@@ -62,6 +62,24 @@ describe('POST /api/v1/skus', () => {
     expect(res.status).toBe(400);
   });
 
+  it('rejects price with more than 2 decimal places', async () => {
+    const res = await request(app).post('/api/v1/skus').send({ ...validSku, price: 19.999 });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('accepts price with exactly 2 decimal places', async () => {
+    const res = await request(app).post('/api/v1/skus').send({ ...validSku, price: 19.99 });
+    expect(res.status).toBe(201);
+    expect(res.body.price).toBe(19.99);
+  });
+
+  it('accepts whole-dollar price', async () => {
+    const res = await request(app).post('/api/v1/skus').send({ ...validSku, price: 20.00 });
+    expect(res.status).toBe(201);
+    expect(res.body.price).toBe(20);
+  });
+
   it('returns 409 for duplicate barcode', async () => {
     await request(app).post('/api/v1/skus').send({ ...validSku, barcode: 'UPC-001' });
     const res = await request(app).post('/api/v1/skus').send({ ...validSku, barcode: 'UPC-001', style: 'Different' });
@@ -129,6 +147,20 @@ describe('PATCH /api/v1/skus/:skuId', () => {
     expect(res.status).toBe(200);
     expect(res.body.heelType).toBe('Block');
     expect(res.body.material).toBe('Suede');
+  });
+
+  it('rejects price with more than 2 decimal places on update', async () => {
+    const created = await request(app).post('/api/v1/skus').send(validSku);
+    const res = await request(app).patch(`/api/v1/skus/${created.body.id}`).send({ price: 19.999 });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('accepts price with exactly 2 decimal places on update', async () => {
+    const created = await request(app).post('/api/v1/skus').send(validSku);
+    const res = await request(app).patch(`/api/v1/skus/${created.body.id}`).send({ price: 19.99 });
+    expect(res.status).toBe(200);
+    expect(res.body.price).toBe(19.99);
   });
 
   it('returns 404 for missing SKU', async () => {
