@@ -4,6 +4,7 @@ import swaggerJsdoc from 'swagger-jsdoc';
 import swaggerUi from 'swagger-ui-express';
 import skuRoutes from './routes/skuRoutes';
 import inventoryRoutes from './routes/inventoryRoutes';
+import vendorRoutes from './routes/vendorRoutes';
 
 const app: Express = express();
 
@@ -29,6 +30,7 @@ app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 // Routes
 app.use('/api/v1/skus', skuRoutes);
 app.use('/api/v1/skus', inventoryRoutes);
+app.use('/api/v1/vendors', vendorRoutes);
 
 // Health check
 app.get('/health', (_req, res) => {

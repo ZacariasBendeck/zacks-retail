@@ -66,6 +66,36 @@ export const auditLogQuerySchema = z.object({
   pageSize: z.coerce.number().int().min(1).max(200).default(50),
 });
 
+const PAYMENT_TERMS = ['NET_30', 'NET_60', 'NET_90'] as const;
+
+export const createVendorSchema = z.object({
+  name: z.string().min(1).max(200),
+  contactEmail: z.string().email().optional().nullable(),
+  phone: z.string().max(50).optional().nullable(),
+  paymentTerms: z.enum(PAYMENT_TERMS).optional().nullable(),
+  leadTimeDays: z.number().int().min(0).optional().nullable(),
+});
+
+export const updateVendorSchema = z.object({
+  name: z.string().min(1).max(200).optional(),
+  contactEmail: z.string().email().optional().nullable(),
+  phone: z.string().max(50).optional().nullable(),
+  paymentTerms: z.enum(PAYMENT_TERMS).optional().nullable(),
+  leadTimeDays: z.number().int().min(0).optional().nullable(),
+  active: z.boolean().optional(),
+});
+
+export const vendorListQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(200).default(50),
+  active: z.preprocess((v) => {
+    if (v === 'true') return true;
+    if (v === 'false') return false;
+    return v;
+  }, z.boolean().optional()),
+  q: z.string().optional(),
+});
+
 export function validate(schema: z.ZodSchema) {
   return (req: Request, res: Response, next: NextFunction): void => {
     const result = schema.safeParse(req.body);
