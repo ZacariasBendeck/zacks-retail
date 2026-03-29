@@ -41,7 +41,6 @@ export function adjustStock(skuId: string, input: StockAdjustmentInput): { inven
     throw new Error('INSUFFICIENT_STOCK');
   }
 
-  const txn = db.prepare('SELECT 1');
   // Use a transaction pattern: node:sqlite doesn't have transaction(), so we use exec
   db.exec('BEGIN TRANSACTION');
   try {
