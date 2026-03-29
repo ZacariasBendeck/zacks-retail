@@ -1,10 +1,10 @@
 import type { Department, Sku } from '../types/sku'
 
-const BRANDS = ['Nike', 'Adidas', 'Puma', 'Clarks', 'Steve Madden', 'Aldo', 'Cole Haan', 'Timberland', 'Dr. Martens', 'Skechers']
-const COLORS = ['Black', 'Brown', 'White', 'Navy', 'Tan', 'Red', 'Grey', 'Burgundy', 'Beige', 'Multi']
+const BRAND_IDS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+const COLOR_IDS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
 const STYLES = ['Oxford', 'Loafer', 'Boot', 'Sandal', 'Sneaker', 'Pump', 'Flat', 'Mule', 'Derby', 'Chelsea']
 const DEPARTMENTS: Department[] = ['FORMAL', 'CASUAL', 'FIESTA', 'SANDALIAS', 'BOOTS', 'COMFORT']
-const SIZES = ['5', '5.5', '6', '6.5', '7', '7.5', '8', '8.5', '9', '9.5', '10', '10.5', '11', '12', '13']
+const CATEGORY_IDS = Array.from({ length: 44 }, (_, i) => 556 + i)
 
 function randomItem<T>(arr: T[]): T {
   return arr[Math.floor(Math.random() * arr.length)]!
@@ -14,23 +14,49 @@ function generateSkus(count: number): Sku[] {
   const skus: Sku[] = []
   for (let i = 0; i < count; i++) {
     const dept = randomItem(DEPARTMENTS)
-    const brand = randomItem(BRANDS)
-    const color = randomItem(COLORS)
-    const size = randomItem(SIZES)
-    const category = 556 + Math.floor(Math.random() * 44)
+    const brandId = randomItem(BRAND_IDS)
+    const colorId = randomItem(COLOR_IDS)
+    const categoryId = randomItem(CATEGORY_IDS)
     skus.push({
       id: crypto.randomUUID(),
-      skuCode: `${dept.slice(0, 3)}-${brand.slice(0, 3).toUpperCase()}-${color.slice(0, 3).toUpperCase()}-${size}-${String(i + 1).padStart(3, '0')}`,
-      brand,
+      skuCode: `${dept.slice(0, 3)}-B${brandId}-C${colorId}-${String(i + 1).padStart(3, '0')}`,
       style: randomItem(STYLES),
-      color,
-      size,
       price: Math.round((29.99 + Math.random() * 220) * 100) / 100,
-      category,
+      cost: null,
+      categoryId,
       department: dept,
       vendorId: crypto.randomUUID(),
+      vendorSku: null,
       barcode: Math.random() > 0.3 ? String(1000000000000 + Math.floor(Math.random() * 9000000000000)) : null,
-      description: null,
+      ricsDescription: null,
+      webDescription: null,
+      comment: null,
+      keywords: null,
+      season: null,
+      manufacturer: null,
+      pictureUrl: null,
+      brandId,
+      colorId,
+      colorFamilyId: null,
+      shoeTypeId: null,
+      heelShapeId: null,
+      heelHeightId: null,
+      toeShapeId: null,
+      closureTypeId: null,
+      upperMaterialId: null,
+      outsoleMaterialId: null,
+      finishId: null,
+      widthTypeId: null,
+      patternId: null,
+      occasionId: null,
+      targetAudienceId: null,
+      accessoryId: null,
+      seasonId: null,
+      sizeTypeId: null,
+      labelTypeId: null,
+      heelMaterialId: null,
+      heelType: null,
+      material: null,
       active: Math.random() > 0.05,
       currentStock: Math.floor(Math.random() * 150),
       createdAt: new Date(Date.now() - Math.random() * 365 * 24 * 60 * 60 * 1000).toISOString(),

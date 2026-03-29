@@ -51,10 +51,9 @@ function buildMockLowStock(threshold: number, page: number, pageSize: number): L
     .map((s) => ({
       id: s.id,
       skuCode: s.skuCode,
-      brand: s.brand,
+      brand: null as string | null,
       style: s.style,
-      color: s.color,
-      size: s.size,
+      color: null as string | null,
       department: s.department,
       currentStock: s.currentStock ?? 0,
       location: LOCATIONS[Math.floor(Math.random() * LOCATIONS.length)],

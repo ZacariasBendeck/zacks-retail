@@ -41,7 +41,7 @@ const DEPARTMENT_COLORS: Record<Department, string> = {
   COMFORT: 'cyan',
 }
 
-const BRANDS = ['Nike', 'Adidas', 'Puma', 'Clarks', 'Steve Madden', 'Aldo', 'Cole Haan', 'Timberland', 'Dr. Martens', 'Skechers']
+// Brands now come from reference data — filter removed (use search instead)
 
 export default function SkuListPage() {
   const { message } = App.useApp()
@@ -101,16 +101,12 @@ export default function SkuListPage() {
 
   const handleExportCsv = useCallback(() => {
     if (!data?.data.length) return
-    const headers = ['SKU Code', 'Brand', 'Style', 'Color', 'Size', 'Price', 'Department', 'Category', 'Stock', 'Status']
+    const headers = ['SKU Code', 'Style', 'Price', 'Department', 'Stock', 'Status']
     const rows = data.data.map((s) => [
       s.skuCode,
-      s.brand,
       s.style,
-      s.color,
-      s.size,
       s.price.toFixed(2),
       s.department,
-      s.category,
       s.currentStock ?? '',
       s.active ? 'Active' : 'Inactive',
     ])
@@ -140,33 +136,12 @@ export default function SkuListPage() {
       ellipsis: true,
     },
     {
-      title: 'Brand',
-      dataIndex: 'brand',
-      key: 'brand',
-      sorter: true,
-      sortOrder: sortOrder('brand'),
-      width: 130,
-    },
-    {
       title: 'Style',
       dataIndex: 'style',
       key: 'style',
       sorter: true,
       sortOrder: sortOrder('style'),
-      width: 120,
-    },
-    {
-      title: 'Color',
-      dataIndex: 'color',
-      key: 'color',
-      width: 100,
-    },
-    {
-      title: 'Size',
-      dataIndex: 'size',
-      key: 'size',
-      width: 70,
-      align: 'center' as const,
+      width: 180,
     },
     {
       title: 'Price',
@@ -306,18 +281,7 @@ export default function SkuListPage() {
                   options={DEPARTMENTS.map((d) => ({ label: d, value: d }))}
                 />
               </Col>
-              <Col xs={24} sm={12} md={6}>
-                <Typography.Text type="secondary" style={{ fontSize: 12 }}>Brand</Typography.Text>
-                <Select
-                  placeholder="All brands"
-                  allowClear
-                  style={{ width: '100%' }}
-                  value={params.brand}
-                  onChange={(v) => updateParams({ brand: v })}
-                  options={BRANDS.map((b) => ({ label: b, value: b }))}
-                  showSearch
-                />
-              </Col>
+              {/* Brand filter removed — use search bar instead */}
               <Col xs={12} sm={8} md={4}>
                 <Typography.Text type="secondary" style={{ fontSize: 12 }}>Min Price</Typography.Text>
                 <InputNumber

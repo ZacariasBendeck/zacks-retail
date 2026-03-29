@@ -60,7 +60,7 @@ function generateMockAdjustments(count: number): Adjustment[] {
         {
           skuId: sku.id,
           skuCode: sku.skuCode,
-          brand: sku.brand,
+          brand: sku.style,
           quantity: type === 'DAMAGE' || type === 'SHRINKAGE'
             ? -(Math.floor(Math.random() * 5) + 1)
             : Math.floor(Math.random() * 20) + 1,
@@ -138,7 +138,7 @@ export async function createAdjustment(payload: CreateAdjustmentPayload): Promis
     await new Promise((r) => setTimeout(r, 300))
     const lineItems = payload.lineItems.map((li) => {
       const sku = MOCK_SKUS.find((s) => s.id === li.skuId)
-      return { ...li, skuCode: sku?.skuCode, brand: sku?.brand }
+      return { ...li, skuCode: sku?.skuCode, brand: sku?.style }
     })
     const fromLoc = MOCK_LOCATIONS.find((l) => l.id === payload.fromLocationId)
     const toLoc = MOCK_LOCATIONS.find((l) => l.id === payload.toLocationId)

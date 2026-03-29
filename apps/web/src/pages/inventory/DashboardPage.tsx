@@ -111,10 +111,10 @@ export default function DashboardPage() {
       width: 100,
     },
     {
-      title: 'Color / Size',
-      key: 'colorSize',
-      width: 120,
-      render: (_: unknown, r: LowStockItem) => `${r.color} / ${r.size}`,
+      title: 'Color',
+      key: 'color',
+      width: 100,
+      render: (_: unknown, r: LowStockItem) => r.color ?? '-',
     },
     {
       title: 'Department',

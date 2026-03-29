@@ -1,4 +1,4 @@
-import type { PaginationEnvelope, Sku, SkuCreatePayload, SkuUpdatePayload, SkuListParams, Vendor, ImageAnalysisResult, EnhancedAnalysisResult, ReferenceDataMap } from '../types/sku'
+import type { PaginationEnvelope, Sku, SkuCreatePayload, SkuUpdatePayload, SkuListParams, Vendor, ImageAnalysisResult, EnhancedAnalysisResult, ReferenceDataMap, SizeLabelItem } from '../types/sku'
 
 export async function fetchSkus(params: SkuListParams): Promise<PaginationEnvelope<Sku>> {
   const searchParams = new URLSearchParams()
@@ -101,5 +101,11 @@ export async function lookupSkuByCode(code: string): Promise<Sku | null> {
   const res = await fetch(`/api/v1/skus/lookup?code=${encodeURIComponent(code)}`)
   if (res.status === 404) return null
   if (!res.ok) throw new Error(`Lookup failed: ${res.status}`)
+  return res.json()
+}
+
+export async function fetchSizeLabels(sizeTypeId: number): Promise<SizeLabelItem[]> {
+  const res = await fetch(`/api/v1/skus/size-types/${sizeTypeId}/sizes`)
+  if (!res.ok) throw new Error(`Failed to fetch size labels: ${res.status}`)
   return res.json()
 }

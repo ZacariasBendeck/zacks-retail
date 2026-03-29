@@ -21,10 +21,9 @@ export interface DashboardKpis {
 export interface LowStockItem {
   id: string
   skuCode: string
-  brand: string
+  brand: string | null
   style: string
-  color: string
-  size: string
+  color: string | null
   department: Department
   currentStock: number
   location?: string

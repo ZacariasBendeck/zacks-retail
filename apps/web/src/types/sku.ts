@@ -3,31 +3,58 @@ export type Department = 'FORMAL' | 'CASUAL' | 'FIESTA' | 'SANDALIAS' | 'BOOTS' 
 export interface ReferenceItem {
   id: number
   name: string
+  code?: string
+  active: boolean
+}
+
+export interface CategoryItem extends ReferenceItem {
+  ricsCode: number
+  deptMacro: string
+}
+
+export interface ColorItem extends ReferenceItem {
+  colorFamilyId: number | null
+}
+
+export interface SizeLabelItem {
+  id: number
+  sizeTypeId: number
+  label: string
+  sortOrder: number
   active: boolean
 }
 
 export type ReferenceDataMap = Record<string, ReferenceItem[]>
 
+export interface SkuSize {
+  id: string
+  skuId: string
+  sizeLabel: string
+  sortOrder: number
+  active: boolean
+  stock?: number
+}
+
 export interface Sku {
   id: string
   skuCode: string
-  brand: string
   style: string
-  color: string
-  size: string
   price: number
   cost: number | null
-  category: number
+  categoryId: number | null
   department: Department
   vendorId: string
   vendorSku: string | null
   barcode: string | null
-  description: string | null
+  ricsDescription: string | null
+  webDescription: string | null
   comment: string | null
   keywords: string | null
   season: string | null
   manufacturer: string | null
   pictureUrl: string | null
+  brandId: number | null
+  colorId: number | null
   colorFamilyId: number | null
   shoeTypeId: number | null
   heelShapeId: number | null
@@ -45,10 +72,12 @@ export interface Sku {
   seasonId: number | null
   sizeTypeId: number | null
   labelTypeId: number | null
+  heelMaterialId: number | null
   heelType: string | null
   material: string | null
   active: boolean
   currentStock?: number
+  sizes?: SkuSize[]
   createdAt: string
   updatedAt: string
 }
@@ -58,29 +87,25 @@ export interface SkuListParams {
   pageSize?: number
   sort?: string
   order?: 'asc' | 'desc'
-  brand?: string
+  brandId?: number
   department?: Department
-  category?: number
+  categoryId?: number
   vendorId?: string
   active?: boolean
   q?: string
   minPrice?: number
   maxPrice?: number
-  size?: string
 }
 
 export interface SkuCreatePayload {
-  brand: string
   style: string
-  color: string
-  size: string
   price: number
-  category: number
   department: Department
   vendorId: string
   skuCode?: string | null
   barcode?: string | null
-  description?: string | null
+  ricsDescription?: string | null
+  webDescription?: string | null
   active?: boolean
   cost?: number | null
   vendorSku?: string | null
@@ -89,7 +114,10 @@ export interface SkuCreatePayload {
   season?: string | null
   manufacturer?: string | null
   pictureUrl?: string | null
-  colorFamilyId?: number | null
+  brandId?: number | null
+  colorId?: number | null
+  categoryId?: number | null
+  heelMaterialId?: number | null
   shoeTypeId?: number | null
   heelShapeId?: number | null
   heelHeightId?: number | null
@@ -106,6 +134,7 @@ export interface SkuCreatePayload {
   seasonId?: number | null
   sizeTypeId?: number | null
   labelTypeId?: number | null
+  sizes?: string[]
 }
 
 export type SkuUpdatePayload = Partial<SkuCreatePayload>

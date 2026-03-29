@@ -23,20 +23,20 @@ import {
 } from 'antd'
 import { ArrowLeftOutlined, SaveOutlined, CameraOutlined, LoadingOutlined, SearchOutlined, ThunderboltOutlined, CheckCircleOutlined, ExclamationCircleOutlined, ReloadOutlined, EyeInvisibleOutlined } from '@ant-design/icons'
 import { useSku, useCreateSku, useUpdateSku, useVendors, useAnalyzeImage, useReferenceData, useLookupSku, useSearchSkus } from '../../hooks/useSkus'
-import type { Department, SkuCreatePayload, ReferenceItem, ImageAnalysisResult, EnhancedAnalysisResult, AiFillSummary } from '../../types/sku'
+import { fetchSizeLabels } from '../../services/skuApi'
+import type { Department, SkuCreatePayload, ReferenceItem, ImageAnalysisResult, EnhancedAnalysisResult, AiFillSummary, SizeLabelItem } from '../../types/sku'
 
 const DEPARTMENTS: Department[] = ['FORMAL', 'CASUAL', 'FIESTA', 'SANDALIAS', 'BOOTS', 'COMFORT']
 
 /** Mapping: AI response key → form field name + reference table slug */
 const AI_FIELD_MAP: { aiKey: keyof ImageAnalysisResult; formField: string; type: 'text' | 'enum' | 'reference'; refTable?: string }[] = [
-  { aiKey: 'color', formField: 'color', type: 'text' },
-  { aiKey: 'description', formField: 'description', type: 'text' },
+  { aiKey: 'description', formField: 'webDescription', type: 'text' },
   { aiKey: 'department', formField: 'department', type: 'enum' },
+  { aiKey: 'color', formField: 'colorId', type: 'reference', refTable: 'colors' },
   { aiKey: 'shoe_type', formField: 'shoeTypeId', type: 'reference', refTable: 'shoe-types' },
   { aiKey: 'heel_height', formField: 'heelHeightId', type: 'reference', refTable: 'heel-heights' },
   { aiKey: 'heel_shape', formField: 'heelShapeId', type: 'reference', refTable: 'heel-shapes' },
   { aiKey: 'toe_shape', formField: 'toeShapeId', type: 'reference', refTable: 'toe-shapes' },
-  { aiKey: 'color_family', formField: 'colorFamilyId', type: 'reference', refTable: 'color-families' },
   { aiKey: 'upper_material', formField: 'upperMaterialId', type: 'reference', refTable: 'upper-materials' },
   { aiKey: 'finish', formField: 'finishId', type: 'reference', refTable: 'finishes' },
   { aiKey: 'pattern', formField: 'patternId', type: 'reference', refTable: 'patterns' },
@@ -123,6 +123,7 @@ export default function SkuFormPage() {
   const [aiFillSummary, setAiFillSummary] = useState<AiFillSummary | null>(null)
   const [analysisError, setAnalysisError] = useState<string | null>(null)
   const [lastUploadedFile, setLastUploadedFile] = useState<File | null>(null)
+  const [sizeLabels, setSizeLabels] = useState<SizeLabelItem[]>([])
 
   // Inline lookup state: tracks when a user-entered SKU code matches an existing SKU
   const [matchedSku, setMatchedSku] = useState<import('../../types/sku').Sku | null>(null)
@@ -145,7 +146,7 @@ export default function SkuFormPage() {
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
           <span style={{ fontWeight: 500 }}>{s.skuCode}</span>
           <span style={{ color: '#888', fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {[s.brand, s.style, s.color, s.size].filter(Boolean).join(' · ')}
+            {s.style} · {s.department}
           </span>
         </div>
       ),
@@ -201,23 +202,23 @@ export default function SkuFormPage() {
   const populateForm = useCallback((s: import('../../types/sku').Sku) => {
     form.setFieldsValue({
       skuCode: s.skuCode,
-      brand: s.brand,
       style: s.style,
-      color: s.color,
-      size: s.size,
       price: s.price,
       cost: s.cost,
-      category: s.category,
+      categoryId: s.categoryId,
       department: s.department,
       vendorId: s.vendorId,
       vendorSku: s.vendorSku,
       barcode: s.barcode,
-      description: s.description,
+      ricsDescription: s.ricsDescription,
+      webDescription: s.webDescription,
       comment: s.comment,
       keywords: s.keywords,
       season: s.season,
       manufacturer: s.manufacturer,
-      colorFamilyId: s.colorFamilyId,
+      brandId: s.brandId,
+      colorId: s.colorId,
+      heelMaterialId: s.heelMaterialId,
       shoeTypeId: s.shoeTypeId,
       heelShapeId: s.heelShapeId,
       heelHeightId: s.heelHeightId,
@@ -234,7 +235,12 @@ export default function SkuFormPage() {
       seasonId: s.seasonId,
       sizeTypeId: s.sizeTypeId,
       labelTypeId: s.labelTypeId,
+      sizes: s.sizes?.map((sz) => sz.sizeLabel) ?? [],
     })
+    // Load size labels if sizeType is set
+    if (s.sizeTypeId) {
+      fetchSizeLabels(s.sizeTypeId).then(setSizeLabels).catch(() => {})
+    }
   }, [form])
 
   useEffect(() => {
@@ -593,9 +599,9 @@ export default function SkuFormPage() {
             <Typography.Text strong style={{ fontSize: 13 }}>Product Details</Typography.Text>
 
             <Row gutter={12} style={{ marginTop: 8 }}>
-              <Col xs={24} sm={4}>
-                <Form.Item label="Brand" name="brand" rules={[{ required: true }, { max: 100 }]} style={compactItem}>
-                  <Input placeholder="e.g. Nike" />
+              <Col xs={12} sm={4}>
+                <Form.Item label="Brand" name="brandId" style={compactItem}>
+                  <Select placeholder="Select" allowClear showSearch optionFilterProp="label" options={refOptions(refData?.['brands'])} />
                 </Form.Item>
               </Col>
               <Col xs={24} sm={4}>
@@ -604,18 +610,25 @@ export default function SkuFormPage() {
                 </Form.Item>
               </Col>
               <Col xs={12} sm={3}>
-                <Form.Item label={aiLabel('Color', 'color', aiFilledFields)} name="color" rules={[{ required: true }, { max: 50 }]} style={{ ...compactItem, ...(aiFilledFields.has('color') ? AI_FILLED_STYLE : {}) }}>
-                  <Input placeholder="e.g. Black" />
-                </Form.Item>
-              </Col>
-              <Col xs={12} sm={3}>
-                <Form.Item label="Size" name="size" rules={[{ required: true }]} style={compactItem}>
-                  <Input placeholder="9.5" />
+                <Form.Item label={aiLabel('Color', 'colorId', aiFilledFields)} name="colorId" style={{ ...compactItem, ...(aiFilledFields.has('colorId') ? AI_FILLED_STYLE : {}) }}>
+                  <Select placeholder="Select" allowClear showSearch optionFilterProp="label" options={refOptions(refData?.['colors'])} />
                 </Form.Item>
               </Col>
               <Col xs={12} sm={3}>
                 <Form.Item label="Size Type" name="sizeTypeId" style={compactItem}>
-                  <Select placeholder="Select" allowClear options={refOptions(refData?.['size-types'])} />
+                  <Select placeholder="Select" allowClear options={refOptions(refData?.['size-types'])} onChange={(val: number | null) => {
+                    if (val) {
+                      fetchSizeLabels(val).then(setSizeLabels).catch(() => setSizeLabels([]))
+                    } else {
+                      setSizeLabels([])
+                      form.setFieldsValue({ sizes: [] })
+                    }
+                  }} />
+                </Form.Item>
+              </Col>
+              <Col xs={24} sm={6}>
+                <Form.Item label="Sizes" name="sizes" style={compactItem}>
+                  <Select mode="multiple" placeholder={sizeLabels.length ? 'Select sizes' : 'Choose size type first'} disabled={!sizeLabels.length} options={sizeLabels.map((sl) => ({ label: sl.label, value: sl.label }))} />
                 </Form.Item>
               </Col>
               <Col xs={12} sm={3}>
@@ -623,19 +636,27 @@ export default function SkuFormPage() {
                   <Select placeholder="Select" allowClear options={refOptions(refData?.['width-types'])} />
                 </Form.Item>
               </Col>
+            </Row>
+
+            <Row gutter={12}>
               <Col xs={12} sm={4}>
                 <Form.Item label={aiLabel('Shoe Type', 'shoeTypeId', aiFilledFields)} name="shoeTypeId" style={{ ...compactItem, ...(aiFilledFields.has('shoeTypeId') ? AI_FILLED_STYLE : {}) }}>
                   <Select placeholder="Select" allowClear showSearch optionFilterProp="label" options={refOptions(refData?.['shoe-types'])} />
                 </Form.Item>
               </Col>
+              <Col xs={24} sm={10}>
+                <Form.Item label={aiLabel('Web Description', 'webDescription', aiFilledFields)} name="webDescription" rules={[{ max: 1000 }]} style={{ ...compactItem, ...(aiFilledFields.has('webDescription') ? AI_FILLED_STYLE : {}) }}>
+                  <Input.TextArea rows={1} placeholder="Descripcion en espanol" />
+                </Form.Item>
+              </Col>
+              <Col xs={24} sm={10}>
+                <Form.Item label="RICS Description" name="ricsDescription" rules={[{ max: 500 }]} style={compactItem}>
+                  <Input placeholder="Auto-generated if blank" />
+                </Form.Item>
+              </Col>
             </Row>
 
             <Row gutter={12}>
-              <Col xs={24} sm={12}>
-                <Form.Item label={aiLabel('Description', 'description', aiFilledFields)} name="description" rules={[{ max: 500 }]} style={{ ...compactItem, ...(aiFilledFields.has('description') ? AI_FILLED_STYLE : {}) }}>
-                  <Input.TextArea rows={1} placeholder="Product description" />
-                </Form.Item>
-              </Col>
               <Col xs={24} sm={12}>
                 <Form.Item label="Comment" name="comment" rules={[{ max: 1000 }]} style={compactItem}>
                   <Input.TextArea rows={1} placeholder="Internal notes" />
@@ -654,9 +675,9 @@ export default function SkuFormPage() {
                   <Select placeholder="Select" options={DEPARTMENTS.map((d) => ({ label: d, value: d }))} />
                 </Form.Item>
               </Col>
-              <Col xs={12} sm={3}>
-                <Form.Item label="Category" name="category" rules={[{ required: true }, { type: 'number', min: 556, max: 599 }]} style={compactItem}>
-                  <InputNumber style={{ width: '100%' }} min={556} max={599} precision={0} placeholder="556-599" />
+              <Col xs={12} sm={4}>
+                <Form.Item label="Category" name="categoryId" style={compactItem}>
+                  <Select placeholder="Select" allowClear showSearch optionFilterProp="label" options={(refData?.['categories'] ?? []).map((c: any) => ({ label: `${c.ricsCode ?? ''} ${c.name}`, value: c.id }))} />
                 </Form.Item>
               </Col>
               <Col xs={12} sm={3}>
@@ -706,11 +727,6 @@ export default function SkuFormPage() {
 
             <Row gutter={12} style={{ marginTop: 8 }}>
               <Col xs={12} sm={3}>
-                <Form.Item label={aiLabel('Color Family', 'colorFamilyId', aiFilledFields)} name="colorFamilyId" style={{ ...compactItem, ...(aiFilledFields.has('colorFamilyId') ? AI_FILLED_STYLE : {}) }}>
-                  <Select placeholder="Select" allowClear showSearch optionFilterProp="label" options={refOptions(refData?.['color-families'])} />
-                </Form.Item>
-              </Col>
-              <Col xs={12} sm={3}>
                 <Form.Item label={aiLabel('Pattern', 'patternId', aiFilledFields)} name="patternId" style={{ ...compactItem, ...(aiFilledFields.has('patternId') ? AI_FILLED_STYLE : {}) }}>
                   <Select placeholder="Select" allowClear options={refOptions(refData?.['patterns'])} />
                 </Form.Item>
@@ -756,6 +772,11 @@ export default function SkuFormPage() {
               <Col xs={12} sm={4}>
                 <Form.Item label="Outsole Material" name="outsoleMaterialId" style={compactItem}>
                   <Select placeholder="Select" allowClear options={refOptions(refData?.['outsole-materials'])} />
+                </Form.Item>
+              </Col>
+              <Col xs={12} sm={4}>
+                <Form.Item label="Heel Material" name="heelMaterialId" style={compactItem}>
+                  <Select placeholder="Select" allowClear options={refOptions(refData?.['heel-materials'])} />
                 </Form.Item>
               </Col>
             </Row>
