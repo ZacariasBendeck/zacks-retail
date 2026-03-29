@@ -7,6 +7,7 @@ import inventoryRoutes from './routes/inventoryRoutes';
 import vendorRoutes from './routes/vendorRoutes';
 import reportRoutes from './routes/reportRoutes';
 import purchaseOrderRoutes from './routes/purchaseOrderRoutes';
+import otbBudgetRoutes from './routes/otbBudgetRoutes';
 
 const app: Express = express();
 
@@ -35,6 +36,7 @@ app.use('/api/v1/skus', inventoryRoutes);
 app.use('/api/v1/vendors', vendorRoutes);
 app.use('/api/v1/reports', reportRoutes);
 app.use('/api/v1/purchase-orders', purchaseOrderRoutes);
+app.use('/api/v1/otb-budgets', otbBudgetRoutes);
 
 // Health check
 app.get('/health', (_req, res) => {

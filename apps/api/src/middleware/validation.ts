@@ -143,6 +143,37 @@ export const vendorListQuerySchema = z.object({
   q: z.string().optional(),
 });
 
+// ── OTB Budget schemas ─────────────────────────────────────────────
+
+export const createOtbBudgetSchema = z.object({
+  department: z.enum(DEPARTMENTS),
+  year: z.number().int().min(2020).max(2099),
+  month: z.number().int().min(1).max(12),
+  plannedBudget: z.number().nonnegative(),
+  notes: z.string().max(1000).optional().nullable(),
+  createdBy: z.string().max(100).optional(),
+});
+
+export const updateOtbBudgetSchema = z.object({
+  plannedBudget: z.number().nonnegative().optional(),
+  notes: z.string().max(1000).optional().nullable(),
+  changedBy: z.string().max(100).optional(),
+});
+
+export const otbBudgetListQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(200).default(50),
+  department: z.enum(DEPARTMENTS).optional(),
+  year: z.coerce.number().int().min(2020).max(2099).optional(),
+  month: z.coerce.number().int().min(1).max(12).optional(),
+});
+
+export const otbSummaryQuerySchema = z.object({
+  year: z.coerce.number().int().min(2020).max(2099),
+  month: z.coerce.number().int().min(1).max(12).optional(),
+  department: z.enum(DEPARTMENTS).optional(),
+});
+
 export function validate(schema: z.ZodSchema) {
   return (req: Request, res: Response, next: NextFunction): void => {
     const result = schema.safeParse(req.body);

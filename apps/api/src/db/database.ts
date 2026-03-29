@@ -140,6 +140,34 @@ function initSchema(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_sales_sku_id ON sales_transactions(sku_id);
     CREATE INDEX IF NOT EXISTS idx_sales_sold_at ON sales_transactions(sold_at);
 
+    -- OTB (Open-to-Buy) budget planning: one row per department+month
+    CREATE TABLE IF NOT EXISTS otb_budgets (
+      id TEXT PRIMARY KEY,
+      department TEXT NOT NULL CHECK(department IN ('FORMAL','CASUAL','FIESTA','SANDALIAS','BOOTS','COMFORT')),
+      year INTEGER NOT NULL CHECK(year >= 2020 AND year <= 2099),
+      month INTEGER NOT NULL CHECK(month >= 1 AND month <= 12),
+      planned_budget REAL NOT NULL CHECK(planned_budget >= 0),
+      notes TEXT,
+      created_by TEXT NOT NULL DEFAULT 'system',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(department, year, month)
+    );
+
+    CREATE TABLE IF NOT EXISTS otb_budget_audit (
+      id TEXT PRIMARY KEY,
+      otb_budget_id TEXT NOT NULL REFERENCES otb_budgets(id),
+      field_changed TEXT NOT NULL,
+      old_value TEXT,
+      new_value TEXT,
+      changed_by TEXT NOT NULL DEFAULT 'system',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_otb_budgets_dept ON otb_budgets(department);
+    CREATE INDEX IF NOT EXISTS idx_otb_budgets_year_month ON otb_budgets(year, month);
+    CREATE INDEX IF NOT EXISTS idx_otb_budget_audit_budget_id ON otb_budget_audit(otb_budget_id);
+
     INSERT OR IGNORE INTO sku_code_seq (prefix, next_val) VALUES ('PO', 1);
 
     CREATE INDEX IF NOT EXISTS idx_po_vendor_id ON purchase_orders(vendor_id);
