@@ -55,6 +55,17 @@ export const skuListQuerySchema = z.object({
   size: z.string().optional(),
 });
 
+export const stockAdjustmentSchema = z.object({
+  adjustment: z.number().int().refine((v) => v !== 0, { message: 'Adjustment cannot be zero' }),
+  reason: z.string().min(1).max(500),
+  performedBy: z.string().max(100).optional(),
+});
+
+export const auditLogQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(200).default(50),
+});
+
 export function validate(schema: z.ZodSchema) {
   return (req: Request, res: Response, next: NextFunction): void => {
     const result = schema.safeParse(req.body);

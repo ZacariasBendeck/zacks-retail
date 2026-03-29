@@ -3,6 +3,7 @@ import cors from 'cors';
 import swaggerJsdoc from 'swagger-jsdoc';
 import swaggerUi from 'swagger-ui-express';
 import skuRoutes from './routes/skuRoutes';
+import inventoryRoutes from './routes/inventoryRoutes';
 
 const app: Express = express();
 
@@ -27,6 +28,7 @@ app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
 // Routes
 app.use('/api/v1/skus', skuRoutes);
+app.use('/api/v1/skus', inventoryRoutes);
 
 // Health check
 app.get('/health', (_req, res) => {

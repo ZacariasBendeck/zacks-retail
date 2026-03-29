@@ -79,5 +79,18 @@ function initSchema(db: DatabaseSync): void {
       prefix TEXT PRIMARY KEY,
       next_val INTEGER NOT NULL DEFAULT 1
     );
+
+    CREATE TABLE IF NOT EXISTS inventory_audit_log (
+      id TEXT PRIMARY KEY,
+      sku_id TEXT NOT NULL REFERENCES skus(id),
+      adjustment INTEGER NOT NULL,
+      reason TEXT NOT NULL,
+      resulting_balance INTEGER NOT NULL,
+      performed_by TEXT NOT NULL DEFAULT 'system',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_audit_log_sku_id ON inventory_audit_log(sku_id);
+    CREATE INDEX IF NOT EXISTS idx_audit_log_created_at ON inventory_audit_log(created_at);
   `);
 }
