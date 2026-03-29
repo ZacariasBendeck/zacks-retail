@@ -105,6 +105,41 @@ router.get('/summary', validateQuery(otbSummaryQuerySchema), (req: Request, res:
 
 /**
  * @openapi
+ * /api/v1/otb-budgets/check-po/{poId}:
+ *   get:
+ *     summary: Check the budget impact of a purchase order against OTB budgets
+ *     tags: [OTB Budgets]
+ *     parameters:
+ *       - name: poId
+ *         in: path
+ *         required: true
+ *         schema: { type: string, format: uuid }
+ *     responses:
+ *       200:
+ *         description: Budget impact analysis per department
+ *       404:
+ *         description: Purchase order not found
+ */
+router.get('/check-po/:poId', (req: Request, res: Response): void => {
+  const result = otbService.checkBudgetImpact(req.params.poId as string);
+
+  if ('error' in result) {
+    if (result.error === 'PO_NOT_FOUND') {
+      res.status(404).json({ error: { code: 'PO_NOT_FOUND', message: 'Purchase order not found.' } });
+      return;
+    }
+  }
+
+  const hasWarning = (result as any[]).some((r: any) => r.exceedsBudget);
+  res.json({
+    poId: req.params.poId,
+    budgetImpact: result,
+    warning: hasWarning ? 'This PO would cause one or more department budgets to be exceeded.' : null,
+  });
+});
+
+/**
+ * @openapi
  * /api/v1/otb-budgets/{budgetId}:
  *   get:
  *     summary: Get an OTB budget by ID

@@ -120,6 +120,11 @@ export const poReceiveSchema = z.object({
   ).min(1, 'At least one line is required'),
 });
 
+export const poSubmitSchema = z.object({
+  force: z.boolean().optional().default(false),
+  changedBy: z.string().max(100).optional(),
+});
+
 export const poCancelSchema = z.object({
   reason: z.string().min(1).max(500).optional(),
 });

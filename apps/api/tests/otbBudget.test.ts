@@ -200,7 +200,7 @@ describe('GET /api/v1/otb-budgets (list)', () => {
 });
 
 describe('GET /api/v1/otb-budgets/summary', () => {
-  it('returns summary with planned budget', async () => {
+  it('returns summary with planned budget and warning fields', async () => {
     await request(app).post('/api/v1/otb-budgets').send(validBudget);
     const res = await request(app).get('/api/v1/otb-budgets/summary?year=2026&month=3');
     expect(res.status).toBe(200);
@@ -210,6 +210,8 @@ describe('GET /api/v1/otb-budgets/summary', () => {
     expect(res.body[0].committedAmount).toBe(0);
     expect(res.body[0].receivedAmount).toBe(0);
     expect(res.body[0].remainingOtb).toBe(50000);
+    expect(res.body[0].utilizationPercent).toBe(0);
+    expect(res.body[0].budgetExceeded).toBe(false);
   });
 
   it('requires year parameter', async () => {
@@ -257,5 +259,151 @@ describe('GET /api/v1/otb-budgets/:budgetId/audit', () => {
     // Both changes recorded
     const values = res.body.map((a: any) => a.newValue).sort();
     expect(values).toEqual(['60000', '70000']);
+  });
+});
+
+describe('GET /api/v1/otb-budgets/check-po/:poId', () => {
+  let vendorId: string;
+  let skuId1: string;
+
+  beforeEach(async () => {
+    const vendor = await request(app).post('/api/v1/vendors').send({
+      name: 'Test Vendor',
+      contactEmail: 'test@vendor.com',
+      paymentTerms: 'NET_30',
+    });
+    vendorId = vendor.body.id;
+
+    const sku = await request(app).post('/api/v1/skus').send({
+      brand: 'Nike',
+      style: 'Air Max',
+      color: 'Black',
+      size: '9',
+      price: 129.99,
+      category: 560,
+      department: 'FORMAL',
+      vendorId,
+    });
+    skuId1 = sku.body.id;
+  });
+
+  it('returns budget impact for a PO within budget', async () => {
+    await request(app).post('/api/v1/otb-budgets').send(validBudget);
+
+    const po = await request(app).post('/api/v1/purchase-orders').send({
+      vendorId,
+      lineItems: [{ skuId: skuId1, quantity: 10, unitCost: 100 }],
+    });
+
+    const res = await request(app).get(`/api/v1/otb-budgets/check-po/${po.body.id}`);
+    expect(res.status).toBe(200);
+    expect(res.body.poId).toBe(po.body.id);
+    expect(res.body.budgetImpact).toHaveLength(1);
+    expect(res.body.budgetImpact[0].department).toBe('FORMAL');
+    expect(res.body.budgetImpact[0].poAmount).toBe(1000);
+    expect(res.body.budgetImpact[0].exceedsBudget).toBe(false);
+    expect(res.body.warning).toBeNull();
+  });
+
+  it('returns warning when PO exceeds budget', async () => {
+    await request(app).post('/api/v1/otb-budgets').send({ ...validBudget, plannedBudget: 500 });
+
+    const po = await request(app).post('/api/v1/purchase-orders').send({
+      vendorId,
+      lineItems: [{ skuId: skuId1, quantity: 10, unitCost: 100 }],
+    });
+
+    const res = await request(app).get(`/api/v1/otb-budgets/check-po/${po.body.id}`);
+    expect(res.status).toBe(200);
+    expect(res.body.budgetImpact[0].exceedsBudget).toBe(true);
+    expect(res.body.budgetImpact[0].overageAmount).toBe(500);
+    expect(res.body.warning).toBeTruthy();
+  });
+
+  it('returns 404 for non-existent PO', async () => {
+    const res = await request(app).get('/api/v1/otb-budgets/check-po/00000000-0000-0000-0000-000000000099');
+    expect(res.status).toBe(404);
+  });
+});
+
+describe('PO submit with OTB budget check', () => {
+  let vendorId: string;
+  let skuId1: string;
+
+  beforeEach(async () => {
+    const vendor = await request(app).post('/api/v1/vendors').send({
+      name: 'Test Vendor',
+      contactEmail: 'test@vendor.com',
+      paymentTerms: 'NET_30',
+    });
+    vendorId = vendor.body.id;
+
+    const sku = await request(app).post('/api/v1/skus').send({
+      brand: 'Nike',
+      style: 'Air Max',
+      color: 'Black',
+      size: '9',
+      price: 129.99,
+      category: 560,
+      department: 'FORMAL',
+      vendorId,
+    });
+    skuId1 = sku.body.id;
+  });
+
+  it('blocks PO submit when it would exceed OTB budget', async () => {
+    await request(app).post('/api/v1/otb-budgets').send({ ...validBudget, plannedBudget: 500 });
+
+    const po = await request(app).post('/api/v1/purchase-orders').send({
+      vendorId,
+      lineItems: [{ skuId: skuId1, quantity: 10, unitCost: 100 }],
+    });
+
+    const res = await request(app).patch(`/api/v1/purchase-orders/${po.body.id}/submit`).send({});
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe('BUDGET_EXCEEDED');
+    expect(res.body.budgetImpact).toBeDefined();
+    expect(res.body.budgetImpact[0].exceedsBudget).toBe(true);
+  });
+
+  it('allows PO submit with force=true when budget exceeded', async () => {
+    await request(app).post('/api/v1/otb-budgets').send({ ...validBudget, plannedBudget: 500 });
+
+    const po = await request(app).post('/api/v1/purchase-orders').send({
+      vendorId,
+      lineItems: [{ skuId: skuId1, quantity: 10, unitCost: 100 }],
+    });
+
+    const res = await request(app).patch(`/api/v1/purchase-orders/${po.body.id}/submit`).send({ force: true });
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('SUBMITTED');
+    expect(res.body.budgetWarning).toBeDefined();
+    expect(res.body.budgetWarning.message).toContain('budget override');
+  });
+
+  it('submits normally when within budget', async () => {
+    await request(app).post('/api/v1/otb-budgets').send(validBudget);
+
+    const po = await request(app).post('/api/v1/purchase-orders').send({
+      vendorId,
+      lineItems: [{ skuId: skuId1, quantity: 10, unitCost: 100 }],
+    });
+
+    const res = await request(app).patch(`/api/v1/purchase-orders/${po.body.id}/submit`).send({});
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('SUBMITTED');
+    expect(res.body.budgetWarning).toBeUndefined();
+  });
+
+  it('submits normally when no OTB budget exists for that department/month', async () => {
+    // No budget set up — should pass without warning
+    const po = await request(app).post('/api/v1/purchase-orders').send({
+      vendorId,
+      lineItems: [{ skuId: skuId1, quantity: 10, unitCost: 100 }],
+    });
+
+    const res = await request(app).patch(`/api/v1/purchase-orders/${po.body.id}/submit`).send({});
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('SUBMITTED');
   });
 });

@@ -6,6 +6,7 @@ import {
   OtbBudgetAuditRow,
   OtbBudgetAudit,
   OtbSummary,
+  BudgetCheckResult,
   Department,
   rowToOtbBudget,
   rowToOtbBudgetAudit,
@@ -221,15 +222,95 @@ export function getOtbSummary(params: {
     received_amount: number;
   }[];
 
-  return rows.map((r) => ({
-    department: r.department,
-    year: r.year,
-    month: r.month,
-    plannedBudget: r.planned_budget,
-    committedAmount: r.committed_amount,
-    receivedAmount: r.received_amount,
-    remainingOtb: r.planned_budget - r.committed_amount,
-  }));
+  return rows.map((r) => {
+    const remainingOtb = r.planned_budget - r.committed_amount;
+    const utilizationPercent = r.planned_budget > 0
+      ? Math.round((r.committed_amount / r.planned_budget) * 10000) / 100
+      : 0;
+    return {
+      department: r.department,
+      year: r.year,
+      month: r.month,
+      plannedBudget: r.planned_budget,
+      committedAmount: r.committed_amount,
+      receivedAmount: r.received_amount,
+      remainingOtb,
+      utilizationPercent,
+      budgetExceeded: r.committed_amount > r.planned_budget,
+    };
+  });
+}
+
+/**
+ * Check the budget impact of a purchase order against OTB budgets.
+ * Groups PO line totals by department (via SKU) and checks against the
+ * OTB budget for the PO's creation month. Returns per-department results.
+ */
+export function checkBudgetImpact(poId: string): BudgetCheckResult[] | { error: string } {
+  const db = getDb();
+
+  const po = db.prepare('SELECT * FROM purchase_orders WHERE id = ?').get(poId) as unknown as { id: string; created_at: string; status: string } | undefined;
+  if (!po) return { error: 'PO_NOT_FOUND' };
+
+  const poYear = new Date(po.created_at).getFullYear();
+  const poMonth = new Date(po.created_at).getMonth() + 1;
+
+  // Get PO line totals grouped by department (via SKU)
+  const poLinesByDept = db.prepare(`
+    SELECT s.department, SUM(pol.quantity_ordered * pol.unit_cost) as po_total
+    FROM purchase_order_lines pol
+    JOIN skus s ON s.id = pol.sku_id
+    WHERE pol.po_id = ?
+    GROUP BY s.department
+  `).all(poId) as unknown as { department: Department; po_total: number }[];
+
+  const results: BudgetCheckResult[] = [];
+
+  for (const line of poLinesByDept) {
+    // Get budget for this department/month
+    const budget = db.prepare(
+      'SELECT * FROM otb_budgets WHERE department = ? AND year = ? AND month = ?'
+    ).get(line.department, poYear, poMonth) as unknown as OtbBudgetRow | undefined;
+
+    // If no budget is configured for this department/month, skip — nothing to check
+    if (!budget) continue;
+
+    const plannedBudget = budget.planned_budget;
+
+    // Get current committed amount (excluding this PO if it's already counted)
+    const committedRow = db.prepare(`
+      SELECT COALESCE(SUM(pol.quantity_ordered * pol.unit_cost), 0) as total
+      FROM purchase_order_lines pol
+      JOIN purchase_orders po ON po.id = pol.po_id
+      JOIN skus s ON s.id = pol.sku_id
+      WHERE s.department = ?
+        AND CAST(strftime('%Y', po.created_at) AS INTEGER) = ?
+        AND CAST(strftime('%m', po.created_at) AS INTEGER) = ?
+        AND po.status IN ('SUBMITTED', 'CONFIRMED', 'PARTIALLY_RECEIVED')
+        AND po.id != ?
+    `).get(line.department, poYear, poMonth, poId) as unknown as { total: number };
+
+    const currentCommitted = committedRow.total;
+    const projectedCommitted = currentCommitted + line.po_total;
+    const remainingAfter = plannedBudget - projectedCommitted;
+    const exceedsBudget = projectedCommitted > plannedBudget;
+    const overageAmount = exceedsBudget ? projectedCommitted - plannedBudget : 0;
+
+    results.push({
+      department: line.department,
+      year: poYear,
+      month: poMonth,
+      plannedBudget,
+      currentCommitted,
+      poAmount: line.po_total,
+      projectedCommitted,
+      remainingAfter,
+      exceedsBudget,
+      overageAmount,
+    });
+  }
+
+  return results;
 }
 
 export function deleteOtbBudget(id: string): boolean {

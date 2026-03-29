@@ -1,11 +1,13 @@
 import { Router, Request, Response, IRouter } from 'express';
 import * as poService from '../services/purchaseOrderService';
+import * as otbService from '../services/otbBudgetService';
 import {
   createPurchaseOrderSchema,
   updatePurchaseOrderSchema,
   poStatusTransitionSchema,
   poListQuerySchema,
   poReceiveSchema,
+  poSubmitSchema,
   poCancelSchema,
   validate,
   validateQuery,
@@ -225,8 +227,29 @@ router.patch('/:poId/status', validate(poStatusTransitionSchema), (req: Request,
  *       409:
  *         description: Invalid transition or validation failure
  */
-router.patch('/:poId/submit', (req: Request, res: Response): void => {
-  const result = poService.submitPurchaseOrder(req.params.poId as string);
+router.patch('/:poId/submit', validate(poSubmitSchema), (req: Request, res: Response): void => {
+  const poId = req.params.poId as string;
+  const { force, changedBy } = req.body;
+
+  // Check budget impact before submitting (soft block)
+  if (!force) {
+    const budgetCheck = otbService.checkBudgetImpact(poId);
+    if (!('error' in budgetCheck)) {
+      const exceeded = budgetCheck.filter((b) => b.exceedsBudget);
+      if (exceeded.length > 0) {
+        res.status(409).json({
+          error: {
+            code: 'BUDGET_EXCEEDED',
+            message: 'This PO would exceed the OTB budget for one or more departments. Submit with force=true to override.',
+          },
+          budgetImpact: budgetCheck,
+        });
+        return;
+      }
+    }
+  }
+
+  const result = poService.submitPurchaseOrder(poId, { changedBy });
 
   if (result === null) {
     res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Purchase order not found.' } });
@@ -247,6 +270,24 @@ router.patch('/:poId/submit', (req: Request, res: Response): void => {
       error: { code: 'INVALID_STATUS_TRANSITION', message: `Invalid status transition: ${result.error.replace('INVALID_TRANSITION:', '')}` },
     });
     return;
+  }
+
+  // Include budget warning in successful response if force was used
+  if (force) {
+    const budgetCheck = otbService.checkBudgetImpact(poId);
+    if (!('error' in budgetCheck)) {
+      const exceeded = budgetCheck.filter((b) => b.exceedsBudget);
+      if (exceeded.length > 0) {
+        res.json({
+          ...result,
+          budgetWarning: {
+            message: 'PO submitted with budget override. One or more department budgets are now exceeded.',
+            budgetImpact: budgetCheck,
+          },
+        });
+        return;
+      }
+    }
   }
 
   res.json(result);

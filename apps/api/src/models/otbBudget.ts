@@ -52,6 +52,21 @@ export interface OtbSummary {
   committedAmount: number;
   receivedAmount: number;
   remainingOtb: number;
+  utilizationPercent: number;
+  budgetExceeded: boolean;
+}
+
+export interface BudgetCheckResult {
+  department: Department;
+  year: number;
+  month: number;
+  plannedBudget: number;
+  currentCommitted: number;
+  poAmount: number;
+  projectedCommitted: number;
+  remainingAfter: number;
+  exceedsBudget: boolean;
+  overageAmount: number;
 }
 
 export function rowToOtbBudget(row: OtbBudgetRow): OtbBudget {
