@@ -6,6 +6,16 @@ export interface DepartmentSummary {
   totalUnits: number
   totalValue: number
   averagePrice: number
+  salesThisMonth: number
+  turnoverRate: number
+}
+
+export interface DashboardKpis {
+  totalOnHandUnits: number
+  totalOnHandValue: number
+  salesThisMonth: number
+  averageTurnover: number
+  openPoCount: number
 }
 
 export interface LowStockItem {

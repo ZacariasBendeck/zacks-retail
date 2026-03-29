@@ -20,9 +20,15 @@ import {
   ShopOutlined,
   InboxOutlined,
   DollarOutlined,
+  RiseOutlined,
+  FileTextOutlined,
 } from '@ant-design/icons'
 import type { TablePaginationConfig } from 'antd/es/table'
-import { useInventorySummary, useLowStock } from '../../hooks/useInventory'
+import {
+  useDashboardKpis,
+  useInventorySummary,
+  useLowStock,
+} from '../../hooks/useInventory'
 import type { Department } from '../../types/sku'
 import type { DepartmentSummary, LowStockItem } from '../../types/inventory'
 
@@ -44,6 +50,12 @@ export default function DashboardPage() {
   const [lowStockPageSize, setLowStockPageSize] = useState(25)
 
   const {
+    data: kpis,
+    isLoading: kpisLoading,
+    refetch: refetchKpis,
+  } = useDashboardKpis()
+
+  const {
     data: summary,
     isLoading: summaryLoading,
     refetch: refetchSummary,
@@ -57,10 +69,11 @@ export default function DashboardPage() {
   } = useLowStock(threshold, lowStockPage, lowStockPageSize)
 
   const handleRefresh = useCallback(() => {
+    refetchKpis()
     refetchSummary()
     refetchLowStock()
     message.info('Dashboard refreshed')
-  }, [refetchSummary, refetchLowStock, message])
+  }, [refetchKpis, refetchSummary, refetchLowStock, message])
 
   const handleDepartmentClick = useCallback(
     (dept: Department) => {
@@ -76,10 +89,6 @@ export default function DashboardPage() {
     },
     [],
   )
-
-  const totalSkus = summary?.reduce((s, d) => s + d.totalSkus, 0) ?? 0
-  const totalUnits = summary?.reduce((s, d) => s + d.totalUnits, 0) ?? 0
-  const totalValue = summary?.reduce((s, d) => s + d.totalValue, 0) ?? 0
 
   const lowStockColumns = [
     {
@@ -146,6 +155,9 @@ export default function DashboardPage() {
               <Typography.Title level={4} style={{ margin: 0 }}>
                 Stock Dashboard
               </Typography.Title>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                Auto-refreshes every 60s
+              </Typography.Text>
             </Col>
             <Col>
               <Button icon={<ReloadOutlined />} onClick={handleRefresh}>
@@ -155,36 +167,61 @@ export default function DashboardPage() {
           </Row>
         </Card>
 
-        {/* Summary totals */}
+        {/* Top-level KPIs */}
         <Row gutter={[16, 16]}>
-          <Col xs={24} sm={8}>
+          <Col xs={24} sm={12} lg={5}>
             <Card>
               <Statistic
-                title="Total Active SKUs"
-                value={totalSkus}
-                prefix={<ShopOutlined />}
-                loading={summaryLoading}
-              />
-            </Card>
-          </Col>
-          <Col xs={24} sm={8}>
-            <Card>
-              <Statistic
-                title="Total Units in Stock"
-                value={totalUnits}
+                title="On-Hand Units"
+                value={kpis?.totalOnHandUnits}
                 prefix={<InboxOutlined />}
-                loading={summaryLoading}
+                loading={kpisLoading}
               />
             </Card>
           </Col>
-          <Col xs={24} sm={8}>
+          <Col xs={24} sm={12} lg={5}>
             <Card>
               <Statistic
-                title="Total Inventory Value"
-                value={totalValue}
+                title="On-Hand Value"
+                value={kpis?.totalOnHandValue}
                 prefix={<DollarOutlined />}
                 precision={2}
-                loading={summaryLoading}
+                loading={kpisLoading}
+              />
+            </Card>
+          </Col>
+          <Col xs={24} sm={12} lg={5}>
+            <Card>
+              <Statistic
+                title="Sales This Month"
+                value={kpis?.salesThisMonth}
+                prefix={<ShopOutlined />}
+                suffix="units"
+                loading={kpisLoading}
+                valueStyle={{ color: '#3f8600' }}
+              />
+            </Card>
+          </Col>
+          <Col xs={24} sm={12} lg={5}>
+            <Card>
+              <Statistic
+                title="Avg Turnover"
+                value={kpis?.averageTurnover}
+                prefix={<RiseOutlined />}
+                precision={2}
+                loading={kpisLoading}
+                valueStyle={{ color: '#1677ff' }}
+              />
+            </Card>
+          </Col>
+          <Col xs={24} sm={12} lg={4}>
+            <Card>
+              <Statistic
+                title="Open POs"
+                value={kpis?.openPoCount}
+                prefix={<FileTextOutlined />}
+                loading={kpisLoading}
+                valueStyle={{ color: '#fa8c16' }}
               />
             </Card>
           </Col>
@@ -209,30 +246,49 @@ export default function DashboardPage() {
                     {dept.department}
                   </Typography.Title>
                   <Row gutter={16}>
-                    <Col span={12}>
-                      <Statistic title="SKUs" value={dept.totalSkus} valueStyle={{ fontSize: 20 }} />
+                    <Col span={8}>
+                      <Statistic title="On-Hand" value={dept.totalUnits} valueStyle={{ fontSize: 18 }} />
                     </Col>
-                    <Col span={12}>
-                      <Statistic title="Units" value={dept.totalUnits} valueStyle={{ fontSize: 20 }} />
+                    <Col span={8}>
+                      <Statistic
+                        title="Sales"
+                        value={dept.salesThisMonth}
+                        valueStyle={{ fontSize: 18, color: '#3f8600' }}
+                      />
+                    </Col>
+                    <Col span={8}>
+                      <Statistic
+                        title="Turnover"
+                        value={dept.turnoverRate}
+                        precision={2}
+                        valueStyle={{ fontSize: 18, color: '#1677ff' }}
+                      />
                     </Col>
                   </Row>
                   <Row gutter={16} style={{ marginTop: 8 }}>
-                    <Col span={12}>
+                    <Col span={8}>
+                      <Statistic
+                        title="SKUs"
+                        value={dept.totalSkus}
+                        valueStyle={{ fontSize: 14 }}
+                      />
+                    </Col>
+                    <Col span={8}>
                       <Statistic
                         title="Value"
                         value={dept.totalValue}
                         prefix="$"
                         precision={0}
-                        valueStyle={{ fontSize: 16 }}
+                        valueStyle={{ fontSize: 14 }}
                       />
                     </Col>
-                    <Col span={12}>
+                    <Col span={8}>
                       <Statistic
                         title="Avg Price"
                         value={dept.averagePrice}
                         prefix="$"
                         precision={2}
-                        valueStyle={{ fontSize: 16 }}
+                        valueStyle={{ fontSize: 14 }}
                       />
                     </Col>
                   </Row>

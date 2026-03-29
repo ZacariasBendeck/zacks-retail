@@ -1,5 +1,5 @@
 import type { Department } from '../types/sku'
-import type { DepartmentSummary, LowStockResponse } from '../types/inventory'
+import type { DepartmentSummary, DashboardKpis, LowStockResponse } from '../types/inventory'
 import { MOCK_SKUS } from '../mock/skuData'
 
 const USE_MOCK = true
@@ -12,6 +12,11 @@ function buildMockSummary(): DepartmentSummary[] {
     const deptSkus = MOCK_SKUS.filter((s) => s.department === dept && s.active)
     const totalUnits = deptSkus.reduce((sum, s) => sum + (s.currentStock ?? 0), 0)
     const totalValue = deptSkus.reduce((sum, s) => sum + s.price * (s.currentStock ?? 0), 0)
+    // Mock: sales ≈ 20-40% of on-hand units, turnover = sales / on-hand
+    const salesThisMonth = Math.round(totalUnits * (0.2 + Math.random() * 0.2))
+    const turnoverRate = totalUnits > 0
+      ? Math.round((salesThisMonth / totalUnits) * 100) / 100
+      : 0
     return {
       department: dept,
       totalSkus: deptSkus.length,
@@ -20,8 +25,23 @@ function buildMockSummary(): DepartmentSummary[] {
       averagePrice: deptSkus.length > 0
         ? Math.round((deptSkus.reduce((s, sk) => s + sk.price, 0) / deptSkus.length) * 100) / 100
         : 0,
+      salesThisMonth,
+      turnoverRate,
     }
   })
+}
+
+function buildMockDashboardKpis(): DashboardKpis {
+  const summary = buildMockSummary()
+  const totalOnHandUnits = summary.reduce((s, d) => s + d.totalUnits, 0)
+  const totalOnHandValue = summary.reduce((s, d) => s + d.totalValue, 0)
+  const salesThisMonth = summary.reduce((s, d) => s + d.salesThisMonth, 0)
+  const averageTurnover = summary.length > 0
+    ? Math.round((summary.reduce((s, d) => s + d.turnoverRate, 0) / summary.length) * 100) / 100
+    : 0
+  // Mock: 3-8 open POs
+  const openPoCount = 3 + Math.floor(Math.random() * 6)
+  return { totalOnHandUnits, totalOnHandValue, salesThisMonth, averageTurnover, openPoCount }
 }
 
 function buildMockLowStock(threshold: number, page: number, pageSize: number): LowStockResponse {
@@ -57,6 +77,17 @@ export async function fetchInventorySummary(): Promise<DepartmentSummary[]> {
 
   const res = await fetch('/api/v1/inventory/summary?groupBy=department')
   if (!res.ok) throw new Error(`Failed to fetch inventory summary: ${res.status}`)
+  return res.json()
+}
+
+export async function fetchDashboardKpis(): Promise<DashboardKpis> {
+  if (USE_MOCK) {
+    await new Promise((r) => setTimeout(r, 180))
+    return buildMockDashboardKpis()
+  }
+
+  const res = await fetch('/api/v1/inventory/dashboard-kpis')
+  if (!res.ok) throw new Error(`Failed to fetch dashboard KPIs: ${res.status}`)
   return res.json()
 }
 
