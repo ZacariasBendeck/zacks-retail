@@ -225,6 +225,166 @@ export function getTurnoverCsvUrl(
   return `/api/v1/reports/inventory-turnover?${params}`
 }
 
+// ── Sell-Through Analysis Report ────────────────────────────────
+
+export interface SellThroughDepartmentSummary {
+  department: string
+  totalStyles: number
+  totalUnitsSold: number
+  totalUnitsReceived: number
+  sellThroughPct: number
+}
+
+export interface SellThroughCategorySummary {
+  category: number
+  department: string
+  totalStyles: number
+  totalUnitsSold: number
+  totalUnitsReceived: number
+  sellThroughPct: number
+}
+
+export interface SellThroughDetail {
+  skuId: string
+  skuCode: string
+  brand: string
+  style: string
+  color: string
+  size: string
+  price: number
+  category: number
+  department: string
+  unitsSold: number
+  unitsReceived: number
+  sellThroughPct: number
+}
+
+export interface SellThroughDepartmentResponse {
+  startDate: string | null
+  endDate: string | null
+  departments: SellThroughDepartmentSummary[]
+}
+
+export interface SellThroughDrillDownResponse {
+  startDate: string | null
+  endDate: string | null
+  department: string
+  categories: SellThroughCategorySummary[]
+  details: SellThroughDetail[]
+}
+
+export async function fetchSellThroughByDepartment(
+  startDate?: string,
+  endDate?: string,
+): Promise<SellThroughDepartmentResponse> {
+  const params = new URLSearchParams()
+  if (startDate) params.set('startDate', startDate)
+  if (endDate) params.set('endDate', endDate)
+  const qs = params.toString()
+  const res = await fetch(`/api/v1/reports/sell-through${qs ? '?' + qs : ''}`)
+  if (!res.ok) throw new Error(`Failed to fetch sell-through report: ${res.status}`)
+  return res.json()
+}
+
+export async function fetchSellThroughDrillDown(
+  department: string,
+  startDate?: string,
+  endDate?: string,
+  category?: number,
+): Promise<SellThroughDrillDownResponse> {
+  const params = new URLSearchParams({ department })
+  if (startDate) params.set('startDate', startDate)
+  if (endDate) params.set('endDate', endDate)
+  if (category != null) params.set('category', String(category))
+  const res = await fetch(`/api/v1/reports/sell-through?${params}`)
+  if (!res.ok) throw new Error(`Failed to fetch sell-through drill-down: ${res.status}`)
+  return res.json()
+}
+
+export function getSellThroughCsvUrl(
+  startDate?: string,
+  endDate?: string,
+  department?: string,
+  category?: number,
+): string {
+  const params = new URLSearchParams({ format: 'csv' })
+  if (startDate) params.set('startDate', startDate)
+  if (endDate) params.set('endDate', endDate)
+  if (department) params.set('department', department)
+  if (category != null) params.set('category', String(category))
+  return `/api/v1/reports/sell-through?${params}`
+}
+
+// ── Inventory Aging Report ──────────────────────────────────────
+
+export interface AgingBucket {
+  bucket: string
+  totalSkus: number
+  totalUnits: number
+  totalCostValue: number
+}
+
+export interface AgingDepartmentSummary {
+  department: string
+  buckets: AgingBucket[]
+  totalSkus: number
+  totalUnits: number
+  totalCostValue: number
+  flaggedUnits: number
+  flaggedValue: number
+}
+
+export interface AgingDetail {
+  skuId: string
+  skuCode: string
+  brand: string
+  style: string
+  color: string
+  size: string
+  price: number
+  category: number
+  department: string
+  quantityOnHand: number
+  costValue: number
+  daysOnHand: number
+  agingBucket: string
+  flagged: boolean
+  lastReceivedAt: string | null
+}
+
+export interface AgingDepartmentResponse {
+  departments: AgingDepartmentSummary[]
+}
+
+export interface AgingDrillDownResponse {
+  department: string
+  details: AgingDetail[]
+}
+
+export async function fetchAgingByDepartment(): Promise<AgingDepartmentResponse> {
+  const res = await fetch('/api/v1/reports/inventory-aging')
+  if (!res.ok) throw new Error(`Failed to fetch aging report: ${res.status}`)
+  return res.json()
+}
+
+export async function fetchAgingDrillDown(
+  department: string,
+  category?: number,
+): Promise<AgingDrillDownResponse> {
+  const params = new URLSearchParams({ department })
+  if (category != null) params.set('category', String(category))
+  const res = await fetch(`/api/v1/reports/inventory-aging?${params}`)
+  if (!res.ok) throw new Error(`Failed to fetch aging drill-down: ${res.status}`)
+  return res.json()
+}
+
+export function getAgingCsvUrl(department?: string, category?: number): string {
+  const params = new URLSearchParams({ format: 'csv' })
+  if (department) params.set('department', department)
+  if (category != null) params.set('category', String(category))
+  return `/api/v1/reports/inventory-aging?${params}`
+}
+
 export function getOnHandCsvUrl(department?: string, category?: number): string {
   const params = new URLSearchParams({ format: 'csv' })
   if (department) params.set('department', department)

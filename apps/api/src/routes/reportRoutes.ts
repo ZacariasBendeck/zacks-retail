@@ -321,6 +321,202 @@ router.get('/inventory-turnover', validateQuery(inventoryTurnoverQuerySchema), (
   });
 });
 
+// ── Sell-Through Analysis Report ────────────────────────────────
+
+const sellThroughQuerySchema = z.object({
+  startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Must be YYYY-MM-DD').optional(),
+  endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Must be YYYY-MM-DD').optional(),
+  department: z.enum(DEPARTMENTS).optional(),
+  category: z.coerce.number().int().min(556).max(599).optional(),
+  format: z.enum(['json', 'csv']).default('json'),
+});
+
+/**
+ * @openapi
+ * /api/v1/reports/sell-through:
+ *   get:
+ *     summary: Sell-through analysis — units sold / units received by style and period
+ *     tags: [Reports]
+ *     parameters:
+ *       - name: startDate
+ *         in: query
+ *         schema: { type: string, format: date }
+ *         description: Start date (YYYY-MM-DD, inclusive)
+ *       - name: endDate
+ *         in: query
+ *         schema: { type: string, format: date }
+ *         description: End date (YYYY-MM-DD, inclusive)
+ *       - name: department
+ *         in: query
+ *         schema: { type: string, enum: [FORMAL, CASUAL, FIESTA, SANDALIAS, BOOTS, COMFORT] }
+ *         description: Drill-down into a specific department
+ *       - name: category
+ *         in: query
+ *         schema: { type: integer, minimum: 556, maximum: 599 }
+ *         description: Filter to a specific category (requires department)
+ *       - name: format
+ *         in: query
+ *         schema: { type: string, enum: [json, csv], default: json }
+ *     responses:
+ *       200:
+ *         description: Sell-through analysis report
+ */
+router.get('/sell-through', validateQuery(sellThroughQuerySchema), (req: Request, res: Response): void => {
+  const query = (req as any).validatedQuery as {
+    startDate?: string;
+    endDate?: string;
+    department?: string;
+    category?: number;
+    format: 'json' | 'csv';
+  };
+
+  const filters: reportService.SellThroughFilters = {
+    startDate: query.startDate,
+    endDate: query.endDate,
+    department: query.department,
+    category: query.category,
+  };
+
+  if (query.format === 'csv') {
+    const details = reportService.getSellThroughDetails(filters);
+
+    const header = 'SKU Code,Brand,Style,Color,Size,Department,Category,Price,Units Sold,Units Received,Sell-Through %';
+    const rows = details.map((d) =>
+      [
+        escapeCsv(d.skuCode),
+        escapeCsv(d.brand),
+        escapeCsv(d.style),
+        escapeCsv(d.color),
+        escapeCsv(d.size),
+        d.department,
+        d.category,
+        d.price.toFixed(2),
+        d.unitsSold,
+        d.unitsReceived,
+        d.sellThroughPct.toFixed(1),
+      ].join(',')
+    );
+
+    const csv = [header, ...rows].join('\n');
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="sell-through-report.csv"');
+    res.send(csv);
+    return;
+  }
+
+  // JSON response
+  if (query.department) {
+    const categories = reportService.getSellThroughByCategory(query.department, filters);
+    const details = reportService.getSellThroughDetails(filters);
+
+    res.json({
+      startDate: query.startDate ?? null,
+      endDate: query.endDate ?? null,
+      department: query.department,
+      categories,
+      details,
+    });
+    return;
+  }
+
+  // Top-level: department summary sorted by sell-through (lowest first = underperformers)
+  const departments = reportService.getSellThroughByDepartment(filters);
+  res.json({
+    startDate: query.startDate ?? null,
+    endDate: query.endDate ?? null,
+    departments,
+  });
+});
+
+// ── Inventory Aging Report ──────────────────────────────────────
+
+const inventoryAgingQuerySchema = z.object({
+  department: z.enum(DEPARTMENTS).optional(),
+  category: z.coerce.number().int().min(556).max(599).optional(),
+  format: z.enum(['json', 'csv']).default('json'),
+});
+
+/**
+ * @openapi
+ * /api/v1/reports/inventory-aging:
+ *   get:
+ *     summary: Inventory aging report — stock bucketed by days on hand
+ *     tags: [Reports]
+ *     parameters:
+ *       - name: department
+ *         in: query
+ *         schema: { type: string, enum: [FORMAL, CASUAL, FIESTA, SANDALIAS, BOOTS, COMFORT] }
+ *         description: Filter to a specific department
+ *       - name: category
+ *         in: query
+ *         schema: { type: integer, minimum: 556, maximum: 599 }
+ *         description: Filter to a specific category (requires department)
+ *       - name: format
+ *         in: query
+ *         schema: { type: string, enum: [json, csv], default: json }
+ *     responses:
+ *       200:
+ *         description: Inventory aging report
+ */
+router.get('/inventory-aging', validateQuery(inventoryAgingQuerySchema), (req: Request, res: Response): void => {
+  const query = (req as any).validatedQuery as {
+    department?: string;
+    category?: number;
+    format: 'json' | 'csv';
+  };
+
+  if (query.format === 'csv') {
+    const details = reportService.getAgingDetails({
+      department: query.department,
+      category: query.category,
+    });
+
+    const header = 'SKU Code,Brand,Style,Color,Size,Department,Category,Price,Qty On Hand,Cost Value,Days On Hand,Aging Bucket,Flagged,Last Received';
+    const rows = details.map((d) =>
+      [
+        escapeCsv(d.skuCode),
+        escapeCsv(d.brand),
+        escapeCsv(d.style),
+        escapeCsv(d.color),
+        escapeCsv(d.size),
+        d.department,
+        d.category,
+        d.price.toFixed(2),
+        d.quantityOnHand,
+        d.costValue.toFixed(2),
+        d.daysOnHand,
+        d.agingBucket,
+        d.flagged ? 'YES' : '',
+        d.lastReceivedAt ?? '',
+      ].join(',')
+    );
+
+    const csv = [header, ...rows].join('\n');
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="inventory-aging-report.csv"');
+    res.send(csv);
+    return;
+  }
+
+  // JSON response
+  if (query.department) {
+    const details = reportService.getAgingDetails({
+      department: query.department,
+      category: query.category,
+    });
+
+    res.json({
+      department: query.department,
+      details,
+    });
+    return;
+  }
+
+  // Top-level: department summary with aging buckets
+  const departments = reportService.getAgingByDepartment();
+  res.json({ departments });
+});
+
 function escapeCsv(value: string): string {
   if (value.includes(',') || value.includes('"') || value.includes('\n')) {
     return `"${value.replace(/"/g, '""')}"`;

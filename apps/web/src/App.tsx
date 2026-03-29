@@ -8,6 +8,9 @@ import AdjustmentFormPage from './pages/inventory/AdjustmentFormPage'
 import AdjustmentDetailPage from './pages/inventory/AdjustmentDetailPage'
 import OnHandReportPage from './pages/inventory/OnHandReportPage'
 import SalesReportPage from './pages/inventory/SalesReportPage'
+import InventoryTurnoverReportPage from './pages/inventory/InventoryTurnoverReportPage'
+import InventoryAgingReportPage from './pages/inventory/InventoryAgingReportPage'
+import SellThroughReportPage from './pages/inventory/SellThroughReportPage'
 import PoReceivePage from './pages/inventory/PoReceivePage'
 
 export default function App() {
@@ -26,6 +29,9 @@ export default function App() {
         <Route path="/purchasing/receive/:poId" element={<PoReceivePage />} />
         <Route path="/reports/on-hand" element={<OnHandReportPage />} />
         <Route path="/reports/sales" element={<SalesReportPage />} />
+        <Route path="/reports/turnover" element={<InventoryTurnoverReportPage />} />
+        <Route path="/reports/aging" element={<InventoryAgingReportPage />} />
+        <Route path="/reports/sell-through" element={<SellThroughReportPage />} />
       </Route>
     </Routes>
   )

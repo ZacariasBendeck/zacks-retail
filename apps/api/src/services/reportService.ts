@@ -518,6 +518,464 @@ export function getTurnoverDetails(filters: TurnoverFilters): TurnoverDetail[] {
   }));
 }
 
+// ── Sell-Through Analysis Report ────────────────────────────────
+
+export interface SellThroughFilters {
+  department?: string;
+  category?: number;
+  startDate?: string;
+  endDate?: string;
+}
+
+export interface SellThroughDepartmentRow {
+  department: string;
+  total_styles: number;
+  total_units_sold: number;
+  total_units_received: number;
+  sell_through_pct: number;
+}
+
+export interface SellThroughDepartmentSummary {
+  department: string;
+  totalStyles: number;
+  totalUnitsSold: number;
+  totalUnitsReceived: number;
+  sellThroughPct: number;
+}
+
+export interface SellThroughCategoryRow {
+  category: number;
+  department: string;
+  total_styles: number;
+  total_units_sold: number;
+  total_units_received: number;
+  sell_through_pct: number;
+}
+
+export interface SellThroughCategorySummary {
+  category: number;
+  department: string;
+  totalStyles: number;
+  totalUnitsSold: number;
+  totalUnitsReceived: number;
+  sellThroughPct: number;
+}
+
+export interface SellThroughDetailRow {
+  sku_id: string;
+  sku_code: string;
+  brand: string;
+  style: string;
+  color: string;
+  size: string;
+  price: number;
+  category: number;
+  department: string;
+  units_sold: number;
+  units_received: number;
+  sell_through_pct: number;
+}
+
+export interface SellThroughDetail {
+  skuId: string;
+  skuCode: string;
+  brand: string;
+  style: string;
+  color: string;
+  size: string;
+  price: number;
+  category: number;
+  department: string;
+  unitsSold: number;
+  unitsReceived: number;
+  sellThroughPct: number;
+}
+
+function buildSellThroughDateClauses(filters: SellThroughFilters): {
+  salesDateClause: string;
+  salesDateParams: (string | number)[];
+  poDateClause: string;
+  poDateParams: (string | number)[];
+} {
+  const salesConds: string[] = [];
+  const salesParams: (string | number)[] = [];
+  const poConds: string[] = [];
+  const poParams: (string | number)[] = [];
+
+  if (filters.startDate) {
+    salesConds.push('st.sold_at >= ?');
+    salesParams.push(filters.startDate);
+    poConds.push('po.created_at >= ?');
+    poParams.push(filters.startDate);
+  }
+  if (filters.endDate) {
+    salesConds.push('st.sold_at <= ?');
+    salesParams.push(filters.endDate + 'T23:59:59');
+    poConds.push('po.created_at <= ?');
+    poParams.push(filters.endDate + 'T23:59:59');
+  }
+
+  return {
+    salesDateClause: salesConds.length > 0 ? ' AND ' + salesConds.join(' AND ') : '',
+    salesDateParams: salesParams,
+    poDateClause: poConds.length > 0 ? ' AND ' + poConds.join(' AND ') : '',
+    poDateParams: poParams,
+  };
+}
+
+export function getSellThroughByDepartment(filters: SellThroughFilters = {}): SellThroughDepartmentSummary[] {
+  const db = getDb();
+  const { salesDateClause, salesDateParams, poDateClause, poDateParams } = buildSellThroughDateClauses(filters);
+
+  const rows = db.prepare(`
+    SELECT
+      s.department,
+      COUNT(DISTINCT s.style) AS total_styles,
+      COALESCE(sales_agg.total_sold, 0) AS total_units_sold,
+      COALESCE(recv_agg.total_received, 0) AS total_units_received,
+      CASE
+        WHEN COALESCE(recv_agg.total_received, 0) = 0 THEN 0
+        ELSE ROUND(CAST(COALESCE(sales_agg.total_sold, 0) AS REAL) / recv_agg.total_received * 100, 1)
+      END AS sell_through_pct
+    FROM skus s
+    LEFT JOIN (
+      SELECT s2.department, SUM(st.quantity) AS total_sold
+      FROM sales_transactions st
+      JOIN skus s2 ON s2.id = st.sku_id
+      WHERE s2.active = 1${salesDateClause}
+      GROUP BY s2.department
+    ) sales_agg ON sales_agg.department = s.department
+    LEFT JOIN (
+      SELECT s3.department, SUM(pol.quantity_received) AS total_received
+      FROM purchase_order_lines pol
+      JOIN skus s3 ON s3.id = pol.sku_id
+      JOIN purchase_orders po ON po.id = pol.po_id
+      WHERE s3.active = 1 AND po.status NOT IN ('DRAFT', 'CANCELLED')${poDateClause}
+      GROUP BY s3.department
+    ) recv_agg ON recv_agg.department = s.department
+    WHERE s.active = 1
+    GROUP BY s.department
+    ORDER BY sell_through_pct ASC
+  `).all(...salesDateParams, ...poDateParams) as unknown as SellThroughDepartmentRow[];
+
+  return rows.map((r) => ({
+    department: r.department,
+    totalStyles: r.total_styles,
+    totalUnitsSold: r.total_units_sold,
+    totalUnitsReceived: r.total_units_received,
+    sellThroughPct: r.sell_through_pct,
+  }));
+}
+
+export function getSellThroughByCategory(department: string, filters: SellThroughFilters = {}): SellThroughCategorySummary[] {
+  const db = getDb();
+  const { salesDateClause, salesDateParams, poDateClause, poDateParams } = buildSellThroughDateClauses(filters);
+
+  const rows = db.prepare(`
+    SELECT
+      s.category,
+      s.department,
+      COUNT(DISTINCT s.style) AS total_styles,
+      COALESCE(sales_agg.total_sold, 0) AS total_units_sold,
+      COALESCE(recv_agg.total_received, 0) AS total_units_received,
+      CASE
+        WHEN COALESCE(recv_agg.total_received, 0) = 0 THEN 0
+        ELSE ROUND(CAST(COALESCE(sales_agg.total_sold, 0) AS REAL) / recv_agg.total_received * 100, 1)
+      END AS sell_through_pct
+    FROM skus s
+    LEFT JOIN (
+      SELECT s2.category, SUM(st.quantity) AS total_sold
+      FROM sales_transactions st
+      JOIN skus s2 ON s2.id = st.sku_id
+      WHERE s2.active = 1 AND s2.department = ?${salesDateClause}
+      GROUP BY s2.category
+    ) sales_agg ON sales_agg.category = s.category
+    LEFT JOIN (
+      SELECT s3.category, SUM(pol.quantity_received) AS total_received
+      FROM purchase_order_lines pol
+      JOIN skus s3 ON s3.id = pol.sku_id
+      JOIN purchase_orders po ON po.id = pol.po_id
+      WHERE s3.active = 1 AND s3.department = ? AND po.status NOT IN ('DRAFT', 'CANCELLED')${poDateClause}
+      GROUP BY s3.category
+    ) recv_agg ON recv_agg.category = s.category
+    WHERE s.active = 1 AND s.department = ?
+    GROUP BY s.category
+    ORDER BY sell_through_pct ASC
+  `).all(department, ...salesDateParams, department, ...poDateParams, department) as unknown as SellThroughCategoryRow[];
+
+  return rows.map((r) => ({
+    category: r.category,
+    department: r.department,
+    totalStyles: r.total_styles,
+    totalUnitsSold: r.total_units_sold,
+    totalUnitsReceived: r.total_units_received,
+    sellThroughPct: r.sell_through_pct,
+  }));
+}
+
+export function getSellThroughDetails(filters: SellThroughFilters): SellThroughDetail[] {
+  const db = getDb();
+  const { salesDateClause, salesDateParams, poDateClause, poDateParams } = buildSellThroughDateClauses(filters);
+
+  const conditions = ['s.active = 1'];
+  const mainParams: (string | number)[] = [];
+
+  if (filters.department) {
+    conditions.push('s.department = ?');
+    mainParams.push(filters.department);
+  }
+  if (filters.category != null) {
+    conditions.push('s.category = ?');
+    mainParams.push(filters.category);
+  }
+
+  const where = conditions.join(' AND ');
+
+  const rows = db.prepare(`
+    SELECT
+      s.id AS sku_id,
+      s.sku_code,
+      s.brand,
+      s.style,
+      s.color,
+      s.size,
+      s.price,
+      s.category,
+      s.department,
+      COALESCE(sales_agg.units_sold, 0) AS units_sold,
+      COALESCE(recv_agg.units_received, 0) AS units_received,
+      CASE
+        WHEN COALESCE(recv_agg.units_received, 0) = 0 THEN 0
+        ELSE ROUND(CAST(COALESCE(sales_agg.units_sold, 0) AS REAL) / recv_agg.units_received * 100, 1)
+      END AS sell_through_pct
+    FROM skus s
+    LEFT JOIN (
+      SELECT st.sku_id, SUM(st.quantity) AS units_sold
+      FROM sales_transactions st
+      WHERE 1=1${salesDateClause}
+      GROUP BY st.sku_id
+    ) sales_agg ON sales_agg.sku_id = s.id
+    LEFT JOIN (
+      SELECT pol.sku_id, SUM(pol.quantity_received) AS units_received
+      FROM purchase_order_lines pol
+      JOIN purchase_orders po ON po.id = pol.po_id
+      WHERE po.status NOT IN ('DRAFT', 'CANCELLED')${poDateClause}
+      GROUP BY pol.sku_id
+    ) recv_agg ON recv_agg.sku_id = s.id
+    WHERE ${where}
+    ORDER BY sell_through_pct ASC, s.department, s.category, s.sku_code
+  `).all(...salesDateParams, ...poDateParams, ...mainParams) as unknown as SellThroughDetailRow[];
+
+  return rows.map((r) => ({
+    skuId: r.sku_id,
+    skuCode: r.sku_code,
+    brand: r.brand,
+    style: r.style,
+    color: r.color,
+    size: r.size,
+    price: r.price,
+    category: r.category,
+    department: r.department,
+    unitsSold: r.units_sold,
+    unitsReceived: r.units_received,
+    sellThroughPct: r.sell_through_pct,
+  }));
+}
+
+// ── Inventory Aging Report ──────────────────────────────────────
+
+export interface AgingBucket {
+  bucket: string;
+  totalSkus: number;
+  totalUnits: number;
+  totalCostValue: number;
+}
+
+export interface AgingDepartmentSummary {
+  department: string;
+  buckets: AgingBucket[];
+  totalSkus: number;
+  totalUnits: number;
+  totalCostValue: number;
+  flaggedUnits: number;
+  flaggedValue: number;
+}
+
+export interface AgingDetailRow {
+  sku_id: string;
+  sku_code: string;
+  brand: string;
+  style: string;
+  color: string;
+  size: string;
+  price: number;
+  category: number;
+  department: string;
+  quantity_on_hand: number;
+  cost_value: number;
+  days_on_hand: number;
+  last_received_at: string | null;
+}
+
+export interface AgingDetail {
+  skuId: string;
+  skuCode: string;
+  brand: string;
+  style: string;
+  color: string;
+  size: string;
+  price: number;
+  category: number;
+  department: string;
+  quantityOnHand: number;
+  costValue: number;
+  daysOnHand: number;
+  agingBucket: string;
+  flagged: boolean;
+  lastReceivedAt: string | null;
+}
+
+function assignBucket(days: number): string {
+  if (days <= 30) return '0-30';
+  if (days <= 60) return '31-60';
+  if (days <= 90) return '61-90';
+  return '90+';
+}
+
+function getAgingBaseRows(filters: { department?: string; category?: number }): AgingDetail[] {
+  const db = getDb();
+
+  const conditions = ['s.active = 1', 'COALESCE(i.quantity_on_hand, 0) > 0'];
+  const params: (string | number)[] = [];
+
+  if (filters.department) {
+    conditions.push('s.department = ?');
+    params.push(filters.department);
+  }
+  if (filters.category != null) {
+    conditions.push('s.category = ?');
+    params.push(filters.category);
+  }
+
+  const where = conditions.join(' AND ');
+
+  const rows = db.prepare(`
+    SELECT
+      s.id AS sku_id,
+      s.sku_code,
+      s.brand,
+      s.style,
+      s.color,
+      s.size,
+      s.price,
+      s.category,
+      s.department,
+      COALESCE(i.quantity_on_hand, 0) AS quantity_on_hand,
+      COALESCE(i.quantity_on_hand * s.price, 0) AS cost_value,
+      COALESCE(
+        (SELECT MAX(ial.created_at) FROM inventory_audit_log ial
+         WHERE ial.sku_id = s.id AND ial.adjustment > 0),
+        i.created_at,
+        s.created_at
+      ) AS last_received_at,
+      CAST(julianday('now') - julianday(
+        COALESCE(
+          (SELECT MAX(ial.created_at) FROM inventory_audit_log ial
+           WHERE ial.sku_id = s.id AND ial.adjustment > 0),
+          i.created_at,
+          s.created_at
+        )
+      ) AS INTEGER) AS days_on_hand
+    FROM skus s
+    LEFT JOIN inventory i ON i.sku_id = s.id
+    WHERE ${where}
+    ORDER BY days_on_hand DESC, s.department, s.category, s.sku_code
+  `).all(...params) as unknown as AgingDetailRow[];
+
+  return rows.map((r) => {
+    const days = Math.max(r.days_on_hand, 0);
+    return {
+      skuId: r.sku_id,
+      skuCode: r.sku_code,
+      brand: r.brand,
+      style: r.style,
+      color: r.color,
+      size: r.size,
+      price: r.price,
+      category: r.category,
+      department: r.department,
+      quantityOnHand: r.quantity_on_hand,
+      costValue: r.cost_value,
+      daysOnHand: days,
+      agingBucket: assignBucket(days),
+      flagged: days > 90,
+      lastReceivedAt: r.last_received_at,
+    };
+  });
+}
+
+export function getAgingByDepartment(): AgingDepartmentSummary[] {
+  const details = getAgingBaseRows({});
+  const deptMap = new Map<string, AgingDetail[]>();
+
+  for (const d of details) {
+    const list = deptMap.get(d.department) || [];
+    list.push(d);
+    deptMap.set(d.department, list);
+  }
+
+  const result: AgingDepartmentSummary[] = [];
+  for (const [department, items] of deptMap) {
+    const bucketMap = new Map<string, { skus: Set<string>; units: number; value: number }>();
+    for (const label of ['0-30', '31-60', '61-90', '90+']) {
+      bucketMap.set(label, { skus: new Set(), units: 0, value: 0 });
+    }
+
+    const skuSet = new Set<string>();
+    let totalUnits = 0;
+    let totalValue = 0;
+    let flaggedUnits = 0;
+    let flaggedValue = 0;
+
+    for (const item of items) {
+      const b = bucketMap.get(item.agingBucket)!;
+      b.skus.add(item.skuId);
+      b.units += item.quantityOnHand;
+      b.value += item.costValue;
+
+      skuSet.add(item.skuId);
+      totalUnits += item.quantityOnHand;
+      totalValue += item.costValue;
+
+      if (item.flagged) {
+        flaggedUnits += item.quantityOnHand;
+        flaggedValue += item.costValue;
+      }
+    }
+
+    result.push({
+      department,
+      buckets: ['0-30', '31-60', '61-90', '90+'].map((label) => ({
+        bucket: label,
+        totalSkus: bucketMap.get(label)!.skus.size,
+        totalUnits: bucketMap.get(label)!.units,
+        totalCostValue: bucketMap.get(label)!.value,
+      })),
+      totalSkus: skuSet.size,
+      totalUnits,
+      totalCostValue: totalValue,
+      flaggedUnits,
+      flaggedValue,
+    });
+  }
+
+  return result.sort((a, b) => a.department.localeCompare(b.department));
+}
+
+export function getAgingDetails(filters: { department?: string; category?: number }): AgingDetail[] {
+  return getAgingBaseRows(filters);
+}
+
 export function getOnHandDetails(filters: { department?: string; category?: number }): OnHandDetail[] {
   const db = getDb();
 

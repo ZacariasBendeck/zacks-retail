@@ -6,6 +6,10 @@ import {
   fetchSalesPerformanceDrillDown,
   fetchTurnoverByDepartment,
   fetchTurnoverDrillDown,
+  fetchAgingByDepartment,
+  fetchAgingDrillDown,
+  fetchSellThroughByDepartment,
+  fetchSellThroughDrillDown,
 } from '../services/reportApi'
 
 export function useOnHandByDepartment() {
@@ -60,6 +64,41 @@ export function useTurnoverDrillDown(
   return useQuery({
     queryKey: ['report-turnover-drilldown', department, startDate, endDate, category],
     queryFn: () => fetchTurnoverDrillDown(department, startDate, endDate, category),
+    enabled: !!department,
+  })
+}
+
+export function useSellThroughByDepartment(startDate?: string, endDate?: string) {
+  return useQuery({
+    queryKey: ['report-sell-through-departments', startDate, endDate],
+    queryFn: () => fetchSellThroughByDepartment(startDate, endDate),
+  })
+}
+
+export function useSellThroughDrillDown(
+  department: string,
+  startDate?: string,
+  endDate?: string,
+  category?: number,
+) {
+  return useQuery({
+    queryKey: ['report-sell-through-drilldown', department, startDate, endDate, category],
+    queryFn: () => fetchSellThroughDrillDown(department, startDate, endDate, category),
+    enabled: !!department,
+  })
+}
+
+export function useAgingByDepartment() {
+  return useQuery({
+    queryKey: ['report-aging-departments'],
+    queryFn: fetchAgingByDepartment,
+  })
+}
+
+export function useAgingDrillDown(department: string, category?: number) {
+  return useQuery({
+    queryKey: ['report-aging-drilldown', department, category],
+    queryFn: () => fetchAgingDrillDown(department, category),
     enabled: !!department,
   })
 }

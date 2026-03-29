@@ -1,5 +1,5 @@
 import { Layout, Menu, Typography } from 'antd'
-import { ShopOutlined, DashboardOutlined, PlusOutlined, SwapOutlined, FileTextOutlined, InboxOutlined, BarChartOutlined } from '@ant-design/icons'
+import { ShopOutlined, DashboardOutlined, PlusOutlined, SwapOutlined, FileTextOutlined, InboxOutlined, BarChartOutlined, SyncOutlined, ClockCircleOutlined, FundOutlined } from '@ant-design/icons'
 import { Outlet, useNavigate, useLocation } from 'react-router-dom'
 
 const { Header, Sider, Content } = Layout
@@ -39,6 +39,21 @@ const menuItems = [
     key: '/reports/sales',
     icon: <BarChartOutlined />,
     label: 'Sales Report',
+  },
+  {
+    key: '/reports/turnover',
+    icon: <SyncOutlined />,
+    label: 'Turnover Report',
+  },
+  {
+    key: '/reports/aging',
+    icon: <ClockCircleOutlined />,
+    label: 'Aging Report',
+  },
+  {
+    key: '/reports/sell-through',
+    icon: <FundOutlined />,
+    label: 'Sell-Through',
   },
 ]
 
