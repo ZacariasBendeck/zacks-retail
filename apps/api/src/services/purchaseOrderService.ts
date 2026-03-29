@@ -265,6 +265,11 @@ export function receivePurchaseOrder(
       const poLine = poLineMap.get(line.lineId)!;
       const newQtyReceived = poLine.quantity_received + line.quantityReceived;
 
+      if (newQtyReceived > poLine.quantity_ordered) {
+        db.exec('ROLLBACK');
+        return { error: `QUANTITY_EXCEEDS_ORDERED:${line.lineId}` };
+      }
+
       db.prepare(
         "UPDATE purchase_order_lines SET quantity_received = ?, updated_at = datetime('now') WHERE id = ?"
       ).run(newQtyReceived, line.lineId);

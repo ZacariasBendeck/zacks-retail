@@ -107,7 +107,7 @@ export const updatePurchaseOrderSchema = z.object({
 });
 
 export const poStatusTransitionSchema = z.object({
-  status: z.enum(['SUBMITTED', 'CONFIRMED', 'PARTIALLY_RECEIVED', 'RECEIVED', 'CLOSED', 'CANCELLED']),
+  status: z.enum(['SUBMITTED', 'CONFIRMED', 'CLOSED', 'CANCELLED']),
   reason: z.string().max(500).optional(),
 });
 

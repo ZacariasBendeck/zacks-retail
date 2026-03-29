@@ -726,6 +726,31 @@ describe('POST /api/v1/purchase-orders/:poId/receive', () => {
     expect(res.body.error.code).toBe('LINE_NOT_FOUND');
   });
 
+  it('rejects receive when quantity exceeds ordered', async () => {
+    // lineId1 has quantity_ordered = 10
+    const res = await request(app)
+      .post(`/api/v1/purchase-orders/${poId}/receive`)
+      .send({ lines: [{ lineId: lineId1, quantityReceived: 1000 }] });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe('QUANTITY_EXCEEDS_ORDERED');
+  });
+
+  it('rejects incremental receive that exceeds ordered total', async () => {
+    // Receive 8 of 10 first
+    await request(app)
+      .post(`/api/v1/purchase-orders/${poId}/receive`)
+      .send({ lines: [{ lineId: lineId1, quantityReceived: 8 }] });
+
+    // Try to receive 5 more (8 + 5 = 13 > 10)
+    const res = await request(app)
+      .post(`/api/v1/purchase-orders/${poId}/receive`)
+      .send({ lines: [{ lineId: lineId1, quantityReceived: 5 }] });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe('QUANTITY_EXCEEDS_ORDERED');
+  });
+
   it('rejects receive with empty lines array', async () => {
     const res = await request(app)
       .post(`/api/v1/purchase-orders/${poId}/receive`)

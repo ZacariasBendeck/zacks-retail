@@ -387,6 +387,11 @@ router.post('/:poId/receive', validate(poReceiveSchema), (req: Request, res: Res
       res.status(409).json({ error: { code: 'LINE_NOT_FOUND', message: `Line item ${lineId} not found on this PO.` } });
       return;
     }
+    if (result.error.startsWith('QUANTITY_EXCEEDS_ORDERED')) {
+      const lineId = result.error.split(':')[1];
+      res.status(409).json({ error: { code: 'QUANTITY_EXCEEDS_ORDERED', message: `Received quantity exceeds ordered quantity for line ${lineId}.` } });
+      return;
+    }
     res.status(409).json({
       error: { code: 'INVALID_STATUS_TRANSITION', message: `Invalid status transition: ${result.error.replace('INVALID_TRANSITION:', '')}` },
     });
