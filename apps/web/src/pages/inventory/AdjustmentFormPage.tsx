@@ -115,7 +115,7 @@ export default function AdjustmentFormPage() {
           onChange={(v) => updateLineItem(record.key, 'skuId', v)}
           filterOption={false}
           options={skuData?.data.map((s) => ({
-            label: `${s.skuCode} — ${s.brand} ${s.style} (${s.color}, ${s.size})`,
+            label: `${s.skuCode} — ${s.style}`,
             value: s.id,
           }))}
         />
