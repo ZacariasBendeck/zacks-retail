@@ -2,6 +2,7 @@ import { Router, Request, Response, IRouter } from 'express';
 import multer from 'multer';
 import * as skuService from '../services/skuService';
 import { analyzeShoeImage } from '../services/imageAnalysisService';
+import { getAiFillConfig, mapAiResultsToReferenceIds } from '../services/aiFieldMappingService';
 import {
   createSkuSchema,
   updateSkuSchema,
@@ -65,6 +66,26 @@ router.post('/', validate(createSkuSchema), (req: Request, res: Response): void 
 
 /**
  * @openapi
+ * /api/v1/skus/ai-fill-config:
+ *   get:
+ *     summary: Get the AI fill configuration for SKU attributes
+ *     tags: [SKUs]
+ *     responses:
+ *       200:
+ *         description: AI fill config specifying which attributes are auto-fillable
+ */
+router.get('/ai-fill-config', (_req: Request, res: Response): void => {
+  try {
+    const config = getAiFillConfig();
+    res.json(config);
+  } catch (err: any) {
+    console.error('Failed to load AI fill config:', err);
+    res.status(500).json({ error: { code: 'CONFIG_ERROR', message: 'Failed to load AI fill configuration.' } });
+  }
+});
+
+/**
+ * @openapi
  * /api/v1/skus/analyze-image:
  *   post:
  *     summary: Analyze a shoe image using AI and return suggested attributes
@@ -95,8 +116,10 @@ router.post('/analyze-image', upload.single('image'), async (req: Request, res: 
       return;
     }
 
-    const result = await analyzeShoeImage(req.file.buffer, req.file.mimetype);
-    res.json(result);
+    const raw = await analyzeShoeImage(req.file.buffer, req.file.mimetype);
+    const config = getAiFillConfig();
+    const mapped = mapAiResultsToReferenceIds(raw as unknown as Record<string, string | null>);
+    res.json({ raw, mapped, config });
   } catch (err: any) {
     if (err.message?.includes('ANTHROPIC_API_KEY')) {
       res.status(500).json({ error: { code: 'CONFIG_ERROR', message: 'AI service is not configured. Set the ANTHROPIC_API_KEY environment variable.' } });

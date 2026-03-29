@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "attributes": {
+    "color": {
+      "enabled": true,
+      "type": "text",
+      "aiKey": "color"
+    },
+    "description": {
+      "enabled": true,
+      "type": "text",
+      "aiKey": "description"
+    },
+    "department": {
+      "enabled": true,
+      "type": "enum",
+      "field": "department",
+      "aiKey": "department"
+    },
+    "shoeTypeId": {
+      "enabled": true,
+      "type": "reference",
+      "refTable": "shoe-types",
+      "aiKey": "shoe_type"
+    },
+    "heelHeightId": {
+      "enabled": true,
+      "type": "reference",
+      "refTable": "heel-heights",
+      "aiKey": "heel_height"
+    },
+    "heelShapeId": {
+      "enabled": true,
+      "type": "reference",
+      "refTable": "heel-shapes",
+      "aiKey": "heel_shape"
+    },
+    "toeShapeId": {
+      "enabled": true,
+      "type": "reference",
+      "refTable": "toe-shapes",
+      "aiKey": "toe_shape"
+    },
+    "colorFamilyId": {
+      "enabled": true,
+      "type": "reference",
+      "refTable": "color-families",
+      "aiKey": "color_family"
+    },
+    "upperMaterialId": {
+      "enabled": true,
+      "type": "reference",
+      "refTable": "upper-materials",
+      "aiKey": "upper_material"
+    },
+    "finishId": {
+      "enabled": true,
+      "type": "reference",
+      "refTable": "finishes",
+      "aiKey": "finish"
+    },
+    "patternId": {
+      "enabled": true,
+      "type": "reference",
+      "refTable": "patterns",
+      "aiKey": "pattern"
+    },
+    "occasionId": {
+      "enabled": true,
+      "type": "reference",
+      "refTable": "occasions",
+      "aiKey": "occasion"
+    }
+  }
+}
