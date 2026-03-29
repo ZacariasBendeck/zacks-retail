@@ -18,8 +18,9 @@ import {
   Alert,
   Tag,
   Tooltip,
+  Switch,
 } from 'antd'
-import { ArrowLeftOutlined, SaveOutlined, CameraOutlined, LoadingOutlined, SearchOutlined, ThunderboltOutlined, CheckCircleOutlined, ExclamationCircleOutlined, ReloadOutlined } from '@ant-design/icons'
+import { ArrowLeftOutlined, SaveOutlined, CameraOutlined, LoadingOutlined, SearchOutlined, ThunderboltOutlined, CheckCircleOutlined, ExclamationCircleOutlined, ReloadOutlined, EyeInvisibleOutlined } from '@ant-design/icons'
 import { useSku, useCreateSku, useUpdateSku, useVendors, useAnalyzeImage, useReferenceData, useLookupSku } from '../../hooks/useSkus'
 import type { Department, SkuCreatePayload, ReferenceItem, ImageAnalysisResult, EnhancedAnalysisResult, AiFillSummary } from '../../types/sku'
 
@@ -114,6 +115,7 @@ export default function SkuFormPage() {
   const updateMutation = useUpdateSku()
   const analyzeMutation = useAnalyzeImage()
   const lookupMutation = useLookupSku()
+  const [aiPanelOpen, setAiPanelOpen] = useState(false)
   const [imagePreview, setImagePreview] = useState<string | null>(null)
   const [lookupCode, setLookupCode] = useState('')
   const [analysisResult, setAnalysisResult] = useState<EnhancedAnalysisResult | null>(null)
@@ -294,17 +296,20 @@ export default function SkuFormPage() {
     )
   }
 
+  const compactItem: React.CSSProperties = { marginBottom: 8 }
+
   return (
     <App>
-      <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-        {/* Header */}
-        <Card size="small">
-          <Row align="middle" justify="space-between">
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, width: '100%' }}>
+        {/* Header with Lookup inline */}
+        <Card size="small" bodyStyle={{ padding: '8px 16px' }}>
+          <Row align="middle" justify="space-between" gutter={16}>
             <Col>
               <Space>
                 <Button
                   icon={<ArrowLeftOutlined />}
                   onClick={() => navigate('/inventory/skus')}
+                  size="small"
                 >
                   Back
                 </Button>
@@ -316,45 +321,46 @@ export default function SkuFormPage() {
                 )}
               </Space>
             </Col>
+            {!isEdit && (
+              <Col>
+                <Space size={4}>
+                  <Input
+                    placeholder="Lookup existing SKU..."
+                    value={lookupCode}
+                    onChange={(e) => setLookupCode(e.target.value)}
+                    onPressEnter={handleLookup}
+                    size="small"
+                    style={{ width: 200 }}
+                  />
+                  <Button
+                    icon={<SearchOutlined />}
+                    onClick={handleLookup}
+                    loading={lookupMutation.isPending}
+                    size="small"
+                  >
+                    Lookup
+                  </Button>
+                  <Divider type="vertical" />
+                  <Switch
+                    checked={aiPanelOpen}
+                    onChange={setAiPanelOpen}
+                    checkedChildren={<><CameraOutlined /> AI</>}
+                    unCheckedChildren={<><EyeInvisibleOutlined /> AI</>}
+                    style={{ minWidth: 60 }}
+                  />
+                </Space>
+              </Col>
+            )}
           </Row>
         </Card>
 
-        {/* SKU Lookup */}
-        {!isEdit && (
-          <Card size="small">
-            <Typography.Text strong>SKU Lookup</Typography.Text>
-            <Typography.Text type="secondary" style={{ marginLeft: 8 }}>
-              Check if a SKU already exists before creating
-            </Typography.Text>
-            <Row gutter={8} style={{ marginTop: 8 }}>
-              <Col flex="auto">
-                <Input
-                  placeholder="Enter SKU code to search..."
-                  value={lookupCode}
-                  onChange={(e) => setLookupCode(e.target.value)}
-                  onPressEnter={handleLookup}
-                />
-              </Col>
-              <Col>
-                <Button
-                  icon={<SearchOutlined />}
-                  onClick={handleLookup}
-                  loading={lookupMutation.isPending}
-                >
-                  Lookup
-                </Button>
-              </Col>
-            </Row>
-          </Card>
-        )}
-
-        {/* AI Image Analysis */}
-        {!isEdit && (
-          <Card size="small">
+        {/* AI Image Analysis — collapsible */}
+        {!isEdit && aiPanelOpen && (
+          <Card size="small" bodyStyle={{ padding: '8px 16px' }}>
             <Row align="middle" justify="space-between">
               <Col>
-                <Typography.Text strong><CameraOutlined /> AI Image Analysis</Typography.Text>
-                <Typography.Text type="secondary" style={{ marginLeft: 8 }}>
+                <Typography.Text strong style={{ fontSize: 13 }}><CameraOutlined /> AI Image Analysis</Typography.Text>
+                <Typography.Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
                   Drop a shoe photo, then fill attributes with AI
                 </Typography.Text>
               </Col>
@@ -365,7 +371,6 @@ export default function SkuFormPage() {
                     icon={<ThunderboltOutlined />}
                     onClick={handleFillWithAi}
                     disabled={!analysisResult || analyzeMutation.isPending}
-                    size="large"
                     style={{ fontWeight: 600 }}
                   >
                     Fill with AI
@@ -384,16 +389,16 @@ export default function SkuFormPage() {
                     return false
                   }}
                   disabled={analyzeMutation.isPending}
-                  style={{ padding: '12px 0' }}
+                  style={{ padding: '8px 0' }}
                 >
                   {analyzeMutation.isPending ? (
                     <div>
-                      <LoadingOutlined style={{ fontSize: 24, color: '#1677ff' }} />
-                      <p style={{ marginTop: 4, marginBottom: 0 }}>Analyzing...</p>
+                      <LoadingOutlined style={{ fontSize: 20, color: '#1677ff' }} />
+                      <p style={{ marginTop: 4, marginBottom: 0, fontSize: 12 }}>Analyzing...</p>
                     </div>
                   ) : (
                     <div>
-                      <CameraOutlined style={{ fontSize: 24, color: '#999' }} />
+                      <CameraOutlined style={{ fontSize: 20, color: '#999' }} />
                       <p style={{ marginTop: 4, marginBottom: 0, fontSize: 12 }}>Click or drag shoe image</p>
                     </div>
                   )}
@@ -404,7 +409,7 @@ export default function SkuFormPage() {
                   <img
                     src={imagePreview}
                     alt="Uploaded shoe"
-                    style={{ width: '100%', maxHeight: 150, objectFit: 'contain', borderRadius: 8, border: '1px solid #d9d9d9' }}
+                    style={{ width: '100%', maxHeight: 120, objectFit: 'contain', borderRadius: 8, border: '1px solid #d9d9d9' }}
                   />
                 </Col>
               )}
@@ -490,256 +495,239 @@ export default function SkuFormPage() {
           </Card>
         )}
 
-        {/* Main Form */}
-        <Card>
+        {/* Main Form — compact layout */}
+        <Card size="small" bodyStyle={{ padding: '12px 16px' }}>
           <Form
             form={form}
             layout="vertical"
             onFinish={handleSubmit}
             requiredMark="optional"
+            size="small"
           >
             {/* ── Product Details ── */}
-            <Typography.Title level={5}>Product Details</Typography.Title>
+            <Typography.Text strong style={{ fontSize: 13 }}>Product Details</Typography.Text>
 
-            <Row gutter={16}>
-              <Col xs={24} sm={8}>
-                <Form.Item label="Brand" name="brand" rules={[{ required: true }, { max: 100 }]}>
+            <Row gutter={12} style={{ marginTop: 8 }}>
+              <Col xs={24} sm={4}>
+                <Form.Item label="Brand" name="brand" rules={[{ required: true }, { max: 100 }]} style={compactItem}>
                   <Input placeholder="e.g. Nike" />
                 </Form.Item>
               </Col>
-              <Col xs={24} sm={8}>
-                <Form.Item label="Style" name="style" rules={[{ required: true }, { max: 100 }]}>
+              <Col xs={24} sm={4}>
+                <Form.Item label="Style" name="style" rules={[{ required: true }, { max: 100 }]} style={compactItem}>
                   <Input placeholder="e.g. Oxford" />
                 </Form.Item>
               </Col>
-              <Col xs={24} sm={8}>
-                <Form.Item label={aiLabel('Color', 'color', aiFilledFields)} name="color" rules={[{ required: true }, { max: 50 }]} style={aiFilledFields.has('color') ? AI_FILLED_STYLE : undefined}>
+              <Col xs={12} sm={3}>
+                <Form.Item label={aiLabel('Color', 'color', aiFilledFields)} name="color" rules={[{ required: true }, { max: 50 }]} style={{ ...compactItem, ...(aiFilledFields.has('color') ? AI_FILLED_STYLE : {}) }}>
                   <Input placeholder="e.g. Black" />
                 </Form.Item>
               </Col>
-            </Row>
-
-            <Row gutter={16}>
-              <Col xs={12} sm={6}>
-                <Form.Item label="Size" name="size" rules={[{ required: true }]}>
+              <Col xs={12} sm={3}>
+                <Form.Item label="Size" name="size" rules={[{ required: true }]} style={compactItem}>
                   <Input placeholder="9.5" />
                 </Form.Item>
               </Col>
-              <Col xs={12} sm={6}>
-                <Form.Item label="Size Type" name="sizeTypeId">
+              <Col xs={12} sm={3}>
+                <Form.Item label="Size Type" name="sizeTypeId" style={compactItem}>
                   <Select placeholder="Select" allowClear options={refOptions(refData?.['size-types'])} />
                 </Form.Item>
               </Col>
-              <Col xs={12} sm={6}>
-                <Form.Item label="Width" name="widthTypeId">
+              <Col xs={12} sm={3}>
+                <Form.Item label="Width" name="widthTypeId" style={compactItem}>
                   <Select placeholder="Select" allowClear options={refOptions(refData?.['width-types'])} />
                 </Form.Item>
               </Col>
-              <Col xs={12} sm={6}>
-                <Form.Item label={aiLabel('Shoe Type', 'shoeTypeId', aiFilledFields)} name="shoeTypeId" style={aiFilledFields.has('shoeTypeId') ? AI_FILLED_STYLE : undefined}>
+              <Col xs={12} sm={4}>
+                <Form.Item label={aiLabel('Shoe Type', 'shoeTypeId', aiFilledFields)} name="shoeTypeId" style={{ ...compactItem, ...(aiFilledFields.has('shoeTypeId') ? AI_FILLED_STYLE : {}) }}>
                   <Select placeholder="Select" allowClear showSearch optionFilterProp="label" options={refOptions(refData?.['shoe-types'])} />
                 </Form.Item>
               </Col>
             </Row>
 
-            <Row gutter={16}>
+            <Row gutter={12}>
               <Col xs={24} sm={12}>
-                <Form.Item label={aiLabel('Description', 'description', aiFilledFields)} name="description" rules={[{ max: 500 }]} style={aiFilledFields.has('description') ? AI_FILLED_STYLE : undefined}>
-                  <Input.TextArea rows={2} placeholder="Product description" />
+                <Form.Item label={aiLabel('Description', 'description', aiFilledFields)} name="description" rules={[{ max: 500 }]} style={{ ...compactItem, ...(aiFilledFields.has('description') ? AI_FILLED_STYLE : {}) }}>
+                  <Input.TextArea rows={1} placeholder="Product description" />
                 </Form.Item>
               </Col>
               <Col xs={24} sm={12}>
-                <Form.Item label="Comment" name="comment" rules={[{ max: 1000 }]}>
-                  <Input.TextArea rows={2} placeholder="Internal notes" />
+                <Form.Item label="Comment" name="comment" rules={[{ max: 1000 }]} style={compactItem}>
+                  <Input.TextArea rows={1} placeholder="Internal notes" />
                 </Form.Item>
               </Col>
             </Row>
 
-            <Divider />
+            <Divider style={{ margin: '8px 0' }} />
 
             {/* ── Classification & Vendor ── */}
-            <Typography.Title level={5}>Classification & Vendor</Typography.Title>
+            <Typography.Text strong style={{ fontSize: 13 }}>Classification & Vendor</Typography.Text>
 
-            <Row gutter={16}>
-              <Col xs={24} sm={8}>
-                <Form.Item label={aiLabel('Department', 'department', aiFilledFields)} name="department" rules={[{ required: true }]} style={aiFilledFields.has('department') ? AI_FILLED_STYLE : undefined}>
+            <Row gutter={12} style={{ marginTop: 8 }}>
+              <Col xs={12} sm={4}>
+                <Form.Item label={aiLabel('Department', 'department', aiFilledFields)} name="department" rules={[{ required: true }]} style={{ ...compactItem, ...(aiFilledFields.has('department') ? AI_FILLED_STYLE : {}) }}>
                   <Select placeholder="Select" options={DEPARTMENTS.map((d) => ({ label: d, value: d }))} />
                 </Form.Item>
               </Col>
-              <Col xs={12} sm={8}>
-                <Form.Item label="Category" name="category" rules={[{ required: true }, { type: 'number', min: 556, max: 599 }]}>
+              <Col xs={12} sm={3}>
+                <Form.Item label="Category" name="category" rules={[{ required: true }, { type: 'number', min: 556, max: 599 }]} style={compactItem}>
                   <InputNumber style={{ width: '100%' }} min={556} max={599} precision={0} placeholder="556-599" />
                 </Form.Item>
               </Col>
-              <Col xs={12} sm={8}>
-                <Form.Item label="Season" name="seasonId">
+              <Col xs={12} sm={3}>
+                <Form.Item label="Season" name="seasonId" style={compactItem}>
                   <Select placeholder="Select" allowClear options={refOptions(refData?.['seasons'])} />
                 </Form.Item>
               </Col>
-            </Row>
-
-            <Row gutter={16}>
-              <Col xs={24} sm={8}>
-                <Form.Item label="Vendor" name="vendorId" rules={[{ required: true }]}>
-                  <Select placeholder="Search vendors..." showSearch optionFilterProp="label" loading={vendorsLoading} options={vendors?.map((v) => ({ label: v.name, value: v.id }))} />
+              <Col xs={24} sm={4}>
+                <Form.Item label="Vendor" name="vendorId" rules={[{ required: true }]} style={compactItem}>
+                  <Select placeholder="Search..." showSearch optionFilterProp="label" loading={vendorsLoading} options={vendors?.map((v) => ({ label: v.name, value: v.id }))} />
                 </Form.Item>
               </Col>
-              <Col xs={24} sm={8}>
-                <Form.Item label="Vendor SKU" name="vendorSku">
-                  <Input placeholder="Vendor's own SKU" />
+              <Col xs={12} sm={3}>
+                <Form.Item label="Vendor SKU" name="vendorSku" style={compactItem}>
+                  <Input placeholder="Vendor SKU" />
                 </Form.Item>
               </Col>
-              <Col xs={24} sm={8}>
-                <Form.Item label="Manufacturer" name="manufacturer">
-                  <Input placeholder="Manufacturer name" />
+              <Col xs={12} sm={3}>
+                <Form.Item label="Manufacturer" name="manufacturer" style={compactItem}>
+                  <Input placeholder="Manufacturer" />
                 </Form.Item>
               </Col>
-            </Row>
-
-            <Row gutter={16}>
-              <Col xs={24} sm={8}>
-                <Form.Item label={aiLabel('Occasion', 'occasionId', aiFilledFields)} name="occasionId" style={aiFilledFields.has('occasionId') ? AI_FILLED_STYLE : undefined}>
+              <Col xs={12} sm={4}>
+                <Form.Item label={aiLabel('Occasion', 'occasionId', aiFilledFields)} name="occasionId" style={{ ...compactItem, ...(aiFilledFields.has('occasionId') ? AI_FILLED_STYLE : {}) }}>
                   <Select placeholder="Select" allowClear options={refOptions(refData?.['occasions'])} />
                 </Form.Item>
               </Col>
-              <Col xs={24} sm={8}>
-                <Form.Item label="Target Audience" name="targetAudienceId">
+            </Row>
+
+            <Row gutter={12}>
+              <Col xs={12} sm={4}>
+                <Form.Item label="Target Audience" name="targetAudienceId" style={compactItem}>
                   <Select placeholder="Select" allowClear options={refOptions(refData?.['target-audiences'])} />
                 </Form.Item>
               </Col>
-              <Col xs={24} sm={8}>
-                <Form.Item label="Label Type" name="labelTypeId">
+              <Col xs={12} sm={4}>
+                <Form.Item label="Label Type" name="labelTypeId" style={compactItem}>
                   <Select placeholder="Select" allowClear options={refOptions(refData?.['label-types'])} />
                 </Form.Item>
               </Col>
             </Row>
 
-            <Divider />
+            <Divider style={{ margin: '8px 0' }} />
 
-            {/* ── Appearance & Design ── */}
-            <Typography.Title level={5}>Appearance & Design</Typography.Title>
+            {/* ── Appearance, Design & Materials ── */}
+            <Typography.Text strong style={{ fontSize: 13 }}>Appearance, Design & Materials</Typography.Text>
 
-            <Row gutter={16}>
-              <Col xs={12} sm={6}>
-                <Form.Item label={aiLabel('Color Family', 'colorFamilyId', aiFilledFields)} name="colorFamilyId" style={aiFilledFields.has('colorFamilyId') ? AI_FILLED_STYLE : undefined}>
+            <Row gutter={12} style={{ marginTop: 8 }}>
+              <Col xs={12} sm={3}>
+                <Form.Item label={aiLabel('Color Family', 'colorFamilyId', aiFilledFields)} name="colorFamilyId" style={{ ...compactItem, ...(aiFilledFields.has('colorFamilyId') ? AI_FILLED_STYLE : {}) }}>
                   <Select placeholder="Select" allowClear showSearch optionFilterProp="label" options={refOptions(refData?.['color-families'])} />
                 </Form.Item>
               </Col>
-              <Col xs={12} sm={6}>
-                <Form.Item label={aiLabel('Pattern', 'patternId', aiFilledFields)} name="patternId" style={aiFilledFields.has('patternId') ? AI_FILLED_STYLE : undefined}>
+              <Col xs={12} sm={3}>
+                <Form.Item label={aiLabel('Pattern', 'patternId', aiFilledFields)} name="patternId" style={{ ...compactItem, ...(aiFilledFields.has('patternId') ? AI_FILLED_STYLE : {}) }}>
                   <Select placeholder="Select" allowClear options={refOptions(refData?.['patterns'])} />
                 </Form.Item>
               </Col>
-              <Col xs={12} sm={6}>
-                <Form.Item label={aiLabel('Finish', 'finishId', aiFilledFields)} name="finishId" style={aiFilledFields.has('finishId') ? AI_FILLED_STYLE : undefined}>
+              <Col xs={12} sm={3}>
+                <Form.Item label={aiLabel('Finish', 'finishId', aiFilledFields)} name="finishId" style={{ ...compactItem, ...(aiFilledFields.has('finishId') ? AI_FILLED_STYLE : {}) }}>
                   <Select placeholder="Select" allowClear options={refOptions(refData?.['finishes'])} />
                 </Form.Item>
               </Col>
-              <Col xs={12} sm={6}>
-                <Form.Item label="Accessory" name="accessoryId">
+              <Col xs={12} sm={3}>
+                <Form.Item label="Accessory" name="accessoryId" style={compactItem}>
                   <Select placeholder="Select" allowClear options={refOptions(refData?.['accessories'])} />
                 </Form.Item>
               </Col>
-            </Row>
-
-            <Row gutter={16}>
-              <Col xs={12} sm={6}>
-                <Form.Item label={aiLabel('Heel Height', 'heelHeightId', aiFilledFields)} name="heelHeightId" style={aiFilledFields.has('heelHeightId') ? AI_FILLED_STYLE : undefined}>
+              <Col xs={12} sm={3}>
+                <Form.Item label={aiLabel('Heel Height', 'heelHeightId', aiFilledFields)} name="heelHeightId" style={{ ...compactItem, ...(aiFilledFields.has('heelHeightId') ? AI_FILLED_STYLE : {}) }}>
                   <Select placeholder="Select" allowClear options={refOptions(refData?.['heel-heights'])} />
                 </Form.Item>
               </Col>
-              <Col xs={12} sm={6}>
-                <Form.Item label={aiLabel('Heel Shape', 'heelShapeId', aiFilledFields)} name="heelShapeId" style={aiFilledFields.has('heelShapeId') ? AI_FILLED_STYLE : undefined}>
+              <Col xs={12} sm={3}>
+                <Form.Item label={aiLabel('Heel Shape', 'heelShapeId', aiFilledFields)} name="heelShapeId" style={{ ...compactItem, ...(aiFilledFields.has('heelShapeId') ? AI_FILLED_STYLE : {}) }}>
                   <Select placeholder="Select" allowClear options={refOptions(refData?.['heel-shapes'])} />
                 </Form.Item>
               </Col>
-              <Col xs={12} sm={6}>
-                <Form.Item label={aiLabel('Toe Shape', 'toeShapeId', aiFilledFields)} name="toeShapeId" style={aiFilledFields.has('toeShapeId') ? AI_FILLED_STYLE : undefined}>
+              <Col xs={12} sm={3}>
+                <Form.Item label={aiLabel('Toe Shape', 'toeShapeId', aiFilledFields)} name="toeShapeId" style={{ ...compactItem, ...(aiFilledFields.has('toeShapeId') ? AI_FILLED_STYLE : {}) }}>
                   <Select placeholder="Select" allowClear options={refOptions(refData?.['toe-shapes'])} />
                 </Form.Item>
               </Col>
-              <Col xs={12} sm={6}>
-                <Form.Item label="Closure Type" name="closureTypeId">
+              <Col xs={12} sm={3}>
+                <Form.Item label="Closure Type" name="closureTypeId" style={compactItem}>
                   <Select placeholder="Select" allowClear options={refOptions(refData?.['closure-types'])} />
                 </Form.Item>
               </Col>
             </Row>
 
-            <Divider />
-
-            {/* ── Materials ── */}
-            <Typography.Title level={5}>Materials</Typography.Title>
-
-            <Row gutter={16}>
-              <Col xs={24} sm={8}>
-                <Form.Item label={aiLabel('Upper Material', 'upperMaterialId', aiFilledFields)} name="upperMaterialId" style={aiFilledFields.has('upperMaterialId') ? AI_FILLED_STYLE : undefined}>
+            <Row gutter={12}>
+              <Col xs={12} sm={4}>
+                <Form.Item label={aiLabel('Upper Material', 'upperMaterialId', aiFilledFields)} name="upperMaterialId" style={{ ...compactItem, ...(aiFilledFields.has('upperMaterialId') ? AI_FILLED_STYLE : {}) }}>
                   <Select placeholder="Select" allowClear showSearch optionFilterProp="label" options={refOptions(refData?.['upper-materials'])} />
                 </Form.Item>
               </Col>
-              <Col xs={24} sm={8}>
-                <Form.Item label="Outsole Material" name="outsoleMaterialId">
+              <Col xs={12} sm={4}>
+                <Form.Item label="Outsole Material" name="outsoleMaterialId" style={compactItem}>
                   <Select placeholder="Select" allowClear options={refOptions(refData?.['outsole-materials'])} />
                 </Form.Item>
               </Col>
             </Row>
 
-            <Divider />
+            <Divider style={{ margin: '8px 0' }} />
 
             {/* ── Pricing & Codes ── */}
-            <Typography.Title level={5}>Pricing & Codes</Typography.Title>
+            <Typography.Text strong style={{ fontSize: 13 }}>Pricing & Codes</Typography.Text>
 
-            <Row gutter={16}>
-              <Col xs={12} sm={6}>
-                <Form.Item label="Retail Price" name="price" rules={[{ required: true }, { type: 'number', min: 0.01 }]}>
+            <Row gutter={12} style={{ marginTop: 8 }}>
+              <Col xs={12} sm={4}>
+                <Form.Item label="Retail Price" name="price" rules={[{ required: true }, { type: 'number', min: 0.01 }]} style={compactItem}>
                   <InputNumber prefix="$" style={{ width: '100%' }} min={0.01} step={0.01} precision={2} placeholder="0.00" />
                 </Form.Item>
               </Col>
-              <Col xs={12} sm={6}>
-                <Form.Item label="Cost" name="cost">
+              <Col xs={12} sm={4}>
+                <Form.Item label="Cost" name="cost" style={compactItem}>
                   <InputNumber prefix="$" style={{ width: '100%' }} min={0} step={0.01} precision={2} placeholder="0.00" />
                 </Form.Item>
               </Col>
-              <Col xs={12} sm={6}>
-                <Form.Item label="Barcode / UPC" name="barcode">
+              <Col xs={12} sm={4}>
+                <Form.Item label="Barcode / UPC" name="barcode" style={compactItem}>
                   <Input placeholder="Auto if blank" />
                 </Form.Item>
               </Col>
-              <Col xs={12} sm={6}>
-                <Form.Item label="Season Code" name="season">
+              <Col xs={12} sm={4}>
+                <Form.Item label="Season Code" name="season" style={compactItem}>
                   <Input placeholder="e.g. SS26" />
                 </Form.Item>
               </Col>
-            </Row>
-
-            <Row gutter={16}>
-              <Col xs={24} sm={12}>
-                <Form.Item label="Keywords" name="keywords" rules={[{ max: 500 }]}>
+              <Col xs={24} sm={8}>
+                <Form.Item label="Keywords" name="keywords" rules={[{ max: 500 }]} style={compactItem}>
                   <Input placeholder="Search keywords (comma-separated)" />
                 </Form.Item>
               </Col>
             </Row>
 
-            <Divider />
+            <Divider style={{ margin: '8px 0' }} />
 
-            <Form.Item>
+            <Form.Item style={{ marginBottom: 0 }}>
               <Space>
                 <Button
                   type="primary"
                   htmlType="submit"
                   icon={<SaveOutlined />}
                   loading={isSaving}
-                  size="large"
                 >
                   {isEdit ? 'Update SKU' : 'Create SKU'}
                 </Button>
-                <Button onClick={() => navigate('/inventory/skus')} size="large">
+                <Button onClick={() => navigate('/inventory/skus')}>
                   Cancel
                 </Button>
               </Space>
             </Form.Item>
           </Form>
         </Card>
-      </Space>
+      </div>
     </App>
   )
 }
