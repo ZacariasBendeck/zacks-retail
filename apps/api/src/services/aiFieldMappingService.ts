@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { getReferenceData } from './skuService';
+import { ReferenceItem } from '../models/sku';
 
 export interface AiFillAttribute {
   enabled: boolean;
@@ -183,8 +184,12 @@ export function matchReferenceValue(
 ): number | null {
   if (!aiValue) return null;
 
-  const refData = getReferenceData(refTableName);
-  if (!refData || refData.length === 0) return null;
+  const rawData = getReferenceData(refTableName);
+  if (!rawData || rawData.length === 0) return null;
+
+  // Filter to items that have a 'name' property (excludes SizeLabelItem)
+  const refData = rawData.filter((r): r is ReferenceItem => 'name' in r);
+  if (refData.length === 0) return null;
 
   const normalizedAi = aiValue.toLowerCase().trim();
 

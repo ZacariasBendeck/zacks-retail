@@ -2,9 +2,12 @@ import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/database';
 
 type DbValue = null | number | bigint | string;
-import { Sku, SkuRow, SkuListParams, PaginationEnvelope, ReferenceItem, rowToSku } from '../models/sku';
+import {
+  Sku, SkuRow, SkuSize, SkuSizeRow, SkuListParams, PaginationEnvelope,
+  ReferenceItem, CategoryItem, ColorItem, SizeLabelItem, rowToSku
+} from '../models/sku';
 
-// All new nullable fields on the SKU
+// Map camelCase API field → snake_case DB column for all updatable FK/scalar fields
 const EXTENDED_FIELDS: Record<string, string> = {
   cost: 'cost',
   vendorSku: 'vendor_sku',
@@ -13,6 +16,10 @@ const EXTENDED_FIELDS: Record<string, string> = {
   season: 'season',
   manufacturer: 'manufacturer',
   pictureUrl: 'picture_url',
+  brandId: 'brand_id',
+  colorId: 'color_id',
+  categoryId: 'category_id',
+  heelMaterialId: 'heel_material_id',
   colorFamilyId: 'color_family_id',
   shoeTypeId: 'shoe_type_id',
   heelShapeId: 'heel_shape_id',
@@ -33,25 +40,31 @@ const EXTENDED_FIELDS: Record<string, string> = {
 };
 
 const ALL_FIELD_MAP: Record<string, string> = {
-  brand: 'brand',
   style: 'style',
-  color: 'color',
-  size: 'size',
   price: 'price',
-  category: 'category',
   department: 'department',
   vendorId: 'vendor_id',
   barcode: 'barcode',
-  description: 'description',
+  ricsDescription: 'rics_description',
+  webDescription: 'web_description',
   heelType: 'heel_type',
   material: 'material',
   active: 'active',
   ...EXTENDED_FIELDS,
 };
 
-function generateSkuCode(department: string, brand: string, color: string, size: string): string {
+function deriveColorFamilyId(colorId: number | null): number | null {
+  if (!colorId) return null;
   const db = getDb();
-  const prefix = `${department}-${brand.toUpperCase().slice(0, 5)}-${color.toUpperCase().slice(0, 3)}-${size}`;
+  const row = db.prepare('SELECT color_family_id FROM ref_colors WHERE id = ?').get(colorId) as { color_family_id: number | null } | undefined;
+  return row?.color_family_id ?? null;
+}
+
+function generateSkuCode(department: string, brandCode: string | null, colorCode: string | null): string {
+  const db = getDb();
+  const b = brandCode ?? 'NONE';
+  const c = colorCode ?? 'XX';
+  const prefix = `${department}-${b}-${c}`;
 
   const upsert = db.prepare(`
     INSERT INTO sku_code_seq (prefix, next_val) VALUES (?, 1)
@@ -63,53 +76,131 @@ function generateSkuCode(department: string, brand: string, color: string, size:
   return `${prefix}-${String(row.next_val).padStart(3, '0')}`;
 }
 
+function getSkuSizes(skuId: string): SkuSize[] {
+  const db = getDb();
+  const rows = db.prepare(
+    `SELECT ss.id, ss.sku_id, ss.size_label, ss.sort_order, ss.active,
+            COALESCE(i.quantity_on_hand, 0) as stock
+     FROM sku_sizes ss
+     LEFT JOIN inventory i ON i.sku_size_id = ss.id
+     WHERE ss.sku_id = ?
+     ORDER BY ss.sort_order`
+  ).all(skuId) as unknown as (SkuSizeRow & { stock: number })[];
+
+  return rows.map(r => ({
+    id: r.id,
+    skuId: r.sku_id,
+    sizeLabel: r.size_label,
+    sortOrder: r.sort_order,
+    active: r.active === 1,
+    stock: r.stock,
+  }));
+}
+
+function getTotalStock(skuId: string): number {
+  const db = getDb();
+  const row = db.prepare('SELECT COALESCE(SUM(quantity_on_hand), 0) as total FROM inventory WHERE sku_id = ?').get(skuId) as { total: number };
+  return row.total;
+}
+
+function getBrandCode(brandId: number | null): string | null {
+  if (!brandId) return null;
+  const db = getDb();
+  const row = db.prepare('SELECT code FROM ref_brands WHERE id = ?').get(brandId) as { code: string } | undefined;
+  return row?.code ?? null;
+}
+
+function getColorCode(colorId: number | null): string | null {
+  if (!colorId) return null;
+  const db = getDb();
+  const row = db.prepare('SELECT code FROM ref_colors WHERE id = ?').get(colorId) as { code: string } | undefined;
+  return row?.code ?? null;
+}
+
 export function createSku(data: Record<string, unknown>): Sku {
   const db = getDb();
   const id = uuidv4();
+
+  const brandId = (data.brandId as number) ?? null;
+  const colorId = (data.colorId as number) ?? null;
+  const colorFamilyId = deriveColorFamilyId(colorId);
+
   const skuCode = (data.skuCode as string) || generateSkuCode(
-    data.department as string, data.brand as string, data.color as string, data.size as string
+    data.department as string,
+    getBrandCode(brandId),
+    getColorCode(colorId)
   );
   const active = data.active !== false ? 1 : 0;
 
   const columns = [
-    'id', 'sku_code', 'brand', 'style', 'color', 'size', 'price', 'category', 'department',
-    'vendor_id', 'barcode', 'description', 'heel_type', 'material', 'active',
-    'cost', 'vendor_sku', 'comment', 'keywords', 'season', 'manufacturer', 'picture_url',
-    'color_family_id', 'shoe_type_id', 'heel_shape_id', 'heel_height_id', 'toe_shape_id',
+    'id', 'sku_code', 'style', 'price', 'cost', 'category_id', 'department',
+    'vendor_id', 'vendor_sku', 'barcode', 'rics_description', 'web_description',
+    'heel_type', 'material', 'active',
+    'brand_id', 'color_id', 'color_family_id', 'heel_material_id',
+    'comment', 'keywords', 'season', 'manufacturer', 'picture_url',
+    'shoe_type_id', 'heel_shape_id', 'heel_height_id', 'toe_shape_id',
     'closure_type_id', 'upper_material_id', 'outsole_material_id', 'finish_id', 'width_type_id',
     'pattern_id', 'occasion_id', 'target_audience_id', 'accessory_id', 'season_id',
     'size_type_id', 'label_type_id',
   ];
 
   const values: DbValue[] = [
-    id, skuCode, data.brand as string, data.style as string, data.color as string,
-    data.size as string, data.price as number, data.category as number, data.department as string,
-    data.vendorId as string, (data.barcode as string) ?? null, (data.description as string) ?? null,
-    (data.heelType as string) ?? null, (data.material as string) ?? null, active,
-    (data.cost as number) ?? null, (data.vendorSku as string) ?? null, (data.comment as string) ?? null,
-    (data.keywords as string) ?? null, (data.season as string) ?? null, (data.manufacturer as string) ?? null,
+    id, skuCode, data.style as string, data.price as number,
+    (data.cost as number) ?? null,
+    (data.categoryId as number) ?? null,
+    data.department as string,
+    data.vendorId as string,
+    (data.vendorSku as string) ?? null,
+    (data.barcode as string) ?? null,
+    (data.ricsDescription as string) ?? null,
+    (data.webDescription as string) ?? null,
+    (data.heelType as string) ?? null,
+    (data.material as string) ?? null,
+    active,
+    brandId, colorId, colorFamilyId,
+    (data.heelMaterialId as number) ?? null,
+    (data.comment as string) ?? null,
+    (data.keywords as string) ?? null,
+    (data.season as string) ?? null,
+    (data.manufacturer as string) ?? null,
     (data.pictureUrl as string) ?? null,
-    (data.colorFamilyId as number) ?? null, (data.shoeTypeId as number) ?? null,
-    (data.heelShapeId as number) ?? null, (data.heelHeightId as number) ?? null,
-    (data.toeShapeId as number) ?? null, (data.closureTypeId as number) ?? null,
-    (data.upperMaterialId as number) ?? null, (data.outsoleMaterialId as number) ?? null,
-    (data.finishId as number) ?? null, (data.widthTypeId as number) ?? null,
-    (data.patternId as number) ?? null, (data.occasionId as number) ?? null,
-    (data.targetAudienceId as number) ?? null, (data.accessoryId as number) ?? null,
-    (data.seasonId as number) ?? null, (data.sizeTypeId as number) ?? null,
+    (data.shoeTypeId as number) ?? null,
+    (data.heelShapeId as number) ?? null,
+    (data.heelHeightId as number) ?? null,
+    (data.toeShapeId as number) ?? null,
+    (data.closureTypeId as number) ?? null,
+    (data.upperMaterialId as number) ?? null,
+    (data.outsoleMaterialId as number) ?? null,
+    (data.finishId as number) ?? null,
+    (data.widthTypeId as number) ?? null,
+    (data.patternId as number) ?? null,
+    (data.occasionId as number) ?? null,
+    (data.targetAudienceId as number) ?? null,
+    (data.accessoryId as number) ?? null,
+    (data.seasonId as number) ?? null,
+    (data.sizeTypeId as number) ?? null,
     (data.labelTypeId as number) ?? null,
   ];
 
   const placeholders = columns.map(() => '?').join(', ');
-  const stmt = db.prepare(`INSERT INTO skus (${columns.join(', ')}) VALUES (${placeholders})`);
-  stmt.run(...values);
+  db.prepare(`INSERT INTO skus (${columns.join(', ')}) VALUES (${placeholders})`).run(...values);
 
-  // Initialize inventory record
-  db.prepare('INSERT INTO inventory (id, sku_id, quantity_on_hand, quantity_reserved) VALUES (?, ?, 0, 0)')
-    .run(uuidv4(), id);
+  // Create sizes + per-size inventory
+  const sizes = data.sizes as string[] | undefined;
+  if (sizes && sizes.length > 0) {
+    for (let i = 0; i < sizes.length; i++) {
+      const sizeId = uuidv4();
+      db.prepare('INSERT INTO sku_sizes (id, sku_id, size_label, sort_order) VALUES (?, ?, ?, ?)').run(sizeId, id, sizes[i], i + 1);
+      db.prepare('INSERT INTO inventory (id, sku_id, sku_size_id, quantity_on_hand, quantity_reserved) VALUES (?, ?, ?, 0, 0)').run(uuidv4(), id, sizeId);
+    }
+  } else {
+    // No sizes — create a single aggregate inventory record
+    db.prepare('INSERT INTO inventory (id, sku_id, quantity_on_hand, quantity_reserved) VALUES (?, ?, 0, 0)').run(uuidv4(), id);
+  }
 
   const row = db.prepare('SELECT * FROM skus WHERE id = ?').get(id) as unknown as SkuRow;
-  return rowToSku(row, 0);
+  const skuSizes = getSkuSizes(id);
+  return rowToSku(row, 0, skuSizes);
 }
 
 export function getSkuById(id: string): Sku | null {
@@ -117,8 +208,9 @@ export function getSkuById(id: string): Sku | null {
   const row = db.prepare('SELECT * FROM skus WHERE id = ?').get(id) as unknown as SkuRow | undefined;
   if (!row) return null;
 
-  const inv = db.prepare('SELECT quantity_on_hand FROM inventory WHERE sku_id = ?').get(id) as { quantity_on_hand: number } | undefined;
-  return rowToSku(row, inv?.quantity_on_hand ?? 0);
+  const totalStock = getTotalStock(id);
+  const sizes = getSkuSizes(id);
+  return rowToSku(row, totalStock, sizes);
 }
 
 export function lookupSkuByCode(code: string): Sku | null {
@@ -126,8 +218,9 @@ export function lookupSkuByCode(code: string): Sku | null {
   const row = db.prepare('SELECT * FROM skus WHERE sku_code = ?').get(code) as unknown as SkuRow | undefined;
   if (!row) return null;
 
-  const inv = db.prepare('SELECT quantity_on_hand FROM inventory WHERE sku_id = ?').get(row.id) as { quantity_on_hand: number } | undefined;
-  return rowToSku(row, inv?.quantity_on_hand ?? 0);
+  const totalStock = getTotalStock(row.id);
+  const sizes = getSkuSizes(row.id);
+  return rowToSku(row, totalStock, sizes);
 }
 
 export function updateSku(id: string, data: Record<string, unknown>): Sku | null {
@@ -139,18 +232,39 @@ export function updateSku(id: string, data: Record<string, unknown>): Sku | null
   const values: DbValue[] = [];
 
   for (const [key, value] of Object.entries(data)) {
+    if (key === 'sizes') continue; // handled separately
     const col = ALL_FIELD_MAP[key];
     if (!col) continue;
     setClauses.push(`${col} = ?`);
     values.push(key === 'active' ? (value ? 1 : 0) : value as DbValue);
   }
 
-  if (setClauses.length === 0) return getSkuById(id);
+  // Auto-derive color_family_id when colorId changes
+  if ('colorId' in data) {
+    const newColorFamilyId = deriveColorFamilyId(data.colorId as number | null);
+    setClauses.push('color_family_id = ?');
+    values.push(newColorFamilyId);
+  }
 
-  setClauses.push("updated_at = datetime('now')");
-  values.push(id);
+  if (setClauses.length > 0) {
+    setClauses.push("updated_at = datetime('now')");
+    values.push(id);
+    db.prepare(`UPDATE skus SET ${setClauses.join(', ')} WHERE id = ?`).run(...values);
+  }
 
-  db.prepare(`UPDATE skus SET ${setClauses.join(', ')} WHERE id = ?`).run(...values);
+  // Update sizes if provided
+  const sizes = data.sizes as string[] | undefined;
+  if (sizes) {
+    // Remove old sizes and their inventory
+    db.prepare('DELETE FROM inventory WHERE sku_size_id IN (SELECT id FROM sku_sizes WHERE sku_id = ?)').run(id);
+    db.prepare('DELETE FROM sku_sizes WHERE sku_id = ?').run(id);
+    // Create new sizes
+    for (let i = 0; i < sizes.length; i++) {
+      const sizeId = uuidv4();
+      db.prepare('INSERT INTO sku_sizes (id, sku_id, size_label, sort_order) VALUES (?, ?, ?, ?)').run(sizeId, id, sizes[i], i + 1);
+      db.prepare('INSERT INTO inventory (id, sku_id, sku_size_id, quantity_on_hand, quantity_reserved) VALUES (?, ?, ?, 0, 0)').run(uuidv4(), id, sizeId);
+    }
+  }
 
   return getSkuById(id);
 }
@@ -165,7 +279,6 @@ export function deactivateSku(id: string): boolean {
 }
 
 const SORT_COLUMN_MAP: Record<string, string> = {
-  brand: 'brand',
   style: 'style',
   price: 'price',
   createdAt: 'created_at',
@@ -176,7 +289,6 @@ export function listSkus(params: SkuListParams): PaginationEnvelope<Sku> {
   const conditions: string[] = [];
   const values: DbValue[] = [];
 
-  // Filter: active (default true)
   if (params.active !== undefined) {
     conditions.push('s.active = ?');
     values.push(params.active ? 1 : 0);
@@ -184,37 +296,26 @@ export function listSkus(params: SkuListParams): PaginationEnvelope<Sku> {
     conditions.push('s.active = 1');
   }
 
-  // Filter: brand (exact match)
-  if (params.brand) {
-    conditions.push('s.brand = ?');
-    values.push(params.brand);
+  if (params.brandId) {
+    conditions.push('s.brand_id = ?');
+    values.push(params.brandId);
   }
 
-  // Filter: department
   if (params.department) {
     conditions.push('s.department = ?');
     values.push(params.department);
   }
 
-  // Filter: category
-  if (params.category !== undefined) {
-    conditions.push('s.category = ?');
-    values.push(params.category);
+  if (params.categoryId !== undefined) {
+    conditions.push('s.category_id = ?');
+    values.push(params.categoryId);
   }
 
-  // Filter: vendorId
   if (params.vendorId) {
     conditions.push('s.vendor_id = ?');
     values.push(params.vendorId);
   }
 
-  // Filter: size
-  if (params.size) {
-    conditions.push('s.size = ?');
-    values.push(params.size);
-  }
-
-  // Filter: price range
   if (params.minPrice !== undefined) {
     conditions.push('s.price >= ?');
     values.push(params.minPrice);
@@ -224,37 +325,36 @@ export function listSkus(params: SkuListParams): PaginationEnvelope<Sku> {
     values.push(params.maxPrice);
   }
 
-  // Filter: full-text search across brand, style, color, barcode
   if (params.q) {
     const pattern = `%${params.q}%`;
-    conditions.push('(s.brand LIKE ? OR s.style LIKE ? OR s.color LIKE ? OR s.sku_code LIKE ? OR s.barcode LIKE ?)');
+    conditions.push('(s.style LIKE ? OR s.sku_code LIKE ? OR s.barcode LIKE ? OR s.web_description LIKE ? OR s.rics_description LIKE ?)');
     values.push(pattern, pattern, pattern, pattern, pattern);
   }
 
   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
-  // Count total
   const countRow = db.prepare(`SELECT COUNT(*) as total FROM skus s ${whereClause}`).get(...values) as unknown as { total: number };
   const totalItems = countRow.total;
 
-  // Sort
-  const sortCol = SORT_COLUMN_MAP[params.sort] || 'brand';
+  const sortCol = SORT_COLUMN_MAP[params.sort] || 'style';
   const sortDir = params.order === 'desc' ? 'DESC' : 'ASC';
 
-  // Paginate
   const offset = (params.page - 1) * params.pageSize;
   const totalPages = Math.ceil(totalItems / params.pageSize);
 
   const rows = db.prepare(
-    `SELECT s.*, COALESCE(i.quantity_on_hand, 0) as current_stock
+    `SELECT s.*
      FROM skus s
-     LEFT JOIN inventory i ON i.sku_id = s.id
      ${whereClause}
      ORDER BY s.${sortCol} ${sortDir}
      LIMIT ? OFFSET ?`
-  ).all(...values, params.pageSize, offset) as unknown as (SkuRow & { current_stock: number })[];
+  ).all(...values, params.pageSize, offset) as unknown as SkuRow[];
 
-  const data = rows.map((row) => rowToSku(row, row.current_stock));
+  const data = rows.map((row) => {
+    const totalStock = getTotalStock(row.id);
+    const sizes = getSkuSizes(row.id);
+    return rowToSku(row, totalStock, sizes);
+  });
 
   return {
     data,
@@ -267,8 +367,10 @@ export function listSkus(params: SkuListParams): PaginationEnvelope<Sku> {
   };
 }
 
-// Reference data
-const REFERENCE_TABLES: Record<string, string> = {
+// ── Reference data ──────────────────────────────────────────
+
+// Simple ref tables (id, name, active)
+const SIMPLE_REF_TABLES: Record<string, string> = {
   'color-families': 'ref_color_families',
   'shoe-types': 'ref_shoe_types',
   'heel-shapes': 'ref_heel_shapes',
@@ -288,22 +390,63 @@ const REFERENCE_TABLES: Record<string, string> = {
   'label-types': 'ref_label_types',
 };
 
+// Tables with code column
+const CODED_REF_TABLES: Record<string, string> = {
+  'brands': 'ref_brands',
+  'heel-materials': 'ref_heel_materials',
+};
+
 export function getReferenceTableNames(): string[] {
-  return Object.keys(REFERENCE_TABLES);
+  return [...Object.keys(SIMPLE_REF_TABLES), ...Object.keys(CODED_REF_TABLES), 'categories', 'colors', 'size-labels'];
 }
 
-export function getReferenceData(tableName: string): ReferenceItem[] | null {
-  const table = REFERENCE_TABLES[tableName];
-  if (!table) return null;
-
+export function getReferenceData(tableName: string): ReferenceItem[] | CategoryItem[] | ColorItem[] | SizeLabelItem[] | null {
   const db = getDb();
-  const rows = db.prepare(`SELECT id, name, active FROM ${table} WHERE active = 1 ORDER BY name`).all() as unknown as { id: number; name: string; active: number }[];
-  return rows.map(r => ({ id: r.id, name: r.name, active: r.active === 1 }));
+
+  // Simple tables
+  if (SIMPLE_REF_TABLES[tableName]) {
+    const table = SIMPLE_REF_TABLES[tableName];
+    const rows = db.prepare(`SELECT id, name, active FROM ${table} WHERE active = 1 ORDER BY name`).all() as unknown as { id: number; name: string; active: number }[];
+    return rows.map(r => ({ id: r.id, name: r.name, active: r.active === 1 }));
+  }
+
+  // Coded tables (brands, heel-materials)
+  if (CODED_REF_TABLES[tableName]) {
+    const table = CODED_REF_TABLES[tableName];
+    const rows = db.prepare(`SELECT id, code, name, active FROM ${table} WHERE active = 1 ORDER BY name`).all() as unknown as { id: number; code: string; name: string; active: number }[];
+    return rows.map(r => ({ id: r.id, code: r.code, name: r.name, active: r.active === 1 }));
+  }
+
+  // Categories (includes rics_code and dept_macro)
+  if (tableName === 'categories') {
+    const rows = db.prepare('SELECT id, rics_code, name, dept_macro, active FROM ref_categories WHERE active = 1 ORDER BY rics_code').all() as unknown as { id: number; rics_code: number; name: string; dept_macro: string; active: number }[];
+    return rows.map(r => ({ id: r.id, ricsCode: r.rics_code, name: r.name, deptMacro: r.dept_macro, active: r.active === 1 }));
+  }
+
+  // Colors (includes code and color_family_id)
+  if (tableName === 'colors') {
+    const rows = db.prepare('SELECT id, code, name, color_family_id, active FROM ref_colors WHERE active = 1 ORDER BY name').all() as unknown as { id: number; code: string; name: string; color_family_id: number | null; active: number }[];
+    return rows.map(r => ({ id: r.id, code: r.code, name: r.name, colorFamilyId: r.color_family_id, active: r.active === 1 }));
+  }
+
+  // Size labels (all, grouped by size type)
+  if (tableName === 'size-labels') {
+    const rows = db.prepare('SELECT id, size_type_id, label, sort_order, active FROM ref_size_labels WHERE active = 1 ORDER BY size_type_id, sort_order').all() as unknown as { id: number; size_type_id: number; label: string; sort_order: number; active: number }[];
+    return rows.map(r => ({ id: r.id, sizeTypeId: r.size_type_id, label: r.label, sortOrder: r.sort_order, active: r.active === 1 }));
+  }
+
+  return null;
 }
 
-export function getAllReferenceData(): Record<string, ReferenceItem[]> {
-  const result: Record<string, ReferenceItem[]> = {};
-  for (const key of Object.keys(REFERENCE_TABLES)) {
+export function getSizeLabelsBySizeType(sizeTypeId: number): SizeLabelItem[] {
+  const db = getDb();
+  const rows = db.prepare('SELECT id, size_type_id, label, sort_order, active FROM ref_size_labels WHERE size_type_id = ? AND active = 1 ORDER BY sort_order').all(sizeTypeId) as unknown as { id: number; size_type_id: number; label: string; sort_order: number; active: number }[];
+  return rows.map(r => ({ id: r.id, sizeTypeId: r.size_type_id, label: r.label, sortOrder: r.sort_order, active: r.active === 1 }));
+}
+
+export function getAllReferenceData(): Record<string, unknown[]> {
+  const result: Record<string, unknown[]> = {};
+  for (const key of getReferenceTableNames()) {
     result[key] = getReferenceData(key) || [];
   }
   return result;

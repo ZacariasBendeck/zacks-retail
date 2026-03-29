@@ -3,23 +3,23 @@ export type Department = 'FORMAL' | 'CASUAL' | 'FIESTA' | 'SANDALIAS' | 'BOOTS' 
 export interface SkuRow {
   id: string;
   sku_code: string;
-  brand: string;
   style: string;
-  color: string;
-  size: string;
   price: number;
   cost: number | null;
-  category: number;
+  category_id: number | null;
   department: Department;
   vendor_id: string;
   vendor_sku: string | null;
   barcode: string | null;
-  description: string | null;
+  rics_description: string | null;
+  web_description: string | null;
   comment: string | null;
   keywords: string | null;
   season: string | null;
   manufacturer: string | null;
   picture_url: string | null;
+  brand_id: number | null;
+  color_id: number | null;
   color_family_id: number | null;
   shoe_type_id: number | null;
   heel_shape_id: number | null;
@@ -37,6 +37,7 @@ export interface SkuRow {
   season_id: number | null;
   size_type_id: number | null;
   label_type_id: number | null;
+  heel_material_id: number | null;
   heel_type: string | null;
   material: string | null;
   active: number; // SQLite boolean
@@ -47,23 +48,23 @@ export interface SkuRow {
 export interface Sku {
   id: string;
   skuCode: string;
-  brand: string;
   style: string;
-  color: string;
-  size: string;
   price: number;
   cost: number | null;
-  category: number;
+  categoryId: number | null;
   department: Department;
   vendorId: string;
   vendorSku: string | null;
   barcode: string | null;
-  description: string | null;
+  ricsDescription: string | null;
+  webDescription: string | null;
   comment: string | null;
   keywords: string | null;
   season: string | null;
   manufacturer: string | null;
   pictureUrl: string | null;
+  brandId: number | null;
+  colorId: number | null;
   colorFamilyId: number | null;
   shoeTypeId: number | null;
   heelShapeId: number | null;
@@ -81,12 +82,31 @@ export interface Sku {
   seasonId: number | null;
   sizeTypeId: number | null;
   labelTypeId: number | null;
+  heelMaterialId: number | null;
   heelType: string | null;
   material: string | null;
   active: boolean;
   currentStock?: number;
+  sizes?: SkuSize[];
   createdAt: string;
   updatedAt: string;
+}
+
+export interface SkuSize {
+  id: string;
+  skuId: string;
+  sizeLabel: string;
+  sortOrder: number;
+  active: boolean;
+  stock?: number;
+}
+
+export interface SkuSizeRow {
+  id: string;
+  sku_id: string;
+  size_label: string;
+  sort_order: number;
+  active: number;
 }
 
 export interface SkuListParams {
@@ -94,15 +114,14 @@ export interface SkuListParams {
   pageSize: number;
   sort: string;
   order: 'asc' | 'desc';
-  brand?: string;
+  brandId?: number;
   department?: Department;
-  category?: number;
+  categoryId?: number;
   vendorId?: string;
   active?: boolean;
   q?: string;
   minPrice?: number;
   maxPrice?: number;
-  size?: string;
 }
 
 export interface PaginationEnvelope<T> {
@@ -118,30 +137,48 @@ export interface PaginationEnvelope<T> {
 export interface ReferenceItem {
   id: number;
   name: string;
+  code?: string;
   active: boolean;
 }
 
-export function rowToSku(row: SkuRow, currentStock?: number): Sku {
+export interface CategoryItem extends ReferenceItem {
+  ricsCode: number;
+  deptMacro: string;
+}
+
+export interface ColorItem extends ReferenceItem {
+  colorFamilyId: number | null;
+}
+
+export interface SizeLabelItem {
+  id: number;
+  sizeTypeId: number;
+  label: string;
+  sortOrder: number;
+  active: boolean;
+}
+
+export function rowToSku(row: SkuRow, currentStock?: number, sizes?: SkuSize[]): Sku {
   return {
     id: row.id,
     skuCode: row.sku_code,
-    brand: row.brand,
     style: row.style,
-    color: row.color,
-    size: row.size,
     price: row.price,
     cost: row.cost,
-    category: row.category,
+    categoryId: row.category_id,
     department: row.department,
     vendorId: row.vendor_id,
     vendorSku: row.vendor_sku,
     barcode: row.barcode,
-    description: row.description,
+    ricsDescription: row.rics_description,
+    webDescription: row.web_description,
     comment: row.comment,
     keywords: row.keywords,
     season: row.season,
     manufacturer: row.manufacturer,
     pictureUrl: row.picture_url,
+    brandId: row.brand_id,
+    colorId: row.color_id,
     colorFamilyId: row.color_family_id,
     shoeTypeId: row.shoe_type_id,
     heelShapeId: row.heel_shape_id,
@@ -159,10 +196,12 @@ export function rowToSku(row: SkuRow, currentStock?: number): Sku {
     seasonId: row.season_id,
     sizeTypeId: row.size_type_id,
     labelTypeId: row.label_type_id,
+    heelMaterialId: row.heel_material_id,
     heelType: row.heel_type,
     material: row.material,
     active: row.active === 1,
     currentStock,
+    sizes,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

@@ -3,7 +3,7 @@ import { Request, Response, NextFunction } from 'express';
 
 const DEPARTMENTS = ['FORMAL', 'CASUAL', 'FIESTA', 'SANDALIAS', 'BOOTS', 'COMFORT'] as const;
 
-// Shared extended attribute fields (all optional/nullable)
+// Shared extended attribute fields (all optional/nullable FK IDs)
 const extendedSkuFields = {
   cost: z.number().nonnegative().multipleOf(0.01).optional().nullable(),
   vendorSku: z.string().max(100).optional().nullable(),
@@ -12,7 +12,10 @@ const extendedSkuFields = {
   season: z.string().max(100).optional().nullable(),
   manufacturer: z.string().max(200).optional().nullable(),
   pictureUrl: z.string().max(500).optional().nullable(),
-  colorFamilyId: z.number().int().positive().optional().nullable(),
+  brandId: z.number().int().positive().optional().nullable(),
+  colorId: z.number().int().positive().optional().nullable(),
+  categoryId: z.number().int().positive().optional().nullable(),
+  heelMaterialId: z.number().int().positive().optional().nullable(),
   shoeTypeId: z.number().int().positive().optional().nullable(),
   heelShapeId: z.number().int().positive().optional().nullable(),
   heelHeightId: z.number().int().positive().optional().nullable(),
@@ -32,49 +35,45 @@ const extendedSkuFields = {
 };
 
 export const createSkuSchema = z.object({
-  brand: z.string().min(1).max(100),
   style: z.string().min(1).max(100),
-  color: z.string().min(1).max(50),
-  size: z.string().min(1),
   price: z.number().positive().multipleOf(0.01),
-  category: z.number().int().min(556).max(599),
   department: z.enum(DEPARTMENTS),
   vendorId: z.string().uuid(),
   skuCode: z.string().max(100).optional().nullable(),
   barcode: z.string().optional().nullable(),
-  description: z.string().max(500).optional().nullable(),
+  ricsDescription: z.string().max(500).optional().nullable(),
+  webDescription: z.string().max(1000).optional().nullable(),
   heelType: z.string().max(100).optional().nullable(),
   material: z.string().max(100).optional().nullable(),
   active: z.boolean().optional().default(true),
+  sizes: z.array(z.string().min(1)).optional(),
   ...extendedSkuFields,
 });
 
 export const updateSkuSchema = z.object({
   skuCode: z.undefined({ message: 'skuCode is auto-generated and cannot be modified' }),
-  brand: z.string().min(1).max(100).optional(),
   style: z.string().min(1).max(100).optional(),
-  color: z.string().min(1).max(50).optional(),
-  size: z.string().min(1).optional(),
   price: z.number().positive().multipleOf(0.01).optional(),
-  category: z.number().int().min(556).max(599).optional(),
   department: z.enum(DEPARTMENTS).optional(),
   vendorId: z.string().uuid().optional(),
   barcode: z.string().optional().nullable(),
-  description: z.string().max(500).optional().nullable(),
+  ricsDescription: z.string().max(500).optional().nullable(),
+  webDescription: z.string().max(1000).optional().nullable(),
   heelType: z.string().max(100).optional().nullable(),
   material: z.string().max(100).optional().nullable(),
   active: z.boolean().optional(),
+  sizes: z.array(z.string().min(1)).optional(),
   ...extendedSkuFields,
 });
 
 export const skuListQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(200).default(50),
-  sort: z.enum(['brand', 'style', 'price', 'createdAt']).default('brand'),
+  sort: z.enum(['style', 'price', 'createdAt']).default('style'),
   order: z.enum(['asc', 'desc']).default('asc'),
-  brand: z.string().optional(),
+  brandId: z.coerce.number().int().positive().optional(),
   department: z.enum(DEPARTMENTS).optional(),
-  category: z.coerce.number().int().min(556).max(599).optional(),
+  categoryId: z.coerce.number().int().positive().optional(),
   vendorId: z.string().uuid().optional(),
   active: z.preprocess((v) => {
     if (v === 'true') return true;
@@ -84,7 +83,6 @@ export const skuListQuerySchema = z.object({
   q: z.string().optional(),
   minPrice: z.coerce.number().positive().optional(),
   maxPrice: z.coerce.number().positive().optional(),
-  size: z.string().optional(),
 });
 
 export const stockAdjustmentSchema = z.object({

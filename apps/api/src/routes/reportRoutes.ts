@@ -9,7 +9,7 @@ const DEPARTMENTS = ['FORMAL', 'CASUAL', 'FIESTA', 'SANDALIAS', 'BOOTS', 'COMFOR
 
 const onHandQuerySchema = z.object({
   department: z.enum(DEPARTMENTS).optional(),
-  category: z.coerce.number().int().min(556).max(599).optional(),
+  category: z.coerce.number().int().positive().optional(),
   format: z.enum(['json', 'csv']).default('json'),
 });
 
@@ -49,16 +49,15 @@ router.get('/on-hand', validateQuery(onHandQuerySchema), (req: Request, res: Res
       category: query.category,
     });
 
-    const header = 'SKU Code,Brand,Style,Color,Size,Department,Category,Price,Quantity On Hand,Cost Value';
+    const header = 'SKU Code,Brand,Style,Color,Department,Category ID,Price,Quantity On Hand,Cost Value';
     const rows = details.map((d) =>
       [
         escapeCsv(d.skuCode),
-        escapeCsv(d.brand),
+        escapeCsv(d.brand ?? ''),
         escapeCsv(d.style),
-        escapeCsv(d.color),
-        escapeCsv(d.size),
+        escapeCsv(d.color ?? ''),
         d.department,
-        d.category,
+        d.categoryId ?? '',
         d.price.toFixed(2),
         d.quantityOnHand,
         d.costValue.toFixed(2),
@@ -100,7 +99,7 @@ const salesPerformanceQuerySchema = z.object({
   startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Must be YYYY-MM-DD'),
   endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Must be YYYY-MM-DD'),
   department: z.enum(DEPARTMENTS).optional(),
-  category: z.coerce.number().int().min(556).max(599).optional(),
+  category: z.coerce.number().int().positive().optional(),
   format: z.enum(['json', 'csv']).default('json'),
 });
 
@@ -163,16 +162,15 @@ router.get('/sales-performance', validateQuery(salesPerformanceQuerySchema), (re
       return;
     }
 
-    const header = 'SKU Code,Brand,Style,Color,Size,Department,Category,Units Sold,Revenue,Avg Selling Price';
+    const header = 'SKU Code,Brand,Style,Color,Department,Category ID,Units Sold,Revenue,Avg Selling Price';
     const rows = details.map((d) =>
       [
         escapeCsv(d.skuCode),
-        escapeCsv(d.brand),
+        escapeCsv(d.brand ?? ''),
         escapeCsv(d.style),
-        escapeCsv(d.color),
-        escapeCsv(d.size),
+        escapeCsv(d.color ?? ''),
         d.department,
-        d.category,
+        d.categoryId ?? '',
         d.totalUnitsSold,
         d.totalRevenue.toFixed(2),
         d.avgSellingPrice.toFixed(2),
@@ -219,7 +217,7 @@ const inventoryTurnoverQuerySchema = z.object({
   startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Must be YYYY-MM-DD').optional(),
   endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Must be YYYY-MM-DD').optional(),
   department: z.enum(DEPARTMENTS).optional(),
-  category: z.coerce.number().int().min(556).max(599).optional(),
+  category: z.coerce.number().int().positive().optional(),
   format: z.enum(['json', 'csv']).default('json'),
 });
 
@@ -272,16 +270,15 @@ router.get('/inventory-turnover', validateQuery(inventoryTurnoverQuerySchema), (
   if (query.format === 'csv') {
     const details = reportService.getTurnoverDetails(filters);
 
-    const header = 'SKU Code,Brand,Style,Color,Size,Department,Category,Price,Qty On Hand,Inventory Value,COGS,Turnover Ratio';
+    const header = 'SKU Code,Brand,Style,Color,Department,Category ID,Price,Qty On Hand,Inventory Value,COGS,Turnover Ratio';
     const rows = details.map((d) =>
       [
         escapeCsv(d.skuCode),
-        escapeCsv(d.brand),
+        escapeCsv(d.brand ?? ''),
         escapeCsv(d.style),
-        escapeCsv(d.color),
-        escapeCsv(d.size),
+        escapeCsv(d.color ?? ''),
         d.department,
-        d.category,
+        d.categoryId ?? '',
         d.price.toFixed(2),
         d.quantityOnHand,
         d.inventoryValue.toFixed(2),
@@ -327,7 +324,7 @@ const sellThroughQuerySchema = z.object({
   startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Must be YYYY-MM-DD').optional(),
   endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Must be YYYY-MM-DD').optional(),
   department: z.enum(DEPARTMENTS).optional(),
-  category: z.coerce.number().int().min(556).max(599).optional(),
+  category: z.coerce.number().int().positive().optional(),
   format: z.enum(['json', 'csv']).default('json'),
 });
 
@@ -380,16 +377,15 @@ router.get('/sell-through', validateQuery(sellThroughQuerySchema), (req: Request
   if (query.format === 'csv') {
     const details = reportService.getSellThroughDetails(filters);
 
-    const header = 'SKU Code,Brand,Style,Color,Size,Department,Category,Price,Units Sold,Units Received,Sell-Through %';
+    const header = 'SKU Code,Brand,Style,Color,Department,Category ID,Price,Units Sold,Units Received,Sell-Through %';
     const rows = details.map((d) =>
       [
         escapeCsv(d.skuCode),
-        escapeCsv(d.brand),
+        escapeCsv(d.brand ?? ''),
         escapeCsv(d.style),
-        escapeCsv(d.color),
-        escapeCsv(d.size),
+        escapeCsv(d.color ?? ''),
         d.department,
-        d.category,
+        d.categoryId ?? '',
         d.price.toFixed(2),
         d.unitsSold,
         d.unitsReceived,
@@ -432,7 +428,7 @@ router.get('/sell-through', validateQuery(sellThroughQuerySchema), (req: Request
 
 const inventoryAgingQuerySchema = z.object({
   department: z.enum(DEPARTMENTS).optional(),
-  category: z.coerce.number().int().min(556).max(599).optional(),
+  category: z.coerce.number().int().positive().optional(),
   format: z.enum(['json', 'csv']).default('json'),
 });
 
@@ -471,16 +467,15 @@ router.get('/inventory-aging', validateQuery(inventoryAgingQuerySchema), (req: R
       category: query.category,
     });
 
-    const header = 'SKU Code,Brand,Style,Color,Size,Department,Category,Price,Qty On Hand,Cost Value,Days On Hand,Aging Bucket,Flagged,Last Received';
+    const header = 'SKU Code,Brand,Style,Color,Department,Category ID,Price,Qty On Hand,Cost Value,Days On Hand,Aging Bucket,Flagged,Last Received';
     const rows = details.map((d) =>
       [
         escapeCsv(d.skuCode),
-        escapeCsv(d.brand),
+        escapeCsv(d.brand ?? ''),
         escapeCsv(d.style),
-        escapeCsv(d.color),
-        escapeCsv(d.size),
+        escapeCsv(d.color ?? ''),
         d.department,
-        d.category,
+        d.categoryId ?? '',
         d.price.toFixed(2),
         d.quantityOnHand,
         d.costValue.toFixed(2),
@@ -517,7 +512,8 @@ router.get('/inventory-aging', validateQuery(inventoryAgingQuerySchema), (req: R
   res.json({ departments });
 });
 
-function escapeCsv(value: string): string {
+function escapeCsv(value: string | null): string {
+  if (!value) return '';
   if (value.includes(',') || value.includes('"') || value.includes('\n')) {
     return `"${value.replace(/"/g, '""')}"`;
   }

@@ -8,7 +8,7 @@ export interface DepartmentOnHandRow {
 }
 
 export interface CategoryOnHandRow {
-  category: number;
+  category_id: number | null;
   department: string;
   total_skus: number;
   total_units: number;
@@ -18,12 +18,11 @@ export interface CategoryOnHandRow {
 export interface OnHandDetailRow {
   sku_id: string;
   sku_code: string;
-  brand: string;
+  brand_name: string | null;
   style: string;
-  color: string;
-  size: string;
+  color_name: string | null;
   price: number;
-  category: number;
+  category_id: number | null;
   department: string;
   quantity_on_hand: number;
   cost_value: number;
@@ -37,7 +36,7 @@ export interface DepartmentSummary {
 }
 
 export interface CategorySummary {
-  category: number;
+  categoryId: number | null;
   department: string;
   totalSkus: number;
   totalUnits: number;
@@ -47,12 +46,11 @@ export interface CategorySummary {
 export interface OnHandDetail {
   skuId: string;
   skuCode: string;
-  brand: string;
+  brand: string | null;
   style: string;
-  color: string;
-  size: string;
+  color: string | null;
   price: number;
-  category: number;
+  categoryId: number | null;
   department: string;
   quantityOnHand: number;
   costValue: number;
@@ -87,7 +85,7 @@ export function getOnHandByCategory(department: string): CategorySummary[] {
 
   const rows = db.prepare(`
     SELECT
-      s.category,
+      s.category_id,
       s.department,
       COUNT(DISTINCT s.id) AS total_skus,
       COALESCE(SUM(i.quantity_on_hand), 0) AS total_units,
@@ -95,12 +93,12 @@ export function getOnHandByCategory(department: string): CategorySummary[] {
     FROM skus s
     LEFT JOIN inventory i ON i.sku_id = s.id
     WHERE s.active = 1 AND s.department = ?
-    GROUP BY s.category
-    ORDER BY s.category
+    GROUP BY s.category_id
+    ORDER BY s.category_id
   `).all(department) as unknown as CategoryOnHandRow[];
 
   return rows.map((r) => ({
-    category: r.category,
+    categoryId: r.category_id,
     department: r.department,
     totalSkus: r.total_skus,
     totalUnits: r.total_units,
@@ -125,7 +123,7 @@ export interface SalesDepartmentSummary {
 }
 
 export interface SalesCategoryRow {
-  category: number;
+  category_id: number | null;
   department: string;
   total_units_sold: number;
   total_revenue: number;
@@ -133,7 +131,7 @@ export interface SalesCategoryRow {
 }
 
 export interface SalesCategorySummary {
-  category: number;
+  categoryId: number | null;
   department: string;
   totalUnitsSold: number;
   totalRevenue: number;
@@ -143,12 +141,11 @@ export interface SalesCategorySummary {
 export interface SalesDetailRow {
   sku_id: string;
   sku_code: string;
-  brand: string;
+  brand_name: string | null;
   style: string;
-  color: string;
-  size: string;
+  color_name: string | null;
   department: string;
-  category: number;
+  category_id: number | null;
   total_units_sold: number;
   total_revenue: number;
   avg_selling_price: number;
@@ -157,12 +154,11 @@ export interface SalesDetailRow {
 export interface SalesDetail {
   skuId: string;
   skuCode: string;
-  brand: string;
+  brand: string | null;
   style: string;
-  color: string;
-  size: string;
+  color: string | null;
   department: string;
-  category: number;
+  categoryId: number | null;
   totalUnitsSold: number;
   totalRevenue: number;
   avgSellingPrice: number;
@@ -200,7 +196,7 @@ export function getSalesPerformanceByCategory(startDate: string, endDate: string
 
   const rows = db.prepare(`
     SELECT
-      s.category,
+      s.category_id,
       s.department,
       COALESCE(SUM(st.quantity), 0) AS total_units_sold,
       COALESCE(SUM(st.quantity * st.unit_price), 0) AS total_revenue,
@@ -211,12 +207,12 @@ export function getSalesPerformanceByCategory(startDate: string, endDate: string
     FROM skus s
     INNER JOIN sales_transactions st ON st.sku_id = s.id
     WHERE st.sold_at >= ? AND st.sold_at < ? AND s.department = ?
-    GROUP BY s.category
+    GROUP BY s.category_id
     ORDER BY total_revenue DESC
   `).all(startDate, endDate, department) as unknown as SalesCategoryRow[];
 
   return rows.map((r) => ({
-    category: r.category,
+    categoryId: r.category_id,
     department: r.department,
     totalUnitsSold: r.total_units_sold,
     totalRevenue: r.total_revenue,
@@ -235,7 +231,7 @@ export function getSalesPerformanceDetails(startDate: string, endDate: string, f
     params.push(filters.department);
   }
   if (filters.category != null) {
-    conditions.push('s.category = ?');
+    conditions.push('s.category_id = ?');
     params.push(filters.category);
   }
 
@@ -245,12 +241,11 @@ export function getSalesPerformanceDetails(startDate: string, endDate: string, f
     SELECT
       s.id AS sku_id,
       s.sku_code,
-      s.brand,
+      rb.name AS brand_name,
       s.style,
-      s.color,
-      s.size,
+      rc.name AS color_name,
       s.department,
-      s.category,
+      s.category_id,
       SUM(st.quantity) AS total_units_sold,
       SUM(st.quantity * st.unit_price) AS total_revenue,
       CASE WHEN SUM(st.quantity) > 0
@@ -259,6 +254,8 @@ export function getSalesPerformanceDetails(startDate: string, endDate: string, f
       END AS avg_selling_price
     FROM skus s
     INNER JOIN sales_transactions st ON st.sku_id = s.id
+    LEFT JOIN ref_brands rb ON rb.id = s.brand_id
+    LEFT JOIN ref_colors rc ON rc.id = s.color_id
     WHERE ${where}
     GROUP BY s.id
     ORDER BY total_revenue DESC
@@ -267,12 +264,11 @@ export function getSalesPerformanceDetails(startDate: string, endDate: string, f
   return rows.map((r) => ({
     skuId: r.sku_id,
     skuCode: r.sku_code,
-    brand: r.brand,
+    brand: r.brand_name,
     style: r.style,
-    color: r.color,
-    size: r.size,
+    color: r.color_name,
     department: r.department,
-    category: r.category,
+    categoryId: r.category_id,
     totalUnitsSold: r.total_units_sold,
     totalRevenue: r.total_revenue,
     avgSellingPrice: r.avg_selling_price,
@@ -297,7 +293,7 @@ export interface DepartmentTurnoverRow {
 }
 
 export interface CategoryTurnoverRow {
-  category: number;
+  category_id: number | null;
   department: string;
   total_skus: number;
   total_cogs: number;
@@ -308,12 +304,11 @@ export interface CategoryTurnoverRow {
 export interface TurnoverDetailRow {
   sku_id: string;
   sku_code: string;
-  brand: string;
+  brand_name: string | null;
   style: string;
-  color: string;
-  size: string;
+  color_name: string | null;
   price: number;
-  category: number;
+  category_id: number | null;
   department: string;
   quantity_on_hand: number;
   inventory_value: number;
@@ -330,7 +325,7 @@ export interface DepartmentTurnover {
 }
 
 export interface CategoryTurnover {
-  category: number;
+  categoryId: number | null;
   department: string;
   totalSkus: number;
   totalCogs: number;
@@ -341,12 +336,11 @@ export interface CategoryTurnover {
 export interface TurnoverDetail {
   skuId: string;
   skuCode: string;
-  brand: string;
+  brand: string | null;
   style: string;
-  color: string;
-  size: string;
+  color: string | null;
   price: number;
-  category: number;
+  categoryId: number | null;
   department: string;
   quantityOnHand: number;
   inventoryValue: number;
@@ -416,7 +410,7 @@ export function getTurnoverByCategory(department: string, filters: TurnoverFilte
 
   const rows = db.prepare(`
     SELECT
-      s.category,
+      s.category_id,
       s.department,
       COUNT(DISTINCT s.id) AS total_skus,
       COALESCE(cogs_agg.total_cogs, 0) AS total_cogs,
@@ -429,20 +423,20 @@ export function getTurnoverByCategory(department: string, filters: TurnoverFilte
     LEFT JOIN inventory i ON i.sku_id = s.id
     LEFT JOIN (
       SELECT
-        s2.category,
+        s2.category_id,
         SUM(st.quantity * st.unit_price) AS total_cogs
       FROM sales_transactions st
       JOIN skus s2 ON s2.id = st.sku_id
       WHERE s2.active = 1 AND s2.department = ?${dateWhere}
-      GROUP BY s2.category
-    ) cogs_agg ON cogs_agg.category = s.category
+      GROUP BY s2.category_id
+    ) cogs_agg ON cogs_agg.category_id = s.category_id
     WHERE s.active = 1 AND s.department = ?
-    GROUP BY s.category
+    GROUP BY s.category_id
     ORDER BY turnover_ratio ASC
   `).all(department, ...dateParams, department) as unknown as CategoryTurnoverRow[];
 
   return rows.map((r) => ({
-    category: r.category,
+    categoryId: r.category_id,
     department: r.department,
     totalSkus: r.total_skus,
     totalCogs: r.total_cogs,
@@ -463,7 +457,7 @@ export function getTurnoverDetails(filters: TurnoverFilters): TurnoverDetail[] {
     mainParams.push(filters.department);
   }
   if (filters.category != null) {
-    conditions.push('s.category = ?');
+    conditions.push('s.category_id = ?');
     mainParams.push(filters.category);
   }
 
@@ -473,12 +467,11 @@ export function getTurnoverDetails(filters: TurnoverFilters): TurnoverDetail[] {
     SELECT
       s.id AS sku_id,
       s.sku_code,
-      s.brand,
+      rb.name AS brand_name,
       s.style,
-      s.color,
-      s.size,
+      rc.name AS color_name,
       s.price,
-      s.category,
+      s.category_id,
       s.department,
       COALESCE(i.quantity_on_hand, 0) AS quantity_on_hand,
       COALESCE(i.quantity_on_hand * s.price, 0) AS inventory_value,
@@ -489,6 +482,8 @@ export function getTurnoverDetails(filters: TurnoverFilters): TurnoverDetail[] {
       END AS turnover_ratio
     FROM skus s
     LEFT JOIN inventory i ON i.sku_id = s.id
+    LEFT JOIN ref_brands rb ON rb.id = s.brand_id
+    LEFT JOIN ref_colors rc ON rc.id = s.color_id
     LEFT JOIN (
       SELECT
         st.sku_id,
@@ -498,18 +493,17 @@ export function getTurnoverDetails(filters: TurnoverFilters): TurnoverDetail[] {
       GROUP BY st.sku_id
     ) cogs_agg ON cogs_agg.sku_id = s.id
     WHERE ${where}
-    ORDER BY turnover_ratio ASC, s.department, s.category, s.sku_code
+    ORDER BY turnover_ratio ASC, s.department, s.category_id, s.sku_code
   `).all(...dateParams, ...mainParams) as unknown as TurnoverDetailRow[];
 
   return rows.map((r) => ({
     skuId: r.sku_id,
     skuCode: r.sku_code,
-    brand: r.brand,
+    brand: r.brand_name,
     style: r.style,
-    color: r.color,
-    size: r.size,
+    color: r.color_name,
     price: r.price,
-    category: r.category,
+    categoryId: r.category_id,
     department: r.department,
     quantityOnHand: r.quantity_on_hand,
     inventoryValue: r.inventory_value,
@@ -544,7 +538,7 @@ export interface SellThroughDepartmentSummary {
 }
 
 export interface SellThroughCategoryRow {
-  category: number;
+  category_id: number | null;
   department: string;
   total_styles: number;
   total_units_sold: number;
@@ -553,7 +547,7 @@ export interface SellThroughCategoryRow {
 }
 
 export interface SellThroughCategorySummary {
-  category: number;
+  categoryId: number | null;
   department: string;
   totalStyles: number;
   totalUnitsSold: number;
@@ -564,12 +558,11 @@ export interface SellThroughCategorySummary {
 export interface SellThroughDetailRow {
   sku_id: string;
   sku_code: string;
-  brand: string;
+  brand_name: string | null;
   style: string;
-  color: string;
-  size: string;
+  color_name: string | null;
   price: number;
-  category: number;
+  category_id: number | null;
   department: string;
   units_sold: number;
   units_received: number;
@@ -579,12 +572,11 @@ export interface SellThroughDetailRow {
 export interface SellThroughDetail {
   skuId: string;
   skuCode: string;
-  brand: string;
+  brand: string | null;
   style: string;
-  color: string;
-  size: string;
+  color: string | null;
   price: number;
-  category: number;
+  categoryId: number | null;
   department: string;
   unitsSold: number;
   unitsReceived: number;
@@ -673,7 +665,7 @@ export function getSellThroughByCategory(department: string, filters: SellThroug
 
   const rows = db.prepare(`
     SELECT
-      s.category,
+      s.category_id,
       s.department,
       COUNT(DISTINCT s.style) AS total_styles,
       COALESCE(sales_agg.total_sold, 0) AS total_units_sold,
@@ -684,27 +676,27 @@ export function getSellThroughByCategory(department: string, filters: SellThroug
       END AS sell_through_pct
     FROM skus s
     LEFT JOIN (
-      SELECT s2.category, SUM(st.quantity) AS total_sold
+      SELECT s2.category_id, SUM(st.quantity) AS total_sold
       FROM sales_transactions st
       JOIN skus s2 ON s2.id = st.sku_id
       WHERE s2.active = 1 AND s2.department = ?${salesDateClause}
-      GROUP BY s2.category
-    ) sales_agg ON sales_agg.category = s.category
+      GROUP BY s2.category_id
+    ) sales_agg ON sales_agg.category_id = s.category_id
     LEFT JOIN (
-      SELECT s3.category, SUM(pol.quantity_received) AS total_received
+      SELECT s3.category_id, SUM(pol.quantity_received) AS total_received
       FROM purchase_order_lines pol
       JOIN skus s3 ON s3.id = pol.sku_id
       JOIN purchase_orders po ON po.id = pol.po_id
       WHERE s3.active = 1 AND s3.department = ? AND po.status NOT IN ('DRAFT', 'CANCELLED')${poDateClause}
-      GROUP BY s3.category
-    ) recv_agg ON recv_agg.category = s.category
+      GROUP BY s3.category_id
+    ) recv_agg ON recv_agg.category_id = s.category_id
     WHERE s.active = 1 AND s.department = ?
-    GROUP BY s.category
+    GROUP BY s.category_id
     ORDER BY sell_through_pct ASC
   `).all(department, ...salesDateParams, department, ...poDateParams, department) as unknown as SellThroughCategoryRow[];
 
   return rows.map((r) => ({
-    category: r.category,
+    categoryId: r.category_id,
     department: r.department,
     totalStyles: r.total_styles,
     totalUnitsSold: r.total_units_sold,
@@ -725,7 +717,7 @@ export function getSellThroughDetails(filters: SellThroughFilters): SellThroughD
     mainParams.push(filters.department);
   }
   if (filters.category != null) {
-    conditions.push('s.category = ?');
+    conditions.push('s.category_id = ?');
     mainParams.push(filters.category);
   }
 
@@ -735,12 +727,11 @@ export function getSellThroughDetails(filters: SellThroughFilters): SellThroughD
     SELECT
       s.id AS sku_id,
       s.sku_code,
-      s.brand,
+      rb.name AS brand_name,
       s.style,
-      s.color,
-      s.size,
+      rc.name AS color_name,
       s.price,
-      s.category,
+      s.category_id,
       s.department,
       COALESCE(sales_agg.units_sold, 0) AS units_sold,
       COALESCE(recv_agg.units_received, 0) AS units_received,
@@ -749,6 +740,8 @@ export function getSellThroughDetails(filters: SellThroughFilters): SellThroughD
         ELSE ROUND(CAST(COALESCE(sales_agg.units_sold, 0) AS REAL) / recv_agg.units_received * 100, 1)
       END AS sell_through_pct
     FROM skus s
+    LEFT JOIN ref_brands rb ON rb.id = s.brand_id
+    LEFT JOIN ref_colors rc ON rc.id = s.color_id
     LEFT JOIN (
       SELECT st.sku_id, SUM(st.quantity) AS units_sold
       FROM sales_transactions st
@@ -763,18 +756,17 @@ export function getSellThroughDetails(filters: SellThroughFilters): SellThroughD
       GROUP BY pol.sku_id
     ) recv_agg ON recv_agg.sku_id = s.id
     WHERE ${where}
-    ORDER BY sell_through_pct ASC, s.department, s.category, s.sku_code
+    ORDER BY sell_through_pct ASC, s.department, s.category_id, s.sku_code
   `).all(...salesDateParams, ...poDateParams, ...mainParams) as unknown as SellThroughDetailRow[];
 
   return rows.map((r) => ({
     skuId: r.sku_id,
     skuCode: r.sku_code,
-    brand: r.brand,
+    brand: r.brand_name,
     style: r.style,
-    color: r.color,
-    size: r.size,
+    color: r.color_name,
     price: r.price,
-    category: r.category,
+    categoryId: r.category_id,
     department: r.department,
     unitsSold: r.units_sold,
     unitsReceived: r.units_received,
@@ -804,12 +796,11 @@ export interface AgingDepartmentSummary {
 export interface AgingDetailRow {
   sku_id: string;
   sku_code: string;
-  brand: string;
+  brand_name: string | null;
   style: string;
-  color: string;
-  size: string;
+  color_name: string | null;
   price: number;
-  category: number;
+  category_id: number | null;
   department: string;
   quantity_on_hand: number;
   cost_value: number;
@@ -820,12 +811,11 @@ export interface AgingDetailRow {
 export interface AgingDetail {
   skuId: string;
   skuCode: string;
-  brand: string;
+  brand: string | null;
   style: string;
-  color: string;
-  size: string;
+  color: string | null;
   price: number;
-  category: number;
+  categoryId: number | null;
   department: string;
   quantityOnHand: number;
   costValue: number;
@@ -853,7 +843,7 @@ function getAgingBaseRows(filters: { department?: string; category?: number }): 
     params.push(filters.department);
   }
   if (filters.category != null) {
-    conditions.push('s.category = ?');
+    conditions.push('s.category_id = ?');
     params.push(filters.category);
   }
 
@@ -863,12 +853,11 @@ function getAgingBaseRows(filters: { department?: string; category?: number }): 
     SELECT
       s.id AS sku_id,
       s.sku_code,
-      s.brand,
+      rb.name AS brand_name,
       s.style,
-      s.color,
-      s.size,
+      rc.name AS color_name,
       s.price,
-      s.category,
+      s.category_id,
       s.department,
       COALESCE(i.quantity_on_hand, 0) AS quantity_on_hand,
       COALESCE(i.quantity_on_hand * s.price, 0) AS cost_value,
@@ -888,8 +877,10 @@ function getAgingBaseRows(filters: { department?: string; category?: number }): 
       ) AS INTEGER) AS days_on_hand
     FROM skus s
     LEFT JOIN inventory i ON i.sku_id = s.id
+    LEFT JOIN ref_brands rb ON rb.id = s.brand_id
+    LEFT JOIN ref_colors rc ON rc.id = s.color_id
     WHERE ${where}
-    ORDER BY days_on_hand DESC, s.department, s.category, s.sku_code
+    ORDER BY days_on_hand DESC, s.department, s.category_id, s.sku_code
   `).all(...params) as unknown as AgingDetailRow[];
 
   return rows.map((r) => {
@@ -897,12 +888,11 @@ function getAgingBaseRows(filters: { department?: string; category?: number }): 
     return {
       skuId: r.sku_id,
       skuCode: r.sku_code,
-      brand: r.brand,
+      brand: r.brand_name,
       style: r.style,
-      color: r.color,
-      size: r.size,
+      color: r.color_name,
       price: r.price,
-      category: r.category,
+      categoryId: r.category_id,
       department: r.department,
       quantityOnHand: r.quantity_on_hand,
       costValue: r.cost_value,
@@ -987,7 +977,7 @@ export function getOnHandDetails(filters: { department?: string; category?: numb
     params.push(filters.department);
   }
   if (filters.category != null) {
-    conditions.push('s.category = ?');
+    conditions.push('s.category_id = ?');
     params.push(filters.category);
   }
 
@@ -997,30 +987,30 @@ export function getOnHandDetails(filters: { department?: string; category?: numb
     SELECT
       s.id AS sku_id,
       s.sku_code,
-      s.brand,
+      rb.name AS brand_name,
       s.style,
-      s.color,
-      s.size,
+      rc.name AS color_name,
       s.price,
-      s.category,
+      s.category_id,
       s.department,
       COALESCE(i.quantity_on_hand, 0) AS quantity_on_hand,
       COALESCE(i.quantity_on_hand * s.price, 0) AS cost_value
     FROM skus s
     LEFT JOIN inventory i ON i.sku_id = s.id
+    LEFT JOIN ref_brands rb ON rb.id = s.brand_id
+    LEFT JOIN ref_colors rc ON rc.id = s.color_id
     WHERE ${where}
-    ORDER BY s.department, s.category, s.brand, s.sku_code
+    ORDER BY s.department, s.category_id, rb.name, s.sku_code
   `).all(...params as any) as unknown as OnHandDetailRow[];
 
   return rows.map((r) => ({
     skuId: r.sku_id,
     skuCode: r.sku_code,
-    brand: r.brand,
+    brand: r.brand_name,
     style: r.style,
-    color: r.color,
-    size: r.size,
+    color: r.color_name,
     price: r.price,
-    category: r.category,
+    categoryId: r.category_id,
     department: r.department,
     quantityOnHand: r.quantity_on_hand,
     costValue: r.cost_value,

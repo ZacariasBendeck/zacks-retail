@@ -156,6 +156,19 @@ router.get('/reference/all', (_req: Request, res: Response): void => {
 });
 
 /**
+ * Size labels for a specific size type
+ */
+router.get('/size-types/:sizeTypeId/sizes', (req: Request, res: Response): void => {
+  const sizeTypeId = parseInt(req.params.sizeTypeId as string, 10);
+  if (isNaN(sizeTypeId) || sizeTypeId < 1) {
+    res.status(400).json({ error: { code: 'INVALID_ID', message: 'sizeTypeId must be a positive integer.' } });
+    return;
+  }
+  const labels = skuService.getSizeLabelsBySizeType(sizeTypeId);
+  res.json(labels);
+});
+
+/**
  * Reference data — single table
  */
 router.get('/reference/:tableName', (req: Request, res: Response): void => {

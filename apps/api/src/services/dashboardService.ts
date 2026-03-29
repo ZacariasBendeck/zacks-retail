@@ -23,10 +23,9 @@ interface DepartmentSummaryRow {
 interface LowStockRow {
   id: string;
   sku_code: string;
-  brand: string;
+  brand_name: string | null;
   style: string;
-  color: string;
-  size: string;
+  color_name: string | null;
   department: string;
   current_stock: number;
 }
@@ -52,10 +51,9 @@ export interface DepartmentSummary {
 export interface LowStockItem {
   id: string;
   skuCode: string;
-  brand: string;
+  brand: string | null;
   style: string;
-  color: string;
-  size: string;
+  color: string | null;
   department: string;
   currentStock: number;
 }
@@ -169,14 +167,15 @@ export function getLowStock(
     SELECT
       s.id,
       s.sku_code,
-      s.brand,
+      rb.name AS brand_name,
       s.style,
-      s.color,
-      s.size,
+      rc.name AS color_name,
       s.department,
       i.quantity_on_hand AS current_stock
     FROM skus s
     JOIN inventory i ON i.sku_id = s.id
+    LEFT JOIN ref_brands rb ON rb.id = s.brand_id
+    LEFT JOIN ref_colors rc ON rc.id = s.color_id
     WHERE s.active = 1 AND i.quantity_on_hand <= ? AND i.quantity_on_hand >= 0
     ORDER BY i.quantity_on_hand ASC, s.department, s.sku_code
     LIMIT ? OFFSET ?
@@ -186,10 +185,9 @@ export function getLowStock(
     data: rows.map((r) => ({
       id: r.id,
       skuCode: r.sku_code,
-      brand: r.brand,
+      brand: r.brand_name,
       style: r.style,
-      color: r.color,
-      size: r.size,
+      color: r.color_name,
       department: r.department,
       currentStock: r.current_stock,
     })),
