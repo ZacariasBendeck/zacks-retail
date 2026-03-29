@@ -37,6 +37,59 @@ function initSchema(db: DatabaseSync): void {
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
+    -- Reference tables for SKU extended attributes
+    CREATE TABLE IF NOT EXISTS ref_color_families (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, active INTEGER NOT NULL DEFAULT 1
+    );
+    CREATE TABLE IF NOT EXISTS ref_shoe_types (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, active INTEGER NOT NULL DEFAULT 1
+    );
+    CREATE TABLE IF NOT EXISTS ref_heel_shapes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, active INTEGER NOT NULL DEFAULT 1
+    );
+    CREATE TABLE IF NOT EXISTS ref_heel_heights (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, active INTEGER NOT NULL DEFAULT 1
+    );
+    CREATE TABLE IF NOT EXISTS ref_toe_shapes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, active INTEGER NOT NULL DEFAULT 1
+    );
+    CREATE TABLE IF NOT EXISTS ref_closure_types (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, active INTEGER NOT NULL DEFAULT 1
+    );
+    CREATE TABLE IF NOT EXISTS ref_upper_materials (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, active INTEGER NOT NULL DEFAULT 1
+    );
+    CREATE TABLE IF NOT EXISTS ref_outsole_materials (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, active INTEGER NOT NULL DEFAULT 1
+    );
+    CREATE TABLE IF NOT EXISTS ref_finishes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, active INTEGER NOT NULL DEFAULT 1
+    );
+    CREATE TABLE IF NOT EXISTS ref_width_types (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, active INTEGER NOT NULL DEFAULT 1
+    );
+    CREATE TABLE IF NOT EXISTS ref_patterns (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, active INTEGER NOT NULL DEFAULT 1
+    );
+    CREATE TABLE IF NOT EXISTS ref_occasions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, active INTEGER NOT NULL DEFAULT 1
+    );
+    CREATE TABLE IF NOT EXISTS ref_target_audiences (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, active INTEGER NOT NULL DEFAULT 1
+    );
+    CREATE TABLE IF NOT EXISTS ref_accessories (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, active INTEGER NOT NULL DEFAULT 1
+    );
+    CREATE TABLE IF NOT EXISTS ref_seasons (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, active INTEGER NOT NULL DEFAULT 1
+    );
+    CREATE TABLE IF NOT EXISTS ref_size_types (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, active INTEGER NOT NULL DEFAULT 1
+    );
+    CREATE TABLE IF NOT EXISTS ref_label_types (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, active INTEGER NOT NULL DEFAULT 1
+    );
+
     CREATE TABLE IF NOT EXISTS skus (
       id TEXT PRIMARY KEY,
       sku_code TEXT NOT NULL UNIQUE,
@@ -45,11 +98,35 @@ function initSchema(db: DatabaseSync): void {
       color TEXT NOT NULL,
       size TEXT NOT NULL,
       price REAL NOT NULL CHECK(price > 0),
+      cost REAL CHECK(cost >= 0),
       category INTEGER NOT NULL CHECK(category BETWEEN 556 AND 599),
       department TEXT NOT NULL CHECK(department IN ('FORMAL','CASUAL','FIESTA','SANDALIAS','BOOTS','COMFORT')),
       vendor_id TEXT NOT NULL REFERENCES vendors(id),
+      vendor_sku TEXT,
       barcode TEXT UNIQUE,
       description TEXT,
+      comment TEXT,
+      keywords TEXT,
+      season TEXT,
+      manufacturer TEXT,
+      picture_url TEXT,
+      color_family_id INTEGER REFERENCES ref_color_families(id),
+      shoe_type_id INTEGER REFERENCES ref_shoe_types(id),
+      heel_shape_id INTEGER REFERENCES ref_heel_shapes(id),
+      heel_height_id INTEGER REFERENCES ref_heel_heights(id),
+      toe_shape_id INTEGER REFERENCES ref_toe_shapes(id),
+      closure_type_id INTEGER REFERENCES ref_closure_types(id),
+      upper_material_id INTEGER REFERENCES ref_upper_materials(id),
+      outsole_material_id INTEGER REFERENCES ref_outsole_materials(id),
+      finish_id INTEGER REFERENCES ref_finishes(id),
+      width_type_id INTEGER REFERENCES ref_width_types(id),
+      pattern_id INTEGER REFERENCES ref_patterns(id),
+      occasion_id INTEGER REFERENCES ref_occasions(id),
+      target_audience_id INTEGER REFERENCES ref_target_audiences(id),
+      accessory_id INTEGER REFERENCES ref_accessories(id),
+      season_id INTEGER REFERENCES ref_seasons(id),
+      size_type_id INTEGER REFERENCES ref_size_types(id),
+      label_type_id INTEGER REFERENCES ref_label_types(id),
       heel_type TEXT,
       material TEXT,
       active INTEGER NOT NULL DEFAULT 1,
@@ -169,6 +246,25 @@ function initSchema(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_otb_budget_audit_budget_id ON otb_budget_audit(otb_budget_id);
 
     INSERT OR IGNORE INTO sku_code_seq (prefix, next_val) VALUES ('PO', 1);
+
+    -- Seed reference tables
+    INSERT OR IGNORE INTO ref_color_families (name) VALUES ('Negro'),('Blanco'),('Café/Camel'),('Beige/Nude'),('Rojo/Bordo'),('Azul'),('Verde'),('Rosa'),('Metálico'),('Multicolor'),('Gris'),('Amarillo'),('Naranja'),('Morado');
+    INSERT OR IGNORE INTO ref_shoe_types (name) VALUES ('Pump'),('Sandalia'),('Bota'),('Sneaker'),('Flat'),('Mule'),('Oxford'),('Loafer'),('Wedge'),('Espadrille'),('Mocasín'),('Bota Corta'),('Chancla'),('Plataforma'),('Derby');
+    INSERT OR IGNORE INTO ref_heel_shapes (name) VALUES ('Stiletto'),('Chunky/Block'),('Wedge'),('Kitten'),('Cone'),('Spool'),('Stacked'),('Platform'),('Flat/None');
+    INSERT OR IGNORE INTO ref_heel_heights (name) VALUES ('Flat (0cm)'),('Bajo (1-3cm)'),('Medio (4-6cm)'),('Alto (7-9cm)'),('Muy Alto (10+cm)');
+    INSERT OR IGNORE INTO ref_toe_shapes (name) VALUES ('Redonda'),('Almendra'),('Cuadrada'),('Puntiaguda'),('Abierta'),('Peep Toe');
+    INSERT OR IGNORE INTO ref_closure_types (name) VALUES ('Slip-On'),('Hebilla'),('Cremallera'),('Cordones'),('Elástico'),('Velcro'),('Cierre Lateral');
+    INSERT OR IGNORE INTO ref_upper_materials (name) VALUES ('Cuero'),('Sintético'),('Tela'),('Charol'),('Ante/Suede'),('Nubuck'),('Mesh'),('Satín'),('Terciopelo'),('Lona');
+    INSERT OR IGNORE INTO ref_outsole_materials (name) VALUES ('Goma'),('TPR'),('PU'),('Cuero'),('Sintético'),('EVA');
+    INSERT OR IGNORE INTO ref_finishes (name) VALUES ('Liso'),('Texturizado'),('Brilloso'),('Mate'),('Metálico'),('Estampado'),('Distressed');
+    INSERT OR IGNORE INTO ref_width_types (name) VALUES ('Angosto'),('Regular'),('Ancho'),('Extra Ancho');
+    INSERT OR IGNORE INTO ref_patterns (name) VALUES ('Liso'),('Animal Print'),('Floral'),('Geométrico'),('Rayas'),('Cuadros'),('Bordado'),('Woven');
+    INSERT OR IGNORE INTO ref_occasions (name) VALUES ('Casual'),('Trabajo/Oficina'),('Fiesta/Gala'),('Deportivo'),('Playa'),('Formal'),('Diario');
+    INSERT OR IGNORE INTO ref_target_audiences (name) VALUES ('Joven/Trendy'),('Adulta/Clásica'),('Plus Size'),('Trabajo'),('Fiesta'),('Deportista'),('Unisex');
+    INSERT OR IGNORE INTO ref_accessories (name) VALUES ('Sin Accesorio'),('Hebilla'),('Tachuelas'),('Lazos'),('Flecos'),('Bordado'),('Pedrería'),('Cadena');
+    INSERT OR IGNORE INTO ref_seasons (name) VALUES ('Primavera/Verano'),('Otoño/Invierno'),('Todo el Año'),('Resort'),('Pre-Fall');
+    INSERT OR IGNORE INTO ref_size_types (name) VALUES ('US Women'),('US Men'),('EU'),('UK'),('MX'),('Infantil'),('Juvenil');
+    INSERT OR IGNORE INTO ref_label_types (name) VALUES ('No Labels'),('Regular Labels'),('Small Labels'),('Hang Tags'),('Other Labels');
 
     CREATE INDEX IF NOT EXISTS idx_po_vendor_id ON purchase_orders(vendor_id);
     CREATE INDEX IF NOT EXISTS idx_po_status ON purchase_orders(status);

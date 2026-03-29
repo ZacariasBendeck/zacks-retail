@@ -3,6 +3,34 @@ import { Request, Response, NextFunction } from 'express';
 
 const DEPARTMENTS = ['FORMAL', 'CASUAL', 'FIESTA', 'SANDALIAS', 'BOOTS', 'COMFORT'] as const;
 
+// Shared extended attribute fields (all optional/nullable)
+const extendedSkuFields = {
+  cost: z.number().nonnegative().multipleOf(0.01).optional().nullable(),
+  vendorSku: z.string().max(100).optional().nullable(),
+  comment: z.string().max(1000).optional().nullable(),
+  keywords: z.string().max(500).optional().nullable(),
+  season: z.string().max(100).optional().nullable(),
+  manufacturer: z.string().max(200).optional().nullable(),
+  pictureUrl: z.string().max(500).optional().nullable(),
+  colorFamilyId: z.number().int().positive().optional().nullable(),
+  shoeTypeId: z.number().int().positive().optional().nullable(),
+  heelShapeId: z.number().int().positive().optional().nullable(),
+  heelHeightId: z.number().int().positive().optional().nullable(),
+  toeShapeId: z.number().int().positive().optional().nullable(),
+  closureTypeId: z.number().int().positive().optional().nullable(),
+  upperMaterialId: z.number().int().positive().optional().nullable(),
+  outsoleMaterialId: z.number().int().positive().optional().nullable(),
+  finishId: z.number().int().positive().optional().nullable(),
+  widthTypeId: z.number().int().positive().optional().nullable(),
+  patternId: z.number().int().positive().optional().nullable(),
+  occasionId: z.number().int().positive().optional().nullable(),
+  targetAudienceId: z.number().int().positive().optional().nullable(),
+  accessoryId: z.number().int().positive().optional().nullable(),
+  seasonId: z.number().int().positive().optional().nullable(),
+  sizeTypeId: z.number().int().positive().optional().nullable(),
+  labelTypeId: z.number().int().positive().optional().nullable(),
+};
+
 export const createSkuSchema = z.object({
   brand: z.string().min(1).max(100),
   style: z.string().min(1).max(100),
@@ -12,11 +40,13 @@ export const createSkuSchema = z.object({
   category: z.number().int().min(556).max(599),
   department: z.enum(DEPARTMENTS),
   vendorId: z.string().uuid(),
+  skuCode: z.string().max(100).optional().nullable(),
   barcode: z.string().optional().nullable(),
   description: z.string().max(500).optional().nullable(),
   heelType: z.string().max(100).optional().nullable(),
   material: z.string().max(100).optional().nullable(),
   active: z.boolean().optional().default(true),
+  ...extendedSkuFields,
 });
 
 export const updateSkuSchema = z.object({
@@ -34,6 +64,7 @@ export const updateSkuSchema = z.object({
   heelType: z.string().max(100).optional().nullable(),
   material: z.string().max(100).optional().nullable(),
   active: z.boolean().optional(),
+  ...extendedSkuFields,
 });
 
 export const skuListQuerySchema = z.object({

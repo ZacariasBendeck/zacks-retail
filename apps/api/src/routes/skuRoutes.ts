@@ -108,6 +108,44 @@ router.post('/analyze-image', upload.single('image'), async (req: Request, res: 
 });
 
 /**
+ * SKU Lookup by code
+ */
+router.get('/lookup', (req: Request, res: Response): void => {
+  const code = req.query.code as string;
+  if (!code) {
+    res.status(400).json({ error: { code: 'MISSING_CODE', message: 'Query parameter "code" is required.' } });
+    return;
+  }
+  const sku = skuService.lookupSkuByCode(code);
+  if (!sku) {
+    res.status(404).json({ error: { code: 'NOT_FOUND', message: 'No SKU found with that code.' } });
+    return;
+  }
+  res.json(sku);
+});
+
+/**
+ * Reference data — all tables at once
+ */
+router.get('/reference/all', (_req: Request, res: Response): void => {
+  const data = skuService.getAllReferenceData();
+  res.json(data);
+});
+
+/**
+ * Reference data — single table
+ */
+router.get('/reference/:tableName', (req: Request, res: Response): void => {
+  const data = skuService.getReferenceData(req.params.tableName as string);
+  if (!data) {
+    const valid = skuService.getReferenceTableNames().join(', ');
+    res.status(404).json({ error: { code: 'UNKNOWN_TABLE', message: `Unknown reference table. Valid: ${valid}` } });
+    return;
+  }
+  res.json(data);
+});
+
+/**
  * @openapi
  * /api/v1/skus:
  *   get:
