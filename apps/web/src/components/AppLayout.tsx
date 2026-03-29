@@ -1,5 +1,5 @@
 import { Layout, Menu, Typography } from 'antd'
-import { ShopOutlined, DashboardOutlined, PlusOutlined, SwapOutlined, FileTextOutlined } from '@ant-design/icons'
+import { ShopOutlined, DashboardOutlined, PlusOutlined, SwapOutlined, FileTextOutlined, InboxOutlined, BarChartOutlined } from '@ant-design/icons'
 import { Outlet, useNavigate, useLocation } from 'react-router-dom'
 
 const { Header, Sider, Content } = Layout
@@ -26,9 +26,19 @@ const menuItems = [
     label: 'Adjustments',
   },
   {
+    key: '/purchasing/receive',
+    icon: <InboxOutlined />,
+    label: 'Receive POs',
+  },
+  {
     key: '/reports/on-hand',
     icon: <FileTextOutlined />,
     label: 'On-Hand Report',
+  },
+  {
+    key: '/reports/sales',
+    icon: <BarChartOutlined />,
+    label: 'Sales Report',
   },
 ]
 

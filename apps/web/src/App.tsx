@@ -7,6 +7,8 @@ import AdjustmentListPage from './pages/inventory/AdjustmentListPage'
 import AdjustmentFormPage from './pages/inventory/AdjustmentFormPage'
 import AdjustmentDetailPage from './pages/inventory/AdjustmentDetailPage'
 import OnHandReportPage from './pages/inventory/OnHandReportPage'
+import SalesReportPage from './pages/inventory/SalesReportPage'
+import PoReceivePage from './pages/inventory/PoReceivePage'
 
 export default function App() {
   return (
@@ -20,7 +22,10 @@ export default function App() {
         <Route path="/inventory/adjustments" element={<AdjustmentListPage />} />
         <Route path="/inventory/adjustments/new" element={<AdjustmentFormPage />} />
         <Route path="/inventory/adjustments/:adjustmentId" element={<AdjustmentDetailPage />} />
+        <Route path="/purchasing/receive" element={<PoReceivePage />} />
+        <Route path="/purchasing/receive/:poId" element={<PoReceivePage />} />
         <Route path="/reports/on-hand" element={<OnHandReportPage />} />
+        <Route path="/reports/sales" element={<SalesReportPage />} />
       </Route>
     </Routes>
   )

@@ -128,6 +128,18 @@ function initSchema(db: DatabaseSync): void {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
+    CREATE TABLE IF NOT EXISTS sales_transactions (
+      id TEXT PRIMARY KEY,
+      sku_id TEXT NOT NULL REFERENCES skus(id),
+      quantity INTEGER NOT NULL CHECK(quantity > 0),
+      unit_price REAL NOT NULL CHECK(unit_price > 0),
+      sold_at TEXT NOT NULL DEFAULT (datetime('now')),
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_sales_sku_id ON sales_transactions(sku_id);
+    CREATE INDEX IF NOT EXISTS idx_sales_sold_at ON sales_transactions(sold_at);
+
     INSERT OR IGNORE INTO sku_code_seq (prefix, next_val) VALUES ('PO', 1);
 
     CREATE INDEX IF NOT EXISTS idx_po_vendor_id ON purchase_orders(vendor_id);
