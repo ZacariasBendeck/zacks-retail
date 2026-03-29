@@ -2,7 +2,7 @@ import type { Department } from '../types/sku'
 import type { DepartmentSummary, DashboardKpis, LowStockResponse } from '../types/inventory'
 import { MOCK_SKUS } from '../mock/skuData'
 
-const USE_MOCK = true
+const USE_MOCK = false
 
 const DEPARTMENTS: Department[] = ['FORMAL', 'CASUAL', 'FIESTA', 'SANDALIAS', 'BOOTS', 'COMFORT']
 const LOCATIONS = ['Almacen Principal', 'Tienda Centro', 'Tienda Norte', 'Tienda Sur', 'Bodega']
@@ -75,7 +75,7 @@ export async function fetchInventorySummary(): Promise<DepartmentSummary[]> {
     return buildMockSummary()
   }
 
-  const res = await fetch('/api/v1/inventory/summary?groupBy=department')
+  const res = await fetch('/api/v1/dashboard/summary')
   if (!res.ok) throw new Error(`Failed to fetch inventory summary: ${res.status}`)
   return res.json()
 }
@@ -86,7 +86,7 @@ export async function fetchDashboardKpis(): Promise<DashboardKpis> {
     return buildMockDashboardKpis()
   }
 
-  const res = await fetch('/api/v1/inventory/dashboard-kpis')
+  const res = await fetch('/api/v1/dashboard/kpis')
   if (!res.ok) throw new Error(`Failed to fetch dashboard KPIs: ${res.status}`)
   return res.json()
 }
@@ -106,7 +106,7 @@ export async function fetchLowStock(
     page: String(page),
     pageSize: String(pageSize),
   })
-  const res = await fetch(`/api/v1/inventory/low-stock?${params}`)
+  const res = await fetch(`/api/v1/dashboard/low-stock?${params}`)
   if (!res.ok) throw new Error(`Failed to fetch low-stock items: ${res.status}`)
   return res.json()
 }
