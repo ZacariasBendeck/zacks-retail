@@ -393,3 +393,459 @@ describe('GET /api/v1/purchase-orders (list)', () => {
     expect(res.body.pagination.totalPages).toBe(2);
   });
 });
+
+// ── Named transition endpoints (ZAI-40) ──────────────────────────────
+
+describe('PATCH /api/v1/purchase-orders/:poId/submit', () => {
+  it('submits a draft PO', async () => {
+    const created = await request(app).post('/api/v1/purchase-orders').send({
+      vendorId,
+      lineItems: [{ skuId: skuId1, quantity: 10, unitCost: 50.0 }],
+    });
+
+    const res = await request(app)
+      .patch(`/api/v1/purchase-orders/${created.body.id}/submit`)
+      .send();
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('SUBMITTED');
+  });
+
+  it('rejects submit on non-draft PO', async () => {
+    const created = await request(app).post('/api/v1/purchase-orders').send({
+      vendorId,
+      lineItems: [{ skuId: skuId1, quantity: 10, unitCost: 50.0 }],
+    });
+
+    await request(app).patch(`/api/v1/purchase-orders/${created.body.id}/submit`).send();
+
+    const res = await request(app)
+      .patch(`/api/v1/purchase-orders/${created.body.id}/submit`)
+      .send();
+
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe('INVALID_STATUS_TRANSITION');
+  });
+
+  it('rejects submit when SKU is inactive', async () => {
+    // Deactivate the SKU
+    await request(app).patch(`/api/v1/skus/${skuId1}`).send({ active: false });
+
+    const created = await request(app).post('/api/v1/purchase-orders').send({
+      vendorId,
+      lineItems: [{ skuId: skuId1, quantity: 10, unitCost: 50.0 }],
+    });
+
+    const res = await request(app)
+      .patch(`/api/v1/purchase-orders/${created.body.id}/submit`)
+      .send();
+
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe('INACTIVE_SKU');
+  });
+
+  it('returns 404 for missing PO', async () => {
+    const res = await request(app)
+      .patch('/api/v1/purchase-orders/00000000-0000-0000-0000-000000000099/submit')
+      .send();
+    expect(res.status).toBe(404);
+  });
+
+  it('records submit in status history', async () => {
+    const created = await request(app).post('/api/v1/purchase-orders').send({
+      vendorId,
+      lineItems: [{ skuId: skuId1, quantity: 10, unitCost: 50.0 }],
+    });
+
+    await request(app).patch(`/api/v1/purchase-orders/${created.body.id}/submit`).send();
+
+    const history = await request(app).get(`/api/v1/purchase-orders/${created.body.id}/history`);
+    expect(history.status).toBe(200);
+    const submitEntry = history.body.find((h: any) => h.toStatus === 'SUBMITTED');
+    expect(submitEntry).toBeDefined();
+    expect(submitEntry.fromStatus).toBe('DRAFT');
+  });
+});
+
+describe('PATCH /api/v1/purchase-orders/:poId/confirm', () => {
+  it('confirms a submitted PO', async () => {
+    const created = await request(app).post('/api/v1/purchase-orders').send({
+      vendorId,
+      lineItems: [{ skuId: skuId1, quantity: 10, unitCost: 50.0 }],
+    });
+
+    await request(app).patch(`/api/v1/purchase-orders/${created.body.id}/submit`).send();
+
+    const res = await request(app)
+      .patch(`/api/v1/purchase-orders/${created.body.id}/confirm`)
+      .send();
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('CONFIRMED');
+  });
+
+  it('rejects confirm on draft PO', async () => {
+    const created = await request(app).post('/api/v1/purchase-orders').send({
+      vendorId,
+      lineItems: [{ skuId: skuId1, quantity: 10, unitCost: 50.0 }],
+    });
+
+    const res = await request(app)
+      .patch(`/api/v1/purchase-orders/${created.body.id}/confirm`)
+      .send();
+
+    expect(res.status).toBe(409);
+  });
+
+  it('returns 404 for missing PO', async () => {
+    const res = await request(app)
+      .patch('/api/v1/purchase-orders/00000000-0000-0000-0000-000000000099/confirm')
+      .send();
+    expect(res.status).toBe(404);
+  });
+});
+
+describe('PATCH /api/v1/purchase-orders/:poId/cancel', () => {
+  it('cancels a draft PO without reason', async () => {
+    const created = await request(app).post('/api/v1/purchase-orders').send({
+      vendorId,
+      lineItems: [{ skuId: skuId1, quantity: 10, unitCost: 50.0 }],
+    });
+
+    const res = await request(app)
+      .patch(`/api/v1/purchase-orders/${created.body.id}/cancel`)
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('CANCELLED');
+  });
+
+  it('requires reason when cancelling a submitted PO', async () => {
+    const created = await request(app).post('/api/v1/purchase-orders').send({
+      vendorId,
+      lineItems: [{ skuId: skuId1, quantity: 10, unitCost: 50.0 }],
+    });
+
+    await request(app).patch(`/api/v1/purchase-orders/${created.body.id}/submit`).send();
+
+    const res = await request(app)
+      .patch(`/api/v1/purchase-orders/${created.body.id}/cancel`)
+      .send({});
+
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe('REASON_REQUIRED');
+  });
+
+  it('cancels submitted PO with reason', async () => {
+    const created = await request(app).post('/api/v1/purchase-orders').send({
+      vendorId,
+      lineItems: [{ skuId: skuId1, quantity: 10, unitCost: 50.0 }],
+    });
+
+    await request(app).patch(`/api/v1/purchase-orders/${created.body.id}/submit`).send();
+
+    const res = await request(app)
+      .patch(`/api/v1/purchase-orders/${created.body.id}/cancel`)
+      .send({ reason: 'Vendor delayed shipment' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('CANCELLED');
+    expect(res.body.cancellationReason).toBe('Vendor delayed shipment');
+  });
+
+  it('requires reason when cancelling a confirmed PO', async () => {
+    const created = await request(app).post('/api/v1/purchase-orders').send({
+      vendorId,
+      lineItems: [{ skuId: skuId1, quantity: 10, unitCost: 50.0 }],
+    });
+
+    await request(app).patch(`/api/v1/purchase-orders/${created.body.id}/submit`).send();
+    await request(app).patch(`/api/v1/purchase-orders/${created.body.id}/confirm`).send();
+
+    const res = await request(app)
+      .patch(`/api/v1/purchase-orders/${created.body.id}/cancel`)
+      .send({});
+
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe('REASON_REQUIRED');
+  });
+
+  it('rejects cancel on received PO', async () => {
+    const created = await request(app).post('/api/v1/purchase-orders').send({
+      vendorId,
+      lineItems: [{ skuId: skuId1, quantity: 10, unitCost: 50.0 }],
+    });
+
+    await request(app).patch(`/api/v1/purchase-orders/${created.body.id}/submit`).send();
+    await request(app).patch(`/api/v1/purchase-orders/${created.body.id}/confirm`).send();
+
+    // Receive fully
+    const po = await request(app).get(`/api/v1/purchase-orders/${created.body.id}`);
+    await request(app)
+      .post(`/api/v1/purchase-orders/${created.body.id}/receive`)
+      .send({ lines: [{ lineId: po.body.lineItems[0].id, quantityReceived: 10 }] });
+
+    const res = await request(app)
+      .patch(`/api/v1/purchase-orders/${created.body.id}/cancel`)
+      .send({ reason: 'Too late' });
+
+    expect(res.status).toBe(409);
+  });
+
+  it('returns 404 for missing PO', async () => {
+    const res = await request(app)
+      .patch('/api/v1/purchase-orders/00000000-0000-0000-0000-000000000099/cancel')
+      .send({});
+    expect(res.status).toBe(404);
+  });
+});
+
+describe('POST /api/v1/purchase-orders/:poId/receive', () => {
+  let poId: string;
+  let lineId1: string;
+  let lineId2: string;
+
+  beforeEach(async () => {
+    // Seed inventory for SKUs
+    await request(app).post(`/api/v1/skus/${skuId1}/inventory/adjustments`).send({
+      adjustment: 100,
+      reason: 'Initial stock',
+    });
+    await request(app).post(`/api/v1/skus/${skuId2}/inventory/adjustments`).send({
+      adjustment: 50,
+      reason: 'Initial stock',
+    });
+
+    // Create, submit, and confirm a PO
+    const created = await request(app).post('/api/v1/purchase-orders').send({
+      vendorId,
+      lineItems: [
+        { skuId: skuId1, quantity: 10, unitCost: 50.0 },
+        { skuId: skuId2, quantity: 5, unitCost: 40.0 },
+      ],
+    });
+    poId = created.body.id;
+
+    await request(app).patch(`/api/v1/purchase-orders/${poId}/submit`).send();
+    await request(app).patch(`/api/v1/purchase-orders/${poId}/confirm`).send();
+
+    const po = await request(app).get(`/api/v1/purchase-orders/${poId}`);
+    lineId1 = po.body.lineItems[0].id;
+    lineId2 = po.body.lineItems[1].id;
+  });
+
+  it('partially receives a PO', async () => {
+    const res = await request(app)
+      .post(`/api/v1/purchase-orders/${poId}/receive`)
+      .send({ lines: [{ lineId: lineId1, quantityReceived: 5 }] });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('PARTIALLY_RECEIVED');
+    expect(res.body.lineItems[0].quantityReceived).toBe(5);
+  });
+
+  it('fully receives a PO', async () => {
+    const res = await request(app)
+      .post(`/api/v1/purchase-orders/${poId}/receive`)
+      .send({
+        lines: [
+          { lineId: lineId1, quantityReceived: 10 },
+          { lineId: lineId2, quantityReceived: 5 },
+        ],
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('RECEIVED');
+  });
+
+  it('handles incremental receives (partial then full)', async () => {
+    // First partial receive
+    await request(app)
+      .post(`/api/v1/purchase-orders/${poId}/receive`)
+      .send({ lines: [{ lineId: lineId1, quantityReceived: 3 }] });
+
+    // Second partial receive
+    const res = await request(app)
+      .post(`/api/v1/purchase-orders/${poId}/receive`)
+      .send({
+        lines: [
+          { lineId: lineId1, quantityReceived: 7 },
+          { lineId: lineId2, quantityReceived: 5 },
+        ],
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('RECEIVED');
+    expect(res.body.lineItems[0].quantityReceived).toBe(10);
+    expect(res.body.lineItems[1].quantityReceived).toBe(5);
+  });
+
+  it('updates inventory on-hand quantities', async () => {
+    const beforeInv = await request(app).get(`/api/v1/skus/${skuId1}/inventory`);
+    const initialQty = beforeInv.body.quantityOnHand;
+
+    await request(app)
+      .post(`/api/v1/purchase-orders/${poId}/receive`)
+      .send({ lines: [{ lineId: lineId1, quantityReceived: 10 }] });
+
+    const afterInv = await request(app).get(`/api/v1/skus/${skuId1}/inventory`);
+    expect(afterInv.body.quantityOnHand).toBe(initialQty + 10);
+  });
+
+  it('creates audit log entries for received goods', async () => {
+    await request(app)
+      .post(`/api/v1/purchase-orders/${poId}/receive`)
+      .send({ lines: [{ lineId: lineId1, quantityReceived: 10 }] });
+
+    const auditLog = await request(app).get(`/api/v1/skus/${skuId1}/inventory/audit-log`);
+    expect(auditLog.status).toBe(200);
+    const receiveEntry = auditLog.body.data.find((e: any) => e.reason.startsWith('PO receive:'));
+    expect(receiveEntry).toBeDefined();
+    expect(receiveEntry.adjustment).toBe(10);
+  });
+
+  it('rejects receive on a draft PO', async () => {
+    const draft = await request(app).post('/api/v1/purchase-orders').send({
+      vendorId,
+      lineItems: [{ skuId: skuId1, quantity: 10, unitCost: 50.0 }],
+    });
+
+    const res = await request(app)
+      .post(`/api/v1/purchase-orders/${draft.body.id}/receive`)
+      .send({ lines: [{ lineId: '00000000-0000-0000-0000-000000000099', quantityReceived: 1 }] });
+
+    expect(res.status).toBe(409);
+  });
+
+  it('rejects receive with unknown lineId', async () => {
+    const res = await request(app)
+      .post(`/api/v1/purchase-orders/${poId}/receive`)
+      .send({ lines: [{ lineId: '00000000-0000-0000-0000-000000000099', quantityReceived: 1 }] });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe('LINE_NOT_FOUND');
+  });
+
+  it('rejects receive with empty lines array', async () => {
+    const res = await request(app)
+      .post(`/api/v1/purchase-orders/${poId}/receive`)
+      .send({ lines: [] });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('returns 404 for missing PO', async () => {
+    const res = await request(app)
+      .post('/api/v1/purchase-orders/00000000-0000-0000-0000-000000000099/receive')
+      .send({ lines: [{ lineId: lineId1, quantityReceived: 1 }] });
+    expect(res.status).toBe(404);
+  });
+
+  it('records receive transitions in status history', async () => {
+    await request(app)
+      .post(`/api/v1/purchase-orders/${poId}/receive`)
+      .send({
+        lines: [
+          { lineId: lineId1, quantityReceived: 10 },
+          { lineId: lineId2, quantityReceived: 5 },
+        ],
+      });
+
+    const history = await request(app).get(`/api/v1/purchase-orders/${poId}/history`);
+    const receiveEntry = history.body.find((h: any) => h.toStatus === 'RECEIVED');
+    expect(receiveEntry).toBeDefined();
+    expect(receiveEntry.fromStatus).toBe('CONFIRMED');
+  });
+});
+
+describe('PATCH /api/v1/purchase-orders/:poId/close', () => {
+  it('closes a fully received PO', async () => {
+    const created = await request(app).post('/api/v1/purchase-orders').send({
+      vendorId,
+      lineItems: [{ skuId: skuId1, quantity: 10, unitCost: 50.0 }],
+    });
+
+    // Seed inventory
+    await request(app).post(`/api/v1/skus/${skuId1}/inventory/adjustments`).send({
+      adjustment: 100,
+      reason: 'Initial stock',
+    });
+
+    await request(app).patch(`/api/v1/purchase-orders/${created.body.id}/submit`).send();
+    await request(app).patch(`/api/v1/purchase-orders/${created.body.id}/confirm`).send();
+
+    const po = await request(app).get(`/api/v1/purchase-orders/${created.body.id}`);
+    await request(app)
+      .post(`/api/v1/purchase-orders/${created.body.id}/receive`)
+      .send({ lines: [{ lineId: po.body.lineItems[0].id, quantityReceived: 10 }] });
+
+    const res = await request(app)
+      .patch(`/api/v1/purchase-orders/${created.body.id}/close`)
+      .send();
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('CLOSED');
+  });
+
+  it('rejects close on non-received PO', async () => {
+    const created = await request(app).post('/api/v1/purchase-orders').send({
+      vendorId,
+      lineItems: [{ skuId: skuId1, quantity: 10, unitCost: 50.0 }],
+    });
+
+    const res = await request(app)
+      .patch(`/api/v1/purchase-orders/${created.body.id}/close`)
+      .send();
+
+    expect(res.status).toBe(409);
+  });
+
+  it('returns 404 for missing PO', async () => {
+    const res = await request(app)
+      .patch('/api/v1/purchase-orders/00000000-0000-0000-0000-000000000099/close')
+      .send();
+    expect(res.status).toBe(404);
+  });
+});
+
+describe('Full PO lifecycle (DRAFT → SUBMITTED → CONFIRMED → RECEIVED → CLOSED)', () => {
+  it('completes entire lifecycle with history', async () => {
+    // Seed inventory record
+    await request(app).post(`/api/v1/skus/${skuId1}/inventory/adjustments`).send({
+      adjustment: 1,
+      reason: 'Seed',
+    });
+
+    const created = await request(app).post('/api/v1/purchase-orders').send({
+      vendorId,
+      lineItems: [{ skuId: skuId1, quantity: 5, unitCost: 25.0 }],
+    });
+    const poId = created.body.id;
+
+    // Submit
+    const submitted = await request(app).patch(`/api/v1/purchase-orders/${poId}/submit`).send();
+    expect(submitted.body.status).toBe('SUBMITTED');
+
+    // Confirm
+    const confirmed = await request(app).patch(`/api/v1/purchase-orders/${poId}/confirm`).send();
+    expect(confirmed.body.status).toBe('CONFIRMED');
+
+    // Receive
+    const po = await request(app).get(`/api/v1/purchase-orders/${poId}`);
+    const received = await request(app)
+      .post(`/api/v1/purchase-orders/${poId}/receive`)
+      .send({ lines: [{ lineId: po.body.lineItems[0].id, quantityReceived: 5 }] });
+    expect(received.body.status).toBe('RECEIVED');
+
+    // Close
+    const closed = await request(app).patch(`/api/v1/purchase-orders/${poId}/close`).send();
+    expect(closed.body.status).toBe('CLOSED');
+
+    // Verify full history
+    const history = await request(app).get(`/api/v1/purchase-orders/${poId}/history`);
+    expect(history.body).toHaveLength(5); // DRAFT, SUBMITTED, CONFIRMED, RECEIVED, CLOSED
+    expect(history.body.map((h: any) => h.toStatus)).toEqual([
+      'DRAFT', 'SUBMITTED', 'CONFIRMED', 'RECEIVED', 'CLOSED',
+    ]);
+  });
+});

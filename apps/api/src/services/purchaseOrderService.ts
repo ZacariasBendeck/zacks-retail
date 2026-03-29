@@ -184,6 +184,135 @@ export function transitionStatus(
   return getPurchaseOrderById(id);
 }
 
+export function submitPurchaseOrder(
+  id: string,
+  options?: { changedBy?: string }
+): PurchaseOrder | null | { error: string } {
+  const db = getDb();
+  const existing = db.prepare('SELECT * FROM purchase_orders WHERE id = ?').get(id) as unknown as PurchaseOrderRow | undefined;
+  if (!existing) return null;
+
+  if (existing.status !== 'DRAFT') {
+    return { error: `INVALID_TRANSITION:${existing.status}→SUBMITTED` };
+  }
+
+  // Validate at least one line item exists
+  const lines = loadLineItems(id);
+  if (lines.length === 0) {
+    return { error: 'NO_LINE_ITEMS' };
+  }
+
+  // Validate all SKUs are active
+  for (const line of lines) {
+    const sku = db.prepare('SELECT id, active FROM skus WHERE id = ?').get(line.sku_id) as unknown as { id: string; active: number } | undefined;
+    if (!sku || !sku.active) {
+      return { error: `INACTIVE_SKU:${line.sku_id}` };
+    }
+  }
+
+  return transitionStatus(id, 'SUBMITTED', options);
+}
+
+export function cancelPurchaseOrder(
+  id: string,
+  options?: { changedBy?: string; reason?: string }
+): PurchaseOrder | null | { error: string } {
+  const db = getDb();
+  const existing = db.prepare('SELECT * FROM purchase_orders WHERE id = ?').get(id) as unknown as PurchaseOrderRow | undefined;
+  if (!existing) return null;
+
+  const allowed = VALID_TRANSITIONS[existing.status];
+  if (!allowed.includes('CANCELLED')) {
+    return { error: `INVALID_TRANSITION:${existing.status}→CANCELLED` };
+  }
+
+  // Require reason for SUBMITTED or CONFIRMED cancellations
+  if ((existing.status === 'SUBMITTED' || existing.status === 'CONFIRMED') && !options?.reason) {
+    return { error: 'REASON_REQUIRED' };
+  }
+
+  return transitionStatus(id, 'CANCELLED', options);
+}
+
+export function receivePurchaseOrder(
+  id: string,
+  data: { lines: { lineId: string; quantityReceived: number }[] },
+  options?: { changedBy?: string }
+): PurchaseOrder | null | { error: string } {
+  const db = getDb();
+  const existing = db.prepare('SELECT * FROM purchase_orders WHERE id = ?').get(id) as unknown as PurchaseOrderRow | undefined;
+  if (!existing) return null;
+
+  if (existing.status !== 'CONFIRMED' && existing.status !== 'PARTIALLY_RECEIVED') {
+    return { error: `INVALID_TRANSITION:${existing.status}→RECEIVED` };
+  }
+
+  // Validate all lineIds belong to this PO
+  const poLines = loadLineItems(id);
+  const poLineMap = new Map(poLines.map(l => [l.id, l]));
+  for (const line of data.lines) {
+    if (!poLineMap.has(line.lineId)) {
+      return { error: `LINE_NOT_FOUND:${line.lineId}` };
+    }
+  }
+
+  const changedBy = options?.changedBy ?? 'system';
+
+  db.exec('BEGIN TRANSACTION');
+  try {
+    // Update each line's quantity_received and inventory
+    for (const line of data.lines) {
+      const poLine = poLineMap.get(line.lineId)!;
+      const newQtyReceived = poLine.quantity_received + line.quantityReceived;
+
+      db.prepare(
+        "UPDATE purchase_order_lines SET quantity_received = ?, updated_at = datetime('now') WHERE id = ?"
+      ).run(newQtyReceived, line.lineId);
+
+      // Update inventory on-hand
+      const invRow = db.prepare('SELECT * FROM inventory WHERE sku_id = ?').get(poLine.sku_id) as unknown as { quantity_on_hand: number } | undefined;
+      if (invRow) {
+        const newBalance = invRow.quantity_on_hand + line.quantityReceived;
+        db.prepare(
+          "UPDATE inventory SET quantity_on_hand = ?, updated_at = datetime('now') WHERE sku_id = ?"
+        ).run(newBalance, poLine.sku_id);
+
+        // Insert audit log
+        db.prepare(
+          'INSERT INTO inventory_audit_log (id, sku_id, adjustment, reason, resulting_balance, performed_by) VALUES (?, ?, ?, ?, ?, ?)'
+        ).run(uuidv4(), poLine.sku_id, line.quantityReceived, `PO receive: ${existing.po_number}`, newBalance, changedBy);
+      } else {
+        // Create inventory record if it doesn't exist
+        const newBalance = line.quantityReceived;
+        db.prepare(
+          'INSERT INTO inventory (id, sku_id, quantity_on_hand) VALUES (?, ?, ?)'
+        ).run(uuidv4(), poLine.sku_id, newBalance);
+
+        db.prepare(
+          'INSERT INTO inventory_audit_log (id, sku_id, adjustment, reason, resulting_balance, performed_by) VALUES (?, ?, ?, ?, ?, ?)'
+        ).run(uuidv4(), poLine.sku_id, line.quantityReceived, `PO receive: ${existing.po_number}`, newBalance, changedBy);
+      }
+    }
+
+    // Reload lines to determine new status
+    const updatedLines = loadLineItems(id);
+    const allFullyReceived = updatedLines.every(l => l.quantity_received >= l.quantity_ordered);
+    const newStatus: PoStatus = allFullyReceived ? 'RECEIVED' : 'PARTIALLY_RECEIVED';
+
+    db.prepare("UPDATE purchase_orders SET status = ?, updated_at = datetime('now') WHERE id = ?")
+      .run(newStatus, id);
+
+    insertStatusHistory(id, existing.status, newStatus, changedBy);
+
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+
+  return getPurchaseOrderById(id);
+}
+
 export function getStatusHistory(poId: string): PoStatusHistory[] {
   const db = getDb();
   const rows = db.prepare(

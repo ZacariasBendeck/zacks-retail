@@ -5,6 +5,8 @@ import {
   updatePurchaseOrderSchema,
   poStatusTransitionSchema,
   poListQuerySchema,
+  poReceiveSchema,
+  poCancelSchema,
   validate,
   validateQuery,
 } from '../middleware/validation';
@@ -188,6 +190,233 @@ router.patch('/:poId/status', validate(poStatusTransitionSchema), (req: Request,
   const result = poService.transitionStatus(req.params.poId as string, req.body.status, {
     reason: req.body.reason,
   });
+
+  if (result === null) {
+    res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Purchase order not found.' } });
+    return;
+  }
+
+  if ('error' in result) {
+    res.status(409).json({
+      error: { code: 'INVALID_STATUS_TRANSITION', message: `Invalid status transition: ${result.error.replace('INVALID_TRANSITION:', '')}` },
+    });
+    return;
+  }
+
+  res.json(result);
+});
+
+/**
+ * @openapi
+ * /api/v1/purchase-orders/{poId}/submit:
+ *   patch:
+ *     summary: Submit a draft PO (DRAFT → SUBMITTED)
+ *     tags: [Purchase Orders]
+ *     parameters:
+ *       - name: poId
+ *         in: path
+ *         required: true
+ *         schema: { type: string, format: uuid }
+ *     responses:
+ *       200:
+ *         description: PO submitted
+ *       404:
+ *         description: Purchase order not found
+ *       409:
+ *         description: Invalid transition or validation failure
+ */
+router.patch('/:poId/submit', (req: Request, res: Response): void => {
+  const result = poService.submitPurchaseOrder(req.params.poId as string);
+
+  if (result === null) {
+    res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Purchase order not found.' } });
+    return;
+  }
+
+  if ('error' in result) {
+    if (result.error === 'NO_LINE_ITEMS') {
+      res.status(409).json({ error: { code: 'NO_LINE_ITEMS', message: 'PO must have at least one line item to submit.' } });
+      return;
+    }
+    if (result.error.startsWith('INACTIVE_SKU')) {
+      const skuId = result.error.split(':')[1];
+      res.status(409).json({ error: { code: 'INACTIVE_SKU', message: `SKU ${skuId} is not active.` } });
+      return;
+    }
+    res.status(409).json({
+      error: { code: 'INVALID_STATUS_TRANSITION', message: `Invalid status transition: ${result.error.replace('INVALID_TRANSITION:', '')}` },
+    });
+    return;
+  }
+
+  res.json(result);
+});
+
+/**
+ * @openapi
+ * /api/v1/purchase-orders/{poId}/confirm:
+ *   patch:
+ *     summary: Confirm a submitted PO (SUBMITTED → CONFIRMED)
+ *     tags: [Purchase Orders]
+ *     parameters:
+ *       - name: poId
+ *         in: path
+ *         required: true
+ *         schema: { type: string, format: uuid }
+ *     responses:
+ *       200:
+ *         description: PO confirmed
+ *       404:
+ *         description: Purchase order not found
+ *       409:
+ *         description: Invalid transition
+ */
+router.patch('/:poId/confirm', (req: Request, res: Response): void => {
+  const result = poService.transitionStatus(req.params.poId as string, 'CONFIRMED');
+
+  if (result === null) {
+    res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Purchase order not found.' } });
+    return;
+  }
+
+  if ('error' in result) {
+    res.status(409).json({
+      error: { code: 'INVALID_STATUS_TRANSITION', message: `Invalid status transition: ${result.error.replace('INVALID_TRANSITION:', '')}` },
+    });
+    return;
+  }
+
+  res.json(result);
+});
+
+/**
+ * @openapi
+ * /api/v1/purchase-orders/{poId}/cancel:
+ *   patch:
+ *     summary: Cancel a PO (DRAFT/SUBMITTED/CONFIRMED → CANCELLED)
+ *     tags: [Purchase Orders]
+ *     parameters:
+ *       - name: poId
+ *         in: path
+ *         required: true
+ *         schema: { type: string, format: uuid }
+ *     requestBody:
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               reason:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: PO cancelled
+ *       404:
+ *         description: Purchase order not found
+ *       409:
+ *         description: Invalid transition or reason required
+ */
+router.patch('/:poId/cancel', validate(poCancelSchema), (req: Request, res: Response): void => {
+  const result = poService.cancelPurchaseOrder(req.params.poId as string, {
+    reason: req.body.reason,
+  });
+
+  if (result === null) {
+    res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Purchase order not found.' } });
+    return;
+  }
+
+  if ('error' in result) {
+    if (result.error === 'REASON_REQUIRED') {
+      res.status(409).json({ error: { code: 'REASON_REQUIRED', message: 'Cancellation reason is required for submitted or confirmed POs.' } });
+      return;
+    }
+    res.status(409).json({
+      error: { code: 'INVALID_STATUS_TRANSITION', message: `Invalid status transition: ${result.error.replace('INVALID_TRANSITION:', '')}` },
+    });
+    return;
+  }
+
+  res.json(result);
+});
+
+/**
+ * @openapi
+ * /api/v1/purchase-orders/{poId}/receive:
+ *   post:
+ *     summary: Receive goods for a PO (CONFIRMED/PARTIALLY_RECEIVED → PARTIALLY_RECEIVED/RECEIVED)
+ *     tags: [Purchase Orders]
+ *     parameters:
+ *       - name: poId
+ *         in: path
+ *         required: true
+ *         schema: { type: string, format: uuid }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               lines:
+ *                 type: array
+ *                 items:
+ *                   type: object
+ *                   properties:
+ *                     lineId: { type: string, format: uuid }
+ *                     quantityReceived: { type: integer, minimum: 1 }
+ *     responses:
+ *       200:
+ *         description: Goods received, status updated
+ *       404:
+ *         description: Purchase order or line not found
+ *       409:
+ *         description: Invalid transition or line not found
+ */
+router.post('/:poId/receive', validate(poReceiveSchema), (req: Request, res: Response): void => {
+  const result = poService.receivePurchaseOrder(req.params.poId as string, req.body);
+
+  if (result === null) {
+    res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Purchase order not found.' } });
+    return;
+  }
+
+  if ('error' in result) {
+    if (result.error.startsWith('LINE_NOT_FOUND')) {
+      const lineId = result.error.split(':')[1];
+      res.status(409).json({ error: { code: 'LINE_NOT_FOUND', message: `Line item ${lineId} not found on this PO.` } });
+      return;
+    }
+    res.status(409).json({
+      error: { code: 'INVALID_STATUS_TRANSITION', message: `Invalid status transition: ${result.error.replace('INVALID_TRANSITION:', '')}` },
+    });
+    return;
+  }
+
+  res.json(result);
+});
+
+/**
+ * @openapi
+ * /api/v1/purchase-orders/{poId}/close:
+ *   patch:
+ *     summary: Close a received PO (RECEIVED → CLOSED)
+ *     tags: [Purchase Orders]
+ *     parameters:
+ *       - name: poId
+ *         in: path
+ *         required: true
+ *         schema: { type: string, format: uuid }
+ *     responses:
+ *       200:
+ *         description: PO closed
+ *       404:
+ *         description: Purchase order not found
+ *       409:
+ *         description: Invalid transition
+ */
+router.patch('/:poId/close', (req: Request, res: Response): void => {
+  const result = poService.transitionStatus(req.params.poId as string, 'CLOSED');
 
   if (result === null) {
     res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Purchase order not found.' } });

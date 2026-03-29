@@ -111,6 +111,19 @@ export const poStatusTransitionSchema = z.object({
   reason: z.string().max(500).optional(),
 });
 
+export const poReceiveSchema = z.object({
+  lines: z.array(
+    z.object({
+      lineId: z.string().uuid(),
+      quantityReceived: z.number().int().positive(),
+    })
+  ).min(1, 'At least one line is required'),
+});
+
+export const poCancelSchema = z.object({
+  reason: z.string().min(1).max(500).optional(),
+});
+
 export const poListQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(200).default(50),
