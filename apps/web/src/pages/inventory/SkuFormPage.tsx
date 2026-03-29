@@ -132,6 +132,9 @@ export default function SkuFormPage() {
   const [skuSearchText, setSkuSearchText] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => {
+    return () => { if (debounceTimer.current) clearTimeout(debounceTimer.current) }
+  }, [])
   const { data: searchResults, isFetching: isSearching } = useSearchSkus(debouncedSearch)
 
   const skuSearchOptions = useMemo(() => {
