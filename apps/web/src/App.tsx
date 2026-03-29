@@ -6,6 +6,7 @@ import DashboardPage from './pages/inventory/DashboardPage'
 import AdjustmentListPage from './pages/inventory/AdjustmentListPage'
 import AdjustmentFormPage from './pages/inventory/AdjustmentFormPage'
 import AdjustmentDetailPage from './pages/inventory/AdjustmentDetailPage'
+import OnHandReportPage from './pages/inventory/OnHandReportPage'
 
 export default function App() {
   return (
@@ -19,6 +20,7 @@ export default function App() {
         <Route path="/inventory/adjustments" element={<AdjustmentListPage />} />
         <Route path="/inventory/adjustments/new" element={<AdjustmentFormPage />} />
         <Route path="/inventory/adjustments/:adjustmentId" element={<AdjustmentDetailPage />} />
+        <Route path="/reports/on-hand" element={<OnHandReportPage />} />
       </Route>
     </Routes>
   )
