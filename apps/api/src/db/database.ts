@@ -92,5 +92,50 @@ function initSchema(db: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS idx_audit_log_sku_id ON inventory_audit_log(sku_id);
     CREATE INDEX IF NOT EXISTS idx_audit_log_created_at ON inventory_audit_log(created_at);
+
+    CREATE TABLE IF NOT EXISTS purchase_orders (
+      id TEXT PRIMARY KEY,
+      po_number TEXT NOT NULL UNIQUE,
+      vendor_id TEXT NOT NULL REFERENCES vendors(id),
+      status TEXT NOT NULL DEFAULT 'DRAFT'
+        CHECK(status IN ('DRAFT','SUBMITTED','CONFIRMED',
+                         'PARTIALLY_RECEIVED','RECEIVED','CLOSED','CANCELLED')),
+      notes TEXT,
+      cancellation_reason TEXT,
+      created_by TEXT NOT NULL DEFAULT 'system',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS purchase_order_lines (
+      id TEXT PRIMARY KEY,
+      po_id TEXT NOT NULL REFERENCES purchase_orders(id),
+      sku_id TEXT NOT NULL REFERENCES skus(id),
+      quantity_ordered INTEGER NOT NULL CHECK(quantity_ordered > 0),
+      quantity_received INTEGER NOT NULL DEFAULT 0 CHECK(quantity_received >= 0),
+      unit_cost REAL NOT NULL CHECK(unit_cost > 0),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS po_status_history (
+      id TEXT PRIMARY KEY,
+      po_id TEXT NOT NULL REFERENCES purchase_orders(id),
+      from_status TEXT,
+      to_status TEXT NOT NULL,
+      changed_by TEXT NOT NULL DEFAULT 'system',
+      reason TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    INSERT OR IGNORE INTO sku_code_seq (prefix, next_val) VALUES ('PO', 1);
+
+    CREATE INDEX IF NOT EXISTS idx_po_vendor_id ON purchase_orders(vendor_id);
+    CREATE INDEX IF NOT EXISTS idx_po_status ON purchase_orders(status);
+    CREATE INDEX IF NOT EXISTS idx_po_po_number ON purchase_orders(po_number);
+    CREATE INDEX IF NOT EXISTS idx_po_lines_po_id ON purchase_order_lines(po_id);
+    CREATE INDEX IF NOT EXISTS idx_po_lines_sku_id ON purchase_order_lines(sku_id);
+    CREATE INDEX IF NOT EXISTS idx_po_history_po_id ON po_status_history(po_id);
+    CREATE INDEX IF NOT EXISTS idx_po_history_created_at ON po_status_history(created_at);
   `);
 }
