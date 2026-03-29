@@ -178,6 +178,11 @@ export function clearConfigCache(): void {
  * Uses the English-to-Spanish mapping first, then falls back to case-insensitive
  * substring matching against the reference table names.
  */
+/** Strip diacritics/accents for fuzzy matching (é→e, ñ→n, etc.) */
+function stripAccents(s: string): string {
+  return s.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+}
+
 export function matchReferenceValue(
   refTableName: string,
   aiValue: string | null,
@@ -191,16 +196,17 @@ export function matchReferenceValue(
   const refData = rawData.filter((r): r is ReferenceItem => 'name' in r);
   if (refData.length === 0) return null;
 
-  const normalizedAi = aiValue.toLowerCase().trim();
+  const normalizedAi = stripAccents(aiValue.toLowerCase().trim());
 
   // Step 1: Try English-to-Spanish mapping
   const tableMap = ENGLISH_TO_SPANISH[refTableName];
   if (tableMap) {
-    const spanishCandidates = tableMap[normalizedAi];
+    const spanishCandidates = tableMap[stripAccents(aiValue.toLowerCase().trim())];
     if (spanishCandidates) {
       for (const candidate of spanishCandidates) {
+        const normCandidate = stripAccents(candidate);
         const match = refData.find(
-          (r) => r.name.toLowerCase() === candidate,
+          (r) => stripAccents(r.name.toLowerCase()) === normCandidate,
         );
         if (match) return match.id;
       }
@@ -209,13 +215,13 @@ export function matchReferenceValue(
 
   // Step 2: Direct case-insensitive exact match (handles loanwords like Stiletto)
   const exactMatch = refData.find(
-    (r) => r.name.toLowerCase() === normalizedAi,
+    (r) => stripAccents(r.name.toLowerCase()) === normalizedAi,
   );
   if (exactMatch) return exactMatch.id;
 
   // Step 3: Substring match — AI value contained in ref name or vice versa
   const substringMatch = refData.find((r) => {
-    const refLower = r.name.toLowerCase();
+    const refLower = stripAccents(r.name.toLowerCase());
     return refLower.includes(normalizedAi) || normalizedAi.includes(refLower);
   });
   if (substringMatch) return substringMatch.id;

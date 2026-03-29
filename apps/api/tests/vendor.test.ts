@@ -110,12 +110,8 @@ describe('DELETE /api/v1/vendors/:vendorId', () => {
 
     // Create a SKU linked to this vendor
     await request(app).post('/api/v1/skus').send({
-      brand: 'Nike',
       style: 'Air Max',
-      color: 'Black',
-      size: '9',
       price: 129.99,
-      category: 560,
       department: 'FORMAL',
       vendorId: vendor.body.id,
     });
@@ -147,9 +143,8 @@ describe('GET /api/v1/vendors (list)', () => {
     const res = await request(app).get('/api/v1/vendors');
     expect(res.status).toBe(200);
     expect(res.body.data.length).toBe(3);
-    expect(res.body.data[0].name).toBe('Alpha Shoes');
-    expect(res.body.data[1].name).toBe('Beta Calzados');
-    expect(res.body.data[2].name).toBe('Gamma Footwear');
+    const names = res.body.data.map((v: any) => v.name);
+    expect(names).toEqual(['Alpha Shoes', 'Beta Calzados', 'Gamma Footwear']);
   });
 
   it('paginates results', async () => {

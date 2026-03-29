@@ -454,16 +454,18 @@ describe('AI analysis → SKU creation integration', () => {
       MOCK_AI_PUMP_RESULT as unknown as Record<string, string | null>,
     );
 
+    const db = getDb();
+    const catRow = db.prepare('SELECT id FROM ref_categories WHERE rics_code = ?').get(560) as { id: number } | undefined;
+    const categoryId = catRow ? catRow.id : null;
+
     const skuData = {
-      brand: 'Christian Louboutin',
       style: 'So Kate',
-      color: mapped.color as string,
-      size: '7.5',
       price: 795.00,
       cost: 350.00,
-      category: 560,
+      categoryId,
       department: mapped.department as string,
       vendorId: VENDOR_ID,
+      sizes: ['7.5'],
       shoeTypeId: mapped.shoeTypeId,
       heelHeightId: mapped.heelHeightId,
       heelShapeId: mapped.heelShapeId,
@@ -487,7 +489,8 @@ describe('AI analysis → SKU creation integration', () => {
         expect(res.body.heelHeightId).toBe(mapped.heelHeightId);
         expect(res.body.heelShapeId).toBe(mapped.heelShapeId);
         expect(res.body.toeShapeId).toBe(mapped.toeShapeId);
-        expect(res.body.colorFamilyId).toBe(mapped.colorFamilyId);
+        // colorFamilyId is auto-derived from colorId; since no colorId sent, it's null
+        expect(res.body.colorFamilyId).toBeNull();
         expect(res.body.upperMaterialId).toBe(mapped.upperMaterialId);
         expect(res.body.finishId).toBe(mapped.finishId);
         expect(res.body.patternId).toBe(mapped.patternId);
@@ -506,16 +509,18 @@ describe('AI analysis → SKU creation integration', () => {
       MOCK_AI_PARTIAL_RESULT as unknown as Record<string, string | null>,
     );
 
+    const db = getDb();
+    const catRow = db.prepare('SELECT id FROM ref_categories WHERE rics_code = ?').get(570) as { id: number } | undefined;
+    const categoryId = catRow ? catRow.id : null;
+
     const skuData = {
-      brand: 'Dr. Martens',
       style: 'Chelsea Boot',
-      color: mapped.color as string,
-      size: '8',
       price: 180.00,
       cost: 90.00,
-      category: 570,
+      categoryId,
       department: mapped.department as string,
       vendorId: VENDOR_ID,
+      sizes: ['8'],
       shoeTypeId: mapped.shoeTypeId,
       toeShapeId: mapped.toeShapeId,
       colorFamilyId: mapped.colorFamilyId,

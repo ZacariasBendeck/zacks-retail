@@ -117,13 +117,81 @@ function getColorCode(colorId: number | null): string | null {
   return row?.code ?? null;
 }
 
+function getCategoryRicsCode(categoryId: number | null): string | null {
+  if (!categoryId) return null;
+  const db = getDb();
+  const row = db.prepare('SELECT rics_code FROM ref_categories WHERE id = ?').get(categoryId) as { rics_code: number } | undefined;
+  return row ? String(row.rics_code) : null;
+}
+
+function generateRicsDescription(
+  department: string,
+  categoryId: number | null,
+  brandId: number | null,
+  colorId: number | null,
+  style: string,
+): string {
+  const dept = (department || '').substring(0, 3).toUpperCase();
+  const catCode = getCategoryRicsCode(categoryId) ?? '0';
+  const brandCode = getBrandCode(brandId) ?? 'NONE';
+  const colorCode = getColorCode(colorId) ?? 'XX';
+  const styleShort = (style || '').substring(0, 10).toUpperCase();
+  return `${dept}/${catCode}/${brandCode}/${colorCode}/${styleShort}`;
+}
+
+class ValidationError extends Error {
+  status: number;
+  constructor(message: string, status = 400) {
+    super(message);
+    this.name = 'ValidationError';
+    this.status = status;
+  }
+}
+
+function validateFkExists(table: string, id: number, label: string): void {
+  const db = getDb();
+  const row = db.prepare(`SELECT id FROM ${table} WHERE id = ?`).get(id);
+  if (!row) {
+    throw new ValidationError(`Invalid ${label}: no record with id ${id} exists`);
+  }
+}
+
+const FK_VALIDATIONS: { field: string; table: string; label: string }[] = [
+  { field: 'brandId', table: 'ref_brands', label: 'brandId' },
+  { field: 'colorId', table: 'ref_colors', label: 'colorId' },
+  { field: 'categoryId', table: 'ref_categories', label: 'categoryId' },
+  { field: 'heelMaterialId', table: 'ref_heel_materials', label: 'heelMaterialId' },
+];
+
+function validateForeignKeys(data: Record<string, unknown>): void {
+  for (const { field, table, label } of FK_VALIDATIONS) {
+    const value = data[field];
+    if (value != null && typeof value === 'number') {
+      validateFkExists(table, value, label);
+    }
+  }
+}
+
 export function createSku(data: Record<string, unknown>): Sku {
+  validateForeignKeys(data);
+
   const db = getDb();
   const id = uuidv4();
 
   const brandId = (data.brandId as number) ?? null;
   const colorId = (data.colorId as number) ?? null;
   const colorFamilyId = deriveColorFamilyId(colorId);
+
+  // Auto-generate ricsDescription if not provided
+  if (!data.ricsDescription) {
+    data.ricsDescription = generateRicsDescription(
+      data.department as string,
+      (data.categoryId as number) ?? null,
+      brandId,
+      colorId,
+      data.style as string,
+    );
+  }
 
   const skuCode = (data.skuCode as string) || generateSkuCode(
     data.department as string,
@@ -224,6 +292,8 @@ export function lookupSkuByCode(code: string): Sku | null {
 }
 
 export function updateSku(id: string, data: Record<string, unknown>): Sku | null {
+  validateForeignKeys(data);
+
   const db = getDb();
   const existing = db.prepare('SELECT * FROM skus WHERE id = ?').get(id) as unknown as SkuRow | undefined;
   if (!existing) return null;

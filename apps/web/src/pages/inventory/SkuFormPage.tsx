@@ -677,7 +677,26 @@ export default function SkuFormPage() {
               </Col>
               <Col xs={12} sm={4}>
                 <Form.Item label="Category" name="categoryId" style={compactItem}>
-                  <Select placeholder="Select" allowClear showSearch optionFilterProp="label" options={(refData?.['categories'] ?? []).map((c: any) => ({ label: `${c.ricsCode ?? ''} ${c.name}`, value: c.id }))} />
+                  <Select placeholder="Select" allowClear showSearch optionFilterProp="label">
+                    {(() => {
+                      const cats = (refData?.['categories'] ?? []) as { id: number; ricsCode?: number; name: string; deptMacro?: string }[]
+                      const grouped = cats.reduce<Record<string, typeof cats>>((acc, c) => {
+                        const group = c.deptMacro || 'Other'
+                        if (!acc[group]) acc[group] = []
+                        acc[group].push(c)
+                        return acc
+                      }, {})
+                      return Object.entries(grouped).map(([macro, items]) => (
+                        <Select.OptGroup key={macro} label={macro}>
+                          {items.map((c) => (
+                            <Select.Option key={c.id} value={c.id} label={`${c.ricsCode ?? ''} ${c.name}`}>
+                              {c.ricsCode ?? ''} {c.name}
+                            </Select.Option>
+                          ))}
+                        </Select.OptGroup>
+                      ))
+                    })()}
+                  </Select>
                 </Form.Item>
               </Col>
               <Col xs={12} sm={3}>

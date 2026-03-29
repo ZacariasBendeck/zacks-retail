@@ -473,15 +473,19 @@ export function getTurnoverDetails(filters: TurnoverFilters): TurnoverDetail[] {
       s.price,
       s.category_id,
       s.department,
-      COALESCE(i.quantity_on_hand, 0) AS quantity_on_hand,
-      COALESCE(i.quantity_on_hand * s.price, 0) AS inventory_value,
+      COALESCE(inv_agg.total_qty, 0) AS quantity_on_hand,
+      COALESCE(inv_agg.total_qty * s.price, 0) AS inventory_value,
       COALESCE(cogs_agg.cogs, 0) AS cogs,
       CASE
-        WHEN COALESCE(i.quantity_on_hand * s.price, 0) = 0 THEN 0
-        ELSE ROUND(COALESCE(cogs_agg.cogs, 0) / (i.quantity_on_hand * s.price), 2)
+        WHEN COALESCE(inv_agg.total_qty * s.price, 0) = 0 THEN 0
+        ELSE ROUND(COALESCE(cogs_agg.cogs, 0) / (inv_agg.total_qty * s.price), 2)
       END AS turnover_ratio
     FROM skus s
-    LEFT JOIN inventory i ON i.sku_id = s.id
+    LEFT JOIN (
+      SELECT sku_id, SUM(quantity_on_hand) AS total_qty
+      FROM inventory
+      GROUP BY sku_id
+    ) inv_agg ON inv_agg.sku_id = s.id
     LEFT JOIN ref_brands rb ON rb.id = s.brand_id
     LEFT JOIN ref_colors rc ON rc.id = s.color_id
     LEFT JOIN (
@@ -835,7 +839,7 @@ function assignBucket(days: number): string {
 function getAgingBaseRows(filters: { department?: string; category?: number }): AgingDetail[] {
   const db = getDb();
 
-  const conditions = ['s.active = 1', 'COALESCE(i.quantity_on_hand, 0) > 0'];
+  const conditions = ['s.active = 1', 'COALESCE(inv_agg.total_qty, 0) > 0'];
   const params: (string | number)[] = [];
 
   if (filters.department) {
@@ -859,24 +863,28 @@ function getAgingBaseRows(filters: { department?: string; category?: number }): 
       s.price,
       s.category_id,
       s.department,
-      COALESCE(i.quantity_on_hand, 0) AS quantity_on_hand,
-      COALESCE(i.quantity_on_hand * s.price, 0) AS cost_value,
+      COALESCE(inv_agg.total_qty, 0) AS quantity_on_hand,
+      COALESCE(inv_agg.total_qty * s.price, 0) AS cost_value,
       COALESCE(
         (SELECT MAX(ial.created_at) FROM inventory_audit_log ial
          WHERE ial.sku_id = s.id AND ial.adjustment > 0),
-        i.created_at,
+        inv_agg.earliest_created_at,
         s.created_at
       ) AS last_received_at,
       CAST(julianday('now') - julianday(
         COALESCE(
           (SELECT MAX(ial.created_at) FROM inventory_audit_log ial
            WHERE ial.sku_id = s.id AND ial.adjustment > 0),
-          i.created_at,
+          inv_agg.earliest_created_at,
           s.created_at
         )
       ) AS INTEGER) AS days_on_hand
     FROM skus s
-    LEFT JOIN inventory i ON i.sku_id = s.id
+    LEFT JOIN (
+      SELECT sku_id, SUM(quantity_on_hand) AS total_qty, MIN(created_at) AS earliest_created_at
+      FROM inventory
+      GROUP BY sku_id
+    ) inv_agg ON inv_agg.sku_id = s.id
     LEFT JOIN ref_brands rb ON rb.id = s.brand_id
     LEFT JOIN ref_colors rc ON rc.id = s.color_id
     WHERE ${where}
@@ -993,10 +1001,14 @@ export function getOnHandDetails(filters: { department?: string; category?: numb
       s.price,
       s.category_id,
       s.department,
-      COALESCE(i.quantity_on_hand, 0) AS quantity_on_hand,
-      COALESCE(i.quantity_on_hand * s.price, 0) AS cost_value
+      COALESCE(inv_agg.total_qty, 0) AS quantity_on_hand,
+      COALESCE(inv_agg.total_qty * s.price, 0) AS cost_value
     FROM skus s
-    LEFT JOIN inventory i ON i.sku_id = s.id
+    LEFT JOIN (
+      SELECT sku_id, SUM(quantity_on_hand) AS total_qty
+      FROM inventory
+      GROUP BY sku_id
+    ) inv_agg ON inv_agg.sku_id = s.id
     LEFT JOIN ref_brands rb ON rb.id = s.brand_id
     LEFT JOIN ref_colors rc ON rc.id = s.color_id
     WHERE ${where}

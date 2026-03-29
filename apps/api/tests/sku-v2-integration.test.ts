@@ -238,9 +238,8 @@ describe('SKU v2: description fields', () => {
     const res = await request(app).post('/api/v1/skus').send(payload);
 
     expect(res.status).toBe(201);
-    // Currently ricsDescription is NOT auto-generated on create
-    // This is a finding: the service should auto-generate it
-    expect(res.body.ricsDescription).toBeNull();
+    // ricsDescription is now auto-generated when not provided (H2 fix)
+    expect(res.body.ricsDescription).toBeTruthy();
   });
 
   it('allows explicit ricsDescription override', async () => {

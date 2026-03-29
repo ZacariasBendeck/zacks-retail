@@ -538,8 +538,10 @@ function seedReferenceData(db: DatabaseSync): void {
     db.exec(`INSERT OR IGNORE INTO ref_heel_materials (code, name) VALUES ('${code}', '${name}')`);
   }
 
-  // Seed dummy data
-  seedDummyData(db);
+  // Seed dummy data (skip in test environment)
+  if (process.env.NODE_ENV !== 'test') {
+    seedDummyData(db);
+  }
 }
 
 function seedSizeLabels(db: DatabaseSync, sizeTypeName: string, labels: string[]): void {

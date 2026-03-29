@@ -52,6 +52,10 @@ router.post('/', validate(createSkuSchema), (req: Request, res: Response): void 
     const sku = skuService.createSku(req.body);
     res.status(201).json(sku);
   } catch (err: any) {
+    if (err.name === 'ValidationError' && err.status) {
+      res.status(err.status).json({ error: { code: 'INVALID_FK', message: err.message } });
+      return;
+    }
     if (err.message?.includes('UNIQUE constraint failed') && err.message?.includes('barcode')) {
       res.status(409).json({ error: { code: 'DUPLICATE_BARCODE', message: 'A SKU with this barcode already exists.' } });
       return;
@@ -319,6 +323,10 @@ router.patch('/:skuId', validate(updateSkuSchema), (req: Request, res: Response)
     }
     res.json(sku);
   } catch (err: any) {
+    if (err.name === 'ValidationError' && err.status) {
+      res.status(err.status).json({ error: { code: 'INVALID_FK', message: err.message } });
+      return;
+    }
     if (err.message?.includes('UNIQUE constraint failed') && err.message?.includes('barcode')) {
       res.status(409).json({ error: { code: 'DUPLICATE_BARCODE', message: 'A SKU with this barcode already exists.' } });
       return;

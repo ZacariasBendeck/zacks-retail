@@ -155,8 +155,9 @@ export function getLowStock(
   const countRow = db.prepare(`
     SELECT COUNT(*) AS total
     FROM skus s
-    JOIN inventory i ON i.sku_id = s.id
-    WHERE s.active = 1 AND i.quantity_on_hand <= ? AND i.quantity_on_hand >= 0
+    WHERE s.active = 1
+      AND (SELECT COALESCE(SUM(i2.quantity_on_hand), 0) FROM inventory i2 WHERE i2.sku_id = s.id) <= ?
+      AND (SELECT COALESCE(SUM(i2.quantity_on_hand), 0) FROM inventory i2 WHERE i2.sku_id = s.id) >= 0
   `).get(threshold) as unknown as { total: number };
 
   const totalItems = countRow.total;
@@ -171,13 +172,14 @@ export function getLowStock(
       s.style,
       rc.name AS color_name,
       s.department,
-      i.quantity_on_hand AS current_stock
+      (SELECT COALESCE(SUM(i2.quantity_on_hand), 0) FROM inventory i2 WHERE i2.sku_id = s.id) AS current_stock
     FROM skus s
-    JOIN inventory i ON i.sku_id = s.id
     LEFT JOIN ref_brands rb ON rb.id = s.brand_id
     LEFT JOIN ref_colors rc ON rc.id = s.color_id
-    WHERE s.active = 1 AND i.quantity_on_hand <= ? AND i.quantity_on_hand >= 0
-    ORDER BY i.quantity_on_hand ASC, s.department, s.sku_code
+    WHERE s.active = 1
+      AND (SELECT COALESCE(SUM(i2.quantity_on_hand), 0) FROM inventory i2 WHERE i2.sku_id = s.id) <= ?
+      AND (SELECT COALESCE(SUM(i2.quantity_on_hand), 0) FROM inventory i2 WHERE i2.sku_id = s.id) >= 0
+    ORDER BY current_stock ASC, s.department, s.sku_code
     LIMIT ? OFFSET ?
   `).all(threshold, pageSize, offset) as unknown as LowStockRow[];
 
