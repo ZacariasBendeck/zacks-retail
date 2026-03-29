@@ -6,6 +6,11 @@ const { Header, Sider, Content } = Layout
 
 const menuItems = [
   {
+    key: '/dashboard',
+    icon: <DashboardOutlined />,
+    label: 'Dashboard',
+  },
+  {
     key: '/inventory/skus',
     icon: <ShopOutlined />,
     label: 'SKU List',
@@ -14,12 +19,6 @@ const menuItems = [
     key: '/inventory/skus/new',
     icon: <PlusOutlined />,
     label: 'New SKU',
-  },
-  {
-    key: '/dashboard',
-    icon: <DashboardOutlined />,
-    label: 'Dashboard',
-    disabled: true,
   },
 ]
 
