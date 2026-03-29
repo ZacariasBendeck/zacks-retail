@@ -3,6 +3,9 @@ import AppLayout from './components/AppLayout'
 import SkuListPage from './pages/inventory/SkuListPage'
 import SkuFormPage from './pages/inventory/SkuFormPage'
 import DashboardPage from './pages/inventory/DashboardPage'
+import AdjustmentListPage from './pages/inventory/AdjustmentListPage'
+import AdjustmentFormPage from './pages/inventory/AdjustmentFormPage'
+import AdjustmentDetailPage from './pages/inventory/AdjustmentDetailPage'
 
 export default function App() {
   return (
@@ -13,6 +16,9 @@ export default function App() {
         <Route path="/inventory/skus" element={<SkuListPage />} />
         <Route path="/inventory/skus/new" element={<SkuFormPage />} />
         <Route path="/inventory/skus/:skuId/edit" element={<SkuFormPage />} />
+        <Route path="/inventory/adjustments" element={<AdjustmentListPage />} />
+        <Route path="/inventory/adjustments/new" element={<AdjustmentFormPage />} />
+        <Route path="/inventory/adjustments/:adjustmentId" element={<AdjustmentDetailPage />} />
       </Route>
     </Routes>
   )

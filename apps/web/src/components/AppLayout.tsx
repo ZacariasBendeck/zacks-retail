@@ -1,5 +1,5 @@
 import { Layout, Menu, Typography } from 'antd'
-import { ShopOutlined, DashboardOutlined, PlusOutlined } from '@ant-design/icons'
+import { ShopOutlined, DashboardOutlined, PlusOutlined, SwapOutlined } from '@ant-design/icons'
 import { Outlet, useNavigate, useLocation } from 'react-router-dom'
 
 const { Header, Sider, Content } = Layout
@@ -19,6 +19,11 @@ const menuItems = [
     key: '/inventory/skus/new',
     icon: <PlusOutlined />,
     label: 'New SKU',
+  },
+  {
+    key: '/inventory/adjustments',
+    icon: <SwapOutlined />,
+    label: 'Adjustments',
   },
 ]
 
