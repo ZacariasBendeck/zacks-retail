@@ -107,7 +107,7 @@ export default function SkuFormPage() {
   const { message } = App.useApp()
   const [form] = Form.useForm()
 
-  const isEdit = !!skuId
+  const isRouteEdit = !!skuId
   const { data: sku, isLoading: skuLoading } = useSku(skuId)
   const { data: vendors, isLoading: vendorsLoading } = useVendors()
   const { data: refData, isLoading: refLoading } = useReferenceData()
@@ -117,12 +117,15 @@ export default function SkuFormPage() {
   const lookupMutation = useLookupSku()
   const [aiPanelOpen, setAiPanelOpen] = useState(false)
   const [imagePreview, setImagePreview] = useState<string | null>(null)
-  const [lookupCode, setLookupCode] = useState('')
   const [analysisResult, setAnalysisResult] = useState<EnhancedAnalysisResult | null>(null)
   const [aiFilledFields, setAiFilledFields] = useState<Set<string>>(new Set())
   const [aiFillSummary, setAiFillSummary] = useState<AiFillSummary | null>(null)
   const [analysisError, setAnalysisError] = useState<string | null>(null)
   const [lastUploadedFile, setLastUploadedFile] = useState<File | null>(null)
+
+  // Inline lookup state: tracks when a user-entered SKU code matches an existing SKU
+  const [matchedSku, setMatchedSku] = useState<import('../../types/sku').Sku | null>(null)
+  const isEdit = isRouteEdit || !!matchedSku
 
   /** Apply AI results to form fields using client-side matching */
   const applyAiFill = useCallback((result: EnhancedAnalysisResult) => {
@@ -169,50 +172,86 @@ export default function SkuFormPage() {
     setAiFillSummary({ filled, skipped, total: AI_FIELD_MAP.length })
   }, [refData, form])
 
+  /** Populate form fields from a SKU object */
+  const populateForm = useCallback((s: import('../../types/sku').Sku) => {
+    form.setFieldsValue({
+      skuCode: s.skuCode,
+      brand: s.brand,
+      style: s.style,
+      color: s.color,
+      size: s.size,
+      price: s.price,
+      cost: s.cost,
+      category: s.category,
+      department: s.department,
+      vendorId: s.vendorId,
+      vendorSku: s.vendorSku,
+      barcode: s.barcode,
+      description: s.description,
+      comment: s.comment,
+      keywords: s.keywords,
+      season: s.season,
+      manufacturer: s.manufacturer,
+      colorFamilyId: s.colorFamilyId,
+      shoeTypeId: s.shoeTypeId,
+      heelShapeId: s.heelShapeId,
+      heelHeightId: s.heelHeightId,
+      toeShapeId: s.toeShapeId,
+      closureTypeId: s.closureTypeId,
+      upperMaterialId: s.upperMaterialId,
+      outsoleMaterialId: s.outsoleMaterialId,
+      finishId: s.finishId,
+      widthTypeId: s.widthTypeId,
+      patternId: s.patternId,
+      occasionId: s.occasionId,
+      targetAudienceId: s.targetAudienceId,
+      accessoryId: s.accessoryId,
+      seasonId: s.seasonId,
+      sizeTypeId: s.sizeTypeId,
+      labelTypeId: s.labelTypeId,
+    })
+  }, [form])
+
   useEffect(() => {
-    if (sku) {
-      form.setFieldsValue({
-        brand: sku.brand,
-        style: sku.style,
-        color: sku.color,
-        size: sku.size,
-        price: sku.price,
-        cost: sku.cost,
-        category: sku.category,
-        department: sku.department,
-        vendorId: sku.vendorId,
-        vendorSku: sku.vendorSku,
-        barcode: sku.barcode,
-        description: sku.description,
-        comment: sku.comment,
-        keywords: sku.keywords,
-        season: sku.season,
-        manufacturer: sku.manufacturer,
-        colorFamilyId: sku.colorFamilyId,
-        shoeTypeId: sku.shoeTypeId,
-        heelShapeId: sku.heelShapeId,
-        heelHeightId: sku.heelHeightId,
-        toeShapeId: sku.toeShapeId,
-        closureTypeId: sku.closureTypeId,
-        upperMaterialId: sku.upperMaterialId,
-        outsoleMaterialId: sku.outsoleMaterialId,
-        finishId: sku.finishId,
-        widthTypeId: sku.widthTypeId,
-        patternId: sku.patternId,
-        occasionId: sku.occasionId,
-        targetAudienceId: sku.targetAudienceId,
-        accessoryId: sku.accessoryId,
-        seasonId: sku.seasonId,
-        sizeTypeId: sku.sizeTypeId,
-        labelTypeId: sku.labelTypeId,
-      })
+    if (sku) populateForm(sku)
+  }, [sku, populateForm])
+
+  /** Look up SKU code — if it exists, populate form & switch to update mode */
+  const handleSkuCodeLookup = useCallback(async (code: string) => {
+    if (!code.trim()) {
+      setMatchedSku(null)
+      return
     }
-  }, [sku, form])
+    try {
+      const found = await lookupMutation.mutateAsync(code.trim())
+      if (found) {
+        setMatchedSku(found)
+        populateForm(found)
+        message.info(`Existing SKU found: ${found.skuCode} — switched to update mode`)
+      } else {
+        setMatchedSku(null)
+      }
+    } catch {
+      setMatchedSku(null)
+    }
+  }, [lookupMutation, populateForm, message])
+
+  /** Reset form back to create mode */
+  const handleResetToCreate = useCallback(() => {
+    const currentCode = form.getFieldValue('skuCode')
+    setMatchedSku(null)
+    form.resetFields()
+    form.setFieldsValue({ skuCode: currentCode })
+    message.info('Switched back to create mode')
+  }, [form, message])
 
   const handleSubmit = async (values: SkuCreatePayload) => {
     try {
-      if (isEdit) {
-        await updateMutation.mutateAsync({ skuId: skuId!, payload: values })
+      const editId = skuId ?? matchedSku?.id
+      if (editId) {
+        // Update mode: either from route param or inline lookup match
+        const { skuCode: _omit, ...updateValues } = values as SkuCreatePayload & { skuCode?: string }
+        await updateMutation.mutateAsync({ skuId: editId, payload: updateValues })
         message.success('SKU updated successfully')
       } else {
         await createMutation.mutateAsync(values)
@@ -263,24 +302,9 @@ export default function SkuFormPage() {
     }
   }
 
-  const handleLookup = async () => {
-    if (!lookupCode.trim()) return
-    try {
-      const found = await lookupMutation.mutateAsync(lookupCode.trim())
-      if (found) {
-        message.info(`SKU found: ${found.skuCode} — ${found.brand} ${found.style}`)
-        navigate(`/inventory/skus/${found.id}/edit`)
-      } else {
-        message.warning('No SKU found with that code. You can create a new one.')
-      }
-    } catch {
-      message.error('Lookup failed')
-    }
-  }
-
   const isSaving = createMutation.isPending || updateMutation.isPending
 
-  if (isEdit && skuLoading) {
+  if (isRouteEdit && skuLoading) {
     return (
       <div style={{ textAlign: 'center', padding: 80 }}>
         <Spin size="large" />
@@ -299,7 +323,7 @@ export default function SkuFormPage() {
   const compactItem: React.CSSProperties = { marginBottom: 8 }
 
   return (
-    <App>
+    <>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8, width: '100%' }}>
         {/* Header with Lookup inline */}
         <Card size="small" bodyStyle={{ padding: '8px 16px' }}>
@@ -316,46 +340,35 @@ export default function SkuFormPage() {
                 <Typography.Title level={4} style={{ margin: 0 }}>
                   {isEdit ? 'Edit SKU' : 'New SKU'}
                 </Typography.Title>
-                {isEdit && sku && (
+                {isRouteEdit && sku && (
                   <Tag color="blue">{sku.skuCode}</Tag>
+                )}
+                {!isRouteEdit && matchedSku && (
+                  <Space size={4}>
+                    <Tag color="orange">Existing: {matchedSku.skuCode}</Tag>
+                    <Button size="small" type="link" onClick={handleResetToCreate}>
+                      Create new instead
+                    </Button>
+                  </Space>
                 )}
               </Space>
             </Col>
-            {!isEdit && (
+            {!isRouteEdit && (
               <Col>
-                <Space size={4}>
-                  <Input
-                    placeholder="Lookup existing SKU..."
-                    value={lookupCode}
-                    onChange={(e) => setLookupCode(e.target.value)}
-                    onPressEnter={handleLookup}
-                    size="small"
-                    style={{ width: 200 }}
-                  />
-                  <Button
-                    icon={<SearchOutlined />}
-                    onClick={handleLookup}
-                    loading={lookupMutation.isPending}
-                    size="small"
-                  >
-                    Lookup
-                  </Button>
-                  <Divider type="vertical" />
-                  <Switch
-                    checked={aiPanelOpen}
-                    onChange={setAiPanelOpen}
-                    checkedChildren={<><CameraOutlined /> AI</>}
-                    unCheckedChildren={<><EyeInvisibleOutlined /> AI</>}
-                    style={{ minWidth: 60 }}
-                  />
-                </Space>
+                <Switch
+                  checked={aiPanelOpen}
+                  onChange={setAiPanelOpen}
+                  checkedChildren={<><CameraOutlined /> AI</>}
+                  unCheckedChildren={<><EyeInvisibleOutlined /> AI</>}
+                  style={{ minWidth: 60 }}
+                />
               </Col>
             )}
           </Row>
         </Card>
 
         {/* AI Image Analysis — collapsible */}
-        {!isEdit && aiPanelOpen && (
+        {!isRouteEdit && aiPanelOpen && (
           <Card size="small" bodyStyle={{ padding: '8px 16px' }}>
             <Row align="middle" justify="space-between">
               <Col>
@@ -504,6 +517,35 @@ export default function SkuFormPage() {
             requiredMark="optional"
             size="small"
           >
+            {/* ── SKU Code ── */}
+            {!isRouteEdit && (
+              <>
+                <Typography.Text strong style={{ fontSize: 13 }}>SKU Code</Typography.Text>
+                <Row gutter={12} style={{ marginTop: 8 }}>
+                  <Col xs={24} sm={8}>
+                    <Form.Item
+                      label="SKU Code"
+                      name="skuCode"
+                      style={compactItem}
+                      extra={matchedSku ? undefined : 'Leave blank to auto-generate, or type an existing code to edit that SKU'}
+                    >
+                      <Input
+                        placeholder="e.g. FORMAL-NIKE-BLK-9.5-001"
+                        onBlur={(e) => handleSkuCodeLookup(e.target.value)}
+                        onPressEnter={(e) => {
+                          e.preventDefault()
+                          handleSkuCodeLookup((e.target as HTMLInputElement).value)
+                        }}
+                        suffix={lookupMutation.isPending ? <LoadingOutlined /> : <SearchOutlined style={{ color: '#999' }} />}
+                        disabled={!!matchedSku}
+                      />
+                    </Form.Item>
+                  </Col>
+                </Row>
+                <Divider style={{ margin: '8px 0' }} />
+              </>
+            )}
+
             {/* ── Product Details ── */}
             <Typography.Text strong style={{ fontSize: 13 }}>Product Details</Typography.Text>
 
@@ -728,6 +770,6 @@ export default function SkuFormPage() {
           </Form>
         </Card>
       </div>
-    </App>
+    </>
   )
 }
