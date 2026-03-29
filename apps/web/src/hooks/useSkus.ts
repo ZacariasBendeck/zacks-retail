@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { fetchSkus, fetchSku, createSku, updateSku, deactivateSku, fetchVendors } from '../services/skuApi'
+import { fetchSkus, fetchSku, createSku, updateSku, deactivateSku, fetchVendors, analyzeImage } from '../services/skuApi'
 import type { SkuListParams, SkuCreatePayload, SkuUpdatePayload } from '../types/sku'
 
 export function useSkus(params: SkuListParams) {
@@ -55,5 +55,11 @@ export function useVendors() {
     queryKey: ['vendors'],
     queryFn: fetchVendors,
     staleTime: 5 * 60 * 1000,
+  })
+}
+
+export function useAnalyzeImage() {
+  return useMutation({
+    mutationFn: (file: File) => analyzeImage(file),
   })
 }

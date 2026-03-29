@@ -1,5 +1,7 @@
 import { Router, Request, Response, IRouter } from 'express';
+import multer from 'multer';
 import * as skuService from '../services/skuService';
+import { analyzeShoeImage } from '../services/imageAnalysisService';
 import {
   createSkuSchema,
   updateSkuSchema,
@@ -10,6 +12,19 @@ import {
 import { SkuListParams } from '../models/sku';
 
 const router: IRouter = Router();
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB max
+  fileFilter: (_req, file, cb) => {
+    const allowed = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+    if (allowed.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only JPEG, PNG, GIF, and WebP images are allowed.'));
+    }
+  },
+});
 
 /**
  * @openapi
@@ -45,6 +60,50 @@ router.post('/', validate(createSkuSchema), (req: Request, res: Response): void 
       return;
     }
     throw err;
+  }
+});
+
+/**
+ * @openapi
+ * /api/v1/skus/analyze-image:
+ *   post:
+ *     summary: Analyze a shoe image using AI and return suggested attributes
+ *     tags: [SKUs]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         multipart/form-data:
+ *           schema:
+ *             type: object
+ *             required: [image]
+ *             properties:
+ *               image:
+ *                 type: string
+ *                 format: binary
+ *     responses:
+ *       200:
+ *         description: AI-suggested shoe attributes
+ *       400:
+ *         description: No image provided or invalid format
+ *       500:
+ *         description: AI analysis failed
+ */
+router.post('/analyze-image', upload.single('image'), async (req: Request, res: Response): Promise<void> => {
+  try {
+    if (!req.file) {
+      res.status(400).json({ error: { code: 'NO_IMAGE', message: 'An image file is required. Upload a JPEG, PNG, GIF, or WebP image.' } });
+      return;
+    }
+
+    const result = await analyzeShoeImage(req.file.buffer, req.file.mimetype);
+    res.json(result);
+  } catch (err: any) {
+    if (err.message?.includes('ANTHROPIC_API_KEY')) {
+      res.status(500).json({ error: { code: 'CONFIG_ERROR', message: 'AI service is not configured. Set the ANTHROPIC_API_KEY environment variable.' } });
+      return;
+    }
+    console.error('Image analysis error:', err);
+    res.status(500).json({ error: { code: 'ANALYSIS_FAILED', message: 'Failed to analyze image. Please try again.' } });
   }
 });
 
@@ -125,6 +184,13 @@ router.get('/', validateQuery(skuListQuerySchema), (req: Request, res: Response)
  */
 router.get('/:skuId', (req: Request, res: Response): void => {
   const skuId = req.params.skuId as string;
+
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!uuidRegex.test(skuId)) {
+    res.status(400).json({ error: { code: 'INVALID_ID', message: 'skuId must be a valid UUID.' } });
+    return;
+  }
+
   const sku = skuService.getSkuById(skuId);
   if (!sku) {
     res.status(404).json({ error: { code: 'NOT_FOUND', message: 'SKU not found.' } });
@@ -158,6 +224,20 @@ router.get('/:skuId', (req: Request, res: Response): void => {
 router.patch('/:skuId', validate(updateSkuSchema), (req: Request, res: Response): void => {
   try {
     const skuId = req.params.skuId as string;
+
+    // Validate UUID format
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!uuidRegex.test(skuId)) {
+      res.status(400).json({ error: { code: 'INVALID_ID', message: 'skuId must be a valid UUID.' } });
+      return;
+    }
+
+    // Reject empty PATCH body
+    if (Object.keys(req.body).length === 0) {
+      res.status(400).json({ error: { code: 'EMPTY_BODY', message: 'PATCH body must contain at least one field to update.' } });
+      return;
+    }
+
     const sku = skuService.updateSku(skuId, req.body);
     if (!sku) {
       res.status(404).json({ error: { code: 'NOT_FOUND', message: 'SKU not found.' } });
@@ -192,6 +272,13 @@ router.patch('/:skuId', validate(updateSkuSchema), (req: Request, res: Response)
  */
 router.delete('/:skuId', (req: Request, res: Response): void => {
   const skuId = req.params.skuId as string;
+
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!uuidRegex.test(skuId)) {
+    res.status(400).json({ error: { code: 'INVALID_ID', message: 'skuId must be a valid UUID.' } });
+    return;
+  }
+
   const deleted = skuService.deactivateSku(skuId);
   if (!deleted) {
     res.status(404).json({ error: { code: 'NOT_FOUND', message: 'SKU not found.' } });

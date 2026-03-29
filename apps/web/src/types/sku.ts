@@ -51,6 +51,21 @@ export interface SkuCreatePayload {
 
 export type SkuUpdatePayload = Partial<SkuCreatePayload>
 
+export interface ImageAnalysisResult {
+  shoe_type: string | null
+  heel_height: string | null
+  heel_shape: string | null
+  toe_shape: string | null
+  color_family: string | null
+  upper_material: string | null
+  finish: string | null
+  pattern: string | null
+  occasion: string | null
+  department: string | null
+  color: string | null
+  description: string | null
+}
+
 export interface Vendor {
   id: string
   name: string

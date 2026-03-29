@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import {
   Form,
@@ -14,9 +14,11 @@ import {
   Typography,
   App,
   Divider,
+  Upload,
+  Alert,
 } from 'antd'
-import { ArrowLeftOutlined, SaveOutlined } from '@ant-design/icons'
-import { useSku, useCreateSku, useUpdateSku, useVendors } from '../../hooks/useSkus'
+import { ArrowLeftOutlined, SaveOutlined, CameraOutlined, LoadingOutlined } from '@ant-design/icons'
+import { useSku, useCreateSku, useUpdateSku, useVendors, useAnalyzeImage } from '../../hooks/useSkus'
 import type { Department, SkuCreatePayload } from '../../types/sku'
 
 const DEPARTMENTS: Department[] = ['FORMAL', 'CASUAL', 'FIESTA', 'SANDALIAS', 'BOOTS', 'COMFORT']
@@ -32,6 +34,8 @@ export default function SkuFormPage() {
   const { data: vendors, isLoading: vendorsLoading } = useVendors()
   const createMutation = useCreateSku()
   const updateMutation = useUpdateSku()
+  const analyzeMutation = useAnalyzeImage()
+  const [imagePreview, setImagePreview] = useState<string | null>(null)
 
   useEffect(() => {
     if (sku) {
@@ -70,6 +74,26 @@ export default function SkuFormPage() {
     }
   }
 
+  const handleImageUpload = async (file: File) => {
+    const previewUrl = URL.createObjectURL(file)
+    setImagePreview(previewUrl)
+
+    try {
+      const result = await analyzeMutation.mutateAsync(file)
+      const fieldsToSet: Record<string, any> = {}
+
+      if (result.color) fieldsToSet.color = result.color
+      if (result.department) fieldsToSet.department = result.department
+      if (result.description) fieldsToSet.description = result.description
+
+      form.setFieldsValue(fieldsToSet)
+      message.success('AI analysis complete — form fields updated. You can adjust any values.')
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : 'Image analysis failed'
+      message.error(errMsg)
+    }
+  }
+
   const isSaving = createMutation.isPending || updateMutation.isPending
 
   if (isEdit && skuLoading) {
@@ -103,6 +127,81 @@ export default function SkuFormPage() {
             </Col>
           </Row>
         </Card>
+
+        {!isEdit && (
+          <Card>
+            <Typography.Title level={5} style={{ marginTop: 0 }}>
+              <CameraOutlined /> AI Image Analysis
+            </Typography.Title>
+            <Typography.Text type="secondary" style={{ display: 'block', marginBottom: 16 }}>
+              Drop a shoe photo to auto-fill attributes using AI
+            </Typography.Text>
+
+            <Row gutter={16} align="top">
+              <Col xs={24} sm={imagePreview ? 12 : 24}>
+                <Upload.Dragger
+                  accept="image/jpeg,image/png,image/gif,image/webp"
+                  showUploadList={false}
+                  beforeUpload={(file) => {
+                    handleImageUpload(file)
+                    return false
+                  }}
+                  disabled={analyzeMutation.isPending}
+                  style={{ padding: '20px 0' }}
+                >
+                  {analyzeMutation.isPending ? (
+                    <div>
+                      <LoadingOutlined style={{ fontSize: 32, color: '#1677ff' }} />
+                      <p style={{ marginTop: 8 }}>Analyzing image with AI...</p>
+                    </div>
+                  ) : (
+                    <div>
+                      <CameraOutlined style={{ fontSize: 32, color: '#999' }} />
+                      <p style={{ marginTop: 8 }}>Click or drag a shoe image here</p>
+                      <p style={{ color: '#999', fontSize: 12 }}>JPEG, PNG, GIF, or WebP — max 10 MB</p>
+                    </div>
+                  )}
+                </Upload.Dragger>
+              </Col>
+              {imagePreview && (
+                <Col xs={24} sm={12}>
+                  <img
+                    src={imagePreview}
+                    alt="Uploaded shoe"
+                    style={{
+                      width: '100%',
+                      maxHeight: 200,
+                      objectFit: 'contain',
+                      borderRadius: 8,
+                      border: '1px solid #d9d9d9',
+                    }}
+                  />
+                </Col>
+              )}
+            </Row>
+
+            {analyzeMutation.isSuccess && analyzeMutation.data && (
+              <Alert
+                type="info"
+                showIcon
+                style={{ marginTop: 16 }}
+                message="AI Suggestions Applied"
+                description={
+                  <div style={{ fontSize: 12 }}>
+                    {analyzeMutation.data.shoe_type && <span><strong>Type:</strong> {analyzeMutation.data.shoe_type} &nbsp;|&nbsp; </span>}
+                    {analyzeMutation.data.heel_height && <span><strong>Heel:</strong> {analyzeMutation.data.heel_height} &nbsp;|&nbsp; </span>}
+                    {analyzeMutation.data.toe_shape && <span><strong>Toe:</strong> {analyzeMutation.data.toe_shape} &nbsp;|&nbsp; </span>}
+                    {analyzeMutation.data.upper_material && <span><strong>Material:</strong> {analyzeMutation.data.upper_material} &nbsp;|&nbsp; </span>}
+                    {analyzeMutation.data.color_family && <span><strong>Color Family:</strong> {analyzeMutation.data.color_family} &nbsp;|&nbsp; </span>}
+                    {analyzeMutation.data.finish && <span><strong>Finish:</strong> {analyzeMutation.data.finish} &nbsp;|&nbsp; </span>}
+                    {analyzeMutation.data.pattern && <span><strong>Pattern:</strong> {analyzeMutation.data.pattern} &nbsp;|&nbsp; </span>}
+                    {analyzeMutation.data.occasion && <span><strong>Occasion:</strong> {analyzeMutation.data.occasion}</span>}
+                  </div>
+                }
+              />
+            )}
+          </Card>
+        )}
 
         <Card>
           <Form

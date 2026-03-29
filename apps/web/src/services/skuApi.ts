@@ -1,4 +1,4 @@
-import type { PaginationEnvelope, Sku, SkuCreatePayload, SkuUpdatePayload, SkuListParams, Vendor } from '../types/sku'
+import type { PaginationEnvelope, Sku, SkuCreatePayload, SkuUpdatePayload, SkuListParams, Vendor, ImageAnalysisResult } from '../types/sku'
 import { MOCK_SKUS } from '../mock/skuData'
 
 const USE_MOCK = true
@@ -166,4 +166,21 @@ export async function deactivateSku(skuId: string): Promise<void> {
 
   const res = await fetch(`/api/v1/skus/${skuId}`, { method: 'DELETE' })
   if (!res.ok) throw new Error(`Failed to deactivate SKU: ${res.status}`)
+}
+
+export async function analyzeImage(file: File): Promise<ImageAnalysisResult> {
+  const formData = new FormData()
+  formData.append('image', file)
+
+  const res = await fetch('/api/v1/skus/analyze-image', {
+    method: 'POST',
+    body: formData,
+  })
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body?.error?.message ?? `Image analysis failed: ${res.status}`)
+  }
+
+  return res.json()
 }

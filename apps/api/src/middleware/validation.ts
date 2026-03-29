@@ -20,6 +20,7 @@ export const createSkuSchema = z.object({
 });
 
 export const updateSkuSchema = z.object({
+  skuCode: z.undefined({ message: 'skuCode is auto-generated and cannot be modified' }),
   brand: z.string().min(1).max(100).optional(),
   style: z.string().min(1).max(100).optional(),
   color: z.string().min(1).max(50).optional(),

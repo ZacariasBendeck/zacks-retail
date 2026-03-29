@@ -112,6 +112,33 @@ describe('POST /api/v1/skus', () => {
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe('INVALID_VENDOR');
   });
+
+  it('auto-creates inventory record with on_hand=0 and reserved=0', async () => {
+    const created = await request(app).post('/api/v1/skus').send(validSku);
+    expect(created.status).toBe(201);
+    expect(created.body.currentStock).toBe(0);
+
+    // Verify inventory record exists via GET
+    const fetched = await request(app).get(`/api/v1/skus/${created.body.id}`);
+    expect(fetched.status).toBe(200);
+    expect(fetched.body.currentStock).toBe(0);
+
+    // Verify directly in DB
+    const db = getDb();
+    const inv = db.prepare('SELECT * FROM inventory WHERE sku_id = ?').get(created.body.id) as any;
+    expect(inv).toBeTruthy();
+    expect(inv.quantity_on_hand).toBe(0);
+    expect(inv.quantity_reserved).toBe(0);
+  });
+
+  it('generates incrementing SKU code sequences (001, 002)', async () => {
+    const sku1 = await request(app).post('/api/v1/skus').send(validSku);
+    const sku2 = await request(app).post('/api/v1/skus').send(validSku);
+    expect(sku1.status).toBe(201);
+    expect(sku2.status).toBe(201);
+    expect(sku1.body.skuCode).toMatch(/-001$/);
+    expect(sku2.body.skuCode).toMatch(/-002$/);
+  });
 });
 
 describe('GET /api/v1/skus/:skuId', () => {
@@ -127,6 +154,12 @@ describe('GET /api/v1/skus/:skuId', () => {
     const res = await request(app).get('/api/v1/skus/00000000-0000-0000-0000-000000000099');
     expect(res.status).toBe(404);
   });
+
+  it('returns 400 for invalid UUID param on GET', async () => {
+    const res = await request(app).get('/api/v1/skus/not-a-uuid');
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('INVALID_ID');
+  });
 });
 
 describe('PATCH /api/v1/skus/:skuId', () => {
@@ -136,6 +169,26 @@ describe('PATCH /api/v1/skus/:skuId', () => {
     expect(res.status).toBe(200);
     expect(res.body.price).toBe(149.99);
     expect(res.body.skuCode).toBe(created.body.skuCode); // immutable
+  });
+
+  it('rejects skuCode in PATCH body (immutable field)', async () => {
+    const created = await request(app).post('/api/v1/skus').send(validSku);
+    const res = await request(app).patch(`/api/v1/skus/${created.body.id}`).send({ skuCode: 'HACKED-CODE' });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('returns 400 for empty PATCH body', async () => {
+    const created = await request(app).post('/api/v1/skus').send(validSku);
+    const res = await request(app).patch(`/api/v1/skus/${created.body.id}`).send({});
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('EMPTY_BODY');
+  });
+
+  it('returns 400 for invalid UUID param on PATCH', async () => {
+    const res = await request(app).patch('/api/v1/skus/not-a-uuid').send({ price: 50 });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('INVALID_ID');
   });
 
   it('updates heelType and material', async () => {
@@ -189,6 +242,12 @@ describe('DELETE /api/v1/skus/:skuId', () => {
   it('returns 404 for missing SKU', async () => {
     const res = await request(app).delete('/api/v1/skus/00000000-0000-0000-0000-000000000099');
     expect(res.status).toBe(404);
+  });
+
+  it('returns 400 for invalid UUID param on DELETE', async () => {
+    const res = await request(app).delete('/api/v1/skus/not-a-uuid');
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('INVALID_ID');
   });
 });
 
