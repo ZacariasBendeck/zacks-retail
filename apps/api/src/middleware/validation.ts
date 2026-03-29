@@ -85,6 +85,40 @@ export const updateVendorSchema = z.object({
   active: z.boolean().optional(),
 });
 
+// ── Purchase Order schemas ──────────────────────────────────────────
+
+const PO_STATUSES = ['DRAFT', 'SUBMITTED', 'CONFIRMED', 'PARTIALLY_RECEIVED', 'RECEIVED', 'CLOSED', 'CANCELLED'] as const;
+
+const lineItemSchema = z.object({
+  skuId: z.string().uuid(),
+  quantity: z.number().int().positive(),
+  unitCost: z.number().positive(),
+});
+
+export const createPurchaseOrderSchema = z.object({
+  vendorId: z.string().uuid(),
+  lineItems: z.array(lineItemSchema).min(1, 'At least one line item is required'),
+  notes: z.string().max(1000).optional().nullable(),
+});
+
+export const updatePurchaseOrderSchema = z.object({
+  notes: z.string().max(1000).optional().nullable(),
+  lineItems: z.array(lineItemSchema).min(1, 'At least one line item is required').optional(),
+});
+
+export const poStatusTransitionSchema = z.object({
+  status: z.enum(['SUBMITTED', 'CONFIRMED', 'PARTIALLY_RECEIVED', 'RECEIVED', 'CLOSED', 'CANCELLED']),
+  reason: z.string().max(500).optional(),
+});
+
+export const poListQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(200).default(50),
+  status: z.enum(PO_STATUSES).optional(),
+  vendorId: z.string().uuid().optional(),
+  q: z.string().optional(),
+});
+
 export const vendorListQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(200).default(50),
