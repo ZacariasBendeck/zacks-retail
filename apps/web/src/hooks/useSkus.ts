@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { fetchSkus, fetchSku, createSku, updateSku, deactivateSku, fetchVendors, analyzeImage, fetchAllReferenceData, lookupSkuByCode } from '../services/skuApi'
+import { fetchSkus, fetchSku, createSku, updateSku, deactivateSku, fetchVendors, analyzeImage, fetchAllReferenceData, lookupSkuByCode, searchSkus } from '../services/skuApi'
 import type { SkuListParams, SkuCreatePayload, SkuUpdatePayload } from '../types/sku'
 
 export function useSkus(params: SkuListParams) {
@@ -60,7 +60,7 @@ export function useVendors() {
 
 export function useAnalyzeImage() {
   return useMutation({
-    mutationFn: (file: File) => analyzeImage(file),
+    mutationFn: analyzeImage,
   })
 }
 
@@ -75,5 +75,15 @@ export function useReferenceData() {
 export function useLookupSku() {
   return useMutation({
     mutationFn: (code: string) => lookupSkuByCode(code),
+  })
+}
+
+export function useSearchSkus(query: string) {
+  return useQuery({
+    queryKey: ['skus', 'search', query],
+    queryFn: () => searchSkus(query),
+    enabled: query.trim().length >= 1,
+    staleTime: 30 * 1000,
+    placeholderData: (prev) => prev,
   })
 }

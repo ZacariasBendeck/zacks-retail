@@ -1,4 +1,4 @@
-import type { PaginationEnvelope, Sku, SkuCreatePayload, SkuUpdatePayload, SkuListParams, Vendor, ImageAnalysisResult, ReferenceDataMap } from '../types/sku'
+import type { PaginationEnvelope, Sku, SkuCreatePayload, SkuUpdatePayload, SkuListParams, Vendor, ImageAnalysisResult, EnhancedAnalysisResult, ReferenceDataMap } from '../types/sku'
 
 export async function fetchSkus(params: SkuListParams): Promise<PaginationEnvelope<Sku>> {
   const searchParams = new URLSearchParams()
@@ -59,7 +59,7 @@ export async function deactivateSku(skuId: string): Promise<void> {
   if (!res.ok) throw new Error(`Failed to deactivate SKU: ${res.status}`)
 }
 
-export async function analyzeImage(file: File): Promise<ImageAnalysisResult> {
+export async function analyzeImage(file: File): Promise<EnhancedAnalysisResult> {
   const formData = new FormData()
   formData.append('image', file)
 
@@ -73,13 +73,28 @@ export async function analyzeImage(file: File): Promise<ImageAnalysisResult> {
     throw new Error(body?.error?.message ?? `Image analysis failed: ${res.status}`)
   }
 
-  return res.json()
+  const data = await res.json()
+
+  // Support both current (flat) and future (enhanced { raw, mapped }) response formats
+  if (data.raw) {
+    return data as EnhancedAnalysisResult
+  }
+  return { raw: data as ImageAnalysisResult }
 }
 
 export async function fetchAllReferenceData(): Promise<ReferenceDataMap> {
   const res = await fetch('/api/v1/skus/reference/all')
   if (!res.ok) throw new Error(`Failed to fetch reference data: ${res.status}`)
   return res.json()
+}
+
+export async function searchSkus(query: string): Promise<Sku[]> {
+  if (!query.trim()) return []
+  const params = new URLSearchParams({ q: query.trim(), pageSize: '50', sort: 'skuCode', order: 'asc' })
+  const res = await fetch(`/api/v1/skus?${params}`)
+  if (!res.ok) return []
+  const body: PaginationEnvelope<Sku> = await res.json()
+  return body.data
 }
 
 export async function lookupSkuByCode(code: string): Promise<Sku | null> {

@@ -125,6 +125,27 @@ export interface ImageAnalysisResult {
   description: string | null
 }
 
+/** Enhanced response from analyze-image when backend supports mapped attributes */
+export interface EnhancedAnalysisResult {
+  raw: ImageAnalysisResult
+  mapped?: Record<string, number | null>
+}
+
+/** Mapping from AI attribute key to form field + reference table */
+export interface AiFillMapping {
+  formField: string
+  type: 'text' | 'enum' | 'reference'
+  refTable?: string
+  aiKey: keyof ImageAnalysisResult
+}
+
+/** Result of AI fill operation for UI feedback */
+export interface AiFillSummary {
+  filled: string[]
+  skipped: string[]
+  total: number
+}
+
 export interface Vendor {
   id: string
   name: string

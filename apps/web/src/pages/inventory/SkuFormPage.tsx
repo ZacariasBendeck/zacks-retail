@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import {
   Form,
@@ -19,9 +19,10 @@ import {
   Tag,
   Tooltip,
   Switch,
+  AutoComplete,
 } from 'antd'
 import { ArrowLeftOutlined, SaveOutlined, CameraOutlined, LoadingOutlined, SearchOutlined, ThunderboltOutlined, CheckCircleOutlined, ExclamationCircleOutlined, ReloadOutlined, EyeInvisibleOutlined } from '@ant-design/icons'
-import { useSku, useCreateSku, useUpdateSku, useVendors, useAnalyzeImage, useReferenceData, useLookupSku } from '../../hooks/useSkus'
+import { useSku, useCreateSku, useUpdateSku, useVendors, useAnalyzeImage, useReferenceData, useLookupSku, useSearchSkus } from '../../hooks/useSkus'
 import type { Department, SkuCreatePayload, ReferenceItem, ImageAnalysisResult, EnhancedAnalysisResult, AiFillSummary } from '../../types/sku'
 
 const DEPARTMENTS: Department[] = ['FORMAL', 'CASUAL', 'FIESTA', 'SANDALIAS', 'BOOTS', 'COMFORT']
@@ -126,6 +127,27 @@ export default function SkuFormPage() {
   // Inline lookup state: tracks when a user-entered SKU code matches an existing SKU
   const [matchedSku, setMatchedSku] = useState<import('../../types/sku').Sku | null>(null)
   const isEdit = isRouteEdit || !!matchedSku
+
+  // SKU search-as-you-type state
+  const [skuSearchText, setSkuSearchText] = useState('')
+  const [debouncedSearch, setDebouncedSearch] = useState('')
+  const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const { data: searchResults, isFetching: isSearching } = useSearchSkus(debouncedSearch)
+
+  const skuSearchOptions = useMemo(() => {
+    if (!searchResults?.length) return []
+    return searchResults.map((s) => ({
+      value: s.skuCode,
+      label: (
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
+          <span style={{ fontWeight: 500 }}>{s.skuCode}</span>
+          <span style={{ color: '#888', fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {[s.brand, s.style, s.color, s.size].filter(Boolean).join(' · ')}
+          </span>
+        </div>
+      ),
+    }))
+  }, [searchResults])
 
   /** Apply AI results to form fields using client-side matching */
   const applyAiFill = useCallback((result: EnhancedAnalysisResult) => {
@@ -527,18 +549,36 @@ export default function SkuFormPage() {
                       label="SKU Code"
                       name="skuCode"
                       style={compactItem}
-                      extra={matchedSku ? undefined : 'Leave blank to auto-generate, or type an existing code to edit that SKU'}
+                      extra={matchedSku ? undefined : 'Leave blank to auto-generate, or type to search existing SKUs'}
                     >
-                      <Input
-                        placeholder="e.g. FORMAL-NIKE-BLK-9.5-001"
-                        onBlur={(e) => handleSkuCodeLookup(e.target.value)}
-                        onPressEnter={(e) => {
-                          e.preventDefault()
-                          handleSkuCodeLookup((e.target as HTMLInputElement).value)
+                      <AutoComplete
+                        options={skuSearchOptions}
+                        onSearch={(text) => {
+                          setSkuSearchText(text)
+                          if (debounceTimer.current) clearTimeout(debounceTimer.current)
+                          debounceTimer.current = setTimeout(() => setDebouncedSearch(text), 300)
                         }}
-                        suffix={lookupMutation.isPending ? <LoadingOutlined /> : <SearchOutlined style={{ color: '#999' }} />}
+                        onSelect={(value: string) => {
+                          form.setFieldsValue({ skuCode: value })
+                          handleSkuCodeLookup(value)
+                        }}
+                        onBlur={() => {
+                          const code = form.getFieldValue('skuCode')
+                          if (code) handleSkuCodeLookup(code)
+                        }}
+                        placeholder="e.g. FORMAL-NIKE-BLK-9.5-001"
                         disabled={!!matchedSku}
-                      />
+                        popupMatchSelectWidth={400}
+                        notFoundContent={isSearching ? <Spin size="small" /> : (skuSearchText.length >= 1 ? 'No matching SKUs' : null)}
+                      >
+                        <Input
+                          suffix={lookupMutation.isPending || isSearching ? <LoadingOutlined /> : <SearchOutlined style={{ color: '#999' }} />}
+                          onPressEnter={(e) => {
+                            e.preventDefault()
+                            handleSkuCodeLookup((e.target as HTMLInputElement).value)
+                          }}
+                        />
+                      </AutoComplete>
                     </Form.Item>
                   </Col>
                 </Row>
