@@ -152,6 +152,7 @@ export interface ImageAnalysisResult {
   department: string | null
   color: string | null
   description: string | null
+  category: string | null
 }
 
 /** Enhanced response from analyze-image when backend supports mapped attributes */

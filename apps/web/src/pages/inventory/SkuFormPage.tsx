@@ -22,17 +22,16 @@ import {
   AutoComplete,
 } from 'antd'
 import { ArrowLeftOutlined, SaveOutlined, CameraOutlined, LoadingOutlined, SearchOutlined, ThunderboltOutlined, CheckCircleOutlined, ExclamationCircleOutlined, ReloadOutlined, EyeInvisibleOutlined } from '@ant-design/icons'
-import { useSku, useCreateSku, useUpdateSku, useVendors, useAnalyzeImage, useReferenceData, useLookupSku, useSearchSkus } from '../../hooks/useSkus'
-import { fetchSizeLabels } from '../../services/skuApi'
-import type { Department, SkuCreatePayload, ReferenceItem, ImageAnalysisResult, EnhancedAnalysisResult, AiFillSummary, SizeLabelItem } from '../../types/sku'
+import { useSku, useCreateSku, useUpdateSku, useVendors, useAnalyzeImage, useReferenceData, useLookupSku, useAutocompleteSkus } from '../../hooks/useSkus'
+import type { Department, SkuCreatePayload, ReferenceItem, ImageAnalysisResult, EnhancedAnalysisResult, AiFillSummary } from '../../types/sku'
 
 const DEPARTMENTS: Department[] = ['FORMAL', 'CASUAL', 'FIESTA', 'SANDALIAS', 'BOOTS', 'COMFORT']
 
-/** Mapping: AI response key → form field name + reference table slug */
+/** Mapping: AI response key -> form field name + reference table slug */
 const AI_FIELD_MAP: { aiKey: keyof ImageAnalysisResult; formField: string; type: 'text' | 'enum' | 'reference'; refTable?: string }[] = [
   { aiKey: 'description', formField: 'webDescription', type: 'text' },
   { aiKey: 'department', formField: 'department', type: 'enum' },
-  { aiKey: 'color', formField: 'colorId', type: 'reference', refTable: 'colors' },
+  { aiKey: 'color_family', formField: 'colorId', type: 'reference', refTable: 'colors' },
   { aiKey: 'shoe_type', formField: 'shoeTypeId', type: 'reference', refTable: 'shoe-types' },
   { aiKey: 'heel_height', formField: 'heelHeightId', type: 'reference', refTable: 'heel-heights' },
   { aiKey: 'heel_shape', formField: 'heelShapeId', type: 'reference', refTable: 'heel-shapes' },
@@ -41,6 +40,7 @@ const AI_FIELD_MAP: { aiKey: keyof ImageAnalysisResult; formField: string; type:
   { aiKey: 'finish', formField: 'finishId', type: 'reference', refTable: 'finishes' },
   { aiKey: 'pattern', formField: 'patternId', type: 'reference', refTable: 'patterns' },
   { aiKey: 'occasion', formField: 'occasionId', type: 'reference', refTable: 'occasions' },
+  { aiKey: 'category', formField: 'categoryId', type: 'reference', refTable: 'categories' },
 ]
 
 /** Normalize string for comparison: lowercase, trim, remove accents */
@@ -116,42 +116,54 @@ export default function SkuFormPage() {
   const updateMutation = useUpdateSku()
   const analyzeMutation = useAnalyzeImage()
   const lookupMutation = useLookupSku()
-  const [aiPanelOpen, setAiPanelOpen] = useState(false)
+  const [aiPanelOpen, setAiPanelOpen] = useState(true)
   const [imagePreview, setImagePreview] = useState<string | null>(null)
   const [analysisResult, setAnalysisResult] = useState<EnhancedAnalysisResult | null>(null)
   const [aiFilledFields, setAiFilledFields] = useState<Set<string>>(new Set())
   const [aiFillSummary, setAiFillSummary] = useState<AiFillSummary | null>(null)
   const [analysisError, setAnalysisError] = useState<string | null>(null)
   const [lastUploadedFile, setLastUploadedFile] = useState<File | null>(null)
-  const [sizeLabels, setSizeLabels] = useState<SizeLabelItem[]>([])
 
   // Inline lookup state: tracks when a user-entered SKU code matches an existing SKU
   const [matchedSku, setMatchedSku] = useState<import('../../types/sku').Sku | null>(null)
   const isEdit = isRouteEdit || !!matchedSku
 
-  // SKU search-as-you-type state
+  // SKU autocomplete state
   const [skuSearchText, setSkuSearchText] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => {
     return () => { if (debounceTimer.current) clearTimeout(debounceTimer.current) }
   }, [])
-  const { data: searchResults, isFetching: isSearching } = useSearchSkus(debouncedSearch)
+  const { data: autocompleteResults, isFetching: isSearching } = useAutocompleteSkus(debouncedSearch)
 
   const skuSearchOptions = useMemo(() => {
-    if (!searchResults?.length) return []
-    return searchResults.map((s) => ({
+    if (!autocompleteResults?.length) return []
+    return autocompleteResults.map((s) => ({
       value: s.skuCode,
       label: (
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
           <span style={{ fontWeight: 500 }}>{s.skuCode}</span>
           <span style={{ color: '#888', fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {s.style} · {s.department}
+            {s.style}{s.brandName ? ` · ${s.brandName}` : ''}
           </span>
         </div>
       ),
     }))
-  }, [searchResults])
+  }, [autocompleteResults])
+
+  // Auto-fill department when category changes
+  const handleCategoryChange = useCallback((categoryId: number | null) => {
+    if (!categoryId || !refData) {
+      form.setFieldsValue({ department: undefined })
+      return
+    }
+    const cats = (refData['categories'] ?? []) as { id: number; deptMacro?: string }[]
+    const cat = cats.find((c) => c.id === categoryId)
+    if (cat?.deptMacro) {
+      form.setFieldsValue({ department: cat.deptMacro })
+    }
+  }, [refData, form])
 
   /** Apply AI results to form fields using client-side matching */
   const applyAiFill = useCallback((result: EnhancedAnalysisResult) => {
@@ -187,6 +199,14 @@ export default function SkuFormPage() {
         if (matchedId != null) {
           fieldsToSet[mapping.formField] = matchedId
           filled.push(mapping.formField)
+          // If AI fills category, also auto-fill department
+          if (mapping.formField === 'categoryId') {
+            const cats = (refData['categories'] ?? []) as { id: number; deptMacro?: string }[]
+            const cat = cats.find((c) => c.id === matchedId)
+            if (cat?.deptMacro) {
+              fieldsToSet['department'] = cat.deptMacro
+            }
+          }
         } else {
           skipped.push(mapping.formField)
         }
@@ -233,14 +253,8 @@ export default function SkuFormPage() {
       targetAudienceId: s.targetAudienceId,
       accessoryId: s.accessoryId,
       seasonId: s.seasonId,
-      sizeTypeId: s.sizeTypeId,
       labelTypeId: s.labelTypeId,
-      sizes: s.sizes?.map((sz) => sz.sizeLabel) ?? [],
     })
-    // Load size labels if sizeType is set
-    if (s.sizeTypeId) {
-      fetchSizeLabels(s.sizeTypeId).then(setSizeLabels).catch(() => {})
-    }
   }, [form])
 
   useEffect(() => {
@@ -258,7 +272,7 @@ export default function SkuFormPage() {
       if (found) {
         setMatchedSku(found)
         populateForm(found)
-        message.info(`Existing SKU found: ${found.skuCode} — switched to update mode`)
+        message.info(`SKU existente encontrado: ${found.skuCode} — modo edicion`)
       } else {
         setMatchedSku(null)
       }
@@ -273,26 +287,25 @@ export default function SkuFormPage() {
     setMatchedSku(null)
     form.resetFields()
     form.setFieldsValue({ skuCode: currentCode })
-    message.info('Switched back to create mode')
+    message.info('Modo crear activado')
   }, [form, message])
 
   const handleSubmit = async (values: SkuCreatePayload) => {
     try {
       const editId = skuId ?? matchedSku?.id
       if (editId) {
-        // Update mode: either from route param or inline lookup match
         const { skuCode: _omit, ...updateValues } = values as SkuCreatePayload & { skuCode?: string }
         await updateMutation.mutateAsync({ skuId: editId, payload: updateValues })
-        message.success('SKU updated successfully')
+        message.success('SKU actualizado exitosamente')
       } else {
         await createMutation.mutateAsync(values)
-        message.success('SKU created successfully')
+        message.success('SKU creado exitosamente')
       }
       navigate('/inventory/skus')
     } catch (err) {
-      const errMsg = err instanceof Error ? err.message : 'An error occurred'
+      const errMsg = err instanceof Error ? err.message : 'Ocurrio un error'
       if (errMsg.toLowerCase().includes('duplicate barcode') || errMsg.includes('409')) {
-        form.setFields([{ name: 'barcode', errors: ['This barcode is already in use'] }])
+        form.setFields([{ name: 'barcode', errors: ['Este codigo de barras ya esta en uso'] }])
       } else {
         message.error(errMsg)
       }
@@ -311,9 +324,9 @@ export default function SkuFormPage() {
     try {
       const result = await analyzeMutation.mutateAsync(file)
       setAnalysisResult(result)
-      message.success('Image analyzed! Click "Fill with AI" to auto-populate fields.')
+      message.success('Imagen analizada. Haz clic en "Llenar con IA" para auto-completar campos.')
     } catch (err) {
-      const errMsg = err instanceof Error ? err.message : 'Image analysis failed'
+      const errMsg = err instanceof Error ? err.message : 'Fallo el analisis de imagen'
       setAnalysisError(errMsg)
     }
   }
@@ -329,7 +342,7 @@ export default function SkuFormPage() {
     applyAiFill(analysisResult)
     const summary = aiFillSummary
     if (summary) {
-      message.success(`AI filled ${summary.filled.length} of ${summary.total} fields.`)
+      message.success(`IA lleno ${summary.filled.length} de ${summary.total} campos.`)
     }
   }
 
@@ -346,12 +359,30 @@ export default function SkuFormPage() {
   if (refLoading) {
     return (
       <div style={{ textAlign: 'center', padding: 80 }}>
-        <Spin size="large" tip="Loading reference data..." />
+        <Spin size="large" tip="Cargando datos de referencia..." />
       </div>
     )
   }
 
   const compactItem: React.CSSProperties = { marginBottom: 8 }
+
+  // Build category options with search by name or RICS code
+  const categoryOptions = useMemo(() => {
+    const cats = (refData?.['categories'] ?? []) as { id: number; ricsCode?: number; name: string; deptMacro?: string }[]
+    const grouped = cats.reduce<Record<string, typeof cats>>((acc, c) => {
+      const group = c.deptMacro || 'Otro'
+      if (!acc[group]) acc[group] = []
+      acc[group].push(c)
+      return acc
+    }, {})
+    return Object.entries(grouped).map(([macro, items]) => ({
+      label: macro,
+      options: items.map((c) => ({
+        label: `${c.ricsCode ?? ''} ${c.name}`,
+        value: c.id,
+      })),
+    }))
+  }, [refData])
 
   return (
     <>
@@ -366,50 +397,48 @@ export default function SkuFormPage() {
                   onClick={() => navigate('/inventory/skus')}
                   size="small"
                 >
-                  Back
+                  Volver
                 </Button>
                 <Typography.Title level={4} style={{ margin: 0 }}>
-                  {isEdit ? 'Edit SKU' : 'New SKU'}
+                  {isEdit ? 'Editar SKU' : 'Nuevo SKU'}
                 </Typography.Title>
                 {isRouteEdit && sku && (
                   <Tag color="blue">{sku.skuCode}</Tag>
                 )}
                 {!isRouteEdit && matchedSku && (
                   <Space size={4}>
-                    <Tag color="orange">Existing: {matchedSku.skuCode}</Tag>
+                    <Tag color="orange">Existente: {matchedSku.skuCode}</Tag>
                     <Button size="small" type="link" onClick={handleResetToCreate}>
-                      Create new instead
+                      Crear nuevo
                     </Button>
                   </Space>
                 )}
               </Space>
             </Col>
-            {!isRouteEdit && (
-              <Col>
-                <Switch
-                  checked={aiPanelOpen}
-                  onChange={setAiPanelOpen}
-                  checkedChildren={<><CameraOutlined /> AI</>}
-                  unCheckedChildren={<><EyeInvisibleOutlined /> AI</>}
-                  style={{ minWidth: 60 }}
-                />
-              </Col>
-            )}
+            <Col>
+              <Switch
+                checked={aiPanelOpen}
+                onChange={setAiPanelOpen}
+                checkedChildren={<><CameraOutlined /> IA</>}
+                unCheckedChildren={<><EyeInvisibleOutlined /> IA</>}
+                style={{ minWidth: 60 }}
+              />
+            </Col>
           </Row>
         </Card>
 
         {/* AI Image Analysis — collapsible */}
-        {!isRouteEdit && aiPanelOpen && (
+        {aiPanelOpen && (
           <Card size="small" bodyStyle={{ padding: '8px 16px' }}>
             <Row align="middle" justify="space-between">
               <Col>
-                <Typography.Text strong style={{ fontSize: 13 }}><CameraOutlined /> AI Image Analysis</Typography.Text>
+                <Typography.Text strong style={{ fontSize: 13 }}><CameraOutlined /> Analisis de Imagen con IA</Typography.Text>
                 <Typography.Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
-                  Drop a shoe photo, then fill attributes with AI
+                  Sube una foto del zapato, luego llena atributos con IA
                 </Typography.Text>
               </Col>
               <Col>
-                <Tooltip title={!analysisResult && !analyzeMutation.isPending ? (analysisError ? 'Analysis failed — see error below' : 'Upload an image first') : undefined}>
+                <Tooltip title={!analysisResult && !analyzeMutation.isPending ? (analysisError ? 'Analisis fallido — ver error abajo' : 'Sube una imagen primero') : undefined}>
                   <Button
                     type="primary"
                     icon={<ThunderboltOutlined />}
@@ -417,7 +446,7 @@ export default function SkuFormPage() {
                     disabled={!analysisResult || analyzeMutation.isPending}
                     style={{ fontWeight: 600 }}
                   >
-                    Fill with AI
+                    Llenar con IA
                   </Button>
                 </Tooltip>
               </Col>
@@ -438,12 +467,12 @@ export default function SkuFormPage() {
                   {analyzeMutation.isPending ? (
                     <div>
                       <LoadingOutlined style={{ fontSize: 20, color: '#1677ff' }} />
-                      <p style={{ marginTop: 4, marginBottom: 0, fontSize: 12 }}>Analyzing...</p>
+                      <p style={{ marginTop: 4, marginBottom: 0, fontSize: 12 }}>Analizando...</p>
                     </div>
                   ) : (
                     <div>
                       <CameraOutlined style={{ fontSize: 20, color: '#999' }} />
-                      <p style={{ marginTop: 4, marginBottom: 0, fontSize: 12 }}>Click or drag shoe image</p>
+                      <p style={{ marginTop: 4, marginBottom: 0, fontSize: 12 }}>Haz clic o arrastra imagen del zapato</p>
                     </div>
                   )}
                 </Upload.Dragger>
@@ -452,7 +481,7 @@ export default function SkuFormPage() {
                 <Col xs={24} sm={12}>
                   <img
                     src={imagePreview}
-                    alt="Uploaded shoe"
+                    alt="Zapato subido"
                     style={{ width: '100%', maxHeight: 120, objectFit: 'contain', borderRadius: 8, border: '1px solid #d9d9d9' }}
                   />
                 </Col>
@@ -465,7 +494,7 @@ export default function SkuFormPage() {
                 showIcon
                 icon={<ExclamationCircleOutlined />}
                 style={{ marginTop: 8 }}
-                message="Image analysis failed"
+                message="Fallo el analisis de imagen"
                 description={
                   <div>
                     <Typography.Text>{analysisError}</Typography.Text>
@@ -476,7 +505,7 @@ export default function SkuFormPage() {
                         onClick={handleRetryAnalysis}
                         loading={analyzeMutation.isPending}
                       >
-                        Retry
+                        Reintentar
                       </Button>
                     </div>
                   </div>
@@ -489,16 +518,16 @@ export default function SkuFormPage() {
                 type="info"
                 showIcon
                 style={{ marginTop: 8 }}
-                message="Image analyzed — ready to fill"
+                message="Imagen analizada — lista para llenar"
                 description={
                   <div style={{ fontSize: 12 }}>
-                    {analysisResult.raw.shoe_type && <span><strong>Type:</strong> {analysisResult.raw.shoe_type} | </span>}
-                    {analysisResult.raw.heel_height && <span><strong>Heel:</strong> {analysisResult.raw.heel_height} | </span>}
+                    {analysisResult.raw.shoe_type && <span><strong>Tipo:</strong> {analysisResult.raw.shoe_type} | </span>}
+                    {analysisResult.raw.heel_height && <span><strong>Tacon:</strong> {analysisResult.raw.heel_height} | </span>}
                     {analysisResult.raw.upper_material && <span><strong>Material:</strong> {analysisResult.raw.upper_material} | </span>}
                     {analysisResult.raw.color_family && <span><strong>Color:</strong> {analysisResult.raw.color_family} | </span>}
-                    {analysisResult.raw.occasion && <span><strong>Occasion:</strong> {analysisResult.raw.occasion}</span>}
+                    {analysisResult.raw.occasion && <span><strong>Ocasion:</strong> {analysisResult.raw.occasion}</span>}
                     <br />
-                    <Typography.Text type="secondary">Click "Fill with AI" to populate form fields.</Typography.Text>
+                    <Typography.Text type="secondary">Haz clic en "Llenar con IA" para completar los campos.</Typography.Text>
                   </div>
                 }
               />
@@ -510,12 +539,12 @@ export default function SkuFormPage() {
                 showIcon
                 icon={<CheckCircleOutlined />}
                 style={{ marginTop: 8 }}
-                message={`AI filled ${aiFillSummary.filled.length} of ${aiFillSummary.total} fields`}
+                message={`IA lleno ${aiFillSummary.filled.length} de ${aiFillSummary.total} campos`}
                 description={
                   <div style={{ fontSize: 12 }}>
                     {aiFillSummary.filled.length > 0 && (
                       <div>
-                        <strong>Filled:</strong>{' '}
+                        <strong>Llenados:</strong>{' '}
                         {aiFillSummary.filled.map((f) => (
                           <Tag key={f} color="green" style={{ marginBottom: 2 }}>{f}</Tag>
                         ))}
@@ -523,14 +552,14 @@ export default function SkuFormPage() {
                     )}
                     {aiFillSummary.skipped.length > 0 && (
                       <div style={{ marginTop: 4 }}>
-                        <strong>Not determined:</strong>{' '}
+                        <strong>No determinados:</strong>{' '}
                         {aiFillSummary.skipped.map((f) => (
                           <Tag key={f} style={{ marginBottom: 2 }}>{f}</Tag>
                         ))}
                       </div>
                     )}
                     <Typography.Text type="secondary" style={{ display: 'block', marginTop: 4 }}>
-                      All AI-filled values are editable — adjust as needed.
+                      Todos los valores llenados por IA son editables — ajusta segun sea necesario.
                     </Typography.Text>
                   </div>
                 }
@@ -548,17 +577,17 @@ export default function SkuFormPage() {
             requiredMark="optional"
             size="small"
           >
-            {/* ── SKU Code ── */}
+            {/* -- Codigo SKU -- */}
             {!isRouteEdit && (
               <>
-                <Typography.Text strong style={{ fontSize: 13 }}>SKU Code</Typography.Text>
+                <Typography.Text strong style={{ fontSize: 13 }}>Codigo SKU</Typography.Text>
                 <Row gutter={12} style={{ marginTop: 8 }}>
                   <Col xs={24} sm={8}>
                     <Form.Item
-                      label="SKU Code"
+                      label="Codigo SKU"
                       name="skuCode"
                       style={compactItem}
-                      extra={matchedSku ? undefined : 'Leave blank to auto-generate, or type to search existing SKUs'}
+                      extra={matchedSku ? undefined : 'Escribe para buscar SKUs existentes o ingresa un codigo nuevo'}
                     >
                       <AutoComplete
                         options={skuSearchOptions}
@@ -575,10 +604,10 @@ export default function SkuFormPage() {
                           const code = form.getFieldValue('skuCode')
                           if (code) handleSkuCodeLookup(code)
                         }}
-                        placeholder="e.g. FORMAL-NIKE-BLK-9.5-001"
+                        placeholder="ej. FORMAL-NIKE-BLK-001"
                         disabled={!!matchedSku}
                         popupMatchSelectWidth={400}
-                        notFoundContent={isSearching ? <Spin size="small" /> : (skuSearchText.length >= 1 ? 'No matching SKUs' : null)}
+                        notFoundContent={isSearching ? <Spin size="small" /> : (skuSearchText.length >= 1 ? 'No se encontraron SKUs' : null)}
                       >
                         <Input
                           suffix={lookupMutation.isPending || isSearching ? <LoadingOutlined /> : <SearchOutlined style={{ color: '#999' }} />}
@@ -595,240 +624,221 @@ export default function SkuFormPage() {
               </>
             )}
 
-            {/* ── Product Details ── */}
-            <Typography.Text strong style={{ fontSize: 13 }}>Product Details</Typography.Text>
+            {/* -- Detalles del Producto -- */}
+            <Typography.Text strong style={{ fontSize: 13 }}>Detalles del Producto</Typography.Text>
 
             <Row gutter={12} style={{ marginTop: 8 }}>
               <Col xs={12} sm={4}>
-                <Form.Item label="Brand" name="brandId" style={compactItem}>
-                  <Select placeholder="Select" allowClear showSearch optionFilterProp="label" options={refOptions(refData?.['brands'])} />
+                <Form.Item label="Marca" name="brandId" style={compactItem}>
+                  <Select placeholder="Seleccionar" allowClear showSearch optionFilterProp="label" options={refOptions(refData?.['brands'])} />
                 </Form.Item>
               </Col>
               <Col xs={24} sm={4}>
-                <Form.Item label="Style" name="style" rules={[{ required: true }, { max: 100 }]} style={compactItem}>
-                  <Input placeholder="e.g. Oxford" />
+                <Form.Item label="Estilo" name="style" rules={[{ required: true, message: 'Estilo es requerido' }, { max: 100 }]} style={compactItem}>
+                  <Input placeholder="ej. Oxford" />
                 </Form.Item>
               </Col>
               <Col xs={12} sm={3}>
                 <Form.Item label={aiLabel('Color', 'colorId', aiFilledFields)} name="colorId" style={{ ...compactItem, ...(aiFilledFields.has('colorId') ? AI_FILLED_STYLE : {}) }}>
-                  <Select placeholder="Select" allowClear showSearch optionFilterProp="label" options={refOptions(refData?.['colors'])} />
+                  <Select placeholder="Seleccionar" allowClear showSearch optionFilterProp="label" options={refOptions(refData?.['colors'])} />
                 </Form.Item>
               </Col>
               <Col xs={12} sm={3}>
-                <Form.Item label="Size Type" name="sizeTypeId" style={compactItem}>
-                  <Select placeholder="Select" allowClear options={refOptions(refData?.['size-types'])} onChange={(val: number | null) => {
-                    if (val) {
-                      fetchSizeLabels(val).then(setSizeLabels).catch(() => setSizeLabels([]))
-                    } else {
-                      setSizeLabels([])
-                      form.setFieldsValue({ sizes: [] })
-                    }
-                  }} />
-                </Form.Item>
-              </Col>
-              <Col xs={24} sm={6}>
-                <Form.Item label="Sizes" name="sizes" style={compactItem}>
-                  <Select mode="multiple" placeholder={sizeLabels.length ? 'Select sizes' : 'Choose size type first'} disabled={!sizeLabels.length} options={sizeLabels.map((sl) => ({ label: sl.label, value: sl.label }))} />
-                </Form.Item>
-              </Col>
-              <Col xs={12} sm={3}>
-                <Form.Item label="Width" name="widthTypeId" style={compactItem}>
-                  <Select placeholder="Select" allowClear options={refOptions(refData?.['width-types'])} />
+                <Form.Item label="Ancho" name="widthTypeId" style={compactItem}>
+                  <Select placeholder="Seleccionar" allowClear options={refOptions(refData?.['width-types'])} />
                 </Form.Item>
               </Col>
             </Row>
 
             <Row gutter={12}>
               <Col xs={12} sm={4}>
-                <Form.Item label={aiLabel('Shoe Type', 'shoeTypeId', aiFilledFields)} name="shoeTypeId" style={{ ...compactItem, ...(aiFilledFields.has('shoeTypeId') ? AI_FILLED_STYLE : {}) }}>
-                  <Select placeholder="Select" allowClear showSearch optionFilterProp="label" options={refOptions(refData?.['shoe-types'])} />
+                <Form.Item label={aiLabel('Tipo de Zapato', 'shoeTypeId', aiFilledFields)} name="shoeTypeId" style={{ ...compactItem, ...(aiFilledFields.has('shoeTypeId') ? AI_FILLED_STYLE : {}) }}>
+                  <Select placeholder="Seleccionar" allowClear showSearch optionFilterProp="label" options={refOptions(refData?.['shoe-types'])} />
                 </Form.Item>
               </Col>
               <Col xs={24} sm={10}>
-                <Form.Item label={aiLabel('Web Description', 'webDescription', aiFilledFields)} name="webDescription" rules={[{ max: 1000 }]} style={{ ...compactItem, ...(aiFilledFields.has('webDescription') ? AI_FILLED_STYLE : {}) }}>
+                <Form.Item label={aiLabel('Descripcion Web', 'webDescription', aiFilledFields)} name="webDescription" rules={[{ max: 1000 }]} style={{ ...compactItem, ...(aiFilledFields.has('webDescription') ? AI_FILLED_STYLE : {}) }}>
                   <Input.TextArea rows={1} placeholder="Descripcion en espanol" />
                 </Form.Item>
               </Col>
               <Col xs={24} sm={10}>
-                <Form.Item label="RICS Description" name="ricsDescription" rules={[{ max: 500 }]} style={compactItem}>
-                  <Input placeholder="Auto-generated if blank" />
+                <Form.Item label="Descripcion RICS" name="ricsDescription" rules={[{ max: 500 }]} style={compactItem}>
+                  <Input placeholder="Auto-generado si se deja vacio" />
                 </Form.Item>
               </Col>
             </Row>
 
             <Row gutter={12}>
               <Col xs={24} sm={12}>
-                <Form.Item label="Comment" name="comment" rules={[{ max: 1000 }]} style={compactItem}>
-                  <Input.TextArea rows={1} placeholder="Internal notes" />
+                <Form.Item label="Comentario" name="comment" rules={[{ max: 1000 }]} style={compactItem}>
+                  <Input.TextArea rows={1} placeholder="Notas internas" />
                 </Form.Item>
               </Col>
             </Row>
 
             <Divider style={{ margin: '8px 0' }} />
 
-            {/* ── Classification & Vendor ── */}
-            <Typography.Text strong style={{ fontSize: 13 }}>Classification & Vendor</Typography.Text>
+            {/* -- Clasificacion y Proveedor -- */}
+            <Typography.Text strong style={{ fontSize: 13 }}>Clasificacion y Proveedor</Typography.Text>
 
             <Row gutter={12} style={{ marginTop: 8 }}>
-              <Col xs={12} sm={4}>
-                <Form.Item label={aiLabel('Department', 'department', aiFilledFields)} name="department" rules={[{ required: true }]} style={{ ...compactItem, ...(aiFilledFields.has('department') ? AI_FILLED_STYLE : {}) }}>
-                  <Select placeholder="Select" options={DEPARTMENTS.map((d) => ({ label: d, value: d }))} />
+              <Col xs={12} sm={5}>
+                <Form.Item
+                  label={aiLabel('Categoria', 'categoryId', aiFilledFields)}
+                  name="categoryId"
+                  rules={[{ required: true, message: 'Categoria es requerida' }]}
+                  style={{ ...compactItem, ...(aiFilledFields.has('categoryId') ? AI_FILLED_STYLE : {}) }}
+                >
+                  <Select
+                    placeholder="Buscar por nombre o codigo RICS"
+                    allowClear
+                    showSearch
+                    optionFilterProp="label"
+                    options={categoryOptions}
+                    onChange={handleCategoryChange}
+                    filterOption={(input, option) => {
+                      const label = String(option?.label ?? '').toLowerCase()
+                      const search = input.toLowerCase()
+                      return label.includes(search)
+                    }}
+                  />
                 </Form.Item>
               </Col>
               <Col xs={12} sm={4}>
-                <Form.Item label="Category" name="categoryId" style={compactItem}>
-                  <Select placeholder="Select" allowClear showSearch optionFilterProp="label">
-                    {(() => {
-                      const cats = (refData?.['categories'] ?? []) as { id: number; ricsCode?: number; name: string; deptMacro?: string }[]
-                      const grouped = cats.reduce<Record<string, typeof cats>>((acc, c) => {
-                        const group = c.deptMacro || 'Other'
-                        if (!acc[group]) acc[group] = []
-                        acc[group].push(c)
-                        return acc
-                      }, {})
-                      return Object.entries(grouped).map(([macro, items]) => (
-                        <Select.OptGroup key={macro} label={macro}>
-                          {items.map((c) => (
-                            <Select.Option key={c.id} value={c.id} label={`${c.ricsCode ?? ''} ${c.name}`}>
-                              {c.ricsCode ?? ''} {c.name}
-                            </Select.Option>
-                          ))}
-                        </Select.OptGroup>
-                      ))
-                    })()}
-                  </Select>
+                <Form.Item label={aiLabel('Departamento', 'department', aiFilledFields)} name="department" rules={[{ required: true, message: 'Departamento es requerido' }]} style={{ ...compactItem, ...(aiFilledFields.has('department') ? AI_FILLED_STYLE : {}) }}>
+                  <Select placeholder="Se llena con categoria" options={DEPARTMENTS.map((d) => ({ label: d, value: d }))} disabled />
                 </Form.Item>
               </Col>
               <Col xs={12} sm={3}>
-                <Form.Item label="Season" name="seasonId" style={compactItem}>
-                  <Select placeholder="Select" allowClear options={refOptions(refData?.['seasons'])} />
+                <Form.Item label="Temporada" name="seasonId" style={compactItem}>
+                  <Select placeholder="Seleccionar" allowClear options={refOptions(refData?.['seasons'])} />
                 </Form.Item>
               </Col>
               <Col xs={24} sm={4}>
-                <Form.Item label="Vendor" name="vendorId" rules={[{ required: true }]} style={compactItem}>
-                  <Select placeholder="Search..." showSearch optionFilterProp="label" loading={vendorsLoading} options={vendors?.map((v) => ({ label: v.name, value: v.id }))} />
+                <Form.Item label="Proveedor" name="vendorId" rules={[{ required: true, message: 'Proveedor es requerido' }]} style={compactItem}>
+                  <Select placeholder="Buscar..." showSearch optionFilterProp="label" loading={vendorsLoading} options={vendors?.map((v) => ({ label: v.name, value: v.id }))} />
                 </Form.Item>
               </Col>
               <Col xs={12} sm={3}>
-                <Form.Item label="Vendor SKU" name="vendorSku" style={compactItem}>
-                  <Input placeholder="Vendor SKU" />
+                <Form.Item label="SKU Proveedor" name="vendorSku" style={compactItem}>
+                  <Input placeholder="SKU Proveedor" />
                 </Form.Item>
               </Col>
               <Col xs={12} sm={3}>
-                <Form.Item label="Manufacturer" name="manufacturer" style={compactItem}>
-                  <Input placeholder="Manufacturer" />
-                </Form.Item>
-              </Col>
-              <Col xs={12} sm={4}>
-                <Form.Item label={aiLabel('Occasion', 'occasionId', aiFilledFields)} name="occasionId" style={{ ...compactItem, ...(aiFilledFields.has('occasionId') ? AI_FILLED_STYLE : {}) }}>
-                  <Select placeholder="Select" allowClear options={refOptions(refData?.['occasions'])} />
+                <Form.Item label="Fabricante" name="manufacturer" style={compactItem}>
+                  <Input placeholder="Fabricante" />
                 </Form.Item>
               </Col>
             </Row>
 
             <Row gutter={12}>
               <Col xs={12} sm={4}>
-                <Form.Item label="Target Audience" name="targetAudienceId" style={compactItem}>
-                  <Select placeholder="Select" allowClear options={refOptions(refData?.['target-audiences'])} />
+                <Form.Item label={aiLabel('Ocasion', 'occasionId', aiFilledFields)} name="occasionId" style={{ ...compactItem, ...(aiFilledFields.has('occasionId') ? AI_FILLED_STYLE : {}) }}>
+                  <Select placeholder="Seleccionar" allowClear options={refOptions(refData?.['occasions'])} />
                 </Form.Item>
               </Col>
               <Col xs={12} sm={4}>
-                <Form.Item label="Label Type" name="labelTypeId" style={compactItem}>
-                  <Select placeholder="Select" allowClear options={refOptions(refData?.['label-types'])} />
+                <Form.Item label="Publico Objetivo" name="targetAudienceId" style={compactItem}>
+                  <Select placeholder="Seleccionar" allowClear options={refOptions(refData?.['target-audiences'])} />
+                </Form.Item>
+              </Col>
+              <Col xs={12} sm={4}>
+                <Form.Item label="Tipo de Etiqueta" name="labelTypeId" style={compactItem}>
+                  <Select placeholder="Seleccionar" allowClear options={refOptions(refData?.['label-types'])} />
                 </Form.Item>
               </Col>
             </Row>
 
             <Divider style={{ margin: '8px 0' }} />
 
-            {/* ── Appearance, Design & Materials ── */}
-            <Typography.Text strong style={{ fontSize: 13 }}>Appearance, Design & Materials</Typography.Text>
+            {/* -- Apariencia, Diseno y Materiales -- */}
+            <Typography.Text strong style={{ fontSize: 13 }}>Apariencia, Diseno y Materiales</Typography.Text>
 
             <Row gutter={12} style={{ marginTop: 8 }}>
               <Col xs={12} sm={3}>
-                <Form.Item label={aiLabel('Pattern', 'patternId', aiFilledFields)} name="patternId" style={{ ...compactItem, ...(aiFilledFields.has('patternId') ? AI_FILLED_STYLE : {}) }}>
-                  <Select placeholder="Select" allowClear options={refOptions(refData?.['patterns'])} />
+                <Form.Item label={aiLabel('Patron', 'patternId', aiFilledFields)} name="patternId" style={{ ...compactItem, ...(aiFilledFields.has('patternId') ? AI_FILLED_STYLE : {}) }}>
+                  <Select placeholder="Seleccionar" allowClear options={refOptions(refData?.['patterns'])} />
                 </Form.Item>
               </Col>
               <Col xs={12} sm={3}>
-                <Form.Item label={aiLabel('Finish', 'finishId', aiFilledFields)} name="finishId" style={{ ...compactItem, ...(aiFilledFields.has('finishId') ? AI_FILLED_STYLE : {}) }}>
-                  <Select placeholder="Select" allowClear options={refOptions(refData?.['finishes'])} />
+                <Form.Item label={aiLabel('Acabado', 'finishId', aiFilledFields)} name="finishId" style={{ ...compactItem, ...(aiFilledFields.has('finishId') ? AI_FILLED_STYLE : {}) }}>
+                  <Select placeholder="Seleccionar" allowClear options={refOptions(refData?.['finishes'])} />
                 </Form.Item>
               </Col>
               <Col xs={12} sm={3}>
-                <Form.Item label="Accessory" name="accessoryId" style={compactItem}>
-                  <Select placeholder="Select" allowClear options={refOptions(refData?.['accessories'])} />
+                <Form.Item label="Accesorio" name="accessoryId" style={compactItem}>
+                  <Select placeholder="Seleccionar" allowClear options={refOptions(refData?.['accessories'])} />
                 </Form.Item>
               </Col>
               <Col xs={12} sm={3}>
-                <Form.Item label={aiLabel('Heel Height', 'heelHeightId', aiFilledFields)} name="heelHeightId" style={{ ...compactItem, ...(aiFilledFields.has('heelHeightId') ? AI_FILLED_STYLE : {}) }}>
-                  <Select placeholder="Select" allowClear options={refOptions(refData?.['heel-heights'])} />
+                <Form.Item label={aiLabel('Altura del Tacon', 'heelHeightId', aiFilledFields)} name="heelHeightId" style={{ ...compactItem, ...(aiFilledFields.has('heelHeightId') ? AI_FILLED_STYLE : {}) }}>
+                  <Select placeholder="Seleccionar" allowClear options={refOptions(refData?.['heel-heights'])} />
                 </Form.Item>
               </Col>
               <Col xs={12} sm={3}>
-                <Form.Item label={aiLabel('Heel Shape', 'heelShapeId', aiFilledFields)} name="heelShapeId" style={{ ...compactItem, ...(aiFilledFields.has('heelShapeId') ? AI_FILLED_STYLE : {}) }}>
-                  <Select placeholder="Select" allowClear options={refOptions(refData?.['heel-shapes'])} />
+                <Form.Item label={aiLabel('Forma del Tacon', 'heelShapeId', aiFilledFields)} name="heelShapeId" style={{ ...compactItem, ...(aiFilledFields.has('heelShapeId') ? AI_FILLED_STYLE : {}) }}>
+                  <Select placeholder="Seleccionar" allowClear options={refOptions(refData?.['heel-shapes'])} />
                 </Form.Item>
               </Col>
               <Col xs={12} sm={3}>
-                <Form.Item label={aiLabel('Toe Shape', 'toeShapeId', aiFilledFields)} name="toeShapeId" style={{ ...compactItem, ...(aiFilledFields.has('toeShapeId') ? AI_FILLED_STYLE : {}) }}>
-                  <Select placeholder="Select" allowClear options={refOptions(refData?.['toe-shapes'])} />
+                <Form.Item label={aiLabel('Forma de la Punta', 'toeShapeId', aiFilledFields)} name="toeShapeId" style={{ ...compactItem, ...(aiFilledFields.has('toeShapeId') ? AI_FILLED_STYLE : {}) }}>
+                  <Select placeholder="Seleccionar" allowClear options={refOptions(refData?.['toe-shapes'])} />
                 </Form.Item>
               </Col>
               <Col xs={12} sm={3}>
-                <Form.Item label="Closure Type" name="closureTypeId" style={compactItem}>
-                  <Select placeholder="Select" allowClear options={refOptions(refData?.['closure-types'])} />
+                <Form.Item label="Tipo de Zapato" name="closureTypeId" style={compactItem}>
+                  <Select placeholder="Seleccionar" allowClear options={refOptions(refData?.['closure-types'])} />
                 </Form.Item>
               </Col>
             </Row>
 
             <Row gutter={12}>
               <Col xs={12} sm={4}>
-                <Form.Item label={aiLabel('Upper Material', 'upperMaterialId', aiFilledFields)} name="upperMaterialId" style={{ ...compactItem, ...(aiFilledFields.has('upperMaterialId') ? AI_FILLED_STYLE : {}) }}>
-                  <Select placeholder="Select" allowClear showSearch optionFilterProp="label" options={refOptions(refData?.['upper-materials'])} />
+                <Form.Item label={aiLabel('Material Superior', 'upperMaterialId', aiFilledFields)} name="upperMaterialId" style={{ ...compactItem, ...(aiFilledFields.has('upperMaterialId') ? AI_FILLED_STYLE : {}) }}>
+                  <Select placeholder="Seleccionar" allowClear showSearch optionFilterProp="label" options={refOptions(refData?.['upper-materials'])} />
                 </Form.Item>
               </Col>
               <Col xs={12} sm={4}>
-                <Form.Item label="Outsole Material" name="outsoleMaterialId" style={compactItem}>
-                  <Select placeholder="Select" allowClear options={refOptions(refData?.['outsole-materials'])} />
+                <Form.Item label="Material de Suela" name="outsoleMaterialId" style={compactItem}>
+                  <Select placeholder="Seleccionar" allowClear options={refOptions(refData?.['outsole-materials'])} />
                 </Form.Item>
               </Col>
               <Col xs={12} sm={4}>
-                <Form.Item label="Heel Material" name="heelMaterialId" style={compactItem}>
-                  <Select placeholder="Select" allowClear options={refOptions(refData?.['heel-materials'])} />
+                <Form.Item label="Material del Tacon" name="heelMaterialId" style={compactItem}>
+                  <Select placeholder="Seleccionar" allowClear options={refOptions(refData?.['heel-materials'])} />
                 </Form.Item>
               </Col>
             </Row>
 
             <Divider style={{ margin: '8px 0' }} />
 
-            {/* ── Pricing & Codes ── */}
-            <Typography.Text strong style={{ fontSize: 13 }}>Pricing & Codes</Typography.Text>
+            {/* -- Precios y Codigos -- */}
+            <Typography.Text strong style={{ fontSize: 13 }}>Precios y Codigos</Typography.Text>
 
             <Row gutter={12} style={{ marginTop: 8 }}>
               <Col xs={12} sm={4}>
-                <Form.Item label="Retail Price" name="price" rules={[{ required: true }, { type: 'number', min: 0.01 }]} style={compactItem}>
+                <Form.Item label="Precio" name="price" rules={[{ required: true, message: 'Precio es requerido' }, { type: 'number', min: 0.01 }]} style={compactItem}>
                   <InputNumber prefix="$" style={{ width: '100%' }} min={0.01} step={0.01} precision={2} placeholder="0.00" />
                 </Form.Item>
               </Col>
               <Col xs={12} sm={4}>
-                <Form.Item label="Cost" name="cost" style={compactItem}>
+                <Form.Item label="Costo" name="cost" style={compactItem}>
                   <InputNumber prefix="$" style={{ width: '100%' }} min={0} step={0.01} precision={2} placeholder="0.00" />
                 </Form.Item>
               </Col>
               <Col xs={12} sm={4}>
-                <Form.Item label="Barcode / UPC" name="barcode" style={compactItem}>
-                  <Input placeholder="Auto if blank" />
+                <Form.Item label="Codigo de Barras / UPC" name="barcode" style={compactItem}>
+                  <Input placeholder="Auto si vacio" />
                 </Form.Item>
               </Col>
               <Col xs={12} sm={4}>
-                <Form.Item label="Season Code" name="season" style={compactItem}>
-                  <Input placeholder="e.g. SS26" />
+                <Form.Item label="Codigo de Temporada" name="season" style={compactItem}>
+                  <Input placeholder="ej. SS26" />
                 </Form.Item>
               </Col>
               <Col xs={24} sm={8}>
-                <Form.Item label="Keywords" name="keywords" rules={[{ max: 500 }]} style={compactItem}>
-                  <Input placeholder="Search keywords (comma-separated)" />
+                <Form.Item label="Palabras Clave" name="keywords" rules={[{ max: 500 }]} style={compactItem}>
+                  <Input placeholder="Palabras clave (separadas por coma)" />
                 </Form.Item>
               </Col>
             </Row>
@@ -843,10 +853,10 @@ export default function SkuFormPage() {
                   icon={<SaveOutlined />}
                   loading={isSaving}
                 >
-                  {isEdit ? 'Update SKU' : 'Create SKU'}
+                  {isEdit ? 'Actualizar SKU' : 'Crear SKU'}
                 </Button>
                 <Button onClick={() => navigate('/inventory/skus')}>
-                  Cancel
+                  Cancelar
                 </Button>
               </Space>
             </Form.Item>

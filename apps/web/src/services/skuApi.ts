@@ -97,6 +97,19 @@ export async function searchSkus(query: string): Promise<Sku[]> {
   return body.data
 }
 
+export interface SkuAutocompleteItem {
+  skuCode: string
+  style: string
+  brandName: string
+}
+
+export async function autocompleteSkus(query: string): Promise<SkuAutocompleteItem[]> {
+  if (!query.trim()) return []
+  const res = await fetch(`/api/v1/skus/autocomplete?q=${encodeURIComponent(query.trim())}`)
+  if (!res.ok) return []
+  return res.json()
+}
+
 export async function lookupSkuByCode(code: string): Promise<Sku | null> {
   const res = await fetch(`/api/v1/skus/lookup?code=${encodeURIComponent(code)}`)
   if (res.status === 404) return null

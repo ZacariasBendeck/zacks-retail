@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { fetchSkus, fetchSku, createSku, updateSku, deactivateSku, fetchVendors, analyzeImage, fetchAllReferenceData, lookupSkuByCode, searchSkus } from '../services/skuApi'
+import { fetchSkus, fetchSku, createSku, updateSku, deactivateSku, fetchVendors, analyzeImage, fetchAllReferenceData, lookupSkuByCode, searchSkus, autocompleteSkus } from '../services/skuApi'
 import type { SkuListParams, SkuCreatePayload, SkuUpdatePayload } from '../types/sku'
 
 export function useSkus(params: SkuListParams) {
@@ -82,6 +82,16 @@ export function useSearchSkus(query: string) {
   return useQuery({
     queryKey: ['skus', 'search', query],
     queryFn: () => searchSkus(query),
+    enabled: query.trim().length >= 1,
+    staleTime: 30 * 1000,
+    placeholderData: (prev) => prev,
+  })
+}
+
+export function useAutocompleteSkus(query: string) {
+  return useQuery({
+    queryKey: ['skus', 'autocomplete', query],
+    queryFn: () => autocompleteSkus(query),
     enabled: query.trim().length >= 1,
     staleTime: 30 * 1000,
     placeholderData: (prev) => prev,
