@@ -248,7 +248,7 @@ describe('mapAiResultsToReferenceIds — realistic scenarios', () => {
     expect(typeof mapped.heelHeightId).toBe('number');
     expect(typeof mapped.heelShapeId).toBe('number');
     expect(typeof mapped.toeShapeId).toBe('number');
-    expect(typeof mapped.colorFamilyId).toBe('number');
+    expect(typeof mapped.colorId).toBe('number');
     expect(typeof mapped.upperMaterialId).toBe('number');
     expect(typeof mapped.finishId).toBe('number');
     expect(typeof mapped.patternId).toBe('number');
@@ -266,7 +266,7 @@ describe('mapAiResultsToReferenceIds — realistic scenarios', () => {
     );
 
     expect(typeof mapped.shoeTypeId).toBe('number');
-    expect(typeof mapped.colorFamilyId).toBe('number');
+    expect(typeof mapped.colorId).toBe('number');
     expect(typeof mapped.upperMaterialId).toBe('number');
     expect(mapped.department).toBe('SANDALIAS');
     expect(mapped.color).toBe('Tan Brown');
@@ -280,7 +280,7 @@ describe('mapAiResultsToReferenceIds — realistic scenarios', () => {
     // Non-null fields should resolve
     expect(typeof mapped.shoeTypeId).toBe('number');
     expect(typeof mapped.toeShapeId).toBe('number');
-    expect(typeof mapped.colorFamilyId).toBe('number');
+    expect(typeof mapped.colorId).toBe('number');
     expect(typeof mapped.upperMaterialId).toBe('number');
 
     // Null fields should stay null
@@ -342,7 +342,7 @@ describe('POST /api/v1/skus/analyze-image (mocked AI)', () => {
     // Mapped should have numeric IDs for reference fields
     expect(typeof res.body.mapped.shoeTypeId).toBe('number');
     expect(typeof res.body.mapped.heelShapeId).toBe('number');
-    expect(typeof res.body.mapped.colorFamilyId).toBe('number');
+    expect(typeof res.body.mapped.colorId).toBe('number');
 
     // Text/enum preserved
     expect(res.body.mapped.color).toBe('Black Patent');
@@ -350,7 +350,7 @@ describe('POST /api/v1/skus/analyze-image (mocked AI)', () => {
 
     // Config should have version and attributes
     expect(res.body.config.version).toBe(1);
-    expect(Object.keys(res.body.config.attributes).length).toBe(12);
+    expect(Object.keys(res.body.config.attributes).length).toBe(13);
   });
 
   it('returns correct mapping for a sandal image', async () => {

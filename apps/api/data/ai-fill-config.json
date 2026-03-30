@@ -41,10 +41,10 @@
       "refTable": "toe-shapes",
       "aiKey": "toe_shape"
     },
-    "colorFamilyId": {
+    "colorId": {
       "enabled": true,
       "type": "reference",
-      "refTable": "color-families",
+      "refTable": "colors",
       "aiKey": "color_family"
     },
     "upperMaterialId": {
@@ -70,6 +70,12 @@
       "type": "reference",
       "refTable": "occasions",
       "aiKey": "occasion"
+    },
+    "categoryId": {
+      "enabled": true,
+      "type": "reference",
+      "refTable": "categories",
+      "aiKey": "category"
     }
   }
 }

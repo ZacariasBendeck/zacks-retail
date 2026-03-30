@@ -514,6 +514,20 @@ export function getSizeLabelsBySizeType(sizeTypeId: number): SizeLabelItem[] {
   return rows.map(r => ({ id: r.id, sizeTypeId: r.size_type_id, label: r.label, sortOrder: r.sort_order, active: r.active === 1 }));
 }
 
+export function autocompleteSkus(prefix: string): { skuCode: string; style: string; brandName: string }[] {
+  if (!prefix) return [];
+  const db = getDb();
+  const rows = db.prepare(`
+    SELECT s.sku_code, s.style, COALESCE(b.name, '') as brand_name
+    FROM skus s
+    LEFT JOIN ref_brands b ON b.id = s.brand_id
+    WHERE s.active = 1 AND s.sku_code LIKE ? COLLATE NOCASE
+    ORDER BY s.sku_code ASC
+    LIMIT 10
+  `).all(`${prefix}%`) as unknown as { sku_code: string; style: string; brand_name: string }[];
+  return rows.map(r => ({ skuCode: r.sku_code, style: r.style, brandName: r.brand_name }));
+}
+
 export function getAllReferenceData(): Record<string, unknown[]> {
   const result: Record<string, unknown[]> = {};
   for (const key of getReferenceTableNames()) {

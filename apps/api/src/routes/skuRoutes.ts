@@ -135,6 +135,32 @@ router.post('/analyze-image', upload.single('image'), async (req: Request, res: 
 });
 
 /**
+ * @openapi
+ * /api/v1/skus/autocomplete:
+ *   get:
+ *     summary: Autocomplete SKUs by code prefix
+ *     tags: [SKUs]
+ *     parameters:
+ *       - name: q
+ *         in: query
+ *         required: true
+ *         schema: { type: string }
+ *         description: SKU code prefix to search for
+ *     responses:
+ *       200:
+ *         description: Up to 10 matching SKUs ordered alphabetically
+ */
+router.get('/autocomplete', (req: Request, res: Response): void => {
+  const q = (req.query.q as string || '').trim();
+  if (!q) {
+    res.json([]);
+    return;
+  }
+  const results = skuService.autocompleteSkus(q);
+  res.json(results);
+});
+
+/**
  * SKU Lookup by code
  */
 router.get('/lookup', (req: Request, res: Response): void => {

@@ -13,6 +13,7 @@ export interface ImageAnalysisResult {
   department: string | null;
   color: string | null;
   description: string | null;
+  category: string | null;
 }
 
 const ANALYSIS_PROMPT = `You are an expert shoe product analyst. Analyze this shoe image and identify the following attributes. Return ONLY a JSON object with these keys — no markdown, no explanation:
@@ -29,7 +30,8 @@ const ANALYSIS_PROMPT = `You are an expert shoe product analyst. Analyze this sh
   "occasion": "<occasion: Formal, Business, Casual, Evening, Party, Bridal, Athletic, Outdoor>",
   "department": "<one of: FORMAL, CASUAL, FIESTA, SANDALIAS, BOOTS, COMFORT>",
   "color": "<specific color name, e.g. Black, Cognac Brown, Wine Red>",
-  "description": "<brief 1-2 sentence description of the shoe>"
+  "description": "<brief 1-2 sentence description of the shoe>",
+  "category": "<product category, e.g. Pump Formal, Sandal Flat, Boot Ankle, Sneaker, Flat Ballet, Mule, Wedge, Espadrille, Oxford, Comfort Casual, Platform, Clog, Slide>"
 }
 
 If you cannot determine an attribute, set it to null.`;

@@ -413,3 +413,83 @@ describe('GET /api/v1/skus (list, search, filter)', () => {
     expect(res.status).toBe(400);
   });
 });
+
+describe('GET /api/v1/skus/autocomplete', () => {
+  beforeEach(async () => {
+    // Create SKUs with known codes for autocomplete testing
+    const skus = [
+      { style: 'Alpha', department: 'FORMAL', price: 100, brandId: getBrandId('KISS'), colorId: getColorId('BK'), categoryId: getCategoryId(556), sizes: ['8'], vendorId: VENDOR_ID },
+      { style: 'Beta', department: 'CASUAL', price: 90, brandId: getBrandId('KISS'), colorId: getColorId('RD'), categoryId: getCategoryId(560), sizes: ['9'], vendorId: VENDOR_ID },
+      { style: 'Gamma', department: 'FORMAL', price: 110, brandId: getBrandId('FLEX'), colorId: getColorId('BK'), categoryId: getCategoryId(556), sizes: ['7'], vendorId: VENDOR_ID },
+    ];
+    for (const sku of skus) {
+      await request(app).post('/api/v1/skus').send(sku);
+    }
+  });
+
+  it('returns matching SKUs by prefix', async () => {
+    const res = await request(app).get('/api/v1/skus/autocomplete?q=FORMAL');
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body)).toBe(true);
+    expect(res.body.length).toBeGreaterThanOrEqual(1);
+    for (const item of res.body) {
+      expect(item.skuCode.toUpperCase()).toMatch(/^FORMAL/);
+      expect(item).toHaveProperty('style');
+      expect(item).toHaveProperty('brandName');
+    }
+  });
+
+  it('returns empty array for empty prefix', async () => {
+    const res = await request(app).get('/api/v1/skus/autocomplete?q=');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([]);
+  });
+
+  it('returns empty array when q is missing', async () => {
+    const res = await request(app).get('/api/v1/skus/autocomplete');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([]);
+  });
+
+  it('returns max 10 results', async () => {
+    // Create 12 more SKUs to exceed limit
+    for (let i = 0; i < 12; i++) {
+      await request(app).post('/api/v1/skus').send({
+        style: `Batch${i}`,
+        department: 'FORMAL',
+        price: 50 + i,
+        brandId: getBrandId('KISS'),
+        colorId: getColorId('BK'),
+        categoryId: getCategoryId(556),
+        sizes: ['8'],
+        vendorId: VENDOR_ID,
+      });
+    }
+    const res = await request(app).get('/api/v1/skus/autocomplete?q=FORMAL');
+    expect(res.status).toBe(200);
+    expect(res.body.length).toBeLessThanOrEqual(10);
+  });
+
+  it('is case-insensitive', async () => {
+    const res = await request(app).get('/api/v1/skus/autocomplete?q=formal');
+    expect(res.status).toBe(200);
+    expect(res.body.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('returns results ordered alphabetically by skuCode', async () => {
+    const res = await request(app).get('/api/v1/skus/autocomplete?q=FORMAL');
+    expect(res.status).toBe(200);
+    if (res.body.length >= 2) {
+      const codes = res.body.map((r: any) => r.skuCode);
+      for (let i = 1; i < codes.length; i++) {
+        expect(codes[i] >= codes[i - 1]).toBe(true);
+      }
+    }
+  });
+
+  it('returns no results for non-matching prefix', async () => {
+    const res = await request(app).get('/api/v1/skus/autocomplete?q=ZZZZZ');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([]);
+  });
+});

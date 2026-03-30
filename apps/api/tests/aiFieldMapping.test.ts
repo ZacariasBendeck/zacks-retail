@@ -24,15 +24,15 @@ describe('getAiFillConfig', () => {
     const config = getAiFillConfig();
     expect(config.version).toBe(1);
     expect(config.attributes).toBeDefined();
-    expect(Object.keys(config.attributes).length).toBe(12);
+    expect(Object.keys(config.attributes).length).toBe(13);
   });
 
   it('includes all expected attribute keys', () => {
     const config = getAiFillConfig();
     const expected = [
       'color', 'description', 'department', 'shoeTypeId', 'heelHeightId',
-      'heelShapeId', 'toeShapeId', 'colorFamilyId', 'upperMaterialId',
-      'finishId', 'patternId', 'occasionId',
+      'heelShapeId', 'toeShapeId', 'colorId', 'upperMaterialId',
+      'finishId', 'patternId', 'occasionId', 'categoryId',
     ];
     for (const key of expected) {
       expect(config.attributes[key]).toBeDefined();
@@ -142,7 +142,7 @@ describe('mapAiResultsToReferenceIds', () => {
     expect(typeof mapped.heelHeightId).toBe('number');
     expect(typeof mapped.heelShapeId).toBe('number');
     expect(typeof mapped.toeShapeId).toBe('number');
-    expect(typeof mapped.colorFamilyId).toBe('number');
+    expect(typeof mapped.colorId).toBe('number');
     expect(typeof mapped.upperMaterialId).toBe('number');
     expect(typeof mapped.finishId).toBe('number');
     expect(typeof mapped.patternId).toBe('number');
@@ -184,8 +184,52 @@ describe('GET /api/v1/skus/ai-fill-config', () => {
     expect(res.status).toBe(200);
     expect(res.body.version).toBe(1);
     expect(res.body.attributes).toBeDefined();
-    expect(Object.keys(res.body.attributes).length).toBe(12);
+    expect(Object.keys(res.body.attributes).length).toBe(13);
     expect(res.body.attributes.shoeTypeId.type).toBe('reference');
     expect(res.body.attributes.shoeTypeId.refTable).toBe('shoe-types');
+    expect(res.body.attributes.categoryId.type).toBe('reference');
+    expect(res.body.attributes.categoryId.refTable).toBe('categories');
+  });
+});
+
+describe('matchReferenceValue — categories', () => {
+  it('matches category by substring (e.g. "pump formal" → Pump Formal)', () => {
+    const id = matchReferenceValue('categories', 'pump formal');
+    expect(id).not.toBeNull();
+    expect(typeof id).toBe('number');
+  });
+
+  it('matches category case-insensitively', () => {
+    const id = matchReferenceValue('categories', 'SANDAL FLAT');
+    expect(id).not.toBeNull();
+  });
+
+  it('returns null for unknown category', () => {
+    const id = matchReferenceValue('categories', 'Jetpack Shoes');
+    expect(id).toBeNull();
+  });
+});
+
+describe('mapAiResultsToReferenceIds — with category', () => {
+  it('maps category AI value to categoryId', () => {
+    const rawResults = {
+      shoe_type: 'Pump',
+      heel_height: 'High (3-4in)',
+      heel_shape: 'Stiletto',
+      toe_shape: 'Pointed',
+      color_family: 'Black',
+      upper_material: 'Leather',
+      finish: 'Glossy',
+      pattern: 'Solid',
+      occasion: 'Formal',
+      department: 'FORMAL',
+      color: 'Black',
+      description: 'A classic black leather pump',
+      category: 'Pump Formal',
+    };
+
+    const mapped = mapAiResultsToReferenceIds(rawResults);
+    expect(typeof mapped.categoryId).toBe('number');
+    expect(mapped.categoryId).not.toBeNull();
   });
 });
