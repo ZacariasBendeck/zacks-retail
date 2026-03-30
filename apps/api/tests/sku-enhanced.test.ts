@@ -121,9 +121,10 @@ describe('GET /api/v1/skus/reference/all', () => {
   it('returns expected seeded heel heights', async () => {
     const res = await request(app).get('/api/v1/skus/reference/all');
     const names = res.body['heel-heights'].map((item: any) => item.name);
-    expect(names).toContain('Flat (0cm)');
-    expect(names).toContain('Alto (7-9cm)');
-    expect(names).toContain('Muy Alto (10+cm)');
+    expect(names).toContain('Plano (0-1 in)');
+    expect(names).toContain('Tacon Alto (3-4 in)');
+    expect(names).toContain('Muy Alto (4+ in)');
+    expect(names).toContain('Sin Tacon / Deportivo (0 in)');
   });
 });
 
@@ -276,12 +277,13 @@ describe('POST /api/v1/skus (enhanced attributes)', () => {
   });
 
   it('creates a SKU without any extended attributes (all null)', async () => {
-    // Send only the required fields — no brandId, colorId, categoryId, or other extended attrs
+    // Send required fields plus categoryId (NOT NULL) — no brandId, colorId, or other extended attrs
     const minimalSku = {
       style: 'Minimal Style',
       price: 50.00,
       department: 'CASUAL',
       vendorId: VENDOR_ID,
+      categoryId: getCategoryId(595),
     };
     const res = await request(app).post('/api/v1/skus').send(minimalSku);
     expect(res.status).toBe(201);

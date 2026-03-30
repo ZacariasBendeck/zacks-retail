@@ -1,6 +1,12 @@
 import request from 'supertest';
 import app from '../src/app';
-import { resetDb } from '../src/db/database';
+import { getDb, resetDb } from '../src/db/database';
+
+function getCategoryId(ricsCode: number): number | null {
+  const db = getDb();
+  const row = db.prepare('SELECT id FROM ref_categories WHERE rics_code = ?').get(ricsCode) as { id: number } | undefined;
+  return row ? row.id : null;
+}
 
 let vendorId: string;
 let skuId1: string;
@@ -15,25 +21,19 @@ async function seedVendorAndSkus() {
   vendorId = vendor.body.id;
 
   const sku1 = await request(app).post('/api/v1/skus').send({
-    brand: 'Nike',
     style: 'Air Max',
-    color: 'Black',
-    size: '9',
     price: 129.99,
-    category: 560,
     department: 'FORMAL',
+    categoryId: getCategoryId(560),
     vendorId,
   });
   skuId1 = sku1.body.id;
 
   const sku2 = await request(app).post('/api/v1/skus').send({
-    brand: 'Adidas',
     style: 'Superstar',
-    color: 'White',
-    size: '10',
     price: 99.99,
-    category: 565,
     department: 'CASUAL',
+    categoryId: getCategoryId(565),
     vendorId,
   });
   skuId2 = sku2.body.id;

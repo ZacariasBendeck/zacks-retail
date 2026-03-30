@@ -11,15 +11,18 @@ function seedVendor(): void {
   ).run(VENDOR_ID);
 }
 
+function getCategoryId(ricsCode: number): number | null {
+  const db = getDb();
+  const row = db.prepare('SELECT id FROM ref_categories WHERE rics_code = ?').get(ricsCode) as { id: number } | undefined;
+  return row ? row.id : null;
+}
+
 const validSku = {
-  brand: 'Nike',
   style: 'Air Max',
-  color: 'Black',
-  size: '9',
   price: 129.99,
-  category: 560,
   department: 'FORMAL',
   vendorId: VENDOR_ID,
+  get categoryId() { return getCategoryId(560); },
 };
 
 let createdSkuId: string;

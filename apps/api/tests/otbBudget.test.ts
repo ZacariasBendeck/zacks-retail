@@ -1,6 +1,12 @@
 import request from 'supertest';
 import app from '../src/app';
-import { resetDb } from '../src/db/database';
+import { getDb, resetDb } from '../src/db/database';
+
+function getCategoryId(ricsCode: number): number | null {
+  const db = getDb();
+  const row = db.prepare('SELECT id FROM ref_categories WHERE rics_code = ?').get(ricsCode) as { id: number } | undefined;
+  return row ? row.id : null;
+}
 
 const validBudget = {
   department: 'FORMAL',
@@ -275,13 +281,10 @@ describe('GET /api/v1/otb-budgets/check-po/:poId', () => {
     vendorId = vendor.body.id;
 
     const sku = await request(app).post('/api/v1/skus').send({
-      brand: 'Nike',
       style: 'Air Max',
-      color: 'Black',
-      size: '9',
       price: 129.99,
-      category: 560,
       department: 'FORMAL',
+      categoryId: getCategoryId(560),
       vendorId,
     });
     skuId1 = sku.body.id;
@@ -339,13 +342,10 @@ describe('PO submit with OTB budget check', () => {
     vendorId = vendor.body.id;
 
     const sku = await request(app).post('/api/v1/skus').send({
-      brand: 'Nike',
       style: 'Air Max',
-      color: 'Black',
-      size: '9',
       price: 129.99,
-      category: 560,
       department: 'FORMAL',
+      categoryId: getCategoryId(560),
       vendorId,
     });
     skuId1 = sku.body.id;

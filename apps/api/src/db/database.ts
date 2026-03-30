@@ -309,10 +309,216 @@ function initSchema(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_po_history_created_at ON po_status_history(created_at);
 
     INSERT OR IGNORE INTO sku_code_seq (prefix, next_val) VALUES ('PO', 1);
+
+    -- Migration tracking
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      version TEXT PRIMARY KEY,
+      applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
   `);
+
+  // Apply pending migrations before seeding
+  runMigrations(db);
 
   // Seed reference tables
   seedReferenceData(db);
+}
+
+// ---------------------------------------------------------------------------
+// Versioned migrations
+// Each migration must be reversible. Add new entries to the end only.
+// ---------------------------------------------------------------------------
+
+type Migration = {
+  version: string;
+  description: string;
+  up: (db: DatabaseSync) => void;
+  down: (db: DatabaseSync) => void;
+};
+
+const MIGRATIONS: Migration[] = [
+  {
+    version: '0001',
+    description: 'Update heel heights to inches, replace closure types with Tipo de Zapato, make category_id NOT NULL',
+    up(db) {
+      // 1. Rename cm-based heel heights to inch-based (UPDATE preserves existing SKU FKs)
+      db.exec(`UPDATE ref_heel_heights SET name = 'Plano (0-1 in)' WHERE name = 'Flat (0cm)'`);
+      db.exec(`UPDATE ref_heel_heights SET name = 'Tacon Bajo (1-2 in)' WHERE name = 'Bajo (1-3cm)'`);
+      db.exec(`UPDATE ref_heel_heights SET name = 'Tacon Medio (2-3 in)' WHERE name = 'Medio (4-6cm)'`);
+      db.exec(`UPDATE ref_heel_heights SET name = 'Tacon Alto (3-4 in)' WHERE name = 'Alto (7-9cm)'`);
+      db.exec(`UPDATE ref_heel_heights SET name = 'Muy Alto (4+ in)' WHERE name = 'Muy Alto (10+cm)'`);
+      db.exec(`INSERT OR IGNORE INTO ref_heel_heights (name) VALUES ('Sin Tacon / Deportivo (0 in)')`);
+
+      // 2. Replace ref_closure_types with Tipo de Zapato values
+      // Nullify SKU references first to satisfy FK constraints
+      db.exec(`UPDATE skus SET closure_type_id = NULL WHERE closure_type_id IS NOT NULL`);
+      db.exec(`DELETE FROM ref_closure_types`);
+      const tipoDeZapato = [
+        'Low Top', 'Plataforma Sandalia', 'Mule', 'Ankle Strap', 'Atletico',
+        'Plataforma Cerrada', 'Sling Back', 'Thong', 'Loafer', '3/4',
+        'Alta', 'Ballerina', 'Mary Jane', 'High Top', 'T-Bar',
+        'Pump', 'Vaquera', 'Slip On', 'Mocasin', 'Plataforma Tacon',
+        'Clog', 'Oxford', 'De Servicio', 'Hiking', 'De Seguridad',
+      ];
+      for (const name of tipoDeZapato) {
+        db.exec(`INSERT OR IGNORE INTO ref_closure_types (name) VALUES ('${name}')`);
+      }
+
+      // 3. Backfill any SKU rows with NULL category_id using 595 (Especial/Otro)
+      db.exec(`
+        UPDATE skus
+        SET category_id = (SELECT id FROM ref_categories WHERE rics_code = 595)
+        WHERE category_id IS NULL
+      `);
+
+      // 4. Recreate skus table with category_id NOT NULL (SQLite requires full table rebuild)
+      // See: https://www.sqlite.org/lang_altertable.html#making_other_kinds_of_table_schema_changes
+      db.exec('PRAGMA foreign_keys = OFF');
+      db.exec(`
+        CREATE TABLE skus_new (
+          id TEXT PRIMARY KEY,
+          sku_code TEXT NOT NULL UNIQUE,
+          style TEXT NOT NULL,
+          price REAL NOT NULL CHECK(price > 0),
+          cost REAL CHECK(cost >= 0),
+          category_id INTEGER NOT NULL REFERENCES ref_categories(id),
+          department TEXT NOT NULL CHECK(department IN ('FORMAL','CASUAL','FIESTA','SANDALIAS','BOOTS','COMFORT')),
+          vendor_id TEXT NOT NULL REFERENCES vendors(id),
+          vendor_sku TEXT,
+          barcode TEXT UNIQUE,
+          rics_description TEXT,
+          web_description TEXT,
+          comment TEXT,
+          keywords TEXT,
+          season TEXT,
+          manufacturer TEXT,
+          picture_url TEXT,
+          brand_id INTEGER REFERENCES ref_brands(id),
+          color_id INTEGER REFERENCES ref_colors(id),
+          color_family_id INTEGER REFERENCES ref_color_families(id),
+          shoe_type_id INTEGER REFERENCES ref_shoe_types(id),
+          heel_shape_id INTEGER REFERENCES ref_heel_shapes(id),
+          heel_height_id INTEGER REFERENCES ref_heel_heights(id),
+          toe_shape_id INTEGER REFERENCES ref_toe_shapes(id),
+          closure_type_id INTEGER REFERENCES ref_closure_types(id),
+          upper_material_id INTEGER REFERENCES ref_upper_materials(id),
+          outsole_material_id INTEGER REFERENCES ref_outsole_materials(id),
+          finish_id INTEGER REFERENCES ref_finishes(id),
+          width_type_id INTEGER REFERENCES ref_width_types(id),
+          pattern_id INTEGER REFERENCES ref_patterns(id),
+          occasion_id INTEGER REFERENCES ref_occasions(id),
+          target_audience_id INTEGER REFERENCES ref_target_audiences(id),
+          accessory_id INTEGER REFERENCES ref_accessories(id),
+          season_id INTEGER REFERENCES ref_seasons(id),
+          size_type_id INTEGER REFERENCES ref_size_types(id),
+          label_type_id INTEGER REFERENCES ref_label_types(id),
+          heel_material_id INTEGER REFERENCES ref_heel_materials(id),
+          heel_type TEXT,
+          material TEXT,
+          active INTEGER NOT NULL DEFAULT 1,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+      `);
+      db.exec('INSERT INTO skus_new SELECT * FROM skus');
+      db.exec('DROP TABLE skus');
+      db.exec('ALTER TABLE skus_new RENAME TO skus');
+      db.exec('CREATE INDEX idx_skus_department ON skus(department)');
+      db.exec('CREATE INDEX idx_skus_category_id ON skus(category_id)');
+      db.exec('CREATE INDEX idx_skus_vendor_id ON skus(vendor_id)');
+      db.exec('CREATE INDEX idx_skus_brand_id ON skus(brand_id)');
+      db.exec('CREATE INDEX idx_skus_color_id ON skus(color_id)');
+      db.exec('CREATE INDEX idx_skus_active ON skus(active)');
+      db.exec('CREATE INDEX idx_skus_price ON skus(price)');
+      db.exec('PRAGMA foreign_keys = ON');
+    },
+    down(db) {
+      // Restore heel heights to cm-based
+      db.exec(`UPDATE ref_heel_heights SET name = 'Flat (0cm)' WHERE name = 'Plano (0-1 in)'`);
+      db.exec(`UPDATE ref_heel_heights SET name = 'Bajo (1-3cm)' WHERE name = 'Tacon Bajo (1-2 in)'`);
+      db.exec(`UPDATE ref_heel_heights SET name = 'Medio (4-6cm)' WHERE name = 'Tacon Medio (2-3 in)'`);
+      db.exec(`UPDATE ref_heel_heights SET name = 'Alto (7-9cm)' WHERE name = 'Tacon Alto (3-4 in)'`);
+      db.exec(`UPDATE ref_heel_heights SET name = 'Muy Alto (10+cm)' WHERE name = 'Muy Alto (4+ in)'`);
+      db.exec(`DELETE FROM ref_heel_heights WHERE name = 'Sin Tacon / Deportivo (0 in)'`);
+
+      // Restore old closure types
+      db.exec(`UPDATE skus SET closure_type_id = NULL WHERE closure_type_id IS NOT NULL`);
+      db.exec(`DELETE FROM ref_closure_types`);
+      for (const name of ['Slip-On', 'Hebilla', 'Cremallera', 'Cordones', 'Elastico', 'Velcro', 'Cierre Lateral']) {
+        db.exec(`INSERT OR IGNORE INTO ref_closure_types (name) VALUES ('${name}')`);
+      }
+
+      // Recreate skus with nullable category_id
+      db.exec('PRAGMA foreign_keys = OFF');
+      db.exec(`
+        CREATE TABLE skus_old (
+          id TEXT PRIMARY KEY,
+          sku_code TEXT NOT NULL UNIQUE,
+          style TEXT NOT NULL,
+          price REAL NOT NULL CHECK(price > 0),
+          cost REAL CHECK(cost >= 0),
+          category_id INTEGER REFERENCES ref_categories(id),
+          department TEXT NOT NULL CHECK(department IN ('FORMAL','CASUAL','FIESTA','SANDALIAS','BOOTS','COMFORT')),
+          vendor_id TEXT NOT NULL REFERENCES vendors(id),
+          vendor_sku TEXT,
+          barcode TEXT UNIQUE,
+          rics_description TEXT,
+          web_description TEXT,
+          comment TEXT,
+          keywords TEXT,
+          season TEXT,
+          manufacturer TEXT,
+          picture_url TEXT,
+          brand_id INTEGER REFERENCES ref_brands(id),
+          color_id INTEGER REFERENCES ref_colors(id),
+          color_family_id INTEGER REFERENCES ref_color_families(id),
+          shoe_type_id INTEGER REFERENCES ref_shoe_types(id),
+          heel_shape_id INTEGER REFERENCES ref_heel_shapes(id),
+          heel_height_id INTEGER REFERENCES ref_heel_heights(id),
+          toe_shape_id INTEGER REFERENCES ref_toe_shapes(id),
+          closure_type_id INTEGER REFERENCES ref_closure_types(id),
+          upper_material_id INTEGER REFERENCES ref_upper_materials(id),
+          outsole_material_id INTEGER REFERENCES ref_outsole_materials(id),
+          finish_id INTEGER REFERENCES ref_finishes(id),
+          width_type_id INTEGER REFERENCES ref_width_types(id),
+          pattern_id INTEGER REFERENCES ref_patterns(id),
+          occasion_id INTEGER REFERENCES ref_occasions(id),
+          target_audience_id INTEGER REFERENCES ref_target_audiences(id),
+          accessory_id INTEGER REFERENCES ref_accessories(id),
+          season_id INTEGER REFERENCES ref_seasons(id),
+          size_type_id INTEGER REFERENCES ref_size_types(id),
+          label_type_id INTEGER REFERENCES ref_label_types(id),
+          heel_material_id INTEGER REFERENCES ref_heel_materials(id),
+          heel_type TEXT,
+          material TEXT,
+          active INTEGER NOT NULL DEFAULT 1,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+      `);
+      db.exec('INSERT INTO skus_old SELECT * FROM skus');
+      db.exec('DROP TABLE skus');
+      db.exec('ALTER TABLE skus_old RENAME TO skus');
+      db.exec('CREATE INDEX idx_skus_department ON skus(department)');
+      db.exec('CREATE INDEX idx_skus_category_id ON skus(category_id)');
+      db.exec('CREATE INDEX idx_skus_vendor_id ON skus(vendor_id)');
+      db.exec('CREATE INDEX idx_skus_brand_id ON skus(brand_id)');
+      db.exec('CREATE INDEX idx_skus_color_id ON skus(color_id)');
+      db.exec('CREATE INDEX idx_skus_active ON skus(active)');
+      db.exec('CREATE INDEX idx_skus_price ON skus(price)');
+      db.exec('PRAGMA foreign_keys = ON');
+    },
+  },
+];
+
+function runMigrations(db: DatabaseSync): void {
+  for (const migration of MIGRATIONS) {
+    const applied = db.prepare('SELECT version FROM schema_migrations WHERE version = ?').get(migration.version) as { version: string } | undefined;
+    if (!applied) {
+      migration.up(db);
+      db.prepare('INSERT INTO schema_migrations (version) VALUES (?)').run(migration.version);
+    }
+  }
 }
 
 function seedReferenceData(db: DatabaseSync): void {
@@ -334,8 +540,8 @@ function seedReferenceData(db: DatabaseSync): void {
     db.exec(`INSERT OR IGNORE INTO ref_heel_shapes (name) VALUES ('${name}')`);
   }
 
-  // Heel heights
-  const heelHeights = ['Flat (0cm)','Bajo (1-3cm)','Medio (4-6cm)','Alto (7-9cm)','Muy Alto (10+cm)'];
+  // Heel heights (inch-based since migration 0001)
+  const heelHeights = ['Plano (0-1 in)','Tacon Bajo (1-2 in)','Tacon Medio (2-3 in)','Tacon Alto (3-4 in)','Muy Alto (4+ in)','Sin Tacon / Deportivo (0 in)'];
   for (const name of heelHeights) {
     db.exec(`INSERT OR IGNORE INTO ref_heel_heights (name) VALUES ('${name}')`);
   }
@@ -346,8 +552,14 @@ function seedReferenceData(db: DatabaseSync): void {
     db.exec(`INSERT OR IGNORE INTO ref_toe_shapes (name) VALUES ('${name}')`);
   }
 
-  // Closure types
-  const closureTypes = ['Slip-On','Hebilla','Cremallera','Cordones','Elastico','Velcro','Cierre Lateral'];
+  // Closure types — repurposed as Tipo de Zapato since migration 0001
+  const closureTypes = [
+    'Low Top', 'Plataforma Sandalia', 'Mule', 'Ankle Strap', 'Atletico',
+    'Plataforma Cerrada', 'Sling Back', 'Thong', 'Loafer', '3/4',
+    'Alta', 'Ballerina', 'Mary Jane', 'High Top', 'T-Bar',
+    'Pump', 'Vaquera', 'Slip On', 'Mocasin', 'Plataforma Tacon',
+    'Clog', 'Oxford', 'De Servicio', 'Hiking', 'De Seguridad',
+  ];
   for (const name of closureTypes) {
     db.exec(`INSERT OR IGNORE INTO ref_closure_types (name) VALUES ('${name}')`);
   }
@@ -588,26 +800,26 @@ function seedDummyData(db: DatabaseSync): void {
 
   // Define ~30 dummy SKUs
   const skuDefs = [
-    { code: 'KISS-BK-556-001', style: 'Elegante Noche', dept: 'FORMAL', catCode: 556, vendor: 0, brandCode: 'KISS', colorCode: 'BK', sizeType: 'US Women', price: 89.99, cost: 35.00, shoeType: 'Pump', heelShape: 'Stiletto', heelHeight: 'Alto (7-9cm)', toeShape: 'Puntiaguda', closure: 'Slip-On', upperMat: 'Charol', outsoleMat: 'Cuero', heelMat: 'FORR', webDesc: 'Pump negro de charol con tacon stiletto alto, ideal para eventos formales y noches elegantes.' },
-    { code: 'KISS-RD-575-002', style: 'Fiesta Roja', dept: 'FIESTA', catCode: 575, vendor: 0, brandCode: 'KISS', colorCode: 'RD', sizeType: 'US Women', price: 95.00, cost: 38.00, shoeType: 'Pump', heelShape: 'Stiletto', heelHeight: 'Muy Alto (10+cm)', toeShape: 'Puntiaguda', closure: 'Slip-On', upperMat: 'Cuero', outsoleMat: 'Cuero', heelMat: 'FORR', webDesc: 'Pump rojo de cuero con tacon muy alto, perfecto para fiestas y ocasiones especiales.' },
-    { code: 'FLEX-BE-559-003', style: 'Comfort Daily', dept: 'CASUAL', catCode: 559, vendor: 1, brandCode: 'FLEX', colorCode: 'BE', sizeType: 'US Women', price: 49.99, cost: 20.00, shoeType: 'Flat', heelShape: 'Flat/None', heelHeight: 'Flat (0cm)', toeShape: 'Redonda', closure: 'Slip-On', upperMat: 'Sintetico', outsoleMat: 'TPR', heelMat: 'PLAN', webDesc: 'Flat beige comodo para uso diario, con suela flexible y material sintetico suave.' },
-    { code: 'REVE-GD-574-004', style: 'Soiree Doree', dept: 'FIESTA', catCode: 574, vendor: 2, brandCode: 'REVE', colorCode: 'GD', sizeType: 'EU', price: 120.00, cost: 48.00, shoeType: 'Sandalia', heelShape: 'Chunky/Block', heelHeight: 'Medio (4-6cm)', toeShape: 'Abierta', closure: 'Hebilla', upperMat: 'Cuero', outsoleMat: 'Cuero', heelMat: 'FORR', webDesc: 'Sandalia dorada de cuero con tacon bloque medio, elegante para fiestas y galas.' },
-    { code: 'TTAB-BK-580-005', style: 'Urban Boot', dept: 'BOOTS', catCode: 580, vendor: 3, brandCode: 'TTAB', colorCode: 'BK', sizeType: 'US Women', price: 149.99, cost: 60.00, shoeType: 'Bota', heelShape: 'Chunky/Block', heelHeight: 'Medio (4-6cm)', toeShape: 'Almendra', closure: 'Cremallera', upperMat: 'Cuero', outsoleMat: 'Goma', heelMat: 'GOMA', webDesc: 'Bota alta negra de cuero con tacon bloque y cremallera lateral, estilo urbano.' },
-    { code: 'CAMP-BR-568-006', style: 'Trail Runner', dept: 'CASUAL', catCode: 568, vendor: 4, brandCode: 'CAMP', colorCode: 'BR', sizeType: 'US Women', price: 79.99, cost: 32.00, shoeType: 'Sneaker', heelShape: 'Flat/None', heelHeight: 'Bajo (1-3cm)', toeShape: 'Redonda', closure: 'Cordones', upperMat: 'Mesh', outsoleMat: 'Goma', heelMat: 'GOMA', webDesc: 'Sneaker cafe deportivo con suela de goma y material mesh transpirable.' },
-    { code: 'KISS-NV-570-007', style: 'Classic Oxford', dept: 'FORMAL', catCode: 570, vendor: 0, brandCode: 'KISS', colorCode: 'NV', sizeType: 'US Women', price: 110.00, cost: 44.00, shoeType: 'Oxford', heelShape: 'Stacked', heelHeight: 'Bajo (1-3cm)', toeShape: 'Almendra', closure: 'Cordones', upperMat: 'Cuero', outsoleMat: 'Cuero', heelMat: 'PLAS', webDesc: 'Oxford navy clasico de cuero con tacon bajo apilado, para oficina y eventos formales.' },
-    { code: 'FLEX-WH-560-008', style: 'Beach Walk', dept: 'SANDALIAS', catCode: 560, vendor: 1, brandCode: 'FLEX', colorCode: 'WH', sizeType: 'US Women', price: 39.99, cost: 16.00, shoeType: 'Sandalia', heelShape: 'Flat/None', heelHeight: 'Flat (0cm)', toeShape: 'Abierta', closure: 'Hebilla', upperMat: 'Sintetico', outsoleMat: 'EVA', heelMat: 'PLAN', webDesc: 'Sandalia plana blanca con hebilla, perfecta para la playa y dias calurosos.' },
-    { code: 'REVE-SV-576-009', style: 'Platform Night', dept: 'FIESTA', catCode: 576, vendor: 2, brandCode: 'REVE', colorCode: 'SV', sizeType: 'EU', price: 135.00, cost: 54.00, shoeType: 'Plataforma', heelShape: 'Platform', heelHeight: 'Muy Alto (10+cm)', toeShape: 'Peep Toe', closure: 'Hebilla', upperMat: 'Satin', outsoleMat: 'TPR', heelMat: 'FORR', webDesc: 'Plataforma plateada de satin con peep toe, ideal para noches de fiesta.' },
-    { code: 'TTAB-CM-582-010', style: 'Ankle Edge', dept: 'BOOTS', catCode: 582, vendor: 3, brandCode: 'TTAB', colorCode: 'CM', sizeType: 'US Women', price: 119.99, cost: 48.00, shoeType: 'Bota Corta', heelShape: 'Chunky/Block', heelHeight: 'Medio (4-6cm)', toeShape: 'Cuadrada', closure: 'Cremallera', upperMat: 'Ante/Suede', outsoleMat: 'Goma', heelMat: 'GOMA', webDesc: 'Botin camel de ante con tacon bloque y punta cuadrada, versatil para toda temporada.' },
-    { code: 'CAMP-GN-585-011', style: 'Comfort Walk', dept: 'COMFORT', catCode: 585, vendor: 4, brandCode: 'CAMP', colorCode: 'GN', sizeType: 'US Women', price: 69.99, cost: 28.00, shoeType: 'Mocasin', heelShape: 'Flat/None', heelHeight: 'Flat (0cm)', toeShape: 'Redonda', closure: 'Slip-On', upperMat: 'Cuero', outsoleMat: 'EVA', heelMat: 'PLAN', webDesc: 'Mocasin verde de cuero comfort con suela EVA ultraligera para caminar todo el dia.' },
-    { code: 'KISS-PK-557-012', style: 'Casual Chic', dept: 'CASUAL', catCode: 557, vendor: 0, brandCode: 'KISS', colorCode: 'PK', sizeType: 'US Women', price: 75.00, cost: 30.00, shoeType: 'Pump', heelShape: 'Kitten', heelHeight: 'Bajo (1-3cm)', toeShape: 'Puntiaguda', closure: 'Slip-On', upperMat: 'Sintetico', outsoleMat: 'TPR', heelMat: 'PLAS', webDesc: 'Pump rosa con tacon kitten bajo, perfecto para look casual chic de dia.' },
-    { code: 'FLEX-BK-561-013', style: 'Tacon Elegante', dept: 'SANDALIAS', catCode: 561, vendor: 1, brandCode: 'FLEX', colorCode: 'BK', sizeType: 'US Women', price: 85.00, cost: 34.00, shoeType: 'Sandalia', heelShape: 'Stiletto', heelHeight: 'Alto (7-9cm)', toeShape: 'Abierta', closure: 'Hebilla', upperMat: 'Cuero', outsoleMat: 'Cuero', heelMat: 'FORR', webDesc: 'Sandalia negra de tacon alto con tiras de cuero, elegante para eventos nocturnos.' },
-    { code: 'REVE-NU-558-014', style: 'Ballet Grace', dept: 'FORMAL', catCode: 558, vendor: 2, brandCode: 'REVE', colorCode: 'NU', sizeType: 'EU', price: 65.00, cost: 26.00, shoeType: 'Flat', heelShape: 'Flat/None', heelHeight: 'Flat (0cm)', toeShape: 'Almendra', closure: 'Slip-On', upperMat: 'Cuero', outsoleMat: 'Cuero', heelMat: 'PLAN', webDesc: 'Flat nude de cuero con punta almendra, clasico y elegante para oficina.' },
-    { code: 'TTAB-FU-565-015', style: 'Mule Bold', dept: 'FORMAL', catCode: 565, vendor: 3, brandCode: 'TTAB', colorCode: 'FU', sizeType: 'US Women', price: 99.00, cost: 40.00, shoeType: 'Mule', heelShape: 'Cone', heelHeight: 'Alto (7-9cm)', toeShape: 'Puntiaguda', closure: 'Slip-On', upperMat: 'Sintetico', outsoleMat: 'TPR', heelMat: 'PLAS', webDesc: 'Mule fucsia con tacon cono alto, diseno atrevido para ocasiones formales.' },
-    { code: 'CAMP-GY-572-016', style: 'Everyday Slip', dept: 'COMFORT', catCode: 572, vendor: 4, brandCode: 'CAMP', colorCode: 'GY', sizeType: 'US Women', price: 55.00, cost: 22.00, shoeType: 'Mocasin', heelShape: 'Flat/None', heelHeight: 'Flat (0cm)', toeShape: 'Redonda', closure: 'Slip-On', upperMat: 'Tela', outsoleMat: 'Goma', heelMat: 'PLAN', webDesc: 'Mocasin gris de tela con suela de goma, ultracomodo para uso diario.' },
-    { code: 'KISS-RG-562-017', style: 'Glam Platform', dept: 'FORMAL', catCode: 562, vendor: 0, brandCode: 'KISS', colorCode: 'RG', sizeType: 'US Women', price: 130.00, cost: 52.00, shoeType: 'Plataforma', heelShape: 'Platform', heelHeight: 'Muy Alto (10+cm)', toeShape: 'Peep Toe', closure: 'Hebilla', upperMat: 'Cuero', outsoleMat: 'TPR', heelMat: 'FORR', webDesc: 'Plataforma rose gold de cuero con peep toe, glamorosa para eventos formales.' },
-    { code: 'FLEX-TN-564-018', style: 'Summer Wedge', dept: 'CASUAL', catCode: 564, vendor: 1, brandCode: 'FLEX', colorCode: 'TN', sizeType: 'US Women', price: 72.00, cost: 29.00, shoeType: 'Wedge', heelShape: 'Wedge', heelHeight: 'Medio (4-6cm)', toeShape: 'Abierta', closure: 'Elastico', upperMat: 'Lona', outsoleMat: 'Goma', heelMat: 'ESPA', webDesc: 'Wedge tan de lona con cuna de espartillo, estilo veraniego y comodo.' },
-    { code: 'REVE-BO-581-019', style: 'Mid Boot Luxe', dept: 'BOOTS', catCode: 581, vendor: 2, brandCode: 'REVE', colorCode: 'BO', sizeType: 'EU', price: 165.00, cost: 66.00, shoeType: 'Bota', heelShape: 'Chunky/Block', heelHeight: 'Medio (4-6cm)', toeShape: 'Almendra', closure: 'Cremallera', upperMat: 'Cuero', outsoleMat: 'Goma', heelMat: 'GOMA', webDesc: 'Bota media bordo de cuero con tacon bloque y cremallera, lujo europeo.' },
-    { code: 'TTAB-MC-567-020', style: 'Espa Tropical', dept: 'CASUAL', catCode: 567, vendor: 3, brandCode: 'TTAB', colorCode: 'MC', sizeType: 'US Women', price: 58.00, cost: 23.00, shoeType: 'Espadrille', heelShape: 'Wedge', heelHeight: 'Bajo (1-3cm)', toeShape: 'Redonda', closure: 'Slip-On', upperMat: 'Tela', outsoleMat: 'Goma', heelMat: 'ESPA', webDesc: 'Espadrille multicolor de tela con suela de yute, estilo tropical playero.' },
+    { code: 'KISS-BK-556-001', style: 'Elegante Noche', dept: 'FORMAL', catCode: 556, vendor: 0, brandCode: 'KISS', colorCode: 'BK', sizeType: 'US Women', price: 89.99, cost: 35.00, shoeType: 'Pump', heelShape: 'Stiletto', heelHeight: 'Tacon Alto (3-4 in)', toeShape: 'Puntiaguda', closure: 'Pump', upperMat: 'Charol', outsoleMat: 'Cuero', heelMat: 'FORR', webDesc: 'Pump negro de charol con tacon stiletto alto, ideal para eventos formales y noches elegantes.' },
+    { code: 'KISS-RD-575-002', style: 'Fiesta Roja', dept: 'FIESTA', catCode: 575, vendor: 0, brandCode: 'KISS', colorCode: 'RD', sizeType: 'US Women', price: 95.00, cost: 38.00, shoeType: 'Pump', heelShape: 'Stiletto', heelHeight: 'Muy Alto (4+ in)', toeShape: 'Puntiaguda', closure: 'Pump', upperMat: 'Cuero', outsoleMat: 'Cuero', heelMat: 'FORR', webDesc: 'Pump rojo de cuero con tacon muy alto, perfecto para fiestas y ocasiones especiales.' },
+    { code: 'FLEX-BE-559-003', style: 'Comfort Daily', dept: 'CASUAL', catCode: 559, vendor: 1, brandCode: 'FLEX', colorCode: 'BE', sizeType: 'US Women', price: 49.99, cost: 20.00, shoeType: 'Flat', heelShape: 'Flat/None', heelHeight: 'Plano (0-1 in)', toeShape: 'Redonda', closure: 'Ballerina', upperMat: 'Sintetico', outsoleMat: 'TPR', heelMat: 'PLAN', webDesc: 'Flat beige comodo para uso diario, con suela flexible y material sintetico suave.' },
+    { code: 'REVE-GD-574-004', style: 'Soiree Doree', dept: 'FIESTA', catCode: 574, vendor: 2, brandCode: 'REVE', colorCode: 'GD', sizeType: 'EU', price: 120.00, cost: 48.00, shoeType: 'Sandalia', heelShape: 'Chunky/Block', heelHeight: 'Tacon Medio (2-3 in)', toeShape: 'Abierta', closure: 'Ankle Strap', upperMat: 'Cuero', outsoleMat: 'Cuero', heelMat: 'FORR', webDesc: 'Sandalia dorada de cuero con tacon bloque medio, elegante para fiestas y galas.' },
+    { code: 'TTAB-BK-580-005', style: 'Urban Boot', dept: 'BOOTS', catCode: 580, vendor: 3, brandCode: 'TTAB', colorCode: 'BK', sizeType: 'US Women', price: 149.99, cost: 60.00, shoeType: 'Bota', heelShape: 'Chunky/Block', heelHeight: 'Tacon Medio (2-3 in)', toeShape: 'Almendra', closure: 'Alta', upperMat: 'Cuero', outsoleMat: 'Goma', heelMat: 'GOMA', webDesc: 'Bota alta negra de cuero con tacon bloque y cremallera lateral, estilo urbano.' },
+    { code: 'CAMP-BR-568-006', style: 'Trail Runner', dept: 'CASUAL', catCode: 568, vendor: 4, brandCode: 'CAMP', colorCode: 'BR', sizeType: 'US Women', price: 79.99, cost: 32.00, shoeType: 'Sneaker', heelShape: 'Flat/None', heelHeight: 'Tacon Bajo (1-2 in)', toeShape: 'Redonda', closure: 'Atletico', upperMat: 'Mesh', outsoleMat: 'Goma', heelMat: 'GOMA', webDesc: 'Sneaker cafe deportivo con suela de goma y material mesh transpirable.' },
+    { code: 'KISS-NV-570-007', style: 'Classic Oxford', dept: 'FORMAL', catCode: 570, vendor: 0, brandCode: 'KISS', colorCode: 'NV', sizeType: 'US Women', price: 110.00, cost: 44.00, shoeType: 'Oxford', heelShape: 'Stacked', heelHeight: 'Tacon Bajo (1-2 in)', toeShape: 'Almendra', closure: 'Oxford', upperMat: 'Cuero', outsoleMat: 'Cuero', heelMat: 'PLAS', webDesc: 'Oxford navy clasico de cuero con tacon bajo apilado, para oficina y eventos formales.' },
+    { code: 'FLEX-WH-560-008', style: 'Beach Walk', dept: 'SANDALIAS', catCode: 560, vendor: 1, brandCode: 'FLEX', colorCode: 'WH', sizeType: 'US Women', price: 39.99, cost: 16.00, shoeType: 'Sandalia', heelShape: 'Flat/None', heelHeight: 'Plano (0-1 in)', toeShape: 'Abierta', closure: 'Sling Back', upperMat: 'Sintetico', outsoleMat: 'EVA', heelMat: 'PLAN', webDesc: 'Sandalia plana blanca con hebilla, perfecta para la playa y dias calurosos.' },
+    { code: 'REVE-SV-576-009', style: 'Platform Night', dept: 'FIESTA', catCode: 576, vendor: 2, brandCode: 'REVE', colorCode: 'SV', sizeType: 'EU', price: 135.00, cost: 54.00, shoeType: 'Plataforma', heelShape: 'Platform', heelHeight: 'Muy Alto (4+ in)', toeShape: 'Peep Toe', closure: 'Plataforma Sandalia', upperMat: 'Satin', outsoleMat: 'TPR', heelMat: 'FORR', webDesc: 'Plataforma plateada de satin con peep toe, ideal para noches de fiesta.' },
+    { code: 'TTAB-CM-582-010', style: 'Ankle Edge', dept: 'BOOTS', catCode: 582, vendor: 3, brandCode: 'TTAB', colorCode: 'CM', sizeType: 'US Women', price: 119.99, cost: 48.00, shoeType: 'Bota Corta', heelShape: 'Chunky/Block', heelHeight: 'Tacon Medio (2-3 in)', toeShape: 'Cuadrada', closure: 'Ankle Strap', upperMat: 'Ante/Suede', outsoleMat: 'Goma', heelMat: 'GOMA', webDesc: 'Botin camel de ante con tacon bloque y punta cuadrada, versatil para toda temporada.' },
+    { code: 'CAMP-GN-585-011', style: 'Comfort Walk', dept: 'COMFORT', catCode: 585, vendor: 4, brandCode: 'CAMP', colorCode: 'GN', sizeType: 'US Women', price: 69.99, cost: 28.00, shoeType: 'Mocasin', heelShape: 'Flat/None', heelHeight: 'Plano (0-1 in)', toeShape: 'Redonda', closure: 'Mocasin', upperMat: 'Cuero', outsoleMat: 'EVA', heelMat: 'PLAN', webDesc: 'Mocasin verde de cuero comfort con suela EVA ultraligera para caminar todo el dia.' },
+    { code: 'KISS-PK-557-012', style: 'Casual Chic', dept: 'CASUAL', catCode: 557, vendor: 0, brandCode: 'KISS', colorCode: 'PK', sizeType: 'US Women', price: 75.00, cost: 30.00, shoeType: 'Pump', heelShape: 'Kitten', heelHeight: 'Tacon Bajo (1-2 in)', toeShape: 'Puntiaguda', closure: 'Pump', upperMat: 'Sintetico', outsoleMat: 'TPR', heelMat: 'PLAS', webDesc: 'Pump rosa con tacon kitten bajo, perfecto para look casual chic de dia.' },
+    { code: 'FLEX-BK-561-013', style: 'Tacon Elegante', dept: 'SANDALIAS', catCode: 561, vendor: 1, brandCode: 'FLEX', colorCode: 'BK', sizeType: 'US Women', price: 85.00, cost: 34.00, shoeType: 'Sandalia', heelShape: 'Stiletto', heelHeight: 'Tacon Alto (3-4 in)', toeShape: 'Abierta', closure: 'Ankle Strap', upperMat: 'Cuero', outsoleMat: 'Cuero', heelMat: 'FORR', webDesc: 'Sandalia negra de tacon alto con tiras de cuero, elegante para eventos nocturnos.' },
+    { code: 'REVE-NU-558-014', style: 'Ballet Grace', dept: 'FORMAL', catCode: 558, vendor: 2, brandCode: 'REVE', colorCode: 'NU', sizeType: 'EU', price: 65.00, cost: 26.00, shoeType: 'Flat', heelShape: 'Flat/None', heelHeight: 'Plano (0-1 in)', toeShape: 'Almendra', closure: 'Ballerina', upperMat: 'Cuero', outsoleMat: 'Cuero', heelMat: 'PLAN', webDesc: 'Flat nude de cuero con punta almendra, clasico y elegante para oficina.' },
+    { code: 'TTAB-FU-565-015', style: 'Mule Bold', dept: 'FORMAL', catCode: 565, vendor: 3, brandCode: 'TTAB', colorCode: 'FU', sizeType: 'US Women', price: 99.00, cost: 40.00, shoeType: 'Mule', heelShape: 'Cone', heelHeight: 'Tacon Alto (3-4 in)', toeShape: 'Puntiaguda', closure: 'Mule', upperMat: 'Sintetico', outsoleMat: 'TPR', heelMat: 'PLAS', webDesc: 'Mule fucsia con tacon cono alto, diseno atrevido para ocasiones formales.' },
+    { code: 'CAMP-GY-572-016', style: 'Everyday Slip', dept: 'COMFORT', catCode: 572, vendor: 4, brandCode: 'CAMP', colorCode: 'GY', sizeType: 'US Women', price: 55.00, cost: 22.00, shoeType: 'Mocasin', heelShape: 'Flat/None', heelHeight: 'Plano (0-1 in)', toeShape: 'Redonda', closure: 'Mocasin', upperMat: 'Tela', outsoleMat: 'Goma', heelMat: 'PLAN', webDesc: 'Mocasin gris de tela con suela de goma, ultracomodo para uso diario.' },
+    { code: 'KISS-RG-562-017', style: 'Glam Platform', dept: 'FORMAL', catCode: 562, vendor: 0, brandCode: 'KISS', colorCode: 'RG', sizeType: 'US Women', price: 130.00, cost: 52.00, shoeType: 'Plataforma', heelShape: 'Platform', heelHeight: 'Muy Alto (4+ in)', toeShape: 'Peep Toe', closure: 'Plataforma Cerrada', upperMat: 'Cuero', outsoleMat: 'TPR', heelMat: 'FORR', webDesc: 'Plataforma rose gold de cuero con peep toe, glamorosa para eventos formales.' },
+    { code: 'FLEX-TN-564-018', style: 'Summer Wedge', dept: 'CASUAL', catCode: 564, vendor: 1, brandCode: 'FLEX', colorCode: 'TN', sizeType: 'US Women', price: 72.00, cost: 29.00, shoeType: 'Wedge', heelShape: 'Wedge', heelHeight: 'Tacon Medio (2-3 in)', toeShape: 'Abierta', closure: 'Plataforma Sandalia', upperMat: 'Lona', outsoleMat: 'Goma', heelMat: 'ESPA', webDesc: 'Wedge tan de lona con cuna de espartillo, estilo veraniego y comodo.' },
+    { code: 'REVE-BO-581-019', style: 'Mid Boot Luxe', dept: 'BOOTS', catCode: 581, vendor: 2, brandCode: 'REVE', colorCode: 'BO', sizeType: 'EU', price: 165.00, cost: 66.00, shoeType: 'Bota', heelShape: 'Chunky/Block', heelHeight: 'Tacon Medio (2-3 in)', toeShape: 'Almendra', closure: 'Alta', upperMat: 'Cuero', outsoleMat: 'Goma', heelMat: 'GOMA', webDesc: 'Bota media bordo de cuero con tacon bloque y cremallera, lujo europeo.' },
+    { code: 'TTAB-MC-567-020', style: 'Espa Tropical', dept: 'CASUAL', catCode: 567, vendor: 3, brandCode: 'TTAB', colorCode: 'MC', sizeType: 'US Women', price: 58.00, cost: 23.00, shoeType: 'Espadrille', heelShape: 'Wedge', heelHeight: 'Tacon Bajo (1-2 in)', toeShape: 'Redonda', closure: 'Slip On', upperMat: 'Tela', outsoleMat: 'Goma', heelMat: 'ESPA', webDesc: 'Espadrille multicolor de tela con suela de yute, estilo tropical playero.' },
   ];
 
   const usWomenSizeTypeId = getSizeTypeId('US Women');

@@ -1,6 +1,12 @@
 import request from 'supertest';
 import app from '../src/app';
-import { resetDb } from '../src/db/database';
+import { getDb, resetDb } from '../src/db/database';
+
+function getCategoryId(ricsCode: number): number | null {
+  const db = getDb();
+  const row = db.prepare('SELECT id FROM ref_categories WHERE rics_code = ?').get(ricsCode) as { id: number } | undefined;
+  return row ? row.id : null;
+}
 
 const validVendor = {
   name: 'Calzados Premium',
@@ -113,6 +119,7 @@ describe('DELETE /api/v1/vendors/:vendorId', () => {
       style: 'Air Max',
       price: 129.99,
       department: 'FORMAL',
+      categoryId: getCategoryId(560),
       vendorId: vendor.body.id,
     });
 
