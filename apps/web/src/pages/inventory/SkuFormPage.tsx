@@ -348,6 +348,25 @@ export default function SkuFormPage() {
 
   const isSaving = createMutation.isPending || updateMutation.isPending
 
+  // Build category options with search by name or RICS code
+  // NOTE: must be above early returns to satisfy Rules of Hooks
+  const categoryOptions = useMemo(() => {
+    const cats = (refData?.['categories'] ?? []) as { id: number; ricsCode?: number; name: string; deptMacro?: string }[]
+    const grouped = cats.reduce<Record<string, typeof cats>>((acc, c) => {
+      const group = c.deptMacro || 'Otro'
+      if (!acc[group]) acc[group] = []
+      acc[group].push(c)
+      return acc
+    }, {})
+    return Object.entries(grouped).map(([macro, items]) => ({
+      label: macro,
+      options: items.map((c) => ({
+        label: `${c.ricsCode ?? ''} ${c.name}`,
+        value: c.id,
+      })),
+    }))
+  }, [refData])
+
   if (isRouteEdit && skuLoading) {
     return (
       <div style={{ textAlign: 'center', padding: 80 }}>
@@ -365,24 +384,6 @@ export default function SkuFormPage() {
   }
 
   const compactItem: React.CSSProperties = { marginBottom: 8 }
-
-  // Build category options with search by name or RICS code
-  const categoryOptions = useMemo(() => {
-    const cats = (refData?.['categories'] ?? []) as { id: number; ricsCode?: number; name: string; deptMacro?: string }[]
-    const grouped = cats.reduce<Record<string, typeof cats>>((acc, c) => {
-      const group = c.deptMacro || 'Otro'
-      if (!acc[group]) acc[group] = []
-      acc[group].push(c)
-      return acc
-    }, {})
-    return Object.entries(grouped).map(([macro, items]) => ({
-      label: macro,
-      options: items.map((c) => ({
-        label: `${c.ricsCode ?? ''} ${c.name}`,
-        value: c.id,
-      })),
-    }))
-  }, [refData])
 
   return (
     <>
