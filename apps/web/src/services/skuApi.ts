@@ -90,7 +90,7 @@ export async function fetchAllReferenceData(): Promise<ReferenceDataMap> {
 
 export async function searchSkus(query: string): Promise<Sku[]> {
   if (!query.trim()) return []
-  const params = new URLSearchParams({ q: query.trim(), pageSize: '50', sort: 'skuCode', order: 'asc' })
+  const params = new URLSearchParams({ q: query.trim(), pageSize: '50', sort: 'style', order: 'asc' })
   const res = await fetch(`/api/v1/skus?${params}`)
   if (!res.ok) return []
   const body: PaginationEnvelope<Sku> = await res.json()

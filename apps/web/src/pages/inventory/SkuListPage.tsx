@@ -50,7 +50,7 @@ export default function SkuListPage() {
   const [params, setParams] = useState<SkuListParams>({
     page: 1,
     pageSize: 50,
-    sort: 'brand',
+    sort: 'style',
     order: 'asc',
     active: true,
   })
