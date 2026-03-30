@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { fetchProducts, fetchProduct } from '@/services/productApi'
+import { fetchProducts, fetchProduct, fetchFacets } from '@/services/productApi'
 import type { ProductListParams } from '@/types/product'
 
 export function useProducts(params: ProductListParams) {
@@ -10,10 +10,17 @@ export function useProducts(params: ProductListParams) {
   })
 }
 
-export function useProduct(id: number) {
+export function useProduct(id: string) {
   return useQuery({
     queryKey: ['product', id],
     queryFn: () => fetchProduct(id),
-    enabled: id > 0,
+    enabled: !!id,
+  })
+}
+
+export function useFacets(params?: Parameters<typeof fetchFacets>[0]) {
+  return useQuery({
+    queryKey: ['facets', params],
+    queryFn: () => fetchFacets(params),
   })
 }

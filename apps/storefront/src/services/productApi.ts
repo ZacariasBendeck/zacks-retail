@@ -1,33 +1,31 @@
-import type { Product, ProductListParams, ProductListResponse } from '@/types/product'
-import { mockFetchProducts, mockFetchProduct } from './mockData'
-
-const USE_MOCK = true
+import type { ProductDetail, ProductListParams, ProductListResponse, Facets } from '@/types/product'
 
 export async function fetchProducts(params: ProductListParams): Promise<ProductListResponse> {
-  if (USE_MOCK) {
-    return Promise.resolve(mockFetchProducts(params))
-  }
   const searchParams = new URLSearchParams()
   for (const [key, value] of Object.entries(params)) {
     if (value == null || value === '') continue
-    if (Array.isArray(value)) {
-      for (const v of value) searchParams.append(key, String(v))
-    } else {
-      searchParams.set(key, String(value))
-    }
+    searchParams.set(key, String(value))
   }
   const res = await fetch(`/api/public/products?${searchParams}`)
   if (!res.ok) throw new Error(`Failed to fetch products: ${res.status}`)
   return res.json()
 }
 
-export async function fetchProduct(id: number): Promise<Product> {
-  if (USE_MOCK) {
-    const product = mockFetchProduct(id)
-    if (!product) throw new Error('Product not found')
-    return Promise.resolve(product)
-  }
+export async function fetchProduct(id: string): Promise<ProductDetail> {
   const res = await fetch(`/api/public/products/${id}`)
   if (!res.ok) throw new Error(`Failed to fetch product: ${res.status}`)
+  return res.json()
+}
+
+export async function fetchFacets(params?: Pick<ProductListParams, 'q' | 'categoryId' | 'department' | 'brandId' | 'colorId' | 'minPrice' | 'maxPrice'>): Promise<Facets> {
+  const searchParams = new URLSearchParams()
+  if (params) {
+    for (const [key, value] of Object.entries(params)) {
+      if (value == null || value === '') continue
+      searchParams.set(key, String(value))
+    }
+  }
+  const res = await fetch(`/api/public/products/facets?${searchParams}`)
+  if (!res.ok) throw new Error(`Failed to fetch facets: ${res.status}`)
   return res.json()
 }

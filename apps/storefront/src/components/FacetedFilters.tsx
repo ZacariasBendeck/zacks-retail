@@ -1,14 +1,15 @@
 import { Checkbox, Collapse, InputNumber, Space, Typography, Button } from 'antd'
 import type { Facets } from '@/types/product'
 
-interface FilterState {
-  brand: string[]
-  size: string[]
-  color: string[]
-  material: string[]
-  style: string[]
-  price_min?: number
-  price_max?: number
+export interface FilterState {
+  brandId?: number
+  colorId?: number
+  sizeLabel?: string
+  categoryId?: number
+  department?: string
+  materialId?: number
+  minPrice?: number
+  maxPrice?: number
 }
 
 interface FacetedFiltersProps {
@@ -18,109 +19,200 @@ interface FacetedFiltersProps {
   loading?: boolean
 }
 
-function FilterSection({
+function IdFilterSection({
   options,
-  selected,
-  onToggle,
+  selectedId,
+  onSelect,
 }: {
-  options: { value: string; label: string; count: number }[]
-  selected: string[]
-  onToggle: (value: string) => void
+  options: { id: number; name: string; count: number }[]
+  selectedId: number | undefined
+  onSelect: (id: number | undefined) => void
 }) {
   if (!options.length) return null
   return (
-    <div style={{ marginBottom: 4 }}>
-      <div style={{ maxHeight: 200, overflowY: 'auto' }}>
-        {options.map(opt => (
-          <div key={opt.value} style={{ padding: '3px 0' }}>
-            <Checkbox
-              checked={selected.includes(opt.value)}
-              onChange={() => onToggle(opt.value)}
-            >
-              <span>{opt.label}</span>
-              <Typography.Text type="secondary" style={{ marginLeft: 4 }}>
-                ({opt.count})
-              </Typography.Text>
-            </Checkbox>
-          </div>
-        ))}
-      </div>
+    <div style={{ maxHeight: 200, overflowY: 'auto' }}>
+      {options.map(opt => (
+        <div key={opt.id} style={{ padding: '3px 0' }}>
+          <Checkbox
+            checked={selectedId === opt.id}
+            onChange={() => onSelect(selectedId === opt.id ? undefined : opt.id)}
+          >
+            <span>{opt.name}</span>
+            <Typography.Text type="secondary" style={{ marginLeft: 4 }}>
+              ({opt.count})
+            </Typography.Text>
+          </Checkbox>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function NameFilterSection({
+  options,
+  selectedName,
+  onSelect,
+}: {
+  options: { name: string; count: number }[]
+  selectedName: string | undefined
+  onSelect: (name: string | undefined) => void
+}) {
+  if (!options.length) return null
+  return (
+    <div style={{ maxHeight: 200, overflowY: 'auto' }}>
+      {options.map(opt => (
+        <div key={opt.name} style={{ padding: '3px 0' }}>
+          <Checkbox
+            checked={selectedName === opt.name}
+            onChange={() => onSelect(selectedName === opt.name ? undefined : opt.name)}
+          >
+            <span>{opt.name}</span>
+            <Typography.Text type="secondary" style={{ marginLeft: 4 }}>
+              ({opt.count})
+            </Typography.Text>
+          </Checkbox>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function SizeFilterSection({
+  options,
+  selectedLabel,
+  onSelect,
+}: {
+  options: { label: string; count: number }[]
+  selectedLabel: string | undefined
+  onSelect: (label: string | undefined) => void
+}) {
+  if (!options.length) return null
+  return (
+    <div style={{ maxHeight: 200, overflowY: 'auto' }}>
+      {options.map(opt => (
+        <div key={opt.label} style={{ padding: '3px 0' }}>
+          <Checkbox
+            checked={selectedLabel === opt.label}
+            onChange={() => onSelect(selectedLabel === opt.label ? undefined : opt.label)}
+          >
+            <span>{opt.label}</span>
+            <Typography.Text type="secondary" style={{ marginLeft: 4 }}>
+              ({opt.count})
+            </Typography.Text>
+          </Checkbox>
+        </div>
+      ))}
     </div>
   )
 }
 
 export default function FacetedFilters({ facets, filters, onChange, loading }: FacetedFiltersProps) {
-  const toggle = (key: keyof Pick<FilterState, 'brand' | 'size' | 'color' | 'material' | 'style'>, value: string) => {
-    const current = filters[key]
-    const next = current.includes(value)
-      ? current.filter(v => v !== value)
-      : [...current, value]
-    onChange({ ...filters, [key]: next })
-  }
-
-  const hasActiveFilters = filters.brand.length > 0 || filters.size.length > 0 ||
-    filters.color.length > 0 || filters.material.length > 0 || filters.style.length > 0 ||
-    filters.price_min != null || filters.price_max != null
+  const hasActiveFilters = filters.brandId != null || filters.colorId != null ||
+    filters.sizeLabel != null || filters.categoryId != null || filters.department != null ||
+    filters.materialId != null || filters.minPrice != null || filters.maxPrice != null
 
   const clearAll = () => {
-    onChange({ brand: [], size: [], color: [], material: [], style: [], price_min: undefined, price_max: undefined })
+    onChange({})
   }
 
   const sections = [
     {
+      key: 'department',
+      label: `Departamento${filters.department ? ' (1)' : ''}`,
+      children: (
+        <NameFilterSection
+          options={facets?.departments ?? []}
+          selectedName={filters.department}
+          onSelect={(name) => onChange({ ...filters, department: name })}
+        />
+      ),
+    },
+    {
       key: 'category',
-      label: 'Categoría',
-      children: <FilterSection options={facets?.categories ?? []} selected={[]} onToggle={() => {}} />,
+      label: `Categoria${filters.categoryId != null ? ' (1)' : ''}`,
+      children: (
+        <IdFilterSection
+          options={facets?.categories ?? []}
+          selectedId={filters.categoryId}
+          onSelect={(id) => onChange({ ...filters, categoryId: id })}
+        />
+      ),
     },
     {
       key: 'brand',
-      label: `Marca${filters.brand.length ? ` (${filters.brand.length})` : ''}`,
-      children: <FilterSection options={facets?.brands ?? []} selected={filters.brand} onToggle={(v) => toggle('brand', v)} />,
+      label: `Marca${filters.brandId != null ? ' (1)' : ''}`,
+      children: (
+        <IdFilterSection
+          options={facets?.brands ?? []}
+          selectedId={filters.brandId}
+          onSelect={(id) => onChange({ ...filters, brandId: id })}
+        />
+      ),
     },
     {
       key: 'size',
-      label: `Talla${filters.size.length ? ` (${filters.size.length})` : ''}`,
-      children: <FilterSection options={facets?.sizes ?? []} selected={filters.size} onToggle={(v) => toggle('size', v)} />,
+      label: `Talla${filters.sizeLabel ? ' (1)' : ''}`,
+      children: (
+        <SizeFilterSection
+          options={facets?.sizes ?? []}
+          selectedLabel={filters.sizeLabel}
+          onSelect={(label) => onChange({ ...filters, sizeLabel: label })}
+        />
+      ),
     },
     {
       key: 'color',
-      label: `Color${filters.color.length ? ` (${filters.color.length})` : ''}`,
-      children: <FilterSection options={facets?.colors ?? []} selected={filters.color} onToggle={(v) => toggle('color', v)} />,
+      label: `Color${filters.colorId != null ? ' (1)' : ''}`,
+      children: (
+        <IdFilterSection
+          options={facets?.colors ?? []}
+          selectedId={filters.colorId}
+          onSelect={(id) => onChange({ ...filters, colorId: id })}
+        />
+      ),
     },
     {
       key: 'price',
       label: 'Precio',
       children: (
-        <Space>
-          <InputNumber
-            placeholder="Min"
-            prefix="$"
-            value={filters.price_min}
-            onChange={(v) => onChange({ ...filters, price_min: v ?? undefined })}
-            style={{ width: 100 }}
-            min={0}
-          />
-          <span>-</span>
-          <InputNumber
-            placeholder="Max"
-            prefix="$"
-            value={filters.price_max}
-            onChange={(v) => onChange({ ...filters, price_max: v ?? undefined })}
-            style={{ width: 100 }}
-            min={0}
-          />
-        </Space>
+        <div>
+          {facets?.priceRange && (
+            <Typography.Text type="secondary" style={{ display: 'block', marginBottom: 8, fontSize: 12 }}>
+              Rango: ${facets.priceRange.min.toFixed(0)} - ${facets.priceRange.max.toFixed(0)}
+            </Typography.Text>
+          )}
+          <Space>
+            <InputNumber
+              placeholder="Min"
+              prefix="$"
+              value={filters.minPrice}
+              onChange={(v) => onChange({ ...filters, minPrice: v ?? undefined })}
+              style={{ width: 100 }}
+              min={0}
+            />
+            <span>-</span>
+            <InputNumber
+              placeholder="Max"
+              prefix="$"
+              value={filters.maxPrice}
+              onChange={(v) => onChange({ ...filters, maxPrice: v ?? undefined })}
+              style={{ width: 100 }}
+              min={0}
+            />
+          </Space>
+        </div>
       ),
     },
     {
       key: 'material',
-      label: `Material${filters.material.length ? ` (${filters.material.length})` : ''}`,
-      children: <FilterSection options={facets?.materials ?? []} selected={filters.material} onToggle={(v) => toggle('material', v)} />,
-    },
-    {
-      key: 'style',
-      label: `Estilo${filters.style.length ? ` (${filters.style.length})` : ''}`,
-      children: <FilterSection options={facets?.styles ?? []} selected={filters.style} onToggle={(v) => toggle('style', v)} />,
+      label: `Material${filters.materialId != null ? ' (1)' : ''}`,
+      children: (
+        <NameFilterSection
+          options={(facets?.materials ?? []).map((m, i) => ({ ...m, id: i })) as unknown as { name: string; count: number }[]}
+          selectedName={undefined}
+          onSelect={() => {}}
+        />
+      ),
     },
   ]
 
@@ -134,7 +226,7 @@ export default function FacetedFilters({ facets, filters, onChange, loading }: F
         </div>
       )}
       <Collapse
-        defaultActiveKey={['brand', 'size', 'color', 'price']}
+        defaultActiveKey={['brand', 'size', 'color', 'price', 'department']}
         ghost
         items={sections}
         expandIconPosition="end"
@@ -142,5 +234,3 @@ export default function FacetedFilters({ facets, filters, onChange, loading }: F
     </div>
   )
 }
-
-export type { FilterState }

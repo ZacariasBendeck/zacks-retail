@@ -1,71 +1,75 @@
-export interface Product {
-  id: number
-  sku_number: string
-  brand: string
+// Types aligned with the real public product API responses
+
+export interface ProductCard {
+  id: string
   name: string
+  brand: string | null
   price: number
-  original_price?: number
-  rating: number
-  review_count: number
-  image_url: string
-  images: string[]
-  colors: ProductColor[]
-  sizes: string[]
-  category: string
-  category_path: string[]
+  mainImage: string | null
+  rating: number | null
+  colorSwatches: ColorSwatch[]
   department: string
-  material?: string
-  style?: string
-  description?: string
-  web_description?: string
-  specifications?: Record<string, string>
+  style: string
 }
 
-export interface ProductColor {
-  id: number
+export interface ColorSwatch {
+  colorId: number
   name: string
   code: string
-  hex?: string
-  swatch_url?: string
 }
 
-export interface FacetValue {
-  value: string
-  label: string
-  count: number
+export interface ProductDetail {
+  id: string
+  skuCode: string
+  name: string
+  brand: string | null
+  price: number
+  department: string
+  style: string
+  description: string | null
+  material: string | null
+  heelType: string | null
+  mainImage: string | null
+  rating: number | null
+  category: string | null
+  color: string | null
+  availableSizes: { id: string; label: string; inStock: boolean }[]
+  availableColors: ColorSwatch[]
+  specs: Record<string, string | null>
 }
 
 export interface Facets {
-  brands: FacetValue[]
-  sizes: FacetValue[]
-  colors: FacetValue[]
-  price_ranges: FacetValue[]
-  categories: FacetValue[]
-  materials: FacetValue[]
-  styles: FacetValue[]
+  brands: { id: number; name: string; count: number }[]
+  colors: { id: number; name: string; count: number }[]
+  sizes: { label: string; count: number }[]
+  categories: { id: number; name: string; count: number }[]
+  departments: { name: string; count: number }[]
+  materials: { name: string; count: number }[]
+  priceRange: { min: number; max: number }
 }
 
 export interface ProductListParams {
   page?: number
-  pageSize?: number
-  sort?: 'relevance' | 'price_asc' | 'price_desc' | 'newest' | 'rating'
+  limit?: number
+  sort?: 'price' | 'newest' | 'name'
+  order?: 'asc' | 'desc'
   q?: string
-  category?: string
-  brand?: string[]
-  size?: string[]
-  color?: string[]
-  price_min?: number
-  price_max?: number
-  material?: string[]
-  style?: string[]
+  categoryId?: number
+  department?: string
+  brandId?: number
+  colorId?: number
+  sizeLabel?: string
+  minPrice?: number
+  maxPrice?: number
+  materialId?: number
+  shoeTypeId?: number
 }
 
 export interface ProductListResponse {
-  data: Product[]
-  facets: Facets
+  data: ProductCard[]
   pagination: {
     page: number
-    pageSize: number
+    limit: number
     totalItems: number
     totalPages: number
   }

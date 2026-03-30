@@ -1,17 +1,18 @@
-import { useState, useCallback } from 'react'
+import { useCallback } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
 import { Row, Col, Pagination, Spin, Empty, Button, Drawer } from 'antd'
 import { FilterOutlined } from '@ant-design/icons'
-import { useProducts } from '@/hooks/useProducts'
+import { useProducts, useFacets } from '@/hooks/useProducts'
 import Breadcrumbs from '@/components/Breadcrumbs'
 import FacetedFilters, { type FilterState } from '@/components/FacetedFilters'
 import SortBar from '@/components/SortBar'
 import ProductCard from '@/components/ProductCard'
 import type { ProductListParams } from '@/types/product'
+import { useState } from 'react'
 
-function parseArrayParam(params: URLSearchParams, key: string): string[] {
+function numParam(params: URLSearchParams, key: string): number | undefined {
   const val = params.get(key)
-  return val ? val.split(',') : []
+  return val ? Number(val) : undefined
 }
 
 export default function ProductListingPage() {
@@ -20,36 +21,43 @@ export default function ProductListingPage() {
   const [drawerOpen, setDrawerOpen] = useState(false)
 
   const filters: FilterState = {
-    brand: parseArrayParam(searchParams, 'brand'),
-    size: parseArrayParam(searchParams, 'size'),
-    color: parseArrayParam(searchParams, 'color'),
-    material: parseArrayParam(searchParams, 'material'),
-    style: parseArrayParam(searchParams, 'style'),
-    price_min: searchParams.get('price_min') ? Number(searchParams.get('price_min')) : undefined,
-    price_max: searchParams.get('price_max') ? Number(searchParams.get('price_max')) : undefined,
+    brandId: numParam(searchParams, 'brandId'),
+    colorId: numParam(searchParams, 'colorId'),
+    sizeLabel: searchParams.get('sizeLabel') ?? undefined,
+    categoryId: numParam(searchParams, 'categoryId'),
+    department: searchParams.get('department') ?? undefined,
+    materialId: numParam(searchParams, 'materialId'),
+    minPrice: numParam(searchParams, 'minPrice'),
+    maxPrice: numParam(searchParams, 'maxPrice'),
   }
+
+  const sort = (searchParams.get('sort') as ProductListParams['sort']) ?? 'name'
+  const order = (searchParams.get('order') as ProductListParams['order']) ?? 'asc'
 
   const queryParams: ProductListParams = {
     page: Number(searchParams.get('page') ?? 1),
-    pageSize: 24,
-    sort: (searchParams.get('sort') as ProductListParams['sort']) ?? 'relevance',
+    limit: 24,
+    sort,
+    order,
     q: searchParams.get('q') ?? undefined,
-    category: searchParams.get('category') ?? undefined,
-    brand: filters.brand.length ? filters.brand : undefined,
-    size: filters.size.length ? filters.size : undefined,
-    color: filters.color.length ? filters.color : undefined,
-    material: filters.material.length ? filters.material : undefined,
-    style: filters.style.length ? filters.style : undefined,
-    price_min: filters.price_min,
-    price_max: filters.price_max,
+    ...filters,
   }
 
   const { data, isLoading } = useProducts(queryParams)
+  const { data: facets } = useFacets({
+    q: queryParams.q,
+    department: filters.department,
+    categoryId: filters.categoryId,
+    brandId: filters.brandId,
+    colorId: filters.colorId,
+    minPrice: filters.minPrice,
+    maxPrice: filters.maxPrice,
+  })
 
   const updateParams = useCallback((updates: Record<string, string | undefined>) => {
     const params = new URLSearchParams(searchParams)
     for (const [key, val] of Object.entries(updates)) {
-      if (val) params.set(key, val)
+      if (val != null) params.set(key, val)
       else params.delete(key)
     }
     navigate(`/?${params}`)
@@ -57,21 +65,20 @@ export default function ProductListingPage() {
 
   const handleFiltersChange = useCallback((newFilters: FilterState) => {
     const params = new URLSearchParams(searchParams)
-    const arrayKeys = ['brand', 'size', 'color', 'material', 'style'] as const
-    for (const key of arrayKeys) {
-      if (newFilters[key].length) params.set(key, newFilters[key].join(','))
-      else params.delete(key)
+    // Clear all filter params first
+    for (const key of ['brandId', 'colorId', 'sizeLabel', 'categoryId', 'department', 'materialId', 'minPrice', 'maxPrice']) {
+      params.delete(key)
     }
-    if (newFilters.price_min != null) params.set('price_min', String(newFilters.price_min))
-    else params.delete('price_min')
-    if (newFilters.price_max != null) params.set('price_max', String(newFilters.price_max))
-    else params.delete('price_max')
+    // Set new ones
+    for (const [key, val] of Object.entries(newFilters)) {
+      if (val != null) params.set(key, String(val))
+    }
     params.set('page', '1')
     navigate(`/?${params}`)
   }, [searchParams, navigate])
 
-  const handleSortChange = useCallback((sort: string) => {
-    updateParams({ sort, page: '1' })
+  const handleSortChange = useCallback((newSort: string, newOrder: string) => {
+    updateParams({ sort: newSort, order: newOrder, page: '1' })
   }, [updateParams])
 
   const handlePageChange = useCallback((page: number) => {
@@ -81,7 +88,7 @@ export default function ProductListingPage() {
 
   const filterSidebar = (
     <FacetedFilters
-      facets={data?.facets}
+      facets={facets}
       filters={filters}
       onChange={handleFiltersChange}
       loading={isLoading}
@@ -111,7 +118,8 @@ export default function ProductListingPage() {
         <Col xs={24} sm={24} md={18} lg={19} xl={19}>
           <SortBar
             total={data?.pagination.totalItems ?? 0}
-            sort={queryParams.sort ?? 'relevance'}
+            sort={sort}
+            order={order}
             onSortChange={handleSortChange}
           />
 
@@ -136,7 +144,7 @@ export default function ProductListingPage() {
                   <Pagination
                     current={data.pagination.page}
                     total={data.pagination.totalItems}
-                    pageSize={data.pagination.pageSize}
+                    pageSize={data.pagination.limit}
                     onChange={handlePageChange}
                     showSizeChanger={false}
                     showTotal={(total, range) => `${range[0]}-${range[1]} de ${total} productos`}

@@ -5,20 +5,20 @@ import { useState } from 'react'
 
 const { Header } = Layout
 
-const CATEGORIES = [
+const DEPARTMENTS = [
   { key: 'all', label: 'Todos' },
-  { key: 'Formal', label: 'Formal' },
-  { key: 'Casual', label: 'Casual' },
-  { key: 'Fiesta', label: 'Fiesta' },
-  { key: 'Sandalias', label: 'Sandalias' },
-  { key: 'Botas', label: 'Botas' },
-  { key: 'Comfort', label: 'Comfort' },
+  { key: 'FORMAL', label: 'Formal' },
+  { key: 'CASUAL', label: 'Casual' },
+  { key: 'FIESTA', label: 'Fiesta' },
+  { key: 'SANDALIAS', label: 'Sandalias' },
+  { key: 'BOOTS', label: 'Botas' },
+  { key: 'COMFORT', label: 'Comfort' },
 ]
 
 export default function StoreHeader() {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
-  const currentCategory = searchParams.get('category') ?? 'all'
+  const currentDept = searchParams.get('department') ?? 'all'
   const [searchValue, setSearchValue] = useState(searchParams.get('q') ?? '')
 
   const handleSearch = (value: string) => {
@@ -32,9 +32,9 @@ export default function StoreHeader() {
     navigate(`/?${params}`)
   }
 
-  const handleCategoryClick = (key: string) => {
+  const handleDepartmentClick = (key: string) => {
     const params = new URLSearchParams()
-    if (key !== 'all') params.set('category', key)
+    if (key !== 'all') params.set('department', key)
     params.set('page', '1')
     navigate(`/?${params}`)
   }
@@ -66,7 +66,7 @@ export default function StoreHeader() {
             style={{ margin: 0, cursor: 'pointer', color: '#1677ff' }}
             onClick={() => navigate('/')}
           >
-            Zapatería
+            Zapateria
           </Typography.Title>
 
           <Input.Search
@@ -88,14 +88,14 @@ export default function StoreHeader() {
           </Space>
         </div>
 
-        {/* Category nav */}
+        {/* Department nav */}
         <Menu
           mode="horizontal"
-          selectedKeys={[currentCategory]}
-          items={CATEGORIES.map(c => ({
-            key: c.key,
-            label: c.label,
-            onClick: () => handleCategoryClick(c.key),
+          selectedKeys={[currentDept]}
+          items={DEPARTMENTS.map(d => ({
+            key: d.key,
+            label: d.label,
+            onClick: () => handleDepartmentClick(d.key),
           }))}
           style={{ border: 'none', fontWeight: 500 }}
         />
