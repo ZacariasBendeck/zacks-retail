@@ -222,3 +222,127 @@ describe('GET /api/public/products/facets', () => {
     expect(size8.count).toBe(1);
   });
 });
+
+// ── GET /api/public/products/facets (dynamic cross-dimensional) ───
+
+describe('GET /api/public/products/facets with filters', () => {
+  // Seed richer data for cross-dimensional tests
+  const SKU_FORMAL_A = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+  const SKU_CASUAL_B = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+  const SKU_FORMAL_B = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
+
+  beforeEach(() => {
+    const db = getDb();
+
+    // Ensure we have two distinct brands, colors, and materials
+    db.prepare("INSERT OR IGNORE INTO ref_brands (code, name, active) VALUES ('BALPHA', 'BrandAlpha', 1)").run();
+    db.prepare("INSERT OR IGNORE INTO ref_brands (code, name, active) VALUES ('BBETA', 'BrandBeta', 1)").run();
+    db.prepare("INSERT OR IGNORE INTO ref_colors (code, name, active) VALUES ('RD2', 'Red', 1)").run();
+    db.prepare("INSERT OR IGNORE INTO ref_colors (code, name, active) VALUES ('BL2', 'Blue', 1)").run();
+    db.prepare("INSERT OR IGNORE INTO ref_upper_materials (name, active) VALUES ('Suede', 1)").run();
+    db.prepare("INSERT OR IGNORE INTO ref_upper_materials (name, active) VALUES ('Canvas', 1)").run();
+
+    const brandAlpha = db.prepare("SELECT id FROM ref_brands WHERE code = 'BALPHA'").get() as { id: number };
+    const brandBeta = db.prepare("SELECT id FROM ref_brands WHERE code = 'BBETA'").get() as { id: number };
+    const colorRed = db.prepare("SELECT id FROM ref_colors WHERE code = 'RD2'").get() as { id: number };
+    const colorBlue = db.prepare("SELECT id FROM ref_colors WHERE code = 'BL2'").get() as { id: number };
+    const matSuede = db.prepare("SELECT id FROM ref_upper_materials WHERE name = 'Suede'").get() as { id: number };
+    const matCanvas = db.prepare("SELECT id FROM ref_upper_materials WHERE name = 'Canvas'").get() as { id: number };
+    const cat = db.prepare('SELECT id FROM ref_categories LIMIT 1').get() as { id: number } | undefined;
+    const catId = cat?.id ?? null;
+
+    // SKU A: FORMAL, BrandAlpha, Red, Suede
+    db.prepare(`
+      INSERT INTO skus (id, sku_code, style, price, department, vendor_id, brand_id, color_id, category_id, upper_material_id, active)
+      VALUES (?, 'XD-001', 'StyleFormalA', 100, 'FORMAL', ?, ?, ?, ?, ?, 1)
+    `).run(SKU_FORMAL_A, VENDOR_ID, brandAlpha.id, colorRed.id, catId, matSuede.id);
+
+    // SKU B: CASUAL, BrandBeta, Blue, Canvas
+    db.prepare(`
+      INSERT INTO skus (id, sku_code, style, price, department, vendor_id, brand_id, color_id, category_id, upper_material_id, active)
+      VALUES (?, 'XD-002', 'StyleCasualB', 60, 'CASUAL', ?, ?, ?, ?, ?, 1)
+    `).run(SKU_CASUAL_B, VENDOR_ID, brandBeta.id, colorBlue.id, catId, matCanvas.id);
+
+    // SKU C: FORMAL, BrandBeta, Blue, Suede
+    db.prepare(`
+      INSERT INTO skus (id, sku_code, style, price, department, vendor_id, brand_id, color_id, category_id, upper_material_id, active)
+      VALUES (?, 'XD-003', 'StyleFormalB', 120, 'FORMAL', ?, ?, ?, ?, ?, 1)
+    `).run(SKU_FORMAL_B, VENDOR_ID, brandBeta.id, colorBlue.id, catId, matSuede.id);
+
+    // Sizes: only SKU_FORMAL_A has size "10", SKU_CASUAL_B has size "7"
+    db.prepare("INSERT INTO sku_sizes (id, sku_id, size_label, sort_order, active) VALUES ('dd000000-0000-0000-0000-000000000001', ?, '10', 1, 1)").run(SKU_FORMAL_A);
+    db.prepare("INSERT INTO sku_sizes (id, sku_id, size_label, sort_order, active) VALUES ('dd000000-0000-0000-0000-000000000002', ?, '7', 1, 1)").run(SKU_CASUAL_B);
+  });
+
+  it('no filters returns all facets with full counts', async () => {
+    const res = await request(app).get('/api/public/products/facets');
+    expect(res.status).toBe(200);
+    // Should have both BrandAlpha and BrandBeta (plus any from base seed)
+    const alpha = res.body.brands.find((b: any) => b.name === 'BrandAlpha');
+    const beta = res.body.brands.find((b: any) => b.name === 'BrandBeta');
+    expect(alpha).toBeDefined();
+    expect(beta).toBeDefined();
+  });
+
+  it('single filter (department=FORMAL) narrows other facets', async () => {
+    const res = await request(app).get('/api/public/products/facets?department=FORMAL');
+    expect(res.status).toBe(200);
+
+    // Brands: both BrandAlpha (StyleFormalA) and BrandBeta (StyleFormalB) are FORMAL
+    const alpha = res.body.brands.find((b: any) => b.name === 'BrandAlpha');
+    const beta = res.body.brands.find((b: any) => b.name === 'BrandBeta');
+    expect(alpha).toBeDefined();
+    expect(beta).toBeDefined();
+
+    // Colors: Red (StyleFormalA) and Blue (StyleFormalB) in FORMAL
+    const red = res.body.colors.find((c: any) => c.name === 'Red');
+    const blue = res.body.colors.find((c: any) => c.name === 'Blue');
+    expect(red).toBeDefined();
+    expect(blue).toBeDefined();
+
+    // Departments facet itself is NOT filtered by department, so CASUAL should still appear
+    const casual = res.body.departments.find((d: any) => d.name === 'CASUAL');
+    expect(casual).toBeDefined();
+
+    // Price range reflects only FORMAL products (from base seed 89.99 + 100 + 120)
+    expect(res.body.priceRange.min).toBeLessThanOrEqual(100);
+    expect(res.body.priceRange.max).toBeGreaterThanOrEqual(120);
+  });
+
+  it('multiple filters narrow results to intersection', async () => {
+    // Look up BrandBeta's dynamic ID
+    const db = getDb();
+    const brandBeta = db.prepare("SELECT id FROM ref_brands WHERE code = 'BBETA'").get() as { id: number };
+
+    // FORMAL + BrandBeta → only StyleFormalB (Blue, Suede, price=120)
+    const res = await request(app).get(`/api/public/products/facets?department=FORMAL&brandId=${brandBeta.id}`);
+    expect(res.status).toBe(200);
+
+    // Colors should only show Blue (the only FORMAL+BrandBeta color)
+    const colors = res.body.colors;
+    const blue = colors.find((c: any) => c.name === 'Blue');
+    const red = colors.find((c: any) => c.name === 'Red');
+    expect(blue).toBeDefined();
+    expect(red).toBeUndefined();
+
+    // Materials: only Suede for this intersection
+    const suede = res.body.materials.find((m: any) => m.name === 'Suede');
+    const canvas = res.body.materials.find((m: any) => m.name === 'Canvas');
+    expect(suede).toBeDefined();
+    expect(canvas).toBeUndefined();
+  });
+
+  it('filter producing zero results on some facets returns empty arrays', async () => {
+    // department=CASUAL + material=Suede → no CASUAL SKUs have Suede
+    const res = await request(app).get('/api/public/products/facets?department=CASUAL&material=Suede');
+    expect(res.status).toBe(200);
+
+    // Brands should be empty (no CASUAL+Suede products)
+    expect(res.body.brands).toEqual([]);
+    // Colors should be empty
+    expect(res.body.colors).toEqual([]);
+    // Price range should be 0/0
+    expect(res.body.priceRange.min).toBe(0);
+    expect(res.body.priceRange.max).toBe(0);
+  });
+});

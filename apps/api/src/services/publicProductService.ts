@@ -290,73 +290,136 @@ export function getProductById(id: string): ProductDetail | null {
 
 // ── Facets ──────────────────────────────────────────────────────────
 
-export function getProductFacets(): FacetsResult {
+export interface FacetFilterParams {
+  department?: string;
+  categoryId?: number;
+  brandId?: number;
+  colorId?: number;
+  size?: string;
+  material?: string;
+}
+
+/**
+ * Build WHERE conditions from active filters, optionally excluding one dimension.
+ * This enables cross-dimensional counting: for each facet, we apply all OTHER
+ * active filters but not the one being counted.
+ */
+function buildFacetConditions(
+  filters: FacetFilterParams,
+  exclude?: keyof FacetFilterParams,
+): { conditions: string[]; values: DbValue[] } {
+  const conditions: string[] = ['s.active = 1'];
+  const values: DbValue[] = [];
+
+  if (exclude !== 'department' && filters.department) {
+    conditions.push('s.department = ?');
+    values.push(filters.department);
+  }
+  if (exclude !== 'categoryId' && filters.categoryId) {
+    conditions.push('s.category_id = ?');
+    values.push(filters.categoryId);
+  }
+  if (exclude !== 'brandId' && filters.brandId) {
+    conditions.push('s.brand_id = ?');
+    values.push(filters.brandId);
+  }
+  if (exclude !== 'colorId' && filters.colorId) {
+    conditions.push('s.color_id = ?');
+    values.push(filters.colorId);
+  }
+  if (exclude !== 'size' && filters.size) {
+    conditions.push('EXISTS (SELECT 1 FROM sku_sizes ss2 WHERE ss2.sku_id = s.id AND ss2.size_label = ? AND ss2.active = 1)');
+    values.push(filters.size);
+  }
+  if (exclude !== 'material' && filters.material) {
+    conditions.push('s.upper_material_id IN (SELECT id FROM ref_upper_materials WHERE name = ?)');
+    values.push(filters.material);
+  }
+
+  return { conditions, values };
+}
+
+export function getProductFacets(filters: FacetFilterParams = {}): FacetsResult {
   const db = getDb();
 
-  // Brands with count
+  // Brands — exclude brandId filter
+  const brandWhere = buildFacetConditions(filters, 'brandId');
   const brands = db.prepare(`
-    SELECT rb.id, rb.name, COUNT(s.id) as count
+    SELECT rb.id, rb.name, COUNT(DISTINCT s.style) as count
     FROM skus s
     JOIN ref_brands rb ON rb.id = s.brand_id
-    WHERE s.active = 1
+    WHERE ${brandWhere.conditions.join(' AND ')}
     GROUP BY rb.id, rb.name
+    HAVING count > 0
     ORDER BY count DESC
-  `).all() as unknown as FacetValue[];
+  `).all(...brandWhere.values) as unknown as FacetValue[];
 
-  // Colors with count
+  // Colors — exclude colorId filter
+  const colorWhere = buildFacetConditions(filters, 'colorId');
   const colors = db.prepare(`
-    SELECT rc.id, rc.name, COUNT(s.id) as count
+    SELECT rc.id, rc.name, COUNT(DISTINCT s.style) as count
     FROM skus s
     JOIN ref_colors rc ON rc.id = s.color_id
-    WHERE s.active = 1
+    WHERE ${colorWhere.conditions.join(' AND ')}
     GROUP BY rc.id, rc.name
+    HAVING count > 0
     ORDER BY count DESC
-  `).all() as unknown as FacetValue[];
+  `).all(...colorWhere.values) as unknown as FacetValue[];
 
-  // Sizes with count
+  // Sizes — exclude size filter
+  const sizeWhere = buildFacetConditions(filters, 'size');
   const sizes = db.prepare(`
-    SELECT ss.size_label as label, COUNT(DISTINCT ss.sku_id) as count
+    SELECT ss.size_label as label, COUNT(DISTINCT s.style) as count
     FROM sku_sizes ss
     JOIN skus s ON s.id = ss.sku_id
-    WHERE s.active = 1 AND ss.active = 1
+    WHERE ${sizeWhere.conditions.join(' AND ')} AND ss.active = 1
     GROUP BY ss.size_label
+    HAVING count > 0
     ORDER BY ss.size_label
-  `).all() as unknown as { label: string; count: number }[];
+  `).all(...sizeWhere.values) as unknown as { label: string; count: number }[];
 
-  // Categories with count
+  // Categories — exclude categoryId filter
+  const catWhere = buildFacetConditions(filters, 'categoryId');
   const categories = db.prepare(`
-    SELECT rc.id, rc.name, COUNT(s.id) as count
+    SELECT rc.id, rc.name, COUNT(DISTINCT s.style) as count
     FROM skus s
     JOIN ref_categories rc ON rc.id = s.category_id
-    WHERE s.active = 1
+    WHERE ${catWhere.conditions.join(' AND ')}
     GROUP BY rc.id, rc.name
+    HAVING count > 0
     ORDER BY count DESC
-  `).all() as unknown as FacetValue[];
+  `).all(...catWhere.values) as unknown as FacetValue[];
 
-  // Departments with count
+  // Departments — exclude department filter
+  const deptWhere = buildFacetConditions(filters, 'department');
   const departments = db.prepare(`
-    SELECT department as name, COUNT(*) as count
-    FROM skus
-    WHERE active = 1
-    GROUP BY department
+    SELECT s.department as name, COUNT(DISTINCT s.style) as count
+    FROM skus s
+    WHERE ${deptWhere.conditions.join(' AND ')}
+    GROUP BY s.department
+    HAVING count > 0
     ORDER BY count DESC
-  `).all() as unknown as { name: string; count: number }[];
+  `).all(...deptWhere.values) as unknown as { name: string; count: number }[];
 
-  // Materials (upper_material) with count
+  // Materials — exclude material filter
+  const matWhere = buildFacetConditions(filters, 'material');
   const materials = db.prepare(`
-    SELECT rum.name, COUNT(s.id) as count
+    SELECT rum.name, COUNT(DISTINCT s.style) as count
     FROM skus s
     JOIN ref_upper_materials rum ON rum.id = s.upper_material_id
-    WHERE s.active = 1
+    WHERE ${matWhere.conditions.join(' AND ')}
     GROUP BY rum.name
+    HAVING count > 0
     ORDER BY count DESC
-  `).all() as unknown as { name: string; count: number }[];
+  `).all(...matWhere.values) as unknown as { name: string; count: number }[];
 
-  // Price range
+  // Price range — apply ALL filters (no exclusion)
+  const priceWhere = buildFacetConditions(filters);
   const priceRow = db.prepare(`
-    SELECT COALESCE(MIN(price), 0) as min, COALESCE(MAX(price), 0) as max
-    FROM skus WHERE active = 1
-  `).get() as unknown as PriceRange;
+    SELECT COALESCE(MIN(s.price), 0) as min, COALESCE(MAX(s.price), 0) as max
+    FROM skus s
+    WHERE ${priceWhere.conditions.join(' AND ')}
+  `).get(...priceWhere.values) as unknown as PriceRange;
 
   return {
     brands,

@@ -2,13 +2,22 @@ import { Router, Request, Response, IRouter } from 'express';
 import { z } from 'zod';
 import { validateQuery } from '../middleware/validation';
 import * as publicProductService from '../services/publicProductService';
-import { ProductListParams } from '../services/publicProductService';
+import { ProductListParams, FacetFilterParams } from '../services/publicProductService';
 
 const router: IRouter = Router();
 
 const DEPARTMENTS = ['FORMAL', 'CASUAL', 'FIESTA', 'SANDALIAS', 'BOOTS', 'COMFORT'] as const;
 
 // ── Validation schemas ─────────────────────────────────────────────
+
+const facetQuerySchema = z.object({
+  department: z.enum(DEPARTMENTS).optional(),
+  categoryId: z.coerce.number().int().positive().optional(),
+  brandId: z.coerce.number().int().positive().optional(),
+  colorId: z.coerce.number().int().positive().optional(),
+  size: z.string().optional(),
+  material: z.string().optional(),
+});
 
 const productListQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
@@ -33,7 +42,32 @@ const productListQuerySchema = z.object({
  *   get:
  *     summary: Get available filter values with counts for storefront sidebar
  *     tags: [Public Products]
- *     description: Returns aggregated filter values (brands, colors, sizes, categories, departments, materials) with product counts for each value, plus the overall price range.
+ *     description: Returns aggregated filter values with cross-dimensional counts. When filters are applied, each facet dimension shows counts with all OTHER active filters applied (but not its own), enabling standard e-commerce faceted navigation.
+ *     parameters:
+ *       - name: department
+ *         in: query
+ *         schema: { type: string, enum: [FORMAL, CASUAL, FIESTA, SANDALIAS, BOOTS, COMFORT] }
+ *         description: Filter by department
+ *       - name: categoryId
+ *         in: query
+ *         schema: { type: integer }
+ *         description: Filter by category ID
+ *       - name: brandId
+ *         in: query
+ *         schema: { type: integer }
+ *         description: Filter by brand ID
+ *       - name: colorId
+ *         in: query
+ *         schema: { type: integer }
+ *         description: Filter by color ID
+ *       - name: size
+ *         in: query
+ *         schema: { type: string }
+ *         description: Filter by size label (e.g. "8", "9.5")
+ *       - name: material
+ *         in: query
+ *         schema: { type: string }
+ *         description: Filter by upper material name
  *     responses:
  *       200:
  *         description: Facet values with counts
@@ -93,8 +127,9 @@ const productListQuerySchema = z.object({
  *                     min: { type: number }
  *                     max: { type: number }
  */
-router.get('/facets', (_req: Request, res: Response): void => {
-  const facets = publicProductService.getProductFacets();
+router.get('/facets', validateQuery(facetQuerySchema), (req: Request, res: Response): void => {
+  const filters = (req as any).validatedQuery as FacetFilterParams;
+  const facets = publicProductService.getProductFacets(filters);
   res.json(facets);
 });
 
