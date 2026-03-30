@@ -48,6 +48,8 @@ export const createSkuSchema = z.object({
   active: z.boolean().optional().default(true),
   sizes: z.array(z.string().min(1)).optional(),
   ...extendedSkuFields,
+  // Override: categoryId is NOT NULL in the database, so it must be required on creation
+  categoryId: z.number().int().positive({ message: 'categoryId is required' }),
 });
 
 export const updateSkuSchema = z.object({

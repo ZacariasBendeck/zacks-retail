@@ -126,6 +126,20 @@ describe('POST /api/v1/skus', () => {
     expect(res.body.material).toBeNull();
   });
 
+  it('rejects missing categoryId (NOT NULL in DB)', async () => {
+    const { categoryId, ...skuWithoutCategory } = makeValidSku();
+    const res = await request(app).post('/api/v1/skus').send(skuWithoutCategory);
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('rejects null categoryId', async () => {
+    const validSku = makeValidSku();
+    const res = await request(app).post('/api/v1/skus').send({ ...validSku, categoryId: null });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+  });
+
   it('rejects invalid vendorId', async () => {
     const validSku = makeValidSku();
     const res = await request(app)

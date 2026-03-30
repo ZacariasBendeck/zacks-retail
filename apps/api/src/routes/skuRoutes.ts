@@ -64,6 +64,12 @@ router.post('/', validate(createSkuSchema), (req: Request, res: Response): void 
       res.status(400).json({ error: { code: 'INVALID_VENDOR', message: 'The specified vendorId does not exist.' } });
       return;
     }
+    if (err.message?.includes('NOT NULL constraint failed')) {
+      const match = err.message.match(/NOT NULL constraint failed:\s*\w+\.(\w+)/);
+      const column = match ? match[1] : 'unknown';
+      res.status(400).json({ error: { code: 'NOT_NULL_VIOLATION', message: `Required field '${column}' cannot be null.` } });
+      return;
+    }
     throw err;
   }
 });
@@ -355,6 +361,12 @@ router.patch('/:skuId', validate(updateSkuSchema), (req: Request, res: Response)
     }
     if (err.message?.includes('UNIQUE constraint failed') && err.message?.includes('barcode')) {
       res.status(409).json({ error: { code: 'DUPLICATE_BARCODE', message: 'A SKU with this barcode already exists.' } });
+      return;
+    }
+    if (err.message?.includes('NOT NULL constraint failed')) {
+      const match = err.message.match(/NOT NULL constraint failed:\s*\w+\.(\w+)/);
+      const column = match ? match[1] : 'unknown';
+      res.status(400).json({ error: { code: 'NOT_NULL_VIOLATION', message: `Required field '${column}' cannot be null.` } });
       return;
     }
     throw err;
