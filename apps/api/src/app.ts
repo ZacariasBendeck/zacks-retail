@@ -10,6 +10,8 @@ import purchaseOrderRoutes from './routes/purchaseOrderRoutes';
 import otbBudgetRoutes from './routes/otbBudgetRoutes';
 import dashboardRoutes from './routes/dashboardRoutes';
 import publicProductRoutes from './routes/publicProductRoutes';
+import cartRoutes from './routes/cartRoutes';
+import orderRoutes from './routes/orderRoutes';
 
 const app: Express = express();
 
@@ -41,6 +43,8 @@ app.use('/api/v1/purchase-orders', purchaseOrderRoutes);
 app.use('/api/v1/otb-budgets', otbBudgetRoutes);
 app.use('/api/v1/dashboard', dashboardRoutes);
 app.use('/api/public/products', publicProductRoutes);
+app.use('/api/public/cart', cartRoutes);
+app.use('/api/public/orders', orderRoutes);
 
 // Health check
 app.get('/health', (_req, res) => {
