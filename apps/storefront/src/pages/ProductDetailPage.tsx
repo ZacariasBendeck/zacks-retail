@@ -1,8 +1,9 @@
 import { useParams, useNavigate } from 'react-router-dom'
-import { Row, Col, Typography, Button, Rate, Space, Divider, Breadcrumb, Select, Spin, Image } from 'antd'
+import { Row, Col, Typography, Button, Rate, Space, Divider, Breadcrumb, Select, Spin, Image, message } from 'antd'
 import { ArrowLeftOutlined, HomeOutlined, ShoppingCartOutlined, HeartOutlined } from '@ant-design/icons'
 import { useProduct } from '@/hooks/useProducts'
 import { useState } from 'react'
+import { useCartStore } from '@/store/cartStore'
 
 const { Title, Text, Paragraph } = Typography
 
@@ -14,6 +15,13 @@ export default function ProductDetailPage() {
   const { data: product, isLoading } = useProduct(id ?? '')
   const [selectedSize, setSelectedSize] = useState<string>()
   const [selectedColor, setSelectedColor] = useState<number>()
+  const { addItem } = useCartStore()
+
+  const handleAddToCart = async () => {
+    if (!product || !selectedSize) return
+    await addItem(parseInt(selectedSize, 10))
+    message.success('Agregado al carrito')
+  }
 
   if (isLoading) {
     return (
@@ -167,6 +175,7 @@ export default function ProductDetailPage() {
               icon={<ShoppingCartOutlined />}
               block
               disabled={!selectedSize}
+              onClick={handleAddToCart}
             >
               {selectedSize ? 'Agregar al Carrito' : 'Selecciona una talla'}
             </Button>

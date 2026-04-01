@@ -1,25 +1,21 @@
-import { Layout, Input, Menu, Space, Typography, Badge, Button } from 'antd'
+import { Layout, Input, Space, Typography, Badge, Button } from 'antd'
 import { SearchOutlined, ShoppingCartOutlined, UserOutlined } from '@ant-design/icons'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+import MegaMenu from './MegaMenu'
+import { useCartStore } from '@/store/cartStore'
 
 const { Header } = Layout
-
-const DEPARTMENTS = [
-  { key: 'all', label: 'Todos' },
-  { key: 'FORMAL', label: 'Formal' },
-  { key: 'CASUAL', label: 'Casual' },
-  { key: 'FIESTA', label: 'Fiesta' },
-  { key: 'SANDALIAS', label: 'Sandalias' },
-  { key: 'BOOTS', label: 'Botas' },
-  { key: 'COMFORT', label: 'Comfort' },
-]
 
 export default function StoreHeader() {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
-  const currentDept = searchParams.get('department') ?? 'all'
   const [searchValue, setSearchValue] = useState(searchParams.get('q') ?? '')
+  const { cart, loadCart } = useCartStore()
+
+  useEffect(() => {
+    loadCart()
+  }, [loadCart])
 
   const handleSearch = (value: string) => {
     const params = new URLSearchParams(searchParams)
@@ -28,13 +24,6 @@ export default function StoreHeader() {
     } else {
       params.delete('q')
     }
-    params.set('page', '1')
-    navigate(`/?${params}`)
-  }
-
-  const handleDepartmentClick = (key: string) => {
-    const params = new URLSearchParams()
-    if (key !== 'all') params.set('department', key)
     params.set('page', '1')
     navigate(`/?${params}`)
   }
@@ -59,15 +48,20 @@ export default function StoreHeader() {
           alignItems: 'center',
           justifyContent: 'space-between',
           padding: '12px 0',
-          borderBottom: '1px solid #f5f5f5',
         }}>
-          <Typography.Title
-            level={3}
-            style={{ margin: 0, cursor: 'pointer', color: '#1677ff' }}
-            onClick={() => navigate('/')}
-          >
-            Zapateria
-          </Typography.Title>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            {/* Mobile hamburger - shown via MegaMenu CSS */}
+            <div className="mega-menu-mobile-trigger" style={{ display: 'none' }}>
+              {/* MegaMenu renders its own trigger button */}
+            </div>
+            <Typography.Title
+              level={3}
+              style={{ margin: 0, cursor: 'pointer', color: '#1677ff' }}
+              onClick={() => navigate('/')}
+            >
+              Zapateria
+            </Typography.Title>
+          </div>
 
           <Input.Search
             placeholder="Buscar zapatos..."
@@ -82,24 +76,17 @@ export default function StoreHeader() {
 
           <Space size="middle">
             <Button type="text" icon={<UserOutlined />}>Mi Cuenta</Button>
-            <Badge count={0} showZero={false}>
-              <Button type="text" icon={<ShoppingCartOutlined />}>Carrito</Button>
+            <Badge count={cart?.itemCount ?? 0} showZero={false}>
+              <Button type="text" icon={<ShoppingCartOutlined />} onClick={() => navigate('/cart')}>
+                Carrito
+              </Button>
             </Badge>
           </Space>
         </div>
-
-        {/* Department nav */}
-        <Menu
-          mode="horizontal"
-          selectedKeys={[currentDept]}
-          items={DEPARTMENTS.map(d => ({
-            key: d.key,
-            label: d.label,
-            onClick: () => handleDepartmentClick(d.key),
-          }))}
-          style={{ border: 'none', fontWeight: 500 }}
-        />
       </div>
+
+      {/* Mega dropdown navigation */}
+      <MegaMenu />
     </Header>
   )
 }

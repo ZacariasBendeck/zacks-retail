@@ -3,6 +3,8 @@ import { Layout } from 'antd'
 import StoreHeader from '@/components/StoreHeader'
 import ProductListingPage from '@/pages/ProductListingPage'
 import ProductDetailPage from '@/pages/ProductDetailPage'
+import CartPage from '@/pages/CartPage'
+import CheckoutPage from '@/pages/CheckoutPage'
 
 const { Footer, Content } = Layout
 
@@ -14,6 +16,8 @@ export default function App() {
         <Routes>
           <Route path="/" element={<ProductListingPage />} />
           <Route path="/product/:id" element={<ProductDetailPage />} />
+          <Route path="/cart" element={<CartPage />} />
+          <Route path="/checkout" element={<CheckoutPage />} />
         </Routes>
       </Content>
       <Footer style={{ textAlign: 'center', background: '#001529', color: '#fff', padding: '24px 50px' }}>
