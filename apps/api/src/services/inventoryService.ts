@@ -6,6 +6,9 @@ import {
   AuditLogEntry,
   AuditLogRow,
   StockAdjustmentInput,
+  InventoryMutationInput,
+  OnHandSkuResult,
+  DepartmentOnHand,
   rowToInventory,
   rowToAuditLog,
 } from '../models/inventory';
@@ -68,9 +71,14 @@ export function adjustStock(skuId: string, input: StockAdjustmentInput): { inven
   }
 }
 
+const AUDIT_SORT_MAP: Record<string, string> = {
+  createdAt: 'created_at',
+  adjustment: 'adjustment',
+};
+
 export function getAuditLog(
   skuId: string,
-  params: { page: number; pageSize: number }
+  params: { page: number; pageSize: number; sort?: string; order?: 'asc' | 'desc' }
 ): PaginationEnvelope<AuditLogEntry> | null {
   const db = getDb();
 
@@ -85,8 +93,11 @@ export function getAuditLog(
   const totalPages = Math.ceil(totalItems / params.pageSize);
   const offset = (params.page - 1) * params.pageSize;
 
+  const sortCol = AUDIT_SORT_MAP[params.sort ?? 'createdAt'] || 'created_at';
+  const sortDir = params.order === 'desc' ? 'DESC' : 'ASC';
+
   const rows = db.prepare(
-    'SELECT * FROM inventory_audit_log WHERE sku_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?'
+    `SELECT * FROM inventory_audit_log WHERE sku_id = ? ORDER BY ${sortCol} ${sortDir}, rowid DESC LIMIT ? OFFSET ?`
   ).all(skuId, params.pageSize, offset) as unknown as AuditLogRow[];
 
   return {
@@ -98,4 +109,280 @@ export function getAuditLog(
       totalPages,
     },
   };
+}
+
+// ── Inventory Mutation (ZAI-134 spec) ────────────────────────────
+
+const VALID_CATEGORY_MIN = 556;
+const VALID_CATEGORY_MAX = 599;
+const VALID_SOURCE_TYPES = [
+  'PURCHASE_ORDER_RECEIPT', 'TRANSFER_ORDER', 'STOCK_ADJUSTMENT',
+  'INITIAL_IMPORT', 'SYSTEM_RECONCILIATION',
+];
+
+export type MutationError = {
+  error: {
+    code: string;
+    message: string;
+    details?: Record<string, string>[];
+    traceId: string;
+  };
+};
+
+export function executeMutation(input: InventoryMutationInput): AuditLogEntry | MutationError {
+  const traceId = uuidv4();
+  const db = getDb();
+
+  // Validate category code range
+  if (input.categoryCode < VALID_CATEGORY_MIN || input.categoryCode > VALID_CATEGORY_MAX) {
+    return {
+      error: {
+        code: 'VALIDATION_CATEGORY_RANGE',
+        message: `Category code must be between ${VALID_CATEGORY_MIN} and ${VALID_CATEGORY_MAX}.`,
+        details: [{ field: 'categoryCode', value: String(input.categoryCode) }],
+        traceId,
+      },
+    };
+  }
+
+  // Validate sourceDocumentRef
+  if (!input.sourceDocumentRef || !VALID_SOURCE_TYPES.includes(input.sourceDocumentRef.type)) {
+    return {
+      error: {
+        code: 'VALIDATION_SOURCE_DOCUMENT',
+        message: 'sourceDocumentRef.type must be one of: ' + VALID_SOURCE_TYPES.join(', '),
+        details: [{ field: 'sourceDocumentRef.type', value: input.sourceDocumentRef?.type ?? 'null' }],
+        traceId,
+      },
+    };
+  }
+
+  if (!input.sourceDocumentRef.id || input.sourceDocumentRef.id.trim() === '') {
+    return {
+      error: {
+        code: 'VALIDATION_SOURCE_DOCUMENT',
+        message: 'sourceDocumentRef.id must be a non-empty string.',
+        details: [{ field: 'sourceDocumentRef.id', value: 'empty' }],
+        traceId,
+      },
+    };
+  }
+
+  // Validate SKU exists and has valid canonical attributes
+  const sku = db.prepare(
+    'SELECT id, brand_id, color_id, style, category_id FROM skus WHERE id = ?'
+  ).get(input.skuId) as { id: string; brand_id: number | null; color_id: number | null; style: string | null; category_id: number | null } | undefined;
+
+  if (!sku) {
+    return {
+      error: {
+        code: 'VALIDATION_CANONICAL_ATTRIBUTE',
+        message: 'SKU not found.',
+        details: [{ field: 'skuId', value: input.skuId }],
+        traceId,
+      },
+    };
+  }
+
+  if (!sku.brand_id || !sku.color_id || !sku.style) {
+    const missing: Record<string, string>[] = [];
+    if (!sku.brand_id) missing.push({ field: 'brandId', value: 'null' });
+    if (!sku.color_id) missing.push({ field: 'colorId', value: 'null' });
+    if (!sku.style) missing.push({ field: 'style', value: 'null' });
+    return {
+      error: {
+        code: 'VALIDATION_CANONICAL_ATTRIBUTE',
+        message: 'SKU is missing required canonical attributes (brand, style, color).',
+        details: missing,
+        traceId,
+      },
+    };
+  }
+
+  // Idempotency check
+  if (input.idempotencyKey) {
+    const existing = db.prepare(
+      'SELECT * FROM inventory_audit_log WHERE idempotency_key = ?'
+    ).get(input.idempotencyKey) as unknown as AuditLogRow | undefined;
+
+    if (existing) {
+      // Same key found — verify payload matches (simplified: check skuId + delta)
+      if (existing.sku_id !== input.skuId || existing.adjustment !== input.quantityDelta) {
+        return {
+          error: {
+            code: 'IDEMPOTENCY_KEY_PAYLOAD_MISMATCH',
+            message: 'Idempotency key already used with a different payload.',
+            details: [{ field: 'idempotencyKey', value: input.idempotencyKey }],
+            traceId,
+          },
+        };
+      }
+      // Replay: return the existing entry
+      const entry = rowToAuditLog(existing);
+      return { ...entry, idempotentReplay: true } as AuditLogEntry & { idempotentReplay: boolean };
+    }
+  }
+
+  // Get or create inventory row
+  let invRow = db.prepare('SELECT * FROM inventory WHERE sku_id = ?').get(input.skuId) as unknown as InventoryRow | undefined;
+
+  db.exec('BEGIN TRANSACTION');
+  try {
+    if (!invRow) {
+      const invId = uuidv4();
+      db.prepare(
+        "INSERT INTO inventory (id, sku_id, quantity_on_hand, quantity_reserved) VALUES (?, ?, 0, 0)"
+      ).run(invId, input.skuId);
+      invRow = db.prepare('SELECT * FROM inventory WHERE id = ?').get(invId) as unknown as InventoryRow;
+    }
+
+    const newBalance = invRow.quantity_on_hand + input.quantityDelta;
+    if (newBalance < 0) {
+      db.exec('ROLLBACK');
+      return {
+        error: {
+          code: 'INSUFFICIENT_STOCK',
+          message: 'Mutation would bring quantity below zero.',
+          details: [
+            { field: 'quantityDelta', value: String(input.quantityDelta) },
+            { field: 'currentOnHand', value: String(invRow.quantity_on_hand) },
+          ],
+          traceId,
+        },
+      };
+    }
+
+    db.prepare(
+      "UPDATE inventory SET quantity_on_hand = ?, updated_at = datetime('now') WHERE sku_id = ?"
+    ).run(newBalance, input.skuId);
+
+    const auditId = uuidv4();
+    db.prepare(
+      `INSERT INTO inventory_audit_log
+        (id, sku_id, adjustment, reason, resulting_balance, performed_by,
+         source_document_ref_type, source_document_ref_id, idempotency_key)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      auditId, input.skuId, input.quantityDelta, input.reasonCode, newBalance,
+      input.actorId, input.sourceDocumentRef.type, input.sourceDocumentRef.id,
+      input.idempotencyKey ?? null,
+    );
+
+    db.exec('COMMIT');
+
+    const auditRow = db.prepare('SELECT * FROM inventory_audit_log WHERE id = ?').get(auditId) as unknown as AuditLogRow;
+    return rowToAuditLog(auditRow);
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+// ── On-Hand Lookup (ZAI-134 spec AC5) ────────────────────────────
+
+export function getOnHandBySku(filters: {
+  brandId?: number;
+  style?: string;
+  colorId?: number;
+  sizeId?: number;
+}): OnHandSkuResult | null {
+  const db = getDb();
+
+  const conditions: string[] = [];
+  const values: (string | number)[] = [];
+
+  if (filters.brandId) {
+    conditions.push('s.brand_id = ?');
+    values.push(filters.brandId);
+  }
+  if (filters.style) {
+    conditions.push('s.style = ?');
+    values.push(filters.style);
+  }
+  if (filters.colorId) {
+    conditions.push('s.color_id = ?');
+    values.push(filters.colorId);
+  }
+  if (filters.sizeId) {
+    conditions.push('s.size_type_id = ?');
+    values.push(filters.sizeId);
+  }
+
+  if (conditions.length === 0) return null;
+
+  const whereClause = conditions.join(' AND ');
+
+  const row = db.prepare(`
+    SELECT
+      s.id as sku_id,
+      s.sku_code,
+      rb.name as brand_name,
+      s.style,
+      rc.name as color_name,
+      s.department,
+      COALESCE(i.quantity_on_hand, 0) as on_hand_units,
+      COALESCE(i.quantity_on_hand, 0) - COALESCE(i.quantity_reserved, 0) as available_units,
+      COALESCE(i.quantity_reserved, 0) as reserved_units,
+      datetime('now') as as_of
+    FROM skus s
+    LEFT JOIN ref_brands rb ON rb.id = s.brand_id
+    LEFT JOIN ref_colors rc ON rc.id = s.color_id
+    LEFT JOIN inventory i ON i.sku_id = s.id
+    WHERE ${whereClause} AND s.active = 1
+    LIMIT 1
+  `).get(...values) as {
+    sku_id: string; sku_code: string; brand_name: string | null; style: string;
+    color_name: string | null; department: string; on_hand_units: number;
+    available_units: number; reserved_units: number; as_of: string;
+  } | undefined;
+
+  if (!row) return null;
+
+  return {
+    skuId: row.sku_id,
+    skuCode: row.sku_code,
+    brand: row.brand_name,
+    style: row.style,
+    color: row.color_name,
+    department: row.department,
+    onHandUnits: row.on_hand_units,
+    availableUnits: row.available_units,
+    reservedUnits: row.reserved_units,
+    asOf: row.as_of,
+  };
+}
+
+// ── Department On-Hand Summary (ZAI-134 spec AC6) ─────────────────
+
+const ALL_DEPARTMENTS = ['FORMAL', 'CASUAL', 'FIESTA', 'SANDALIAS', 'BOOTS', 'COMFORT'];
+
+export function getOnHandByDepartments(): DepartmentOnHand[] {
+  const db = getDb();
+
+  const rows = db.prepare(`
+    SELECT
+      s.department,
+      COUNT(DISTINCT s.id) as total_skus,
+      COALESCE(SUM(i.quantity_on_hand), 0) as total_units_on_hand,
+      COALESCE(SUM(i.quantity_on_hand * s.price), 0) as total_cost_value
+    FROM skus s
+    LEFT JOIN inventory i ON i.sku_id = s.id
+    WHERE s.active = 1
+    GROUP BY s.department
+  `).all() as { department: string; total_skus: number; total_units_on_hand: number; total_cost_value: number }[];
+
+  const resultMap = new Map<string, DepartmentOnHand>();
+  for (const dept of ALL_DEPARTMENTS) {
+    resultMap.set(dept, { department: dept, totalSkus: 0, totalUnitsOnHand: 0, totalCostValue: 0 });
+  }
+  for (const row of rows) {
+    resultMap.set(row.department, {
+      department: row.department,
+      totalSkus: row.total_skus,
+      totalUnitsOnHand: row.total_units_on_hand,
+      totalCostValue: row.total_cost_value,
+    });
+  }
+
+  return ALL_DEPARTMENTS.map(d => resultMap.get(d)!);
 }

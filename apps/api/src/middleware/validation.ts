@@ -44,7 +44,9 @@ export const createSkuSchema = z.object({
   ricsDescription: z.string().max(500).optional().nullable(),
   webDescription: z.string().max(1000).optional().nullable(),
   heelType: z.string().max(100).optional().nullable(),
+  heelTypeCode: z.string().max(40).optional().nullable(),
   material: z.string().max(100).optional().nullable(),
+  heelMaterialTypeCode: z.string().max(40).optional().nullable(),
   active: z.boolean().optional().default(true),
   sizes: z.array(z.string().min(1)).optional(),
   ...extendedSkuFields,
@@ -62,7 +64,9 @@ export const updateSkuSchema = z.object({
   ricsDescription: z.string().max(500).optional().nullable(),
   webDescription: z.string().max(1000).optional().nullable(),
   heelType: z.string().max(100).optional().nullable(),
+  heelTypeCode: z.string().max(40).optional().nullable(),
   material: z.string().max(100).optional().nullable(),
+  heelMaterialTypeCode: z.string().max(40).optional().nullable(),
   active: z.boolean().optional(),
   sizes: z.array(z.string().min(1)).optional(),
   ...extendedSkuFields,
@@ -96,6 +100,43 @@ export const stockAdjustmentSchema = z.object({
 export const auditLogQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(200).default(50),
+  sort: z.enum(['createdAt', 'adjustment']).default('createdAt'),
+  order: z.enum(['asc', 'desc']).default('desc'),
+});
+
+const SOURCE_DOCUMENT_REF_TYPES = [
+  'PURCHASE_ORDER_RECEIPT', 'TRANSFER_ORDER', 'STOCK_ADJUSTMENT',
+  'INITIAL_IMPORT', 'SYSTEM_RECONCILIATION',
+] as const;
+
+/** Base mutation schema — idempotencyKey is optional (used by adjust). */
+const inventoryMutationBaseSchema = z.object({
+  skuId: z.string().uuid(),
+  quantityDelta: z.number().int().refine((v) => v !== 0, { message: 'quantityDelta cannot be zero' }),
+  reasonCode: z.string().min(1).max(200),
+  categoryCode: z.number().int(),
+  sourceDocumentRef: z.object({
+    type: z.enum(SOURCE_DOCUMENT_REF_TYPES),
+    id: z.string().min(1),
+  }),
+  actorId: z.string().uuid(),
+  occurredAt: z.string().optional(),
+  idempotencyKey: z.string().max(255).optional(),
+});
+
+/** Adjust endpoint — idempotencyKey optional. */
+export const inventoryMutationSchema = inventoryMutationBaseSchema;
+
+/** Receive/Transfer endpoints — idempotencyKey required per CTO policy (ZAI-168). */
+export const inventoryMutationRequireIdempotencySchema = inventoryMutationBaseSchema.extend({
+  idempotencyKey: z.string().min(1).max(255),
+});
+
+export const onHandSkuQuerySchema = z.object({
+  brandId: z.coerce.number().int().positive().optional(),
+  style: z.string().min(1).max(100).optional(),
+  colorId: z.coerce.number().int().positive().optional(),
+  sizeId: z.coerce.number().int().positive().optional(),
 });
 
 const PAYMENT_TERMS = ['NET_30', 'NET_60', 'NET_90'] as const;
@@ -121,10 +162,17 @@ export const updateVendorSchema = z.object({
 
 const PO_STATUSES = ['DRAFT', 'SUBMITTED', 'CONFIRMED', 'PARTIALLY_RECEIVED', 'RECEIVED', 'CLOSED', 'CANCELLED'] as const;
 
+/** Reusable cent-precision refinement for currency fields (max 2 decimal places). */
+function centPrecision(val: number): boolean {
+  const parts = val.toString().split('.');
+  return !parts[1] || parts[1].length <= 2;
+}
+const CENT_PRECISION_MSG = 'INVALID_CURRENCY_PRECISION: Value must have at most 2 decimal places';
+
 const lineItemSchema = z.object({
   skuId: z.string().uuid(),
   quantity: z.number().int().positive(),
-  unitCost: z.number().positive(),
+  unitCost: z.number().positive().refine(centPrecision, { message: CENT_PRECISION_MSG }),
 });
 
 export const createPurchaseOrderSchema = z.object({
@@ -150,11 +198,21 @@ export const poReceiveSchema = z.object({
       quantityReceived: z.number().int().positive(),
     })
   ).min(1, 'At least one line is required'),
+  locationId: z.string().max(100).optional(),
+  receivedBy: z.string().max(100).optional(),
+  referenceNumber: z.string().max(120).optional().nullable(),
 });
 
 export const poSubmitSchema = z.object({
   force: z.boolean().optional().default(false),
   changedBy: z.string().max(100).optional(),
+  overrideReasonCode: z.string().max(120).optional(),
+  approverIds: z.array(z.string().max(120)).max(20).optional(),
+  ceoExceptionApprovalId: z.string().max(120).optional(),
+  policySource: z.enum(['default', 'configured']).optional(),
+  warningThresholdPct: z.number().min(0).max(200).optional(),
+  hardStopThresholdPct: z.number().min(0).max(200).optional(),
+  traceId: z.string().max(120).optional(),
 });
 
 export const poCancelSchema = z.object({
@@ -164,6 +222,8 @@ export const poCancelSchema = z.object({
 export const poListQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(200).default(50),
+  sort: z.enum(['poNumber', 'status', 'createdAt', 'updatedAt']).default('createdAt'),
+  order: z.enum(['asc', 'desc']).default('desc'),
   status: z.enum(PO_STATUSES).optional(),
   vendorId: z.string().uuid().optional(),
   q: z.string().optional(),
@@ -172,6 +232,8 @@ export const poListQuerySchema = z.object({
 export const vendorListQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(200).default(50),
+  sort: z.enum(['name', 'createdAt', 'leadTimeDays']).default('name'),
+  order: z.enum(['asc', 'desc']).default('asc'),
   active: z.preprocess((v) => {
     if (v === 'true') return true;
     if (v === 'false') return false;
@@ -186,13 +248,13 @@ export const createOtbBudgetSchema = z.object({
   department: z.enum(DEPARTMENTS),
   year: z.number().int().min(2020).max(2099),
   month: z.number().int().min(1).max(12),
-  plannedBudget: z.number().nonnegative(),
+  plannedBudget: z.number().nonnegative().refine(centPrecision, { message: CENT_PRECISION_MSG }),
   notes: z.string().max(1000).optional().nullable(),
   createdBy: z.string().max(100).optional(),
 });
 
 export const updateOtbBudgetSchema = z.object({
-  plannedBudget: z.number().nonnegative().optional(),
+  plannedBudget: z.number().nonnegative().refine(centPrecision, { message: CENT_PRECISION_MSG }).optional(),
   notes: z.string().max(1000).optional().nullable(),
   changedBy: z.string().max(100).optional(),
 });
@@ -200,6 +262,8 @@ export const updateOtbBudgetSchema = z.object({
 export const otbBudgetListQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(200).default(50),
+  sort: z.enum(['department', 'year', 'month', 'plannedBudget', 'createdAt']).default('year'),
+  order: z.enum(['asc', 'desc']).default('desc'),
   department: z.enum(DEPARTMENTS).optional(),
   year: z.coerce.number().int().min(2020).max(2099).optional(),
   month: z.coerce.number().int().min(1).max(12).optional(),
@@ -211,10 +275,63 @@ export const otbSummaryQuerySchema = z.object({
   department: z.enum(DEPARTMENTS).optional(),
 });
 
+// ── Inventory Adjustment schemas ──────────────────────────────────
+
+const ADJUSTMENT_TYPES = ['RECEIPT', 'TRANSFER', 'MANUAL_ADJUST', 'RETURN', 'DAMAGE', 'SHRINKAGE'] as const;
+
+export const createAdjustmentSchema = z.object({
+  type: z.enum(ADJUSTMENT_TYPES),
+  fromLocationId: z.string().optional().nullable(),
+  toLocationId: z.string().optional().nullable(),
+  reason: z.string().max(500).optional().nullable(),
+  lineItems: z.array(
+    z.object({
+      skuId: z.string().uuid(),
+      quantity: z.number().int().refine((v) => v !== 0, { message: 'Quantity cannot be zero' }),
+    })
+  ).min(1, 'At least one line item is required'),
+  createdBy: z.string().max(100).optional(),
+});
+
+export const adjustmentListQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(200).default(25),
+  sort: z.enum(['type', 'createdAt']).default('createdAt'),
+  order: z.enum(['asc', 'desc']).default('desc'),
+  type: z.enum(ADJUSTMENT_TYPES).optional(),
+  fromDate: z.string().optional(),
+  toDate: z.string().optional(),
+});
+
+// ── Dashboard schemas ─────────────────────────────────────────────
+
+export const lowStockQuerySchema = z.object({
+  threshold: z.coerce.number().int().min(0).default(10),
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(200).default(25),
+  sort: z.enum(['currentStock', 'skuCode', 'department', 'style']).default('currentStock'),
+  order: z.enum(['asc', 'desc']).default('asc'),
+});
+
 export function validate(schema: z.ZodSchema) {
   return (req: Request, res: Response, next: NextFunction): void => {
     const result = schema.safeParse(req.body);
     if (!result.success) {
+      const hasCurrencyPrecisionError = result.error.errors.some(
+        (e) => e.message.startsWith('INVALID_CURRENCY_PRECISION')
+      );
+      if (hasCurrencyPrecisionError) {
+        res.status(400).json({
+          error: {
+            code: 'INVALID_CURRENCY_PRECISION',
+            message: 'Currency values must have at most 2 decimal places (cent precision).',
+            fields: result.error.errors
+              .filter((e) => e.message.startsWith('INVALID_CURRENCY_PRECISION'))
+              .map((e) => e.path.join('.')),
+          },
+        });
+        return;
+      }
       res.status(400).json({
         error: {
           code: 'VALIDATION_ERROR',
