@@ -2,6 +2,11 @@ import { Router, Request, Response, IRouter } from 'express';
 import * as poService from '../services/purchaseOrderService';
 import * as otbService from '../services/otbBudgetService';
 import {
+  buildOtbPolicyAuditEvents,
+  recordOtbPolicyAuditEvents,
+  OtbPolicyAuditEvent,
+} from '../services/otbPolicyAuditService';
+import {
   createPurchaseOrderSchema,
   updatePurchaseOrderSchema,
   poStatusTransitionSchema,
@@ -76,6 +81,14 @@ router.post('/', validate(createPurchaseOrderSchema), (req: Request, res: Respon
  *         in: query
  *         schema: { type: string }
  *         description: Search by PO number or notes
+ *       - name: sort
+ *         in: query
+ *         schema: { type: string, enum: [poNumber, status, createdAt, updatedAt], default: createdAt }
+ *         description: Field to sort by
+ *       - name: order
+ *         in: query
+ *         schema: { type: string, enum: [asc, desc], default: desc }
+ *         description: Sort direction
  *     responses:
  *       200:
  *         description: Paginated list of purchase orders
@@ -84,6 +97,21 @@ router.get('/', validateQuery(poListQuerySchema), (req: Request, res: Response):
   const params = (req as any).validatedQuery;
   const result = poService.listPurchaseOrders(params);
   res.json(result);
+});
+
+/**
+ * @openapi
+ * /api/v1/purchase-orders/overdue-exceptions:
+ *   get:
+ *     summary: List POs where vendor lead time has been exceeded without receipt
+ *     tags: [Purchase Orders]
+ *     responses:
+ *       200:
+ *         description: List of overdue PO exceptions with days overdue
+ */
+router.get('/overdue-exceptions', (_req: Request, res: Response): void => {
+  const exceptions = poService.listOverdueExceptions();
+  res.json(exceptions);
 });
 
 /**
@@ -229,20 +257,93 @@ router.patch('/:poId/status', validate(poStatusTransitionSchema), (req: Request,
  */
 router.patch('/:poId/submit', validate(poSubmitSchema), (req: Request, res: Response): void => {
   const poId = req.params.poId as string;
-  const { force, changedBy } = req.body;
+  const {
+    force,
+    changedBy,
+    overrideReasonCode,
+    approverIds,
+    ceoExceptionApprovalId,
+    policySource,
+    warningThresholdPct,
+    hardStopThresholdPct,
+    traceId,
+  } = req.body;
+
+  const budgetCheck = otbService.checkBudgetImpact(poId);
+  const actorUserId = changedBy ?? 'system';
+  const requestTraceId = traceId
+    ?? req.header('x-trace-id')
+    ?? req.header('x-request-id')
+    ?? req.header('x-correlation-id')
+    ?? null;
+  let auditEvents: OtbPolicyAuditEvent[] = [];
+
+  if (!('error' in budgetCheck)) {
+    auditEvents = buildOtbPolicyAuditEvents({
+      poId,
+      budgetImpact: budgetCheck,
+      force: Boolean(force),
+      actorUserId,
+      overrideReasonCode: overrideReasonCode ?? null,
+      approverIds: approverIds ?? null,
+      ceoExceptionApprovalId: ceoExceptionApprovalId ?? null,
+      policySource,
+      warningThresholdPct,
+      hardStopThresholdPct,
+      traceId: requestTraceId,
+    });
+
+    recordOtbPolicyAuditEvents(auditEvents);
+  }
 
   // Check budget impact before submitting (soft block)
-  if (!force) {
-    const budgetCheck = otbService.checkBudgetImpact(poId);
-    if (!('error' in budgetCheck)) {
-      const exceeded = budgetCheck.filter((b) => b.exceedsBudget);
-      if (exceeded.length > 0) {
-        res.status(409).json({
+  if (!('error' in budgetCheck)) {
+    const hasHardStop = auditEvents.some((event) => event.decision === 'hard_stop');
+    const hasOverride = auditEvents.some((event) => event.decision === 'override');
+    const hasException = auditEvents.some((event) => event.decision === 'exception');
+
+    // M3: Hard-stop at >=100% without force
+    if (!force && hasHardStop) {
+      res.status(409).json({
+        error: {
+          code: 'BUDGET_EXCEEDED',
+          message: 'This PO would exceed the OTB budget for one or more departments. Submit with force=true to override.',
+        },
+        budgetImpact: budgetCheck,
+      });
+      return;
+    }
+
+    // M4: Enforce override contract — require reason code + dual approvals (min 2)
+    if (force && (hasOverride || hasException)) {
+      if (!overrideReasonCode || !overrideReasonCode.trim()) {
+        res.status(400).json({
           error: {
-            code: 'BUDGET_EXCEEDED',
-            message: 'This PO would exceed the OTB budget for one or more departments. Submit with force=true to override.',
+            code: 'OTB_OVERRIDE_CONTRACT_INCOMPLETE',
+            message: 'Budget override requires an overrideReasonCode.',
           },
-          budgetImpact: budgetCheck,
+        });
+        return;
+      }
+      if (!approverIds || approverIds.length < 2) {
+        res.status(400).json({
+          error: {
+            code: 'OTB_OVERRIDE_CONTRACT_INCOMPLETE',
+            message: 'Budget override requires at least 2 approverIds (Merchandising Director + Finance Controller).',
+          },
+        });
+        return;
+      }
+    }
+
+    // M5: Enforce CEO exception token for >105% utilization
+    if (force && hasException) {
+      if (!ceoExceptionApprovalId || !ceoExceptionApprovalId.trim()) {
+        res.status(400).json({
+          error: {
+            code: 'OTB_CEO_EXCEPTION_REQUIRED',
+            message: 'Projected utilization exceeds 105%. A ceoExceptionApprovalId is required.',
+          },
         });
         return;
       }
@@ -273,20 +374,17 @@ router.patch('/:poId/submit', validate(poSubmitSchema), (req: Request, res: Resp
   }
 
   // Include budget warning in successful response if force was used
-  if (force) {
-    const budgetCheck = otbService.checkBudgetImpact(poId);
-    if (!('error' in budgetCheck)) {
-      const exceeded = budgetCheck.filter((b) => b.exceedsBudget);
-      if (exceeded.length > 0) {
-        res.json({
-          ...result,
-          budgetWarning: {
-            message: 'PO submitted with budget override. One or more department budgets are now exceeded.',
-            budgetImpact: budgetCheck,
-          },
-        });
-        return;
-      }
+  if (force && !('error' in budgetCheck)) {
+    const hasOverrideOrException = auditEvents.some((event) => event.decision === 'override' || event.decision === 'exception');
+    if (hasOverrideOrException) {
+      res.json({
+        ...result,
+        budgetWarning: {
+          message: 'PO submitted with budget override. One or more department budgets are now exceeded.',
+          budgetImpact: budgetCheck,
+        },
+      });
+      return;
     }
   }
 
@@ -428,9 +526,19 @@ router.post('/:poId/receive', validate(poReceiveSchema), (req: Request, res: Res
       res.status(409).json({ error: { code: 'LINE_NOT_FOUND', message: `Line item ${lineId} not found on this PO.` } });
       return;
     }
+    if (result.error.startsWith('LOCATION_NOT_FOUND')) {
+      const locationId = result.error.split(':')[1];
+      res.status(404).json({ error: { code: 'LOCATION_NOT_FOUND', message: `Location ${locationId} not found.` } });
+      return;
+    }
     if (result.error.startsWith('QUANTITY_EXCEEDS_ORDERED')) {
       const lineId = result.error.split(':')[1];
       res.status(409).json({ error: { code: 'QUANTITY_EXCEEDS_ORDERED', message: `Received quantity exceeds ordered quantity for line ${lineId}.` } });
+      return;
+    }
+    if (result.error.startsWith('DISCREPANCY_REASON_REQUIRED')) {
+      const lineId = result.error.split(':')[1];
+      res.status(422).json({ error: { code: 'DISCREPANCY_REASON_REQUIRED', message: `Discrepancy reason is required when receiving less than ordered for line ${lineId}.` } });
       return;
     }
     res.status(409).json({
@@ -440,6 +548,32 @@ router.post('/:poId/receive', validate(poReceiveSchema), (req: Request, res: Res
   }
 
   res.json(result);
+});
+
+/**
+ * @openapi
+ * /api/v1/purchase-orders/{poId}/receipts:
+ *   get:
+ *     summary: List receipt events recorded for a purchase order
+ *     tags: [Purchase Orders]
+ *     parameters:
+ *       - name: poId
+ *         in: path
+ *         required: true
+ *         schema: { type: string, format: uuid }
+ *     responses:
+ *       200:
+ *         description: Receipt headers with received line details
+ *       404:
+ *         description: Purchase order not found
+ */
+router.get('/:poId/receipts', (req: Request, res: Response): void => {
+  const receipts = poService.listPoReceiptsByPurchaseOrder(req.params.poId as string);
+  if (receipts === null) {
+    res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Purchase order not found.' } });
+    return;
+  }
+  res.json(receipts);
 });
 
 /**

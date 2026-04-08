@@ -676,11 +676,16 @@ const MIGRATIONS: Migration[] = [
           sku_size_id TEXT REFERENCES sku_sizes(id),
           quantity_received INTEGER NOT NULL CHECK(quantity_received > 0),
           unit_cost REAL CHECK(unit_cost >= 0),
+          discrepancy_reason TEXT,
+          audit_reference TEXT,
           created_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
         CREATE INDEX IF NOT EXISTS idx_po_receipt_lines_receipt_id ON po_receipt_lines(receipt_id);
         CREATE INDEX IF NOT EXISTS idx_po_receipt_lines_sku_id ON po_receipt_lines(sku_id);
         CREATE INDEX IF NOT EXISTS idx_po_receipt_lines_po_line_id ON po_receipt_lines(po_line_id);
+        CREATE INDEX IF NOT EXISTS idx_po_receipt_lines_discrepancy_v018
+          ON po_receipt_lines(discrepancy_reason)
+          WHERE discrepancy_reason IS NOT NULL;
 
         CREATE TABLE IF NOT EXISTS transfer_orders (
           id TEXT PRIMARY KEY,

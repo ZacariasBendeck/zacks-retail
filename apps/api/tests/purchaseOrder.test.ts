@@ -8,6 +8,18 @@ function getCategoryId(ricsCode: number): number | null {
   return row ? row.id : null;
 }
 
+function getBrandId(code: string): number | null {
+  const db = getDb();
+  const row = db.prepare('SELECT id FROM ref_brands WHERE code = ?').get(code) as { id: number } | undefined;
+  return row ? row.id : null;
+}
+
+function getColorId(code: string): number | null {
+  const db = getDb();
+  const row = db.prepare('SELECT id FROM ref_colors WHERE code = ?').get(code) as { id: number } | undefined;
+  return row ? row.id : null;
+}
+
 let vendorId: string;
 let skuId1: string;
 let skuId2: string;
@@ -17,6 +29,7 @@ async function seedVendorAndSkus() {
     name: 'Calzados Premium',
     contactEmail: 'ventas@calzados.com',
     paymentTerms: 'NET_30',
+    leadTimeDays: 14,
   });
   vendorId = vendor.body.id;
 
@@ -25,6 +38,8 @@ async function seedVendorAndSkus() {
     price: 129.99,
     department: 'FORMAL',
     categoryId: getCategoryId(560),
+    brandId: getBrandId('KISS'),
+    colorId: getColorId('BK'),
     vendorId,
   });
   skuId1 = sku1.body.id;
@@ -34,6 +49,8 @@ async function seedVendorAndSkus() {
     price: 99.99,
     department: 'CASUAL',
     categoryId: getCategoryId(565),
+    brandId: getBrandId('FLEX'),
+    colorId: getColorId('WH'),
     vendorId,
   });
   skuId2 = sku2.body.id;
@@ -634,10 +651,10 @@ describe('POST /api/v1/purchase-orders/:poId/receive', () => {
     lineId2 = po.body.lineItems[1].id;
   });
 
-  it('partially receives a PO', async () => {
+  it('partially receives a PO (with discrepancy reason)', async () => {
     const res = await request(app)
       .post(`/api/v1/purchase-orders/${poId}/receive`)
-      .send({ lines: [{ lineId: lineId1, quantityReceived: 5 }] });
+      .send({ lines: [{ lineId: lineId1, quantityReceived: 5, discrepancyReason: 'Shipment shortage' }] });
 
     expect(res.status).toBe(200);
     expect(res.body.status).toBe('PARTIALLY_RECEIVED');
@@ -659,12 +676,12 @@ describe('POST /api/v1/purchase-orders/:poId/receive', () => {
   });
 
   it('handles incremental receives (partial then full)', async () => {
-    // First partial receive
+    // First partial receive — receiving less than ordered requires discrepancy reason
     await request(app)
       .post(`/api/v1/purchase-orders/${poId}/receive`)
-      .send({ lines: [{ lineId: lineId1, quantityReceived: 3 }] });
+      .send({ lines: [{ lineId: lineId1, quantityReceived: 3, discrepancyReason: 'Partial shipment' }] });
 
-    // Second partial receive
+    // Second receive completes remaining — no reason required for exact-match lines
     const res = await request(app)
       .post(`/api/v1/purchase-orders/${poId}/receive`)
       .send({
@@ -704,6 +721,26 @@ describe('POST /api/v1/purchase-orders/:poId/receive', () => {
     expect(receiveEntry.adjustment).toBe(10);
   });
 
+  it('creates po_receipts rows and exposes dedicated receipts endpoint', async () => {
+    await request(app)
+      .post(`/api/v1/purchase-orders/${poId}/receive`)
+      .send({
+        lines: [{ lineId: lineId1, quantityReceived: 4, discrepancyReason: 'Damaged in transit', auditReference: 'DMG-2026-001' }],
+        locationId: 'loc-01',
+        referenceNumber: 'RCV-001',
+      });
+
+    const receipts = await request(app).get(`/api/v1/purchase-orders/${poId}/receipts`);
+    expect(receipts.status).toBe(200);
+    expect(Array.isArray(receipts.body)).toBe(true);
+    expect(receipts.body.length).toBeGreaterThanOrEqual(1);
+    expect(receipts.body[0].locationId).toBe('loc-01');
+    expect(receipts.body[0].referenceNumber).toBe('RCV-001');
+    expect(receipts.body[0].lines[0].quantityReceived).toBe(4);
+    expect(receipts.body[0].lines[0].discrepancyReason).toBe('Damaged in transit');
+    expect(receipts.body[0].lines[0].auditReference).toBe('DMG-2026-001');
+  });
+
   it('rejects receive on a draft PO', async () => {
     const draft = await request(app).post('/api/v1/purchase-orders').send({
       vendorId,
@@ -737,10 +774,10 @@ describe('POST /api/v1/purchase-orders/:poId/receive', () => {
   });
 
   it('rejects incremental receive that exceeds ordered total', async () => {
-    // Receive 8 of 10 first
+    // Receive 8 of 10 first (short receipt requires reason)
     await request(app)
       .post(`/api/v1/purchase-orders/${poId}/receive`)
-      .send({ lines: [{ lineId: lineId1, quantityReceived: 8 }] });
+      .send({ lines: [{ lineId: lineId1, quantityReceived: 8, discrepancyReason: 'Partial delivery' }] });
 
     // Try to receive 5 more (8 + 5 = 13 > 10)
     const res = await request(app)
@@ -766,6 +803,14 @@ describe('POST /api/v1/purchase-orders/:poId/receive', () => {
     expect(res.status).toBe(404);
   });
 
+  it('returns 404 when receiving into an unknown location', async () => {
+    const res = await request(app)
+      .post(`/api/v1/purchase-orders/${poId}/receive`)
+      .send({ lines: [{ lineId: lineId1, quantityReceived: 1, discrepancyReason: 'Short ship' }], locationId: 'loc-99' });
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe('LOCATION_NOT_FOUND');
+  });
+
   it('records receive transitions in status history', async () => {
     await request(app)
       .post(`/api/v1/purchase-orders/${poId}/receive`)
@@ -780,6 +825,96 @@ describe('POST /api/v1/purchase-orders/:poId/receive', () => {
     const receiveEntry = history.body.find((h: any) => h.toStatus === 'RECEIVED');
     expect(receiveEntry).toBeDefined();
     expect(receiveEntry.fromStatus).toBe('CONFIRMED');
+  });
+
+  // ── Discrepancy reason / audit reference (ZAI-322) ─────────────────
+
+  it('rejects short receipt without discrepancyReason', async () => {
+    const res = await request(app)
+      .post(`/api/v1/purchase-orders/${poId}/receive`)
+      .send({ lines: [{ lineId: lineId1, quantityReceived: 3 }] });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error.code).toBe('DISCREPANCY_REASON_REQUIRED');
+  });
+
+  it('accepts short receipt when discrepancyReason is provided', async () => {
+    const res = await request(app)
+      .post(`/api/v1/purchase-orders/${poId}/receive`)
+      .send({ lines: [{ lineId: lineId1, quantityReceived: 3, discrepancyReason: 'Vendor shipped partial' }] });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('PARTIALLY_RECEIVED');
+  });
+
+  it('does not require discrepancyReason for full-quantity receipt', async () => {
+    const res = await request(app)
+      .post(`/api/v1/purchase-orders/${poId}/receive`)
+      .send({
+        lines: [
+          { lineId: lineId1, quantityReceived: 10 },
+          { lineId: lineId2, quantityReceived: 5 },
+        ],
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('RECEIVED');
+  });
+
+  it('persists discrepancyReason and auditReference on receipt lines', async () => {
+    await request(app)
+      .post(`/api/v1/purchase-orders/${poId}/receive`)
+      .send({
+        lines: [{
+          lineId: lineId1,
+          quantityReceived: 7,
+          discrepancyReason: 'Damaged goods rejected',
+          auditReference: 'CLM-2026-042',
+        }, {
+          lineId: lineId2,
+          quantityReceived: 5,
+        }],
+      });
+
+    const receipts = await request(app).get(`/api/v1/purchase-orders/${poId}/receipts`);
+    expect(receipts.status).toBe(200);
+
+    const lines = receipts.body[0].lines;
+    const shortLine = lines.find((l: any) => l.discrepancyReason === 'Damaged goods rejected');
+    expect(shortLine).toBeDefined();
+    expect(shortLine.auditReference).toBe('CLM-2026-042');
+
+    const fullLine = lines.find((l: any) => l.discrepancyReason === null);
+    expect(fullLine).toBeDefined();
+    expect(fullLine.auditReference).toBeNull();
+  });
+
+  it('allows auditReference without discrepancyReason on full-match lines', async () => {
+    const res = await request(app)
+      .post(`/api/v1/purchase-orders/${poId}/receive`)
+      .send({
+        lines: [
+          { lineId: lineId1, quantityReceived: 10, auditReference: 'ASN-7890' },
+          { lineId: lineId2, quantityReceived: 5 },
+        ],
+      });
+
+    expect(res.status).toBe(200);
+
+    const receipts = await request(app).get(`/api/v1/purchase-orders/${poId}/receipts`);
+    const lineWithRef = receipts.body[0].lines.find((l: any) => l.auditReference === 'ASN-7890');
+    expect(lineWithRef).toBeDefined();
+    expect(lineWithRef.discrepancyReason).toBeNull();
+  });
+});
+
+describe('GET /api/v1/transfer-orders', () => {
+  it('returns paginated transfer-order read model (empty by default)', async () => {
+    const res = await request(app).get('/api/v1/transfer-orders');
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty('data');
+    expect(res.body).toHaveProperty('pagination');
+    expect(Array.isArray(res.body.data)).toBe(true);
   });
 });
 
@@ -872,5 +1007,152 @@ describe('Full PO lifecycle (DRAFT → SUBMITTED → CONFIRMED → RECEIVED → 
     expect(history.body.map((h: any) => h.toStatus)).toEqual([
       'DRAFT', 'SUBMITTED', 'CONFIRMED', 'RECEIVED', 'CLOSED',
     ]);
+  });
+});
+
+// ── Receipt idempotency (ZAI-136 AC4) ──────────────────────────────
+
+describe('POST /api/v1/purchase-orders/:poId/receive — idempotency', () => {
+  let poId: string;
+  let lineId1: string;
+
+  beforeEach(async () => {
+    await request(app).post(`/api/v1/skus/${skuId1}/inventory/adjustments`).send({
+      adjustment: 100,
+      reason: 'Initial stock',
+    });
+
+    const created = await request(app).post('/api/v1/purchase-orders').send({
+      vendorId,
+      lineItems: [{ skuId: skuId1, quantity: 10, unitCost: 50.0 }],
+    });
+    poId = created.body.id;
+
+    await request(app).patch(`/api/v1/purchase-orders/${poId}/submit`).send();
+    await request(app).patch(`/api/v1/purchase-orders/${poId}/confirm`).send();
+
+    const po = await request(app).get(`/api/v1/purchase-orders/${poId}`);
+    lineId1 = po.body.lineItems[0].id;
+  });
+
+  it('duplicate receive with same idempotencyKey returns current state without double-posting', async () => {
+    const key = 'receipt-unique-key-001';
+
+    const first = await request(app)
+      .post(`/api/v1/purchase-orders/${poId}/receive`)
+      .send({ lines: [{ lineId: lineId1, quantityReceived: 5, discrepancyReason: 'Short ship' }], idempotencyKey: key });
+
+    expect(first.status).toBe(200);
+    expect(first.body.lineItems[0].quantityReceived).toBe(5);
+
+    const beforeInv = await request(app).get(`/api/v1/skus/${skuId1}/inventory`);
+    const qtyAfterFirst = beforeInv.body.quantityOnHand;
+
+    // Replay same request
+    const second = await request(app)
+      .post(`/api/v1/purchase-orders/${poId}/receive`)
+      .send({ lines: [{ lineId: lineId1, quantityReceived: 5, discrepancyReason: 'Short ship' }], idempotencyKey: key });
+
+    expect(second.status).toBe(200);
+    expect(second.body.lineItems[0].quantityReceived).toBe(5); // unchanged
+
+    const afterInv = await request(app).get(`/api/v1/skus/${skuId1}/inventory`);
+    expect(afterInv.body.quantityOnHand).toBe(qtyAfterFirst); // inventory not double-incremented
+  });
+
+  it('different idempotencyKeys create separate receipts', async () => {
+    await request(app)
+      .post(`/api/v1/purchase-orders/${poId}/receive`)
+      .send({ lines: [{ lineId: lineId1, quantityReceived: 3, discrepancyReason: 'Partial A' }], idempotencyKey: 'key-a' });
+
+    const second = await request(app)
+      .post(`/api/v1/purchase-orders/${poId}/receive`)
+      .send({ lines: [{ lineId: lineId1, quantityReceived: 4, discrepancyReason: 'Partial B' }], idempotencyKey: 'key-b' });
+
+    expect(second.status).toBe(200);
+    expect(second.body.lineItems[0].quantityReceived).toBe(7); // 3 + 4
+  });
+
+  it('receive without idempotencyKey is not deduplicated', async () => {
+    await request(app)
+      .post(`/api/v1/purchase-orders/${poId}/receive`)
+      .send({ lines: [{ lineId: lineId1, quantityReceived: 3, discrepancyReason: 'Partial 1' }] });
+
+    const second = await request(app)
+      .post(`/api/v1/purchase-orders/${poId}/receive`)
+      .send({ lines: [{ lineId: lineId1, quantityReceived: 3, discrepancyReason: 'Partial 2' }] });
+
+    expect(second.status).toBe(200);
+    expect(second.body.lineItems[0].quantityReceived).toBe(6); // 3 + 3
+  });
+});
+
+// ── Overdue lead-time exceptions (ZAI-136 AC6) ─────────────────────
+
+describe('GET /api/v1/purchase-orders/overdue-exceptions', () => {
+  it('returns empty list when no POs are overdue', async () => {
+    const res = await request(app).get('/api/v1/purchase-orders/overdue-exceptions');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([]);
+  });
+
+  it('returns overdue POs when vendor lead time has been exceeded', async () => {
+    const db = getDb();
+
+    // Create PO, submit, and confirm
+    const created = await request(app).post('/api/v1/purchase-orders').send({
+      vendorId,
+      lineItems: [{ skuId: skuId1, quantity: 10, unitCost: 50.0 }],
+    });
+    const poId = created.body.id;
+
+    await request(app).patch(`/api/v1/purchase-orders/${poId}/submit`).send();
+    await request(app).patch(`/api/v1/purchase-orders/${poId}/confirm`).send();
+
+    // Backdate the SUBMITTED status history entry to simulate lead time exceeding
+    db.prepare(
+      "UPDATE po_status_history SET created_at = datetime('now', '-30 days') WHERE po_id = ? AND to_status = 'SUBMITTED'"
+    ).run(poId);
+
+    const res = await request(app).get('/api/v1/purchase-orders/overdue-exceptions');
+    expect(res.status).toBe(200);
+    expect(res.body.length).toBe(1);
+    expect(res.body[0].poId).toBe(poId);
+    expect(res.body[0].daysOverdue).toBeGreaterThanOrEqual(1);
+    expect(res.body[0].vendorName).toBe('Calzados Premium');
+    expect(res.body[0].leadTimeDays).toBe(14);
+  });
+
+  it('does not include fully received POs', async () => {
+    const db = getDb();
+
+    await request(app).post(`/api/v1/skus/${skuId1}/inventory/adjustments`).send({
+      adjustment: 100,
+      reason: 'Initial stock',
+    });
+
+    const created = await request(app).post('/api/v1/purchase-orders').send({
+      vendorId,
+      lineItems: [{ skuId: skuId1, quantity: 10, unitCost: 50.0 }],
+    });
+    const poId = created.body.id;
+
+    await request(app).patch(`/api/v1/purchase-orders/${poId}/submit`).send();
+    await request(app).patch(`/api/v1/purchase-orders/${poId}/confirm`).send();
+
+    // Backdate submitted_at
+    db.prepare(
+      "UPDATE po_status_history SET created_at = datetime('now', '-30 days') WHERE po_id = ? AND to_status = 'SUBMITTED'"
+    ).run(poId);
+
+    // Fully receive the PO
+    const po = await request(app).get(`/api/v1/purchase-orders/${poId}`);
+    await request(app)
+      .post(`/api/v1/purchase-orders/${poId}/receive`)
+      .send({ lines: [{ lineId: po.body.lineItems[0].id, quantityReceived: 10 }] });
+
+    const res = await request(app).get('/api/v1/purchase-orders/overdue-exceptions');
+    expect(res.status).toBe(200);
+    expect(res.body.find((e: any) => e.poId === poId)).toBeUndefined();
   });
 });

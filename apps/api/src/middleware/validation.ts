@@ -197,12 +197,15 @@ export const poReceiveSchema = z.object({
     z.object({
       lineId: z.string().uuid(),
       quantityReceived: z.number().int().positive(),
+      discrepancyReason: z.string().min(1).max(500).optional().nullable(),
+      auditReference: z.string().min(1).max(255).optional().nullable(),
     })
   ).min(1, 'At least one line is required'),
   locationId: z.string().max(100).optional(),
   receivedBy: z.string().max(100).optional(),
   referenceNumber: z.string().max(120).optional().nullable(),
   idempotencyKey: z.string().min(1).max(255).optional(),
+  reason: z.string().max(500).optional(),
 });
 
 export const poSubmitSchema = z.object({
