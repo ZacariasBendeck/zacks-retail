@@ -336,6 +336,42 @@ type Migration = {
   down: (db: DatabaseSync) => void;
 };
 
+function ensureSchemaTableCommentsTable(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS schema_table_comments (
+      table_name TEXT PRIMARY KEY,
+      comment TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `);
+}
+
+function tableExists(db: DatabaseSync, tableName: string): boolean {
+  const table = db.prepare(`
+    SELECT name
+    FROM sqlite_master
+    WHERE type = 'table' AND name = ?
+  `).get(tableName) as { name: string } | undefined;
+  return Boolean(table?.name);
+}
+
+function columnExists(db: DatabaseSync, tableName: string, columnName: string): boolean {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(tableName)) {
+    throw new Error(`Invalid table name for PRAGMA table_info: ${tableName}`);
+  }
+  if (!tableExists(db, tableName)) return false;
+  const rows = db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>;
+  return rows.some((row) => row.name === columnName);
+}
+
+function dropSchemaCommentsTableIfEmpty(db: DatabaseSync): void {
+  if (!tableExists(db, 'schema_table_comments')) return;
+  const count = db.prepare('SELECT COUNT(*) AS total FROM schema_table_comments').get() as { total: number };
+  if (count.total === 0) {
+    db.exec('DROP TABLE schema_table_comments');
+  }
+}
+
 const MIGRATIONS: Migration[] = [
   {
     version: '0001',
@@ -507,6 +543,1377 @@ const MIGRATIONS: Migration[] = [
       db.exec('CREATE INDEX idx_skus_active ON skus(active)');
       db.exec('CREATE INDEX idx_skus_price ON skus(price)');
       db.exec('PRAGMA foreign_keys = ON');
+    },
+  },
+  {
+    version: '0002',
+    description: 'Add inventory_locations table and inventory_adjustments with line items for multi-location adjustment workflow',
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS inventory_locations (
+          id TEXT PRIMARY KEY,
+          code TEXT NOT NULL UNIQUE,
+          name TEXT NOT NULL,
+          location_type TEXT NOT NULL CHECK(location_type IN ('WAREHOUSE','STORE')),
+          active INTEGER NOT NULL DEFAULT 1,
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_inventory_locations_active ON inventory_locations(active);
+
+        CREATE TABLE IF NOT EXISTS inventory_adjustments (
+          id TEXT PRIMARY KEY,
+          type TEXT NOT NULL CHECK(type IN ('RECEIPT','TRANSFER','MANUAL_ADJUST','RETURN','DAMAGE','SHRINKAGE')),
+          from_location_id TEXT REFERENCES inventory_locations(id),
+          to_location_id TEXT REFERENCES inventory_locations(id),
+          reason TEXT,
+          created_by TEXT NOT NULL DEFAULT 'system',
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS inventory_adjustment_lines (
+          id TEXT PRIMARY KEY,
+          adjustment_id TEXT NOT NULL REFERENCES inventory_adjustments(id),
+          sku_id TEXT NOT NULL REFERENCES skus(id),
+          quantity INTEGER NOT NULL,
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_inv_adj_type ON inventory_adjustments(type);
+        CREATE INDEX IF NOT EXISTS idx_inv_adj_created_at ON inventory_adjustments(created_at);
+        CREATE INDEX IF NOT EXISTS idx_inv_adj_lines_adj_id ON inventory_adjustment_lines(adjustment_id);
+        CREATE INDEX IF NOT EXISTS idx_inv_adj_lines_sku_id ON inventory_adjustment_lines(sku_id);
+      `);
+
+      // Seed default locations
+      const locations: [string, string, string, string][] = [
+        ['loc-01', 'LOC_01', 'Almacen Principal', 'WAREHOUSE'],
+        ['loc-02', 'LOC_02', 'Tienda Centro', 'STORE'],
+        ['loc-03', 'LOC_03', 'Tienda Norte', 'STORE'],
+        ['loc-04', 'LOC_04', 'Tienda Sur', 'STORE'],
+        ['loc-05', 'LOC_05', 'Bodega', 'WAREHOUSE'],
+      ];
+      const stmt = db.prepare('INSERT OR IGNORE INTO inventory_locations (id, code, name, location_type) VALUES (?, ?, ?, ?)');
+      for (const [id, code, name, locType] of locations) {
+        stmt.run(id, code, name, locType);
+      }
+    },
+    down(db) {
+      db.exec(`
+        DROP TABLE IF EXISTS inventory_adjustment_lines;
+        DROP TABLE IF EXISTS inventory_adjustments;
+        DROP TABLE IF EXISTS inventory_locations;
+      `);
+    },
+  },
+  {
+    version: '0003',
+    description: 'Expose canonical style-color, heel enum dictionaries, and receipt/transfer transaction tables',
+    up(db) {
+      db.exec(`
+        -- Non-obvious design decision:
+        -- keep canonical heel dictionaries as code+name catalogs and map legacy SKU text values to codes at the API boundary.
+        CREATE TABLE IF NOT EXISTS ref_heel_types (
+          code TEXT PRIMARY KEY,
+          name TEXT NOT NULL UNIQUE,
+          active INTEGER NOT NULL DEFAULT 1
+        );
+
+        CREATE TABLE IF NOT EXISTS ref_heel_material_types (
+          code TEXT PRIMARY KEY,
+          name TEXT NOT NULL UNIQUE,
+          active INTEGER NOT NULL DEFAULT 1
+        );
+
+        -- Non-obvious design decision:
+        -- style_colors materializes the natural identity (brand+style+color) so API joins stay stable
+        -- even when SKU rows add size or merchandising details.
+        CREATE TABLE IF NOT EXISTS style_colors (
+          id TEXT PRIMARY KEY,
+          brand_id INTEGER NOT NULL REFERENCES ref_brands(id),
+          style TEXT NOT NULL,
+          color_id INTEGER NOT NULL REFERENCES ref_colors(id),
+          category_id INTEGER NOT NULL REFERENCES ref_categories(id),
+          department TEXT NOT NULL CHECK(department IN ('FORMAL','CASUAL','FIESTA','SANDALIAS','BOOTS','COMFORT')),
+          heel_type_code TEXT REFERENCES ref_heel_types(code),
+          heel_material_type_code TEXT REFERENCES ref_heel_material_types(code),
+          season TEXT,
+          active INTEGER NOT NULL DEFAULT 1,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_style_colors_brand_style_color
+          ON style_colors(brand_id, lower(trim(style)), color_id);
+        CREATE INDEX IF NOT EXISTS idx_style_colors_category_id ON style_colors(category_id);
+        CREATE INDEX IF NOT EXISTS idx_style_colors_department ON style_colors(department);
+
+        CREATE TABLE IF NOT EXISTS sku_style_colors (
+          sku_id TEXT PRIMARY KEY REFERENCES skus(id) ON DELETE CASCADE,
+          style_color_id TEXT NOT NULL UNIQUE REFERENCES style_colors(id) ON DELETE RESTRICT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_sku_style_colors_style_color_id ON sku_style_colors(style_color_id);
+
+        CREATE TABLE IF NOT EXISTS po_receipts (
+          id TEXT PRIMARY KEY,
+          po_id TEXT NOT NULL REFERENCES purchase_orders(id) ON DELETE CASCADE,
+          location_id TEXT NOT NULL REFERENCES inventory_locations(id),
+          received_by TEXT NOT NULL DEFAULT 'system',
+          reference_number TEXT,
+          received_at TEXT NOT NULL DEFAULT (datetime('now')),
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_po_receipts_po_id ON po_receipts(po_id);
+        CREATE INDEX IF NOT EXISTS idx_po_receipts_location_id ON po_receipts(location_id);
+        CREATE INDEX IF NOT EXISTS idx_po_receipts_received_at ON po_receipts(received_at DESC);
+
+        CREATE TABLE IF NOT EXISTS po_receipt_lines (
+          id TEXT PRIMARY KEY,
+          receipt_id TEXT NOT NULL REFERENCES po_receipts(id) ON DELETE CASCADE,
+          po_line_id TEXT REFERENCES purchase_order_lines(id) ON DELETE SET NULL,
+          sku_id TEXT NOT NULL REFERENCES skus(id),
+          sku_size_id TEXT REFERENCES sku_sizes(id),
+          quantity_received INTEGER NOT NULL CHECK(quantity_received > 0),
+          unit_cost REAL CHECK(unit_cost >= 0),
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_po_receipt_lines_receipt_id ON po_receipt_lines(receipt_id);
+        CREATE INDEX IF NOT EXISTS idx_po_receipt_lines_sku_id ON po_receipt_lines(sku_id);
+        CREATE INDEX IF NOT EXISTS idx_po_receipt_lines_po_line_id ON po_receipt_lines(po_line_id);
+
+        CREATE TABLE IF NOT EXISTS transfer_orders (
+          id TEXT PRIMARY KEY,
+          from_location_id TEXT NOT NULL REFERENCES inventory_locations(id),
+          to_location_id TEXT NOT NULL REFERENCES inventory_locations(id),
+          status TEXT NOT NULL DEFAULT 'DRAFT'
+            CHECK(status IN ('DRAFT','IN_TRANSIT','RECEIVED','CANCELLED')),
+          requested_by TEXT NOT NULL DEFAULT 'system',
+          shipped_at TEXT,
+          received_at TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          CHECK(from_location_id <> to_location_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_transfer_orders_from_location_status ON transfer_orders(from_location_id, status);
+        CREATE INDEX IF NOT EXISTS idx_transfer_orders_to_location_status ON transfer_orders(to_location_id, status);
+
+        CREATE TABLE IF NOT EXISTS transfer_order_lines (
+          id TEXT PRIMARY KEY,
+          transfer_order_id TEXT NOT NULL REFERENCES transfer_orders(id) ON DELETE CASCADE,
+          sku_id TEXT NOT NULL REFERENCES skus(id),
+          sku_size_id TEXT REFERENCES sku_sizes(id),
+          quantity INTEGER NOT NULL CHECK(quantity > 0),
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_transfer_order_lines_transfer_id ON transfer_order_lines(transfer_order_id);
+        CREATE INDEX IF NOT EXISTS idx_transfer_order_lines_sku_id ON transfer_order_lines(sku_id);
+      `);
+
+      const heelTypeSeed = db.prepare('INSERT OR IGNORE INTO ref_heel_types (code, name, active) VALUES (?, ?, 1)');
+      heelTypeSeed.run('STILETTO', 'Stiletto');
+      heelTypeSeed.run('CHUNKY', 'Chunky');
+
+      const heelMaterialSeed = db.prepare('INSERT OR IGNORE INTO ref_heel_material_types (code, name, active) VALUES (?, ?, 1)');
+      heelMaterialSeed.run('LINED', 'Lined');
+      heelMaterialSeed.run('PLASTIC', 'Plastic');
+
+      // inventory_locations already created and seeded in migration 0002
+
+      db.exec(`
+        INSERT OR IGNORE INTO style_colors (
+          id,
+          brand_id,
+          style,
+          color_id,
+          category_id,
+          department,
+          heel_type_code,
+          heel_material_type_code,
+          season,
+          active
+        )
+        SELECT
+          lower(hex(randomblob(16))),
+          s.brand_id,
+          trim(s.style),
+          s.color_id,
+          s.category_id,
+          s.department,
+          (
+            SELECT t.code
+            FROM ref_heel_types t
+            WHERE upper(t.code) = upper(trim(COALESCE(s.heel_type, '')))
+               OR upper(t.name) = upper(trim(COALESCE(s.heel_type, '')))
+            LIMIT 1
+          ),
+          (
+            SELECT m.code
+            FROM ref_heel_material_types m
+            WHERE upper(m.code) = upper(trim(COALESCE(s.material, '')))
+               OR upper(m.name) = upper(trim(COALESCE(s.material, '')))
+            LIMIT 1
+          ),
+          s.season,
+          s.active
+        FROM skus s
+        WHERE s.brand_id IS NOT NULL
+          AND s.color_id IS NOT NULL
+          AND s.style IS NOT NULL
+          AND length(trim(s.style)) > 0;
+      `);
+
+      db.exec(`
+        INSERT INTO sku_style_colors (sku_id, style_color_id)
+        SELECT
+          s.id,
+          sc.id
+        FROM skus s
+        JOIN style_colors sc
+          ON sc.brand_id = s.brand_id
+         AND sc.color_id = s.color_id
+         AND lower(trim(sc.style)) = lower(trim(s.style))
+        WHERE s.brand_id IS NOT NULL
+          AND s.color_id IS NOT NULL
+          AND s.style IS NOT NULL
+          AND length(trim(s.style)) > 0
+        ON CONFLICT(sku_id) DO UPDATE SET style_color_id = excluded.style_color_id;
+      `);
+    },
+    down(db) {
+      db.exec(`
+        DROP TABLE IF EXISTS transfer_order_lines;
+        DROP TABLE IF EXISTS transfer_orders;
+        DROP TABLE IF EXISTS po_receipt_lines;
+        DROP TABLE IF EXISTS po_receipts;
+        DROP TABLE IF EXISTS sku_style_colors;
+        DROP TABLE IF EXISTS style_colors;
+        DROP TABLE IF EXISTS ref_heel_material_types;
+        DROP TABLE IF EXISTS ref_heel_types;
+      `);
+    },
+  },
+  {
+    version: '0004',
+    description: 'Integrate SQL migration 010 into runtime migrations (RICS import staging + SKU natural key safeguards)',
+    up(db) {
+      // Non-obvious design decision:
+      // keep migration 010 semantics in runtime to avoid drift between db/migrations SQL
+      // and the application bootstrap path that executes MIGRATIONS[].
+      ensureSchemaTableCommentsTable(db);
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS rics_import_batches (
+          id TEXT PRIMARY KEY,
+          source_system TEXT NOT NULL DEFAULT 'RICS',
+          source_location TEXT,
+          department TEXT CHECK(department IN ('FORMAL','CASUAL','FIESTA','SANDALIAS','BOOTS','COMFORT')),
+          import_month TEXT,
+          requested_by TEXT NOT NULL DEFAULT 'system',
+          status TEXT NOT NULL DEFAULT 'PENDING'
+            CHECK(status IN ('PENDING','UPLOADED','VALIDATING','READY_TO_APPLY','APPLYING','APPLIED','FAILED','CANCELLED')),
+          total_files INTEGER NOT NULL DEFAULT 0 CHECK(total_files >= 0),
+          total_rows INTEGER NOT NULL DEFAULT 0 CHECK(total_rows >= 0),
+          valid_rows INTEGER NOT NULL DEFAULT 0 CHECK(valid_rows >= 0),
+          invalid_rows INTEGER NOT NULL DEFAULT 0 CHECK(invalid_rows >= 0),
+          applied_rows INTEGER NOT NULL DEFAULT 0 CHECK(applied_rows >= 0),
+          started_at TEXT,
+          completed_at TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_rics_import_batches_status_created_at
+          ON rics_import_batches(status, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_rics_import_batches_department_month
+          ON rics_import_batches(department, import_month);
+
+        CREATE TABLE IF NOT EXISTS rics_import_files (
+          id TEXT PRIMARY KEY,
+          batch_id TEXT NOT NULL REFERENCES rics_import_batches(id) ON DELETE CASCADE,
+          file_name TEXT NOT NULL,
+          file_sha256 TEXT NOT NULL,
+          file_size_bytes INTEGER CHECK(file_size_bytes >= 0),
+          status TEXT NOT NULL DEFAULT 'UPLOADED'
+            CHECK(status IN ('UPLOADED','PARSED','VALIDATED','APPLIED','FAILED')),
+          row_count INTEGER NOT NULL DEFAULT 0 CHECK(row_count >= 0),
+          valid_row_count INTEGER NOT NULL DEFAULT 0 CHECK(valid_row_count >= 0),
+          invalid_row_count INTEGER NOT NULL DEFAULT 0 CHECK(invalid_row_count >= 0),
+          uploaded_at TEXT NOT NULL DEFAULT (datetime('now')),
+          parsed_at TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          UNIQUE(batch_id, file_name),
+          UNIQUE(batch_id, file_sha256)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_rics_import_files_batch_id
+          ON rics_import_files(batch_id);
+        CREATE INDEX IF NOT EXISTS idx_rics_import_files_status_uploaded_at
+          ON rics_import_files(status, uploaded_at DESC);
+
+        CREATE TABLE IF NOT EXISTS rics_import_rows (
+          id TEXT PRIMARY KEY,
+          file_id TEXT NOT NULL REFERENCES rics_import_files(id) ON DELETE CASCADE,
+          row_number INTEGER NOT NULL CHECK(row_number > 0),
+          dedupe_hash TEXT NOT NULL,
+          vendor_code TEXT,
+          brand_code TEXT,
+          style TEXT,
+          color_code TEXT,
+          size_label TEXT,
+          category_code INTEGER,
+          season_code TEXT,
+          heel_type TEXT,
+          heel_material_code TEXT,
+          raw_payload TEXT NOT NULL,
+          normalized_payload TEXT,
+          validation_status TEXT NOT NULL DEFAULT 'PENDING'
+            CHECK(validation_status IN ('PENDING','VALID','INVALID','DUPLICATE','APPLIED','SKIPPED')),
+          validation_errors TEXT,
+          target_sku_id TEXT REFERENCES skus(id) ON DELETE SET NULL,
+          target_sku_size_id TEXT REFERENCES sku_sizes(id) ON DELETE SET NULL,
+          applied_action TEXT
+            CHECK(applied_action IN ('INSERT_SKU','UPDATE_SKU','UPSERT_INVENTORY','SKIP_INVALID','SKIP_DUPLICATE','NONE')),
+          applied_at TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          UNIQUE(file_id, row_number),
+          UNIQUE(file_id, dedupe_hash)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_rics_import_rows_file_validation
+          ON rics_import_rows(file_id, validation_status, row_number);
+        CREATE INDEX IF NOT EXISTS idx_rics_import_rows_dedupe_hash
+          ON rics_import_rows(dedupe_hash);
+        CREATE INDEX IF NOT EXISTS idx_rics_import_rows_target_sku
+          ON rics_import_rows(target_sku_id, target_sku_size_id);
+        CREATE INDEX IF NOT EXISTS idx_rics_import_rows_category_code
+          ON rics_import_rows(category_code);
+
+        CREATE TABLE IF NOT EXISTS rics_import_quarantine (
+          id TEXT PRIMARY KEY,
+          import_row_id TEXT NOT NULL UNIQUE REFERENCES rics_import_rows(id) ON DELETE CASCADE,
+          reason_code TEXT NOT NULL,
+          reason_detail TEXT,
+          status TEXT NOT NULL DEFAULT 'OPEN' CHECK(status IN ('OPEN','RESOLVED','IGNORED')),
+          resolved_by TEXT,
+          resolved_at TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_rics_import_quarantine_status_created_at
+          ON rics_import_quarantine(status, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS rics_import_apply_log (
+          id TEXT PRIMARY KEY,
+          batch_id TEXT NOT NULL REFERENCES rics_import_batches(id) ON DELETE CASCADE,
+          import_row_id TEXT REFERENCES rics_import_rows(id) ON DELETE SET NULL,
+          action TEXT NOT NULL
+            CHECK(action IN ('INSERT_SKU','UPDATE_SKU','UPSERT_INVENTORY','SKIP_INVALID','SKIP_DUPLICATE','ERROR','NOOP')),
+          target_table TEXT,
+          target_id TEXT,
+          message TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_rics_import_apply_log_batch_created_at
+          ON rics_import_apply_log(batch_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_rics_import_apply_log_row
+          ON rics_import_apply_log(import_row_id);
+
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_skus_brand_style_color
+          ON skus(brand_id, lower(trim(style)), color_id)
+          WHERE brand_id IS NOT NULL AND color_id IS NOT NULL AND length(trim(style)) > 0;
+
+        CREATE TRIGGER IF NOT EXISTS trg_skus_require_natural_identity_insert
+        BEFORE INSERT ON skus
+        WHEN NEW.brand_id IS NULL
+          OR NEW.color_id IS NULL
+          OR NEW.style IS NULL
+          OR length(trim(NEW.style)) = 0
+        BEGIN
+          SELECT RAISE(ABORT, 'skus natural identity requires brand_id, style, and color_id');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_skus_require_natural_identity_update
+        BEFORE UPDATE ON skus
+        WHEN NEW.brand_id IS NULL
+          OR NEW.color_id IS NULL
+          OR NEW.style IS NULL
+          OR length(trim(NEW.style)) = 0
+        BEGIN
+          SELECT RAISE(ABORT, 'skus natural identity requires brand_id, style, and color_id');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_sku_sizes_require_nonblank_size_insert
+        BEFORE INSERT ON sku_sizes
+        WHEN NEW.size_label IS NULL OR length(trim(NEW.size_label)) = 0
+        BEGIN
+          SELECT RAISE(ABORT, 'sku_sizes.size_label must be non-blank');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_sku_sizes_require_nonblank_size_update
+        BEFORE UPDATE ON sku_sizes
+        WHEN NEW.size_label IS NULL OR length(trim(NEW.size_label)) = 0
+        BEGIN
+          SELECT RAISE(ABORT, 'sku_sizes.size_label must be non-blank');
+        END;
+
+        INSERT OR REPLACE INTO schema_table_comments (table_name, comment) VALUES
+          ('vendors', 'Master vendor registry with vendor code semantics, contact data, and purchasing terms.'),
+          ('ref_categories', 'RICS category lookup (codes 556-599) mapped to macro-departments for reporting and OTB controls.'),
+          ('skus', 'Canonical SKU master. Natural identity is enforced by brand+style+color uniqueness plus size uniqueness in sku_sizes.'),
+          ('sku_sizes', 'Size-run rows linked to skus. One row per size label with unique (sku_id, size_label).'),
+          ('inventory', 'Current stock by SKU and optional size row. Tracks on-hand and reserved quantities.'),
+          ('purchase_orders', 'PO headers for receipts and vendor commitments.'),
+          ('sales_transactions', 'Sale events used by inventory depletion and sell-through reporting.'),
+          ('otb_budgets', 'Open-to-Buy monthly plan by macro-department, used to compare planned vs committed vs received spend.'),
+          ('rics_import_batches', 'Top-level import execution unit for one RICS load cycle (department/month context and totals).'),
+          ('rics_import_files', 'Physical files attached to a batch with parse/validation counters and dedupe fingerprint.'),
+          ('rics_import_rows', 'Row-level normalized import payloads with validation status, dedupe hash, and target SKU linkage.'),
+          ('rics_import_quarantine', 'Rows excluded from apply step pending manual resolution with reason tracking.'),
+          ('rics_import_apply_log', 'Immutable apply ledger for inserts/updates/skips/errors during batch materialization.');
+      `);
+    },
+    down(db) {
+      db.exec(`
+        DROP TRIGGER IF EXISTS trg_sku_sizes_require_nonblank_size_update;
+        DROP TRIGGER IF EXISTS trg_sku_sizes_require_nonblank_size_insert;
+        DROP TRIGGER IF EXISTS trg_skus_require_natural_identity_update;
+        DROP TRIGGER IF EXISTS trg_skus_require_natural_identity_insert;
+
+        DROP INDEX IF EXISTS ux_skus_brand_style_color;
+        DROP INDEX IF EXISTS idx_rics_import_apply_log_row;
+        DROP INDEX IF EXISTS idx_rics_import_apply_log_batch_created_at;
+        DROP INDEX IF EXISTS idx_rics_import_quarantine_status_created_at;
+        DROP INDEX IF EXISTS idx_rics_import_rows_category_code;
+        DROP INDEX IF EXISTS idx_rics_import_rows_target_sku;
+        DROP INDEX IF EXISTS idx_rics_import_rows_dedupe_hash;
+        DROP INDEX IF EXISTS idx_rics_import_rows_file_validation;
+        DROP INDEX IF EXISTS idx_rics_import_files_status_uploaded_at;
+        DROP INDEX IF EXISTS idx_rics_import_files_batch_id;
+        DROP INDEX IF EXISTS idx_rics_import_batches_department_month;
+        DROP INDEX IF EXISTS idx_rics_import_batches_status_created_at;
+
+        DROP TABLE IF EXISTS rics_import_apply_log;
+        DROP TABLE IF EXISTS rics_import_quarantine;
+        DROP TABLE IF EXISTS rics_import_rows;
+        DROP TABLE IF EXISTS rics_import_files;
+        DROP TABLE IF EXISTS rics_import_batches;
+      `);
+
+      if (tableExists(db, 'schema_table_comments')) {
+        db.exec(`
+          DELETE FROM schema_table_comments
+          WHERE table_name IN (
+            'vendors',
+            'ref_categories',
+            'skus',
+            'sku_sizes',
+            'inventory',
+            'purchase_orders',
+            'sales_transactions',
+            'otb_budgets',
+            'rics_import_batches',
+            'rics_import_files',
+            'rics_import_rows',
+            'rics_import_quarantine',
+            'rics_import_apply_log'
+          );
+        `);
+      }
+      dropSchemaCommentsTableIfEmpty(db);
+    },
+  },
+  {
+    version: '0005',
+    description: 'Integrate SQL migration 011 hardening into runtime migrations (canonical constraints, OTB commitments, validation triggers)',
+    up(db) {
+      ensureSchemaTableCommentsTable(db);
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS ref_departments (
+          code TEXT PRIMARY KEY CHECK(code IN ('FORMAL','CASUAL','FIESTA','SANDALIAS','BOOTS','COMFORT')),
+          name TEXT NOT NULL UNIQUE,
+          sort_order INTEGER NOT NULL,
+          active INTEGER NOT NULL DEFAULT 1
+        );
+
+        INSERT OR IGNORE INTO ref_departments (code, name, sort_order, active) VALUES
+          ('FORMAL', 'Formal', 1, 1),
+          ('CASUAL', 'Casual', 2, 1),
+          ('FIESTA', 'Fiesta', 3, 1),
+          ('SANDALIAS', 'Sandalias', 4, 1),
+          ('BOOTS', 'Boots', 5, 1),
+          ('COMFORT', 'Comfort', 6, 1);
+
+        CREATE TABLE IF NOT EXISTS otb_commitments (
+          id TEXT PRIMARY KEY,
+          otb_budget_id TEXT NOT NULL REFERENCES otb_budgets(id) ON DELETE CASCADE,
+          po_id TEXT REFERENCES purchase_orders(id) ON DELETE SET NULL,
+          committed_amount REAL NOT NULL CHECK(committed_amount >= 0),
+          received_amount REAL NOT NULL DEFAULT 0 CHECK(received_amount >= 0),
+          status TEXT NOT NULL DEFAULT 'COMMITTED'
+            CHECK(status IN ('COMMITTED','PARTIALLY_RECEIVED','RECEIVED','CANCELLED')),
+          committed_at TEXT NOT NULL DEFAULT (datetime('now')),
+          received_at TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE VIEW IF NOT EXISTS v_otb_budget_vs_actual AS
+        SELECT
+          b.id AS otb_budget_id,
+          b.department,
+          b.year,
+          b.month,
+          b.planned_budget,
+          COALESCE(SUM(CASE WHEN c.status <> 'CANCELLED' THEN c.committed_amount ELSE 0 END), 0) AS committed_amount,
+          COALESCE(SUM(CASE WHEN c.status <> 'CANCELLED' THEN c.received_amount ELSE 0 END), 0) AS received_amount,
+          b.planned_budget - COALESCE(SUM(CASE WHEN c.status <> 'CANCELLED' THEN c.committed_amount ELSE 0 END), 0) AS remaining_to_commit
+        FROM otb_budgets b
+        LEFT JOIN otb_commitments c ON c.otb_budget_id = b.id
+        GROUP BY b.id, b.department, b.year, b.month, b.planned_budget;
+
+        CREATE TRIGGER IF NOT EXISTS trg_ref_categories_rics_range_insert_v011
+        BEFORE INSERT ON ref_categories
+        WHEN NEW.rics_code < 556 OR NEW.rics_code > 599
+        BEGIN
+          SELECT RAISE(ABORT, 'ref_categories.rics_code must be in range 556-599');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_ref_categories_rics_range_update_v011
+        BEFORE UPDATE ON ref_categories
+        WHEN NEW.rics_code < 556 OR NEW.rics_code > 599
+        BEGIN
+          SELECT RAISE(ABORT, 'ref_categories.rics_code must be in range 556-599');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_skus_natural_identity_insert_v011
+        BEFORE INSERT ON skus
+        WHEN NEW.brand_id IS NULL
+          OR NEW.color_id IS NULL
+          OR NEW.style IS NULL
+          OR length(trim(NEW.style)) = 0
+          OR EXISTS (
+            SELECT 1
+            FROM skus s
+            WHERE s.brand_id = NEW.brand_id
+              AND s.color_id = NEW.color_id
+              AND lower(trim(s.style)) = lower(trim(NEW.style))
+          )
+        BEGIN
+          SELECT RAISE(ABORT, 'skus must be unique by brand_id + style + color_id');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_skus_natural_identity_update_v011
+        BEFORE UPDATE ON skus
+        WHEN NEW.brand_id IS NULL
+          OR NEW.color_id IS NULL
+          OR NEW.style IS NULL
+          OR length(trim(NEW.style)) = 0
+          OR EXISTS (
+            SELECT 1
+            FROM skus s
+            WHERE s.id <> NEW.id
+              AND s.brand_id = NEW.brand_id
+              AND s.color_id = NEW.color_id
+              AND lower(trim(s.style)) = lower(trim(NEW.style))
+          )
+        BEGIN
+          SELECT RAISE(ABORT, 'skus must be unique by brand_id + style + color_id');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_skus_heel_validation_insert_v011
+        BEFORE INSERT ON skus
+        WHEN (
+          NEW.heel_type IS NOT NULL
+          AND length(trim(NEW.heel_type)) > 0
+          AND NOT EXISTS (
+            SELECT 1 FROM ref_heel_types t
+            WHERE t.active = 1
+              AND (t.code = upper(trim(NEW.heel_type)) OR upper(t.name) = upper(trim(NEW.heel_type)))
+          )
+        ) OR (
+          NEW.material IS NOT NULL
+          AND length(trim(NEW.material)) > 0
+          AND NOT EXISTS (
+            SELECT 1 FROM ref_heel_material_types m
+            WHERE m.active = 1
+              AND (m.code = upper(trim(NEW.material)) OR upper(m.name) = upper(trim(NEW.material)))
+          )
+        )
+        BEGIN
+          SELECT RAISE(ABORT, 'skus heel_type/material must map to canonical heel catalogs');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_skus_heel_validation_update_v011
+        BEFORE UPDATE ON skus
+        WHEN (
+          NEW.heel_type IS NOT NULL
+          AND length(trim(NEW.heel_type)) > 0
+          AND NOT EXISTS (
+            SELECT 1 FROM ref_heel_types t
+            WHERE t.active = 1
+              AND (t.code = upper(trim(NEW.heel_type)) OR upper(t.name) = upper(trim(NEW.heel_type)))
+          )
+        ) OR (
+          NEW.material IS NOT NULL
+          AND length(trim(NEW.material)) > 0
+          AND NOT EXISTS (
+            SELECT 1 FROM ref_heel_material_types m
+            WHERE m.active = 1
+              AND (m.code = upper(trim(NEW.material)) OR upper(m.name) = upper(trim(NEW.material)))
+          )
+        )
+        BEGIN
+          SELECT RAISE(ABORT, 'skus heel_type/material must map to canonical heel catalogs');
+        END;
+
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_skus_brand_style_color_v011
+          ON skus(brand_id, lower(trim(style)), color_id)
+          WHERE brand_id IS NOT NULL AND color_id IS NOT NULL AND length(trim(style)) > 0;
+
+        CREATE INDEX IF NOT EXISTS idx_ref_categories_dept_macro ON ref_categories(dept_macro);
+        CREATE INDEX IF NOT EXISTS idx_skus_department_category ON skus(department, category_id);
+        CREATE INDEX IF NOT EXISTS idx_skus_vendor_brand ON skus(vendor_id, brand_id);
+        CREATE INDEX IF NOT EXISTS idx_sku_sizes_sku_id_v011 ON sku_sizes(sku_id);
+        CREATE INDEX IF NOT EXISTS idx_inventory_sku_id_v011 ON inventory(sku_id);
+        CREATE INDEX IF NOT EXISTS idx_inventory_sku_size_id_v011 ON inventory(sku_size_id);
+        CREATE INDEX IF NOT EXISTS idx_purchase_orders_vendor_status_v011 ON purchase_orders(vendor_id, status);
+        CREATE INDEX IF NOT EXISTS idx_purchase_order_lines_po_id_v011 ON purchase_order_lines(po_id);
+        CREATE INDEX IF NOT EXISTS idx_purchase_order_lines_sku_id_v011 ON purchase_order_lines(sku_id);
+        CREATE INDEX IF NOT EXISTS idx_sales_transactions_sku_sold_at_v011 ON sales_transactions(sku_id, sold_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_style_colors_category_id ON style_colors(category_id);
+        CREATE INDEX IF NOT EXISTS idx_style_colors_department ON style_colors(department);
+        CREATE INDEX IF NOT EXISTS idx_sku_style_colors_style_color_id ON sku_style_colors(style_color_id);
+        CREATE INDEX IF NOT EXISTS idx_po_receipts_po_id ON po_receipts(po_id);
+        CREATE INDEX IF NOT EXISTS idx_po_receipts_location_id ON po_receipts(location_id);
+        CREATE INDEX IF NOT EXISTS idx_po_receipt_lines_receipt_id ON po_receipt_lines(receipt_id);
+        CREATE INDEX IF NOT EXISTS idx_po_receipt_lines_sku_id ON po_receipt_lines(sku_id);
+        CREATE INDEX IF NOT EXISTS idx_transfer_orders_from_location_status ON transfer_orders(from_location_id, status);
+        CREATE INDEX IF NOT EXISTS idx_transfer_orders_to_location_status ON transfer_orders(to_location_id, status);
+        CREATE INDEX IF NOT EXISTS idx_transfer_order_lines_transfer_id ON transfer_order_lines(transfer_order_id);
+        CREATE INDEX IF NOT EXISTS idx_transfer_order_lines_sku_id ON transfer_order_lines(sku_id);
+        CREATE INDEX IF NOT EXISTS idx_otb_commitments_budget_status ON otb_commitments(otb_budget_id, status);
+        CREATE INDEX IF NOT EXISTS idx_otb_commitments_po_id ON otb_commitments(po_id);
+      `);
+
+      if (columnExists(db, 'inventory_adjustments', 'location_id')) {
+        db.exec(`
+          CREATE INDEX IF NOT EXISTS idx_inventory_adjustments_location_created
+            ON inventory_adjustments(location_id, created_at DESC);
+        `);
+      } else {
+        db.exec(`
+          CREATE INDEX IF NOT EXISTS idx_inventory_adjustments_from_location_created_v011
+            ON inventory_adjustments(from_location_id, created_at DESC);
+          CREATE INDEX IF NOT EXISTS idx_inventory_adjustments_to_location_created_v011
+            ON inventory_adjustments(to_location_id, created_at DESC);
+        `);
+      }
+      if (columnExists(db, 'inventory_adjustments', 'sku_id')) {
+        db.exec(`
+          CREATE INDEX IF NOT EXISTS idx_inventory_adjustments_sku_created
+            ON inventory_adjustments(sku_id, created_at DESC);
+        `);
+      }
+
+      db.exec(`
+        INSERT OR IGNORE INTO ref_categories (rics_code, name, dept_macro, active) VALUES
+          (556, 'Pump Formal', 'FORMAL', 1),
+          (557, 'Pump Casual', 'CASUAL', 1),
+          (558, 'Flat Formal', 'FORMAL', 1),
+          (559, 'Flat Casual', 'CASUAL', 1),
+          (560, 'Sandalia Plana', 'SANDALIAS', 1),
+          (561, 'Sandalia Tacon', 'SANDALIAS', 1),
+          (562, 'Plataforma Formal', 'FORMAL', 1),
+          (563, 'Plataforma Casual', 'CASUAL', 1),
+          (564, 'Wedge', 'CASUAL', 1),
+          (565, 'Mule Formal', 'FORMAL', 1),
+          (566, 'Mule Casual', 'CASUAL', 1),
+          (567, 'Espadrille', 'CASUAL', 1),
+          (568, 'Sneaker', 'CASUAL', 1),
+          (569, 'Loafer', 'CASUAL', 1),
+          (570, 'Oxford', 'FORMAL', 1),
+          (571, 'Derby', 'FORMAL', 1),
+          (572, 'Mocasin', 'COMFORT', 1),
+          (573, 'Chancla', 'SANDALIAS', 1),
+          (574, 'Sandalia Fiesta', 'FIESTA', 1),
+          (575, 'Pump Fiesta', 'FIESTA', 1),
+          (576, 'Plataforma Fiesta', 'FIESTA', 1),
+          (577, 'Flat Fiesta', 'FIESTA', 1),
+          (580, 'Bota Alta', 'BOOTS', 1),
+          (581, 'Bota Media', 'BOOTS', 1),
+          (582, 'Botin', 'BOOTS', 1),
+          (585, 'Comfort Casual', 'COMFORT', 1),
+          (586, 'Comfort Formal', 'COMFORT', 1),
+          (590, 'Sandalia Comfort', 'COMFORT', 1),
+          (595, 'Especial/Otro', 'CASUAL', 1);
+      `);
+
+      // Non-obvious design decision:
+      // style_colors in migration 0003 uses heel_type_code/heel_material_type_code,
+      // so backfill chooses target columns dynamically for compatibility.
+      if (tableExists(db, 'style_colors') && tableExists(db, 'sku_style_colors')) {
+        if (columnExists(db, 'style_colors', 'heel_type_code') && columnExists(db, 'style_colors', 'heel_material_type_code')) {
+          db.exec(`
+            INSERT OR IGNORE INTO style_colors (
+              id,
+              brand_id,
+              style,
+              color_id,
+              category_id,
+              department,
+              heel_type_code,
+              heel_material_type_code,
+              season,
+              active
+            )
+            SELECT
+              lower(hex(randomblob(16))),
+              s.brand_id,
+              trim(s.style),
+              s.color_id,
+              s.category_id,
+              s.department,
+              CASE
+                WHEN s.heel_type IS NULL OR length(trim(s.heel_type)) = 0 THEN NULL
+                ELSE upper(trim(s.heel_type))
+              END,
+              CASE
+                WHEN s.material IS NULL OR length(trim(s.material)) = 0 THEN NULL
+                ELSE upper(trim(s.material))
+              END,
+              s.season,
+              s.active
+            FROM skus s
+            WHERE s.brand_id IS NOT NULL
+              AND s.color_id IS NOT NULL
+              AND s.style IS NOT NULL
+              AND length(trim(s.style)) > 0;
+          `);
+        } else if (columnExists(db, 'style_colors', 'heel_type') && columnExists(db, 'style_colors', 'heel_material')) {
+          db.exec(`
+            INSERT OR IGNORE INTO style_colors (
+              id,
+              brand_id,
+              style,
+              color_id,
+              category_id,
+              department,
+              heel_type,
+              heel_material,
+              season
+            )
+            SELECT
+              lower(hex(randomblob(16))),
+              s.brand_id,
+              trim(s.style),
+              s.color_id,
+              s.category_id,
+              s.department,
+              CASE
+                WHEN s.heel_type IS NULL OR length(trim(s.heel_type)) = 0 THEN NULL
+                ELSE upper(trim(s.heel_type))
+              END,
+              CASE
+                WHEN s.material IS NULL OR length(trim(s.material)) = 0 THEN NULL
+                ELSE upper(trim(s.material))
+              END,
+              s.season
+            FROM skus s
+            WHERE s.brand_id IS NOT NULL
+              AND s.color_id IS NOT NULL
+              AND s.style IS NOT NULL
+              AND length(trim(s.style)) > 0;
+          `);
+        }
+
+        db.exec(`
+          INSERT OR IGNORE INTO sku_style_colors (sku_id, style_color_id)
+          SELECT
+            s.id,
+            sc.id
+          FROM skus s
+          JOIN style_colors sc
+            ON sc.brand_id = s.brand_id
+           AND sc.color_id = s.color_id
+           AND lower(trim(sc.style)) = lower(trim(s.style))
+          WHERE s.brand_id IS NOT NULL
+            AND s.color_id IS NOT NULL
+            AND s.style IS NOT NULL
+            AND length(trim(s.style)) > 0;
+        `);
+      }
+
+      db.exec(`
+        INSERT OR REPLACE INTO schema_table_comments (table_name, comment) VALUES
+          ('ref_departments', 'Canonical macro-department catalog used by SKU, category, and OTB constraints.'),
+          ('otb_commitments', 'OTB committed and received amounts linked to budgets and optional purchase orders.'),
+          ('v_otb_budget_vs_actual', 'Read model exposing OTB planned budget vs committed and received amounts.');
+      `);
+    },
+    down(db) {
+      db.exec(`
+        DROP VIEW IF EXISTS v_otb_budget_vs_actual;
+
+        DROP TRIGGER IF EXISTS trg_skus_heel_validation_update_v011;
+        DROP TRIGGER IF EXISTS trg_skus_heel_validation_insert_v011;
+        DROP TRIGGER IF EXISTS trg_skus_natural_identity_update_v011;
+        DROP TRIGGER IF EXISTS trg_skus_natural_identity_insert_v011;
+        DROP TRIGGER IF EXISTS trg_ref_categories_rics_range_update_v011;
+        DROP TRIGGER IF EXISTS trg_ref_categories_rics_range_insert_v011;
+
+        DROP INDEX IF EXISTS idx_otb_commitments_po_id;
+        DROP INDEX IF EXISTS idx_otb_commitments_budget_status;
+        DROP INDEX IF EXISTS idx_inventory_adjustments_sku_created;
+        DROP INDEX IF EXISTS idx_inventory_adjustments_location_created;
+        DROP INDEX IF EXISTS idx_inventory_adjustments_from_location_created_v011;
+        DROP INDEX IF EXISTS idx_inventory_adjustments_to_location_created_v011;
+        DROP INDEX IF EXISTS idx_transfer_order_lines_sku_id;
+        DROP INDEX IF EXISTS idx_transfer_order_lines_transfer_id;
+        DROP INDEX IF EXISTS idx_transfer_orders_to_location_status;
+        DROP INDEX IF EXISTS idx_transfer_orders_from_location_status;
+        DROP INDEX IF EXISTS idx_po_receipt_lines_sku_id;
+        DROP INDEX IF EXISTS idx_po_receipt_lines_receipt_id;
+        DROP INDEX IF EXISTS idx_po_receipts_location_id;
+        DROP INDEX IF EXISTS idx_po_receipts_po_id;
+        DROP INDEX IF EXISTS idx_sku_style_colors_style_color_id;
+        DROP INDEX IF EXISTS idx_style_colors_department;
+        DROP INDEX IF EXISTS idx_style_colors_category_id;
+        DROP INDEX IF EXISTS idx_sales_transactions_sku_sold_at_v011;
+        DROP INDEX IF EXISTS idx_purchase_order_lines_sku_id_v011;
+        DROP INDEX IF EXISTS idx_purchase_order_lines_po_id_v011;
+        DROP INDEX IF EXISTS idx_purchase_orders_vendor_status_v011;
+        DROP INDEX IF EXISTS idx_inventory_sku_size_id_v011;
+        DROP INDEX IF EXISTS idx_inventory_sku_id_v011;
+        DROP INDEX IF EXISTS idx_sku_sizes_sku_id_v011;
+        DROP INDEX IF EXISTS idx_skus_vendor_brand;
+        DROP INDEX IF EXISTS idx_skus_department_category;
+        DROP INDEX IF EXISTS idx_ref_categories_dept_macro;
+        DROP INDEX IF EXISTS ux_skus_brand_style_color_v011;
+
+        DROP TABLE IF EXISTS otb_commitments;
+        DROP TABLE IF EXISTS ref_departments;
+      `);
+
+      if (tableExists(db, 'schema_table_comments')) {
+        db.exec(`
+          DELETE FROM schema_table_comments
+          WHERE table_name IN ('ref_departments', 'otb_commitments', 'v_otb_budget_vs_actual');
+        `);
+      }
+      dropSchemaCommentsTableIfEmpty(db);
+    },
+  },
+  {
+    version: '0006',
+    description: 'Add sourceDocumentRef and idempotency support to inventory_audit_log per ZAI-134 functional spec',
+    up(db: DatabaseSync) {
+      // Add source document reference columns for audit traceability
+      db.exec(`
+        ALTER TABLE inventory_audit_log ADD COLUMN source_document_ref_type TEXT
+          CHECK(source_document_ref_type IS NULL OR source_document_ref_type IN (
+            'PURCHASE_ORDER_RECEIPT','TRANSFER_ORDER','STOCK_ADJUSTMENT','INITIAL_IMPORT','SYSTEM_RECONCILIATION'
+          ));
+      `);
+      db.exec(`ALTER TABLE inventory_audit_log ADD COLUMN source_document_ref_id TEXT;`);
+
+      // Add idempotency key with unique constraint for replay detection
+      db.exec(`ALTER TABLE inventory_audit_log ADD COLUMN idempotency_key TEXT;`);
+      db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_log_idempotency_key ON inventory_audit_log(idempotency_key) WHERE idempotency_key IS NOT NULL;`);
+
+      // Index on source_document_ref for reverse lookups
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_audit_log_source_ref ON inventory_audit_log(source_document_ref_type, source_document_ref_id) WHERE source_document_ref_type IS NOT NULL;`);
+    },
+    down(db: DatabaseSync) {
+      db.exec(`DROP INDEX IF EXISTS idx_audit_log_source_ref;`);
+      db.exec(`DROP INDEX IF EXISTS idx_audit_log_idempotency_key;`);
+      // SQLite does not support DROP COLUMN; columns are left in place on rollback.
+    },
+  },
+  {
+    version: '0007',
+    description: 'Add otb_policy_audit_log for default/configured policy decisions across allow/warn/hard_stop/override/exception paths',
+    up(db: DatabaseSync) {
+      ensureSchemaTableCommentsTable(db);
+
+      // Non-obvious design decisions:
+      // 1) One policy event can fan out into multiple rows (one per department/period),
+      //    so event_id is indexed but not unique.
+      // 2) retention_expires_at is persisted at write time to make archival scans cheap
+      //    without expression indexes in SQLite.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS otb_policy_audit_log (
+          id TEXT PRIMARY KEY,
+          event_id TEXT NOT NULL,
+          event_timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+          department TEXT NOT NULL REFERENCES ref_departments(code),
+          period_year INTEGER NOT NULL CHECK(period_year BETWEEN 2020 AND 2099),
+          period_month INTEGER NOT NULL CHECK(period_month BETWEEN 1 AND 12),
+          po_id TEXT NOT NULL REFERENCES purchase_orders(id),
+          policy_source TEXT NOT NULL CHECK(policy_source IN ('default','configured')),
+          warning_threshold_pct REAL NOT NULL CHECK(warning_threshold_pct >= 0),
+          hard_stop_threshold_pct REAL NOT NULL CHECK(hard_stop_threshold_pct >= warning_threshold_pct),
+          projected_utilization_pct REAL NOT NULL CHECK(projected_utilization_pct >= 0),
+          decision TEXT NOT NULL CHECK(decision IN ('allow','warn','hard_stop','override','exception')),
+          override_reason_code TEXT,
+          approver_ids TEXT,
+          ceo_exception_approval_id TEXT,
+          actor_user_id TEXT NOT NULL,
+          trace_id TEXT NOT NULL,
+          retention_expires_at TEXT NOT NULL,
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_otb_policy_audit_log_po_id ON otb_policy_audit_log(po_id);
+        CREATE INDEX IF NOT EXISTS idx_otb_policy_audit_log_event_id ON otb_policy_audit_log(event_id);
+        CREATE INDEX IF NOT EXISTS idx_otb_policy_audit_log_trace_id ON otb_policy_audit_log(trace_id);
+        CREATE INDEX IF NOT EXISTS idx_otb_policy_audit_log_decision_created
+          ON otb_policy_audit_log(decision, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_otb_policy_audit_log_department_period
+          ON otb_policy_audit_log(department, period_year, period_month, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_otb_policy_audit_log_retention_expires
+          ON otb_policy_audit_log(retention_expires_at);
+
+        INSERT OR REPLACE INTO schema_table_comments (table_name, comment) VALUES
+          ('otb_policy_audit_log', 'Immutable OTB policy decision audit ledger by PO, department, and period with threshold metadata and retention markers.');
+      `);
+    },
+    down(db: DatabaseSync) {
+      db.exec(`
+        DROP INDEX IF EXISTS idx_otb_policy_audit_log_retention_expires;
+        DROP INDEX IF EXISTS idx_otb_policy_audit_log_department_period;
+        DROP INDEX IF EXISTS idx_otb_policy_audit_log_decision_created;
+        DROP INDEX IF EXISTS idx_otb_policy_audit_log_trace_id;
+        DROP INDEX IF EXISTS idx_otb_policy_audit_log_event_id;
+        DROP INDEX IF EXISTS idx_otb_policy_audit_log_po_id;
+        DROP TABLE IF EXISTS otb_policy_audit_log;
+      `);
+
+      if (tableExists(db, 'schema_table_comments')) {
+        db.exec(`
+          DELETE FROM schema_table_comments
+          WHERE table_name = 'otb_policy_audit_log';
+        `);
+      }
+      dropSchemaCommentsTableIfEmpty(db);
+    },
+  },
+  {
+    version: '0008',
+    description: 'Add index coverage for server-side table sorting/filtering on purchase orders, OTB budgets, and inventory audit logs',
+    up(db: DatabaseSync) {
+      // Non-obvious design decision:
+      // keep read-path indexes narrowly targeted to current server-table contract fields
+      // to improve pagination/sort latency without materially increasing write cost.
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_purchase_orders_created_at
+          ON purchase_orders(created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_purchase_orders_updated_at
+          ON purchase_orders(updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_otb_budgets_created_at
+          ON otb_budgets(created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_otb_budgets_planned_budget
+          ON otb_budgets(planned_budget);
+        CREATE INDEX IF NOT EXISTS idx_inventory_audit_log_sku_created_at
+          ON inventory_audit_log(sku_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_inventory_audit_log_sku_adjustment
+          ON inventory_audit_log(sku_id, adjustment);
+      `);
+    },
+    down(db: DatabaseSync) {
+      db.exec(`
+        DROP INDEX IF EXISTS idx_inventory_audit_log_sku_adjustment;
+        DROP INDEX IF EXISTS idx_inventory_audit_log_sku_created_at;
+        DROP INDEX IF EXISTS idx_otb_budgets_planned_budget;
+        DROP INDEX IF EXISTS idx_otb_budgets_created_at;
+        DROP INDEX IF EXISTS idx_purchase_orders_updated_at;
+        DROP INDEX IF EXISTS idx_purchase_orders_created_at;
+      `);
+    },
+  },
+  {
+    version: '0009',
+    description: 'Sales ledger index + OTB SKU plan lines table and read view',
+    up(db: DatabaseSync) {
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_sales_transactions_sold_at_sku
+          ON sales_transactions(sold_at DESC, sku_id);
+
+        CREATE TABLE IF NOT EXISTS otb_sku_plan_lines (
+          id TEXT PRIMARY KEY,
+          otb_budget_id TEXT NOT NULL REFERENCES otb_budgets(id),
+          sku_id TEXT NOT NULL REFERENCES skus(id),
+          budget_units INTEGER NOT NULL CHECK(budget_units >= 0),
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          UNIQUE(otb_budget_id, sku_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_otb_sku_plan_lines_sku
+          ON otb_sku_plan_lines(sku_id);
+      `);
+    },
+    down(db: DatabaseSync) {
+      db.exec(`
+        DROP TABLE IF EXISTS otb_sku_plan_lines;
+        DROP INDEX IF EXISTS idx_sales_transactions_sold_at_sku;
+      `);
+    },
+  },
+  {
+    version: '0010',
+    description: 'Add idempotency_key to po_receipts for duplicate receipt prevention (ZAI-136 AC4)',
+    up(db: DatabaseSync) {
+      db.exec(`ALTER TABLE po_receipts ADD COLUMN idempotency_key TEXT;`);
+      db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_po_receipts_idempotency_key ON po_receipts(idempotency_key) WHERE idempotency_key IS NOT NULL;`);
+    },
+    down(db: DatabaseSync) {
+      db.exec(`DROP INDEX IF EXISTS idx_po_receipts_idempotency_key;`);
+    },
+  },
+  {
+    version: '0011',
+    description: 'OTB month/department/SKU-size financial planning table + read view (migration 015)',
+    up(db: DatabaseSync) {
+      ensureSchemaTableCommentsTable(db);
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS otb_monthly_department_sku_plan (
+          id TEXT PRIMARY KEY,
+          otb_budget_id TEXT NOT NULL REFERENCES otb_budgets(id) ON DELETE CASCADE,
+          sku_id TEXT NOT NULL REFERENCES skus(id) ON DELETE RESTRICT,
+          sku_size_id TEXT NOT NULL REFERENCES sku_sizes(id) ON DELETE RESTRICT,
+          budget_amount REAL NOT NULL CHECK(budget_amount >= 0),
+          committed_amount REAL NOT NULL DEFAULT 0 CHECK(committed_amount >= 0),
+          received_amount REAL NOT NULL DEFAULT 0 CHECK(received_amount >= 0),
+          notes TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          UNIQUE(otb_budget_id, sku_size_id),
+          CHECK(committed_amount <= budget_amount),
+          CHECK(received_amount <= committed_amount)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_otb_monthly_sku_plan_budget_id_v015
+          ON otb_monthly_department_sku_plan(otb_budget_id);
+        CREATE INDEX IF NOT EXISTS idx_otb_monthly_sku_plan_sku_id_v015
+          ON otb_monthly_department_sku_plan(sku_id);
+        CREATE INDEX IF NOT EXISTS idx_otb_monthly_sku_plan_sku_size_id_v015
+          ON otb_monthly_department_sku_plan(sku_size_id);
+        CREATE INDEX IF NOT EXISTS idx_otb_monthly_sku_plan_budget_updated_v015
+          ON otb_monthly_department_sku_plan(otb_budget_id, updated_at DESC);
+      `);
+
+      db.exec(`
+        CREATE TRIGGER IF NOT EXISTS trg_otb_monthly_sku_plan_size_alignment_insert_v015
+        BEFORE INSERT ON otb_monthly_department_sku_plan
+        WHEN NOT EXISTS (
+          SELECT 1 FROM sku_sizes ss WHERE ss.id = NEW.sku_size_id AND ss.sku_id = NEW.sku_id
+        )
+        BEGIN
+          SELECT RAISE(ABORT, 'otb_monthly_department_sku_plan sku_size_id must belong to sku_id');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_otb_monthly_sku_plan_size_alignment_update_v015
+        BEFORE UPDATE OF sku_id, sku_size_id ON otb_monthly_department_sku_plan
+        WHEN NOT EXISTS (
+          SELECT 1 FROM sku_sizes ss WHERE ss.id = NEW.sku_size_id AND ss.sku_id = NEW.sku_id
+        )
+        BEGIN
+          SELECT RAISE(ABORT, 'otb_monthly_department_sku_plan sku_size_id must belong to sku_id');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_otb_monthly_sku_plan_department_alignment_insert_v015
+        BEFORE INSERT ON otb_monthly_department_sku_plan
+        WHEN NOT EXISTS (
+          SELECT 1 FROM otb_budgets b JOIN skus s ON s.id = NEW.sku_id
+          WHERE b.id = NEW.otb_budget_id AND b.department = s.department
+        )
+        BEGIN
+          SELECT RAISE(ABORT, 'otb_monthly_department_sku_plan otb_budget department must match skus.department');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_otb_monthly_sku_plan_department_alignment_update_v015
+        BEFORE UPDATE OF otb_budget_id, sku_id ON otb_monthly_department_sku_plan
+        WHEN NOT EXISTS (
+          SELECT 1 FROM otb_budgets b JOIN skus s ON s.id = NEW.sku_id
+          WHERE b.id = NEW.otb_budget_id AND b.department = s.department
+        )
+        BEGIN
+          SELECT RAISE(ABORT, 'otb_monthly_department_sku_plan otb_budget department must match skus.department');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_otb_monthly_sku_plan_category_guardrail_insert_v015
+        BEFORE INSERT ON otb_monthly_department_sku_plan
+        WHEN NOT EXISTS (
+          SELECT 1 FROM skus s JOIN ref_categories c ON c.id = s.category_id
+          WHERE s.id = NEW.sku_id AND c.rics_code BETWEEN 556 AND 599
+        )
+        BEGIN
+          SELECT RAISE(ABORT, 'otb_monthly_department_sku_plan sku category must resolve to RICS 556-599');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_otb_monthly_sku_plan_category_guardrail_update_v015
+        BEFORE UPDATE OF sku_id ON otb_monthly_department_sku_plan
+        WHEN NOT EXISTS (
+          SELECT 1 FROM skus s JOIN ref_categories c ON c.id = s.category_id
+          WHERE s.id = NEW.sku_id AND c.rics_code BETWEEN 556 AND 599
+        )
+        BEGIN
+          SELECT RAISE(ABORT, 'otb_monthly_department_sku_plan sku category must resolve to RICS 556-599');
+        END;
+      `);
+
+      db.exec(`
+        CREATE VIEW IF NOT EXISTS v_otb_monthly_department_sku_plan AS
+        SELECT
+          p.id,
+          p.otb_budget_id,
+          b.department AS macro_department,
+          b.year,
+          b.month,
+          printf('%04d-%02d', b.year, b.month) AS plan_month,
+          p.sku_id,
+          p.sku_size_id,
+          sz.size_label,
+          s.brand_id,
+          s.style,
+          s.color_id,
+          s.category_id,
+          p.budget_amount,
+          p.committed_amount,
+          p.received_amount,
+          p.budget_amount - p.committed_amount AS remaining_to_commit_amount,
+          p.committed_amount - p.received_amount AS remaining_to_receive_amount,
+          p.budget_amount - p.received_amount AS budget_vs_received_variance_amount,
+          p.notes,
+          p.created_at,
+          p.updated_at
+        FROM otb_monthly_department_sku_plan p
+        JOIN otb_budgets b ON b.id = p.otb_budget_id
+        JOIN skus s ON s.id = p.sku_id
+        JOIN sku_sizes sz ON sz.id = p.sku_size_id;
+      `);
+
+      db.exec(`
+        INSERT OR REPLACE INTO schema_table_comments (table_name, comment) VALUES
+          ('otb_monthly_department_sku_plan', 'Monthly OTB planning lines at SKU-size grain with budget/committed/received financials. Enforces department and womens-category guardrails.'),
+          ('v_otb_monthly_department_sku_plan', 'Read model for month+department+SKU-size OTB financials with derivable variance metrics.');
+      `);
+    },
+    down(db: DatabaseSync) {
+      db.exec(`
+        DROP VIEW IF EXISTS v_otb_monthly_department_sku_plan;
+        DROP TRIGGER IF EXISTS trg_otb_monthly_sku_plan_category_guardrail_update_v015;
+        DROP TRIGGER IF EXISTS trg_otb_monthly_sku_plan_category_guardrail_insert_v015;
+        DROP TRIGGER IF EXISTS trg_otb_monthly_sku_plan_department_alignment_update_v015;
+        DROP TRIGGER IF EXISTS trg_otb_monthly_sku_plan_department_alignment_insert_v015;
+        DROP TRIGGER IF EXISTS trg_otb_monthly_sku_plan_size_alignment_update_v015;
+        DROP TRIGGER IF EXISTS trg_otb_monthly_sku_plan_size_alignment_insert_v015;
+        DROP INDEX IF EXISTS idx_otb_monthly_sku_plan_budget_updated_v015;
+        DROP INDEX IF EXISTS idx_otb_monthly_sku_plan_sku_size_id_v015;
+        DROP INDEX IF EXISTS idx_otb_monthly_sku_plan_sku_id_v015;
+        DROP INDEX IF EXISTS idx_otb_monthly_sku_plan_budget_id_v015;
+        DROP TABLE IF EXISTS otb_monthly_department_sku_plan;
+        DELETE FROM schema_table_comments WHERE table_name IN (
+          'otb_monthly_department_sku_plan', 'v_otb_monthly_department_sku_plan'
+        );
+      `);
+    },
+  },
+  {
+    version: '0012',
+    description: 'Transaction ledger integrity hardening for receipts/transfers/adjustments (migration 016)',
+    up(db: DatabaseSync) {
+      // Non-obvious design decisions:
+      // 1) SQLite CHECK constraints cannot reference related rows, so receipt/transfer
+      //    cross-table consistency is enforced through triggers.
+      // 2) quantity_received <= quantity_ordered is guarded at DB level to prevent
+      //    over-receipt via any write path.
+      // 3) Composite read indexes align with current server-side WHERE+ORDER BY clauses.
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_purchase_order_lines_po_created_v016
+          ON purchase_order_lines(po_id, created_at ASC);
+        CREATE INDEX IF NOT EXISTS idx_po_receipts_po_received_at_v016
+          ON po_receipts(po_id, received_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_po_receipt_lines_receipt_created_v016
+          ON po_receipt_lines(receipt_id, created_at ASC);
+        CREATE INDEX IF NOT EXISTS idx_transfer_orders_status_created_v016
+          ON transfer_orders(status, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_transfer_order_lines_transfer_created_v016
+          ON transfer_order_lines(transfer_order_id, created_at ASC);
+        CREATE INDEX IF NOT EXISTS idx_inventory_adjustments_type_created_v016
+          ON inventory_adjustments(type, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_inventory_adjustment_lines_adjustment_created_v016
+          ON inventory_adjustment_lines(adjustment_id, created_at ASC);
+      `);
+
+      db.exec(`
+        CREATE TRIGGER IF NOT EXISTS trg_purchase_order_lines_qty_received_insert_guard_v016
+        BEFORE INSERT ON purchase_order_lines
+        WHEN NEW.quantity_received > NEW.quantity_ordered
+        BEGIN
+          SELECT RAISE(ABORT, 'purchase_order_lines quantity_received cannot exceed quantity_ordered');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_purchase_order_lines_qty_received_update_guard_v016
+        BEFORE UPDATE OF quantity_received, quantity_ordered ON purchase_order_lines
+        WHEN NEW.quantity_received > NEW.quantity_ordered
+        BEGIN
+          SELECT RAISE(ABORT, 'purchase_order_lines quantity_received cannot exceed quantity_ordered');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_po_receipt_lines_po_line_alignment_insert_v016
+        BEFORE INSERT ON po_receipt_lines
+        WHEN NEW.po_line_id IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1
+            FROM purchase_order_lines pol
+            JOIN po_receipts pr ON pr.id = NEW.receipt_id
+            WHERE pol.id = NEW.po_line_id
+              AND pol.po_id = pr.po_id
+              AND pol.sku_id = NEW.sku_id
+          )
+        BEGIN
+          SELECT RAISE(ABORT, 'po_receipt_lines po_line_id must belong to receipt po_id and sku_id');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_po_receipt_lines_po_line_alignment_update_v016
+        BEFORE UPDATE OF receipt_id, po_line_id, sku_id ON po_receipt_lines
+        WHEN NEW.po_line_id IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1
+            FROM purchase_order_lines pol
+            JOIN po_receipts pr ON pr.id = NEW.receipt_id
+            WHERE pol.id = NEW.po_line_id
+              AND pol.po_id = pr.po_id
+              AND pol.sku_id = NEW.sku_id
+          )
+        BEGIN
+          SELECT RAISE(ABORT, 'po_receipt_lines po_line_id must belong to receipt po_id and sku_id');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_po_receipt_lines_size_alignment_insert_v016
+        BEFORE INSERT ON po_receipt_lines
+        WHEN NEW.sku_size_id IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1
+            FROM sku_sizes ss
+            WHERE ss.id = NEW.sku_size_id
+              AND ss.sku_id = NEW.sku_id
+          )
+        BEGIN
+          SELECT RAISE(ABORT, 'po_receipt_lines sku_size_id must belong to sku_id');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_po_receipt_lines_size_alignment_update_v016
+        BEFORE UPDATE OF sku_id, sku_size_id ON po_receipt_lines
+        WHEN NEW.sku_size_id IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1
+            FROM sku_sizes ss
+            WHERE ss.id = NEW.sku_size_id
+              AND ss.sku_id = NEW.sku_id
+          )
+        BEGIN
+          SELECT RAISE(ABORT, 'po_receipt_lines sku_size_id must belong to sku_id');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_transfer_order_lines_size_alignment_insert_v016
+        BEFORE INSERT ON transfer_order_lines
+        WHEN NEW.sku_size_id IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1
+            FROM sku_sizes ss
+            WHERE ss.id = NEW.sku_size_id
+              AND ss.sku_id = NEW.sku_id
+          )
+        BEGIN
+          SELECT RAISE(ABORT, 'transfer_order_lines sku_size_id must belong to sku_id');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_transfer_order_lines_size_alignment_update_v016
+        BEFORE UPDATE OF sku_id, sku_size_id ON transfer_order_lines
+        WHEN NEW.sku_size_id IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1
+            FROM sku_sizes ss
+            WHERE ss.id = NEW.sku_size_id
+              AND ss.sku_id = NEW.sku_id
+          )
+        BEGIN
+          SELECT RAISE(ABORT, 'transfer_order_lines sku_size_id must belong to sku_id');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_inventory_adjustment_lines_nonzero_insert_v016
+        BEFORE INSERT ON inventory_adjustment_lines
+        WHEN NEW.quantity = 0
+        BEGIN
+          SELECT RAISE(ABORT, 'inventory_adjustment_lines quantity cannot be zero');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_inventory_adjustment_lines_nonzero_update_v016
+        BEFORE UPDATE OF quantity ON inventory_adjustment_lines
+        WHEN NEW.quantity = 0
+        BEGIN
+          SELECT RAISE(ABORT, 'inventory_adjustment_lines quantity cannot be zero');
+        END;
+      `);
+    },
+    down(db: DatabaseSync) {
+      db.exec(`
+        DROP TRIGGER IF EXISTS trg_inventory_adjustment_lines_nonzero_update_v016;
+        DROP TRIGGER IF EXISTS trg_inventory_adjustment_lines_nonzero_insert_v016;
+        DROP TRIGGER IF EXISTS trg_transfer_order_lines_size_alignment_update_v016;
+        DROP TRIGGER IF EXISTS trg_transfer_order_lines_size_alignment_insert_v016;
+        DROP TRIGGER IF EXISTS trg_po_receipt_lines_size_alignment_update_v016;
+        DROP TRIGGER IF EXISTS trg_po_receipt_lines_size_alignment_insert_v016;
+        DROP TRIGGER IF EXISTS trg_po_receipt_lines_po_line_alignment_update_v016;
+        DROP TRIGGER IF EXISTS trg_po_receipt_lines_po_line_alignment_insert_v016;
+        DROP TRIGGER IF EXISTS trg_purchase_order_lines_qty_received_update_guard_v016;
+        DROP TRIGGER IF EXISTS trg_purchase_order_lines_qty_received_insert_guard_v016;
+
+        DROP INDEX IF EXISTS idx_inventory_adjustment_lines_adjustment_created_v016;
+        DROP INDEX IF EXISTS idx_inventory_adjustments_type_created_v016;
+        DROP INDEX IF EXISTS idx_transfer_order_lines_transfer_created_v016;
+        DROP INDEX IF EXISTS idx_transfer_orders_status_created_v016;
+        DROP INDEX IF EXISTS idx_po_receipt_lines_receipt_created_v016;
+        DROP INDEX IF EXISTS idx_po_receipts_po_received_at_v016;
+        DROP INDEX IF EXISTS idx_purchase_order_lines_po_created_v016;
+      `);
+    },
+  },
+  {
+    version: '0013',
+    description: 'Add optimistic concurrency version column to inventory table (ZAI-296)',
+    up(db: DatabaseSync) {
+      db.exec(`ALTER TABLE inventory ADD COLUMN version INTEGER NOT NULL DEFAULT 1;`);
+    },
+    down(db: DatabaseSync) {
+      // SQLite does not support DROP COLUMN in older versions;
+      // version column is harmless if left in place during rollback.
+    },
+  },
+  {
+    version: '0014',
+    description: 'Add composite indexes for cursor-based inventory list pagination (ZAI-298)',
+    up(db: DatabaseSync) {
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_inventory_updated_at_id
+          ON inventory(updated_at DESC, id DESC);
+        CREATE INDEX IF NOT EXISTS idx_inventory_qty_on_hand_id
+          ON inventory(quantity_on_hand DESC, id DESC);
+      `);
+    },
+    down(db: DatabaseSync) {
+      db.exec(`
+        DROP INDEX IF EXISTS idx_inventory_qty_on_hand_id;
+        DROP INDEX IF EXISTS idx_inventory_updated_at_id;
+      `);
     },
   },
 ];

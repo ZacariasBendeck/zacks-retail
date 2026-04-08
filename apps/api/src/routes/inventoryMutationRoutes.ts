@@ -4,11 +4,60 @@ import {
   inventoryMutationSchema,
   inventoryMutationRequireIdempotencySchema,
   onHandSkuQuerySchema,
+  inventoryListQuerySchema,
   validate,
   validateQuery,
 } from '../middleware/validation';
 
 const router: IRouter = Router();
+
+/**
+ * @openapi
+ * /api/v1/inventory:
+ *   get:
+ *     summary: List inventory with cursor-based pagination
+ *     tags: [Inventory]
+ *     parameters:
+ *       - name: limit
+ *         in: query
+ *         schema: { type: integer, default: 50, minimum: 1, maximum: 200 }
+ *       - name: cursor
+ *         in: query
+ *         schema: { type: string }
+ *         description: Opaque cursor token from previous page's nextCursor
+ *       - name: sort
+ *         in: query
+ *         schema: { type: string, enum: [quantityOnHand, updatedAt, skuCode, department], default: updatedAt }
+ *       - name: order
+ *         in: query
+ *         schema: { type: string, enum: [asc, desc], default: desc }
+ *       - name: department
+ *         in: query
+ *         schema: { type: string, enum: [FORMAL, CASUAL, FIESTA, SANDALIAS, BOOTS, COMFORT] }
+ *       - name: brandId
+ *         in: query
+ *         schema: { type: integer }
+ *       - name: categoryId
+ *         in: query
+ *         schema: { type: integer }
+ *       - name: active
+ *         in: query
+ *         schema: { type: boolean }
+ *       - name: q
+ *         in: query
+ *         schema: { type: string }
+ *         description: Free-text search across skuCode, style, ricsDescription
+ *     responses:
+ *       200:
+ *         description: Cursor-paginated inventory list with appliedSort and appliedFilters echo
+ *       400:
+ *         description: Validation error
+ */
+router.get('/', validateQuery(inventoryListQuerySchema), (req: Request, res: Response): void => {
+  const params = (req as any).validatedQuery;
+  const result = inventoryService.listInventory(params);
+  res.json(result);
+});
 
 /**
  * @openapi

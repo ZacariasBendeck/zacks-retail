@@ -122,6 +122,7 @@ const inventoryMutationBaseSchema = z.object({
   actorId: z.string().uuid(),
   occurredAt: z.string().optional(),
   idempotencyKey: z.string().max(255).optional(),
+  expectedVersion: z.number().int().positive().optional(),
 });
 
 /** Adjust endpoint — idempotencyKey optional. */
@@ -143,10 +144,10 @@ const PAYMENT_TERMS = ['NET_30', 'NET_60', 'NET_90'] as const;
 
 export const createVendorSchema = z.object({
   name: z.string().min(1).max(200),
-  contactEmail: z.string().email().optional().nullable(),
+  contactEmail: z.string().email(),
   phone: z.string().max(50).optional().nullable(),
-  paymentTerms: z.enum(PAYMENT_TERMS).optional().nullable(),
-  leadTimeDays: z.number().int().min(0).optional().nullable(),
+  paymentTerms: z.enum(PAYMENT_TERMS),
+  leadTimeDays: z.number().int().min(0),
 });
 
 export const updateVendorSchema = z.object({
@@ -201,6 +202,7 @@ export const poReceiveSchema = z.object({
   locationId: z.string().max(100).optional(),
   receivedBy: z.string().max(100).optional(),
   referenceNumber: z.string().max(120).optional().nullable(),
+  idempotencyKey: z.string().min(1).max(255).optional(),
 });
 
 export const poSubmitSchema = z.object({
@@ -301,6 +303,26 @@ export const adjustmentListQuerySchema = z.object({
   type: z.enum(ADJUSTMENT_TYPES).optional(),
   fromDate: z.string().optional(),
   toDate: z.string().optional(),
+});
+
+// ── Inventory list (cursor pagination) schemas ───────────────────
+
+const INVENTORY_LIST_SORT_FIELDS = ['quantityOnHand', 'updatedAt', 'skuCode', 'department'] as const;
+
+export const inventoryListQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  cursor: z.string().optional(),
+  sort: z.enum(INVENTORY_LIST_SORT_FIELDS).default('updatedAt'),
+  order: z.enum(['asc', 'desc']).default('desc'),
+  department: z.enum(DEPARTMENTS).optional(),
+  brandId: z.coerce.number().int().positive().optional(),
+  categoryId: z.coerce.number().int().positive().optional(),
+  active: z.preprocess((v) => {
+    if (v === 'true') return true;
+    if (v === 'false') return false;
+    return v;
+  }, z.boolean().optional()),
+  q: z.string().optional(),
 });
 
 // ── Dashboard schemas ─────────────────────────────────────────────

@@ -48,7 +48,7 @@ export function adjustStock(skuId: string, input: StockAdjustmentInput): { inven
   db.exec('BEGIN TRANSACTION');
   try {
     db.prepare(
-      "UPDATE inventory SET quantity_on_hand = ?, updated_at = datetime('now') WHERE sku_id = ?"
+      "UPDATE inventory SET quantity_on_hand = ?, version = version + 1, updated_at = datetime('now') WHERE sku_id = ?"
     ).run(newBalance, skuId);
 
     const auditId = uuidv4();
@@ -111,6 +111,165 @@ export function getAuditLog(
   };
 }
 
+// ── Cursor-paginated inventory list (ZAI-298) ───────────────────
+
+import {
+  InventoryListParams,
+  InventoryListItem,
+  CursorPaginationEnvelope,
+  InventoryListSortField,
+} from '../models/inventory';
+
+const INV_LIST_SORT_MAP: Record<InventoryListSortField, string> = {
+  quantityOnHand: 'i.quantity_on_hand',
+  updatedAt: 'i.updated_at',
+  skuCode: 's.sku_code',
+  department: 's.department',
+};
+
+function encodeCursor(sortValue: string | number, id: string): string {
+  return Buffer.from(JSON.stringify({ s: sortValue, id })).toString('base64url');
+}
+
+function decodeCursor(cursor: string): { s: string | number; id: string } | null {
+  try {
+    const parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf-8'));
+    if (parsed && typeof parsed.id === 'string' && parsed.s !== undefined) return parsed;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export function listInventory(
+  params: InventoryListParams
+): CursorPaginationEnvelope<InventoryListItem> {
+  const db = getDb();
+
+  const sortCol = INV_LIST_SORT_MAP[params.sort] || 'i.updated_at';
+  const sortDir = params.order === 'asc' ? 'ASC' : 'DESC';
+  const oppositeOp = sortDir === 'ASC' ? '>' : '<';
+
+  const conditions: string[] = [];
+  const values: (string | number)[] = [];
+
+  // Filters
+  if (params.department) {
+    conditions.push('s.department = ?');
+    values.push(params.department);
+  }
+  if (params.brandId !== undefined) {
+    conditions.push('s.brand_id = ?');
+    values.push(params.brandId);
+  }
+  if (params.categoryId !== undefined) {
+    conditions.push('s.category_id = ?');
+    values.push(params.categoryId);
+  }
+  if (params.active !== undefined) {
+    conditions.push('s.active = ?');
+    values.push(params.active ? 1 : 0);
+  }
+  if (params.q) {
+    conditions.push("(s.sku_code LIKE ? OR s.style LIKE ? OR s.rics_description LIKE ?)");
+    const pattern = `%${params.q}%`;
+    values.push(pattern, pattern, pattern);
+  }
+
+  // Cursor condition: (sortCol, i.id) comparison for deterministic paging
+  if (params.cursor) {
+    const decoded = decodeCursor(params.cursor);
+    if (decoded) {
+      // Keyset pagination: (sortCol < cursorSortVal) OR (sortCol = cursorSortVal AND i.id < cursorId)
+      // Direction depends on ASC/DESC
+      conditions.push(
+        `(${sortCol} ${oppositeOp} ? OR (${sortCol} = ? AND i.id ${oppositeOp} ?))`
+      );
+      values.push(decoded.s, decoded.s, decoded.id);
+    }
+  }
+
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+  // Fetch limit+1 to detect if there are more rows
+  const fetchLimit = params.limit + 1;
+
+  const query = `
+    SELECT
+      i.id AS inventory_id,
+      i.sku_id,
+      s.sku_code,
+      s.style,
+      s.department,
+      s.brand_id,
+      rb.name AS brand_name,
+      s.category_id,
+      i.quantity_on_hand,
+      i.quantity_reserved,
+      (i.quantity_on_hand - i.quantity_reserved) AS quantity_available,
+      i.version,
+      i.updated_at
+    FROM inventory i
+    INNER JOIN skus s ON s.id = i.sku_id
+    LEFT JOIN ref_brands rb ON rb.id = s.brand_id
+    ${whereClause}
+    ORDER BY ${sortCol} ${sortDir}, i.id ${sortDir}
+    LIMIT ?
+  `;
+
+  values.push(fetchLimit);
+
+  const rows = db.prepare(query).all(...values) as {
+    inventory_id: string; sku_id: string; sku_code: string; style: string;
+    department: string; brand_id: number | null; brand_name: string | null;
+    category_id: number | null; quantity_on_hand: number; quantity_reserved: number;
+    quantity_available: number; version: number; updated_at: string;
+  }[];
+
+  const hasMore = rows.length > params.limit;
+  const resultRows = hasMore ? rows.slice(0, params.limit) : rows;
+
+  let nextCursor: string | null = null;
+  if (hasMore && resultRows.length > 0) {
+    const last = resultRows[resultRows.length - 1];
+    const sortValue = params.sort === 'quantityOnHand' ? last.quantity_on_hand
+      : params.sort === 'skuCode' ? last.sku_code
+      : params.sort === 'department' ? last.department
+      : last.updated_at;
+    nextCursor = encodeCursor(sortValue, last.inventory_id);
+  }
+
+  // Build appliedFilters (only include filters actually sent)
+  const appliedFilters: Record<string, string | number | boolean> = {};
+  if (params.department) appliedFilters.department = params.department;
+  if (params.brandId !== undefined) appliedFilters.brandId = params.brandId;
+  if (params.categoryId !== undefined) appliedFilters.categoryId = params.categoryId;
+  if (params.active !== undefined) appliedFilters.active = params.active;
+  if (params.q) appliedFilters.q = params.q;
+
+  return {
+    data: resultRows.map((r) => ({
+      inventoryId: r.inventory_id,
+      skuId: r.sku_id,
+      skuCode: r.sku_code,
+      style: r.style,
+      department: r.department,
+      brandId: r.brand_id,
+      brandName: r.brand_name,
+      categoryId: r.category_id,
+      quantityOnHand: r.quantity_on_hand,
+      quantityReserved: r.quantity_reserved,
+      quantityAvailable: r.quantity_available,
+      version: r.version,
+      updatedAt: r.updated_at,
+    })),
+    nextCursor,
+    limit: params.limit,
+    appliedSort: { field: params.sort, order: params.order },
+    appliedFilters,
+  };
+}
+
 // ── Inventory Mutation (ZAI-134 spec) ────────────────────────────
 
 const VALID_CATEGORY_MIN = 556;
@@ -129,7 +288,9 @@ export type MutationError = {
   };
 };
 
-export function executeMutation(input: InventoryMutationInput): AuditLogEntry | MutationError {
+export type MutationResult = AuditLogEntry & { version: number; idempotentReplay?: boolean };
+
+export function executeMutation(input: InventoryMutationInput): MutationResult | MutationError {
   const traceId = uuidv4();
   const db = getDb();
 
@@ -217,9 +378,10 @@ export function executeMutation(input: InventoryMutationInput): AuditLogEntry | 
           },
         };
       }
-      // Replay: return the existing entry
+      // Replay: return the existing entry with current version
       const entry = rowToAuditLog(existing);
-      return { ...entry, idempotentReplay: true } as AuditLogEntry & { idempotentReplay: boolean };
+      const currentInv = db.prepare('SELECT version FROM inventory WHERE sku_id = ?').get(input.skuId) as { version: number } | undefined;
+      return { ...entry, version: currentInv?.version ?? 1, idempotentReplay: true };
     }
   }
 
@@ -231,9 +393,25 @@ export function executeMutation(input: InventoryMutationInput): AuditLogEntry | 
     if (!invRow) {
       const invId = uuidv4();
       db.prepare(
-        "INSERT INTO inventory (id, sku_id, quantity_on_hand, quantity_reserved) VALUES (?, ?, 0, 0)"
+        "INSERT INTO inventory (id, sku_id, quantity_on_hand, quantity_reserved, version) VALUES (?, ?, 0, 0, 1)"
       ).run(invId, input.skuId);
       invRow = db.prepare('SELECT * FROM inventory WHERE id = ?').get(invId) as unknown as InventoryRow;
+    }
+
+    // Optimistic concurrency: if expectedVersion is provided, verify it matches
+    if (input.expectedVersion !== undefined && input.expectedVersion !== invRow.version) {
+      db.exec('ROLLBACK');
+      return {
+        error: {
+          code: 'CONFLICT_VERSION_MISMATCH',
+          message: 'Inventory version conflict. Another mutation was applied concurrently.',
+          details: [
+            { field: 'expectedVersion', value: String(input.expectedVersion) },
+            { field: 'currentVersion', value: String(invRow.version) },
+          ],
+          traceId,
+        },
+      };
     }
 
     const newBalance = invRow.quantity_on_hand + input.quantityDelta;
@@ -252,9 +430,27 @@ export function executeMutation(input: InventoryMutationInput): AuditLogEntry | 
       };
     }
 
-    db.prepare(
-      "UPDATE inventory SET quantity_on_hand = ?, updated_at = datetime('now') WHERE sku_id = ?"
-    ).run(newBalance, input.skuId);
+    const newVersion = (invRow.version ?? 1) + 1;
+
+    // Atomic update with version increment; WHERE version = ? ensures no concurrent write sneaked in
+    const updateResult = db.prepare(
+      "UPDATE inventory SET quantity_on_hand = ?, version = ?, updated_at = datetime('now') WHERE sku_id = ? AND version = ?"
+    ).run(newBalance, newVersion, input.skuId, invRow.version);
+
+    if ((updateResult as any).changes === 0) {
+      db.exec('ROLLBACK');
+      return {
+        error: {
+          code: 'CONFLICT_VERSION_MISMATCH',
+          message: 'Inventory version conflict. Another mutation was applied concurrently.',
+          details: [
+            { field: 'expectedVersion', value: String(invRow.version) },
+            { field: 'currentVersion', value: 'unknown (row changed)' },
+          ],
+          traceId,
+        },
+      };
+    }
 
     const auditId = uuidv4();
     db.prepare(
@@ -271,7 +467,7 @@ export function executeMutation(input: InventoryMutationInput): AuditLogEntry | 
     db.exec('COMMIT');
 
     const auditRow = db.prepare('SELECT * FROM inventory_audit_log WHERE id = ?').get(auditId) as unknown as AuditLogRow;
-    return rowToAuditLog(auditRow);
+    return { ...rowToAuditLog(auditRow), version: newVersion };
   } catch (err) {
     db.exec('ROLLBACK');
     throw err;
