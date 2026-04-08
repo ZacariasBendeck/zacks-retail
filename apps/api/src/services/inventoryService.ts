@@ -26,6 +26,24 @@ export function getInventoryBySkuId(skuId: string): Inventory | null {
   return rowToInventory(row);
 }
 
+/**
+ * Resolves the default inventory location (LOC_01 warehouse, or first available).
+ * Used to guarantee ledger coverage via migration-019 triggers.
+ */
+function getDefaultLocationId(db: ReturnType<typeof getDb>): string {
+  const loc = db.prepare(
+    "SELECT id FROM inventory_locations WHERE code = 'LOC_01' LIMIT 1"
+  ).get() as { id: string } | undefined;
+  if (loc) return loc.id;
+
+  const fallback = db.prepare(
+    "SELECT id FROM inventory_locations ORDER BY created_at ASC, id ASC LIMIT 1"
+  ).get() as { id: string } | undefined;
+  if (fallback) return fallback.id;
+
+  throw new Error('NO_LOCATION_AVAILABLE');
+}
+
 export function adjustStock(skuId: string, input: StockAdjustmentInput): { inventory: Inventory; auditEntry: AuditLogEntry } {
   const db = getDb();
 
@@ -44,9 +62,29 @@ export function adjustStock(skuId: string, input: StockAdjustmentInput): { inven
     throw new Error('INSUFFICIENT_STOCK');
   }
 
-  // Use a transaction pattern: node:sqlite doesn't have transaction(), so we use exec
+  const defaultLocationId = getDefaultLocationId(db);
+
   db.exec('BEGIN TRANSACTION');
   try {
+    // Create canonical adjustment source records so migration-019 triggers
+    // generate inventory_movement_ledger entries automatically.
+    const adjustmentId = uuidv4();
+    db.prepare(
+      'INSERT INTO inventory_adjustments (id, type, from_location_id, to_location_id, reason, created_by) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run(
+      adjustmentId,
+      'MANUAL_ADJUST',
+      input.adjustment < 0 ? defaultLocationId : null,
+      input.adjustment >= 0 ? defaultLocationId : null,
+      input.reason,
+      input.performedBy ?? 'system',
+    );
+
+    db.prepare(
+      'INSERT INTO inventory_adjustment_lines (id, adjustment_id, sku_id, quantity) VALUES (?, ?, ?, ?)'
+    ).run(uuidv4(), adjustmentId, skuId, input.adjustment);
+
+    // Update inventory balance (triggers only create ledger rows, not balance updates)
     db.prepare(
       "UPDATE inventory SET quantity_on_hand = ?, version = version + 1, updated_at = datetime('now') WHERE sku_id = ?"
     ).run(newBalance, skuId);
@@ -451,6 +489,33 @@ export function executeMutation(input: InventoryMutationInput): MutationResult |
         },
       };
     }
+
+    // Create canonical adjustment source records so migration-019 triggers
+    // generate inventory_movement_ledger entries automatically.
+    const SOURCE_TO_ADJ_TYPE: Record<string, string> = {
+      PURCHASE_ORDER_RECEIPT: 'RECEIPT',
+      TRANSFER_ORDER: 'TRANSFER',
+      STOCK_ADJUSTMENT: 'MANUAL_ADJUST',
+      INITIAL_IMPORT: 'MANUAL_ADJUST',
+      SYSTEM_RECONCILIATION: 'MANUAL_ADJUST',
+    };
+    const defaultLocationId = getDefaultLocationId(db);
+    const adjType = SOURCE_TO_ADJ_TYPE[input.sourceDocumentRef.type] ?? 'MANUAL_ADJUST';
+    const adjustmentId = uuidv4();
+    db.prepare(
+      'INSERT INTO inventory_adjustments (id, type, from_location_id, to_location_id, reason, created_by) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run(
+      adjustmentId,
+      adjType,
+      input.quantityDelta < 0 ? defaultLocationId : null,
+      input.quantityDelta >= 0 ? defaultLocationId : null,
+      `[${input.sourceDocumentRef.type}:${input.sourceDocumentRef.id}] ${input.reasonCode}`,
+      input.actorId,
+    );
+
+    db.prepare(
+      'INSERT INTO inventory_adjustment_lines (id, adjustment_id, sku_id, quantity) VALUES (?, ?, ?, ?)'
+    ).run(uuidv4(), adjustmentId, input.skuId, input.quantityDelta);
 
     const auditId = uuidv4();
     db.prepare(
