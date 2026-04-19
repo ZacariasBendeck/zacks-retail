@@ -7,6 +7,16 @@ import { ALLOWED_DEPARTMENTS, CATEGORY_MAX, CATEGORY_MIN } from '../../constants
 import type { Department } from '../../types/sku'
 import type { SalesChannel, SalesLedgerParams, SalesLedgerRow } from '../../types/salesLedger'
 
+// Currency is Honduran Lempira (HNL) system-wide — labeled once at the top of
+// the page, not repeated in every cell (see CLAUDE.md "Currency" policy).
+function formatMoney(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) return '-'
+  return value.toLocaleString('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })
+}
+
 const CHANNEL_OPTIONS: { label: string; value: SalesChannel }[] = [
   { label: 'Store', value: 'STORE' },
   { label: 'Online', value: 'ONLINE' },
@@ -123,7 +133,7 @@ export default function SalesLedgerPage() {
       sorter: true,
       width: 130,
       align: 'right',
-      render: (value: number) => `$${value.toFixed(2)}`,
+      render: (value: number) => formatMoney(value),
       exportValue: (record) => record.netRevenue.toFixed(2),
     },
   ]
@@ -137,6 +147,9 @@ export default function SalesLedgerPage() {
         <Typography.Text type="secondary">
           Server-driven sales transactions with category guardrails ({CATEGORY_MIN}-{CATEGORY_MAX}).
         </Typography.Text>
+        <Typography.Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0, fontSize: 12 }}>
+          Amounts in Lempira (HNL).
+        </Typography.Paragraph>
       </Card>
 
       <Card size="small" title="Filters">
@@ -270,7 +283,7 @@ export default function SalesLedgerPage() {
             <Space>
               <Typography.Text strong>Transactions</Typography.Text>
               <Typography.Text type="secondary">
-                Visible revenue: ${totalRevenue.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                Visible revenue: {formatMoney(totalRevenue)}
               </Typography.Text>
             </Space>
           }

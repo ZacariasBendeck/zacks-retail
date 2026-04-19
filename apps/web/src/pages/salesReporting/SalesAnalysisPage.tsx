@@ -161,7 +161,7 @@ export default function SalesAnalysisPage() {
         v == null ? '—' : <Tag color={v >= 30 ? 'green' : v >= 10 ? 'gold' : 'red'}>{v.toFixed(1)}%</Tag>,
     },
     {
-      title: 'Inv $ (Cost)', dataIndex: 'onHandAtCost', key: 'onHandAtCost', width: 130,
+      title: 'Inv (Cost)', dataIndex: 'onHandAtCost', key: 'onHandAtCost', width: 130,
       align: 'right' as const, render: (v: number) => v.toFixed(2),
     },
     {
@@ -420,7 +420,7 @@ export default function SalesAnalysisPage() {
             <Text type="secondary">
               {query.reportType.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, c => c.toUpperCase())}
             </Text>
-            <Text type="secondary">Net sales: ${data.totals.netSales.toLocaleString()}</Text>
+            <Text type="secondary">Net sales: {data.totals.netSales.toLocaleString('en-US')}</Text>
           </Space>
         </Card>
         <Table<SalesAnalysisRow>

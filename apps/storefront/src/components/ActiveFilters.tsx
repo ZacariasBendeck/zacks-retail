@@ -40,8 +40,8 @@ export default function ActiveFilters({ filters, facets, onChange }: ActiveFilte
   }
 
   if (filters.minPrice != null || filters.maxPrice != null) {
-    const min = filters.minPrice != null ? `$${filters.minPrice}` : ''
-    const max = filters.maxPrice != null ? `$${filters.maxPrice}` : ''
+    const min = filters.minPrice != null ? `L ${filters.minPrice}` : ''
+    const max = filters.maxPrice != null ? `L ${filters.maxPrice}` : ''
     const label = min && max ? `${min} – ${max}` : min ? `Desde ${min}` : `Hasta ${max}`
     chips.push({ label: `Precio: ${label}`, key: 'priceRange' })
   }

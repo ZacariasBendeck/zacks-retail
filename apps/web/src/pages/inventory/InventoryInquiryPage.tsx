@@ -101,8 +101,12 @@ export default function InventoryInquiryPage() {
 function InquiryContent({ data }: { data: InventoryInquiry }) {
   const { master, stores, totals } = data
 
-  const priceText = master.retailPrice != null ? `$${master.retailPrice.toFixed(2)}` : '—'
-  const costText = master.currentCost != null ? `$${master.currentCost.toFixed(2)}` : '—'
+  const fmtMoney = (v: number | null | undefined) =>
+    v == null
+      ? '—'
+      : v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  const priceText = fmtMoney(master.retailPrice)
+  const costText = fmtMoney(master.currentCost)
 
   return (
     <>

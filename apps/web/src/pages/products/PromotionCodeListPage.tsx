@@ -19,7 +19,10 @@ export default function PromotionCodeListPage() {
       dataIndex: 'cost',
       key: 'cost',
       width: 120,
-      render: (v: number | null) => (v == null ? '—' : `$${v.toFixed(2)}`),
+      render: (v: number | null) =>
+        v == null
+          ? '—'
+          : v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
     },
     {
       title: '',
@@ -56,11 +59,13 @@ export default function PromotionCodeListPage() {
       }
     >
       <Table<PromotionCode>
+        size="small"
+        className="products-compact-table"
         rowKey="code"
         dataSource={data}
         columns={columns}
         loading={isLoading}
-        pagination={{ pageSize: 50, showSizeChanger: true }}
+        pagination={{ defaultPageSize: 25, showSizeChanger: true, pageSizeOptions: [25, 50, 100, 200] }}
       />
     </Card>
   )

@@ -32,6 +32,16 @@ interface LineItemRow {
   unitCost: number
 }
 
+// Currency is Honduran Lempira (HNL) system-wide — labeled once at the top of
+// the page, not repeated in every cell (see CLAUDE.md "Currency" policy).
+function formatMoney(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) return '-'
+  return value.toLocaleString('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })
+}
+
 export default function PurchaseOrderFormPage() {
   const navigate = useNavigate()
   const { message } = App.useApp()
@@ -161,7 +171,6 @@ export default function PurchaseOrderFormPage() {
           value={record.unitCost}
           onChange={(value) => updateLineItem(record.key, 'unitCost', value ?? 0.01)}
           style={{ width: '100%' }}
-          prefix="$"
         />
       ),
     },
@@ -171,7 +180,7 @@ export default function PurchaseOrderFormPage() {
       width: 160,
       align: 'right' as const,
       render: (_: unknown, record: LineItemRow) =>
-        `$${(record.quantity * record.unitCost).toLocaleString('en-US', { minimumFractionDigits: 2 })}`,
+        formatMoney(record.quantity * record.unitCost),
     },
     {
       title: '',
@@ -200,9 +209,14 @@ export default function PurchaseOrderFormPage() {
           <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/purchasing/orders')}>
             Back
           </Button>
-          <Typography.Title level={4} style={{ margin: 0 }}>
-            New Purchase Order
-          </Typography.Title>
+          <div>
+            <Typography.Title level={4} style={{ margin: 0 }}>
+              New Purchase Order
+            </Typography.Title>
+            <Typography.Paragraph type="secondary" style={{ marginTop: 4, marginBottom: 0, fontSize: 12 }}>
+              Amounts in Lempira (HNL).
+            </Typography.Paragraph>
+          </div>
         </Space>
       </Card>
 
@@ -254,7 +268,7 @@ export default function PurchaseOrderFormPage() {
 
           <Row justify="end" style={{ marginBottom: 16 }}>
             <Typography.Text strong>
-              Subtotal: ${subtotal.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+              Subtotal: {formatMoney(subtotal)}
             </Typography.Text>
           </Row>
 

@@ -236,7 +236,13 @@ export default function ChangeDetailPage() {
                   key: 'cost',
                   align: 'right',
                   width: 100,
-                  render: (v: number) => (v ? `$${v.toFixed(2)}` : '—'),
+                  render: (v: number) =>
+                    v
+                      ? v.toLocaleString('en-US', {
+                          minimumFractionDigits: 2,
+                          maximumFractionDigits: 2,
+                        })
+                      : '—',
                 },
                 {
                   title: 'PO',

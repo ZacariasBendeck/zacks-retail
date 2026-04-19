@@ -186,7 +186,7 @@ export default function FacetedFilters({ facets, filters, onChange, loading }: F
         <div>
           {facets?.priceRange && (
             <Typography.Text type="secondary" style={{ display: 'block', marginBottom: 8, fontSize: 12 }}>
-              Rango: ${facets.priceRange.min.toFixed(0)} - ${facets.priceRange.max.toFixed(0)}
+              Rango: L {facets.priceRange.min.toLocaleString('en-US', { maximumFractionDigits: 0 })} - L {facets.priceRange.max.toLocaleString('en-US', { maximumFractionDigits: 0 })}
             </Typography.Text>
           )}
           <Space>

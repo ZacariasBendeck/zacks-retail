@@ -591,13 +591,12 @@ export default function PoReceiveMockPage() {
             <Statistic title="Remaining on PO" value={totals.remainingUnits} />
           </Col>
           <Col xs={12} md={5}>
-            <Statistic title="Receipt at Cost" prefix="$" precision={2} value={totals.atCost} />
+            <Statistic title="Receipt at Cost" precision={2} value={totals.atCost} />
           </Col>
           <Col xs={12} md={5}>
             <Statistic
               title="Receipt at Retail"
-              prefix="$"
-              precision={2}
+                            precision={2}
               value={totals.atRetail}
             />
           </Col>
@@ -811,8 +810,7 @@ function ReceiveLineCard({
               min={0}
               step={0.01}
               precision={2}
-              prefix="$"
-              value={lineDraft.freightEach}
+                            value={lineDraft.freightEach}
               onChange={(v) => onPatch({ freightEach: Number(v ?? 0) })}
               style={{ width: '100%' }}
             />
@@ -821,24 +819,21 @@ function ReceiveLineCard({
         <Col xs={12} md={4}>
           <Statistic
             title="Effective unit cost"
-            prefix="$"
-            precision={2}
+                        precision={2}
             value={effectiveCost}
           />
         </Col>
         <Col xs={12} md={6}>
           <Statistic
             title="Receipt subtotal"
-            prefix="$"
-            precision={2}
+                        precision={2}
             value={receivingNowTotal * effectiveCost}
           />
         </Col>
         <Col xs={12} md={6}>
           <Statistic
             title="Line retail"
-            prefix="$"
-            precision={2}
+                        precision={2}
             value={receivingNowTotal * line.retailPrice}
           />
         </Col>

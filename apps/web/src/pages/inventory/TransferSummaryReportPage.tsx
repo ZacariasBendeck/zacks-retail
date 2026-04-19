@@ -61,6 +61,9 @@ export default function TransferSummaryReportPage() {
             <Typography.Text type="secondary">
               RICS Ch. 4 p. 80 — monthly from × to transfer rollup (reads RIINVCHG TOU rows)
             </Typography.Text>
+            <Typography.Paragraph type="secondary" style={{ marginTop: 4, marginBottom: 0, fontSize: 12 }}>
+              Amounts in Lempira (HNL).
+            </Typography.Paragraph>
           </Col>
           <Col>
             <Space>
@@ -149,7 +152,6 @@ function ReportContent({
               title="Total Cost Moved"
               value={report.grandTotalCost}
               precision={2}
-              prefix="$"
             />
           </Col>
           <Col xs={12} md={6}>
@@ -181,7 +183,7 @@ function MonthlyView({ report }: { report: TransferSummaryReport }) {
             <Space>
               <Typography.Text strong>{monthLabel(m.month)}</Typography.Text>
               <Typography.Text type="secondary" style={{ fontWeight: 'normal' }}>
-                {m.totalEvents} events · {m.totalQuantity} units · ${m.totalCost.toLocaleString()}
+                {m.totalEvents} events · {m.totalQuantity} units · {m.totalCost.toLocaleString('en-US')}
               </Typography.Text>
             </Space>
           }
@@ -238,7 +240,7 @@ function MatrixView({ report }: { report: TransferSummaryReport }) {
             <div style={{ textAlign: 'right' }}>
               <div style={{ fontWeight: 600 }}>{cell.quantity}</div>
               <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-                ${Math.round(cell.cost).toLocaleString()}
+                {Math.round(cell.cost).toLocaleString('en-US')}
               </Typography.Text>
             </div>
           )
@@ -310,7 +312,8 @@ const cellColumns = [
     key: 'cost',
     align: 'right' as const,
     width: 128,
-    render: (v: number) => `$${v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+    render: (v: number) =>
+      v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
   },
 ]
 

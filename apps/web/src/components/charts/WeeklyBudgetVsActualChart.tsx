@@ -23,7 +23,7 @@ export default function WeeklyBudgetVsActualChart({
       tooltip: {
         trigger: 'axis',
         axisPointer: { type: 'shadow' },
-        valueFormatter: (value: number) => `$${value.toLocaleString('en-US')}`,
+        valueFormatter: (value: number) => value.toLocaleString('en-US'),
       },
       legend: {
         top: 0,
@@ -43,7 +43,7 @@ export default function WeeklyBudgetVsActualChart({
       yAxis: {
         type: 'value',
         axisLabel: {
-          formatter: (value: number) => `$${Math.round(value / 1000)}k`,
+          formatter: (value: number) => `${Math.round(value / 1000)}k`,
         },
       },
       series: [

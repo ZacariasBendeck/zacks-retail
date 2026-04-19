@@ -56,11 +56,15 @@ export default function CustomerListPage() {
       render: (_: unknown, r: Customer) => [r.city, r.stateRegion].filter(Boolean).join(', '),
     },
     {
-      title: 'YTD $',
+      title: 'YTD Sales',
       key: 'ytdSales',
       width: 120,
       align: 'right' as const,
-      render: (_: unknown, r: Customer) => `$${(r.ytdSalesCents / 100).toFixed(2)}`,
+      render: (_: unknown, r: Customer) =>
+        (r.ytdSalesCents / 100).toLocaleString('en-US', {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        }),
     },
     {
       title: 'Last Purchase',

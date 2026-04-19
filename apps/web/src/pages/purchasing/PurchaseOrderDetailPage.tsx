@@ -44,6 +44,16 @@ const STATUS_COLORS: Record<PoStatus, string> = {
   CANCELLED: 'red',
 }
 
+// Currency is Honduran Lempira (HNL) system-wide — labeled once at the top of
+// the page, not repeated in every cell (see CLAUDE.md "Currency" policy).
+function formatMoney(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) return '-'
+  return value.toLocaleString('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })
+}
+
 function isCancelable(status: PoStatus): boolean {
   return status === 'DRAFT' || status === 'SUBMITTED' || status === 'CONFIRMED'
 }
@@ -183,7 +193,7 @@ export default function PurchaseOrderDetailPage() {
       key: 'unitCost',
       width: 130,
       align: 'right' as const,
-      render: (value: number) => `$${value.toFixed(2)}`,
+      render: (value: number) => formatMoney(value),
     },
     {
       title: 'Line Total',
@@ -191,7 +201,7 @@ export default function PurchaseOrderDetailPage() {
       key: 'lineTotal',
       width: 140,
       align: 'right' as const,
-      render: (value: number) => `$${value.toFixed(2)}`,
+      render: (value: number) => formatMoney(value),
     },
   ]
 
@@ -202,9 +212,14 @@ export default function PurchaseOrderDetailPage() {
           <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/purchasing/orders')}>
             Back
           </Button>
-          <Typography.Title level={4} style={{ margin: 0 }}>
-            {po.poNumber}
-          </Typography.Title>
+          <div>
+            <Typography.Title level={4} style={{ margin: 0 }}>
+              {po.poNumber}
+            </Typography.Title>
+            <Typography.Paragraph type="secondary" style={{ marginTop: 4, marginBottom: 0, fontSize: 12 }}>
+              Amounts in Lempira (HNL).
+            </Typography.Paragraph>
+          </div>
           <Tag color={STATUS_COLORS[po.status]}>{po.status.replace(/_/g, ' ')}</Tag>
 
           {canSubmit && (
@@ -279,7 +294,7 @@ export default function PurchaseOrderDetailPage() {
           </Descriptions.Item>
           <Descriptions.Item label="Created By">{po.createdBy}</Descriptions.Item>
           <Descriptions.Item label="Subtotal">
-            ${po.subtotal.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+            {formatMoney(po.subtotal)}
           </Descriptions.Item>
           <Descriptions.Item label="Units">
             {totalReceived}/{totalOrdered} received

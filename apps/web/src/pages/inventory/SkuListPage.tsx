@@ -141,7 +141,8 @@ export default function SkuListPage() {
       sortOrder: sortOrder('price'),
       width: 100,
       align: 'right' as const,
-      render: (v: number) => `$${v.toFixed(2)}`,
+      render: (v: number) =>
+        v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
     },
     {
       title: 'Department',
@@ -289,8 +290,7 @@ export default function SkuListPage() {
                 <InputNumber
                   placeholder="Min"
                   min={0}
-                  prefix="$"
-                  style={{ width: '100%' }}
+                                    style={{ width: '100%' }}
                   value={params.minPrice}
                   onChange={(v) => updateParams({ minPrice: v ?? undefined })}
                 />
@@ -300,8 +300,7 @@ export default function SkuListPage() {
                 <InputNumber
                   placeholder="Max"
                   min={0}
-                  prefix="$"
-                  style={{ width: '100%' }}
+                                    style={{ width: '100%' }}
                   value={params.maxPrice}
                   onChange={(v) => updateParams({ maxPrice: v ?? undefined })}
                 />

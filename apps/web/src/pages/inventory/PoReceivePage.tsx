@@ -51,6 +51,16 @@ const STATUS_COLORS: Record<PoStatus, string> = {
   CANCELLED: 'red',
 }
 
+// Currency is Honduran Lempira (HNL) system-wide — labeled once at the top of
+// the page, not repeated in every cell (see CLAUDE.md "Currency" policy).
+function formatMoney(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) return '-'
+  return value.toLocaleString('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })
+}
+
 const DISCREPANCY_REASON_OPTIONS = [
   { value: 'SHORT_SHIPMENT', label: 'Short shipment by vendor' },
   { value: 'DAMAGED_IN_TRANSIT', label: 'Damaged in transit' },
@@ -136,7 +146,7 @@ function PoSelectionList() {
       key: 'subtotal',
       width: 120,
       align: 'right' as const,
-      render: (v: number) => `$${v.toLocaleString('en-US', { minimumFractionDigits: 2 })}`,
+      render: (v: number) => formatMoney(v),
       exportValue: (record) => record.subtotal.toFixed(2),
     },
     {
@@ -169,10 +179,15 @@ function PoSelectionList() {
       <Space direction="vertical" size="middle" style={{ width: '100%' }}>
         <Card size="small">
           <Space align="center" style={{ width: '100%', justifyContent: 'space-between' }}>
-            <Typography.Title level={4} style={{ margin: 0 }}>
-              <InboxOutlined style={{ marginRight: 8 }} />
-              Receive Purchase Orders
-            </Typography.Title>
+            <div>
+              <Typography.Title level={4} style={{ margin: 0 }}>
+                <InboxOutlined style={{ marginRight: 8 }} />
+                Receive Purchase Orders
+              </Typography.Title>
+              <Typography.Paragraph type="secondary" style={{ marginTop: 4, marginBottom: 0, fontSize: 12 }}>
+                Amounts in Lempira (HNL).
+              </Typography.Paragraph>
+            </div>
             <Select
               allowClear
               placeholder="Filter by status"
@@ -348,7 +363,7 @@ function PoReceiveForm({
       key: 'unitCost',
       width: 100,
       align: 'right' as const,
-      render: (v: number) => `$${v.toFixed(2)}`,
+      render: (v: number) => formatMoney(v),
     },
     {
       title: 'Ordered',
@@ -485,6 +500,9 @@ function PoReceiveForm({
               {po.status.replace(/_/g, ' ')}
             </Tag>
           </Space>
+          <Typography.Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0, fontSize: 12 }}>
+            Amounts in Lempira (HNL).
+          </Typography.Paragraph>
         </Card>
 
         {/* PO Summary */}
@@ -505,7 +523,7 @@ function PoReceiveForm({
               {dayjs(po.createdAt).format('YYYY-MM-DD HH:mm')}
             </Descriptions.Item>
             <Descriptions.Item label="Subtotal">
-              ${po.subtotal.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+              {formatMoney(po.subtotal)}
             </Descriptions.Item>
             <Descriptions.Item label="Receiving Progress">
               <Progress
@@ -686,8 +704,7 @@ function PoReceiveForm({
                               dataIndex: 'unitCost',
                               key: 'unitCost',
                               align: 'right' as const,
-                              render: (value: number | null) =>
-                                value == null ? '-' : `$${value.toFixed(2)}`,
+                              render: (value: number | null) => formatMoney(value),
                             },
                           ]}
                         />

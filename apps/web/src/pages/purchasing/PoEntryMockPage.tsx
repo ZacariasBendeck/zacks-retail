@@ -115,14 +115,14 @@ const evaluateOtb = (totalCost: number): OtbCheckResult => {
     return {
       status: 'BLOCK',
       totalCost,
-      message: `OTB hard stop — PO at cost exceeds $${OTB_BLOCK_THRESHOLD.toLocaleString()}. Submission would be blocked without a CEO exception approval.`,
+      message: `OTB hard stop — PO at cost exceeds ${OTB_BLOCK_THRESHOLD.toLocaleString()}. Submission would be blocked without a CEO exception approval.`,
     }
   }
   if (totalCost >= OTB_WARN_THRESHOLD) {
     return {
       status: 'WARN',
       totalCost,
-      message: `OTB warning — PO at cost exceeds $${OTB_WARN_THRESHOLD.toLocaleString()}. Submission would prompt for confirmation.`,
+      message: `OTB warning — PO at cost exceeds ${OTB_WARN_THRESHOLD.toLocaleString()}. Submission would prompt for confirmation.`,
     }
   }
   return { status: 'OK', totalCost, message: 'Within OTB plan.' }
@@ -657,10 +657,10 @@ export default function PoEntryMockPage() {
             <Statistic title="Total Qty" value={totals.totalQty} />
           </Col>
           <Col xs={12} md={4}>
-            <Statistic title="Total at Cost" prefix="$" precision={2} value={totals.totalCost} />
+            <Statistic title="Total at Cost" precision={2} value={totals.totalCost} />
           </Col>
           <Col xs={12} md={4}>
-            <Statistic title="Total at Retail" prefix="$" precision={2} value={totals.totalRetail} />
+            <Statistic title="Total at Retail" precision={2} value={totals.totalRetail} />
           </Col>
           <Col xs={12} md={4}>
             <Text type="secondary">Classification</Text>
@@ -875,7 +875,6 @@ function SkuLineEditor({
               min={0}
               step={0.01}
               precision={2}
-              prefix="$"
               disabled={!sku}
               value={draft.unitCost}
               onChange={(value) => patch({ unitCost: Number(value ?? 0) })}
@@ -889,7 +888,6 @@ function SkuLineEditor({
               min={0}
               step={0.01}
               precision={2}
-              prefix="$"
               disabled={!sku}
               value={draft.retailPrice}
               onChange={(value) => patch({ retailPrice: Number(value ?? 0) })}
@@ -996,10 +994,10 @@ function SkuLineEditor({
           <Statistic title="Line Qty" value={lineQty} />
         </Col>
         <Col xs={8} md={5}>
-          <Statistic title="Line Cost" prefix="$" precision={2} value={lineCost} />
+          <Statistic title="Line Cost" precision={2} value={lineCost} />
         </Col>
         <Col xs={8} md={5}>
-          <Statistic title="Line Retail" prefix="$" precision={2} value={lineRetail} />
+          <Statistic title="Line Retail" precision={2} value={lineRetail} />
         </Col>
         <Col xs={24} md={10} style={{ textAlign: 'right' }}>
           <Space wrap>
@@ -1102,10 +1100,10 @@ function CommittedSkuList({ lines, editingKey, onEdit, onRemove }: CommittedSkuL
                         Qty <strong>{qty}</strong>
                       </Text>
                       <Text>
-                        Cost <strong>${cost.toFixed(2)}</strong> (@ ${line.unitCost.toFixed(2)})
+                        Cost <strong>{cost.toFixed(2)}</strong> (@ {line.unitCost.toFixed(2)})
                       </Text>
                       <Text>
-                        Retail <strong>${retail.toFixed(2)}</strong> (@ ${line.retailPrice.toFixed(2)})
+                        Retail <strong>{retail.toFixed(2)}</strong> (@ {line.retailPrice.toFixed(2)})
                       </Text>
                       {line.writeBackToMaster && <Tag>Writes back to SKU master</Tag>}
                     </Space>

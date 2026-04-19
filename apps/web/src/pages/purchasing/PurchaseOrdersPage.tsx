@@ -60,6 +60,16 @@ interface ReceivingExceptionRow {
   lastUpdatedAt: string
 }
 
+// Currency is Honduran Lempira (HNL) system-wide — labeled once at the top of
+// the page, not repeated in every cell (see CLAUDE.md "Currency" policy).
+function formatMoney(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) return '-'
+  return value.toLocaleString('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })
+}
+
 const STATUS_COLORS: Record<PoStatus, string> = {
   DRAFT: 'default',
   SUBMITTED: 'processing',
@@ -315,7 +325,7 @@ export default function PurchaseOrdersPage() {
       key: 'subtotal',
       width: 140,
       align: 'right',
-      render: (value: number) => `$${value.toLocaleString('en-US', { minimumFractionDigits: 2 })}`,
+      render: (value: number) => formatMoney(value),
       exportValue: (record) => record.subtotal.toFixed(2),
     },
     {
@@ -546,6 +556,9 @@ export default function PurchaseOrdersPage() {
             <Typography.Title level={4} style={{ margin: 0 }}>
               Purchasing Control Tower
             </Typography.Title>
+            <Typography.Paragraph type="secondary" style={{ marginTop: 4, marginBottom: 8, fontSize: 12 }}>
+              Amounts in Lempira (HNL).
+            </Typography.Paragraph>
             <Space size={16}>
               <Typography.Text type="secondary">Receivable now: {receivableCount}</Typography.Text>
               <Typography.Text type="secondary">

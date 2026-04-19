@@ -18,7 +18,6 @@ import {
   WarningOutlined,
   ShopOutlined,
   InboxOutlined,
-  DollarOutlined,
   RiseOutlined,
   FileTextOutlined,
 } from '@ant-design/icons'
@@ -154,6 +153,9 @@ export default function DashboardPage() {
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                 Auto-refreshes every 60s
               </Typography.Text>
+              <Typography.Paragraph type="secondary" style={{ marginTop: 4, marginBottom: 0, fontSize: 12 }}>
+                Amounts in Lempira (HNL).
+              </Typography.Paragraph>
             </Col>
             <Col>
               <Button icon={<ReloadOutlined />} onClick={handleRefresh}>
@@ -180,7 +182,6 @@ export default function DashboardPage() {
               <Statistic
                 title="On-Hand Value"
                 value={kpis?.totalOnHandValue}
-                prefix={<DollarOutlined />}
                 precision={2}
                 loading={kpisLoading}
               />
@@ -273,7 +274,6 @@ export default function DashboardPage() {
                       <Statistic
                         title="Value"
                         value={dept.totalValue}
-                        prefix="$"
                         precision={0}
                         valueStyle={{ fontSize: 14 }}
                       />
@@ -282,7 +282,6 @@ export default function DashboardPage() {
                       <Statistic
                         title="Avg Price"
                         value={dept.averagePrice}
-                        prefix="$"
                         precision={2}
                         valueStyle={{ fontSize: 14 }}
                       />

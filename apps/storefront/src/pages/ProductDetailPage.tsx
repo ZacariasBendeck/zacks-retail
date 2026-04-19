@@ -109,7 +109,7 @@ export default function ProductDetailPage() {
 
           <div style={{ marginBottom: 24 }}>
             <Title level={3} style={{ color: '#1677ff', margin: 0, display: 'inline' }}>
-              ${product.price.toFixed(2)}
+              L {product.price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
             </Title>
           </div>
 

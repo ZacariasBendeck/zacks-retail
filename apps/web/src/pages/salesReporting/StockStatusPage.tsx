@@ -74,12 +74,16 @@ export default function StockStatusPage() {
       render: (v: number) => (v > 0 ? <Tag color="red">{v}</Tag> : v),
     },
     {
-      title: 'Retail $', dataIndex: 'retailValue', key: 'retailValue', width: 120,
-      align: 'right' as const, render: (v: number) => v.toFixed(2),
+      title: 'Retail Value', dataIndex: 'retailValue', key: 'retailValue', width: 120,
+      align: 'right' as const,
+      render: (v: number) =>
+        v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
     },
     {
-      title: 'Cost $', dataIndex: 'costValue', key: 'costValue', width: 120,
-      align: 'right' as const, render: (v: number) => v.toFixed(2),
+      title: 'Cost Value', dataIndex: 'costValue', key: 'costValue', width: 120,
+      align: 'right' as const,
+      render: (v: number) =>
+        v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
     },
   ]
 
@@ -96,6 +100,9 @@ export default function StockStatusPage() {
       <Paragraph type="secondary">
         On-hand / on-order / model / short / critical per SKU (RICS Ch. 6 p. 96). Unfiltered runs
         can scan thousands of SKUs — use criteria filters to narrow the scope.
+      </Paragraph>
+      <Paragraph type="secondary" style={{ marginTop: 0, fontSize: 12 }}>
+        Amounts in Lempira (HNL).
       </Paragraph>
 
       <Card style={{ marginBottom: 16 }}>

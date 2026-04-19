@@ -127,13 +127,13 @@ export default function CustomerFormPage() {
       {isEdit && balances && (
         <Row gutter={16} style={{ marginBottom: 16 }}>
           <Col span={6}>
-            <Statistic title="A/R Balance" value={balances.arBalanceCents / 100} precision={2} prefix="$" />
+            <Statistic title="A/R Balance" value={balances.arBalanceCents / 100} precision={2}  />
           </Col>
           <Col span={6}>
-            <Statistic title="Store Credit" value={balances.storeCreditCents / 100} precision={2} prefix="$" />
+            <Statistic title="Store Credit" value={balances.storeCreditCents / 100} precision={2}  />
           </Col>
           <Col span={6}>
-            <Statistic title="YTD Sales" value={(customer?.ytdSalesCents ?? 0) / 100} precision={2} prefix="$" />
+            <Statistic title="YTD Sales" value={(customer?.ytdSalesCents ?? 0) / 100} precision={2}  />
           </Col>
           <Col span={6}>
             <Statistic
@@ -185,7 +185,7 @@ export default function CustomerFormPage() {
                   </Col>
                   <Col span={8}>
                     <Form.Item label="Credit limit" name="creditLimit">
-                      <InputNumber min={0} precision={2} prefix="$" style={{ width: '100%' }} />
+                      <InputNumber min={0} precision={2}  style={{ width: '100%' }} />
                     </Form.Item>
                   </Col>
                 </Row>

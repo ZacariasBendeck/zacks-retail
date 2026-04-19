@@ -68,8 +68,10 @@ const MONTHLY_PLAN_SORT_FIELDS: Array<NonNullable<OtbMonthlyPlanParams['sort']>>
   'updatedAt',
 ]
 
+// Currency is Honduran Lempira (HNL) system-wide — labeled once at the top of
+// the page, not repeated in every cell (see CLAUDE.md "Currency" policy).
 function currency(value: number): string {
-  return `$${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  return value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 
 function coerceSortField(sort: string | undefined): OtbMonthlyPlanParams['sort'] | undefined {
@@ -444,6 +446,9 @@ export default function OtbMonthlyPlansPage() {
             <Typography.Text type="secondary">
               Month + macro-department + SKU-size planning lines with server-side controls and CRUD.
             </Typography.Text>
+            <Typography.Paragraph type="secondary" style={{ marginTop: 4, marginBottom: 0, fontSize: 12 }}>
+              Amounts in Lempira (HNL).
+            </Typography.Paragraph>
           </div>
           <Button type="primary" icon={<PlusOutlined />} onClick={openCreateModal}>
             Add Plan Line
@@ -629,7 +634,7 @@ export default function OtbMonthlyPlansPage() {
                 name="budgetAmount"
                 rules={[{ required: true, message: 'Budget amount is required' }]}
               >
-                <InputNumber min={0} step={0.01} precision={2} style={{ width: '100%' }} prefix="$" />
+                <InputNumber min={0} step={0.01} precision={2} style={{ width: '100%' }} />
               </Form.Item>
             </Col>
             <Col span={8}>
@@ -648,7 +653,7 @@ export default function OtbMonthlyPlansPage() {
                   }),
                 ]}
               >
-                <InputNumber min={0} step={0.01} precision={2} style={{ width: '100%' }} prefix="$" />
+                <InputNumber min={0} step={0.01} precision={2} style={{ width: '100%' }} />
               </Form.Item>
             </Col>
             <Col span={8}>
@@ -667,7 +672,7 @@ export default function OtbMonthlyPlansPage() {
                   }),
                 ]}
               >
-                <InputNumber min={0} step={0.01} precision={2} style={{ width: '100%' }} prefix="$" />
+                <InputNumber min={0} step={0.01} precision={2} style={{ width: '100%' }} />
               </Form.Item>
             </Col>
           </Row>

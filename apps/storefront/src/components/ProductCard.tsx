@@ -50,7 +50,7 @@ export default function ProductCard({ product }: ProductCardProps) {
 
       <div style={{ marginBottom: 8 }}>
         <Text strong style={{ fontSize: 16, color: '#1677ff' }}>
-          ${product.price.toFixed(2)}
+          L {product.price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
         </Text>
       </div>
 

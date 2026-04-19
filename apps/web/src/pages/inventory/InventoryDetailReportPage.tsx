@@ -38,6 +38,16 @@ type ReportType =
   | 'SIZE_DETAIL'
   | 'SKU_DETAIL'
 
+// Currency is Honduran Lempira (HNL) system-wide — labeled once at the top of
+// the page, not repeated in every cell (see CLAUDE.md "Currency" policy).
+function formatMoney(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) return '—'
+  return value.toLocaleString('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })
+}
+
 const REPORT_TYPES: Array<{ value: ReportType; label: string }> = [
   { value: 'SKU_SUMMARY', label: 'SKU Summary' },
   { value: 'CATEGORY_VENDOR_SUMMARY', label: 'Cat / Vendor' },
@@ -98,6 +108,9 @@ export default function InventoryDetailReportPage() {
             <Typography.Text type="secondary">
               RICS Ch. 4 p. 80 — five report types over per-SKU on-hand + retail/cost value
             </Typography.Text>
+            <Typography.Paragraph type="secondary" style={{ marginTop: 4, marginBottom: 0, fontSize: 12 }}>
+              Amounts in Lempira (HNL).
+            </Typography.Paragraph>
           </Col>
           <Col>
             <Segmented<ReportType>
@@ -228,12 +241,12 @@ export default function InventoryDetailReportPage() {
             </Col>
             <Col xs={12} md={6}>
               <Card>
-                <Statistic title="Retail Value" value={totals.retailValue} precision={2} prefix="$" />
+                <Statistic title="Retail Value" value={totals.retailValue} precision={2} />
               </Card>
             </Col>
             <Col xs={12} md={6}>
               <Card>
-                <Statistic title="Cost Value" value={totals.costValue} precision={2} prefix="$" />
+                <Statistic title="Cost Value" value={totals.costValue} precision={2} />
               </Card>
             </Col>
           </Row>
@@ -271,7 +284,7 @@ function SkuSummaryTable({ rows }: { rows: InventoryDetailReportRow[] }) {
             key: 'retailPrice',
             align: 'right',
             width: 100,
-            render: (v: number | null) => (v != null ? `$${v.toFixed(2)}` : '—'),
+            render: (v: number | null) => formatMoney(v),
           },
           {
             title: 'Cost',
@@ -279,7 +292,7 @@ function SkuSummaryTable({ rows }: { rows: InventoryDetailReportRow[] }) {
             key: 'currentCost',
             align: 'right',
             width: 100,
-            render: (v: number | null) => (v != null ? `$${v.toFixed(2)}` : '—'),
+            render: (v: number | null) => formatMoney(v),
           },
           {
             title: 'On Hand',
@@ -301,7 +314,7 @@ function SkuSummaryTable({ rows }: { rows: InventoryDetailReportRow[] }) {
             align: 'right',
             width: 130,
             sorter: (a, b) => a.retailValue - b.retailValue,
-            render: (v: number) => `$${v.toFixed(2)}`,
+            render: (v: number) => formatMoney(v),
           },
           {
             title: 'Cost Value',
@@ -310,7 +323,7 @@ function SkuSummaryTable({ rows }: { rows: InventoryDetailReportRow[] }) {
             align: 'right',
             width: 130,
             sorter: (a, b) => a.costValue - b.costValue,
-            render: (v: number) => `$${v.toFixed(2)}`,
+            render: (v: number) => formatMoney(v),
           },
         ]}
       />
@@ -396,8 +409,8 @@ function CategoryVendorTable({ rows }: { rows: InventoryDetailReportRow[] }) {
               <Table.Summary.Cell index={5} align="right">{totals.totalCurrentOnOrder}</Table.Summary.Cell>
               <Table.Summary.Cell index={6} align="right">{totals.totalYtdSales}</Table.Summary.Cell>
               <Table.Summary.Cell index={7} align="right">{totals.totalLySales}</Table.Summary.Cell>
-              <Table.Summary.Cell index={8} align="right">${totals.retailValue.toFixed(2)}</Table.Summary.Cell>
-              <Table.Summary.Cell index={9} align="right">${totals.costValue.toFixed(2)}</Table.Summary.Cell>
+              <Table.Summary.Cell index={8} align="right">{formatMoney(totals.retailValue)}</Table.Summary.Cell>
+              <Table.Summary.Cell index={9} align="right">{formatMoney(totals.costValue)}</Table.Summary.Cell>
             </Table.Summary.Row>
           )
         }}
@@ -440,7 +453,7 @@ function CategoryVendorTable({ rows }: { rows: InventoryDetailReportRow[] }) {
             align: 'right',
             width: 130,
             sorter: (a, b) => a.retailValue - b.retailValue,
-            render: (v: number) => `$${v.toFixed(2)}`,
+            render: (v: number) => formatMoney(v),
           },
           {
             title: 'Cost Value',
@@ -448,7 +461,7 @@ function CategoryVendorTable({ rows }: { rows: InventoryDetailReportRow[] }) {
             key: 'costValue',
             align: 'right',
             width: 130,
-            render: (v: number) => `$${v.toFixed(2)}`,
+            render: (v: number) => formatMoney(v),
           },
         ]}
       />

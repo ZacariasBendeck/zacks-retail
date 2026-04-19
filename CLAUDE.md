@@ -20,6 +20,12 @@ This repo builds **Zack's Retail** — a modern, web-based inventory and retail-
 
 **Out of scope (RICS features explicitly not being ported):** modem / dial-up comms, diskette POS sync, RICS.CFG editor, DOS prompt, screen spool files, hardware-printer driver setup, etc. The "What's not being ported" table in `docs/MODULES.md` is authoritative.
 
+**Currency.** All monetary values in RICS are in **Honduran Lempira (HNL, symbol `L`)**. The system is single-currency; no other currency has been introduced.
+
+**Rendering policy:** do **not** render the currency symbol inside individual cells, chart axes, tooltips, or CSV/XLSX cells. Show a plain number with thousands separators and appropriate decimals (e.g. `1,234.56`, `1,860`). This avoids repeating "L" on every row and keeps grids dense. Where clarity matters (reports, purchase orders, ledgers), put a one-line note at the top of the page — e.g. "Amounts in Lempira (HNL)" — so the reader understands the unit once.
+
+Do **not** hardcode `$`, `USD`, or `en-US` currency formatters anywhere. For `Intl.NumberFormat`, use `{ minimumFractionDigits, maximumFractionDigits }` on a plain number (no `style: 'currency'`) or the locale `es-HN` without a currency style. For Excel number formats, use patterns like `#,##0.00` / `#,##0` (no symbol). If you find an existing USD-formatted screen, fix it in the same pass.
+
 ## Rollout phases
 
 The project rolls out in three phases. Always know which phase a piece of work belongs to — it determines what data sources are legal, what regressions matter, and whether a feature can be Postgres-only.

@@ -1,6 +1,6 @@
 import { Suspense, lazy, useCallback, useMemo, useState } from 'react'
 import { Alert, Card, Col, Input, InputNumber, Row, Select, Space, Statistic, Tag, Typography } from 'antd'
-import { DollarOutlined, WarningOutlined } from '@ant-design/icons'
+import { WarningOutlined } from '@ant-design/icons'
 import { useSearchParams } from 'react-router-dom'
 import ServerDataTable, { type ServerQueryChange, type ServerTableColumn } from '../../components/ServerDataTable'
 import { useOtbLines, useOtbSummary } from '../../hooks/useOtb'
@@ -182,6 +182,9 @@ export default function OtbDashboardPage() {
             <Typography.Text type="secondary">
               Period, department, and category filters share the same contract as backend OTB endpoints.
             </Typography.Text>
+            <Typography.Paragraph type="secondary" style={{ marginTop: 4, marginBottom: 0, fontSize: 12 }}>
+              Amounts in Lempira (HNL).
+            </Typography.Paragraph>
           </Col>
           <Col xs={24} sm={12} md={8} lg={4}>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
@@ -304,7 +307,6 @@ export default function OtbDashboardPage() {
             <Statistic
               title="Budget"
               value={totals.budgetAmount}
-              prefix={<DollarOutlined />}
               precision={2}
               loading={summaryLoading}
             />
@@ -315,7 +317,6 @@ export default function OtbDashboardPage() {
             <Statistic
               title="Actual"
               value={totals.actualAmount}
-              prefix={<DollarOutlined />}
               precision={2}
               loading={summaryLoading}
             />
@@ -326,7 +327,6 @@ export default function OtbDashboardPage() {
             <Statistic
               title="Committed"
               value={totals.committedAmount}
-              prefix={<DollarOutlined />}
               precision={2}
               loading={summaryLoading}
             />
@@ -337,7 +337,7 @@ export default function OtbDashboardPage() {
             <Statistic
               title="Open To Buy"
               value={totals.openToBuyAmount}
-              prefix={totals.openToBuyAmount < 0 ? <WarningOutlined /> : <DollarOutlined />}
+              prefix={totals.openToBuyAmount < 0 ? <WarningOutlined /> : undefined}
               precision={2}
               loading={summaryLoading}
               valueStyle={{ color: totals.openToBuyAmount < 0 ? '#cf1322' : '#1677ff' }}

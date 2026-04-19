@@ -225,7 +225,12 @@ export default function InventoryMovementPage() {
       width: 110,
       align: 'right',
       render: (value: number | null | undefined) =>
-        value == null ? '-' : `$${value.toLocaleString('en-US', { maximumFractionDigits: 2 })}`,
+        value == null
+          ? '-'
+          : value.toLocaleString('en-US', {
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 2,
+            }),
       exportValue: (row) => row.unitCostSnapshot ?? '',
     },
     {

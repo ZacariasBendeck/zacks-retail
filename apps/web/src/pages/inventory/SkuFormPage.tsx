@@ -1041,12 +1041,12 @@ export default function SkuFormPage() {
             <Row gutter={12} style={{ marginTop: 8 }}>
               <Col xs={12} sm={4}>
                 <Form.Item label="Precio" name="price" rules={[{ required: true, message: 'Precio es requerido' }, { type: 'number', min: 0.01 }]} style={compactItem}>
-                  <InputNumber prefix="$" style={{ width: '100%' }} min={0.01} step={0.01} precision={2} placeholder="0.00" />
+                  <InputNumber  style={{ width: '100%' }} min={0.01} step={0.01} precision={2} placeholder="0.00" />
                 </Form.Item>
               </Col>
               <Col xs={12} sm={4}>
                 <Form.Item label="Costo" name="cost" style={compactItem}>
-                  <InputNumber prefix="$" style={{ width: '100%' }} min={0} step={0.01} precision={2} placeholder="0.00" />
+                  <InputNumber  style={{ width: '100%' }} min={0} step={0.01} precision={2} placeholder="0.00" />
                 </Form.Item>
               </Col>
               <Col xs={12} sm={4}>

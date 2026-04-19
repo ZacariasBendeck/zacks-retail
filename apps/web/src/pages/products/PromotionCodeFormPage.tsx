@@ -58,7 +58,7 @@ export default function PromotionCodeFormPage() {
           <InputNumber min={0} style={{ width: '100%' }} />
         </Form.Item>
         <Form.Item name="cost" label="Cost">
-          <InputNumber min={0} step={0.01} style={{ width: '100%' }} prefix="$" />
+          <InputNumber min={0} step={0.01} style={{ width: '100%' }}  />
         </Form.Item>
         <Space>
           <Button type="primary" htmlType="submit" loading={create.isPending || update.isPending}>
