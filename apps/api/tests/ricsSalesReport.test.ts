@@ -520,6 +520,46 @@ describe('getSalesAnalysis', () => {
     expect(report.rows[0].dimensionKey).toBe('560');
     expect(report.rows[0].netSales).toBe(100);
   });
+
+  it('DEPT_SUMMARY returns rows in numeric order by dept number, not alphabetical by label', async () => {
+    // Dept labels are chosen so that alphabetical-by-label order
+    // (ACCESORIOS, MUJER, ZAPATO) disagrees with numeric-by-key order
+    // (1, 3, 5). The adapter must sort by dimensionKey, not dimensionLabel.
+    setMockRows([
+      { match: sqlMatches('FROM [StoreMaster]'), rows: STORE_ROWS },
+      { match: sqlMatches('FROM [Salespeople]'), rows: SALESPERSON_ROWS },
+      {
+        match: sqlMatches('FROM [Departments]'),
+        rows: [
+          // Numeric order: 1, 3, 5. Alphabetical label order: 3, 1, 5.
+          { Number: 5, Desc: 'ZAPATO MUJER', BegCateg: 550, EndCateg: 599 },
+          { Number: 1, Desc: 'MUJER',        BegCateg: 100, EndCateg: 199 },
+          { Number: 3, Desc: 'ACCESORIOS',   BegCateg: 300, EndCateg: 399 },
+        ],
+      },
+      {
+        match: (sql) => sql.includes('FROM TicketHeader h INNER JOIN TicketDetail d'),
+        rows: [
+          line({ H_Ticket: 1, D_Category: 560, D_Extension: 100, D_Cost: 50 }),
+          line({ H_Ticket: 2, D_Category: 150, D_Extension: 100, D_Cost: 50 }),
+          line({ H_Ticket: 3, D_Category: 350, D_Extension: 100, D_Cost: 50 }),
+        ],
+      },
+    ]);
+
+    const report = await adapter.getSalesAnalysis({
+      dimension: 'CATEGORY',
+      reportType: 'DEPT_SUMMARY',
+      storeOption: 'COMBINE',
+      criteria: {},
+      printing: {},
+      startDate: '2024-11-04',
+      endDate: '2024-11-04',
+    });
+
+    expect(report.rows.map((r: { dimensionKey: string }) => r.dimensionKey))
+      .toEqual(['1', '3', '5']);
+  });
 });
 
 // ══════════════════════════════════════════════════════════════════════════

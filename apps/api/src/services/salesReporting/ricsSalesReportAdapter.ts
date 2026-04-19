@@ -1186,8 +1186,10 @@ export async function getSalesAnalysis(params: {
     }
   }
 
-  // Default sort: alphabetical by dimensionKey (case-insensitive, numeric-aware).
-  // Users can still re-sort interactively via Ant's column headers.
+  // Default sort: by dimensionKey (numeric-aware). For DEPT_SUMMARY /
+  // CATEGORY_SUMMARY this gives numeric ascending; for VENDOR_SUMMARY /
+  // SKU_DETAIL it gives alphanumeric ascending. Users can still re-sort
+  // interactively via Ant's column headers.
   const rows: SalesAnalysisRow[] = [...buckets.values()]
     .map((b) => {
       const grossProfit = b.netSales - b.cogs;
@@ -1209,11 +1211,10 @@ export async function getSalesAnalysis(params: {
       };
     })
     .sort((a, b) =>
-      (a.dimensionLabel ?? a.dimensionKey).localeCompare(
-        b.dimensionLabel ?? b.dimensionKey,
-        undefined,
-        { numeric: true, sensitivity: 'base' },
-      ));
+      a.dimensionKey.localeCompare(b.dimensionKey, undefined, {
+        numeric: true,
+        sensitivity: 'base',
+      }));
 
   const totals = {
     qty: rows.reduce((s, r) => s + r.qty, 0),
