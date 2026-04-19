@@ -1,7 +1,9 @@
 import express, { Express } from 'express';
 import cors from 'cors';
+import cookieParser from 'cookie-parser';
 import swaggerJsdoc from 'swagger-jsdoc';
 import swaggerUi from 'swagger-ui-express';
+import { PrismaClient } from '@prisma/client';
 import skuRoutes from './routes/skuRoutes';
 import inventoryRoutes from './routes/inventoryRoutes';
 import vendorRoutes from './routes/vendorRoutes';
@@ -12,11 +14,17 @@ import dashboardRoutes from './routes/dashboardRoutes';
 import publicProductRoutes from './routes/publicProductRoutes';
 import cartRoutes from './routes/cartRoutes';
 import orderRoutes from './routes/orderRoutes';
+import { createAuthRoutes } from './routes/authRoutes';
+import { createUserRoutes } from './routes/userRoutes';
+import { attachUser } from './middleware/authMiddleware';
 
 const app: Express = express();
 
 app.use(cors());
 app.use(express.json());
+app.use(cookieParser());
+const prisma = new PrismaClient();
+app.use(attachUser(prisma));
 
 // Swagger
 const swaggerSpec = swaggerJsdoc({
@@ -45,6 +53,10 @@ app.use('/api/v1/dashboard', dashboardRoutes);
 app.use('/api/public/products', publicProductRoutes);
 app.use('/api/public/cart', cartRoutes);
 app.use('/api/public/orders', orderRoutes);
+
+// employees module
+app.use('/api/v1/auth', createAuthRoutes(prisma));
+app.use('/api/v1/users', createUserRoutes(prisma));
 
 // Health check
 app.get('/health', (_req, res) => {
