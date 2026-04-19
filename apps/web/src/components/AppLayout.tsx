@@ -1,6 +1,7 @@
 import { useState } from 'react'
-import { Layout, Menu, Typography } from 'antd'
+import { Avatar, Button, Dropdown, Layout, Menu, Typography } from 'antd'
 import {
+  UserOutlined,
   ShopOutlined,
   DashboardOutlined,
   SwapOutlined,
@@ -21,6 +22,7 @@ import {
   TeamOutlined,
 } from '@ant-design/icons'
 import { Outlet, useNavigate, useLocation } from 'react-router-dom'
+import { useAuth } from '../auth/useAuth'
 
 const { Header, Sider, Content } = Layout
 
@@ -109,6 +111,29 @@ export default function AppLayout() {
   const navigate = useNavigate()
   const location = useLocation()
   const currentPath = location.pathname
+  const { user, logout } = useAuth()
+
+  const userMenuItems = [
+    {
+      key: 'me',
+      label: 'My account',
+      onClick: () => navigate('/me'),
+    },
+    {
+      key: 'users',
+      label: 'Users',
+      onClick: () => navigate('/admin/users'),
+    },
+    { type: 'divider' as const },
+    {
+      key: 'logout',
+      label: 'Sign out',
+      onClick: async () => {
+        await logout()
+        navigate('/login')
+      },
+    },
+  ]
 
   const allLeafKeys = menuItems.flatMap((item) =>
     item.children ? item.children.map((child) => child.key) : [item.key],
@@ -119,10 +144,6 @@ export default function AppLayout() {
       .filter((key) => currentPath === key || currentPath.startsWith(`${key}/`))
       .sort((a, b) => b.length - a.length)[0] ?? '/inventory/dashboard'
 
-  // Keep the currently active module's submenu open, but let the user expand
-  // or collapse any of the others by clicking the header. `openKeys` is
-  // stateful; we seed it with the active module on first render and from then
-  // on the Menu's `onOpenChange` is the source of truth.
   const activeModule =
     menuItems.find((item) => currentPath === item.key || currentPath.startsWith(`${item.key}/`)) ??
     menuItems.find((item) => item.children?.some((child) => child.key === selectedLeaf)) ??
@@ -154,12 +175,19 @@ export default function AppLayout() {
             padding: '0 24px',
             display: 'flex',
             alignItems: 'center',
+            justifyContent: 'space-between',
             borderBottom: '1px solid #f0f0f0',
           }}
         >
           <Typography.Title level={4} style={{ margin: 0 }}>
             {activeModule?.label ?? 'Inventory'}
           </Typography.Title>
+          <Dropdown menu={{ items: userMenuItems }} placement="bottomRight">
+            <Button type="text" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <Avatar size="small" icon={<UserOutlined />} />
+              {user?.displayName ?? user?.email ?? 'Account'}
+            </Button>
+          </Dropdown>
         </Header>
         <Content style={{ margin: 16 }}>
           <Outlet />

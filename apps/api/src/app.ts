@@ -2,8 +2,10 @@ import express, { Express } from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
 import cors from 'cors';
+import cookieParser from 'cookie-parser';
 import swaggerJsdoc from 'swagger-jsdoc';
 import swaggerUi from 'swagger-ui-express';
+import { PrismaClient } from '@prisma/client';
 import skuRoutes from './routes/skuRoutes';
 import inventoryRoutes from './routes/inventoryRoutes';
 import vendorRoutes from './routes/vendorRoutes';
@@ -31,11 +33,18 @@ import salesPasswordRoutes from './routes/salesPasswordRoutes';
 import posReportRoutes from './routes/posReportRoutes';
 import posSkuRoutes from './routes/posSkuRoutes';
 import customerRoutes from './routes/customerRoutes';
+import customerTransactionsRoutes from './routes/customerTransactionsRoutes';
+import { createAuthRoutes } from './routes/authRoutes';
+import { createUserRoutes } from './routes/userRoutes';
+import { attachUser } from './middleware/authMiddleware';
 
 const app: Express = express();
 
 app.use(cors());
 app.use(express.json());
+app.use(cookieParser());
+const prisma = new PrismaClient();
+app.use(attachUser(prisma));
 
 // RICS product images — served from the legacy RICS install's pics folder.
 // Defaults to C:\RICSWIN\ricspics on Windows. Override with RICS_IMAGES_DIR.
@@ -103,6 +112,13 @@ app.use('/api/v1/reports/pos', posReportRoutes);
 
 // crm module
 app.use('/api/v1/customers', customerRoutes);
+
+// customer-transactions module
+app.use('/api/v1/customer-transactions', customerTransactionsRoutes);
+
+// employees module
+app.use('/api/v1/auth', createAuthRoutes(prisma));
+app.use('/api/v1/users', createUserRoutes(prisma));
 
 // Health check
 app.get('/health', (_req, res) => {

@@ -1,5 +1,22 @@
 # Module: employees
 
+> **Status — Slice 1 shipped (2026-04-18).** The first slice of this module is live on branch `feature/employees-auth-slice`: **Users + Roles + Permissions + Sessions + argon2id password login + user CRUD + a seeded OWNER**. Everything below about `Employee`, `TimeClockEntry`, `CommissionOverride`, `SalesPassword` (modernized), `EmployeePeriod`, MFA/TOTP, and the legacy RICS import is still spec-only — planned for slices 2+. See [`docs/superpowers/plans/2026-04-18-employees-auth-slice.md`](../superpowers/plans/2026-04-18-employees-auth-slice.md) for what actually landed.
+>
+> **Shipped surface:**
+> - `POST /api/v1/auth/login`, `POST /api/v1/auth/logout`, `GET /api/v1/auth/me`, `POST /api/v1/auth/change-password`
+> - `GET/POST/PATCH/DELETE /api/v1/users`, `GET /api/v1/users/_meta/roles`
+> - Six seed roles: OWNER, ADMIN, FINANCE, BUYER, MANAGER, SALESPERSON with 19 permission strings across all modules
+> - Permission middleware (`requireAuth`, `requirePermission`) at `apps/api/src/middleware/authMiddleware.ts`
+> - Web: `/login`, `/me`, `/change-password`, `/admin/users`, `/admin/users/new`, `/admin/users/:id/edit`
+> - OWNER bootstrapped from `AUTH_OWNER_EMAIL` + `AUTH_OWNER_PASSWORD` env vars on first boot
+>
+> **Key decisions made during Slice 1 (confirmed with user):**
+> 1. Employee + User are unified into one entity (commitment — Slice 2 `Employee` fields will hang off `User`, not a separate table with an FK).
+> 2. Legacy `RIPASS.Password` and `RISLSPSN.CashierPassword` are **ignored** for web login. The auth slice writes only to Postgres.
+> 3. MFA / TOTP deferred to Slice 2.
+> 4. The legacy RICS import (reading `RIPASS.Users` + `RISLSPSN.Salespeople` into Postgres `User` rows) is deferred to Slice 2.
+> 5. Legacy sales-password routes at `apps/api/src/routes/salesPasswordRoutes.ts` are **left untouched**. Modernizing them is a later slice.
+
 **Goal**
 
 `employees` is the **people + access control** layer of Zack's Retail. It owns three cleanly-separated concepts that RICS partially conflates:
