@@ -1,35 +1,58 @@
 import React from 'react';
-import { Table } from 'antd';
-import type { ColumnsType } from 'antd/es/table';
 import type { InquiryRollup } from '../../../types/inventoryInquiry';
+
+// Compact rollup grid mirroring the RICS inquiry panel: plain <table>
+// with small fonts and tight padding. AntD Table was overkill for a
+// fixed 4×4 grid and bloated the vertical footprint.
 
 const fmtQty = new Intl.NumberFormat('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
 const fmtMoney = new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
-interface Row {
-  key: string;
-  label: string;
-  qty: number;
-  net: number;
-  markdown: number;
-  profit: number;
-}
+const PERIODS: Array<{ key: keyof InquiryRollup; label: string }> = [
+  { key: 'week',   label: 'Week' },
+  { key: 'month',  label: 'Month' },
+  { key: 'season', label: 'Season' },
+  { key: 'year',   label: 'Year' },
+];
 
-export const SalesRollupStrip: React.FC<{ rollup: InquiryRollup }> = ({ rollup }) => {
-  const data: Row[] = [
-    { key: 'week',   label: 'Week',   ...rollup.week },
-    { key: 'month',  label: 'Month',  ...rollup.month },
-    { key: 'season', label: 'Season', ...rollup.season },
-    { key: 'year',   label: 'Year',   ...rollup.year },
-  ];
-
-  const columns: ColumnsType<Row> = [
-    { title: 'Sales',    dataIndex: 'label',    key: 'label' },
-    { title: 'Qty',      dataIndex: 'qty',      key: 'qty',      align: 'right', render: (v) => fmtQty.format(v) },
-    { title: 'Net',      dataIndex: 'net',      key: 'net',      align: 'right', render: (v) => fmtMoney.format(v) },
-    { title: 'Markdown', dataIndex: 'markdown', key: 'markdown', align: 'right', render: (v) => fmtMoney.format(v) },
-    { title: 'Profit',   dataIndex: 'profit',   key: 'profit',   align: 'right', render: (v) => fmtMoney.format(v) },
-  ];
-
-  return <Table size="small" pagination={false} columns={columns} dataSource={data} />;
+const th: React.CSSProperties = {
+  textAlign: 'right',
+  padding: '1px 6px',
+  color: '#666',
+  fontWeight: 500,
+  borderBottom: '1px solid #ddd',
 };
+const td: React.CSSProperties = {
+  textAlign: 'right',
+  padding: '1px 6px',
+  minWidth: 60,
+};
+
+export const SalesRollupStrip: React.FC<{ rollup: InquiryRollup }> = ({ rollup }) => (
+  <table style={{ borderCollapse: 'collapse', fontSize: 12 }}>
+    <thead>
+      <tr>
+        <th scope="col" style={{ ...th, textAlign: 'left' }}>Sales</th>
+        <th scope="col" style={th}>Qty</th>
+        <th scope="col" style={th}>Net</th>
+        <th scope="col" style={th}>Markdown</th>
+        <th scope="col" style={th}>Profit</th>
+      </tr>
+    </thead>
+    <tbody>
+      {PERIODS.map(({ key, label }) => {
+        const cell = rollup[key];
+        return (
+          <tr key={key}>
+            {/* role "cell" (plain <td>) not "rowheader" — test asserts getByRole('cell', …) */}
+            <td style={{ ...td, textAlign: 'left', color: '#666', fontWeight: 500 }}>{label}</td>
+            <td style={td}>{fmtQty.format(cell.qty)}</td>
+            <td style={td}>{fmtMoney.format(cell.net)}</td>
+            <td style={td}>{fmtMoney.format(cell.markdown)}</td>
+            <td style={td}>{fmtMoney.format(cell.profit)}</td>
+          </tr>
+        );
+      })}
+    </tbody>
+  </table>
+);

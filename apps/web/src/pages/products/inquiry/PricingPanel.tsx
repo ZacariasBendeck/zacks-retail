@@ -14,16 +14,19 @@ const ROWS: Array<{ label: string; key: keyof InquiryPricing; slot?: PriceSlot; 
 ];
 
 export const PricingPanel: React.FC<{ pricing: InquiryPricing }> = ({ pricing }) => (
-  <table style={{ borderCollapse: 'collapse' }}>
+  <table style={{ borderCollapse: 'collapse', fontSize: 12 }}>
     <tbody>
       {ROWS.map(({ label, key, slot, formatter }) => {
         const isCurrent = slot !== undefined && pricing.currentSlot === slot;
         const fmt = formatter ?? money;
         return (
-          <tr key={key} data-current={isCurrent ? 'true' : undefined}
-              style={{ fontWeight: isCurrent ? 600 : 400 }}>
-            <th style={{ textAlign: 'right', paddingRight: 12 }}>{label}</th>
-            <td style={{ textAlign: 'right' }}>{fmt.format(pricing[key] as number)}</td>
+          <tr
+            key={key}
+            data-current={isCurrent ? 'true' : undefined}
+            style={{ fontWeight: isCurrent ? 600 : 400 }}
+          >
+            <th style={{ textAlign: 'right', padding: '1px 8px 1px 0', color: '#666', fontWeight: 500 }}>{label}</th>
+            <td style={{ textAlign: 'right', padding: '1px 4px', minWidth: 70 }}>{fmt.format(pricing[key] as number)}</td>
           </tr>
         );
       })}

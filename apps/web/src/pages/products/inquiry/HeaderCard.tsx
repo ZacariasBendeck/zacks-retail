@@ -1,21 +1,56 @@
 import React from 'react';
-import { Descriptions } from 'antd';
 import type { InventoryInquiry } from '../../../types/inventoryInquiry';
 
+// Compact header mirroring the RICS Inventory Inquiry layout:
+// a dense label|value grid where the label is right-aligned grey and
+// the value column carries the data. Two paired columns per row.
+
+const cellLabel: React.CSSProperties = {
+  color: '#666',
+  textAlign: 'right',
+  padding: '2px 8px 2px 0',
+  whiteSpace: 'nowrap',
+  fontWeight: 500,
+};
+const cellValue: React.CSSProperties = {
+  padding: '2px 16px 2px 4px',
+  borderBottom: '1px solid #eee',
+  whiteSpace: 'nowrap',
+};
+
 export const HeaderCard: React.FC<{ inquiry: InventoryInquiry }> = ({ inquiry }) => (
-  <Descriptions title={inquiry.sku} size="small" column={2} bordered>
-    <Descriptions.Item label="Description">{inquiry.description}</Descriptions.Item>
-    <Descriptions.Item label="Category">
-      {inquiry.category?.id} {inquiry.category?.name}
-    </Descriptions.Item>
-    <Descriptions.Item label="Vendor">
-      {inquiry.vendor?.code} {inquiry.vendor?.name}
-    </Descriptions.Item>
-    <Descriptions.Item label="Vendor SKU">{inquiry.vendorSku ?? '—'}</Descriptions.Item>
-    <Descriptions.Item label="Style/Color">{inquiry.styleColor ?? '—'}</Descriptions.Item>
-    <Descriptions.Item label="Size Type">
-      {inquiry.sizeType?.id} {inquiry.sizeType?.name}
-    </Descriptions.Item>
-    <Descriptions.Item label="Last Received">{inquiry.lastReceivedAt ?? '—'}</Descriptions.Item>
-  </Descriptions>
+  <table style={{ borderCollapse: 'collapse', fontSize: 12 }}>
+    <tbody>
+      <tr>
+        <th style={cellLabel}>SKU</th>
+        <td style={cellValue}><strong>{inquiry.sku}</strong></td>
+        <th style={cellLabel}>Description</th>
+        <td style={cellValue}>{inquiry.description}</td>
+      </tr>
+      <tr>
+        <th style={cellLabel}>Category</th>
+        <td style={cellValue}>
+          {inquiry.category?.id} {inquiry.category?.name}
+        </td>
+        <th style={cellLabel}>Vendor</th>
+        <td style={cellValue}>
+          {inquiry.vendor?.code} {inquiry.vendor?.name}
+        </td>
+      </tr>
+      <tr>
+        <th style={cellLabel}>Vendor SKU</th>
+        <td style={cellValue}>{inquiry.vendorSku ?? '—'}</td>
+        <th style={cellLabel}>Style/Color</th>
+        <td style={cellValue}>{inquiry.styleColor ?? '—'}</td>
+      </tr>
+      <tr>
+        <th style={cellLabel}>Size Type</th>
+        <td style={cellValue}>
+          {inquiry.sizeType?.id} {inquiry.sizeType?.name}
+        </td>
+        <th style={cellLabel}>Last Received</th>
+        <td style={cellValue}>{inquiry.lastReceivedAt ?? '—'}</td>
+      </tr>
+    </tbody>
+  </table>
 );

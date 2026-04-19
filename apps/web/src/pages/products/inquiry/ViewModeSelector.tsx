@@ -39,16 +39,19 @@ export const ViewModeSelector: React.FC<{
   value: ViewMode;
   onChange: (mode: ViewMode) => void;
 }> = ({ value, onChange }) => (
-  <Space wrap>
+  <Space wrap size={[4, 4]}>
     {VIEW_MODES.map((m) => {
       const button = (
         <Button
           key={m.value}
+          size="small"
           type={value === m.value ? 'primary' : 'default'}
           disabled={!m.live}
           onClick={() => onChange(m.value)}
+          style={{ fontSize: 11, padding: '0 8px', height: 22 }}
         >
-          {m.label} <span style={{ opacity: 0.6, marginLeft: 6 }}>{m.shortcut}</span>
+          {m.label}
+          <span style={{ opacity: 0.55, marginLeft: 4, fontSize: 10 }}>{m.shortcut}</span>
         </Button>
       );
       return m.live ? (

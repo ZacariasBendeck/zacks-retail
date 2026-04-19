@@ -19,15 +19,19 @@ const TABS: Array<{ key: InquiryTab; label: string; live: boolean; waitingOn?: s
   { key: 'DETAIL', label: 'Detail', live: true },
 ];
 
+const btnStyle: React.CSSProperties = { fontSize: 11, padding: '0 10px', height: 24 };
+
 export const ActionBar: React.FC<Props> = ({ activeTab, onTab, onPrev, onNext, onClear }) => (
-  <Space wrap>
-    <Button onClick={onClear}>Clear</Button>
-    <Button onClick={onPrev}>Prev</Button>
-    <Button onClick={onNext}>Next</Button>
+  <Space wrap size={[4, 4]}>
+    <Button size="small" style={btnStyle} onClick={onClear}>Clear</Button>
+    <Button size="small" style={btnStyle} onClick={onPrev}>Prev</Button>
+    <Button size="small" style={btnStyle} onClick={onNext}>Next</Button>
     {TABS.map((t) => {
       const btn = (
         <Button
           key={t.key}
+          size="small"
+          style={btnStyle}
           type={activeTab === t.key ? 'primary' : 'default'}
           disabled={!t.live}
           onClick={() => onTab(t.key)}
@@ -42,7 +46,7 @@ export const ActionBar: React.FC<Props> = ({ activeTab, onTab, onPrev, onNext, o
       );
     })}
     <Tooltip title="Phase 2 — waiting on label-print pipeline">
-      <span><Button disabled>Print</Button></span>
+      <span><Button size="small" style={btnStyle} disabled>Print</Button></span>
     </Tooltip>
   </Space>
 );

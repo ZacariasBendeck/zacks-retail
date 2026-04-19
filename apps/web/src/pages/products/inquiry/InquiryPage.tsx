@@ -93,37 +93,93 @@ export const InquiryPage: React.FC = () => {
   if (error) return <Alert type="error" message={(error as Error).message} />;
   if (!data) return null;
 
+  const gridKey = GRID_KEY_BY_MODE[mode];
+  const grid = gridKey ? data.grids[gridKey] : undefined;
+
   return (
-    <div>
-      <div style={{ marginBottom: 12 }}>
-        <Button icon={<SearchOutlined />} onClick={() => setLookupOpen(true)}>
-          SKU Lookup
-        </Button>
-      </div>
+    <div style={{ fontSize: 12 }}>
       <SkuLookup
         open={lookupOpen}
         onClose={() => setLookupOpen(false)}
         onSelect={goToSku}
         initialQuery={skuCode}
       />
-      <HeaderCard inquiry={data} />
-      <PicturePanel pictureUrl={data.pictureUrl} alt={data.sku} />
-      <PricingPanel pricing={data.pricing} />
-      <SalesRollupStrip rollup={data.rollup} />
-      <ViewModeSelector value={mode} onChange={setMode} />
-      {(() => {
-        const gridKey = GRID_KEY_BY_MODE[mode];
-        const grid = gridKey ? data.grids[gridKey] : undefined;
-        return grid
+
+      {/* Top row: Header (left) | Pricing + Rollup + Picture (right) */}
+      <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start', marginBottom: 8 }}>
+        <div style={{ flex: '1 1 0', minWidth: 0 }}>
+          <div style={{ marginBottom: 4 }}>
+            <Button size="small" icon={<SearchOutlined />} onClick={() => setLookupOpen(true)}>
+              SKU Lookup
+            </Button>
+          </div>
+          <HeaderCard inquiry={data} />
+        </div>
+
+        <div style={{ flex: '0 0 auto', display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <PricingPanel pricing={data.pricing} />
+            <SalesRollupStrip rollup={data.rollup} />
+          </div>
+          {data.pictureUrl && (
+            <div style={{ flex: '0 0 140px' }}>
+              <PicturePanel pictureUrl={data.pictureUrl} alt={data.sku} />
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* View-mode selector (compact) */}
+      <div style={{ marginBottom: 4 }}>
+        <ViewModeSelector value={mode} onChange={setMode} />
+      </div>
+
+      {/* Size grid caption + body */}
+      <div style={{ margin: '4px 0' }}>
+        <div style={{ background: '#e6f0ff', padding: '2px 8px', fontWeight: 600, borderBottom: '1px solid #ccd8ea' }}>
+          {gridCaptionFor(mode)}
+        </div>
+        {grid
           ? <SizeGridComponent grid={grid} />
-          : <em>No data for this view mode.</em>;
-      })()}
-      <ActionBar activeTab={activeTab} onTab={setActiveTab} onPrev={onPrev} onNext={onNext} onClear={onClear} />
-      {activeTab === 'UPCS' && <UpcsTab skuCode={data.sku} />}
-      {activeTab === 'INFO' && data.info && <InfoTab info={data.info} />}
-      {activeTab === 'DETAIL' && <DetailTab skuCode={data.sku} />}
-      {activeTab === 'POS' && <PosTab />}
-      {activeTab === 'TREND' && <TrendTab />}
+          : <em style={{ color: '#999', padding: 8, display: 'block' }}>No data for this view mode.</em>}
+      </div>
+
+      {/* Action bar */}
+      <div style={{ marginTop: 8 }}>
+        <ActionBar activeTab={activeTab} onTab={setActiveTab} onPrev={onPrev} onNext={onNext} onClear={onClear} />
+      </div>
+
+      {/* Active tab panel */}
+      {activeTab && (
+        <div style={{ marginTop: 8 }}>
+          {activeTab === 'UPCS' && <UpcsTab skuCode={data.sku} />}
+          {activeTab === 'INFO' && data.info && <InfoTab info={data.info} />}
+          {activeTab === 'DETAIL' && <DetailTab skuCode={data.sku} />}
+          {activeTab === 'POS' && <PosTab />}
+          {activeTab === 'TREND' && <TrendTab />}
+        </div>
+      )}
     </div>
   );
 };
+
+function gridCaptionFor(mode: ViewMode): string {
+  switch (mode) {
+    case 'ON_HAND':            return 'On Hand';
+    case 'ON_ORDER_CURRENT':   return 'On Order (At-Once)';
+    case 'ON_ORDER_FUTURE':    return 'On Order (Future)';
+    case 'MODEL':              return 'Model Quantities';
+    case 'SHORT':              return 'Short Quantities';
+    case 'MTD_SALES':          return 'Month-to-Date Sales';
+    case 'STD_SALES':          return 'Season-to-Date Sales';
+    case 'YTD_SALES':          return 'Year-To-Date Sales';
+    case 'LY_SALES':           return 'Last Year Sales';
+    case 'SINGLE_COLUMN':      return 'Column Only';
+    case 'ALL_STORES_ON_HAND': return 'All Stores - On Hand';
+    case 'ALL_STORES_ONE_ROW': return 'All Stores - 1 Row';
+    case 'ALL_STORES_SUMMARY': return 'All stores - Summary';
+    case 'MAX':                return 'Max Quantities';
+    case 'REORDER':            return 'Reorder Quantities';
+    default:                   return '';
+  }
+}
