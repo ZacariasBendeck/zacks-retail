@@ -12,6 +12,9 @@ import { SizeGrid as SizeGridComponent } from '../../../components/size-grid';
 import type { InquiryGrids } from '../../../types/inventoryInquiry';
 import { UpcsTab } from './tabs/UpcsTab';
 import { InfoTab } from './tabs/InfoTab';
+import { DetailTab } from './tabs/DetailTab';
+import { PosTab } from './tabs/PosTab';
+import { TrendTab } from './tabs/TrendTab';
 
 const GRID_KEY_BY_MODE: Partial<Record<ViewMode, keyof InquiryGrids>> = {
   ON_HAND:            'onHand',
@@ -62,6 +65,9 @@ export const InquiryPage: React.FC = () => {
       <ActionBar activeTab={activeTab} onTab={setActiveTab} onPrev={onPrev} onNext={onNext} onClear={onClear} />
       {activeTab === 'UPCS' && <UpcsTab skuCode={data.sku} />}
       {activeTab === 'INFO' && data.info && <InfoTab info={data.info} />}
+      {activeTab === 'DETAIL' && <DetailTab skuCode={data.sku} />}
+      {activeTab === 'POS' && <PosTab />}
+      {activeTab === 'TREND' && <TrendTab />}
     </div>
   );
 };
