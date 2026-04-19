@@ -28,9 +28,17 @@ function mapError(err: unknown, res: Response): void {
     const statusByCode: Record<string, number> = {
       SESSION_NOT_FOUND: 404,
       BATCH_NOT_FOUND_FOR_SESSION: 404,
+      VARIANCE_NOT_FOUND: 404,
       INVALID_STATUS_TRANSITION: 409,
       INVALID_INDEPENDENT_VERIFICATION_N: 400,
       JOIN_CODE_EXHAUSTED: 503,
+      SNAPSHOT_MISSING: 409,
+      SETTINGS_MISSING: 500,
+      INVALID_REVIEW_STEP: 400,
+      INVALID_DEVICE_LABEL: 400,
+      CSV_HEADER_INVALID: 400,
+      REVIEW_ACKS_MISSING: 409,
+      VARIANCES_UNACKNOWLEDGED: 409,
     };
     res.status(statusByCode[err.code] ?? 400).json({
       error: { code: err.code, message: err.message },
