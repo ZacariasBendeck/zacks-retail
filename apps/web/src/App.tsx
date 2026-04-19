@@ -92,9 +92,9 @@ const InquiryPage = lazy(() => import('./pages/products/inquiry/InquiryPage').th
 const LegacyInquiryRedirect: React.FC = () => {
   const { skuCode } = useParams<{ skuCode?: string }>()
   const [params] = useSearchParams()
-  if (!skuCode) return <Navigate to="/products/skus" replace />
   const qs = params.toString()
-  return <Navigate to={`/products/inquiry/${skuCode}${qs ? `?${qs}` : ''}`} replace />
+  const base = skuCode ? `/products/inquiry/${skuCode}` : '/products/inquiry'
+  return <Navigate to={`${base}${qs ? `?${qs}` : ''}`} replace />
 }
 
 function RouteLoadingFallback() {
@@ -142,6 +142,7 @@ export default function App() {
             <Route path="/inventory/movements" element={<InventoryMovementPage />} />
             <Route path="/inventory/inquiry" element={<LegacyInquiryRedirect />} />
             <Route path="/inventory/inquiry/:skuCode" element={<LegacyInquiryRedirect />} />
+            <Route path="/products/inquiry" element={<InquiryPage />} />
             <Route path="/products/inquiry/:skuCode" element={<InquiryPage />} />
             <Route path="/inventory/find-by-size" element={<FindBySizePage />} />
             <Route path="/inventory/replenishment" element={<ReplenishmentTargetsPage />} />

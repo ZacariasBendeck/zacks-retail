@@ -32,7 +32,7 @@ const menuItems = [
     icon: <AppstoreOutlined />,
     label: 'Products',
     children: [
-      { key: '/inventory/inquiry', icon: <SearchOutlined />, label: 'Inquiry' },
+      { key: '/products/inquiry', icon: <SearchOutlined />, label: 'Inquiry' },
       { key: '/inventory/skus', icon: <AppstoreOutlined />, label: 'SKU List' },
       { key: '/products/taxonomy', icon: <AppstoreOutlined />, label: 'Taxonomy' },
       { key: '/products/taxonomy/departments', icon: <FileTextOutlined />, label: '\u2014 Departments' },
