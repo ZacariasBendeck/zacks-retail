@@ -2,10 +2,18 @@
   "name": "benlow-rics",
   "private": true,
   "packageManager": "pnpm@10.33.0",
+  "scripts": {
+    "db:up": "docker compose up -d postgres",
+    "db:down": "docker compose down",
+    "db:logs": "docker compose logs -f postgres"
+  },
   "pnpm": {
     "onlyBuiltDependencies": [
+      "@prisma/client",
+      "@prisma/engines",
       "better-sqlite3",
-      "esbuild"
+      "esbuild",
+      "prisma"
     ]
   }
 }
