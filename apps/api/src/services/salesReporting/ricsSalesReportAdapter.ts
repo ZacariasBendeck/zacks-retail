@@ -41,6 +41,12 @@ import {
 } from '../accessOleDb';
 import { getOnHandAtCostByDimension } from './ricsOnHandAtCostAdapter';
 import { computeRoiTurnsGp } from './metrics';
+import {
+  parseCriteria,
+  matchesCriteria,
+  type CriteriaExpression,
+  sqlNumericBounds,
+} from '../../utils/criteriaGrammar';
 import type {
   RicsSalesByDayByStoreReport,
   RicsSalesByDayRow,
@@ -1110,9 +1116,34 @@ export async function getSalesAnalysis(params: {
     throw new ReportTypeNotImplementedError(params.reportType);
   }
 
-  const filteredStores = params.criteria.stores && params.criteria.stores.length
-    ? params.criteria.stores
-    : undefined;
+  const parsed: ParsedAnalysisCriteria = {
+    stores: parseCriteria(params.criteria.storesRaw),
+    categories: parseCriteria(params.criteria.categoriesRaw),
+    vendors: parseCriteria(params.criteria.vendorsRaw),
+    skus: parseCriteria(params.criteria.skusRaw),
+  };
+
+  // Widen the ticket-line pre-filter for Stores: if `storesRaw` expresses a
+  // numeric range (e.g. "2-16"), include every store in those bounds in the
+  // SQL-side store filter. This deliberately OVER-selects — the exact match
+  // still runs per-row via `facetKeeps`/`matchesCriteria`. Exclusion-only
+  // grammar returns null bounds and falls back to the structured-only path.
+  const structuredStoresList = params.criteria.stores ?? [];
+  const storesBounds = sqlNumericBounds(parsed.stores);
+  let expandedStoresFromGrammar: number[] | null = null;
+  if (storesBounds) {
+    expandedStoresFromGrammar = [];
+    for (let n = storesBounds.min; n <= storesBounds.max; n++) {
+      expandedStoresFromGrammar.push(n);
+    }
+  }
+  const filteredStores = (() => {
+    if (!structuredStoresList.length && !expandedStoresFromGrammar) return undefined;
+    if (!structuredStoresList.length) return expandedStoresFromGrammar ?? undefined;
+    if (!expandedStoresFromGrammar) return structuredStoresList;
+    return Array.from(new Set([...structuredStoresList, ...expandedStoresFromGrammar]));
+  })();
+
   const lines = await loadTicketLines({
     startDate,
     endDate,
@@ -1120,7 +1151,7 @@ export async function getSalesAnalysis(params: {
   });
 
   // Apply criteria filters.
-  const filtered = lines.filter((l) => applyAnalysisCriteria(l, params.criteria));
+  const filtered = lines.filter((l) => applyAnalysisCriteria(l, params.criteria, parsed));
 
   // Row grain is driven by `reportType`:
   //   SKU_DETAIL           → one row per SKU
@@ -1179,7 +1210,7 @@ export async function getSalesAnalysis(params: {
     });
     priorYearByDimStore = new Map();
     for (const l of pyLines) {
-      if (!applyAnalysisCriteria(l, params.criteria)) continue;
+      if (!applyAnalysisCriteria(l, params.criteria, parsed)) continue;
       const dimKey = rowGrainKey(l, params.reportType, deptMap);
       if (!dimKey) continue;
       const storeKey = combine ? null : l.store;
@@ -1320,10 +1351,63 @@ function resolveAnalysisWindow(params: { startDate?: string; endDate?: string; p
   return resolvePeriod('YTD');
 }
 
-function applyAnalysisCriteria(l: TicketLine, c: SalesAnalysisCriteria): boolean {
-  if (c.categories?.length && (l.category == null || !c.categories.includes(l.category))) return false;
-  if (c.vendors?.length && (!l.vendor || !c.vendors.includes(l.vendor))) return false;
-  if (c.skus?.length && !c.skus.includes(l.sku)) return false;
+/**
+ * Criteria merge per spec §2: structured picks ∪ grammar inclusions, with
+ * grammar exclusions applied on top. Exclusion-only grammar narrows the
+ * structured picks (does not widen to the universe).
+ *
+ * Duplicates the same helper in `ricsOnHandAtCostAdapter.ts`. Intentional for
+ * now — a follow-up cleanup can lift both into a shared module.
+ */
+function facetKeeps(
+  structured: Array<string | number> | undefined,
+  expr: CriteriaExpression,
+  candidate: string | number | null,
+): boolean {
+  const structuredList = structured && structured.length > 0 ? structured : null;
+  const grammarIncluded = expr.tokens.some((t) => !t.excluded);
+  const grammarExcluded = expr.tokens.some((t) => t.excluded);
+
+  if (!structuredList && expr.empty) return true;
+  if (expr.empty) {
+    if (candidate == null) return false;
+    return structuredList!.some((x) => String(x) === String(candidate));
+  }
+  if (!structuredList) {
+    return matchesCriteria(expr, candidate);
+  }
+  const structuredHit =
+    candidate != null && structuredList.some((x) => String(x) === String(candidate));
+  if (grammarIncluded) {
+    if (!(structuredHit || matchesCriteria(expr, candidate))) return false;
+    if (!grammarExcluded) return true;
+    const exOnly: CriteriaExpression = {
+      ...expr,
+      tokens: expr.tokens.filter((t) => t.excluded),
+    };
+    return matchesCriteria(exOnly, candidate);
+  }
+  // exclusion-only grammar
+  if (!structuredHit) return false;
+  return matchesCriteria(expr, candidate);
+}
+
+interface ParsedAnalysisCriteria {
+  stores: CriteriaExpression;
+  categories: CriteriaExpression;
+  vendors: CriteriaExpression;
+  skus: CriteriaExpression;
+}
+
+function applyAnalysisCriteria(
+  l: TicketLine,
+  c: SalesAnalysisCriteria,
+  parsed: ParsedAnalysisCriteria,
+): boolean {
+  if (!facetKeeps(c.stores, parsed.stores, l.store)) return false;
+  if (!facetKeeps(c.categories, parsed.categories, l.category ?? null)) return false;
+  if (!facetKeeps(c.vendors, parsed.vendors, l.vendor ?? null)) return false;
+  if (!facetKeeps(c.skus, parsed.skus, l.sku)) return false;
   return true;
 }
 
