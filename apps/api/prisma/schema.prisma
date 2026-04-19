@@ -1,0 +1,121 @@
+// Zack's Retail — storefront-only Prisma schema.
+//
+// Scope: net-new tables that back the storefront (content overlay, cart, orders).
+// Products, inventory, and sizes still come from the legacy RICS MDBs live
+// via the PowerShell + OLEDB adapter (see apps/api/src/services/ricsProductAdapter.ts).
+// The RICS SKU code is treated as an opaque external string key.
+//
+// Admin-side data (SKUs, vendors, POs, OTB, etc.) continues to live in the
+// SQLite DB initialized from apps/api/src/db/database.ts until that migration
+// is scoped separately.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// Web-only overlay keyed by RICS SKU code.
+/// Fields here override or extend what RICS carries (description, imagery, SEO).
+/// A product with no row here still renders — it just uses RICS fields only.
+model ProductContent {
+  ricsSkuCode    String   @id
+  webDescription String?
+  heroImageUrl   String?
+  galleryJson    Json?
+  specsJson      Json?
+  seoSlug        String?  @unique
+  published      Boolean  @default(false)
+  updatedAt      DateTime @updatedAt
+  createdAt      DateTime @default(now())
+}
+
+/// Anonymous cart keyed by a session cookie (UUID). User accounts come later.
+model Cart {
+  id        String     @id @default(uuid())
+  sessionId String     @unique
+  lines     CartLine[]
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+}
+
+model CartLine {
+  id                String   @id @default(uuid())
+  cartId            String
+  cart              Cart     @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  ricsSkuCode       String
+  sizeLabel         String
+  colorId           Int?
+  quantity          Int
+  unitPriceSnapshot Decimal  @db.Decimal(12, 2)
+  createdAt         DateTime @default(now())
+
+  @@index([cartId])
+  @@index([ricsSkuCode])
+}
+
+model Order {
+  id            String      @id @default(uuid())
+  status        String      @default("PLACED")
+  shippingJson  Json
+  paymentMethod String
+  subtotal      Decimal     @db.Decimal(12, 2)
+  tax           Decimal     @db.Decimal(12, 2)
+  total         Decimal     @db.Decimal(12, 2)
+  lines         OrderLine[]
+  createdAt     DateTime    @default(now())
+}
+
+model OrderLine {
+  id          String   @id @default(uuid())
+  orderId     String
+  order       Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  ricsSkuCode String
+  sizeLabel   String
+  colorId     Int?
+  quantity    Int
+  unitPrice   Decimal  @db.Decimal(12, 2)
+
+  @@index([orderId])
+}
+
+model User {
+  id              String    @id @default(uuid())
+  email           String    @unique
+  passwordHash    String
+  displayName     String
+  active          Boolean   @default(true)
+  ricsUserId      String?
+  salespersonCode String?
+  roleId          String
+  role            Role      @relation(fields: [roleId], references: [id])
+  sessions        Session[]
+  lastLoginAt     DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([roleId])
+}
+
+model Role {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  permissions String[]
+  users       User[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model Session {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+}
