@@ -85,6 +85,62 @@ describe('listOtbPlanRows', () => {
   });
 });
 
+describe('updateOtbPlanRow', () => {
+  it('writes one audit row per changed scalar field', () => {
+    const created = svc.createOtbPlanRow(baseInput);
+    if ('code' in created) throw new Error('unexpected');
+
+    const upd = svc.updateOtbPlanRow(created.id, {
+      pctChangeLyToCy: 10.0,
+      plannedGpPct: 50.0,
+      changedBy: 'buyer2',
+    });
+    if ('code' in upd) throw new Error(`unexpected error ${upd.code}`);
+    expect(upd.pctChangeLyToCy).toBe(10.0);
+    expect(upd.plannedGpPct).toBe(50.0);
+
+    const audit = svc.getOtbPlanRowAudit(created.id);
+    const changed = audit.map((a) => a.fieldChanged).sort();
+    expect(changed).toEqual(['pct_change_ly_to_cy', 'planned_gp_pct']);
+    expect(audit.find((a) => a.fieldChanged === 'pct_change_ly_to_cy')?.oldValue).toBe('7.5');
+    expect(audit.find((a) => a.fieldChanged === 'pct_change_ly_to_cy')?.newValue).toBe('10');
+    expect(audit.find((a) => a.fieldChanged === 'pct_change_ly_to_cy')?.changedBy).toBe('buyer2');
+  });
+
+  it('writes one audit row per changed monthly cell', () => {
+    const created = svc.createOtbPlanRow(baseInput);
+    if ('code' in created) throw new Error('unexpected');
+    const newLy = [...baseInput.lySales] as (number | null)[];
+    newLy[0] = 11000;
+    newLy[2] = 12500;
+
+    svc.updateOtbPlanRow(created.id, { lySales: newLy, changedBy: 'buyer2' });
+
+    const audit = svc.getOtbPlanRowAudit(created.id);
+    const changed = audit.map((a) => a.fieldChanged).sort();
+    expect(changed).toEqual(['ly_sales_m01', 'ly_sales_m03']);
+  });
+
+  it('writes zero audit rows when nothing changed', () => {
+    const created = svc.createOtbPlanRow(baseInput);
+    if ('code' in created) throw new Error('unexpected');
+    svc.updateOtbPlanRow(created.id, { pctChangeLyToCy: 7.5, changedBy: 'buyer2' });
+    const audit = svc.getOtbPlanRowAudit(created.id);
+    expect(audit).toHaveLength(0);
+  });
+
+  it('returns NOT_FOUND for missing id', () => {
+    expect(svc.updateOtbPlanRow('nope', { pctChangeLyToCy: 1 })).toEqual({ code: 'NOT_FOUND' });
+  });
+
+  it('validates monthly array length on update', () => {
+    const created = svc.createOtbPlanRow(baseInput);
+    if ('code' in created) throw new Error('unexpected');
+    const r = svc.updateOtbPlanRow(created.id, { lySales: [1, 2] as unknown as (number | null)[] });
+    expect(r).toEqual({ code: 'INVALID_MONTHLY_ARRAY_LENGTH', field: 'lySales', expected: 12, actual: 2 });
+  });
+});
+
 describe('deleteOtbPlanRow', () => {
   it('deletes an existing row', () => {
     const created = svc.createOtbPlanRow(baseInput);

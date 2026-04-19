@@ -156,6 +156,87 @@ export function deleteOtbPlanRow(id: string): { ok: true } | { code: 'NOT_FOUND'
   return { ok: true };
 }
 
+const SCALAR_PATCH_COLUMNS = {
+  pctChangeLyToCy: 'pct_change_ly_to_cy',
+  pctChangeCyToNy: 'pct_change_cy_to_ny',
+  plannedTurnover1h: 'planned_turnover_1h',
+  plannedTurnover2h: 'planned_turnover_2h',
+  plannedGpPct: 'planned_gp_pct',
+} as const;
+
+type ScalarPatchKey = keyof typeof SCALAR_PATCH_COLUMNS;
+
+export function updateOtbPlanRow(id: string, patch: UpdateOtbPlanRowInput): OtbPlanRow | OtbPlanRowError {
+  for (const [field, arr] of [['lySales', patch.lySales], ['plannedSales', patch.plannedSales], ['markdownPct', patch.markdownPct]] as const) {
+    const err = validateMonthlyArray(arr, field);
+    if (err) return err;
+  }
+  if (patch.plannedGpPct !== undefined && patch.plannedGpPct !== null && (patch.plannedGpPct < -100 || patch.plannedGpPct > 100)) {
+    return { code: 'INVALID_GP_PCT', value: patch.plannedGpPct };
+  }
+
+  const db = getDb();
+  const existing = db.prepare('SELECT * FROM otb_plan_rows WHERE id = ?').get(id) as OtbPlanRowDbRow | undefined;
+  if (!existing) return { code: 'NOT_FOUND' };
+
+  const changedBy = patch.changedBy ?? 'system';
+  const sets: string[] = [];
+  const values: DbValue[] = [];
+  const auditWrites: Array<[string, string | null, string | null]> = [];
+
+  for (const key of Object.keys(SCALAR_PATCH_COLUMNS) as ScalarPatchKey[]) {
+    const patchVal = patch[key];
+    if (patchVal === undefined) continue;
+    const col = SCALAR_PATCH_COLUMNS[key];
+    const oldVal = (existing as unknown as Record<string, number | null>)[col];
+    const newVal = patchVal;
+    if (oldVal === newVal) continue;
+    sets.push(`${col} = ?`);
+    values.push(newVal);
+    auditWrites.push([col, oldVal === null || oldVal === undefined ? null : String(oldVal), newVal === null ? null : String(newVal)]);
+  }
+
+  for (const [field, prefix] of [
+    ['lySales', 'ly_sales'],
+    ['plannedSales', 'planned_sales'],
+    ['markdownPct', 'markdown_pct'],
+  ] as const) {
+    const arr = patch[field];
+    if (!arr) continue;
+    for (let i = 0; i < 12; i++) {
+      const col = `${prefix}_${MONTH_COLUMN_SUFFIXES[i]}`;
+      const oldVal = (existing as unknown as Record<string, number | null>)[col];
+      const newVal = arr[i] ?? null;
+      if (oldVal === newVal) continue;
+      sets.push(`${col} = ?`);
+      values.push(newVal);
+      auditWrites.push([col, oldVal === null || oldVal === undefined ? null : String(oldVal), newVal === null ? null : String(newVal)]);
+    }
+  }
+
+  if (sets.length === 0) {
+    return rowToOtbPlanRow(existing);
+  }
+
+  db.exec('BEGIN');
+  try {
+    for (const [field, oldStr, newStr] of auditWrites) {
+      db.prepare(
+        `INSERT INTO otb_plan_row_audit (id, otb_plan_row_id, field_changed, old_value, new_value, changed_by)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      ).run(uuidv4(), id, field, oldStr, newStr, changedBy);
+    }
+    sets.push(`updated_at = datetime('now')`);
+    db.prepare(`UPDATE otb_plan_rows SET ${sets.join(', ')} WHERE id = ?`).run(...values, id);
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+
+  return getOtbPlanRow(id) as OtbPlanRow;
+}
+
 export function getOtbPlanRowAudit(otbPlanRowId: string): OtbPlanRowAudit[] {
   const db = getDb();
   const rows = db.prepare(
