@@ -86,6 +86,9 @@ const VendorFormPage = lazy(() => import('./pages/products/vendors/VendorFormPag
 const ProductsSkuListPage = lazy(() => import('./pages/products/skus/SkuListPage'))
 const ProductsSkuFormPage = lazy(() => import('./pages/products/skus/SkuFormPage'))
 
+// products module — Inventory Inquiry (new route; legacy /inventory/inquiry stays until Task 23)
+const InquiryPage = lazy(() => import('./pages/products/inquiry/InquiryPage').then(m => ({ default: m.InquiryPage })))
+
 function RouteLoadingFallback() {
   return (
     <Flex align="center" justify="center" style={{ minHeight: 240 }} data-testid="route-loading-fallback">
@@ -130,6 +133,7 @@ export default function App() {
             <Route path="/inventory/sales-ledger" element={<SalesLedgerPage />} />
             <Route path="/inventory/movements" element={<InventoryMovementPage />} />
             <Route path="/inventory/inquiry" element={<InventoryInquiryPage />} />
+            <Route path="/products/inquiry/:skuCode" element={<InquiryPage />} />
             <Route path="/inventory/find-by-size" element={<FindBySizePage />} />
             <Route path="/inventory/replenishment" element={<ReplenishmentTargetsPage />} />
             <Route path="/inventory/transfers/manual" element={<ManualTransferEntryPage />} />
