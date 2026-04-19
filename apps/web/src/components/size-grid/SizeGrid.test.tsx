@@ -28,6 +28,12 @@ describe('SizeGrid', () => {
     render(<SizeGrid grid={{ columns: [], rows: [] }} />);
     // AntD Empty renders "No data" in both an SVG <title> and the description div;
     // use getAllByText to handle multiple matches.
-    expect(screen.getAllByText(/no data/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/no data/i).length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('accepts an optional total scalar without throwing', () => {
+    render(<SizeGrid grid={{ columns: ['6'], rows: [{ label: 'On Hand', cells: [{ value: 1 }] }], total: 42 }} />);
+    // Not rendered today — this just confirms the optional field is accepted.
+    expect(screen.getByRole('columnheader', { name: '6' })).toBeInTheDocument();
   });
 });
