@@ -864,6 +864,9 @@ export interface SalesAnalysisRow {
   cogs: number
   grossProfit: number
   gpPct: number | null
+  onHandAtCost: number
+  turns: number | null
+  roiPct: number | null
   priorYearNetSales: number | null
   pyPctChange: number | null
 }
@@ -878,8 +881,13 @@ export interface SalesAnalysisReport {
     netSales: number
     cogs: number
     grossProfit: number
+    onHandAtCost: number
+    gpPct: number | null
+    turns: number | null
+    roiPct: number | null
     priorYearNetSales: number | null
   }
+  periodDays: number
 }
 
 export async function fetchSalesAnalysis(args: {
@@ -896,6 +904,14 @@ export async function fetchSalesAnalysis(args: {
   styleColor?: string
   groups?: string[]
   keywords?: string[]
+  storesRaw?: string
+  categoriesRaw?: string
+  vendorsRaw?: string
+  seasonsRaw?: string
+  skusRaw?: string
+  groupsRaw?: string
+  keywordsRaw?: string
+  styleColorRaw?: string
   wtd?: boolean
   mtd?: boolean
   std?: boolean
@@ -918,6 +934,14 @@ export async function fetchSalesAnalysis(args: {
   if (args.styleColor) params.set('styleColor', args.styleColor)
   if (args.groups?.length) params.set('groups', args.groups.join(','))
   if (args.keywords?.length) params.set('keywords', args.keywords.join(','))
+  if (args.storesRaw) params.set('storesRaw', args.storesRaw)
+  if (args.categoriesRaw) params.set('categoriesRaw', args.categoriesRaw)
+  if (args.vendorsRaw) params.set('vendorsRaw', args.vendorsRaw)
+  if (args.seasonsRaw) params.set('seasonsRaw', args.seasonsRaw)
+  if (args.skusRaw) params.set('skusRaw', args.skusRaw)
+  if (args.groupsRaw) params.set('groupsRaw', args.groupsRaw)
+  if (args.keywordsRaw) params.set('keywordsRaw', args.keywordsRaw)
+  if (args.styleColorRaw) params.set('styleColorRaw', args.styleColorRaw)
   if (args.wtd) params.set('wtd', 'true')
   if (args.mtd) params.set('mtd', 'true')
   if (args.std) params.set('std', 'true')
@@ -1006,16 +1030,22 @@ export async function fetchStockStatus(args: {
 export type SalesHistoryByMonthSortBy = 'vendor' | 'category'
 export type SalesHistoryByMonthDetailLevel = 'sku' | 'subtotals' | 'department'
 
-/** Metric keys the API emits for every selected metric. */
+/** Metric keys the API emits for every selected metric. v2.1 added
+ *  beginningOnHand / roiPct / turns once RIINVHIS was indexed. */
 export type SalesHistoryByMonthMetricKey =
   | 'quantitySold'
   | 'netSales'
   | 'pctOfStoreNetSales'
   | 'profit'
   | 'grossProfit'
+  | 'beginningOnHand'
+  | 'roiPct'
+  | 'turns'
 
-/** Metric keys deferred to Phase 2 (documented in the spec); the UI shows
- *  disabled checkboxes when the user requests one of these. */
+/** Retained for backward compatibility with callers that passed
+ *  `deferredMetrics` on the query string. v2.1 ships every previously
+ *  deferred metric, so the union members here are the same as the shipped
+ *  metric keys and no metric is actually deferred. */
 export type SalesHistoryByMonthDeferredMetricKey =
   | 'beginningOnHand'
   | 'roiPct'

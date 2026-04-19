@@ -240,6 +240,14 @@ export type SalesAnalysisArgs = {
   styleColor?: string
   groups?: string[]
   keywords?: string[]
+  storesRaw?: string
+  categoriesRaw?: string
+  vendorsRaw?: string
+  seasonsRaw?: string
+  skusRaw?: string
+  groupsRaw?: string
+  keywordsRaw?: string
+  styleColorRaw?: string
   wtd?: boolean
   mtd?: boolean
   std?: boolean

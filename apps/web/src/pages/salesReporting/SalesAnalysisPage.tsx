@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import {
-  Alert, Breadcrumb, Card, Checkbox, Col, DatePicker, Empty, Input, Radio, Row, Select, Space, Table, Tag, Typography, Spin,
+  Alert, Breadcrumb, Card, Checkbox, Col, DatePicker, Empty, Radio, Row, Space, Table, Tag, Typography, Spin,
 } from 'antd'
 import dayjs from 'dayjs'
 import { Link } from 'react-router-dom'
@@ -14,14 +14,10 @@ import type {
 } from '../../services/reportApi'
 import { getErrorMessage } from '../../utils/errors'
 import RunReportControls from './RunReportControls'
+import CriteriaInput from './CriteriaInput'
 
 const { RangePicker } = DatePicker
 const { Title, Paragraph, Text } = Typography
-
-function parseStrs(s: string): string[] | undefined {
-  const arr = s.split(',').map((x) => x.trim()).filter(Boolean)
-  return arr.length ? arr : undefined
-}
 
 function defaultRange(): [string, string] {
   // Last 7 days by default — fast first run. Users can widen to 30/60/90+ via
@@ -61,33 +57,24 @@ const STORE_OPTIONS: { value: SalesAnalysisStoreOption; label: string }[] = [
   { value: 'COMBINE', label: 'Combine Stores' },
 ]
 
-/** One criteria row — fixed-width label on the left, control on the right. */
-function CriteriaRow({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <Row gutter={12} align="middle" wrap={false}>
-      <Col flex="140px" style={{ textAlign: 'right' }}>
-        <Text strong>{label}</Text>
-      </Col>
-      <Col flex="auto">{children}</Col>
-    </Row>
-  )
-}
-
 export default function SalesAnalysisPage() {
   const qc = useQueryClient()
   const [dimension, setDimension] = useState<SalesAnalysisDimension>('CATEGORY')
   const [reportType, setReportType] = useState<SalesAnalysisReportType>('SKU_DETAIL')
   const [storeOption, setStoreOption] = useState<SalesAnalysisStoreOption>('COMBINE')
   const [dateRange, setDateRange] = useState<[string, string]>(defaultRange)
-  // Criteria state — arrays for the multi-selects, strings for wildcard text.
+  // Criteria state — arrays for the multi-selects, strings for RICS grammar.
   const [selectedStores, setSelectedStores] = useState<number[]>([])
   const [selectedCategories, setSelectedCategories] = useState<number[]>([])
-  const [vendorsText, setVendorsText] = useState('')
-  const [seasonsText, setSeasonsText] = useState('')
-  const [styleColorPattern, setStyleColorPattern] = useState('')
-  const [skusText, setSkusText] = useState('')
   const [selectedGroups, setSelectedGroups] = useState<string[]>([])
-  const [keywordsText, setKeywordsText] = useState('')
+  const [storesRaw, setStoresRaw] = useState('')
+  const [categoriesRaw, setCategoriesRaw] = useState('')
+  const [vendorsRaw, setVendorsRaw] = useState('')
+  const [seasonsRaw, setSeasonsRaw] = useState('')
+  const [styleColorRaw, setStyleColorRaw] = useState('')
+  const [skusRaw, setSkusRaw] = useState('')
+  const [groupsRaw, setGroupsRaw] = useState('')
+  const [keywordsRaw, setKeywordsRaw] = useState('')
   const [priorYear, setPriorYear] = useState(false)
   const [query, setQuery] = useState<SalesAnalysisArgs | null>(null)
 
@@ -114,12 +101,15 @@ export default function SalesAnalysisPage() {
       endDate: dateRange[1],
       stores: selectedStores.length ? selectedStores : undefined,
       categories: selectedCategories.length ? selectedCategories : undefined,
-      vendors: parseStrs(vendorsText),
-      seasons: parseStrs(seasonsText),
-      styleColor: styleColorPattern.trim() || undefined,
-      skus: parseStrs(skusText),
       groups: selectedGroups.length ? selectedGroups : undefined,
-      keywords: parseStrs(keywordsText),
+      storesRaw: storesRaw.trim() || undefined,
+      categoriesRaw: categoriesRaw.trim() || undefined,
+      vendorsRaw: vendorsRaw.trim() || undefined,
+      seasonsRaw: seasonsRaw.trim() || undefined,
+      styleColorRaw: styleColorRaw.trim() || undefined,
+      skusRaw: skusRaw.trim() || undefined,
+      groupsRaw: groupsRaw.trim() || undefined,
+      keywordsRaw: keywordsRaw.trim() || undefined,
       priorYear,
     })
   }
@@ -143,7 +133,7 @@ export default function SalesAnalysisPage() {
     : 'Key'
 
   const columns = [
-    { title: keyColumnTitle, dataIndex: 'dimensionKey', key: 'dimensionKey', width: 180 },
+    { title: keyColumnTitle, dataIndex: 'dimensionKey', key: 'dimensionKey', width: 160 },
     ...(query?.reportType === 'DEPT_SUMMARY'
       ? [{ title: 'Label', dataIndex: 'dimensionLabel', key: 'dimensionLabel', width: 200, render: (v: string | null) => v ?? '—' }]
       : []),
@@ -151,34 +141,49 @@ export default function SalesAnalysisPage() {
       title: 'Store', dataIndex: 'storeNumber', key: 'storeNumber', width: 80,
       render: (v: number | null) => v ?? '(all)',
     },
-    { title: 'Qty', dataIndex: 'qty', key: 'qty', width: 90, align: 'right' as const },
+    { title: 'Qty', dataIndex: 'qty', key: 'qty', width: 80, align: 'right' as const },
     {
-      title: 'Net Sales', dataIndex: 'netSales', key: 'netSales', width: 140,
+      title: 'Net Sales', dataIndex: 'netSales', key: 'netSales', width: 130,
       align: 'right' as const, render: (v: number) => v.toFixed(2),
     },
     {
-      title: 'COGS', dataIndex: 'cogs', key: 'cogs', width: 140,
+      title: 'COGS', dataIndex: 'cogs', key: 'cogs', width: 130,
       align: 'right' as const, render: (v: number) => v.toFixed(2),
     },
     {
-      title: 'Gross Profit', dataIndex: 'grossProfit', key: 'grossProfit', width: 140,
+      title: 'Gross Profit', dataIndex: 'grossProfit', key: 'grossProfit', width: 130,
       align: 'right' as const, render: (v: number) => v.toFixed(2),
     },
     {
-      title: 'GP %', dataIndex: 'gpPct', key: 'gpPct', width: 100,
+      title: 'GP %', dataIndex: 'gpPct', key: 'gpPct', width: 90,
       align: 'right' as const,
       render: (v: number | null) =>
         v == null ? '—' : <Tag color={v >= 30 ? 'green' : v >= 10 ? 'gold' : 'red'}>{v.toFixed(1)}%</Tag>,
     },
+    {
+      title: 'Inv $ (Cost)', dataIndex: 'onHandAtCost', key: 'onHandAtCost', width: 130,
+      align: 'right' as const, render: (v: number) => v.toFixed(2),
+    },
+    {
+      title: 'Turns', dataIndex: 'turns', key: 'turns', width: 80,
+      align: 'right' as const,
+      render: (v: number | null) => (v == null ? '—' : v.toFixed(1)),
+    },
+    {
+      title: 'ROI', dataIndex: 'roiPct', key: 'roiPct', width: 90,
+      align: 'right' as const,
+      render: (v: number | null) =>
+        v == null ? '—' : <Tag color={v >= 5 ? 'green' : v >= 2 ? 'gold' : 'red'}>{v.toFixed(1)}×</Tag>,
+    },
     ...(query?.priorYear
       ? [
           {
-            title: 'Prior Yr Net', dataIndex: 'priorYearNetSales', key: 'priorYearNetSales', width: 140,
+            title: 'Prior Yr Net', dataIndex: 'priorYearNetSales', key: 'priorYearNetSales', width: 130,
             align: 'right' as const,
             render: (v: number | null) => (v == null ? '—' : v.toFixed(2)),
           },
           {
-            title: 'PY % Δ', dataIndex: 'pyPctChange', key: 'pyPctChange', width: 100,
+            title: 'PY % Δ', dataIndex: 'pyPctChange', key: 'pyPctChange', width: 90,
             align: 'right' as const,
             render: (v: number | null) =>
               v == null ? '—' : <Tag color={v >= 0 ? 'green' : 'red'}>{v.toFixed(1)}%</Tag>,
@@ -198,7 +203,7 @@ export default function SalesAnalysisPage() {
       />
       <Title level={2} style={{ marginBottom: 0 }}>Sales Analysis</Title>
       <Paragraph type="secondary">
-        Multi-dimensional sales analysis (RICS Ch. 6 p. 88). Rows sorted alphabetically by default.
+        Multi-dimensional sales analysis (RICS Ch. 6 p. 88). Rows sorted by key ascending by default.
       </Paragraph>
 
       <Card style={{ marginBottom: 16 }}>
@@ -272,110 +277,106 @@ export default function SalesAnalysisPage() {
         </Row>
         <Card size="small" title={<Text strong>Criteria</Text>} style={{ marginTop: 16 }}>
           <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
-            Leave a row blank to include everything. Style/Colors and Keywords accept
-            wildcards — <code>*</code> matches any sequence of characters,{' '}
-            <code>?</code> matches a single character (e.g. <code>KISS*BK</code>,{' '}
-            <code>*FORMAL*</code>).
+            Leave a row blank to include everything. Type ranges like <code>556-599</code>,
+            exclusions <code>&lt;&gt;575</code>, or wildcards <code>KISS*BK</code> in the
+            grammar box under each dropdown.
           </Text>
-          <Space direction="vertical" size={8} style={{ width: '100%' }}>
-            <CriteriaRow label="Stores">
-              <Select
-                mode="multiple"
-                allowClear
-                loading={dimsLoading}
-                value={selectedStores}
-                onChange={setSelectedStores}
-                placeholder="All stores"
-                optionFilterProp="label"
-                style={{ width: '100%' }}
-                options={(dims?.stores ?? []).map((s) => ({
-                  value: s.number,
-                  label: s.name ? `${s.number} — ${s.name}` : String(s.number),
-                }))}
-              />
-            </CriteriaRow>
-            <CriteriaRow label="Categories">
-              <Select
-                mode="multiple"
-                allowClear
-                loading={dimsLoading}
-                value={selectedCategories}
-                onChange={setSelectedCategories}
-                placeholder="All categories"
-                optionFilterProp="label"
-                style={{ width: '100%' }}
-                options={(dims?.categories ?? []).map((c) => ({
-                  value: c.number,
-                  label: c.desc ? `${c.number} — ${c.desc}` : String(c.number),
-                }))}
-              />
-            </CriteriaRow>
-            <CriteriaRow label="Vendors">
-              <Input
-                placeholder="e.g. WEYC, VEND (comma separated)"
-                value={vendorsText}
-                onChange={(e) => setVendorsText(e.target.value)}
-              />
-            </CriteriaRow>
-            <CriteriaRow label="Seasons">
-              <Input
-                placeholder="e.g. A, B (comma separated)"
-                value={seasonsText}
-                onChange={(e) => setSeasonsText(e.target.value)}
-              />
-            </CriteriaRow>
-            <CriteriaRow label="Style/Colors">
-              <Input
-                placeholder="Wildcard pattern, e.g. KISS*BK  or  *FORMAL*"
-                value={styleColorPattern}
-                onChange={(e) => setStyleColorPattern(e.target.value)}
-                suffix={
-                  <Tag color="default" style={{ marginRight: 0 }}>
-                    requires master join — coming soon
-                  </Tag>
-                }
-              />
-            </CriteriaRow>
-            <CriteriaRow label="SKUs">
-              <Input
-                placeholder="e.g. TRLR7812-39-BK, 2A703GDGY (comma separated)"
-                value={skusText}
-                onChange={(e) => setSkusText(e.target.value)}
-              />
-            </CriteriaRow>
-            <CriteriaRow label="Groups">
-              <Select
-                mode="multiple"
-                allowClear
-                loading={dimsLoading}
-                value={selectedGroups}
-                onChange={setSelectedGroups}
-                placeholder="All groups"
-                optionFilterProp="label"
-                style={{ width: '100%' }}
-                options={(dims?.groups ?? []).map((g) => ({
-                  value: g.code,
-                  label: g.desc ? `${g.code} — ${g.desc}` : g.code,
-                }))}
-                suffixIcon={
-                  <Tag color="default" style={{ marginRight: 0, fontSize: 10 }}>
-                    requires master join — coming soon
-                  </Tag>
-                }
-              />
-            </CriteriaRow>
-            <CriteriaRow label="Keywords">
-              <Input
-                placeholder="Wildcard patterns, comma separated. e.g. 01AG25, *SUMMER*"
-                value={keywordsText}
-                onChange={(e) => setKeywordsText(e.target.value)}
-                suffix={
-                  <Tag color="default" style={{ marginRight: 0 }}>
-                    requires master join — coming soon
-                  </Tag>
-                }
-              />
-            </CriteriaRow>
+          <Space direction="vertical" size={12} style={{ width: '100%' }}>
+            <CriteriaInput
+              label="Stores"
+              mode="numeric"
+              loading={dimsLoading}
+              options={(dims?.stores ?? []).map((s) => ({
+                value: s.number,
+                label: s.name ? `${s.number} — ${s.name}` : String(s.number),
+              }))}
+              selected={selectedStores}
+              onSelectedChange={setSelectedStores}
+              rawText={storesRaw}
+              onRawTextChange={setStoresRaw}
+            />
+            <CriteriaInput
+              label="Categories"
+              mode="numeric"
+              loading={dimsLoading}
+              options={(dims?.categories ?? []).map((c) => ({
+                value: c.number,
+                label: c.desc ? `${c.number} — ${c.desc}` : String(c.number),
+              }))}
+              selected={selectedCategories}
+              onSelectedChange={setSelectedCategories}
+              rawText={categoriesRaw}
+              onRawTextChange={setCategoriesRaw}
+            />
+            <CriteriaInput
+              label="Vendors"
+              mode="string"
+              options={[]}
+              selected={[]}
+              onSelectedChange={() => {}}
+              rawText={vendorsRaw}
+              onRawTextChange={setVendorsRaw}
+              hideDropdown
+              helpText="e.g. WEYC, VEND, <>NIKE"
+            />
+            <CriteriaInput
+              label="Seasons"
+              mode="string"
+              options={[]}
+              selected={[]}
+              onSelectedChange={() => {}}
+              rawText={seasonsRaw}
+              onRawTextChange={setSeasonsRaw}
+              hideDropdown
+              helpText="e.g. A, B, <>C"
+            />
+            <CriteriaInput
+              label="Style/Colors"
+              mode="string"
+              options={[]}
+              selected={[]}
+              onSelectedChange={() => {}}
+              rawText={styleColorRaw}
+              onRawTextChange={setStyleColorRaw}
+              hideDropdown
+              helpText="Wildcard pattern, e.g. KISS*BK or *FORMAL*  (requires master join — coming soon)"
+            />
+            <CriteriaInput
+              label="SKUs"
+              mode="string"
+              options={[]}
+              selected={[]}
+              onSelectedChange={() => {}}
+              rawText={skusRaw}
+              onRawTextChange={setSkusRaw}
+              hideDropdown
+              helpText="e.g. TRLR7812-39-BK, 2A703GDGY, <>SKU001"
+            />
+            <CriteriaInput
+              label="Groups"
+              mode="string"
+              loading={dimsLoading}
+              options={(dims?.groups ?? []).map((g) => ({
+                value: g.code,
+                label: g.desc ? `${g.code} — ${g.desc}` : g.code,
+              }))}
+              selected={selectedGroups}
+              onSelectedChange={setSelectedGroups}
+              rawText={groupsRaw}
+              onRawTextChange={setGroupsRaw}
+              helpText="Dropdown or grammar. (Grammar requires master join — coming soon.)"
+            />
+            <CriteriaInput
+              label="Keywords"
+              mode="string"
+              options={[]}
+              selected={[]}
+              onSelectedChange={() => {}}
+              rawText={keywordsRaw}
+              onRawTextChange={setKeywordsRaw}
+              hideDropdown
+              helpText="Wildcard patterns, comma separated. e.g. 01AG25, *SUMMER*  (requires master join — coming soon)"
+            />
           </Space>
         </Card>
         <div style={{ marginTop: 16, borderTop: '1px solid #f0f0f0', paddingTop: 16 }}>
@@ -429,32 +430,31 @@ export default function SalesAnalysisPage() {
           size="small"
           pagination={{ pageSize: 50 }}
           summary={() => {
-            const summaryColSpan = query?.reportType === 'DEPT_SUMMARY' ? 3 : 2
+            const t = data.totals
+            const cells: Array<string | number | null | JSX.Element> = []
+            cells.push('Totals')
+            if (query.reportType === 'DEPT_SUMMARY') cells.push('')
+            cells.push('') // Store
+            cells.push(t.qty)
+            cells.push(t.netSales.toFixed(2))
+            cells.push(t.cogs.toFixed(2))
+            cells.push(t.grossProfit.toFixed(2))
+            cells.push(t.gpPct == null ? '—' : `${t.gpPct.toFixed(1)}%`)
+            cells.push(t.onHandAtCost.toFixed(2))
+            cells.push(t.turns == null ? '—' : t.turns.toFixed(1))
+            cells.push(t.roiPct == null ? '—' : `${t.roiPct.toFixed(1)}×`)
+            if (query.priorYear) {
+              cells.push(t.priorYearNetSales == null ? '—' : t.priorYearNetSales.toFixed(2))
+              cells.push('') // PY % Δ total omitted
+            }
             return (
               <Table.Summary fixed>
                 <Table.Summary.Row>
-                  <Table.Summary.Cell index={0} colSpan={summaryColSpan}>Totals</Table.Summary.Cell>
-                  <Table.Summary.Cell index={summaryColSpan} align="right">{data.totals.qty}</Table.Summary.Cell>
-                  <Table.Summary.Cell index={summaryColSpan + 1} align="right">
-                    {data.totals.netSales.toFixed(2)}
-                  </Table.Summary.Cell>
-                  <Table.Summary.Cell index={summaryColSpan + 2} align="right">
-                    {data.totals.cogs.toFixed(2)}
-                  </Table.Summary.Cell>
-                  <Table.Summary.Cell index={summaryColSpan + 3} align="right">
-                    {data.totals.grossProfit.toFixed(2)}
-                  </Table.Summary.Cell>
-                  <Table.Summary.Cell index={summaryColSpan + 4} />
-                  {query.priorYear && (
-                    <>
-                      <Table.Summary.Cell index={summaryColSpan + 5} align="right">
-                        {data.totals.priorYearNetSales == null
-                          ? '—'
-                          : data.totals.priorYearNetSales.toFixed(2)}
-                      </Table.Summary.Cell>
-                      <Table.Summary.Cell index={summaryColSpan + 6} />
-                    </>
-                  )}
+                  {cells.map((c, i) => (
+                    <Table.Summary.Cell key={i} index={i} align={i >= 2 ? 'right' : 'left'}>
+                      {c as React.ReactNode}
+                    </Table.Summary.Cell>
+                  ))}
                 </Table.Summary.Row>
               </Table.Summary>
             )
