@@ -55,6 +55,7 @@ describe('InquiryPage', () => {
           },
         },
         pictureUrl: null,
+        info: { seasonCode: null, labelCode: null, groupCode: null, firstReceivedAt: null, lastMarkdownAt: null, perks: null, comment: null },
       },
     });
     renderPage();
@@ -77,6 +78,7 @@ describe('InquiryPage', () => {
         rollup: { week: { qty: 0, net: 0, markdown: 0, profit: 0 }, month: { qty: 0, net: 0, markdown: 0, profit: 0 }, season: { qty: 0, net: 0, markdown: 0, profit: 0 }, year: { qty: 14, net: 7317.42, markdown: 1995.66, profit: 3933.79 } },
         grids: {},
         pictureUrl: null,
+        info: { seasonCode: null, labelCode: null, groupCode: null, firstReceivedAt: null, lastMarkdownAt: null, perks: null, comment: null },
       },
       error: null,
     });

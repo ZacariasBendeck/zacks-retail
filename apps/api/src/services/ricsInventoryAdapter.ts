@@ -103,6 +103,18 @@ export interface InquiryGrids {
   allStoresSummary?: InquirySizeGrid;
 }
 
+export interface InquiryInfo {
+  seasonCode: string | null;
+  labelCode: string | null;
+  groupCode: string | null;
+  /** Not on InventoryMaster — Phase 2 will source from a receipts table. */
+  firstReceivedAt: string | null;
+  /** Sourced from InventoryMaster.LastPriceChange if available, else null. */
+  lastMarkdownAt: string | null;
+  perks: number | null;
+  comment: string | null;
+}
+
 export interface InventoryInquiry {
   sku: string;
   master: {
@@ -126,6 +138,7 @@ export interface InventoryInquiry {
   rollup: InquiryRollup;
   grids: InquiryGrids;
   pictureUrl: string | null;
+  info: InquiryInfo;
 }
 
 export interface FindBySizeResult {
@@ -390,23 +403,29 @@ interface MasterRow {
   Category: number | null;
   SizeType: number | null;
   Season: string | null;
+  LabelCode: string | null;
+  GroupCode: string | null;
   StyleColor: string | null;
+  VendorSku: string | null;
   ListPrice: number | null;
   RetailPrice: number | null;
   MarkDownPrice1: number | null;
   MarkDownPrice2: number | null;
   CurrentPrice: number | null;
   CurrentCost: number | null;
+  LastPriceChange: string | null;
   PictureFileName: string | null;
+  Perks: number | null;
+  Comment: string | null;
   Status: string | null;
 }
 
 async function loadMasterBySku(sku: string): Promise<MasterRow | null> {
   const safe = sku.replace(/'/g, "''");
   const sql = `SELECT TOP 1
-  [SKU], [Desc], [Vendor], [Manufacturer], [Category], [SizeType], [Season], [StyleColor],
-  [ListPrice], [RetailPrice], [MarkDownPrice1], [MarkDownPrice2], [CurrentPrice], [CurrentCost],
-  [PictureFileName], [Status]
+  [SKU], [Desc], [Vendor], [Manufacturer], [Category], [SizeType], [Season], [LabelCode], [GroupCode],
+  [StyleColor], [VendorSku], [ListPrice], [RetailPrice], [MarkDownPrice1], [MarkDownPrice2],
+  [CurrentPrice], [CurrentCost], [LastPriceChange], [PictureFileName], [Perks], [Comment], [Status]
 FROM [InventoryMaster] WHERE [SKU] = '${safe}'`;
   const rows = queryAll<MasterRow>(INVMAS_MDB(), sql);
   return rows[0] ?? null;
@@ -712,6 +731,15 @@ ORDER BY [Store], [Row], [Segment]`;
     rollup:     buildRollup(),
     grids:      buildGrids(storeEntries, sizeType ? sizeType.columns.filter((lbl) => !!lbl) : []),
     pictureUrl: buildPictureUrl(master),
+    info: {
+      seasonCode:     master.Season?.trim()        || null,
+      labelCode:      master.LabelCode?.trim()     || null,
+      groupCode:      master.GroupCode?.trim()      || null,
+      firstReceivedAt: null, // Phase 2: not stored on InventoryMaster
+      lastMarkdownAt: master.LastPriceChange?.trim() || null,
+      perks:          master.Perks ?? null,
+      comment:        master.Comment?.trim()        || null,
+    },
   };
 }
 

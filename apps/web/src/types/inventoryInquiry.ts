@@ -46,6 +46,16 @@ export interface InquirySizeType {
   rows: string[];
 }
 
+export interface InquiryInfo {
+  seasonCode: string | null;
+  labelCode: string | null;
+  groupCode: string | null;
+  firstReceivedAt: string | null;
+  lastMarkdownAt: string | null;
+  perks: number | null;
+  comment: string | null;
+}
+
 export interface InventoryInquiry {
   sku: string;
   description: string;
@@ -59,4 +69,5 @@ export interface InventoryInquiry {
   rollup: InquiryRollup;
   grids: InquiryGrids;
   pictureUrl: string | null;
+  info: InquiryInfo;
 }

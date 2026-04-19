@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import type { InventoryInquiry } from '../../../types/inventoryInquiry';
+import type { InventoryInquiry, InquiryInfo } from '../../../types/inventoryInquiry';
 
 // The backend's GET /api/v1/inventory/inquiry/:sku historically returned a
 // nested shape with `master: {...}` and `stores[]`. Task 5 added the extended
@@ -38,6 +38,7 @@ interface BackendInquiry {
   grids: InventoryInquiry['grids'];
   pictureUrl: string | null;
   lastReceivedAt?: string | null;
+  info?: InquiryInfo;
 }
 
 function flatten(raw: BackendInquiry): InventoryInquiry {
@@ -66,6 +67,15 @@ function flatten(raw: BackendInquiry): InventoryInquiry {
     rollup: raw.rollup,
     grids: raw.grids,
     pictureUrl: raw.pictureUrl,
+    info: raw.info ?? {
+      seasonCode: null,
+      labelCode: null,
+      groupCode: null,
+      firstReceivedAt: null,
+      lastMarkdownAt: null,
+      perks: null,
+      comment: null,
+    },
   };
 }
 
