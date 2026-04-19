@@ -268,6 +268,77 @@ model DiscontinuedSkuMerge {        // audit log for p. 69
 - **Discontinue SKU wizard** — source + target + conflict review + confirm
 - **Stock Label queue** — pending-print SKUs; bulk select; "print batch" action
 - **UPC Import wizard** — upload GMAIC file, show exception report, commit
+- **Product Inquiry** — see dedicated section below (RICS-named "Inventory Inquiry"; this module owns the page, `inventory` owns the data).
+
+## Product Inquiry (the RICS "Inventory Inquiry" screen)
+
+**Ownership note.** In RICS this screen is called **Inventory Inquiry** and is catalogued in Chapter 4 (Stock Maintenance). Structurally it is a single-SKU, all-context view — identity + pricing + sizes + on-hand + on-order + model + shortage + MTD/STD/YTD sales + GP / ROI / Turns + open POs + 8-week trend — and its spine is the product record. We keep RICS's name in the UI for operator familiarity, but ownership of the **page** sits with `products` because every field in the header and every action button resolves through SKU identity. `inventory` still owns the stock-side **data contracts** (see `getOnHand`, `getOnHandGrid`, `getReplenishmentGrid`, `getMovementsForSku` in [docs/modules/inventory.md](inventory.md) § Contracts exposed), and `purchasing` / `sales-reporting` each own their slice as noted below. **This section is the page spec; another module's agent works the contracts.**
+
+### RICS features covered
+
+- **Ch. 4 p. 70, Inventory Inquiry** — admin entry point. The screen shows, per Store, a size grid of on-hand, on-order current (At-Once), on-order future, model, shortage (model − on-hand), MTD / STD / YTD sales (qty). Header shows SKU Description, Category, Vendor, Vendor SKU, Style/Color, Size Type, Last Received. Top-right panel: Retail, Markdown 1, Markdown 2, Avg Cost, Current Cost, List Price. Middle band: Qty / Net / Markdown / Profit for Week / Month / Season / Year.
+- **Ch. 2 p. 53, Inventory Inquiry (from Sales)** — sales-clerk entry point, same screen, same payload. Reached from the register. The RICS manual explicitly states the two menu entries drop into one inquiry.
+- **View-mode function keys (p. 70)** — F2 On Hand, F3 On Order Current, F4 On Order Future, F5 Model, F6 Short, F7 MTD Sales, F8 STD Sales, F9 YTD Sales, F11 Single Column, F12 All Stores On Hand, Shift+F1 All Stores 1 Row, Shift+F2 All Stores Summary, Shift+F3 Max, Shift+F4 Reorder. Zack's Retail surfaces these as a view-mode selector (tabs + keyboard shortcuts), not load-bearing F-keys.
+- **Action buttons (p. 70–71)**:
+  - `[UPCs]` — all UPCs for the SKU (served by `products.SkuUpc`, this module).
+  - `[POs]` — outstanding POs for the SKU (served by `purchasing.getOpenPoLines(skuId)`).
+  - `[Trend]` — Eight-Week Trending (served by `sales-reporting.getEightWeekTrend(skuId)`).
+  - `[Info]` — Season, Label Code, Group Code, Date 1st Received, Date Last Markdown, Perks, Comments, last-12-months sales qty + $, plus SKU/Store GP% · ROI · TURNS at MTD/STD/YTD.
+  - `[Detail]` — opens Inventory Change Detail for the current SKU (served by `inventory.getMovementsForSku(skuId)`; rendered as a side panel or separate route).
+- **Navigation — `[Prev]` / `[Next]`** — step through SKUs, optionally in store-then-SKU order (RICS p. 70).
+
+### Modernization decisions for the page
+
+- **Single route, one page, tab-based view modes.** `/products/inquiry/:skuCode` (URL lives under `/products/*` going forward; the current `/inventory/inquiry` route is kept as a redirect until all callers update).
+- **Store filter is URL state, not modal.** The sales-path "Ch. 2 p. 53" flow launches with the current register's store pre-selected via `?storeId=<id>`.
+- **Prev/Next uses the URL's filter set** — whatever criteria (vendor, category, season) is in the query string defines the cursor sequence. This replaces RICS's global "process in store order" setting (p. 70) with a per-view sort param.
+- **`[Trend]`, `[POs]`, `[Info]`, `[Detail]`, `[UPCs]` are tabs or side-drawers on the page** rather than separate screens, so the operator never loses SKU context.
+- **F-key shortcuts are supported but not required.** The same state machine drives clicks and keystrokes.
+- **The "All Stores" modes (F12, Shift+F1, Shift+F2) render as a pivoted grid** with stores on the Y-axis and sizes on the X-axis; Shift+F3 / Shift+F4 (Max / Reorder) are just additional view-mode options alongside the sales / stock numbers.
+
+### Page surface
+
+- **URL**: `/products/inquiry/:skuCode` (canonical). Also reachable from:
+  - SKU list row click (`/products/skus`)
+  - `[Inquiry]` action on a PO line (`purchasing`)
+  - `[Lookup]` action on the POS register (Ch. 2 p. 53 — sales-pos launches the page with the register's store pre-selected).
+- **Query params**: `storeId`, `mode` (one of `ON_HAND | ON_ORDER_CURRENT | ON_ORDER_FUTURE | MODEL | SHORT | MTD_SALES | STD_SALES | YTD_SALES | SINGLE_COLUMN | ALL_STORES_ON_HAND | ALL_STORES_ONE_ROW | ALL_STORES_SUMMARY | MAX | REORDER | COMBINED`), `row` (required for SINGLE_COLUMN / ALL_STORES_ONE_ROW / ALL_STORES_SUMMARY for 2-D size types).
+- **Page regions** (top to bottom):
+  1. **Header** — SKU code + description + Category + Vendor + Vendor SKU + Style/Color + Size Type + Last Received. Prev / Next cursor buttons at the top-right.
+  2. **Pricing panel** — Retail / Markdown 1 / Markdown 2 / Avg Cost / Current Cost / List Price. Highlights the current-price slot.
+  3. **Sales roll-up strip** — Qty / Net / Markdown / Profit for Week / Month / Season / Year.
+  4. **View-mode selector** — tab row + keyboard-shortcut hints. Default view = `COMBINED` (new, shows on-hand + on-order + model + shortage in one grid).
+  5. **Size grid** — renders per the selected mode; rows/columns come from `products.getSizeType(sizeTypeId)`.
+  6. **Action drawers / tabs** — UPCs, POs, Trend, Info, Detail (Change Detail).
+
+### Data the page reads (all via outbound contracts, owned elsewhere)
+
+- `products.getSku(skuCode)` → header + pricing panel + size type reference *(this module)*
+- `products.getCurrentPrice(skuId, storeId)` → current slot highlight *(this module)*
+- `products.listSkuUpcs(skuId)` → `[UPCs]` tab *(this module)*
+- `inventory.getOnHandGrid(skuId, storeId)` / `getOnHandAllStores(skuId)` → size grids in all On-Hand / All-Stores modes *(`inventory`)*
+- `inventory.getReplenishmentGrid(skuId, storeId)` → Model / Max / Reorder view modes *(`inventory`)*
+- `inventory.getMovementsForSku(skuId, { storeId?, dateRange? })` → `[Detail]` tab *(`inventory`)*
+- `inventory.getLastReceivedAt(skuId, storeId)` → header Last Received *(`inventory`)*
+- `purchasing.getOnOrder(skuId, storeId, col, row, classification)` → On-Order Current / On-Order Future grids *(`purchasing`)*
+- `purchasing.getOpenPoLines(skuId)` → `[POs]` tab *(`purchasing`)*
+- `sales-reporting.getSkuSalesRollups(skuId, storeId)` → sales roll-up strip (Week / Month / Season / Year × Qty / Net / Markdown / Profit) *(`sales-reporting`)*
+- `sales-reporting.getSizeGridSales(skuId, storeId, period)` → MTD / STD / YTD size grid modes *(`sales-reporting`)*
+- `sales-reporting.getEightWeekTrend(skuId, storeId)` → `[Trend]` tab *(`sales-reporting`)*
+- `sales-reporting.getSkuPerformance(skuId, storeId)` → `[Info]` tab (GP%, ROI, Turns at MTD/STD/YTD + last-12-months qty + $) *(`sales-reporting`)*
+
+### What this module owns vs. what it just composes
+
+- **Owns**: the page route, the component tree, the header + pricing panel + action drawers, the view-mode state machine, keyboard handlers, the Prev/Next cursor, UPC rendering, pricing-slot highlighting, URL state.
+- **Composes (does not own)**: the size grid renderer (shared UI primitive — should live in `apps/web/src/components/size-grid/`, used by this page, Find by Size, Replenishment Targets editor, Manual Receipts, etc.); every data fetch above.
+- **Does not own**: on-hand / on-order / replenishment reads (→ `inventory` + `purchasing`), movement history (→ `inventory`), sales analytics (→ `sales-reporting`).
+
+### Dispatch note
+
+The owning agent for the page itself is `products-dev`. When implementing:
+- Keep all data reads behind the module contracts named above. Do not inline SQL / Prisma calls that bypass the contracts — if a needed contract is missing, raise it to the owning module first.
+- If the contracts don't yet exist as concrete endpoints, the first deliverable is to stub them on the frontend with typed hooks + TanStack Query keys that will later be wired to real endpoints. This keeps the page owned by `products-dev` and the backend concerns ownable by `inventory`-maintainer / `purchasing`-maintainer / `sales-reporting`-maintainer.
+- The current Phase-1 RICS adapter (`apps/api/src/routes/ricsInventoryRoutes.ts` via `useRicsInventory` hooks) already serves a subset of this page. Phase-1 work can light up tabs against those read paths; Phase-2 work replaces them with the native contracts.
 
 ## Dependencies
 

@@ -16,6 +16,10 @@ const InventoryInquiryPage = lazy(() => import('./pages/inventory/InventoryInqui
 const FindBySizePage = lazy(() => import('./pages/inventory/FindBySizePage'))
 const ReplenishmentTargetsPage = lazy(() => import('./pages/inventory/ReplenishmentTargetsPage'))
 const TransferSummaryReportPage = lazy(() => import('./pages/inventory/TransferSummaryReportPage'))
+const RecommendedTransferReportPage = lazy(() => import('./pages/inventory/RecommendedTransferReportPage'))
+const AutoTransferPreviewPage = lazy(() => import('./pages/inventory/AutoTransferPreviewPage'))
+const BalancingTransferPreviewPage = lazy(() => import('./pages/inventory/BalancingTransferPreviewPage'))
+const ManualTransferEntryPage = lazy(() => import('./pages/inventory/ManualTransferEntryPage'))
 const InventoryDetailReportPage = lazy(() => import('./pages/inventory/InventoryDetailReportPage'))
 const ChangeDetailPage = lazy(() => import('./pages/inventory/ChangeDetailPage'))
 const AdjustmentListPage = lazy(() => import('./pages/inventory/AdjustmentListPage'))
@@ -52,6 +56,27 @@ const MePage = lazy(() => import('./pages/auth/MePage'))
 const ChangePasswordPage = lazy(() => import('./pages/auth/ChangePasswordPage'))
 const UsersListPage = lazy(() => import('./pages/users/UsersListPage'))
 const UserFormPage = lazy(() => import('./pages/users/UserFormPage'))
+
+// products module — Phase 1 Step 2 taxonomy pages
+const TaxonomyHomePage = lazy(() => import('./pages/products/TaxonomyHomePage'))
+const DepartmentListPage = lazy(() => import('./pages/products/DepartmentListPage'))
+const DepartmentFormPage = lazy(() => import('./pages/products/DepartmentFormPage'))
+const CategoryListPage = lazy(() => import('./pages/products/CategoryListPage'))
+const CategoryFormPage = lazy(() => import('./pages/products/CategoryFormPage'))
+const GroupListPage = lazy(() => import('./pages/products/GroupListPage'))
+const GroupFormPage = lazy(() => import('./pages/products/GroupFormPage'))
+const KeywordListPage = lazy(() => import('./pages/products/KeywordListPage'))
+const KeywordFormPage = lazy(() => import('./pages/products/KeywordFormPage'))
+const SectorListPage = lazy(() => import('./pages/products/SectorListPage'))
+const SectorFormPage = lazy(() => import('./pages/products/SectorFormPage'))
+const ReturnCodeListPage = lazy(() => import('./pages/products/ReturnCodeListPage'))
+const ReturnCodeFormPage = lazy(() => import('./pages/products/ReturnCodeFormPage'))
+const PromotionCodeListPage = lazy(() => import('./pages/products/PromotionCodeListPage'))
+const PromotionCodeFormPage = lazy(() => import('./pages/products/PromotionCodeFormPage'))
+const SeasonListPage = lazy(() => import('./pages/products/SeasonListPage'))
+const SeasonFormPage = lazy(() => import('./pages/products/SeasonFormPage'))
+const SizeTypeListPage = lazy(() => import('./pages/products/SizeTypeListPage'))
+const SizeTypeGridEditorPage = lazy(() => import('./pages/products/SizeTypeGridEditorPage'))
 
 function RouteLoadingFallback() {
   return (
@@ -99,7 +124,11 @@ export default function App() {
             <Route path="/inventory/inquiry" element={<InventoryInquiryPage />} />
             <Route path="/inventory/find-by-size" element={<FindBySizePage />} />
             <Route path="/inventory/replenishment" element={<ReplenishmentTargetsPage />} />
+            <Route path="/inventory/transfers/manual" element={<ManualTransferEntryPage />} />
+            <Route path="/inventory/transfers/auto-preview" element={<AutoTransferPreviewPage />} />
+            <Route path="/inventory/transfers/balancing-preview" element={<BalancingTransferPreviewPage />} />
             <Route path="/reports/transfer-summary" element={<TransferSummaryReportPage />} />
+            <Route path="/reports/recommended-transfers" element={<RecommendedTransferReportPage />} />
             <Route path="/reports/inventory-detail" element={<InventoryDetailReportPage />} />
             <Route path="/inventory/change-detail" element={<ChangeDetailPage />} />
             <Route path="/purchasing" element={<Navigate to="/purchasing/orders" replace />} />
@@ -134,6 +163,37 @@ export default function App() {
             <Route path="/customers" element={<CustomerListPage />} />
             <Route path="/customers/new" element={<CustomerFormPage />} />
             <Route path="/customers/:customerId/edit" element={<CustomerFormPage />} />
+
+            {/* products module — Phase 1 Step 2 taxonomy pages */}
+            <Route path="/products" element={<Navigate to="/products/taxonomy" replace />} />
+            <Route path="/products/taxonomy" element={<TaxonomyHomePage />} />
+            <Route path="/products/taxonomy/departments" element={<DepartmentListPage />} />
+            <Route path="/products/taxonomy/departments/new" element={<DepartmentFormPage />} />
+            <Route path="/products/taxonomy/departments/:number" element={<DepartmentFormPage />} />
+            <Route path="/products/taxonomy/categories" element={<CategoryListPage />} />
+            <Route path="/products/taxonomy/categories/new" element={<CategoryFormPage />} />
+            <Route path="/products/taxonomy/categories/:number" element={<CategoryFormPage />} />
+            <Route path="/products/taxonomy/groups" element={<GroupListPage />} />
+            <Route path="/products/taxonomy/groups/new" element={<GroupFormPage />} />
+            <Route path="/products/taxonomy/groups/:code" element={<GroupFormPage />} />
+            <Route path="/products/taxonomy/keywords" element={<KeywordListPage />} />
+            <Route path="/products/taxonomy/keywords/new" element={<KeywordFormPage />} />
+            <Route path="/products/taxonomy/keywords/:keyword" element={<KeywordFormPage />} />
+            <Route path="/products/taxonomy/sectors" element={<SectorListPage />} />
+            <Route path="/products/taxonomy/sectors/new" element={<SectorFormPage />} />
+            <Route path="/products/taxonomy/sectors/:number" element={<SectorFormPage />} />
+            <Route path="/products/taxonomy/return-codes" element={<ReturnCodeListPage />} />
+            <Route path="/products/taxonomy/return-codes/new" element={<ReturnCodeFormPage />} />
+            <Route path="/products/taxonomy/return-codes/:code" element={<ReturnCodeFormPage />} />
+            <Route path="/products/taxonomy/promotion-codes" element={<PromotionCodeListPage />} />
+            <Route path="/products/taxonomy/promotion-codes/new" element={<PromotionCodeFormPage />} />
+            <Route path="/products/taxonomy/promotion-codes/:code" element={<PromotionCodeFormPage />} />
+            <Route path="/products/taxonomy/seasons" element={<SeasonListPage />} />
+            <Route path="/products/taxonomy/seasons/new" element={<SeasonFormPage />} />
+            <Route path="/products/taxonomy/seasons/:code" element={<SeasonFormPage />} />
+            <Route path="/products/taxonomy/size-types" element={<SizeTypeListPage />} />
+            <Route path="/products/taxonomy/size-types/new" element={<SizeTypeGridEditorPage />} />
+            <Route path="/products/taxonomy/size-types/:code" element={<SizeTypeGridEditorPage />} />
             <Route path="/me" element={<MePage />} />
             <Route path="/change-password" element={<ChangePasswordPage />} />
             <Route

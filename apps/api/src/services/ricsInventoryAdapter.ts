@@ -1,0 +1,1577 @@
+/**
+ * Live read-through adapter from the legacy RICS MDBs into the shapes the
+ * `inventory` module spec (docs/modules/inventory.md) publishes.
+ *
+ * Read-only. Never writes to RICS.
+ *
+ * Covers the Phase 1 read surfaces:
+ *   - Inventory Inquiry  (RICS Ch. 4 p. 75)  — getInventoryInquiry(sku)
+ *   - Find by Size       (RICS Ch. 4 p. 70)  — findBySize(sku, sizeLabel)
+ *   - Inventory Detail   (RICS Ch. 4 p. 78)  — getInventoryDetailReport(...)
+ *
+ * Data sources:
+ *   RIINVQUA "Inventory Quantities"  → on-hand / on-order / model / max / reorder / sales history
+ *   RIINVMAS "InventoryMaster"       → SKU master (desc, brand FK, size type, pricing)
+ *   RISIZE   "SizeTypes"             → row + column labels for the size grid
+ *   RISTORE  "StoreMaster"           → store numbers → store names
+ *   RIVENDOR "Vendor Master"         → brand display name
+ *
+ * The RIINVQUA wide-column shape (`OnHand_01..18` per (SKU, Store, Row, Segment))
+ * is unwound here into flat `InventoryCell` objects that the inventory module
+ * spec prescribes. Segment N covers size-grid columns `(N-1)*18 + 1 .. N*18`.
+ */
+
+import fs from 'node:fs';
+import {
+  ricsDbPath,
+  getOrRecoverPassword,
+  runPowerShellJson,
+  buildSelectScript,
+} from './accessOleDb';
+
+// ─────────────────────────── public types ─────────────────────────────────
+
+export interface InventoryCell {
+  storeNumber: number;
+  rowLabel: string;          // size-grid row (e.g. "M", "W", or "" for single-row)
+  columnLabel: string;       // size-grid column (e.g. "7", "7.5")
+  onHand: number;
+  currentOnOrder: number;
+  futureOnOrder: number;
+  model: number;
+  maxQty: number;
+  reorder: number;
+  mtdSales: number;
+  stdSales: number;
+  ytdSales: number;
+  lySales: number;
+}
+
+export interface InventoryInquiryStore {
+  storeNumber: number;
+  storeName: string | null;
+  cells: InventoryCell[];
+  totals: {
+    onHand: number;
+    currentOnOrder: number;
+    futureOnOrder: number;
+    ytdSales: number;
+    lySales: number;
+  };
+}
+
+export interface InventoryInquiry {
+  sku: string;
+  master: {
+    description: string | null;
+    brand: string | null;
+    vendorCode: string | null;
+    category: number | null;
+    season: string | null;
+    retailPrice: number | null;
+    currentCost: number | null;
+    sizeType: {
+      code: number | null;
+      desc: string | null;
+      rowLabels: string[];
+      columnLabels: string[];
+    };
+  };
+  stores: InventoryInquiryStore[];
+  totals: InventoryInquiryStore['totals'];
+}
+
+export interface FindBySizeResult {
+  sku: string;
+  description: string | null;
+  brand: string | null;
+  sizeLabel: string;
+  matches: Array<{
+    storeNumber: number;
+    storeName: string | null;
+    rowLabel: string;
+    onHand: number;
+  }>;
+  totalOnHand: number;
+}
+
+export interface InventoryDetailReportRow {
+  sku: string;
+  description: string | null;
+  brand: string | null;
+  vendorCode: string | null;
+  category: number | null;
+  styleColor: string | null;
+  season: string | null;
+  retailPrice: number | null;
+  currentCost: number | null;
+  totalOnHand: number;
+  totalCurrentOnOrder: number;
+  totalYtdSales: number;
+  totalLySales: number;
+  retailValue: number;
+  costValue: number;
+}
+
+export interface InventoryDetailReportParams {
+  storeNumber?: number;       // if omitted, sum across all stores
+  vendorCode?: string;
+  categoryMin?: number;
+  categoryMax?: number;
+  season?: string;
+  limit?: number;
+}
+
+/**
+ * One row from RICS's InvChanges ledger (RIINVCHG). Matches the raw columns
+ * directly — `rowLabel` / `columnLabel` are the size-grid coordinates, and
+ * `otherStore` is the counterpart store for transfer entries.
+ */
+export interface ChangeDetailRow {
+  sku: string;
+  origSku: string | null;
+  store: number;
+  changeType: string;        // POR | RET | PHY | TOU | TIN | REC | ...
+  date: string;              // ISO 8601
+  rowLabel: string;
+  columnLabel: string;
+  purchaseOrder: string | null;
+  otherStore: number | null; // transfer counterpart store, 0/null otherwise
+  quantity: number;
+  cost: number;
+  rmaNumber: string | null;
+}
+
+export interface ChangeDetailParams {
+  sku?: string;
+  store?: number;
+  changeType?: string;
+  fromDate?: string;         // YYYY-MM-DD (inclusive)
+  toDate?: string;           // YYYY-MM-DD (inclusive)
+  limit?: number;            // default 200, max 1000
+}
+
+export class ChangeDetailQueryTooBroadError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ChangeDetailQueryTooBroadError';
+  }
+}
+
+export class TransferSummaryInputError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'TransferSummaryInputError';
+  }
+}
+
+// ─────────────────────────── Transfer Summary Report types ────────────────
+
+export interface TransferSummaryParams {
+  fromDate: string; // YYYY-MM-DD, required (inclusive)
+  toDate: string;   // YYYY-MM-DD, required (inclusive)
+  fromStoreNumbers?: number[];
+  toStoreNumbers?: number[];
+}
+
+export interface TransferSummaryCell {
+  fromStore: number;
+  fromStoreName: string | null;
+  toStore: number;
+  toStoreName: string | null;
+  quantity: number;
+  cost: number;
+  transferEvents: number; // count of RIINVCHG TOU rows (one per SKU-cell transfer)
+}
+
+export interface TransferSummaryMonth {
+  month: string; // YYYY-MM
+  cells: TransferSummaryCell[];
+  totalQuantity: number;
+  totalCost: number;
+  totalEvents: number;
+}
+
+export interface TransferSummaryReport {
+  fromDate: string;
+  toDate: string;
+  months: TransferSummaryMonth[];
+  matrix: TransferSummaryCell[]; // from×to rollup across the full range
+  stores: Array<{ number: number; name: string | null }>;
+  grandTotalQuantity: number;
+  grandTotalCost: number;
+  grandTotalEvents: number;
+}
+
+// ─────────────────────────── TTL cache ────────────────────────────────────
+
+interface CacheEntry<T> {
+  value: T;
+  expiresAt: number;
+}
+const cache = new Map<string, CacheEntry<unknown>>();
+
+async function cachedAsync<T>(key: string, ttlMs: number, loader: () => Promise<T>): Promise<T> {
+  const now = Date.now();
+  const hit = cache.get(key) as CacheEntry<T> | undefined;
+  if (hit && hit.expiresAt > now) return hit.value;
+  const value = await loader();
+  cache.set(key, { value, expiresAt: now + ttlMs });
+  return value;
+}
+
+export function clearCache(): void {
+  cache.clear();
+}
+
+// ─────────────────────────── MDB paths ────────────────────────────────────
+
+function mdbPath(envKey: string, defaultFile: string): string {
+  return ricsDbPath(process.env[envKey] || defaultFile);
+}
+const INVQUA_MDB = () => mdbPath('RICS_INVQUA_DB_FILE', 'RIINVQUA.MDB');
+const INVCHG_MDB = () => mdbPath('RICS_INVCHG_DB_FILE', 'RIINVCHG.MDB');
+const INVMAS_MDB = () => mdbPath('RICS_INVMAS_DB_FILE', 'RIINVMAS.MDB');
+const SIZE_MDB   = () => mdbPath('RICS_SIZE_DB_FILE',   'RISIZE.MDB');
+const STORE_MDB  = () => mdbPath('RICS_STORE_DB_FILE',  'RISTORE.MDB');
+const VENDOR_MDB = () => mdbPath('RICS_VENDOR_DB_FILE', 'RIVENDOR.MDB');
+
+// ─────────────────────────── dimension loaders ────────────────────────────
+
+interface StoreRow {
+  number: number;
+  name: string | null;
+}
+
+async function loadStoreMap(): Promise<Map<number, StoreRow>> {
+  return cachedAsync('dim:stores', 300_000, async () => {
+    const rows = queryAll<{ Number: number; Desc: string | null }>(
+      STORE_MDB(),
+      'SELECT [Number], [Desc] FROM [StoreMaster]',
+    );
+    const map = new Map<number, StoreRow>();
+    for (const r of rows) {
+      if (r.Number == null) continue;
+      map.set(Number(r.Number), {
+        number: Number(r.Number),
+        name: r.Desc?.trim() || null,
+      });
+    }
+    return map;
+  });
+}
+
+interface SizeTypeRow {
+  code: number;
+  desc: string | null;
+  columns: string[]; // ordered, 1-based
+  rows: string[];
+  maxColumns: number;
+  maxRows: number;
+}
+
+async function loadSizeTypeMap(): Promise<Map<number, SizeTypeRow>> {
+  return cachedAsync('dim:sizeTypes', 300_000, async () => {
+    const colSelect = Array.from({ length: 54 }, (_, i) => `[Columns_${pad2(i + 1)}]`).join(', ');
+    const rowSelect = Array.from({ length: 27 }, (_, i) => `[Rows_${pad2(i + 1)}]`).join(', ');
+    const rows = queryAll<Record<string, string | number | null>>(
+      SIZE_MDB(),
+      `SELECT [Code], [Desc], [MaxColumns], [MaxRows], ${colSelect}, ${rowSelect} FROM [SizeTypes]`,
+    );
+    const map = new Map<number, SizeTypeRow>();
+    for (const r of rows) {
+      const code = Number(r.Code);
+      if (!Number.isFinite(code)) continue;
+      const maxCols = Math.min(54, Math.max(0, Number(r.MaxColumns ?? 0)));
+      const maxRows = Math.min(27, Math.max(0, Number(r.MaxRows ?? 0)));
+      const cols: string[] = [];
+      for (let i = 1; i <= maxCols; i++) {
+        const v = (r[`Columns_${pad2(i)}`] as string | null)?.toString().trim();
+        cols.push(v || '');
+      }
+      const rws: string[] = [];
+      for (let i = 1; i <= maxRows; i++) {
+        const v = (r[`Rows_${pad2(i)}`] as string | null)?.toString().trim();
+        rws.push(v || '');
+      }
+      map.set(code, {
+        code,
+        desc: (r.Desc as string | null)?.toString().trim() || null,
+        columns: cols,
+        rows: rws,
+        maxColumns: maxCols,
+        maxRows: maxRows,
+      });
+    }
+    return map;
+  });
+}
+
+interface VendorRow {
+  code: string;
+  shortName: string | null;
+  manuName: string | null;
+}
+
+async function loadVendorMap(): Promise<Map<string, VendorRow>> {
+  return cachedAsync('dim:vendors', 300_000, async () => {
+    const rows = queryAll<{ Code: string; 'Short Name': string | null; 'Manu Name': string | null }>(
+      VENDOR_MDB(),
+      'SELECT [Code], [Short Name], [Manu Name] FROM [Vendor Master]',
+    );
+    const map = new Map<string, VendorRow>();
+    for (const r of rows) {
+      if (!r.Code) continue;
+      const code = r.Code.trim();
+      map.set(code, {
+        code,
+        shortName: r['Short Name']?.trim() || null,
+        manuName: r['Manu Name']?.trim() || null,
+      });
+    }
+    return map;
+  });
+}
+
+// ─────────────────────────── master lookup ────────────────────────────────
+
+interface MasterRow {
+  SKU: string | null;
+  Desc: string | null;
+  Vendor: string | null;
+  Manufacturer: string | null;
+  Category: number | null;
+  SizeType: number | null;
+  Season: string | null;
+  StyleColor: string | null;
+  ListPrice: number | null;
+  RetailPrice: number | null;
+  MarkDownPrice1: number | null;
+  MarkDownPrice2: number | null;
+  CurrentPrice: number | null;
+  CurrentCost: number | null;
+  Status: string | null;
+}
+
+async function loadMasterBySku(sku: string): Promise<MasterRow | null> {
+  const safe = sku.replace(/'/g, "''");
+  const sql = `SELECT TOP 1
+  [SKU], [Desc], [Vendor], [Manufacturer], [Category], [SizeType], [Season], [StyleColor],
+  [ListPrice], [RetailPrice], [MarkDownPrice1], [MarkDownPrice2], [CurrentPrice], [CurrentCost], [Status]
+FROM [InventoryMaster] WHERE [SKU] = '${safe}'`;
+  const rows = queryAll<MasterRow>(INVMAS_MDB(), sql);
+  return rows[0] ?? null;
+}
+
+/** Resolve the effective price via the RICS `CurrentPrice` slot selector (p.155). */
+function resolveCurrentPrice(row: Pick<MasterRow, 'CurrentPrice' | 'ListPrice' | 'RetailPrice' | 'MarkDownPrice1' | 'MarkDownPrice2'>): number | null {
+  const slot = Number(row.CurrentPrice ?? 2);
+  const picked =
+    slot === 1 ? row.ListPrice :
+    slot === 3 ? row.MarkDownPrice1 :
+    slot === 4 ? row.MarkDownPrice2 :
+                 row.RetailPrice;
+  const n = Number(picked ?? 0);
+  if (n > 0) return n;
+  const fallback = Number(row.RetailPrice ?? 0);
+  return fallback > 0 ? fallback : null;
+}
+
+// ─────────────────────────── RIINVQUA wide → flat ─────────────────────────
+
+/** Superset row shape from `Inventory Quantities`. All `_NN` metrics are nullable SMALLINTs. */
+type QuaRow = {
+  SKU: string | null;
+  Store: number | null;
+  Row: string | null;
+  Segment: number | null;
+} & Record<string, string | number | null>;
+
+interface MetricFamily {
+  prefix: string;              // e.g. "OnHand_"
+  key: keyof InventoryCell;    // e.g. "onHand"
+}
+
+const CELL_METRICS: MetricFamily[] = [
+  { prefix: 'OnHand_',         key: 'onHand' },
+  { prefix: 'CurrentOnOrder_', key: 'currentOnOrder' },
+  { prefix: 'FutureOnOrder_',  key: 'futureOnOrder' },
+  { prefix: 'Model_',          key: 'model' },
+  { prefix: 'MaxQtys_',        key: 'maxQty' },
+  { prefix: 'Reorder_',        key: 'reorder' },
+  // The Access column names carry hyphens literally — bracket them in SQL:
+  { prefix: 'M-T-DSales_',     key: 'mtdSales' },
+  { prefix: 'S-T-DSales_',     key: 'stdSales' },
+  { prefix: 'Y-T-DSales_',     key: 'ytdSales' },
+  { prefix: 'LYSales_',        key: 'lySales' },
+];
+
+/** SELECT column list covering all metric families for segments 01–18. */
+function buildQuaSelect(): string {
+  const cols = ['[SKU]', '[Store]', '[Row]', '[Segment]'];
+  for (const m of CELL_METRICS) {
+    for (let i = 1; i <= 18; i++) {
+      cols.push(`[${m.prefix}${pad2(i)}]`);
+    }
+  }
+  return cols.join(',\n  ');
+}
+
+/**
+ * Unwind one RIINVQUA row into up to 18 cells. Cells whose column slot maps
+ * past the SizeType's MaxColumns are dropped; cells with all zero metrics are
+ * dropped only when `includeZero` is false (inquiry keeps them so the grid is
+ * complete; find-by-size drops them so the result is small).
+ */
+function expandQuaRow(
+  q: QuaRow,
+  sizeType: SizeTypeRow | null,
+  opts: { includeZero: boolean },
+): InventoryCell[] {
+  const segment = Number(q.Segment ?? 1);
+  const firstCol = (segment - 1) * 18 + 1; // 1-based position in the full size grid
+  const rowLabel = (q.Row ?? '').toString().trim();
+  const storeNumber = Number(q.Store ?? 0);
+
+  const out: InventoryCell[] = [];
+  for (let i = 1; i <= 18; i++) {
+    const absoluteCol = firstCol + (i - 1);
+    if (sizeType && absoluteCol > sizeType.maxColumns) break;
+    const columnLabel = sizeType
+      ? (sizeType.columns[absoluteCol - 1] ?? '').trim()
+      : '';
+
+    const cell: InventoryCell = {
+      storeNumber,
+      rowLabel,
+      columnLabel: columnLabel || String(absoluteCol),
+      onHand: 0,
+      currentOnOrder: 0,
+      futureOnOrder: 0,
+      model: 0,
+      maxQty: 0,
+      reorder: 0,
+      mtdSales: 0,
+      stdSales: 0,
+      ytdSales: 0,
+      lySales: 0,
+    };
+
+    let any = false;
+    for (const m of CELL_METRICS) {
+      const v = Number(q[`${m.prefix}${pad2(i)}`] ?? 0) || 0;
+      (cell as any)[m.key] = v;
+      if (v !== 0) any = true;
+    }
+
+    // Drop pure-zero cells that also have no column label (i.e. unused slots
+    // in a segment that overshoots the size grid).
+    if (!columnLabel && !any) continue;
+    if (!opts.includeZero && !any) continue;
+    out.push(cell);
+  }
+  return out;
+}
+
+// ─────────────────────────── public: Inventory Inquiry ────────────────────
+
+export async function getInventoryInquiry(sku: string): Promise<InventoryInquiry | null> {
+  const trimmed = (sku ?? '').trim();
+  if (!trimmed) return null;
+
+  const master = await loadMasterBySku(trimmed);
+  if (!master || !master.SKU) return null;
+
+  const [stores, sizeTypes, vendors] = await Promise.all([
+    loadStoreMap(),
+    loadSizeTypeMap(),
+    loadVendorMap(),
+  ]);
+
+  const sizeType = master.SizeType != null ? sizeTypes.get(Number(master.SizeType)) ?? null : null;
+  const vendor = master.Vendor ? vendors.get(master.Vendor.trim()) ?? null : null;
+
+  const safe = trimmed.replace(/'/g, "''");
+  const sql = `SELECT ${buildQuaSelect()}
+FROM [Inventory Quantities]
+WHERE [SKU] = '${safe}'
+ORDER BY [Store], [Row], [Segment]`;
+  const rows = queryAll<QuaRow>(INVQUA_MDB(), sql);
+
+  const byStore = new Map<number, InventoryCell[]>();
+  for (const r of rows) {
+    const cells = expandQuaRow(r, sizeType, { includeZero: true });
+    const list = byStore.get(Number(r.Store ?? 0)) ?? [];
+    list.push(...cells);
+    byStore.set(Number(r.Store ?? 0), list);
+  }
+
+  const storeEntries: InventoryInquiryStore[] = [...byStore.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([storeNumber, cells]) => ({
+      storeNumber,
+      storeName: stores.get(storeNumber)?.name ?? null,
+      cells,
+      totals: sumCellTotals(cells),
+    }));
+
+  const brand =
+    master.Manufacturer?.trim() ||
+    vendor?.manuName ||
+    vendor?.shortName ||
+    master.Vendor?.trim() ||
+    null;
+
+  const rowLabelsPresent = new Set<string>();
+  for (const entry of storeEntries) {
+    for (const c of entry.cells) {
+      if (c.rowLabel) rowLabelsPresent.add(c.rowLabel);
+    }
+  }
+
+  return {
+    sku: master.SKU,
+    master: {
+      description: master.Desc?.trim() || null,
+      brand,
+      vendorCode: master.Vendor?.trim() || null,
+      category: master.Category ?? null,
+      season: master.Season?.trim() || null,
+      retailPrice: resolveCurrentPrice(master),
+      currentCost: master.CurrentCost ?? null,
+      sizeType: {
+        code: sizeType?.code ?? master.SizeType ?? null,
+        desc: sizeType?.desc ?? null,
+        rowLabels: sizeType
+          ? sizeType.rows.filter((lbl) => lbl && (rowLabelsPresent.size === 0 || rowLabelsPresent.has(lbl)))
+          : [...rowLabelsPresent],
+        columnLabels: sizeType ? sizeType.columns.filter((lbl) => !!lbl) : [],
+      },
+    },
+    stores: storeEntries,
+    totals: storeEntries.reduce<InventoryInquiryStore['totals']>(
+      (acc, s) => ({
+        onHand: acc.onHand + s.totals.onHand,
+        currentOnOrder: acc.currentOnOrder + s.totals.currentOnOrder,
+        futureOnOrder: acc.futureOnOrder + s.totals.futureOnOrder,
+        ytdSales: acc.ytdSales + s.totals.ytdSales,
+        lySales: acc.lySales + s.totals.lySales,
+      }),
+      { onHand: 0, currentOnOrder: 0, futureOnOrder: 0, ytdSales: 0, lySales: 0 },
+    ),
+  };
+}
+
+function sumCellTotals(cells: InventoryCell[]): InventoryInquiryStore['totals'] {
+  return cells.reduce(
+    (acc, c) => ({
+      onHand: acc.onHand + c.onHand,
+      currentOnOrder: acc.currentOnOrder + c.currentOnOrder,
+      futureOnOrder: acc.futureOnOrder + c.futureOnOrder,
+      ytdSales: acc.ytdSales + c.ytdSales,
+      lySales: acc.lySales + c.lySales,
+    }),
+    { onHand: 0, currentOnOrder: 0, futureOnOrder: 0, ytdSales: 0, lySales: 0 },
+  );
+}
+
+// ─────────────────────────── public: Find by Size ─────────────────────────
+
+/**
+ * Find available on-hand for a single (SKU, sizeLabel) across every store.
+ * Matches RICS's Ch. 4 p. 70 flow: enter SKU + size → see which store has it.
+ * Size matching is case-insensitive exact-match against the SizeType's column
+ * labels (or row labels when the shoe grid uses rows for width).
+ */
+export async function findBySize(sku: string, sizeLabel: string): Promise<FindBySizeResult | null> {
+  const skuTrim = (sku ?? '').trim();
+  const sizeTrim = (sizeLabel ?? '').trim();
+  if (!skuTrim || !sizeTrim) return null;
+
+  const inquiry = await getInventoryInquiry(skuTrim);
+  if (!inquiry) return null;
+
+  const target = sizeTrim.toLowerCase();
+  const matches: FindBySizeResult['matches'] = [];
+  for (const s of inquiry.stores) {
+    for (const c of s.cells) {
+      const labelMatches =
+        c.columnLabel.toLowerCase() === target ||
+        c.rowLabel.toLowerCase() === target;
+      if (!labelMatches) continue;
+      if (c.onHand === 0) continue;
+      matches.push({
+        storeNumber: s.storeNumber,
+        storeName: s.storeName,
+        rowLabel: c.rowLabel,
+        onHand: c.onHand,
+      });
+    }
+  }
+  matches.sort((a, b) => b.onHand - a.onHand);
+
+  return {
+    sku: inquiry.sku,
+    description: inquiry.master.description,
+    brand: inquiry.master.brand,
+    sizeLabel: sizeTrim,
+    matches,
+    totalOnHand: matches.reduce((acc, m) => acc + m.onHand, 0),
+  };
+}
+
+// ─────────────────────────── public: Inventory Detail Report ──────────────
+
+/**
+ * Roll RIINVQUA up to one row per SKU (optionally scoped to one store),
+ * joined with InventoryMaster so the merchandiser can see on-hand × cost /
+ * retail without drilling into cells. This is RICS's Ch. 4 p. 78 "Print
+ * Inventory Detail Report" in its default (by-SKU) shape — further report
+ * variants (by-vendor, by-category) are simple re-aggregations of this row
+ * set and are built in the web layer from the same payload.
+ */
+export async function getInventoryDetailReport(
+  params: InventoryDetailReportParams = {},
+): Promise<InventoryDetailReportRow[]> {
+  const limit = Math.max(1, Math.min(params.limit ?? 5000, 20_000));
+
+  const [stores, vendors] = await Promise.all([loadStoreMap(), loadVendorMap()]);
+  void stores;
+
+  // 1) Aggregate RIINVQUA rows by SKU. On-hand / on-order / sales rollups are
+  //    simple per-metric sums over every cell of every (store, row, segment).
+  const storeFilter =
+    params.storeNumber != null ? ` WHERE [Store] = ${Number(params.storeNumber)}` : '';
+  const sumParts = CELL_METRICS
+    .filter((m) =>
+      m.key === 'onHand' ||
+      m.key === 'currentOnOrder' ||
+      m.key === 'ytdSales' ||
+      m.key === 'lySales',
+    )
+    .flatMap((m) =>
+      Array.from({ length: 18 }, (_, i) => `IIF([${m.prefix}${pad2(i + 1)}] IS NULL, 0, [${m.prefix}${pad2(i + 1)}])`),
+    );
+  // Break the sum into four named rollups matching the MetricFamily filter
+  // above. The order is preserved: onHand | currentOnOrder | ytdSales | lySales,
+  // 18 columns each.
+  const onHandSum = sumParts.slice(0, 18).join(' + ');
+  const onOrderSum = sumParts.slice(18, 36).join(' + ');
+  const ytdSum = sumParts.slice(36, 54).join(' + ');
+  const lySum = sumParts.slice(54, 72).join(' + ');
+
+  const sqlQua = `SELECT [SKU],
+  SUM(${onHandSum}) AS TotalOnHand,
+  SUM(${onOrderSum}) AS TotalCurrentOnOrder,
+  SUM(${ytdSum}) AS TotalYtdSales,
+  SUM(${lySum}) AS TotalLySales
+FROM [Inventory Quantities]${storeFilter}
+GROUP BY [SKU]`;
+
+  interface QuaAgg {
+    SKU: string | null;
+    TotalOnHand: number | null;
+    TotalCurrentOnOrder: number | null;
+    TotalYtdSales: number | null;
+    TotalLySales: number | null;
+  }
+  const aggs = queryAll<QuaAgg>(INVQUA_MDB(), sqlQua);
+
+  // 2) Pull the master rows for those SKUs (bounded by any caller filters).
+  const wheres: string[] = [];
+  if (params.vendorCode) {
+    const safe = params.vendorCode.trim().replace(/'/g, "''");
+    wheres.push(`[Vendor] = '${safe}'`);
+  }
+  if (params.categoryMin != null && params.categoryMax != null) {
+    wheres.push(`[Category] BETWEEN ${Number(params.categoryMin)} AND ${Number(params.categoryMax)}`);
+  } else if (params.categoryMin != null) {
+    wheres.push(`[Category] >= ${Number(params.categoryMin)}`);
+  } else if (params.categoryMax != null) {
+    wheres.push(`[Category] <= ${Number(params.categoryMax)}`);
+  }
+  if (params.season) {
+    const safe = params.season.trim().replace(/'/g, "''");
+    wheres.push(`[Season] = '${safe}'`);
+  }
+  wheres.push(`([Status] IS NULL OR [Status] <> 'D')`);
+  const whereClause = wheres.length ? ` WHERE ${wheres.join(' AND ')}` : '';
+
+  const sqlMaster = `SELECT TOP ${limit}
+  [SKU], [Desc], [Vendor], [Manufacturer], [Category], [Season], [StyleColor],
+  [ListPrice], [RetailPrice], [MarkDownPrice1], [MarkDownPrice2], [CurrentPrice], [CurrentCost]
+FROM [InventoryMaster]${whereClause}
+ORDER BY [Desc]`;
+  const masters = queryAll<MasterRow>(INVMAS_MDB(), sqlMaster);
+
+  const aggBySku = new Map<string, QuaAgg>();
+  for (const a of aggs) {
+    if (a.SKU) aggBySku.set(a.SKU, a);
+  }
+
+  const report: InventoryDetailReportRow[] = [];
+  for (const m of masters) {
+    if (!m.SKU) continue;
+    const agg = aggBySku.get(m.SKU);
+    const totalOnHand = Number(agg?.TotalOnHand ?? 0);
+    const totalOnOrder = Number(agg?.TotalCurrentOnOrder ?? 0);
+    const totalYtd = Number(agg?.TotalYtdSales ?? 0);
+    const totalLy = Number(agg?.TotalLySales ?? 0);
+    if (totalOnHand === 0 && totalOnOrder === 0 && totalYtd === 0 && totalLy === 0) {
+      // Skip SKUs that have no quantity footprint in the scope. The master
+      // snapshot can carry orphans — a report row with all zeros is noise.
+      continue;
+    }
+    const retail = resolveCurrentPrice(m);
+    const cost = m.CurrentCost ?? null;
+    const vendor = m.Vendor ? vendors.get(m.Vendor.trim()) ?? null : null;
+    report.push({
+      sku: m.SKU,
+      description: m.Desc?.trim() || null,
+      brand:
+        m.Manufacturer?.trim() ||
+        vendor?.manuName ||
+        vendor?.shortName ||
+        m.Vendor?.trim() ||
+        null,
+      vendorCode: m.Vendor?.trim() || null,
+      category: m.Category ?? null,
+      styleColor: m.StyleColor?.trim() || null,
+      season: m.Season?.trim() || null,
+      retailPrice: retail,
+      currentCost: cost,
+      totalOnHand,
+      totalCurrentOnOrder: totalOnOrder,
+      totalYtdSales: totalYtd,
+      totalLySales: totalLy,
+      retailValue: retail != null ? Math.round(retail * totalOnHand * 100) / 100 : 0,
+      costValue: cost != null ? Math.round(cost * totalOnHand * 100) / 100 : 0,
+    });
+  }
+  return report;
+}
+
+// ─────────────────────────── public: Change Detail ───────────────────────
+
+/**
+ * Browse the RIINVCHG "InvChanges" movement ledger. RICS Ch. 2 p. 55 and
+ * Ch. 4 p. 72.
+ *
+ * The ledger carries ~11 M rows across ~6 years, so an unscoped SELECT would
+ * be a performance cliff: require at least one of { sku, 90-day date range }.
+ * The route layer maps `ChangeDetailQueryTooBroadError` to HTTP 400.
+ */
+export async function getChangeDetail(params: ChangeDetailParams): Promise<ChangeDetailRow[]> {
+  const limit = clamp(params.limit ?? 200, 1, 1000);
+
+  const wheres: string[] = [];
+  if (params.sku) {
+    const safe = params.sku.trim().replace(/'/g, "''");
+    if (safe) wheres.push(`[SKU] = '${safe}'`);
+  }
+  if (params.store != null) {
+    wheres.push(`[Store] = ${Number(params.store)}`);
+  }
+  if (params.changeType) {
+    const safe = params.changeType.trim().replace(/'/g, "''").toUpperCase();
+    if (safe) wheres.push(`UCASE([ChgType]) = '${safe}'`);
+  }
+
+  const { from, to } = normalizeDateRange(params.fromDate, params.toDate);
+  if (from) wheres.push(`[Date] >= #${accessDate(from)}#`);
+  if (to) wheres.push(`[Date] < #${accessDate(addDays(to, 1))}#`);
+
+  // Enforce a scope: no SKU + no date range means refuse.
+  const haveSku = !!params.sku?.trim();
+  const spanDays = from && to ? daysBetween(from, to) + 1 : null;
+  if (!haveSku) {
+    if (spanDays == null) {
+      throw new ChangeDetailQueryTooBroadError(
+        'Provide a SKU, or a fromDate+toDate window (≤ 90 days), before browsing InvChanges.',
+      );
+    }
+    if (spanDays > 90) {
+      throw new ChangeDetailQueryTooBroadError(
+        `Date window is ${spanDays} days; cap without a SKU is 90 days.`,
+      );
+    }
+  }
+
+  const whereClause = wheres.length ? ` WHERE ${wheres.join(' AND ')}` : '';
+  const sql = `SELECT TOP ${limit}
+  [SKU], [OrigSKU], [Store], [ChgType], [Date], [Col], [Row],
+  [PO], [OthStore], [Qty], [Cost], [RMANumber]
+FROM [InvChanges]${whereClause}
+ORDER BY [Date] DESC`;
+
+  interface RawRow {
+    SKU: string | null;
+    OrigSKU: string | null;
+    Store: number | null;
+    ChgType: string | null;
+    Date: string | null;
+    Col: string | null;
+    Row: string | null;
+    PO: string | null;
+    OthStore: number | null;
+    Qty: number | null;
+    Cost: number | null;
+    RMANumber: string | null;
+  }
+  const rows = queryAll<RawRow>(INVCHG_MDB(), sql);
+
+  return rows.map((r) => ({
+    sku: (r.SKU ?? '').trim(),
+    origSku: r.OrigSKU?.trim() || null,
+    store: Number(r.Store ?? 0),
+    changeType: (r.ChgType ?? '').trim(),
+    date: parseAccessDate(r.Date),
+    rowLabel: (r.Row ?? '').trim(),
+    columnLabel: (r.Col ?? '').trim(),
+    purchaseOrder: r.PO?.trim() || null,
+    otherStore: r.OthStore != null && Number(r.OthStore) !== 0 ? Number(r.OthStore) : null,
+    quantity: Number(r.Qty ?? 0),
+    cost: Number(r.Cost ?? 0),
+    rmaNumber: r.RMANumber?.trim() || null,
+  }));
+}
+
+// ─────────────────────────── per-(SKU × Store) rollup ────────────────────
+
+/**
+ * Per (SKU × Store) rollup from RIINVQUA — one row per (SKU × Store) with
+ * aggregate on-hand, model, max, reorder, current-on-order, and sales
+ * (MTD / STD / YTD / LY) rolled across every size cell. This is the primitive
+ * behind Recommended Transfer (Ch. 4 p. 79), Auto Transfer Preview (Ch. 4 p. 76),
+ * and Balancing Transfer Preview (Ch. 4 p. 77). Filter by store(s) / vendor /
+ * category range / season to keep the scan bounded.
+ */
+export interface SkuStoreRollupParams {
+  storeNumbers?: number[];
+  vendorCode?: string;
+  categoryMin?: number;
+  categoryMax?: number;
+  season?: string;
+  skus?: string[];     // scope to an explicit list (max 200)
+  limit?: number;       // SKU-level safety cap (default 50 000, hard ceiling 200 000).
+                        // This is NOT a scope limit — it's a safety bound. Clients
+                        // should scope via vendor / category / season filters.
+}
+
+export interface SkuStoreRollupRow {
+  sku: string;
+  store: number;
+  storeName: string | null;
+  description: string | null;
+  brand: string | null;
+  vendorCode: string | null;
+  category: number | null;
+  season: string | null;
+  onHand: number;
+  model: number;
+  maxQty: number;
+  reorder: number;
+  currentOnOrder: number;
+  mtdSales: number;
+  stdSales: number;
+  ytdSales: number;
+  lySales: number;
+}
+
+/**
+ * Per-cell rollup: one row per (SKU × Store × Row × Column), unwound from
+ * RIINVQUA segments. Primitive behind the transfer wizards' per-size
+ * allocation — Auto Transfer's warehouse-to-store fill by size, Manual
+ * Transfer's donor grid, Balancing Transfer's per-cell doubles. Same filter
+ * surface as `getSkuStoreRollup`, same SKU cap, but an extra row-per-cell
+ * factor multiplies the payload (up to `maxColumns × maxRows` cells per
+ * SKU × Store), so callers should scope aggressively.
+ */
+export interface SkuStoreCellRow {
+  sku: string;
+  store: number;
+  storeName: string | null;
+  rowLabel: string;
+  columnLabel: string;
+  description: string | null;
+  brand: string | null;
+  vendorCode: string | null;
+  category: number | null;
+  season: string | null;
+  sizeTypeCode: number | null;
+  sizeTypeDesc: string | null;
+  onHand: number;
+  model: number;
+  maxQty: number;
+  reorder: number;
+  currentOnOrder: number;
+  futureOnOrder: number;
+  mtdSales: number;
+  stdSales: number;
+  ytdSales: number;
+  lySales: number;
+}
+
+export async function getSkuStoreCellRollup(
+  params: SkuStoreRollupParams = {},
+): Promise<SkuStoreCellRow[]> {
+  // Per-cell rollup is the most payload-heavy shape (each SKU × Store fans
+  // out to up to 18 cells), but the scan should still cover every SKU that
+  // matches the operator's filters. The cap is a safety bound, not a scope
+  // limit: the cell expansion is bounded in memory by MaxColumns × MaxRows
+  // of the SKU's size type, and chunked by 100 SKUs per SQL call below.
+  const limit = clamp(params.limit ?? 50_000, 1, 200_000);
+  const [stores, sizeTypes, vendors] = await Promise.all([
+    loadStoreMap(),
+    loadSizeTypeMap(),
+    loadVendorMap(),
+  ]);
+
+  const masterWheres: string[] = [`([Status] IS NULL OR [Status] <> 'D')`];
+  if (params.vendorCode) {
+    const safe = params.vendorCode.trim().replace(/'/g, "''");
+    masterWheres.push(`[Vendor] = '${safe}'`);
+  }
+  if (params.categoryMin != null && params.categoryMax != null) {
+    masterWheres.push(`[Category] BETWEEN ${Number(params.categoryMin)} AND ${Number(params.categoryMax)}`);
+  } else if (params.categoryMin != null) {
+    masterWheres.push(`[Category] >= ${Number(params.categoryMin)}`);
+  } else if (params.categoryMax != null) {
+    masterWheres.push(`[Category] <= ${Number(params.categoryMax)}`);
+  }
+  if (params.season) {
+    const safe = params.season.trim().replace(/'/g, "''");
+    masterWheres.push(`[Season] = '${safe}'`);
+  }
+  if (params.skus?.length) {
+    const list = params.skus
+      .slice(0, 200)
+      .map((s) => `'${s.replace(/'/g, "''")}'`)
+      .join(',');
+    masterWheres.push(`[SKU] IN (${list})`);
+  }
+  const masterWhere = ` WHERE ${masterWheres.join(' AND ')}`;
+  const sqlMaster = `SELECT TOP ${limit}
+  [SKU], [Desc], [Vendor], [Manufacturer], [Category], [Season], [SizeType]
+FROM [InventoryMaster]${masterWhere}
+ORDER BY [SKU]`;
+  interface MasterSlim {
+    SKU: string | null;
+    Desc: string | null;
+    Vendor: string | null;
+    Manufacturer: string | null;
+    Category: number | null;
+    Season: string | null;
+    SizeType: number | null;
+  }
+  const masters = queryAll<MasterSlim>(INVMAS_MDB(), sqlMaster);
+  if (masters.length === 0) return [];
+
+  const masterBySku = new Map<string, MasterSlim>();
+  for (const m of masters) {
+    if (!m.SKU) continue;
+    masterBySku.set(m.SKU, m);
+  }
+  const skuList = [...masterBySku.keys()];
+
+  const CHUNK = 100;
+  const allCells: SkuStoreCellRow[] = [];
+
+  for (let i = 0; i < skuList.length; i += CHUNK) {
+    const chunk = skuList.slice(i, i + CHUNK);
+    const inList = chunk.map((s) => `'${s.replace(/'/g, "''")}'`).join(',');
+    const chunkWheres = [`[SKU] IN (${inList})`];
+    if (params.storeNumbers?.length) {
+      chunkWheres.push(`[Store] IN (${params.storeNumbers.map((n) => Number(n)).join(',')})`);
+    }
+    const sql = `SELECT ${buildQuaSelect()}
+FROM [Inventory Quantities]
+WHERE ${chunkWheres.join(' AND ')}`;
+    const quaRows = queryAll<QuaRow>(INVQUA_MDB(), sql);
+
+    for (const r of quaRows) {
+      const sku = (r.SKU ?? '').toString();
+      const m = masterBySku.get(sku);
+      if (!m) continue;
+      const sizeType = m.SizeType != null ? sizeTypes.get(Number(m.SizeType)) ?? null : null;
+      const cells = expandQuaRow(r, sizeType, { includeZero: false });
+      if (cells.length === 0) continue;
+      const vendor = m.Vendor ? vendors.get(m.Vendor.trim()) ?? null : null;
+      const brand =
+        m.Manufacturer?.trim() ||
+        vendor?.manuName ||
+        vendor?.shortName ||
+        m.Vendor?.trim() ||
+        null;
+      for (const c of cells) {
+        allCells.push({
+          sku,
+          store: c.storeNumber,
+          storeName: stores.get(c.storeNumber)?.name ?? null,
+          rowLabel: c.rowLabel,
+          columnLabel: c.columnLabel,
+          description: m.Desc?.trim() || null,
+          brand,
+          vendorCode: m.Vendor?.trim() || null,
+          category: m.Category ?? null,
+          season: m.Season?.trim() || null,
+          sizeTypeCode: sizeType?.code ?? m.SizeType ?? null,
+          sizeTypeDesc: sizeType?.desc ?? null,
+          onHand: c.onHand,
+          model: c.model,
+          maxQty: c.maxQty,
+          reorder: c.reorder,
+          currentOnOrder: c.currentOnOrder,
+          futureOnOrder: c.futureOnOrder,
+          mtdSales: c.mtdSales,
+          stdSales: c.stdSales,
+          ytdSales: c.ytdSales,
+          lySales: c.lySales,
+        });
+      }
+    }
+  }
+
+  return allCells;
+}
+
+export async function getSkuStoreRollup(
+  params: SkuStoreRollupParams = {},
+): Promise<SkuStoreRollupRow[]> {
+  const limit = clamp(params.limit ?? 50_000, 1, 200_000);
+  const [stores, vendors] = await Promise.all([loadStoreMap(), loadVendorMap()]);
+
+  // ── Step 1: pull the master rows that satisfy the filter — scoped SKU list ──
+  const masterWheres: string[] = [`([Status] IS NULL OR [Status] <> 'D')`];
+  if (params.vendorCode) {
+    const safe = params.vendorCode.trim().replace(/'/g, "''");
+    masterWheres.push(`[Vendor] = '${safe}'`);
+  }
+  if (params.categoryMin != null && params.categoryMax != null) {
+    masterWheres.push(
+      `[Category] BETWEEN ${Number(params.categoryMin)} AND ${Number(params.categoryMax)}`,
+    );
+  } else if (params.categoryMin != null) {
+    masterWheres.push(`[Category] >= ${Number(params.categoryMin)}`);
+  } else if (params.categoryMax != null) {
+    masterWheres.push(`[Category] <= ${Number(params.categoryMax)}`);
+  }
+  if (params.season) {
+    const safe = params.season.trim().replace(/'/g, "''");
+    masterWheres.push(`[Season] = '${safe}'`);
+  }
+  if (params.skus?.length) {
+    const list = params.skus
+      .slice(0, 200)
+      .map((s) => `'${s.replace(/'/g, "''")}'`)
+      .join(',');
+    masterWheres.push(`[SKU] IN (${list})`);
+  }
+  const masterWhere = ` WHERE ${masterWheres.join(' AND ')}`;
+  const sqlMaster = `SELECT TOP ${limit}
+  [SKU], [Desc], [Vendor], [Manufacturer], [Category], [Season]
+FROM [InventoryMaster]${masterWhere}
+ORDER BY [SKU]`;
+  interface MasterSlim {
+    SKU: string | null;
+    Desc: string | null;
+    Vendor: string | null;
+    Manufacturer: string | null;
+    Category: number | null;
+    Season: string | null;
+  }
+  const masters = queryAll<MasterSlim>(INVMAS_MDB(), sqlMaster);
+  if (masters.length === 0) return [];
+
+  const skuSet = new Set<string>();
+  const masterBySku = new Map<string, MasterSlim>();
+  for (const m of masters) {
+    if (!m.SKU) continue;
+    skuSet.add(m.SKU);
+    masterBySku.set(m.SKU, m);
+  }
+
+  // ── Step 2: aggregate RIINVQUA per (SKU × Store) for those SKUs ──
+  const quaWheres: string[] = [];
+  // Access caps the IN list size — chunk by 100 SKUs per SQL call.
+  const skuList = [...skuSet];
+  const CHUNK = 100;
+  const allAggRows: QuaStoreAgg[] = [];
+
+  const onHandSum = sumOfMetric('OnHand_');
+  const modelSum = sumOfMetric('Model_');
+  const maxSum = sumOfMetric('MaxQtys_');
+  const reorderSum = sumOfMetric('Reorder_');
+  const onOrderSum = sumOfMetric('CurrentOnOrder_');
+  const mtdSum = sumOfMetric('M-T-DSales_');
+  const stdSum = sumOfMetric('S-T-DSales_');
+  const ytdSum = sumOfMetric('Y-T-DSales_');
+  const lySum = sumOfMetric('LYSales_');
+
+  for (let i = 0; i < skuList.length; i += CHUNK) {
+    const chunk = skuList.slice(i, i + CHUNK);
+    const inList = chunk.map((s) => `'${s.replace(/'/g, "''")}'`).join(',');
+    const chunkWheres = [...quaWheres, `[SKU] IN (${inList})`];
+    if (params.storeNumbers?.length) {
+      chunkWheres.push(`[Store] IN (${params.storeNumbers.map((n) => Number(n)).join(',')})`);
+    }
+    const sql = `SELECT [SKU], [Store],
+  SUM(${onHandSum}) AS OnHand,
+  SUM(${modelSum}) AS Model,
+  SUM(${maxSum}) AS MaxQ,
+  SUM(${reorderSum}) AS Reord,
+  SUM(${onOrderSum}) AS OnOrder,
+  SUM(${mtdSum}) AS MtdS,
+  SUM(${stdSum}) AS StdS,
+  SUM(${ytdSum}) AS YtdS,
+  SUM(${lySum}) AS LyS
+FROM [Inventory Quantities]
+WHERE ${chunkWheres.join(' AND ')}
+GROUP BY [SKU], [Store]`;
+    const chunkRows = queryAll<QuaStoreAgg>(INVQUA_MDB(), sql);
+    allAggRows.push(...chunkRows);
+  }
+
+  // ── Step 3: join to master → output ──
+  const out: SkuStoreRollupRow[] = [];
+  for (const r of allAggRows) {
+    if (!r.SKU) continue;
+    const m = masterBySku.get(r.SKU);
+    if (!m) continue;
+    const vendor = m.Vendor ? vendors.get(m.Vendor.trim()) ?? null : null;
+    out.push({
+      sku: r.SKU,
+      store: Number(r.Store ?? 0),
+      storeName: stores.get(Number(r.Store ?? 0))?.name ?? null,
+      description: m.Desc?.trim() || null,
+      brand:
+        m.Manufacturer?.trim() ||
+        vendor?.manuName ||
+        vendor?.shortName ||
+        m.Vendor?.trim() ||
+        null,
+      vendorCode: m.Vendor?.trim() || null,
+      category: m.Category ?? null,
+      season: m.Season?.trim() || null,
+      onHand: Number(r.OnHand ?? 0),
+      model: Number(r.Model ?? 0),
+      maxQty: Number(r.MaxQ ?? 0),
+      reorder: Number(r.Reord ?? 0),
+      currentOnOrder: Number(r.OnOrder ?? 0),
+      mtdSales: Number(r.MtdS ?? 0),
+      stdSales: Number(r.StdS ?? 0),
+      ytdSales: Number(r.YtdS ?? 0),
+      lySales: Number(r.LyS ?? 0),
+    });
+  }
+  return out;
+}
+
+interface QuaStoreAgg {
+  SKU: string | null;
+  Store: number | null;
+  OnHand: number | null;
+  Model: number | null;
+  MaxQ: number | null;
+  Reord: number | null;
+  OnOrder: number | null;
+  MtdS: number | null;
+  StdS: number | null;
+  YtdS: number | null;
+  LyS: number | null;
+}
+
+function sumOfMetric(prefix: string): string {
+  const parts: string[] = [];
+  for (let i = 1; i <= 18; i++) {
+    parts.push(`IIF([${prefix}${pad2(i)}] IS NULL, 0, [${prefix}${pad2(i)}])`);
+  }
+  return parts.join(' + ');
+}
+
+// ─────────────────────────── Recommended Transfer Report ──────────────────
+
+/**
+ * RICS Ch. 4 p. 79 — advisory report, no writes. Computes per-SKU transfer
+ * suggestions under one of three rules:
+ *   OVER_UNDER_MODELS   — source stores over model send to targets under model
+ *   UNEVEN_DOUBLES      — stores with ≥2 of a SKU send 1 to stores with 0
+ *   TURNOVER_VARIANCE   — compare YTD sales velocity; fast sellers receive
+ *                         from slow sellers (expressed as a ratio threshold)
+ */
+export type RecommendedTransferRule =
+  | 'OVER_UNDER_MODELS'
+  | 'UNEVEN_DOUBLES'
+  | 'TURNOVER_VARIANCE';
+
+export interface RecommendedTransferParams extends SkuStoreRollupParams {
+  rule: RecommendedTransferRule;
+  turnoverRatioThreshold?: number; // default 2 — "sells 2× faster"
+  includeSkusWithoutModels?: boolean; // OVER_UNDER_MODELS only
+}
+
+export interface RecommendedTransferRow {
+  sku: string;
+  description: string | null;
+  brand: string | null;
+  category: number | null;
+  vendorCode: string | null;
+  fromStore: number;
+  fromStoreName: string | null;
+  toStore: number;
+  toStoreName: string | null;
+  suggestedQuantity: number;
+  reason: string;
+  fromOnHand: number;
+  toOnHand: number;
+  fromModel: number;
+  toModel: number;
+  fromYtd: number;
+  toYtd: number;
+}
+
+export async function getRecommendedTransfers(
+  params: RecommendedTransferParams,
+): Promise<RecommendedTransferRow[]> {
+  const rollup = await getSkuStoreRollup(params);
+  if (rollup.length === 0) return [];
+
+  // Group by SKU for per-SKU pairwise reasoning.
+  const bySku = new Map<string, SkuStoreRollupRow[]>();
+  for (const r of rollup) {
+    const list = bySku.get(r.sku) ?? [];
+    list.push(r);
+    bySku.set(r.sku, list);
+  }
+
+  const out: RecommendedTransferRow[] = [];
+  const threshold = Math.max(1.1, params.turnoverRatioThreshold ?? 2);
+
+  for (const [sku, rows] of bySku) {
+    if (rows.length < 2) continue; // need at least two stores
+    const firstRow = rows[0];
+
+    if (params.rule === 'OVER_UNDER_MODELS') {
+      const hasModels = rows.some((r) => r.model > 0);
+      if (!hasModels && !params.includeSkusWithoutModels) continue;
+      const donors = rows
+        .filter((r) => r.onHand > r.model && r.model > 0)
+        .sort((a, b) => (b.onHand - b.model) - (a.onHand - a.model));
+      const receivers = rows
+        .filter((r) => r.onHand < r.model)
+        .sort((a, b) => (b.model - b.onHand) - (a.model - a.onHand));
+      for (const receiver of receivers) {
+        const need = receiver.model - receiver.onHand;
+        for (const donor of donors) {
+          if (donor.store === receiver.store) continue;
+          const surplus = donor.onHand - donor.model;
+          const move = Math.min(surplus, need);
+          if (move <= 0) continue;
+          out.push(transferRow(firstRow, donor, receiver, move,
+            `Donor over model by ${surplus}; receiver short by ${need}.`));
+          donor.onHand -= move;
+          break;
+        }
+      }
+    } else if (params.rule === 'UNEVEN_DOUBLES') {
+      const donors = rows.filter((r) => r.onHand >= 2);
+      const receivers = rows.filter((r) => r.onHand === 0);
+      if (donors.length === 0 || receivers.length === 0) continue;
+      // Sort receivers by highest YTD (better sellers first)
+      receivers.sort((a, b) => b.ytdSales - a.ytdSales);
+      donors.sort((a, b) => b.onHand - a.onHand);
+      for (const receiver of receivers) {
+        const donor = donors.find((d) => d.onHand >= 2);
+        if (!donor) break;
+        out.push(transferRow(firstRow, donor, receiver, 1,
+          `Donor holds ${donor.onHand}; receiver at 0.`));
+        donor.onHand -= 1;
+      }
+    } else if (params.rule === 'TURNOVER_VARIANCE') {
+      const sorted = [...rows].sort((a, b) => b.ytdSales - a.ytdSales);
+      const fastest = sorted[0];
+      for (const slow of sorted.slice(1)) {
+        if (slow.ytdSales === 0 && fastest.ytdSales === 0) continue;
+        const ratio = slow.ytdSales === 0
+          ? (fastest.ytdSales > 0 ? Infinity : 0)
+          : fastest.ytdSales / slow.ytdSales;
+        if (ratio < threshold) continue;
+        if (slow.onHand <= 0) continue;
+        const move = Math.min(slow.onHand, Math.max(1, Math.floor(slow.onHand / 2)));
+        out.push(transferRow(firstRow, slow, fastest, move,
+          `YTD variance ${ratio === Infinity ? '∞' : ratio.toFixed(1)}× (fastest ${fastest.ytdSales} vs donor ${slow.ytdSales}).`));
+      }
+    }
+  }
+
+  // Stable order: from store, to store, sku
+  out.sort(
+    (a, b) =>
+      a.fromStore - b.fromStore ||
+      a.toStore - b.toStore ||
+      a.sku.localeCompare(b.sku),
+  );
+  return out;
+}
+
+function transferRow(
+  seed: SkuStoreRollupRow,
+  from: SkuStoreRollupRow,
+  to: SkuStoreRollupRow,
+  qty: number,
+  reason: string,
+): RecommendedTransferRow {
+  return {
+    sku: seed.sku,
+    description: seed.description,
+    brand: seed.brand,
+    category: seed.category,
+    vendorCode: seed.vendorCode,
+    fromStore: from.store,
+    fromStoreName: from.storeName,
+    toStore: to.store,
+    toStoreName: to.storeName,
+    suggestedQuantity: qty,
+    reason,
+    fromOnHand: from.onHand,
+    toOnHand: to.onHand,
+    fromModel: from.model,
+    toModel: to.model,
+    fromYtd: from.ytdSales,
+    toYtd: to.ytdSales,
+  };
+}
+
+// ─────────────────────────── public: Transfer Summary Report ─────────────
+
+/**
+ * Monthly rollup of RIINVCHG transfer rows. RICS Ch. 4 p. 80 — "Print Transfer
+ * Summary Report". We sum only the TOU ("transfer out") side to avoid
+ * double-counting (every transfer also writes a matching TIN on the
+ * destination). Date range is required and capped at 366 days to keep the scan
+ * bounded — the ledger is append-only and grows fast.
+ */
+export async function getTransferSummary(
+  params: TransferSummaryParams,
+): Promise<TransferSummaryReport> {
+  const { from, to } = normalizeDateRange(params.fromDate, params.toDate);
+  if (!from || !to) {
+    throw new TransferSummaryInputError('fromDate and toDate are required (YYYY-MM-DD).');
+  }
+  const spanDays = daysBetween(from, to) + 1;
+  if (spanDays > 366) {
+    throw new TransferSummaryInputError(
+      `Date window is ${spanDays} days; Transfer Summary caps at 366 days per request.`,
+    );
+  }
+
+  const stores = await loadStoreMap();
+
+  const wheres: string[] = [
+    `UCASE([ChgType]) = 'TOU'`,
+    `[Date] >= #${accessDate(from)}#`,
+    `[Date] < #${accessDate(addDays(to, 1))}#`,
+  ];
+  if (params.fromStoreNumbers?.length) {
+    wheres.push(`[Store] IN (${params.fromStoreNumbers.map((n) => Number(n)).join(',')})`);
+  }
+  if (params.toStoreNumbers?.length) {
+    wheres.push(`[OthStore] IN (${params.toStoreNumbers.map((n) => Number(n)).join(',')})`);
+  }
+  const whereClause = ` WHERE ${wheres.join(' AND ')}`;
+
+  // Aggregate in SQL so the PowerShell bridge round-trips a bounded payload
+  // (O(stores² × months)) instead of every raw transfer line. Access's
+  // DatePart() gives us year+month without DATE_TRUNC.
+  const sql = `SELECT [Store] AS FromStore, [OthStore] AS ToStore,
+  DatePart('yyyy', [Date]) AS Yr, DatePart('m', [Date]) AS Mo,
+  COUNT(*) AS Events,
+  SUM(IIF([Qty] IS NULL, 0, [Qty])) AS TotalQty,
+  SUM(IIF([Cost] IS NULL, 0, [Cost])) AS TotalCost
+FROM [InvChanges]${whereClause}
+GROUP BY [Store], [OthStore], DatePart('yyyy', [Date]), DatePart('m', [Date])`;
+
+  interface AggRow {
+    FromStore: number | null;
+    ToStore: number | null;
+    Yr: number | null;
+    Mo: number | null;
+    Events: number | null;
+    TotalQty: number | null;
+    TotalCost: number | null;
+  }
+  const rows = queryAll<AggRow>(INVCHG_MDB(), sql);
+
+  const monthMap = new Map<string, Map<string, TransferSummaryCell>>();
+  const matrixMap = new Map<string, TransferSummaryCell>();
+  const touchedStores = new Set<number>();
+
+  let grandQty = 0;
+  let grandCost = 0;
+  let grandEvents = 0;
+
+  for (const r of rows) {
+    const fromStore = Number(r.FromStore ?? 0);
+    const toStore = Number(r.ToStore ?? 0);
+    if (!fromStore || !toStore) continue;
+    const yr = Number(r.Yr ?? 0);
+    const mo = Number(r.Mo ?? 0);
+    if (!yr || !mo) continue;
+    const month = `${yr}-${pad2(mo)}`;
+    const qty = Number(r.TotalQty ?? 0);
+    const cost = Number(r.TotalCost ?? 0);
+    const events = Number(r.Events ?? 0);
+
+    touchedStores.add(fromStore);
+    touchedStores.add(toStore);
+
+    const pairKey = `${fromStore}|${toStore}`;
+    const monthCells = monthMap.get(month) ?? new Map<string, TransferSummaryCell>();
+    const mCell = monthCells.get(pairKey) ?? {
+      fromStore,
+      fromStoreName: stores.get(fromStore)?.name ?? null,
+      toStore,
+      toStoreName: stores.get(toStore)?.name ?? null,
+      quantity: 0,
+      cost: 0,
+      transferEvents: 0,
+    };
+    mCell.quantity += qty;
+    mCell.cost += cost;
+    mCell.transferEvents += events;
+    monthCells.set(pairKey, mCell);
+    monthMap.set(month, monthCells);
+
+    const matrixCell = matrixMap.get(pairKey) ?? {
+      fromStore,
+      fromStoreName: stores.get(fromStore)?.name ?? null,
+      toStore,
+      toStoreName: stores.get(toStore)?.name ?? null,
+      quantity: 0,
+      cost: 0,
+      transferEvents: 0,
+    };
+    matrixCell.quantity += qty;
+    matrixCell.cost += cost;
+    matrixCell.transferEvents += events;
+    matrixMap.set(pairKey, matrixCell);
+
+    grandQty += qty;
+    grandCost += cost;
+    grandEvents += events;
+  }
+
+  const months: TransferSummaryMonth[] = [...monthMap.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([month, cells]) => {
+      const cellList = [...cells.values()].sort(
+        (a, b) => a.fromStore - b.fromStore || a.toStore - b.toStore,
+      );
+      return {
+        month,
+        cells: cellList,
+        totalQuantity: cellList.reduce((s, c) => s + c.quantity, 0),
+        totalCost: Math.round(cellList.reduce((s, c) => s + c.cost, 0) * 100) / 100,
+        totalEvents: cellList.reduce((s, c) => s + c.transferEvents, 0),
+      };
+    });
+
+  const matrix = [...matrixMap.values()].sort(
+    (a, b) => a.fromStore - b.fromStore || a.toStore - b.toStore,
+  );
+
+  const storeList = [...touchedStores]
+    .sort((a, b) => a - b)
+    .map((n) => ({ number: n, name: stores.get(n)?.name ?? null }));
+
+  return {
+    fromDate: params.fromDate,
+    toDate: params.toDate,
+    months,
+    matrix,
+    stores: storeList,
+    grandTotalQuantity: grandQty,
+    grandTotalCost: Math.round(grandCost * 100) / 100,
+    grandTotalEvents: grandEvents,
+  };
+}
+
+// ─────────────────────────── warmup ───────────────────────────────────────
+
+export async function warmup(): Promise<void> {
+  try {
+    await Promise.all([loadStoreMap(), loadSizeTypeMap(), loadVendorMap()]);
+    console.log('[ricsInventoryAdapter] warmup complete');
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn('[ricsInventoryAdapter] warmup failed (non-fatal):', msg);
+  }
+}
+
+// ─────────────────────────── internals ────────────────────────────────────
+
+function queryAll<T>(dbPath: string, sql: string): T[] {
+  if (!fs.existsSync(dbPath)) {
+    console.warn(`[ricsInventoryAdapter] MDB not found at ${dbPath}`);
+    return [];
+  }
+  const password = getOrRecoverPassword(dbPath);
+  try {
+    const raw = runPowerShellJson<T | T[]>(buildSelectScript(dbPath, password, sql));
+    return Array.isArray(raw) ? raw : raw ? [raw] : [];
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[ricsInventoryAdapter] query failed on ${dbPath}:`, msg);
+    return [];
+  }
+}
+
+function pad2(n: number): string {
+  return String(n).padStart(2, '0');
+}
+
+function clamp(n: number, lo: number, hi: number): number {
+  return Math.max(lo, Math.min(hi, Math.trunc(n)));
+}
+
+/**
+ * RICS dates arrive from `ConvertTo-Json` as the Microsoft format
+ * `/Date(1577985713000)/`. Anything else we pass through.
+ */
+function parseAccessDate(raw: string | null): string {
+  if (!raw) return '';
+  const m = /^\/Date\((-?\d+)\)\/$/.exec(raw);
+  if (m) return new Date(Number(m[1])).toISOString();
+  const d = new Date(raw);
+  return Number.isNaN(d.getTime()) ? raw : d.toISOString();
+}
+
+function normalizeDateRange(from?: string, to?: string): { from: Date | null; to: Date | null } {
+  const f = from ? parseYmd(from) : null;
+  const t = to ? parseYmd(to) : null;
+  if (f && t && f > t) return { from: t, to: f };
+  return { from: f, to: t };
+}
+
+function parseYmd(s: string): Date | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s.trim());
+  if (!m) return null;
+  const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function accessDate(d: Date): string {
+  // Access is happy with mm/dd/yyyy inside `#` delimiters, locale-independent.
+  const mm = pad2(d.getUTCMonth() + 1);
+  const dd = pad2(d.getUTCDate());
+  const yyyy = d.getUTCFullYear();
+  return `${mm}/${dd}/${yyyy}`;
+}
+
+function addDays(d: Date, n: number): Date {
+  return new Date(d.getTime() + n * 86_400_000);
+}
+
+function daysBetween(a: Date, b: Date): number {
+  return Math.abs(Math.round((b.getTime() - a.getTime()) / 86_400_000));
+}

@@ -1,32 +1,47 @@
-import { useState, useCallback } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useState, useCallback, useMemo } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
-  Card,
-  Table,
-  Select,
+  Alert,
+  App,
   Button,
-  Space,
-  Tag,
-  Typography,
-  Row,
+  Card,
   Col,
   DatePicker,
-  App,
+  Empty,
+  Row,
+  Space,
+  Tabs,
+  Tag,
+  Typography,
 } from 'antd'
-import { PlusOutlined, EyeOutlined, ReloadOutlined } from '@ant-design/icons'
-import type { TablePaginationConfig } from 'antd/es/table'
+import {
+  PlusOutlined,
+  EyeOutlined,
+  ReloadOutlined,
+  InboxOutlined,
+  RollbackOutlined,
+  DollarOutlined,
+  AuditOutlined,
+  FileAddOutlined,
+} from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { useAdjustments } from '../../hooks/useAdjustments'
 import type { Adjustment, AdjustmentType, AdjustmentListParams } from '../../types/adjustment'
+import ServerDataTable, {
+  type ServerQueryChange,
+  type ServerTableColumn,
+} from '../../components/ServerDataTable'
 
-const ADJUSTMENT_TYPE_OPTIONS: { label: string; value: AdjustmentType }[] = [
-  { label: 'Receipt', value: 'RECEIPT' },
-  { label: 'Transfer', value: 'TRANSFER' },
-  { label: 'Manual Adjust', value: 'MANUAL_ADJUST' },
-  { label: 'Return', value: 'RETURN' },
-  { label: 'Damage', value: 'DAMAGE' },
-  { label: 'Shrinkage', value: 'SHRINKAGE' },
-]
+// RICS Ch. 4 splits what our single "Adjustments" concept conflates into
+// five distinct screens (p. 66 Manual Receipt / Return / Order; Ch. 10
+// Physical Inventory; p. 67 Change Average Cost). This page mirrors that
+// split with a Tabs UI so the operator sees each RICS screen one-to-one.
+type AdjustmentTab =
+  | 'MANUAL_RECEIPT'
+  | 'MANUAL_RETURN'
+  | 'MANUAL_ORDER'
+  | 'PHYSICAL'
+  | 'CHANGE_AVG_COST'
 
 const TYPE_COLORS: Record<AdjustmentType, string> = {
   RECEIPT: 'green',
@@ -37,44 +52,176 @@ const TYPE_COLORS: Record<AdjustmentType, string> = {
   SHRINKAGE: 'volcano',
 }
 
+interface TabConfig {
+  key: AdjustmentTab
+  label: string
+  icon: React.ReactNode
+  ricsRef: string
+  description: string
+  filterType?: AdjustmentType // types to filter on
+  newButtonLabel?: string
+  newButtonHref?: string
+}
+
+const TABS: TabConfig[] = [
+  {
+    key: 'MANUAL_RECEIPT',
+    label: 'Manual Receipt',
+    icon: <InboxOutlined />,
+    ricsRef: 'RICS Ch. 4 p. 66',
+    description:
+      'Add on-hand quantities to (Store × SKU × Column × Row) outside a PO. Per-size grid, cost + retail override, case-pack auto-fill, UPC scan.',
+    filterType: 'RECEIPT',
+    newButtonLabel: 'New Manual Receipt',
+    newButtonHref: '/inventory/adjustments/new?type=RECEIPT',
+  },
+  {
+    key: 'MANUAL_RETURN',
+    label: 'Manual Return',
+    icon: <RollbackOutlined />,
+    ricsRef: 'RICS Ch. 4 p. 66',
+    description:
+      'Decrease on-hand for returns to vendor / shrink-outs. Shows donor on-hand for sanity-check before submit; prints a transaction journal.',
+    filterType: 'RETURN',
+    newButtonLabel: 'New Manual Return',
+    newButtonHref: '/inventory/adjustments/new?type=RETURN',
+  },
+  {
+    key: 'MANUAL_ORDER',
+    label: 'Manual Order',
+    icon: <FileAddOutlined />,
+    ricsRef: 'RICS Ch. 4 p. 66',
+    description:
+      'Increment on-order without a PO header. Per the inventory spec, this now delegates to the purchasing module as a "Quick Order" — the button below routes there.',
+    newButtonLabel: 'New Quick Order →',
+    newButtonHref: '/purchasing/orders/new',
+  },
+  {
+    key: 'PHYSICAL',
+    label: 'Physical Count',
+    icon: <AuditOutlined />,
+    ricsRef: 'RICS Ch. 10',
+    description:
+      'Post variance from a physical count worksheet. Owned by the physical-inventory module in the target architecture; the pre-Phase-1 pipe still shows manual / damage / shrinkage adjustments here.',
+    filterType: 'MANUAL_ADJUST',
+    newButtonLabel: 'New Physical Adjustment',
+    newButtonHref: '/inventory/adjustments/new?type=MANUAL_ADJUST',
+  },
+  {
+    key: 'CHANGE_AVG_COST',
+    label: 'Change Avg Cost',
+    icon: <DollarOutlined />,
+    ricsRef: 'RICS Ch. 4 p. 67',
+    description:
+      'Manual override of a SKU\'s average cost per store. Owned by the products module in the target architecture — the button below opens the SKU form where cost is editable.',
+    newButtonLabel: 'Open SKU List →',
+    newButtonHref: '/inventory/skus',
+  },
+]
+
 export default function AdjustmentListPage() {
+  const [searchParams, setSearchParams] = useSearchParams()
+  const tabFromUrl = (searchParams.get('tab') as AdjustmentTab) || 'MANUAL_RECEIPT'
+  const activeTab: AdjustmentTab = TABS.some((t) => t.key === tabFromUrl)
+    ? tabFromUrl
+    : 'MANUAL_RECEIPT'
+  const tabConfig = useMemo(() => TABS.find((t) => t.key === activeTab)!, [activeTab])
+
+  return (
+    <App>
+      <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+        <Card size="small">
+          <Typography.Title level={4} style={{ margin: 0 }}>
+            Adjustments
+          </Typography.Title>
+          <Typography.Text type="secondary">
+            RICS Ch. 4 pp. 66–67 + Ch. 10 — this screen splits into five RICS-faithful tabs.
+          </Typography.Text>
+        </Card>
+
+        <Tabs
+          activeKey={activeTab}
+          destroyInactiveTabPane
+          onChange={(k) => {
+            const next = new URLSearchParams(searchParams)
+            next.set('tab', k)
+            setSearchParams(next)
+          }}
+          items={TABS.map((t) => ({
+            key: t.key,
+            label: (
+              <Space size={6}>
+                {t.icon}
+                {t.label}
+              </Space>
+            ),
+            children: <TabPane key={t.key} tab={t} />,
+          }))}
+        />
+
+        {/* Tab-level pointer for the tabs that delegate elsewhere */}
+        {(activeTab === 'MANUAL_ORDER' || activeTab === 'CHANGE_AVG_COST') && (
+          <Alert
+            type="info"
+            showIcon
+            message="This screen belongs to another module"
+            description={tabConfig.description}
+          />
+        )}
+      </Space>
+    </App>
+  )
+}
+
+function TabPane({ tab }: { tab: TabConfig }) {
   const navigate = useNavigate()
   const { message } = App.useApp()
 
   const [params, setParams] = useState<AdjustmentListParams>({
     page: 1,
     pageSize: 25,
+    sort: 'createdAt',
+    order: 'desc',
+    type: tab.filterType,
   })
 
-  const { data, isLoading, isFetching, refetch } = useAdjustments(params)
-
-  const handleTableChange = useCallback(
-    (pagination: TablePaginationConfig) => {
-      setParams((prev) => ({
-        ...prev,
-        page: pagination.current ?? 1,
-        pageSize: pagination.pageSize ?? 25,
-      }))
-    },
-    [],
+  const effectiveParams = useMemo<AdjustmentListParams>(
+    () => ({ ...params, type: tab.filterType }),
+    [params, tab.filterType],
   )
 
-  const columns = [
+  const { data, isLoading, isFetching, refetch } = useAdjustments(effectiveParams)
+
+  const handleTableChange = useCallback((query: ServerQueryChange) => {
+    setParams((prev) => ({
+      ...prev,
+      page: query.page,
+      pageSize: query.pageSize,
+      sort: (query.sort as AdjustmentListParams['sort']) ?? prev.sort,
+      order: query.order ?? prev.order,
+    }))
+  }, [])
+
+  const columns: ServerTableColumn<Adjustment>[] = [
     {
       title: 'Date',
       dataIndex: 'createdAt',
       key: 'createdAt',
       width: 160,
+      sorter: true,
       render: (v: string) => dayjs(v).format('YYYY-MM-DD HH:mm'),
+      exportValue: (record) => dayjs(record.createdAt).format('YYYY-MM-DD HH:mm'),
     },
     {
       title: 'Type',
       dataIndex: 'type',
       key: 'type',
       width: 130,
+      sorter: true,
       render: (type: AdjustmentType) => (
         <Tag color={TYPE_COLORS[type]}>{type.replace('_', ' ')}</Tag>
       ),
+      exportValue: (record) => record.type,
     },
     {
       title: 'SKU(s)',
@@ -83,6 +230,7 @@ export default function AdjustmentListPage() {
       ellipsis: true,
       render: (_: unknown, record: Adjustment) =>
         record.lineItems.map((li) => li.skuCode ?? li.skuId).join(', '),
+      exportValue: (record) => record.lineItems.map((li) => li.skuCode ?? li.skuId).join(', '),
     },
     {
       title: 'Qty',
@@ -97,6 +245,7 @@ export default function AdjustmentListPage() {
           </Typography.Text>
         )
       },
+      exportValue: (record) => record.lineItems.reduce((s, li) => s + li.quantity, 0),
     },
     {
       title: 'From',
@@ -104,6 +253,7 @@ export default function AdjustmentListPage() {
       key: 'from',
       width: 140,
       render: (v: string | null) => v ?? '-',
+      exportValue: (record) => record.fromLocationName ?? '-',
     },
     {
       title: 'To',
@@ -111,6 +261,7 @@ export default function AdjustmentListPage() {
       key: 'to',
       width: 140,
       render: (v: string | null) => v ?? '-',
+      exportValue: (record) => record.toLocationName ?? '-',
     },
     {
       title: 'Reason',
@@ -119,6 +270,7 @@ export default function AdjustmentListPage() {
       width: 200,
       ellipsis: true,
       render: (v: string | null) => v ?? '-',
+      exportValue: (record) => record.reason ?? '-',
     },
     {
       title: 'By',
@@ -142,46 +294,53 @@ export default function AdjustmentListPage() {
     },
   ]
 
+  const delegates = !tab.filterType // MANUAL_ORDER / CHANGE_AVG_COST have no filter and no list
+
   return (
-    <App>
-      <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-        <Card size="small">
-          <Row align="middle" justify="space-between">
-            <Col>
-              <Typography.Title level={4} style={{ margin: 0 }}>
-                Inventory Adjustments
-              </Typography.Title>
-            </Col>
-            <Col>
-              <Space>
+    <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+      <Card size="small">
+        <Row align="middle" justify="space-between">
+          <Col flex="auto">
+            <Typography.Text strong>{tab.label}</Typography.Text>
+            <Typography.Text type="secondary" style={{ marginLeft: 8 }}>
+              {tab.ricsRef}
+            </Typography.Text>
+            <Typography.Paragraph style={{ marginTop: 8, marginBottom: 0 }}>
+              {tab.description}
+            </Typography.Paragraph>
+          </Col>
+          <Col>
+            <Space>
+              {tab.newButtonHref && (
                 <Button
                   type="primary"
                   icon={<PlusOutlined />}
-                  onClick={() => navigate('/inventory/adjustments/new')}
+                  onClick={() => navigate(tab.newButtonHref!)}
                 >
-                  New Adjustment
+                  {tab.newButtonLabel ?? 'New'}
                 </Button>
-                <Button icon={<ReloadOutlined />} onClick={() => { refetch(); message.info('Refreshed') }} />
-              </Space>
-            </Col>
-          </Row>
-        </Card>
+              )}
+              {!delegates && (
+                <Button
+                  icon={<ReloadOutlined />}
+                  onClick={() => {
+                    refetch()
+                    message.info('Refreshed')
+                  }}
+                />
+              )}
+            </Space>
+          </Col>
+        </Row>
+      </Card>
 
+      {!delegates && (
         <Card size="small" title="Filters">
           <Row gutter={[12, 12]}>
             <Col xs={24} sm={8} md={6}>
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>Type</Typography.Text>
-              <Select
-                placeholder="All types"
-                allowClear
-                style={{ width: '100%' }}
-                value={params.type}
-                onChange={(v) => setParams((p) => ({ ...p, type: v, page: 1 }))}
-                options={ADJUSTMENT_TYPE_OPTIONS}
-              />
-            </Col>
-            <Col xs={24} sm={8} md={6}>
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>From Date</Typography.Text>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                From Date
+              </Typography.Text>
               <DatePicker
                 style={{ width: '100%' }}
                 value={params.fromDate ? dayjs(params.fromDate) : null}
@@ -195,7 +354,9 @@ export default function AdjustmentListPage() {
               />
             </Col>
             <Col xs={24} sm={8} md={6}>
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>To Date</Typography.Text>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                To Date
+              </Typography.Text>
               <DatePicker
                 style={{ width: '100%' }}
                 value={params.toDate ? dayjs(params.toDate) : null}
@@ -210,41 +371,35 @@ export default function AdjustmentListPage() {
             </Col>
           </Row>
         </Card>
+      )}
 
-        <Card
-          size="small"
-          title={
-            <Space>
-              <Typography.Text strong>Audit Trail</Typography.Text>
-              {data && (
-                <Typography.Text type="secondary">
-                  ({data.pagination.totalItems} records)
-                </Typography.Text>
-              )}
-            </Space>
-          }
-        >
-          <Table<Adjustment>
-            dataSource={data?.data}
+      {delegates ? (
+        <Card>
+          <Empty
+            description={
+              tab.key === 'MANUAL_ORDER'
+                ? 'Manual Orders are created through the Purchasing module. Click the button above to open a new PO.'
+                : 'Average cost is edited from the SKU form in the Products module. Click the button above to open the SKU List.'
+            }
+          />
+        </Card>
+      ) : (
+        <Card size="small">
+          <ServerDataTable<Adjustment>
+            title={<Typography.Text strong>{tab.label} entries</Typography.Text>}
+            data={data?.data}
             columns={columns}
             rowKey="id"
             loading={isLoading}
-            size="small"
-            scroll={{ x: 1100 }}
-            onChange={handleTableChange}
-            pagination={{
-              current: data?.pagination.page,
-              pageSize: data?.pagination.pageSize,
-              total: data?.pagination.totalItems,
-              showSizeChanger: true,
-              pageSizeOptions: ['10', '25', '50'],
-              showTotal: (total, range) => `${range[0]}-${range[1]} of ${total}`,
-              size: 'default',
-            }}
-            style={{ opacity: isFetching && !isLoading ? 0.6 : 1 }}
+            fetching={isFetching}
+            pagination={data?.pagination}
+            onQueryChange={handleTableChange}
+            expectedTotalRows={data?.pagination.totalItems}
+            exportFileName={`${tab.key.toLowerCase()}-${new Date().toISOString().slice(0, 10)}`}
+            scrollX={1100}
           />
         </Card>
-      </Space>
-    </App>
+      )}
+    </Space>
   )
 }
