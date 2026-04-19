@@ -280,6 +280,66 @@ export const otbSummaryQuerySchema = z.object({
   department: z.enum(DEPARTMENTS).optional(),
 });
 
+// ── OTB Plan Row schemas (Ch. 11 p. 158) ──────────────────────────
+
+const monthlyArraySchema = z.array(z.number().nullable()).length(12, {
+  message: 'Monthly arrays must have exactly 12 entries (Jan–Dec of fiscal year).',
+});
+
+const pctSchema = z.number().finite().optional().nullable();
+
+export const createOtbPlanRowSchema = z.object({
+  storeId: z.string().min(1).max(100),
+  categoryId: z.string().min(1).max(100),
+  fiscalYear: z.number().int().min(2020).max(2099),
+  pctChangeLyToCy: pctSchema,
+  pctChangeCyToNy: pctSchema,
+  plannedTurnover1h: z.number().finite().optional().nullable(),
+  plannedTurnover2h: z.number().finite().optional().nullable(),
+  plannedGpPct: z.number().min(-100).max(100).optional().nullable(),
+  lySales: monthlyArraySchema.optional(),
+  plannedSales: monthlyArraySchema.optional(),
+  markdownPct: monthlyArraySchema.optional(),
+  createdBy: z.string().max(100).optional(),
+});
+
+export const updateOtbPlanRowSchema = z.object({
+  pctChangeLyToCy: pctSchema,
+  pctChangeCyToNy: pctSchema,
+  plannedTurnover1h: z.number().finite().optional().nullable(),
+  plannedTurnover2h: z.number().finite().optional().nullable(),
+  plannedGpPct: z.number().min(-100).max(100).optional().nullable(),
+  lySales: monthlyArraySchema.optional(),
+  plannedSales: monthlyArraySchema.optional(),
+  markdownPct: monthlyArraySchema.optional(),
+  changedBy: z.string().max(100).optional(),
+});
+
+export const otbPlanRowListQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(200).default(50),
+  storeId: z.string().max(100).optional(),
+  categoryId: z.string().max(100).optional(),
+  fiscalYear: z.coerce.number().int().min(2020).max(2099).optional(),
+});
+
+export const otbPlanRowCopySchema = z.object({
+  targetStoreId: z.string().min(1).max(100),
+  targetCategoryId: z.string().min(1).max(100),
+  changedBy: z.string().max(100).optional(),
+});
+
+export const otbPlanRowRecalcSchema = z.object({
+  changedBy: z.string().max(100).optional(),
+});
+
+// ── Company Settings schemas ──────────────────────────────────────
+
+export const otbEntryMethodSchema = z.object({
+  value: z.enum(['CHANGE_OVER_LAST_YEAR', 'FIXED_MONTHLY_MIX']),
+  changedBy: z.string().max(100).optional(),
+});
+
 // ── Inventory Adjustment schemas ──────────────────────────────────
 
 const ADJUSTMENT_TYPES = ['RECEIPT', 'TRANSFER', 'MANUAL_ADJUST', 'RETURN', 'DAMAGE', 'SHRINKAGE'] as const;
