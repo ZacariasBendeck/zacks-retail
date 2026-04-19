@@ -8,6 +8,7 @@ import {
   parseCriteria,
   matchesCriteria,
   matchesKeywords,
+  sqlNumericBounds,
 } from '../src/utils/criteriaGrammar';
 
 describe('parseCriteria', () => {
@@ -116,5 +117,45 @@ describe('matchesKeywords', () => {
     const expr = parseCriteria('<>PROMO');
     expect(matchesKeywords(expr, 'WEDGE PROMO')).toBe(false);
     expect(matchesKeywords(expr, 'WEDGE')).toBe(true);
+  });
+});
+
+describe('sqlNumericBounds', () => {
+  it('returns null for empty expression', () => {
+    expect(sqlNumericBounds(parseCriteria(''))).toBeNull();
+  });
+
+  it('returns null when any non-numeric literal is present', () => {
+    expect(sqlNumericBounds(parseCriteria('NIKE'))).toBeNull();
+    expect(sqlNumericBounds(parseCriteria('100,NIKE'))).toBeNull();
+  });
+
+  it('returns null when a wildcard pattern is present', () => {
+    expect(sqlNumericBounds(parseCriteria('KISS*BK'))).toBeNull();
+    expect(sqlNumericBounds(parseCriteria('100,KISS*BK'))).toBeNull();
+  });
+
+  it('returns null when a non-numeric range is present', () => {
+    expect(sqlNumericBounds(parseCriteria('AAA-ZZZ'))).toBeNull();
+  });
+
+  it('bounds a single numeric range', () => {
+    expect(sqlNumericBounds(parseCriteria('556-599'))).toEqual({ min: 556, max: 599 });
+  });
+
+  it('bounds a list of numeric literals', () => {
+    expect(sqlNumericBounds(parseCriteria('100,200,300'))).toEqual({ min: 100, max: 300 });
+  });
+
+  it('bounds a mix of ranges and literals', () => {
+    expect(sqlNumericBounds(parseCriteria('100,556-599,650'))).toEqual({ min: 100, max: 650 });
+  });
+
+  it('ignores exclusions (they only narrow post-filter)', () => {
+    expect(sqlNumericBounds(parseCriteria('100-200,<>150'))).toEqual({ min: 100, max: 200 });
+  });
+
+  it('returns null for exclusion-only expression', () => {
+    expect(sqlNumericBounds(parseCriteria('<>150'))).toBeNull();
   });
 });

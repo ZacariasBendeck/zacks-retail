@@ -272,3 +272,48 @@ export function sqlInLiterals(expr: CriteriaExpression): string[] | null {
   }
   return out;
 }
+
+/**
+ * Returns { min, max } covering every non-excluded numeric token (literal or
+ * numeric range) in the expression, or null if the expression is empty, any
+ * non-numeric token is present, or the expression contains only exclusions.
+ *
+ * Used by adapters to push a loose `BETWEEN ? AND ?` pre-filter down to the
+ * database before `matchesCriteria()` runs the exact per-row check in memory.
+ * Exclusions never widen or narrow the SQL bound — they only tighten the
+ * in-memory post-filter.
+ */
+export function sqlNumericBounds(
+  expr: CriteriaExpression,
+): { min: number; max: number } | null {
+  if (expr.empty) return null;
+  let min = Number.POSITIVE_INFINITY;
+  let max = Number.NEGATIVE_INFINITY;
+  let sawPositive = false;
+
+  for (const t of expr.tokens) {
+    if (t.excluded) continue;
+    switch (t.kind) {
+      case 'literal': {
+        if (!/^-?\d+$/.test(t.value)) return null;
+        const n = Number(t.value);
+        if (n < min) min = n;
+        if (n > max) max = n;
+        sawPositive = true;
+        break;
+      }
+      case 'range': {
+        if (!t.numeric) return null;
+        const from = Number(t.from);
+        const to = Number(t.to);
+        if (from < min) min = from;
+        if (to > max) max = to;
+        sawPositive = true;
+        break;
+      }
+      case 'pattern':
+        return null;
+    }
+  }
+  return sawPositive ? { min, max } : null;
+}
