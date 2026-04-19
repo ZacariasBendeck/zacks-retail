@@ -2962,6 +2962,75 @@ const MIGRATIONS: Migration[] = [
       db.exec(`DROP TABLE IF EXISTS company_physical_inventory_settings;`);
     },
   },
+  {
+    version: '0021',
+    description: 'otb-planning Phase 1: OTB Plan entry file (RICS manual Ch. 11 p. 158) — store×category×fiscal_year wide-format plan row, audit, + company settings key/value store',
+    up(db: DatabaseSync) {
+      const monthCols = Array.from({ length: 12 }, (_, i) => String(i + 1).padStart(2, '0'));
+      const lySales = monthCols.map((m) => `ly_sales_m${m} REAL`).join(',\n          ');
+      const plannedSales = monthCols.map((m) => `planned_sales_m${m} REAL`).join(',\n          ');
+      const markdownPct = monthCols.map((m) => `markdown_pct_m${m} REAL`).join(',\n          ');
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS otb_plan_rows (
+          id TEXT PRIMARY KEY,
+          store_id TEXT NOT NULL,
+          category_id TEXT NOT NULL,
+          fiscal_year INTEGER NOT NULL CHECK(fiscal_year BETWEEN 2020 AND 2099),
+          pct_change_ly_to_cy REAL,
+          pct_change_cy_to_ny REAL,
+          planned_turnover_1h REAL,
+          planned_turnover_2h REAL,
+          planned_gp_pct REAL CHECK(planned_gp_pct IS NULL OR (planned_gp_pct >= -100 AND planned_gp_pct <= 100)),
+          ${lySales},
+          ${plannedSales},
+          ${markdownPct},
+          created_by TEXT NOT NULL DEFAULT 'system',
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          UNIQUE(store_id, category_id, fiscal_year)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_otb_plan_rows_store_year
+          ON otb_plan_rows(store_id, fiscal_year);
+        CREATE INDEX IF NOT EXISTS idx_otb_plan_rows_category_year
+          ON otb_plan_rows(category_id, fiscal_year);
+
+        CREATE TABLE IF NOT EXISTS otb_plan_row_audit (
+          id TEXT PRIMARY KEY,
+          otb_plan_row_id TEXT NOT NULL REFERENCES otb_plan_rows(id),
+          field_changed TEXT NOT NULL,
+          old_value TEXT,
+          new_value TEXT,
+          changed_by TEXT NOT NULL DEFAULT 'system',
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_otb_plan_row_audit_row
+          ON otb_plan_row_audit(otb_plan_row_id, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS company_settings (
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL,
+          updated_by TEXT NOT NULL DEFAULT 'system',
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        INSERT OR IGNORE INTO company_settings (key, value, updated_by)
+          VALUES ('otb.entry_method', '"CHANGE_OVER_LAST_YEAR"', 'system');
+      `);
+    },
+    down(db: DatabaseSync) {
+      db.exec(`
+        DROP INDEX IF EXISTS idx_otb_plan_row_audit_row;
+        DROP INDEX IF EXISTS idx_otb_plan_rows_category_year;
+        DROP INDEX IF EXISTS idx_otb_plan_rows_store_year;
+        DROP TABLE IF EXISTS otb_plan_row_audit;
+        DROP TABLE IF EXISTS otb_plan_rows;
+        DROP TABLE IF EXISTS company_settings;
+      `);
+    },
+  },
 ];
 
 function runMigrations(db: DatabaseSync): void {
