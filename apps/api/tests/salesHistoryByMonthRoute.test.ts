@@ -1,17 +1,18 @@
 /**
  * Route-level integration tests for
- * `GET /api/v1/reports/rics-sales-history-by-month`.
+ * `GET /api/v1/reports/rics-sales-history-by-month` — v2.
  *
  * The adapter is mocked at the `ricsSalesHistoryByMonthAdapter` boundary so
  * the route → facade → adapter pipeline is exercised end-to-end without any
- * RICS MDB dependency. Follows the same pattern the sibling
- * `rics-sales-by-day-store` integration tests use.
+ * RICS MDB dependency.
  */
 
 // ─────────────────────────── adapter mocks ────────────────────────────────
 
 jest.mock('../src/services/salesReporting/ricsSalesHistoryByMonthAdapter', () => ({
+  queryMonthlyMeasures: jest.fn(),
   queryMonthlyNetSales: jest.fn(),
+  loadSkuMasterForCriteria: jest.fn().mockResolvedValue([]),
   clearCache: jest.fn(),
 }));
 
@@ -35,28 +36,42 @@ jest.mock('../src/services/salesReporting/ricsSalesReportAdapter', () => {
 
 import request from 'supertest';
 
-type MonthlyNetSalesRow = {
+type MonthlyMeasuresRow = {
   storeNumber: number;
   yearMonth: string;
   dimKey: string;
   dimLabel: string;
+  categoryKey: string | null;
+  vendorKey: string | null;
+  quantity: number;
   netSales: number;
+  cogs: number;
 };
 
-/**
- * Re-require the adapter module each call so we write to the instance the
- * facade is actually using (which is loaded AFTER `jest.resetModules()` in
- * each describe's `beforeAll`).
- */
-function setAdapterRows(rows: MonthlyNetSalesRow[]): void {
+function measureRow(partial: Partial<MonthlyMeasuresRow>): MonthlyMeasuresRow {
+  return {
+    storeNumber: 2,
+    yearMonth: '2026-04',
+    dimKey: 'NIKE',
+    dimLabel: 'NIKE',
+    categoryKey: null,
+    vendorKey: 'NIKE',
+    quantity: 0,
+    netSales: 0,
+    cogs: 0,
+    ...partial,
+  };
+}
+
+function setAdapterRows(rows: MonthlyMeasuresRow[]): void {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const monthlyAdapter = require('../src/services/salesReporting/ricsSalesHistoryByMonthAdapter');
-  (monthlyAdapter.queryMonthlyNetSales as jest.Mock).mockReset();
-  (monthlyAdapter.queryMonthlyNetSales as jest.Mock).mockResolvedValue(rows);
+  (monthlyAdapter.queryMonthlyMeasures as jest.Mock).mockReset();
+  (monthlyAdapter.queryMonthlyMeasures as jest.Mock).mockResolvedValue(rows);
 }
 
 // ══════════════════════════════════════════════════════════════════════════
-// JSON and CSV happy paths
+// JSON happy paths
 // ══════════════════════════════════════════════════════════════════════════
 
 describe('GET /api/v1/reports/rics-sales-history-by-month (JSON)', () => {
@@ -76,9 +91,9 @@ describe('GET /api/v1/reports/rics-sales-history-by-month (JSON)', () => {
 
   it('returns a valid pivot response with combineStores=true by default', async () => {
     setAdapterRows([
-      { storeNumber: 2, yearMonth: '2026-04', dimKey: 'NIKE', dimLabel: 'NIKE', netSales: 100 },
-      { storeNumber: 13, yearMonth: '2026-04', dimKey: 'NIKE', dimLabel: 'NIKE', netSales: 50 },
-      { storeNumber: 2, yearMonth: '2026-03', dimKey: 'ADIDAS', dimLabel: 'ADIDAS', netSales: 25 },
+      measureRow({ storeNumber: 2,  yearMonth: '2026-04', dimKey: 'NIKE',   dimLabel: 'NIKE',   netSales: 100 }),
+      measureRow({ storeNumber: 13, yearMonth: '2026-04', dimKey: 'NIKE',   dimLabel: 'NIKE',   netSales: 50  }),
+      measureRow({ storeNumber: 2,  yearMonth: '2026-03', dimKey: 'ADIDAS', dimLabel: 'ADIDAS', netSales: 25  }),
     ]);
 
     const res = await request(app).get(
@@ -91,20 +106,21 @@ describe('GET /api/v1/reports/rics-sales-history-by-month (JSON)', () => {
     expect(res.body.months).toHaveLength(12);
     expect(res.body.months[0]).toBe('2025-05');
     expect(res.body.months[11]).toBe('2026-04');
+    expect(res.body.detailLevel).toBe('subtotals');
+    expect(res.body.dataToPrint).toEqual(['netSales']);
     expect(res.body.blocks).toHaveLength(1);
     expect(res.body.blocks[0].storeNumber).toBe('ALL');
     expect(res.body.blocks[0].storeLabel).toBe('All Stores');
-    expect(res.body.chartSeries).toHaveLength(1);
 
     const nike = res.body.blocks[0].rows.find((r: any) => r.key === 'NIKE');
-    expect(nike.monthValues[11]).toBe(150);
-    expect(nike.total).toBe(150);
+    expect(nike.metrics.netSales[11]).toBe(150);
+    expect(nike.totals.netSales).toBe(150);
   });
 
   it('respects combineStores=false and returns one block per store in order', async () => {
     setAdapterRows([
-      { storeNumber: 2, yearMonth: '2026-04', dimKey: 'NIKE', dimLabel: 'NIKE', netSales: 100 },
-      { storeNumber: 13, yearMonth: '2026-04', dimKey: 'NIKE', dimLabel: 'NIKE', netSales: 50 },
+      measureRow({ storeNumber: 2,  yearMonth: '2026-04', dimKey: 'NIKE', dimLabel: 'NIKE', netSales: 100 }),
+      measureRow({ storeNumber: 13, yearMonth: '2026-04', dimKey: 'NIKE', dimLabel: 'NIKE', netSales: 50  }),
     ]);
 
     const res = await request(app).get(
@@ -115,20 +131,59 @@ describe('GET /api/v1/reports/rics-sales-history-by-month (JSON)', () => {
     expect(res.body.blocks).toHaveLength(2);
     expect(res.body.blocks[0].storeNumber).toBe(2);
     expect(res.body.blocks[1].storeNumber).toBe(13);
-    expect(res.body.chartSeries).toHaveLength(2);
   });
 
-  it('accepts sortBy=category', async () => {
+  it('accepts multiple metrics via dataToPrint and returns each as a metric block', async () => {
     setAdapterRows([
-      { storeNumber: 2, yearMonth: '2026-04', dimKey: '556', dimLabel: '556 - Dress Shoes', netSales: 100 },
+      measureRow({ yearMonth: '2026-04', dimKey: 'NIKE', dimLabel: 'NIKE', quantity: 4, netSales: 200, cogs: 120 }),
     ]);
     const res = await request(app).get(
-      '/api/v1/reports/rics-sales-history-by-month?stores=2&endMonth=2026-04&sortBy=category',
+      '/api/v1/reports/rics-sales-history-by-month?stores=2&endMonth=2026-04&dataToPrint=netSales,profit,grossProfit,quantitySold',
     );
     expect(res.status).toBe(200);
-    expect(res.body.sortBy).toBe('category');
-    expect(res.body.blocks[0].rows[0].key).toBe('556');
-    expect(res.body.blocks[0].rows[0].label).toBe('556 - Dress Shoes');
+    expect(res.body.dataToPrint).toEqual(['netSales', 'profit', 'grossProfit', 'quantitySold']);
+    const nike = res.body.blocks[0].rows[0];
+    expect(nike.metrics.quantitySold[11]).toBe(4);
+    expect(nike.metrics.profit[11]).toBe(80);
+    expect(nike.metrics.grossProfit[11]).toBeCloseTo(40, 1);
+  });
+
+  it('accepts detailLevel=sku and propagates to the adapter', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const monthlyAdapter = require('../src/services/salesReporting/ricsSalesHistoryByMonthAdapter');
+    setAdapterRows([
+      measureRow({ yearMonth: '2026-04', dimKey: 'SKU-A', dimLabel: 'SKU-A', netSales: 100 }),
+    ]);
+    const res = await request(app).get(
+      '/api/v1/reports/rics-sales-history-by-month?stores=2&endMonth=2026-04&detailLevel=sku',
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.detailLevel).toBe('sku');
+    expect((monthlyAdapter.queryMonthlyMeasures as jest.Mock).mock.calls.at(-1)?.[0]).toMatchObject({
+      detailLevel: 'sku',
+    });
+  });
+
+  it('passes criteria facets through to the adapter', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const monthlyAdapter = require('../src/services/salesReporting/ricsSalesHistoryByMonthAdapter');
+    setAdapterRows([]);
+    await request(app).get(
+      '/api/v1/reports/rics-sales-history-by-month?stores=2,13&endMonth=2026-04&critVendors=NIKE,ADIDAS&critCategories=556-559',
+    );
+    expect((monthlyAdapter.queryMonthlyMeasures as jest.Mock).mock.calls.at(-1)?.[0]).toMatchObject({
+      vendorFilter: ['NIKE', 'ADIDAS'],
+      categoryFilter: [556, 557, 558, 559],
+    });
+  });
+
+  it('echoes deferredMetrics so the UI can surface Phase-2 notices', async () => {
+    setAdapterRows([]);
+    const res = await request(app).get(
+      '/api/v1/reports/rics-sales-history-by-month?stores=2&endMonth=2026-04&deferredMetrics=beginningOnHand,roiPct,turns',
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.deferredMetrics).toEqual(['beginningOnHand', 'roiPct', 'turns']);
   });
 });
 
@@ -147,13 +202,12 @@ describe('GET /api/v1/reports/rics-sales-history-by-month (CSV)', () => {
     else process.env.SALES_SOURCE = ORIGINAL_SOURCE;
   });
 
-  it('emits a single-section CSV when combineStores=true', async () => {
+  it('emits a multi-metric CSV when combineStores=true and dataToPrint selects >1 metric', async () => {
     setAdapterRows([
-      { storeNumber: 2, yearMonth: '2026-04', dimKey: 'NIKE', dimLabel: 'NIKE', netSales: 100 },
-      { storeNumber: 13, yearMonth: '2026-04', dimKey: 'NIKE', dimLabel: 'NIKE', netSales: 50 },
+      measureRow({ yearMonth: '2026-04', dimKey: 'NIKE', dimLabel: 'NIKE', quantity: 4, netSales: 200, cogs: 120 }),
     ]);
     const res = await request(app).get(
-      '/api/v1/reports/rics-sales-history-by-month?stores=2,13&endMonth=2026-04&format=csv',
+      '/api/v1/reports/rics-sales-history-by-month?stores=2,13&endMonth=2026-04&dataToPrint=netSales,profit&format=csv',
     );
     expect(res.status).toBe(200);
     expect(res.headers['content-type']).toMatch(/text\/csv/);
@@ -161,17 +215,17 @@ describe('GET /api/v1/reports/rics-sales-history-by-month (CSV)', () => {
     const csv = res.text;
     expect(csv).toContain('Sales History by Month');
     expect(csv).toContain('All Stores');
+    expect(csv).toContain('Net Sales');
+    expect(csv).toContain('Profit');
     expect(csv).toContain('NIKE');
-    expect(csv).toContain('Totals');
-    expect(csv).toContain('150.00');                        // combined April value
-    // Only one store-label banner when combined.
-    expect(csv.match(/All Stores/g)?.length ?? 0).toBe(1);
+    expect(csv).toContain('200.00');
+    expect(csv).toContain('80.00');                        // profit
   });
 
   it('emits per-store sections when combineStores=false', async () => {
     setAdapterRows([
-      { storeNumber: 2, yearMonth: '2026-04', dimKey: 'NIKE', dimLabel: 'NIKE', netSales: 100 },
-      { storeNumber: 13, yearMonth: '2026-04', dimKey: 'NIKE', dimLabel: 'NIKE', netSales: 50 },
+      measureRow({ storeNumber: 2,  yearMonth: '2026-04', dimKey: 'NIKE', dimLabel: 'NIKE', netSales: 100 }),
+      measureRow({ storeNumber: 13, yearMonth: '2026-04', dimKey: 'NIKE', dimLabel: 'NIKE', netSales: 50  }),
     ]);
     const res = await request(app).get(
       '/api/v1/reports/rics-sales-history-by-month?stores=2,13&endMonth=2026-04&combineStores=false&format=csv',
@@ -180,8 +234,44 @@ describe('GET /api/v1/reports/rics-sales-history-by-month (CSV)', () => {
     const csv = res.text;
     expect(csv).toContain('2 - UNLIMITED C. 2000');
     expect(csv).toContain('13 - TEST STORE 13');
-    // Each section has its own Totals line → expect 2 total rows.
-    expect(csv.match(/^Totals,/gm)?.length ?? 0).toBe(2);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════
+// XLSX export
+// ══════════════════════════════════════════════════════════════════════════
+
+describe('GET /api/v1/reports/rics-sales-history-by-month (XLSX)', () => {
+  const ORIGINAL_SOURCE = process.env.SALES_SOURCE;
+  let app: any;
+
+  beforeAll(async () => {
+    process.env.SALES_SOURCE = 'rics';
+    jest.resetModules();
+    app = (await import('../src/app')).default;
+  });
+
+  afterAll(() => {
+    if (ORIGINAL_SOURCE === undefined) delete process.env.SALES_SOURCE;
+    else process.env.SALES_SOURCE = ORIGINAL_SOURCE;
+  });
+
+  it('emits a binary XLSX with the expected content-type and extension', async () => {
+    setAdapterRows([
+      measureRow({ yearMonth: '2026-04', dimKey: 'NIKE', dimLabel: 'NIKE', quantity: 4, netSales: 200, cogs: 120 }),
+    ]);
+    const res = await request(app).get(
+      '/api/v1/reports/rics-sales-history-by-month?stores=2&endMonth=2026-04&format=xlsx&dataToPrint=netSales,profit',
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toMatch(
+      /openxmlformats-officedocument\.spreadsheetml\.sheet/,
+    );
+    expect(res.headers['content-disposition']).toMatch(/rics-sales-history-by-month-2026-04\.xlsx/);
+    // PK magic bytes — XLSX is a zip-based format.
+    expect(res.body?.length ?? res.body?.byteLength ?? 0).toBeGreaterThan(0);
+    const buf = Buffer.isBuffer(res.body) ? res.body : Buffer.from(res.body);
+    expect(buf.slice(0, 2).toString('hex')).toBe('504b');   // 'PK'
   });
 });
 
@@ -221,6 +311,14 @@ describe('GET /api/v1/reports/rics-sales-history-by-month (validation)', () => {
   it('returns 400 when sortBy is not vendor or category', async () => {
     const res = await request(app).get(
       '/api/v1/reports/rics-sales-history-by-month?stores=2&endMonth=2026-04&sortBy=brand',
+    );
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('returns 400 when detailLevel is invalid', async () => {
+    const res = await request(app).get(
+      '/api/v1/reports/rics-sales-history-by-month?stores=2&endMonth=2026-04&detailLevel=blahblah',
     );
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe('VALIDATION_ERROR');

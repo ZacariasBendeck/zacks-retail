@@ -2933,6 +2933,35 @@ const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    version: '0020',
+    description: 'physical-inventory Wave 2: company_physical_inventory_settings (variance bands, conflict window, IV defaults). Single-row config table; one row per company.',
+    up(db: DatabaseSync) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS company_physical_inventory_settings (
+          id INTEGER PRIMARY KEY CHECK(id = 1),
+          low_variance_tolerance_pct REAL NOT NULL DEFAULT 2.0,
+          material_variance_tolerance_pct REAL NOT NULL DEFAULT 5.0,
+          extreme_variance_tolerance_pct REAL NOT NULL DEFAULT 15.0,
+          extreme_variance_ceo_notify INTEGER NOT NULL DEFAULT 1
+            CHECK(extreme_variance_ceo_notify IN (0, 1)),
+          require_zero_ack_for_extreme INTEGER NOT NULL DEFAULT 1
+            CHECK(require_zero_ack_for_extreme IN (0, 1)),
+          duplicate_pass_window_minutes INTEGER NOT NULL DEFAULT 30
+            CHECK(duplicate_pass_window_minutes >= 0),
+          default_lock_store_during_count INTEGER NOT NULL DEFAULT 0
+            CHECK(default_lock_store_during_count IN (0, 1)),
+          independent_verification_count_n INTEGER NOT NULL DEFAULT 2
+            CHECK(independent_verification_count_n >= 2),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        INSERT OR IGNORE INTO company_physical_inventory_settings (id) VALUES (1);
+      `);
+    },
+    down(db: DatabaseSync) {
+      db.exec(`DROP TABLE IF EXISTS company_physical_inventory_settings;`);
+    },
+  },
 ];
 
 function runMigrations(db: DatabaseSync): void {
