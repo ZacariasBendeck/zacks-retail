@@ -17,6 +17,7 @@ import {
 } from 'antd'
 import { SearchOutlined, ShopOutlined } from '@ant-design/icons'
 import { useInventoryInquiry } from '../../hooks/useRicsInventory'
+import { SkuLink } from '../../components/sku-link'
 import type {
   InventoryCell,
   InventoryInquiry,
@@ -176,7 +177,7 @@ function TargetsContent({
         <Row gutter={[16, 16]}>
           <Col xs={24} lg={14}>
             <Typography.Title level={4} style={{ marginTop: 0 }}>
-              {data.sku}
+              <SkuLink skuCode={data.sku} />
             </Typography.Title>
             <Typography.Paragraph style={{ marginBottom: 8 }}>
               {master.description || (

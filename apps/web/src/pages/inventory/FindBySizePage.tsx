@@ -18,6 +18,7 @@ import {
 } from 'antd'
 import { SearchOutlined, ShopOutlined } from '@ant-design/icons'
 import { useFindBySize } from '../../hooks/useRicsInventory'
+import { SkuLink } from '../../components/sku-link'
 import type { FindBySizeResult } from '../../services/ricsInventoryApi'
 import { getErrorMessage } from '../../utils/errors'
 
@@ -113,7 +114,7 @@ function FindResults({ data }: { data: FindBySizeResult }) {
         <Row gutter={[16, 16]} align="middle">
           <Col xs={24} md={14}>
             <Typography.Title level={4} style={{ marginTop: 0 }}>
-              {data.sku} — size <Tag color="geekblue">{data.sizeLabel}</Tag>
+              <SkuLink skuCode={data.sku} /> — size <Tag color="geekblue">{data.sizeLabel}</Tag>
             </Typography.Title>
             <Typography.Paragraph style={{ margin: 0 }}>
               {data.description || <Typography.Text type="secondary">(no description)</Typography.Text>}

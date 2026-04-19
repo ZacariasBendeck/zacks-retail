@@ -24,6 +24,7 @@ import type {
   InventoryInquiryStore,
 } from '../../services/ricsInventoryApi'
 import { getErrorMessage } from '../../utils/errors'
+import { SkuLink } from '../../components/sku-link'
 
 // RICS Ch. 4 p. 76 — Enter Manual Transfers. Scaffold: From + To store,
 // SKU, per-cell quantity grid driven by live Inquiry data. Commit is
@@ -280,7 +281,7 @@ export default function ManualTransferEntryPage() {
             rowKey="key"
             pagination={false}
             columns={[
-              { title: 'SKU', dataIndex: 'sku', key: 'sku', width: 140 },
+              { title: 'SKU', dataIndex: 'sku', key: 'sku', width: 140, render: (sku: string) => <SkuLink skuCode={sku} /> },
               { title: 'Description', dataIndex: 'description', key: 'description', ellipsis: true },
               {
                 title: 'From → To',
@@ -371,7 +372,7 @@ function SkuGridEntry({
       size="small"
       title={
         <Space size="large">
-          <Typography.Text strong>{data.sku}</Typography.Text>
+          <SkuLink skuCode={data.sku} />
           <Typography.Text type="secondary">
             {data.master.description ?? '(no description)'}
           </Typography.Text>
