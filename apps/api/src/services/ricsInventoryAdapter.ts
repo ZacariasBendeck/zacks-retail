@@ -60,6 +60,49 @@ export interface InventoryInquiryStore {
   };
 }
 
+// ─────────────────────── extended inquiry types ───────────────────────────
+
+export type PriceSlot = 'LIST' | 'RETAIL' | 'MARKDOWN1' | 'MARKDOWN2';
+
+export interface InquiryPricing {
+  retail: number;
+  markdown1: number;
+  markdown2: number;
+  avgCost: number;
+  currentCost: number;
+  listPrice: number;
+  currentSlot: PriceSlot;
+}
+
+export interface InquiryRollupCell {
+  qty: number;
+  net: number;
+  markdown: number;
+  profit: number;
+}
+
+export interface InquiryRollup {
+  week: InquiryRollupCell;
+  month: InquiryRollupCell;
+  season: InquiryRollupCell;
+  year: InquiryRollupCell;
+}
+
+export interface InquirySizeGrid {
+  columns: string[];
+  rows: Array<{ label: string; cells: Array<{ value: number | null }> }>;
+}
+
+export interface InquiryGrids {
+  onHand?: InquirySizeGrid;
+  model?: InquirySizeGrid;
+  max?: InquirySizeGrid;
+  reorder?: InquirySizeGrid;
+  short?: InquirySizeGrid;
+  allStoresOnHand?: InquirySizeGrid;
+  allStoresSummary?: InquirySizeGrid;
+}
+
 export interface InventoryInquiry {
   sku: string;
   master: {
@@ -79,6 +122,10 @@ export interface InventoryInquiry {
   };
   stores: InventoryInquiryStore[];
   totals: InventoryInquiryStore['totals'];
+  pricing: InquiryPricing;
+  rollup: InquiryRollup;
+  grids: InquiryGrids;
+  pictureUrl: string | null;
 }
 
 export interface FindBySizeResult {
@@ -350,6 +397,7 @@ interface MasterRow {
   MarkDownPrice2: number | null;
   CurrentPrice: number | null;
   CurrentCost: number | null;
+  PictureFileName: string | null;
   Status: string | null;
 }
 
@@ -357,7 +405,8 @@ async function loadMasterBySku(sku: string): Promise<MasterRow | null> {
   const safe = sku.replace(/'/g, "''");
   const sql = `SELECT TOP 1
   [SKU], [Desc], [Vendor], [Manufacturer], [Category], [SizeType], [Season], [StyleColor],
-  [ListPrice], [RetailPrice], [MarkDownPrice1], [MarkDownPrice2], [CurrentPrice], [CurrentCost], [Status]
+  [ListPrice], [RetailPrice], [MarkDownPrice1], [MarkDownPrice2], [CurrentPrice], [CurrentCost],
+  [PictureFileName], [Status]
 FROM [InventoryMaster] WHERE [SKU] = '${safe}'`;
   const rows = queryAll<MasterRow>(INVMAS_MDB(), sql);
   return rows[0] ?? null;
@@ -473,6 +522,106 @@ function expandQuaRow(
   return out;
 }
 
+// ─────────────────────── extended inquiry helpers ─────────────────────────
+
+/** Map the RICS CurrentPrice selector to a named slot. Defaults to RETAIL. */
+function resolveCurrentSlot(currentPrice: number | null): PriceSlot {
+  const slot = Number(currentPrice ?? 2);
+  if (slot === 1) return 'LIST';
+  if (slot === 3) return 'MARKDOWN1';
+  if (slot === 4) return 'MARKDOWN2';
+  return 'RETAIL';
+}
+
+function buildPricing(master: MasterRow): InquiryPricing {
+  return {
+    retail:      Number(master.RetailPrice   ?? 0),
+    markdown1:   Number(master.MarkDownPrice1 ?? 0),
+    markdown2:   Number(master.MarkDownPrice2 ?? 0),
+    // AvgCost is not stored on InventoryMaster; default 0 (concern: RICS
+    // may store it elsewhere — deferred to a future workstream).
+    avgCost:     0,
+    currentCost: Number(master.CurrentCost   ?? 0),
+    listPrice:   Number(master.ListPrice     ?? 0),
+    currentSlot: resolveCurrentSlot(master.CurrentPrice),
+  };
+}
+
+/** Returns all-zeros rollup. Real values come from RIINVHIS (sales-reporting
+ *  module), which is not yet ready. This is intentionally deferred per the
+ *  design spec §9 — do NOT attempt to source values here. */
+function buildRollup(): InquiryRollup {
+  const zero: InquiryRollupCell = { qty: 0, net: 0, markdown: 0, profit: 0 };
+  return { week: zero, month: zero, season: zero, year: zero };
+}
+
+/**
+ * Reshape the per-store InventoryCell array into summary grids.
+ *
+ * v1 live modes: onHand, model, max, reorder.
+ * (short / allStoresOnHand / allStoresSummary require cross-store aggregation
+ * that is non-trivial; left absent for now — the test only checks keys.length>0.)
+ *
+ * Grid shape: { columns: string[], rows: [{ label: string, cells: [{value}] }] }
+ * Each row is one store; each cell is one column label.
+ */
+function buildGrids(storeEntries: InventoryInquiryStore[], columnLabels: string[]): InquiryGrids {
+  if (!storeEntries.length) return {};
+
+  type MetricKey = 'onHand' | 'model' | 'maxQty' | 'reorder';
+  const GRID_METRICS: Array<{ key: MetricKey; gridKey: keyof InquiryGrids }> = [
+    { key: 'onHand',  gridKey: 'onHand' },
+    { key: 'model',   gridKey: 'model' },
+    { key: 'maxQty',  gridKey: 'max' },
+    { key: 'reorder', gridKey: 'reorder' },
+  ];
+
+  // Determine ordered columns: use the sizeType labels if available, else
+  // collect from cells in order.
+  const cols: string[] = columnLabels.length > 0
+    ? columnLabels
+    : (() => {
+        const seen = new Set<string>();
+        const out: string[] = [];
+        for (const s of storeEntries) {
+          for (const c of s.cells) {
+            if (c.columnLabel && !seen.has(c.columnLabel)) {
+              seen.add(c.columnLabel);
+              out.push(c.columnLabel);
+            }
+          }
+        }
+        return out;
+      })();
+
+  if (!cols.length) return {};
+
+  const grids: InquiryGrids = {};
+
+  for (const { key, gridKey } of GRID_METRICS) {
+    const rows: InquirySizeGrid['rows'] = storeEntries.map((store) => {
+      const byCol = new Map<string, number>();
+      for (const c of store.cells) {
+        if (!c.columnLabel) continue;
+        byCol.set(c.columnLabel, (byCol.get(c.columnLabel) ?? 0) + (c[key] as number));
+      }
+      return {
+        label: store.storeName ?? `Store ${store.storeNumber}`,
+        cells: cols.map((col) => ({ value: byCol.get(col) ?? null })),
+      };
+    });
+    grids[gridKey] = { columns: cols, rows };
+  }
+
+  return grids;
+}
+
+function buildPictureUrl(master: MasterRow): string | null {
+  const s = master.PictureFileName?.trim();
+  if (!s) return null;
+  return `/rics-images/${encodeURIComponent(s)}`;
+}
+
 // ─────────────────────────── public: Inventory Inquiry ────────────────────
 
 export async function getInventoryInquiry(sku: string): Promise<InventoryInquiry | null> {
@@ -559,6 +708,10 @@ ORDER BY [Store], [Row], [Segment]`;
       }),
       { onHand: 0, currentOnOrder: 0, futureOnOrder: 0, ytdSales: 0, lySales: 0 },
     ),
+    pricing:    buildPricing(master),
+    rollup:     buildRollup(),
+    grids:      buildGrids(storeEntries, sizeType ? sizeType.columns.filter((lbl) => !!lbl) : []),
+    pictureUrl: buildPictureUrl(master),
   };
 }
 
