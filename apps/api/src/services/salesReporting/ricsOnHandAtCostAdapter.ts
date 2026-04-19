@@ -30,9 +30,9 @@ import type {
 } from './types';
 
 const INVQUA_MDB = () =>
-  process.env.RICS_INVQUA_DB_FILE ?? ricsDbPath('RIINVQUA.MDB');
+  ricsDbPath(process.env.RICS_INVQUA_DB_FILE || 'RIINVQUA.MDB');
 const INVMAS_MDB = () =>
-  process.env.RICS_INVMAS_DB_FILE ?? ricsDbPath('RIINVMAS.MDB');
+  ricsDbPath(process.env.RICS_INVMAS_DB_FILE || 'RIINVMAS.MDB');
 
 const MASTER_JOIN_ONLY = new Set<SalesAnalysisReportType>([
   'GROUP_SUMMARY',
