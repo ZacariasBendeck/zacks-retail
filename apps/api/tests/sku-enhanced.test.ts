@@ -277,17 +277,18 @@ describe('POST /api/v1/skus (enhanced attributes)', () => {
   });
 
   it('creates a SKU without any extended attributes (all null)', async () => {
-    // Send required fields plus categoryId (NOT NULL) — no brandId, colorId, or other extended attrs
+    // Send required fields plus categoryId (NOT NULL) + brandId/colorId (required by trigger) — no other extended attrs
     const minimalSku = {
       style: 'Minimal Style',
       price: 50.00,
       department: 'CASUAL',
       vendorId: VENDOR_ID,
       categoryId: getCategoryId(595),
+      brandId: getBrandId('KISS'),
+      colorId: getColorId('BK'),
     };
     const res = await request(app).post('/api/v1/skus').send(minimalSku);
     expect(res.status).toBe(201);
-    expect(res.body.colorFamilyId).toBeNull();
     expect(res.body.shoeTypeId).toBeNull();
     expect(res.body.cost).toBeNull();
     expect(res.body.vendorSku).toBeNull();

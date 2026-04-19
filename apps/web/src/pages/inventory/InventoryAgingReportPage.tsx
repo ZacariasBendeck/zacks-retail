@@ -1,5 +1,6 @@
 import { useState, useCallback, useMemo } from 'react'
 import {
+  Alert,
   Card,
   Row,
   Col,
@@ -24,7 +25,9 @@ import {
   useAgingByDepartment,
   useAgingDrillDown,
 } from '../../hooks/useReports'
-import { getAgingCsvUrl } from '../../services/reportApi'
+import { getAgingCsvUrl, getAgingXlsxUrl } from '../../services/reportApi'
+import { validateDomainFilterContract } from '../../services/domainFilterContract'
+import { getErrorMessage } from '../../utils/errors'
 import type {
   AgingDepartmentSummary,
   AgingDetail,
@@ -55,11 +58,28 @@ export default function InventoryAgingReportPage() {
   const [selectedDepartment, setSelectedDepartment] = useState<string | null>(null)
   const [selectedCategory, setSelectedCategory] = useState<number | null>(null)
 
-  const { data: deptData, isLoading: deptLoading } = useAgingByDepartment()
-  const { data: drillData, isLoading: drillLoading } = useAgingDrillDown(
+  const { data: deptData, isLoading: deptLoading, error: deptError } = useAgingByDepartment()
+  const { data: drillData, isLoading: drillLoading, error: drillError } = useAgingDrillDown(
     selectedDepartment ?? '',
     selectedCategory ?? undefined,
   )
+
+  const filterValidation = useMemo(
+    () =>
+      validateDomainFilterContract(
+        { department: selectedDepartment, category: selectedCategory },
+        { requireDepartmentForCategory: true },
+      ),
+    [selectedCategory, selectedDepartment],
+  )
+
+  const reportErrorMessage = selectedDepartment
+    ? drillError
+      ? getErrorMessage(drillError, 'Unable to load aging drill-down report.')
+      : null
+    : deptError
+      ? getErrorMessage(deptError, 'Unable to load aging department summary.')
+      : null
 
   const handleDepartmentClick = useCallback((dept: string) => {
     setSelectedDepartment(dept)
@@ -80,6 +100,14 @@ export default function InventoryAgingReportPage() {
 
   const handleExportCsv = useCallback(() => {
     const url = getAgingCsvUrl(
+      selectedDepartment ?? undefined,
+      selectedCategory ?? undefined,
+    )
+    window.open(url, '_blank')
+  }, [selectedDepartment, selectedCategory])
+
+  const handleExportXlsx = useCallback(() => {
+    const url = getAgingXlsxUrl(
       selectedDepartment ?? undefined,
       selectedCategory ?? undefined,
     )
@@ -122,6 +150,13 @@ export default function InventoryAgingReportPage() {
     })).sort((a, b) => b.flaggedValue - a.flaggedValue)
   }, [drillData, selectedCategory])
 
+  // Helper to pull a bucket's cost value (or 0) off an AgingDepartmentSummary.
+  // Used as the sort key for the four aging-bucket columns so clicking the
+  // header orders departments by how much $$ sits in that bucket.
+  const bucketValue = (rec: AgingDepartmentSummary, bucket: string): number => {
+    const b = rec.buckets.find((x) => x.bucket === bucket)
+    return b?.totalCostValue ?? 0
+  }
   const departmentColumns = [
     {
       title: 'Department',
@@ -130,6 +165,8 @@ export default function InventoryAgingReportPage() {
       render: (dept: string) => (
         <Tag color={DEPARTMENT_COLORS[dept as Department]}>{dept}</Tag>
       ),
+      sorter: (a: AgingDepartmentSummary, b: AgingDepartmentSummary) =>
+        a.department.localeCompare(b.department),
     },
     {
       title: '0-30 Days',
@@ -139,6 +176,8 @@ export default function InventoryAgingReportPage() {
         const b = record.buckets.find((x) => x.bucket === '0-30')
         return b ? `${b.totalUnits} units / $${b.totalCostValue.toFixed(2)}` : '—'
       },
+      sorter: (a: AgingDepartmentSummary, b: AgingDepartmentSummary) =>
+        bucketValue(a, '0-30') - bucketValue(b, '0-30'),
     },
     {
       title: '31-60 Days',
@@ -148,6 +187,8 @@ export default function InventoryAgingReportPage() {
         const b = record.buckets.find((x) => x.bucket === '31-60')
         return b ? `${b.totalUnits} units / $${b.totalCostValue.toFixed(2)}` : '—'
       },
+      sorter: (a: AgingDepartmentSummary, b: AgingDepartmentSummary) =>
+        bucketValue(a, '31-60') - bucketValue(b, '31-60'),
     },
     {
       title: '61-90 Days',
@@ -157,6 +198,8 @@ export default function InventoryAgingReportPage() {
         const b = record.buckets.find((x) => x.bucket === '61-90')
         return b ? `${b.totalUnits} units / $${b.totalCostValue.toFixed(2)}` : '—'
       },
+      sorter: (a: AgingDepartmentSummary, b: AgingDepartmentSummary) =>
+        bucketValue(a, '61-90') - bucketValue(b, '61-90'),
     },
     {
       title: (
@@ -175,6 +218,8 @@ export default function InventoryAgingReportPage() {
           </Typography.Text>
         )
       },
+      sorter: (a: AgingDepartmentSummary, b: AgingDepartmentSummary) =>
+        bucketValue(a, '90+') - bucketValue(b, '90+'),
     },
     {
       title: 'Total Value',
@@ -201,18 +246,21 @@ export default function InventoryAgingReportPage() {
       title: 'Category',
       dataIndex: 'category',
       key: 'category',
+      sorter: (a: { category: number }, b: { category: number }) => a.category - b.category,
     },
     {
       title: 'Active SKUs',
       dataIndex: 'totalSkus',
       key: 'totalSkus',
       align: 'right' as const,
+      sorter: (a: { totalSkus: number }, b: { totalSkus: number }) => a.totalSkus - b.totalSkus,
     },
     {
       title: 'Total Units',
       dataIndex: 'totalUnits',
       key: 'totalUnits',
       align: 'right' as const,
+      sorter: (a: { totalUnits: number }, b: { totalUnits: number }) => a.totalUnits - b.totalUnits,
     },
     {
       title: 'Total Value',
@@ -220,6 +268,8 @@ export default function InventoryAgingReportPage() {
       key: 'totalCostValue',
       align: 'right' as const,
       render: (v: number) => `$${v.toFixed(2)}`,
+      sorter: (a: { totalCostValue: number }, b: { totalCostValue: number }) =>
+        a.totalCostValue - b.totalCostValue,
     },
     {
       title: (
@@ -253,12 +303,52 @@ export default function InventoryAgingReportPage() {
   ]
 
   const detailColumns = [
-    { title: 'SKU Code', dataIndex: 'skuCode', key: 'skuCode', width: 200, ellipsis: true },
-    { title: 'Brand', dataIndex: 'brand', key: 'brand', width: 120 },
-    { title: 'Style', dataIndex: 'style', key: 'style', width: 100 },
-    { title: 'Color', dataIndex: 'color', key: 'color', width: 100 },
-    { title: 'Size', dataIndex: 'size', key: 'size', width: 70 },
-    { title: 'Category', dataIndex: 'category', key: 'category', width: 90 },
+    {
+      title: 'SKU Code',
+      dataIndex: 'skuCode',
+      key: 'skuCode',
+      width: 200,
+      ellipsis: true,
+      sorter: (a: AgingDetail, b: AgingDetail) => a.skuCode.localeCompare(b.skuCode),
+    },
+    {
+      title: 'Brand',
+      dataIndex: 'brand',
+      key: 'brand',
+      width: 120,
+      sorter: (a: AgingDetail, b: AgingDetail) =>
+        (a.brand ?? '').localeCompare(b.brand ?? ''),
+    },
+    {
+      title: 'Style',
+      dataIndex: 'style',
+      key: 'style',
+      width: 100,
+      sorter: (a: AgingDetail, b: AgingDetail) => a.style.localeCompare(b.style),
+    },
+    {
+      title: 'Color',
+      dataIndex: 'color',
+      key: 'color',
+      width: 100,
+      sorter: (a: AgingDetail, b: AgingDetail) =>
+        (a.color ?? '').localeCompare(b.color ?? ''),
+    },
+    {
+      title: 'Size',
+      dataIndex: 'size',
+      key: 'size',
+      width: 70,
+      sorter: (a: AgingDetail, b: AgingDetail) =>
+        (a.size ?? '').localeCompare(b.size ?? ''),
+    },
+    {
+      title: 'Category',
+      dataIndex: 'category',
+      key: 'category',
+      width: 90,
+      sorter: (a: AgingDetail, b: AgingDetail) => a.category - b.category,
+    },
     {
       title: 'Price',
       dataIndex: 'price',
@@ -266,6 +356,7 @@ export default function InventoryAgingReportPage() {
       width: 90,
       align: 'right' as const,
       render: (v: number) => `$${v.toFixed(2)}`,
+      sorter: (a: AgingDetail, b: AgingDetail) => a.price - b.price,
     },
     {
       title: 'Qty On Hand',
@@ -273,6 +364,7 @@ export default function InventoryAgingReportPage() {
       key: 'quantityOnHand',
       width: 100,
       align: 'right' as const,
+      sorter: (a: AgingDetail, b: AgingDetail) => a.quantityOnHand - b.quantityOnHand,
     },
     {
       title: 'Cost Value',
@@ -281,6 +373,7 @@ export default function InventoryAgingReportPage() {
       width: 110,
       align: 'right' as const,
       render: (v: number) => `$${v.toFixed(2)}`,
+      sorter: (a: AgingDetail, b: AgingDetail) => a.costValue - b.costValue,
     },
     {
       title: 'Days On Hand',
@@ -297,6 +390,9 @@ export default function InventoryAgingReportPage() {
       key: 'agingBucket',
       width: 120,
       render: renderAgingBucket,
+      // Aging buckets are ordinal, not alphabetical — sort by daysOnHand which
+      // is already the canonical ordering for "how old is this stock".
+      sorter: (a: AgingDetail, b: AgingDetail) => a.daysOnHand - b.daysOnHand,
     },
     {
       title: 'Flagged',
@@ -336,6 +432,22 @@ export default function InventoryAgingReportPage() {
 
   return (
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+      {filterValidation.errors.length > 0 && (
+        <Alert
+          type="error"
+          showIcon
+          message="Invalid report filter selection"
+          description={filterValidation.errors.join(' ')}
+        />
+      )}
+      {reportErrorMessage && (
+        <Alert
+          type="error"
+          showIcon
+          message="Inventory aging request failed"
+          description={reportErrorMessage}
+        />
+      )}
       {/* Header */}
       <Card size="small">
         <Row align="middle" justify="space-between">
@@ -350,9 +462,14 @@ export default function InventoryAgingReportPage() {
             </Space>
           </Col>
           <Col>
-            <Button icon={<DownloadOutlined />} onClick={handleExportCsv}>
-              Export CSV
-            </Button>
+            <Space>
+              <Button icon={<DownloadOutlined />} onClick={handleExportCsv}>
+                Export CSV
+              </Button>
+              <Button icon={<DownloadOutlined />} onClick={handleExportXlsx}>
+                Export XLSX
+              </Button>
+            </Space>
           </Col>
         </Row>
         <Breadcrumb style={{ marginTop: 8 }} items={breadcrumbItems} />

@@ -17,12 +17,26 @@ function getCategoryId(ricsCode: number): number | null {
   return row ? row.id : null;
 }
 
+function getBrandId(code: string): number | null {
+  const db = getDb();
+  const row = db.prepare('SELECT id FROM ref_brands WHERE code = ?').get(code) as { id: number } | undefined;
+  return row ? row.id : null;
+}
+
+function getColorId(code: string): number | null {
+  const db = getDb();
+  const row = db.prepare('SELECT id FROM ref_colors WHERE code = ?').get(code) as { id: number } | undefined;
+  return row ? row.id : null;
+}
+
 const validSku = {
   style: 'Air Max',
   price: 129.99,
   department: 'FORMAL',
   vendorId: VENDOR_ID,
   get categoryId() { return getCategoryId(560); },
+  get brandId() { return getBrandId('KISS'); },
+  get colorId() { return getColorId('BK'); },
 };
 
 let createdSkuId: string;
@@ -210,7 +224,7 @@ describe('GET /api/v1/skus/:skuId/inventory/audit-log', () => {
 
   it('returns empty audit log for SKU with no adjustments', async () => {
     // Create a fresh SKU
-    const newSku = await request(app).post('/api/v1/skus').send({ ...validSku, style: 'Fresh' });
+    const newSku = await request(app).post('/api/v1/skus').send({ ...validSku, style: 'Fresh', brandId: getBrandId('FLEX'), colorId: getColorId('WH') });
     const res = await request(app).get(`/api/v1/skus/${newSku.body.id}/inventory/audit-log`);
     expect(res.status).toBe(200);
     expect(res.body.data.length).toBe(0);

@@ -145,10 +145,19 @@ export function getDepartmentSummary(): DepartmentSummary[] {
   }));
 }
 
+const LOW_STOCK_SORT_MAP: Record<string, string> = {
+  currentStock: 'current_stock',
+  skuCode: 's.sku_code',
+  department: 's.department',
+  style: 's.style',
+};
+
 export function getLowStock(
   threshold: number,
   page: number,
   pageSize: number,
+  sort: string = 'currentStock',
+  order: 'asc' | 'desc' = 'asc',
 ): { data: LowStockItem[]; pagination: { page: number; pageSize: number; totalItems: number; totalPages: number } } {
   const db = getDb();
 
@@ -163,6 +172,9 @@ export function getLowStock(
   const totalItems = countRow.total;
   const totalPages = Math.ceil(totalItems / pageSize);
   const offset = (page - 1) * pageSize;
+
+  const sortCol = LOW_STOCK_SORT_MAP[sort] || 'current_stock';
+  const sortDir = order === 'desc' ? 'DESC' : 'ASC';
 
   const rows = db.prepare(`
     SELECT
@@ -179,7 +191,7 @@ export function getLowStock(
     WHERE s.active = 1
       AND (SELECT COALESCE(SUM(i2.quantity_on_hand), 0) FROM inventory i2 WHERE i2.sku_id = s.id) <= ?
       AND (SELECT COALESCE(SUM(i2.quantity_on_hand), 0) FROM inventory i2 WHERE i2.sku_id = s.id) >= 0
-    ORDER BY current_stock ASC, s.department, s.sku_code
+    ORDER BY ${sortCol} ${sortDir}, s.sku_code ASC
     LIMIT ? OFFSET ?
   `).all(threshold, pageSize, offset) as unknown as LowStockRow[];
 

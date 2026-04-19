@@ -26,6 +26,20 @@ function getCategoryId(ricsCode: number): number | null {
   return row ? row.id : null;
 }
 
+function insertOutOfRangeCategory(ricsCode: number): number {
+  const db = getDb();
+  db.exec('DROP TRIGGER IF EXISTS trg_ref_categories_rics_range_insert_v011');
+  db.exec('DROP TRIGGER IF EXISTS trg_ref_categories_rics_range_update_v011');
+  db.exec('PRAGMA ignore_check_constraints = ON');
+  db.prepare(
+    "INSERT INTO ref_categories (rics_code, name, dept_macro, active) VALUES (?, ?, 'FORMAL', 1)"
+  ).run(ricsCode, `OutOfRange-${ricsCode}`);
+  db.exec('PRAGMA ignore_check_constraints = OFF');
+  const row = db.prepare('SELECT id FROM ref_categories WHERE rics_code = ?').get(ricsCode) as { id: number } | undefined;
+  if (!row) throw new Error('Failed to insert out-of-range category fixture');
+  return row.id;
+}
+
 function makeValidSku() {
   return {
     style: 'Air Max',
@@ -111,11 +125,11 @@ describe('POST /api/v1/skus', () => {
     const res = await request(app).post('/api/v1/skus').send({
       ...validSku,
       heelType: 'Stiletto',
-      material: 'Leather',
+      material: 'Lined',
     });
     expect(res.status).toBe(201);
     expect(res.body.heelType).toBe('Stiletto');
-    expect(res.body.material).toBe('Leather');
+    expect(res.body.material).toBe('Lined');
   });
 
   it('creates a SKU without heelType and material (defaults to null)', async () => {
@@ -149,6 +163,21 @@ describe('POST /api/v1/skus', () => {
     expect(res.body.error.code).toBe('INVALID_VENDOR');
   });
 
+  it('rejects category IDs mapped to RICS codes outside 556-599', async () => {
+    const validSku = makeValidSku();
+    const outOfRangeCategoryId = insertOutOfRangeCategory(600);
+    const res = await request(app)
+      .post('/api/v1/skus')
+      .send({ ...validSku, categoryId: outOfRangeCategoryId });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('VALIDATION_CATEGORY_RANGE');
+    expect(res.body.error.details).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ field: 'categoryCode', value: '600' }),
+      ])
+    );
+  });
+
   it('auto-creates inventory record with on_hand=0 and reserved=0', async () => {
     const validSku = makeValidSku();
     const created = await request(app).post('/api/v1/skus').send(validSku);
@@ -171,7 +200,7 @@ describe('POST /api/v1/skus', () => {
   it('generates incrementing SKU code sequences (001, 002)', async () => {
     const validSku = makeValidSku();
     const sku1 = await request(app).post('/api/v1/skus').send(validSku);
-    const sku2 = await request(app).post('/api/v1/skus').send(validSku);
+    const sku2 = await request(app).post('/api/v1/skus').send({ ...validSku, style: 'Air Max V2' });
     expect(sku1.status).toBe(201);
     expect(sku2.status).toBe(201);
     expect(sku1.body.skuCode).toMatch(/-001$/);
@@ -237,12 +266,12 @@ describe('PATCH /api/v1/skus/:skuId', () => {
     const validSku = makeValidSku();
     const created = await request(app).post('/api/v1/skus').send(validSku);
     const res = await request(app).patch(`/api/v1/skus/${created.body.id}`).send({
-      heelType: 'Block',
-      material: 'Suede',
+      heelType: 'Chunky',
+      material: 'Plastic',
     });
     expect(res.status).toBe(200);
-    expect(res.body.heelType).toBe('Block');
-    expect(res.body.material).toBe('Suede');
+    expect(res.body.heelType).toBe('Chunky');
+    expect(res.body.material).toBe('Plastic');
   });
 
   it('rejects price with more than 2 decimal places on update', async () => {
@@ -272,6 +301,17 @@ describe('PATCH /api/v1/skus/:skuId', () => {
     const sku2 = await request(app).post('/api/v1/skus').send({ ...validSku, barcode: 'BC-2', style: 'Other' });
     const res = await request(app).patch(`/api/v1/skus/${sku2.body.id}`).send({ barcode: 'BC-1' });
     expect(res.status).toBe(409);
+  });
+
+  it('rejects category updates to RICS codes outside 556-599', async () => {
+    const validSku = makeValidSku();
+    const created = await request(app).post('/api/v1/skus').send(validSku);
+    const outOfRangeCategoryId = insertOutOfRangeCategory(600);
+    const res = await request(app)
+      .patch(`/api/v1/skus/${created.body.id}`)
+      .send({ categoryId: outOfRangeCategoryId });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('VALIDATION_CATEGORY_RANGE');
   });
 });
 

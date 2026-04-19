@@ -115,13 +115,21 @@ export default function FacetedFilters({ facets, filters, onChange, loading }: F
     onChange({})
   }
 
+  // Filter out zero-count options so users only see relevant choices
+  const departments = (facets?.departments ?? []).filter(o => o.count > 0)
+  const categories = (facets?.categories ?? []).filter(o => o.count > 0)
+  const brands = (facets?.brands ?? []).filter(o => o.count > 0)
+  const sizes = (facets?.sizes ?? []).filter(o => o.count > 0)
+  const colors = (facets?.colors ?? []).filter(o => o.count > 0)
+  const materials = (facets?.materials ?? []).filter(o => o.count > 0)
+
   const sections = [
     {
       key: 'department',
       label: `Departamento${filters.department ? ' (1)' : ''}`,
       children: (
         <NameFilterSection
-          options={facets?.departments ?? []}
+          options={departments}
           selectedName={filters.department}
           onSelect={(name) => onChange({ ...filters, department: name })}
         />
@@ -132,7 +140,7 @@ export default function FacetedFilters({ facets, filters, onChange, loading }: F
       label: `Categoria${filters.categoryId != null ? ' (1)' : ''}`,
       children: (
         <IdFilterSection
-          options={facets?.categories ?? []}
+          options={categories}
           selectedId={filters.categoryId}
           onSelect={(id) => onChange({ ...filters, categoryId: id })}
         />
@@ -143,7 +151,7 @@ export default function FacetedFilters({ facets, filters, onChange, loading }: F
       label: `Marca${filters.brandId != null ? ' (1)' : ''}`,
       children: (
         <IdFilterSection
-          options={facets?.brands ?? []}
+          options={brands}
           selectedId={filters.brandId}
           onSelect={(id) => onChange({ ...filters, brandId: id })}
         />
@@ -154,7 +162,7 @@ export default function FacetedFilters({ facets, filters, onChange, loading }: F
       label: `Talla${filters.sizeLabel ? ' (1)' : ''}`,
       children: (
         <SizeFilterSection
-          options={facets?.sizes ?? []}
+          options={sizes}
           selectedLabel={filters.sizeLabel}
           onSelect={(label) => onChange({ ...filters, sizeLabel: label })}
         />
@@ -165,7 +173,7 @@ export default function FacetedFilters({ facets, filters, onChange, loading }: F
       label: `Color${filters.colorId != null ? ' (1)' : ''}`,
       children: (
         <IdFilterSection
-          options={facets?.colors ?? []}
+          options={colors}
           selectedId={filters.colorId}
           onSelect={(id) => onChange({ ...filters, colorId: id })}
         />
@@ -208,7 +216,7 @@ export default function FacetedFilters({ facets, filters, onChange, loading }: F
       label: `Material${filters.materialId != null ? ' (1)' : ''}`,
       children: (
         <NameFilterSection
-          options={(facets?.materials ?? []).map((m, i) => ({ ...m, id: i })) as unknown as { name: string; count: number }[]}
+          options={materials}
           selectedName={undefined}
           onSelect={() => {}}
         />

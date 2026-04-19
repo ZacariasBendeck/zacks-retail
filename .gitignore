@@ -42,3 +42,7 @@ Rics Databases/
 
 # Misc
 test.xlsx
+
+# Secrets
+*.pem
+*.key

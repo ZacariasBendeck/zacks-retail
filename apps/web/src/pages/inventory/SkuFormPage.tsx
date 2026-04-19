@@ -22,10 +22,40 @@ import {
   AutoComplete,
 } from 'antd'
 import { ArrowLeftOutlined, SaveOutlined, CameraOutlined, LoadingOutlined, SearchOutlined, ThunderboltOutlined, CheckCircleOutlined, ExclamationCircleOutlined, ReloadOutlined, EyeInvisibleOutlined } from '@ant-design/icons'
-import { useSku, useCreateSku, useUpdateSku, useVendors, useAnalyzeImage, useReferenceData, useLookupSku, useAutocompleteSkus } from '../../hooks/useSkus'
-import type { Department, SkuCreatePayload, ReferenceItem, ImageAnalysisResult, EnhancedAnalysisResult, AiFillSummary } from '../../types/sku'
+import {
+  useSku,
+  useCreateSku,
+  useUpdateSku,
+  useVendors,
+  useAnalyzeImage,
+  useReferenceData,
+  useLookupSku,
+  useAutocompleteSkus,
+  useStyleColors,
+} from '../../hooks/useSkus'
+import type {
+  Department,
+  SkuCreatePayload,
+  ReferenceItem,
+  ImageAnalysisResult,
+  EnhancedAnalysisResult,
+  AiFillSummary,
+  StyleColorLink,
+} from '../../types/sku'
+import {
+  ALLOWED_DEPARTMENTS,
+  CATEGORY_MAX,
+  CATEGORY_MIN,
+  isValidCategoryCode,
+  isValidDepartment,
+} from '../../constants/domain'
+import { SkuApiError } from '../../services/skuApi'
 
-const DEPARTMENTS: Department[] = ['FORMAL', 'CASUAL', 'FIESTA', 'SANDALIAS', 'BOOTS', 'COMFORT']
+const DEPARTMENTS: Department[] = ALLOWED_DEPARTMENTS
+
+type SkuFormValues = SkuCreatePayload & {
+  styleColorId?: string | null
+}
 
 /** Mapping: AI response key -> form field name + reference table slug */
 const AI_FIELD_MAP: { aiKey: keyof ImageAnalysisResult; formField: string; type: 'text' | 'enum' | 'reference'; refTable?: string }[] = [
@@ -136,6 +166,23 @@ export default function SkuFormPage() {
     return () => { if (debounceTimer.current) clearTimeout(debounceTimer.current) }
   }, [])
   const { data: autocompleteResults, isFetching: isSearching } = useAutocompleteSkus(debouncedSearch)
+  const watchedDepartment = Form.useWatch('department', form) as Department | undefined
+  const watchedBrandId = Form.useWatch('brandId', form) as number | undefined
+  const watchedColorId = Form.useWatch('colorId', form) as number | undefined
+
+  const styleColorFilters = useMemo(
+    () => ({
+      active: true,
+      department: isValidDepartment(watchedDepartment) ? watchedDepartment : undefined,
+      brandId: watchedBrandId,
+      colorId: watchedColorId,
+    }),
+    [watchedDepartment, watchedBrandId, watchedColorId],
+  )
+  const { data: styleColors, isLoading: styleColorsLoading } = useStyleColors(
+    styleColorFilters,
+    true,
+  )
 
   const skuSearchOptions = useMemo(() => {
     if (!autocompleteResults?.length) return []
@@ -152,18 +199,83 @@ export default function SkuFormPage() {
     }))
   }, [autocompleteResults])
 
+  const styleColorMap = useMemo(() => {
+    const map = new Map<string, StyleColorLink>()
+    for (const styleColor of styleColors ?? []) {
+      map.set(styleColor.styleColorId, styleColor)
+    }
+    return map
+  }, [styleColors])
+
+  const styleColorOptions = useMemo(() => {
+    return (styleColors ?? []).map((styleColor) => ({
+      value: styleColor.styleColorId,
+      label: `${styleColor.style} · ${styleColor.department} · cat ${styleColor.categoryId}`,
+    }))
+  }, [styleColors])
+
+  const validCategoriesById = useMemo(() => {
+    const map = new Map<number, { id: number; ricsCode?: number; name: string; deptMacro?: string }>()
+    const categories = (refData?.['categories'] ?? []) as {
+      id: number
+      ricsCode?: number
+      name: string
+      deptMacro?: string
+    }[]
+
+    for (const category of categories) {
+      if (!isValidCategoryCode(category.ricsCode)) continue
+      if (!isValidDepartment(category.deptMacro)) continue
+      map.set(category.id, category)
+    }
+    return map
+  }, [refData])
+
   // Auto-fill department when category changes
   const handleCategoryChange = useCallback((categoryId: number | null) => {
-    if (!categoryId || !refData) {
+    if (!categoryId) {
       form.setFieldsValue({ department: undefined })
       return
     }
-    const cats = (refData['categories'] ?? []) as { id: number; deptMacro?: string }[]
-    const cat = cats.find((c) => c.id === categoryId)
-    if (cat?.deptMacro) {
-      form.setFieldsValue({ department: cat.deptMacro })
+    const category = validCategoriesById.get(categoryId)
+    if (category?.deptMacro && isValidDepartment(category.deptMacro)) {
+      form.setFields([
+        { name: 'categoryId', errors: [] },
+        { name: 'department', errors: [] },
+      ])
+      form.setFieldsValue({ department: category.deptMacro })
+    } else {
+      form.setFields([
+        {
+          name: 'categoryId',
+          errors: [
+            `Category must be between ${CATEGORY_MIN}-${CATEGORY_MAX} and mapped to an allowed macro-department.`,
+          ],
+        },
+      ])
+      form.setFieldsValue({ department: undefined })
     }
-  }, [refData, form])
+  }, [form, validCategoriesById])
+
+  const handleStyleColorChange = useCallback((styleColorId: string | null) => {
+    if (!styleColorId) return
+    const styleColor = styleColorMap.get(styleColorId)
+    if (!styleColor) return
+
+    const nextValues: Partial<SkuFormValues> = {
+      style: styleColor.style,
+      brandId: styleColor.brandId,
+      colorId: styleColor.colorId,
+      categoryId: styleColor.categoryId,
+      department: styleColor.department,
+      heelTypeCode: styleColor.heelTypeCode ?? null,
+      heelMaterialTypeCode: styleColor.heelMaterialTypeCode ?? null,
+      season: styleColor.season ?? undefined,
+    }
+
+    form.setFieldsValue(nextValues)
+    message.success('Plantilla style-color aplicada al formulario')
+  }, [form, message, styleColorMap])
 
   /** Apply AI results to form fields using client-side matching */
   const applyAiFill = useCallback((result: EnhancedAnalysisResult) => {
@@ -184,7 +296,7 @@ export default function SkuFormPage() {
         fieldsToSet[mapping.formField] = aiValue
         filled.push(mapping.formField)
       } else if (mapping.type === 'enum' && mapping.formField === 'department') {
-        const dept = DEPARTMENTS.find((d) => d.toLowerCase() === aiValue.toLowerCase())
+        const dept = DEPARTMENTS.find((d) => d.toLowerCase() === aiValue.toLowerCase() && isValidDepartment(d))
         if (dept) {
           fieldsToSet[mapping.formField] = dept
           filled.push(mapping.formField)
@@ -197,15 +309,18 @@ export default function SkuFormPage() {
         const refItems = refData[mapping.refTable] ?? []
         const matchedId = mappedId ?? matchReference(aiValue, refItems)
         if (matchedId != null) {
-          fieldsToSet[mapping.formField] = matchedId
-          filled.push(mapping.formField)
-          // If AI fills category, also auto-fill department
           if (mapping.formField === 'categoryId') {
-            const cats = (refData['categories'] ?? []) as { id: number; deptMacro?: string }[]
-            const cat = cats.find((c) => c.id === matchedId)
-            if (cat?.deptMacro) {
+            const cat = validCategoriesById.get(matchedId)
+            if (cat?.deptMacro && isValidDepartment(cat.deptMacro)) {
+              fieldsToSet[mapping.formField] = matchedId
+              filled.push(mapping.formField)
               fieldsToSet['department'] = cat.deptMacro
+            } else {
+              skipped.push('categoryId')
             }
+          } else {
+            fieldsToSet[mapping.formField] = matchedId
+            filled.push(mapping.formField)
           }
         } else {
           skipped.push(mapping.formField)
@@ -216,7 +331,7 @@ export default function SkuFormPage() {
     form.setFieldsValue(fieldsToSet)
     setAiFilledFields(new Set(filled))
     setAiFillSummary({ filled, skipped, total: AI_FIELD_MAP.length })
-  }, [refData, form])
+  }, [refData, form, validCategoriesById])
 
   /** Populate form fields from a SKU object */
   const populateForm = useCallback((s: import('../../types/sku').Sku) => {
@@ -239,6 +354,8 @@ export default function SkuFormPage() {
       brandId: s.brandId,
       colorId: s.colorId,
       heelMaterialId: s.heelMaterialId,
+      heelTypeCode: s.heelTypeCode ?? null,
+      heelMaterialTypeCode: s.heelMaterialTypeCode ?? null,
       shoeTypeId: s.shoeTypeId,
       heelShapeId: s.heelShapeId,
       heelHeightId: s.heelHeightId,
@@ -254,6 +371,7 @@ export default function SkuFormPage() {
       accessoryId: s.accessoryId,
       seasonId: s.seasonId,
       labelTypeId: s.labelTypeId,
+      styleColorId: s.styleColor?.styleColorId ?? null,
     })
   }, [form])
 
@@ -290,25 +408,34 @@ export default function SkuFormPage() {
     message.info('Modo crear activado')
   }, [form, message])
 
-  const handleSubmit = async (values: SkuCreatePayload) => {
+  const handleSubmit = async (values: SkuFormValues) => {
     try {
+      const { styleColorId: _styleColorId, ...payload } = values
       const editId = skuId ?? matchedSku?.id
       if (editId) {
-        const { skuCode: _omit, ...updateValues } = values as SkuCreatePayload & { skuCode?: string }
+        const { skuCode: _omit, ...updateValues } = payload as SkuCreatePayload & { skuCode?: string }
         await updateMutation.mutateAsync({ skuId: editId, payload: updateValues })
         message.success('SKU actualizado exitosamente')
       } else {
-        await createMutation.mutateAsync(values)
+        await createMutation.mutateAsync(payload)
         message.success('SKU creado exitosamente')
       }
       navigate('/inventory/skus')
     } catch (err) {
-      const errMsg = err instanceof Error ? err.message : 'Ocurrio un error'
-      if (errMsg.toLowerCase().includes('duplicate barcode') || errMsg.includes('409')) {
+      if (err instanceof SkuApiError && err.code === 'DUPLICATE_BARCODE') {
         form.setFields([{ name: 'barcode', errors: ['Este codigo de barras ya esta en uso'] }])
-      } else {
-        message.error(errMsg)
+        return
       }
+
+      if (err instanceof SkuApiError && err.code === 'VALIDATION_CATEGORY_RANGE') {
+        const rangeMessage = err.message || `Categoria fuera de rango permitido (${CATEGORY_MIN}-${CATEGORY_MAX}).`
+        form.setFields([{ name: 'categoryId', errors: [rangeMessage] }])
+        message.error(rangeMessage)
+        return
+      }
+
+      const errMsg = err instanceof Error ? err.message : 'Ocurrio un error'
+      message.error(errMsg)
     }
   }
 
@@ -351,9 +478,9 @@ export default function SkuFormPage() {
   // Build category options with search by name or RICS code
   // NOTE: must be above early returns to satisfy Rules of Hooks
   const categoryOptions = useMemo(() => {
-    const cats = (refData?.['categories'] ?? []) as { id: number; ricsCode?: number; name: string; deptMacro?: string }[]
+    const cats = Array.from(validCategoriesById.values())
     const grouped = cats.reduce<Record<string, typeof cats>>((acc, c) => {
-      const group = c.deptMacro || 'Otro'
+      const group = c.deptMacro || 'OTHER'
       if (!acc[group]) acc[group] = []
       acc[group].push(c)
       return acc
@@ -365,7 +492,7 @@ export default function SkuFormPage() {
         value: c.id,
       })),
     }))
-  }, [refData])
+  }, [validCategoriesById])
 
   if (isRouteEdit && skuLoading) {
     return (
@@ -404,7 +531,12 @@ export default function SkuFormPage() {
                   {isEdit ? 'Editar SKU' : 'Nuevo SKU'}
                 </Typography.Title>
                 {isRouteEdit && sku && (
-                  <Tag color="blue">{sku.skuCode}</Tag>
+                  <Space size={4}>
+                    <Tag color="blue">{sku.skuCode}</Tag>
+                    {sku.styleColor?.styleColorId && (
+                      <Tag color="gold">StyleColor: {sku.styleColor.styleColorId.slice(0, 8)}</Tag>
+                    )}
+                  </Space>
                 )}
                 {!isRouteEdit && matchedSku && (
                   <Space size={4}>
@@ -652,6 +784,27 @@ export default function SkuFormPage() {
             </Row>
 
             <Row gutter={12}>
+              <Col xs={24} sm={10}>
+                <Form.Item
+                  label="Style-Color Canonico"
+                  name="styleColorId"
+                  tooltip="Selector basado en /api/v1/skus/style-colors para copiar combinaciones existentes."
+                  style={compactItem}
+                >
+                  <Select
+                    placeholder="Seleccionar combinacion existente (opcional)"
+                    allowClear
+                    showSearch
+                    optionFilterProp="label"
+                    loading={styleColorsLoading}
+                    options={styleColorOptions}
+                    onChange={handleStyleColorChange}
+                  />
+                </Form.Item>
+              </Col>
+            </Row>
+
+            <Row gutter={12}>
               <Col xs={12} sm={4}>
                 <Form.Item label={aiLabel('Tipo de Zapato', 'shoeTypeId', aiFilledFields)} name="shoeTypeId" style={{ ...compactItem, ...(aiFilledFields.has('shoeTypeId') ? AI_FILLED_STYLE : {}) }}>
                   <Select placeholder="Seleccionar" allowClear showSearch optionFilterProp="label" options={refOptions(refData?.['shoe-types'])} />
@@ -687,7 +840,27 @@ export default function SkuFormPage() {
                 <Form.Item
                   label={aiLabel('Categoria', 'categoryId', aiFilledFields)}
                   name="categoryId"
-                  rules={[{ required: true, message: 'Categoria es requerida' }]}
+                  extra={`Solo categorias RICS ${CATEGORY_MIN}-${CATEGORY_MAX}; el departamento se deriva automaticamente.`}
+                  rules={[
+                    { required: true, message: 'Categoria es requerida' },
+                    {
+                      validator: (_, value: number | null | undefined) => {
+                        if (value == null) return Promise.resolve()
+                        const category = validCategoriesById.get(value)
+                        if (!category || !isValidCategoryCode(category.ricsCode)) {
+                          return Promise.reject(
+                            new Error(`Categoria fuera de rango permitido (${CATEGORY_MIN}-${CATEGORY_MAX}).`),
+                          )
+                        }
+                        if (!isValidDepartment(category.deptMacro)) {
+                          return Promise.reject(
+                            new Error('Categoria sin macro-departamento valido.'),
+                          )
+                        }
+                        return Promise.resolve()
+                      },
+                    },
+                  ]}
                   style={{ ...compactItem, ...(aiFilledFields.has('categoryId') ? AI_FILLED_STYLE : {}) }}
                 >
                   <Select
@@ -706,7 +879,20 @@ export default function SkuFormPage() {
                 </Form.Item>
               </Col>
               <Col xs={12} sm={4}>
-                <Form.Item label={aiLabel('Departamento', 'department', aiFilledFields)} name="department" rules={[{ required: true, message: 'Departamento es requerido' }]} style={{ ...compactItem, ...(aiFilledFields.has('department') ? AI_FILLED_STYLE : {}) }}>
+                <Form.Item
+                  label={aiLabel('Departamento', 'department', aiFilledFields)}
+                  name="department"
+                  rules={[
+                    { required: true, message: 'Departamento es requerido' },
+                    {
+                      validator: (_, value: string | undefined) =>
+                        isValidDepartment(value)
+                          ? Promise.resolve()
+                          : Promise.reject(new Error('Departamento invalido para estandar macro.')),
+                    },
+                  ]}
+                  style={{ ...compactItem, ...(aiFilledFields.has('department') ? AI_FILLED_STYLE : {}) }}
+                >
                   <Select placeholder="Se llena con categoria" options={DEPARTMENTS.map((d) => ({ label: d, value: d }))} disabled />
                 </Form.Item>
               </Col>
@@ -807,6 +993,42 @@ export default function SkuFormPage() {
               <Col xs={12} sm={4}>
                 <Form.Item label="Material del Tacon" name="heelMaterialId" style={compactItem}>
                   <Select placeholder="Seleccionar" allowClear options={refOptions(refData?.['heel-materials'])} />
+                </Form.Item>
+              </Col>
+              <Col xs={12} sm={5}>
+                <Form.Item
+                  label="Tipo de Tacon (canonico)"
+                  name="heelTypeCode"
+                  style={compactItem}
+                >
+                  <Select
+                    placeholder="Codigo canonico"
+                    allowClear
+                    showSearch
+                    optionFilterProp="label"
+                    options={(refData?.['heel-types'] ?? []).map((item) => ({
+                      value: item.code,
+                      label: item.code ? `${item.code} · ${item.name}` : item.name,
+                    }))}
+                  />
+                </Form.Item>
+              </Col>
+              <Col xs={12} sm={5}>
+                <Form.Item
+                  label="Material Tacon (canonico)"
+                  name="heelMaterialTypeCode"
+                  style={compactItem}
+                >
+                  <Select
+                    placeholder="Codigo canonico"
+                    allowClear
+                    showSearch
+                    optionFilterProp="label"
+                    options={(refData?.['heel-material-types'] ?? []).map((item) => ({
+                      value: item.code,
+                      label: item.code ? `${item.code} · ${item.name}` : item.name,
+                    }))}
+                  />
                 </Form.Item>
               </Col>
             </Row>

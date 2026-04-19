@@ -1,5 +1,6 @@
 import { useState, useCallback, useMemo } from 'react'
 import {
+  Alert,
   Card,
   Row,
   Col,
@@ -20,8 +21,19 @@ import {
   ShopOutlined,
 } from '@ant-design/icons'
 import { useOnHandByDepartment, useOnHandDrillDown } from '../../hooks/useReports'
-import { getOnHandCsvUrl } from '../../services/reportApi'
-import type { DepartmentOnHand, CategoryOnHand, OnHandDetail } from '../../services/reportApi'
+import ServerDataTable, {
+  type ServerQueryChange,
+  type ServerTableColumn,
+} from '../../components/ServerDataTable'
+import { getOnHandCsvUrl, getOnHandXlsxUrl } from '../../services/reportApi'
+import { validateDomainFilterContract } from '../../services/domainFilterContract'
+import { getErrorMessage } from '../../utils/errors'
+import type {
+  DepartmentOnHand,
+  CategoryOnHand,
+  OnHandDetail,
+  ReportDetailQuery,
+} from '../../services/reportApi'
 import type { Department } from '../../types/sku'
 
 const DEPARTMENT_COLORS: Record<Department, string> = {
@@ -33,35 +45,83 @@ const DEPARTMENT_COLORS: Record<Department, string> = {
   COMFORT: '#13c2c2',
 }
 
+const DEFAULT_DETAIL_QUERY: ReportDetailQuery = {
+  page: 1,
+  pageSize: 50,
+  sort: 'department',
+  order: 'asc',
+}
+
 export default function OnHandReportPage() {
   const [selectedDepartment, setSelectedDepartment] = useState<string | null>(null)
   const [selectedCategory, setSelectedCategory] = useState<number | null>(null)
+  const [detailQuery, setDetailQuery] = useState<ReportDetailQuery>(DEFAULT_DETAIL_QUERY)
 
-  const { data: deptData, isLoading: deptLoading } = useOnHandByDepartment()
-  const { data: drillData, isLoading: drillLoading } = useOnHandDrillDown(
+  const { data: deptData, isLoading: deptLoading, error: deptError } = useOnHandByDepartment()
+  const { data: drillData, isLoading: drillLoading, error: drillError } = useOnHandDrillDown(
     selectedDepartment ?? '',
     selectedCategory ?? undefined,
+    detailQuery,
   )
+
+  const filterValidation = useMemo(
+    () =>
+      validateDomainFilterContract(
+        { department: selectedDepartment, category: selectedCategory },
+        { requireDepartmentForCategory: true },
+      ),
+    [selectedCategory, selectedDepartment],
+  )
+
+  const reportErrorMessage = selectedDepartment
+    ? drillError
+      ? getErrorMessage(drillError, 'Unable to load on-hand drill-down report.')
+      : null
+    : deptError
+      ? getErrorMessage(deptError, 'Unable to load on-hand department summary.')
+      : null
 
   const handleDepartmentClick = useCallback((dept: string) => {
     setSelectedDepartment(dept)
     setSelectedCategory(null)
+    setDetailQuery(DEFAULT_DETAIL_QUERY)
   }, [])
 
   const handleCategoryClick = useCallback((cat: number) => {
     setSelectedCategory(cat)
+    setDetailQuery((prev) => ({ ...prev, page: 1 }))
   }, [])
 
   const handleBack = useCallback(() => {
     if (selectedCategory != null) {
       setSelectedCategory(null)
+      setDetailQuery((prev) => ({ ...prev, page: 1 }))
     } else {
       setSelectedDepartment(null)
+      setDetailQuery(DEFAULT_DETAIL_QUERY)
     }
   }, [selectedCategory])
 
+  const handleDetailQueryChange = useCallback((query: ServerQueryChange) => {
+    setDetailQuery((prev) => ({
+      ...prev,
+      page: query.page,
+      pageSize: query.pageSize,
+      sort: query.sort ?? prev.sort,
+      order: query.order ?? prev.order,
+    }))
+  }, [])
+
   const handleExportCsv = useCallback(() => {
     const url = getOnHandCsvUrl(
+      selectedDepartment ?? undefined,
+      selectedCategory ?? undefined,
+    )
+    window.open(url, '_blank')
+  }, [selectedDepartment, selectedCategory])
+
+  const handleExportXlsx = useCallback(() => {
+    const url = getOnHandXlsxUrl(
       selectedDepartment ?? undefined,
       selectedCategory ?? undefined,
     )
@@ -86,18 +146,22 @@ export default function OnHandReportPage() {
       render: (dept: string) => (
         <Tag color={DEPARTMENT_COLORS[dept as Department]}>{dept}</Tag>
       ),
+      sorter: (a: DepartmentOnHand, b: DepartmentOnHand) =>
+        a.department.localeCompare(b.department),
     },
     {
       title: 'Active SKUs',
       dataIndex: 'totalSkus',
       key: 'totalSkus',
       align: 'right' as const,
+      sorter: (a: DepartmentOnHand, b: DepartmentOnHand) => a.totalSkus - b.totalSkus,
     },
     {
       title: 'Total Units',
       dataIndex: 'totalUnits',
       key: 'totalUnits',
       align: 'right' as const,
+      sorter: (a: DepartmentOnHand, b: DepartmentOnHand) => a.totalUnits - b.totalUnits,
     },
     {
       title: 'Total Cost Value',
@@ -105,6 +169,7 @@ export default function OnHandReportPage() {
       key: 'totalCostValue',
       align: 'right' as const,
       render: (v: number) => `$${v.toFixed(2)}`,
+      sorter: (a: DepartmentOnHand, b: DepartmentOnHand) => a.totalCostValue - b.totalCostValue,
     },
     {
       title: 'Action',
@@ -122,18 +187,21 @@ export default function OnHandReportPage() {
       title: 'Category',
       dataIndex: 'category',
       key: 'category',
+      sorter: (a: CategoryOnHand, b: CategoryOnHand) => a.category - b.category,
     },
     {
       title: 'Active SKUs',
       dataIndex: 'totalSkus',
       key: 'totalSkus',
       align: 'right' as const,
+      sorter: (a: CategoryOnHand, b: CategoryOnHand) => a.totalSkus - b.totalSkus,
     },
     {
       title: 'Total Units',
       dataIndex: 'totalUnits',
       key: 'totalUnits',
       align: 'right' as const,
+      sorter: (a: CategoryOnHand, b: CategoryOnHand) => a.totalUnits - b.totalUnits,
     },
     {
       title: 'Total Cost Value',
@@ -141,6 +209,7 @@ export default function OnHandReportPage() {
       key: 'totalCostValue',
       align: 'right' as const,
       render: (v: number) => `$${v.toFixed(2)}`,
+      sorter: (a: CategoryOnHand, b: CategoryOnHand) => a.totalCostValue - b.totalCostValue,
     },
     {
       title: 'Action',
@@ -153,13 +222,51 @@ export default function OnHandReportPage() {
     },
   ]
 
-  const detailColumns = [
-    { title: 'SKU Code', dataIndex: 'skuCode', key: 'skuCode', width: 200, ellipsis: true },
-    { title: 'Brand', dataIndex: 'brand', key: 'brand', width: 120 },
-    { title: 'Style', dataIndex: 'style', key: 'style', width: 100 },
+  const sortOrder = useCallback(
+    (field: string) => {
+      if (detailQuery.sort !== field) return undefined
+      return detailQuery.order === 'asc' ? ('ascend' as const) : ('descend' as const)
+    },
+    [detailQuery.order, detailQuery.sort],
+  )
+
+  const detailColumns: ServerTableColumn<OnHandDetail>[] = [
+    {
+      title: 'SKU Code',
+      dataIndex: 'skuCode',
+      key: 'skuCode',
+      width: 200,
+      ellipsis: true,
+      sorter: true,
+      sortOrder: sortOrder('skuCode'),
+    },
+    {
+      title: 'Brand',
+      dataIndex: 'brand',
+      key: 'brand',
+      width: 120,
+      sorter: true,
+      sortOrder: sortOrder('brand'),
+    },
+    {
+      title: 'Style',
+      dataIndex: 'style',
+      key: 'style',
+      width: 100,
+      sorter: true,
+      sortOrder: sortOrder('style'),
+    },
     { title: 'Color', dataIndex: 'color', key: 'color', width: 100 },
     { title: 'Size', dataIndex: 'size', key: 'size', width: 70 },
     { title: 'Category', dataIndex: 'category', key: 'category', width: 90 },
+    {
+      title: 'Department',
+      dataIndex: 'department',
+      key: 'department',
+      width: 120,
+      sorter: true,
+      sortOrder: sortOrder('department'),
+    },
     {
       title: 'Price',
       dataIndex: 'price',
@@ -167,6 +274,8 @@ export default function OnHandReportPage() {
       width: 90,
       align: 'right' as const,
       render: (v: number) => `$${v.toFixed(2)}`,
+      sorter: true,
+      sortOrder: sortOrder('price'),
     },
     {
       title: 'Qty On Hand',
@@ -179,6 +288,8 @@ export default function OnHandReportPage() {
           {v}
         </Typography.Text>
       ),
+      sorter: true,
+      sortOrder: sortOrder('quantityOnHand'),
     },
     {
       title: 'Cost Value',
@@ -187,6 +298,8 @@ export default function OnHandReportPage() {
       width: 110,
       align: 'right' as const,
       render: (v: number) => `$${v.toFixed(2)}`,
+      sorter: true,
+      sortOrder: sortOrder('costValue'),
     },
   ]
 
@@ -202,6 +315,22 @@ export default function OnHandReportPage() {
 
   return (
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+      {filterValidation.errors.length > 0 && (
+        <Alert
+          type="error"
+          showIcon
+          message="Invalid report filter selection"
+          description={filterValidation.errors.join(' ')}
+        />
+      )}
+      {reportErrorMessage && (
+        <Alert
+          type="error"
+          showIcon
+          message="On-hand report request failed"
+          description={reportErrorMessage}
+        />
+      )}
       {/* Header */}
       <Card size="small">
         <Row align="middle" justify="space-between">
@@ -216,9 +345,14 @@ export default function OnHandReportPage() {
             </Space>
           </Col>
           <Col>
-            <Button icon={<DownloadOutlined />} onClick={handleExportCsv}>
-              Export CSV
-            </Button>
+            <Space>
+              <Button icon={<DownloadOutlined />} onClick={handleExportCsv}>
+                Export CSV
+              </Button>
+              <Button icon={<DownloadOutlined />} onClick={handleExportXlsx}>
+                Export XLSX
+              </Button>
+            </Space>
           </Col>
         </Row>
         <Breadcrumb style={{ marginTop: 8 }} items={breadcrumbItems} />
@@ -300,13 +434,16 @@ export default function OnHandReportPage() {
                 : `All Items in ${selectedDepartment}`
             }
           >
-            <Table<OnHandDetail>
-              dataSource={drillData?.details}
+            <ServerDataTable<OnHandDetail>
+              data={drillData?.details}
+              title={<Typography.Text strong>Detail Rows</Typography.Text>}
               columns={detailColumns}
               rowKey="skuId"
-              size="small"
-              scroll={{ x: 1060 }}
-              pagination={{ pageSize: 50, showSizeChanger: true, pageSizeOptions: ['25', '50', '100'] }}
+              pagination={drillData?.pagination}
+              onQueryChange={handleDetailQueryChange}
+              expectedTotalRows={drillData?.pagination.totalItems}
+              exportFileName={`on-hand-details-${new Date().toISOString().slice(0, 10)}`}
+              scrollX={1180}
             />
           </Card>
         </>

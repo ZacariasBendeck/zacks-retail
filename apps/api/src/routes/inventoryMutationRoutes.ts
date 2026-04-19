@@ -5,6 +5,8 @@ import {
   inventoryMutationRequireIdempotencySchema,
   onHandSkuQuerySchema,
   inventoryListQuerySchema,
+  movementTimelineQuerySchema,
+  movementReconciliationQuerySchema,
   validate,
   validateQuery,
 } from '../middleware/validation';
@@ -149,6 +151,98 @@ router.post('/mutations/transfer', validate(inventoryMutationRequireIdempotencyS
     res.status(status).json(result);
     return;
   }
+  res.json(result);
+});
+
+/**
+ * @openapi
+ * /api/v1/inventory/movements/timeline:
+ *   get:
+ *     summary: List inventory movements as a cursor-paginated timeline
+ *     tags: [Inventory Movements]
+ *     parameters:
+ *       - name: limit
+ *         in: query
+ *         schema: { type: integer, default: 50, minimum: 1, maximum: 200 }
+ *       - name: cursor
+ *         in: query
+ *         schema: { type: string }
+ *         description: Opaque cursor token from previous page's nextCursor
+ *       - name: sort
+ *         in: query
+ *         schema: { type: string, enum: [movementAt, quantityDelta], default: movementAt }
+ *       - name: order
+ *         in: query
+ *         schema: { type: string, enum: [asc, desc], default: desc }
+ *       - name: skuId
+ *         in: query
+ *         schema: { type: string, format: uuid }
+ *         description: Filter by SKU ID
+ *       - name: locationId
+ *         in: query
+ *         schema: { type: string }
+ *         description: Filter by location ID
+ *       - name: movementType
+ *         in: query
+ *         schema: { type: string, enum: [sale, po_receipt, transfer_in, transfer_out, adjustment] }
+ *         description: Filter by movement type
+ *       - name: fromDate
+ *         in: query
+ *         schema: { type: string, format: date-time }
+ *         description: Filter movements on or after this date
+ *       - name: toDate
+ *         in: query
+ *         schema: { type: string, format: date-time }
+ *         description: Filter movements on or before this date
+ *     responses:
+ *       200:
+ *         description: Cursor-paginated movement timeline with appliedSort and appliedFilters echo
+ *       400:
+ *         description: Validation error
+ */
+router.get('/movements/timeline', validateQuery(movementTimelineQuerySchema), (req: Request, res: Response): void => {
+  const params = (req as any).validatedQuery;
+  const result = inventoryService.listMovementTimeline(params);
+  res.json(result);
+});
+
+/**
+ * @openapi
+ * /api/v1/inventory/movements/reconciliation:
+ *   get:
+ *     summary: List inventory movement reconciliation aggregates per SKU and location
+ *     tags: [Inventory Movements]
+ *     parameters:
+ *       - name: limit
+ *         in: query
+ *         schema: { type: integer, default: 50, minimum: 1, maximum: 200 }
+ *       - name: cursor
+ *         in: query
+ *         schema: { type: string }
+ *         description: Opaque cursor token from previous page's nextCursor
+ *       - name: sort
+ *         in: query
+ *         schema: { type: string, enum: [expectedQuantityDelta, lastMovementAt, movementRowCount], default: lastMovementAt }
+ *       - name: order
+ *         in: query
+ *         schema: { type: string, enum: [asc, desc], default: desc }
+ *       - name: skuId
+ *         in: query
+ *         schema: { type: string, format: uuid }
+ *         description: Filter by SKU ID
+ *       - name: locationId
+ *         in: query
+ *         schema: { type: string }
+ *         description: Filter by location ID
+ *     responses:
+ *       200:
+ *         description: Cursor-paginated reconciliation aggregates with appliedSort and appliedFilters echo
+ *       400:
+ *         description: Validation error
+ */
+router.get('/movements/reconciliation', validateQuery(movementReconciliationQuerySchema), (req: Request, res: Response): void => {
+  const params = (req as any).validatedQuery;
+  const result = inventoryService.listMovementReconciliation(params);
   res.json(result);
 });
 

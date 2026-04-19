@@ -4,7 +4,6 @@ import {
   Card,
   Row,
   Col,
-  Table,
   InputNumber,
   Button,
   Space,
@@ -23,7 +22,6 @@ import {
   RiseOutlined,
   FileTextOutlined,
 } from '@ant-design/icons'
-import type { TablePaginationConfig } from 'antd/es/table'
 import {
   useDashboardKpis,
   useInventorySummary,
@@ -31,6 +29,7 @@ import {
 } from '../../hooks/useInventory'
 import type { Department } from '../../types/sku'
 import type { DepartmentSummary, LowStockItem } from '../../types/inventory'
+import ServerDataTable, { type ServerQueryChange, type ServerTableColumn } from '../../components/ServerDataTable'
 
 const DEPARTMENT_COLORS: Record<Department, string> = {
   FORMAL: '#1677ff',
@@ -82,15 +81,12 @@ export default function DashboardPage() {
     [navigate],
   )
 
-  const handleLowStockTableChange = useCallback(
-    (pagination: TablePaginationConfig) => {
-      setLowStockPage(pagination.current ?? 1)
-      setLowStockPageSize(pagination.pageSize ?? 25)
-    },
-    [],
-  )
+  const handleLowStockTableChange = useCallback((query: ServerQueryChange) => {
+    setLowStockPage(query.page)
+    setLowStockPageSize(query.pageSize)
+  }, [])
 
-  const lowStockColumns = [
+  const lowStockColumns: ServerTableColumn<LowStockItem>[] = [
     {
       title: 'SKU Code',
       dataIndex: 'skuCode',
@@ -331,24 +327,27 @@ export default function DashboardPage() {
             </Space>
           }
         >
-          <Table<LowStockItem>
-            dataSource={lowStock?.data}
+          <ServerDataTable<LowStockItem>
+            data={lowStock?.data}
             columns={lowStockColumns}
             rowKey="id"
             loading={lowStockLoading}
-            size="small"
-            scroll={{ x: 880 }}
-            onChange={handleLowStockTableChange}
-            pagination={{
-              current: lowStock?.pagination.page,
-              pageSize: lowStock?.pagination.pageSize,
-              total: lowStock?.pagination.totalItems,
-              showSizeChanger: true,
-              pageSizeOptions: ['10', '25', '50'],
-              showTotal: (total, range) => `${range[0]}-${range[1]} of ${total}`,
-              size: 'default',
-            }}
-            style={{ opacity: lowStockFetching && !lowStockLoading ? 0.6 : 1 }}
+            fetching={lowStockFetching}
+            onQueryChange={handleLowStockTableChange}
+            pagination={
+              lowStock?.pagination
+                ? {
+                    page: lowStock.pagination.page,
+                    pageSize: lowStock.pagination.pageSize,
+                    totalItems: lowStock.pagination.totalItems,
+                    totalPages: lowStock.pagination.totalPages,
+                  }
+                : undefined
+            }
+            expectedTotalRows={lowStock?.pagination.totalItems}
+            scrollX={880}
+            tableSize="small"
+            exportFileName={`low-stock-alerts-threshold-${threshold}`}
           />
         </Card>
       </Space>

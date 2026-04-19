@@ -88,9 +88,17 @@ export function deleteVendor(id: string): { deleted: boolean; blocked?: boolean 
   return { deleted: true };
 }
 
+const VENDOR_SORT_MAP: Record<string, string> = {
+  name: 'name',
+  createdAt: 'created_at',
+  leadTimeDays: 'lead_time_days',
+};
+
 export function listVendors(params: {
   page: number;
   pageSize: number;
+  sort?: string;
+  order?: 'asc' | 'desc';
   active?: boolean;
   q?: string;
 }): PaginationEnvelope<Vendor> {
@@ -119,8 +127,11 @@ export function listVendors(params: {
   const totalPages = Math.ceil(totalItems / params.pageSize);
   const offset = (params.page - 1) * params.pageSize;
 
+  const sortCol = VENDOR_SORT_MAP[params.sort ?? 'name'] || 'name';
+  const sortDir = params.order === 'desc' ? 'DESC' : 'ASC';
+
   const rows = db.prepare(
-    `SELECT * FROM vendors ${whereClause} ORDER BY name ASC LIMIT ? OFFSET ?`
+    `SELECT * FROM vendors ${whereClause} ORDER BY ${sortCol} ${sortDir} LIMIT ? OFFSET ?`
   ).all(...values, params.pageSize, offset) as unknown as VendorRow[];
 
   return {

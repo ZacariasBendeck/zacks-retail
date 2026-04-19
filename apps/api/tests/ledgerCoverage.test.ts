@@ -17,7 +17,7 @@ const VENDOR_ID = '00000000-0000-4000-a000-000000000099';
 /** Apply migration-019 SQL to add ledger table + triggers to test DB */
 function applyMigration019(): void {
   const db = getDb();
-  const sqlPath = path.resolve(__dirname, '../../../db/migrations/019_inventory_movement_ledger_normalization.up.sql');
+  const sqlPath = path.resolve(__dirname, '../../../legacy/sqlite-migrations/019_inventory_movement_ledger_normalization.up.sql');
   const sql = fs.readFileSync(sqlPath, 'utf-8');
   db.exec(sql);
 }

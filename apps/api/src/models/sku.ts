@@ -84,12 +84,28 @@ export interface Sku {
   labelTypeId: number | null;
   heelMaterialId: number | null;
   heelType: string | null;
+  heelTypeCode?: string | null;
   material: string | null;
+  heelMaterialTypeCode?: string | null;
+  styleColor?: StyleColorLink | null;
   active: boolean;
   currentStock?: number;
   sizes?: SkuSize[];
   createdAt: string;
   updatedAt: string;
+}
+
+export interface StyleColorLink {
+  styleColorId: string;
+  brandId: number;
+  style: string;
+  colorId: number;
+  categoryId: number;
+  department: Department;
+  heelTypeCode: string | null;
+  heelMaterialTypeCode: string | null;
+  season: string | null;
+  active: boolean;
 }
 
 export interface SkuSize {
@@ -143,7 +159,7 @@ export interface ReferenceItem {
 
 export interface CategoryItem extends ReferenceItem {
   ricsCode: number;
-  deptMacro: string;
+  deptMacro: Department;
 }
 
 export interface ColorItem extends ReferenceItem {

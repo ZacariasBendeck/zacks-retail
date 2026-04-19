@@ -1,0 +1,136 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { DomainFilterContractError } from '../services/domainFilterContract'
+import {
+  fetchOnHandDrillDown,
+  fetchSalesPerformanceDrillDown,
+  fetchTurnoverDrillDown,
+  fetchSellThroughDrillDown,
+  ReportApiError,
+} from '../services/reportApi'
+
+function buildOkResponse(body: unknown): Response {
+  return {
+    ok: true,
+    json: async () => body,
+  } as Response
+}
+
+function getCalledUrl(): URL {
+  const called = vi.mocked(fetch).mock.calls[0]?.[0]
+  return new URL(String(called), 'http://localhost')
+}
+
+describe('reportApi drill-down query mapping', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(buildOkResponse({})))
+  })
+
+  it('maps on-hand drill-down query params', async () => {
+    await fetchOnHandDrillDown('FORMAL', 556, {
+      page: 2,
+      pageSize: 100,
+      sort: 'costValue',
+      order: 'desc',
+    })
+
+    const url = getCalledUrl()
+    expect(url.pathname).toBe('/api/v1/reports/on-hand')
+    expect(url.searchParams.get('department')).toBe('FORMAL')
+    expect(url.searchParams.get('category')).toBe('556')
+    expect(url.searchParams.get('page')).toBe('2')
+    expect(url.searchParams.get('pageSize')).toBe('100')
+    expect(url.searchParams.get('sort')).toBe('costValue')
+    expect(url.searchParams.get('order')).toBe('desc')
+  })
+
+  it('maps sales drill-down query params', async () => {
+    await fetchSalesPerformanceDrillDown('2026-01-01', '2026-01-31', 'CASUAL', 557, {
+      page: 3,
+      pageSize: 25,
+      sort: 'totalRevenue',
+      order: 'desc',
+    })
+
+    const url = getCalledUrl()
+    expect(url.pathname).toBe('/api/v1/reports/sales-performance')
+    expect(url.searchParams.get('startDate')).toBe('2026-01-01')
+    expect(url.searchParams.get('endDate')).toBe('2026-01-31')
+    expect(url.searchParams.get('department')).toBe('CASUAL')
+    expect(url.searchParams.get('category')).toBe('557')
+    expect(url.searchParams.get('page')).toBe('3')
+    expect(url.searchParams.get('pageSize')).toBe('25')
+    expect(url.searchParams.get('sort')).toBe('totalRevenue')
+    expect(url.searchParams.get('order')).toBe('desc')
+  })
+
+  it('maps turnover drill-down query params', async () => {
+    await fetchTurnoverDrillDown('FIESTA', '2026-02-01', '2026-02-28', 558, {
+      page: 4,
+      pageSize: 75,
+      sort: 'turnoverRatio',
+      order: 'asc',
+    })
+
+    const url = getCalledUrl()
+    expect(url.pathname).toBe('/api/v1/reports/inventory-turnover')
+    expect(url.searchParams.get('department')).toBe('FIESTA')
+    expect(url.searchParams.get('startDate')).toBe('2026-02-01')
+    expect(url.searchParams.get('endDate')).toBe('2026-02-28')
+    expect(url.searchParams.get('category')).toBe('558')
+    expect(url.searchParams.get('page')).toBe('4')
+    expect(url.searchParams.get('pageSize')).toBe('75')
+    expect(url.searchParams.get('sort')).toBe('turnoverRatio')
+    expect(url.searchParams.get('order')).toBe('asc')
+  })
+
+  it('maps sell-through drill-down query params', async () => {
+    await fetchSellThroughDrillDown('BOOTS', '2026-03-01', '2026-03-31', 559, {
+      page: 5,
+      pageSize: 60,
+      sort: 'sellThroughPct',
+      order: 'asc',
+    })
+
+    const url = getCalledUrl()
+    expect(url.pathname).toBe('/api/v1/reports/sell-through')
+    expect(url.searchParams.get('department')).toBe('BOOTS')
+    expect(url.searchParams.get('startDate')).toBe('2026-03-01')
+    expect(url.searchParams.get('endDate')).toBe('2026-03-31')
+    expect(url.searchParams.get('category')).toBe('559')
+    expect(url.searchParams.get('page')).toBe('5')
+    expect(url.searchParams.get('pageSize')).toBe('60')
+    expect(url.searchParams.get('sort')).toBe('sellThroughPct')
+    expect(url.searchParams.get('order')).toBe('asc')
+  })
+
+  it('rejects drill-down requests with category and no department', async () => {
+    await expect(
+      fetchOnHandDrillDown('', 560, {
+        page: 1,
+        pageSize: 50,
+      }),
+    ).rejects.toBeInstanceOf(DomainFilterContractError)
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled()
+  })
+
+  it('surfaces API validation errors as ReportApiError', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: false,
+      status: 400,
+      json: async () => ({
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'department: Invalid enum value',
+        },
+      }),
+    } as Response)
+
+    await expect(
+      fetchTurnoverDrillDown('FORMAL', '2026-02-01', '2026-02-28'),
+    ).rejects.toMatchObject({
+      name: 'ReportApiError',
+      status: 400,
+      code: 'VALIDATION_ERROR',
+    } as Partial<ReportApiError>)
+  })
+})

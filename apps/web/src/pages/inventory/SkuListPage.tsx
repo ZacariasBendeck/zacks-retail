@@ -1,6 +1,5 @@
 import { useState, useCallback } from 'react'
 import {
-  Table,
   Card,
   Input,
   Select,
@@ -17,20 +16,19 @@ import {
 } from 'antd'
 import {
   SearchOutlined,
-  DownloadOutlined,
   DeleteOutlined,
   ReloadOutlined,
   FilterOutlined,
   EditOutlined,
   PlusOutlined,
 } from '@ant-design/icons'
-import type { TablePaginationConfig } from 'antd/es/table'
-import type { SorterResult } from 'antd/es/table/interface'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useSkus, useDeactivateSku } from '../../hooks/useSkus'
 import type { Department, Sku, SkuListParams } from '../../types/sku'
+import ServerDataTable, { type ServerQueryChange, type ServerTableColumn } from '../../components/ServerDataTable'
+import { ALLOWED_DEPARTMENTS } from '../../constants/domain'
 
-const DEPARTMENTS: Department[] = ['FORMAL', 'CASUAL', 'FIESTA', 'SANDALIAS', 'BOOTS', 'COMFORT']
+const DEPARTMENTS: Department[] = ALLOWED_DEPARTMENTS
 
 const DEPARTMENT_COLORS: Record<Department, string> = {
   FORMAL: 'blue',
@@ -46,6 +44,11 @@ const DEPARTMENT_COLORS: Record<Department, string> = {
 export default function SkuListPage() {
   const { message } = App.useApp()
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  const departmentParam = searchParams.get('department')
+  const initialDepartment = DEPARTMENTS.includes(departmentParam as Department)
+    ? (departmentParam as Department)
+    : undefined
 
   const [params, setParams] = useState<SkuListParams>({
     page: 1,
@@ -53,6 +56,7 @@ export default function SkuListPage() {
     sort: 'style',
     order: 'asc',
     active: true,
+    department: initialDepartment,
   })
 
   const [searchText, setSearchText] = useState('')
@@ -69,23 +73,15 @@ export default function SkuListPage() {
     updateParams({ q: searchText || undefined })
   }, [searchText, updateParams])
 
-  const handleTableChange = useCallback(
-    (
-      pagination: TablePaginationConfig,
-      _filters: Record<string, unknown>,
-      sorter: SorterResult<Sku> | SorterResult<Sku>[],
-    ) => {
-      const s = Array.isArray(sorter) ? sorter[0] : sorter
-      setParams((prev) => ({
-        ...prev,
-        page: pagination.current ?? 1,
-        pageSize: pagination.pageSize ?? 50,
-        sort: s?.field as string | undefined ?? prev.sort,
-        order: s?.order === 'descend' ? 'desc' : s?.order === 'ascend' ? 'asc' : prev.order,
-      }))
-    },
-    [],
-  )
+  const handleTableChange = useCallback((query: ServerQueryChange) => {
+    setParams((prev) => ({
+      ...prev,
+      page: query.page,
+      pageSize: query.pageSize,
+      sort: query.sort ?? prev.sort,
+      order: query.order ?? prev.order,
+    }))
+  }, [])
 
   const handleDeactivate = useCallback(
     async (skuId: string) => {
@@ -99,33 +95,12 @@ export default function SkuListPage() {
     [deactivateMutation, message],
   )
 
-  const handleExportCsv = useCallback(() => {
-    if (!data?.data.length) return
-    const headers = ['SKU Code', 'Style', 'Price', 'Department', 'Stock', 'Status']
-    const rows = data.data.map((s) => [
-      s.skuCode,
-      s.style,
-      s.price.toFixed(2),
-      s.department,
-      s.currentStock ?? '',
-      s.active ? 'Active' : 'Inactive',
-    ])
-    const csv = [headers, ...rows].map((r) => r.map((c) => `"${c}"`).join(',')).join('\n')
-    const blob = new Blob([csv], { type: 'text/csv' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `skus-export-${new Date().toISOString().slice(0, 10)}.csv`
-    a.click()
-    URL.revokeObjectURL(url)
-  }, [data])
-
   const sortOrder = (field: string) => {
     if (params.sort !== field) return undefined
     return params.order === 'asc' ? ('ascend' as const) : ('descend' as const)
   }
 
-  const columns = [
+  const columns: ServerTableColumn<Sku>[] = [
     {
       title: 'SKU Code',
       dataIndex: 'skuCode',
@@ -142,6 +117,21 @@ export default function SkuListPage() {
       sorter: true,
       sortOrder: sortOrder('style'),
       width: 180,
+    },
+    {
+      title: 'Style-Color',
+      key: 'styleColor',
+      width: 200,
+      render: (_: unknown, record: Sku) => {
+        const styleColorId = record.styleColor?.styleColorId
+        if (!styleColorId) return <Typography.Text type="secondary">-</Typography.Text>
+        return (
+          <Tooltip title={styleColorId}>
+            <Typography.Text code>{styleColorId.slice(0, 8)}</Typography.Text>
+          </Tooltip>
+        )
+      },
+      exportValue: (record) => record.styleColor?.styleColorId ?? '',
     },
     {
       title: 'Price',
@@ -161,6 +151,7 @@ export default function SkuListPage() {
       render: (dept: Department) => (
         <Tag color={DEPARTMENT_COLORS[dept]}>{dept}</Tag>
       ),
+      exportValue: (record) => record.department,
     },
     {
       title: 'Stock',
@@ -174,6 +165,7 @@ export default function SkuListPage() {
         if (v <= 25) return <Typography.Text type="warning">{v}</Typography.Text>
         return v
       },
+      exportValue: (record) => record.currentStock ?? '',
     },
     {
       title: 'Status',
@@ -183,6 +175,23 @@ export default function SkuListPage() {
       render: (active: boolean) => (
         <Tag color={active ? 'success' : 'default'}>{active ? 'Active' : 'Inactive'}</Tag>
       ),
+      exportValue: (record) => (record.active ? 'Active' : 'Inactive'),
+    },
+    {
+      title: 'Heel Type',
+      dataIndex: 'heelTypeCode',
+      key: 'heelTypeCode',
+      width: 120,
+      render: (value: string | null | undefined) => value ?? '-',
+      exportValue: (record) => record.heelTypeCode ?? '',
+    },
+    {
+      title: 'Heel Material',
+      dataIndex: 'heelMaterialTypeCode',
+      key: 'heelMaterialTypeCode',
+      width: 130,
+      render: (value: string | null | undefined) => value ?? '-',
+      exportValue: (record) => record.heelMaterialTypeCode ?? '',
     },
     {
       title: '',
@@ -254,13 +263,6 @@ export default function SkuListPage() {
                 <Tooltip title="Refresh">
                   <Button icon={<ReloadOutlined />} onClick={() => refetch()} />
                 </Tooltip>
-                <Button
-                  icon={<DownloadOutlined />}
-                  onClick={handleExportCsv}
-                  disabled={!data?.data.length}
-                >
-                  Export CSV
-                </Button>
               </Space>
             </Col>
           </Row>
@@ -322,37 +324,19 @@ export default function SkuListPage() {
         )}
 
         {/* Data table */}
-        <Card
-          size="small"
-          title={
-            <Space>
-              <Typography.Text strong>SKUs</Typography.Text>
-              {data && (
-                <Typography.Text type="secondary">
-                  ({data.pagination.totalItems} total)
-                </Typography.Text>
-              )}
-            </Space>
-          }
-        >
-          <Table<Sku>
-            dataSource={data?.data}
+        <Card size="small">
+          <ServerDataTable<Sku>
+            title={<Typography.Text strong>SKUs</Typography.Text>}
+            data={data?.data}
             columns={columns}
             rowKey="id"
             loading={isLoading}
-            size="small"
-            scroll={{ x: 1060 }}
-            onChange={handleTableChange}
-            pagination={{
-              current: data?.pagination.page,
-              pageSize: data?.pagination.pageSize,
-              total: data?.pagination.totalItems,
-              showSizeChanger: true,
-              pageSizeOptions: ['25', '50', '100', '200'],
-              showTotal: (total, range) => `${range[0]}-${range[1]} of ${total}`,
-              size: 'default',
-            }}
-            style={{ opacity: isFetching && !isLoading ? 0.6 : 1 }}
+            fetching={isFetching}
+            pagination={data?.pagination}
+            onQueryChange={handleTableChange}
+            expectedTotalRows={data?.pagination.totalItems}
+            exportFileName={`skus-${new Date().toISOString().slice(0, 10)}`}
+            scrollX={1510}
           />
         </Card>
       </Space>

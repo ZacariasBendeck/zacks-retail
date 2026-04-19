@@ -1,6 +1,24 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { fetchSkus, fetchSku, createSku, updateSku, deactivateSku, fetchVendors, analyzeImage, fetchAllReferenceData, lookupSkuByCode, searchSkus, autocompleteSkus } from '../services/skuApi'
-import type { SkuListParams, SkuCreatePayload, SkuUpdatePayload } from '../types/sku'
+import {
+  fetchSkus,
+  fetchSku,
+  createSku,
+  updateSku,
+  deactivateSku,
+  fetchVendors,
+  analyzeImage,
+  fetchAllReferenceData,
+  lookupSkuByCode,
+  searchSkus,
+  autocompleteSkus,
+  fetchStyleColors,
+} from '../services/skuApi'
+import type {
+  SkuListParams,
+  SkuCreatePayload,
+  SkuUpdatePayload,
+  StyleColorListParams,
+} from '../types/sku'
 
 export function useSkus(params: SkuListParams) {
   return useQuery({
@@ -94,6 +112,16 @@ export function useAutocompleteSkus(query: string) {
     queryFn: () => autocompleteSkus(query),
     enabled: query.trim().length >= 1,
     staleTime: 30 * 1000,
+    placeholderData: (prev) => prev,
+  })
+}
+
+export function useStyleColors(params: StyleColorListParams, enabled = true) {
+  return useQuery({
+    queryKey: ['skus', 'style-colors', params],
+    queryFn: () => fetchStyleColors(params),
+    enabled,
+    staleTime: 60 * 1000,
     placeholderData: (prev) => prev,
   })
 }

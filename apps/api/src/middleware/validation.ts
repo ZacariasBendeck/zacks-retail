@@ -328,6 +328,31 @@ export const inventoryListQuerySchema = z.object({
   q: z.string().optional(),
 });
 
+// ── Movement timeline / reconciliation schemas (ZAI-357) ─────────
+
+const MOVEMENT_TYPES = ['sale', 'po_receipt', 'transfer_in', 'transfer_out', 'adjustment'] as const;
+
+export const movementTimelineQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  cursor: z.string().optional(),
+  sort: z.enum(['movementAt', 'quantityDelta']).default('movementAt'),
+  order: z.enum(['asc', 'desc']).default('desc'),
+  skuId: z.string().uuid().optional(),
+  locationId: z.string().optional(),
+  movementType: z.enum(MOVEMENT_TYPES).optional(),
+  fromDate: z.string().optional(),
+  toDate: z.string().optional(),
+});
+
+export const movementReconciliationQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  cursor: z.string().optional(),
+  sort: z.enum(['expectedQuantityDelta', 'lastMovementAt', 'movementRowCount']).default('lastMovementAt'),
+  order: z.enum(['asc', 'desc']).default('desc'),
+  skuId: z.string().uuid().optional(),
+  locationId: z.string().optional(),
+});
+
 // ── Dashboard schemas ─────────────────────────────────────────────
 
 export const lowStockQuerySchema = z.object({
@@ -337,6 +362,85 @@ export const lowStockQuerySchema = z.object({
   sort: z.enum(['currentStock', 'skuCode', 'department', 'style']).default('currentStock'),
   order: z.enum(['asc', 'desc']).default('asc'),
 });
+
+// ── Customer (crm) schemas ─────────────────────────────────────────
+
+const FAMILY_GENDERS = ['M', 'F', 'C'] as const;
+
+export const createCustomerSchema = z.object({
+  accountNumber: z.string().min(1).max(15).optional(),
+  phoneE164: z.string().max(20).optional().nullable(),
+  firstName: z.string().max(50).optional().nullable(),
+  lastName: z.string().max(50).optional().nullable(),
+  displayName: z.string().max(100).optional().nullable(),
+  email: z.string().email().max(200).optional().nullable(),
+  addressLine1: z.string().max(200).optional().nullable(),
+  addressLine2: z.string().max(200).optional().nullable(),
+  city: z.string().max(100).optional().nullable(),
+  stateRegion: z.string().max(100).optional().nullable(),
+  postalCode: z.string().max(20).optional().nullable(),
+  country: z.string().max(100).optional().nullable(),
+  creditLimit: z.number().nonnegative().optional().nullable(),
+  alertFlag: z.boolean().optional(),
+  alertMessage: z.string().max(500).optional().nullable(),
+  comments: z.string().max(2000).optional().nullable(),
+  extraFields: z.record(z.unknown()).optional().nullable(),
+  marketingOptIn: z.boolean().optional(),
+});
+
+export const updateCustomerSchema = z.object({
+  accountNumber: z.string().min(1).max(15).optional(),
+  phoneE164: z.string().max(20).optional().nullable(),
+  firstName: z.string().max(50).optional().nullable(),
+  lastName: z.string().max(50).optional().nullable(),
+  displayName: z.string().max(100).optional().nullable(),
+  email: z.string().email().max(200).optional().nullable(),
+  addressLine1: z.string().max(200).optional().nullable(),
+  addressLine2: z.string().max(200).optional().nullable(),
+  city: z.string().max(100).optional().nullable(),
+  stateRegion: z.string().max(100).optional().nullable(),
+  postalCode: z.string().max(20).optional().nullable(),
+  country: z.string().max(100).optional().nullable(),
+  creditLimit: z.number().nonnegative().optional().nullable(),
+  alertFlag: z.boolean().optional(),
+  alertMessage: z.string().max(500).optional().nullable(),
+  comments: z.string().max(2000).optional().nullable(),
+  extraFields: z.record(z.unknown()).optional().nullable(),
+  marketingOptIn: z.boolean().optional(),
+  active: z.boolean().optional(),
+});
+
+export const customerListQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(200).default(50),
+  sort: z.enum(['displayName', 'accountNumber', 'dateAdded', 'dateOfLastPurchase', 'ytdSalesCents']).default('displayName'),
+  order: z.enum(['asc', 'desc']).default('asc'),
+  active: z.preprocess((v) => {
+    if (v === 'true') return true;
+    if (v === 'false') return false;
+    return v;
+  }, z.boolean().optional()),
+  q: z.string().optional(),
+});
+
+export const customerSearchQuerySchema = z.object({
+  q: z.string().min(1).max(200),
+  limit: z.coerce.number().int().min(1).max(50).default(10),
+});
+
+export const createFamilyMemberSchema = z.object({
+  code: z.string().min(1).max(2),
+  firstName: z.string().max(50).optional().nullable(),
+  lastName: z.string().max(50).optional().nullable(),
+  gender: z.enum(FAMILY_GENDERS).optional().nullable(),
+  birthday: z.string().optional().nullable(),
+  comments: z.string().max(2000).optional().nullable(),
+  alertFlag: z.boolean().optional(),
+  alertMessage: z.string().max(500).optional().nullable(),
+  extraFields: z.record(z.unknown()).optional().nullable(),
+});
+
+export const updateFamilyMemberSchema = createFamilyMemberSchema.partial();
 
 export function validate(schema: z.ZodSchema) {
   return (req: Request, res: Response, next: NextFunction): void => {

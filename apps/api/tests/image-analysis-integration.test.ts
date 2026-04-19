@@ -457,12 +457,16 @@ describe('AI analysis → SKU creation integration', () => {
     const db = getDb();
     const catRow = db.prepare('SELECT id FROM ref_categories WHERE rics_code = ?').get(560) as { id: number } | undefined;
     const categoryId = catRow ? catRow.id : null;
+    const brandRow = db.prepare("SELECT id FROM ref_brands WHERE code = 'KISS'").get() as { id: number } | undefined;
+    const colorRow = db.prepare("SELECT id FROM ref_colors WHERE code = 'BK'").get() as { id: number } | undefined;
 
     const skuData = {
       style: 'So Kate',
       price: 795.00,
       cost: 350.00,
       categoryId,
+      brandId: brandRow?.id ?? null,
+      colorId: colorRow?.id ?? null,
       department: mapped.department as string,
       vendorId: VENDOR_ID,
       sizes: ['7.5'],
@@ -489,8 +493,8 @@ describe('AI analysis → SKU creation integration', () => {
         expect(res.body.heelHeightId).toBe(mapped.heelHeightId);
         expect(res.body.heelShapeId).toBe(mapped.heelShapeId);
         expect(res.body.toeShapeId).toBe(mapped.toeShapeId);
-        // colorFamilyId is auto-derived from colorId; since no colorId sent, it's null
-        expect(res.body.colorFamilyId).toBeNull();
+        // colorFamilyId is auto-derived from colorId (BK → Negro)
+        expect(res.body.colorFamilyId).toBeDefined();
         expect(res.body.upperMaterialId).toBe(mapped.upperMaterialId);
         expect(res.body.finishId).toBe(mapped.finishId);
         expect(res.body.patternId).toBe(mapped.patternId);
@@ -512,12 +516,16 @@ describe('AI analysis → SKU creation integration', () => {
     const db = getDb();
     const catRow = db.prepare('SELECT id FROM ref_categories WHERE rics_code = ?').get(570) as { id: number } | undefined;
     const categoryId = catRow ? catRow.id : null;
+    const brandRow2 = db.prepare("SELECT id FROM ref_brands WHERE code = 'FLEX'").get() as { id: number } | undefined;
+    const colorRow2 = db.prepare("SELECT id FROM ref_colors WHERE code = 'BR'").get() as { id: number } | undefined;
 
     const skuData = {
       style: 'Chelsea Boot',
       price: 180.00,
       cost: 90.00,
       categoryId,
+      brandId: brandRow2?.id ?? null,
+      colorId: colorRow2?.id ?? null,
       department: mapped.department as string,
       vendorId: VENDOR_ID,
       sizes: ['8'],

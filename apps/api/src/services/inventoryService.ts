@@ -308,6 +308,237 @@ export function listInventory(
   };
 }
 
+// ── Movement Timeline (ZAI-357) ─────────────────────────────────
+
+import {
+  MovementTimelineParams,
+  MovementTimelineItem,
+  MovementTimelineSortField,
+  MovementType,
+  ReconciliationParams,
+  ReconciliationItem,
+  ReconciliationSortField,
+} from '../models/inventory';
+
+const TIMELINE_SORT_MAP: Record<MovementTimelineSortField, string> = {
+  movementAt: 'l.movement_at',
+  quantityDelta: 'l.quantity_delta',
+};
+
+export function listMovementTimeline(
+  params: MovementTimelineParams
+): CursorPaginationEnvelope<MovementTimelineItem> {
+  const db = getDb();
+
+  const sortCol = TIMELINE_SORT_MAP[params.sort] || 'l.movement_at';
+  const sortDir = params.order === 'asc' ? 'ASC' : 'DESC';
+  const oppositeOp = sortDir === 'ASC' ? '>' : '<';
+
+  const conditions: string[] = [];
+  const values: (string | number)[] = [];
+
+  if (params.skuId) {
+    conditions.push('l.sku_id = ?');
+    values.push(params.skuId);
+  }
+  if (params.locationId) {
+    conditions.push('l.location_id = ?');
+    values.push(params.locationId);
+  }
+  if (params.movementType) {
+    conditions.push('l.movement_type = ?');
+    values.push(params.movementType);
+  }
+  if (params.fromDate) {
+    conditions.push('l.movement_at >= ?');
+    values.push(params.fromDate);
+  }
+  if (params.toDate) {
+    conditions.push('l.movement_at <= ?');
+    values.push(params.toDate);
+  }
+
+  if (params.cursor) {
+    const decoded = decodeCursor(params.cursor);
+    if (decoded) {
+      conditions.push(
+        `(${sortCol} ${oppositeOp} ? OR (${sortCol} = ? AND l.id ${oppositeOp} ?))`
+      );
+      values.push(decoded.s, decoded.s, decoded.id);
+    }
+  }
+
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  const fetchLimit = params.limit + 1;
+
+  const query = `
+    SELECT
+      l.id,
+      l.sku_id,
+      s.sku_code,
+      l.location_id,
+      loc.code AS location_code,
+      l.movement_type,
+      l.quantity_delta,
+      l.unit_cost_snapshot,
+      l.movement_at,
+      l.created_at
+    FROM inventory_movement_ledger l
+    LEFT JOIN skus s ON s.id = l.sku_id
+    LEFT JOIN inventory_locations loc ON loc.id = l.location_id
+    ${whereClause}
+    ORDER BY ${sortCol} ${sortDir}, l.id ${sortDir}
+    LIMIT ?
+  `;
+
+  values.push(fetchLimit);
+
+  const rows = db.prepare(query).all(...values) as {
+    id: string; sku_id: string; sku_code: string | null; location_id: string;
+    location_code: string | null; movement_type: string; quantity_delta: number;
+    unit_cost_snapshot: number | null; movement_at: string; created_at: string;
+  }[];
+
+  const hasMore = rows.length > params.limit;
+  const resultRows = hasMore ? rows.slice(0, params.limit) : rows;
+
+  let nextCursor: string | null = null;
+  if (hasMore && resultRows.length > 0) {
+    const last = resultRows[resultRows.length - 1];
+    const sortValue = params.sort === 'quantityDelta' ? last.quantity_delta : last.movement_at;
+    nextCursor = encodeCursor(sortValue, last.id);
+  }
+
+  const appliedFilters: Record<string, string | number | boolean> = {};
+  if (params.skuId) appliedFilters.skuId = params.skuId;
+  if (params.locationId) appliedFilters.locationId = params.locationId;
+  if (params.movementType) appliedFilters.movementType = params.movementType;
+  if (params.fromDate) appliedFilters.fromDate = params.fromDate;
+  if (params.toDate) appliedFilters.toDate = params.toDate;
+
+  return {
+    data: resultRows.map((r) => ({
+      id: r.id,
+      skuId: r.sku_id,
+      skuCode: r.sku_code,
+      locationId: r.location_id,
+      locationCode: r.location_code,
+      movementType: r.movement_type as MovementType,
+      quantityDelta: r.quantity_delta,
+      unitCostSnapshot: r.unit_cost_snapshot,
+      movementAt: r.movement_at,
+      createdAt: r.created_at,
+    })),
+    nextCursor,
+    limit: params.limit,
+    appliedSort: { field: params.sort, order: params.order },
+    appliedFilters,
+  };
+}
+
+// ── Movement Reconciliation (ZAI-357) ───────────────────────────
+
+const RECONCILIATION_SORT_MAP: Record<ReconciliationSortField, string> = {
+  expectedQuantityDelta: 'r.expected_quantity_delta',
+  lastMovementAt: 'r.last_movement_at',
+  movementRowCount: 'r.movement_row_count',
+};
+
+export function listMovementReconciliation(
+  params: ReconciliationParams
+): CursorPaginationEnvelope<ReconciliationItem> {
+  const db = getDb();
+
+  const sortCol = RECONCILIATION_SORT_MAP[params.sort] || 'r.last_movement_at';
+  const sortDir = params.order === 'asc' ? 'ASC' : 'DESC';
+  const oppositeOp = sortDir === 'ASC' ? '>' : '<';
+
+  const conditions: string[] = [];
+  const values: (string | number)[] = [];
+
+  if (params.skuId) {
+    conditions.push('r.sku_id = ?');
+    values.push(params.skuId);
+  }
+  if (params.locationId) {
+    conditions.push('r.location_id = ?');
+    values.push(params.locationId);
+  }
+
+  // Reconciliation view uses composite key (sku_id, location_id) as row identity for cursor
+  if (params.cursor) {
+    const decoded = decodeCursor(params.cursor);
+    if (decoded) {
+      conditions.push(
+        `(${sortCol} ${oppositeOp} ? OR (${sortCol} = ? AND (r.sku_id || '|' || r.location_id) ${oppositeOp} ?))`
+      );
+      values.push(decoded.s, decoded.s, decoded.id);
+    }
+  }
+
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  const fetchLimit = params.limit + 1;
+
+  const query = `
+    SELECT
+      r.sku_id,
+      s.sku_code,
+      r.location_id,
+      loc.code AS location_code,
+      r.expected_quantity_delta,
+      r.movement_row_count,
+      r.first_movement_at,
+      r.last_movement_at
+    FROM v_inventory_movement_reconciliation r
+    LEFT JOIN skus s ON s.id = r.sku_id
+    LEFT JOIN inventory_locations loc ON loc.id = r.location_id
+    ${whereClause}
+    ORDER BY ${sortCol} ${sortDir}, (r.sku_id || '|' || r.location_id) ${sortDir}
+    LIMIT ?
+  `;
+
+  values.push(fetchLimit);
+
+  const rows = db.prepare(query).all(...values) as {
+    sku_id: string; sku_code: string | null; location_id: string;
+    location_code: string | null; expected_quantity_delta: number;
+    movement_row_count: number; first_movement_at: string; last_movement_at: string;
+  }[];
+
+  const hasMore = rows.length > params.limit;
+  const resultRows = hasMore ? rows.slice(0, params.limit) : rows;
+
+  let nextCursor: string | null = null;
+  if (hasMore && resultRows.length > 0) {
+    const last = resultRows[resultRows.length - 1];
+    const sortValue = params.sort === 'expectedQuantityDelta' ? last.expected_quantity_delta
+      : params.sort === 'movementRowCount' ? last.movement_row_count
+      : last.last_movement_at;
+    nextCursor = encodeCursor(sortValue, `${last.sku_id}|${last.location_id}`);
+  }
+
+  const appliedFilters: Record<string, string | number | boolean> = {};
+  if (params.skuId) appliedFilters.skuId = params.skuId;
+  if (params.locationId) appliedFilters.locationId = params.locationId;
+
+  return {
+    data: resultRows.map((r) => ({
+      skuId: r.sku_id,
+      skuCode: r.sku_code,
+      locationId: r.location_id,
+      locationCode: r.location_code,
+      expectedQuantityDelta: r.expected_quantity_delta,
+      movementRowCount: r.movement_row_count,
+      firstMovementAt: r.first_movement_at,
+      lastMovementAt: r.last_movement_at,
+    })),
+    nextCursor,
+    limit: params.limit,
+    appliedSort: { field: params.sort, order: params.order },
+    appliedFilters,
+  };
+}
+
 // ── Inventory Mutation (ZAI-134 spec) ────────────────────────────
 
 const VALID_CATEGORY_MIN = 556;

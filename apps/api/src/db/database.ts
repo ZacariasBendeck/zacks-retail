@@ -803,7 +803,7 @@ const MIGRATIONS: Migration[] = [
     description: 'Integrate SQL migration 010 into runtime migrations (RICS import staging + SKU natural key safeguards)',
     up(db) {
       // Non-obvious design decision:
-      // keep migration 010 semantics in runtime to avoid drift between db/migrations SQL
+      // keep migration 010 semantics in runtime to avoid drift between legacy/sqlite-migrations SQL
       // and the application bootstrap path that executes MIGRATIONS[].
       ensureSchemaTableCommentsTable(db);
 
@@ -1918,6 +1918,1018 @@ const MIGRATIONS: Migration[] = [
       db.exec(`
         DROP INDEX IF EXISTS idx_inventory_qty_on_hand_id;
         DROP INDEX IF EXISTS idx_inventory_updated_at_id;
+      `);
+    },
+  },
+  {
+    version: '0015',
+    description: 'Align runtime schema with migration 011 womens-category scoped guardrails',
+    up(db: DatabaseSync) {
+      // Non-obvious design decision:
+      // previous runtime migration 0005 added global ref_categories 556-599 triggers.
+      // This migration scopes enforcement to womens_shoe_categories + SKU write guards
+      // so ref_categories remains a broader catalog.
+      ensureSchemaTableCommentsTable(db);
+
+      db.exec(`
+        DROP TRIGGER IF EXISTS trg_ref_categories_rics_range_insert_v011;
+        DROP TRIGGER IF EXISTS trg_ref_categories_rics_range_update_v011;
+
+        CREATE TABLE IF NOT EXISTS womens_shoe_categories (
+          category_id INTEGER PRIMARY KEY REFERENCES ref_categories(id) ON DELETE CASCADE,
+          rics_code INTEGER NOT NULL UNIQUE,
+          dept_macro TEXT NOT NULL CHECK(dept_macro IN ('FORMAL','CASUAL','FIESTA','SANDALIAS','BOOTS','COMFORT')),
+          active INTEGER NOT NULL DEFAULT 1,
+          source_updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        INSERT OR REPLACE INTO womens_shoe_categories (category_id, rics_code, dept_macro, active, source_updated_at)
+        SELECT
+          c.id,
+          c.rics_code,
+          c.dept_macro,
+          c.active,
+          datetime('now')
+        FROM ref_categories c
+        WHERE c.rics_code BETWEEN 556 AND 599;
+
+        CREATE TRIGGER IF NOT EXISTS trg_womens_shoe_categories_sync_insert_v011
+        AFTER INSERT ON ref_categories
+        WHEN NEW.rics_code BETWEEN 556 AND 599
+        BEGIN
+          INSERT OR REPLACE INTO womens_shoe_categories (
+            category_id,
+            rics_code,
+            dept_macro,
+            active,
+            source_updated_at
+          ) VALUES (
+            NEW.id,
+            NEW.rics_code,
+            NEW.dept_macro,
+            NEW.active,
+            datetime('now')
+          );
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_womens_shoe_categories_sync_update_in_range_v011
+        AFTER UPDATE OF rics_code, dept_macro, active ON ref_categories
+        WHEN NEW.rics_code BETWEEN 556 AND 599
+        BEGIN
+          INSERT OR REPLACE INTO womens_shoe_categories (
+            category_id,
+            rics_code,
+            dept_macro,
+            active,
+            source_updated_at
+          ) VALUES (
+            NEW.id,
+            NEW.rics_code,
+            NEW.dept_macro,
+            NEW.active,
+            datetime('now')
+          );
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_womens_shoe_categories_sync_update_out_range_v011
+        AFTER UPDATE OF rics_code ON ref_categories
+        WHEN OLD.rics_code BETWEEN 556 AND 599
+          AND (NEW.rics_code < 556 OR NEW.rics_code > 599)
+        BEGIN
+          DELETE FROM womens_shoe_categories
+          WHERE category_id = OLD.id;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_womens_shoe_categories_sync_delete_v011
+        AFTER DELETE ON ref_categories
+        WHEN OLD.rics_code BETWEEN 556 AND 599
+        BEGIN
+          DELETE FROM womens_shoe_categories
+          WHERE category_id = OLD.id;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_skus_womens_category_guardrail_insert_v011
+        BEFORE INSERT ON skus
+        WHEN NEW.category_id IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1
+            FROM womens_shoe_categories w
+            WHERE w.category_id = NEW.category_id
+          )
+        BEGIN
+          SELECT RAISE(ABORT, 'skus.category_id must map to womens_shoe_categories');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_skus_womens_category_guardrail_update_v011
+        BEFORE UPDATE OF category_id ON skus
+        WHEN NEW.category_id IS NOT OLD.category_id
+          AND NEW.category_id IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1
+            FROM womens_shoe_categories w
+            WHERE w.category_id = NEW.category_id
+          )
+        BEGIN
+          SELECT RAISE(ABORT, 'skus.category_id must map to womens_shoe_categories');
+        END;
+
+        CREATE VIEW IF NOT EXISTS v_sku_category_guardrail_violations AS
+        SELECT
+          s.id,
+          s.sku_code,
+          s.category_id,
+          c.rics_code,
+          c.name AS category_name,
+          c.dept_macro,
+          s.department,
+          s.active,
+          s.updated_at
+        FROM skus s
+        LEFT JOIN ref_categories c ON c.id = s.category_id
+        LEFT JOIN womens_shoe_categories w ON w.category_id = s.category_id
+        WHERE s.category_id IS NOT NULL
+          AND w.category_id IS NULL;
+
+        CREATE INDEX IF NOT EXISTS idx_womens_shoe_categories_dept_rics_v011
+          ON womens_shoe_categories(dept_macro, rics_code);
+        CREATE INDEX IF NOT EXISTS idx_skus_category_active_created_v011
+          ON skus(category_id, active, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_inventory_sku_size_v011
+          ON inventory(sku_id, sku_size_id);
+        CREATE INDEX IF NOT EXISTS idx_purchase_order_lines_sku_po_v011
+          ON purchase_order_lines(sku_id, po_id);
+        CREATE INDEX IF NOT EXISTS idx_sales_transactions_sku_sold_at_v011
+          ON sales_transactions(sku_id, sold_at DESC);
+
+        INSERT OR REPLACE INTO schema_table_comments (table_name, comment) VALUES
+          ('womens_shoe_categories', 'Derived subset of ref_categories limited to womens guardrail codes (556-599). Used for SKU category gating without globally restricting the canonical category master.'),
+          ('v_sku_category_guardrail_violations', 'Diagnostic view listing SKUs whose category_id is outside womens_shoe_categories. Use this to remediate legacy rows before full policy freeze.');
+      `);
+    },
+    down(db: DatabaseSync) {
+      db.exec(`
+        DROP VIEW IF EXISTS v_sku_category_guardrail_violations;
+
+        DROP TRIGGER IF EXISTS trg_skus_womens_category_guardrail_update_v011;
+        DROP TRIGGER IF EXISTS trg_skus_womens_category_guardrail_insert_v011;
+        DROP TRIGGER IF EXISTS trg_womens_shoe_categories_sync_delete_v011;
+        DROP TRIGGER IF EXISTS trg_womens_shoe_categories_sync_update_out_range_v011;
+        DROP TRIGGER IF EXISTS trg_womens_shoe_categories_sync_update_in_range_v011;
+        DROP TRIGGER IF EXISTS trg_womens_shoe_categories_sync_insert_v011;
+
+        DROP INDEX IF EXISTS idx_sales_transactions_sku_sold_at_v011;
+        DROP INDEX IF EXISTS idx_purchase_order_lines_sku_po_v011;
+        DROP INDEX IF EXISTS idx_inventory_sku_size_v011;
+        DROP INDEX IF EXISTS idx_skus_category_active_created_v011;
+        DROP INDEX IF EXISTS idx_womens_shoe_categories_dept_rics_v011;
+
+        DROP TABLE IF EXISTS womens_shoe_categories;
+
+        CREATE TRIGGER IF NOT EXISTS trg_ref_categories_rics_range_insert_v011
+        BEFORE INSERT ON ref_categories
+        WHEN NEW.rics_code < 556 OR NEW.rics_code > 599
+        BEGIN
+          SELECT RAISE(ABORT, 'ref_categories.rics_code must be in range 556-599');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_ref_categories_rics_range_update_v011
+        BEFORE UPDATE ON ref_categories
+        WHEN NEW.rics_code < 556 OR NEW.rics_code > 599
+        BEGIN
+          SELECT RAISE(ABORT, 'ref_categories.rics_code must be in range 556-599');
+        END;
+      `);
+
+      if (tableExists(db, 'schema_table_comments')) {
+        db.exec(`
+          DELETE FROM schema_table_comments
+          WHERE table_name IN (
+            'womens_shoe_categories',
+            'v_sku_category_guardrail_violations'
+          );
+        `);
+      }
+      dropSchemaCommentsTableIfEmpty(db);
+    },
+  },
+  {
+    version: '0016',
+    description: 'sales-pos module: stores, registers, shifts, tickets, lines, tenders, taxes, tender types, payouts, drawer counts, sales passwords, receipt templates, store sales options',
+    up(db: DatabaseSync) {
+      db.exec(`
+        -- Stores (first-class multi-store support). Seeded with default store 1.
+        CREATE TABLE IF NOT EXISTS pos_stores (
+          id INTEGER PRIMARY KEY,
+          code TEXT NOT NULL UNIQUE,
+          name TEXT NOT NULL,
+          tax_rate REAL NOT NULL DEFAULT 0 CHECK(tax_rate >= 0),
+          tax_code TEXT NOT NULL DEFAULT 'LOCAL',
+          other_charge_label TEXT NOT NULL DEFAULT 'Other Charges',
+          return_code_tracking INTEGER NOT NULL DEFAULT 0,
+          currency_enabled INTEGER NOT NULL DEFAULT 0,
+          currency_rate REAL,
+          currency_decimals INTEGER DEFAULT 2,
+          currency_print_on_receipt INTEGER DEFAULT 1,
+          active INTEGER NOT NULL DEFAULT 1,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        INSERT OR IGNORE INTO pos_stores (id, code, name) VALUES (1, 'MAIN', 'Main Store');
+
+        -- Registers. RICS A-Z register letter; here a stable per-store code.
+        CREATE TABLE IF NOT EXISTS pos_registers (
+          id TEXT PRIMARY KEY,
+          store_id INTEGER NOT NULL REFERENCES pos_stores(id),
+          code TEXT NOT NULL,
+          label TEXT NOT NULL,
+          drawer_kind TEXT NOT NULL DEFAULT 'NONE'
+            CHECK(drawer_kind IN ('NONE','OPOS','WEBUSB','PRINTER_TRIGGERED')),
+          drawer_config_json TEXT,
+          active INTEGER NOT NULL DEFAULT 1,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          UNIQUE(store_id, code)
+        );
+        CREATE INDEX IF NOT EXISTS idx_pos_registers_store ON pos_registers(store_id);
+
+        -- Tender types per store. tender_kind is the semantic class.
+        CREATE TABLE IF NOT EXISTS pos_tender_types (
+          id TEXT PRIMARY KEY,
+          store_id INTEGER NOT NULL REFERENCES pos_stores(id),
+          code TEXT NOT NULL,
+          label TEXT NOT NULL,
+          tender_kind TEXT NOT NULL
+            CHECK(tender_kind IN ('CASH','CHECK','CARD','GIFT_CERT','STORE_CREDIT','HOUSE_CHARGE','CONTINUATION','FOREIGN_CURRENCY','OTHER')),
+          is_considered_cash INTEGER NOT NULL DEFAULT 0,
+          opens_drawer INTEGER NOT NULL DEFAULT 0,
+          require_account_number INTEGER NOT NULL DEFAULT 0,
+          active INTEGER NOT NULL DEFAULT 1,
+          sort_order INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          UNIQUE(store_id, code)
+        );
+        CREATE INDEX IF NOT EXISTS idx_pos_tender_types_store ON pos_tender_types(store_id);
+
+        -- Payout categories per store. Curated list.
+        CREATE TABLE IF NOT EXISTS pos_payout_categories (
+          id TEXT PRIMARY KEY,
+          store_id INTEGER NOT NULL REFERENCES pos_stores(id),
+          code TEXT NOT NULL,
+          label TEXT NOT NULL,
+          active INTEGER NOT NULL DEFAULT 1,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          UNIQUE(store_id, code)
+        );
+
+        -- Shift (RICS batch of sales).
+        CREATE TABLE IF NOT EXISTS pos_shifts (
+          id TEXT PRIMARY KEY,
+          store_id INTEGER NOT NULL REFERENCES pos_stores(id),
+          register_id TEXT NOT NULL REFERENCES pos_registers(id),
+          opened_at TEXT NOT NULL DEFAULT (datetime('now')),
+          opened_by_user_id TEXT NOT NULL,
+          opening_cash_float REAL NOT NULL DEFAULT 0 CHECK(opening_cash_float >= 0),
+          closed_at TEXT,
+          closed_by_user_id TEXT,
+          closing_cash_count REAL,
+          closing_deposit_count REAL,
+          expected_cash_at_close REAL,
+          over_short_amount REAL,
+          over_short_approved_by TEXT,
+          status TEXT NOT NULL DEFAULT 'OPEN'
+            CHECK(status IN ('OPEN','CLOSING','CLOSED','VOIDED')),
+          posting_mode TEXT NOT NULL DEFAULT 'REALTIME'
+            CHECK(posting_mode IN ('REALTIME','BATCH')),
+          posted_at TEXT,
+          last_ticket_number_used INTEGER NOT NULL DEFAULT 0,
+          notes TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_pos_shifts_store_opened ON pos_shifts(store_id, opened_at);
+        CREATE INDEX IF NOT EXISTS idx_pos_shifts_register_status ON pos_shifts(register_id, status);
+
+        -- Sales ticket (the polymorphic ticket framework).
+        CREATE TABLE IF NOT EXISTS pos_sales_tickets (
+          id TEXT PRIMARY KEY,
+          ticket_number INTEGER NOT NULL,
+          store_id INTEGER NOT NULL REFERENCES pos_stores(id),
+          register_id TEXT NOT NULL REFERENCES pos_registers(id),
+          shift_id TEXT NOT NULL REFERENCES pos_shifts(id),
+          business_date TEXT NOT NULL,
+          transaction_type TEXT NOT NULL DEFAULT 'REGULAR'
+            CHECK(transaction_type IN (
+              'REGULAR','USER_DEFINED','SPECIAL_ORDER_PICKUP','LAYAWAY_SALE',
+              'GIFT_CERT_SALE','HOUSE_CHARGE_PAYMENT','SPECIAL_ORDER_DEPOSIT','LAYAWAY_PAYMENT'
+            )),
+          cashier_user_id TEXT NOT NULL,
+          customer_account_id TEXT,
+          header_discount_pct REAL,
+          promotion_code TEXT,
+          family_member_id TEXT,
+          subtotal REAL NOT NULL DEFAULT 0,
+          tax_total REAL NOT NULL DEFAULT 0,
+          tax_override_reason TEXT,
+          other_charges REAL NOT NULL DEFAULT 0,
+          other_charges_label TEXT,
+          grand_total REAL NOT NULL DEFAULT 0,
+          change_given REAL NOT NULL DEFAULT 0,
+          comment TEXT,
+          parent_ticket_id TEXT REFERENCES pos_sales_tickets(id),
+          continuation_head_id TEXT REFERENCES pos_sales_tickets(id),
+          voided_at TEXT,
+          voided_by_user_id TEXT,
+          void_password_used INTEGER NOT NULL DEFAULT 0,
+          reclaimed_from_ticket_id TEXT REFERENCES pos_sales_tickets(id),
+          posting_status TEXT NOT NULL DEFAULT 'DRAFT'
+            CHECK(posting_status IN (
+              'DRAFT','REALTIME_POSTED','PENDING_POST','BATCH_POSTED','VOIDED_UNPOSTED'
+            )),
+          posted_at TEXT,
+          receipt_print_count INTEGER NOT NULL DEFAULT 0,
+          ended_at TEXT,
+          -- Extension FK slots owned by customer-transactions (reserved; nullable for now)
+          special_order_ext_id TEXT,
+          layaway_ext_id TEXT,
+          house_charge_ext_id TEXT,
+          gift_cert_sale_ext_id TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          UNIQUE(store_id, business_date, ticket_number)
+        );
+        CREATE INDEX IF NOT EXISTS idx_pos_tickets_shift ON pos_sales_tickets(shift_id);
+        CREATE INDEX IF NOT EXISTS idx_pos_tickets_customer ON pos_sales_tickets(customer_account_id);
+        CREATE INDEX IF NOT EXISTS idx_pos_tickets_posting ON pos_sales_tickets(posting_status, business_date);
+        CREATE INDEX IF NOT EXISTS idx_pos_tickets_txtype ON pos_sales_tickets(transaction_type, business_date);
+        CREATE INDEX IF NOT EXISTS idx_pos_tickets_parent ON pos_sales_tickets(parent_ticket_id);
+
+        -- Sales ticket lines.
+        CREATE TABLE IF NOT EXISTS pos_sales_ticket_lines (
+          id TEXT PRIMARY KEY,
+          ticket_id TEXT NOT NULL REFERENCES pos_sales_tickets(id) ON DELETE CASCADE,
+          line_number INTEGER NOT NULL,
+          line_kind TEXT NOT NULL DEFAULT 'MERCHANDISE'
+            CHECK(line_kind IN ('MERCHANDISE','COUPON','COMMENT_ONLY')),
+          sku_id TEXT REFERENCES skus(id),
+          sku_size_id TEXT REFERENCES sku_sizes(id),
+          sku_code_snapshot TEXT,
+          quantity INTEGER NOT NULL,
+          unit_price REAL NOT NULL DEFAULT 0,
+          price_slot_used TEXT,
+          line_discount_pct REAL,
+          line_discount_amount REAL,
+          perks_amount REAL NOT NULL DEFAULT 0,
+          salesperson_user_id TEXT,
+          family_member_id TEXT,
+          return_code_id INTEGER,
+          taxable INTEGER NOT NULL DEFAULT 1,
+          comment TEXT,
+          extended_net REAL NOT NULL DEFAULT 0,
+          extended_tax REAL NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          UNIQUE(ticket_id, line_number)
+        );
+        CREATE INDEX IF NOT EXISTS idx_pos_ticket_lines_ticket ON pos_sales_ticket_lines(ticket_id);
+        CREATE INDEX IF NOT EXISTS idx_pos_ticket_lines_sku ON pos_sales_ticket_lines(sku_id);
+        CREATE INDEX IF NOT EXISTS idx_pos_ticket_lines_salesperson ON pos_sales_ticket_lines(salesperson_user_id);
+
+        -- Sales ticket tenders (split payments, up to 4).
+        CREATE TABLE IF NOT EXISTS pos_sales_ticket_tenders (
+          id TEXT PRIMARY KEY,
+          ticket_id TEXT NOT NULL REFERENCES pos_sales_tickets(id) ON DELETE CASCADE,
+          sequence INTEGER NOT NULL,
+          tender_type_id TEXT NOT NULL REFERENCES pos_tender_types(id),
+          tender_kind TEXT NOT NULL,
+          amount REAL NOT NULL,
+          foreign_currency_amount REAL,
+          account_number TEXT,
+          gift_cert_number TEXT,
+          auth_reference TEXT,
+          is_continuation INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          UNIQUE(ticket_id, sequence)
+        );
+        CREATE INDEX IF NOT EXISTS idx_pos_ticket_tenders_ticket ON pos_sales_ticket_tenders(ticket_id);
+
+        -- Per-tax-code breakdown on each ticket.
+        CREATE TABLE IF NOT EXISTS pos_sales_ticket_taxes (
+          id TEXT PRIMARY KEY,
+          ticket_id TEXT NOT NULL REFERENCES pos_sales_tickets(id) ON DELETE CASCADE,
+          tax_code TEXT NOT NULL,
+          tax_rate REAL NOT NULL,
+          taxable_base REAL NOT NULL,
+          tax_amount REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_pos_ticket_taxes_ticket ON pos_sales_ticket_taxes(ticket_id);
+
+        -- Audit events on a ticket (void, reclaim, tax override, etc.).
+        CREATE TABLE IF NOT EXISTS pos_ticket_audit_events (
+          id TEXT PRIMARY KEY,
+          ticket_id TEXT NOT NULL REFERENCES pos_sales_tickets(id) ON DELETE CASCADE,
+          event_type TEXT NOT NULL
+            CHECK(event_type IN (
+              'VOID_MID','VOID_POST_END','RECLAIM','TAX_OVERRIDE','PRICE_OVERRIDE',
+              'PASSWORD_CHALLENGE','COMMENT_EDIT','END_SALE','REPRINT'
+            )),
+          actor_user_id TEXT NOT NULL,
+          payload_json TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_pos_ticket_audit_ticket ON pos_ticket_audit_events(ticket_id);
+
+        -- Pay outs (cash taken from drawer mid-shift).
+        CREATE TABLE IF NOT EXISTS pos_payouts (
+          id TEXT PRIMARY KEY,
+          shift_id TEXT NOT NULL REFERENCES pos_shifts(id),
+          cashier_user_id TEXT NOT NULL,
+          category_id TEXT NOT NULL REFERENCES pos_payout_categories(id),
+          category_label TEXT NOT NULL,
+          amount REAL NOT NULL CHECK(amount > 0),
+          note TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_pos_payouts_shift ON pos_payouts(shift_id);
+
+        -- Count money at close: one row per tender type.
+        CREATE TABLE IF NOT EXISTS pos_drawer_tender_counts (
+          id TEXT PRIMARY KEY,
+          shift_id TEXT NOT NULL REFERENCES pos_shifts(id),
+          tender_type_id TEXT NOT NULL REFERENCES pos_tender_types(id),
+          tender_kind TEXT NOT NULL,
+          counted_amount REAL NOT NULL,
+          expected_amount REAL NOT NULL,
+          difference REAL NOT NULL,
+          detail_json TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          UNIQUE(shift_id, tender_type_id)
+        );
+
+        -- Receipt templates per store.
+        CREATE TABLE IF NOT EXISTS pos_receipt_templates (
+          id TEXT PRIMARY KEY,
+          store_id INTEGER NOT NULL REFERENCES pos_stores(id),
+          code TEXT NOT NULL,
+          is_default INTEGER NOT NULL DEFAULT 0,
+          handlebars TEXT NOT NULL,
+          paper_width_cols INTEGER NOT NULL DEFAULT 40,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          UNIQUE(store_id, code)
+        );
+
+        -- Sales passwords (MANAGER / TICKET) per store — RICS p. 52 register-side quick-change.
+        CREATE TABLE IF NOT EXISTS pos_sales_passwords (
+          id TEXT PRIMARY KEY,
+          store_id INTEGER NOT NULL REFERENCES pos_stores(id),
+          kind TEXT NOT NULL CHECK(kind IN ('MANAGER','TICKET')),
+          hash TEXT NOT NULL,
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_by_user_id TEXT NOT NULL,
+          UNIQUE(store_id, kind)
+        );
+
+        -- Store-level sales options — Manager Options + Sales Ticket Options (pp. 22-24).
+        CREATE TABLE IF NOT EXISTS pos_store_sales_options (
+          store_id INTEGER PRIMARY KEY REFERENCES pos_stores(id),
+          default_tender_type_id TEXT REFERENCES pos_tender_types(id),
+          default_transaction_type TEXT NOT NULL DEFAULT 'REGULAR',
+          auto_ticket_number INTEGER NOT NULL DEFAULT 1,
+          allow_perks INTEGER NOT NULL DEFAULT 1,
+          allow_discounts INTEGER NOT NULL DEFAULT 1,
+          posting_mode TEXT NOT NULL DEFAULT 'REALTIME'
+            CHECK(posting_mode IN ('REALTIME','BATCH')),
+          beginning_receipt_message TEXT,
+          ending_receipt_message TEXT,
+          require_account_types_json TEXT,
+          auto_reprint_types_json TEXT,
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        -- Seed default tender types for store 1.
+        INSERT OR IGNORE INTO pos_tender_types (id, store_id, code, label, tender_kind, is_considered_cash, opens_drawer, sort_order) VALUES
+          ('tt-main-cash',   1, 'CASH',   'Cash',          'CASH',         1, 1, 10),
+          ('tt-main-check',  1, 'CHECK',  'Check',         'CHECK',        1, 1, 20),
+          ('tt-main-card',   1, 'CARD',   'Credit Card',   'CARD',         0, 0, 30),
+          ('tt-main-gift',   1, 'GIFT',   'Gift Certificate', 'GIFT_CERT', 0, 1, 40),
+          ('tt-main-credit', 1, 'CRED',   'Store Credit',  'STORE_CREDIT', 0, 0, 50),
+          ('tt-main-house',  1, 'HOUSE',  'House Charge',  'HOUSE_CHARGE', 0, 0, 60),
+          ('tt-main-cont',   1, 'CONT',   'Continued',     'CONTINUATION', 0, 0, 99);
+
+        -- Seed default payout categories for store 1.
+        INSERT OR IGNORE INTO pos_payout_categories (id, store_id, code, label) VALUES
+          ('pc-main-post',    1, 'POSTAGE',      'Postage'),
+          ('pc-main-sup',     1, 'SUPPLIES',     'Office Supplies'),
+          ('pc-main-petty',   1, 'PETTY',        'Petty Cash'),
+          ('pc-main-refund',  1, 'REFUND_ADJ',   'Refund Adjustment'),
+          ('pc-main-other',   1, 'OTHER',        'Other');
+
+        -- Seed default register A for store 1.
+        INSERT OR IGNORE INTO pos_registers (id, store_id, code, label, drawer_kind) VALUES
+          ('reg-main-a', 1, 'A', 'Register A', 'NONE');
+
+        -- Seed default receipt template for store 1.
+        INSERT OR IGNORE INTO pos_receipt_templates (id, store_id, code, is_default, handlebars, paper_width_cols) VALUES
+          ('rt-main-default', 1, '40COL_THERMAL', 1,
+           '{{begin_message}}\n{{#lines}}{{qty}} {{desc}}  {{price}}\n{{/lines}}\nSubtotal: {{subtotal}}\nTax: {{tax}}\nTotal: {{total}}\n{{end_message}}',
+           40);
+
+        -- Seed default store sales options.
+        INSERT OR IGNORE INTO pos_store_sales_options (store_id, default_tender_type_id, default_transaction_type) VALUES
+          (1, 'tt-main-cash', 'REGULAR');
+      `);
+    },
+    down(db: DatabaseSync) {
+      db.exec(`
+        DROP TABLE IF EXISTS pos_store_sales_options;
+        DROP TABLE IF EXISTS pos_sales_passwords;
+        DROP TABLE IF EXISTS pos_receipt_templates;
+        DROP TABLE IF EXISTS pos_drawer_tender_counts;
+        DROP TABLE IF EXISTS pos_payouts;
+        DROP TABLE IF EXISTS pos_ticket_audit_events;
+        DROP TABLE IF EXISTS pos_sales_ticket_taxes;
+        DROP TABLE IF EXISTS pos_sales_ticket_tenders;
+        DROP TABLE IF EXISTS pos_sales_ticket_lines;
+        DROP TABLE IF EXISTS pos_sales_tickets;
+        DROP TABLE IF EXISTS pos_shifts;
+        DROP TABLE IF EXISTS pos_payout_categories;
+        DROP TABLE IF EXISTS pos_tender_types;
+        DROP TABLE IF EXISTS pos_registers;
+        DROP TABLE IF EXISTS pos_stores;
+      `);
+    },
+  },
+  {
+    version: '0017',
+    description: 'crm module: customers + family_members + mail_list_settings. Slim Stage 1 subset per docs/modules/crm.md.',
+    up(db: DatabaseSync) {
+      db.exec(`
+        -- Customers (RICS Mailing List entry, Ch. 9 p. 117). Slim subset for Stage 1 POS.
+        -- Loyalty / quotes / mail detail tables deferred until those surfaces are built.
+        CREATE TABLE IF NOT EXISTS customers (
+          id TEXT PRIMARY KEY,
+          account_number TEXT NOT NULL UNIQUE,
+          phone_e164 TEXT,
+          first_name TEXT,
+          last_name TEXT,
+          display_name TEXT NOT NULL,
+          email TEXT,
+          address_line1 TEXT,
+          address_line2 TEXT,
+          city TEXT,
+          state_region TEXT,
+          postal_code TEXT,
+          country TEXT,
+          credit_limit REAL CHECK(credit_limit IS NULL OR credit_limit >= 0),
+          alert_flag INTEGER NOT NULL DEFAULT 0,
+          alert_message TEXT,
+          comments TEXT,
+          ptd_qty INTEGER NOT NULL DEFAULT 0,
+          ptd_sales_cents INTEGER NOT NULL DEFAULT 0,
+          ytd_qty INTEGER NOT NULL DEFAULT 0,
+          ytd_sales_cents INTEGER NOT NULL DEFAULT 0,
+          ttd_qty INTEGER NOT NULL DEFAULT 0,
+          ttd_sales_cents INTEGER NOT NULL DEFAULT 0,
+          last_year_sales_cents INTEGER NOT NULL DEFAULT 0,
+          date_added TEXT NOT NULL DEFAULT (datetime('now')),
+          date_of_last_purchase TEXT,
+          last_known_ar_balance_cents INTEGER NOT NULL DEFAULT 0,
+          ar_balance_as_of TEXT,
+          last_known_store_credit_cents INTEGER NOT NULL DEFAULT 0,
+          store_credit_as_of TEXT,
+          extra_fields_json TEXT,
+          marketing_opt_in INTEGER NOT NULL DEFAULT 0,
+          active INTEGER NOT NULL DEFAULT 1,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_customers_phone ON customers(phone_e164);
+        CREATE INDEX IF NOT EXISTS idx_customers_last_first ON customers(last_name, first_name);
+        CREATE INDEX IF NOT EXISTS idx_customers_postal ON customers(postal_code);
+        CREATE INDEX IF NOT EXISTS idx_customers_account ON customers(account_number);
+
+        -- Family members (RICS p. 118). Slim subset.
+        CREATE TABLE IF NOT EXISTS customer_family_members (
+          id TEXT PRIMARY KEY,
+          customer_id TEXT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+          code TEXT NOT NULL,
+          first_name TEXT,
+          last_name TEXT,
+          gender TEXT CHECK(gender IS NULL OR gender IN ('M','F','C')),
+          birthday TEXT,
+          comments TEXT,
+          alert_flag INTEGER NOT NULL DEFAULT 0,
+          alert_message TEXT,
+          extra_fields_json TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          UNIQUE(customer_id, code)
+        );
+        CREATE INDEX IF NOT EXISTS idx_family_members_customer ON customer_family_members(customer_id);
+
+        -- Mail List Setup (RICS p. 218). Single-row tenant-wide config.
+        CREATE TABLE IF NOT EXISTS mail_list_settings (
+          id INTEGER PRIMARY KEY CHECK(id = 1),
+          save_mail_detail INTEGER NOT NULL DEFAULT 1,
+          omit_categories_from_mail_detail_json TEXT NOT NULL DEFAULT '[]',
+          exclude_categories_from_qty_totals_json TEXT NOT NULL DEFAULT '[]',
+          extra_field_definitions_json TEXT NOT NULL DEFAULT '[]',
+          require_account_for_transaction_types_json TEXT NOT NULL DEFAULT '[]',
+          require_account_for_tender_types_json TEXT NOT NULL DEFAULT '[]',
+          default_loyalty_plan_id TEXT,
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        INSERT OR IGNORE INTO mail_list_settings (id) VALUES (1);
+      `);
+    },
+    down(db: DatabaseSync) {
+      db.exec(`
+        DROP TABLE IF EXISTS mail_list_settings;
+        DROP TABLE IF EXISTS customer_family_members;
+        DROP TABLE IF EXISTS customers;
+      `);
+    },
+  },
+  {
+    version: '0018',
+    description: 'customer-transactions module: special orders, layaways, gift certificates, house charges. Per docs/modules/customer-transactions.md.',
+    up(db: DatabaseSync) {
+      db.exec(`
+        -- Company-wide customer-transactions settings (RICS Ch. 2 require-account flags + policy knobs).
+        CREATE TABLE IF NOT EXISTS customer_transaction_settings (
+          id INTEGER PRIMARY KEY CHECK(id = 1),
+          require_account_on_special_orders INTEGER NOT NULL DEFAULT 1,
+          require_account_on_layaways INTEGER NOT NULL DEFAULT 1,
+          require_account_on_gift_certs INTEGER NOT NULL DEFAULT 0,
+          require_account_on_house_charges INTEGER NOT NULL DEFAULT 1,
+          track_gift_certificates INTEGER NOT NULL DEFAULT 1,
+          auto_number_gift_certificates INTEGER NOT NULL DEFAULT 1,
+          require_cert_number_on_redeem INTEGER NOT NULL DEFAULT 1,
+          auto_reprint_layaway_sale INTEGER NOT NULL DEFAULT 1,
+          auto_reprint_layaway_payment INTEGER NOT NULL DEFAULT 1,
+          auto_reprint_special_order_deposit INTEGER NOT NULL DEFAULT 1,
+          min_layaway_deposit_percent INTEGER,
+          layaway_payment_cadence_days INTEGER,
+          layaway_forfeit_stale_days INTEGER,
+          layaway_default_fee REAL NOT NULL DEFAULT 0,
+          enforce_customer_credit_limit TEXT NOT NULL DEFAULT 'WARN'
+            CHECK(enforce_customer_credit_limit IN ('OFF','WARN','BLOCK')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        INSERT OR IGNORE INTO customer_transaction_settings (id) VALUES (1);
+
+        -- Special Orders (RICS pp. 36-37).
+        -- Inventory does NOT deduct at deposit — only at pickup.
+        CREATE TABLE IF NOT EXISTS special_orders (
+          id TEXT PRIMARY KEY,
+          customer_id TEXT NOT NULL REFERENCES customers(id),
+          store_id INTEGER NOT NULL,
+          status TEXT NOT NULL DEFAULT 'OPEN_DEPOSITED'
+            CHECK(status IN ('OPEN_DEPOSITED','PICKED_UP','REFUNDED','CANCELLED')),
+          opened_at TEXT NOT NULL DEFAULT (datetime('now')),
+          picked_up_at TEXT,
+          refunded_at TEXT,
+          deposit_ticket_id TEXT NOT NULL,    -- FK → pos_sales_tickets.id (cross-DB, no constraint)
+          pickup_ticket_id TEXT,
+          refund_ticket_id TEXT,
+          total_ordered REAL NOT NULL DEFAULT 0,
+          deposit_paid REAL NOT NULL DEFAULT 0,
+          balance_due REAL NOT NULL DEFAULT 0,
+          notes TEXT,
+          created_by TEXT NOT NULL,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_so_customer_status ON special_orders(customer_id, status);
+        CREATE INDEX IF NOT EXISTS idx_so_store_status_opened ON special_orders(store_id, status, opened_at);
+
+        CREATE TABLE IF NOT EXISTS special_order_lines (
+          id TEXT PRIMARY KEY,
+          special_order_id TEXT NOT NULL REFERENCES special_orders(id) ON DELETE CASCADE,
+          sku_id TEXT,
+          draft_sku_code TEXT,
+          draft_description TEXT,
+          column_label TEXT,
+          row_label TEXT,
+          quantity INTEGER NOT NULL DEFAULT 1,
+          price_at_deposit REAL NOT NULL DEFAULT 0,
+          resolved_sku_id TEXT,
+          resolved_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_so_lines_order ON special_order_lines(special_order_id);
+
+        CREATE TABLE IF NOT EXISTS special_order_deposits (
+          id TEXT PRIMARY KEY,
+          special_order_id TEXT NOT NULL REFERENCES special_orders(id) ON DELETE CASCADE,
+          ticket_id TEXT NOT NULL,
+          amount REAL NOT NULL,
+          taken_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_so_deposits_order ON special_order_deposits(special_order_id);
+
+        -- Layaways (RICS pp. 38-39).
+        -- Inventory DEDUCTS at sale (different from Special Order).
+        CREATE TABLE IF NOT EXISTS layaways (
+          id TEXT PRIMARY KEY,
+          customer_id TEXT NOT NULL REFERENCES customers(id),
+          store_id INTEGER NOT NULL,
+          status TEXT NOT NULL DEFAULT 'ACTIVE'
+            CHECK(status IN ('ACTIVE','PICKED_UP','REFUNDED','FORFEITED','CANCELLED')),
+          original_ticket_id TEXT NOT NULL,
+          opened_at TEXT NOT NULL DEFAULT (datetime('now')),
+          picked_up_at TEXT,
+          refunded_at TEXT,
+          forfeited_at TEXT,
+          total_originally_due REAL NOT NULL DEFAULT 0,
+          total_paid REAL NOT NULL DEFAULT 0,
+          balance REAL NOT NULL DEFAULT 0,
+          layaway_fee REAL NOT NULL DEFAULT 0,
+          next_payment_due_at TEXT,
+          last_payment_at TEXT,
+          created_by TEXT NOT NULL,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_layaway_customer_status ON layaways(customer_id, status);
+        CREATE INDEX IF NOT EXISTS idx_layaway_store_status_opened ON layaways(store_id, status, opened_at);
+        CREATE INDEX IF NOT EXISTS idx_layaway_stale ON layaways(status, next_payment_due_at);
+
+        CREATE TABLE IF NOT EXISTS layaway_lines (
+          id TEXT PRIMARY KEY,
+          layaway_id TEXT NOT NULL REFERENCES layaways(id) ON DELETE CASCADE,
+          sku_id TEXT NOT NULL,
+          column_label TEXT,
+          row_label TEXT,
+          quantity INTEGER NOT NULL DEFAULT 1,
+          price_at_sale REAL NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_layaway_lines_layaway ON layaway_lines(layaway_id);
+
+        CREATE TABLE IF NOT EXISTS layaway_payments (
+          id TEXT PRIMARY KEY,
+          layaway_id TEXT NOT NULL REFERENCES layaways(id) ON DELETE CASCADE,
+          ticket_id TEXT NOT NULL,
+          amount REAL NOT NULL,
+          paid_at TEXT NOT NULL DEFAULT (datetime('now')),
+          is_pickup INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_layaway_payments_layaway ON layaway_payments(layaway_id);
+
+        -- Gift Certificates (RICS pp. 40, 131-132).
+        CREATE TABLE IF NOT EXISTS gift_certificates (
+          id TEXT PRIMARY KEY,
+          certificate_no TEXT NOT NULL,
+          sequence TEXT NOT NULL DEFAULT '',
+          purchaser_customer_id TEXT REFERENCES customers(id),
+          for_account_customer_id TEXT REFERENCES customers(id),
+          original_amount REAL NOT NULL,
+          redeemed_amount REAL NOT NULL DEFAULT 0,
+          balance REAL NOT NULL,
+          status TEXT NOT NULL DEFAULT 'ACTIVE'
+            CHECK(status IN ('ACTIVE','FULLY_REDEEMED','VOIDED')),
+          origin TEXT NOT NULL DEFAULT 'POS_SALE'
+            CHECK(origin IN ('POS_SALE','MAINTENANCE_BACKFILL')),
+          purchase_ticket_id TEXT,
+          purchase_store_id INTEGER,
+          purchase_date TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          UNIQUE(certificate_no, sequence)
+        );
+        CREATE INDEX IF NOT EXISTS idx_gc_purchaser ON gift_certificates(purchaser_customer_id);
+        CREATE INDEX IF NOT EXISTS idx_gc_for_account ON gift_certificates(for_account_customer_id);
+        CREATE INDEX IF NOT EXISTS idx_gc_status ON gift_certificates(status);
+
+        CREATE TABLE IF NOT EXISTS gift_certificate_transactions (
+          id TEXT PRIMARY KEY,
+          cert_id TEXT NOT NULL REFERENCES gift_certificates(id) ON DELETE CASCADE,
+          kind TEXT NOT NULL CHECK(kind IN ('REDEMPTION','MANUAL_ADJUSTMENT')),
+          ticket_id TEXT,
+          store_id INTEGER,
+          customer_id TEXT REFERENCES customers(id),
+          amount REAL NOT NULL,
+          occurred_at TEXT NOT NULL DEFAULT (datetime('now')),
+          entered_by TEXT NOT NULL,
+          note TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_gct_cert ON gift_certificate_transactions(cert_id);
+
+        -- House Charges (RICS pp. 40-41) — stateless event rows; running balance
+        -- lives in accounts-receivable. Stage 1 keeps them here as the source
+        -- ledger until A/R is built.
+        CREATE TABLE IF NOT EXISTS house_charge_transactions (
+          id TEXT PRIMARY KEY,
+          customer_id TEXT NOT NULL REFERENCES customers(id),
+          store_id INTEGER NOT NULL,
+          ticket_id TEXT NOT NULL,
+          kind TEXT NOT NULL CHECK(kind IN ('CHARGE','PAYMENT')),
+          amount REAL NOT NULL CHECK(amount > 0),
+          tender_type TEXT,
+          occurred_at TEXT NOT NULL DEFAULT (datetime('now')),
+          posted_to_ar_at TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_hct_customer_occurred ON house_charge_transactions(customer_id, occurred_at);
+        CREATE INDEX IF NOT EXISTS idx_hct_store_occurred ON house_charge_transactions(store_id, occurred_at);
+      `);
+    },
+    down(db: DatabaseSync) {
+      db.exec(`
+        DROP TABLE IF EXISTS house_charge_transactions;
+        DROP TABLE IF EXISTS gift_certificate_transactions;
+        DROP TABLE IF EXISTS gift_certificates;
+        DROP TABLE IF EXISTS layaway_payments;
+        DROP TABLE IF EXISTS layaway_lines;
+        DROP TABLE IF EXISTS layaways;
+        DROP TABLE IF EXISTS special_order_deposits;
+        DROP TABLE IF EXISTS special_order_lines;
+        DROP TABLE IF EXISTS special_orders;
+        DROP TABLE IF EXISTS customer_transaction_settings;
+      `);
+    },
+  },
+  {
+    version: '0019',
+    description: 'physical-inventory module (P1.a Slice 3): count sessions, snapshots + cells, batches, entries, variances, review acks, worksheet exports. Per docs/modules/physical-inventory.md and docs/superpowers/specs/2026-04-19-physical-inventory-p1a-slice3-design.md.',
+    up(db: DatabaseSync) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS count_sessions (
+          id TEXT PRIMARY KEY,
+          session_number TEXT NOT NULL UNIQUE,
+          store_id INTEGER NOT NULL,
+          status TEXT NOT NULL
+            CHECK(status IN (
+              'DRAFT', 'OPEN', 'COUNTING', 'READY_FOR_REVIEW',
+              'READY_FOR_UPDATE', 'POSTING', 'COMMITTED', 'EXPORTED', 'CANCELLED'
+            )),
+          mode TEXT NOT NULL DEFAULT 'ADDITIVE'
+            CHECK(mode IN ('ADDITIVE', 'INDEPENDENT_VERIFICATION')),
+          independent_verification_n INTEGER,
+          scope_json TEXT NOT NULL DEFAULT '{"all":true}',
+          lock_store_during_count INTEGER NOT NULL DEFAULT 0
+            CHECK(lock_store_during_count IN (0, 1)),
+          join_code TEXT,
+          join_code_qr_payload TEXT,
+          opened_by TEXT NOT NULL,
+          opened_at TEXT NOT NULL DEFAULT (datetime('now')),
+          frozen_at TEXT,
+          review_started_at TEXT,
+          exported_at TEXT,
+          exported_by TEXT,
+          posting_started_at TEXT,
+          committed_at TEXT,
+          cancelled_at TEXT,
+          cancellation_reason TEXT,
+          cancelled_by TEXT,
+          retention_expires_at TEXT,
+          notes TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          CHECK(
+            (mode = 'ADDITIVE' AND independent_verification_n IS NULL) OR
+            (mode = 'INDEPENDENT_VERIFICATION' AND independent_verification_n >= 2)
+          )
+        );
+        CREATE INDEX IF NOT EXISTS idx_count_sessions_store_status_v020
+          ON count_sessions(store_id, status);
+        CREATE INDEX IF NOT EXISTS idx_count_sessions_status_opened_at_v020
+          ON count_sessions(status, opened_at DESC);
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_count_sessions_join_code_v020
+          ON count_sessions(join_code) WHERE join_code IS NOT NULL;
+
+        CREATE TABLE IF NOT EXISTS count_session_snapshots (
+          id TEXT PRIMARY KEY,
+          session_id TEXT NOT NULL UNIQUE
+            REFERENCES count_sessions(id) ON DELETE RESTRICT,
+          taken_at TEXT NOT NULL,
+          cell_count INTEGER NOT NULL DEFAULT 0,
+          total_units_on_hand INTEGER NOT NULL DEFAULT 0,
+          total_cost_value REAL NOT NULL DEFAULT 0,
+          source TEXT NOT NULL DEFAULT 'RICS_LIVE'
+            CHECK(source IN ('RICS_LIVE', 'POSTGRES_PROJECTION')),
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS count_session_snapshot_cells (
+          id TEXT PRIMARY KEY,
+          session_snapshot_id TEXT NOT NULL
+            REFERENCES count_session_snapshots(id) ON DELETE CASCADE,
+          sku_id TEXT NOT NULL,
+          column_label TEXT NOT NULL DEFAULT '',
+          row_label TEXT NOT NULL DEFAULT '',
+          snapshot_on_hand INTEGER NOT NULL,
+          snapshot_avg_cost REAL,
+          snapshot_retail REAL,
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_count_session_snapshot_cells_cell_v020
+          ON count_session_snapshot_cells(session_snapshot_id, sku_id, column_label, row_label);
+        CREATE INDEX IF NOT EXISTS idx_count_session_snapshot_cells_snapshot_v020
+          ON count_session_snapshot_cells(session_snapshot_id);
+        CREATE INDEX IF NOT EXISTS idx_count_session_snapshot_cells_sku_v020
+          ON count_session_snapshot_cells(sku_id);
+
+        CREATE TABLE IF NOT EXISTS count_batches (
+          id TEXT PRIMARY KEY,
+          session_id TEXT NOT NULL
+            REFERENCES count_sessions(id) ON DELETE RESTRICT,
+          source TEXT NOT NULL
+            CHECK(source IN ('MOBILE_WEB', 'HID_SCANNER', 'CSV_IMPORT', 'MANUAL_KEYED', 'LEGACY_PERCON_BUFFER')),
+          device_id TEXT,
+          device_label TEXT,
+          counter_user_id TEXT,
+          imported_at TEXT NOT NULL DEFAULT (datetime('now')),
+          acknowledged_at TEXT,
+          exceptions_json TEXT,
+          raw_payload_ref TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_count_batches_session_v020
+          ON count_batches(session_id, imported_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_count_batches_source_v020
+          ON count_batches(source, imported_at DESC);
+
+        CREATE TABLE IF NOT EXISTS count_entries (
+          id TEXT PRIMARY KEY,
+          session_id TEXT NOT NULL
+            REFERENCES count_sessions(id) ON DELETE RESTRICT,
+          batch_id TEXT NOT NULL
+            REFERENCES count_batches(id) ON DELETE RESTRICT,
+          sku_id TEXT NOT NULL,
+          column_label TEXT NOT NULL DEFAULT '',
+          row_label TEXT NOT NULL DEFAULT '',
+          quantity INTEGER NOT NULL,
+          scanned_at TEXT NOT NULL DEFAULT (datetime('now')),
+          counter_user_id TEXT,
+          is_zero_flag INTEGER NOT NULL DEFAULT 0
+            CHECK(is_zero_flag IN (0, 1)),
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_count_entries_session_sku_cell_v020
+          ON count_entries(session_id, sku_id, column_label, row_label);
+        CREATE INDEX IF NOT EXISTS idx_count_entries_session_scanned_at_v020
+          ON count_entries(session_id, scanned_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_count_entries_batch_v020
+          ON count_entries(batch_id);
+
+        CREATE TABLE IF NOT EXISTS count_variances (
+          id TEXT PRIMARY KEY,
+          session_id TEXT NOT NULL
+            REFERENCES count_sessions(id) ON DELETE CASCADE,
+          sku_id TEXT NOT NULL,
+          column_label TEXT NOT NULL DEFAULT '',
+          row_label TEXT NOT NULL DEFAULT '',
+          counted_qty INTEGER NOT NULL,
+          snapshot_on_hand INTEGER NOT NULL,
+          delta INTEGER NOT NULL,
+          unit_cost REAL,
+          variance_pct REAL,
+          band TEXT NOT NULL
+            CHECK(band IN ('ZERO', 'LOW', 'MATERIAL', 'EXTREME')),
+          acknowledged_at TEXT,
+          acknowledged_by TEXT,
+          computed_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_count_variances_session_cell_v020
+          ON count_variances(session_id, sku_id, column_label, row_label);
+        CREATE INDEX IF NOT EXISTS idx_count_variances_session_band_v020
+          ON count_variances(session_id, band);
+
+        CREATE TABLE IF NOT EXISTS count_review_acks (
+          id TEXT PRIMARY KEY,
+          session_id TEXT NOT NULL
+            REFERENCES count_sessions(id) ON DELETE CASCADE,
+          step TEXT NOT NULL
+            CHECK(step IN ('VIEWED_ITEMS_NOT_COUNTED', 'VIEWED_VARIANCE', 'ACK_MATERIAL_VARIANCES', 'BACKUP_VERIFIED')),
+          acknowledged_by TEXT NOT NULL,
+          acknowledged_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_count_review_acks_session_step_v020
+          ON count_review_acks(session_id, step);
+
+        CREATE TABLE IF NOT EXISTS worksheet_exports (
+          id TEXT PRIMARY KEY,
+          store_id INTEGER NOT NULL,
+          filters_json TEXT NOT NULL,
+          format TEXT NOT NULL CHECK(format IN ('PDF', 'CSV')),
+          generated_by TEXT NOT NULL,
+          generated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          artifact_ref TEXT,
+          row_count INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_worksheet_exports_store_v020
+          ON worksheet_exports(store_id, generated_at DESC);
+      `);
+    },
+    down(db: DatabaseSync) {
+      db.exec(`
+        DROP TABLE IF EXISTS worksheet_exports;
+        DROP TABLE IF EXISTS count_review_acks;
+        DROP TABLE IF EXISTS count_variances;
+        DROP TABLE IF EXISTS count_entries;
+        DROP TABLE IF EXISTS count_batches;
+        DROP TABLE IF EXISTS count_session_snapshot_cells;
+        DROP TABLE IF EXISTS count_session_snapshots;
+        DROP TABLE IF EXISTS count_sessions;
       `);
     },
   },

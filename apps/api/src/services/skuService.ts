@@ -1,10 +1,11 @@
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/database';
+import { CATEGORY_CODE_MAX, CATEGORY_CODE_MIN } from '../constants/domain';
 
 type DbValue = null | number | bigint | string;
 import {
   Sku, SkuRow, SkuSize, SkuSizeRow, SkuListParams, PaginationEnvelope,
-  ReferenceItem, CategoryItem, ColorItem, SizeLabelItem, rowToSku
+  ReferenceItem, CategoryItem, ColorItem, SizeLabelItem, StyleColorLink, rowToSku
 } from '../models/sku';
 
 // Map camelCase API field → snake_case DB column for all updatable FK/scalar fields
@@ -52,6 +53,80 @@ const ALL_FIELD_MAP: Record<string, string> = {
   active: 'active',
   ...EXTENDED_FIELDS,
 };
+
+type CanonicalHeelRow = {
+  code: string;
+  name: string;
+};
+
+type StyleColorRow = {
+  style_color_id: string;
+  brand_id: number;
+  style: string;
+  color_id: number;
+  category_id: number;
+  department: Sku['department'];
+  heel_type_code: string | null;
+  heel_material_type_code: string | null;
+  season: string | null;
+  active: number;
+};
+
+function normalizeCanonicalCode(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim().toUpperCase();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function resolveCanonicalHeelType(input: unknown): CanonicalHeelRow | null {
+  const normalized = normalizeCanonicalCode(input);
+  if (!normalized) return null;
+  const db = getDb();
+  const row = db.prepare(`
+    SELECT code, name
+    FROM ref_heel_types
+    WHERE upper(code) = ? OR upper(name) = ?
+    LIMIT 1
+  `).get(normalized, normalized) as CanonicalHeelRow | undefined;
+  return row ?? null;
+}
+
+function resolveCanonicalHeelMaterialType(input: unknown): CanonicalHeelRow | null {
+  const normalized = normalizeCanonicalCode(input);
+  if (!normalized) return null;
+  const db = getDb();
+  const row = db.prepare(`
+    SELECT code, name
+    FROM ref_heel_material_types
+    WHERE upper(code) = ? OR upper(name) = ?
+    LIMIT 1
+  `).get(normalized, normalized) as CanonicalHeelRow | undefined;
+  return row ?? null;
+}
+
+function normalizeCanonicalHeelInputs(data: Record<string, unknown>): void {
+  const heelTypeFromCode = resolveCanonicalHeelType(data.heelTypeCode);
+  if (heelTypeFromCode) {
+    data.heelType = heelTypeFromCode.name;
+  } else if (data.heelType != null) {
+    const heelTypeFromName = resolveCanonicalHeelType(data.heelType);
+    if (heelTypeFromName) {
+      data.heelType = heelTypeFromName.name;
+      data.heelTypeCode = heelTypeFromName.code;
+    }
+  }
+
+  const heelMaterialFromCode = resolveCanonicalHeelMaterialType(data.heelMaterialTypeCode);
+  if (heelMaterialFromCode) {
+    data.material = heelMaterialFromCode.name;
+  } else if (data.material != null) {
+    const heelMaterialFromName = resolveCanonicalHeelMaterialType(data.material);
+    if (heelMaterialFromName) {
+      data.material = heelMaterialFromName.name;
+      data.heelMaterialTypeCode = heelMaterialFromName.code;
+    }
+  }
+}
 
 function deriveColorFamilyId(colorId: number | null): number | null {
   if (!colorId) return null;
@@ -139,24 +214,195 @@ function generateRicsDescription(
   return `${dept}/${catCode}/${brandCode}/${colorCode}/${styleShort}`;
 }
 
+function mapStyleColorRow(row: StyleColorRow): StyleColorLink {
+  return {
+    styleColorId: row.style_color_id,
+    brandId: row.brand_id,
+    style: row.style,
+    colorId: row.color_id,
+    categoryId: row.category_id,
+    department: row.department,
+    heelTypeCode: row.heel_type_code,
+    heelMaterialTypeCode: row.heel_material_type_code,
+    season: row.season,
+    active: row.active === 1,
+  };
+}
+
+function getStyleColorBySkuId(skuId: string): StyleColorLink | null {
+  const db = getDb();
+  const row = db.prepare(`
+    SELECT
+      sc.id AS style_color_id,
+      sc.brand_id,
+      sc.style,
+      sc.color_id,
+      sc.category_id,
+      sc.department,
+      sc.heel_type_code,
+      sc.heel_material_type_code,
+      sc.season,
+      sc.active
+    FROM sku_style_colors ssc
+    JOIN style_colors sc ON sc.id = ssc.style_color_id
+    WHERE ssc.sku_id = ?
+  `).get(skuId) as StyleColorRow | undefined;
+  return row ? mapStyleColorRow(row) : null;
+}
+
+function upsertStyleColorLinkForSku(skuId: string): void {
+  const db = getDb();
+  const sku = db.prepare(`
+    SELECT
+      id,
+      brand_id,
+      style,
+      color_id,
+      category_id,
+      department,
+      heel_type,
+      material,
+      season,
+      active
+    FROM skus
+    WHERE id = ?
+  `).get(skuId) as {
+    id: string;
+    brand_id: number | null;
+    style: string | null;
+    color_id: number | null;
+    category_id: number | null;
+    department: string | null;
+    heel_type: string | null;
+    material: string | null;
+    season: string | null;
+    active: number;
+  } | undefined;
+
+  if (
+    !sku
+    || sku.brand_id == null
+    || sku.color_id == null
+    || sku.style == null
+    || sku.category_id == null
+    || sku.department == null
+    || sku.style.trim().length === 0
+  ) {
+    db.prepare('DELETE FROM sku_style_colors WHERE sku_id = ?').run(skuId);
+    return;
+  }
+
+  const heelTypeCode = resolveCanonicalHeelType(sku.heel_type)?.code ?? null;
+  const heelMaterialTypeCode = resolveCanonicalHeelMaterialType(sku.material)?.code ?? null;
+  const normalizedStyle = sku.style.trim();
+
+  const existing = db.prepare(`
+    SELECT id
+    FROM style_colors
+    WHERE brand_id = ?
+      AND color_id = ?
+      AND lower(trim(style)) = lower(trim(?))
+    LIMIT 1
+  `).get(sku.brand_id, sku.color_id, normalizedStyle) as { id: string } | undefined;
+
+  let styleColorId = existing?.id ?? null;
+  if (!styleColorId) {
+    styleColorId = uuidv4();
+    db.prepare(`
+      INSERT INTO style_colors (
+        id,
+        brand_id,
+        style,
+        color_id,
+        category_id,
+        department,
+        heel_type_code,
+        heel_material_type_code,
+        season,
+        active
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      styleColorId,
+      sku.brand_id,
+      normalizedStyle,
+      sku.color_id,
+      sku.category_id,
+      sku.department,
+      heelTypeCode,
+      heelMaterialTypeCode,
+      sku.season,
+      sku.active,
+    );
+  } else {
+    db.prepare(`
+      UPDATE style_colors
+      SET
+        category_id = ?,
+        department = ?,
+        heel_type_code = ?,
+        heel_material_type_code = ?,
+        season = ?,
+        active = ?,
+        updated_at = datetime('now')
+      WHERE id = ?
+    `).run(
+      sku.category_id,
+      sku.department,
+      heelTypeCode,
+      heelMaterialTypeCode,
+      sku.season,
+      sku.active,
+      styleColorId,
+    );
+  }
+
+  db.prepare(`
+    INSERT INTO sku_style_colors (sku_id, style_color_id)
+    VALUES (?, ?)
+    ON CONFLICT(sku_id) DO UPDATE SET style_color_id = excluded.style_color_id
+  `).run(skuId, styleColorId);
+}
+
+function enrichSkuWithCanonicalFields(sku: Sku): Sku {
+  const heelTypeCode = resolveCanonicalHeelType(sku.heelType)?.code ?? null;
+  const heelMaterialTypeCode = resolveCanonicalHeelMaterialType(sku.material)?.code ?? null;
+  return {
+    ...sku,
+    heelTypeCode,
+    heelMaterialTypeCode,
+    styleColor: getStyleColorBySkuId(sku.id),
+  };
+}
+
 class ValidationError extends Error {
   status: number;
-  constructor(message: string, status = 400) {
+  code: string;
+  details?: Record<string, string>[];
+
+  constructor(
+    message: string,
+    status = 400,
+    code = 'INVALID_FK',
+    details?: Record<string, string>[],
+  ) {
     super(message);
     this.name = 'ValidationError';
     this.status = status;
+    this.code = code;
+    this.details = details;
   }
 }
 
-function validateFkExists(table: string, id: number, label: string): void {
+function validateFkExists(table: string, id: number | string, label: string, code = 'INVALID_FK'): void {
   const db = getDb();
   const row = db.prepare(`SELECT id FROM ${table} WHERE id = ?`).get(id);
   if (!row) {
-    throw new ValidationError(`Invalid ${label}: no record with id ${id} exists`);
+    throw new ValidationError(`Invalid ${label}: no record with id ${id} exists`, 400, code);
   }
 }
 
-const FK_VALIDATIONS: { field: string; table: string; label: string }[] = [
+const FK_VALIDATIONS: { field: string; table: string; label: string; code?: string }[] = [
+  { field: 'vendorId', table: 'vendors', label: 'vendorId', code: 'INVALID_VENDOR' },
   { field: 'brandId', table: 'ref_brands', label: 'brandId' },
   { field: 'colorId', table: 'ref_colors', label: 'colorId' },
   { field: 'categoryId', table: 'ref_categories', label: 'categoryId' },
@@ -164,16 +410,43 @@ const FK_VALIDATIONS: { field: string; table: string; label: string }[] = [
 ];
 
 function validateForeignKeys(data: Record<string, unknown>): void {
-  for (const { field, table, label } of FK_VALIDATIONS) {
+  for (const { field, table, label, code } of FK_VALIDATIONS) {
     const value = data[field];
-    if (value != null && typeof value === 'number') {
-      validateFkExists(table, value, label);
+    if (value != null && (typeof value === 'number' || typeof value === 'string')) {
+      validateFkExists(table, value, label, code ?? 'INVALID_FK');
     }
   }
 }
 
+function validateCategoryRange(categoryId: number): void {
+  const db = getDb();
+  const row = db.prepare(
+    'SELECT rics_code FROM ref_categories WHERE id = ?',
+  ).get(categoryId) as { rics_code: number } | undefined;
+
+  if (!row) {
+    throw new ValidationError(`Invalid categoryId: no record with id ${categoryId} exists`);
+  }
+
+  if (row.rics_code < CATEGORY_CODE_MIN || row.rics_code > CATEGORY_CODE_MAX) {
+    throw new ValidationError(
+      `Category code must be between ${CATEGORY_CODE_MIN} and ${CATEGORY_CODE_MAX}.`,
+      400,
+      'VALIDATION_CATEGORY_RANGE',
+      [
+        { field: 'categoryId', value: String(categoryId) },
+        { field: 'categoryCode', value: String(row.rics_code) },
+      ],
+    );
+  }
+}
+
 export function createSku(data: Record<string, unknown>): Sku {
+  normalizeCanonicalHeelInputs(data);
   validateForeignKeys(data);
+  if (typeof data.categoryId === 'number') {
+    validateCategoryRange(data.categoryId);
+  }
 
   const db = getDb();
   const id = uuidv4();
@@ -268,7 +541,8 @@ export function createSku(data: Record<string, unknown>): Sku {
 
   const row = db.prepare('SELECT * FROM skus WHERE id = ?').get(id) as unknown as SkuRow;
   const skuSizes = getSkuSizes(id);
-  return rowToSku(row, 0, skuSizes);
+  upsertStyleColorLinkForSku(id);
+  return enrichSkuWithCanonicalFields(rowToSku(row, 0, skuSizes));
 }
 
 export function getSkuById(id: string): Sku | null {
@@ -278,7 +552,7 @@ export function getSkuById(id: string): Sku | null {
 
   const totalStock = getTotalStock(id);
   const sizes = getSkuSizes(id);
-  return rowToSku(row, totalStock, sizes);
+  return enrichSkuWithCanonicalFields(rowToSku(row, totalStock, sizes));
 }
 
 export function lookupSkuByCode(code: string): Sku | null {
@@ -288,11 +562,15 @@ export function lookupSkuByCode(code: string): Sku | null {
 
   const totalStock = getTotalStock(row.id);
   const sizes = getSkuSizes(row.id);
-  return rowToSku(row, totalStock, sizes);
+  return enrichSkuWithCanonicalFields(rowToSku(row, totalStock, sizes));
 }
 
 export function updateSku(id: string, data: Record<string, unknown>): Sku | null {
+  normalizeCanonicalHeelInputs(data);
   validateForeignKeys(data);
+  if (typeof data.categoryId === 'number') {
+    validateCategoryRange(data.categoryId);
+  }
 
   const db = getDb();
   const existing = db.prepare('SELECT * FROM skus WHERE id = ?').get(id) as unknown as SkuRow | undefined;
@@ -322,6 +600,8 @@ export function updateSku(id: string, data: Record<string, unknown>): Sku | null
     db.prepare(`UPDATE skus SET ${setClauses.join(', ')} WHERE id = ?`).run(...values);
   }
 
+  upsertStyleColorLinkForSku(id);
+
   // Update sizes if provided
   const sizes = data.sizes as string[] | undefined;
   if (sizes) {
@@ -345,6 +625,7 @@ export function deactivateSku(id: string): boolean {
   if (!existing) return false;
 
   db.prepare("UPDATE skus SET active = 0, updated_at = datetime('now') WHERE id = ?").run(id);
+  upsertStyleColorLinkForSku(id);
   return true;
 }
 
@@ -423,7 +704,7 @@ export function listSkus(params: SkuListParams): PaginationEnvelope<Sku> {
   const data = rows.map((row) => {
     const totalStock = getTotalStock(row.id);
     const sizes = getSkuSizes(row.id);
-    return rowToSku(row, totalStock, sizes);
+    return enrichSkuWithCanonicalFields(rowToSku(row, totalStock, sizes));
   });
 
   return {
@@ -466,8 +747,20 @@ const CODED_REF_TABLES: Record<string, string> = {
   'heel-materials': 'ref_heel_materials',
 };
 
+const CANONICAL_CODE_REF_TABLES: Record<string, string> = {
+  'heel-types': 'ref_heel_types',
+  'heel-material-types': 'ref_heel_material_types',
+};
+
 export function getReferenceTableNames(): string[] {
-  return [...Object.keys(SIMPLE_REF_TABLES), ...Object.keys(CODED_REF_TABLES), 'categories', 'colors', 'size-labels'];
+  return [
+    ...Object.keys(SIMPLE_REF_TABLES),
+    ...Object.keys(CODED_REF_TABLES),
+    ...Object.keys(CANONICAL_CODE_REF_TABLES),
+    'categories',
+    'colors',
+    'size-labels',
+  ];
 }
 
 export function getReferenceData(tableName: string): ReferenceItem[] | CategoryItem[] | ColorItem[] | SizeLabelItem[] | null {
@@ -487,10 +780,23 @@ export function getReferenceData(tableName: string): ReferenceItem[] | CategoryI
     return rows.map(r => ({ id: r.id, code: r.code, name: r.name, active: r.active === 1 }));
   }
 
+  // Canonical code tables do not have integer ids, so we emit a stable synthetic ordinal id.
+  if (CANONICAL_CODE_REF_TABLES[tableName]) {
+    const table = CANONICAL_CODE_REF_TABLES[tableName];
+    const rows = db.prepare(`SELECT code, name, active FROM ${table} WHERE active = 1 ORDER BY name`).all() as unknown as { code: string; name: string; active: number }[];
+    return rows.map((r, idx) => ({ id: idx + 1, code: r.code, name: r.name, active: r.active === 1 }));
+  }
+
   // Categories (includes rics_code and dept_macro)
   if (tableName === 'categories') {
     const rows = db.prepare('SELECT id, rics_code, name, dept_macro, active FROM ref_categories WHERE active = 1 ORDER BY rics_code').all() as unknown as { id: number; rics_code: number; name: string; dept_macro: string; active: number }[];
-    return rows.map(r => ({ id: r.id, ricsCode: r.rics_code, name: r.name, deptMacro: r.dept_macro, active: r.active === 1 }));
+    return rows.map(r => ({
+      id: r.id,
+      ricsCode: r.rics_code,
+      name: r.name,
+      deptMacro: r.dept_macro as CategoryItem['deptMacro'],
+      active: r.active === 1,
+    }));
   }
 
   // Colors (includes code and color_family_id)
@@ -526,6 +832,58 @@ export function autocompleteSkus(prefix: string): { skuCode: string; style: stri
     LIMIT 10
   `).all(`${prefix}%`) as unknown as { sku_code: string; style: string; brand_name: string }[];
   return rows.map(r => ({ skuCode: r.sku_code, style: r.style, brandName: r.brand_name }));
+}
+
+export function getSkuStyleColorLink(skuId: string): StyleColorLink | null {
+  return getStyleColorBySkuId(skuId);
+}
+
+export function listStyleColors(params?: {
+  brandId?: number;
+  colorId?: number;
+  department?: Sku['department'];
+  active?: boolean;
+}): StyleColorLink[] {
+  const db = getDb();
+  const conditions: string[] = [];
+  const values: DbValue[] = [];
+
+  if (params?.brandId != null) {
+    conditions.push('sc.brand_id = ?');
+    values.push(params.brandId);
+  }
+  if (params?.colorId != null) {
+    conditions.push('sc.color_id = ?');
+    values.push(params.colorId);
+  }
+  if (params?.department != null) {
+    conditions.push('sc.department = ?');
+    values.push(params.department);
+  }
+  if (params?.active != null) {
+    conditions.push('sc.active = ?');
+    values.push(params.active ? 1 : 0);
+  }
+
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  const rows = db.prepare(`
+    SELECT
+      sc.id AS style_color_id,
+      sc.brand_id,
+      sc.style,
+      sc.color_id,
+      sc.category_id,
+      sc.department,
+      sc.heel_type_code,
+      sc.heel_material_type_code,
+      sc.season,
+      sc.active
+    FROM style_colors sc
+    ${whereClause}
+    ORDER BY sc.department ASC, sc.style ASC
+  `).all(...values) as StyleColorRow[];
+
+  return rows.map(mapStyleColorRow);
 }
 
 export function getAllReferenceData(): Record<string, unknown[]> {

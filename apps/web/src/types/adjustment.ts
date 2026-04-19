@@ -37,6 +37,8 @@ export interface CreateAdjustmentPayload {
 export interface AdjustmentListParams {
   page?: number
   pageSize?: number
+  sort?: 'type' | 'createdAt'
+  order?: 'asc' | 'desc'
   type?: AdjustmentType
   fromDate?: string
   toDate?: string

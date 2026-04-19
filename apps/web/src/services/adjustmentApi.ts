@@ -8,7 +8,8 @@ import type {
 import type { PaginationEnvelope } from '../types/sku'
 import { MOCK_SKUS } from '../mock/skuData'
 
-const USE_MOCK = true
+// Backend routes are available for adjustments/locations; keep mocks off by default.
+const USE_MOCK = false
 
 const MOCK_LOCATIONS: Location[] = [
   { id: 'loc-01', name: 'Almacen Principal' },
@@ -166,8 +167,11 @@ export async function createAdjustment(payload: CreateAdjustmentPayload): Promis
   })
   if (res.status === 409) {
     const err = await res.json().catch(() => ({}))
-    throw new Error(err.message ?? 'Stock would go below zero')
+    throw new Error(err?.error?.message ?? err?.message ?? 'Stock would go below zero')
   }
-  if (!res.ok) throw new Error(`Failed to create adjustment: ${res.status}`)
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err?.error?.message ?? err?.message ?? `Failed to create adjustment: ${res.status}`)
+  }
   return res.json()
 }

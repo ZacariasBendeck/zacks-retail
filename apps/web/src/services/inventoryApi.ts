@@ -1,5 +1,13 @@
 import type { Department } from '../types/sku'
-import type { DepartmentSummary, DashboardKpis, LowStockResponse } from '../types/inventory'
+import type {
+  CursorEnvelope,
+  DashboardKpis,
+  DepartmentSummary,
+  InventoryBalanceListParams,
+  InventoryBalanceRow,
+  InventoryBalanceSortField,
+  LowStockResponse,
+} from '../types/inventory'
 import { MOCK_SKUS } from '../mock/skuData'
 
 const USE_MOCK = false
@@ -107,5 +115,29 @@ export async function fetchLowStock(
   })
   const res = await fetch(`/api/v1/dashboard/low-stock?${params}`)
   if (!res.ok) throw new Error(`Failed to fetch low-stock items: ${res.status}`)
+  return res.json()
+}
+
+export const INVENTORY_BALANCE_SORT_ALLOWLIST: readonly InventoryBalanceSortField[] = [
+  'quantityOnHand',
+  'updatedAt',
+  'skuCode',
+  'department',
+] as const
+
+export async function fetchInventoryBalances(
+  params: InventoryBalanceListParams,
+): Promise<CursorEnvelope<InventoryBalanceRow>> {
+  const searchParams = new URLSearchParams()
+  for (const [key, value] of Object.entries(params)) {
+    if (value == null || value === '') continue
+    searchParams.set(key, String(value))
+  }
+
+  const res = await fetch(`/api/v1/inventory?${searchParams}`)
+  if (!res.ok) {
+    throw new Error(`Failed to fetch inventory balances: ${res.status}`)
+  }
+
   return res.json()
 }

@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useEffect, useMemo, useState } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   Form,
   Input,
@@ -20,6 +20,8 @@ import { useCreateAdjustment } from '../../hooks/useAdjustments'
 import { useLocations } from '../../hooks/useAdjustments'
 import { useSkus } from '../../hooks/useSkus'
 import type { AdjustmentType } from '../../types/adjustment'
+import type { Sku } from '../../types/sku'
+import { isValidCategoryCode, isValidDepartment } from '../../constants/domain'
 
 const ADJUSTMENT_TYPES: { label: string; value: AdjustmentType }[] = [
   { label: 'Receipt', value: 'RECEIPT' },
@@ -33,6 +35,7 @@ const ADJUSTMENT_TYPES: { label: string; value: AdjustmentType }[] = [
 const TYPES_WITH_REASON: AdjustmentType[] = ['MANUAL_ADJUST', 'DAMAGE', 'SHRINKAGE']
 const TYPES_WITH_FROM_LOCATION: AdjustmentType[] = ['TRANSFER']
 const TYPES_WITH_TO_LOCATION: AdjustmentType[] = ['RECEIPT', 'TRANSFER', 'RETURN']
+const QUICK_START_TYPES: AdjustmentType[] = ['MANUAL_ADJUST', 'TRANSFER', 'RECEIPT']
 
 interface LineItemRow {
   key: string
@@ -40,13 +43,24 @@ interface LineItemRow {
   quantity: number
 }
 
+function isGuardrailSku(sku: Sku): boolean {
+  return isValidDepartment(sku.department) && isValidCategoryCode(sku.categoryId)
+}
+
 export default function AdjustmentFormPage() {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const { message } = App.useApp()
   const [form] = Form.useForm()
   const createMutation = useCreateAdjustment()
 
-  const [adjustmentType, setAdjustmentType] = useState<AdjustmentType | undefined>()
+  const initialType = useMemo(() => {
+    const type = searchParams.get('type')
+    if (!type) return undefined
+    return QUICK_START_TYPES.includes(type as AdjustmentType) ? (type as AdjustmentType) : undefined
+  }, [searchParams])
+
+  const [adjustmentType, setAdjustmentType] = useState<AdjustmentType | undefined>(initialType)
   const [lineItems, setLineItems] = useState<LineItemRow[]>([
     { key: crypto.randomUUID(), skuId: '', quantity: 1 },
   ])
@@ -54,10 +68,23 @@ export default function AdjustmentFormPage() {
 
   const { data: locations } = useLocations()
   const { data: skuData } = useSkus({ page: 1, pageSize: 50, q: skuSearch || undefined, active: true })
+  const validSkus = useMemo(() => (skuData?.data ?? []).filter(isGuardrailSku), [skuData?.data])
+
+  useEffect(() => {
+    if (!initialType) return
+    setAdjustmentType(initialType)
+    form.setFieldValue('type', initialType)
+  }, [form, initialType])
 
   const showFromLocation = adjustmentType && TYPES_WITH_FROM_LOCATION.includes(adjustmentType)
   const showToLocation = adjustmentType && TYPES_WITH_TO_LOCATION.includes(adjustmentType)
   const showReason = adjustmentType && TYPES_WITH_REASON.includes(adjustmentType)
+  const pageTitle =
+    adjustmentType === 'TRANSFER'
+      ? 'Initiate Transfer'
+      : adjustmentType === 'RECEIPT'
+        ? 'Receive Transfer'
+        : 'New Adjustment'
 
   const addLineItem = () => {
     setLineItems((prev) => [...prev, { key: crypto.randomUUID(), skuId: '', quantity: 1 }])
@@ -80,13 +107,30 @@ export default function AdjustmentFormPage() {
       return
     }
 
+    const type = values.type as AdjustmentType
+    const normalizedLines = validLines.map((li) => {
+      const integerQty = Math.trunc(li.quantity)
+      if (type === 'DAMAGE' || type === 'SHRINKAGE') {
+        return { skuId: li.skuId, quantity: -Math.abs(integerQty) }
+      }
+      if (type === 'MANUAL_ADJUST') {
+        return { skuId: li.skuId, quantity: integerQty }
+      }
+      return { skuId: li.skuId, quantity: Math.abs(integerQty) }
+    })
+
+    if (normalizedLines.some((line) => line.quantity === 0)) {
+      message.error('Line item quantities cannot be zero')
+      return
+    }
+
     try {
       await createMutation.mutateAsync({
-        type: values.type as AdjustmentType,
+        type,
         fromLocationId: (values.fromLocationId as string) || null,
         toLocationId: (values.toLocationId as string) || null,
         reason: (values.reason as string) || null,
-        lineItems: validLines.map((li) => ({ skuId: li.skuId, quantity: li.quantity })),
+        lineItems: normalizedLines,
       })
       message.success('Adjustment recorded successfully')
       navigate('/inventory/adjustments')
@@ -114,8 +158,8 @@ export default function AdjustmentFormPage() {
           onSearch={setSkuSearch}
           onChange={(v) => updateLineItem(record.key, 'skuId', v)}
           filterOption={false}
-          options={skuData?.data.map((s) => ({
-            label: `${s.skuCode} — ${s.style}`,
+          options={validSkus.map((s) => ({
+            label: `${s.skuCode} - ${s.style} (${s.department}/${s.categoryId})`,
             value: s.id,
           }))}
         />
@@ -127,6 +171,9 @@ export default function AdjustmentFormPage() {
       width: 140,
       render: (_: unknown, record: LineItemRow) => (
         <InputNumber
+          min={adjustmentType === 'MANUAL_ADJUST' ? undefined : 1}
+          precision={0}
+          step={1}
           value={record.quantity}
           onChange={(v) => updateLineItem(record.key, 'quantity', v ?? 0)}
           style={{ width: '100%' }}
@@ -163,7 +210,7 @@ export default function AdjustmentFormPage() {
                 Back
               </Button>
               <Typography.Title level={4} style={{ margin: 0 }}>
-                New Adjustment
+                {pageTitle}
               </Typography.Title>
             </Space>
           </Row>
@@ -240,6 +287,14 @@ export default function AdjustmentFormPage() {
 
             <Divider />
             <Typography.Title level={5}>Line Items</Typography.Title>
+            <Typography.Paragraph type="secondary">
+              SKU options are limited to womens categories 556-599 and approved macro-departments.
+            </Typography.Paragraph>
+            {(adjustmentType === 'DAMAGE' || adjustmentType === 'SHRINKAGE') && (
+              <Typography.Paragraph type="warning">
+                Enter positive quantities; the transaction is posted as a stock deduction.
+              </Typography.Paragraph>
+            )}
 
             <Table
               dataSource={lineItems}
@@ -278,3 +333,4 @@ export default function AdjustmentFormPage() {
     </App>
   )
 }
+

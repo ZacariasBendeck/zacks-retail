@@ -66,6 +66,14 @@ router.post('/', validate(createOtbBudgetSchema), (req: Request, res: Response):
  *       - name: month
  *         in: query
  *         schema: { type: integer }
+ *       - name: sort
+ *         in: query
+ *         schema: { type: string, enum: [department, year, month, plannedBudget, createdAt], default: year }
+ *         description: Field to sort by
+ *       - name: order
+ *         in: query
+ *         schema: { type: string, enum: [asc, desc], default: desc }
+ *         description: Sort direction
  *     responses:
  *       200:
  *         description: Paginated list of OTB budgets

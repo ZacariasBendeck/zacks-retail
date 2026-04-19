@@ -9,6 +9,8 @@ const lowStockQuerySchema = z.object({
   threshold: z.coerce.number().int().min(0).max(10000).default(10),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(200).default(25),
+  sort: z.enum(['currentStock', 'skuCode', 'department', 'style']).default('currentStock'),
+  order: z.enum(['asc', 'desc']).default('asc'),
 });
 
 /**
@@ -57,13 +59,21 @@ router.get('/summary', (_req: Request, res: Response): void => {
  *       - name: pageSize
  *         in: query
  *         schema: { type: integer, default: 25, maximum: 200 }
+ *       - name: sort
+ *         in: query
+ *         schema: { type: string, enum: [currentStock, skuCode, department, style], default: currentStock }
+ *         description: Field to sort by
+ *       - name: order
+ *         in: query
+ *         schema: { type: string, enum: [asc, desc], default: asc }
+ *         description: Sort direction
  *     responses:
  *       200:
  *         description: Paginated low stock items
  */
 router.get('/low-stock', validateQuery(lowStockQuerySchema), (req: Request, res: Response): void => {
-  const params = (req as any).validatedQuery as { threshold: number; page: number; pageSize: number };
-  const result = dashboardService.getLowStock(params.threshold, params.page, params.pageSize);
+  const params = (req as any).validatedQuery as { threshold: number; page: number; pageSize: number; sort: string; order: 'asc' | 'desc' };
+  const result = dashboardService.getLowStock(params.threshold, params.page, params.pageSize, params.sort, params.order);
   res.json(result);
 });
 

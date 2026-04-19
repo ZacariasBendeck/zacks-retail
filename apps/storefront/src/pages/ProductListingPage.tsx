@@ -7,6 +7,7 @@ import Breadcrumbs from '@/components/Breadcrumbs'
 import FacetedFilters, { type FilterState } from '@/components/FacetedFilters'
 import SortBar from '@/components/SortBar'
 import ProductCard from '@/components/ProductCard'
+import ActiveFilters from '@/components/ActiveFilters'
 import type { ProductListParams } from '@/types/product'
 import { useState } from 'react'
 
@@ -50,6 +51,8 @@ export default function ProductListingPage() {
     categoryId: filters.categoryId,
     brandId: filters.brandId,
     colorId: filters.colorId,
+    sizeLabel: filters.sizeLabel,
+    materialId: filters.materialId,
     minPrice: filters.minPrice,
     maxPrice: filters.maxPrice,
   })
@@ -116,6 +119,12 @@ export default function ProductListingPage() {
 
         {/* Product grid */}
         <Col xs={24} sm={24} md={18} lg={19} xl={19}>
+          <ActiveFilters
+            filters={filters}
+            facets={facets}
+            onChange={handleFiltersChange}
+          />
+
           <SortBar
             total={data?.pagination.totalItems ?? 0}
             sort={sort}

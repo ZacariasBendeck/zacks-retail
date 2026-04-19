@@ -29,7 +29,7 @@ function seedTestData(): void {
   // Insert two active SKUs
   db.prepare(`
     INSERT INTO skus (id, sku_code, style, price, department, vendor_id, brand_id, color_id, category_id, active, web_description, material)
-    VALUES (?, 'TEST-001', 'Elegant Pump', 89.99, 'FORMAL', ?, ?, ?, ?, 1, 'A stylish formal pump', 'Leather')
+    VALUES (?, 'TEST-001', 'Elegant Pump', 89.99, 'FORMAL', ?, ?, ?, ?, 1, 'A stylish formal pump', 'Lined')
   `).run(SKU_ID_1, VENDOR_ID, brandId, colorId, categoryId);
 
   db.prepare(`
@@ -178,10 +178,18 @@ describe('GET /api/public/products/:productId', () => {
     expect(res.body.error.code).toBe('NOT_FOUND');
   });
 
-  it('returns 400 for invalid UUID', async () => {
-    const res = await request(app).get('/api/public/products/not-a-uuid');
+  it('returns 400 for malformed product id (whitespace, too long)', async () => {
+    // Route now accepts any string id (UUID for SQLite source, opaque SKU code
+    // for the RICS live-read source), so it only rejects obviously malformed input.
+    const res = await request(app).get('/api/public/products/' + encodeURIComponent('a'.repeat(65)));
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe('INVALID_ID');
+  });
+
+  it('returns 404 for a well-formed non-UUID id not in the SQLite source', async () => {
+    const res = await request(app).get('/api/public/products/not-a-uuid');
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe('NOT_FOUND');
   });
 });
 

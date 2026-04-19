@@ -112,6 +112,14 @@ router.post('/:skuId/inventory/adjustments', validate(stockAdjustmentSchema), (r
  *       - name: pageSize
  *         in: query
  *         schema: { type: integer, default: 50, maximum: 200 }
+ *       - name: sort
+ *         in: query
+ *         schema: { type: string, enum: [createdAt, adjustment], default: createdAt }
+ *         description: Field to sort by
+ *       - name: order
+ *         in: query
+ *         schema: { type: string, enum: [asc, desc], default: desc }
+ *         description: Sort direction
  *     responses:
  *       200:
  *         description: Paginated audit log entries
@@ -120,7 +128,7 @@ router.post('/:skuId/inventory/adjustments', validate(stockAdjustmentSchema), (r
  */
 router.get('/:skuId/inventory/audit-log', validateQuery(auditLogQuerySchema), (req: Request, res: Response): void => {
   const skuId = req.params.skuId as string;
-  const params = (req as any).validatedQuery as { page: number; pageSize: number };
+  const params = (req as any).validatedQuery as { page: number; pageSize: number; sort?: string; order?: 'asc' | 'desc' };
   const result = inventoryService.getAuditLog(skuId, params);
   if (!result) {
     res.status(404).json({ error: { code: 'NOT_FOUND', message: 'SKU not found.' } });

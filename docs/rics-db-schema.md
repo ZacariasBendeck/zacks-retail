@@ -1,6 +1,6 @@
 # RICS MDB Schema (auto-generated)
 
-_Generated at 2026-04-17T22:19:48.367Z by `pnpm --filter @benlow-rics/api rics:discover`._
+_Generated at 2026-04-19T02:34:13.309Z by `pnpm --filter @benlow-rics/api rics:discover`._
 
 This file enumerates user tables and columns in the RICS Access databases that the storefront adapter reads from. **Do not edit the per-MDB sections by hand** — re-run the script instead. Mapping decisions (RICS column → storefront field) go under the _Mappings_ heading at the bottom and are hand-maintained.
 
@@ -2258,6 +2258,58 @@ _Purchase order detail — on-order for Stock Status_
 
 </details>
 
+## RIGROUP.MDB
+_Group master (sales-reporting criteria)_
+
+**Tables (3):** `GroupCodes`, `Keywords`, `MarketingCode`
+
+### `GroupCodes`
+
+| # | column | type | nullable |
+|---|--------|------|----------|
+| 1 | `Code` | WCHAR | yes |
+| 2 | `Desc` | WCHAR | yes |
+| 3 | `DateLastChanged` | DATE | yes |
+
+<details><summary>sample row</summary>
+
+| column | value |
+|--------|-------|
+| `Code` | BAS |
+| `Desc` | Zap Bass Hombre Dama |
+| `DateLastChanged` | /Date(1040947753000)/ |
+
+</details>
+
+### `Keywords`
+
+| # | column | type | nullable |
+|---|--------|------|----------|
+| 1 | `Keyword` | WCHAR | yes |
+| 2 | `Desc` | WCHAR | yes |
+| 3 | `DateLastChanged` | DATE | yes |
+
+<details><summary>sample row</summary>
+
+| column | value |
+|--------|-------|
+| `Keyword` | 01AG25 |
+| `Desc` | repartido 01agosto |
+| `DateLastChanged` | /Date(1753887266000)/ |
+
+</details>
+
+### `MarketingCode`
+
+| # | column | type | nullable |
+|---|--------|------|----------|
+| 1 | `Code` | WCHAR | yes |
+| 2 | `Description` | WCHAR | yes |
+| 3 | `Date` | DATE | yes |
+| 4 | `Pieces` | INTEGER | yes |
+| 5 | `Cost` | CURRENCY | yes |
+| 6 | `DateLastChanged` | DATE | yes |
+
 ---
 
 ## Mappings (hand-maintained)
@@ -2272,59 +2324,3 @@ Record here which RICS column feeds which storefront field, along with any trans
 
 ### `Facets`
 - _TBD_
-
-### Sales Reporting
-
-Column names pinned from the discovery run above, consumed by `apps/api/src/services/salesReporting/ricsSalesReportAdapter.ts`.
-
-**Ticket join key** — 6-column composite, identical on `TicketHeader` and `TicketDetail`: `(UserID, BatchDate, Terminal, Store, Ticket, RealDate)`. `TicketTender` uses the same key.
-
-**TicketHeader filters** (all reports):
-- `TransType` — `1` = normal sale (filter on this).
-- `Voided` — BOOLEAN, exclude `true`.
-- `Posted` — WCHAR (`'Y'` / `'N'`); only filtered on for the legacy Sales-by-Day contract. Other reports default to Live mode (no Posted filter).
-
-**TicketDetail columns used**:
-- `SKU` (WCHAR) — joins to RIINVMAS.
-- `Column`, `Row` (WCHAR) — size-grid coordinates; the "shoe" SizeType example: Column='090' (width), Row='M' (size code). Used as-is in reports; RISIZE join only required when rendering the grid header.
-- `Qty` (SMALLINT, note: `Qty` not `Quantity`).
-- `Price`, `RealPrice`, `Extension` (CURRENCY).
-- `Perks` (CURRENCY) — salesperson perks/spiff paid.
-- `Category` (SMALLINT), `Vendor` (WCHAR) — denormalized from RIINVMAS onto the line; reports can group without joining.
-- `Cost` (CURRENCY) — line COGS; denormalized.
-- `SalesPerson` (WCHAR) — lives on **TicketDetail**, not TicketHeader. Joins to `RISLSPSN.Salespeople.Code`.
-- `ReturnCode` (SMALLINT) — nonzero means the line is a return (driven by return reasons setup).
-- `DiscPct`, `DiscAmt` (CURRENCY) — line discount.
-- `Prices_01..04` (CURRENCY) — the 4-slot price master at sale time (List / Retail / MD1 / MD2). For markdown derivation: Markdown ≈ `(Prices_02 - RealPrice) * Qty` when pricing slot is Retail; confirm per-line with samples.
-- `Tax_01..03` / `TaxAmt_01..03` — per-tax-bucket flags + amounts; consumed by Sales Tax Recap (deferred past Phase 1+2).
-
-**TicketHeader columns used**:
-- `Cashier` (WCHAR) — distinct from SalesPerson (which is per line). Joins to `RISLSPSN.Salespeople.Code`.
-- `MarketingCode` (WCHAR) — promotion-code-analysis key.
-- `Account` (WCHAR) — AR customer account for house charges.
-
-**StoreMaster (RISTORE.MDB)**:
-- `Number` (SMALLINT) PK, `Desc` (WCHAR) name.
-- `Tender_01..12` — tender type labels per store (e.g. `'Efectivo L'`, `'House Charge'`, `'Gift Cert.'`). Tender type dimension is NOT a separate table — pivot off this when consuming `TicketTender.Tender` (SMALLINT 1..12).
-- `State` — used by Sales Tax Recap state rollup.
-
-**Salespeople (RISLSPSN.MDB)**:
-- Table name: `Salespeople` (plural).
-- `Code` (WCHAR) PK — matches `TicketDetail.SalesPerson` and `TicketHeader.Cashier`.
-- `Name` (WCHAR) — display.
-- `Commission` (REAL), `Comm Method` (WCHAR).
-
-**Purchase Detail (RIPODET.MDB → `Purchase Detail`)** — used by Stock Status On-Order:
-- `PO Number`, `SKU`, `Row`, `Segment`.
-- `Ordered_01..18`, `Received_01..18` (SMALLINT per column in size grid). Open qty = `Ordered_NN - Received_NN`.
-- **No `Store` column** on Purchase Detail — to scope on-order by store, join via `RIPOMAS` (not yet enumerated; defer until Stock Status implementation needs per-store split).
-- **No expected-ship date** on Purchase Detail — At-Once vs. Future classification requires `RIPOMAS` header date. For v1, report total open on-order without the A/O split.
-
-**TicketTender (RITRNSSV.TicketTender)** — deferred past Phase 1+2:
-- Same 6-col composite key + `Tender` (SMALLINT 1..12), `Amount`, `AltAmount`.
-- Used by Sales Tax Recap and any tender-breakdown report.
-
-**Known gaps (reports that need columns not on the ticket)**:
-- Markdown amounts: no explicit column on TicketDetail — derive as `(Prices_02 - RealPrice) * Qty`, OR use `OvsAmt` / `ThisOvsAmt` (unclear semantics; verify with fixture data in Phase 2).
-- First/Last-received dates (Stock Status aging): must come from `RIINVQUA` or `RIINVHIS` — not on the ticket.
-- On-hand for Stock Status: sourced from `RIINVQUA.InventoryQuantity` (see earlier section).

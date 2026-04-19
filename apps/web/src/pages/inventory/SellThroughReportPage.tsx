@@ -1,5 +1,6 @@
 import { useState, useCallback, useMemo } from 'react'
 import {
+  Alert,
   Card,
   Row,
   Col,
@@ -27,11 +28,18 @@ import {
   useSellThroughByDepartment,
   useSellThroughDrillDown,
 } from '../../hooks/useReports'
-import { getSellThroughCsvUrl } from '../../services/reportApi'
+import { getSellThroughCsvUrl, getSellThroughXlsxUrl } from '../../services/reportApi'
+import { validateDomainFilterContract } from '../../services/domainFilterContract'
+import ServerDataTable, {
+  type ServerQueryChange,
+  type ServerTableColumn,
+} from '../../components/ServerDataTable'
+import { getErrorMessage } from '../../utils/errors'
 import type {
   SellThroughDepartmentSummary,
   SellThroughCategorySummary,
   SellThroughDetail,
+  ReportDetailQuery,
 } from '../../services/reportApi'
 import type { Department } from '../../types/sku'
 
@@ -44,6 +52,13 @@ const DEPARTMENT_COLORS: Record<Department, string> = {
   SANDALIAS: '#fa8c16',
   BOOTS: '#fa541c',
   COMFORT: '#13c2c2',
+}
+
+const DEFAULT_DETAIL_QUERY: ReportDetailQuery = {
+  page: 1,
+  pageSize: 50,
+  sort: 'sellThroughPct',
+  order: 'asc',
 }
 
 function renderSellThroughPct(v: number) {
@@ -59,17 +74,36 @@ export default function SellThroughReportPage() {
   const [dateRange, setDateRange] = useState<[string, string] | null>(null)
   const [selectedDepartment, setSelectedDepartment] = useState<string | null>(null)
   const [selectedCategory, setSelectedCategory] = useState<number | null>(null)
+  const [detailQuery, setDetailQuery] = useState<ReportDetailQuery>(DEFAULT_DETAIL_QUERY)
 
-  const { data: deptData, isLoading: deptLoading } = useSellThroughByDepartment(
+  const { data: deptData, isLoading: deptLoading, error: deptError } = useSellThroughByDepartment(
     dateRange?.[0],
     dateRange?.[1],
   )
-  const { data: drillData, isLoading: drillLoading } = useSellThroughDrillDown(
+  const { data: drillData, isLoading: drillLoading, error: drillError } = useSellThroughDrillDown(
     selectedDepartment ?? '',
     dateRange?.[0],
     dateRange?.[1],
     selectedCategory ?? undefined,
+    detailQuery,
   )
+
+  const filterValidation = useMemo(
+    () =>
+      validateDomainFilterContract(
+        { department: selectedDepartment, category: selectedCategory },
+        { requireDepartmentForCategory: true },
+      ),
+    [selectedCategory, selectedDepartment],
+  )
+
+  const reportErrorMessage = selectedDepartment
+    ? drillError
+      ? getErrorMessage(drillError, 'Unable to load sell-through drill-down report.')
+      : null
+    : deptError
+      ? getErrorMessage(deptError, 'Unable to load sell-through department summary.')
+      : null
 
   const handleDateChange = useCallback(
     (_: unknown, dateStrings: [string, string]) => {
@@ -77,8 +111,10 @@ export default function SellThroughReportPage() {
         setDateRange(dateStrings)
         setSelectedDepartment(null)
         setSelectedCategory(null)
+        setDetailQuery(DEFAULT_DETAIL_QUERY)
       } else {
         setDateRange(null)
+        setDetailQuery(DEFAULT_DETAIL_QUERY)
       }
     },
     [],
@@ -87,22 +123,46 @@ export default function SellThroughReportPage() {
   const handleDepartmentClick = useCallback((dept: string) => {
     setSelectedDepartment(dept)
     setSelectedCategory(null)
+    setDetailQuery(DEFAULT_DETAIL_QUERY)
   }, [])
 
   const handleCategoryClick = useCallback((cat: number) => {
     setSelectedCategory(cat)
+    setDetailQuery((prev) => ({ ...prev, page: 1 }))
   }, [])
 
   const handleBack = useCallback(() => {
     if (selectedCategory != null) {
       setSelectedCategory(null)
+      setDetailQuery((prev) => ({ ...prev, page: 1 }))
     } else {
       setSelectedDepartment(null)
+      setDetailQuery(DEFAULT_DETAIL_QUERY)
     }
   }, [selectedCategory])
 
+  const handleDetailQueryChange = useCallback((query: ServerQueryChange) => {
+    setDetailQuery((prev) => ({
+      ...prev,
+      page: query.page,
+      pageSize: query.pageSize,
+      sort: query.sort ?? prev.sort,
+      order: query.order ?? prev.order,
+    }))
+  }, [])
+
   const handleExportCsv = useCallback(() => {
     const url = getSellThroughCsvUrl(
+      dateRange?.[0],
+      dateRange?.[1],
+      selectedDepartment ?? undefined,
+      selectedCategory ?? undefined,
+    )
+    window.open(url, '_blank')
+  }, [dateRange, selectedDepartment, selectedCategory])
+
+  const handleExportXlsx = useCallback(() => {
+    const url = getSellThroughXlsxUrl(
       dateRange?.[0],
       dateRange?.[1],
       selectedDepartment ?? undefined,
@@ -130,12 +190,16 @@ export default function SellThroughReportPage() {
       render: (dept: string) => (
         <Tag color={DEPARTMENT_COLORS[dept as Department]}>{dept}</Tag>
       ),
+      sorter: (a: SellThroughDepartmentSummary, b: SellThroughDepartmentSummary) =>
+        a.department.localeCompare(b.department),
     },
     {
       title: 'Styles',
       dataIndex: 'totalStyles',
       key: 'totalStyles',
       align: 'right' as const,
+      sorter: (a: SellThroughDepartmentSummary, b: SellThroughDepartmentSummary) =>
+        a.totalStyles - b.totalStyles,
     },
     {
       title: 'Units Sold',
@@ -150,6 +214,8 @@ export default function SellThroughReportPage() {
       dataIndex: 'totalUnitsReceived',
       key: 'totalUnitsReceived',
       align: 'right' as const,
+      sorter: (a: SellThroughDepartmentSummary, b: SellThroughDepartmentSummary) =>
+        a.totalUnitsReceived - b.totalUnitsReceived,
     },
     {
       title: 'Sell-Through %',
@@ -177,24 +243,32 @@ export default function SellThroughReportPage() {
       title: 'Category',
       dataIndex: 'category',
       key: 'category',
+      sorter: (a: SellThroughCategorySummary, b: SellThroughCategorySummary) =>
+        a.category - b.category,
     },
     {
       title: 'Styles',
       dataIndex: 'totalStyles',
       key: 'totalStyles',
       align: 'right' as const,
+      sorter: (a: SellThroughCategorySummary, b: SellThroughCategorySummary) =>
+        a.totalStyles - b.totalStyles,
     },
     {
       title: 'Units Sold',
       dataIndex: 'totalUnitsSold',
       key: 'totalUnitsSold',
       align: 'right' as const,
+      sorter: (a: SellThroughCategorySummary, b: SellThroughCategorySummary) =>
+        a.totalUnitsSold - b.totalUnitsSold,
     },
     {
       title: 'Units Received',
       dataIndex: 'totalUnitsReceived',
       key: 'totalUnitsReceived',
       align: 'right' as const,
+      sorter: (a: SellThroughCategorySummary, b: SellThroughCategorySummary) =>
+        a.totalUnitsReceived - b.totalUnitsReceived,
     },
     {
       title: 'Sell-Through %',
@@ -217,13 +291,51 @@ export default function SellThroughReportPage() {
     },
   ]
 
-  const detailColumns = [
-    { title: 'SKU Code', dataIndex: 'skuCode', key: 'skuCode', width: 200, ellipsis: true },
-    { title: 'Brand', dataIndex: 'brand', key: 'brand', width: 120 },
-    { title: 'Style', dataIndex: 'style', key: 'style', width: 100 },
+  const sortOrder = useCallback(
+    (field: string) => {
+      if (detailQuery.sort !== field) return undefined
+      return detailQuery.order === 'asc' ? ('ascend' as const) : ('descend' as const)
+    },
+    [detailQuery.order, detailQuery.sort],
+  )
+
+  const detailColumns: ServerTableColumn<SellThroughDetail>[] = [
+    {
+      title: 'SKU Code',
+      dataIndex: 'skuCode',
+      key: 'skuCode',
+      width: 200,
+      ellipsis: true,
+      sorter: true,
+      sortOrder: sortOrder('skuCode'),
+    },
+    {
+      title: 'Brand',
+      dataIndex: 'brand',
+      key: 'brand',
+      width: 120,
+      sorter: true,
+      sortOrder: sortOrder('brand'),
+    },
+    {
+      title: 'Style',
+      dataIndex: 'style',
+      key: 'style',
+      width: 100,
+      sorter: true,
+      sortOrder: sortOrder('style'),
+    },
     { title: 'Color', dataIndex: 'color', key: 'color', width: 100 },
     { title: 'Size', dataIndex: 'size', key: 'size', width: 70 },
     { title: 'Category', dataIndex: 'category', key: 'category', width: 90 },
+    {
+      title: 'Department',
+      dataIndex: 'department',
+      key: 'department',
+      width: 120,
+      sorter: true,
+      sortOrder: sortOrder('department'),
+    },
     {
       title: 'Price',
       dataIndex: 'price',
@@ -231,6 +343,8 @@ export default function SellThroughReportPage() {
       width: 90,
       align: 'right' as const,
       render: (v: number) => `$${v.toFixed(2)}`,
+      sorter: true,
+      sortOrder: sortOrder('price'),
     },
     {
       title: 'Units Sold',
@@ -238,6 +352,8 @@ export default function SellThroughReportPage() {
       key: 'unitsSold',
       width: 100,
       align: 'right' as const,
+      sorter: true,
+      sortOrder: sortOrder('unitsSold'),
     },
     {
       title: 'Units Received',
@@ -245,6 +361,8 @@ export default function SellThroughReportPage() {
       key: 'unitsReceived',
       width: 120,
       align: 'right' as const,
+      sorter: true,
+      sortOrder: sortOrder('unitsReceived'),
     },
     {
       title: 'Sell-Through %',
@@ -253,9 +371,8 @@ export default function SellThroughReportPage() {
       width: 120,
       align: 'right' as const,
       render: renderSellThroughPct,
-      sorter: (a: SellThroughDetail, b: SellThroughDetail) =>
-        a.sellThroughPct - b.sellThroughPct,
-      defaultSortOrder: 'ascend' as const,
+      sorter: true,
+      sortOrder: sortOrder('sellThroughPct'),
     },
   ]
 
@@ -274,6 +391,22 @@ export default function SellThroughReportPage() {
 
   return (
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+      {filterValidation.errors.length > 0 && (
+        <Alert
+          type="error"
+          showIcon
+          message="Invalid report filter selection"
+          description={filterValidation.errors.join(' ')}
+        />
+      )}
+      {reportErrorMessage && (
+        <Alert
+          type="error"
+          showIcon
+          message="Sell-through report request failed"
+          description={reportErrorMessage}
+        />
+      )}
       {/* Header */}
       <Card size="small">
         <Row align="middle" justify="space-between">
@@ -297,6 +430,9 @@ export default function SellThroughReportPage() {
               />
               <Button icon={<DownloadOutlined />} onClick={handleExportCsv}>
                 Export CSV
+              </Button>
+              <Button icon={<DownloadOutlined />} onClick={handleExportXlsx}>
+                Export XLSX
               </Button>
             </Space>
           </Col>
@@ -412,17 +548,16 @@ export default function SellThroughReportPage() {
                 : `All Items in ${selectedDepartment}`
             }
           >
-            <Table<SellThroughDetail>
-              dataSource={drillData?.details}
+            <ServerDataTable<SellThroughDetail>
+              title={<Typography.Text strong>Detail Rows</Typography.Text>}
+              data={drillData?.details}
               columns={detailColumns}
               rowKey="skuId"
-              size="small"
-              scroll={{ x: 1210 }}
-              pagination={{
-                pageSize: 50,
-                showSizeChanger: true,
-                pageSizeOptions: ['25', '50', '100'],
-              }}
+              pagination={drillData?.pagination}
+              onQueryChange={handleDetailQueryChange}
+              expectedTotalRows={drillData?.pagination.totalItems}
+              exportFileName={`sell-through-details-${new Date().toISOString().slice(0, 10)}`}
+              scrollX={1360}
             />
           </Card>
         </>

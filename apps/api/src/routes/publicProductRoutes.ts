@@ -1,17 +1,21 @@
 import { Router, Request, Response, IRouter } from 'express';
 import { z } from 'zod';
 import { validateQuery } from '../middleware/validation';
-import * as publicProductService from '../services/publicProductService';
-import { ProductListParams, FacetFilterParams } from '../services/publicProductService';
+import * as publicProductService from '../services/publicProductFacade';
+import type { ProductListParams, FacetFilterParams } from '../services/publicProductService';
 
 const router: IRouter = Router();
 
-const DEPARTMENTS = ['FORMAL', 'CASUAL', 'FIESTA', 'SANDALIAS', 'BOOTS', 'COMFORT'] as const;
+// Department filter accepts any reasonable string — the actual allowed values
+// come from the live RICS `Departments` table (surfaced via the facets
+// endpoint), which varies per customer. Semantic validation happens downstream
+// in the adapter (unknown names produce an empty result set).
+const departmentFilter = z.string().trim().min(1).max(64).optional();
 
 // ── Validation schemas ─────────────────────────────────────────────
 
 const facetQuerySchema = z.object({
-  department: z.enum(DEPARTMENTS).optional(),
+  department: departmentFilter,
   categoryId: z.coerce.number().int().positive().optional(),
   brandId: z.coerce.number().int().positive().optional(),
   colorId: z.coerce.number().int().positive().optional(),
@@ -28,7 +32,7 @@ const productListQuerySchema = z.object({
   colorId: z.coerce.number().int().positive().optional(),
   sizeLabel: z.string().optional(),
   categoryId: z.coerce.number().int().positive().optional(),
-  department: z.enum(DEPARTMENTS).optional(),
+  department: departmentFilter,
   minPrice: z.coerce.number().nonnegative().optional(),
   maxPrice: z.coerce.number().positive().optional(),
   materialId: z.coerce.number().int().positive().optional(),
@@ -127,9 +131,9 @@ const productListQuerySchema = z.object({
  *                     min: { type: number }
  *                     max: { type: number }
  */
-router.get('/facets', validateQuery(facetQuerySchema), (req: Request, res: Response): void => {
+router.get('/facets', validateQuery(facetQuerySchema), async (req: Request, res: Response): Promise<void> => {
   const filters = (req as any).validatedQuery as FacetFilterParams;
-  const facets = publicProductService.getProductFacets(filters);
+  const facets = await publicProductService.getProductFacets(filters);
   res.json(facets);
 });
 
@@ -227,9 +231,9 @@ router.get('/facets', validateQuery(facetQuerySchema), (req: Request, res: Respo
  *       400:
  *         description: Validation error
  */
-router.get('/', validateQuery(productListQuerySchema), (req: Request, res: Response): void => {
+router.get('/', validateQuery(productListQuerySchema), async (req: Request, res: Response): Promise<void> => {
   const params = (req as any).validatedQuery as ProductListParams;
-  const result = publicProductService.listProducts(params);
+  const result = await publicProductService.listProducts(params);
   res.json(result);
 });
 
@@ -291,16 +295,17 @@ router.get('/', validateQuery(productListQuerySchema), (req: Request, res: Respo
  *       404:
  *         description: Product not found
  */
-router.get('/:productId', (req: Request, res: Response): void => {
-  const productId = req.params.productId as string;
+router.get('/:productId', async (req: Request, res: Response): Promise<void> => {
+  const productId = (req.params.productId as string || '').trim();
 
-  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  if (!uuidRegex.test(productId)) {
-    res.status(400).json({ error: { code: 'INVALID_ID', message: 'productId must be a valid UUID.' } });
+  // Accept both UUIDs (SQLite source) and opaque RICS SKU codes (live source).
+  // Only guard against obviously malformed input.
+  if (!productId || productId.length > 64 || /[\r\n\t]/.test(productId)) {
+    res.status(400).json({ error: { code: 'INVALID_ID', message: 'productId is missing or malformed.' } });
     return;
   }
 
-  const product = publicProductService.getProductById(productId);
+  const product = await publicProductService.getProductById(productId);
   if (!product) {
     res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Product not found.' } });
     return;

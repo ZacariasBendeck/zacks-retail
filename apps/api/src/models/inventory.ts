@@ -154,6 +154,73 @@ export interface CursorPaginationEnvelope<T> {
   appliedFilters: Record<string, string | number | boolean>;
 }
 
+// ── Movement timeline (ZAI-357) ──────────────────────────────────
+
+export type MovementType = 'sale' | 'po_receipt' | 'transfer_in' | 'transfer_out' | 'adjustment';
+
+export const MOVEMENT_TYPES: readonly MovementType[] = [
+  'sale', 'po_receipt', 'transfer_in', 'transfer_out', 'adjustment',
+] as const;
+
+export type MovementTimelineSortField = 'movementAt' | 'quantityDelta';
+
+export const MOVEMENT_TIMELINE_SORT_ALLOWLIST: readonly MovementTimelineSortField[] = [
+  'movementAt', 'quantityDelta',
+] as const;
+
+export interface MovementTimelineParams {
+  limit: number;
+  cursor?: string;
+  sort: MovementTimelineSortField;
+  order: 'asc' | 'desc';
+  skuId?: string;
+  locationId?: string;
+  movementType?: MovementType;
+  fromDate?: string;
+  toDate?: string;
+}
+
+export interface MovementTimelineItem {
+  id: string;
+  skuId: string;
+  skuCode: string | null;
+  locationId: string;
+  locationCode: string | null;
+  movementType: MovementType;
+  quantityDelta: number;
+  unitCostSnapshot: number | null;
+  movementAt: string;
+  createdAt: string;
+}
+
+// ── Movement reconciliation (ZAI-357) ────────────────────────────
+
+export type ReconciliationSortField = 'expectedQuantityDelta' | 'lastMovementAt' | 'movementRowCount';
+
+export const RECONCILIATION_SORT_ALLOWLIST: readonly ReconciliationSortField[] = [
+  'expectedQuantityDelta', 'lastMovementAt', 'movementRowCount',
+] as const;
+
+export interface ReconciliationParams {
+  limit: number;
+  cursor?: string;
+  sort: ReconciliationSortField;
+  order: 'asc' | 'desc';
+  skuId?: string;
+  locationId?: string;
+}
+
+export interface ReconciliationItem {
+  skuId: string;
+  skuCode: string | null;
+  locationId: string;
+  locationCode: string | null;
+  expectedQuantityDelta: number;
+  movementRowCount: number;
+  firstMovementAt: string;
+  lastMovementAt: string;
+}
+
 export function rowToAuditLog(row: AuditLogRow): AuditLogEntry {
   return {
     id: row.id,

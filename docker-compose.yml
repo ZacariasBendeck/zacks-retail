@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: zacks-retail-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: zacks
+      POSTGRES_PASSWORD: zacks_dev
+      POSTGRES_DB: zacks_retail
+    ports:
+      - "5433:5432"
+    volumes:
+      - zacks_retail_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zacks -d zacks_retail"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  zacks_retail_pgdata:

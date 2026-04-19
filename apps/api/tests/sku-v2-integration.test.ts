@@ -205,14 +205,59 @@ describe('SKU v2: auto-derivation', () => {
     expect(updateRes.body.colorFamilyId).toBe(expectedFamilyId);
   });
 
-  it('sets colorFamilyId to null when colorId is null', async () => {
+  it('rejects setting colorId to null (natural identity trigger)', async () => {
     const payload = buildValidV2Sku();
     const createRes = await request(app).post('/api/v1/skus').send(payload);
     const skuId = createRes.body.id;
 
     const updateRes = await request(app).patch(`/api/v1/skus/${skuId}`).send({ colorId: null });
-    expect(updateRes.status).toBe(200);
-    expect(updateRes.body.colorFamilyId).toBeNull();
+    expect(updateRes.status).toBe(500);
+  });
+});
+
+describe('SKU v2: canonical style-color + heel enum exposure', () => {
+  it('returns styleColor mapping and canonical heel codes in SKU detail', async () => {
+    const payload = buildValidV2Sku({
+      heelTypeCode: 'STILETTO',
+      heelMaterialTypeCode: 'LINED',
+    });
+    const createRes = await request(app).post('/api/v1/skus').send(payload);
+    expect(createRes.status).toBe(201);
+
+    const getRes = await request(app).get(`/api/v1/skus/${createRes.body.id}`);
+    expect(getRes.status).toBe(200);
+    expect(getRes.body.heelTypeCode).toBe('STILETTO');
+    expect(getRes.body.heelMaterialTypeCode).toBe('LINED');
+    expect(getRes.body.styleColor).toBeTruthy();
+    expect(getRes.body.styleColor.styleColorId).toBeDefined();
+    expect(getRes.body.styleColor.brandId).toBe(payload.brandId);
+    expect(getRes.body.styleColor.colorId).toBe(payload.colorId);
+  });
+
+  it('lists style colors via dedicated endpoint', async () => {
+    const payload = buildValidV2Sku({
+      style: 'Contract Exposure',
+      heelTypeCode: 'CHUNKY',
+      heelMaterialTypeCode: 'PLASTIC',
+    });
+    await request(app).post('/api/v1/skus').send(payload);
+
+    const res = await request(app).get('/api/v1/skus/style-colors?department=FORMAL&active=true');
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body)).toBe(true);
+    expect(res.body.length).toBeGreaterThan(0);
+    expect(res.body[0]).toHaveProperty('styleColorId');
+  });
+
+  it('returns canonical heel reference dictionaries from reference/all', async () => {
+    const refRes = await request(app).get('/api/v1/skus/reference/all');
+    expect(refRes.status).toBe(200);
+    expect(refRes.body['heel-types']).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: 'STILETTO' })])
+    );
+    expect(refRes.body['heel-material-types']).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: 'LINED' })])
+    );
   });
 });
 
@@ -335,11 +380,10 @@ describe('SKU v2: SKU code generation', () => {
     expect(res.body.skuCode).toContain('BK');
   });
 
-  it('handles null brand/color gracefully in code generation', async () => {
+  it('rejects null brand/color (natural identity trigger)', async () => {
     const payload = buildValidV2Sku({ brandId: null, colorId: null });
     const res = await request(app).post('/api/v1/skus').send(payload);
-    expect(res.status).toBe(201);
-    expect(res.body.skuCode).toBeDefined();
+    expect(res.status).toBe(500);
   });
 
   it('allows user-defined SKU code', async () => {

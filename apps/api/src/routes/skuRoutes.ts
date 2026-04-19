@@ -53,7 +53,18 @@ router.post('/', validate(createSkuSchema), (req: Request, res: Response): void 
     res.status(201).json(sku);
   } catch (err: any) {
     if (err.name === 'ValidationError' && err.status) {
-      res.status(err.status).json({ error: { code: 'INVALID_FK', message: err.message } });
+      const errorPayload: {
+        code: string;
+        message: string;
+        details?: Record<string, string>[];
+      } = {
+        code: typeof err.code === 'string' ? err.code : 'INVALID_FK',
+        message: err.message,
+      };
+      if (Array.isArray(err.details) && err.details.length > 0) {
+        errorPayload.details = err.details;
+      }
+      res.status(err.status).json({ error: errorPayload });
       return;
     }
     if (err.message?.includes('UNIQUE constraint failed') && err.message?.includes('barcode')) {
@@ -61,7 +72,7 @@ router.post('/', validate(createSkuSchema), (req: Request, res: Response): void 
       return;
     }
     if (err.message?.includes('FOREIGN KEY constraint failed')) {
-      res.status(400).json({ error: { code: 'INVALID_VENDOR', message: 'The specified vendorId does not exist.' } });
+      res.status(400).json({ error: { code: 'INVALID_REFERENCE', message: 'One or more referenced records do not exist.' } });
       return;
     }
     if (err.message?.includes('NOT NULL constraint failed')) {
@@ -218,6 +229,54 @@ router.get('/reference/:tableName', (req: Request, res: Response): void => {
 });
 
 /**
+ * Canonical StyleColor catalog list
+ */
+router.get('/style-colors', (req: Request, res: Response): void => {
+  const brandId = req.query.brandId ? parseInt(req.query.brandId as string, 10) : undefined;
+  const colorId = req.query.colorId ? parseInt(req.query.colorId as string, 10) : undefined;
+  const department = req.query.department as SkuListParams['department'] | undefined;
+  const activeRaw = req.query.active as string | undefined;
+  const active = activeRaw === undefined ? undefined : activeRaw === 'true';
+
+  if (brandId !== undefined && (isNaN(brandId) || brandId < 1)) {
+    res.status(400).json({ error: { code: 'INVALID_FILTER', message: 'brandId must be a positive integer.' } });
+    return;
+  }
+  if (colorId !== undefined && (isNaN(colorId) || colorId < 1)) {
+    res.status(400).json({ error: { code: 'INVALID_FILTER', message: 'colorId must be a positive integer.' } });
+    return;
+  }
+
+  const rows = skuService.listStyleColors({ brandId, colorId, department, active });
+  res.json(rows);
+});
+
+/**
+ * Canonical StyleColor linkage for one SKU
+ */
+router.get('/:skuId/style-color', (req: Request, res: Response): void => {
+  const skuId = req.params.skuId as string;
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!uuidRegex.test(skuId)) {
+    res.status(400).json({ error: { code: 'INVALID_ID', message: 'skuId must be a valid UUID.' } });
+    return;
+  }
+
+  const sku = skuService.getSkuById(skuId);
+  if (!sku) {
+    res.status(404).json({ error: { code: 'NOT_FOUND', message: 'SKU not found.' } });
+    return;
+  }
+
+  const styleColor = skuService.getSkuStyleColorLink(skuId);
+  if (!styleColor) {
+    res.status(404).json({ error: { code: 'STYLE_COLOR_NOT_LINKED', message: 'No StyleColor mapping exists for this SKU.' } });
+    return;
+  }
+  res.json(styleColor);
+});
+
+/**
  * @openapi
  * /api/v1/skus:
  *   get:
@@ -356,11 +415,26 @@ router.patch('/:skuId', validate(updateSkuSchema), (req: Request, res: Response)
     res.json(sku);
   } catch (err: any) {
     if (err.name === 'ValidationError' && err.status) {
-      res.status(err.status).json({ error: { code: 'INVALID_FK', message: err.message } });
+      const errorPayload: {
+        code: string;
+        message: string;
+        details?: Record<string, string>[];
+      } = {
+        code: typeof err.code === 'string' ? err.code : 'INVALID_FK',
+        message: err.message,
+      };
+      if (Array.isArray(err.details) && err.details.length > 0) {
+        errorPayload.details = err.details;
+      }
+      res.status(err.status).json({ error: errorPayload });
       return;
     }
     if (err.message?.includes('UNIQUE constraint failed') && err.message?.includes('barcode')) {
       res.status(409).json({ error: { code: 'DUPLICATE_BARCODE', message: 'A SKU with this barcode already exists.' } });
+      return;
+    }
+    if (err.message?.includes('FOREIGN KEY constraint failed')) {
+      res.status(400).json({ error: { code: 'INVALID_REFERENCE', message: 'One or more referenced records do not exist.' } });
       return;
     }
     if (err.message?.includes('NOT NULL constraint failed')) {

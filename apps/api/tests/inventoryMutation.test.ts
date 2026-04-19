@@ -20,7 +20,7 @@ let skuId: string;
 
 beforeEach(async () => {
   resetDb();
-  const vendor = await request(app).post('/api/v1/vendors').send({ name: 'Mutation Test Vendor' });
+  const vendor = await request(app).post('/api/v1/vendors').send({ name: 'Mutation Test Vendor', contactEmail: 'mutation@test.com', paymentTerms: 'NET_30', leadTimeDays: 14 });
   vendorId = vendor.body.id;
   const catId = getCategoryId(560);
   const brandId = getRefId('ref_brands');
@@ -385,6 +385,209 @@ describe('GET /api/v1/inventory/on-hand/departments (AC6)', () => {
     const formal = res.body.departments.find((d: any) => d.department === 'FORMAL');
     expect(formal.totalUnitsOnHand).toBe(20);
     expect(formal.totalSkus).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// ── Optimistic Concurrency (ZAI-296 AC3) ────────────────────────
+
+describe('Optimistic concurrency — version check (ZAI-296 AC3)', () => {
+  it('returns version in mutation response', async () => {
+    const res = await request(app).post('/api/v1/inventory/mutations/receive').send({
+      skuId,
+      quantityDelta: 10,
+      reasonCode: 'PO Receipt',
+      categoryCode: 560,
+      sourceDocumentRef: { type: 'PURCHASE_ORDER_RECEIPT', id: 'PO-VER-001' },
+      actorId: uuidv4(),
+      idempotencyKey: uuidv4(),
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.body.version).toBe(2); // initial version 1 → incremented to 2
+  });
+
+  it('increments version on each successful mutation', async () => {
+    const first = await request(app).post('/api/v1/inventory/mutations/receive').send({
+      skuId,
+      quantityDelta: 10,
+      reasonCode: 'First receive',
+      categoryCode: 560,
+      sourceDocumentRef: { type: 'PURCHASE_ORDER_RECEIPT', id: 'PO-VER-002a' },
+      actorId: uuidv4(),
+      idempotencyKey: uuidv4(),
+    });
+    expect(first.body.version).toBe(2);
+
+    const second = await request(app).post('/api/v1/inventory/mutations/receive').send({
+      skuId,
+      quantityDelta: 5,
+      reasonCode: 'Second receive',
+      categoryCode: 560,
+      sourceDocumentRef: { type: 'PURCHASE_ORDER_RECEIPT', id: 'PO-VER-002b' },
+      actorId: uuidv4(),
+      idempotencyKey: uuidv4(),
+    });
+    expect(second.body.version).toBe(3);
+  });
+
+  it('succeeds when expectedVersion matches current version', async () => {
+    // First mutation to create inventory row (version becomes 2)
+    const first = await request(app).post('/api/v1/inventory/mutations/receive').send({
+      skuId,
+      quantityDelta: 20,
+      reasonCode: 'Setup',
+      categoryCode: 560,
+      sourceDocumentRef: { type: 'INITIAL_IMPORT', id: 'IMP-VER-003' },
+      actorId: uuidv4(),
+      idempotencyKey: uuidv4(),
+    });
+    expect(first.body.version).toBe(2);
+
+    // Second mutation with correct expectedVersion
+    const second = await request(app).post('/api/v1/inventory/mutations/adjust').send({
+      skuId,
+      quantityDelta: -5,
+      reasonCode: 'Damage',
+      categoryCode: 560,
+      sourceDocumentRef: { type: 'STOCK_ADJUSTMENT', id: 'ADJ-VER-003' },
+      actorId: uuidv4(),
+      expectedVersion: 2,
+    });
+    expect(second.status).toBe(200);
+    expect(second.body.version).toBe(3);
+    expect(second.body.resultingBalance).toBe(15);
+  });
+
+  it('rejects mutation when expectedVersion is stale (409 CONFLICT_VERSION_MISMATCH)', async () => {
+    // Create inventory row
+    await request(app).post('/api/v1/inventory/mutations/receive').send({
+      skuId,
+      quantityDelta: 50,
+      reasonCode: 'Setup',
+      categoryCode: 560,
+      sourceDocumentRef: { type: 'INITIAL_IMPORT', id: 'IMP-VER-004a' },
+      actorId: uuidv4(),
+      idempotencyKey: uuidv4(),
+    });
+
+    // Apply another mutation (version now 3)
+    await request(app).post('/api/v1/inventory/mutations/receive').send({
+      skuId,
+      quantityDelta: 10,
+      reasonCode: 'More stock',
+      categoryCode: 560,
+      sourceDocumentRef: { type: 'PURCHASE_ORDER_RECEIPT', id: 'PO-VER-004b' },
+      actorId: uuidv4(),
+      idempotencyKey: uuidv4(),
+    });
+
+    // Try with stale expectedVersion (1 instead of 3)
+    const stale = await request(app).post('/api/v1/inventory/mutations/adjust').send({
+      skuId,
+      quantityDelta: -5,
+      reasonCode: 'Late adjustment',
+      categoryCode: 560,
+      sourceDocumentRef: { type: 'STOCK_ADJUSTMENT', id: 'ADJ-VER-004' },
+      actorId: uuidv4(),
+      expectedVersion: 1,
+    });
+
+    expect(stale.status).toBe(409);
+    expect(stale.body.error.code).toBe('CONFLICT_VERSION_MISMATCH');
+    expect(stale.body.error.details).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ field: 'expectedVersion' }),
+        expect.objectContaining({ field: 'currentVersion' }),
+      ])
+    );
+  });
+
+  it('no stock delta committed when version conflict occurs (AC3 + AC2 rollback)', async () => {
+    const db = getDb();
+
+    // Setup: receive stock
+    await request(app).post('/api/v1/inventory/mutations/receive').send({
+      skuId,
+      quantityDelta: 30,
+      reasonCode: 'Setup',
+      categoryCode: 560,
+      sourceDocumentRef: { type: 'INITIAL_IMPORT', id: 'IMP-VER-005' },
+      actorId: uuidv4(),
+      idempotencyKey: uuidv4(),
+    });
+
+    const beforeInv = db.prepare('SELECT quantity_on_hand, version FROM inventory WHERE sku_id = ?').get(skuId) as { quantity_on_hand: number; version: number };
+    expect(beforeInv.quantity_on_hand).toBe(30);
+
+    // Attempt with stale version
+    const res = await request(app).post('/api/v1/inventory/mutations/adjust').send({
+      skuId,
+      quantityDelta: -10,
+      reasonCode: 'Should fail',
+      categoryCode: 560,
+      sourceDocumentRef: { type: 'STOCK_ADJUSTMENT', id: 'ADJ-VER-005' },
+      actorId: uuidv4(),
+      expectedVersion: 1, // stale
+    });
+    expect(res.status).toBe(409);
+
+    // Verify no stock change
+    const afterInv = db.prepare('SELECT quantity_on_hand, version FROM inventory WHERE sku_id = ?').get(skuId) as { quantity_on_hand: number; version: number };
+    expect(afterInv.quantity_on_hand).toBe(30); // unchanged
+    expect(afterInv.version).toBe(beforeInv.version); // unchanged
+  });
+
+  it('does not require expectedVersion (optional parameter)', async () => {
+    const res = await request(app).post('/api/v1/inventory/mutations/receive').send({
+      skuId,
+      quantityDelta: 10,
+      reasonCode: 'No version check',
+      categoryCode: 560,
+      sourceDocumentRef: { type: 'PURCHASE_ORDER_RECEIPT', id: 'PO-VER-006' },
+      actorId: uuidv4(),
+      idempotencyKey: uuidv4(),
+      // expectedVersion intentionally omitted
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.version).toBeDefined();
+  });
+});
+
+// ── Idempotency replay returns version (ZAI-296 AC4) ────────────
+
+describe('Idempotency replay includes version (ZAI-296 AC4)', () => {
+  it('replay response includes current version', async () => {
+    const idempotencyKey = uuidv4();
+    const payload = {
+      skuId,
+      quantityDelta: 15,
+      reasonCode: 'PO Receipt',
+      categoryCode: 560,
+      sourceDocumentRef: { type: 'PURCHASE_ORDER_RECEIPT', id: 'PO-IDEM-VER-001' },
+      actorId: uuidv4(),
+      idempotencyKey,
+    };
+
+    const first = await request(app).post('/api/v1/inventory/mutations/receive').send(payload);
+    expect(first.status).toBe(200);
+    expect(first.body.version).toBe(2);
+
+    // Apply another mutation to advance version
+    await request(app).post('/api/v1/inventory/mutations/receive').send({
+      skuId,
+      quantityDelta: 5,
+      reasonCode: 'More',
+      categoryCode: 560,
+      sourceDocumentRef: { type: 'PURCHASE_ORDER_RECEIPT', id: 'PO-IDEM-VER-002' },
+      actorId: uuidv4(),
+      idempotencyKey: uuidv4(),
+    });
+
+    // Replay original — version should reflect current state
+    const replay = await request(app).post('/api/v1/inventory/mutations/receive').send(payload);
+    expect(replay.status).toBe(200);
+    expect(replay.body.id).toBe(first.body.id);
+    expect(replay.body.version).toBe(3); // current version, not original
   });
 });
 

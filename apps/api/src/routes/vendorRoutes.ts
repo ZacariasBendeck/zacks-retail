@@ -53,6 +53,14 @@ router.post('/', validate(createVendorSchema), (req: Request, res: Response): vo
  *         in: query
  *         schema: { type: string }
  *         description: Search by name, email, or phone
+ *       - name: sort
+ *         in: query
+ *         schema: { type: string, enum: [name, createdAt, leadTimeDays], default: name }
+ *         description: Field to sort by
+ *       - name: order
+ *         in: query
+ *         schema: { type: string, enum: [asc, desc], default: asc }
+ *         description: Sort direction
  *     responses:
  *       200:
  *         description: Paginated list of vendors

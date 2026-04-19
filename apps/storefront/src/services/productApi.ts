@@ -17,7 +17,7 @@ export async function fetchProduct(id: string): Promise<ProductDetail> {
   return res.json()
 }
 
-export async function fetchFacets(params?: Pick<ProductListParams, 'q' | 'categoryId' | 'department' | 'brandId' | 'colorId' | 'minPrice' | 'maxPrice'>): Promise<Facets> {
+export async function fetchFacets(params?: Pick<ProductListParams, 'q' | 'categoryId' | 'department' | 'brandId' | 'colorId' | 'sizeLabel' | 'materialId' | 'minPrice' | 'maxPrice'>): Promise<Facets> {
   const searchParams = new URLSearchParams()
   if (params) {
     for (const [key, value] of Object.entries(params)) {

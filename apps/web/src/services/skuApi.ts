@@ -1,4 +1,38 @@
-import type { PaginationEnvelope, Sku, SkuCreatePayload, SkuUpdatePayload, SkuListParams, Vendor, ImageAnalysisResult, EnhancedAnalysisResult, ReferenceDataMap, SizeLabelItem } from '../types/sku'
+import type {
+  PaginationEnvelope,
+  Sku,
+  SkuCreatePayload,
+  SkuUpdatePayload,
+  SkuListParams,
+  Vendor,
+  EnhancedAnalysisResult,
+  ReferenceDataMap,
+  SizeLabelItem,
+  StyleColorLink,
+  StyleColorListParams,
+} from '../types/sku'
+
+export class SkuApiError extends Error {
+  status: number
+  code?: string
+  details?: Record<string, string>[]
+
+  constructor(message: string, status: number, code?: string, details?: Record<string, string>[]) {
+    super(message)
+    this.name = 'SkuApiError'
+    this.status = status
+    this.code = code
+    this.details = details
+  }
+}
+
+async function throwSkuApiError(res: Response, fallbackMessage: string): Promise<never> {
+  const body = await res.json().catch(() => ({}))
+  const code = typeof body?.error?.code === 'string' ? body.error.code : undefined
+  const message = typeof body?.error?.message === 'string' ? body.error.message : fallbackMessage
+  const details = Array.isArray(body?.error?.details) ? body.error.details as Record<string, string>[] : undefined
+  throw new SkuApiError(message, res.status, code, details)
+}
 
 export async function fetchSkus(params: SkuListParams): Promise<PaginationEnvelope<Sku>> {
   const searchParams = new URLSearchParams()
@@ -22,13 +56,8 @@ export async function createSku(payload: SkuCreatePayload): Promise<Sku> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   })
-  if (res.status === 409) {
-    const err = await res.json().catch(() => ({}))
-    throw new Error(err?.error?.message ?? 'Duplicate barcode')
-  }
   if (!res.ok) {
-    const err = await res.json().catch(() => ({}))
-    throw new Error(err?.error?.message ?? `Failed to create SKU: ${res.status}`)
+    await throwSkuApiError(res, `Failed to create SKU: ${res.status}`)
   }
   return res.json()
 }
@@ -39,19 +68,21 @@ export async function updateSku(skuId: string, payload: SkuUpdatePayload): Promi
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   })
-  if (res.status === 409) {
-    const err = await res.json().catch(() => ({}))
-    throw new Error(err?.error?.message ?? 'Duplicate barcode')
-  }
-  if (!res.ok) throw new Error(`Failed to update SKU: ${res.status}`)
+  if (!res.ok) await throwSkuApiError(res, `Failed to update SKU: ${res.status}`)
   return res.json()
 }
 
 export async function fetchVendors(): Promise<Vendor[]> {
-  const res = await fetch('/api/v1/vendors')
+  const params = new URLSearchParams({
+    page: '1',
+    pageSize: '200',
+    sort: 'name',
+    order: 'asc',
+  })
+  const res = await fetch(`/api/v1/vendors?${params}`)
   if (!res.ok) throw new Error(`Failed to fetch vendors: ${res.status}`)
-  const body = await res.json()
-  return Array.isArray(body) ? body : body.data
+  const body: PaginationEnvelope<Vendor> = await res.json()
+  return body.data
 }
 
 export async function deactivateSku(skuId: string): Promise<void> {
@@ -73,13 +104,7 @@ export async function analyzeImage(file: File): Promise<EnhancedAnalysisResult> 
     throw new Error(body?.error?.message ?? `Image analysis failed: ${res.status}`)
   }
 
-  const data = await res.json()
-
-  // Support both current (flat) and future (enhanced { raw, mapped }) response formats
-  if (data.raw) {
-    return data as EnhancedAnalysisResult
-  }
-  return { raw: data as ImageAnalysisResult }
+  return res.json()
 }
 
 export async function fetchAllReferenceData(): Promise<ReferenceDataMap> {
@@ -120,5 +145,16 @@ export async function lookupSkuByCode(code: string): Promise<Sku | null> {
 export async function fetchSizeLabels(sizeTypeId: number): Promise<SizeLabelItem[]> {
   const res = await fetch(`/api/v1/skus/size-types/${sizeTypeId}/sizes`)
   if (!res.ok) throw new Error(`Failed to fetch size labels: ${res.status}`)
+  return res.json()
+}
+
+export async function fetchStyleColors(params: StyleColorListParams = {}): Promise<StyleColorLink[]> {
+  const searchParams = new URLSearchParams()
+  for (const [key, value] of Object.entries(params)) {
+    if (value != null && value !== '') searchParams.set(key, String(value))
+  }
+  const query = searchParams.toString()
+  const res = await fetch(`/api/v1/skus/style-colors${query ? `?${query}` : ''}`)
+  if (!res.ok) throw new Error(`Failed to fetch style colors: ${res.status}`)
   return res.json()
 }

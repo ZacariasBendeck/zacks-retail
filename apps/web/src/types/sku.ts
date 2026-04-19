@@ -9,7 +9,7 @@ export interface ReferenceItem {
 
 export interface CategoryItem extends ReferenceItem {
   ricsCode: number
-  deptMacro: string
+  deptMacro: Department
 }
 
 export interface ColorItem extends ReferenceItem {
@@ -74,12 +74,28 @@ export interface Sku {
   labelTypeId: number | null
   heelMaterialId: number | null
   heelType: string | null
+  heelTypeCode?: string | null
   material: string | null
+  heelMaterialTypeCode?: string | null
+  styleColor?: StyleColorLink | null
   active: boolean
   currentStock?: number
   sizes?: SkuSize[]
   createdAt: string
   updatedAt: string
+}
+
+export interface StyleColorLink {
+  styleColorId: string
+  brandId: number
+  style: string
+  colorId: number
+  categoryId: number
+  department: Department
+  heelTypeCode: string | null
+  heelMaterialTypeCode: string | null
+  season: string | null
+  active: boolean
 }
 
 export interface SkuListParams {
@@ -134,6 +150,8 @@ export interface SkuCreatePayload {
   seasonId?: number | null
   sizeTypeId?: number | null
   labelTypeId?: number | null
+  heelTypeCode?: string | null
+  heelMaterialTypeCode?: string | null
   sizes?: string[]
 }
 
@@ -155,10 +173,18 @@ export interface ImageAnalysisResult {
   category: string | null
 }
 
-/** Enhanced response from analyze-image when backend supports mapped attributes */
+export interface AiFillConfigEntry {
+  aiKey: string
+  formField: string
+  type: 'text' | 'enum' | 'reference'
+  refTable?: string
+}
+
+/** Canonical analyze-image response */
 export interface EnhancedAnalysisResult {
   raw: ImageAnalysisResult
   mapped?: Record<string, number | null>
+  config?: AiFillConfigEntry[]
 }
 
 /** Mapping from AI attribute key to form field + reference table */
@@ -190,4 +216,11 @@ export interface PaginationEnvelope<T> {
     totalItems: number
     totalPages: number
   }
+}
+
+export interface StyleColorListParams {
+  brandId?: number
+  colorId?: number
+  department?: Department
+  active?: boolean
 }

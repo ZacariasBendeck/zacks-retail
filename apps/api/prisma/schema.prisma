@@ -119,3 +119,25 @@ model Session {
   @@index([userId])
   @@index([expiresAt])
 }
+
+/// Phase 1 audit log for products-module mutations against the live RICS MDBs.
+/// Every create/update/delete on a taxonomy entity (Department, Category,
+/// Sector, Group, Keyword, PromotionCode, SizeType) or a future products write
+/// path (SKU, Vendor, Price Change, UPC) writes one row here. The audit log is
+/// observability — product correctness depends on the Access write succeeding,
+/// not on this row being present. Writers should treat Postgres failures as
+/// non-blocking and log them.
+///
+/// Retention is unbounded in Phase 1; Phase 2 will add a retention policy.
+model ProductsAuditLog {
+  id          String   @id @default(uuid())
+  actor       String   // user id, email, or "system" for scheduled-job writes
+  action      String   // e.g. "department.create", "sizeType.update"
+  targetTable String   // RICS table, e.g. "RIDEPT.Departments"
+  targetPk    String   // primary-key value as a string (numbers stringified)
+  payloadJson Json     // before/after snapshot for the mutation
+  occurredAt  DateTime @default(now())
+
+  @@index([occurredAt])
+  @@index([targetTable, targetPk])
+}

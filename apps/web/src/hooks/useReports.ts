@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import {
   fetchOnHandByDepartment,
   fetchOnHandDrillDown,
@@ -10,6 +10,28 @@ import {
   fetchAgingDrillDown,
   fetchSellThroughByDepartment,
   fetchSellThroughDrillDown,
+  fetchSalesByDay,
+  fetchSalesByTime,
+  fetchSalesBySku,
+  fetchSalespersonSummary,
+  fetchBestSellers,
+  fetchSalesAnalysis,
+  fetchStockStatus,
+  fetchSalesDimensions,
+  fetchSalesHistoryByMonth,
+  type ReportDetailQuery,
+  type SalesBySkuSortBy,
+  type SalespersonSubtotalBy,
+  type BestSellersDimension,
+  type BestSellersMetric,
+  type BestSellersPeriodFlag,
+  type SalesAnalysisDimension,
+  type SalesAnalysisReportType,
+  type SalesAnalysisStoreOption,
+  type StockStatusSortBy,
+  type StockStatusStoreOption,
+  type StockStatusItemFilter,
+  type SalesHistoryByMonthParams,
 } from '../services/reportApi'
 
 export function useOnHandByDepartment() {
@@ -19,10 +41,14 @@ export function useOnHandByDepartment() {
   })
 }
 
-export function useOnHandDrillDown(department: string, category?: number) {
+export function useOnHandDrillDown(
+  department: string,
+  category?: number,
+  query?: ReportDetailQuery,
+) {
   return useQuery({
-    queryKey: ['report-on-hand-drilldown', department, category],
-    queryFn: () => fetchOnHandDrillDown(department, category),
+    queryKey: ['report-on-hand-drilldown', department, category, query],
+    queryFn: () => fetchOnHandDrillDown(department, category, query),
     enabled: !!department,
   })
 }
@@ -40,10 +66,11 @@ export function useSalesPerformanceDrillDown(
   endDate: string,
   department: string,
   category?: number,
+  query?: ReportDetailQuery,
 ) {
   return useQuery({
-    queryKey: ['report-sales-drilldown', startDate, endDate, department, category],
-    queryFn: () => fetchSalesPerformanceDrillDown(startDate, endDate, department, category),
+    queryKey: ['report-sales-drilldown', startDate, endDate, department, category, query],
+    queryFn: () => fetchSalesPerformanceDrillDown(startDate, endDate, department, category, query),
     enabled: !!startDate && !!endDate && !!department,
   })
 }
@@ -60,10 +87,11 @@ export function useTurnoverDrillDown(
   startDate?: string,
   endDate?: string,
   category?: number,
+  query?: ReportDetailQuery,
 ) {
   return useQuery({
-    queryKey: ['report-turnover-drilldown', department, startDate, endDate, category],
-    queryFn: () => fetchTurnoverDrillDown(department, startDate, endDate, category),
+    queryKey: ['report-turnover-drilldown', department, startDate, endDate, category, query],
+    queryFn: () => fetchTurnoverDrillDown(department, startDate, endDate, category, query),
     enabled: !!department,
   })
 }
@@ -80,10 +108,11 @@ export function useSellThroughDrillDown(
   startDate?: string,
   endDate?: string,
   category?: number,
+  query?: ReportDetailQuery,
 ) {
   return useQuery({
-    queryKey: ['report-sell-through-drilldown', department, startDate, endDate, category],
-    queryFn: () => fetchSellThroughDrillDown(department, startDate, endDate, category),
+    queryKey: ['report-sell-through-drilldown', department, startDate, endDate, category, query],
+    queryFn: () => fetchSellThroughDrillDown(department, startDate, endDate, category, query),
     enabled: !!department,
   })
 }
@@ -100,5 +129,171 @@ export function useAgingDrillDown(department: string, category?: number) {
     queryKey: ['report-aging-drilldown', department, category],
     queryFn: () => fetchAgingDrillDown(department, category),
     enabled: !!department,
+  })
+}
+
+// ─────────────────────────── Sales Reporting (RICS-backed) ────────────────
+//
+// Every hook:
+//   (a) is gated by `enabled: !!args` — the page keeps `args` null until the
+//       user clicks "Run Report".
+//   (b) forwards TanStack Query's `signal` into `fetch`, so a `Stop` button
+//       can call `queryClient.cancelQueries({ queryKey })` to abort mid-flight.
+
+export type SalesByDayArgs = {
+  storeNumber: number
+  startDate: string
+  endDate: string
+  comparisonOffsetDays?: number
+}
+export function useSalesByDay(args: SalesByDayArgs | null) {
+  return useQuery({
+    queryKey: ['sales-by-day', args] as const,
+    queryFn: ({ signal }) =>
+      fetchSalesByDay(
+        args!.storeNumber,
+        args!.startDate,
+        args!.endDate,
+        args!.comparisonOffsetDays ?? 364,
+        signal,
+      ),
+    enabled: !!args,
+  })
+}
+
+export type SalesByTimeArgs = {
+  startDate: string
+  endDate: string
+  compareStartDate?: string
+  compareEndDate?: string
+  stores?: number[]
+  pctOfTotal?: boolean
+}
+export function useSalesByTime(args: SalesByTimeArgs | null) {
+  return useQuery({
+    queryKey: ['sales-by-time', args] as const,
+    queryFn: ({ signal }) => fetchSalesByTime({ ...args!, signal }),
+    enabled: !!args,
+  })
+}
+
+export type SalesBySkuArgs = {
+  startDate: string
+  endDate: string
+  stores?: number[]
+  sortBy?: SalesBySkuSortBy
+  includeReturns?: boolean
+  skus?: string[]
+}
+export function useSalesBySku(args: SalesBySkuArgs | null) {
+  return useQuery({
+    queryKey: ['sales-by-sku', args] as const,
+    queryFn: ({ signal }) => fetchSalesBySku({ ...args!, signal }),
+    enabled: !!args,
+  })
+}
+
+export type SalespersonSummaryArgs = {
+  startDate: string
+  endDate: string
+  stores?: number[]
+  subtotalBy?: SalespersonSubtotalBy
+  combineStores?: boolean
+  cashierSummary?: boolean
+}
+export function useSalespersonSummary(args: SalespersonSummaryArgs | null) {
+  return useQuery({
+    queryKey: ['salesperson-summary', args] as const,
+    queryFn: ({ signal }) => fetchSalespersonSummary({ ...args!, signal }),
+    enabled: !!args,
+  })
+}
+
+export type BestSellersArgs = {
+  dimension: BestSellersDimension
+  metric: BestSellersMetric
+  period?: BestSellersPeriodFlag
+  lastNMonths?: number
+  stores?: number[]
+  combineStores?: boolean
+  topN?: number
+}
+export function useBestSellers(args: BestSellersArgs | null) {
+  return useQuery({
+    queryKey: ['best-sellers', args] as const,
+    queryFn: ({ signal }) => fetchBestSellers({ ...args!, signal }),
+    enabled: !!args,
+  })
+}
+
+export type SalesAnalysisArgs = {
+  dimension: SalesAnalysisDimension
+  reportType: SalesAnalysisReportType
+  storeOption?: SalesAnalysisStoreOption
+  startDate?: string
+  endDate?: string
+  stores?: number[]
+  categories?: number[]
+  vendors?: string[]
+  seasons?: string[]
+  skus?: string[]
+  styleColor?: string
+  groups?: string[]
+  keywords?: string[]
+  wtd?: boolean
+  mtd?: boolean
+  std?: boolean
+  ytd?: boolean
+  priorYear?: boolean
+}
+export function useSalesAnalysis(args: SalesAnalysisArgs | null) {
+  return useQuery({
+    queryKey: ['sales-analysis', args] as const,
+    queryFn: ({ signal }) => fetchSalesAnalysis({ ...args!, signal }),
+    enabled: !!args,
+  })
+}
+
+export type StockStatusArgs = {
+  sortBy?: StockStatusSortBy
+  storeOption?: StockStatusStoreOption
+  itemFilter?: StockStatusItemFilter
+  vendors?: string[]
+  categories?: number[]
+  seasons?: string[]
+  skus?: string[]
+}
+export function useStockStatus(args: StockStatusArgs | null) {
+  return useQuery({
+    queryKey: ['stock-status', args] as const,
+    queryFn: ({ signal }) => fetchStockStatus({ ...args!, signal }),
+    enabled: !!args,
+  })
+}
+
+// Populates the Stores / Categories / Groups dropdowns on the Criteria panel.
+// Small payload, cached 5 min server-side; the client-side cache sits under
+// `staleTime` for 5 min too so tab-switching doesn't re-hit the API.
+export function useSalesDimensions() {
+  return useQuery({
+    queryKey: ['sales-dimensions'] as const,
+    queryFn: ({ signal }) => fetchSalesDimensions(signal),
+    staleTime: 5 * 60 * 1000,
+  })
+}
+
+// Sales History by Month (RICS Ch. 6 p. 95). Fires only when ≥1 store is
+// selected — the page guards the empty state locally, but we also guard
+// here so a mis-wired caller can't blow up the backend with `stores=`.
+// `placeholderData: keepPreviousData` gives the chart/table a stable frame
+// while re-fetching on filter tweaks (matches the pattern the other sales
+// reporting pages rely on for perceived responsiveness).
+export function useSalesHistoryByMonth(params: SalesHistoryByMonthParams | null) {
+  return useQuery({
+    queryKey: ['sales-history-by-month', params] as const,
+    queryFn: ({ signal }) => fetchSalesHistoryByMonth(params!, signal),
+    enabled: !!params && params.stores.length > 0,
+    staleTime: 60 * 1000,
+    placeholderData: keepPreviousData,
   })
 }

@@ -22,5 +22,6 @@ export function useFacets(params?: Parameters<typeof fetchFacets>[0]) {
   return useQuery({
     queryKey: ['facets', params],
     queryFn: () => fetchFacets(params),
+    placeholderData: (prev) => prev,
   })
 }

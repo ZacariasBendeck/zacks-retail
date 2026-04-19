@@ -1,0 +1,25 @@
+-- Migration 016 (DOWN)
+-- Revert transaction ledger integrity hardening for receipts, transfers, and adjustments.
+
+BEGIN TRANSACTION;
+
+DROP TRIGGER IF EXISTS trg_inventory_adjustment_lines_nonzero_update_v016;
+DROP TRIGGER IF EXISTS trg_inventory_adjustment_lines_nonzero_insert_v016;
+DROP TRIGGER IF EXISTS trg_transfer_order_lines_size_alignment_update_v016;
+DROP TRIGGER IF EXISTS trg_transfer_order_lines_size_alignment_insert_v016;
+DROP TRIGGER IF EXISTS trg_po_receipt_lines_size_alignment_update_v016;
+DROP TRIGGER IF EXISTS trg_po_receipt_lines_size_alignment_insert_v016;
+DROP TRIGGER IF EXISTS trg_po_receipt_lines_po_line_alignment_update_v016;
+DROP TRIGGER IF EXISTS trg_po_receipt_lines_po_line_alignment_insert_v016;
+DROP TRIGGER IF EXISTS trg_purchase_order_lines_qty_received_update_guard_v016;
+DROP TRIGGER IF EXISTS trg_purchase_order_lines_qty_received_insert_guard_v016;
+
+DROP INDEX IF EXISTS idx_inventory_adjustment_lines_adjustment_created_v016;
+DROP INDEX IF EXISTS idx_inventory_adjustments_type_created_v016;
+DROP INDEX IF EXISTS idx_transfer_order_lines_transfer_created_v016;
+DROP INDEX IF EXISTS idx_transfer_orders_status_created_v016;
+DROP INDEX IF EXISTS idx_po_receipt_lines_receipt_created_v016;
+DROP INDEX IF EXISTS idx_po_receipts_po_received_at_v016;
+DROP INDEX IF EXISTS idx_purchase_order_lines_po_created_v016;
+
+COMMIT;

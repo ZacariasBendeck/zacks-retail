@@ -1,4 +1,12 @@
 import { getDb } from '../db/database';
+import { PaginationEnvelope } from '../models/sku';
+
+export interface ReportPageParams {
+  page?: number;
+  pageSize?: number;
+  sort?: string;
+  order?: 'asc' | 'desc';
+}
 
 export interface DepartmentOnHandRow {
   department: string;
@@ -220,7 +228,22 @@ export function getSalesPerformanceByCategory(startDate: string, endDate: string
   }));
 }
 
-export function getSalesPerformanceDetails(startDate: string, endDate: string, filters: { department?: string; category?: number }): SalesDetail[] {
+const SALES_DETAIL_SORT_MAP: Record<string, string> = {
+  skuCode: 's.sku_code',
+  brand: 'rb.name',
+  style: 's.style',
+  department: 's.department',
+  totalUnitsSold: 'total_units_sold',
+  totalRevenue: 'total_revenue',
+  avgSellingPrice: 'avg_selling_price',
+};
+
+export function getSalesPerformanceDetails(
+  startDate: string,
+  endDate: string,
+  filters: { department?: string; category?: number },
+  pagination?: ReportPageParams,
+): PaginationEnvelope<SalesDetail> {
   const db = getDb();
 
   const conditions = ['st.sold_at >= ?', 'st.sold_at < ?'];
@@ -237,6 +260,24 @@ export function getSalesPerformanceDetails(startDate: string, endDate: string, f
 
   const where = conditions.join(' AND ');
 
+  const baseFrom = `
+    FROM skus s
+    INNER JOIN sales_transactions st ON st.sku_id = s.id
+    LEFT JOIN ref_brands rb ON rb.id = s.brand_id
+    LEFT JOIN ref_colors rc ON rc.id = s.color_id
+    WHERE ${where}`;
+
+  const countRow = db.prepare(`SELECT COUNT(DISTINCT s.id) as total ${baseFrom}`).get(...params as any) as unknown as { total: number };
+  const totalItems = countRow.total;
+
+  const page = pagination?.page ?? 1;
+  const pageSize = pagination?.pageSize ?? (totalItems || 1);
+  const totalPages = Math.ceil(totalItems / pageSize);
+  const offset = (page - 1) * pageSize;
+
+  const sortCol = SALES_DETAIL_SORT_MAP[pagination?.sort ?? 'totalRevenue'] || 'total_revenue';
+  const sortDir = pagination?.order === 'asc' ? 'ASC' : 'DESC';
+
   const rows = db.prepare(`
     SELECT
       s.id AS sku_id,
@@ -252,27 +293,27 @@ export function getSalesPerformanceDetails(startDate: string, endDate: string, f
         THEN SUM(st.quantity * st.unit_price) / SUM(st.quantity)
         ELSE 0
       END AS avg_selling_price
-    FROM skus s
-    INNER JOIN sales_transactions st ON st.sku_id = s.id
-    LEFT JOIN ref_brands rb ON rb.id = s.brand_id
-    LEFT JOIN ref_colors rc ON rc.id = s.color_id
-    WHERE ${where}
+    ${baseFrom}
     GROUP BY s.id
-    ORDER BY total_revenue DESC
-  `).all(...params as any) as unknown as SalesDetailRow[];
+    ORDER BY ${sortCol} ${sortDir}, s.sku_code ASC
+    LIMIT ? OFFSET ?
+  `).all(...params as any, pageSize, offset) as unknown as SalesDetailRow[];
 
-  return rows.map((r) => ({
-    skuId: r.sku_id,
-    skuCode: r.sku_code,
-    brand: r.brand_name,
-    style: r.style,
-    color: r.color_name,
-    department: r.department,
-    categoryId: r.category_id,
-    totalUnitsSold: r.total_units_sold,
-    totalRevenue: r.total_revenue,
-    avgSellingPrice: r.avg_selling_price,
-  }));
+  return {
+    data: rows.map((r) => ({
+      skuId: r.sku_id,
+      skuCode: r.sku_code,
+      brand: r.brand_name,
+      style: r.style,
+      color: r.color_name,
+      department: r.department,
+      categoryId: r.category_id,
+      totalUnitsSold: r.total_units_sold,
+      totalRevenue: r.total_revenue,
+      avgSellingPrice: r.avg_selling_price,
+    })),
+    pagination: { page, pageSize, totalItems, totalPages },
+  };
 }
 
 // ── Inventory Turnover Report ────────────────────────────────────
@@ -445,7 +486,22 @@ export function getTurnoverByCategory(department: string, filters: TurnoverFilte
   }));
 }
 
-export function getTurnoverDetails(filters: TurnoverFilters): TurnoverDetail[] {
+const TURNOVER_SORT_MAP: Record<string, string> = {
+  skuCode: 's.sku_code',
+  brand: 'rb.name',
+  style: 's.style',
+  department: 's.department',
+  price: 's.price',
+  quantityOnHand: 'quantity_on_hand',
+  inventoryValue: 'inventory_value',
+  cogs: 'cogs',
+  turnoverRatio: 'turnover_ratio',
+};
+
+export function getTurnoverDetails(
+  filters: TurnoverFilters,
+  pagination?: ReportPageParams,
+): PaginationEnvelope<TurnoverDetail> {
   const db = getDb();
   const { clause: dateWhere, params: dateParams } = buildSalesDateWhere(filters, 'st');
 
@@ -462,6 +518,36 @@ export function getTurnoverDetails(filters: TurnoverFilters): TurnoverDetail[] {
   }
 
   const where = conditions.join(' AND ');
+
+  const baseFrom = `
+    FROM skus s
+    LEFT JOIN (
+      SELECT sku_id, SUM(quantity_on_hand) AS total_qty
+      FROM inventory
+      GROUP BY sku_id
+    ) inv_agg ON inv_agg.sku_id = s.id
+    LEFT JOIN ref_brands rb ON rb.id = s.brand_id
+    LEFT JOIN ref_colors rc ON rc.id = s.color_id
+    LEFT JOIN (
+      SELECT
+        st.sku_id,
+        SUM(st.quantity * st.unit_price) AS cogs
+      FROM sales_transactions st
+      WHERE 1=1${dateWhere}
+      GROUP BY st.sku_id
+    ) cogs_agg ON cogs_agg.sku_id = s.id
+    WHERE ${where}`;
+
+  const countRow = db.prepare(`SELECT COUNT(*) as total ${baseFrom}`).get(...dateParams, ...mainParams) as unknown as { total: number };
+  const totalItems = countRow.total;
+
+  const page = pagination?.page ?? 1;
+  const pageSize = pagination?.pageSize ?? (totalItems || 1);
+  const totalPages = Math.ceil(totalItems / pageSize);
+  const offset = (page - 1) * pageSize;
+
+  const sortCol = TURNOVER_SORT_MAP[pagination?.sort ?? 'turnoverRatio'] || 'turnover_ratio';
+  const sortDir = pagination?.order === 'desc' ? 'DESC' : 'ASC';
 
   const rows = db.prepare(`
     SELECT
@@ -480,40 +566,28 @@ export function getTurnoverDetails(filters: TurnoverFilters): TurnoverDetail[] {
         WHEN COALESCE(inv_agg.total_qty * s.price, 0) = 0 THEN 0
         ELSE ROUND(COALESCE(cogs_agg.cogs, 0) / (inv_agg.total_qty * s.price), 2)
       END AS turnover_ratio
-    FROM skus s
-    LEFT JOIN (
-      SELECT sku_id, SUM(quantity_on_hand) AS total_qty
-      FROM inventory
-      GROUP BY sku_id
-    ) inv_agg ON inv_agg.sku_id = s.id
-    LEFT JOIN ref_brands rb ON rb.id = s.brand_id
-    LEFT JOIN ref_colors rc ON rc.id = s.color_id
-    LEFT JOIN (
-      SELECT
-        st.sku_id,
-        SUM(st.quantity * st.unit_price) AS cogs
-      FROM sales_transactions st
-      WHERE 1=1${dateWhere}
-      GROUP BY st.sku_id
-    ) cogs_agg ON cogs_agg.sku_id = s.id
-    WHERE ${where}
-    ORDER BY turnover_ratio ASC, s.department, s.category_id, s.sku_code
-  `).all(...dateParams, ...mainParams) as unknown as TurnoverDetailRow[];
+    ${baseFrom}
+    ORDER BY ${sortCol} ${sortDir}, s.sku_code ASC
+    LIMIT ? OFFSET ?
+  `).all(...dateParams, ...mainParams, pageSize, offset) as unknown as TurnoverDetailRow[];
 
-  return rows.map((r) => ({
-    skuId: r.sku_id,
-    skuCode: r.sku_code,
-    brand: r.brand_name,
-    style: r.style,
-    color: r.color_name,
-    price: r.price,
-    categoryId: r.category_id,
-    department: r.department,
-    quantityOnHand: r.quantity_on_hand,
-    inventoryValue: r.inventory_value,
-    cogs: r.cogs,
-    turnoverRatio: r.turnover_ratio,
-  }));
+  return {
+    data: rows.map((r) => ({
+      skuId: r.sku_id,
+      skuCode: r.sku_code,
+      brand: r.brand_name,
+      style: r.style,
+      color: r.color_name,
+      price: r.price,
+      categoryId: r.category_id,
+      department: r.department,
+      quantityOnHand: r.quantity_on_hand,
+      inventoryValue: r.inventory_value,
+      cogs: r.cogs,
+      turnoverRatio: r.turnover_ratio,
+    })),
+    pagination: { page, pageSize, totalItems, totalPages },
+  };
 }
 
 // ── Sell-Through Analysis Report ────────────────────────────────
@@ -709,7 +783,21 @@ export function getSellThroughByCategory(department: string, filters: SellThroug
   }));
 }
 
-export function getSellThroughDetails(filters: SellThroughFilters): SellThroughDetail[] {
+const SELL_THROUGH_SORT_MAP: Record<string, string> = {
+  skuCode: 's.sku_code',
+  brand: 'rb.name',
+  style: 's.style',
+  department: 's.department',
+  price: 's.price',
+  unitsSold: 'units_sold',
+  unitsReceived: 'units_received',
+  sellThroughPct: 'sell_through_pct',
+};
+
+export function getSellThroughDetails(
+  filters: SellThroughFilters,
+  pagination?: ReportPageParams,
+): PaginationEnvelope<SellThroughDetail> {
   const db = getDb();
   const { salesDateClause, salesDateParams, poDateClause, poDateParams } = buildSellThroughDateClauses(filters);
 
@@ -727,22 +815,7 @@ export function getSellThroughDetails(filters: SellThroughFilters): SellThroughD
 
   const where = conditions.join(' AND ');
 
-  const rows = db.prepare(`
-    SELECT
-      s.id AS sku_id,
-      s.sku_code,
-      rb.name AS brand_name,
-      s.style,
-      rc.name AS color_name,
-      s.price,
-      s.category_id,
-      s.department,
-      COALESCE(sales_agg.units_sold, 0) AS units_sold,
-      COALESCE(recv_agg.units_received, 0) AS units_received,
-      CASE
-        WHEN COALESCE(recv_agg.units_received, 0) = 0 THEN 0
-        ELSE ROUND(CAST(COALESCE(sales_agg.units_sold, 0) AS REAL) / recv_agg.units_received * 100, 1)
-      END AS sell_through_pct
+  const baseFrom = `
     FROM skus s
     LEFT JOIN ref_brands rb ON rb.id = s.brand_id
     LEFT JOIN ref_colors rc ON rc.id = s.color_id
@@ -759,23 +832,56 @@ export function getSellThroughDetails(filters: SellThroughFilters): SellThroughD
       WHERE po.status NOT IN ('DRAFT', 'CANCELLED')${poDateClause}
       GROUP BY pol.sku_id
     ) recv_agg ON recv_agg.sku_id = s.id
-    WHERE ${where}
-    ORDER BY sell_through_pct ASC, s.department, s.category_id, s.sku_code
-  `).all(...salesDateParams, ...poDateParams, ...mainParams) as unknown as SellThroughDetailRow[];
+    WHERE ${where}`;
 
-  return rows.map((r) => ({
-    skuId: r.sku_id,
-    skuCode: r.sku_code,
-    brand: r.brand_name,
-    style: r.style,
-    color: r.color_name,
-    price: r.price,
-    categoryId: r.category_id,
-    department: r.department,
-    unitsSold: r.units_sold,
-    unitsReceived: r.units_received,
-    sellThroughPct: r.sell_through_pct,
-  }));
+  const countRow = db.prepare(`SELECT COUNT(*) as total ${baseFrom}`).get(...salesDateParams, ...poDateParams, ...mainParams) as unknown as { total: number };
+  const totalItems = countRow.total;
+
+  const page = pagination?.page ?? 1;
+  const pageSize = pagination?.pageSize ?? (totalItems || 1);
+  const totalPages = Math.ceil(totalItems / pageSize);
+  const offset = (page - 1) * pageSize;
+
+  const sortCol = SELL_THROUGH_SORT_MAP[pagination?.sort ?? 'sellThroughPct'] || 'sell_through_pct';
+  const sortDir = pagination?.order === 'desc' ? 'DESC' : 'ASC';
+
+  const rows = db.prepare(`
+    SELECT
+      s.id AS sku_id,
+      s.sku_code,
+      rb.name AS brand_name,
+      s.style,
+      rc.name AS color_name,
+      s.price,
+      s.category_id,
+      s.department,
+      COALESCE(sales_agg.units_sold, 0) AS units_sold,
+      COALESCE(recv_agg.units_received, 0) AS units_received,
+      CASE
+        WHEN COALESCE(recv_agg.units_received, 0) = 0 THEN 0
+        ELSE ROUND(CAST(COALESCE(sales_agg.units_sold, 0) AS REAL) / recv_agg.units_received * 100, 1)
+      END AS sell_through_pct
+    ${baseFrom}
+    ORDER BY ${sortCol} ${sortDir}, s.sku_code ASC
+    LIMIT ? OFFSET ?
+  `).all(...salesDateParams, ...poDateParams, ...mainParams, pageSize, offset) as unknown as SellThroughDetailRow[];
+
+  return {
+    data: rows.map((r) => ({
+      skuId: r.sku_id,
+      skuCode: r.sku_code,
+      brand: r.brand_name,
+      style: r.style,
+      color: r.color_name,
+      price: r.price,
+      categoryId: r.category_id,
+      department: r.department,
+      unitsSold: r.units_sold,
+      unitsReceived: r.units_received,
+      sellThroughPct: r.sell_through_pct,
+    })),
+    pagination: { page, pageSize, totalItems, totalPages },
+  };
 }
 
 // ── Inventory Aging Report ──────────────────────────────────────
@@ -836,7 +942,21 @@ function assignBucket(days: number): string {
   return '90+';
 }
 
-function getAgingBaseRows(filters: { department?: string; category?: number }): AgingDetail[] {
+const AGING_SORT_MAP: Record<string, string> = {
+  skuCode: 's.sku_code',
+  brand: 'rb.name',
+  style: 's.style',
+  department: 's.department',
+  price: 's.price',
+  quantityOnHand: 'quantity_on_hand',
+  costValue: 'cost_value',
+  daysOnHand: 'days_on_hand',
+};
+
+function getAgingBaseRows(
+  filters: { department?: string; category?: number },
+  pagination?: ReportPageParams,
+): PaginationEnvelope<AgingDetail> {
   const db = getDb();
 
   const conditions = ['s.active = 1', 'COALESCE(inv_agg.total_qty, 0) > 0'];
@@ -852,6 +972,28 @@ function getAgingBaseRows(filters: { department?: string; category?: number }): 
   }
 
   const where = conditions.join(' AND ');
+
+  const baseFrom = `
+    FROM skus s
+    LEFT JOIN (
+      SELECT sku_id, SUM(quantity_on_hand) AS total_qty, MIN(created_at) AS earliest_created_at
+      FROM inventory
+      GROUP BY sku_id
+    ) inv_agg ON inv_agg.sku_id = s.id
+    LEFT JOIN ref_brands rb ON rb.id = s.brand_id
+    LEFT JOIN ref_colors rc ON rc.id = s.color_id
+    WHERE ${where}`;
+
+  const countRow = db.prepare(`SELECT COUNT(*) as total ${baseFrom}`).get(...params) as unknown as { total: number };
+  const totalItems = countRow.total;
+
+  const page = pagination?.page ?? 1;
+  const pageSize = pagination?.pageSize ?? (totalItems || 1);
+  const totalPages = Math.ceil(totalItems / pageSize);
+  const offset = (page - 1) * pageSize;
+
+  const sortCol = AGING_SORT_MAP[pagination?.sort ?? 'daysOnHand'] || 'days_on_hand';
+  const sortDir = pagination?.order === 'asc' ? 'ASC' : 'DESC';
 
   const rows = db.prepare(`
     SELECT
@@ -879,41 +1021,37 @@ function getAgingBaseRows(filters: { department?: string; category?: number }): 
           s.created_at
         )
       ) AS INTEGER) AS days_on_hand
-    FROM skus s
-    LEFT JOIN (
-      SELECT sku_id, SUM(quantity_on_hand) AS total_qty, MIN(created_at) AS earliest_created_at
-      FROM inventory
-      GROUP BY sku_id
-    ) inv_agg ON inv_agg.sku_id = s.id
-    LEFT JOIN ref_brands rb ON rb.id = s.brand_id
-    LEFT JOIN ref_colors rc ON rc.id = s.color_id
-    WHERE ${where}
-    ORDER BY days_on_hand DESC, s.department, s.category_id, s.sku_code
-  `).all(...params) as unknown as AgingDetailRow[];
+    ${baseFrom}
+    ORDER BY ${sortCol} ${sortDir}, s.sku_code ASC
+    LIMIT ? OFFSET ?
+  `).all(...params, pageSize, offset) as unknown as AgingDetailRow[];
 
-  return rows.map((r) => {
-    const days = Math.max(r.days_on_hand, 0);
-    return {
-      skuId: r.sku_id,
-      skuCode: r.sku_code,
-      brand: r.brand_name,
-      style: r.style,
-      color: r.color_name,
-      price: r.price,
-      categoryId: r.category_id,
-      department: r.department,
-      quantityOnHand: r.quantity_on_hand,
-      costValue: r.cost_value,
-      daysOnHand: days,
-      agingBucket: assignBucket(days),
-      flagged: days > 90,
-      lastReceivedAt: r.last_received_at,
-    };
-  });
+  return {
+    data: rows.map((r) => {
+      const days = Math.max(r.days_on_hand, 0);
+      return {
+        skuId: r.sku_id,
+        skuCode: r.sku_code,
+        brand: r.brand_name,
+        style: r.style,
+        color: r.color_name,
+        price: r.price,
+        categoryId: r.category_id,
+        department: r.department,
+        quantityOnHand: r.quantity_on_hand,
+        costValue: r.cost_value,
+        daysOnHand: days,
+        agingBucket: assignBucket(days),
+        flagged: days > 90,
+        lastReceivedAt: r.last_received_at,
+      };
+    }),
+    pagination: { page, pageSize, totalItems, totalPages },
+  };
 }
 
 export function getAgingByDepartment(): AgingDepartmentSummary[] {
-  const details = getAgingBaseRows({});
+  const { data: details } = getAgingBaseRows({});
   const deptMap = new Map<string, AgingDetail[]>();
 
   for (const d of details) {
@@ -970,11 +1108,27 @@ export function getAgingByDepartment(): AgingDepartmentSummary[] {
   return result.sort((a, b) => a.department.localeCompare(b.department));
 }
 
-export function getAgingDetails(filters: { department?: string; category?: number }): AgingDetail[] {
-  return getAgingBaseRows(filters);
+export function getAgingDetails(
+  filters: { department?: string; category?: number },
+  pagination?: ReportPageParams,
+): PaginationEnvelope<AgingDetail> {
+  return getAgingBaseRows(filters, pagination);
 }
 
-export function getOnHandDetails(filters: { department?: string; category?: number }): OnHandDetail[] {
+const ON_HAND_SORT_MAP: Record<string, string> = {
+  skuCode: 's.sku_code',
+  brand: 'rb.name',
+  style: 's.style',
+  department: 's.department',
+  price: 's.price',
+  quantityOnHand: 'quantity_on_hand',
+  costValue: 'cost_value',
+};
+
+export function getOnHandDetails(
+  filters: { department?: string; category?: number },
+  pagination?: ReportPageParams,
+): PaginationEnvelope<OnHandDetail> {
   const db = getDb();
 
   const conditions = ['s.active = 1'];
@@ -991,6 +1145,28 @@ export function getOnHandDetails(filters: { department?: string; category?: numb
 
   const where = conditions.join(' AND ');
 
+  const baseFrom = `
+    FROM skus s
+    LEFT JOIN (
+      SELECT sku_id, SUM(quantity_on_hand) AS total_qty
+      FROM inventory
+      GROUP BY sku_id
+    ) inv_agg ON inv_agg.sku_id = s.id
+    LEFT JOIN ref_brands rb ON rb.id = s.brand_id
+    LEFT JOIN ref_colors rc ON rc.id = s.color_id
+    WHERE ${where}`;
+
+  const countRow = db.prepare(`SELECT COUNT(*) as total ${baseFrom}`).get(...params as any) as unknown as { total: number };
+  const totalItems = countRow.total;
+
+  const page = pagination?.page ?? 1;
+  const pageSize = pagination?.pageSize ?? (totalItems || 1);
+  const totalPages = Math.ceil(totalItems / pageSize);
+  const offset = (page - 1) * pageSize;
+
+  const sortCol = ON_HAND_SORT_MAP[pagination?.sort ?? 'department'] || 's.department';
+  const sortDir = pagination?.order === 'desc' ? 'DESC' : 'ASC';
+
   const rows = db.prepare(`
     SELECT
       s.id AS sku_id,
@@ -1003,28 +1179,24 @@ export function getOnHandDetails(filters: { department?: string; category?: numb
       s.department,
       COALESCE(inv_agg.total_qty, 0) AS quantity_on_hand,
       COALESCE(inv_agg.total_qty * s.price, 0) AS cost_value
-    FROM skus s
-    LEFT JOIN (
-      SELECT sku_id, SUM(quantity_on_hand) AS total_qty
-      FROM inventory
-      GROUP BY sku_id
-    ) inv_agg ON inv_agg.sku_id = s.id
-    LEFT JOIN ref_brands rb ON rb.id = s.brand_id
-    LEFT JOIN ref_colors rc ON rc.id = s.color_id
-    WHERE ${where}
-    ORDER BY s.department, s.category_id, rb.name, s.sku_code
-  `).all(...params as any) as unknown as OnHandDetailRow[];
+    ${baseFrom}
+    ORDER BY ${sortCol} ${sortDir}, s.sku_code ASC
+    LIMIT ? OFFSET ?
+  `).all(...params as any, pageSize, offset) as unknown as OnHandDetailRow[];
 
-  return rows.map((r) => ({
-    skuId: r.sku_id,
-    skuCode: r.sku_code,
-    brand: r.brand_name,
-    style: r.style,
-    color: r.color_name,
-    price: r.price,
-    categoryId: r.category_id,
-    department: r.department,
-    quantityOnHand: r.quantity_on_hand,
-    costValue: r.cost_value,
-  }));
+  return {
+    data: rows.map((r) => ({
+      skuId: r.sku_id,
+      skuCode: r.sku_code,
+      brand: r.brand_name,
+      style: r.style,
+      color: r.color_name,
+      price: r.price,
+      categoryId: r.category_id,
+      department: r.department,
+      quantityOnHand: r.quantity_on_hand,
+      costValue: r.cost_value,
+    })),
+    pagination: { page, pageSize, totalItems, totalPages },
+  };
 }

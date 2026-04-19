@@ -8,6 +8,18 @@ function getCategoryId(ricsCode: number): number | null {
   return row ? row.id : null;
 }
 
+function getBrandId(code: string): number | null {
+  const db = getDb();
+  const row = db.prepare('SELECT id FROM ref_brands WHERE code = ?').get(code) as { id: number } | undefined;
+  return row ? row.id : null;
+}
+
+function getColorId(code: string): number | null {
+  const db = getDb();
+  const row = db.prepare('SELECT id FROM ref_colors WHERE code = ?').get(code) as { id: number } | undefined;
+  return row ? row.id : null;
+}
+
 const validVendor = {
   name: 'Calzados Premium',
   contactEmail: 'ventas@calzados.com',
@@ -37,12 +49,10 @@ describe('POST /api/v1/vendors', () => {
     expect(res.body.id).toBeDefined();
   });
 
-  it('creates a vendor with only name', async () => {
+  it('rejects vendor missing mandatory fields (contactEmail, paymentTerms, leadTimeDays)', async () => {
     const res = await request(app).post('/api/v1/vendors').send({ name: 'Simple Vendor' });
-    expect(res.status).toBe(201);
-    expect(res.body.name).toBe('Simple Vendor');
-    expect(res.body.contactEmail).toBeNull();
-    expect(res.body.paymentTerms).toBeNull();
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
   });
 
   it('rejects missing name', async () => {
@@ -120,6 +130,8 @@ describe('DELETE /api/v1/vendors/:vendorId', () => {
       price: 129.99,
       department: 'FORMAL',
       categoryId: getCategoryId(560),
+      brandId: getBrandId('KISS'),
+      colorId: getColorId('BK'),
       vendorId: vendor.body.id,
     });
 
@@ -137,9 +149,9 @@ describe('DELETE /api/v1/vendors/:vendorId', () => {
 describe('GET /api/v1/vendors (list)', () => {
   beforeEach(async () => {
     const vendors = [
-      { name: 'Alpha Shoes', paymentTerms: 'NET_30' },
-      { name: 'Beta Calzados', paymentTerms: 'NET_60' },
-      { name: 'Gamma Footwear', paymentTerms: 'NET_90' },
+      { name: 'Alpha Shoes', contactEmail: 'alpha@shoes.com', paymentTerms: 'NET_30', leadTimeDays: 10 },
+      { name: 'Beta Calzados', contactEmail: 'beta@calzados.com', paymentTerms: 'NET_60', leadTimeDays: 15 },
+      { name: 'Gamma Footwear', contactEmail: 'gamma@footwear.com', paymentTerms: 'NET_90', leadTimeDays: 20 },
     ];
     for (const v of vendors) {
       await request(app).post('/api/v1/vendors').send(v);
