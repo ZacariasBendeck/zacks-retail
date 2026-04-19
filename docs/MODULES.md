@@ -74,3 +74,23 @@ Further refinements after user review (2026-04-17):
 1. Drop the RICS manual PDF at [rics-reference/77manual.pdf](rics-reference/77manual.pdf).
 2. Invoke the `rics-module-analyst` sub-agent with "propose initial module breakdown" to get a refined module list, or with a specific module name (e.g., `products`) to produce a deep spec at `docs/modules/<name>.md`.
 3. Work through the modules one at a time. Don't try to spec everything in parallel — the point of this structure is that each module can be picked up independently.
+
+---
+
+## How to use this registry
+
+New here? Start with this file, then walk into the spec for whichever module you need to touch. Each spec at [modules/](modules/)`<name>.md` follows the strict template defined in [.claude/agents/rics-module-analyst.md](../.claude/agents/rics-module-analyst.md) (sections: Goal · RICS features covered · Modernization decisions · Data model sketch · API surface · UI surface · Dependencies · Contracts exposed · Out of scope for v1 · Open questions).
+
+**Routing guide for changes**
+
+| You want to… | Invoke |
+|---|---|
+| Change the module decomposition (split, merge, rename, add a new module) | `@rics-module-analyst` in Mode A ("propose initial module breakdown" or "refine the registry because…") |
+| Produce or update a single module's spec | `@rics-module-analyst` in Mode B with the module name (e.g. "produce the spec for `crm`") |
+| Implement, fix, or RICS-map anything in the **products** module | `@products-dev` |
+| Build, fix, or refine any storefront feature that crosses modules (cart, checkout, orders, account pages, public API) | `@storefront-dev` |
+| Implement / fix any other module | No dedicated agent yet — use the general-purpose flow and reference the module's spec for scope |
+
+Agents themselves live in [.claude/agents/](../.claude/agents/) and are versioned alongside the code — they are team tooling, not personal preferences. If you change an agent definition, commit it.
+
+The "RICS features explicitly **not** being ported" table above is the canonical cut list. New specs' Modernization decisions sections should reference it rather than restate it.
