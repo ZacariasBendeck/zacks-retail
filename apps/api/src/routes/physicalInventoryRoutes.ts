@@ -16,9 +16,13 @@ import {
   COUNT_SESSION_STATUSES,
   COUNT_MODES,
   COUNT_BATCH_SOURCES,
+  VARIANCE_BANDS,
+  REVIEW_STEPS,
   type CountBatchSource,
   type CountMode,
   type CountSessionStatus,
+  type VarianceBand,
+  type ReviewStep,
 } from '../models/physicalInventory';
 
 const router: IRouter = Router();
@@ -300,6 +304,262 @@ router.get('/:id/entries', (req: Request, res: Response): void => {
     }
     const entries = physicalInventory.getEntriesForSku((req.params.id as string), skuId);
     res.json({ data: entries });
+  } catch (err) {
+    mapError(err, res);
+  }
+});
+
+// ── Wave 2 — variance + review + export ─────────────────────────────────────
+
+router.post('/:id/ready-for-review', (req: Request, res: Response): void => {
+  try {
+    const result = physicalInventory.readyForReview(req.params.id as string);
+    res.status(200).json(result);
+  } catch (err) {
+    mapError(err, res);
+  }
+});
+
+router.get('/:id/variance', (req: Request, res: Response): void => {
+  try {
+    const bandsParam = asString(req.query.bands);
+    const bands = bandsParam
+      ? (bandsParam.split(',').filter((b) => (VARIANCE_BANDS as readonly string[]).includes(b)) as VarianceBand[])
+      : undefined;
+    const onlyVarying = req.query.onlyVarying === 'true' || req.query.onlyVarying === '1';
+    const limit = asInt(req.query.limit);
+    const offset = asInt(req.query.offset);
+    const data = physicalInventory.listVariances(req.params.id as string, {
+      bands,
+      onlyVarying,
+      limit,
+      offset,
+    });
+    res.json({ data });
+  } catch (err) {
+    mapError(err, res);
+  }
+});
+
+router.get('/:id/variance.csv', (req: Request, res: Response): void => {
+  try {
+    const bandsParam = asString(req.query.bands);
+    const bands = bandsParam
+      ? (bandsParam.split(',').filter((b) => (VARIANCE_BANDS as readonly string[]).includes(b)) as VarianceBand[])
+      : undefined;
+    const onlyVarying = req.query.onlyVarying === 'true' || req.query.onlyVarying === '1';
+    const csv = physicalInventory.buildVarianceCsv(req.params.id as string, {
+      bands,
+      onlyVarying,
+    });
+    res.type('text/csv').send(csv);
+  } catch (err) {
+    mapError(err, res);
+  }
+});
+
+router.get('/:id/variance/summary', (req: Request, res: Response): void => {
+  try {
+    const summary = physicalInventory.getVarianceSummary(req.params.id as string);
+    res.json(summary);
+  } catch (err) {
+    mapError(err, res);
+  }
+});
+
+router.post('/:id/variance/:varianceId/acknowledge', (req: Request, res: Response): void => {
+  try {
+    const acknowledgedBy = asString(req.body?.acknowledgedBy);
+    if (!acknowledgedBy) {
+      res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'acknowledgedBy is required.' } });
+      return;
+    }
+    const variance = physicalInventory.acknowledgeVariance(
+      req.params.id as string,
+      req.params.varianceId as string,
+      acknowledgedBy,
+    );
+    res.json(variance);
+  } catch (err) {
+    mapError(err, res);
+  }
+});
+
+router.get('/:id/items-not-counted', (req: Request, res: Response): void => {
+  try {
+    const includeZeroOnHand = req.query.includeZeroOnHand === 'true' || req.query.includeZeroOnHand === '1';
+    const limit = asInt(req.query.limit);
+    const offset = asInt(req.query.offset);
+    const data = physicalInventory.getItemsNotCounted(req.params.id as string, {
+      includeZeroOnHand,
+      limit,
+      offset,
+    });
+    res.json({ data });
+  } catch (err) {
+    mapError(err, res);
+  }
+});
+
+router.get('/:id/items-not-counted.csv', (req: Request, res: Response): void => {
+  try {
+    const includeZeroOnHand = req.query.includeZeroOnHand === 'true' || req.query.includeZeroOnHand === '1';
+    const csv = physicalInventory.buildItemsNotCountedCsv(req.params.id as string, {
+      includeZeroOnHand,
+    });
+    res.type('text/csv').send(csv);
+  } catch (err) {
+    mapError(err, res);
+  }
+});
+
+router.post('/:id/items-not-counted/zero-out-bulk', (req: Request, res: Response): void => {
+  try {
+    const skuIds = Array.isArray(req.body?.skuIds) ? (req.body.skuIds as unknown[]).filter((s): s is string => typeof s === 'string' && s.length > 0) : [];
+    const performedBy = asString(req.body?.performedBy);
+    if (skuIds.length === 0 || !performedBy) {
+      res.status(400).json({
+        error: { code: 'VALIDATION_ERROR', message: 'skuIds[] and performedBy are required.' },
+      });
+      return;
+    }
+    const entries = physicalInventory.bulkZeroOut(req.params.id as string, skuIds, performedBy);
+    res.status(201).json({ data: entries });
+  } catch (err) {
+    mapError(err, res);
+  }
+});
+
+router.post('/:id/review-acks', (req: Request, res: Response): void => {
+  try {
+    const step = req.body?.step;
+    const acknowledgedBy = asString(req.body?.acknowledgedBy);
+    if (!step || !(REVIEW_STEPS as readonly string[]).includes(step)) {
+      res.status(400).json({
+        error: { code: 'INVALID_REVIEW_STEP', message: 'step must be a valid ReviewStep.' },
+      });
+      return;
+    }
+    if (!acknowledgedBy) {
+      res.status(400).json({
+        error: { code: 'VALIDATION_ERROR', message: 'acknowledgedBy is required.' },
+      });
+      return;
+    }
+    const ack = physicalInventory.recordReviewAck(req.params.id as string, step as ReviewStep, acknowledgedBy);
+    res.status(201).json(ack);
+  } catch (err) {
+    mapError(err, res);
+  }
+});
+
+router.get('/:id/review-acks', (req: Request, res: Response): void => {
+  try {
+    const data = physicalInventory.listReviewAcks(req.params.id as string);
+    res.json({ data });
+  } catch (err) {
+    mapError(err, res);
+  }
+});
+
+router.post('/:id/export', (req: Request, res: Response): void => {
+  try {
+    const exportedBy = asString(req.body?.exportedBy);
+    if (!exportedBy) {
+      res.status(400).json({
+        error: { code: 'VALIDATION_ERROR', message: 'exportedBy is required.' },
+      });
+      return;
+    }
+    const result = physicalInventory.markSessionExported(req.params.id as string, exportedBy);
+    res.json(result);
+  } catch (err) {
+    mapError(err, res);
+  }
+});
+
+// ── Wave 3 — mobile join + batch ingestion + conflicts ──────────────────────
+
+router.post('/by-join-code/:code', (req: Request, res: Response): void => {
+  try {
+    const result = physicalInventory.joinSessionByCode(req.params.code as string);
+    if (!result) {
+      res.status(404).json({
+        error: { code: 'JOIN_CODE_INVALID', message: 'Join code is invalid or session is not active.' },
+      });
+      return;
+    }
+    res.json(result);
+  } catch (err) {
+    mapError(err, res);
+  }
+});
+
+router.post('/:id/devices', (req: Request, res: Response): void => {
+  try {
+    const deviceLabel = asString(req.body?.deviceLabel);
+    const counterUserId = asString(req.body?.counterUserId);
+    if (!deviceLabel) {
+      res.status(400).json({
+        error: { code: 'INVALID_DEVICE_LABEL', message: 'deviceLabel is required.' },
+      });
+      return;
+    }
+    const batch = physicalInventory.registerDevice(req.params.id as string, {
+      deviceLabel,
+      counterUserId,
+    });
+    res.status(201).json(batch);
+  } catch (err) {
+    mapError(err, res);
+  }
+});
+
+router.post('/:id/batches/:batchId/acknowledge', (req: Request, res: Response): void => {
+  try {
+    const batch = physicalInventory.acknowledgeBatch(
+      req.params.id as string,
+      req.params.batchId as string,
+    );
+    res.json(batch);
+  } catch (err) {
+    mapError(err, res);
+  }
+});
+
+router.post('/:id/batches/:batchId/import-csv', (req: Request, res: Response): void => {
+  try {
+    const csvText = typeof req.body === 'string' ? req.body : asString(req.body?.csv);
+    const performedBy = asString(req.body?.performedBy);
+    if (!csvText) {
+      res.status(400).json({
+        error: { code: 'VALIDATION_ERROR', message: 'csv text body is required (string or {csv}).' },
+      });
+      return;
+    }
+    if (!performedBy) {
+      res.status(400).json({
+        error: { code: 'VALIDATION_ERROR', message: 'performedBy is required.' },
+      });
+      return;
+    }
+    const result = physicalInventory.importBatchCsv(
+      req.params.id as string,
+      req.params.batchId as string,
+      csvText,
+      performedBy,
+    );
+    res.status(201).json(result);
+  } catch (err) {
+    mapError(err, res);
+  }
+});
+
+router.get('/:id/conflicts', (req: Request, res: Response): void => {
+  try {
+    const windowMinutes = asInt(req.query.windowMinutes);
+    const data = physicalInventory.computeConflicts(req.params.id as string, windowMinutes);
+    res.json({ data });
   } catch (err) {
     mapError(err, res);
   }

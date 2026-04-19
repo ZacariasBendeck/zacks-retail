@@ -44,6 +44,8 @@ const menuItems = [
       { key: '/products/taxonomy/return-codes', icon: <FileTextOutlined />, label: '\u2014 Return Codes' },
       { key: '/products/taxonomy/promotion-codes', icon: <FileTextOutlined />, label: '\u2014 Promotion Codes' },
       { key: '/products/taxonomy/size-types', icon: <FileTextOutlined />, label: '\u2014 Size Types' },
+      { key: '/products/vendors', icon: <AppstoreOutlined />, label: 'Vendors' },
+      { key: '/products/skus', icon: <AppstoreOutlined />, label: 'SKUs (Phase 1)' },
     ],
   },
   {

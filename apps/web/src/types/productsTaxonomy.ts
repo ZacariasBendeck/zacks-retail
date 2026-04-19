@@ -69,8 +69,12 @@ export interface SectorInput {
 
 export interface Season {
   code: string
+  position: number
   description: string | null
   skuCount: number
+  isCurrent: boolean
+  periodStartedAt: string | null
+  periodEndsAt: string | null
 }
 
 export interface SeasonInput {

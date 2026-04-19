@@ -46,3 +46,15 @@ test.xlsx
 # Secrets
 *.pem
 *.key
+
+# Claude Code local state
+.claude/settings.local.json
+.claude/worktrees/
+
+# Scratch
+.tmp/
+
+# Local SQLite databases (runtime-initialized; not source-controlled)
+apps/api/data/*.db
+apps/api/data/*.db-shm
+apps/api/data/*.db-wal

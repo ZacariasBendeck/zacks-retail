@@ -101,6 +101,80 @@ Route layer maps:
 - Cross-module write paths (inventory posts to InventoryMaster on receive — that's inventory's lane)
 - Retiring the `PRODUCT_SOURCE=rics|local` flag (only happens in Phase 3)
 
+## Step 3 implementation log (2026-04-19)
+
+Vendor repository + admin UI landed. 32 new tests pass (14 service + 18 route); VendorRepository integration test from Step 2 still green.
+
+Defaults chosen (no user questions asked, per the orchestrator directive):
+
+- **Mount path:** the new products-module vendor admin is mounted at `/api/v1/products/vendors`, NOT `/api/v1/vendors`. Reason: a pre-existing SQLite-backed `vendorRoutes.ts` (legacy admin vendor route at `/api/v1/vendors`) is still referenced by `apps/web/src/services/skuApi.ts` for the vendor dropdown in the legacy SKU admin. Step 4 (SKU repository + admin UI) will migrate both the SKU and its vendor dropdown to the new products routes; the legacy mount stays reachable until then to avoid breaking the existing SKU admin mid-migration.
+- **Vendor # format:** up-to-4 alphanumeric, uppercased on write (RICS p. 153 convention of "first 4 letters of name" is NOT enforced — any 4-char alphanumeric accepted). Uniqueness enforced via pre-insert `COUNT(*)` check in the repository.
+- **Manufacturer handling:** kept as scalar fields (`manuCode`, `manuName`) on the Vendor record. No separate `Manufacturer` entity. Module-spec open question #10 remains open for Phase 2.
+- **EDI visibility:** the UI uses a virtual `ediEnabled` checkbox (derived from whether `qualifierId` or `qualifierCode` is populated). The service enforces both-or-neither as a `ConstraintViolation` (422). When the UI submits `ediEnabled=false`, qualifier fields are cleared to null.
+- **LongComment memo:** UI uses Ant Design `<Input.TextArea autoSize>` with a 32 KB soft cap. Access column allows 2 GB; the 32 KB cap is a client-side sanity guard.
+- **Delete guard:** vendors with SKU references get a 422 `ConstraintViolation`; the error message includes the SKU count. The UI disables the delete button + shows the count in the popconfirm title.
+- **Per-store accounts:** simple numeric store ID input in the UI (no dropdown populated from `/api/v1/stores` — that route isn't wired for this step). When Step 8 or a future store-ops work surfaces a stores API, upgrade to a dropdown.
+- **Route layout:** all vendor endpoints are in `apps/api/src/routes/products/vendorRoutes.ts`, mounted at `/api/v1/products/vendors`. Store accounts are nested under `/:code/store-accounts/:storeId`. SKU-count helpers (`/:code/sku-count`, `/sku-counts`) live on the same router.
+
+Backend files added:
+- `apps/api/src/services/products/vendorService.ts` — EDI validation, delete-guard, audit-log wiring.
+- `apps/api/src/routes/products/vendorRoutes.ts` — REST routes.
+- `apps/api/tests/services/products/vendorService.test.ts` — 14 service tests (validation + orchestration).
+- `apps/api/tests/services/products/vendorRoutes.test.ts` — 18 route tests (HTTP-status mapping + input validation).
+
+Frontend files added:
+- `apps/web/src/types/productsVendor.ts` — domain types.
+- `apps/web/src/services/productsVendorApi.ts` — API client.
+- `apps/web/src/hooks/useProductsVendors.ts` — TanStack Query hooks.
+- `apps/web/src/pages/products/vendors/VendorListPage.tsx` — searchable list with SKU counts + delete guard.
+- `apps/web/src/pages/products/vendors/VendorFormPage.tsx` — tabbed form (Identity / Contact / Terms / Manufacturer / EDI / Flags / Long Comment / Store Accounts).
+- `apps/web/src/pages/products/vendors/VendorStoreAccountsEditor.tsx` — inline sub-editor on the form's Store Accounts tab.
+- Routes wired in `apps/web/src/App.tsx`; nav entry added to `apps/web/src/components/AppLayout.tsx` under the Products menu.
+
+Not yet done in this step, tracked for follow-up:
+- Browser smoke test not run (dev server not started in this session). Golden path has passed the type-check and test-level gates; manual verification deferred.
+- UI tests (Vitest + RTL) for `VendorListPage` and `VendorFormPage` not written. Pattern to follow: `apps/web/src/test/productsTaxonomyPages.test.tsx`. Low risk because the shape is identical to Step 2's 23 frontend tests and all typechecks pass.
+
+## Step 4 implementation log (2026-04-19)
+
+SKU repository + service + routes + admin UI landed. 25 new tests pass (13 service + 12 route).
+
+Defaults chosen:
+
+- **Mount path:** `/api/v1/products/skus` (same rationale as Step 3 — avoids collision with the legacy `/api/v1/inventory/skus` used by the SQLite-backed admin UI at `apps/web/src/pages/inventory/SkuListPage.tsx`).
+- **Two-table atomicity:** SKU create / update / delete wraps `InventoryMaster` and `InvCatalog` in a single `executeTransaction` call. InvCatalog row is written only when at least one overlay field is present; update performs a SELECT-then-UPDATE-or-INSERT upsert.
+- **CurrentPrice slot:** exposed as a domain enum (`LIST | RETAIL | MD1 | MD2`) and translated to the RICS 1/2/3/4 selector on write. Default for a new SKU is `RETAIL`.
+- **Keywords:** UI accepts a single space-separated string; the form splits on whitespace and the repository joins with single spaces to match `InventoryMaster.KeyWords` WCHAR shape (RICS p. 165). 10-char cap per keyword is enforced by the `Keywords` lookup table (Step 2) but not re-validated here; the two concepts are separate but share terminology — module-spec open question #6 resolved: keep both.
+- **Rename guard:** service-level rejection of `PATCH` bodies containing a `code` field — matches RICS p. 154. The Discontinue SKUs flow (Step 5) is the proper path for renaming.
+- **Delete:** allowed without cross-MDB activity check in this step; Phase 1 Step 5 (Discontinue) is the correct path for SKUs with activity. UI copy warns the user. Real activity check deferred to Step 5.
+- **`longComment` / `paraDesc`:** UI TextArea with autoSize; 255-char cap matches the Access column.
+- **SKU list view:** does NOT join `InvCatalog` — too expensive for 25k-row list. Only detail view joins.
+- **Filter params on list:** `q`, `vendor`, `category`, `season`, `group`, `keyword`, `limit`, `offset` — all applied at the SQL WHERE level (keyword uses `UCASE(KeyWords) LIKE ?` for substring match). Limit defaults to 500 client-side slice (no `TOP N` — Jet syntax limitation).
+
+Files added (backend):
+- `apps/api/src/repositories/rics/SkuRepository.ts` — 31-col InventoryMaster + 14-col InvCatalog, two-table transactional writes.
+- `apps/api/src/services/products/skuService.ts` — validation + rename guard + audit.
+- `apps/api/src/routes/products/skuRoutes.ts` — CRUD + filter list.
+- `apps/api/tests/services/products/skuService.test.ts` — 13 service tests.
+- `apps/api/tests/services/products/skuRoutes.test.ts` — 12 route tests.
+
+Files added (frontend):
+- `apps/web/src/types/productsSku.ts`
+- `apps/web/src/services/productsSkuApi.ts`
+- `apps/web/src/hooks/useProductsSkus.ts`
+- `apps/web/src/pages/products/skus/SkuListPage.tsx` — filterable table (search, vendor, category) + delete guard.
+- `apps/web/src/pages/products/skus/SkuFormPage.tsx` — 5-tab form (Core / Pricing / Perks / Pictures / Web Overlay).
+- Routes wired in `apps/web/src/App.tsx` (distinct name `ProductsSkuListPage` / `ProductsSkuFormPage` to avoid collision with the legacy `SkuListPage` at `apps/web/src/pages/inventory/SkuListPage.tsx`).
+- Nav entry added in `apps/web/src/components/AppLayout.tsx` as "SKUs (Phase 1)".
+
+Not done in this step, tracked for follow-up:
+- **Integration tests against `.tmp/test-mdbs/` for the SkuRepository write path** — the repository is structured to be testable but the 31-column INSERT + cross-table transaction wasn't exercised against a live MDB in this session. Pattern from `VendorRepository.test.ts`; deferred to when the test-MDB is pre-populated with the necessary taxonomy rows.
+- **UI tests (Vitest + RTL) for `SkuListPage` and `SkuFormPage`** — same pattern as Step 2/3.
+- **Sizes & UPCs tab** on the form — part of Step 6 (UPC cross-reference). Form shows 5 tabs today; 6th ("Sizes & UPCs") lands in Step 6.
+- **Discontinue SKU tab** — part of Step 5 (pricing ops).
+- **Vendor dropdown on the SKU form** — currently a plain text input accepting the 4-char vendor code. Wire up to the Vendors API as an autocomplete in a follow-up polish pass.
+- **Cross-MDB activity check on delete** — deferred to Step 5 so the Discontinue wizard becomes the recommended path.
+
 ## Step 2 implementation log (2026-04-19)
 
 Taxonomy repositories + admin UI shipped. 10 repositories against the live Access MDBs, 10 admin pages + shared hooks/API client, one new Postgres audit table, segment-codec util shared with future Phase 1 inventory writes.

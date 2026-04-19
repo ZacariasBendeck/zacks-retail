@@ -173,6 +173,38 @@ export const SectorRepository = {
     }
   },
 
+  /**
+   * Find the Sector that owns a given Department number via the range lookup
+   * (BegDept <= dept <= EndDept). RICS p. 144 — each Department belongs to
+   * exactly one Sector. Returns NotFound if no Sector covers the Department.
+   */
+  async findByDepartment(departmentNumber: number): Promise<Result<Sector>> {
+    try {
+      const { path, password } = openRicsDb(RicsDb.Sectors);
+      const rows = executeQuery<SectorRow>(
+        path,
+        password,
+        `SELECT [Number], [Desc], [BegDept], [EndDept], [DateLastChanged]
+           FROM [Sectors]
+           WHERE [BegDept] <= ? AND [EndDept] >= ?
+           ORDER BY [Number]`,
+        [
+          { value: departmentNumber, type: 'integer' },
+          { value: departmentNumber, type: 'integer' },
+        ],
+      );
+      if (rows.length === 0) {
+        return Err({
+          kind: 'NotFound',
+          message: `No Sector covers Department ${departmentNumber}.`,
+        });
+      }
+      return Ok(mapRow(rows[0]));
+    } catch (err) {
+      return Err(toRepoError(err));
+    }
+  },
+
   async delete(number: number): Promise<Result<void>> {
     try {
       const { path, password } = openRicsDb(RicsDb.Sectors);

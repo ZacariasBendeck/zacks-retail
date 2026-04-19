@@ -48,11 +48,13 @@ export default function KeywordListPage() {
       }
     >
       <Table<Keyword>
+        size="small"
+        className="products-compact-table"
         rowKey="keyword"
         dataSource={data}
         columns={columns}
         loading={isLoading}
-        pagination={{ pageSize: 50, showSizeChanger: true }}
+        pagination={{ defaultPageSize: 25, showSizeChanger: true, pageSizeOptions: [25, 50, 100, 200] }}
       />
     </Card>
   )

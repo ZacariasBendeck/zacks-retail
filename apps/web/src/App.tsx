@@ -78,6 +78,14 @@ const SeasonFormPage = lazy(() => import('./pages/products/SeasonFormPage'))
 const SizeTypeListPage = lazy(() => import('./pages/products/SizeTypeListPage'))
 const SizeTypeGridEditorPage = lazy(() => import('./pages/products/SizeTypeGridEditorPage'))
 
+// products module — Phase 1 Step 3 vendor pages
+const VendorListPage = lazy(() => import('./pages/products/vendors/VendorListPage'))
+const VendorFormPage = lazy(() => import('./pages/products/vendors/VendorFormPage'))
+
+// products module — Phase 1 Step 4 SKU pages (distinct from legacy inventory SkuListPage)
+const ProductsSkuListPage = lazy(() => import('./pages/products/skus/SkuListPage'))
+const ProductsSkuFormPage = lazy(() => import('./pages/products/skus/SkuFormPage'))
+
 function RouteLoadingFallback() {
   return (
     <Flex align="center" justify="center" style={{ minHeight: 240 }} data-testid="route-loading-fallback">
@@ -194,6 +202,12 @@ export default function App() {
             <Route path="/products/taxonomy/size-types" element={<SizeTypeListPage />} />
             <Route path="/products/taxonomy/size-types/new" element={<SizeTypeGridEditorPage />} />
             <Route path="/products/taxonomy/size-types/:code" element={<SizeTypeGridEditorPage />} />
+            <Route path="/products/vendors" element={<VendorListPage />} />
+            <Route path="/products/vendors/new" element={<VendorFormPage />} />
+            <Route path="/products/vendors/:code" element={<VendorFormPage />} />
+            <Route path="/products/skus" element={<ProductsSkuListPage />} />
+            <Route path="/products/skus/new" element={<ProductsSkuFormPage />} />
+            <Route path="/products/skus/:code" element={<ProductsSkuFormPage />} />
             <Route path="/me" element={<MePage />} />
             <Route path="/change-password" element={<ChangePasswordPage />} />
             <Route

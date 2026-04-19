@@ -198,6 +198,40 @@ export const DepartmentRepository = {
     }
   },
 
+  /**
+   * Find the Department that owns a given Category number via the range-based
+   * lookup (BegCateg <= category <= EndCateg). RICS p. 145 — each Category
+   * belongs to exactly one Department (no FK; ranges are non-overlapping by
+   * admin discipline). Returns NotFound if no Department covers the Category
+   * — this is a reporting gap and should be surfaced to the merchandiser.
+   */
+  async findByCategory(category: number): Promise<Result<Department>> {
+    try {
+      const { path, password } = openRicsDb(RicsDb.Departments);
+      const rows = executeQuery<DepartmentRow>(
+        path,
+        password,
+        `SELECT [Number], [Desc], [BegCateg], [EndCateg], [DateLastChanged]
+           FROM [Departments]
+           WHERE [BegCateg] <= ? AND [EndCateg] >= ?
+           ORDER BY [Number]`,
+        [
+          { value: category, type: 'integer' },
+          { value: category, type: 'integer' },
+        ],
+      );
+      if (rows.length === 0) {
+        return Err({
+          kind: 'NotFound',
+          message: `No Department covers Category ${category}. Check BegCateg..EndCateg ranges.`,
+        });
+      }
+      return Ok(mapRow(rows[0]));
+    } catch (err) {
+      return Err(toRepoError(err));
+    }
+  },
+
   async delete(number: number): Promise<Result<void>> {
     try {
       const { path, password } = openRicsDb(RicsDb.Departments);

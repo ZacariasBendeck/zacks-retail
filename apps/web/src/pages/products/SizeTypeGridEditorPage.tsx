@@ -236,6 +236,7 @@ export default function SizeTypeGridEditorPage() {
         pagination={false}
         scroll={{ x: 'max-content' }}
         size="small"
+        className="products-compact-table"
       />
 
       <Space style={{ marginTop: 16 }}>

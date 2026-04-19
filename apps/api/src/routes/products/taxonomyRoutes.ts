@@ -55,6 +55,26 @@ function parseInt32(raw: unknown): number | null {
   return n;
 }
 
+// ────────────────── Resolve Category → Department → Sector ────────────────
+
+/**
+ * GET /api/v1/taxonomy/resolve?category=100
+ *
+ * Returns `{ category, department, sector }`. Department and Sector may be
+ * null when no range-covering row exists (reporting gap — the UI should show
+ * this, not hide it).
+ */
+router.get('/resolve', async (req: Request, res: Response) => {
+  const category = parseInt32(req.query.category);
+  if (category == null) {
+    res.status(400).json({
+      error: { code: 'INVALID_PARAM', message: 'category query param is required (integer).' },
+    });
+    return;
+  }
+  send(res, await taxonomyService.resolveForCategory(category));
+});
+
 // ────────────────── Departments ────────────────────────────────────────────
 
 router.get('/departments', async (_req: Request, res: Response) => {
@@ -173,10 +193,19 @@ router.delete('/keywords/:keyword', async (req: Request, res: Response) => {
   send(res, await taxonomyService.keywords.delete(paramString(req.params.keyword)), 204);
 });
 
-// ────────────────── Seasons (read-only in Phase 1) ─────────────────────────
+// ────────────────── Seasons (20-slot ring, RICS p. 218) ────────────────────
 
 router.get('/seasons', async (_req: Request, res: Response) => {
   send(res, await taxonomyService.seasons.list());
+});
+
+/**
+ * The current season per today's date + configured cadence. Must be declared
+ * BEFORE /seasons/:code so the literal 'current' path is not captured as a
+ * season code param.
+ */
+router.get('/seasons/current', async (_req: Request, res: Response) => {
+  send(res, await taxonomyService.seasons.getCurrent());
 });
 
 router.get('/seasons/:code', async (req: Request, res: Response) => {

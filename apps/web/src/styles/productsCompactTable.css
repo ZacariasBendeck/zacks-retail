@@ -1,0 +1,47 @@
+/**
+ * Compact row styling for products-module admin tables.
+ * Roughly halves the default AntD Table row height so operators can see more
+ * rows per screen — especially on the SKU + Vendor lists (25k+ rows total).
+ *
+ * Applied by passing className="products-compact-table" alongside size="small"
+ * on a Table. `!important` needed because AntD v5 uses CSS variables + cascade
+ * that otherwise wins at Table-default specificity.
+ */
+
+.products-compact-table .ant-table-cell {
+  padding-top: 3px !important;
+  padding-bottom: 3px !important;
+  line-height: 1.25 !important;
+  font-size: 12px !important;
+}
+
+.products-compact-table .ant-table-thead > tr > th {
+  padding-top: 6px !important;
+  padding-bottom: 6px !important;
+  line-height: 1.2 !important;
+  font-size: 12px !important;
+}
+
+/*
+ * Shrink action-column icon buttons and derived-column tags — BUT scoped to
+ * `.ant-table-cell` only so the pagination controls (Prev/Next, page number,
+ * page-size changer) keep their normal size and stay clickable. Earlier
+ * unscoped rules accidentally disabled the "items per page" dropdown.
+ */
+.products-compact-table .ant-table-cell .ant-btn-sm {
+  height: 20px !important;
+  padding: 0 4px !important;
+  line-height: 20px !important;
+}
+
+.products-compact-table .ant-table-cell .ant-tag {
+  line-height: 16px !important;
+  padding: 0 5px !important;
+  margin-inline-end: 4px !important;
+}
+
+/* Highlight the active season row on the SeasonListPage. */
+.products-compact-table .season-row-current > td {
+  background: #f6ffed !important;
+  font-weight: 600;
+}

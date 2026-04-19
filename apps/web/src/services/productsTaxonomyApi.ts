@@ -64,6 +64,18 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 
 const BASE = '/api/v1/taxonomy'
 
+// Resolve Category → Department → Sector
+export interface TaxonomyResolution {
+  category: number
+  department: Department | null
+  sector: Sector | null
+}
+
+export const resolveApi = {
+  forCategory: (n: number) =>
+    request<TaxonomyResolution>(`${BASE}/resolve?category=${encodeURIComponent(String(n))}`),
+}
+
 // Departments
 export const departmentsApi = {
   list: () => request<Department[]>(`${BASE}/departments`),

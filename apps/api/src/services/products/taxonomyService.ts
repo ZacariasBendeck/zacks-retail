@@ -10,15 +10,46 @@
  */
 
 import { CategoryRepository } from '../../repositories/rics/CategoryRepository';
-import { DepartmentRepository } from '../../repositories/rics/DepartmentRepository';
+import { DepartmentRepository, type Department } from '../../repositories/rics/DepartmentRepository';
 import { GroupRepository } from '../../repositories/rics/GroupRepository';
 import { KeywordRepository } from '../../repositories/rics/KeywordRepository';
 import { NrfCodeRepository } from '../../repositories/rics/NrfCodeRepository';
 import { PromotionCodeRepository } from '../../repositories/rics/PromotionCodeRepository';
 import { ReturnCodeRepository } from '../../repositories/rics/ReturnCodeRepository';
 import { SeasonRepository } from '../../repositories/rics/SeasonRepository';
-import { SectorRepository } from '../../repositories/rics/SectorRepository';
+import { SectorRepository, type Sector } from '../../repositories/rics/SectorRepository';
 import { SizeTypeRepository } from '../../repositories/rics/SizeTypeRepository';
+import { Err, Ok, type Result } from '../../repositories/rics/repoResult';
+
+/**
+ * Resolved Category→Department→Sector chain for a given Category number.
+ * Department / Sector may be null if no range covers the lookup (reporting gap).
+ */
+export interface TaxonomyResolution {
+  category: number;
+  department: Department | null;
+  sector: Sector | null;
+}
+
+/**
+ * Walk Category → Department (by BegCateg..EndCateg) → Sector (by BegDept..EndDept).
+ * Returns a partial chain even if only the intermediate step resolves so the UI
+ * can surface the gap rather than 404.
+ */
+async function resolveForCategory(category: number): Promise<Result<TaxonomyResolution>> {
+  const dept = await DepartmentRepository.findByCategory(category);
+  if (!dept.ok) {
+    // AccessConnectionError surfaces as-is; NotFound means no covering department.
+    if (dept.error.kind === 'AccessConnectionError') return Err(dept.error);
+    return Ok({ category, department: null, sector: null });
+  }
+  const sector = await SectorRepository.findByDepartment(dept.value.number);
+  if (!sector.ok) {
+    if (sector.error.kind === 'AccessConnectionError') return Err(sector.error);
+    return Ok({ category, department: dept.value, sector: null });
+  }
+  return Ok({ category, department: dept.value, sector: sector.value });
+}
 
 export const taxonomyService = {
   departments: DepartmentRepository,
@@ -31,6 +62,7 @@ export const taxonomyService = {
   promotionCodes: PromotionCodeRepository,
   sizeTypes: SizeTypeRepository,
   nrfCodes: NrfCodeRepository,
+  resolveForCategory,
 };
 
 export type TaxonomyService = typeof taxonomyService;

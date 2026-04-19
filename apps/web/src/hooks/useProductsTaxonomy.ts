@@ -11,11 +11,21 @@ import {
   keywordsApi,
   nrfCodesApi,
   promotionCodesApi,
+  resolveApi,
   returnCodesApi,
   seasonsApi,
   sectorsApi,
   sizeTypesApi,
 } from '../services/productsTaxonomyApi'
+
+/**
+ * Taxonomy data changes rarely (department rename, new category) and the
+ * PowerShell + Access read path is expensive (~1–2 s per call). Cache list
+ * fetches for 10 minutes so navigating between Products pages serves from
+ * cache instead of refetching every click. Mutations explicitly invalidate
+ * so edits still appear instantly.
+ */
+const LIST_STALE_MS = 10 * 60 * 1000
 import type {
   CategoryInput,
   DepartmentInput,
@@ -23,13 +33,24 @@ import type {
   KeywordInput,
   PromotionCodeInput,
   ReturnCodeInput,
+  SeasonInput,
   SectorInput,
   SizeTypeInput,
 } from '../types/productsTaxonomy'
 
+// Resolve Category → Department → Sector
+export function useResolveTaxonomy(category: number | undefined) {
+  return useQuery({
+    queryKey: ['taxonomy', 'resolve', category],
+    queryFn: () => resolveApi.forCategory(category!),
+    enabled: category != null && Number.isFinite(category) && category > 0,
+    staleTime: LIST_STALE_MS,
+  })
+}
+
 // Departments
 export function useDepartments() {
-  return useQuery({ queryKey: ['taxonomy', 'departments'], queryFn: departmentsApi.list })
+  return useQuery({ queryKey: ['taxonomy', 'departments'], queryFn: departmentsApi.list, staleTime: LIST_STALE_MS })
 }
 export function useDepartment(n: number | undefined) {
   return useQuery({
@@ -63,7 +84,7 @@ export function useDeleteDepartment() {
 
 // Categories
 export function useCategories() {
-  return useQuery({ queryKey: ['taxonomy', 'categories'], queryFn: categoriesApi.list })
+  return useQuery({ queryKey: ['taxonomy', 'categories'], queryFn: categoriesApi.list, staleTime: LIST_STALE_MS })
 }
 export function useCategory(n: number | undefined) {
   return useQuery({
@@ -97,7 +118,7 @@ export function useDeleteCategory() {
 
 // Groups
 export function useGroups() {
-  return useQuery({ queryKey: ['taxonomy', 'groups'], queryFn: groupsApi.list })
+  return useQuery({ queryKey: ['taxonomy', 'groups'], queryFn: groupsApi.list, staleTime: LIST_STALE_MS })
 }
 export function useGroup(code: string | undefined) {
   return useQuery({
@@ -131,7 +152,7 @@ export function useDeleteGroup() {
 
 // Keywords
 export function useKeywords() {
-  return useQuery({ queryKey: ['taxonomy', 'keywords'], queryFn: keywordsApi.list })
+  return useQuery({ queryKey: ['taxonomy', 'keywords'], queryFn: keywordsApi.list, staleTime: LIST_STALE_MS })
 }
 export function useKeyword(k: string | undefined) {
   return useQuery({
@@ -165,7 +186,7 @@ export function useDeleteKeyword() {
 
 // Sectors
 export function useSectors() {
-  return useQuery({ queryKey: ['taxonomy', 'sectors'], queryFn: sectorsApi.list })
+  return useQuery({ queryKey: ['taxonomy', 'sectors'], queryFn: sectorsApi.list, staleTime: LIST_STALE_MS })
 }
 export function useSector(n: number | undefined) {
   return useQuery({
@@ -199,7 +220,7 @@ export function useDeleteSector() {
 
 // Seasons
 export function useSeasons() {
-  return useQuery({ queryKey: ['taxonomy', 'seasons'], queryFn: seasonsApi.list })
+  return useQuery({ queryKey: ['taxonomy', 'seasons'], queryFn: seasonsApi.list, staleTime: LIST_STALE_MS })
 }
 export function useSeason(code: string | undefined) {
   return useQuery({
@@ -208,10 +229,32 @@ export function useSeason(code: string | undefined) {
     enabled: !!code,
   })
 }
+export function useCreateSeason() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (input: SeasonInput) => seasonsApi.create(input),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['taxonomy', 'seasons'] }),
+  })
+}
+export function useUpdateSeason() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ code, patch }: { code: string; patch: Partial<Omit<SeasonInput, 'code'>> }) =>
+      seasonsApi.update(code, patch),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['taxonomy', 'seasons'] }),
+  })
+}
+export function useDeleteSeason() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (code: string) => seasonsApi.remove(code),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['taxonomy', 'seasons'] }),
+  })
+}
 
 // Return codes
 export function useReturnCodes() {
-  return useQuery({ queryKey: ['taxonomy', 'return-codes'], queryFn: returnCodesApi.list })
+  return useQuery({ queryKey: ['taxonomy', 'return-codes'], queryFn: returnCodesApi.list, staleTime: LIST_STALE_MS })
 }
 export function useReturnCode(n: number | undefined) {
   return useQuery({
@@ -245,7 +288,7 @@ export function useDeleteReturnCode() {
 
 // Promotion codes
 export function usePromotionCodes() {
-  return useQuery({ queryKey: ['taxonomy', 'promotion-codes'], queryFn: promotionCodesApi.list })
+  return useQuery({ queryKey: ['taxonomy', 'promotion-codes'], queryFn: promotionCodesApi.list, staleTime: LIST_STALE_MS })
 }
 export function usePromotionCode(code: string | undefined) {
   return useQuery({
@@ -279,7 +322,7 @@ export function useDeletePromotionCode() {
 
 // Size types
 export function useSizeTypes() {
-  return useQuery({ queryKey: ['taxonomy', 'size-types'], queryFn: sizeTypesApi.list })
+  return useQuery({ queryKey: ['taxonomy', 'size-types'], queryFn: sizeTypesApi.list, staleTime: LIST_STALE_MS })
 }
 export function useSizeType(n: number | undefined) {
   return useQuery({

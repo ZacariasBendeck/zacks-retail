@@ -36,6 +36,8 @@ import customerRoutes from './routes/customerRoutes';
 import customerTransactionsRoutes from './routes/customerTransactionsRoutes';
 import physicalInventoryRoutes from './routes/physicalInventoryRoutes';
 import productsTaxonomyRoutes from './routes/products/taxonomyRoutes';
+import productsVendorRoutes from './routes/products/vendorRoutes';
+import productsSkuRoutes from './routes/products/skuRoutes';
 import { createAuthRoutes } from './routes/authRoutes';
 import { createUserRoutes } from './routes/userRoutes';
 import { attachUser } from './middleware/authMiddleware';
@@ -123,6 +125,8 @@ app.use('/api/v1/count-sessions', physicalInventoryRoutes);
 
 // products module — Phase 1 Step 2 taxonomy CRUD
 app.use('/api/v1/taxonomy', productsTaxonomyRoutes);
+app.use('/api/v1/products/vendors', productsVendorRoutes);
+app.use('/api/v1/products/skus', productsSkuRoutes);
 
 // employees module
 app.use('/api/v1/auth', createAuthRoutes(prisma));

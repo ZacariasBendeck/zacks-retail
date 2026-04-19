@@ -62,8 +62,25 @@ export function escapePowerShellLiteral(value: string): string {
   return value.replace(/'/g, "''");
 }
 
+/**
+ * PowerShell prologue that forces stdout + pipeline encoding to UTF-8 so that
+ * non-ASCII characters (e.g. the Spanish Ñ in department descriptions like
+ * 'SECTOR ROPA NIÑOS') survive the transit from PowerShell's OEM code page
+ * (typically Windows-1252 / CP850) into Node's UTF-8-decoded `spawnSync` stdout.
+ *
+ * Without this, 0xD1 'Ñ' encoded as a single byte by PowerShell gets treated as
+ * an invalid UTF-8 start byte by Node and is replaced with U+FFFD (or split,
+ * depending on what follows). Setting the console + pipeline encodings to UTF-8
+ * makes PowerShell emit the character as the 2-byte sequence 0xC3 0x91, which
+ * round-trips cleanly through JSON.
+ */
+const UTF8_OUTPUT_PROLOGUE = `
+$OutputEncoding = [System.Text.Encoding]::UTF8
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+`;
+
 export function runPowerShellJson<T>(script: string): T {
-  const result = spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], {
+  const result = spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', UTF8_OUTPUT_PROLOGUE + script], {
     encoding: 'utf8',
     maxBuffer: 64 * 1024 * 1024,
   });

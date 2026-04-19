@@ -141,3 +141,37 @@ model ProductsAuditLog {
   @@index([occurredAt])
   @@index([targetTable, targetPk])
 }
+
+/// Season descriptions — RICS-style 20-slot rolling ring.
+///
+/// RICS stores the 20 fixed codes (`0`, `V`–`Z`, `1`–`9`, `A`–`E`) with
+/// user-editable descriptions in RISEMF.MDB, which the Phase 1 adapter cannot
+/// reliably open on this customer's database. We mirror the 20 slots in
+/// Postgres as a small overlay. The Phase 1 admin UI reads and writes here;
+/// Phase 2 will sync back to RISEMF when the format issue is resolved.
+///
+/// See RICS p. 218 (Season Setup) and the screenshot attached to the
+/// 2026-04-19 parity request. Codes are a fixed universe — only descriptions
+/// are user-editable.
+model SeasonOverlay {
+  code            String   @id @db.VarChar(2)
+  position        Int      @unique             // 0..19 ordering in the RICS grid
+  description     String?  @db.VarChar(32)
+  dateLastChanged DateTime @default(now()) @updatedAt
+}
+
+/// Season cadence + current-season anchor.
+///
+/// Singleton row (id=1). Holds the "Season Ending Months" configuration from
+/// RICS Company Setup (p. 218) and an anchor pair (seasonCode, startedAt) that
+/// lets the backend compute the current season for any given date without
+/// storing a cursor that mutates on a schedule. RICS's equivalent fields live
+/// in RICFG; we'll sync once the Ñ-encoding PowerShell fix is confirmed
+/// against that file too.
+model SeasonConfig {
+  id                        Int      @id @default(1)
+  endingMonthsCsv           String   @default("3,6,9,12")  // CSV of month numbers 1..12
+  anchorSeasonCode          String   @db.VarChar(2)         // season code active at anchorStartedAt
+  anchorStartedAt           DateTime                         // first day of that anchor season
+  updatedAt                 DateTime @default(now()) @updatedAt
+}

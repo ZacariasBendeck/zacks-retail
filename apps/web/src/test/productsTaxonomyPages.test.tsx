@@ -40,6 +40,10 @@ vi.mock('../hooks/useProductsTaxonomy', () => ({
   useUpdatePromotionCode: vi.fn(),
   useDeletePromotionCode: vi.fn(),
   useSeasons: vi.fn(),
+  useSeason: vi.fn(),
+  useCreateSeason: vi.fn(),
+  useUpdateSeason: vi.fn(),
+  useDeleteSeason: vi.fn(),
   useSizeTypes: vi.fn(),
   useSizeType: vi.fn(),
   useCreateSizeType: vi.fn(),
@@ -106,9 +110,18 @@ describe('Products taxonomy pages', () => {
       ],
       isLoading: false,
     } as never)
+    // DepartmentListPage now computes a derived Sector column — mock useSectors.
+    vi.mocked(hooks.useSectors).mockReturnValue({
+      data: [
+        { number: 1, description: 'MARCAS', begDept: 1, endDept: 20, dateLastChanged: null },
+      ],
+      isLoading: false,
+    } as never)
     renderPage(<DepartmentListPage />)
     expect(screen.getByText('ROPA HOMBRE')).toBeTruthy()
     expect(screen.getByText('ROPA MUJER')).toBeTruthy()
+    // Sector 'MARCAS' renders once per department row it covers.
+    expect(screen.getAllByText('MARCAS').length).toBeGreaterThanOrEqual(1)
   })
 
   it('DepartmentFormPage in create mode shows empty form and Save button', () => {
@@ -195,13 +208,49 @@ describe('Products taxonomy pages', () => {
     expect(screen.getByText('Summer promo')).toBeTruthy()
   })
 
-  it('SeasonListPage shows Phase 1 read-only notice', () => {
+  it('SeasonListPage renders all 20 slots with descriptions and the current marker', () => {
     vi.mocked(hooks.useSeasons).mockReturnValue({
-      data: [{ code: 'A', description: null, skuCount: 42 }],
+      data: [
+        {
+          code: 'A',
+          position: 15,
+          description: 'NAV 25',
+          skuCount: 42,
+          isCurrent: false,
+          periodStartedAt: null,
+          periodEndsAt: null,
+        },
+        {
+          code: 'B',
+          position: 16,
+          description: 'PRIM 26',
+          skuCount: 3,
+          isCurrent: true,
+          periodStartedAt: '2026-04-01T00:00:00.000Z',
+          periodEndsAt: '2026-06-30T23:59:59.999Z',
+        },
+        {
+          code: 'C',
+          position: 17,
+          description: null,
+          skuCount: 0,
+          isCurrent: false,
+          periodStartedAt: null,
+          periodEndsAt: null,
+        },
+      ],
       isLoading: false,
     } as never)
+    vi.mocked(hooks.useDeleteSeason).mockReturnValue({
+      mutateAsync: vi.fn(),
+      isPending: false,
+    } as never)
     renderPage(<SeasonListPage />)
-    expect(screen.getByText(/Read-only in Phase 1/)).toBeTruthy()
+    expect(screen.getByText('NAV 25')).toBeTruthy()
+    // PRIM 26 appears twice — once in the header "Current season" and once in the row.
+    expect(screen.getAllByText('PRIM 26').length).toBeGreaterThanOrEqual(1)
+    expect(screen.getAllByText('CURRENT').length).toBeGreaterThanOrEqual(1)
+    expect(screen.getByText(/\(empty\)/)).toBeTruthy()
   })
 
   it('SizeTypeListPage renders grid size summary', () => {
