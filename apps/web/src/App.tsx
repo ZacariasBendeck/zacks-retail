@@ -1,6 +1,6 @@
 import { Suspense, lazy } from 'react'
 import { Flex, Spin } from 'antd'
-import { Routes, Route, Navigate, Outlet } from 'react-router-dom'
+import { Routes, Route, Navigate, Outlet, useParams, useSearchParams } from 'react-router-dom'
 import AppLayout from './components/AppLayout'
 import { AuthProvider } from './auth/AuthContext'
 import { RequireAuth } from './auth/RequireAuth'
@@ -12,7 +12,6 @@ const DashboardPage = lazy(() => import('./pages/inventory/DashboardPage'))
 const InventoryBalancesPage = lazy(() => import('./pages/inventory/InventoryBalancesPage'))
 const SalesLedgerPage = lazy(() => import('./pages/inventory/SalesLedgerPage'))
 const InventoryMovementPage = lazy(() => import('./pages/inventory/InventoryMovementPage'))
-const InventoryInquiryPage = lazy(() => import('./pages/inventory/InventoryInquiryPage'))
 const FindBySizePage = lazy(() => import('./pages/inventory/FindBySizePage'))
 const ReplenishmentTargetsPage = lazy(() => import('./pages/inventory/ReplenishmentTargetsPage'))
 const TransferSummaryReportPage = lazy(() => import('./pages/inventory/TransferSummaryReportPage'))
@@ -87,8 +86,16 @@ const VendorFormPage = lazy(() => import('./pages/products/vendors/VendorFormPag
 const ProductsSkuListPage = lazy(() => import('./pages/products/skus/SkuListPage'))
 const ProductsSkuFormPage = lazy(() => import('./pages/products/skus/SkuFormPage'))
 
-// products module — Inventory Inquiry (new route; legacy /inventory/inquiry stays until Task 23)
+// products module — Inventory Inquiry (/inventory/inquiry now redirects here)
 const InquiryPage = lazy(() => import('./pages/products/inquiry/InquiryPage').then(m => ({ default: m.InquiryPage })))
+
+const LegacyInquiryRedirect: React.FC = () => {
+  const { skuCode } = useParams<{ skuCode?: string }>()
+  const [params] = useSearchParams()
+  if (!skuCode) return <Navigate to="/products/skus" replace />
+  const qs = params.toString()
+  return <Navigate to={`/products/inquiry/${skuCode}${qs ? `?${qs}` : ''}`} replace />
+}
 
 function RouteLoadingFallback() {
   return (
@@ -133,7 +140,8 @@ export default function App() {
             <Route path="/inventory/adjustments/:adjustmentId" element={<AdjustmentDetailPage />} />
             <Route path="/inventory/sales-ledger" element={<SalesLedgerPage />} />
             <Route path="/inventory/movements" element={<InventoryMovementPage />} />
-            <Route path="/inventory/inquiry" element={<InventoryInquiryPage />} />
+            <Route path="/inventory/inquiry" element={<LegacyInquiryRedirect />} />
+            <Route path="/inventory/inquiry/:skuCode" element={<LegacyInquiryRedirect />} />
             <Route path="/products/inquiry/:skuCode" element={<InquiryPage />} />
             <Route path="/inventory/find-by-size" element={<FindBySizePage />} />
             <Route path="/inventory/replenishment" element={<ReplenishmentTargetsPage />} />
