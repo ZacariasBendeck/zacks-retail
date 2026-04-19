@@ -2,6 +2,7 @@ import React from 'react';
 import { Alert, Spin } from 'antd';
 import { useParams, useSearchParams } from 'react-router-dom';
 import { HeaderCard } from './HeaderCard';
+import { PricingPanel } from './PricingPanel';
 import { useInquiryData } from './useInquiryData';
 
 export const InquiryPage: React.FC = () => {
@@ -19,7 +20,8 @@ export const InquiryPage: React.FC = () => {
   return (
     <div>
       <HeaderCard inquiry={data} />
-      {/* Pricing, Rollup, Picture, ViewModeSelector, ActionBar, tabs wired in following tasks */}
+      <PricingPanel pricing={data.pricing} />
+      {/* Rollup, Picture, ViewModeSelector, ActionBar, tabs wired in following tasks */}
     </div>
   );
 };
