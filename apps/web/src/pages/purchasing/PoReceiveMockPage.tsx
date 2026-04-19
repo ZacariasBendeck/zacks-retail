@@ -52,6 +52,7 @@ import type {
   SizeType,
   UnderReceiveAction,
 } from '../../types/purchasingSpec'
+import { SkuLink } from '../../components/sku-link'
 
 const { Text, Title, Paragraph } = Typography
 
@@ -558,7 +559,7 @@ export default function PoReceiveMockPage() {
                   renderItem={(entry) => (
                     <List.Item style={{ padding: '4px 0' }}>
                       <Text style={{ fontSize: 12 }}>
-                        {entry.ts} · {entry.skuCode} · {entry.cellLabel}
+                        {entry.ts} · <SkuLink skuCode={entry.skuCode} /> · {entry.cellLabel}
                       </Text>
                     </List.Item>
                   )}
@@ -659,7 +660,7 @@ export default function PoReceiveMockPage() {
                 <Space direction="vertical" size={4} style={{ width: '100%' }}>
                   <Space>
                     <Tag color="blue">SKU {index + 1}</Tag>
-                    <Text strong>{sku?.skuCode}</Text>
+                    {sku?.skuCode ? <SkuLink skuCode={sku.skuCode} /> : null}
                     <Text type="secondary">· {sku?.description}</Text>
                   </Space>
                   <Text type="secondary">
@@ -749,7 +750,11 @@ function ReceiveLineCard({
       title={
         <Space wrap>
           <Tag color="blue">SKU {index + 1}</Tag>
-          <Text strong>{sku?.skuCode ?? line.skuId}</Text>
+          {sku?.skuCode ? (
+            <SkuLink skuCode={sku.skuCode} />
+          ) : (
+            <Text strong>{line.skuId}</Text>
+          )}
           <Text type="secondary">· {sku?.description}</Text>
           {sku && <Tag color="geekblue">{sku.brand}</Tag>}
           {sizeType && <Tag>{sizeType.name}</Tag>}

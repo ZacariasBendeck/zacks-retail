@@ -58,6 +58,7 @@ import type {
   PoLineDraft,
   SizeType,
 } from '../../types/purchasingSpec'
+import { SkuLink } from '../../components/sku-link'
 
 const { Text, Title, Paragraph } = Typography
 
@@ -1086,7 +1087,11 @@ function CommittedSkuList({ lines, editingKey, onEdit, onRemove }: CommittedSkuL
                   title={
                     <Space wrap>
                       <Tag color="blue">SKU {index + 1}</Tag>
-                      <Text strong>{sku?.skuCode ?? line.skuId}</Text>
+                      {sku?.skuCode ? (
+                        <SkuLink skuCode={sku.skuCode} />
+                      ) : (
+                        <Text strong>{line.skuId}</Text>
+                      )}
                       <Text type="secondary">· {sku?.description ?? ''}</Text>
                       {sku && <Tag color="geekblue">{sku.brand}</Tag>}
                       {type && <Tag>{type.name}</Tag>}
