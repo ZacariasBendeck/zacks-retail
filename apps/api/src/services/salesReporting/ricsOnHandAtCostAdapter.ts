@@ -34,6 +34,29 @@ const INVQUA_MDB = () =>
 const INVMAS_MDB = () =>
   ricsDbPath(process.env.RICS_INVMAS_DB_FILE || 'RIINVMAS.MDB');
 
+// The RIINVQUA GROUP BY aggregation and the RIINVMAS lite pull are both
+// expensive over OLEDB (tens of thousands of rows × wide-column sums).
+// Cache them independently of the report-specific criteria — callers apply
+// criteria in-memory after the raw data lands. Five-minute TTL is tight
+// enough that stock movements show up within one coffee break.
+const CACHE_TTL_MS = 5 * 60 * 1000;
+interface CacheEntry<T> {
+  value: T;
+  expiresAt: number;
+}
+const cache = new Map<string, CacheEntry<unknown>>();
+function cached<T>(key: string, loader: () => T): T {
+  const now = Date.now();
+  const hit = cache.get(key) as CacheEntry<T> | undefined;
+  if (hit && hit.expiresAt > now) return hit.value;
+  const value = loader();
+  cache.set(key, { value, expiresAt: now + CACHE_TTL_MS });
+  return value;
+}
+export function clearOnHandCache(): void {
+  cache.clear();
+}
+
 const MASTER_JOIN_ONLY = new Set<SalesAnalysisReportType>([
   'GROUP_SUMMARY',
   'SEASON_SUMMARY',
@@ -106,40 +129,29 @@ export async function getOnHandAtCostByDimension(params: {
     return new Map();
   }
 
-  const pw = getOrRecoverPassword(INVQUA_MDB());
-
-  const onHandExpr = Array.from({ length: 18 }, (_, i) =>
-    `IIF([OnHand_${pad2(i + 1)}] IS NULL, 0, [OnHand_${pad2(i + 1)}])`,
-  ).join(' + ');
-  const quaSql = `SELECT [SKU], [Store], SUM(${onHandExpr}) AS TotalOnHand
+  const qua = cached('onhand:qua', () => {
+    const pw = getOrRecoverPassword(INVQUA_MDB());
+    const onHandExpr = Array.from({ length: 18 }, (_, i) =>
+      `IIF([OnHand_${pad2(i + 1)}] IS NULL, 0, [OnHand_${pad2(i + 1)}])`,
+    ).join(' + ');
+    const quaSql = `SELECT [SKU], [Store], SUM(${onHandExpr}) AS TotalOnHand
 FROM [Inventory Quantities]
-GROUP BY [SKU], [Store]`;
-  const qua =
-    runPowerShellJson<QuaRow[]>(buildSelectScript(INVQUA_MDB(), pw, quaSql)) ?? [];
-
-  const masterWheres: string[] = [`([Status] IS NULL OR [Status] <> 'D')`];
-  if (params.criteria.categories?.length) {
-    masterWheres.push(
-      `[Category] IN (${params.criteria.categories.map((c) => Number(c)).join(',')})`,
+GROUP BY [SKU], [Store]
+HAVING SUM(${onHandExpr}) > 0`;
+    return (
+      runPowerShellJson<QuaRow[]>(buildSelectScript(INVQUA_MDB(), pw, quaSql)) ?? []
     );
-  }
-  if (params.criteria.vendors?.length) {
-    const list = params.criteria.vendors
-      .map((v) => `'${String(v).trim().replace(/'/g, "''")}'`)
-      .join(',');
-    masterWheres.push(`[Vendor] IN (${list})`);
-  }
-  if (params.criteria.skus?.length) {
-    const list = params.criteria.skus
-      .map((s) => `'${String(s).trim().replace(/'/g, "''")}'`)
-      .join(',');
-    masterWheres.push(`[SKU] IN (${list})`);
-  }
-  const masterSql = `SELECT [SKU], [Category], [Vendor], [Season], [CurrentCost]
+  });
+
+  const masters = cached('onhand:master', () => {
+    const pw = getOrRecoverPassword(INVMAS_MDB());
+    const masterSql = `SELECT [SKU], [Category], [Vendor], [Season], [CurrentCost]
 FROM [InventoryMaster]
-WHERE ${masterWheres.join(' AND ')}`;
-  const masters =
-    runPowerShellJson<MasterRow[]>(buildSelectScript(INVMAS_MDB(), pw, masterSql)) ?? [];
+WHERE ([Status] IS NULL OR [Status] <> 'D')`;
+    return (
+      runPowerShellJson<MasterRow[]>(buildSelectScript(INVMAS_MDB(), pw, masterSql)) ?? []
+    );
+  });
 
   const categoryExpr = parseCriteria(params.criteria.categoriesRaw);
   const vendorExpr = parseCriteria(params.criteria.vendorsRaw);

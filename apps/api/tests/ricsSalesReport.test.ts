@@ -55,8 +55,14 @@ jest.mock('../src/services/accessOleDb', () => {
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const adapter = require('../src/services/salesReporting/ricsSalesReportAdapter');
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { clearOnHandCache } = require('../src/services/salesReporting/ricsOnHandAtCostAdapter');
 
 const sqlMatches = (needle: string) => (sql: string): boolean => sql.includes(needle);
+
+beforeEach(() => {
+  clearOnHandCache();
+});
 
 // ─────────────────────────── fixtures ─────────────────────────────────────
 

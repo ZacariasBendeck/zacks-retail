@@ -40,13 +40,14 @@ jest.mock('../src/services/accessOleDb', () => {
 });
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { getOnHandAtCostByDimension } = require('../src/services/salesReporting/ricsOnHandAtCostAdapter');
+const { getOnHandAtCostByDimension, clearOnHandCache } = require('../src/services/salesReporting/ricsOnHandAtCostAdapter');
 
 const sqlMatches = (needle: string) => (sql: string) => sql.includes(needle);
 
 describe('getOnHandAtCostByDimension', () => {
   beforeEach(() => {
     mockSpecs = [];
+    clearOnHandCache();
   });
 
   it('groups by category for CATEGORY_SUMMARY', async () => {
