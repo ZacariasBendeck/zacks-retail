@@ -2,6 +2,7 @@ import React from 'react';
 import { Alert, Spin } from 'antd';
 import { useParams, useSearchParams } from 'react-router-dom';
 import { HeaderCard } from './HeaderCard';
+import { PicturePanel } from './PicturePanel';
 import { PricingPanel } from './PricingPanel';
 import { SalesRollupStrip } from './SalesRollupStrip';
 import { useInquiryData } from './useInquiryData';
@@ -21,9 +22,10 @@ export const InquiryPage: React.FC = () => {
   return (
     <div>
       <HeaderCard inquiry={data} />
+      <PicturePanel pictureUrl={data.pictureUrl} alt={data.sku} />
       <PricingPanel pricing={data.pricing} />
       <SalesRollupStrip rollup={data.rollup} />
-      {/* Picture, ViewModeSelector, ActionBar, tabs wired in following tasks */}
+      {/* ViewModeSelector, ActionBar, tabs wired in following tasks */}
     </div>
   );
 };
