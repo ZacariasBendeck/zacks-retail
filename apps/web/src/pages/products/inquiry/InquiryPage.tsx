@@ -1,6 +1,7 @@
 import React from 'react';
 import { Alert, Spin } from 'antd';
 import { useParams, useSearchParams } from 'react-router-dom';
+import { HeaderCard } from './HeaderCard';
 import { useInquiryData } from './useInquiryData';
 
 export const InquiryPage: React.FC = () => {
@@ -17,11 +18,8 @@ export const InquiryPage: React.FC = () => {
 
   return (
     <div>
-      <header>
-        <h1>{data.sku}</h1>
-        <p>{data.description}</p>
-      </header>
-      {/* Header, Pricing, Rollup, Picture, ViewModeSelector, ActionBar, tabs wired in following tasks */}
+      <HeaderCard inquiry={data} />
+      {/* Pricing, Rollup, Picture, ViewModeSelector, ActionBar, tabs wired in following tasks */}
     </div>
   );
 };
