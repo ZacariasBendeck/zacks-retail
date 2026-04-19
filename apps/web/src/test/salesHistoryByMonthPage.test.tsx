@@ -37,18 +37,8 @@ vi.mock('../hooks/useReports', () => ({
 }))
 
 const MONTHS = [
-  '2025-05',
-  '2025-06',
-  '2025-07',
-  '2025-08',
-  '2025-09',
-  '2025-10',
-  '2025-11',
-  '2025-12',
-  '2026-01',
-  '2026-02',
-  '2026-03',
-  '2026-04',
+  '2025-05', '2025-06', '2025-07', '2025-08', '2025-09', '2025-10',
+  '2025-11', '2025-12', '2026-01', '2026-02', '2026-03', '2026-04',
 ]
 
 function buildDims(): SalesDimensionsResponse {
@@ -62,7 +52,10 @@ function buildDims(): SalesDimensionsResponse {
   }
 }
 
-function buildCombinedReport(): SalesHistoryByMonthReport {
+function buildCombinedReport(
+  overrides: Partial<SalesHistoryByMonthReport> = {},
+): SalesHistoryByMonthReport {
+  const monthly = [100, 110, 120, 130, 140, 150, 160, 170, 180, 190, 200, 210]
   return {
     sortBy: 'vendor',
     endMonth: '2026-04',
@@ -72,6 +65,10 @@ function buildCombinedReport(): SalesHistoryByMonthReport {
       { number: 1, label: '1 — Main Street' },
       { number: 2, label: '2 — Downtown' },
     ],
+    detailLevel: 'subtotals',
+    dataToPrint: ['netSales'],
+    deferredMetrics: [],
+    criteria: {},
     blocks: [
       {
         storeNumber: 'ALL',
@@ -80,24 +77,46 @@ function buildCombinedReport(): SalesHistoryByMonthReport {
           {
             key: 'NIKE',
             label: 'NIKE',
-            monthValues: [100, 110, 120, 130, 140, 150, 160, 170, 180, 190, 200, 210],
-            total: 1860,
+            metrics: { netSales: monthly },
+            totals: { netSales: 1860 },
           },
         ],
-        columnTotals: [100, 110, 120, 130, 140, 150, 160, 170, 180, 190, 200, 210],
-        grandTotal: 1860,
+        columnTotals: { netSales: monthly },
+        grandTotals: { netSales: 1860 },
       },
     ],
-    chartSeries: [
+    chartSeries: [{ name: 'All Stores', values: monthly }],
+    ...overrides,
+  }
+}
+
+function buildMultiMetricReport(): SalesHistoryByMonthReport {
+  const netMonthly = [100, 110, 120, 130, 140, 150, 160, 170, 180, 190, 200, 210]
+  const qtyMonthly = [5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10]
+  return {
+    ...buildCombinedReport(),
+    dataToPrint: ['netSales', 'quantitySold'],
+    blocks: [
       {
-        name: 'All Stores',
-        values: [100, 110, 120, 130, 140, 150, 160, 170, 180, 190, 200, 210],
+        storeNumber: 'ALL',
+        storeLabel: 'All Stores',
+        rows: [
+          {
+            key: 'NIKE',
+            label: 'NIKE',
+            metrics: { netSales: netMonthly, quantitySold: qtyMonthly },
+            totals: { netSales: 1860, quantitySold: 90 },
+          },
+        ],
+        columnTotals: { netSales: netMonthly, quantitySold: qtyMonthly },
+        grandTotals: { netSales: 1860, quantitySold: 90 },
       },
     ],
   }
 }
 
 function buildSeparateReport(): SalesHistoryByMonthReport {
+  const half = [50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100, 105]
   return {
     sortBy: 'vendor',
     endMonth: '2026-04',
@@ -107,6 +126,10 @@ function buildSeparateReport(): SalesHistoryByMonthReport {
       { number: 1, label: '1 — Main Street' },
       { number: 2, label: '2 — Downtown' },
     ],
+    detailLevel: 'subtotals',
+    dataToPrint: ['netSales'],
+    deferredMetrics: [],
+    criteria: {},
     blocks: [
       {
         storeNumber: 1,
@@ -115,12 +138,12 @@ function buildSeparateReport(): SalesHistoryByMonthReport {
           {
             key: 'NIKE',
             label: 'NIKE',
-            monthValues: [50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100, 105],
-            total: 930,
+            metrics: { netSales: half },
+            totals: { netSales: 930 },
           },
         ],
-        columnTotals: [50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100, 105],
-        grandTotal: 930,
+        columnTotals: { netSales: half },
+        grandTotals: { netSales: 930 },
       },
       {
         storeNumber: 2,
@@ -129,17 +152,17 @@ function buildSeparateReport(): SalesHistoryByMonthReport {
           {
             key: 'NIKE',
             label: 'NIKE',
-            monthValues: [50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100, 105],
-            total: 930,
+            metrics: { netSales: half },
+            totals: { netSales: 930 },
           },
         ],
-        columnTotals: [50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100, 105],
-        grandTotal: 930,
+        columnTotals: { netSales: half },
+        grandTotals: { netSales: 930 },
       },
     ],
     chartSeries: [
-      { name: '1 — Main Street', values: [50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100, 105] },
-      { name: '2 — Downtown', values: [50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100, 105] },
+      { name: '1 — Main Street', values: half },
+      { name: '2 — Downtown', values: half },
     ],
   }
 }
@@ -187,21 +210,15 @@ describe('SalesHistoryByMonthPage', () => {
 
     renderPage()
 
-    // Filter bar controls are present before any selection.
     expect(
       screen.getByRole('heading', { level: 2, name: /Sales History by Month/ }),
     ).toBeInTheDocument()
     expect(screen.getByTestId('stores-select')).toBeInTheDocument()
-    expect(screen.getByRole('switch')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Export CSV/i })).toBeDisabled()
 
-    // Empty state is shown.
     expect(
       screen.getByText(/Select one or more stores to load the report/i),
     ).toBeInTheDocument()
 
-    // Every call to useSalesHistoryByMonth should have been made with `null`
-    // (the page disables the query until ≥1 store is selected).
     expect(hook).toHaveBeenCalled()
     for (const call of hook.mock.calls) {
       expect(call[0]).toBeNull()
@@ -220,18 +237,20 @@ describe('SalesHistoryByMonthPage', () => {
 
     await selectStore(user, /1 — Main Street/)
 
-    // Chart renders once.
     await waitFor(() => {
       expect(screen.getByTestId('sales-history-chart')).toBeInTheDocument()
     })
 
-    // Vendor row and month columns render with currency formatting.
+    // Vendor row renders.
     expect(screen.getByText('NIKE')).toBeInTheDocument()
-    // The row total ($1,860) appears in the row and in the summary cell.
-    expect(screen.getAllByText('$1,860').length).toBeGreaterThan(0)
+    // Row + summary total — plain number (currency symbol is labeled once in
+    // the page header per CLAUDE.md policy, not on every cell).
+    expect(screen.getAllByText(/^1,860(\.00)?$/).length).toBeGreaterThan(0)
 
     // No per-store block headers in combined mode.
     expect(screen.queryByTestId('block-header')).not.toBeInTheDocument()
+    // No metric tab strip when only one metric is selected.
+    expect(screen.queryByTestId('metric-tab-strip')).not.toBeInTheDocument()
   })
 
   it('renders one table per block for combineStores=false', async () => {
@@ -254,7 +273,27 @@ describe('SalesHistoryByMonthPage', () => {
     expect(headers[1]).toHaveTextContent('2 — Downtown')
   })
 
-  it('Export CSV button links to the endpoint with format=csv once a store is selected', async () => {
+  it('shows the metric tab strip when multiple metrics are enabled', async () => {
+    const user = userEvent.setup()
+    vi.mocked(useSalesHistoryByMonth).mockReturnValue({
+      data: buildMultiMetricReport(),
+      isFetching: false,
+      error: null,
+    } as never)
+
+    renderPage()
+    await selectStore(user, /1 — Main Street/)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('metric-tab-strip')).toBeInTheDocument()
+    })
+    // Tab strip contains both metric short-labels.
+    const strip = screen.getByTestId('metric-tab-strip')
+    expect(within(strip).getByText(/Net Sales/)).toBeInTheDocument()
+    expect(within(strip).getByText(/Qty/)).toBeInTheDocument()
+  })
+
+  it('Export CSV + XLSX links are enabled once a store is selected and encode the full params', async () => {
     const user = userEvent.setup()
     vi.mocked(useSalesHistoryByMonth).mockReturnValue({
       data: buildCombinedReport(),
@@ -264,21 +303,66 @@ describe('SalesHistoryByMonthPage', () => {
 
     renderPage()
 
-    const csvBefore = screen.getByRole('button', { name: /Export CSV/i })
+    const csvBefore = screen.getAllByRole('button', { name: /Export CSV/i })[0]
     expect(csvBefore).toBeDisabled()
 
     await selectStore(user, /1 — Main Street/)
 
     await waitFor(() => {
-      expect(screen.getByRole('link', { name: /Export CSV/i })).toBeInTheDocument()
+      expect(screen.getAllByRole('link', { name: /Export CSV/i }).length).toBeGreaterThan(0)
     })
-    const csvAfter = screen.getByRole('link', { name: /Export CSV/i })
-    const href = csvAfter.getAttribute('href') ?? ''
-    expect(href).toContain('/api/v1/reports/rics-sales-history-by-month')
-    expect(href).toContain('format=csv')
-    expect(href).toContain('stores=1')
-    expect(href).toContain('sortBy=vendor')
-    expect(href).toContain('combineStores=true')
+    const csvAfter = screen.getAllByRole('link', { name: /Export CSV/i })[0]!
+    const csvHref = csvAfter.getAttribute('href') ?? ''
+    expect(csvHref).toContain('/api/v1/reports/rics-sales-history-by-month')
+    expect(csvHref).toContain('format=csv')
+    expect(csvHref).toContain('stores=1')
+    expect(csvHref).toContain('sortBy=vendor')
+    expect(csvHref).toContain('combineStores=true')
+    expect(csvHref).toContain('detailLevel=subtotals')
+
+    const xlsxAfter = screen.getAllByRole('link', { name: /Export XLSX/i })[0]!
+    const xlsxHref = xlsxAfter.getAttribute('href') ?? ''
+    expect(xlsxHref).toContain('format=xlsx')
+  })
+
+  it('Criteria tab exposes all seven facet inputs', async () => {
+    const user = userEvent.setup()
+    vi.mocked(useSalesHistoryByMonth).mockReturnValue({
+      data: undefined,
+      isFetching: false,
+      error: null,
+    } as never)
+
+    renderPage()
+
+    await user.click(screen.getByRole('tab', { name: /Criteria/i }))
+
+    expect(screen.getByTestId('criteria-stores')).toBeInTheDocument()
+    expect(screen.getByTestId('criteria-categories')).toBeInTheDocument()
+    expect(screen.getByTestId('criteria-vendors')).toBeInTheDocument()
+    expect(screen.getByTestId('criteria-seasons')).toBeInTheDocument()
+    expect(screen.getByTestId('criteria-styleColors')).toBeInTheDocument()
+    expect(screen.getByTestId('criteria-groups')).toBeInTheDocument()
+    expect(screen.getByTestId('criteria-keywords')).toBeInTheDocument()
+  })
+
+  it('typing a criteria value propagates into the URL params on the next fetch', async () => {
+    const user = userEvent.setup()
+    const hook = vi.mocked(useSalesHistoryByMonth)
+    hook.mockReturnValue({ data: undefined, isFetching: false, error: null } as never)
+
+    renderPage()
+    await selectStore(user, /1 — Main Street/)
+
+    await user.click(screen.getByRole('tab', { name: /Criteria/i }))
+    await user.type(screen.getByTestId('criteria-vendors'), 'NIKE,ADIDAS')
+
+    // Hook receives the updated criteria (last call after the typing settles).
+    await waitFor(() => {
+      const calls = hook.mock.calls
+      const lastCall = calls[calls.length - 1]
+      expect(lastCall?.[0]?.criteria?.vendors).toBe('NIKE,ADIDAS')
+    })
   })
 
   it('renders an error Alert with the server message when the hook errors', async () => {
@@ -299,5 +383,21 @@ describe('SalesHistoryByMonthPage', () => {
     const alert = screen.getByRole('alert')
     expect(within(alert).getByText(/Failed to load report/i)).toBeInTheDocument()
     expect(within(alert).getByText(/SALES_SOURCE must be set to rics/i)).toBeInTheDocument()
+  })
+
+  it('exposes the deferred-metric checkboxes on the Report Options tab', async () => {
+    const user = userEvent.setup()
+    const hook = vi.mocked(useSalesHistoryByMonth)
+    hook.mockReturnValue({ data: undefined, isFetching: false, error: null } as never)
+
+    renderPage()
+    await selectStore(user, /1 — Main Street/)
+
+    // Beginning On-Hand / ROI% / Turns shipped in v2.1 after RIINVHIS.MDB
+    // was indexed — they render as regular (non-deferred) metric checkboxes
+    // alongside Quantity Sold, Net Sales, Profit, etc.
+    expect(screen.getByTestId('metric-beginningOnHand')).toBeInTheDocument()
+    expect(screen.getByTestId('metric-roiPct')).toBeInTheDocument()
+    expect(screen.getByTestId('metric-turns')).toBeInTheDocument()
   })
 })

@@ -103,12 +103,15 @@ export async function sendXlsx(res: Response, options: XlsxExportOptions): Promi
 }
 
 // Common Excel number format codes, exported so routes don't duplicate string
-// literals. '$#,##0.00' is the standard USD currency pattern; '0' renders
-// integers; '0.00' a two-decimal number (good for ratios, multipliers, etc.);
-// '0.0%' a percentage multiplied by 100 — we use '0.0' instead for values we
+// literals. Currency policy (see CLAUDE.md): render money as plain numbers
+// with thousands separators and no currency symbol — the system is
+// single-currency (Lempira) and the page surface labels the unit once.
+// '#,##0.00' = two-decimal money. '0' renders integers. '0.00' is a
+// two-decimal number (good for ratios, multipliers, etc.). '0.0%' is a
+// percentage multiplied by 100 — we use '0.0' instead for values we
 // pre-compute as percentages so Excel doesn't apply ×100 again.
 export const XLSX_NUMFMT = {
-  money: '$#,##0.00',
+  money: '#,##0.00',
   integer: '0',
   decimal2: '0.00',
   /** Pre-computed percentage (e.g. "53.3") — shows 1 decimal without ×100. */

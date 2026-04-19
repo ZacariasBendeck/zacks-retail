@@ -18,7 +18,6 @@ import {
 import {
   DownloadOutlined,
   ArrowLeftOutlined,
-  DollarOutlined,
   SyncOutlined,
   WarningOutlined,
 } from '@ant-design/icons'
@@ -58,6 +57,16 @@ const DEFAULT_DETAIL_QUERY: ReportDetailQuery = {
   pageSize: 50,
   sort: 'turnoverRatio',
   order: 'asc',
+}
+
+// Currency is Honduran Lempira (HNL) system-wide — labeled once at the top of
+// the page, not repeated in every cell (see CLAUDE.md "Currency" policy).
+function formatMoney(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) return '-'
+  return value.toLocaleString('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })
 }
 
 function renderTurnoverRatio(v: number) {
@@ -204,7 +213,7 @@ export default function InventoryTurnoverReportPage() {
       dataIndex: 'totalCogs',
       key: 'totalCogs',
       align: 'right' as const,
-      render: (v: number) => `$${v.toFixed(2)}`,
+      render: (v: number) => formatMoney(v),
       sorter: (a: DepartmentTurnover, b: DepartmentTurnover) =>
         a.totalCogs - b.totalCogs,
     },
@@ -213,7 +222,7 @@ export default function InventoryTurnoverReportPage() {
       dataIndex: 'totalInventoryValue',
       key: 'totalInventoryValue',
       align: 'right' as const,
-      render: (v: number) => `$${v.toFixed(2)}`,
+      render: (v: number) => formatMoney(v),
       sorter: (a: DepartmentTurnover, b: DepartmentTurnover) =>
         a.totalInventoryValue - b.totalInventoryValue,
     },
@@ -257,7 +266,7 @@ export default function InventoryTurnoverReportPage() {
       dataIndex: 'totalCogs',
       key: 'totalCogs',
       align: 'right' as const,
-      render: (v: number) => `$${v.toFixed(2)}`,
+      render: (v: number) => formatMoney(v),
       sorter: (a: CategoryTurnover, b: CategoryTurnover) => a.totalCogs - b.totalCogs,
     },
     {
@@ -265,7 +274,7 @@ export default function InventoryTurnoverReportPage() {
       dataIndex: 'totalInventoryValue',
       key: 'totalInventoryValue',
       align: 'right' as const,
-      render: (v: number) => `$${v.toFixed(2)}`,
+      render: (v: number) => formatMoney(v),
       sorter: (a: CategoryTurnover, b: CategoryTurnover) =>
         a.totalInventoryValue - b.totalInventoryValue,
     },
@@ -341,7 +350,7 @@ export default function InventoryTurnoverReportPage() {
       key: 'price',
       width: 90,
       align: 'right' as const,
-      render: (v: number) => `$${v.toFixed(2)}`,
+      render: (v: number) => formatMoney(v),
       sorter: true,
       sortOrder: sortOrder('price'),
     },
@@ -365,7 +374,7 @@ export default function InventoryTurnoverReportPage() {
       key: 'inventoryValue',
       width: 110,
       align: 'right' as const,
-      render: (v: number) => `$${v.toFixed(2)}`,
+      render: (v: number) => formatMoney(v),
       sorter: true,
       sortOrder: sortOrder('inventoryValue'),
     },
@@ -375,7 +384,7 @@ export default function InventoryTurnoverReportPage() {
       key: 'cogs',
       width: 100,
       align: 'right' as const,
-      render: (v: number) => `$${v.toFixed(2)}`,
+      render: (v: number) => formatMoney(v),
       sorter: true,
       sortOrder: sortOrder('cogs'),
     },
@@ -453,6 +462,9 @@ export default function InventoryTurnoverReportPage() {
           </Col>
         </Row>
         <Breadcrumb style={{ marginTop: 8 }} items={breadcrumbItems} />
+        <Typography.Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0, fontSize: 12 }}>
+          Amounts in Lempira (HNL).
+        </Typography.Paragraph>
       </Card>
 
       {/* Summary KPIs (top-level only) */}
@@ -463,7 +475,6 @@ export default function InventoryTurnoverReportPage() {
               <Statistic
                 title="Total COGS"
                 value={totals.totalCogs}
-                prefix={<DollarOutlined />}
                 precision={2}
                 loading={deptLoading}
               />
@@ -474,7 +485,6 @@ export default function InventoryTurnoverReportPage() {
               <Statistic
                 title="Total Inventory Value"
                 value={totals.totalInventoryValue}
-                prefix={<DollarOutlined />}
                 precision={2}
                 loading={deptLoading}
               />
@@ -530,10 +540,10 @@ export default function InventoryTurnoverReportPage() {
                   </Table.Summary.Cell>
                   <Table.Summary.Cell index={1} />
                   <Table.Summary.Cell index={2} align="right">
-                    <Typography.Text strong>${totalCogs.toFixed(2)}</Typography.Text>
+                    <Typography.Text strong>{formatMoney(totalCogs)}</Typography.Text>
                   </Table.Summary.Cell>
                   <Table.Summary.Cell index={3} align="right">
-                    <Typography.Text strong>${totalInv.toFixed(2)}</Typography.Text>
+                    <Typography.Text strong>{formatMoney(totalInv)}</Typography.Text>
                   </Table.Summary.Cell>
                   <Table.Summary.Cell index={4} align="right">
                     <Typography.Text strong>{overallRatio.toFixed(2)}x</Typography.Text>

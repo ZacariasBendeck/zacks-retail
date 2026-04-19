@@ -162,10 +162,11 @@ export async function listSalesDimensions(): Promise<import('./ricsSalesReportAd
 // Keywords). See docs/superpowers/specs/2026-04-18-sales-history-by-month-design.md
 // for the v1→v2 delta.
 //
-// Deferred (Phase 2, gated by monthly-inventory-history data source):
-//   - Beginning On-Hand Qtys — requires a BOM inventory snapshot per (sku,
-//     store, month); not available from the live RICS MDBs we query today.
-//   - ROI% and Turns — derive from Beginning On-Hand, so they defer with it.
+// v2.1 (2026-04-18): Beginning On-Hand Qty, ROI%, and Turns ship after the
+// RIINVHIS.MDB discovery pass turned up monthly inventory snapshots in the
+// `InvHis.LYMonthQtyOH_NN` / `LYMonthOnHand_NN` rolling arrays. See the
+// adapter's `queryMonthlyInventoryHistory` for the column semantics and the
+// "metric formulas" section below for how ROI% / Turns are derived.
 
 import type { MonthlyDetailLevel } from './ricsSalesHistoryByMonthAdapter';
 
@@ -176,14 +177,20 @@ export const SUPPORTED_MONTHLY_METRICS = [
   'pctOfStoreNetSales',
   'profit',
   'grossProfit',
+  'beginningOnHand',
+  'roiPct',
+  'turns',
 ] as const;
 export type MonthlyMetricKey = (typeof SUPPORTED_MONTHLY_METRICS)[number];
 
-/** Metrics listed in the RICS manual that require a monthly inventory snapshot
- * the adapter can't produce today. Returned in the response so the UI can
- * disable the checkboxes with a tooltip (see spec v2). */
-export const DEFERRED_MONTHLY_METRICS = ['beginningOnHand', 'roiPct', 'turns'] as const;
-export type DeferredMetricKey = (typeof DEFERRED_MONTHLY_METRICS)[number];
+/** Metrics listed in the RICS manual that still require a data source we
+ * don't have yet. Currently empty — the three formerly deferred metrics
+ * (Beginning On-Hand Qty, ROI%, Turns) shipped in v2.1 once RIINVHIS was
+ * indexed. Retained as a type for backward compatibility with callers that
+ * still send `deferredMetrics=…` on the query string; any keys sent are
+ * echoed back in the response and otherwise ignored by the facade. */
+export const DEFERRED_MONTHLY_METRICS = [] as const;
+export type DeferredMetricKey = 'beginningOnHand' | 'roiPct' | 'turns';
 
 export interface SalesHistoryByMonthCriteria {
   /** Raw RICS-grammar strings per facet. Empty strings = "no filter". */
@@ -279,6 +286,52 @@ function round2(value: number): number {
 }
 function round1(value: number): number {
   return Math.round((value + Number.EPSILON) * 10) / 10;
+}
+
+// ─────────────────────── RIINVHIS calendar-slot mapping ──────────────────
+//
+// RIINVHIS.InvHis stores rolling 12-month inventory snapshots keyed by
+// calendar month (NN=01..12). Slot NN always holds the MOST RECENT COMPLETED
+// occurrence of calendar-month NN — so if today is 2026-04, slot _04 =
+// 2025-04 (in-progress 2026-04 hasn't closed yet), slot _03 = 2026-03,
+// slot _12 = 2025-12, etc. This helper maps each window month to the
+// calendar slot that stores its end-of-month qty, or null if that window
+// month is outside the RIINVHIS rolling window.
+function slotForWindowMonth(
+  windowYearMonth: string,
+  todayYear: number,
+  todayMonth: number,
+): number | null {
+  const y = Number(windowYearMonth.slice(0, 4));
+  const m = Number(windowYearMonth.slice(5, 7));
+  const storedYear = m < todayMonth ? todayYear : todayYear - 1;
+  return storedYear === y ? m - 1 : null;
+}
+
+/** For each of the 12 window months, return the InvHis slot index (0-11) that
+ *  holds that month's end-of-month snapshot, or null if it's outside the
+ *  rolling window. */
+function mapWindowToInvHisSlot(
+  months: string[],
+  today: { year: number; month: number },
+): (number | null)[] {
+  return months.map((ym) => slotForWindowMonth(ym, today.year, today.month));
+}
+
+/** For each of the 12 window months, return the InvHis slot index holding the
+ *  end-of-month snapshot of the PREVIOUS month (i.e. the beginning-on-hand
+ *  source for this month), or null if unavailable. */
+function mapWindowToPrevMonthInvHisSlot(
+  months: string[],
+  today: { year: number; month: number },
+): (number | null)[] {
+  return months.map((ym) => {
+    let y = Number(ym.slice(0, 4));
+    let m = Number(ym.slice(5, 7)) - 1;
+    if (m === 0) { m = 12; y -= 1; }
+    const prevYm = `${String(y).padStart(4, '0')}-${String(m).padStart(2, '0')}`;
+    return slotForWindowMonth(prevYm, today.year, today.month);
+  });
 }
 
 // ─────────────────────────── department lookup ────────────────────────────
@@ -573,6 +626,117 @@ export async function getSalesHistoryByMonth(
     bumpStoreTotals(storeBucket, mIdx, r.netSales);
   }
 
+  // ─── Inventory history (for Beginning On-Hand / ROI% / Turns) ─────────
+  // Pulled from RIINVHIS.InvHis only when one of the three inventory-backed
+  // metrics is requested, and rolled up through the same dim logic the sales
+  // pivot uses so the two line up 1:1.
+  type InvAgg = {
+    monthQtyOH: number[];                 // length 12, indexed by RICS calendar slot (0=Jan, 11=Dec)
+    monthValueOH: number[];               // length 12, in dollars
+  };
+  const needsInventory = dataToPrint.some(
+    (k) => k === 'beginningOnHand' || k === 'roiPct' || k === 'turns',
+  );
+  const invByRow = new Map<string, InvAgg>();
+  const today = new Date();
+  const todayInfo = { year: today.getFullYear(), month: today.getMonth() + 1 };
+  const currentSlotMap = mapWindowToInvHisSlot(months, todayInfo);
+  const prevSlotMap = mapWindowToPrevMonthInvHisSlot(months, todayInfo);
+
+  if (needsInventory) {
+    // Reuse the SKU master projection that resolveCriteria already loads.
+    const skuMaster = await monthlyAdapter.loadSkuMasterForCriteria();
+    const skuDimMap = new Map<string, { vendor: string; category: number | null }>();
+    for (const s of skuMaster) {
+      skuDimMap.set(s.sku, { vendor: s.vendor ?? '', category: s.category });
+    }
+
+    // Push any criteria narrowing through to the InvHis query. Without this,
+    // an unfiltered report would scan the full 1-2M-row InvHis table via
+    // PowerShell OLEDB which times out in practice. Priority:
+    //   1. An explicit resolved.skuFilter (complex criteria path).
+    //   2. Derive SKU list from vendorFilter / categoryFilter by intersecting
+    //      the skuMaster projection — cheap in-memory, avoids the worst case.
+    let invSkuFilter: string[] | undefined = resolved.skuFilter;
+    if (!invSkuFilter && (resolved.vendorFilter || resolved.categoryFilter)) {
+      const vSet = resolved.vendorFilter && resolved.vendorFilter.length > 0
+        ? new Set(resolved.vendorFilter)
+        : null;
+      const cSet = resolved.categoryFilter && resolved.categoryFilter.length > 0
+        ? new Set(resolved.categoryFilter)
+        : null;
+      const matched: string[] = [];
+      for (const s of skuMaster) {
+        if (vSet && !vSet.has(s.vendor ?? '')) continue;
+        if (cSet && !cSet.has(s.category ?? -1)) continue;
+        matched.push(s.sku);
+      }
+      if (matched.length > 0) invSkuFilter = matched;
+    }
+
+    let invRows: Awaited<ReturnType<typeof monthlyAdapter.queryMonthlyInventoryHistory>> = [];
+    try {
+      invRows = await monthlyAdapter.queryMonthlyInventoryHistory({
+        storeNumbers: effectiveStores,
+        skuFilter: invSkuFilter,
+        nonZeroOnly: true,
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[salesReportFacade] InvHis fetch failed: ${msg}`);
+    }
+
+    for (const inv of invRows) {
+      const dim = skuDimMap.get(inv.sku);
+      if (!dim) continue;
+
+      let dimKey: string;
+      let dimLabel: string;
+      if (detailLevel === 'sku') {
+        dimKey = inv.sku;
+        dimLabel = inv.sku;
+      } else if (detailLevel === 'department' && deptMap) {
+        const code = dim.category ?? 0;
+        const d = deptMap(code);
+        dimKey = d.key;
+        dimLabel = d.label;
+      } else if (params.sortBy === 'vendor') {
+        dimKey = dim.vendor || '(Unknown)';
+        dimLabel = dim.vendor || '(Unknown)';
+      } else {
+        dimKey = String(dim.category ?? '');
+        dimLabel = dimKey;
+      }
+
+      const storeBucket: number | 'ALL' = params.combineStores ? 'ALL' : inv.storeNumber;
+      const mapKey = `${storeBucket}|${dimKey}`;
+      let acc = invByRow.get(mapKey);
+      if (!acc) {
+        acc = {
+          monthQtyOH: new Array<number>(12).fill(0),
+          monthValueOH: new Array<number>(12).fill(0),
+        };
+        invByRow.set(mapKey, acc);
+      }
+      for (let i = 0; i < 12; i++) {
+        acc.monthQtyOH[i] += inv.monthQtyOH[i];
+        acc.monthValueOH[i] += inv.monthValueOH[i];
+      }
+      // dimLabel is intentionally unused in the aggregation (pivotMap owns labels),
+      // but the block key must match pivotMap's key so lookups join correctly.
+      void dimLabel;
+    }
+  }
+
+  /** Look up the InvHis aggregate for a (bucket, dim) row, or zero-filled default. */
+  const zeroInv: InvAgg = {
+    monthQtyOH: new Array<number>(12).fill(0),
+    monthValueOH: new Array<number>(12).fill(0),
+  };
+  function invFor(bucket: number | 'ALL', dimKey: string): InvAgg {
+    return invByRow.get(`${bucket}|${dimKey}`) ?? zeroInv;
+  }
+
   // ─── Bucket into blocks ───────────────────────────────────────────────
 
   type BucketAccumulator = {
@@ -622,7 +786,14 @@ export async function getSalesHistoryByMonth(
       pctOfStoreNetSales: new Array(12).fill(0),
       profit: new Array(12).fill(0),
       grossProfit: new Array(12).fill(0),
+      beginningOnHand: new Array(12).fill(0),
+      roiPct: new Array(12).fill(0),
+      turns: new Array(12).fill(0),
     };
+    // Block-level inventory-value accumulators, indexed by RICS calendar slot.
+    // Used to compute column ROI%/Turns as aggregate profit/cogs divided by
+    // aggregate avg inventory value (avoids Simpson's paradox at rollup).
+    const colMonthValueBySlot = new Array<number>(12).fill(0);
 
     const resultRows: SalesHistoryByMonthBlockRow[] = sortedRows.map((r) => {
       const metrics: Partial<Record<MonthlyMetricKey, number[]>> = {};
@@ -668,6 +839,72 @@ export async function getSalesHistoryByMonth(
           : 0;
       }
 
+      // ─ Inventory-backed metrics (BoH, ROI%, Turns) ─
+      // RICS p. 87: ROI% "always annualized regardless of what period is
+      // being analyzed." Same for Turns. We compute per-month values as
+      // (monthly flow × 12) / avgInventoryValue, and the row-total as
+      // (total flow over window) / avgInventoryValue (window is 12 months
+      // so already a year).
+      const needsInvRow =
+        dataToPrint.includes('beginningOnHand') ||
+        dataToPrint.includes('roiPct') ||
+        dataToPrint.includes('turns');
+      if (needsInvRow) {
+        const inv = invFor(b.storeNumber, r.dimKey);
+
+        // Accumulate per-slot inv value into the block-level vector (used
+        // later for column totals).
+        for (let s = 0; s < 12; s++) colMonthValueBySlot[s] += inv.monthValueOH[s];
+
+        // Row-level avg inventory value: mean of mapped window months only.
+        let rowAvgInvValue = 0;
+        let mappedCount = 0;
+        for (let i = 0; i < 12; i++) {
+          const slot = currentSlotMap[i];
+          if (slot !== null) {
+            rowAvgInvValue += inv.monthValueOH[slot];
+            mappedCount += 1;
+          }
+        }
+        rowAvgInvValue = mappedCount > 0 ? rowAvgInvValue / mappedCount : 0;
+
+        if (dataToPrint.includes('beginningOnHand')) {
+          const boh = months.map((_m, i) => {
+            const slot = prevSlotMap[i];
+            return slot === null ? 0 : Math.round(inv.monthQtyOH[slot]);
+          });
+          metrics.beginningOnHand = boh;
+          // Row total = average BoH across the window (BoH is a stock, not a
+          // flow — summing 12 snapshots isn't meaningful, averaging is).
+          totals.beginningOnHand = Math.round(boh.reduce((s, v) => s + v, 0) / 12);
+          for (let i = 0; i < 12; i++) colTotals.beginningOnHand[i] += boh[i];
+        }
+
+        if (dataToPrint.includes('roiPct')) {
+          // Per-month annualized ROI% = (monthly profit × 12) / avgInv × 100
+          const roi = profit.map((p) =>
+            rowAvgInvValue > 0 ? round1(((p * 12) / rowAvgInvValue) * 100) : 0,
+          );
+          metrics.roiPct = roi;
+          // Row-total ROI% over the window (already 12 months, no ×12 needed).
+          const rowProfit = profit.reduce((s, v) => s + v, 0);
+          totals.roiPct = rowAvgInvValue > 0
+            ? round1((rowProfit / rowAvgInvValue) * 100)
+            : 0;
+        }
+
+        if (dataToPrint.includes('turns')) {
+          const turns = r.cogs.map((c) =>
+            rowAvgInvValue > 0 ? round2((c * 12) / rowAvgInvValue) : 0,
+          );
+          metrics.turns = turns;
+          const rowCogs = r.cogs.reduce((s, v) => s + v, 0);
+          totals.turns = rowAvgInvValue > 0
+            ? round2(rowCogs / rowAvgInvValue)
+            : 0;
+        }
+      }
+
       return { key: r.dimKey, label: r.dimLabel, metrics, totals };
     });
 
@@ -707,6 +944,49 @@ export async function getSalesHistoryByMonth(
               (colTotals.netSales.reduce((s, v) => s + v, 0) / storeTotals.total) * 100,
             )
           : 0;
+      } else if (k === 'beginningOnHand') {
+        columnTotals.beginningOnHand = colTotals.beginningOnHand.map((v) => Math.round(v));
+        grandTotals.beginningOnHand = Math.round(
+          columnTotals.beginningOnHand.reduce((s, v) => s + v, 0) / 12,
+        );
+      } else if (k === 'roiPct' || k === 'turns') {
+        // Column ROI%/Turns at block level = aggregate flow / aggregate avg
+        // inv value (avoids Simpson's paradox). Block avg inv value uses the
+        // block-level per-slot accumulator mapped through the window.
+        let blockAvgInvValue = 0;
+        let mappedCount = 0;
+        for (let i = 0; i < 12; i++) {
+          const slot = currentSlotMap[i];
+          if (slot !== null) {
+            blockAvgInvValue += colMonthValueBySlot[slot];
+            mappedCount += 1;
+          }
+        }
+        blockAvgInvValue = mappedCount > 0 ? blockAvgInvValue / mappedCount : 0;
+
+        if (k === 'roiPct') {
+          const perMonth = colTotals.profit.map((p) =>
+            blockAvgInvValue > 0 ? round1(((p * 12) / blockAvgInvValue) * 100) : 0,
+          );
+          columnTotals.roiPct = perMonth;
+          const totalProfit = colTotals.profit.reduce((s, v) => s + v, 0);
+          grandTotals.roiPct = blockAvgInvValue > 0
+            ? round1((totalProfit / blockAvgInvValue) * 100)
+            : 0;
+        } else {
+          // turns
+          // Column cogs wasn't accumulated separately; derive it from
+          // (netSales - profit) to avoid another accumulator.
+          const colCogs = colTotals.netSales.map((n, i) => n - colTotals.profit[i]);
+          const perMonth = colCogs.map((c) =>
+            blockAvgInvValue > 0 ? round2((c * 12) / blockAvgInvValue) : 0,
+          );
+          columnTotals.turns = perMonth;
+          const totalCogs = colCogs.reduce((s, v) => s + v, 0);
+          grandTotals.turns = blockAvgInvValue > 0
+            ? round2(totalCogs / blockAvgInvValue)
+            : 0;
+        }
       }
     }
 

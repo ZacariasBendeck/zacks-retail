@@ -46,6 +46,7 @@ function mdbPath(envKey: string, defaultFile: string): string {
 const SALES_MDB  = (): string => mdbPath('RICS_SALES_DB_FILE',  'RITRNSSV.MDB');
 const CATEG_MDB  = (): string => mdbPath('RICS_CATEG_DB_FILE',  'RICATEG.MDB');
 const INVMAS_MDB = (): string => mdbPath('RICS_INVMAS_DB_FILE', 'RIINVMAS.MDB');
+const INVHIS_MDB = (): string => mdbPath('RICS_INVHIS_DB_FILE', 'RIINVHIS.MDB');
 
 // ─────────────────────────── public types ─────────────────────────────────
 
@@ -435,6 +436,179 @@ export async function queryMonthlyNetSales(
     }
   }
   return [...collapsed.values()];
+}
+
+// ─────────────────────────── Monthly inventory history (RIINVHIS) ─────────
+//
+// RIINVHIS.MDB contains one row per (SKU, Store) in the `InvHis` table.
+// Each row carries RICS's rolling 12-month trailing inventory history:
+//
+//   - `LYMonthQtyOH_01` … `LYMonthQtyOH_12`   — units on hand at month-end,
+//                                               indexed by **calendar month**
+//                                               (NN=01 → January, NN=12 →
+//                                               December). These are rolling:
+//                                               at any given time the 12 slots
+//                                               hold the trailing 12 months of
+//                                               snapshots, with the current
+//                                               month's slot still pointing at
+//                                               last year. RICS advances the
+//                                               array on month-end close.
+//   - `LYMonthOnHand_01` … `LYMonthOnHand_12` — same, expressed in dollars
+//                                               (qty × average cost as of the
+//                                               month-end snapshot). Verified
+//                                               empirically on a known SKU:
+//                                               LYMonthOnHand_NN equals
+//                                               LYMonthQtyOH_NN × AverageCost.
+//   - `AverageCost`                            — current per-SKU-per-Store
+//                                               average cost (Currency). Fed
+//                                               by receipts + physical
+//                                               inventory events; present on
+//                                               99.99% of rows in a sample
+//                                               customer DB (1,918,274 of
+//                                               1,918,492).
+//   - `OnHand`, `LastMonthOnHand`              — current-month scalar snapshots
+//                                               used as the "end boundary"
+//                                               when computing the 13-value
+//                                               average inventory series.
+//
+// Sibling `LYMonthDolSales_NN` / `LYMonthQtySales_NN` rows were cross-checked
+// against `RITRNSSV.TicketDetail` for Store 16: e.g.,
+// `LYMonthDolSales_04 = 882,775.83` matches `SUM(Extension)` for
+// April 2025 **exactly** — proving that NN is a calendar-month index (not an
+// ordinal/relative offset) AND that the rolling window is anchored to the
+// most recent month-end close.
+//
+// The discovery pass that produced this mapping lives in
+// `apps/api/scripts/discover-invhis.ts` and
+// `apps/api/scripts/probe-invhis-alignment.ts`.
+
+export interface MonthlyInventoryHistoryRow {
+  storeNumber: number;
+  sku: string;
+  averageCost: number;
+  /** Current on-hand qty (end of the most recent closed month). */
+  onHand: number;
+  /** Per-calendar-month snapshots, index 0 = Jan (NN=01), index 11 = Dec (NN=12). */
+  monthQtyOH: number[];
+  /** Per-calendar-month on-hand value in dollars (qty × cost at snapshot time). */
+  monthValueOH: number[];
+}
+
+export interface QueryMonthlyInventoryHistoryParams {
+  storeNumbers: number[];
+  /** Restrict to these SKUs (chunked at 500 per OR-clause to dodge Access's IN cap). */
+  skuFilter?: string[];
+  /** Restrict to rows with at least some historical activity. Skips the
+   *  enormous tail of zero-on-hand SKU-store pairs that bloats the scan. */
+  nonZeroOnly?: boolean;
+}
+
+interface RawInvHisRow {
+  SKU: string | null;
+  Store: number | null;
+  AverageCost: number | null;
+  OnHand: number | null;
+  LYMonthQtyOH_01: number | null;  LYMonthQtyOH_02: number | null;
+  LYMonthQtyOH_03: number | null;  LYMonthQtyOH_04: number | null;
+  LYMonthQtyOH_05: number | null;  LYMonthQtyOH_06: number | null;
+  LYMonthQtyOH_07: number | null;  LYMonthQtyOH_08: number | null;
+  LYMonthQtyOH_09: number | null;  LYMonthQtyOH_10: number | null;
+  LYMonthQtyOH_11: number | null;  LYMonthQtyOH_12: number | null;
+  LYMonthOnHand_01: number | null; LYMonthOnHand_02: number | null;
+  LYMonthOnHand_03: number | null; LYMonthOnHand_04: number | null;
+  LYMonthOnHand_05: number | null; LYMonthOnHand_06: number | null;
+  LYMonthOnHand_07: number | null; LYMonthOnHand_08: number | null;
+  LYMonthOnHand_09: number | null; LYMonthOnHand_10: number | null;
+  LYMonthOnHand_11: number | null; LYMonthOnHand_12: number | null;
+}
+
+const INVHIS_SELECT_COLUMNS =
+  '[SKU],[Store],[AverageCost],[OnHand],' +
+  '[LYMonthQtyOH_01],[LYMonthQtyOH_02],[LYMonthQtyOH_03],[LYMonthQtyOH_04],' +
+  '[LYMonthQtyOH_05],[LYMonthQtyOH_06],[LYMonthQtyOH_07],[LYMonthQtyOH_08],' +
+  '[LYMonthQtyOH_09],[LYMonthQtyOH_10],[LYMonthQtyOH_11],[LYMonthQtyOH_12],' +
+  '[LYMonthOnHand_01],[LYMonthOnHand_02],[LYMonthOnHand_03],[LYMonthOnHand_04],' +
+  '[LYMonthOnHand_05],[LYMonthOnHand_06],[LYMonthOnHand_07],[LYMonthOnHand_08],' +
+  '[LYMonthOnHand_09],[LYMonthOnHand_10],[LYMonthOnHand_11],[LYMonthOnHand_12]';
+
+/**
+ * Pull the 12-slot calendar-month inventory-history snapshots from
+ * `RIINVHIS.InvHis` for the given stores and (optionally) SKUs.
+ *
+ * Phase 1 read-only. No joins — this function returns the raw (store, sku)
+ * rows with their LY* column vectors intact; the facade is responsible for
+ * mapping calendar-month NN → the 12-month report window and for rolling up
+ * to vendor / category / department.
+ *
+ * If `skuFilter` is omitted, the scan returns every SKU that has at least
+ * **some** historical activity (non-zero OnHand, LY*, or AverageCost). On a
+ * 1.9M-row customer DB this still yields ~225k rows; callers that want
+ * subtotal or department rollups should prefer to pre-resolve the SKU set
+ * via `loadSkuMasterForCriteria` + criteria push-down so the query stays
+ * under Access's IN-clause limits and under a reasonable wall-clock.
+ */
+export async function queryMonthlyInventoryHistory(
+  params: QueryMonthlyInventoryHistoryParams,
+): Promise<MonthlyInventoryHistoryRow[]> {
+  if (!params.storeNumbers || params.storeNumbers.length === 0) {
+    throw new Error('storeNumbers must have at least one entry');
+  }
+
+  const storeList = params.storeNumbers.map((n) => Number(n)).join(',');
+  const wheres: string[] = [`[Store] IN (${storeList})`];
+
+  if (params.skuFilter && params.skuFilter.length > 0) {
+    const chunks = chunkArray(params.skuFilter, 500);
+    const orParts = chunks.map((c) => `[SKU] IN (${sqlStringList(c)})`);
+    wheres.push(`(${orParts.join(' OR ')})`);
+  } else if (params.nonZeroOnly !== false) {
+    // Skip the long tail of all-zero (store, sku) pairs that bloat the scan.
+    // Any row with either a current on-hand or any LY snapshot or a cost
+    // counts as historically meaningful.
+    wheres.push(
+      '(' +
+        '[OnHand] <> 0 OR [AverageCost] > 0 OR ' +
+        '[LYMonthQtyOH_01] <> 0 OR [LYMonthQtyOH_02] <> 0 OR [LYMonthQtyOH_03] <> 0 OR ' +
+        '[LYMonthQtyOH_04] <> 0 OR [LYMonthQtyOH_05] <> 0 OR [LYMonthQtyOH_06] <> 0 OR ' +
+        '[LYMonthQtyOH_07] <> 0 OR [LYMonthQtyOH_08] <> 0 OR [LYMonthQtyOH_09] <> 0 OR ' +
+        '[LYMonthQtyOH_10] <> 0 OR [LYMonthQtyOH_11] <> 0 OR [LYMonthQtyOH_12] <> 0' +
+      ')',
+    );
+  }
+
+  const sql =
+    `SELECT ${INVHIS_SELECT_COLUMNS} FROM [InvHis] WHERE ${wheres.join(' AND ')}`;
+
+  const raw = queryAll<RawInvHisRow>(INVHIS_MDB(), sql);
+  const rows: MonthlyInventoryHistoryRow[] = [];
+  for (const r of raw) {
+    if (r.SKU == null || r.Store == null) continue;
+    const monthQty: number[] = [
+      Number(r.LYMonthQtyOH_01 ?? 0), Number(r.LYMonthQtyOH_02 ?? 0),
+      Number(r.LYMonthQtyOH_03 ?? 0), Number(r.LYMonthQtyOH_04 ?? 0),
+      Number(r.LYMonthQtyOH_05 ?? 0), Number(r.LYMonthQtyOH_06 ?? 0),
+      Number(r.LYMonthQtyOH_07 ?? 0), Number(r.LYMonthQtyOH_08 ?? 0),
+      Number(r.LYMonthQtyOH_09 ?? 0), Number(r.LYMonthQtyOH_10 ?? 0),
+      Number(r.LYMonthQtyOH_11 ?? 0), Number(r.LYMonthQtyOH_12 ?? 0),
+    ];
+    const monthValue: number[] = [
+      Number(r.LYMonthOnHand_01 ?? 0), Number(r.LYMonthOnHand_02 ?? 0),
+      Number(r.LYMonthOnHand_03 ?? 0), Number(r.LYMonthOnHand_04 ?? 0),
+      Number(r.LYMonthOnHand_05 ?? 0), Number(r.LYMonthOnHand_06 ?? 0),
+      Number(r.LYMonthOnHand_07 ?? 0), Number(r.LYMonthOnHand_08 ?? 0),
+      Number(r.LYMonthOnHand_09 ?? 0), Number(r.LYMonthOnHand_10 ?? 0),
+      Number(r.LYMonthOnHand_11 ?? 0), Number(r.LYMonthOnHand_12 ?? 0),
+    ];
+    rows.push({
+      storeNumber: Number(r.Store),
+      sku: String(r.SKU).trim(),
+      averageCost: Number(r.AverageCost ?? 0),
+      onHand: Number(r.OnHand ?? 0),
+      monthQtyOH: monthQty,
+      monthValueOH: monthValue,
+    });
+  }
+  return rows;
 }
 
 // ─────────────────────────── internals ────────────────────────────────────

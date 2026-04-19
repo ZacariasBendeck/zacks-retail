@@ -18,7 +18,6 @@ import {
 import {
   DownloadOutlined,
   ArrowLeftOutlined,
-  DollarOutlined,
   ShoppingCartOutlined,
   BarChartOutlined,
 } from '@ant-design/icons'
@@ -59,6 +58,16 @@ const DEFAULT_DETAIL_QUERY: ReportDetailQuery = {
   pageSize: 50,
   sort: 'totalRevenue',
   order: 'desc',
+}
+
+// Currency is Honduran Lempira (HNL) system-wide — labeled once at the top of
+// the page, not repeated in every cell (see CLAUDE.md "Currency" policy).
+function formatMoney(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) return '-'
+  return value.toLocaleString('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })
 }
 
 export default function SalesReportPage() {
@@ -207,7 +216,7 @@ export default function SalesReportPage() {
       dataIndex: 'totalRevenue',
       key: 'totalRevenue',
       align: 'right' as const,
-      render: (v: number) => `$${v.toFixed(2)}`,
+      render: (v: number) => formatMoney(v),
       sorter: (a: SalesDepartmentSummary, b: SalesDepartmentSummary) =>
         a.totalRevenue - b.totalRevenue,
       defaultSortOrder: 'descend' as const,
@@ -217,7 +226,7 @@ export default function SalesReportPage() {
       dataIndex: 'avgSellingPrice',
       key: 'avgSellingPrice',
       align: 'right' as const,
-      render: (v: number) => `$${v.toFixed(2)}`,
+      render: (v: number) => formatMoney(v),
       sorter: (a: SalesDepartmentSummary, b: SalesDepartmentSummary) =>
         a.avgSellingPrice - b.avgSellingPrice,
     },
@@ -252,7 +261,7 @@ export default function SalesReportPage() {
       dataIndex: 'totalRevenue',
       key: 'totalRevenue',
       align: 'right' as const,
-      render: (v: number) => `$${v.toFixed(2)}`,
+      render: (v: number) => formatMoney(v),
       sorter: (a: SalesCategorySummary, b: SalesCategorySummary) =>
         a.totalRevenue - b.totalRevenue,
       defaultSortOrder: 'descend' as const,
@@ -262,7 +271,7 @@ export default function SalesReportPage() {
       dataIndex: 'avgSellingPrice',
       key: 'avgSellingPrice',
       align: 'right' as const,
-      render: (v: number) => `$${v.toFixed(2)}`,
+      render: (v: number) => formatMoney(v),
       sorter: (a: SalesCategorySummary, b: SalesCategorySummary) =>
         a.avgSellingPrice - b.avgSellingPrice,
     },
@@ -337,7 +346,7 @@ export default function SalesReportPage() {
       key: 'totalRevenue',
       width: 110,
       align: 'right' as const,
-      render: (v: number) => `$${v.toFixed(2)}`,
+      render: (v: number) => formatMoney(v),
       sorter: true,
       sortOrder: sortOrder('totalRevenue'),
     },
@@ -347,7 +356,7 @@ export default function SalesReportPage() {
       key: 'avgSellingPrice',
       width: 100,
       align: 'right' as const,
-      render: (v: number) => `$${v.toFixed(2)}`,
+      render: (v: number) => formatMoney(v),
       sorter: true,
       sortOrder: sortOrder('avgSellingPrice'),
     },
@@ -414,6 +423,9 @@ export default function SalesReportPage() {
           </Col>
         </Row>
         <Breadcrumb style={{ marginTop: 8 }} items={breadcrumbItems} />
+        <Typography.Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0, fontSize: 12 }}>
+          Amounts in Lempira (HNL).
+        </Typography.Paragraph>
       </Card>
 
       {/* Summary KPIs (top-level only) */}
@@ -434,7 +446,6 @@ export default function SalesReportPage() {
               <Statistic
                 title="Total Revenue"
                 value={totals.totalRevenue}
-                prefix={<DollarOutlined />}
                 precision={2}
                 loading={deptLoading}
               />
@@ -483,11 +494,11 @@ export default function SalesReportPage() {
                     <Typography.Text strong>{totalUnits}</Typography.Text>
                   </Table.Summary.Cell>
                   <Table.Summary.Cell index={2} align="right">
-                    <Typography.Text strong>${totalRev.toFixed(2)}</Typography.Text>
+                    <Typography.Text strong>{formatMoney(totalRev)}</Typography.Text>
                   </Table.Summary.Cell>
                   <Table.Summary.Cell index={3} align="right">
                     <Typography.Text strong>
-                      ${totalUnits > 0 ? (totalRev / totalUnits).toFixed(2) : '0.00'}
+                      {formatMoney(totalUnits > 0 ? totalRev / totalUnits : 0)}
                     </Typography.Text>
                   </Table.Summary.Cell>
                   <Table.Summary.Cell index={4} />
@@ -518,11 +529,11 @@ export default function SalesReportPage() {
                         <Typography.Text strong>{totalUnits}</Typography.Text>
                       </Table.Summary.Cell>
                       <Table.Summary.Cell index={2} align="right">
-                        <Typography.Text strong>${totalRev.toFixed(2)}</Typography.Text>
+                        <Typography.Text strong>{formatMoney(totalRev)}</Typography.Text>
                       </Table.Summary.Cell>
                       <Table.Summary.Cell index={3} align="right">
                         <Typography.Text strong>
-                          ${totalUnits > 0 ? (totalRev / totalUnits).toFixed(2) : '0.00'}
+                          {formatMoney(totalUnits > 0 ? totalRev / totalUnits : 0)}
                         </Typography.Text>
                       </Table.Summary.Cell>
                       <Table.Summary.Cell index={4} />

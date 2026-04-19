@@ -17,7 +17,6 @@ import {
 import {
   DownloadOutlined,
   ArrowLeftOutlined,
-  DollarOutlined,
   WarningOutlined,
   ClockCircleOutlined,
 } from '@ant-design/icons'
@@ -52,6 +51,16 @@ const BUCKET_COLORS: Record<string, string> = {
 
 function renderAgingBucket(bucket: string) {
   return <Tag color={BUCKET_COLORS[bucket]}>{bucket} days</Tag>
+}
+
+// Currency is Honduran Lempira (HNL) system-wide — labeled once at the top of
+// the page, not repeated in every cell (see CLAUDE.md "Currency" policy).
+function formatMoney(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) return '-'
+  return value.toLocaleString('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })
 }
 
 export default function InventoryAgingReportPage() {
@@ -174,7 +183,7 @@ export default function InventoryAgingReportPage() {
       align: 'right' as const,
       render: (_: unknown, record: AgingDepartmentSummary) => {
         const b = record.buckets.find((x) => x.bucket === '0-30')
-        return b ? `${b.totalUnits} units / $${b.totalCostValue.toFixed(2)}` : '—'
+        return b ? `${b.totalUnits} units / ${formatMoney(b.totalCostValue)}` : '—'
       },
       sorter: (a: AgingDepartmentSummary, b: AgingDepartmentSummary) =>
         bucketValue(a, '0-30') - bucketValue(b, '0-30'),
@@ -185,7 +194,7 @@ export default function InventoryAgingReportPage() {
       align: 'right' as const,
       render: (_: unknown, record: AgingDepartmentSummary) => {
         const b = record.buckets.find((x) => x.bucket === '31-60')
-        return b ? `${b.totalUnits} units / $${b.totalCostValue.toFixed(2)}` : '—'
+        return b ? `${b.totalUnits} units / ${formatMoney(b.totalCostValue)}` : '—'
       },
       sorter: (a: AgingDepartmentSummary, b: AgingDepartmentSummary) =>
         bucketValue(a, '31-60') - bucketValue(b, '31-60'),
@@ -196,7 +205,7 @@ export default function InventoryAgingReportPage() {
       align: 'right' as const,
       render: (_: unknown, record: AgingDepartmentSummary) => {
         const b = record.buckets.find((x) => x.bucket === '61-90')
-        return b ? `${b.totalUnits} units / $${b.totalCostValue.toFixed(2)}` : '—'
+        return b ? `${b.totalUnits} units / ${formatMoney(b.totalCostValue)}` : '—'
       },
       sorter: (a: AgingDepartmentSummary, b: AgingDepartmentSummary) =>
         bucketValue(a, '61-90') - bucketValue(b, '61-90'),
@@ -214,7 +223,7 @@ export default function InventoryAgingReportPage() {
         if (!b || b.totalUnits === 0) return '—'
         return (
           <Typography.Text type="danger" strong>
-            {b.totalUnits} units / ${b.totalCostValue.toFixed(2)}
+            {b.totalUnits} units / {formatMoney(b.totalCostValue)}
           </Typography.Text>
         )
       },
@@ -226,7 +235,7 @@ export default function InventoryAgingReportPage() {
       dataIndex: 'totalCostValue',
       key: 'totalCostValue',
       align: 'right' as const,
-      render: (v: number) => `$${v.toFixed(2)}`,
+      render: (v: number) => formatMoney(v),
       sorter: (a: AgingDepartmentSummary, b: AgingDepartmentSummary) =>
         a.totalCostValue - b.totalCostValue,
     },
@@ -267,7 +276,7 @@ export default function InventoryAgingReportPage() {
       dataIndex: 'totalCostValue',
       key: 'totalCostValue',
       align: 'right' as const,
-      render: (v: number) => `$${v.toFixed(2)}`,
+      render: (v: number) => formatMoney(v),
       sorter: (a: { totalCostValue: number }, b: { totalCostValue: number }) =>
         a.totalCostValue - b.totalCostValue,
     },
@@ -283,7 +292,7 @@ export default function InventoryAgingReportPage() {
         if (record.flaggedUnits === 0) return '—'
         return (
           <Typography.Text type="danger" strong>
-            {record.flaggedUnits} units / ${record.flaggedValue.toFixed(2)}
+            {record.flaggedUnits} units / {formatMoney(record.flaggedValue)}
           </Typography.Text>
         )
       },
@@ -355,7 +364,7 @@ export default function InventoryAgingReportPage() {
       key: 'price',
       width: 90,
       align: 'right' as const,
-      render: (v: number) => `$${v.toFixed(2)}`,
+      render: (v: number) => formatMoney(v),
       sorter: (a: AgingDetail, b: AgingDetail) => a.price - b.price,
     },
     {
@@ -372,7 +381,7 @@ export default function InventoryAgingReportPage() {
       key: 'costValue',
       width: 110,
       align: 'right' as const,
-      render: (v: number) => `$${v.toFixed(2)}`,
+      render: (v: number) => formatMoney(v),
       sorter: (a: AgingDetail, b: AgingDetail) => a.costValue - b.costValue,
     },
     {
@@ -473,6 +482,9 @@ export default function InventoryAgingReportPage() {
           </Col>
         </Row>
         <Breadcrumb style={{ marginTop: 8 }} items={breadcrumbItems} />
+        <Typography.Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0, fontSize: 12 }}>
+          Amounts in Lempira (HNL).
+        </Typography.Paragraph>
       </Card>
 
       {/* Summary KPIs (top-level only) */}
@@ -493,7 +505,6 @@ export default function InventoryAgingReportPage() {
               <Statistic
                 title="Total Inventory Value"
                 value={totals.totalValue}
-                prefix={<DollarOutlined />}
                 precision={2}
                 loading={deptLoading}
               />
@@ -515,7 +526,6 @@ export default function InventoryAgingReportPage() {
               <Statistic
                 title="Flagged Value (90+ Days)"
                 value={totals.flaggedValue}
-                prefix={<DollarOutlined />}
                 precision={2}
                 loading={deptLoading}
                 valueStyle={{ color: totals.flaggedValue > 0 ? '#cf1322' : '#3f8600' }}
@@ -557,12 +567,12 @@ export default function InventoryAgingReportPage() {
                   <Table.Summary.Cell index={4} align="right">
                     {flaggedUnits > 0 && (
                       <Typography.Text type="danger" strong>
-                        {flaggedUnits} units / ${flaggedValue.toFixed(2)}
+                        {flaggedUnits} units / {formatMoney(flaggedValue)}
                       </Typography.Text>
                     )}
                   </Table.Summary.Cell>
                   <Table.Summary.Cell index={5} align="right">
-                    <Typography.Text strong>${totalValue.toFixed(2)}</Typography.Text>
+                    <Typography.Text strong>{formatMoney(totalValue)}</Typography.Text>
                   </Table.Summary.Cell>
                   <Table.Summary.Cell index={6} />
                 </Table.Summary.Row>

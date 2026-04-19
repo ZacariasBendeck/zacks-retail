@@ -69,7 +69,7 @@ export default function SalesByDayPage() {
       sorter: (a: SalesByDayRow, b: SalesByDayRow) => a.comparedNetSales - b.comparedNetSales,
     },
     {
-      title: '$ Change', dataIndex: 'dollarChange', key: 'dollarChange', width: 120,
+      title: 'Change', dataIndex: 'dollarChange', key: 'dollarChange', width: 120,
       align: 'right' as const,
       render: (v: number) => <Tag color={v >= 0 ? 'green' : 'red'}>{v.toFixed(2)}</Tag>,
       sorter: (a: SalesByDayRow, b: SalesByDayRow) => a.dollarChange - b.dollarChange,
@@ -98,6 +98,9 @@ export default function SalesByDayPage() {
       <Title level={2} style={{ marginBottom: 0 }}>Sales by Day</Title>
       <Paragraph type="secondary">
         Net sales by day for one store (RICS Ch. 6 p. 52). Sourced live from RITRNSSV.
+      </Paragraph>
+      <Paragraph type="secondary" style={{ marginTop: 0, fontSize: 12 }}>
+        Amounts in Lempira (HNL).
       </Paragraph>
 
       <Card style={{ marginBottom: 16 }}>

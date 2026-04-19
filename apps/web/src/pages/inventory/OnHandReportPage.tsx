@@ -17,7 +17,6 @@ import {
   DownloadOutlined,
   ArrowLeftOutlined,
   InboxOutlined,
-  DollarOutlined,
   ShopOutlined,
 } from '@ant-design/icons'
 import { useOnHandByDepartment, useOnHandDrillDown } from '../../hooks/useReports'
@@ -50,6 +49,16 @@ const DEFAULT_DETAIL_QUERY: ReportDetailQuery = {
   pageSize: 50,
   sort: 'department',
   order: 'asc',
+}
+
+// Currency is Honduran Lempira (HNL) system-wide — labeled once at the top of
+// the page, not repeated in every cell (see CLAUDE.md "Currency" policy).
+function formatMoney(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) return '-'
+  return value.toLocaleString('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })
 }
 
 export default function OnHandReportPage() {
@@ -168,7 +177,7 @@ export default function OnHandReportPage() {
       dataIndex: 'totalCostValue',
       key: 'totalCostValue',
       align: 'right' as const,
-      render: (v: number) => `$${v.toFixed(2)}`,
+      render: (v: number) => formatMoney(v),
       sorter: (a: DepartmentOnHand, b: DepartmentOnHand) => a.totalCostValue - b.totalCostValue,
     },
     {
@@ -208,7 +217,7 @@ export default function OnHandReportPage() {
       dataIndex: 'totalCostValue',
       key: 'totalCostValue',
       align: 'right' as const,
-      render: (v: number) => `$${v.toFixed(2)}`,
+      render: (v: number) => formatMoney(v),
       sorter: (a: CategoryOnHand, b: CategoryOnHand) => a.totalCostValue - b.totalCostValue,
     },
     {
@@ -273,7 +282,7 @@ export default function OnHandReportPage() {
       key: 'price',
       width: 90,
       align: 'right' as const,
-      render: (v: number) => `$${v.toFixed(2)}`,
+      render: (v: number) => formatMoney(v),
       sorter: true,
       sortOrder: sortOrder('price'),
     },
@@ -297,7 +306,7 @@ export default function OnHandReportPage() {
       key: 'costValue',
       width: 110,
       align: 'right' as const,
-      render: (v: number) => `$${v.toFixed(2)}`,
+      render: (v: number) => formatMoney(v),
       sorter: true,
       sortOrder: sortOrder('costValue'),
     },
@@ -356,6 +365,9 @@ export default function OnHandReportPage() {
           </Col>
         </Row>
         <Breadcrumb style={{ marginTop: 8 }} items={breadcrumbItems} />
+        <Typography.Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0, fontSize: 12 }}>
+          Amounts in Lempira (HNL).
+        </Typography.Paragraph>
       </Card>
 
       {/* Summary KPIs (top-level only) */}
@@ -386,7 +398,6 @@ export default function OnHandReportPage() {
               <Statistic
                 title="Total Inventory Value"
                 value={totals.totalCostValue}
-                prefix={<DollarOutlined />}
                 precision={2}
                 loading={deptLoading}
               />

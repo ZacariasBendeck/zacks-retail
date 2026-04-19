@@ -61,6 +61,16 @@ const DEFAULT_DETAIL_QUERY: ReportDetailQuery = {
   order: 'asc',
 }
 
+// Currency is Honduran Lempira (HNL) system-wide — labeled once at the top of
+// the page, not repeated in every cell (see CLAUDE.md "Currency" policy).
+function formatMoney(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) return '-'
+  return value.toLocaleString('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })
+}
+
 function renderSellThroughPct(v: number) {
   const color = v === 0 ? 'red' : v < 50 ? 'orange' : v < 80 ? 'blue' : 'green'
   return (
@@ -342,7 +352,7 @@ export default function SellThroughReportPage() {
       key: 'price',
       width: 90,
       align: 'right' as const,
-      render: (v: number) => `$${v.toFixed(2)}`,
+      render: (v: number) => formatMoney(v),
       sorter: true,
       sortOrder: sortOrder('price'),
     },

@@ -16,6 +16,7 @@
 jest.mock('../src/services/salesReporting/ricsSalesHistoryByMonthAdapter', () => ({
   queryMonthlyMeasures: jest.fn(),
   queryMonthlyNetSales: jest.fn(),
+  queryMonthlyInventoryHistory: jest.fn().mockResolvedValue([]),
   loadSkuMasterForCriteria: jest.fn().mockResolvedValue([]),
   clearCache: jest.fn(),
 }));
@@ -520,5 +521,172 @@ describe('getSalesHistoryByMonth — input validation', () => {
         combineStores: true,
       }),
     ).rejects.toThrow(/YYYY-MM/);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════
+// Inventory-backed metrics (Beginning On-Hand / ROI% / Turns)
+//
+// RIINVHIS.InvHis stores rolling 12-month snapshots keyed by calendar month.
+// These tests pin today to 2026-04-15 so window-to-slot mapping is deterministic.
+// endMonth=2026-03 (last completed) is the "all 12 months map" case.
+// ══════════════════════════════════════════════════════════════════════════
+
+describe('getSalesHistoryByMonth — inventory-backed metrics', () => {
+  const ORIGINAL_SOURCE = process.env.SALES_SOURCE;
+  beforeAll(() => {
+    process.env.SALES_SOURCE = 'rics';
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-04-15T12:00:00Z'));
+  });
+  afterAll(() => {
+    jest.useRealTimers();
+    if (ORIGINAL_SOURCE === undefined) delete process.env.SALES_SOURCE;
+    else process.env.SALES_SOURCE = ORIGINAL_SOURCE;
+  });
+
+  beforeEach(() => {
+    setAdapterRows([]);
+    (monthlyAdapter.queryMonthlyInventoryHistory as jest.Mock).mockReset();
+    (monthlyAdapter.loadSkuMasterForCriteria as jest.Mock).mockReset();
+    (monthlyAdapter.loadSkuMasterForCriteria as jest.Mock).mockResolvedValue([]);
+  });
+
+  function setInvRows(rows: Array<{
+    storeNumber: number;
+    sku: string;
+    averageCost: number;
+    onHand: number;
+    monthQtyOH: number[];
+    monthValueOH: number[];
+  }>): void {
+    (monthlyAdapter.queryMonthlyInventoryHistory as jest.Mock).mockResolvedValue(rows);
+  }
+
+  it('does NOT call queryMonthlyInventoryHistory when no inventory-backed metric is requested', async () => {
+    await facade.getSalesHistoryByMonth({
+      storeNumbers: [2],
+      endYearMonth: '2026-03',
+      sortBy: 'vendor',
+      combineStores: true,
+      dataToPrint: ['netSales', 'profit'],
+    });
+    expect(monthlyAdapter.queryMonthlyInventoryHistory).not.toHaveBeenCalled();
+  });
+
+  it('beginningOnHand: maps LYMonthQtyOH slots to the window and uses prev-month slot per window index', async () => {
+    setAdapterRows([
+      rowOf({ storeNumber: 2, yearMonth: '2026-03', dimKey: 'NIKE', dimLabel: 'NIKE', netSales: 500, cogs: 250 }),
+    ]);
+    (monthlyAdapter.loadSkuMasterForCriteria as jest.Mock).mockResolvedValue([
+      { sku: 'N1', vendor: 'NIKE', category: 100, season: null, styleColor: null, groupCode: null, keywords: null },
+    ]);
+    // Calendar-slot indexed (0=Jan..11=Dec). With today=2026-04-15:
+    //   _01..._03 = 2026-01..2026-03 ; _04..._12 = 2025-04..2025-12
+    // endMonth=2026-03 window = [2025-04..2026-03].
+    // LYMonthQtyOH values: set _04 = 10 (2025-04), _05 = 20 (2025-05), ..., arbitrary unique numbers
+    // Beginning OH for window month W = end-of-month qty of (W-1).
+    //   BoH[window=2025-04] = end of 2025-03 -> slot _03 = 2026-03 (wrong year) -> 0
+    //   BoH[window=2025-05] = end of 2025-04 -> slot _04 = 10
+    //   BoH[window=2025-06] = end of 2025-05 -> slot _05 = 20
+    //   ... etc
+    const qty = [
+      /*_01=2026-01*/ 100, /*_02=2026-02*/ 200, /*_03=2026-03*/ 300,
+      /*_04=2025-04*/  10, /*_05=2025-05*/  20, /*_06=2025-06*/  30,
+      /*_07=2025-07*/  40, /*_08=2025-08*/  50, /*_09=2025-09*/  60,
+      /*_10=2025-10*/  70, /*_11=2025-11*/  80, /*_12=2025-12*/  90,
+    ];
+    setInvRows([
+      { storeNumber: 2, sku: 'N1', averageCost: 5, onHand: 100, monthQtyOH: qty, monthValueOH: qty.map((q) => q * 5) },
+    ]);
+
+    const report = await facade.getSalesHistoryByMonth({
+      storeNumbers: [2],
+      endYearMonth: '2026-03',
+      sortBy: 'vendor',
+      combineStores: true,
+      dataToPrint: ['beginningOnHand'],
+    });
+
+    const row = report.blocks[0].rows[0];
+    expect(row.label).toBe('NIKE');
+    // Window order: 2025-04 ... 2026-03
+    expect(row.metrics.beginningOnHand).toEqual([
+      0,    // BoH 2025-04 = end 2025-03 (unavailable — _03 holds 2026-03)
+      10,   // BoH 2025-05 = end 2025-04 = _04
+      20,   // BoH 2025-06 = end 2025-05 = _05
+      30,   // _06
+      40,   // _07
+      50,   // _08
+      60,   // _09
+      70,   // _10
+      80,   // _11
+      90,   // BoH 2026-01 = end 2025-12 = _12
+      100,  // BoH 2026-02 = end 2026-01 = _01
+      200,  // BoH 2026-03 = end 2026-02 = _02
+    ]);
+  });
+
+  it('roiPct and turns are annualized from profit and cogs against avg inventory value', async () => {
+    // Single SKU, one month of sales (2026-03) for simplicity.
+    // Inventory value: 100 dollars each month for all 12 slots (so avg = 100).
+    // Profit for 2026-03 = netSales(1200) - cogs(900) = 300
+    // Window-total cogs = 900 ; window-total profit = 300 ; avgInv = 100
+    // Turns (window) = 900 / 100 = 9.00
+    // ROI% (window) = 300 / 100 × 100 = 300.0
+    // Per-month Turns[2026-03] = 900 × 12 / 100 = 108.00 (monthly flow annualized)
+    // Per-month ROI%[2026-03]  = 300 × 12 / 100 × 100 = 3600.0
+    setAdapterRows([
+      rowOf({ storeNumber: 2, yearMonth: '2026-03', dimKey: 'NIKE', dimLabel: 'NIKE', netSales: 1200, cogs: 900 }),
+    ]);
+    (monthlyAdapter.loadSkuMasterForCriteria as jest.Mock).mockResolvedValue([
+      { sku: 'N1', vendor: 'NIKE', category: 100, season: null, styleColor: null, groupCode: null, keywords: null },
+    ]);
+    const monthQty = new Array<number>(12).fill(10);
+    const monthValue = new Array<number>(12).fill(100);
+    setInvRows([
+      { storeNumber: 2, sku: 'N1', averageCost: 10, onHand: 10, monthQtyOH: monthQty, monthValueOH: monthValue },
+    ]);
+
+    const report = await facade.getSalesHistoryByMonth({
+      storeNumbers: [2],
+      endYearMonth: '2026-03',
+      sortBy: 'vendor',
+      combineStores: true,
+      dataToPrint: ['roiPct', 'turns'],
+    });
+
+    const row = report.blocks[0].rows[0];
+    // Window index for 2026-03 = 11 (last column).
+    expect(row.metrics.roiPct![11]).toBeCloseTo(3600, 0);
+    expect(row.metrics.turns![11]).toBeCloseTo(108, 1);
+    // Months with no sales → flow=0 → ratio=0
+    expect(row.metrics.roiPct![0]).toBe(0);
+    expect(row.metrics.turns![0]).toBe(0);
+    // Row total = window-total flow / avgInv
+    expect(row.totals.roiPct).toBeCloseTo(300, 0);
+    expect(row.totals.turns).toBeCloseTo(9, 1);
+  });
+
+  it('returns zeros for inventory metrics when InvHis has no matching SKU', async () => {
+    setAdapterRows([
+      rowOf({ storeNumber: 2, yearMonth: '2026-03', dimKey: 'NIKE', dimLabel: 'NIKE', netSales: 500, cogs: 250 }),
+    ]);
+    // No InvHis rows returned.
+    setInvRows([]);
+    const report = await facade.getSalesHistoryByMonth({
+      storeNumbers: [2],
+      endYearMonth: '2026-03',
+      sortBy: 'vendor',
+      combineStores: true,
+      dataToPrint: ['beginningOnHand', 'roiPct', 'turns'],
+    });
+    const row = report.blocks[0].rows[0];
+    expect(row.metrics.beginningOnHand).toEqual(new Array(12).fill(0));
+    expect(row.metrics.roiPct).toEqual(new Array(12).fill(0));
+    expect(row.metrics.turns).toEqual(new Array(12).fill(0));
+    expect(row.totals.beginningOnHand).toBe(0);
+    expect(row.totals.roiPct).toBe(0);
+    expect(row.totals.turns).toBe(0);
   });
 });

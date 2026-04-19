@@ -1094,6 +1094,10 @@ const SUPPORTED_METRIC_KEYS = [
   'pctOfStoreNetSales',
   'profit',
   'grossProfit',
+  // v2.1 — shipped after RIINVHIS discovery.
+  'beginningOnHand',
+  'roiPct',
+  'turns',
 ] as const;
 const DEFERRED_METRIC_KEYS = ['beginningOnHand', 'roiPct', 'turns'] as const;
 
