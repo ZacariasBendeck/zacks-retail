@@ -394,3 +394,192 @@ export interface CellRunningTotal {
   entryCount: number;
   hasZeroFlag: boolean;
 }
+
+// ── count_variances (Wave 2) ────────────────────────────────────────────────
+
+export interface CountVarianceRow {
+  id: string;
+  session_id: string;
+  sku_id: string;
+  column_label: string;
+  row_label: string;
+  counted_qty: number;
+  snapshot_on_hand: number;
+  delta: number;
+  unit_cost: number | null;
+  variance_pct: number | null;
+  band: VarianceBand;
+  acknowledged_at: string | null;
+  acknowledged_by: string | null;
+  computed_at: string;
+}
+
+export interface CountVariance {
+  id: string;
+  sessionId: string;
+  skuId: string;
+  columnLabel: string;
+  rowLabel: string;
+  countedQty: number;
+  snapshotOnHand: number;
+  delta: number;
+  unitCost: number | null;
+  variancePct: number | null;
+  band: VarianceBand;
+  acknowledgedAt: string | null;
+  acknowledgedBy: string | null;
+  computedAt: string;
+}
+
+export function rowToCountVariance(row: CountVarianceRow): CountVariance {
+  return {
+    id: row.id,
+    sessionId: row.session_id,
+    skuId: row.sku_id,
+    columnLabel: row.column_label,
+    rowLabel: row.row_label,
+    countedQty: row.counted_qty,
+    snapshotOnHand: row.snapshot_on_hand,
+    delta: row.delta,
+    unitCost: row.unit_cost,
+    variancePct: row.variance_pct,
+    band: row.band,
+    acknowledgedAt: row.acknowledged_at,
+    acknowledgedBy: row.acknowledged_by,
+    computedAt: row.computed_at,
+  };
+}
+
+// ── count_review_acks (Wave 2) ──────────────────────────────────────────────
+
+export interface CountReviewAckRow {
+  id: string;
+  session_id: string;
+  step: ReviewStep;
+  acknowledged_by: string;
+  acknowledged_at: string;
+}
+
+export interface CountReviewAck {
+  id: string;
+  sessionId: string;
+  step: ReviewStep;
+  acknowledgedBy: string;
+  acknowledgedAt: string;
+}
+
+export function rowToCountReviewAck(row: CountReviewAckRow): CountReviewAck {
+  return {
+    id: row.id,
+    sessionId: row.session_id,
+    step: row.step,
+    acknowledgedBy: row.acknowledged_by,
+    acknowledgedAt: row.acknowledged_at,
+  };
+}
+
+// ── company_physical_inventory_settings (Wave 2) ────────────────────────────
+
+export interface CompanyPhysicalInventorySettingsRow {
+  id: number;
+  low_variance_tolerance_pct: number;
+  material_variance_tolerance_pct: number;
+  extreme_variance_tolerance_pct: number;
+  extreme_variance_ceo_notify: number;
+  require_zero_ack_for_extreme: number;
+  duplicate_pass_window_minutes: number;
+  default_lock_store_during_count: number;
+  independent_verification_count_n: number;
+  updated_at: string;
+}
+
+export interface CompanyPhysicalInventorySettings {
+  lowVarianceTolerancePct: number;
+  materialVarianceTolerancePct: number;
+  extremeVarianceTolerancePct: number;
+  extremeVarianceCeoNotify: boolean;
+  requireZeroAckForExtreme: boolean;
+  duplicatePassWindowMinutes: number;
+  defaultLockStoreDuringCount: boolean;
+  independentVerificationCountN: number;
+  updatedAt: string;
+}
+
+export function rowToSettings(row: CompanyPhysicalInventorySettingsRow): CompanyPhysicalInventorySettings {
+  return {
+    lowVarianceTolerancePct: row.low_variance_tolerance_pct,
+    materialVarianceTolerancePct: row.material_variance_tolerance_pct,
+    extremeVarianceTolerancePct: row.extreme_variance_tolerance_pct,
+    extremeVarianceCeoNotify: row.extreme_variance_ceo_notify === 1,
+    requireZeroAckForExtreme: row.require_zero_ack_for_extreme === 1,
+    duplicatePassWindowMinutes: row.duplicate_pass_window_minutes,
+    defaultLockStoreDuringCount: row.default_lock_store_during_count === 1,
+    independentVerificationCountN: row.independent_verification_count_n,
+    updatedAt: row.updated_at,
+  };
+}
+
+// ── Items not counted (Wave 2 — derived view) ───────────────────────────────
+
+export interface ItemNotCountedRow {
+  skuId: string;
+  columnLabel: string;
+  rowLabel: string;
+  snapshotOnHand: number;
+}
+
+export interface ItemNotCountedListParams {
+  includeZeroOnHand?: boolean;
+  vendors?: number[];
+  categories?: number[];
+  limit?: number;
+  offset?: number;
+}
+
+// ── Variance summary (Wave 2 — derived view) ────────────────────────────────
+
+export interface VarianceBandRollup {
+  band: VarianceBand;
+  cellCount: number;
+  totalDeltaUnits: number;
+  totalDeltaCost: number;
+  unacknowledgedCount: number;
+}
+
+export interface VarianceSummary {
+  totalCellsWithEntry: number;
+  totalUnitsCounted: number;
+  totalUnitsDelta: number;
+  totalCostDelta: number;
+  bands: VarianceBandRollup[];
+  pendingAcknowledgements: number;
+}
+
+// ── Conflicts (Wave 3 — derived view) ───────────────────────────────────────
+
+export interface ConflictRow {
+  skuId: string;
+  columnLabel: string;
+  rowLabel: string;
+  deviceCount: number;
+  totalQuantity: number;
+  windowStart: string;
+  windowEnd: string;
+  devices: Array<{ deviceId: string | null; deviceLabel: string | null; quantity: number; entryCount: number }>;
+}
+
+// ── CSV import (Wave 3) ─────────────────────────────────────────────────────
+
+export interface CsvImportException {
+  rowNumber: number;
+  reason: string;
+  raw: string;
+  previousValidSku: string | null;
+  nextValidSku: string | null;
+}
+
+export interface CsvImportResult {
+  batchId: string;
+  acceptedCount: number;
+  exceptions: CsvImportException[];
+}

@@ -995,32 +995,61 @@ export async function fetchStockStatus(args: {
   return res.json()
 }
 
-// ── Sales History by Month ───────────────────────────────────────────────
+// ── Sales History by Month (v2) ──────────────────────────────────────────
 //
-// RICS Ch. 6 p. 95. Returns a 12-month window ending at the requested
-// endMonth, pivoted by Vendor or Category. The endpoint is served by the
-// RICS adapter in Phase 1 and responds 501 when SALES_SOURCE !== 'rics'.
+// RICS Ch. 6 p. 95. 12-month trailing window with multiple metrics, three
+// detail levels, and seven criteria facets (each a RICS-grammar string).
+//
+// The endpoint is served by the RICS adapter in Phase 1 and responds 501
+// when SALES_SOURCE !== 'rics'.
 
 export type SalesHistoryByMonthSortBy = 'vendor' | 'category'
+export type SalesHistoryByMonthDetailLevel = 'sku' | 'subtotals' | 'department'
+
+/** Metric keys the API emits for every selected metric. */
+export type SalesHistoryByMonthMetricKey =
+  | 'quantitySold'
+  | 'netSales'
+  | 'pctOfStoreNetSales'
+  | 'profit'
+  | 'grossProfit'
+
+/** Metric keys deferred to Phase 2 (documented in the spec); the UI shows
+ *  disabled checkboxes when the user requests one of these. */
+export type SalesHistoryByMonthDeferredMetricKey =
+  | 'beginningOnHand'
+  | 'roiPct'
+  | 'turns'
+
+export interface SalesHistoryByMonthCriteria {
+  stores?: string
+  categories?: string
+  vendors?: string
+  seasons?: string
+  styleColors?: string
+  groups?: string
+  keywords?: string
+}
 
 export interface SalesHistoryByMonthRow {
   key: string
   label: string
-  monthValues: number[]
-  total: number
+  /** Per-metric 12-month grid. Undefined for metrics not in dataToPrint. */
+  metrics: Partial<Record<SalesHistoryByMonthMetricKey, number[]>>
+  totals: Partial<Record<SalesHistoryByMonthMetricKey, number>>
 }
 
 export interface SalesHistoryByMonthBlock {
   storeNumber: number | 'ALL'
   storeLabel: string
   rows: SalesHistoryByMonthRow[]
-  columnTotals: number[]
-  grandTotal: number
+  columnTotals: Partial<Record<SalesHistoryByMonthMetricKey, number[]>>
+  grandTotals: Partial<Record<SalesHistoryByMonthMetricKey, number>>
 }
 
 export interface SalesHistoryByMonthChartSeries {
   name: string
-  values: number[]
+  values: number[]                                    // always Net Sales
 }
 
 export interface SalesHistoryByMonthStoreRef {
@@ -1034,6 +1063,10 @@ export interface SalesHistoryByMonthReport {
   months: string[]
   combineStores: boolean
   stores: SalesHistoryByMonthStoreRef[]
+  detailLevel: SalesHistoryByMonthDetailLevel
+  dataToPrint: SalesHistoryByMonthMetricKey[]
+  deferredMetrics: SalesHistoryByMonthDeferredMetricKey[]
+  criteria: SalesHistoryByMonthCriteria
   blocks: SalesHistoryByMonthBlock[]
   chartSeries: SalesHistoryByMonthChartSeries[]
 }
@@ -1043,18 +1076,37 @@ export interface SalesHistoryByMonthParams {
   endMonth: string
   sortBy?: SalesHistoryByMonthSortBy
   combineStores?: boolean
+  detailLevel?: SalesHistoryByMonthDetailLevel
+  dataToPrint?: SalesHistoryByMonthMetricKey[]
+  deferredMetrics?: SalesHistoryByMonthDeferredMetricKey[]
+  criteria?: SalesHistoryByMonthCriteria
 }
 
 function buildSalesHistoryByMonthParams(
   params: SalesHistoryByMonthParams,
-  format?: 'csv',
+  format?: 'csv' | 'xlsx',
 ): URLSearchParams {
   const qs = new URLSearchParams({
     stores: params.stores.join(','),
     endMonth: params.endMonth,
     sortBy: params.sortBy ?? 'vendor',
     combineStores: String(params.combineStores ?? true),
+    detailLevel: params.detailLevel ?? 'subtotals',
   })
+  if (params.dataToPrint && params.dataToPrint.length > 0) {
+    qs.set('dataToPrint', params.dataToPrint.join(','))
+  }
+  if (params.deferredMetrics && params.deferredMetrics.length > 0) {
+    qs.set('deferredMetrics', params.deferredMetrics.join(','))
+  }
+  const c = params.criteria ?? {}
+  if (c.stores)       qs.set('critStores', c.stores)
+  if (c.categories)   qs.set('critCategories', c.categories)
+  if (c.vendors)      qs.set('critVendors', c.vendors)
+  if (c.seasons)      qs.set('critSeasons', c.seasons)
+  if (c.styleColors)  qs.set('critStyleColors', c.styleColors)
+  if (c.groups)       qs.set('critGroups', c.groups)
+  if (c.keywords)     qs.set('critKeywords', c.keywords)
   if (format) qs.set('format', format)
   return qs
 }
@@ -1073,5 +1125,10 @@ export async function fetchSalesHistoryByMonth(
 
 export function getSalesHistoryByMonthCsvUrl(params: SalesHistoryByMonthParams): string {
   const qs = buildSalesHistoryByMonthParams(params, 'csv')
+  return `/api/v1/reports/rics-sales-history-by-month?${qs}`
+}
+
+export function getSalesHistoryByMonthXlsxUrl(params: SalesHistoryByMonthParams): string {
+  const qs = buildSalesHistoryByMonthParams(params, 'xlsx')
   return `/api/v1/reports/rics-sales-history-by-month?${qs}`
 }

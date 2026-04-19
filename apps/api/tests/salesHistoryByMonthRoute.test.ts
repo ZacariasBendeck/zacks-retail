@@ -260,18 +260,28 @@ describe('GET /api/v1/reports/rics-sales-history-by-month (XLSX)', () => {
     setAdapterRows([
       measureRow({ yearMonth: '2026-04', dimKey: 'NIKE', dimLabel: 'NIKE', quantity: 4, netSales: 200, cogs: 120 }),
     ]);
-    const res = await request(app).get(
-      '/api/v1/reports/rics-sales-history-by-month?stores=2&endMonth=2026-04&format=xlsx&dataToPrint=netSales,profit',
-    );
+    // supertest doesn't parse the XLSX MIME by default — register a binary
+    // buffer parser so `res.body` ends up as a Node Buffer we can inspect.
+    const res = await request(app)
+      .get(
+        '/api/v1/reports/rics-sales-history-by-month?stores=2&endMonth=2026-04&format=xlsx&dataToPrint=netSales,profit',
+      )
+      .buffer(true)
+      .parse((res, cb) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+        res.on('end', () => cb(null, Buffer.concat(chunks)));
+      });
     expect(res.status).toBe(200);
     expect(res.headers['content-type']).toMatch(
       /openxmlformats-officedocument\.spreadsheetml\.sheet/,
     );
     expect(res.headers['content-disposition']).toMatch(/rics-sales-history-by-month-2026-04\.xlsx/);
+    const buf = res.body as Buffer;
+    expect(Buffer.isBuffer(buf)).toBe(true);
+    expect(buf.length).toBeGreaterThan(0);
     // PK magic bytes — XLSX is a zip-based format.
-    expect(res.body?.length ?? res.body?.byteLength ?? 0).toBeGreaterThan(0);
-    const buf = Buffer.isBuffer(res.body) ? res.body : Buffer.from(res.body);
-    expect(buf.slice(0, 2).toString('hex')).toBe('504b');   // 'PK'
+    expect(buf.slice(0, 2).toString('hex')).toBe('504b');
   });
 });
 
