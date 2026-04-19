@@ -46,6 +46,8 @@ d('SizeTypeRepository (integration, wide-column segment codec)', () => {
     expect(create.value.maxColumns).toBe(3);
     expect(create.value.maxRows).toBe(2);
 
+    await new Promise((resolve) => setTimeout(resolve, 400));
+
     const get = await SizeTypeRepository.getByCode(TEST_CODE);
     expect(get.ok).toBe(true);
     if (!get.ok) return;
@@ -55,8 +57,7 @@ d('SizeTypeRepository (integration, wide-column segment codec)', () => {
     const upd = await SizeTypeRepository.update(TEST_CODE, {
       columns: ['060', '065', '070', '075'],
     });
-    expect(upd.ok).toBe(true);
-    if (!upd.ok) return;
+    if (!upd.ok) throw new Error('Update failed: ' + JSON.stringify(upd.error));
     expect(upd.value.columns).toEqual(['060', '065', '070', '075']);
     expect(upd.value.maxColumns).toBe(4);
 

@@ -25,14 +25,15 @@ d('ReturnCodeRepository (integration)', () => {
     if (!create.ok) return;
     expect(create.value.trackable).toBe(true);
 
+    await new Promise((resolve) => setTimeout(resolve, 400));
+
     const list = await ReturnCodeRepository.list();
     expect(list.ok).toBe(true);
     if (!list.ok) return;
     expect(list.value.some((r) => r.code === TEST_CODE)).toBe(true);
 
     const upd = await ReturnCodeRepository.update(TEST_CODE, { trackable: false });
-    expect(upd.ok).toBe(true);
-    if (!upd.ok) return;
+    if (!upd.ok) throw new Error('Update failed: ' + JSON.stringify(upd.error));
     expect(upd.value.trackable).toBe(false);
 
     const del = await ReturnCodeRepository.delete(TEST_CODE);

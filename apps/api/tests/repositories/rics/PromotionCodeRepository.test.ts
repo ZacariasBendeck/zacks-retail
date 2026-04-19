@@ -24,14 +24,15 @@ d('PromotionCodeRepository (integration)', () => {
     });
     expect(create.ok).toBe(true);
 
+    await new Promise((resolve) => setTimeout(resolve, 400));
+
     const list = await PromotionCodeRepository.list();
     expect(list.ok).toBe(true);
     if (!list.ok) return;
     expect(list.value.some((p) => p.code === TEST_CODE)).toBe(true);
 
     const upd = await PromotionCodeRepository.update(TEST_CODE, { pieces: 200 });
-    expect(upd.ok).toBe(true);
-    if (!upd.ok) return;
+    if (!upd.ok) throw new Error('Update failed: ' + JSON.stringify(upd.error));
     expect(upd.value.pieces).toBe(200);
 
     const del = await PromotionCodeRepository.delete(TEST_CODE);

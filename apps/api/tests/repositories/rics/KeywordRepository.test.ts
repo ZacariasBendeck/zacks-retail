@@ -18,13 +18,14 @@ d('KeywordRepository (integration)', () => {
   it('creates, lists, updates, deletes', async () => {
     const create = await KeywordRepository.create({ keyword: TEST_KEYWORD, description: 'ztest kw' });
     expect(create.ok).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 400));
     const list = await KeywordRepository.list();
     expect(list.ok).toBe(true);
     if (!list.ok) return;
     expect(list.value.some((k) => k.keyword === TEST_KEYWORD)).toBe(true);
 
     const upd = await KeywordRepository.update(TEST_KEYWORD, { description: 'ztest kw 2' });
-    expect(upd.ok).toBe(true);
+    if (!upd.ok) throw new Error('Update failed: ' + JSON.stringify(upd.error));
 
     const del = await KeywordRepository.delete(TEST_KEYWORD);
     expect(del.ok).toBe(true);

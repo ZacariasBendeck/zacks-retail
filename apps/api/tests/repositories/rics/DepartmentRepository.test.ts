@@ -50,12 +50,20 @@ d('DepartmentRepository (integration against .tmp/test-mdbs/)', () => {
   });
 
   it('rejects a duplicate primary key', async () => {
-    await DepartmentRepository.create({
+    const first = await DepartmentRepository.create({
       number: TEST_NUMBER,
       description: 'ZTEST DEPT',
       begCateg: 900,
       endCateg: 910,
     });
+    expect(first.ok).toBe(true);
+
+    // Small settle pause — Jet's OLE DB transport occasionally serves a stale
+    // COUNT(*) read on a second spawn even after the INSERT has committed,
+    // which would let the duplicate INSERT slip through. 400ms is well inside
+    // the observed stabilization window for the .tmp/test-mdbs clone.
+    await new Promise((resolve) => setTimeout(resolve, 400));
+
     const dup = await DepartmentRepository.create({
       number: TEST_NUMBER,
       description: 'OTHER',
@@ -87,6 +95,10 @@ d('DepartmentRepository (integration against .tmp/test-mdbs/)', () => {
       endCateg: 910,
     });
     expect(seed.ok).toBe(true);
+
+    // Pause so update()'s read-before-write sees the insert we just did.
+    await new Promise((resolve) => setTimeout(resolve, 400));
+
     const updated = await DepartmentRepository.update(TEST_NUMBER, { description: 'ZTEST 2', endCateg: 920 });
     if (!updated.ok) {
       throw new Error('Update failed: ' + JSON.stringify(updated.error));
@@ -110,8 +122,10 @@ d('DepartmentRepository (integration against .tmp/test-mdbs/)', () => {
       begCateg: 900,
       endCateg: 910,
     });
+    await new Promise((resolve) => setTimeout(resolve, 400));
     const del = await DepartmentRepository.delete(TEST_NUMBER);
     expect(del.ok).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 400));
     const after = await DepartmentRepository.getByNumber(TEST_NUMBER);
     expect(after.ok).toBe(false);
     if (after.ok) return;

@@ -23,6 +23,7 @@ export enum RicsDb {
   NrfCodes = 'NrfCodes',
   InventoryMaster = 'InventoryMaster',
   Seasons = 'Seasons',
+  Vendors = 'Vendors',
 }
 
 interface RicsDbConfig {
@@ -47,6 +48,7 @@ const CONFIG: Record<RicsDb, RicsDbConfig> = {
   [RicsDb.NrfCodes]: { envKey: 'RICS_SIZE_DB_FILE', defaultFile: 'RISIZE.MDB' },
   [RicsDb.InventoryMaster]: { envKey: 'RICS_INVMAS_DB_FILE', defaultFile: 'RIINVMAS.MDB' },
   [RicsDb.Seasons]: { envKey: 'RICS_SEASON_DB_FILE', defaultFile: 'RISEMF.MDB' },
+  [RicsDb.Vendors]: { envKey: 'RICS_VENDOR_DB_FILE', defaultFile: 'RIVENDOR.MDB' },
 };
 
 export interface OpenedDb {

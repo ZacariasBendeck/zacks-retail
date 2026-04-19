@@ -100,3 +100,56 @@ Route layer maps:
 - Postgres-backed product data (Phase 2)
 - Cross-module write paths (inventory posts to InventoryMaster on receive — that's inventory's lane)
 - Retiring the `PRODUCT_SOURCE=rics|local` flag (only happens in Phase 3)
+
+## Step 2 implementation log (2026-04-19)
+
+Taxonomy repositories + admin UI shipped. 10 repositories against the live Access MDBs, 10 admin pages + shared hooks/API client, one new Postgres audit table, segment-codec util shared with future Phase 1 inventory writes.
+
+### Repositories delivered
+
+| Entity | Access table | CRUD | Notes |
+|---|---|---|---|
+| Department | RIDEPT.Departments | full | 1–99 number, range check enforced |
+| Category | RICATEG.Categories | full | 1–999 number |
+| Sector | RIDEPT.Sectors | full | 1–99; kept for Phase 1 (see decision below) |
+| Group | RIGROUP.GroupCodes | full | 1–3 alphanumeric code |
+| Keyword | RIGROUP.Keywords | full | 10-char cap + no-whitespace |
+| PromotionCode | RIGROUP.MarketingCode | full | Access table name differs from RICS terminology |
+| ReturnCode | RIRETURN.ReturnCodes | full | Schema inferred from RICS manual (MDB was not in the auto-discovered schema doc) |
+| SizeType | RISIZE.SizeTypes | full | Wide-column grid via shared segmentCodec |
+| Season | (derived) InventoryMaster.Season | read-only | RISEMF.MDB legacy format; writes 503 |
+| NrfCode | RISIZE.NRMACodes | read-only | NRMACodes table empty; editor deferred |
+
+### Decisions recorded during Step 2
+
+- **Sectors kept in Phase 1.** The spec's "drop Sectors for v1" modernization decision is deferred to Phase 2+. Nine populated sector rows are in active reporting use; shipping parity is the lower-risk move. See products.md "Data findings reconciliation" #12.
+- **Seasons derived, not a master table.** `RISEMF.MDB` in this customer's install is in an older Jet format the modern `Microsoft.ACE.OLEDB.12.0` provider refuses to open. `SeasonRepository.list()` returns distinct values from `InventoryMaster.Season` with SKU counts as a proxy. Writes are intentionally blocked with `AccessConnectionError`. Phase 2 should migrate Season master to Postgres.
+- **Promotion Codes map to `MarketingCode`.** RICS manual p. 167 uses "Promotion Code"; the Access table is physically `MarketingCode`. We preserve manual terminology in the UI and the repository reads the Access table by its actual name. Schema assumed `(Code, Description, Date, Pieces, Cost, DateLastChanged)` per the auto-discovered schema + manual — the live table is empty, so column types were not verified against real rows.
+- **ReturnCodes schema inferred.** `RIRETURN.MDB` was not in the auto-generated `docs/rics-db-schema.md`. The repository assumes `(Code SMALLINT, Desc WCHAR, Trackable BOOLEAN, DateLastChanged DATE)` per RICS manual p. 166; integration test passed against the live MDB, validating the shape.
+- **NRMACodes deferred.** The customer's table is empty; the write path is not built. The read API returns `[]` and the admin UI surfaces an empty-state panel. Phase 2 will add seed data (Footwear + Clothing tables) and a cell-level editor.
+- **Audit log is non-blocking.** `ProductsAuditLog` inserts are best-effort — failures are logged but the Access mutation is treated as authoritative. Consistency between the two is eventual; reports querying the audit log should expect gaps.
+- **Test data prefix `ZTEST*`.** Fixtures scope themselves to `ZTEST`-prefixed codes (or out-of-range numbers like 97, 9000) and self-clean via `beforeEach` / `afterAll` deletes. `.tmp/test-mdbs/` is idempotent — repeat runs reuse the clone, with EBUSY fallbacks for parallel workers. If a live row ever uses a `ZTEST` prefix the test suite will see it; so far none do.
+
+### Access quirks table update (from the "Ground rules" section)
+
+| Quirk | Handled in | Notes |
+|---|---|---|
+| Wide-column segment rows (`Columns_01..54`, `Rows_01..27`, `OnHand_01..18`) | `src/utils/segmentCodec.ts` | Flatten on read, re-shard on write. Unit-tested; used by SizeTypeRepository and (future) inventory/labels/UPC write paths. |
+| MDB file locking under parallel Jest workers | `tests/repositories/rics/testMdbSetup.ts` | Idempotent copy; EBUSY-tolerant. |
+| Legacy Jet format (RISEMF.MDB) | `SeasonRepository` | Reads derived from InventoryMaster; writes 503 with a pointer to this log. |
+| Access table name mismatch (RICS "Promotion Code" vs Access `MarketingCode`) | `PromotionCodeRepository` | UI surfaces RICS terminology; repo + SQL use the Access name. |
+
+### Unresolved items (open questions raised)
+
+- **Promotion Code column types not verified against live rows** (table was empty at implementation time). If a real GMAIC or manual write comes in and the `Pieces INTEGER` column is actually `SMALLINT`, the `long` typed param will be wrong. Log an integration run and adjust in the first week of production use.
+- **`ReturnCodes` schema not in the auto-discovered schema doc.** The repo shape works against this customer's MDB; regenerate `docs/rics-db-schema.md` via `pnpm --filter @benlow-rics/api rics:discover` to capture RIRETURN going forward.
+
+### Additional Step 2 findings (2026-04-19)
+
+- **Jet OLE DB UPDATE occasionally under-reports `rowsAffected`.** On a warm test run, `executeNonQuery('UPDATE ... WHERE PK = ?')` returned 0 even though a subsequent SELECT proved the row changed. Every taxonomy `update()` method therefore drops the "rowsAffected === 0 → NotFound" check and re-reads the row instead. The NotFound case is still covered: `update()` begins with a `getByNumber/getByCode` pre-check that returns NotFound before any SQL runs.
+- **Jet OLE DB returns a stale `SELECT COUNT(*)` immediately after an INSERT from a separate PowerShell spawn.** The duplicate-primary-key check in `create()` saw 0 rows a fraction of a second after an INSERT committed. Tests now insert a 400ms settle pause between the seed INSERT and the follow-up create when asserting DuplicatePrimaryKey; production write paths are not affected because the insert itself succeeds on the second attempt if the constraint really is violated (Access returns the duplicate-key error string, which `toRepoError` maps correctly).
+- **Parallel Jest workers cannot coexist on the same MDB.** Opening RIGROUP.MDB from two workers simultaneously reliably wedged the file (EBUSY on copy, NullReferenceException on open). `jest.config.js` now pins `maxWorkers: 1`. The integration-test suite serializes by design; unit-only tests still run inline under the same config (the cost is ~20s of extra wall time, acceptable).
+- **`req.params` is `string | string[]`** in `@types/express@5`. Route handlers cast via a shared `paramString()` helper before passing to repositories; this prevents runtime surprises on catch-all routes.
+- **App-level route mount is `/api/v1/taxonomy/*`**, not `/api/v1/*`. This differs from the bullet list in the Scope table earlier in this doc; the chosen prefix mirrors the rest of the app's grouping convention (`/api/v1/customers`, `/api/v1/inventory`, etc.) and leaves the top-level namespace clean for per-entity routes added in later steps. Clients use the prefix; the typed `productsTaxonomyApi` service on the admin front-end already does.
+- **Admin navigation wiring deferred.** Per the Step 2 charter, `AppLayout.tsx` is not modified here; the orchestrator wires menu entries at the end of the 9-step rollout. Routes in `App.tsx` are added so every page is reachable by URL (e.g. `/products/taxonomy/departments`), which is sufficient for smoke tests.
+- **segmentCodec already existed from Step 1.** My scaffold would have overwritten it with an identical copy; no behavior change. The repository for Step 2 consumes it via `SizeTypeRepository` (single-row wide-column case) and NrfCodeRepository (multi-segment case); inventory/labels/UPC repos in Steps 4–6 will reuse the same helpers.

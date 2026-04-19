@@ -5,6 +5,11 @@
  *
  * Skip mode: if the source directory is missing (e.g., CI with no Access data)
  * the helper returns `false` and callers should `test.skip(...)` their suite.
+ *
+ * Side effect: raises Jest's per-test timeout to 60s so PowerShell + OLE DB
+ * round-trips (each ~1–3s) plus 400ms Jet stabilization pauses don't blow up
+ * the suite on cold runs. Tests in this suite spend almost all their wall
+ * time in PowerShell, not in assertions.
  */
 
 import fs from 'node:fs';
@@ -21,6 +26,12 @@ export interface TestMdbContext {
 }
 
 export function setupTestMdbs(): TestMdbContext {
+  // Raise Jest's default 5s timeout — every repository call spawns PowerShell
+  // (~1–2s) and the Jet stabilization pauses inside tests (~400ms each) push
+  // a typical create+read+update+delete flow well past 5s.
+  if (typeof jest !== 'undefined') {
+    jest.setTimeout(60_000);
+  }
   if (!fs.existsSync(SOURCE_DIR)) {
     return { available: false, testDir: DEST_DIR, sourceDir: SOURCE_DIR };
   }
@@ -35,7 +46,8 @@ export function setupTestMdbs(): TestMdbContext {
     'RIGROUP.MDB',
     'RIRETURN.MDB',
     'RISIZE.MDB',
-    'RIINVMAS.MDB', // used by SeasonRepository
+    'RIINVMAS.MDB', // used by SeasonRepository + VendorRepository sku-count join
+    'RIVENDOR.MDB', // used by VendorRepository (Step 3)
   ];
   for (const f of FILES) {
     const src = path.join(SOURCE_DIR, f);

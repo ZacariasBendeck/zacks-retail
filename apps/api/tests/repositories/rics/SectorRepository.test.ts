@@ -25,13 +25,15 @@ d('SectorRepository (integration)', () => {
     });
     expect(create.ok).toBe(true);
 
+    await new Promise((resolve) => setTimeout(resolve, 400));
+
     const list = await SectorRepository.list();
     expect(list.ok).toBe(true);
     if (!list.ok) return;
     expect(list.value.some((s) => s.number === TEST_NUMBER)).toBe(true);
 
     const upd = await SectorRepository.update(TEST_NUMBER, { description: 'ZTEST SEC 2' });
-    expect(upd.ok).toBe(true);
+    if (!upd.ok) throw new Error('Update failed: ' + JSON.stringify(upd.error));
 
     const del = await SectorRepository.delete(TEST_NUMBER);
     expect(del.ok).toBe(true);

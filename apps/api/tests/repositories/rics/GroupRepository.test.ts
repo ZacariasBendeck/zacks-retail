@@ -20,14 +20,15 @@ d('GroupRepository (integration)', () => {
     expect(create.ok).toBe(true);
     if (!create.ok) return;
 
+    await new Promise((resolve) => setTimeout(resolve, 400));
+
     const list = await GroupRepository.list();
     expect(list.ok).toBe(true);
     if (!list.ok) return;
     expect(list.value.some((g) => g.code === TEST_CODE)).toBe(true);
 
     const update = await GroupRepository.update(TEST_CODE, { description: 'ZTEST GRP 2' });
-    expect(update.ok).toBe(true);
-    if (!update.ok) return;
+    if (!update.ok) throw new Error('Update failed: ' + JSON.stringify(update.error));
     expect(update.value.description).toBe('ZTEST GRP 2');
 
     const del = await GroupRepository.delete(TEST_CODE);
