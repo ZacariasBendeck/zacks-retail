@@ -237,6 +237,84 @@ export function updateOtbPlanRow(id: string, patch: UpdateOtbPlanRowInput): OtbP
   return getOtbPlanRow(id) as OtbPlanRow;
 }
 
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
+export function recalculatePlannedSales(id: string, changedBy = 'system'): OtbPlanRow | OtbPlanRowError {
+  const db = getDb();
+  const existing = db.prepare('SELECT * FROM otb_plan_rows WHERE id = ?').get(id) as OtbPlanRowDbRow | undefined;
+  if (!existing) return { code: 'NOT_FOUND' };
+
+  const pct = existing.pct_change_ly_to_cy;
+  if (pct === null || pct === undefined) {
+    return rowToOtbPlanRow(existing);
+  }
+
+  const updates: string[] = [];
+  const values: DbValue[] = [];
+  const auditWrites: Array<[string, string | null, string | null]> = [];
+
+  for (let i = 0; i < 12; i++) {
+    const suffix = MONTH_COLUMN_SUFFIXES[i];
+    const lyCol = `ly_sales_${suffix}`;
+    const plannedCol = `planned_sales_${suffix}`;
+    const ly = (existing as unknown as Record<string, number | null>)[lyCol];
+    const oldPlanned = (existing as unknown as Record<string, number | null>)[plannedCol];
+    if (ly === null || ly === undefined) continue;
+    const newPlanned = round2(ly * (1 + pct / 100));
+    if (oldPlanned === newPlanned) continue;
+    updates.push(`${plannedCol} = ?`);
+    values.push(newPlanned);
+    auditWrites.push([plannedCol, oldPlanned === null || oldPlanned === undefined ? null : String(oldPlanned), String(newPlanned)]);
+  }
+
+  if (updates.length === 0) return rowToOtbPlanRow(existing);
+
+  db.exec('BEGIN');
+  try {
+    for (const [field, oldStr, newStr] of auditWrites) {
+      db.prepare(
+        `INSERT INTO otb_plan_row_audit (id, otb_plan_row_id, field_changed, old_value, new_value, changed_by)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      ).run(uuidv4(), id, field, oldStr, newStr, changedBy);
+    }
+    updates.push(`updated_at = datetime('now')`);
+    db.prepare(`UPDATE otb_plan_rows SET ${updates.join(', ')} WHERE id = ?`).run(...values, id);
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+
+  return getOtbPlanRow(id) as OtbPlanRow;
+}
+
+export function copyOtbPlanRow(
+  sourceId: string,
+  targetStoreId: string,
+  targetCategoryId: string,
+  changedBy = 'system',
+): OtbPlanRow | OtbPlanRowError {
+  const source = getOtbPlanRow(sourceId);
+  if ('code' in source) return source;
+
+  return createOtbPlanRow({
+    storeId: targetStoreId,
+    categoryId: targetCategoryId,
+    fiscalYear: source.fiscalYear,
+    pctChangeLyToCy: source.pctChangeLyToCy,
+    pctChangeCyToNy: source.pctChangeCyToNy,
+    plannedTurnover1h: source.plannedTurnover1h,
+    plannedTurnover2h: source.plannedTurnover2h,
+    plannedGpPct: source.plannedGpPct,
+    lySales: source.lySales,
+    plannedSales: source.plannedSales,
+    markdownPct: source.markdownPct,
+    createdBy: changedBy,
+  });
+}
+
 export function getOtbPlanRowAudit(otbPlanRowId: string): OtbPlanRowAudit[] {
   const db = getDb();
   const rows = db.prepare(

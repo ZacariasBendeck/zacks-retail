@@ -141,6 +141,94 @@ describe('updateOtbPlanRow', () => {
   });
 });
 
+describe('recalculatePlannedSales', () => {
+  it('fills plannedSales[m] = lySales[m] * (1 + pct/100) for each non-null cell', () => {
+    const created = svc.createOtbPlanRow({
+      ...baseInput,
+      lySales: [10000, 12000, 8000, null, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000],
+      pctChangeLyToCy: 10,
+    });
+    if ('code' in created) throw new Error('unexpected');
+
+    const r = svc.recalculatePlannedSales(created.id);
+    if ('code' in r) throw new Error(`unexpected error ${r.code}`);
+    expect(r.plannedSales[0]).toBe(11000);
+    expect(r.plannedSales[1]).toBe(13200);
+    expect(r.plannedSales[2]).toBe(8800);
+    expect(r.plannedSales[3]).toBeNull();
+  });
+
+  it('handles negative percent (decrease)', () => {
+    const created = svc.createOtbPlanRow({
+      ...baseInput,
+      lySales: Array(12).fill(10000) as (number | null)[],
+      pctChangeLyToCy: -15,
+    });
+    if ('code' in created) throw new Error('unexpected');
+    const r = svc.recalculatePlannedSales(created.id);
+    if ('code' in r) throw new Error('unexpected');
+    expect(r.plannedSales[0]).toBe(8500);
+  });
+
+  it('leaves plannedSales unchanged when pctChangeLyToCy is null', () => {
+    const created = svc.createOtbPlanRow({
+      ...baseInput,
+      pctChangeLyToCy: null,
+      plannedSales: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] as (number | null)[],
+    });
+    if ('code' in created) throw new Error('unexpected');
+    const r = svc.recalculatePlannedSales(created.id);
+    if ('code' in r) throw new Error('unexpected');
+    expect(r.plannedSales).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+  });
+
+  it('writes one audit row per changed monthly cell', () => {
+    const created = svc.createOtbPlanRow({
+      ...baseInput,
+      lySales: Array(12).fill(10000) as (number | null)[],
+      pctChangeLyToCy: 10,
+    });
+    if ('code' in created) throw new Error('unexpected');
+    svc.recalculatePlannedSales(created.id, 'buyer3');
+    const audit = svc.getOtbPlanRowAudit(created.id);
+    const planned = audit.filter((a) => a.fieldChanged.startsWith('planned_sales_m'));
+    expect(planned).toHaveLength(12);
+    expect(planned.every((a) => a.changedBy === 'buyer3')).toBe(true);
+  });
+
+  it('returns NOT_FOUND', () => {
+    expect(svc.recalculatePlannedSales('nope')).toEqual({ code: 'NOT_FOUND' });
+  });
+});
+
+describe('copyOtbPlanRow', () => {
+  it('copies scalar + monthly fields to a new (store, category) row', () => {
+    const created = svc.createOtbPlanRow(baseInput);
+    if ('code' in created) throw new Error('unexpected');
+    const copied = svc.copyOtbPlanRow(created.id, 'store-2', 'cat-557', 'buyer4');
+    if ('code' in copied) throw new Error(`unexpected error ${copied.code}`);
+    expect(copied.id).not.toBe(created.id);
+    expect(copied.storeId).toBe('store-2');
+    expect(copied.categoryId).toBe('cat-557');
+    expect(copied.fiscalYear).toBe(2026);
+    expect(copied.pctChangeLyToCy).toBe(7.5);
+    expect(copied.lySales).toEqual(Array(12).fill(10000));
+    expect(copied.createdBy).toBe('buyer4');
+  });
+
+  it('returns DUPLICATE_KEY when target (store, category, year) already exists', () => {
+    const created = svc.createOtbPlanRow(baseInput);
+    if ('code' in created) throw new Error('unexpected');
+    svc.createOtbPlanRow({ ...baseInput, storeId: 'store-2', categoryId: 'cat-557' });
+    const r = svc.copyOtbPlanRow(created.id, 'store-2', 'cat-557');
+    expect(r).toEqual({ code: 'DUPLICATE_KEY', storeId: 'store-2', categoryId: 'cat-557', fiscalYear: 2026 });
+  });
+
+  it('returns NOT_FOUND for missing source id', () => {
+    expect(svc.copyOtbPlanRow('nope', 'store-2', 'cat-557')).toEqual({ code: 'NOT_FOUND' });
+  });
+});
+
 describe('deleteOtbPlanRow', () => {
   it('deletes an existing row', () => {
     const created = svc.createOtbPlanRow(baseInput);
