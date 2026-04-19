@@ -7,6 +7,18 @@ import { PricingPanel } from './PricingPanel';
 import { SalesRollupStrip } from './SalesRollupStrip';
 import { ViewModeSelector, type ViewMode } from './ViewModeSelector';
 import { useInquiryData } from './useInquiryData';
+import { SizeGrid as SizeGridComponent } from '../../../components/size-grid';
+import type { InquiryGrids } from '../../../types/inventoryInquiry';
+
+const GRID_KEY_BY_MODE: Partial<Record<ViewMode, keyof InquiryGrids>> = {
+  ON_HAND:            'onHand',
+  MODEL:              'model',
+  SHORT:              'short',
+  MAX:                'max',
+  REORDER:            'reorder',
+  ALL_STORES_ON_HAND: 'allStoresOnHand',
+  ALL_STORES_SUMMARY: 'allStoresSummary',
+};
 
 export const InquiryPage: React.FC = () => {
   const { skuCode = '' } = useParams<{ skuCode: string }>();
@@ -33,7 +45,13 @@ export const InquiryPage: React.FC = () => {
       <PricingPanel pricing={data.pricing} />
       <SalesRollupStrip rollup={data.rollup} />
       <ViewModeSelector value={mode} onChange={setMode} />
-      {/* ActionBar, size grid wired in following tasks */}
+      {(() => {
+        const gridKey = GRID_KEY_BY_MODE[mode];
+        const grid = gridKey ? data.grids[gridKey] : undefined;
+        return grid
+          ? <SizeGridComponent grid={grid} />
+          : <em>No data for this view mode.</em>;
+      })()}
     </div>
   );
 };
