@@ -1204,6 +1204,9 @@ export async function getSalesAnalysis(params: {
         cogs: round2(b.cogs),
         grossProfit: round2(grossProfit),
         gpPct: b.netSales === 0 ? null : round1((grossProfit / b.netSales) * 100),
+        onHandAtCost: 0,        // STUB — populated in Task 6
+        turns: null,            // STUB — populated in Task 6
+        roiPct: null,           // STUB — populated in Task 6
         priorYearNetSales: priorYear != null ? round2(priorYear) : null,
         pyPctChange: priorYear == null || priorYear === 0
           ? null
@@ -1221,10 +1224,19 @@ export async function getSalesAnalysis(params: {
     netSales: round2(rows.reduce((s, r) => s + r.netSales, 0)),
     cogs: round2(rows.reduce((s, r) => s + r.cogs, 0)),
     grossProfit: round2(rows.reduce((s, r) => s + r.grossProfit, 0)),
+    onHandAtCost: 0,       // STUB — populated in Task 6
+    gpPct: null as number | null,  // STUB — populated in Task 6
+    turns: null as number | null,  // STUB — populated in Task 6
+    roiPct: null as number | null, // STUB — populated in Task 6
     priorYearNetSales: priorYearByDimStore
       ? round2(rows.reduce((s, r) => s + (r.priorYearNetSales ?? 0), 0))
       : null,
   };
+
+  const periodDays =
+    Math.round(
+      (new Date(endDate).getTime() - new Date(startDate).getTime()) / 86_400_000,
+    ) + 1;
 
   return {
     dimension: params.dimension,
@@ -1234,6 +1246,7 @@ export async function getSalesAnalysis(params: {
     printing: params.printing,
     rows,
     totals,
+    periodDays,
   };
 }
 

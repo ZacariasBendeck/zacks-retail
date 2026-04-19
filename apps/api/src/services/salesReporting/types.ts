@@ -193,6 +193,7 @@ export type SalesAnalysisReportType =
 export type SalesAnalysisStoreOption = 'SEPARATE' | 'COMPARE' | 'COMBINE';
 
 export interface SalesAnalysisCriteria {
+  // Structured selections — IDs / codes picked from the dropdown.
   stores?: number[];
   categories?: number[];
   vendors?: string[];
@@ -204,6 +205,20 @@ export interface SalesAnalysisCriteria {
   groups?: string[];
   /** Keyword pattern(s). Requires RIINVMAS join. */
   keywords?: string[];
+
+  // Raw RICS-grammar text per facet (see apps/api/src/utils/criteriaGrammar.ts).
+  // Merge semantics: a facet matches if (structured selection matches) OR
+  // (grammar inclusion matches), then grammar exclusions narrow on top.
+  // Exclusion-only grammar narrows the structured picks (it does not widen
+  // to the universe).
+  storesRaw?: string;
+  categoriesRaw?: string;
+  vendorsRaw?: string;
+  seasonsRaw?: string;
+  skusRaw?: string;
+  groupsRaw?: string;
+  keywordsRaw?: string;
+  styleColorRaw?: string;
 }
 
 export interface SalesAnalysisPrinting {
@@ -222,7 +237,10 @@ export interface SalesAnalysisRow {
   netSales: number;
   cogs: number;
   grossProfit: number;
-  gpPct: number | null;         // grossProfit / netSales; null when netSales=0
+  gpPct: number | null;         // grossProfit / netSales × 100; null when netSales=0
+  onHandAtCost: number;         // Σ(OnHand × CurrentCost) for the dimension; 0 when unknown
+  turns: number | null;         // annualized; null when onHandAtCost=0
+  roiPct: number | null;        // GMROI, annualized; null when onHandAtCost=0
   priorYearNetSales: number | null;
   pyPctChange: number | null;
 }
@@ -239,8 +257,13 @@ export interface SalesAnalysisReport {
     netSales: number;
     cogs: number;
     grossProfit: number;
+    onHandAtCost: number;
+    gpPct: number | null;
+    turns: number | null;
+    roiPct: number | null;
     priorYearNetSales: number | null;
   };
+  periodDays: number;
 }
 
 // ─────────────────────────── Stock Status (RICS p. 96) ────────────────────
