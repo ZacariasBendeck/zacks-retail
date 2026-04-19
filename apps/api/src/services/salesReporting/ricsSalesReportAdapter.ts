@@ -39,6 +39,8 @@ import {
   runPowerShellJson,
   buildSelectScript,
 } from '../accessOleDb';
+import { getOnHandAtCostByDimension } from './ricsOnHandAtCostAdapter';
+import { computeRoiTurnsGp } from './metrics';
 import type {
   RicsSalesByDayByStoreReport,
   RicsSalesByDayRow,
@@ -1186,6 +1188,42 @@ export async function getSalesAnalysis(params: {
     }
   }
 
+  // On-hand-at-cost lookup (Turns/ROI denominator).
+  const rawOnHandMap = await getOnHandAtCostByDimension({
+    reportType: params.reportType,
+    storeOption: params.storeOption,
+    criteria: params.criteria,
+  });
+
+  // DEPT_SUMMARY comes back keyed as `CAT:<category>[|<store>]` — the
+  // on-hand adapter doesn't have the dept map. Re-bucket here using the
+  // existing deptNumberForCategory helper.
+  let onHandLookup = rawOnHandMap;
+  if (params.reportType === 'DEPT_SUMMARY' && deptMap) {
+    onHandLookup = new Map<string, number>();
+    for (const [k, v] of rawOnHandMap) {
+      const pipeIdx = k.indexOf('|');
+      const head = pipeIdx === -1 ? k : k.slice(0, pipeIdx);
+      const tail = pipeIdx === -1 ? '' : k.slice(pipeIdx);
+      const catNum = Number(head.replace(/^CAT:/, ''));
+      const dept = deptNumberForCategory(catNum, deptMap);
+      if (dept == null) continue;
+      const newKey = `${dept}${tail}`;
+      onHandLookup.set(newKey, (onHandLookup.get(newKey) ?? 0) + v);
+    }
+  } else if (params.reportType === 'PRICE_POINT_SUMMARY') {
+    // PP bucketing requires SKU → bucket mapping from the sales adapter's
+    // own bucketization, which is not currently exposed. Until that's
+    // refactored, leave onHandLookup empty so ROI/Turns render as null
+    // on price-point rows. Documented as spec Open Question 2.
+    onHandLookup = new Map();
+  }
+
+  const periodDays =
+    Math.round(
+      (new Date(endDate).getTime() - new Date(startDate).getTime()) / 86_400_000,
+    ) + 1;
+
   // Default sort: by dimensionKey (numeric-aware). For DEPT_SUMMARY /
   // CATEGORY_SUMMARY this gives numeric ascending; for VENDOR_SUMMARY /
   // SKU_DETAIL it gives alphanumeric ascending. Users can still re-sort
@@ -1195,6 +1233,21 @@ export async function getSalesAnalysis(params: {
       const grossProfit = b.netSales - b.cogs;
       const mapKey = `${b.dimensionKey}|${b.storeNumber ?? '*'}`;
       const priorYear = priorYearByDimStore?.get(mapKey) ?? null;
+
+      const onHandKey =
+        params.storeOption === 'COMBINE'
+          ? b.dimensionKey
+          : `${b.dimensionKey}|${b.storeNumber}`;
+      const onHandAtCost = onHandLookup.get(onHandKey) ?? 0;
+
+      const metrics = computeRoiTurnsGp({
+        netSales: b.netSales,
+        cogs: b.cogs,
+        grossProfit,
+        onHandAtCost,
+        periodDays,
+      });
+
       return {
         dimensionKey: b.dimensionKey,
         dimensionLabel: b.dimensionLabel,
@@ -1203,10 +1256,10 @@ export async function getSalesAnalysis(params: {
         netSales: round2(b.netSales),
         cogs: round2(b.cogs),
         grossProfit: round2(grossProfit),
-        gpPct: b.netSales === 0 ? null : round1((grossProfit / b.netSales) * 100),
-        onHandAtCost: 0,        // STUB — populated in Task 6
-        turns: null,            // STUB — populated in Task 6
-        roiPct: null,           // STUB — populated in Task 6
+        gpPct: metrics.gpPct,
+        onHandAtCost: round2(onHandAtCost),
+        turns: metrics.turns,
+        roiPct: metrics.roiPct,
         priorYearNetSales: priorYear != null ? round2(priorYear) : null,
         pyPctChange: priorYear == null || priorYear === 0
           ? null
@@ -1219,24 +1272,30 @@ export async function getSalesAnalysis(params: {
         sensitivity: 'base',
       }));
 
+  const totalNetSales = rows.reduce((s, r) => s + r.netSales, 0);
+  const totalCogs = rows.reduce((s, r) => s + r.cogs, 0);
+  const totalGrossProfit = rows.reduce((s, r) => s + r.grossProfit, 0);
+  const totalOnHandAtCost = rows.reduce((s, r) => s + r.onHandAtCost, 0);
+  const totalsMetrics = computeRoiTurnsGp({
+    netSales: totalNetSales,
+    cogs: totalCogs,
+    grossProfit: totalGrossProfit,
+    onHandAtCost: totalOnHandAtCost,
+    periodDays,
+  });
   const totals = {
     qty: rows.reduce((s, r) => s + r.qty, 0),
-    netSales: round2(rows.reduce((s, r) => s + r.netSales, 0)),
-    cogs: round2(rows.reduce((s, r) => s + r.cogs, 0)),
-    grossProfit: round2(rows.reduce((s, r) => s + r.grossProfit, 0)),
-    onHandAtCost: 0,       // STUB — populated in Task 6
-    gpPct: null as number | null,  // STUB — populated in Task 6
-    turns: null as number | null,  // STUB — populated in Task 6
-    roiPct: null as number | null, // STUB — populated in Task 6
+    netSales: round2(totalNetSales),
+    cogs: round2(totalCogs),
+    grossProfit: round2(totalGrossProfit),
+    onHandAtCost: round2(totalOnHandAtCost),
+    gpPct: totalsMetrics.gpPct,
+    turns: totalsMetrics.turns,
+    roiPct: totalsMetrics.roiPct,
     priorYearNetSales: priorYearByDimStore
       ? round2(rows.reduce((s, r) => s + (r.priorYearNetSales ?? 0), 0))
       : null,
   };
-
-  const periodDays =
-    Math.round(
-      (new Date(endDate).getTime() - new Date(startDate).getTime()) / 86_400_000,
-    ) + 1;
 
   return {
     dimension: params.dimension,

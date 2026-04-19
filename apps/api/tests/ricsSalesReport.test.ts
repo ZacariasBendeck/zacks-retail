@@ -521,6 +521,62 @@ describe('getSalesAnalysis', () => {
     expect(report.rows[0].netSales).toBe(100);
   });
 
+  it('SalesAnalysis rows carry onHandAtCost, turns, and roiPct', async () => {
+    setMockRows([
+      { match: sqlMatches('FROM [StoreMaster]'), rows: STORE_ROWS },
+      { match: sqlMatches('FROM [Salespeople]'), rows: SALESPERSON_ROWS },
+      {
+        match: (sql) => sql.includes('FROM TicketHeader h INNER JOIN TicketDetail d'),
+        rows: [
+          line({
+            H_Store: 2,
+            H_Ticket: 1,
+            H_RealDate: dateMs('2026-04-01'),
+            D_SKU: 'A',
+            D_Qty: 10,
+            D_Extension: 1500,
+            D_Cost: 100,
+            D_Category: 556,
+            D_Vendor: 'V1',
+          }),
+        ],
+      },
+      {
+        match: sqlMatches('FROM [Inventory Quantities]'),
+        rows: [{ SKU: 'A', Store: 2, TotalOnHand: 50 }],
+      },
+      {
+        match: sqlMatches('FROM [InventoryMaster]'),
+        rows: [
+          { SKU: 'A', Category: 556, Vendor: 'V1', Season: null, CurrentCost: 100 },
+        ],
+      },
+    ]);
+
+    const report = await adapter.getSalesAnalysis({
+      dimension: 'CATEGORY',
+      reportType: 'CATEGORY_SUMMARY',
+      storeOption: 'COMBINE',
+      criteria: {},
+      printing: {},
+      startDate: '2026-04-01',
+      endDate: '2026-04-30',   // 30 days inclusive
+    });
+
+    expect(report.rows).toHaveLength(1);
+    const row = report.rows[0];
+    expect(row.dimensionKey).toBe('556');
+    expect(row.onHandAtCost).toBeCloseTo(5000, 2);
+    // COGS = 100 × 10 = 1000; annualizer 365/30 ≈ 12.166; Turns = 1000*12.166/5000 ≈ 2.43
+    expect(row.turns).toBeCloseTo(2.43, 1);
+    // grossProfit = 1500 - 1000 = 500; ROI = 500*12.166/5000 ≈ 1.22
+    expect(row.roiPct).toBeCloseTo(1.22, 1);
+    expect(report.totals.onHandAtCost).toBeCloseTo(5000, 2);
+    expect(report.totals.turns).toBeCloseTo(2.43, 1);
+    expect(report.totals.roiPct).toBeCloseTo(1.22, 1);
+    expect(report.periodDays).toBe(30);
+  });
+
   it('DEPT_SUMMARY returns rows in numeric order by dept number, not alphabetical by label', async () => {
     // Dept labels are chosen so that alphabetical-by-label order
     // (ACCESORIOS, MUJER, ZAPATO) disagrees with numeric-by-key order
