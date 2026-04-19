@@ -23,6 +23,7 @@ import {
   SendOutlined,
 } from '@ant-design/icons'
 import dayjs from 'dayjs'
+import { SkuLink } from '../../components/sku-link'
 import {
   useCancelPurchaseOrder,
   useClosePurchaseOrder,
@@ -162,9 +163,12 @@ export default function PurchaseOrderDetailPage() {
       title: 'SKU',
       key: 'sku',
       width: 200,
-      render: (_: unknown, line: PoLineItem) => (
-        <Typography.Text code>{line.skuCode ?? line.skuId}</Typography.Text>
-      ),
+      render: (_: unknown, line: PoLineItem) =>
+        line.skuCode ? (
+          <SkuLink skuCode={line.skuCode} />
+        ) : (
+          <Typography.Text code>{line.skuId}</Typography.Text>
+        ),
     },
     {
       title: 'Style',
