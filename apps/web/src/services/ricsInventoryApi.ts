@@ -3,6 +3,51 @@
  * Server source: apps/api/src/routes/ricsInventoryRoutes.ts.
  */
 
+// ─────────────────────── extended inquiry types ───────────────────────────
+
+export type PriceSlot = 'LIST' | 'RETAIL' | 'MARKDOWN1' | 'MARKDOWN2';
+
+export interface InquiryPricing {
+  retail: number;
+  markdown1: number;
+  markdown2: number;
+  avgCost: number;
+  currentCost: number;
+  listPrice: number;
+  currentSlot: PriceSlot;
+}
+
+export interface InquiryRollupCell {
+  qty: number;
+  net: number;
+  markdown: number;
+  profit: number;
+}
+
+export interface InquiryRollup {
+  week: InquiryRollupCell;
+  month: InquiryRollupCell;
+  season: InquiryRollupCell;
+  year: InquiryRollupCell;
+}
+
+export interface InquirySizeGrid {
+  columns: string[];
+  rows: Array<{ label: string; cells: Array<{ value: number | null }> }>;
+}
+
+export interface InquiryGrids {
+  onHand?: InquirySizeGrid;
+  model?: InquirySizeGrid;
+  max?: InquirySizeGrid;
+  reorder?: InquirySizeGrid;
+  short?: InquirySizeGrid;
+  allStoresOnHand?: InquirySizeGrid;
+  allStoresSummary?: InquirySizeGrid;
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+
 export interface InventoryCell {
   storeNumber: number
   rowLabel: string
@@ -51,6 +96,10 @@ export interface InventoryInquiry {
   }
   stores: InventoryInquiryStore[]
   totals: InventoryInquiryStore['totals']
+  pricing?: InquiryPricing
+  rollup?: InquiryRollup
+  grids?: InquiryGrids
+  pictureUrl?: string | null
 }
 
 export interface FindBySizeResult {
