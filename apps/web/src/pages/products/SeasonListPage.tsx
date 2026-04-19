@@ -1,69 +1,45 @@
-import { App, Button, Card, Popconfirm, Space, Table, Tag, Typography } from 'antd'
-import { DeleteOutlined, EditOutlined } from '@ant-design/icons'
-import { useNavigate } from 'react-router-dom'
-import { useDeleteSeason, useSeasons } from '../../hooks/useProductsTaxonomy'
+import { Alert, App, Button, Card, Popconfirm, Space, Table, Tag, Typography } from 'antd'
+import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons'
+import { Link, useNavigate } from 'react-router-dom'
+import {
+  useDeleteSeason,
+  useSeasons,
+  useSeasonSource,
+} from '../../hooks/useProductsTaxonomy'
 import type { Season } from '../../types/productsTaxonomy'
 
-/**
- * Season Code Setup — RICS parity with the 20-slot fixed ring (p. 218).
- *
- * Always renders all 20 codes in canonical order. The current season (computed
- * from today + cadence config) is highlighted. Descriptions are the only
- * user-editable field; codes are a RICS constant. "Delete" clears the
- * description rather than removing the slot.
- */
 export default function SeasonListPage() {
   const navigate = useNavigate()
   const { message } = App.useApp()
   const { data, isLoading } = useSeasons()
+  const { data: source } = useSeasonSource()
   const del = useDeleteSeason()
-
-  const current = data?.find((s) => s.isCurrent) ?? null
 
   const columns = [
     {
       title: 'Code',
       dataIndex: 'code',
       key: 'code',
-      width: 80,
+      width: 100,
+      sorter: (a: Season, b: Season) => a.code.localeCompare(b.code),
     },
     {
       title: 'Description',
       dataIndex: 'description',
       key: 'description',
-      render: (v: string | null, r: Season) => (
-        <Space size={8}>
-          {v ?? <Typography.Text type="secondary">(empty)</Typography.Text>}
-          {r.isCurrent ? <Tag color="green">CURRENT</Tag> : null}
-        </Space>
-      ),
-    },
-    {
-      title: 'Period',
-      key: 'period',
-      width: 200,
-      render: (_: unknown, r: Season) =>
-        r.isCurrent && r.periodStartedAt && r.periodEndsAt ? (
-          <Typography.Text type="secondary">
-            {new Date(r.periodStartedAt).toISOString().slice(0, 10)} –{' '}
-            {new Date(r.periodEndsAt).toISOString().slice(0, 10)}
-          </Typography.Text>
-        ) : (
-          <Typography.Text type="secondary">—</Typography.Text>
-        ),
     },
     {
       title: 'SKUs',
       dataIndex: 'skuCount',
       key: 'skuCount',
-      width: 80,
+      width: 100,
       align: 'right' as const,
       sorter: (a: Season, b: Season) => a.skuCount - b.skuCount,
     },
     {
       title: '',
       key: 'actions',
-      width: 90,
+      width: 100,
       render: (_: unknown, r: Season) => (
         <Space size={0}>
           <Button
@@ -73,11 +49,15 @@ export default function SeasonListPage() {
             onClick={() => navigate(`/products/taxonomy/seasons/${encodeURIComponent(r.code)}`)}
           />
           <Popconfirm
-            title="Clear this season's description? (The slot itself stays — codes are a RICS constant.)"
+            title={
+              r.skuCount > 0
+                ? `This season is used on ${r.skuCount} SKU(s). Delete anyway?`
+                : 'Delete this season?'
+            }
             onConfirm={async () => {
               try {
                 await del.mutateAsync(r.code)
-                message.success('Cleared')
+                message.success('Deleted')
               } catch (e) {
                 message.error((e as Error).message)
               }
@@ -91,19 +71,48 @@ export default function SeasonListPage() {
   ]
 
   return (
-    <Card title={<Typography.Text strong>Seasons</Typography.Text>}>
-      <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-        <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
-          RICS uses 20 fixed season codes (<code>0, V–Z, 1–9, A–E</code>, p. 218). Only the
-          descriptions are user-editable. The current season is computed from today + the
-          configured Season Ending Months (default Mar/Jun/Sep/Dec = quarterly).
-          {current ? (
-            <>
-              {' '}Current season: <Tag color="green">{current.code}</Tag>{' '}
-              <strong>{current.description ?? '(no description)'}</strong>.
-            </>
+    <Card
+      title={<Typography.Text strong>Seasons</Typography.Text>}
+      extra={
+        <Space>
+          {source ? (
+            source.usingRics ? (
+              <Tag color="green">Source: RICS ({source.table})</Tag>
+            ) : (
+              <Tag color="gold">Source: Postgres (RISEMF unavailable)</Tag>
+            )
           ) : null}
-        </Typography.Paragraph>
+          <Link to="/products/taxonomy/seasons/new">
+            <Button type="primary" icon={<PlusOutlined />}>
+              New season
+            </Button>
+          </Link>
+        </Space>
+      }
+    >
+      <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+        {source && !source.usingRics && source.lastError ? (
+          <Alert
+            type="warning"
+            showIcon
+            message="Reading from Postgres fallback — RISEMF.MDB couldn't be opened."
+            description={
+              <>
+                <div>
+                  <strong>Path:</strong> <code>{source.risemfPath ?? '(not resolved)'}</code>
+                </div>
+                <div>
+                  <strong>Error:</strong> {source.lastError}
+                </div>
+                <div style={{ marginTop: 8 }}>
+                  The list shows whatever has been edited here in the admin. Once the Access
+                  file opens (driver install or file repair), edits will flow back to RICS
+                  and both systems stay in sync.
+                </div>
+              </>
+            }
+          />
+        ) : null}
         <Table<Season>
           size="small"
           className="products-compact-table"
@@ -111,8 +120,7 @@ export default function SeasonListPage() {
           dataSource={data}
           columns={columns}
           loading={isLoading}
-          pagination={false}
-          rowClassName={(r) => (r.isCurrent ? 'season-row-current' : '')}
+          pagination={{ defaultPageSize: 25, showSizeChanger: true, pageSizeOptions: [25, 50, 100, 200] }}
         />
       </Space>
     </Card>

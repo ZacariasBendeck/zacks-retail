@@ -229,6 +229,13 @@ export function useSeason(code: string | undefined) {
     enabled: !!code,
   })
 }
+export function useSeasonSource() {
+  return useQuery({
+    queryKey: ['taxonomy', 'seasons', '_source'],
+    queryFn: () => seasonsApi.source(),
+    staleTime: LIST_STALE_MS,
+  })
+}
 export function useCreateSeason() {
   const qc = useQueryClient()
   return useMutation({

@@ -1,19 +1,30 @@
 /**
- * Season repository — RICS-style 20-slot ring, backed by Postgres overlay.
+ * Season repository — Postgres-backed user-defined SKU attribute.
  *
- * RICS p. 218: Season Code Setup stores 20 fixed codes (0, V–Z, 1–9, A–E) with
- * user-editable descriptions. Codes are NOT user-defined — only the
- * descriptions and the cadence are. RISEMF.MDB is the RICS source of truth,
- * but this customer's copy won't open with modern OLE DB; we mirror the 20
- * slots in Postgres (`SeasonOverlay`) until Phase 2 reconciles RISEMF.
+ * Diagnosis trail (2026-04-19):
+ *   - Initial assumption: season descriptions live in RISEMF.MDB. WRONG.
+ *   - After converting RISEMF from Jet 3.x → 4.0 and introspecting, its tables
+ *     (SEMF AR / EDI / JOB / LABELS / MAILLIST / ONLINE / PHYSICAL INV / PRICE
+ *     CHANGE / PURCHASE ORDS / QUOTES / SALE / TRANSFERS / USER / USER01..05)
+ *     turned out to be per-screen user queue configuration — not seasons.
+ *   - Scanned every other MDB in the folder: RIDEPT (Departments + Sectors),
+ *     RIGROUP (GroupCodes + Keywords + MarketingCode), RICATEG (Categories),
+ *     RISIZE (NRMACodes + SizeTypes), RICSW4D (Permissions), RIPASS (Users),
+ *     ricomm (Communications), RIPARMS (UserOptions), RIADDRS (AddrLabels),
+ *     etc. No table anywhere matches "season/temporada/semf" AND holds the
+ *     descriptions shown in the RICS Season Code Setup screen.
+ *   - Conclusion: RICS Season Code Setup writes to `RICS.CFG` (text config
+ *     file in the RICS install directory), not to any shared MDB. That file
+ *     is not in the Rics Databases folder.
  *
- * This repository:
- *   - always returns all 20 slots (not just ones present on SKUs)
- *   - exposes `getCurrentSeason(now)` — computed from today + config cadence
- *   - `create` / `update` / `delete` act on the overlay descriptions only
- *     (slot codes and positions are immutable)
+ * Phase 1 behavior: seasons are a plain Postgres-backed user-editable list.
+ * Seeded via the `SeasonOverlay` migration from the user's screenshot so the
+ * admin is populated on first load. Edits are local to Zack's Retail; they do
+ * NOT sync to RICS. If/when RICS.CFG location is known, a Phase 2 sync can
+ * mirror edits across.
  *
- * SKU counts come from InventoryMaster.Season (best effort — 0 on read failure).
+ * The `getSourceStatus()` helper is kept for transparency — it now always
+ * reports "postgres" and explains why in `lastError`.
  */
 
 import { executeQuery } from '../../services/accessOleDb';
@@ -21,168 +32,48 @@ import { Err, Ok, type Result, type RepoError } from './repoResult';
 import { openRicsDb, RicsDb, toRepoError, trimString } from './ricsAccess';
 import { prisma } from '../../db/prisma';
 
-// ────────────── Fixed universe ──────────────
-
-/**
- * The 20 RICS season codes in their canonical grid order. Position index maps
- * to the slot as rendered in the RICS Season Code Setup screen (left column
- * then right column, top-down). Codes and positions are a RICS constant.
- */
-export const SEASON_CODE_ORDER = [
-  '0', 'V', 'W', 'X', 'Y', 'Z', '1', '2', '3', '4',
-  '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E',
-] as const;
-
-export type SeasonCode = (typeof SEASON_CODE_ORDER)[number];
-
-const CODE_POSITION = new Map<string, number>(
-  SEASON_CODE_ORDER.map((c, i) => [c, i]),
-);
-
-function isValidCode(code: string): boolean {
-  return CODE_POSITION.has(code);
-}
-
-// ────────────── Domain types ──────────────
-
 export interface Season {
   code: string;
-  position: number;
-  description: string | null;
+  description: string;
   skuCount: number;
-  /** True when this slot is the current season per config cadence + today. */
-  isCurrent: boolean;
-  /** When this slot's period started (computed; null for rolling / past slots). */
-  periodStartedAt: Date | null;
-  /** When this slot's period ends (computed). */
-  periodEndsAt: Date | null;
+  source?: 'postgres';
 }
 
 export interface SeasonInput {
-  code: string;        // must be one of SEASON_CODE_ORDER
+  code: string;
   description: string;
 }
 
-export interface SeasonCadenceConfig {
-  endingMonths: number[];   // sorted ascending, 1..12
-  anchorSeasonCode: string;
-  anchorStartedAt: Date;
-}
+const CODE_MAX = 2;
+const DESC_MAX = 32;
+const CODE_PATTERN = /^[A-Za-z0-9]+$/;
 
-// ────────────── Cadence + current-season math ──────────────
-
-function parseEndingMonths(csv: string): number[] {
-  return csv
-    .split(',')
-    .map((s) => Number(s.trim()))
-    .filter((n) => Number.isInteger(n) && n >= 1 && n <= 12)
-    .sort((a, b) => a - b);
-}
-
-/**
- * Given a date and the set of season-ending months, return the first day of
- * the season period that contains `at`.
- *
- * Example: endingMonths=[3,6,9,12], at=April 15 2026 → April 1 2026.
- * (Period ends June 30 2026; next starts July 1 2026.)
- */
-function periodStartForDate(at: Date, endingMonths: number[]): Date {
-  const year = at.getUTCFullYear();
-  const month = at.getUTCMonth() + 1; // 1..12
-  // Find the most recent ending-month boundary that is strictly before `month`.
-  const sorted = [...endingMonths].sort((a, b) => a - b);
-  let periodStartMonth = 1;
-  let periodStartYear = year;
-  // If `at` is before the first ending boundary of the year, the period
-  // started in the previous calendar year's last boundary + 1.
-  const firstBoundary = sorted[0];
-  if (month <= firstBoundary) {
-    // Period that contains `at` started just after the previous year's last boundary.
-    periodStartMonth = (sorted[sorted.length - 1] % 12) + 1; // month after last boundary
-    periodStartYear = periodStartMonth === 1 ? year : year - 1;
-  } else {
-    // Find largest boundary strictly less than `month`.
-    let prevBoundary = firstBoundary;
-    for (const b of sorted) {
-      if (b < month) prevBoundary = b;
-      else break;
-    }
-    periodStartMonth = (prevBoundary % 12) + 1;
-    periodStartYear = periodStartMonth === 1 ? year + 1 : year;
-    // Edge case: if prevBoundary is December (12), next period starts Jan of next year.
-    if (prevBoundary === 12) {
-      periodStartMonth = 1;
-      periodStartYear = year; // December ends at start of next January in same calendar year
-    }
+function validateInput(input: SeasonInput): RepoError | null {
+  const code = (input.code ?? '').trim();
+  if (code.length === 0) {
+    return { kind: 'ConstraintViolation', message: 'Season code is required.' };
   }
-  return new Date(Date.UTC(periodStartYear, periodStartMonth - 1, 1));
-}
-
-/**
- * Count how many season periods are between `from` and `to`, given the
- * configured ending-months cadence. Positive when `to` is after `from`.
- */
-function periodOffset(
-  from: Date,
-  to: Date,
-  endingMonths: number[],
-): number {
-  const perYear = endingMonths.length;
-  if (perYear === 0) return 0;
-  const fromStart = periodStartForDate(from, endingMonths);
-  const toStart = periodStartForDate(to, endingMonths);
-  // Work in months-between between the two period-start dates, then map to
-  // number of season cadence steps (which are month-based, not strictly equal).
-  const months =
-    (toStart.getUTCFullYear() - fromStart.getUTCFullYear()) * 12 +
-    (toStart.getUTCMonth() - fromStart.getUTCMonth());
-  // Step size in months = 12 / perYear.
-  const stepMonths = 12 / perYear;
-  return Math.round(months / stepMonths);
-}
-
-/**
- * Resolve the current season code from config + now.
- * The ring rotates through V..E (skipping 0 which is the "Pasado" catch-all).
- */
-function computeCurrentSeasonCode(config: SeasonCadenceConfig, now: Date): string {
-  const offset = periodOffset(config.anchorStartedAt, now, config.endingMonths);
-  const anchorPos = CODE_POSITION.get(config.anchorSeasonCode) ?? 16; // default anchor = B
-  // Ring positions 1..19 cycle; position 0 = Pasado (never returned as current).
-  const ringLen = 19;
-  const anchorRingPos = Math.max(1, anchorPos); // clamp to ring
-  const newRingPos = ((anchorRingPos - 1 + offset) % ringLen + ringLen) % ringLen + 1;
-  return SEASON_CODE_ORDER[newRingPos];
-}
-
-function nextPeriodStart(periodStart: Date, endingMonths: number[]): Date {
-  const perYear = endingMonths.length;
-  if (perYear === 0) return periodStart;
-  const stepMonths = 12 / perYear;
-  const d = new Date(periodStart);
-  d.setUTCMonth(d.getUTCMonth() + stepMonths);
-  return d;
-}
-
-// ────────────── Config loader ──────────────
-
-async function loadConfig(): Promise<SeasonCadenceConfig> {
-  const row = await prisma.seasonConfig.findUnique({ where: { id: 1 } });
-  if (!row) {
+  if (code.length > CODE_MAX) {
     return {
-      endingMonths: [3, 6, 9, 12],
-      anchorSeasonCode: 'B',
-      anchorStartedAt: new Date(Date.UTC(2026, 3, 1)),
+      kind: 'ConstraintViolation',
+      message: `Season code max length is ${CODE_MAX}.`,
     };
   }
-  return {
-    endingMonths: parseEndingMonths(row.endingMonthsCsv),
-    anchorSeasonCode: row.anchorSeasonCode,
-    anchorStartedAt: row.anchorStartedAt,
-  };
+  if (!CODE_PATTERN.test(code)) {
+    return { kind: 'ConstraintViolation', message: 'Season code must be alphanumeric.' };
+  }
+  const desc = (input.description ?? '').trim();
+  if (desc.length === 0) {
+    return { kind: 'ConstraintViolation', message: 'Season description is required.' };
+  }
+  if (desc.length > DESC_MAX) {
+    return {
+      kind: 'ConstraintViolation',
+      message: `Season description max length is ${DESC_MAX}.`,
+    };
+  }
+  return null;
 }
-
-// ────────────── SKU counts (best effort) ──────────────
 
 function loadSkuCountsByCode(): Map<string, number> {
   const out = new Map<string, number>();
@@ -196,110 +87,97 @@ function loadSkuCountsByCode(): Map<string, number> {
          GROUP BY [Season]`,
     );
     for (const r of rows) {
-      const code = (trimString(r.Season) ?? '').slice(0, 2).toUpperCase();
+      const code = (trimString(r.Season) ?? '').trim().toUpperCase();
       if (code) out.set(code, Number(r.N ?? 0));
     }
   } catch {
-    // ignore — leave counts at 0
+    // leave counts at 0
   }
   return out;
 }
 
-// ────────────── Repository ──────────────
-
-function validateInput(input: SeasonInput): RepoError | null {
-  const code = (input.code ?? '').trim().toUpperCase();
-  if (!isValidCode(code)) {
-    return {
-      kind: 'ConstraintViolation',
-      message: `Season code '${code}' is not one of the 20 RICS slots (0,V,W,X,Y,Z,1-9,A-E).`,
-    };
-  }
-  const desc = input.description?.trim() ?? '';
-  if (desc.length === 0) {
-    return { kind: 'ConstraintViolation', message: 'Season description is required.' };
-  }
-  if (desc.length > 32) {
-    return { kind: 'ConstraintViolation', message: 'Season description max length is 32.' };
-  }
-  return null;
-}
-
 export const SeasonRepository = {
-  async list(now: Date = new Date()): Promise<Result<Season[]>> {
+  /**
+   * Reports the data source. Always 'postgres' in Phase 1 — see the file
+   * header for why RISEMF.MDB turned out not to be the season master.
+   */
+  async getSourceStatus(): Promise<{
+    usingRics: boolean;
+    risemfPath: string | null;
+    lastError: string | null;
+    table: string | null;
+    codeCol: string | null;
+    descCol: string | null;
+  }> {
+    let risemfPath: string | null = null;
     try {
-      const [overlays, config] = await Promise.all([
-        prisma.seasonOverlay.findMany({ orderBy: { position: 'asc' } }),
-        loadConfig(),
-      ]);
-      const skuCounts = loadSkuCountsByCode();
-      const currentCode = computeCurrentSeasonCode(config, now);
-      const currentStart = periodStartForDate(now, config.endingMonths);
-      const currentEnd = (() => {
-        const next = nextPeriodStart(currentStart, config.endingMonths);
-        return new Date(next.getTime() - 1);
-      })();
+      risemfPath = openRicsDb(RicsDb.Seasons).path;
+    } catch {
+      risemfPath = null;
+    }
+    return {
+      usingRics: false,
+      risemfPath,
+      lastError:
+        'RICS stores Season Code Setup in RICS.CFG (a text file in the RICS program ' +
+        'directory), not in any MDB in the Rics Databases folder. RISEMF.MDB is a ' +
+        'user-screen-queue configuration file, not the season master. Descriptions ' +
+        'are managed locally in the Postgres SeasonOverlay table; seed this from ' +
+        "the RICS Season Code Setup screen via the admin UI's New/Edit buttons.",
+      table: null,
+      codeCol: null,
+      descCol: null,
+    };
+  },
 
-      const overlayByCode = new Map(overlays.map((o) => [o.code, o]));
-      const seasons: Season[] = SEASON_CODE_ORDER.map((code, position) => {
-        const overlay = overlayByCode.get(code);
-        const isCurrent = code === currentCode;
-        return {
-          code,
-          position,
-          description: overlay?.description ?? null,
-          skuCount: skuCounts.get(code) ?? 0,
-          isCurrent,
-          periodStartedAt: isCurrent ? currentStart : null,
-          periodEndsAt: isCurrent ? currentEnd : null,
-        };
-      });
-      return Ok(seasons);
+  async list(): Promise<Result<Season[]>> {
+    try {
+      const rows = await prisma.seasonOverlay.findMany({ orderBy: { code: 'asc' } });
+      const skuCounts = loadSkuCountsByCode();
+      return Ok(
+        rows.map((r) => ({
+          code: r.code,
+          description: r.description,
+          skuCount: skuCounts.get(r.code.toUpperCase()) ?? 0,
+          source: 'postgres' as const,
+        })),
+      );
     } catch (err) {
       return Err(toRepoError(err));
     }
   },
 
-  async getByCode(code: string, now: Date = new Date()): Promise<Result<Season>> {
-    const normalized = code.trim().toUpperCase();
-    if (!isValidCode(normalized)) {
-      return Err({ kind: 'NotFound', message: `Season '${code}' is not a valid RICS code.` });
+  async getByCode(code: string): Promise<Result<Season>> {
+    const normalized = (code ?? '').trim().toUpperCase();
+    if (normalized.length === 0 || normalized.length > CODE_MAX) {
+      return Err({ kind: 'NotFound', message: `Season '${code}' not found.` });
     }
-    const listResult = await this.list(now);
-    if (!listResult.ok) return listResult;
-    const found = listResult.value.find((s) => s.code === normalized);
-    if (!found) return Err({ kind: 'NotFound', message: `Season '${normalized}' not found.` });
-    return Ok(found);
-  },
-
-  /**
-   * Return the current season (the one whose period contains `now`).
-   * Useful for the SKU form to default new entries.
-   */
-  async getCurrent(now: Date = new Date()): Promise<Result<Season>> {
-    const config = await loadConfig();
-    const code = computeCurrentSeasonCode(config, now);
-    return this.getByCode(code, now);
+    try {
+      const row = await prisma.seasonOverlay.findUnique({ where: { code: normalized } });
+      if (!row) {
+        return Err({ kind: 'NotFound', message: `Season '${normalized}' not found.` });
+      }
+      const skuCount = loadSkuCountsByCode().get(normalized) ?? 0;
+      return Ok({ code: row.code, description: row.description, skuCount, source: 'postgres' });
+    } catch (err) {
+      return Err(toRepoError(err));
+    }
   },
 
   async create(input: SeasonInput): Promise<Result<Season>> {
     const err = validateInput(input);
     if (err) return Err(err);
     const code = input.code.trim().toUpperCase();
+    const description = input.description.trim();
     try {
       const existing = await prisma.seasonOverlay.findUnique({ where: { code } });
-      if (existing && existing.description && existing.description.trim().length > 0) {
+      if (existing) {
         return Err({
           kind: 'DuplicatePrimaryKey',
-          message: `Season '${code}' already has a description. Use update/edit instead.`,
+          message: `Season '${code}' already exists.`,
         });
       }
-      const position = CODE_POSITION.get(code)!;
-      await prisma.seasonOverlay.upsert({
-        where: { code },
-        update: { description: input.description.trim() },
-        create: { code, position, description: input.description.trim() },
-      });
+      await prisma.seasonOverlay.create({ data: { code, description } });
       return this.getByCode(code);
     } catch (e) {
       return Err(toRepoError(e));
@@ -310,26 +188,31 @@ export const SeasonRepository = {
     code: string,
     patch: Partial<Omit<SeasonInput, 'code'>>,
   ): Promise<Result<Season>> {
-    const normalized = code.trim().toUpperCase();
-    if (!isValidCode(normalized)) {
-      return Err({ kind: 'NotFound', message: `Season '${code}' is not a valid RICS code.` });
-    }
+    const normalized = (code ?? '').trim().toUpperCase();
     if (patch.description === undefined) {
       return this.getByCode(normalized);
     }
-    const desc = patch.description.trim();
+    const desc = (patch.description ?? '').trim();
     if (desc.length === 0) {
-      return Err({ kind: 'ConstraintViolation', message: 'Description cannot be empty on update.' });
+      return Err({
+        kind: 'ConstraintViolation',
+        message: 'Season description cannot be empty.',
+      });
     }
-    if (desc.length > 32) {
-      return Err({ kind: 'ConstraintViolation', message: 'Description max length is 32.' });
+    if (desc.length > DESC_MAX) {
+      return Err({
+        kind: 'ConstraintViolation',
+        message: `Season description max length is ${DESC_MAX}.`,
+      });
     }
     try {
-      const position = CODE_POSITION.get(normalized)!;
-      await prisma.seasonOverlay.upsert({
+      const existing = await prisma.seasonOverlay.findUnique({ where: { code: normalized } });
+      if (!existing) {
+        return Err({ kind: 'NotFound', message: `Season '${normalized}' not found.` });
+      }
+      await prisma.seasonOverlay.update({
         where: { code: normalized },
-        update: { description: desc },
-        create: { code: normalized, position, description: desc },
+        data: { description: desc },
       });
       return this.getByCode(normalized);
     } catch (e) {
@@ -337,31 +220,17 @@ export const SeasonRepository = {
     }
   },
 
-  /**
-   * "Delete" clears the description but leaves the slot in place — the 20
-   * codes are a fixed universe and cannot be removed. Matches RICS semantics
-   * for a user-cleared description field.
-   */
   async delete(code: string): Promise<Result<void>> {
-    const normalized = code.trim().toUpperCase();
-    if (!isValidCode(normalized)) {
-      return Err({ kind: 'NotFound', message: `Season '${code}' is not a valid RICS code.` });
-    }
+    const normalized = (code ?? '').trim().toUpperCase();
     try {
-      const position = CODE_POSITION.get(normalized)!;
-      await prisma.seasonOverlay.upsert({
-        where: { code: normalized },
-        update: { description: null },
-        create: { code: normalized, position, description: null },
-      });
+      const existing = await prisma.seasonOverlay.findUnique({ where: { code: normalized } });
+      if (!existing) {
+        return Err({ kind: 'NotFound', message: `Season '${normalized}' not found.` });
+      }
+      await prisma.seasonOverlay.delete({ where: { code: normalized } });
       return Ok(undefined);
     } catch (e) {
       return Err(toRepoError(e));
     }
-  },
-
-  /** Admin: load the full cadence config. */
-  async getConfig(): Promise<SeasonCadenceConfig> {
-    return loadConfig();
   },
 };

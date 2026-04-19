@@ -142,36 +142,21 @@ model ProductsAuditLog {
   @@index([targetTable, targetPk])
 }
 
-/// Season descriptions — RICS-style 20-slot rolling ring.
+/// Season descriptions — user-defined taxonomy tags assigned to SKUs.
 ///
-/// RICS stores the 20 fixed codes (`0`, `V`–`Z`, `1`–`9`, `A`–`E`) with
-/// user-editable descriptions in RISEMF.MDB, which the Phase 1 adapter cannot
-/// reliably open on this customer's database. We mirror the 20 slots in
-/// Postgres as a small overlay. The Phase 1 admin UI reads and writes here;
-/// Phase 2 will sync back to RISEMF when the format issue is resolved.
+/// Clarified 2026-04-19: Seasons are a simple user-editable attribute on
+/// SKUs, just like Groups or Categories. The user picks any code + description
+/// that fits their reporting workflow — no fixed code universe, no computed
+/// "current season" based on dates (that concept was a misread of RICS
+/// Company Setup → Season Ending Months, which is only a reporting-date
+/// filter, NOT a constraint on the seasons themselves).
 ///
-/// See RICS p. 218 (Season Setup) and the screenshot attached to the
-/// 2026-04-19 parity request. Codes are a fixed universe — only descriptions
-/// are user-editable.
+/// RICS stores these in RISEMF.MDB (p. 218, Season Setup). This customer's
+/// copy of that file does not open with ACE.OLEDB.12.0, so we mirror the
+/// descriptions in Postgres. SKU counts still come from
+/// InventoryMaster.Season via the Access read path.
 model SeasonOverlay {
   code            String   @id @db.VarChar(2)
-  position        Int      @unique             // 0..19 ordering in the RICS grid
-  description     String?  @db.VarChar(32)
+  description     String   @db.VarChar(32)
   dateLastChanged DateTime @default(now()) @updatedAt
-}
-
-/// Season cadence + current-season anchor.
-///
-/// Singleton row (id=1). Holds the "Season Ending Months" configuration from
-/// RICS Company Setup (p. 218) and an anchor pair (seasonCode, startedAt) that
-/// lets the backend compute the current season for any given date without
-/// storing a cursor that mutates on a schedule. RICS's equivalent fields live
-/// in RICFG; we'll sync once the Ñ-encoding PowerShell fix is confirmed
-/// against that file too.
-model SeasonConfig {
-  id                        Int      @id @default(1)
-  endingMonthsCsv           String   @default("3,6,9,12")  // CSV of month numbers 1..12
-  anchorSeasonCode          String   @db.VarChar(2)         // season code active at anchorStartedAt
-  anchorStartedAt           DateTime                         // first day of that anchor season
-  updatedAt                 DateTime @default(now()) @updatedAt
 }

@@ -41,6 +41,7 @@ vi.mock('../hooks/useProductsTaxonomy', () => ({
   useDeletePromotionCode: vi.fn(),
   useSeasons: vi.fn(),
   useSeason: vi.fn(),
+  useSeasonSource: vi.fn(),
   useCreateSeason: vi.fn(),
   useUpdateSeason: vi.fn(),
   useDeleteSeason: vi.fn(),
@@ -208,37 +209,23 @@ describe('Products taxonomy pages', () => {
     expect(screen.getByText('Summer promo')).toBeTruthy()
   })
 
-  it('SeasonListPage renders all 20 slots with descriptions and the current marker', () => {
+  it('SeasonListPage renders user-defined seasons with CRUD actions', () => {
     vi.mocked(hooks.useSeasons).mockReturnValue({
       data: [
-        {
-          code: 'A',
-          position: 15,
-          description: 'NAV 25',
-          skuCount: 42,
-          isCurrent: false,
-          periodStartedAt: null,
-          periodEndsAt: null,
-        },
-        {
-          code: 'B',
-          position: 16,
-          description: 'PRIM 26',
-          skuCount: 3,
-          isCurrent: true,
-          periodStartedAt: '2026-04-01T00:00:00.000Z',
-          periodEndsAt: '2026-06-30T23:59:59.999Z',
-        },
-        {
-          code: 'C',
-          position: 17,
-          description: null,
-          skuCount: 0,
-          isCurrent: false,
-          periodStartedAt: null,
-          periodEndsAt: null,
-        },
+        { code: 'A', description: 'NAV 25', skuCount: 42 },
+        { code: 'B', description: 'PRIM 26', skuCount: 3 },
       ],
+      isLoading: false,
+    } as never)
+    vi.mocked(hooks.useSeasonSource).mockReturnValue({
+      data: {
+        usingRics: true,
+        risemfPath: 'C:\\...\\RISEMF.MDB',
+        lastError: null,
+        table: 'Seasons',
+        codeCol: 'Code',
+        descCol: 'Desc',
+      },
       isLoading: false,
     } as never)
     vi.mocked(hooks.useDeleteSeason).mockReturnValue({
@@ -247,10 +234,8 @@ describe('Products taxonomy pages', () => {
     } as never)
     renderPage(<SeasonListPage />)
     expect(screen.getByText('NAV 25')).toBeTruthy()
-    // PRIM 26 appears twice — once in the header "Current season" and once in the row.
-    expect(screen.getAllByText('PRIM 26').length).toBeGreaterThanOrEqual(1)
-    expect(screen.getAllByText('CURRENT').length).toBeGreaterThanOrEqual(1)
-    expect(screen.getByText(/\(empty\)/)).toBeTruthy()
+    expect(screen.getByText('PRIM 26')).toBeTruthy()
+    expect(screen.getByText(/New season/)).toBeTruthy()
   })
 
   it('SizeTypeListPage renders grid size summary', () => {

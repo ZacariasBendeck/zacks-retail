@@ -5,25 +5,25 @@ import {
   Button,
   Card,
   Checkbox,
+  Col,
   DatePicker,
   Empty,
-  Input,
   Radio,
+  Row,
   Segmented,
-  Select,
   Skeleton,
   Space,
   Switch,
   Table,
-  Tabs,
   Tag,
   Tooltip,
   Typography,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
-import { DownloadOutlined, FileExcelOutlined, InfoCircleOutlined } from '@ant-design/icons'
+import { DownloadOutlined, FileExcelOutlined } from '@ant-design/icons'
 import dayjs, { type Dayjs } from 'dayjs'
 import { Link } from 'react-router-dom'
+import { useQueryClient } from '@tanstack/react-query'
 import * as echarts from 'echarts/core'
 import { LineChart } from 'echarts/charts'
 import {
@@ -42,24 +42,20 @@ import {
   type SalesHistoryByMonthDeferredMetricKey,
   type SalesHistoryByMonthDetailLevel,
   type SalesHistoryByMonthMetricKey,
+  type SalesHistoryByMonthParams,
   type SalesHistoryByMonthReport,
   type SalesHistoryByMonthRow,
   type SalesHistoryByMonthSortBy,
 } from '../../services/reportApi'
 import { getErrorMessage } from '../../utils/errors'
+import RunReportControls from './RunReportControls'
+import CriteriaInput from './CriteriaInput'
 
 echarts.use([LineChart, GridComponent, TooltipComponent, LegendComponent, TitleComponent, CanvasRenderer])
 
 const { Title, Paragraph, Text } = Typography
 
 // ─────────────────────────── Metric definitions ─────────────────────────
-//
-// Design decision (documented in the v2 spec): when the user selects multiple
-// metrics, the table shows ONE metric at a time via a tab strip (Segmented).
-// This keeps columns readable (12 month columns + 1 total × 1 metric = 14
-// columns) regardless of how many metrics are enabled. A multi-metric view
-// that stacked every metric into the same grid became unreadable past
-// 2 metrics on a ~1440-px screen.
 
 interface MetricDef {
   key: SalesHistoryByMonthMetricKey
@@ -88,17 +84,10 @@ interface DeferredMetricDef {
   reason: string
 }
 
-// All previously deferred metrics ship in v2.1 after the RIINVHIS discovery
-// pass. Keeping this list empty (rather than deleting it) preserves the
-// scaffolding if a future metric needs to be parked while its data source is
-// investigated.
 const DEFERRED_METRIC_DEFS: readonly DeferredMetricDef[] = []
 
 // ─────────────────────────── formatters ─────────────────────────────────
 
-// Currency is Honduran Lempira (HNL) system-wide — labeled once at the top
-// of the report, not repeated in every cell (see CLAUDE.md "Currency" policy).
-// Cells render plain numbers with thousands separators.
 const currencyFmt = new Intl.NumberFormat('en-US', {
   maximumFractionDigits: 0,
 })
@@ -111,17 +100,9 @@ const integerFmt = new Intl.NumberFormat('en-US')
 function formatMetricValue(def: MetricDef | undefined, value: number | undefined): string {
   if (value == null || Number.isNaN(value)) return '—'
   if (!def) return currencyFmt.format(value)
-  if (def.format === 'money') {
-    // Totals use no cents; per-month cells use no cents too for density.
-    return currencyFmt.format(value)
-  }
-  if (def.format === 'integer') {
-    return integerFmt.format(Math.round(value))
-  }
-  if (def.format === 'decimal2') {
-    return value.toFixed(2)
-  }
-  // percent1 — value is already 0-100 scale
+  if (def.format === 'money') return currencyFmt.format(value)
+  if (def.format === 'integer') return integerFmt.format(Math.round(value))
+  if (def.format === 'decimal2') return value.toFixed(2)
   return `${value.toFixed(1)}%`
 }
 
@@ -134,7 +115,6 @@ function formatMetricValuePrecise(def: MetricDef | undefined, value: number | un
   return `${value.toFixed(1)}%`
 }
 
-// 'YYYY-MM' → 'Apr 2026'
 function formatMonthLabel(yyyyMm: string): string {
   return dayjs(`${yyyyMm}-01`).format('MMM YYYY')
 }
@@ -206,7 +186,7 @@ function buildColumns(
     title: formatMonthLabel(m),
     key: `m-${m}`,
     align: 'right',
-    width: 110,
+    width: 78,
     sorter: (a, b) => {
       const av = a.metrics[metric.key]?.[idx] ?? 0
       const bv = b.metrics[metric.key]?.[idx] ?? 0
@@ -221,7 +201,7 @@ function buildColumns(
       dataIndex: 'label',
       key: 'label',
       fixed: 'left',
-      width: 240,
+      width: 150,
       sorter: (a, b) => a.label.localeCompare(b.label),
     },
     ...monthCols,
@@ -230,7 +210,7 @@ function buildColumns(
       dataIndex: 'total',
       key: 'total',
       align: 'right',
-      width: 140,
+      width: 100,
       fixed: 'right',
       sorter: (a, b) => (a.totals[metric.key] ?? 0) - (b.totals[metric.key] ?? 0),
       defaultSortOrder: 'descend',
@@ -261,10 +241,12 @@ function HistoryTable({ block, months, dimLabel, metric, detailLevel }: HistoryT
       columns={columns}
       rowKey="key"
       size="small"
-      // SKU detail may be thousands of rows — paginate to stay snappy.
-      // Subtotals / Department level fit on one page easily (rarely > 50 rows).
       pagination={detailLevel === 'sku' ? { pageSize: 100, showSizeChanger: true } : false}
       scroll={{ x: 'max-content' }}
+      // Sticky header stays pinned to the viewport as the user scrolls down
+      // through a long pivot table. Fixed first + last columns stay pinned
+      // during horizontal scroll via `fixed: 'left' | 'right'` on those cols.
+      sticky
       summary={() => (
         <Table.Summary.Row>
           <Table.Summary.Cell index={0}>
@@ -302,8 +284,6 @@ function Results({ report, activeMetric, onMetricChange }: ResultsProps) {
           ? 'Vendor'
           : 'Category'
 
-  // The active metric may have been de-selected by the user — fall back to
-  // the first selected metric in that case.
   const metricKey = (report.dataToPrint.includes(activeMetric) ? activeMetric : report.dataToPrint[0]) ?? 'netSales'
   const metric = METRIC_DEFS_BY_KEY.get(metricKey)!
 
@@ -316,7 +296,6 @@ function Results({ report, activeMetric, onMetricChange }: ResultsProps) {
         </Paragraph>
       </Card>
 
-      {/* Metric tab strip — only shown when >1 metric is selected. */}
       {report.dataToPrint.length > 1 ? (
         <Card
           size="small"
@@ -362,85 +341,77 @@ function Results({ report, activeMetric, onMetricChange }: ResultsProps) {
   )
 }
 
-// ─────────────────────────── Criteria panel ─────────────────────────────
-
-interface CriteriaPanelProps {
-  value: SalesHistoryByMonthCriteria
-  onChange: (next: SalesHistoryByMonthCriteria) => void
-}
-
-const CRITERIA_FIELD_HELP = `RICS criteria grammar — examples:
-  NIKE,ADIDAS           → list
-  556-599               → range (numeric only)
-  <>NIKE                → exclusion
-  ???37  |  58*         → wildcards (? = 1 char, * = any)
-  100!-120              → literal hyphen (not a range)
-  +WEDGE,HEEL           → keyword AND (keywords facet only)`
-
-function CriteriaField({
-  label,
-  field,
-  value,
-  onChange,
-}: {
-  label: string
-  field: keyof SalesHistoryByMonthCriteria
-  value: SalesHistoryByMonthCriteria
-  onChange: (next: SalesHistoryByMonthCriteria) => void
-}) {
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', marginBottom: 12 }}>
-      <Text style={{ minWidth: 120 }}>{label}</Text>
-      <Input
-        data-testid={`criteria-${field}`}
-        style={{ maxWidth: 360 }}
-        placeholder="(leave blank = include all)"
-        value={value[field] ?? ''}
-        onChange={(e) => onChange({ ...value, [field]: e.target.value })}
-      />
-      <Tooltip title={<pre style={{ color: 'white', fontSize: 11, margin: 0 }}>{CRITERIA_FIELD_HELP}</pre>}>
-        <InfoCircleOutlined style={{ marginLeft: 8, color: '#888' }} />
-      </Tooltip>
-    </div>
-  )
-}
-
-function CriteriaPanel({ value, onChange }: CriteriaPanelProps) {
-  return (
-    <div data-testid="criteria-panel">
-      <CriteriaField label="Stores"        field="stores"       value={value} onChange={onChange} />
-      <CriteriaField label="Categories"    field="categories"   value={value} onChange={onChange} />
-      <CriteriaField label="Vendors"       field="vendors"      value={value} onChange={onChange} />
-      <CriteriaField label="Seasons"       field="seasons"      value={value} onChange={onChange} />
-      <CriteriaField label="Style/Colors"  field="styleColors"  value={value} onChange={onChange} />
-      <CriteriaField label="Groups"        field="groups"       value={value} onChange={onChange} />
-      <CriteriaField label="Keywords"      field="keywords"     value={value} onChange={onChange} />
-      <Paragraph type="secondary" style={{ fontSize: 12, marginTop: 8 }}>
-        Criteria use the RICS v7.7 grammar — same as every other RICS report (manual p. 8). Complex
-        criteria (Seasons, Style/Colors, Groups, Keywords, wildcards, exclusions) resolve through the
-        SKU master before the monthly sales query runs.
-      </Paragraph>
-    </div>
-  )
-}
-
 // ─────────────────────────── Main page ──────────────────────────────────
 
 export default function SalesHistoryByMonthPage() {
+  const qc = useQueryClient()
+
+  // Form state
   const [sortBy, setSortBy] = useState<SalesHistoryByMonthSortBy>('vendor')
-  const [selectedStores, setSelectedStores] = useState<number[]>([])
   const [combineStores, setCombineStores] = useState(true)
   const [endMonth, setEndMonth] = useState<Dayjs>(() => dayjs().startOf('month'))
   const [detailLevel, setDetailLevel] = useState<SalesHistoryByMonthDetailLevel>('subtotals')
   const [dataToPrint, setDataToPrint] = useState<SalesHistoryByMonthMetricKey[]>(['netSales'])
   const [deferredChecked, setDeferredChecked] = useState<SalesHistoryByMonthDeferredMetricKey[]>([])
-  const [criteria, setCriteria] = useState<SalesHistoryByMonthCriteria>({})
+
+  // Criteria — mirrors SalesAnalysisPage: separate selected[] and rawText per facet.
+  const [selectedStores, setSelectedStores] = useState<number[]>([])
+  const [selectedCategories, setSelectedCategories] = useState<number[]>([])
+  const [selectedGroups, setSelectedGroups] = useState<string[]>([])
+  const [storesRaw, setStoresRaw] = useState('')
+  const [categoriesRaw, setCategoriesRaw] = useState('')
+  const [vendorsRaw, setVendorsRaw] = useState('')
+  const [seasonsRaw, setSeasonsRaw] = useState('')
+  const [styleColorsRaw, setStyleColorsRaw] = useState('')
+  const [groupsRaw, setGroupsRaw] = useState('')
+  const [keywordsRaw, setKeywordsRaw] = useState('')
+
   const [activeMetric, setActiveMetric] = useState<SalesHistoryByMonthMetricKey>('netSales')
 
-  const { data: dims, isLoading: dimsLoading } = useSalesDimensions()
+  // Committed params — null until Run Report is clicked. Mirrors the pattern
+  // used by SalesAnalysisPage so the query only fires on user intent.
+  const [query, setQuery] = useState<SalesHistoryByMonthParams | null>(null)
 
-  const params = useMemo(
-    () => ({
+  const { data: dims, isLoading: dimsLoading } = useSalesDimensions()
+  const { data, isFetching, error } = useSalesHistoryByMonth(query)
+  const running = query != null && isFetching
+
+  const resultRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    // jsdom lacks scrollIntoView — guard so tests don't blow up on the effect.
+    if (query && resultRef.current?.scrollIntoView) {
+      resultRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }
+  }, [query])
+
+  const hasStores = selectedStores.length > 0
+  const hasAnyMetric = dataToPrint.length > 0
+  const canRun = hasStores && hasAnyMetric
+
+  function buildCriteria(): SalesHistoryByMonthCriteria {
+    const c: SalesHistoryByMonthCriteria = {}
+    const storesStr = storesRaw.trim()
+    if (storesStr) c.stores = storesStr
+    const catsStr = [
+      ...selectedCategories.map(String),
+      ...(categoriesRaw.trim() ? [categoriesRaw.trim()] : []),
+    ].join(',')
+    if (catsStr) c.categories = catsStr
+    if (vendorsRaw.trim()) c.vendors = vendorsRaw.trim()
+    if (seasonsRaw.trim()) c.seasons = seasonsRaw.trim()
+    if (styleColorsRaw.trim()) c.styleColors = styleColorsRaw.trim()
+    const groupsStr = [
+      ...selectedGroups,
+      ...(groupsRaw.trim() ? [groupsRaw.trim()] : []),
+    ].join(',')
+    if (groupsStr) c.groups = groupsStr
+    if (keywordsRaw.trim()) c.keywords = keywordsRaw.trim()
+    return c
+  }
+
+  function onRun(): void {
+    if (!canRun) return
+    setQuery({
       stores: selectedStores,
       endMonth: endMonth.format('YYYY-MM'),
       sortBy,
@@ -448,18 +419,15 @@ export default function SalesHistoryByMonthPage() {
       detailLevel,
       dataToPrint,
       deferredMetrics: deferredChecked,
-      criteria,
-    }),
-    [selectedStores, endMonth, sortBy, combineStores, detailLevel, dataToPrint, deferredChecked, criteria],
-  )
+      criteria: buildCriteria(),
+    })
+  }
+  function onStop(): void {
+    qc.cancelQueries({ queryKey: ['sales-history-by-month', query] })
+  }
 
-  const hasStores = selectedStores.length > 0
-  const hasAnyMetric = dataToPrint.length > 0
-  const canQuery = hasStores && hasAnyMetric
-  const { data, isFetching, error } = useSalesHistoryByMonth(canQuery ? params : null)
-
-  const csvUrl = canQuery ? getSalesHistoryByMonthCsvUrl(params) : undefined
-  const xlsxUrl = canQuery ? getSalesHistoryByMonthXlsxUrl(params) : undefined
+  const csvUrl = query ? getSalesHistoryByMonthCsvUrl(query) : undefined
+  const xlsxUrl = query ? getSalesHistoryByMonthXlsxUrl(query) : undefined
 
   const toggleMetric = (key: SalesHistoryByMonthMetricKey) => {
     setDataToPrint((prev) =>
@@ -491,200 +459,245 @@ export default function SalesHistoryByMonthPage() {
         All monetary values are in <strong>Lempira (HNL)</strong>.
       </Paragraph>
 
-      <Card
-        style={{ marginBottom: 16, position: 'sticky', top: 0, zIndex: 5 }}
-        styles={{ body: { padding: 16 } }}
-      >
-        <Space wrap size="middle" align="center">
-          <div>
-            <Text style={{ marginRight: 8 }}>Sort by</Text>
-            <Radio.Group
-              value={sortBy}
-              onChange={(e) => setSortBy(e.target.value as SalesHistoryByMonthSortBy)}
-              optionType="button"
-              buttonStyle="solid"
-              options={[
-                { label: 'Vendor', value: 'vendor' },
-                { label: 'Category', value: 'category' },
-              ]}
-            />
-          </div>
+      <Card style={{ marginBottom: 16 }}>
+        <Row gutter={24}>
+          <Col xs={24} md={6}>
+            <Card size="small" title={<Text strong>Sort by</Text>} style={{ marginBottom: 16 }}>
+              <Radio.Group
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value)}
+                style={{ display: 'flex', flexDirection: 'column', gap: 4 }}
+              >
+                <Radio value="vendor">Vendor</Radio>
+                <Radio value="category">Category</Radio>
+              </Radio.Group>
+            </Card>
+            <Card size="small" title={<Text strong>Detail to Print</Text>}>
+              <Radio.Group
+                value={detailLevel}
+                onChange={(e) => setDetailLevel(e.target.value as SalesHistoryByMonthDetailLevel)}
+                style={{ display: 'flex', flexDirection: 'column', gap: 4 }}
+              >
+                <Radio value="sku">SKU Detail</Radio>
+                <Radio value="subtotals">Category/Vendor Subtotals</Radio>
+                <Radio value="department">Department Summary</Radio>
+              </Radio.Group>
+            </Card>
+          </Col>
 
-          <div style={{ minWidth: 260 }}>
-            <Text style={{ marginRight: 8 }}>Stores</Text>
-            <Select<number[]>
-              mode="multiple"
-              data-testid="stores-select"
-              allowClear
-              loading={dimsLoading}
-              value={selectedStores}
-              onChange={setSelectedStores}
-              placeholder="Select at least one store"
-              optionFilterProp="label"
-              style={{ minWidth: 260 }}
-              options={(dims?.stores ?? []).map((s) => ({
-                value: s.number,
-                label: s.name ? `${s.number} — ${s.name}` : String(s.number),
-              }))}
-            />
-          </div>
-
-          <div>
-            <Text style={{ marginRight: 8 }}>Combine stores</Text>
-            <Switch
-              aria-label="Combine stores"
-              checked={combineStores}
-              onChange={setCombineStores}
-            />
-          </div>
-
-          <div>
-            <Text style={{ marginRight: 8 }}>End month</Text>
-            <DatePicker
-              picker="month"
-              aria-label="End month"
-              value={endMonth}
-              allowClear={false}
-              onChange={(v) => v && setEndMonth(v.startOf('month'))}
-            />
-          </div>
-
-          <Button
-            icon={<DownloadOutlined />}
-            disabled={!csvUrl}
-            href={csvUrl}
-          >
-            Export CSV
-          </Button>
-          <Button
-            icon={<FileExcelOutlined />}
-            disabled={!xlsxUrl}
-            href={xlsxUrl}
-            data-testid="export-xlsx"
-          >
-            Export XLSX
-          </Button>
-        </Space>
-      </Card>
-
-      <Tabs
-        defaultActiveKey="options"
-        items={[
-          {
-            key: 'options',
-            label: 'Report Options',
-            children: (
-              <Card styles={{ body: { padding: 16 } }}>
-                <div style={{ marginBottom: 20 }}>
-                  <Title level={5}>Data to Print</Title>
-                  <Paragraph type="secondary" style={{ marginTop: 0, marginBottom: 8, fontSize: 12 }}>
-                    Select one or more metrics. When multiple metrics are selected, the table shows one at a time via a
-                    tab strip above the grid (preserves column readability across 12 month columns).
-                  </Paragraph>
-                  <Space wrap>
-                    {METRIC_DEFS.map((m) => (
-                      <Tooltip key={m.key} title={m.description}>
+          <Col xs={24} md={10}>
+            <Card size="small" title={<Text strong>Data to Print</Text>}>
+              <Paragraph type="secondary" style={{ marginTop: 0, marginBottom: 8, fontSize: 12 }}>
+                Select one or more metrics. When multiple are selected, the table shows one at a time via
+                a tab strip above the grid.
+              </Paragraph>
+              <Space wrap>
+                {METRIC_DEFS.map((m) => (
+                  <Tooltip key={m.key} title={m.description}>
+                    <Checkbox
+                      data-testid={`metric-${m.key}`}
+                      checked={dataToPrint.includes(m.key)}
+                      onChange={() => toggleMetric(m.key)}
+                    >
+                      {m.label}
+                    </Checkbox>
+                  </Tooltip>
+                ))}
+              </Space>
+              {DEFERRED_METRIC_DEFS.length > 0 && (
+                <div style={{ marginTop: 12 }}>
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    Deferred (Phase 2):
+                  </Text>
+                  <Space wrap style={{ marginLeft: 8 }}>
+                    {DEFERRED_METRIC_DEFS.map((m) => (
+                      <Tooltip key={m.key} title={m.reason}>
                         <Checkbox
-                          data-testid={`metric-${m.key}`}
-                          checked={dataToPrint.includes(m.key)}
-                          onChange={() => toggleMetric(m.key)}
+                          data-testid={`deferred-metric-${m.key}`}
+                          checked={deferredChecked.includes(m.key)}
+                          onChange={() => toggleDeferredMetric(m.key)}
                         >
-                          {m.label}
+                          <Tag color="gold">{m.label}</Tag>
                         </Checkbox>
                       </Tooltip>
                     ))}
                   </Space>
-                  {DEFERRED_METRIC_DEFS.length > 0 && (
-                    <div style={{ marginTop: 12 }}>
-                      <Text type="secondary" style={{ fontSize: 12 }}>
-                        Deferred (Phase 2):
-                      </Text>
-                      <Space wrap style={{ marginLeft: 8 }}>
-                        {DEFERRED_METRIC_DEFS.map((m) => (
-                          <Tooltip key={m.key} title={m.reason}>
-                            <Checkbox
-                              data-testid={`deferred-metric-${m.key}`}
-                              checked={deferredChecked.includes(m.key)}
-                              onChange={() => toggleDeferredMetric(m.key)}
-                            >
-                              <Tag color="gold">{m.label}</Tag>
-                            </Checkbox>
-                          </Tooltip>
-                        ))}
-                      </Space>
-                    </div>
-                  )}
                 </div>
+              )}
+            </Card>
+          </Col>
 
+          <Col xs={24} md={8}>
+            <Card size="small" title={<Text strong>Period</Text>}>
+              <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                <DatePicker
+                  picker="month"
+                  aria-label="End month"
+                  value={endMonth}
+                  allowClear={false}
+                  onChange={(v) => v && setEndMonth(v.startOf('month'))}
+                  style={{ width: '100%' }}
+                />
                 <div>
-                  <Title level={5}>Detail to Print</Title>
-                  <Radio.Group
-                    value={detailLevel}
-                    onChange={(e) => setDetailLevel(e.target.value as SalesHistoryByMonthDetailLevel)}
-                    options={[
-                      { value: 'sku',         label: 'SKU Detail' },
-                      { value: 'subtotals',   label: 'Category/Vendor Subtotals' },
-                      { value: 'department',  label: 'Department Summary' },
-                    ]}
+                  <Switch
+                    aria-label="Combine stores"
+                    checked={combineStores}
+                    onChange={setCombineStores}
                   />
-                  <Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0, fontSize: 12 }}>
-                    SKU Detail paginates at 100 rows per page (the RICS SKU count can reach thousands).
-                    Department Summary aggregates categories into the macro-departments from <code>ref_categories</code>.
-                  </Paragraph>
+                  <Text style={{ marginLeft: 8 }}>Combine stores</Text>
                 </div>
-              </Card>
-            ),
-          },
-          {
-            key: 'criteria',
-            label: 'Criteria',
-            children: (
-              <Card styles={{ body: { padding: 16 } }}>
-                <CriteriaPanel value={criteria} onChange={setCriteria} />
-              </Card>
-            ),
-          },
-          {
-            key: 'export',
-            label: 'Export Options',
-            children: (
-              <Card styles={{ body: { padding: 16 } }}>
-                <Paragraph>
-                  Exports include every selected metric as a labeled section. Choose a format:
-                </Paragraph>
-                <Space>
-                  <Button icon={<DownloadOutlined />} disabled={!csvUrl} href={csvUrl}>
-                    Export CSV
-                  </Button>
-                  <Button icon={<FileExcelOutlined />} disabled={!xlsxUrl} href={xlsxUrl}>
-                    Export XLSX
-                  </Button>
-                </Space>
-              </Card>
-            ),
-          },
-        ]}
-      />
+              </Space>
+            </Card>
+          </Col>
+        </Row>
 
-      {error && (
-        <Alert
-          type="error"
-          message="Failed to load report"
-          description={getErrorMessage(error)}
-          style={{ marginBottom: 16, marginTop: 16 }}
-        />
-      )}
+        <Card size="small" title={<Text strong>Criteria</Text>} style={{ marginTop: 16 }}>
+          <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
+            Leave a row blank to include everything. Type ranges like <code>556-599</code>,
+            exclusions <code>&lt;&gt;575</code>, or wildcards <code>KISS*BK</code> in the grammar
+            box under each dropdown.
+          </Text>
+          <Space direction="vertical" size={12} style={{ width: '100%' }}>
+            <CriteriaInput
+              label="Stores"
+              mode="numeric"
+              loading={dimsLoading}
+              options={(dims?.stores ?? []).map((s) => ({
+                value: s.number,
+                label: s.name ? `${s.number} — ${s.name}` : String(s.number),
+              }))}
+              selected={selectedStores}
+              onSelectedChange={setSelectedStores}
+              rawText={storesRaw}
+              onRawTextChange={setStoresRaw}
+              selectTestId="stores-select"
+              rawTestId="criteria-stores"
+            />
+            <CriteriaInput
+              label="Categories"
+              mode="numeric"
+              loading={dimsLoading}
+              options={(dims?.categories ?? []).map((c) => ({
+                value: c.number,
+                label: c.desc ? `${c.number} — ${c.desc}` : String(c.number),
+              }))}
+              selected={selectedCategories}
+              onSelectedChange={setSelectedCategories}
+              rawText={categoriesRaw}
+              onRawTextChange={setCategoriesRaw}
+              rawTestId="criteria-categories"
+            />
+            <CriteriaInput
+              label="Vendors"
+              mode="string"
+              options={[]}
+              selected={[]}
+              onSelectedChange={() => {}}
+              rawText={vendorsRaw}
+              onRawTextChange={setVendorsRaw}
+              hideDropdown
+              helpText="e.g. WEYC, VEND, <>NIKE"
+              rawTestId="criteria-vendors"
+            />
+            <CriteriaInput
+              label="Seasons"
+              mode="string"
+              options={[]}
+              selected={[]}
+              onSelectedChange={() => {}}
+              rawText={seasonsRaw}
+              onRawTextChange={setSeasonsRaw}
+              hideDropdown
+              helpText="e.g. A, B, <>C"
+              rawTestId="criteria-seasons"
+            />
+            <CriteriaInput
+              label="Style/Colors"
+              mode="string"
+              options={[]}
+              selected={[]}
+              onSelectedChange={() => {}}
+              rawText={styleColorsRaw}
+              onRawTextChange={setStyleColorsRaw}
+              hideDropdown
+              helpText="Wildcard pattern, e.g. KISS*BK or *FORMAL*"
+              rawTestId="criteria-styleColors"
+            />
+            <CriteriaInput
+              label="Groups"
+              mode="string"
+              loading={dimsLoading}
+              options={(dims?.groups ?? []).map((g) => ({
+                value: g.code,
+                label: g.desc ? `${g.code} — ${g.desc}` : g.code,
+              }))}
+              selected={selectedGroups}
+              onSelectedChange={setSelectedGroups}
+              rawText={groupsRaw}
+              onRawTextChange={setGroupsRaw}
+              helpText="Dropdown or grammar."
+              rawTestId="criteria-groups"
+            />
+            <CriteriaInput
+              label="Keywords"
+              mode="string"
+              options={[]}
+              selected={[]}
+              onSelectedChange={() => {}}
+              rawText={keywordsRaw}
+              onRawTextChange={setKeywordsRaw}
+              hideDropdown
+              helpText="Wildcard patterns, comma separated. e.g. 01AG25, *SUMMER*"
+              rawTestId="criteria-keywords"
+            />
+          </Space>
+        </Card>
 
-      <div style={{ marginTop: 16 }}>
-        {!hasStores ? (
-          <Empty
-            description="Select one or more stores to load the report."
-            image={Empty.PRESENTED_IMAGE_SIMPLE}
-            style={{ padding: 40 }}
+        <div style={{ marginTop: 16, borderTop: '1px solid #f0f0f0', paddingTop: 16 }}>
+          <Space align="center">
+            <RunReportControls running={running} hasRun={query != null} onRun={onRun} onStop={onStop} />
+            <Button
+              icon={<DownloadOutlined />}
+              disabled={!csvUrl}
+              href={csvUrl}
+            >
+              Export CSV
+            </Button>
+            <Button
+              icon={<FileExcelOutlined />}
+              disabled={!xlsxUrl}
+              href={xlsxUrl}
+              data-testid="export-xlsx"
+            >
+              Export XLSX
+            </Button>
+            {!hasStores && (
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                Select at least one store under Criteria to enable Run Report.
+              </Text>
+            )}
+            {hasStores && !hasAnyMetric && (
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                Select at least one metric under Data to Print.
+              </Text>
+            )}
+          </Space>
+        </div>
+      </Card>
+
+      <div ref={resultRef} style={{ scrollMarginTop: 12 }}>
+        {error && (
+          <Alert
+            type="error"
+            message="Failed to load report"
+            description={getErrorMessage(error)}
+            style={{ marginBottom: 16 }}
           />
-        ) : !hasAnyMetric ? (
+        )}
+
+        {!query ? (
           <Empty
-            description="Select at least one metric under Report Options → Data to Print."
+            description="Configure your options and click Run Report to load the report."
             image={Empty.PRESENTED_IMAGE_SIMPLE}
             style={{ padding: 40 }}
           />

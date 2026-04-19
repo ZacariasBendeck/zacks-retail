@@ -195,6 +195,10 @@ async function selectStore(user: ReturnType<typeof userEvent.setup>, label: RegE
   await user.click(option)
 }
 
+async function clickRunReport(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole('button', { name: /Run Report|Re-run/i }))
+}
+
 describe('SalesHistoryByMonthPage', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -204,7 +208,7 @@ describe('SalesHistoryByMonthPage', () => {
     } as never)
   })
 
-  it('shows the Empty prompt and does not call the API hook when no stores are selected', () => {
+  it('shows the Empty prompt and does not call the API hook until Run Report is clicked', () => {
     const hook = vi.mocked(useSalesHistoryByMonth)
     hook.mockReturnValue({ data: undefined, isFetching: false, error: null } as never)
 
@@ -216,7 +220,7 @@ describe('SalesHistoryByMonthPage', () => {
     expect(screen.getByTestId('stores-select')).toBeInTheDocument()
 
     expect(
-      screen.getByText(/Select one or more stores to load the report/i),
+      screen.getByText(/Configure your options and click Run Report/i),
     ).toBeInTheDocument()
 
     expect(hook).toHaveBeenCalled()
@@ -225,7 +229,7 @@ describe('SalesHistoryByMonthPage', () => {
     }
   })
 
-  it('renders chart + single pivot table after a store is selected (combineStores=true fixture)', async () => {
+  it('renders chart + single pivot table after Run Report is clicked (combineStores=true fixture)', async () => {
     const user = userEvent.setup()
     vi.mocked(useSalesHistoryByMonth).mockReturnValue({
       data: buildCombinedReport(),
@@ -236,6 +240,7 @@ describe('SalesHistoryByMonthPage', () => {
     renderPage()
 
     await selectStore(user, /1 — Main Street/)
+    await clickRunReport(user)
 
     await waitFor(() => {
       expect(screen.getByTestId('sales-history-chart')).toBeInTheDocument()
@@ -264,6 +269,7 @@ describe('SalesHistoryByMonthPage', () => {
     renderPage()
 
     await selectStore(user, /1 — Main Street/)
+    await clickRunReport(user)
 
     await waitFor(() => {
       expect(screen.getAllByTestId('block-header')).toHaveLength(2)
@@ -283,6 +289,7 @@ describe('SalesHistoryByMonthPage', () => {
 
     renderPage()
     await selectStore(user, /1 — Main Street/)
+    await clickRunReport(user)
 
     await waitFor(() => {
       expect(screen.getByTestId('metric-tab-strip')).toBeInTheDocument()
@@ -293,7 +300,7 @@ describe('SalesHistoryByMonthPage', () => {
     expect(within(strip).getByText(/Qty/)).toBeInTheDocument()
   })
 
-  it('Export CSV + XLSX links are enabled once a store is selected and encode the full params', async () => {
+  it('Export CSV + XLSX links are enabled once Run Report commits and encode the full params', async () => {
     const user = userEvent.setup()
     vi.mocked(useSalesHistoryByMonth).mockReturnValue({
       data: buildCombinedReport(),
@@ -307,6 +314,7 @@ describe('SalesHistoryByMonthPage', () => {
     expect(csvBefore).toBeDisabled()
 
     await selectStore(user, /1 — Main Street/)
+    await clickRunReport(user)
 
     await waitFor(() => {
       expect(screen.getAllByRole('link', { name: /Export CSV/i }).length).toBeGreaterThan(0)
@@ -325,8 +333,7 @@ describe('SalesHistoryByMonthPage', () => {
     expect(xlsxHref).toContain('format=xlsx')
   })
 
-  it('Criteria tab exposes all seven facet inputs', async () => {
-    const user = userEvent.setup()
+  it('Criteria section exposes all seven facet inputs inline (no tabs)', () => {
     vi.mocked(useSalesHistoryByMonth).mockReturnValue({
       data: undefined,
       isFetching: false,
@@ -335,7 +342,8 @@ describe('SalesHistoryByMonthPage', () => {
 
     renderPage()
 
-    await user.click(screen.getByRole('tab', { name: /Criteria/i }))
+    expect(screen.queryByRole('tab', { name: /Criteria/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('tab', { name: /Export Options/i })).not.toBeInTheDocument()
 
     expect(screen.getByTestId('criteria-stores')).toBeInTheDocument()
     expect(screen.getByTestId('criteria-categories')).toBeInTheDocument()
@@ -346,7 +354,7 @@ describe('SalesHistoryByMonthPage', () => {
     expect(screen.getByTestId('criteria-keywords')).toBeInTheDocument()
   })
 
-  it('typing a criteria value propagates into the URL params on the next fetch', async () => {
+  it('typing a criteria value propagates into the URL params on Run Report', async () => {
     const user = userEvent.setup()
     const hook = vi.mocked(useSalesHistoryByMonth)
     hook.mockReturnValue({ data: undefined, isFetching: false, error: null } as never)
@@ -354,10 +362,10 @@ describe('SalesHistoryByMonthPage', () => {
     renderPage()
     await selectStore(user, /1 — Main Street/)
 
-    await user.click(screen.getByRole('tab', { name: /Criteria/i }))
     await user.type(screen.getByTestId('criteria-vendors'), 'NIKE,ADIDAS')
+    await clickRunReport(user)
 
-    // Hook receives the updated criteria (last call after the typing settles).
+    // Hook receives the committed criteria on the post-Run call.
     await waitFor(() => {
       const calls = hook.mock.calls
       const lastCall = calls[calls.length - 1]
@@ -376,6 +384,7 @@ describe('SalesHistoryByMonthPage', () => {
     renderPage()
 
     await selectStore(user, /1 — Main Street/)
+    await clickRunReport(user)
 
     await waitFor(() => {
       expect(screen.getByRole('alert')).toBeInTheDocument()
@@ -385,17 +394,16 @@ describe('SalesHistoryByMonthPage', () => {
     expect(within(alert).getByText(/SALES_SOURCE must be set to rics/i)).toBeInTheDocument()
   })
 
-  it('exposes the deferred-metric checkboxes on the Report Options tab', async () => {
-    const user = userEvent.setup()
+  it('exposes the BoH / ROI / Turns metric checkboxes inline', () => {
     const hook = vi.mocked(useSalesHistoryByMonth)
     hook.mockReturnValue({ data: undefined, isFetching: false, error: null } as never)
 
     renderPage()
-    await selectStore(user, /1 — Main Street/)
 
     // Beginning On-Hand / ROI% / Turns shipped in v2.1 after RIINVHIS.MDB
-    // was indexed — they render as regular (non-deferred) metric checkboxes
-    // alongside Quantity Sold, Net Sales, Profit, etc.
+    // was indexed — they render as regular metric checkboxes alongside
+    // Quantity Sold, Net Sales, Profit, etc. They are visible without any
+    // tab navigation since the tab layout was removed.
     expect(screen.getByTestId('metric-beginningOnHand')).toBeInTheDocument()
     expect(screen.getByTestId('metric-roiPct')).toBeInTheDocument()
     expect(screen.getByTestId('metric-turns')).toBeInTheDocument()

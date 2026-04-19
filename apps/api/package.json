@@ -12,6 +12,7 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",
     "rics:discover": "tsx scripts/discover-rics-schema.ts",
+    "rics:convert": "tsx scripts/convert-rics-mdbs.ts",
     "db:verify:migration010": "npx tsx --experimental-sqlite scripts/verifyMigration010.ts",
     "db:verify:migration011": "npx tsx --experimental-sqlite scripts/verifyMigration011.ts",
     "db:verify:migration014": "npx tsx --experimental-sqlite scripts/verifyMigration014.ts",

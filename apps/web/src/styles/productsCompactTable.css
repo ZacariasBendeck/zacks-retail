@@ -39,9 +39,3 @@
   padding: 0 5px !important;
   margin-inline-end: 4px !important;
 }
-
-/* Highlight the active season row on the SeasonListPage. */
-.products-compact-table .season-row-current > td {
-  background: #f6ffed !important;
-  font-weight: 600;
-}

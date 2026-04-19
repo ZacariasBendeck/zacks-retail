@@ -22,6 +22,10 @@ export interface CriteriaInputProps<V extends OptionValue> {
   hideDropdown?: boolean
   /** Overrides the default help line under the text box. */
   helpText?: string
+  /** Optional data-testid for the multi-select. */
+  selectTestId?: string
+  /** Optional data-testid for the grammar text Input. */
+  rawTestId?: string
 }
 
 const NUMERIC_HELP =
@@ -45,6 +49,8 @@ export default function CriteriaInput<V extends OptionValue>({
   loading = false,
   hideDropdown = false,
   helpText,
+  selectTestId,
+  rawTestId,
 }: CriteriaInputProps<V>) {
   const defaultHelp = mode === 'numeric' ? NUMERIC_HELP : STRING_HELP
   const effectiveHelp = helpText ?? defaultHelp
@@ -69,6 +75,7 @@ export default function CriteriaInput<V extends OptionValue>({
               optionFilterProp="label"
               style={{ width: '100%' }}
               options={options}
+              data-testid={selectTestId}
             />
           )}
           <Input
@@ -76,6 +83,7 @@ export default function CriteriaInput<V extends OptionValue>({
             value={rawText}
             onChange={(e) => onRawTextChange(e.target.value)}
             style={{ fontFamily: 'Consolas, Menlo, monospace' }}
+            data-testid={rawTestId}
           />
           <Text type="secondary" style={{ fontSize: 12 }}>
             {effectiveHelp}

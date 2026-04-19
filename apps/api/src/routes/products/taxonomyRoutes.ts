@@ -193,19 +193,21 @@ router.delete('/keywords/:keyword', async (req: Request, res: Response) => {
   send(res, await taxonomyService.keywords.delete(paramString(req.params.keyword)), 204);
 });
 
-// ────────────────── Seasons (20-slot ring, RICS p. 218) ────────────────────
+// ────────────────── Seasons (user-editable SKU attribute, RICS p. 218) ─────
 
 router.get('/seasons', async (_req: Request, res: Response) => {
   send(res, await taxonomyService.seasons.list());
 });
 
 /**
- * The current season per today's date + configured cadence. Must be declared
- * BEFORE /seasons/:code so the literal 'current' path is not captured as a
- * season code param.
+ * Diagnostic: is the repo reading from RISEMF or Postgres right now?
+ * Returns the resolved path, introspected table/columns, and last probe error.
+ * Kept under the /seasons/ prefix for simplicity; declared before /:code so
+ * the literal 'source' path isn't captured as a code param.
  */
-router.get('/seasons/current', async (_req: Request, res: Response) => {
-  send(res, await taxonomyService.seasons.getCurrent());
+router.get('/seasons/_source', async (_req: Request, res: Response) => {
+  const status = await taxonomyService.seasons.getSourceStatus();
+  res.status(200).json(status);
 });
 
 router.get('/seasons/:code', async (req: Request, res: Response) => {

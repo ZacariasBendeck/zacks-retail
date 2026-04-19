@@ -1,40 +1,38 @@
 import { App, Button, Card, Form, Input, Space, Typography } from 'antd'
 import { useEffect } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { useSeason, useUpdateSeason } from '../../hooks/useProductsTaxonomy'
+import {
+  useCreateSeason,
+  useSeason,
+  useUpdateSeason,
+} from '../../hooks/useProductsTaxonomy'
+import type { SeasonInput } from '../../types/productsTaxonomy'
 
-interface FormShape {
-  code: string
-  description: string
-}
-
-/**
- * Edit the description for one of the 20 fixed RICS season slots. The code
- * itself cannot change — RICS pins the 20 codes (0, V–Z, 1–9, A–E). "New" is
- * not exposed as a path; adding a season means picking an empty slot from the
- * list and editing its description.
- */
 export default function SeasonFormPage() {
   const { code } = useParams<{ code: string }>()
   const navigate = useNavigate()
   const { message } = App.useApp()
-  const [form] = Form.useForm<FormShape>()
-  const { data } = useSeason(code)
+  const [form] = Form.useForm<SeasonInput>()
+  const editing = code != null && code !== 'new'
+  const { data } = useSeason(editing ? code : undefined)
+  const create = useCreateSeason()
   const update = useUpdateSeason()
 
   useEffect(() => {
-    if (data) {
-      form.setFieldsValue({ code: data.code, description: data.description ?? '' })
-    } else if (code) {
-      form.setFieldsValue({ code })
+    if (editing && data) {
+      form.setFieldsValue({ code: data.code, description: data.description })
     }
-  }, [code, data, form])
+  }, [editing, data, form])
 
-  const onFinish = async (values: FormShape) => {
-    if (!code) return
+  const onFinish = async (values: SeasonInput) => {
     try {
-      await update.mutateAsync({ code, patch: { description: values.description } })
-      message.success('Season description saved')
+      if (editing && code) {
+        await update.mutateAsync({ code, patch: { description: values.description } })
+        message.success('Season updated')
+      } else {
+        await create.mutateAsync(values)
+        message.success('Season created')
+      }
       navigate('/products/taxonomy/seasons')
     } catch (e) {
       message.error((e as Error).message)
@@ -42,10 +40,22 @@ export default function SeasonFormPage() {
   }
 
   return (
-    <Card title={<Typography.Text strong>Edit season: {code}</Typography.Text>}>
-      <Form<FormShape> form={form} layout="vertical" onFinish={onFinish}>
-        <Form.Item name="code" label="Code (fixed — RICS p. 218)">
-          <Input disabled />
+    <Card
+      title={
+        <Typography.Text strong>{editing ? `Edit season: ${code}` : 'New season'}</Typography.Text>
+      }
+    >
+      <Form<SeasonInput> form={form} layout="vertical" onFinish={onFinish}>
+        <Form.Item
+          name="code"
+          label="Code (1–2 chars, alphanumeric)"
+          rules={[
+            { required: true, message: 'Code is required' },
+            { max: 2, message: 'Max 2 characters' },
+            { pattern: /^[A-Za-z0-9]+$/, message: 'Alphanumeric only' },
+          ]}
+        >
+          <Input disabled={editing} maxLength={2} style={{ textTransform: 'uppercase' }} />
         </Form.Item>
         <Form.Item
           name="description"
@@ -58,7 +68,7 @@ export default function SeasonFormPage() {
           <Input maxLength={32} placeholder="e.g. PRIM 26" />
         </Form.Item>
         <Space>
-          <Button type="primary" htmlType="submit" loading={update.isPending}>
+          <Button type="primary" htmlType="submit" loading={create.isPending || update.isPending}>
             Save
           </Button>
           <Button onClick={() => navigate('/products/taxonomy/seasons')}>Cancel</Button>

@@ -140,9 +140,19 @@ export const sectorsApi = {
 }
 
 // Seasons (read-only in Phase 1; create/update/delete will 503)
+export interface SeasonSourceStatus {
+  usingRics: boolean
+  risemfPath: string | null
+  lastError: string | null
+  table: string | null
+  codeCol: string | null
+  descCol: string | null
+}
+
 export const seasonsApi = {
   list: () => request<Season[]>(`${BASE}/seasons`),
   get: (code: string) => request<Season>(`${BASE}/seasons/${encodeURIComponent(code)}`),
+  source: () => request<SeasonSourceStatus>(`${BASE}/seasons/_source`),
   create: (input: SeasonInput) =>
     request<Season>(`${BASE}/seasons`, { method: 'POST', body: JSON.stringify(input) }),
   update: (code: string, patch: Partial<Omit<SeasonInput, 'code'>>) =>
