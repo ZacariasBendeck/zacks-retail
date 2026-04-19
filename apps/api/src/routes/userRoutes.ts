@@ -38,8 +38,9 @@ export function createUserRoutes(prisma: PrismaClient): Router {
 
   router.get('/:id', requirePermission(PERMISSIONS.EMPLOYEES_VIEW), async (req, res, next) => {
     try {
+      const id = String(req.params.id);
       const user = await prisma.user.findUnique({
-        where: { id: req.params.id },
+        where: { id },
         include: { role: true },
       });
       if (!user) return res.status(404).json({ error: { code: 'NOT_FOUND' } });
@@ -94,9 +95,10 @@ export function createUserRoutes(prisma: PrismaClient): Router {
       if (!parsed.success) {
         return res.status(400).json({ error: { code: 'INVALID_BODY', message: parsed.error.message } });
       }
-      await updateUser(prisma, req.params.id, parsed.data);
+      const id = String(req.params.id);
+      await updateUser(prisma, id, parsed.data);
       const withRole = await prisma.user.findUnique({
-        where: { id: req.params.id },
+        where: { id },
         include: { role: true },
       });
       res.json({ user: sanitize(withRole) });
@@ -107,10 +109,11 @@ export function createUserRoutes(prisma: PrismaClient): Router {
 
   router.delete('/:id', requirePermission(PERMISSIONS.EMPLOYEES_MANAGE), async (req, res, next) => {
     try {
-      if (req.user?.id === req.params.id) {
+      const id = String(req.params.id);
+      if (req.user?.id === id) {
         return res.status(400).json({ error: { code: 'CANNOT_DELETE_SELF' } });
       }
-      await deleteUser(prisma, req.params.id);
+      await deleteUser(prisma, id);
       res.status(204).end();
     } catch (err) {
       next(err);
