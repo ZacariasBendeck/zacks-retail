@@ -27,6 +27,7 @@ import { useSkus, useDeactivateSku } from '../../hooks/useSkus'
 import type { Department, Sku, SkuListParams } from '../../types/sku'
 import ServerDataTable, { type ServerQueryChange, type ServerTableColumn } from '../../components/ServerDataTable'
 import { ALLOWED_DEPARTMENTS } from '../../constants/domain'
+import { SkuLink } from '../../components/sku-link'
 
 const DEPARTMENTS: Department[] = ALLOWED_DEPARTMENTS
 
@@ -109,6 +110,7 @@ export default function SkuListPage() {
       sortOrder: sortOrder('skuCode'),
       width: 200,
       ellipsis: true,
+      render: (skuCode: string) => <SkuLink skuCode={skuCode} />,
     },
     {
       title: 'Style',
