@@ -1109,6 +1109,95 @@ export async function getPosSku(skuCode: string): Promise<PosSku | null> {
   return invRowToPosSku(row, categories, vendors);
 }
 
+// ── SKU Lookup modal search ──────────────────────────────────────────────────
+
+export type SkuLookupSort = 'SKU' | 'DESCRIPTION' | 'VENDOR' | 'STYLE_COLOR';
+
+export interface SkuLookupRow {
+  skuId: string;
+  skuCode: string;
+  description: string;
+  vendor: string;
+  category: string;
+  styleColor: string | null;
+  currentPrice: number | null;
+}
+
+export interface SkuLookupParams {
+  q?: string;
+  descContains?: string;
+  wholeWord?: boolean;
+  sort?: SkuLookupSort;
+  limit?: number;
+  offset?: number;
+}
+
+/**
+ * Search the POS inventory snapshot for the SKU Lookup modal.
+ *
+ * Filtering:
+ *   - `q` — SKU code prefix match (case-insensitive)
+ *   - `descContains` — substring (or whole-word when `wholeWord=true`) match on Desc
+ *
+ * Pricing: uses `resolveCurrentPrice` (CurrentPrice slot selector → correct
+ * price field; slot 1=List, 2=Retail, 3=MD1, 4=MD2; falls back to Retail).
+ *
+ * Uses `loadPosInventorySnapshot` (full catalog, no season/category filter)
+ * so the lookup modal covers every active SKU, not just the storefront season.
+ */
+export async function searchSkusForLookup(
+  params: SkuLookupParams,
+): Promise<{ rows: SkuLookupRow[]; total: number }> {
+  const snapshot = await loadPosInventorySnapshot();
+  const q = (params.q ?? '').trim().toLowerCase();
+  const desc = (params.descContains ?? '').trim().toLowerCase();
+  const whole = !!params.wholeWord;
+
+  let filtered = snapshot.filter((row) => {
+    const skuCode = String(row.SKU ?? '').toLowerCase();
+    const description = String(row.Desc ?? '').toLowerCase();
+    if (q && !skuCode.startsWith(q)) return false;
+    if (desc) {
+      if (whole) {
+        const tokens = description.split(/\s+/);
+        if (!tokens.includes(desc)) return false;
+      } else if (!description.includes(desc)) {
+        return false;
+      }
+    }
+    return true;
+  });
+
+  const sort: SkuLookupSort = params.sort ?? 'SKU';
+  const sortKey = (row: InventoryMasterRow): string => {
+    switch (sort) {
+      case 'DESCRIPTION': return String(row.Desc ?? '');
+      case 'VENDOR':      return String(row.Vendor ?? '');
+      case 'STYLE_COLOR': return String(row.StyleColor ?? '');
+      case 'SKU':
+      default:            return String(row.SKU ?? '');
+    }
+  };
+  filtered = filtered.sort((a, b) => sortKey(a).localeCompare(sortKey(b)));
+
+  const total = filtered.length;
+  const offset = Math.max(0, params.offset ?? 0);
+  const limit = Math.max(1, Math.min(params.limit ?? 50, 500));
+  const page = filtered.slice(offset, offset + limit);
+
+  const rows: SkuLookupRow[] = page.map((row) => ({
+    skuId: String(row.SKU ?? ''),
+    skuCode: String(row.SKU ?? ''),
+    description: String(row.Desc ?? ''),
+    vendor: String(row.Vendor ?? ''),
+    category: String(row.Category ?? ''),
+    styleColor: row.StyleColor ? String(row.StyleColor) : null,
+    currentPrice: resolveCurrentPrice(row) || null,
+  }));
+
+  return { rows, total };
+}
+
 /**
  * Return all four price slots for a SKU plus the current slot selector.
  * RICS p. 32 [Next Price] button cycles through non-null, non-zero slots.

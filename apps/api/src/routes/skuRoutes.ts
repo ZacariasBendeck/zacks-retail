@@ -11,6 +11,7 @@ import {
   validateQuery,
 } from '../middleware/validation';
 import { SkuListParams } from '../models/sku';
+import { searchSkusForLookup, type SkuLookupSort } from '../services/ricsProductAdapter';
 
 const router: IRouter = Router();
 
@@ -192,6 +193,38 @@ router.get('/lookup', (req: Request, res: Response): void => {
     return;
   }
   res.json(sku);
+});
+
+/**
+ * SKU Search for the Inventory Inquiry / SKU Lookup modal.
+ * Supports prefix match on SKU code, substring/whole-word match on description,
+ * sorting by SKU | DESCRIPTION | VENDOR | STYLE_COLOR, and pagination.
+ */
+router.get('/search', async (req: Request, res: Response, next): Promise<void> => {
+  try {
+    const q = typeof req.query.q === 'string' ? req.query.q : undefined;
+    const descContains = typeof req.query.descContains === 'string' ? req.query.descContains : undefined;
+
+    if (q === undefined && !descContains) {
+      res.status(400).json({ error: 'q or descContains is required' });
+      return;
+    }
+
+    const sortRaw = typeof req.query.sort === 'string' ? req.query.sort.toUpperCase() : 'SKU';
+    const allowedSorts: SkuLookupSort[] = ['SKU', 'DESCRIPTION', 'VENDOR', 'STYLE_COLOR'];
+    const sort = (allowedSorts as string[]).includes(sortRaw)
+      ? (sortRaw as SkuLookupSort)
+      : 'SKU';
+
+    const wholeWord = req.query.wholeWord === 'true';
+    const limit = req.query.limit ? Number(req.query.limit) : 50;
+    const offset = req.query.offset ? Number(req.query.offset) : 0;
+
+    const result = await searchSkusForLookup({ q, descContains, wholeWord, sort, limit, offset });
+    res.json(result);
+  } catch (err) {
+    next(err);
+  }
 });
 
 /**

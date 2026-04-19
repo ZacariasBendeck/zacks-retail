@@ -142,6 +142,48 @@ export async function lookupSkuByCode(code: string): Promise<Sku | null> {
   return res.json()
 }
 
+// ── SKU Lookup modal search ──────────────────────────────────────────────────
+
+export type SkuLookupSort = 'SKU' | 'DESCRIPTION' | 'VENDOR' | 'STYLE_COLOR'
+
+export interface SkuLookupRow {
+  skuId: string
+  skuCode: string
+  description: string
+  vendor: string
+  category: string
+  styleColor: string | null
+  currentPrice: number | null
+}
+
+export interface SkuLookupResult {
+  rows: SkuLookupRow[]
+  total: number
+}
+
+export interface SkuLookupQuery {
+  q?: string
+  descContains?: string
+  wholeWord?: boolean
+  sort?: SkuLookupSort
+  limit?: number
+  offset?: number
+}
+
+export async function searchSkusForLookup(query: SkuLookupQuery): Promise<SkuLookupResult> {
+  const params = new URLSearchParams()
+  if (query.q !== undefined) params.set('q', query.q)
+  if (query.descContains) params.set('descContains', query.descContains)
+  if (query.wholeWord) params.set('wholeWord', 'true')
+  if (query.sort) params.set('sort', query.sort)
+  if (query.limit) params.set('limit', String(query.limit))
+  if (query.offset) params.set('offset', String(query.offset))
+
+  const response = await fetch(`/api/v1/skus/search?${params.toString()}`)
+  if (!response.ok) throw new SkuApiError(`SKU search failed: ${response.status}`, response.status)
+  return response.json()
+}
+
 export async function fetchSizeLabels(sizeTypeId: number): Promise<SizeLabelItem[]> {
   const res = await fetch(`/api/v1/skus/size-types/${sizeTypeId}/sizes`)
   if (!res.ok) throw new Error(`Failed to fetch size labels: ${res.status}`)
