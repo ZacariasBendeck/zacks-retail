@@ -6,6 +6,7 @@ import { PicturePanel } from './PicturePanel';
 import { PricingPanel } from './PricingPanel';
 import { SalesRollupStrip } from './SalesRollupStrip';
 import { ViewModeSelector, type ViewMode } from './ViewModeSelector';
+import { ActionBar, type InquiryTab } from './ActionBar';
 import { useInquiryData } from './useInquiryData';
 import { SizeGrid as SizeGridComponent } from '../../../components/size-grid';
 import type { InquiryGrids } from '../../../types/inventoryInquiry';
@@ -31,6 +32,10 @@ export const InquiryPage: React.FC = () => {
     nextParams.set('mode', next);
     setParams(nextParams, { replace: true });
   };
+  const [activeTab, setActiveTab] = React.useState<InquiryTab | null>(null);
+  const onPrev = () => {};
+  const onNext = () => {};
+  const onClear = () => setActiveTab(null);
 
   const { data, isLoading, error } = useInquiryData(skuCode, storeId);
 
@@ -52,6 +57,7 @@ export const InquiryPage: React.FC = () => {
           ? <SizeGridComponent grid={grid} />
           : <em>No data for this view mode.</em>;
       })()}
+      <ActionBar activeTab={activeTab} onTab={setActiveTab} onPrev={onPrev} onNext={onNext} onClear={onClear} />
     </div>
   );
 };

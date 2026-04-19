@@ -1,0 +1,27 @@
+import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { describe, expect, it, vi } from 'vitest';
+import { ActionBar } from './ActionBar';
+
+describe('ActionBar', () => {
+  it('renders all nine action buttons', () => {
+    render(<ActionBar activeTab={null} onTab={() => {}} onPrev={() => {}} onNext={() => {}} onClear={() => {}} />);
+    ['Clear', 'Prev', 'Next', 'UPCs', 'POs', 'Trend', 'Info', 'Detail', 'Print'].forEach((label) =>
+      expect(screen.getByRole('button', { name: label })).toBeInTheDocument()
+    );
+  });
+
+  it('disables stubbed buttons (POs / Trend / Print)', () => {
+    render(<ActionBar activeTab={null} onTab={() => {}} onPrev={() => {}} onNext={() => {}} onClear={() => {}} />);
+    expect(screen.getByRole('button', { name: 'POs' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Trend' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Print' })).toBeDisabled();
+  });
+
+  it('invokes onTab when a live tab is clicked', async () => {
+    const onTab = vi.fn();
+    render(<ActionBar activeTab={null} onTab={onTab} onPrev={() => {}} onNext={() => {}} onClear={() => {}} />);
+    await userEvent.click(screen.getByRole('button', { name: 'UPCs' }));
+    expect(onTab).toHaveBeenCalledWith('UPCS');
+  });
+});
