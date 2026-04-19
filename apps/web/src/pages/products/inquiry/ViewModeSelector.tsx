@@ -27,7 +27,7 @@ export const VIEW_MODES: Mode[] = [
   { value: 'STD_SALES',           label: 'Season-to-Date Sales',   shortcut: 'F8',       live: false, waitingOn: 'sales-reporting.getSizeGridSales' },
   { value: 'YTD_SALES',           label: 'Year-To-Date Sales',     shortcut: 'F9',       live: false, waitingOn: 'sales-reporting.getSizeGridSales' },
   { value: 'SINGLE_COLUMN',       label: 'Column Only',            shortcut: 'F11',      live: false, waitingOn: 'Phase 2 UX' },
-  { value: 'ALL_STORES_ON_HAND',  label: 'All Stores Inventory',   shortcut: 'Shift+F1', live: true },
+  { value: 'ALL_STORES_ON_HAND',  label: 'All Stores - On Hand',   shortcut: 'Shift+F1', live: true },
   { value: 'ALL_STORES_ONE_ROW',  label: 'All Stores - 1 Row',     shortcut: 'Shift+F2', live: false, waitingOn: 'Phase 2 UX' },
   { value: 'ALL_STORES_SUMMARY',  label: 'All Stores Summary',     shortcut: 'Shift+F3', live: true },
   { value: 'MAX',                 label: 'Max Quantities',         shortcut: 'Shift+F4', live: true },
