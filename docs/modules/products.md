@@ -340,6 +340,12 @@ The owning agent for the page itself is `products-dev`. When implementing:
 - If the contracts don't yet exist as concrete endpoints, the first deliverable is to stub them on the frontend with typed hooks + TanStack Query keys that will later be wired to real endpoints. This keeps the page owned by `products-dev` and the backend concerns ownable by `inventory`-maintainer / `purchasing`-maintainer / `sales-reporting`-maintainer.
 - The current Phase-1 RICS adapter (`apps/api/src/routes/ricsInventoryRoutes.ts` via `useRicsInventory` hooks) already serves a subset of this page. Phase-1 work can light up tabs against those read paths; Phase-2 work replaces them with the native contracts.
 
+### Phase 1 — deferred items
+
+For the canonical list of view modes, action tabs, and features that v1 stubs (plus the cross-module contract each one is waiting on), see the design doc:
+
+[`docs/superpowers/specs/2026-04-19-inventory-inquiry-design.md` § Deferred / waiting on](../superpowers/specs/2026-04-19-inventory-inquiry-design.md#deferred--waiting-on).
+
 ## Dependencies
 
 - **`inventory`** — reads on-hand / sales totals for the SKU detail screen; calls into `products.updateAverageCost()` on receive/transfer
