@@ -10,6 +10,7 @@ import { ActionBar, type InquiryTab } from './ActionBar';
 import { useInquiryData } from './useInquiryData';
 import { SizeGrid as SizeGridComponent } from '../../../components/size-grid';
 import type { InquiryGrids } from '../../../types/inventoryInquiry';
+import { UpcsTab } from './tabs/UpcsTab';
 
 const GRID_KEY_BY_MODE: Partial<Record<ViewMode, keyof InquiryGrids>> = {
   ON_HAND:            'onHand',
@@ -58,6 +59,7 @@ export const InquiryPage: React.FC = () => {
           : <em>No data for this view mode.</em>;
       })()}
       <ActionBar activeTab={activeTab} onTab={setActiveTab} onPrev={onPrev} onNext={onNext} onClear={onClear} />
+      {activeTab === 'UPCS' && <UpcsTab skuCode={data.sku} />}
     </div>
   );
 };

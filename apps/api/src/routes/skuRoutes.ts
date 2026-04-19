@@ -369,6 +369,30 @@ router.get('/', validateQuery(skuListQuerySchema), (req: Request, res: Response)
 
 /**
  * @openapi
+ * /api/v1/skus/{skuCode}/upcs:
+ *   get:
+ *     summary: List UPCs for a SKU by SKU code
+ *     tags: [SKUs]
+ *     parameters:
+ *       - name: skuCode
+ *         in: path
+ *         required: true
+ *         schema: { type: string }
+ *     responses:
+ *       200:
+ *         description: Array of UPC records (may be empty)
+ *
+ * NOTE: The RICS Access adapter does not yet expose UPC data from the
+ * InvGMAIC / InvUPC tables. This route returns an empty array until a
+ * UPC repository is wired up (Phase 2 — products module, SkuUpc table).
+ */
+router.get('/:skuCode/upcs', (req: Request, res: Response): void => {
+  // TODO(Phase 2): query SkuUpc by skuCode once adapter exposes UPC data.
+  res.json([]);
+});
+
+/**
+ * @openapi
  * /api/v1/skus/{skuId}:
  *   get:
  *     summary: Get a single SKU by ID
