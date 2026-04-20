@@ -29,6 +29,7 @@ export const SkuLookup: React.FC<SkuLookupProps> = ({
   open, onClose, onSelect, initialQuery = '', allowCreate = false,
 }) => {
   const [q, setQ] = useState(initialQuery);
+  const [debouncedQ, setDebouncedQ] = useState(initialQuery);
   const [pendingDesc, setPendingDesc] = useState('');
   const [descContains, setDescContains] = useState('');
   const [wholeWord, setWholeWord] = useState(false);
@@ -37,9 +38,17 @@ export const SkuLookup: React.FC<SkuLookupProps> = ({
   const [selected, setSelected] = useState<SkuLookupRow | null>(null);
   const navigate = useNavigate();
 
+  // Debounce the SKU prefix so we only query after the user pauses typing.
+  // The live-query fallback in the backend (when a SKU is past the snapshot
+  // cap) costs ~2 seconds; firing per-keystroke would stack those requests.
+  React.useEffect(() => {
+    const h = setTimeout(() => setDebouncedQ(q), 300);
+    return () => clearTimeout(h);
+  }, [q]);
+
   const queryParams = useMemo(
-    () => ({ q, descContains, wholeWord, sort, limit: PAGE_SIZE, offset: (page - 1) * PAGE_SIZE }),
-    [q, descContains, wholeWord, sort, page]
+    () => ({ q: debouncedQ, descContains, wholeWord, sort, limit: PAGE_SIZE, offset: (page - 1) * PAGE_SIZE }),
+    [debouncedQ, descContains, wholeWord, sort, page]
   );
 
   const { data, isFetching } = useQuery({
