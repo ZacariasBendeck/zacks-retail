@@ -313,7 +313,7 @@ export default function SkuFormPage() {
                     Perks (RICS p. 155) — a flat dollar amount credited to the salesperson when
                     this SKU is sold. Leave blank or 0 for no perk.
                   </Typography.Paragraph>
-                  <Form.Item name="perks" label="Perk amount ($)">
+                  <Form.Item name="perks" label="Perk amount">
                     <InputNumber min={0} step={0.01} precision={2} style={{ width: '100%' }} />
                   </Form.Item>
                   <Form.Item name="labelCode" label="Label code (1 char — R/H/J/S/O/N)">
