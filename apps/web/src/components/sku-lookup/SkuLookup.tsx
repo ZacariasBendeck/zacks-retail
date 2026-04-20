@@ -74,17 +74,17 @@ export const SkuLookup: React.FC<SkuLookupProps> = ({
     {
       title: '',
       key: 'thumb',
-      width: 44,
+      width: 64,
       render: (_: unknown, record: SkuLookupRow) =>
         record.pictureUrl ? (
           <img
             src={record.pictureUrl}
             alt=""
             loading="lazy"
-            style={{ width: 32, height: 32, objectFit: 'cover', border: '1px solid #eee', borderRadius: 2 }}
+            style={{ width: 52, height: 52, objectFit: 'cover', border: '1px solid #eee', borderRadius: 3 }}
           />
         ) : (
-          <span style={{ display: 'inline-block', width: 32, height: 32, border: '1px dashed #ddd', borderRadius: 2, color: '#ccc', textAlign: 'center', lineHeight: '32px', fontSize: 10 }}>—</span>
+          <span style={{ display: 'inline-block', width: 52, height: 52, border: '1px dashed #ddd', borderRadius: 3, color: '#ccc', textAlign: 'center', lineHeight: '52px', fontSize: 12 }}>—</span>
         ),
     },
     {
