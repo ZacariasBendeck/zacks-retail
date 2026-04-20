@@ -4,9 +4,15 @@
 
 ## What it is
 
-On every start of the API server (`apps/api`), the `ricsProductAdapter` runs a dedicated startup step that reads the **entire `InventoryMaster` table** from the legacy RICS MDB into a narrow-column, in-memory index. This index powers the **SKU Lookup modal** on the Inventory Inquiry screen (`/products/inquiry`) — including the input prompt, the Sort-by radio buttons, and the full-catalog search.
+On every start of the API server (`apps/api`), the `ricsProductAdapter` runs a dedicated startup step that reads the **entire `InventoryMaster` table** from the legacy RICS MDB into an in-memory index. This index powers three related flows:
 
-Without this warmup, the lookup modal either returns empty results or misses SKUs entirely for any prefix outside the first few thousand rows.
+1. The **SKU Lookup modal** on the Inventory Inquiry screen (`/products/inquiry`) — input prompt, Sort-by radio buttons, full-catalog search.
+2. The **Inquiry master lookup**. `loadMasterBySku()` on the inventory adapter resolves master rows from the index first, falling back to a PowerShell round-trip only if the SKU isn't there. This is what makes repeated SKU clicks feel instant.
+3. **Prev / Next SKU navigation** on the Inquiry screen. `findNeighborSku(sku, direction, scope)` walks the index (sorted by SKU at load time), optionally filtered to the current SKU's vendor or category.
+
+The row projection covers every master column these flows read — not a narrow "modal-only" subset. That keeps all three code paths off the PowerShell hot path.
+
+Without this warmup, the lookup modal returns incomplete results, master lookups take ~1 second per click, and Prev/Next is disabled.
 
 Canonical name for this process: **SKU Lookup index warmup**.
 
@@ -20,7 +26,9 @@ Earlier, a smaller "POS snapshot" (capped at 50,000 rows and sorted by descripti
 
 | File | What it does |
 |---|---|
-| `apps/api/src/services/ricsProductAdapter.ts` — `loadSkuLookupIndex()` | Reads `InventoryMaster` (no `TOP` cap, narrow projection, `WHERE Status IS NULL OR Status <> 'D'`, `ORDER BY [SKU]`) into a cached array. |
+| `apps/api/src/services/ricsProductAdapter.ts` — `loadSkuLookupIndex()` | Reads `InventoryMaster` (no `TOP` cap, `WHERE Status IS NULL OR Status <> 'D'`, `ORDER BY [SKU]`) into a cached `{ rows, byCode }` pair — a sorted array plus a Map keyed by uppercase SKU for O(1) point lookups. |
+| `apps/api/src/services/ricsProductAdapter.ts` — `findIndexedMaster(sku)` | O(1) master-row lookup used by the inventory adapter's `loadMasterBySku()`. |
+| `apps/api/src/services/ricsProductAdapter.ts` — `findNeighborSku(sku, direction, scope)` | Prev/Next walk of the sorted index, optionally filtered by vendor or category. |
 | `apps/api/src/services/ricsProductAdapter.ts` — `warmup()` | Invokes `loadSkuLookupIndex()` as part of its `Promise.all` so the index is loading while the server's other warmups run. |
 | `apps/api/src/services/ricsProductAdapter.ts` — `searchSkusForLookup()` | Every request to `GET /api/v1/skus/search` filters this same in-memory index. |
 | `apps/web/src/main.tsx` — `queryClient.prefetchQuery(...)` | Fires the default SKU Lookup request at app boot so the TanStack cache is also warm when the first React component subscribes. |
@@ -54,8 +62,11 @@ The index has a 10-minute TTL (`SKU_LOOKUP_INDEX_TTL_MS = 10 * 60_000`). The fir
 
 If the warmup becomes a startup-time problem (e.g. catalog grows past 1M rows), acceptable remedies are:
 
-1. Narrow the column projection further.
-2. Mirror the SKU index into Postgres and serve prefix queries from there directly.
-3. Split the load into pages and background-merge them.
+1. Mirror the SKU index into Postgres and serve prefix queries + master lookups from there directly.
+2. Split the load into pages and background-merge them.
+3. Trim the projection to only the columns `loadMasterBySku()` and `searchSkusForLookup()` actually consume (less generous than today's "everything in `InventoryMaster`").
 
-**Not** acceptable: re-introducing a row cap.
+**Not** acceptable:
+- Re-introducing a row cap.
+- Removing `findIndexedMaster()` and reverting `loadMasterBySku()` to a per-click PowerShell query.
+- Splitting the index into two (modal vs. master) — one projection that serves both is cheaper than two passes over the MDB.

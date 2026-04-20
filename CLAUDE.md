@@ -84,11 +84,15 @@ Superpowers does not replace these. `subagent-driven-development` dispatches wor
 - **Deliverables** land in cloud services (Google Sheets, Slides, etc.), not local files
 - **`.tmp/`** is disposable — regenerate as needed; don't rely on it persisting
 - **`.env`** is the only place for secrets — never hardcode
-- **`odoo-addons/`** and **`db/migrations/`** (legacy Odoo cutover plumbing) are NOT the target of new work. The Odoo migration was abandoned.
+- **`legacy/`** holds artifacts from the abandoned Odoo cutover (`MIGRATION_RUNBOOK.md`, `README.md`) plus `legacy/sqlite-migrations/` SQL files that are still read at runtime by `apps/api/scripts/verifyMigration*.ts` and a couple of tests. Do not extend any of it, and do not move `legacy/sqlite-migrations/` without updating every caller in the same commit.
 
 ## HARD RULE — SKU Lookup index warmup must stay in place
 
 The API pre-loads the full `InventoryMaster` table into an in-memory index at startup. This powers the SKU Lookup modal on the Inventory Inquiry screen and **must cover every SKU in the catalog** — never a capped subset. Details, call sites, and the canonical log line to watch for live in [`docs/operations/sku-lookup-index-warmup.md`](docs/operations/sku-lookup-index-warmup.md). Read it before touching `loadSkuLookupIndex()`, `searchSkusForLookup()`, or the `warmup()` `Promise.all` in `apps/api/src/services/ricsProductAdapter.ts`.
+
+## HARD RULE — Access OLE DB helper must stay async
+
+`runPowerShellJson()` in [`apps/api/src/services/accessOleDb.ts`](apps/api/src/services/accessOleDb.ts) **must use `child_process.spawn`, never `spawnSync`**. Every read and write against the legacy RICS MDBs goes through this one helper; if it becomes synchronous, the Node event loop freezes for the full duration of every PowerShell call (0.7–60 s each) and the server stops answering HTTP even though port 4000 is still listening. Operators see "every tab hangs" on restart. Full explanation, verification steps, and the list of edits that would re-introduce the bug live in [`docs/operations/access-oledb-async-spawn.md`](docs/operations/access-oledb-async-spawn.md).
 
 ## HARD RULE — no new branches, no worktrees
 

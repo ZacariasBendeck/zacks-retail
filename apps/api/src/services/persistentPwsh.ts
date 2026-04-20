@@ -90,6 +90,14 @@ class PersistentPowerShellHost {
     //     <script lines…>
     //     ___PWSH_SEND___
     // and every response is read up to `___PWSH_END_<token>___`.
+    // The host loop emits the end marker AS part of the PowerShell pipeline
+    // stream — not via a separate `[Console]::Out.WriteLine`. That way the
+    // marker is guaranteed to appear AFTER every preceding pipeline object
+    // (including huge `ConvertTo-Json` outputs) in strict write order, with
+    // no flush race. Earlier designs that called `Out.Flush()` + writeline
+    // for the marker worked for small payloads but could misframe on large
+    // ones because the implicit pipeline was still draining when the
+    // separate writeline landed on stdout.
     const hostLoop = [
       "$ErrorActionPreference = 'Continue'",
       "$OutputEncoding = [System.Text.Encoding]::UTF8",
@@ -108,12 +116,11 @@ class PersistentPowerShellHost {
       '  } catch {',
       "    @{ __pwshHostError = $true; message = $_.Exception.Message } | ConvertTo-Json -Compress",
       '  }',
-      // Flush all pipeline output, then write a known end marker that we can
-      // grep for in Node. The marker is on its own line on stdout so Node
-      // can use a simple indexOf() to frame responses.
-      '  [Console]::Out.Flush()',
-      "  [Console]::Out.WriteLine('___PWSH_END___')",
-      '  [Console]::Out.Flush()',
+      // End marker on its own line, as a bare pipeline string. PowerShell
+      // queues it behind whatever the script emitted; the default
+      // `Out-Default` formatter writes each pipeline string followed by a
+      // newline, so Node sees the marker on its own line on stdout.
+      "  '___PWSH_END___'",
       '}',
     ].join('\r\n');
 

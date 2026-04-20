@@ -24,6 +24,7 @@ import {
   TransferSummaryInputError,
 } from '../services/ricsInventoryFacade';
 import type { RecommendedTransferRule } from '../services/ricsInventoryAdapter';
+import { findNeighborSku } from '../services/ricsProductAdapter';
 
 const router: IRouter = Router();
 
@@ -54,6 +55,45 @@ router.get('/inquiry/:sku', async (req: Request, res: Response, next: NextFuncti
       return;
     }
     res.json(inquiry);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * @openapi
+ * /api/v1/inventory/inquiry/{sku}/neighbor:
+ *   get:
+ *     tags: [Inventory]
+ *     summary: Next/Prev SKU for the Inventory Inquiry Prev/Next buttons. Walks the in-memory SKU index (sorted by SKU) optionally filtered to the current SKU's vendor or category.
+ *     parameters:
+ *       - in: path
+ *         name: sku
+ *         required: true
+ *         schema: { type: string }
+ *       - in: query
+ *         name: direction
+ *         required: true
+ *         schema: { type: string, enum: [next, prev] }
+ *       - in: query
+ *         name: scope
+ *         schema: { type: string, enum: [general, vendor, category], default: general }
+ *     responses:
+ *       200:
+ *         description: "Neighbor SKU payload. `sku` is null when no neighbor exists in scope."
+ */
+router.get('/inquiry/:sku/neighbor', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const skuRaw = req.params.sku;
+    const sku = Array.isArray(skuRaw) ? skuRaw[0] : skuRaw;
+    const directionRaw = String(req.query.direction ?? '').toLowerCase();
+    const direction: 'next' | 'prev' =
+      directionRaw === 'prev' ? 'prev' : directionRaw === 'next' ? 'next' : 'next';
+    const scopeRaw = String(req.query.scope ?? 'general').toLowerCase();
+    const scope: 'general' | 'vendor' | 'category' =
+      scopeRaw === 'vendor' ? 'vendor' : scopeRaw === 'category' ? 'category' : 'general';
+    const neighbor = await findNeighborSku(sku, direction, scope);
+    res.json({ sku: neighbor });
   } catch (err) {
     next(err);
   }

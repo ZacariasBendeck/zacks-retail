@@ -86,11 +86,19 @@ export interface SkuInput {
 
 export interface SkuListFilters {
   q?: string
+  /** Legacy single-value filters. */
   vendor?: string
   category?: number
   season?: string
   group?: string
   keyword?: string
+  /** Multi-value filters for the admin workbench. */
+  vendors?: string[]
+  categories?: number[]
+  seasons?: string[]
+  groups?: string[]
+  keywords?: string[]
+  styleColor?: string
   limit?: number
   offset?: number
 }

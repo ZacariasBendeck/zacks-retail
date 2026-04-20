@@ -1,12 +1,12 @@
 import React from 'react';
-import { Alert, Button, Spin } from 'antd';
+import { Alert, Button, message, Spin } from 'antd';
 import { SearchOutlined } from '@ant-design/icons';
 import { HeaderCard } from './HeaderCard';
 import { PicturePanel } from './PicturePanel';
 import { PricingPanel } from './PricingPanel';
 import { SalesRollupStrip } from './SalesRollupStrip';
 import { ViewModeSelector, type ViewMode } from './ViewModeSelector';
-import { ActionBar, type InquiryTab } from './ActionBar';
+import { ActionBar, type InquiryTab, type NeighborScope } from './ActionBar';
 import { useInquiryData } from './useInquiryData';
 import { SizeGrid as SizeGridComponent } from '../../../components/size-grid';
 import { SkuLookup } from '../../../components/sku-lookup';
@@ -55,6 +55,8 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({ skuCode, storeId, onPi
   const [mode, setMode] = React.useState<ViewMode>('ALL_STORES_SUMMARY');
   const [activeTab, setActiveTab] = React.useState<InquiryTab | null>(null);
   const [lookupOpen, setLookupOpen] = React.useState(!skuCode);
+  const [scope, setScope] = React.useState<NeighborScope>('general');
+  const [navLoading, setNavLoading] = React.useState(false);
 
   React.useEffect(() => {
     setLookupOpen(!skuCode);
@@ -67,6 +69,31 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({ skuCode, storeId, onPi
     setLookupOpen(false);
     onPickSku(picked);
   };
+
+  const navigateNeighbor = React.useCallback(
+    async (direction: 'next' | 'prev') => {
+      if (!skuCode) return;
+      setNavLoading(true);
+      try {
+        const url =
+          `/api/v1/inventory/inquiry/${encodeURIComponent(skuCode)}/neighbor` +
+          `?direction=${direction}&scope=${scope}`;
+        const response = await fetch(url);
+        if (!response.ok) throw new Error(`neighbor lookup failed: ${response.status}`);
+        const { sku } = (await response.json()) as { sku: string | null };
+        if (!sku) {
+          message.info(`No ${direction === 'next' ? 'next' : 'previous'} SKU in ${scopeLabel(scope)}.`);
+          return;
+        }
+        onPickSku({ skuCode: sku, skuId: sku });
+      } catch (err) {
+        message.error((err as Error).message);
+      } finally {
+        setNavLoading(false);
+      }
+    },
+    [skuCode, scope, onPickSku],
+  );
 
   if (!skuCode) {
     return (
@@ -152,9 +179,12 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({ skuCode, storeId, onPi
         <ActionBar
           activeTab={activeTab}
           onTab={setActiveTab}
-          onPrev={() => {}}
-          onNext={() => {}}
+          onPrev={() => navigateNeighbor('prev')}
+          onNext={() => navigateNeighbor('next')}
           onClear={() => setActiveTab(null)}
+          scope={scope}
+          onScopeChange={setScope}
+          navLoading={navLoading}
         />
       </div>
 
@@ -171,6 +201,12 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({ skuCode, storeId, onPi
     </div>
   );
 };
+
+function scopeLabel(scope: NeighborScope): string {
+  if (scope === 'vendor')   return 'the same vendor';
+  if (scope === 'category') return 'the same category';
+  return 'the catalog';
+}
 
 function gridCaptionFor(mode: ViewMode): string {
   switch (mode) {

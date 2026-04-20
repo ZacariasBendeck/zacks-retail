@@ -28,6 +28,7 @@ import { SizeTypeRepository } from '../../repositories/rics/SizeTypeRepository';
 import { SeasonRepository } from '../../repositories/rics/SeasonRepository';
 import { VendorRepository } from '../../repositories/rics/VendorRepository';
 import { SkuRepository } from '../../repositories/rics/SkuRepository';
+import type { StartupPhaseResult } from '../startupReport';
 
 interface WarmupTask {
   name: string;
@@ -50,8 +51,15 @@ const TASKS: WarmupTask[] = [
   { name: 'vendors:sku-counts', run: () => VendorRepository.countSkusPerVendor() },
 ];
 
-export async function warmupProductsAdmin(): Promise<void> {
-  const overall = Date.now();
+/**
+ * Run every taxonomy + vendor warmup task in parallel.
+ *
+ * Returns per-task results for inclusion in the top-level startup report —
+ * the caller is responsible for printing them (see `startupReport.ts`).
+ * Does NOT print its own summary line; the consolidated report at the end
+ * of startup is the single source of truth.
+ */
+export async function warmupProductsAdmin(): Promise<StartupPhaseResult[]> {
   const results = await Promise.allSettled(
     TASKS.map(async (t) => {
       const t0 = Date.now();
@@ -68,19 +76,16 @@ export async function warmupProductsAdmin(): Promise<void> {
       }
     }),
   );
-  const summary = results.map((r) => (r.status === 'fulfilled' ? r.value : { name: '?', ms: 0, ok: false as const, error: String((r as PromiseRejectedResult).reason) }));
-  const okCount = summary.filter((s) => s.ok).length;
-  const failCount = summary.length - okCount;
-  // eslint-disable-next-line no-console
-  console.log(
-    `[products-warmup] ${okCount}/${summary.length} tasks in ${Date.now() - overall}ms` +
-      (failCount > 0 ? ` (${failCount} failed — see details below)` : ''),
+  return results.map<StartupPhaseResult>((r) =>
+    r.status === 'fulfilled'
+      ? r.value
+      : {
+          name: '?',
+          ms: 0,
+          ok: false,
+          error: String((r as PromiseRejectedResult).reason),
+        },
   );
-  for (const s of summary) {
-    const tag = s.ok ? '[ok]' : '[err]';
-    // eslint-disable-next-line no-console
-    console.log(`  ${tag} ${s.name.padEnd(24)} ${s.ms}ms${'error' in s ? ` — ${s.error}` : ''}`);
-  }
 
   // SKU list warmup deliberately skipped. Pulling 25 k rows over OLE DB
   // takes ~60-100 s and leaves the persistent PS host holding a ~1 GB

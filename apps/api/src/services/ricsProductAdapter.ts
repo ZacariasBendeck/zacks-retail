@@ -1050,29 +1050,48 @@ ORDER BY [Desc]
 
 const SKU_LOOKUP_INDEX_TTL_MS = 10 * 60_000;
 
-type SkuLookupIndexRow = Pick<
+// The lookup index doubles as an instant master-lookup cache for the
+// Inventory Inquiry. The projection covers every column the Inquiry screen
+// consumes (pricing slots, size type, season, label/group, perks, comment,
+// status, picture) so `loadMasterBySku()` can resolve without a fresh
+// PowerShell round-trip. A second Map keyed by uppercase SKU gives O(1)
+// point-lookups on top of the sorted array used by `searchSkusForLookup`.
+export type SkuLookupIndexRow = Pick<
   InventoryMasterRow,
-  'SKU' | 'Desc' | 'Vendor' | 'Category' | 'StyleColor' | 'PictureFileName'
-    | 'ListPrice' | 'RetailPrice' | 'MarkDownPrice1' | 'MarkDownPrice2' | 'CurrentPrice'
+  | 'SKU' | 'Desc' | 'Vendor' | 'Manufacturer' | 'Category' | 'StyleColor'
+  | 'VendorSKU' | 'SizeType' | 'Season' | 'LabelCode' | 'GroupCode'
+  | 'PictureFileName'
+  | 'ListPrice' | 'RetailPrice' | 'MarkDownPrice1' | 'MarkDownPrice2'
+  | 'CurrentPrice' | 'CurrentCost' | 'LastPriceChange'
+  | 'Perks' | 'Comment' | 'Status'
 >;
 
-async function loadSkuLookupIndex(): Promise<SkuLookupIndexRow[]> {
+interface SkuLookupIndex {
+  rows: SkuLookupIndexRow[];
+  byCode: Map<string, SkuLookupIndexRow>;
+}
+
+async function loadSkuLookupIndex(): Promise<SkuLookupIndex> {
   return cachedAsync('sku:lookup:index', SKU_LOOKUP_INDEX_TTL_MS, async () => {
     const dbPath = INVMAS_MDB();
     if (!fs.existsSync(dbPath)) {
       console.warn(`[ricsProductAdapter] RIINVMAS not found at ${dbPath}; SKU lookup index empty.`);
-      return [];
+      return { rows: [], byCode: new Map() };
     }
     const password = getOrRecoverPassword(dbPath);
 
-    // Narrow projection + no TOP cap + sort by [SKU] so the modal's default
-    // sort (SKU ascending) can stream straight from the cached array. Omit
-    // discontinued SKUs (Status='D') but keep zero-price SKUs — operators
-    // need to look up any SKU, not just currently-priced ones.
+    // No TOP cap + sort by [SKU] so the modal's default sort (SKU ascending)
+    // can stream straight from the cached array. Omit discontinued SKUs
+    // (Status='D') but keep zero-price SKUs — operators need to look up any
+    // SKU, not just currently-priced ones.
     const sql = `
 SELECT
-  [SKU], [Desc], [Vendor], [Category], [StyleColor], [PictureFileName],
-  [ListPrice], [RetailPrice], [MarkDownPrice1], [MarkDownPrice2], [CurrentPrice]
+  [SKU], [Desc], [Vendor], [Manufacturer], [Category], [StyleColor],
+  [VendorSKU], [SizeType], [Season], [LabelCode], [GroupCode],
+  [PictureFileName],
+  [ListPrice], [RetailPrice], [MarkDownPrice1], [MarkDownPrice2],
+  [CurrentPrice], [CurrentCost], [LastPriceChange],
+  [Perks], [Comment], [Status]
 FROM [InventoryMaster]
 WHERE ([Status] IS NULL OR [Status] <> 'D')
 ORDER BY [SKU]
@@ -1084,11 +1103,16 @@ ORDER BY [SKU]
         buildSelectScript(dbPath, password, sql),
       );
       const rows = Array.isArray(raw) ? raw : raw ? [raw] : [];
+      const byCode = new Map<string, SkuLookupIndexRow>();
+      for (const r of rows) {
+        const code = r.SKU?.trim().toUpperCase();
+        if (code) byCode.set(code, r);
+      }
       console.log(`[ricsProductAdapter] SKU lookup index loaded: ${rows.length} rows in ${Date.now() - t0}ms`);
-      return rows;
+      return { rows, byCode };
     } catch (err: any) {
       console.error('[ricsProductAdapter] SKU lookup index load failed:', err.message);
-      return [];
+      return { rows: [], byCode: new Map() };
     }
   });
 }
@@ -1096,6 +1120,62 @@ ORDER BY [SKU]
 /** Warmup hook — pull the index on startup so the first user request is fast. */
 export async function warmupSkuLookupIndex(): Promise<void> {
   await loadSkuLookupIndex();
+}
+
+/**
+ * Fast master lookup from the in-memory SKU index. Returns null if the SKU
+ * isn't present (either genuinely unknown, or the index hasn't warmed up yet
+ * — callers should fall back to a live query in that case). The returned row
+ * is the full projection above, which covers every column the Inventory
+ * Inquiry and sibling screens read from InventoryMaster.
+ */
+export async function findIndexedMaster(sku: string): Promise<SkuLookupIndexRow | null> {
+  const key = (sku ?? '').trim().toUpperCase();
+  if (!key) return null;
+  const index = await loadSkuLookupIndex();
+  return index.byCode.get(key) ?? null;
+}
+
+/**
+ * Neighbor navigation for the Inventory Inquiry's Prev/Next buttons. The
+ * index is sorted by SKU at load time; neighbors are resolved by binary-
+ * searching that order and optionally filtering by vendor or category.
+ *
+ * `scope`:
+ *   - 'general'  — any SKU in the catalog (default)
+ *   - 'vendor'   — next/prev within the same Vendor code
+ *   - 'category' — next/prev within the same Category number
+ *
+ * Returns the neighboring SKU code, or null if the SKU isn't indexed / has no
+ * neighbor in the requested scope.
+ */
+export async function findNeighborSku(
+  sku: string,
+  direction: 'next' | 'prev',
+  scope: 'general' | 'vendor' | 'category' = 'general',
+): Promise<string | null> {
+  const target = (sku ?? '').trim().toUpperCase();
+  if (!target) return null;
+  const { rows } = await loadSkuLookupIndex();
+  if (rows.length === 0) return null;
+
+  const startIdx = rows.findIndex((r) => r.SKU?.trim().toUpperCase() === target);
+  if (startIdx < 0) return null;
+  const current = rows[startIdx];
+
+  const matchesScope = (r: SkuLookupIndexRow): boolean => {
+    if (scope === 'vendor')   return (r.Vendor ?? '').trim() === (current.Vendor ?? '').trim();
+    if (scope === 'category') return (r.Category ?? null) === (current.Category ?? null);
+    return true;
+  };
+
+  const step = direction === 'next' ? 1 : -1;
+  for (let i = startIdx + step; i >= 0 && i < rows.length; i += step) {
+    if (matchesScope(rows[i]) && rows[i].SKU) {
+      return rows[i].SKU!.trim();
+    }
+  }
+  return null;
 }
 
 function invRowToPosSku(
@@ -1213,7 +1293,7 @@ export async function searchSkusForLookup(
 ): Promise<{ rows: SkuLookupRow[]; total: number }> {
   // Backed by the uncapped SKU lookup index — every non-discontinued SKU in
   // InventoryMaster is in memory, so there are no cap-related blind spots.
-  const index = await loadSkuLookupIndex();
+  const { rows: index } = await loadSkuLookupIndex();
   const q = (params.q ?? '').trim().toLowerCase();
   const desc = (params.descContains ?? '').trim().toLowerCase();
   const whole = !!params.wholeWord;

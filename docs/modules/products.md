@@ -218,7 +218,7 @@ model DiscontinuedSkuMerge {        // audit log for p. 69
 ## API surface
 
 **SKU**
-- `GET /api/v1/skus` — list + criteria filter (vendor/category/season/style-color/group/keyword)
+- `GET /api/v1/skus` — list + criteria filter. Every dimension accepts a **multi-value array** (repeated key or comma-separated): `vendors`, `categories`, `seasons`, `groups`, `keywords`. Style/Color is `styleColor` (case-insensitive substring). Legacy single-value params (`vendor`, `category`, `season`, `group`, `keyword`) are still accepted for back-compat. Omit `limit` to pull every matching row; pass an integer to cap. Filters union inside a dimension, intersect across dimensions. Department and Sector are **not** dimensions on this endpoint — the client expands them into the corresponding `categories[]` via the range lookup.
 - `POST /api/v1/skus` — create
 - `GET /api/v1/skus/:id` — full detail incl. sizes, UPCs, pictures, perks, oversize
 - `PATCH /api/v1/skus/:id` — edit (rejects code change if activity exists)
@@ -257,7 +257,12 @@ model DiscontinuedSkuMerge {        // audit log for p. 69
 
 ## UI surface
 
-- **SKU list** (`/products/skus`) — filter by vendor/category/season/keyword; show price + on-hand (via `inventory` contract); click for detail
+- **SKU list workbench** (`/products/skus`) — **query-first**: opening the page does NOT fetch SKUs. The user picks filters and clicks **Run query**; only then does the backend return a result set. Rationale: the full catalog is 200 k+ rows and ~100 s to load cold — auto-loading on every page visit is a bad admin UX. RICS itself is query-first; this matches that pattern.
+  - **Filter dimensions:** Department (single-select, expands to category range client-side), Sector (single-select, expands to departments → categories client-side), Category (multi), Group (multi), Keyword (multi), Season (multi), Vendor (multi), Style/Color (substring), free-text search (`q`). Department + Sector + explicit Category picks are **intersected** before being sent as a single `categories[]` param — the backend stays dim-agnostic.
+  - **Run controls:** `Run query` (runs with current filters), `Clear filters` (resets inputs without re-running), `Load all (slow)` (escape hatch — pulls every row; ~100 s on cold first hit per hour, RAM-served afterward).
+  - **Selection persists across filter/sort changes** (React Query `preserveSelectedRowKeys`) so bulk ops (price discount, discontinue, add keyword) can queue picks from multiple queries before committing.
+  - **Taxonomy dropdowns load eagerly** (they're tiny + cached), so the filter UI is responsive even before the first query runs.
+  - Row click → SKU detail; inline edit/delete actions per row.
 - **SKU detail / edit** — tabs: Core / Pricing / Sizes & UPCs / Pictures / Perks / Discontinue
 - **Vendor list / edit** — incl. per-store account numbers
 - **Taxonomy admin** — Categories, Departments, Groups, Keywords, Return Codes, Promotion Codes as sibling admin pages

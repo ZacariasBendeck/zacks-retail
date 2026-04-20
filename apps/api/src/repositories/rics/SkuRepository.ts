@@ -146,11 +146,20 @@ export interface SkuInput {
 
 export interface FindAllOptions {
   q?: string;
+  /** Single-value filters (legacy, kept for callers that pass one value). */
   vendor?: string;
   category?: number;
   season?: string;
   group?: string;
   keyword?: string;
+  /** Multi-value filters — the admin workbench uses these. */
+  vendors?: string[];
+  categories?: number[];
+  seasons?: string[];
+  groups?: string[];
+  keywords?: string[];
+  /** Style/Color substring match (case-insensitive). */
+  styleColor?: string;
   limit?: number;
   offset?: number;
 }
@@ -459,26 +468,40 @@ function applyFilters(all: Sku[], opts: FindAllOptions): Sku[] {
         (s.styleColor ?? '').toUpperCase().includes(q),
     );
   }
-  if (opts.vendor) {
-    const v = opts.vendor.trim().toUpperCase();
-    out = out.filter((s) => (s.vendor ?? '').toUpperCase() === v);
+  // Multi-value filters — unioned within a dimension, intersected across
+  // dimensions. Arrays override their single-value counterparts.
+  const vendors = setOf(opts.vendors ?? (opts.vendor ? [opts.vendor] : []));
+  if (vendors.size > 0) {
+    out = out.filter((s) => s.vendor != null && vendors.has(s.vendor.toUpperCase()));
   }
-  if (opts.category != null) {
-    out = out.filter((s) => s.category === opts.category);
+  const categories = numSet(opts.categories ?? (opts.category != null ? [opts.category] : []));
+  if (categories.size > 0) {
+    out = out.filter((s) => s.category != null && categories.has(s.category));
   }
-  if (opts.season) {
-    const sv = opts.season.trim().toUpperCase();
-    out = out.filter((s) => (s.season ?? '').toUpperCase() === sv);
+  const seasons = setOf(opts.seasons ?? (opts.season ? [opts.season] : []));
+  if (seasons.size > 0) {
+    out = out.filter((s) => s.season != null && seasons.has(s.season.toUpperCase()));
   }
-  if (opts.group) {
-    const gv = opts.group.trim().toUpperCase();
-    out = out.filter((s) => (s.groupCode ?? '').toUpperCase() === gv);
+  const groups = setOf(opts.groups ?? (opts.group ? [opts.group] : []));
+  if (groups.size > 0) {
+    out = out.filter((s) => s.groupCode != null && groups.has(s.groupCode.toUpperCase()));
   }
-  if (opts.keyword) {
-    const k = opts.keyword.trim().toUpperCase();
-    out = out.filter((s) => s.keywords.some((kw) => kw.toUpperCase().includes(k)));
+  const keywords = setOf(opts.keywords ?? (opts.keyword ? [opts.keyword] : []));
+  if (keywords.size > 0) {
+    out = out.filter((s) => s.keywords.some((kw) => keywords.has(kw.toUpperCase())));
+  }
+  if (opts.styleColor && opts.styleColor.trim().length > 0) {
+    const needle = opts.styleColor.trim().toUpperCase();
+    out = out.filter((s) => (s.styleColor ?? '').toUpperCase().includes(needle));
   }
   return out;
+}
+
+function setOf(xs: string[]): Set<string> {
+  return new Set(xs.map((x) => String(x).trim().toUpperCase()).filter((x) => x.length > 0));
+}
+function numSet(xs: number[]): Set<number> {
+  return new Set(xs.filter((x) => Number.isFinite(x)));
 }
 
 // ────────────── Repository ──────────────
@@ -488,9 +511,14 @@ export const SkuRepository = {
     try {
       const all = await skuListCache.get(loadFullSkuList);
       const filtered = applyFilters(all, opts);
-      const limit = opts.limit ?? 500;
       const offset = opts.offset ?? 0;
-      return Ok(filtered.slice(offset, offset + limit));
+      // Omit `limit` entirely to get every row back. Passing a number
+      // applies a hard cap (used by the storefront and specific callers
+      // that know they want to paginate).
+      if (opts.limit == null) {
+        return Ok(offset > 0 ? filtered.slice(offset) : filtered);
+      }
+      return Ok(filtered.slice(offset, offset + opts.limit));
     } catch (err) {
       return Err(toRepoError(err));
     }

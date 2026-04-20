@@ -28,6 +28,8 @@ import {
   runPowerShellJson,
   buildSelectScript,
 } from './accessOleDb';
+import { findIndexedMaster, findNeighborSku } from './ricsProductAdapter';
+import { getInquirySalesRollup } from './salesReporting/ricsInquiryRollupAdapter';
 
 // ─────────────────────────── public types ─────────────────────────────────
 
@@ -421,6 +423,40 @@ interface MasterRow {
 }
 
 async function loadMasterBySku(sku: string): Promise<MasterRow | null> {
+  // Fast path: the SKU index warmed at startup holds every non-discontinued
+  // master row in memory. Avoids a PowerShell round-trip per inquiry, which
+  // is the hot path when operators rapidly click SKU links. The narrow
+  // projection in the index matches MasterRow one-for-one; the only nuance
+  // is VendorSKU (index) vs. VendorSku (MasterRow column name in this file).
+  const indexed = await findIndexedMaster(sku);
+  if (indexed) {
+    return {
+      SKU: indexed.SKU,
+      Desc: indexed.Desc,
+      Vendor: indexed.Vendor,
+      Manufacturer: indexed.Manufacturer,
+      Category: indexed.Category,
+      SizeType: indexed.SizeType,
+      Season: indexed.Season,
+      LabelCode: indexed.LabelCode,
+      GroupCode: indexed.GroupCode,
+      StyleColor: indexed.StyleColor,
+      VendorSku: indexed.VendorSKU,
+      ListPrice: indexed.ListPrice,
+      RetailPrice: indexed.RetailPrice,
+      MarkDownPrice1: indexed.MarkDownPrice1,
+      MarkDownPrice2: indexed.MarkDownPrice2,
+      CurrentPrice: indexed.CurrentPrice,
+      CurrentCost: indexed.CurrentCost,
+      LastPriceChange: indexed.LastPriceChange,
+      PictureFileName: indexed.PictureFileName,
+      Perks: indexed.Perks,
+      Comment: indexed.Comment,
+      Status: indexed.Status,
+    };
+  }
+
+  // Fallback: index not yet warmed, or SKU not in it (discontinued / new).
   const safe = sku.replace(/'/g, "''");
   const sql = `SELECT TOP 1
   [SKU], [Desc], [Vendor], [Manufacturer], [Category], [SizeType], [Season], [LabelCode], [GroupCode],
@@ -566,14 +602,6 @@ function buildPricing(master: MasterRow): InquiryPricing {
   };
 }
 
-/** Returns all-zeros rollup. Real values come from RIINVHIS (sales-reporting
- *  module), which is not yet ready. This is intentionally deferred per the
- *  design spec §9 — do NOT attempt to source values here. */
-function buildRollup(): InquiryRollup {
-  const zero: InquiryRollupCell = { qty: 0, net: 0, markdown: 0, profit: 0 };
-  return { week: zero, month: zero, season: zero, year: zero };
-}
-
 /**
  * Reshape the per-store InventoryCell array into summary grids.
  *
@@ -650,21 +678,26 @@ export async function getInventoryInquiry(sku: string): Promise<InventoryInquiry
   const master = await loadMasterBySku(trimmed);
   if (!master || !master.SKU) return null;
 
-  const [stores, sizeTypes, vendors] = await Promise.all([
+  const safe = trimmed.replace(/'/g, "''");
+  const quaSql = `SELECT ${buildQuaSelect()}
+FROM [Inventory Quantities]
+WHERE [SKU] = '${safe}'
+ORDER BY [Store], [Row], [Segment]`;
+
+  // Parallel legs: dimension maps (cached; fast), RIINVQUA per-SKU cells
+  // (the dominant cost), and the per-SKU sales rollup against RITRNSSV.
+  // Rolling them together hides the rollup's PowerShell latency behind the
+  // RIINVQUA query on fast connections.
+  const [stores, sizeTypes, vendors, rows, salesRollup] = await Promise.all([
     loadStoreMap(),
     loadSizeTypeMap(),
     loadVendorMap(),
+    queryAll<QuaRow>(INVQUA_MDB(), quaSql),
+    getInquirySalesRollup(trimmed),
   ]);
 
   const sizeType = master.SizeType != null ? sizeTypes.get(Number(master.SizeType)) ?? null : null;
   const vendor = master.Vendor ? vendors.get(master.Vendor.trim()) ?? null : null;
-
-  const safe = trimmed.replace(/'/g, "''");
-  const sql = `SELECT ${buildQuaSelect()}
-FROM [Inventory Quantities]
-WHERE [SKU] = '${safe}'
-ORDER BY [Store], [Row], [Segment]`;
-  const rows = await queryAll<QuaRow>(INVQUA_MDB(), sql);
 
   const byStore = new Map<number, InventoryCell[]>();
   for (const r of rows) {
@@ -728,7 +761,7 @@ ORDER BY [Store], [Row], [Segment]`;
       { onHand: 0, currentOnOrder: 0, futureOnOrder: 0, ytdSales: 0, lySales: 0 },
     ),
     pricing:    buildPricing(master),
-    rollup:     buildRollup(),
+    rollup:     salesRollup,
     grids:      buildGrids(storeEntries, sizeType ? sizeType.columns.filter((lbl) => !!lbl) : []),
     pictureUrl: buildPictureUrl(master),
     info: {

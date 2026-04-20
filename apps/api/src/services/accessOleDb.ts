@@ -14,7 +14,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { executeViaPersistentHost } from './persistentPwsh';
 
 const INIT_KEY = Uint8Array.from([
@@ -83,40 +83,53 @@ $OutputEncoding = [System.Text.Encoding]::UTF8
 /**
  * Run a PowerShell script and parse its stdout as JSON.
  *
- * Execution strategy: the first call initializes a persistent `powershell.exe`
- * host (see `persistentPwsh.ts`). Every subsequent call reuses it — no cold
- * start per query. This cuts ~1 second of latency off every read/write the
- * adapter makes.
+ * Execution strategy: spawns a new `powershell.exe` per call using async
+ * `spawn` (not `spawnSync`). Async matters because `spawnSync` blocks the
+ * Node event loop for the full 0.7–60 s a PowerShell call can take, which
+ * means warmup and long-running queries freeze every other HTTP request.
+ * With `spawn`, stdout/stderr drain through event-loop callbacks and the
+ * server keeps serving other routes while OLE DB churns.
  *
- * Error surface: PowerShell-side exceptions are caught and emitted as
- * `{ __pwshHostError: true, message: "…" }`; we re-throw them as JS Error
- * so callers see a normal exception path.
+ * Per-call spawn (vs. a persistent host): costs ~0.7–1.2 s of process
+ * cold-start per query but is bulletproof against large responses. An
+ * earlier persistent-host design (see `persistentPwsh.ts`) deadlocked
+ * when a 150 MB+ SKU dump raced the end-marker write. The per-call spawn
+ * keeps framing trivial: stdout is the whole response, full stop, no
+ * inter-request state.
  *
- * Empty stdout returns `[]` to match the pre-persistent-host behavior (so
- * "table with zero rows" keeps returning an empty array without callers
- * needing to special-case null).
+ * Empty stdout returns `[]` to match "table with zero rows" semantics.
  */
-export async function runPowerShellJson<T>(script: string): Promise<T> {
-  const payload = await executeViaPersistentHost(script);
-  if (!payload) return [] as T;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(payload);
-  } catch (err) {
-    throw new Error(
-      `failed to parse PowerShell JSON output: ${(err as Error).message}\n` +
-        `--- raw stdout ---\n${payload.slice(0, 500)}`,
+export function runPowerShellJson<T>(script: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const child: any = spawn(
+      'powershell',
+      ['-NoProfile', '-NonInteractive', '-Command', UTF8_OUTPUT_PROLOGUE + script],
+      { windowsHide: true },
     );
-  }
-  if (
-    parsed !== null &&
-    typeof parsed === 'object' &&
-    (parsed as { __pwshHostError?: boolean }).__pwshHostError === true
-  ) {
-    const msg = (parsed as { message?: string }).message ?? 'PowerShell command failed';
-    throw new Error(msg);
-  }
-  return parsed as T;
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (c: string) => { stdout += c; });
+    child.stderr.on('data', (c: string) => { stderr += c; });
+    child.on('error', (err: Error) => reject(err));
+    child.on('close', (code: number) => {
+      if (code !== 0) {
+        reject(new Error((stderr || stdout || `PowerShell exited with code ${code}`).trim()));
+        return;
+      }
+      const payload = stdout.trim();
+      if (!payload) {
+        resolve([] as unknown as T);
+        return;
+      }
+      try {
+        resolve(JSON.parse(payload) as T);
+      } catch (err) {
+        reject(err);
+      }
+    });
+  });
 }
 
 /**

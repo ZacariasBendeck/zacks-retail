@@ -46,18 +46,73 @@ function parseInt32(raw: unknown): number | null {
   return n;
 }
 
+/**
+ * Multi-value query-string parser. Supports three shapes:
+ *   - `?vendors=ABC,DEF,GHI`        (comma-separated)
+ *   - `?vendors=ABC&vendors=DEF`    (repeated key)
+ *   - `?vendors=ABC`                (single value)
+ * Trims and drops empties so `?vendors=,,,ABC` reads as `['ABC']`.
+ */
+function parseStringArray(raw: unknown): string[] | undefined {
+  if (raw == null) return undefined;
+  const all = Array.isArray(raw) ? raw : [raw];
+  const out: string[] = [];
+  for (const item of all) {
+    if (typeof item !== 'string') continue;
+    for (const piece of item.split(',')) {
+      const t = piece.trim();
+      if (t.length > 0) out.push(t);
+    }
+  }
+  return out.length > 0 ? out : undefined;
+}
+function parseIntArray(raw: unknown): number[] | undefined {
+  const strs = parseStringArray(raw);
+  if (!strs) return undefined;
+  const out: number[] = [];
+  for (const s of strs) {
+    const n = Number(s);
+    if (Number.isFinite(n) && Number.isInteger(n)) out.push(n);
+  }
+  return out.length > 0 ? out : undefined;
+}
+
 router.get('/', async (req: Request, res: Response) => {
   const q = typeof req.query.q === 'string' ? req.query.q : undefined;
+  // Single-value aliases kept for back-compat; the admin workbench sends arrays.
   const vendor = typeof req.query.vendor === 'string' ? req.query.vendor : undefined;
   const category = parseInt32(req.query.category) ?? undefined;
   const season = typeof req.query.season === 'string' ? req.query.season : undefined;
   const group = typeof req.query.group === 'string' ? req.query.group : undefined;
   const keyword = typeof req.query.keyword === 'string' ? req.query.keyword : undefined;
+  // Multi-value filters — the admin workbench sends these.
+  const vendors = parseStringArray(req.query.vendors);
+  const categories = parseIntArray(req.query.categories);
+  const seasons = parseStringArray(req.query.seasons);
+  const groups = parseStringArray(req.query.groups);
+  const keywords = parseStringArray(req.query.keywords);
+  const styleColor =
+    typeof req.query.styleColor === 'string' ? req.query.styleColor : undefined;
   const limit = parseInt32(req.query.limit) ?? undefined;
   const offset = parseInt32(req.query.offset) ?? undefined;
   send(
     res,
-    await skuService.list({ q, vendor, category, season, group, keyword, limit, offset }),
+    await skuService.list({
+      q,
+      vendor,
+      category,
+      season,
+      group,
+      keyword,
+      vendors,
+      categories,
+      seasons,
+      groups,
+      keywords,
+      styleColor,
+      limit,
+      offset,
+    }),
   );
 });
 

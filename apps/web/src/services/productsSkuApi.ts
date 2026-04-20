@@ -43,6 +43,15 @@ function buildParams(f?: SkuListFilters): string {
   if (f.season) p.set('season', f.season)
   if (f.group) p.set('group', f.group)
   if (f.keyword) p.set('keyword', f.keyword)
+  // Multi-value filters — sent comma-separated; backend accepts either
+  // comma-separated OR repeated-key shapes.
+  if (f.vendors && f.vendors.length > 0) p.set('vendors', f.vendors.join(','))
+  if (f.categories && f.categories.length > 0)
+    p.set('categories', f.categories.join(','))
+  if (f.seasons && f.seasons.length > 0) p.set('seasons', f.seasons.join(','))
+  if (f.groups && f.groups.length > 0) p.set('groups', f.groups.join(','))
+  if (f.keywords && f.keywords.length > 0) p.set('keywords', f.keywords.join(','))
+  if (f.styleColor) p.set('styleColor', f.styleColor)
   if (f.limit != null) p.set('limit', String(f.limit))
   if (f.offset != null) p.set('offset', String(f.offset))
   return p.toString() ? `?${p.toString()}` : ''

@@ -5,40 +5,58 @@ import { warmup as warmRicsAdapter } from './services/ricsProductAdapter';
 import { warmup as warmRicsInventoryAdapter } from './services/ricsInventoryFacade';
 import { warmup as warmRicsSalesReportAdapter } from './services/salesReporting/salesReportFacade';
 import { warmupProductsAdmin } from './services/products/warmup';
+import { StartupReport } from './services/startupReport';
 
 const PORT = process.env.PORT ?? 4000;
 
+// Prisma bootstrap runs in parallel with `app.listen` so it doesn't delay the
+// socket binding. Its timing is folded into the consolidated startup report
+// below — `report.track('prisma:bootstrap-owner', ...)` awaits the same
+// promise after `listen` fires.
 const bootstrapPrisma = new PrismaClient();
-bootstrapOwner(bootstrapPrisma)
-  .catch((err) => console.warn('[index] bootstrapOwner error:', err))
-  .finally(() => bootstrapPrisma.$disconnect());
+const bootstrapOwnerPromise = bootstrapOwner(bootstrapPrisma).finally(() =>
+  bootstrapPrisma.$disconnect(),
+);
 
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`RICS API server running on http://localhost:${PORT}`);
   console.log(`Swagger docs: http://localhost:${PORT}/api-docs`);
 
-  // Warm the RICS snapshot + dimension caches in the background so the first
-  // storefront request doesn't pay the cold PowerShell+OLEDB spawn tax.
+  const report = new StartupReport();
+
+  // Every warmup phase runs in parallel; `report.track` captures its timing
+  // without ever rejecting, so one failure doesn't poison the others.
+  const tasks: Promise<unknown>[] = [];
+
+  tasks.push(report.track('prisma:bootstrap-owner', () => bootstrapOwnerPromise));
+
   if ((process.env.PRODUCT_SOURCE || 'local').toLowerCase() === 'rics') {
-    warmRicsAdapter().catch((err) => console.warn('RICS product warmup error:', err));
-  }
-  // Inventory adapter defaults to rics; warm its dimension tables (stores,
-  // size types, vendors) so the first Inventory Inquiry is fast.
-  warmRicsInventoryAdapter().catch((err) =>
-    console.warn('RICS inventory warmup error:', err),
-  );
-  // Sales-reporting adapter defaults to rics; warm its dimension tables
-  // (stores, salespeople) so the first sales report is fast.
-  if ((process.env.SALES_SOURCE || 'rics').toLowerCase() === 'rics') {
-    warmRicsSalesReportAdapter().catch((err) =>
-      console.warn('RICS sales-report warmup error:', err),
-    );
+    tasks.push(report.track('rics:product-adapter', () => warmRicsAdapter()));
+  } else {
+    report.skip('rics:product-adapter', 'PRODUCT_SOURCE=local');
   }
 
-  // Warm every products-admin taxonomy + vendor list so the Products pages
-  // load instantly on first use. The persistent PowerShell host amortizes
-  // the OLE DB connection cost across all of these.
-  warmupProductsAdmin().catch((err) =>
-    console.warn('[products-warmup] unexpected error:', err),
+  tasks.push(
+    report.track('rics:inventory-adapter', () => warmRicsInventoryAdapter()),
   );
+
+  if ((process.env.SALES_SOURCE || 'rics').toLowerCase() === 'rics') {
+    tasks.push(
+      report.track('rics:sales-report-adapter', () => warmRicsSalesReportAdapter()),
+    );
+  } else {
+    report.skip('rics:sales-report-adapter', 'SALES_SOURCE!=rics');
+  }
+
+  // Products-admin warmup returns its 11 sub-task timings so they can be
+  // inlined into the consolidated table.
+  tasks.push(
+    report.track('products:warmup', async () => {
+      const subs = await warmupProductsAdmin();
+      report.addSubPhases('products', subs);
+    }),
+  );
+
+  await Promise.allSettled(tasks);
+  report.print();
 });

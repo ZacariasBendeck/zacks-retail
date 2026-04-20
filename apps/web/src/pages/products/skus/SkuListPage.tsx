@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import {
+  Alert,
   App,
   Button,
   Card,
@@ -15,14 +16,16 @@ import {
 import {
   DeleteOutlined,
   EditOutlined,
+  PlayCircleOutlined,
   PlusOutlined,
   SearchOutlined,
 } from '@ant-design/icons'
 import { Link, useNavigate } from 'react-router-dom'
+import { useQuery } from '@tanstack/react-query'
 import {
   useDeleteProductsSku,
-  useProductsSkus,
 } from '../../../hooks/useProductsSkus'
+import { productsSkuApi } from '../../../services/productsSkuApi'
 import {
   useCategories,
   useDepartments,
@@ -36,35 +39,32 @@ import type { SkuListFilters } from '../../../types/productsSku'
 import type { Department, Sector } from '../../../types/productsTaxonomy'
 
 /**
- * SKU list workbench.
+ * SKU list workbench — query-first.
  *
- * Goals:
- *  - Every column sortable (click header to toggle asc/desc).
- *  - Dropdown filters for every dimension the user cares about: Department,
- *    Sector, Category, Group, Keyword, Season, Vendor. Style/Color takes a
- *    substring search because it's free-text.
- *  - Row selection wired up so future bulk ops (price discount, discontinue,
- *    add keyword) have a selection to operate on. For now the "Apply
- *    discount" button is a stub that shows the count and waits on Step 5.
+ * Opening the page does NOT trigger a SKU fetch. The user picks filters and
+ * hits **Run query** to pull a result set. Taxonomy dropdowns populate
+ * immediately (they're tiny + cached), so filter UX is snappy.
  *
- * Filtering is client-side. The backend returns the full snapshot (cached
- * in-memory server-side) and we filter + sort here; this matches the
- * storefront adapter's approach and keeps the filter UI snappy.
+ * Why query-first: the full SKU universe is 200 k+ rows. Auto-loading on
+ * every page visit means every tab switch to /products/skus hangs for ~100 s
+ * on the first visit per hour, which is awful UX for an admin tool. RICS
+ * itself is query-first — you punch in criteria, then get results. Matching
+ * that behaviour here.
+ *
+ * Departments + Sectors on the client: both are derived from Category via
+ * range lookup. When the user picks a department, we expand it into its
+ * `BegCateg..EndCateg` range and send the full category list to the backend
+ * (backend stays dumb: it filters by category[] + vendor[] + etc). Same
+ * trick for sector → departments → categories. No new server-side logic.
  */
 export default function SkuListPage() {
   const navigate = useNavigate()
   const { message } = App.useApp()
 
-  // Text search stays separate from the dropdown filters — it maps to the
-  // backend `q` so the server-side cache can narrow large result sets when a
-  // user is searching a specific SKU.
-  const [searchValue, setSearchValue] = useState('')
+  // Filter state (not yet applied — becomes `activeFilters` when Run clicked)
   const [q, setQ] = useState('')
-
-  // Department is single-select — user preference. Every other dimension
-  // stays multi-select so you can e.g. pick a bunch of vendors at once.
   const [departmentNumber, setDepartmentNumber] = useState<number | null>(null)
-  const [sectorNumbers, setSectorNumbers] = useState<number[]>([])
+  const [sectorNumber, setSectorNumber] = useState<number | null>(null)
   const [categoryNumbers, setCategoryNumbers] = useState<number[]>([])
   const [groupCodes, setGroupCodes] = useState<string[]>([])
   const [keywordCodes, setKeywordCodes] = useState<string[]>([])
@@ -72,19 +72,10 @@ export default function SkuListPage() {
   const [vendorCodes, setVendorCodes] = useState<string[]>([])
   const [styleColor, setStyleColor] = useState('')
 
+  // Selection persists across filter/sort changes for bulk ops.
   const [selectedCodes, setSelectedCodes] = useState<string[]>([])
 
-  // Fetch the full snapshot — no `limit`, so the backend returns every row.
-  // Server-side in-memory cache makes this a 35 ms response once warm; the
-  // payload is ~9-15 MB of JSON but only travels on the first visit per
-  // hour, and React Query caches it locally for the session after that.
-  const filter: SkuListFilters = useMemo(
-    () => ({ q: q || undefined }),
-    [q],
-  )
-  const { data, isLoading } = useProductsSkus(filter)
-  const del = useDeleteProductsSku()
-
+  // Taxonomy data — always loaded so dropdowns are responsive.
   const { data: departments } = useDepartments()
   const { data: sectors } = useSectors()
   const { data: categories } = useCategories()
@@ -93,7 +84,63 @@ export default function SkuListPage() {
   const { data: seasons } = useSeasons()
   const { data: vendors } = useVendors()
 
-  // Range-based rollup — Category → Department, Department → Sector.
+  // Expand a Department pick to its category range.
+  const deptCategoryRange = useMemo(() => {
+    if (departmentNumber == null || !departments) return null
+    const d = departments.find((x) => x.number === departmentNumber)
+    if (!d) return null
+    const out: number[] = []
+    for (let c = d.begCateg; c <= d.endCateg; c++) out.push(c)
+    return out
+  }, [departmentNumber, departments])
+
+  // Expand a Sector pick → departments in sector → category ranges → flat list.
+  const sectorCategoryRange = useMemo(() => {
+    if (sectorNumber == null || !sectors || !departments) return null
+    const s = sectors.find((x) => x.number === sectorNumber)
+    if (!s) return null
+    const depts = departments.filter(
+      (d) => d.number >= s.begDept && d.number <= s.endDept,
+    )
+    const out: number[] = []
+    for (const d of depts) {
+      for (let c = d.begCateg; c <= d.endCateg; c++) out.push(c)
+    }
+    return out
+  }, [sectorNumber, sectors, departments])
+
+  // Intersect department range + sector range + explicit category picks into
+  // the single `categories` param the backend accepts.
+  const effectiveCategories = useMemo(() => {
+    const sets: Set<number>[] = []
+    if (deptCategoryRange) sets.push(new Set(deptCategoryRange))
+    if (sectorCategoryRange) sets.push(new Set(sectorCategoryRange))
+    if (categoryNumbers.length > 0) sets.push(new Set(categoryNumbers))
+    if (sets.length === 0) return undefined
+    // Intersect all sets.
+    const first = sets[0]!
+    let result = Array.from(first)
+    for (let i = 1; i < sets.length; i++) {
+      const s = sets[i]!
+      result = result.filter((x) => s.has(x))
+    }
+    return result
+  }, [deptCategoryRange, sectorCategoryRange, categoryNumbers])
+
+  // Committed query — only populated after the user clicks Run. React Query
+  // caches per-filter-hash so re-running the same query serves from cache.
+  const [activeFilters, setActiveFilters] = useState<SkuListFilters | null>(null)
+
+  const { data: skus, isLoading, isFetching } = useQuery({
+    queryKey: ['products-skus', 'list', activeFilters],
+    queryFn: () => productsSkuApi.list(activeFilters ?? undefined),
+    enabled: activeFilters != null,
+    staleTime: 5 * 60_000,
+  })
+
+  const del = useDeleteProductsSku()
+
+  // Range-based rollup for the rendered Department/Sector columns.
   const deptFor = useMemo(() => {
     return (categoryNum: number | null): Department | null => {
       if (categoryNum == null || !departments) return null
@@ -114,64 +161,16 @@ export default function SkuListPage() {
     }
   }, [sectors])
 
-  // Pre-compute department/sector per SKU so filter & render don't both
-  // re-walk the ranges for every row.
   const enriched = useMemo(() => {
-    if (!data) return []
-    return data.map((s) => {
+    if (!skus) return []
+    return skus.map((s) => {
       const d = deptFor(s.category)
       const sec = sectorFor(d?.number ?? null)
       return { ...s, _deptNumber: d?.number ?? null, _sectorNumber: sec?.number ?? null }
     })
-  }, [data, deptFor, sectorFor])
+  }, [skus, deptFor, sectorFor])
 
   type EnrichedSku = (typeof enriched)[number]
-
-  const filtered = useMemo(() => {
-    let out: EnrichedSku[] = enriched
-    if (departmentNumber != null) {
-      out = out.filter((s) => s._deptNumber === departmentNumber)
-    }
-    if (sectorNumbers.length > 0) {
-      const set = new Set(sectorNumbers)
-      out = out.filter((s) => s._sectorNumber != null && set.has(s._sectorNumber))
-    }
-    if (categoryNumbers.length > 0) {
-      const set = new Set(categoryNumbers)
-      out = out.filter((s) => s.category != null && set.has(s.category))
-    }
-    if (groupCodes.length > 0) {
-      const set = new Set(groupCodes.map((c) => c.toUpperCase()))
-      out = out.filter((s) => s.groupCode != null && set.has(s.groupCode.toUpperCase()))
-    }
-    if (keywordCodes.length > 0) {
-      const set = new Set(keywordCodes.map((c) => c.toUpperCase()))
-      out = out.filter((s) => s.keywords.some((k) => set.has(k.toUpperCase())))
-    }
-    if (seasonCodes.length > 0) {
-      const set = new Set(seasonCodes.map((c) => c.toUpperCase()))
-      out = out.filter((s) => s.season != null && set.has(s.season.toUpperCase()))
-    }
-    if (vendorCodes.length > 0) {
-      const set = new Set(vendorCodes.map((c) => c.toUpperCase()))
-      out = out.filter((s) => s.vendor != null && set.has(s.vendor.toUpperCase()))
-    }
-    if (styleColor.trim().length > 0) {
-      const needle = styleColor.trim().toUpperCase()
-      out = out.filter((s) => (s.styleColor ?? '').toUpperCase().includes(needle))
-    }
-    return out
-  }, [
-    enriched,
-    departmentNumber,
-    sectorNumbers,
-    categoryNumbers,
-    groupCodes,
-    keywordCodes,
-    seasonCodes,
-    vendorCodes,
-    styleColor,
-  ])
 
   const columns = [
     {
@@ -314,68 +313,85 @@ export default function SkuListPage() {
     },
   ]
 
+  const buildFilters = (): SkuListFilters => ({
+    q: q.trim() || undefined,
+    vendors: vendorCodes.length > 0 ? vendorCodes : undefined,
+    categories: effectiveCategories,
+    seasons: seasonCodes.length > 0 ? seasonCodes : undefined,
+    groups: groupCodes.length > 0 ? groupCodes : undefined,
+    keywords: keywordCodes.length > 0 ? keywordCodes : undefined,
+    styleColor: styleColor.trim() || undefined,
+  })
+
+  const runQuery = () => {
+    setActiveFilters(buildFilters())
+  }
+
+  const runQueryLoadAll = () => {
+    // Bypass all filters — pulls the full 200 k-row snapshot. Slow on first
+    // hit of the hour (~100 s), subsequent hits are RAM-served.
+    setActiveFilters({})
+  }
+
   const clearFilters = () => {
+    setQ('')
     setDepartmentNumber(null)
-    setSectorNumbers([])
+    setSectorNumber(null)
     setCategoryNumbers([])
     setGroupCodes([])
     setKeywordCodes([])
     setSeasonCodes([])
     setVendorCodes([])
     setStyleColor('')
-    setSelectedCodes([])
   }
 
-  const anyFilterActive =
+  const anyFilterSet =
+    q.trim().length > 0 ||
     departmentNumber != null ||
-    sectorNumbers.length > 0 ||
+    sectorNumber != null ||
     categoryNumbers.length > 0 ||
     groupCodes.length > 0 ||
     keywordCodes.length > 0 ||
     seasonCodes.length > 0 ||
     vendorCodes.length > 0 ||
-    styleColor.trim().length > 0 ||
-    q.trim().length > 0
+    styleColor.trim().length > 0
+
+  const isRunning = isLoading || isFetching
+  const hasRun = activeFilters != null
+  const resultCount = enriched.length
 
   return (
     <Card
       title={
         <Space>
           <Typography.Text strong>SKUs</Typography.Text>
-          <Typography.Text type="secondary">
-            {isLoading
-              ? 'loading…'
-              : `${filtered.length.toLocaleString()} of ${(data?.length ?? 0).toLocaleString()}`}
-          </Typography.Text>
+          {hasRun && !isRunning ? (
+            <Typography.Text type="secondary">
+              {resultCount.toLocaleString()} result{resultCount === 1 ? '' : 's'}
+            </Typography.Text>
+          ) : null}
         </Space>
       }
       extra={
-        <Space>
-          <Input
-            placeholder="Search code, desc, style…"
-            prefix={<SearchOutlined />}
-            value={searchValue}
-            onChange={(e) => setSearchValue(e.target.value)}
-            onPressEnter={() => setQ(searchValue.trim())}
-            allowClear
-            onClear={() => {
-              setSearchValue('')
-              setQ('')
-            }}
-            style={{ width: 260 }}
-          />
-          <Link to="/products/skus/new">
-            <Button type="primary" icon={<PlusOutlined />}>
-              New SKU
-            </Button>
-          </Link>
-        </Space>
+        <Link to="/products/skus/new">
+          <Button type="primary" icon={<PlusOutlined />}>
+            New SKU
+          </Button>
+        </Link>
       }
     >
       <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-        {/* Filter bar. Each Select multi-select runs against in-memory data
-             so reactions are instant. */}
+        {/* Filter bar */}
         <Space wrap size={8}>
+          <Input
+            placeholder="Search code, desc, style…"
+            prefix={<SearchOutlined />}
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            onPressEnter={runQuery}
+            allowClear
+            style={{ width: 240 }}
+          />
           <Select
             placeholder="Department"
             value={departmentNumber ?? undefined}
@@ -392,13 +408,12 @@ export default function SkuListPage() {
             }
           />
           <Select
-            mode="multiple"
             placeholder="Sector"
-            value={sectorNumbers}
-            onChange={setSectorNumbers}
+            value={sectorNumber ?? undefined}
+            onChange={(v) => setSectorNumber(typeof v === 'number' ? v : null)}
             allowClear
+            showSearch
             style={{ minWidth: 200 }}
-            maxTagCount="responsive"
             options={(sectors ?? []).map((s) => ({
               value: s.number,
               label: `${s.number} — ${s.description}`,
@@ -489,22 +504,38 @@ export default function SkuListPage() {
             placeholder="Style/Color contains…"
             value={styleColor}
             onChange={(e) => setStyleColor(e.target.value)}
+            onPressEnter={runQuery}
             allowClear
             style={{ width: 200 }}
           />
-          {anyFilterActive ? (
-            <Button onClick={clearFilters}>Clear all</Button>
-          ) : null}
         </Space>
 
-        {/* Bulk-ops bar. Enabled when rows are selected. "Apply discount"
-             is a placeholder until Step 5 ships the bulk-discount flow. */}
+        {/* Run / clear / load-all controls */}
+        <Space>
+          <Button
+            type="primary"
+            icon={<PlayCircleOutlined />}
+            onClick={runQuery}
+            loading={isRunning && hasRun}
+            disabled={!anyFilterSet && hasRun}
+          >
+            Run query
+          </Button>
+          {anyFilterSet ? <Button onClick={clearFilters}>Clear filters</Button> : null}
+          <Tooltip title="Pulls every SKU (200 k+). Slow first time — use only when you really need the full dataset.">
+            <Button onClick={runQueryLoadAll} loading={isRunning && !anyFilterSet}>
+              Load all (slow)
+            </Button>
+          </Tooltip>
+        </Space>
+
+        {/* Bulk-ops toolbar — appears when rows selected */}
         {selectedCodes.length > 0 ? (
           <Space>
             <Typography.Text strong>
               {selectedCodes.length.toLocaleString()} selected
             </Typography.Text>
-            <Tooltip title="Bulk price-change / discount is part of Step 5 (pricing ops). The selection persists across filter/sort changes so you can queue them up now.">
+            <Tooltip title="Bulk price-change / discount is part of Step 5 (pricing ops). The selection persists across filter changes so you can queue them up now.">
               <Button disabled>Apply discount…</Button>
             </Tooltip>
             <Tooltip title="Step 5 (Discontinue SKU) — coming next.">
@@ -517,24 +548,34 @@ export default function SkuListPage() {
           </Space>
         ) : null}
 
-        <Table<EnrichedSku>
-          size="small"
-          className="products-compact-table"
-          rowKey="code"
-          dataSource={filtered}
-          columns={columns}
-          loading={isLoading}
-          pagination={{
-            defaultPageSize: 25,
-            showSizeChanger: true,
-            pageSizeOptions: [25, 50, 100, 200, 500],
-          }}
-          rowSelection={{
-            selectedRowKeys: selectedCodes,
-            onChange: (keys) => setSelectedCodes(keys.map(String)),
-            preserveSelectedRowKeys: true,
-          }}
-        />
+        {/* Empty state / result table */}
+        {!hasRun ? (
+          <Alert
+            type="info"
+            showIcon
+            message="Pick filters and click Run query"
+            description="Nothing loads until you ask for it. Taxonomy dropdowns above are ready — select what you want and hit Run. Use 'Load all (slow)' only if you really need the full 200 k-row dataset."
+          />
+        ) : (
+          <Table<EnrichedSku>
+            size="small"
+            className="products-compact-table"
+            rowKey="code"
+            dataSource={enriched}
+            columns={columns}
+            loading={isRunning}
+            pagination={{
+              defaultPageSize: 25,
+              showSizeChanger: true,
+              pageSizeOptions: [25, 50, 100, 200, 500],
+            }}
+            rowSelection={{
+              selectedRowKeys: selectedCodes,
+              onChange: (keys) => setSelectedCodes(keys.map(String)),
+              preserveSelectedRowKeys: true,
+            }}
+          />
+        )}
       </Space>
     </Card>
   )

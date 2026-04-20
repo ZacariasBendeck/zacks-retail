@@ -1,7 +1,14 @@
 import React from 'react';
-import { Button, Space, Tooltip } from 'antd';
+import { Button, Segmented, Space, Tooltip } from 'antd';
 
 export type InquiryTab = 'UPCS' | 'POS' | 'TREND' | 'INFO' | 'DETAIL';
+
+/**
+ * Scope selector for Prev/Next SKU navigation. Mirrors the RICS inquiry's
+ * "step through" modes: any SKU in the catalog, any SKU of the same vendor,
+ * or any SKU in the same category — all in alphabetical SKU order.
+ */
+export type NeighborScope = 'general' | 'vendor' | 'category';
 
 interface Props {
   activeTab: InquiryTab | null;
@@ -9,6 +16,9 @@ interface Props {
   onPrev: () => void;
   onNext: () => void;
   onClear: () => void;
+  scope: NeighborScope;
+  onScopeChange: (scope: NeighborScope) => void;
+  navLoading?: boolean;
 }
 
 const TABS: Array<{ key: InquiryTab; label: string; live: boolean; waitingOn?: string }> = [
@@ -21,11 +31,25 @@ const TABS: Array<{ key: InquiryTab; label: string; live: boolean; waitingOn?: s
 
 const btnStyle: React.CSSProperties = { fontSize: 11, padding: '0 10px', height: 24 };
 
-export const ActionBar: React.FC<Props> = ({ activeTab, onTab, onPrev, onNext, onClear }) => (
+export const ActionBar: React.FC<Props> = ({
+  activeTab, onTab, onPrev, onNext, onClear, scope, onScopeChange, navLoading,
+}) => (
   <Space wrap size={[4, 4]}>
     <Button size="small" style={btnStyle} onClick={onClear}>Clear</Button>
-    <Button size="small" style={btnStyle} onClick={onPrev}>Prev</Button>
-    <Button size="small" style={btnStyle} onClick={onNext}>Next</Button>
+    <Button size="small" style={btnStyle} onClick={onPrev} loading={navLoading}>Prev</Button>
+    <Button size="small" style={btnStyle} onClick={onNext} loading={navLoading}>Next</Button>
+    <Tooltip title="Scope for Prev / Next navigation">
+      <Segmented
+        size="small"
+        value={scope}
+        onChange={(v) => onScopeChange(v as NeighborScope)}
+        options={[
+          { label: 'Any',      value: 'general' },
+          { label: 'Vendor',   value: 'vendor' },
+          { label: 'Category', value: 'category' },
+        ]}
+      />
+    </Tooltip>
     {TABS.map((t) => {
       const btn = (
         <Button
