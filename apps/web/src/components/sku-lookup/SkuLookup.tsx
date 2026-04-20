@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { Button, Checkbox, Input, Modal, Radio, Space, Table } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, keepPreviousData } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import {
   searchSkusForLookup,
@@ -51,11 +51,16 @@ export const SkuLookup: React.FC<SkuLookupProps> = ({
     [debouncedQ, descContains, wholeWord, sort, page]
   );
 
-  const { data, isFetching } = useQuery({
+  const { data, isFetching, isLoading } = useQuery({
     queryKey: ['sku-lookup', queryParams],
     queryFn: () => searchSkusForLookup(queryParams),
-    enabled: open,
-    staleTime: 30_000,
+    // Always kept warm — refetched in the background but the modal never waits
+    // on a spinner to re-show the rows it already has. TanStack caches results
+    // across opens so the second time the modal opens it shows instantly.
+    enabled: true,
+    staleTime: 5 * 60_000,  // 5 min — the backend index refreshes every 10 min
+    gcTime: 15 * 60_000,
+    placeholderData: keepPreviousData,
   });
 
   const columns: ColumnsType<SkuLookupRow> = [
@@ -144,7 +149,10 @@ export const SkuLookup: React.FC<SkuLookupProps> = ({
         <Table<SkuLookupRow>
           rowKey="skuId"
           size="small"
-          loading={isFetching}
+          // Only show the overlay spinner on the very first load (no data yet).
+          // Background refetches keep the cached rows visible — this matches
+          // the RICS feel where the list is there the moment the modal opens.
+          loading={isLoading}
           dataSource={data?.rows ?? []}
           columns={columns}
           pagination={{
