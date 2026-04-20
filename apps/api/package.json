@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "node --env-file-if-exists=.env --experimental-sqlite --watch -r tsx/cjs src/index.ts",
+    "dev": "node --env-file-if-exists=.env --experimental-sqlite --watch-path=src --watch-path=prisma -r tsx/cjs src/index.ts",
     "build": "tsc",
     "start": "node --env-file-if-exists=.env --experimental-sqlite dist/index.js",
     "seed": "npx tsx --experimental-sqlite scripts/seed.ts",
