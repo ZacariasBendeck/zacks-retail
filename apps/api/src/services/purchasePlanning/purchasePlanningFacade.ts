@@ -11,6 +11,7 @@
 
 import { queryMonthlyMeasures } from '../salesReporting/ricsSalesHistoryByMonthAdapter';
 import { getOnHandSkuRows } from '../salesReporting/ricsOnHandAtCostAdapter';
+import { listSalesDimensions } from '../salesReporting/salesReportFacade';
 import { DepartmentRepository } from '../../repositories/rics/DepartmentRepository';
 import { parseCriteria, matchesCriteria } from '../../utils/criteriaGrammar';
 import { forecast, shiftYearMonth } from './forecast';
@@ -168,23 +169,32 @@ function aggregateOnHand(
 }
 
 export async function computePurchasePlan(req: PlanRequest): Promise<PlanResponse> {
-  if (!req.storeNumbers || req.storeNumbers.length === 0) {
-    throw new Error('storeNumbers must have at least one entry');
-  }
-
   const asOfYearMonth = resolveAsOfYearMonth(req.asOfYearMonth);
   const horizon = buildHorizon(asOfYearMonth, HORIZON_MONTHS);
   const window = buildHistoryWindow(asOfYearMonth, req.forecast.method);
 
+  // Resolve "all stores" when caller leaves storeNumbers empty.
+  // queryMonthlyMeasures still requires an explicit list — pull the canonical
+  // set from listSalesDimensions, which is the same source the frontend uses
+  // to populate the store dropdown, so the two stay consistent.
+  let storeNumbers = req.storeNumbers && req.storeNumbers.length > 0 ? req.storeNumbers : null;
+  if (storeNumbers == null) {
+    const dims = await listSalesDimensions();
+    storeNumbers = dims.stores.map((s) => s.number);
+    if (storeNumbers.length === 0) {
+      throw new Error('No stores available in RICS — cannot compute plan');
+    }
+  }
+
   const [salesRows, onHandRows, catMap] = await Promise.all([
     queryMonthlyMeasures({
-      storeNumbers: req.storeNumbers,
+      storeNumbers,
       fromYearMonth: window.from,
       toYearMonth: window.to,
       sortBy: req.dimension === 'vendor' ? 'vendor' : 'category',
       detailLevel: req.dimension === 'department' ? 'department' : 'subtotals',
     }),
-    getOnHandSkuRows({ storeNumbers: req.storeNumbers }),
+    getOnHandSkuRows({ storeNumbers }),
     loadCategoryToDepartment(),
   ]);
 

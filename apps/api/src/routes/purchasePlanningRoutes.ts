@@ -29,7 +29,8 @@ const forecastSchema = z
 const projectionsSchema = z
   .object({
     dimension: z.enum(['department', 'category', 'vendor']),
-    storeNumbers: z.array(z.number().int().positive()).min(1),
+    // Empty / missing → all stores (resolved in the facade via listSalesDimensions).
+    storeNumbers: z.array(z.number().int().positive()).optional(),
     forecast: forecastSchema,
     eohMethod: z.enum(['forward', 'seasonal']),
     coverMonths: z.number().int().min(1).max(24).optional(),

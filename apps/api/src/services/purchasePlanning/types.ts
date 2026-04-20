@@ -66,7 +66,8 @@ export interface PlanTotals {
 
 export interface PlanRequest {
   dimension: Dimension;
-  storeNumbers: number[];
+  /** When empty or omitted, the facade resolves to every store known to RICS. */
+  storeNumbers?: number[];
   forecast: {
     method: ForecastMethod;
   } & ForecastParams;

@@ -17,7 +17,8 @@ export type PurchasePlanEohMethod = 'forward' | 'seasonal';
 
 export interface PurchasePlanRequest {
   dimension: PurchasePlanDimension;
-  storeNumbers: number[];
+  /** Empty / omitted = all stores (resolved server-side). */
+  storeNumbers?: number[];
   forecast: {
     method: PurchasePlanForecastMethod;
     trailingMonths?: number;

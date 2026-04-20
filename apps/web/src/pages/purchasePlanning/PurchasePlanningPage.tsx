@@ -17,7 +17,7 @@ import {
   Typography,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
-import { keepPreviousData, useQuery } from '@tanstack/react-query'
+import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query'
 import dayjs, { type Dayjs } from 'dayjs'
 import { useSalesDimensions } from '../../hooks/useReports'
 import CriteriaInput from '../salesReporting/CriteriaInput'
@@ -139,6 +139,7 @@ export default function PurchasePlanningPage() {
   // ── Committed query (null until Run is clicked) ──
   const [query, setQuery] = useState<PurchasePlanRequest | null>(null)
 
+  const qc = useQueryClient()
   const { data: dims, isLoading: dimsLoading } = useSalesDimensions()
 
   const result = useQuery<PurchasePlanResponse>({
@@ -149,17 +150,17 @@ export default function PurchasePlanningPage() {
     placeholderData: keepPreviousData,
   })
 
-  const canRun = selectedStores.length > 0
+  const running = !!query && result.isFetching
 
   function onRun(): void {
-    if (!canRun) return
     const combinedCategories = [
       ...categoriesSelected.map(String),
       ...(categoriesRaw.trim() ? [categoriesRaw.trim()] : []),
     ].join(',')
     setQuery({
       dimension,
-      storeNumbers: selectedStores,
+      // Empty → all stores (server resolves via listSalesDimensions).
+      storeNumbers: selectedStores.length > 0 ? selectedStores : undefined,
       forecast: {
         method: forecastMethod,
         trailingMonths: forecastMethod === 'trailingAverage' ? trailingMonths : undefined,
@@ -175,6 +176,15 @@ export default function PurchasePlanningPage() {
         departmentsRaw: departmentsRaw.trim() || undefined,
       },
     })
+  }
+
+  // Cancel the in-flight query. TanStack Query aborts the fetch via
+  // AbortSignal (wired through postPurchasePlan → fetch). We also reset the
+  // committed query so the UI returns to the "not run yet" state — otherwise
+  // clicking Run again with identical params would be a no-op (cache hit).
+  function onStop(): void {
+    qc.cancelQueries({ queryKey: ['purchase-planning', query] })
+    setQuery(null)
   }
 
   const pivotRows = useMemo(() => {
@@ -354,7 +364,7 @@ export default function PurchasePlanningPage() {
                 loading={dimsLoading}
                 value={selectedStores}
                 onChange={setSelectedStores}
-                placeholder="Seleccionar tiendas (requerido)"
+                placeholder="Todas las tiendas (dejar vacío para incluir todas)"
                 optionFilterProp="label"
                 style={{ width: '100%' }}
                 options={(dims?.stores ?? []).map((s) => ({
@@ -362,6 +372,11 @@ export default function PurchasePlanningPage() {
                   label: s.name ? `${s.number} — ${s.name}` : String(s.number),
                 }))}
               />
+              <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 4 }}>
+                {selectedStores.length === 0
+                  ? `Se incluirán todas las tiendas (${dims?.stores?.length ?? 0}).`
+                  : `${selectedStores.length} tienda${selectedStores.length === 1 ? '' : 's'} seleccionada${selectedStores.length === 1 ? '' : 's'}.`}
+              </Text>
             </Card>
 
             <Card size="small" title="Filtros (opcional)">
@@ -411,17 +426,20 @@ export default function PurchasePlanningPage() {
             <Button
               type="primary"
               onClick={onRun}
-              loading={result.isFetching && !!query}
-              disabled={!canRun}
+              loading={running}
+              disabled={running}
             >
               Calcular plan
             </Button>
-            {!canRun && (
+            <Button onClick={onStop} disabled={!running} danger>
+              Detener
+            </Button>
+            {running && (
               <Text type="secondary" style={{ fontSize: 12 }}>
-                Selecciona al menos una tienda para habilitar el botón.
+                Calculando… puedes presionar Detener si fue un error.
               </Text>
             )}
-            {query && result.data?.meta && (
+            {!running && query && result.data?.meta && (
               <Text type="secondary" style={{ fontSize: 12 }}>
                 Historia: {result.data.meta.historyFromYearMonth} a {result.data.meta.historyToYearMonth}.
                 OH actualizado: {dayjs(result.data.meta.onHandAsOf).format('DD/MM HH:mm')}.
