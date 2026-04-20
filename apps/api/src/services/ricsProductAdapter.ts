@@ -286,6 +286,10 @@ export async function warmup(): Promise<void> {
       loadVendorMap(),
       loadSizeTypeMap(),
       loadDepartmentList(),
+      // Full SKU index for the Inventory Inquiry's SKU Lookup modal.
+      // This is usually the slowest leg of warmup (scales with row count),
+      // but doing it once up-front makes every subsequent lookup instant.
+      loadSkuLookupIndex(),
     ]);
     console.log('[ricsProductAdapter] warmup complete');
   } catch (err: any) {
@@ -590,34 +594,6 @@ async function queryAll<T>(dbPath: string, sql: string): Promise<T[]> {
   }
 }
 
-/**
- * Live InventoryMaster prefix lookup — used by searchSkusForLookup as a
- * fallback when the POS snapshot doesn't carry the target SKUs (snapshot
- * is capped at POS_SNAPSHOT_CAP rows and sorted by Desc, so SKUs past
- * that cap are missing from memory). Access/Jet SQL uses `*` as the
- * wildcard in LIKE. Caps the result set at `limit` rows.
- */
-async function loadInventoryMasterByPrefix(
-  prefix: string,
-  limit: number,
-): Promise<InventoryMasterRow[]> {
-  // Upper-case the prefix for the LIKE comparison — Access/Jet LIKE is case
-  // sensitive by default. Wrapping SKU in UCase() would kill the SKU-code
-  // index; matching on an upper-cased prefix preserves index usage because
-  // all SKU codes in the RICS catalog are already uppercase.
-  const safe = prefix.toUpperCase().replace(/'/g, "''");
-  // Narrow column list + single prefix predicate. Excluding RetailPrice/Status
-  // filters here keeps the query index-friendly (SKU-only predicate); the
-  // caller already post-filters the snapshot side, and the discontinued/zero-
-  // price exclusion isn't critical for a lookup modal.
-  const sql = `SELECT TOP ${limit}
-  [SKU], [Desc], [Vendor], [Category], [StyleColor],
-  [ListPrice], [RetailPrice], [MarkDownPrice1], [MarkDownPrice2], [CurrentPrice]
-FROM [InventoryMaster]
-WHERE [SKU] LIKE '${safe}*'
-ORDER BY [SKU]`;
-  return queryAll<InventoryMasterRow>(INVMAS_MDB(), sql);
-}
 
 // ─────────────────────────── row → public type mappers ────────────────────
 
@@ -629,7 +605,9 @@ const DEFAULT_DEPARTMENT = 'FORMAL';
  *   1 = List, 2 = Retail, 3 = MarkDown1, 4 = MarkDown2
  * Falls back to RetailPrice when the slot is missing or its value is zero.
  */
-function resolveCurrentPrice(row: InventoryMasterRow): number {
+function resolveCurrentPrice(
+  row: Pick<InventoryMasterRow, 'CurrentPrice' | 'ListPrice' | 'RetailPrice' | 'MarkDownPrice1' | 'MarkDownPrice2'>,
+): number {
   const slot = Number(row.CurrentPrice ?? 2);
   const candidate =
     slot === 1 ? row.ListPrice
@@ -1062,6 +1040,64 @@ ORDER BY [Desc]
   });
 }
 
+// ─────────────────────────── uncapped SKU lookup index ────────────────────
+// Dedicated in-memory index for the SKU Lookup modal. Unlike the POS snapshot
+// (capped at 50k rows for the register), this must cover EVERY SKU in the
+// catalog so the inquiry modal can find any SKU the user types. To keep the
+// cold load reasonable on a large InventoryMaster, we project only the
+// columns the modal actually renders — SKU, Desc, Vendor, Category,
+// StyleColor, plus the price slots needed for `resolveCurrentPrice`.
+
+const SKU_LOOKUP_INDEX_TTL_MS = 10 * 60_000;
+
+type SkuLookupIndexRow = Pick<
+  InventoryMasterRow,
+  'SKU' | 'Desc' | 'Vendor' | 'Category' | 'StyleColor'
+    | 'ListPrice' | 'RetailPrice' | 'MarkDownPrice1' | 'MarkDownPrice2' | 'CurrentPrice'
+>;
+
+async function loadSkuLookupIndex(): Promise<SkuLookupIndexRow[]> {
+  return cachedAsync('sku:lookup:index', SKU_LOOKUP_INDEX_TTL_MS, async () => {
+    const dbPath = INVMAS_MDB();
+    if (!fs.existsSync(dbPath)) {
+      console.warn(`[ricsProductAdapter] RIINVMAS not found at ${dbPath}; SKU lookup index empty.`);
+      return [];
+    }
+    const password = getOrRecoverPassword(dbPath);
+
+    // Narrow projection + no TOP cap + sort by [SKU] so the modal's default
+    // sort (SKU ascending) can stream straight from the cached array. Omit
+    // discontinued SKUs (Status='D') but keep zero-price SKUs — operators
+    // need to look up any SKU, not just currently-priced ones.
+    const sql = `
+SELECT
+  [SKU], [Desc], [Vendor], [Category], [StyleColor],
+  [ListPrice], [RetailPrice], [MarkDownPrice1], [MarkDownPrice2], [CurrentPrice]
+FROM [InventoryMaster]
+WHERE ([Status] IS NULL OR [Status] <> 'D')
+ORDER BY [SKU]
+`.trim();
+
+    const t0 = Date.now();
+    try {
+      const raw = await runPowerShellJson<SkuLookupIndexRow | SkuLookupIndexRow[]>(
+        buildSelectScript(dbPath, password, sql),
+      );
+      const rows = Array.isArray(raw) ? raw : raw ? [raw] : [];
+      console.log(`[ricsProductAdapter] SKU lookup index loaded: ${rows.length} rows in ${Date.now() - t0}ms`);
+      return rows;
+    } catch (err: any) {
+      console.error('[ricsProductAdapter] SKU lookup index load failed:', err.message);
+      return [];
+    }
+  });
+}
+
+/** Warmup hook — pull the index on startup so the first user request is fast. */
+export async function warmupSkuLookupIndex(): Promise<void> {
+  await loadSkuLookupIndex();
+}
+
 function invRowToPosSku(
   r: InventoryMasterRow,
   categories: Map<number, CategoryRow>,
@@ -1175,12 +1211,15 @@ export interface SkuLookupParams {
 export async function searchSkusForLookup(
   params: SkuLookupParams,
 ): Promise<{ rows: SkuLookupRow[]; total: number }> {
-  const snapshot = await loadPosInventorySnapshot();
+  // Backed by the uncapped SKU lookup index — every non-discontinued SKU in
+  // InventoryMaster is in memory, so there are no cap-related blind spots.
+  // The live-DB fallback that used to sit here is no longer needed.
+  const index = await loadSkuLookupIndex();
   const q = (params.q ?? '').trim().toLowerCase();
   const desc = (params.descContains ?? '').trim().toLowerCase();
   const whole = !!params.wholeWord;
 
-  let filtered = snapshot.filter((row) => {
+  let filtered = index.filter((row) => {
     const skuCode = String(row.SKU ?? '').toLowerCase();
     const description = String(row.Desc ?? '').toLowerCase();
     if (q && !skuCode.startsWith(q)) return false;
@@ -1195,29 +1234,8 @@ export async function searchSkusForLookup(
     return true;
   });
 
-  // Snapshot is capped at POS_SNAPSHOT_CAP rows ordered by [Desc], so SKUs
-  // past the cap (e.g. the ZN02-* series) aren't in memory. When the snapshot
-  // filter returns empty and a prefix was supplied, fall back to a live
-  // indexed prefix query against InventoryMaster.[SKU] (primary key → Jet
-  // uses the index for LIKE 'prefix*', so the query is sub-second per call
-  // through the persistent PowerShell host).
-  if (filtered.length === 0 && q) {
-    const t0 = Date.now();
-    const live = await loadInventoryMasterByPrefix(q, 500);
-    console.log(`[searchSkusForLookup] live prefix "${q}" → ${live.length} rows in ${Date.now() - t0}ms`);
-    filtered = live.filter((row) => {
-      const description = String(row.Desc ?? '').toLowerCase();
-      if (!desc) return true;
-      if (whole) {
-        const tokens = description.split(/\s+/);
-        return tokens.includes(desc);
-      }
-      return description.includes(desc);
-    });
-  }
-
   const sort: SkuLookupSort = params.sort ?? 'SKU';
-  const sortKey = (row: InventoryMasterRow): string => {
+  const sortKey = (row: SkuLookupIndexRow): string => {
     switch (sort) {
       case 'DESCRIPTION': return String(row.Desc ?? '');
       case 'VENDOR':      return String(row.Vendor ?? '');
@@ -1226,7 +1244,11 @@ export async function searchSkusForLookup(
       default:            return String(row.SKU ?? '');
     }
   };
-  filtered = filtered.sort((a, b) => sortKey(a).localeCompare(sortKey(b)));
+  if (sort !== 'SKU') {
+    // Index is already ordered by SKU from the SQL side, so skip re-sorting
+    // in the common case — saves real time on a 200k+ row set.
+    filtered = filtered.sort((a, b) => sortKey(a).localeCompare(sortKey(b)));
+  }
 
   const total = filtered.length;
   const offset = Math.max(0, params.offset ?? 0);
