@@ -17,12 +17,14 @@ export interface SkuLookupProps {
   allowCreate?: boolean;
 }
 
+type SearchField = SkuLookupSort; // 'SKU' | 'DESCRIPTION' | 'VENDOR' | 'STYLE_COLOR'
+
 const PAGE_SIZE = 50;
-const SORT_OPTIONS: Array<{ value: SkuLookupSort; label: string }> = [
-  { value: 'SKU',         label: 'SKU' },
-  { value: 'DESCRIPTION', label: 'Description' },
-  { value: 'VENDOR',      label: 'Vendor' },
-  { value: 'STYLE_COLOR', label: 'Style/Color' },
+const SEARCH_FIELD_OPTIONS: Array<{ value: SearchField; label: string; prompt: string }> = [
+  { value: 'SKU',         label: 'SKU',         prompt: 'SKU' },
+  { value: 'DESCRIPTION', label: 'Description', prompt: 'Description' },
+  { value: 'VENDOR',      label: 'Vendor',      prompt: 'Vendor' },
+  { value: 'STYLE_COLOR', label: 'Style/Color', prompt: 'Style/Color' },
 ];
 
 export const SkuLookup: React.FC<SkuLookupProps> = ({
@@ -33,48 +35,83 @@ export const SkuLookup: React.FC<SkuLookupProps> = ({
   const [pendingDesc, setPendingDesc] = useState('');
   const [descContains, setDescContains] = useState('');
   const [wholeWord, setWholeWord] = useState(false);
-  const [sort, setSort] = useState<SkuLookupSort>('SKU');
+  // The radio buttons now drive which column the primary search input
+  // filters against — NOT the result sort order. Sort order is controlled
+  // by clicking the table column headers instead.
+  const [searchField, setSearchField] = useState<SearchField>('SKU');
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState<SkuLookupRow | null>(null);
   const navigate = useNavigate();
 
-  // Debounce the SKU prefix so we only query after the user pauses typing.
-  // The live-query fallback in the backend (when a SKU is past the snapshot
-  // cap) costs ~2 seconds; firing per-keystroke would stack those requests.
+  // Debounce the prefix so we only query after the user pauses typing.
   React.useEffect(() => {
     const h = setTimeout(() => setDebouncedQ(q), 300);
     return () => clearTimeout(h);
   }, [q]);
 
   const queryParams = useMemo(
-    () => ({ q: debouncedQ, descContains, wholeWord, sort, limit: PAGE_SIZE, offset: (page - 1) * PAGE_SIZE }),
-    [debouncedQ, descContains, wholeWord, sort, page]
+    () => ({
+      q: debouncedQ,
+      descContains,
+      wholeWord,
+      searchField,
+      limit: PAGE_SIZE,
+      offset: (page - 1) * PAGE_SIZE,
+    }),
+    [debouncedQ, descContains, wholeWord, searchField, page]
   );
 
-  const { data, isFetching, isLoading } = useQuery({
+  const { data, isLoading } = useQuery({
     queryKey: ['sku-lookup', queryParams],
     queryFn: () => searchSkusForLookup(queryParams),
-    // Always kept warm — refetched in the background but the modal never waits
-    // on a spinner to re-show the rows it already has. TanStack caches results
-    // across opens so the second time the modal opens it shows instantly.
     enabled: true,
-    staleTime: 5 * 60_000,  // 5 min — the backend index refreshes every 10 min
+    staleTime: 5 * 60_000,
     gcTime: 15 * 60_000,
     placeholderData: keepPreviousData,
   });
 
   const columns: ColumnsType<SkuLookupRow> = [
-    { title: 'SKU',         dataIndex: 'skuCode',      key: 'skuCode',      width: 140 },
-    { title: 'Description', dataIndex: 'description',  key: 'description' },
-    { title: 'Vendor',      dataIndex: 'vendor',       key: 'vendor',       width: 100 },
-    { title: 'Categ.',      dataIndex: 'category',     key: 'category',     width: 80 },
-    { title: 'Style/Color', dataIndex: 'styleColor',   key: 'styleColor',   width: 160 },
+    {
+      title: 'SKU',
+      dataIndex: 'skuCode',
+      key: 'skuCode',
+      width: 140,
+      sorter: (a, b) => a.skuCode.localeCompare(b.skuCode),
+    },
+    {
+      title: 'Description',
+      dataIndex: 'description',
+      key: 'description',
+      sorter: (a, b) => a.description.localeCompare(b.description),
+    },
+    {
+      title: 'Vendor',
+      dataIndex: 'vendor',
+      key: 'vendor',
+      width: 100,
+      sorter: (a, b) => a.vendor.localeCompare(b.vendor),
+    },
+    {
+      title: 'Categ.',
+      dataIndex: 'category',
+      key: 'category',
+      width: 80,
+      sorter: (a, b) => a.category.localeCompare(b.category),
+    },
+    {
+      title: 'Style/Color',
+      dataIndex: 'styleColor',
+      key: 'styleColor',
+      width: 160,
+      sorter: (a, b) => (a.styleColor ?? '').localeCompare(b.styleColor ?? ''),
+    },
     {
       title: 'Price',
       dataIndex: 'currentPrice',
       key: 'currentPrice',
       width: 100,
       align: 'right',
+      sorter: (a, b) => (a.currentPrice ?? 0) - (b.currentPrice ?? 0),
       render: (value: number | null) =>
         value == null
           ? '—'
@@ -87,6 +124,8 @@ export const SkuLookup: React.FC<SkuLookupProps> = ({
     onSelect({ skuCode: row.skuCode, skuId: row.skuId });
     onClose();
   };
+
+  const currentPrompt = SEARCH_FIELD_OPTIONS.find((o) => o.value === searchField)?.prompt ?? 'SKU';
 
   return (
     <Modal
@@ -109,7 +148,7 @@ export const SkuLookup: React.FC<SkuLookupProps> = ({
       <Space direction="vertical" style={{ width: '100%' }} size="middle">
         <Space wrap>
           <label>
-            SKU:&nbsp;
+            {currentPrompt}:&nbsp;
             <Input
               autoFocus
               value={q}
@@ -120,10 +159,15 @@ export const SkuLookup: React.FC<SkuLookupProps> = ({
           </label>
 
           <Radio.Group
-            value={sort}
-            onChange={(e) => { setSort(e.target.value); setPage(1); }}
+            value={searchField}
+            onChange={(e) => {
+              setSearchField(e.target.value);
+              // Switching the search column resets the page so the first page
+              // of the new column's matches is what we see.
+              setPage(1);
+            }}
           >
-            {SORT_OPTIONS.map((opt) => (
+            {SEARCH_FIELD_OPTIONS.map((opt) => (
               <Radio key={opt.value} value={opt.value}>{opt.label}</Radio>
             ))}
           </Radio.Group>
@@ -149,9 +193,6 @@ export const SkuLookup: React.FC<SkuLookupProps> = ({
         <Table<SkuLookupRow>
           rowKey="skuId"
           size="small"
-          // Only show the overlay spinner on the very first load (no data yet).
-          // Background refetches keep the cached rows visible — this matches
-          // the RICS feel where the list is there the moment the modal opens.
           loading={isLoading}
           dataSource={data?.rows ?? []}
           columns={columns}

@@ -1192,38 +1192,46 @@ export interface SkuLookupParams {
   q?: string;
   descContains?: string;
   wholeWord?: boolean;
-  sort?: SkuLookupSort;
+  /** Which column the `q` prefix filters against. Default: SKU. */
+  searchField?: SkuLookupSort;
   limit?: number;
   offset?: number;
 }
 
 /**
- * Search the POS inventory snapshot, with a live-query fallback for SKUs
- * the snapshot doesn't cover.
+ * Search the in-memory SKU index for the Inventory Inquiry's SKU Lookup modal.
  *
- * The snapshot is capped at POS_SNAPSHOT_CAP rows (currently 50k) ordered
- * by Desc, so SKUs whose description sorts past that cap are missing
- * (e.g. the `ZN02-*` series). When the snapshot prefix filter finds nothing
- * but `q` is non-empty, fall back to a small live prefix query against
- * InventoryMaster — reusing the same queryAll() pattern that loadMasterBySku
- * uses for single-SKU lookup.
+ * `q` filters by a user-selectable column (`searchField`: SKU / Description /
+ * Vendor / Style-Color). `descContains` is an additional AND-filter on the
+ * description text. Results are always ordered by SKU — the Inquiry modal's
+ * table handles its own sort via column-header clicks on the client side.
  */
 export async function searchSkusForLookup(
   params: SkuLookupParams,
 ): Promise<{ rows: SkuLookupRow[]; total: number }> {
   // Backed by the uncapped SKU lookup index — every non-discontinued SKU in
   // InventoryMaster is in memory, so there are no cap-related blind spots.
-  // The live-DB fallback that used to sit here is no longer needed.
   const index = await loadSkuLookupIndex();
   const q = (params.q ?? '').trim().toLowerCase();
   const desc = (params.descContains ?? '').trim().toLowerCase();
   const whole = !!params.wholeWord;
+  const searchField: SkuLookupSort = params.searchField ?? 'SKU';
 
-  let filtered = index.filter((row) => {
-    const skuCode = String(row.SKU ?? '').toLowerCase();
-    const description = String(row.Desc ?? '').toLowerCase();
-    if (q && !skuCode.startsWith(q)) return false;
+  // Extract the text to match against the configured column for each row.
+  const fieldOf = (row: SkuLookupIndexRow): string => {
+    switch (searchField) {
+      case 'DESCRIPTION': return String(row.Desc ?? '').toLowerCase();
+      case 'VENDOR':      return String(row.Vendor ?? '').toLowerCase();
+      case 'STYLE_COLOR': return String(row.StyleColor ?? '').toLowerCase();
+      case 'SKU':
+      default:            return String(row.SKU ?? '').toLowerCase();
+    }
+  };
+
+  const filtered = index.filter((row) => {
+    if (q && !fieldOf(row).startsWith(q)) return false;
     if (desc) {
+      const description = String(row.Desc ?? '').toLowerCase();
       if (whole) {
         const tokens = description.split(/\s+/);
         if (!tokens.includes(desc)) return false;
@@ -1234,21 +1242,7 @@ export async function searchSkusForLookup(
     return true;
   });
 
-  const sort: SkuLookupSort = params.sort ?? 'SKU';
-  const sortKey = (row: SkuLookupIndexRow): string => {
-    switch (sort) {
-      case 'DESCRIPTION': return String(row.Desc ?? '');
-      case 'VENDOR':      return String(row.Vendor ?? '');
-      case 'STYLE_COLOR': return String(row.StyleColor ?? '');
-      case 'SKU':
-      default:            return String(row.SKU ?? '');
-    }
-  };
-  if (sort !== 'SKU') {
-    // Index is already ordered by SKU from the SQL side, so skip re-sorting
-    // in the common case — saves real time on a 200k+ row set.
-    filtered = filtered.sort((a, b) => sortKey(a).localeCompare(sortKey(b)));
-  }
+  // Index is already [SKU]-sorted at load time — no re-sort required.
 
   const total = filtered.length;
   const offset = Math.max(0, params.offset ?? 0);

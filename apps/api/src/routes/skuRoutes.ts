@@ -210,17 +210,23 @@ router.get('/search', async (req: Request, res: Response, next): Promise<void> =
       return;
     }
 
-    const sortRaw = typeof req.query.sort === 'string' ? req.query.sort.toUpperCase() : 'SKU';
-    const allowedSorts: SkuLookupSort[] = ['SKU', 'DESCRIPTION', 'VENDOR', 'STYLE_COLOR'];
-    const sort = (allowedSorts as string[]).includes(sortRaw)
-      ? (sortRaw as SkuLookupSort)
+    // `searchField` picks which column `q` filters against. Also accept the
+    // legacy `sort` query parameter (older clients) so we don't break them.
+    const fieldRaw = (
+      typeof req.query.searchField === 'string' ? req.query.searchField
+      : typeof req.query.sort === 'string' ? req.query.sort
+      : 'SKU'
+    ).toUpperCase();
+    const allowedFields: SkuLookupSort[] = ['SKU', 'DESCRIPTION', 'VENDOR', 'STYLE_COLOR'];
+    const searchField = (allowedFields as string[]).includes(fieldRaw)
+      ? (fieldRaw as SkuLookupSort)
       : 'SKU';
 
     const wholeWord = req.query.wholeWord === 'true';
     const limit = req.query.limit ? Number(req.query.limit) : 50;
     const offset = req.query.offset ? Number(req.query.offset) : 0;
 
-    const result = await searchSkusForLookup({ q, descContains, wholeWord, sort, limit, offset });
+    const result = await searchSkusForLookup({ q, descContains, wholeWord, searchField, limit, offset });
     res.json(result);
   } catch (err) {
     next(err);
