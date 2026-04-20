@@ -305,7 +305,7 @@ interface StoreRow {
 
 async function loadStoreMap(): Promise<Map<number, StoreRow>> {
   return cachedAsync('dim:stores', 300_000, async () => {
-    const rows = queryAll<{ Number: number; Desc: string | null }>(
+    const rows = await queryAll<{ Number: number; Desc: string | null }>(
       STORE_MDB(),
       'SELECT [Number], [Desc] FROM [StoreMaster]',
     );
@@ -334,7 +334,7 @@ async function loadSizeTypeMap(): Promise<Map<number, SizeTypeRow>> {
   return cachedAsync('dim:sizeTypes', 300_000, async () => {
     const colSelect = Array.from({ length: 54 }, (_, i) => `[Columns_${pad2(i + 1)}]`).join(', ');
     const rowSelect = Array.from({ length: 27 }, (_, i) => `[Rows_${pad2(i + 1)}]`).join(', ');
-    const rows = queryAll<Record<string, string | number | null>>(
+    const rows = await queryAll<Record<string, string | number | null>>(
       SIZE_MDB(),
       `SELECT [Code], [Desc], [MaxColumns], [MaxRows], ${colSelect}, ${rowSelect} FROM [SizeTypes]`,
     );
@@ -375,7 +375,7 @@ interface VendorRow {
 
 async function loadVendorMap(): Promise<Map<string, VendorRow>> {
   return cachedAsync('dim:vendors', 300_000, async () => {
-    const rows = queryAll<{ Code: string; 'Short Name': string | null; 'Manu Name': string | null }>(
+    const rows = await queryAll<{ Code: string; 'Short Name': string | null; 'Manu Name': string | null }>(
       VENDOR_MDB(),
       'SELECT [Code], [Short Name], [Manu Name] FROM [Vendor Master]',
     );
@@ -427,7 +427,7 @@ async function loadMasterBySku(sku: string): Promise<MasterRow | null> {
   [StyleColor], [VendorSku], [ListPrice], [RetailPrice], [MarkDownPrice1], [MarkDownPrice2],
   [CurrentPrice], [CurrentCost], [LastPriceChange], [PictureFileName], [Perks], [Comment], [Status]
 FROM [InventoryMaster] WHERE [SKU] = '${safe}'`;
-  const rows = queryAll<MasterRow>(INVMAS_MDB(), sql);
+  const rows = await queryAll<MasterRow>(INVMAS_MDB(), sql);
   return rows[0] ?? null;
 }
 
@@ -664,7 +664,7 @@ export async function getInventoryInquiry(sku: string): Promise<InventoryInquiry
 FROM [Inventory Quantities]
 WHERE [SKU] = '${safe}'
 ORDER BY [Store], [Row], [Segment]`;
-  const rows = queryAll<QuaRow>(INVQUA_MDB(), sql);
+  const rows = await queryAll<QuaRow>(INVQUA_MDB(), sql);
 
   const byStore = new Map<number, InventoryCell[]>();
   for (const r of rows) {
@@ -856,7 +856,7 @@ GROUP BY [SKU]`;
     TotalYtdSales: number | null;
     TotalLySales: number | null;
   }
-  const aggs = queryAll<QuaAgg>(INVQUA_MDB(), sqlQua);
+  const aggs = await queryAll<QuaAgg>(INVQUA_MDB(), sqlQua);
 
   // 2) Pull the master rows for those SKUs (bounded by any caller filters).
   const wheres: string[] = [];
@@ -883,7 +883,7 @@ GROUP BY [SKU]`;
   [ListPrice], [RetailPrice], [MarkDownPrice1], [MarkDownPrice2], [CurrentPrice], [CurrentCost]
 FROM [InventoryMaster]${whereClause}
 ORDER BY [Desc]`;
-  const masters = queryAll<MasterRow>(INVMAS_MDB(), sqlMaster);
+  const masters = await queryAll<MasterRow>(INVMAS_MDB(), sqlMaster);
 
   const aggBySku = new Map<string, QuaAgg>();
   for (const a of aggs) {
@@ -999,7 +999,7 @@ ORDER BY [Date] DESC`;
     Cost: number | null;
     RMANumber: string | null;
   }
-  const rows = queryAll<RawRow>(INVCHG_MDB(), sql);
+  const rows = await queryAll<RawRow>(INVCHG_MDB(), sql);
 
   return rows.map((r) => ({
     sku: (r.SKU ?? '').trim(),
@@ -1145,7 +1145,7 @@ ORDER BY [SKU]`;
     Season: string | null;
     SizeType: number | null;
   }
-  const masters = queryAll<MasterSlim>(INVMAS_MDB(), sqlMaster);
+  const masters = await queryAll<MasterSlim>(INVMAS_MDB(), sqlMaster);
   if (masters.length === 0) return [];
 
   const masterBySku = new Map<string, MasterSlim>();
@@ -1168,7 +1168,7 @@ ORDER BY [SKU]`;
     const sql = `SELECT ${buildQuaSelect()}
 FROM [Inventory Quantities]
 WHERE ${chunkWheres.join(' AND ')}`;
-    const quaRows = queryAll<QuaRow>(INVQUA_MDB(), sql);
+    const quaRows = await queryAll<QuaRow>(INVQUA_MDB(), sql);
 
     for (const r of quaRows) {
       const sku = (r.SKU ?? '').toString();
@@ -1261,7 +1261,7 @@ ORDER BY [SKU]`;
     Category: number | null;
     Season: string | null;
   }
-  const masters = queryAll<MasterSlim>(INVMAS_MDB(), sqlMaster);
+  const masters = await queryAll<MasterSlim>(INVMAS_MDB(), sqlMaster);
   if (masters.length === 0) return [];
 
   const skuSet = new Set<string>();
@@ -1309,7 +1309,7 @@ ORDER BY [SKU]`;
 FROM [Inventory Quantities]
 WHERE ${chunkWheres.join(' AND ')}
 GROUP BY [SKU], [Store]`;
-    const chunkRows = queryAll<QuaStoreAgg>(INVQUA_MDB(), sql);
+    const chunkRows = await queryAll<QuaStoreAgg>(INVQUA_MDB(), sql);
     allAggRows.push(...chunkRows);
   }
 
@@ -1581,7 +1581,7 @@ GROUP BY [Store], [OthStore], DatePart('yyyy', [Date]), DatePart('m', [Date])`;
     TotalQty: number | null;
     TotalCost: number | null;
   }
-  const rows = queryAll<AggRow>(INVCHG_MDB(), sql);
+  const rows = await queryAll<AggRow>(INVCHG_MDB(), sql);
 
   const monthMap = new Map<string, Map<string, TransferSummaryCell>>();
   const matrixMap = new Map<string, TransferSummaryCell>();
@@ -1691,14 +1691,14 @@ export async function warmup(): Promise<void> {
 
 // ─────────────────────────── internals ────────────────────────────────────
 
-function queryAll<T>(dbPath: string, sql: string): T[] {
+async function queryAll<T>(dbPath: string, sql: string): Promise<T[]> {
   if (!fs.existsSync(dbPath)) {
     console.warn(`[ricsInventoryAdapter] MDB not found at ${dbPath}`);
     return [];
   }
   const password = getOrRecoverPassword(dbPath);
   try {
-    const raw = runPowerShellJson<T | T[]>(buildSelectScript(dbPath, password, sql));
+    const raw = await runPowerShellJson<T | T[]>(buildSelectScript(dbPath, password, sql));
     return Array.isArray(raw) ? raw : raw ? [raw] : [];
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);

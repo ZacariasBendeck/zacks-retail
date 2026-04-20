@@ -15,6 +15,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { executeViaPersistentHost } from './persistentPwsh';
 
 const INIT_KEY = Uint8Array.from([
   0xc7, 0xda, 0x39, 0x6b, 0x00, 0x00, 0x4e, 0xa2, 0xdd, 0x43, 0x16, 0xd0, 0x34, 0xbe, 0x26, 0x60,
@@ -79,7 +80,52 @@ $OutputEncoding = [System.Text.Encoding]::UTF8
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 `;
 
-export function runPowerShellJson<T>(script: string): T {
+/**
+ * Run a PowerShell script and parse its stdout as JSON.
+ *
+ * Execution strategy: the first call initializes a persistent `powershell.exe`
+ * host (see `persistentPwsh.ts`). Every subsequent call reuses it — no cold
+ * start per query. This cuts ~1 second of latency off every read/write the
+ * adapter makes.
+ *
+ * Error surface: PowerShell-side exceptions are caught and emitted as
+ * `{ __pwshHostError: true, message: "…" }`; we re-throw them as JS Error
+ * so callers see a normal exception path.
+ *
+ * Empty stdout returns `[]` to match the pre-persistent-host behavior (so
+ * "table with zero rows" keeps returning an empty array without callers
+ * needing to special-case null).
+ */
+export async function runPowerShellJson<T>(script: string): Promise<T> {
+  const payload = await executeViaPersistentHost(script);
+  if (!payload) return [] as T;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(payload);
+  } catch (err) {
+    throw new Error(
+      `failed to parse PowerShell JSON output: ${(err as Error).message}\n` +
+        `--- raw stdout ---\n${payload.slice(0, 500)}`,
+    );
+  }
+  if (
+    parsed !== null &&
+    typeof parsed === 'object' &&
+    (parsed as { __pwshHostError?: boolean }).__pwshHostError === true
+  ) {
+    const msg = (parsed as { message?: string }).message ?? 'PowerShell command failed';
+    throw new Error(msg);
+  }
+  return parsed as T;
+}
+
+/**
+ * Legacy synchronous path. Kept for edge cases where async isn't possible
+ * (rare — most of the codebase runs inside async functions already). New
+ * code should prefer `runPowerShellJson`, which is async and amortizes
+ * process startup.
+ */
+export function runPowerShellJsonSync<T>(script: string): T {
   const result = spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', UTF8_OUTPUT_PROLOGUE + script], {
     encoding: 'utf8',
     maxBuffer: 64 * 1024 * 1024,
@@ -404,14 +450,14 @@ ${opBlocks}
  * (SKU code, UPC, vendor ID, date range). Always prefer this over buildSelectScript
  * + runPowerShellJson for new code.
  */
-export function executeQuery<Row>(
+export async function executeQuery<Row>(
   dbPath: string,
   password: string,
   sql: string,
   params: AccessParam[] = []
-): Row[] {
+): Promise<Row[]> {
   const script = buildQueryScript(dbPath, password, sql, params);
-  const result = runPowerShellJson<AccessQueryResult<Row>>(script);
+  const result = await runPowerShellJson<AccessQueryResult<Row>>(script);
   // Null-safe against empty result — runPowerShellJson returns [] when stdout is empty.
   if (Array.isArray(result)) return [];
   return result.rows ?? [];
@@ -421,14 +467,14 @@ export function executeQuery<Row>(
  * Parameterized INSERT / UPDATE / DELETE. Returns the number of affected rows.
  * Never inline user values into the SQL — always pass them as AccessParam entries.
  */
-export function executeNonQuery(
+export async function executeNonQuery(
   dbPath: string,
   password: string,
   sql: string,
   params: AccessParam[] = []
-): number {
+): Promise<number> {
   const script = buildNonQueryScript(dbPath, password, sql, params);
-  const result = runPowerShellJson<AccessNonQueryResult>(script);
+  const result = await runPowerShellJson<AccessNonQueryResult>(script);
   if (Array.isArray(result)) return 0;
   return result.rowsAffected ?? 0;
 }
@@ -440,14 +486,14 @@ export function executeNonQuery(
  *
  * Returns rowsAffected per operation in the same order as the input.
  */
-export function executeTransaction(
+export async function executeTransaction(
   dbPath: string,
   password: string,
   operations: AccessWriteOperation[]
-): number[] {
+): Promise<number[]> {
   if (operations.length === 0) return [];
   const script = buildTransactionScript(dbPath, password, operations);
-  const result = runPowerShellJson<AccessTransactionResult>(script);
+  const result = await runPowerShellJson<AccessTransactionResult>(script);
   if (Array.isArray(result)) return [];
   return result.rowsAffected ?? [];
 }

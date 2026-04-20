@@ -61,7 +61,7 @@ export const KeywordRepository = {
   async list(): Promise<Result<Keyword[]>> {
     try {
       const { path, password } = openRicsDb(RicsDb.Keywords);
-      const rows = executeQuery<KeywordRow>(
+      const rows = await executeQuery<KeywordRow>(
         path,
         password,
         'SELECT [Keyword], [Desc], [DateLastChanged] FROM [Keywords] ORDER BY [Keyword]',
@@ -75,7 +75,7 @@ export const KeywordRepository = {
   async getByKeyword(keyword: string): Promise<Result<Keyword>> {
     try {
       const { path, password } = openRicsDb(RicsDb.Keywords);
-      const rows = executeQuery<KeywordRow>(
+      const rows = await executeQuery<KeywordRow>(
         path,
         password,
         'SELECT [Keyword], [Desc], [DateLastChanged] FROM [Keywords] WHERE [Keyword] = ?',
@@ -97,7 +97,7 @@ export const KeywordRepository = {
 
     try {
       const { path, password } = openRicsDb(RicsDb.Keywords);
-      const existing = executeQuery<{ n: number }>(
+      const existing = await executeQuery<{ n: number }>(
         path,
         password,
         'SELECT COUNT(*) AS n FROM [Keywords] WHERE [Keyword] = ?',
@@ -111,7 +111,7 @@ export const KeywordRepository = {
         { value: (input.description ?? '').trim(), type: 'string' },
         { value: new Date(), type: 'date' },
       ];
-      executeNonQuery(
+      await executeNonQuery(
         path,
         password,
         'INSERT INTO [Keywords] ([Keyword], [Desc], [DateLastChanged]) VALUES (?, ?, ?)',
@@ -141,7 +141,7 @@ export const KeywordRepository = {
         { value: new Date(), type: 'date' },
         { value: keyword.trim(), type: 'string' },
       ];
-      executeNonQuery(
+      await executeNonQuery(
         path,
         password,
         'UPDATE [Keywords] SET [Desc] = ?, [DateLastChanged] = ? WHERE [Keyword] = ?',
@@ -157,7 +157,7 @@ export const KeywordRepository = {
   async delete(keyword: string): Promise<Result<void>> {
     try {
       const { path, password } = openRicsDb(RicsDb.Keywords);
-      const rows = executeNonQuery(
+      const rows = await executeNonQuery(
         path,
         password,
         'DELETE FROM [Keywords] WHERE [Keyword] = ?',

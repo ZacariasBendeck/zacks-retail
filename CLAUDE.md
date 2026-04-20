@@ -86,6 +86,20 @@ Superpowers does not replace these. `subagent-driven-development` dispatches wor
 - **`.env`** is the only place for secrets — never hardcode
 - **`odoo-addons/`** and **`db/migrations/`** (legacy Odoo cutover plumbing) are NOT the target of new work. The Odoo migration was abandoned.
 
+## HARD RULE — no new branches, no worktrees
+
+The operator does **not** want branches or worktrees created for this project, ever. All work is committed directly to `master`. This overrides the default behavior of several superpowers skills and the Claude Code `Agent` tool's `isolation` parameter.
+
+**Enforce this by:**
+
+- Never invoking `superpowers:using-git-worktrees`. If another skill (e.g. `brainstorming`, `writing-plans`, `subagent-driven-development`, `executing-plans`) says "required: set up an isolated workspace" — skip that step and proceed on `master`.
+- Never calling the `Agent` tool with `isolation: "worktree"`. Omit the parameter entirely.
+- Never invoking `superpowers:finishing-a-development-branch` if it would create a PR or merge branch. That skill's guidance assumes a branch-per-feature workflow; here it's out of scope.
+- Never creating a new branch with `git checkout -b …`, `git branch …`, or any equivalent. Commit directly to `master` with `git commit`.
+- When writing implementation plans, omit the "create a worktree" step. Plans on this project execute on `master` only.
+
+If the operator ever explicitly asks for a branch, you can create one — but the default is always `master`.
+
 ## Skill expectations (post-install)
 
 Once `/plugin install superpowers@claude-plugins-official` is run, expect these to trigger automatically:

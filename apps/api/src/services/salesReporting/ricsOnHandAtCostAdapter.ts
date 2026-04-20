@@ -45,11 +45,11 @@ interface CacheEntry<T> {
   expiresAt: number;
 }
 const cache = new Map<string, CacheEntry<unknown>>();
-function cached<T>(key: string, loader: () => T): T {
+async function cached<T>(key: string, loader: () => Promise<T>): Promise<T> {
   const now = Date.now();
   const hit = cache.get(key) as CacheEntry<T> | undefined;
   if (hit && hit.expiresAt > now) return hit.value;
-  const value = loader();
+  const value = await loader();
   cache.set(key, { value, expiresAt: now + CACHE_TTL_MS });
   return value;
 }
@@ -129,7 +129,7 @@ export async function getOnHandAtCostByDimension(params: {
     return new Map();
   }
 
-  const qua = cached('onhand:qua', () => {
+  const qua = await cached('onhand:qua', async () => {
     const pw = getOrRecoverPassword(INVQUA_MDB());
     const onHandExpr = Array.from({ length: 18 }, (_, i) =>
       `IIF([OnHand_${pad2(i + 1)}] IS NULL, 0, [OnHand_${pad2(i + 1)}])`,
@@ -139,17 +139,17 @@ FROM [Inventory Quantities]
 GROUP BY [SKU], [Store]
 HAVING SUM(${onHandExpr}) > 0`;
     return (
-      runPowerShellJson<QuaRow[]>(buildSelectScript(INVQUA_MDB(), pw, quaSql)) ?? []
+      (await runPowerShellJson<QuaRow[]>(buildSelectScript(INVQUA_MDB(), pw, quaSql))) ?? []
     );
   });
 
-  const masters = cached('onhand:master', () => {
+  const masters = await cached('onhand:master', async () => {
     const pw = getOrRecoverPassword(INVMAS_MDB());
     const masterSql = `SELECT [SKU], [Category], [Vendor], [Season], [CurrentCost]
 FROM [InventoryMaster]
 WHERE ([Status] IS NULL OR [Status] <> 'D')`;
     return (
-      runPowerShellJson<MasterRow[]>(buildSelectScript(INVMAS_MDB(), pw, masterSql)) ?? []
+      (await runPowerShellJson<MasterRow[]>(buildSelectScript(INVMAS_MDB(), pw, masterSql))) ?? []
     );
   });
 

@@ -75,11 +75,11 @@ function validateInput(input: SeasonInput): RepoError | null {
   return null;
 }
 
-function loadSkuCountsByCode(): Map<string, number> {
+async function loadSkuCountsByCode(): Promise<Map<string, number>> {
   const out = new Map<string, number>();
   try {
     const { path, password } = openRicsDb(RicsDb.InventoryMaster);
-    const rows = executeQuery<{ Season: string | null; N: number }>(
+    const rows = await executeQuery<{ Season: string | null; N: number }>(
       path,
       password,
       `SELECT [Season], COUNT(*) AS N FROM [InventoryMaster]
@@ -133,7 +133,7 @@ export const SeasonRepository = {
   async list(): Promise<Result<Season[]>> {
     try {
       const rows = await prisma.seasonOverlay.findMany({ orderBy: { code: 'asc' } });
-      const skuCounts = loadSkuCountsByCode();
+      const skuCounts = await loadSkuCountsByCode();
       return Ok(
         rows.map((r) => ({
           code: r.code,
@@ -157,7 +157,7 @@ export const SeasonRepository = {
       if (!row) {
         return Err({ kind: 'NotFound', message: `Season '${normalized}' not found.` });
       }
-      const skuCount = loadSkuCountsByCode().get(normalized) ?? 0;
+      const skuCount = (await loadSkuCountsByCode()).get(normalized) ?? 0;
       return Ok({ code: row.code, description: row.description, skuCount, source: 'postgres' });
     } catch (err) {
       return Err(toRepoError(err));

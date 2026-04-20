@@ -61,7 +61,7 @@ export const ReturnCodeRepository = {
   async list(): Promise<Result<ReturnCode[]>> {
     try {
       const { path, password } = openRicsDb(RicsDb.ReturnCodes);
-      const rows = executeQuery<ReturnCodeRow>(
+      const rows = await executeQuery<ReturnCodeRow>(
         path,
         password,
         'SELECT [Code], [Desc], [Trackable], [DateLastChanged] FROM [ReturnCodes] ORDER BY [Code]',
@@ -75,7 +75,7 @@ export const ReturnCodeRepository = {
   async getByCode(code: number): Promise<Result<ReturnCode>> {
     try {
       const { path, password } = openRicsDb(RicsDb.ReturnCodes);
-      const rows = executeQuery<ReturnCodeRow>(
+      const rows = await executeQuery<ReturnCodeRow>(
         path,
         password,
         'SELECT [Code], [Desc], [Trackable], [DateLastChanged] FROM [ReturnCodes] WHERE [Code] = ?',
@@ -96,7 +96,7 @@ export const ReturnCodeRepository = {
 
     try {
       const { path, password } = openRicsDb(RicsDb.ReturnCodes);
-      const existing = executeQuery<{ n: number }>(
+      const existing = await executeQuery<{ n: number }>(
         path,
         password,
         'SELECT COUNT(*) AS n FROM [ReturnCodes] WHERE [Code] = ?',
@@ -111,7 +111,7 @@ export const ReturnCodeRepository = {
         { value: input.trackable, type: 'boolean' },
         { value: new Date(), type: 'date' },
       ];
-      executeNonQuery(
+      await executeNonQuery(
         path,
         password,
         'INSERT INTO [ReturnCodes] ([Code], [Desc], [Trackable], [DateLastChanged]) VALUES (?, ?, ?, ?)',
@@ -143,7 +143,7 @@ export const ReturnCodeRepository = {
         { value: new Date(), type: 'date' },
         { value: code, type: 'integer' },
       ];
-      executeNonQuery(
+      await executeNonQuery(
         path,
         password,
         'UPDATE [ReturnCodes] SET [Desc] = ?, [Trackable] = ?, [DateLastChanged] = ? WHERE [Code] = ?',
@@ -158,7 +158,7 @@ export const ReturnCodeRepository = {
   async delete(code: number): Promise<Result<void>> {
     try {
       const { path, password } = openRicsDb(RicsDb.ReturnCodes);
-      const rows = executeNonQuery(
+      const rows = await executeNonQuery(
         path,
         password,
         'DELETE FROM [ReturnCodes] WHERE [Code] = ?',

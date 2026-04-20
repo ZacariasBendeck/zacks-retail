@@ -68,7 +68,7 @@ export const NrfCodeRepository = {
     try {
       const { path, password } = openRicsDb(RicsDb.NrfCodes);
       const params: AccessParam[] = [{ value: sizeTypeCode, type: 'integer' }];
-      const rows = executeQuery<NrmaCodesRow>(
+      const rows = await executeQuery<NrmaCodesRow>(
         path,
         password,
         `SELECT [Code], [Row], [Segment], ${ALL_CELLS.join(', ')} FROM [NRMACodes] WHERE [Code] = ? ORDER BY [Row], [Segment]`,

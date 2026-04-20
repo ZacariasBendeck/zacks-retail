@@ -68,7 +68,7 @@ export const CategoryRepository = {
   async list(): Promise<Result<Category[]>> {
     try {
       const { path, password } = openRicsDb(RicsDb.Categories);
-      const rows = executeQuery<CategoryRow>(
+      const rows = await executeQuery<CategoryRow>(
         path,
         password,
         'SELECT [Number], [Desc], [DateLastChanged] FROM [Categories] ORDER BY [Number]',
@@ -82,7 +82,7 @@ export const CategoryRepository = {
   async getByNumber(number: number): Promise<Result<Category>> {
     try {
       const { path, password } = openRicsDb(RicsDb.Categories);
-      const rows = executeQuery<CategoryRow>(
+      const rows = await executeQuery<CategoryRow>(
         path,
         password,
         'SELECT [Number], [Desc], [DateLastChanged] FROM [Categories] WHERE [Number] = ?',
@@ -103,7 +103,7 @@ export const CategoryRepository = {
 
     try {
       const { path, password } = openRicsDb(RicsDb.Categories);
-      const existing = executeQuery<{ n: number }>(
+      const existing = await executeQuery<{ n: number }>(
         path,
         password,
         'SELECT COUNT(*) AS n FROM [Categories] WHERE [Number] = ?',
@@ -117,7 +117,7 @@ export const CategoryRepository = {
         { value: input.description.trim(), type: 'string' },
         { value: new Date(), type: 'date' },
       ];
-      executeNonQuery(
+      await executeNonQuery(
         path,
         password,
         'INSERT INTO [Categories] ([Number], [Desc], [DateLastChanged]) VALUES (?, ?, ?)',
@@ -147,7 +147,7 @@ export const CategoryRepository = {
         { value: new Date(), type: 'date' },
         { value: number, type: 'integer' },
       ];
-      executeNonQuery(
+      await executeNonQuery(
         path,
         password,
         'UPDATE [Categories] SET [Desc] = ?, [DateLastChanged] = ? WHERE [Number] = ?',
@@ -164,7 +164,7 @@ export const CategoryRepository = {
   async delete(number: number): Promise<Result<void>> {
     try {
       const { path, password } = openRicsDb(RicsDb.Categories);
-      const rows = executeNonQuery(
+      const rows = await executeNonQuery(
         path,
         password,
         'DELETE FROM [Categories] WHERE [Number] = ?',

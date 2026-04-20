@@ -92,7 +92,7 @@ export const DepartmentRepository = {
   async list(): Promise<Result<Department[]>> {
     try {
       const { path, password } = openRicsDb(RicsDb.Departments);
-      const rows = executeQuery<DepartmentRow>(
+      const rows = await executeQuery<DepartmentRow>(
         path,
         password,
         'SELECT [Number], [Desc], [BegCateg], [EndCateg], [DateLastChanged] FROM [Departments] ORDER BY [Number]',
@@ -107,7 +107,7 @@ export const DepartmentRepository = {
     try {
       const { path, password } = openRicsDb(RicsDb.Departments);
       const params: AccessParam[] = [{ value: number, type: 'integer' }];
-      const rows = executeQuery<DepartmentRow>(
+      const rows = await executeQuery<DepartmentRow>(
         path,
         password,
         'SELECT [Number], [Desc], [BegCateg], [EndCateg], [DateLastChanged] FROM [Departments] WHERE [Number] = ?',
@@ -131,7 +131,7 @@ export const DepartmentRepository = {
 
       // Explicit uniqueness check — `Number` isn't a declared PK in the MDB,
       // so we can't rely on a constraint violation to surface a collision.
-      const existing = executeQuery<{ n: number }>(
+      const existing = await executeQuery<{ n: number }>(
         path,
         password,
         'SELECT COUNT(*) AS n FROM [Departments] WHERE [Number] = ?',
@@ -148,7 +148,7 @@ export const DepartmentRepository = {
         { value: input.endCateg, type: 'integer' },
         { value: new Date(), type: 'date' },
       ];
-      executeNonQuery(
+      await executeNonQuery(
         path,
         password,
         'INSERT INTO [Departments] ([Number], [Desc], [BegCateg], [EndCateg], [DateLastChanged]) VALUES (?, ?, ?, ?, ?)',
@@ -182,7 +182,7 @@ export const DepartmentRepository = {
         { value: new Date(), type: 'date' },
         { value: number, type: 'integer' },
       ];
-      executeNonQuery(
+      await executeNonQuery(
         path,
         password,
         'UPDATE [Departments] SET [Desc] = ?, [BegCateg] = ?, [EndCateg] = ?, [DateLastChanged] = ? WHERE [Number] = ?',
@@ -208,7 +208,7 @@ export const DepartmentRepository = {
   async findByCategory(category: number): Promise<Result<Department>> {
     try {
       const { path, password } = openRicsDb(RicsDb.Departments);
-      const rows = executeQuery<DepartmentRow>(
+      const rows = await executeQuery<DepartmentRow>(
         path,
         password,
         `SELECT [Number], [Desc], [BegCateg], [EndCateg], [DateLastChanged]
@@ -235,7 +235,7 @@ export const DepartmentRepository = {
   async delete(number: number): Promise<Result<void>> {
     try {
       const { path, password } = openRicsDb(RicsDb.Departments);
-      const rows = executeNonQuery(
+      const rows = await executeNonQuery(
         path,
         password,
         'DELETE FROM [Departments] WHERE [Number] = ?',

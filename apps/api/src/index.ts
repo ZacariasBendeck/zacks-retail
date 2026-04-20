@@ -4,6 +4,7 @@ import app from './app';
 import { warmup as warmRicsAdapter } from './services/ricsProductAdapter';
 import { warmup as warmRicsInventoryAdapter } from './services/ricsInventoryFacade';
 import { warmup as warmRicsSalesReportAdapter } from './services/salesReporting/salesReportFacade';
+import { warmupProductsAdmin } from './services/products/warmup';
 
 const PORT = process.env.PORT ?? 4000;
 
@@ -33,4 +34,11 @@ app.listen(PORT, () => {
       console.warn('RICS sales-report warmup error:', err),
     );
   }
+
+  // Warm every products-admin taxonomy + vendor list so the Products pages
+  // load instantly on first use. The persistent PowerShell host amortizes
+  // the OLE DB connection cost across all of these.
+  warmupProductsAdmin().catch((err) =>
+    console.warn('[products-warmup] unexpected error:', err),
+  );
 });

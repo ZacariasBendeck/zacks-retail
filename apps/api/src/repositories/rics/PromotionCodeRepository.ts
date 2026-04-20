@@ -79,7 +79,7 @@ export const PromotionCodeRepository = {
   async list(): Promise<Result<PromotionCode[]>> {
     try {
       const { path, password } = openRicsDb(RicsDb.PromotionCodes);
-      const rows = executeQuery<PromotionCodeRow>(
+      const rows = await executeQuery<PromotionCodeRow>(
         path,
         password,
         'SELECT [Code], [Description], [Date], [Pieces], [Cost], [DateLastChanged] FROM [MarketingCode] ORDER BY [Code]',
@@ -93,7 +93,7 @@ export const PromotionCodeRepository = {
   async getByCode(code: string): Promise<Result<PromotionCode>> {
     try {
       const { path, password } = openRicsDb(RicsDb.PromotionCodes);
-      const rows = executeQuery<PromotionCodeRow>(
+      const rows = await executeQuery<PromotionCodeRow>(
         path,
         password,
         'SELECT [Code], [Description], [Date], [Pieces], [Cost], [DateLastChanged] FROM [MarketingCode] WHERE [Code] = ?',
@@ -115,7 +115,7 @@ export const PromotionCodeRepository = {
 
     try {
       const { path, password } = openRicsDb(RicsDb.PromotionCodes);
-      const existing = executeQuery<{ n: number }>(
+      const existing = await executeQuery<{ n: number }>(
         path,
         password,
         'SELECT COUNT(*) AS n FROM [MarketingCode] WHERE [Code] = ?',
@@ -132,7 +132,7 @@ export const PromotionCodeRepository = {
         input.cost != null ? { value: input.cost, type: 'decimal' } : { value: null, type: 'null' },
         { value: new Date(), type: 'date' },
       ];
-      executeNonQuery(
+      await executeNonQuery(
         path,
         password,
         'INSERT INTO [MarketingCode] ([Code], [Description], [Date], [Pieces], [Cost], [DateLastChanged]) VALUES (?, ?, ?, ?, ?, ?)',
@@ -168,7 +168,7 @@ export const PromotionCodeRepository = {
         { value: new Date(), type: 'date' },
         { value: code.trim(), type: 'string' },
       ];
-      executeNonQuery(
+      await executeNonQuery(
         path,
         password,
         'UPDATE [MarketingCode] SET [Description] = ?, [Date] = ?, [Pieces] = ?, [Cost] = ?, [DateLastChanged] = ? WHERE [Code] = ?',
@@ -183,7 +183,7 @@ export const PromotionCodeRepository = {
   async delete(code: string): Promise<Result<void>> {
     try {
       const { path, password } = openRicsDb(RicsDb.PromotionCodes);
-      const rows = executeNonQuery(
+      const rows = await executeNonQuery(
         path,
         password,
         'DELETE FROM [MarketingCode] WHERE [Code] = ?',

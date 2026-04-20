@@ -47,6 +47,7 @@ import {
 import { Err, Ok, type Result } from './repoResult';
 import { openRicsDb, RicsDb, toRepoError, trimString, coerceNumber, coerceBoolean } from './ricsAccess';
 import { parseAccessDate } from './parseAccessDate';
+import { createTtlCache } from '../../services/products/ttlCache';
 
 // ────────────── Domain types ──────────────
 
@@ -288,6 +289,20 @@ const INVENTORY_MASTER_COLS = `[SKU], [VendorSKU], [Category], [Vendor], [SizeTy
   [Coupon], [LastPriceChange], [Status], [DateLastChanged], [OrderMultiple],
   [OrderUOM]`;
 
+/**
+ * Narrow column set for the list view. Drops long text columns (`Comment`,
+ * `KeyWords`, `PictureFileName`, `Manufacturer`, `Location`) and the
+ * rarely-read `OrderMultiple`/`OrderUOM`/`Perks`/`OverSize*`/`LabelCode`/
+ * `ColorCode`/`CurrentCost`/`LastPriceChange`/`DateLastChanged`/`Coupon` —
+ * the list page only renders code, desc, vendor, category, styleColor,
+ * season, current-price slot+amount, and status. Pulling ~12 columns over
+ * 25k rows is roughly 2-3× faster than pulling all 31 and drops the JSON
+ * payload from ~25 MB to ~9 MB.
+ */
+const INVENTORY_MASTER_LIST_COLS = `[SKU], [Category], [Vendor], [Desc],
+  [StyleColor], [Season], [ListPrice], [RetailPrice],
+  [MarkDownPrice1], [MarkDownPrice2], [CurrentPrice], [Status]`;
+
 const INV_CATALOG_COLS = `[SKU], [LongColor], [BoldDesc], [ParaDesc], [CatalogSKU],
   [BulletText_01], [BulletText_02], [BulletText_03], [BulletText_04], [BulletText_05],
   [PictureName_01], [PictureName_02], [SizeText], [WebFileName]`;
@@ -410,62 +425,87 @@ function invCatalogParams(input: SkuInput): AccessParam[] | null {
   ];
 }
 
+// ────────────── Cache ──────────────
+
+// The full SKU snapshot is loaded once and filtered in memory. 60-minute TTL
+// means after a user visits the SKUs page (and pays the ~60-100 s one-time
+// load cost), every subsequent view in the hour is instant. Mutations call
+// `skuListCache.invalidate()` so writes surface immediately without the user
+// noticing the stale period. The storefront adapter uses a similar long TTL.
+const SKU_LIST_TTL_MS = 60 * 60 * 1000;
+const skuListCache = createTtlCache<Sku[]>(SKU_LIST_TTL_MS);
+
+async function loadFullSkuList(): Promise<Sku[]> {
+  const { path, password } = openRicsDb(RicsDb.InventoryMaster);
+  const rows = await executeQuery<InventoryMasterRow>(
+    path,
+    password,
+    `SELECT ${INVENTORY_MASTER_LIST_COLS} FROM [InventoryMaster] ORDER BY [SKU]`,
+  );
+  // mapSku tolerates missing columns — `trimString` / `coerceNumber` both
+  // return null for undefined inputs, so dropped columns surface as null on
+  // the domain object. Detail view (`findByCode`) still pulls the full row.
+  return rows.map((r) => mapSku(r, null));
+}
+
+function applyFilters(all: Sku[], opts: FindAllOptions): Sku[] {
+  let out = all;
+  if (opts.q && opts.q.trim().length > 0) {
+    const q = opts.q.trim().toUpperCase();
+    out = out.filter(
+      (s) =>
+        s.code.toUpperCase().includes(q) ||
+        s.description.toUpperCase().includes(q) ||
+        (s.styleColor ?? '').toUpperCase().includes(q),
+    );
+  }
+  if (opts.vendor) {
+    const v = opts.vendor.trim().toUpperCase();
+    out = out.filter((s) => (s.vendor ?? '').toUpperCase() === v);
+  }
+  if (opts.category != null) {
+    out = out.filter((s) => s.category === opts.category);
+  }
+  if (opts.season) {
+    const sv = opts.season.trim().toUpperCase();
+    out = out.filter((s) => (s.season ?? '').toUpperCase() === sv);
+  }
+  if (opts.group) {
+    const gv = opts.group.trim().toUpperCase();
+    out = out.filter((s) => (s.groupCode ?? '').toUpperCase() === gv);
+  }
+  if (opts.keyword) {
+    const k = opts.keyword.trim().toUpperCase();
+    out = out.filter((s) => s.keywords.some((kw) => kw.toUpperCase().includes(k)));
+  }
+  return out;
+}
+
 // ────────────── Repository ──────────────
 
 export const SkuRepository = {
   async findAll(opts: FindAllOptions = {}): Promise<Result<Sku[]>> {
     try {
-      const { path, password } = openRicsDb(RicsDb.InventoryMaster);
-      const clauses: string[] = [];
-      const params: AccessParam[] = [];
-      if (opts.q && opts.q.trim().length > 0) {
-        const like = `%${opts.q.trim().toUpperCase()}%`;
-        clauses.push(`(UCASE([SKU]) LIKE ? OR UCASE([Desc]) LIKE ? OR UCASE([StyleColor]) LIKE ?)`);
-        params.push({ value: like, type: 'string' }, { value: like, type: 'string' }, { value: like, type: 'string' });
-      }
-      if (opts.vendor) {
-        clauses.push(`[Vendor] = ?`);
-        params.push({ value: opts.vendor, type: 'string' });
-      }
-      if (opts.category != null) {
-        clauses.push(`[Category] = ?`);
-        params.push({ value: opts.category, type: 'long' });
-      }
-      if (opts.season) {
-        clauses.push(`[Season] = ?`);
-        params.push({ value: opts.season, type: 'string' });
-      }
-      if (opts.group) {
-        clauses.push(`[GroupCode] = ?`);
-        params.push({ value: opts.group, type: 'string' });
-      }
-      if (opts.keyword) {
-        clauses.push(`UCASE([KeyWords]) LIKE ?`);
-        params.push({ value: `%${opts.keyword.toUpperCase()}%`, type: 'string' });
-      }
-      const where = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
-      const rows = executeQuery<InventoryMasterRow>(
-        path,
-        password,
-        `SELECT ${INVENTORY_MASTER_COLS} FROM [InventoryMaster] ${where} ORDER BY [SKU]`,
-        params,
-      );
-      // Apply limit/offset client-side (Jet LIMIT syntax differs; limit is a UI concern)
+      const all = await skuListCache.get(loadFullSkuList);
+      const filtered = applyFilters(all, opts);
       const limit = opts.limit ?? 500;
       const offset = opts.offset ?? 0;
-      const sliced = rows.slice(offset, offset + limit);
-      // Do NOT join InvCatalog for list — expensive and only needed on detail.
-      return Ok(sliced.map((r) => mapSku(r, null)));
+      return Ok(filtered.slice(offset, offset + limit));
     } catch (err) {
       return Err(toRepoError(err));
     }
+  },
+
+  /** Preload the full SKU list into cache. Called from startup warmup. */
+  async warmup(): Promise<void> {
+    await skuListCache.get(loadFullSkuList);
   },
 
   async findByCode(code: string): Promise<Result<Sku>> {
     try {
       const { path, password } = openRicsDb(RicsDb.InventoryMaster);
       const normalized = normalizeCode(code);
-      const rows = executeQuery<InventoryMasterRow>(
+      const rows = await executeQuery<InventoryMasterRow>(
         path,
         password,
         `SELECT ${INVENTORY_MASTER_COLS} FROM [InventoryMaster] WHERE [SKU] = ?`,
@@ -474,7 +514,7 @@ export const SkuRepository = {
       if (rows.length === 0) {
         return Err({ kind: 'NotFound', message: `SKU '${normalized}' not found.` });
       }
-      const catalogRows = executeQuery<InvCatalogRow>(
+      const catalogRows = await executeQuery<InvCatalogRow>(
         path,
         password,
         `SELECT ${INV_CATALOG_COLS} FROM [InvCatalog] WHERE [SKU] = ?`,
@@ -490,7 +530,7 @@ export const SkuRepository = {
     try {
       const { path, password } = openRicsDb(RicsDb.InventoryMaster);
       const normalized = normalizeCode(input.code);
-      const existing = executeQuery<{ n: number }>(
+      const existing = await executeQuery<{ n: number }>(
         path,
         password,
         'SELECT COUNT(*) AS n FROM [InventoryMaster] WHERE [SKU] = ?',
@@ -517,7 +557,8 @@ export const SkuRepository = {
           params: catParams,
         });
       }
-      executeTransaction(path, password, ops);
+      await executeTransaction(path, password, ops);
+      skuListCache.invalidate();
       return this.findByCode(normalized);
     } catch (err) {
       return Err(toRepoError(err));
@@ -596,7 +637,7 @@ export const SkuRepository = {
       // InvCatalog: upsert if any overlay field provided.
       const catParams = invCatalogParams(merged);
       if (catParams) {
-        const catalogExists = executeQuery<{ n: number }>(
+        const catalogExists = await executeQuery<{ n: number }>(
           path,
           password,
           'SELECT COUNT(*) AS n FROM [InvCatalog] WHERE [SKU] = ?',
@@ -620,7 +661,8 @@ export const SkuRepository = {
           });
         }
       }
-      executeTransaction(path, password, updateOps);
+      await executeTransaction(path, password, updateOps);
+      skuListCache.invalidate();
       return this.findByCode(merged.code);
     } catch (err) {
       return Err(toRepoError(err));
@@ -641,11 +683,12 @@ export const SkuRepository = {
           params: [{ value: normalized, type: 'string' }],
         },
       ];
-      const affected = executeTransaction(path, password, ops);
+      const affected = await executeTransaction(path, password, ops);
       // Second op is the master delete — its affected count must be > 0.
       if ((affected[1] ?? 0) === 0) {
         return Err({ kind: 'NotFound', message: `SKU '${normalized}' not found.` });
       }
+      skuListCache.invalidate();
       return Ok(undefined);
     } catch (err) {
       return Err(toRepoError(err));
@@ -655,7 +698,7 @@ export const SkuRepository = {
   async countByVendor(vendorCode: string): Promise<Result<number>> {
     try {
       const { path, password } = openRicsDb(RicsDb.InventoryMaster);
-      const rows = executeQuery<{ n: number }>(
+      const rows = await executeQuery<{ n: number }>(
         path,
         password,
         'SELECT COUNT(*) AS n FROM [InventoryMaster] WHERE [Vendor] = ?',
@@ -670,7 +713,7 @@ export const SkuRepository = {
   async countByCategory(category: number): Promise<Result<number>> {
     try {
       const { path, password } = openRicsDb(RicsDb.InventoryMaster);
-      const rows = executeQuery<{ n: number }>(
+      const rows = await executeQuery<{ n: number }>(
         path,
         password,
         'SELECT COUNT(*) AS n FROM [InventoryMaster] WHERE [Category] = ?',

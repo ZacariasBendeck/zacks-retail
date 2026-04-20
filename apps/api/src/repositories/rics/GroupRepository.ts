@@ -59,7 +59,7 @@ export const GroupRepository = {
   async list(): Promise<Result<Group[]>> {
     try {
       const { path, password } = openRicsDb(RicsDb.Groups);
-      const rows = executeQuery<GroupRow>(
+      const rows = await executeQuery<GroupRow>(
         path,
         password,
         'SELECT [Code], [Desc], [DateLastChanged] FROM [GroupCodes] ORDER BY [Code]',
@@ -73,7 +73,7 @@ export const GroupRepository = {
   async getByCode(code: string): Promise<Result<Group>> {
     try {
       const { path, password } = openRicsDb(RicsDb.Groups);
-      const rows = executeQuery<GroupRow>(
+      const rows = await executeQuery<GroupRow>(
         path,
         password,
         'SELECT [Code], [Desc], [DateLastChanged] FROM [GroupCodes] WHERE [Code] = ?',
@@ -95,7 +95,7 @@ export const GroupRepository = {
 
     try {
       const { path, password } = openRicsDb(RicsDb.Groups);
-      const existing = executeQuery<{ n: number }>(
+      const existing = await executeQuery<{ n: number }>(
         path,
         password,
         'SELECT COUNT(*) AS n FROM [GroupCodes] WHERE [Code] = ?',
@@ -109,7 +109,7 @@ export const GroupRepository = {
         { value: input.description.trim(), type: 'string' },
         { value: new Date(), type: 'date' },
       ];
-      executeNonQuery(
+      await executeNonQuery(
         path,
         password,
         'INSERT INTO [GroupCodes] ([Code], [Desc], [DateLastChanged]) VALUES (?, ?, ?)',
@@ -139,7 +139,7 @@ export const GroupRepository = {
         { value: new Date(), type: 'date' },
         { value: code.trim(), type: 'string' },
       ];
-      executeNonQuery(
+      await executeNonQuery(
         path,
         password,
         'UPDATE [GroupCodes] SET [Desc] = ?, [DateLastChanged] = ? WHERE [Code] = ?',
@@ -156,7 +156,7 @@ export const GroupRepository = {
   async delete(code: string): Promise<Result<void>> {
     try {
       const { path, password } = openRicsDb(RicsDb.Groups);
-      const rows = executeNonQuery(
+      const rows = await executeNonQuery(
         path,
         password,
         'DELETE FROM [GroupCodes] WHERE [Code] = ?',

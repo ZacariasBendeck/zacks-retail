@@ -178,7 +178,7 @@ export const SizeTypeRepository = {
   async list(): Promise<Result<SizeType[]>> {
     try {
       const { path, password } = openRicsDb(RicsDb.SizeTypes);
-      const rows = executeQuery<SizeTypeRow>(
+      const rows = await executeQuery<SizeTypeRow>(
         path,
         password,
         `SELECT ${LIST_COLUMNS} FROM [SizeTypes] ORDER BY [Code]`,
@@ -192,7 +192,7 @@ export const SizeTypeRepository = {
   async getByCode(code: number): Promise<Result<SizeType>> {
     try {
       const { path, password } = openRicsDb(RicsDb.SizeTypes);
-      const rows = executeQuery<SizeTypeRow>(
+      const rows = await executeQuery<SizeTypeRow>(
         path,
         password,
         `SELECT ${LIST_COLUMNS} FROM [SizeTypes] WHERE [Code] = ?`,
@@ -213,7 +213,7 @@ export const SizeTypeRepository = {
 
     try {
       const { path, password } = openRicsDb(RicsDb.SizeTypes);
-      const existing = executeQuery<{ n: number }>(
+      const existing = await executeQuery<{ n: number }>(
         path,
         password,
         'SELECT COUNT(*) AS n FROM [SizeTypes] WHERE [Code] = ?',
@@ -224,7 +224,7 @@ export const SizeTypeRepository = {
       }
       const { columns, params } = buildInsertOrUpdateColumns(input);
       const placeholders = columns.map(() => '?').join(', ');
-      executeNonQuery(
+      await executeNonQuery(
         path,
         password,
         `INSERT INTO [SizeTypes] (${columns.join(', ')}) VALUES (${placeholders})`,
@@ -259,7 +259,7 @@ export const SizeTypeRepository = {
       const setColumns = columns.slice(1); // skip [Code]
       const setParams = insertParams.slice(1);
       const setClause = setColumns.map((c) => `${c} = ?`).join(', ');
-      executeNonQuery(
+      await executeNonQuery(
         path,
         password,
         `UPDATE [SizeTypes] SET ${setClause} WHERE [Code] = ?`,
@@ -274,7 +274,7 @@ export const SizeTypeRepository = {
   async delete(code: number): Promise<Result<void>> {
     try {
       const { path, password } = openRicsDb(RicsDb.SizeTypes);
-      const rows = executeNonQuery(
+      const rows = await executeNonQuery(
         path,
         password,
         'DELETE FROM [SizeTypes] WHERE [Code] = ?',

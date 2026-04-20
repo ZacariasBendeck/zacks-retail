@@ -150,7 +150,7 @@ interface CategoryRowRaw {
 let categoryLabelCache: Map<number, string> | null = null;
 let categoryLabelCacheExpiry = 0;
 
-function loadCategoryLabels(): Map<number, string> {
+async function loadCategoryLabels(): Promise<Map<number, string>> {
   const now = Date.now();
   if (categoryLabelCache && categoryLabelCacheExpiry > now) return categoryLabelCache;
   const dbPath = CATEG_MDB();
@@ -160,7 +160,7 @@ function loadCategoryLabels(): Map<number, string> {
     return categoryLabelCache;
   }
   try {
-    const rows = queryAll<CategoryRowRaw>(dbPath, 'SELECT [Number], [Desc] FROM [Categories]');
+    const rows = await queryAll<CategoryRowRaw>(dbPath, 'SELECT [Number], [Desc] FROM [Categories]');
     const map = new Map<number, string>();
     for (const r of rows) {
       if (r.Number == null) continue;
@@ -217,7 +217,7 @@ export async function loadSkuMasterForCriteria(): Promise<SkuMasterRow[]> {
     return skuMasterLookupCache;
   }
   try {
-    const rows = queryAll<{
+    const rows = await queryAll<{
       SKU: string | null;
       Vendor: string | null;
       Category: number | null;
@@ -356,11 +356,11 @@ GROUP BY h.Store, Year(h.RealDate), Month(h.RealDate), ${dimExpr},
   IIF(d.Vendor IS NULL, '(none)', d.Vendor),
   IIF(d.Category IS NULL, 0, d.Category)`;
 
-  const raw = queryAll<RawMonthlyRow>(SALES_MDB(), sql);
+  const raw = await queryAll<RawMonthlyRow>(SALES_MDB(), sql);
 
   const categoryLabels =
     params.sortBy === 'category' || params.detailLevel === 'department'
-      ? loadCategoryLabels()
+      ? await loadCategoryLabels()
       : null;
 
   const rows: MonthlyMeasuresRow[] = [];
@@ -579,7 +579,7 @@ export async function queryMonthlyInventoryHistory(
   const sql =
     `SELECT ${INVHIS_SELECT_COLUMNS} FROM [InvHis] WHERE ${wheres.join(' AND ')}`;
 
-  const raw = queryAll<RawInvHisRow>(INVHIS_MDB(), sql);
+  const raw = await queryAll<RawInvHisRow>(INVHIS_MDB(), sql);
   const rows: MonthlyInventoryHistoryRow[] = [];
   for (const r of raw) {
     if (r.SKU == null || r.Store == null) continue;
@@ -619,14 +619,14 @@ function chunkArray<T>(arr: T[], size: number): T[][] {
   return out;
 }
 
-function queryAll<T>(dbPath: string, sql: string): T[] {
+async function queryAll<T>(dbPath: string, sql: string): Promise<T[]> {
   if (!fs.existsSync(dbPath)) {
     console.warn(`[ricsSalesHistoryByMonthAdapter] MDB not found at ${dbPath}`);
     return [];
   }
   const password = getOrRecoverPassword(dbPath);
   try {
-    const raw = runPowerShellJson<T | T[]>(buildSelectScript(dbPath, password, sql));
+    const raw = await runPowerShellJson<T | T[]>(buildSelectScript(dbPath, password, sql));
     return Array.isArray(raw) ? raw : raw ? [raw] : [];
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);

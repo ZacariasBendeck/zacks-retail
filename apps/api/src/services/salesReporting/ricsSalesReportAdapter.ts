@@ -126,7 +126,7 @@ interface StoreRow {
 
 async function loadStoreMap(): Promise<Map<number, StoreRow>> {
   return cachedAsync('sr:dim:stores', 300_000, async () => {
-    const rows = queryAll<{ Number: number; Desc: string | null }>(
+    const rows = await queryAll<{ Number: number; Desc: string | null }>(
       STORE_MDB(),
       'SELECT [Number], [Desc] FROM [StoreMaster]',
     );
@@ -149,7 +149,7 @@ interface SalespersonInfo {
 
 async function loadSalespersonMap(): Promise<Map<string, SalespersonInfo>> {
   return cachedAsync('sr:dim:salespeople', 300_000, async () => {
-    const rows = queryAll<{ Code: string; Name: string | null }>(
+    const rows = await queryAll<{ Code: string; Name: string | null }>(
       SLSPSN_MDB(),
       'SELECT [Code], [Name] FROM [Salespeople]',
     );
@@ -174,7 +174,7 @@ interface CategoryRow {
 
 async function loadCategoryList(): Promise<CategoryRow[]> {
   return cachedAsync('sr:dim:categories', 300_000, async () => {
-    const rows = queryAll<{ Number: number; Desc: string | null }>(
+    const rows = await queryAll<{ Number: number; Desc: string | null }>(
       CATEG_MDB(),
       'SELECT [Number], [Desc] FROM [Categories]',
     );
@@ -195,7 +195,7 @@ interface GroupRow {
 
 async function loadGroupList(): Promise<GroupRow[]> {
   return cachedAsync('sr:dim:groups', 300_000, async () => {
-    const rows = queryAll<{ Code: string; Desc: string | null }>(
+    const rows = await queryAll<{ Code: string; Desc: string | null }>(
       GROUP_MDB(),
       'SELECT [Code], [Desc] FROM [GroupCodes]',
     );
@@ -436,7 +436,7 @@ WHERE
       D_Vendor: string | null; D_Cost: number | null; D_ReturnCode: number | null;
       D_RealPrice: number | null;
     }
-    const raw = queryAll<Raw>(SALES_MDB(), sql);
+    const raw = await queryAll<Raw>(SALES_MDB(), sql);
     return raw.map<TicketLine>((r) => ({
       store: Number(r.H_Store ?? 0),
       ticket: Number(r.H_Ticket ?? 0),
@@ -490,7 +490,7 @@ WHERE
   AND h.RealDate < #${accessDate(endExclusive)}#
   AND h.TransType = 1
   AND h.Voided = False${storeFilter}${postedFilter}`;
-    const raw = queryAll<RawTicketHeaderFlag>(SALES_MDB(), sql);
+    const raw = await queryAll<RawTicketHeaderFlag>(SALES_MDB(), sql);
     return raw.map<TicketHeaderFlag>((r) => ({
       store: Number(r.Store ?? 0),
       ticket: Number(r.Ticket ?? 0),
@@ -1438,7 +1438,7 @@ interface DeptRow {
 
 async function loadDepartmentMap(): Promise<DeptRow[]> {
   return cachedAsync('sr:dim:departments', 300_000, async () => {
-    const rows = queryAll<{ Number: number; Desc: string | null; BegCateg: number; EndCateg: number }>(
+    const rows = await queryAll<{ Number: number; Desc: string | null; BegCateg: number; EndCateg: number }>(
       mdbPath('RICS_DEPT_DB_FILE', 'RIDEPT.MDB'),
       'SELECT [Number], [Desc], [BegCateg], [EndCateg] FROM [Departments]',
     );
@@ -1548,7 +1548,7 @@ export async function getStockStatus(params: {
 FROM [Inventory Quantities]
 GROUP BY [SKU], [Store]`;
 
-  const qua = queryAll<QuaAggRow>(INVQUA_MDB(), quaSql);
+  const qua = await queryAll<QuaAggRow>(INVQUA_MDB(), quaSql);
 
   // 2) Pull master data (filtered by criteria).
   const masterWheres: string[] = [`([Status] IS NULL OR [Status] <> 'D')`];
@@ -1572,7 +1572,7 @@ GROUP BY [SKU], [Store]`;
 FROM [InventoryMaster]
 WHERE ${masterWheres.join(' AND ')}`;
 
-  const masters = queryAll<MasterLiteRow>(INVMAS_MDB(), masterSql);
+  const masters = await queryAll<MasterLiteRow>(INVMAS_MDB(), masterSql);
   const masterBySku = new Map<string, MasterLiteRow>();
   for (const m of masters) {
     if (m.SKU) masterBySku.set(m.SKU, m);
@@ -1683,14 +1683,14 @@ export async function warmup(): Promise<void> {
 // Internals
 // ══════════════════════════════════════════════════════════════════════════
 
-function queryAll<T>(dbPath: string, sql: string): T[] {
+async function queryAll<T>(dbPath: string, sql: string): Promise<T[]> {
   if (!fs.existsSync(dbPath)) {
     console.warn(`[ricsSalesReportAdapter] MDB not found at ${dbPath}`);
     return [];
   }
   const password = getOrRecoverPassword(dbPath);
   try {
-    const raw = runPowerShellJson<T | T[]>(buildSelectScript(dbPath, password, sql));
+    const raw = await runPowerShellJson<T | T[]>(buildSelectScript(dbPath, password, sql));
     return Array.isArray(raw) ? raw : raw ? [raw] : [];
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);

@@ -42,6 +42,7 @@ import {
 } from '../../services/accessOleDb';
 import { Err, Ok, type Result, type RepoError } from './repoResult';
 import { openRicsDb, RicsDb, toRepoError, trimString, coerceNumber, coerceBoolean } from './ricsAccess';
+import { createTtlCache } from '../../services/products/ttlCache';
 
 // ────────────── Domain types ──────────────
 
@@ -289,50 +290,55 @@ function insertParams(input: VendorInput, nowIso: Date): AccessParam[] {
   ];
 }
 
+// 5-minute TTL snapshot + in-memory filter — same trick as SkuRepository.
+// Vendor Master has ~2 254 rows; loading it once is fast, and repeated
+// searches (typical admin workflow) serve from RAM.
+const VENDOR_LIST_TTL_MS = 5 * 60 * 1000;
+const vendorListCache = createTtlCache<Vendor[]>(VENDOR_LIST_TTL_MS);
+
+async function loadFullVendorList(): Promise<Vendor[]> {
+  const { path, password } = openRicsDb(RicsDb.Vendors);
+  const cols = allColumnsSql();
+  const rows = await executeQuery<VendorRow>(
+    path,
+    password,
+    `SELECT ${cols} FROM [Vendor Master] ORDER BY [Code]`,
+  );
+  return rows.map(mapVendor);
+}
+
 export const VendorRepository = {
   async findAll(opts: FindAllOptions = {}): Promise<Result<Vendor[]>> {
     try {
-      const { path, password } = openRicsDb(RicsDb.Vendors);
-      const cols = allColumnsSql();
+      const all = await vendorListCache.get(loadFullVendorList);
+      let filtered = all;
       if (opts.q && opts.q.trim().length > 0) {
-        const like = `%${opts.q.trim().toUpperCase()}%`;
-        // Jet LIKE in Access is case-sensitive on WCHAR unless UCASE is used.
-        // We compare UCASE(col) to an upper-cased pattern for case-insensitivity.
-        const rows = executeQuery<VendorRow>(
-          path,
-          password,
-          `SELECT ${cols} FROM [Vendor Master]
-           WHERE UCASE([Code]) LIKE ?
-              OR UCASE([Short Name]) LIKE ?
-              OR UCASE([Mail Name]) LIKE ?
-              OR UCASE([Manu Name]) LIKE ?
-           ORDER BY [Code]`,
-          [
-            { value: like, type: 'string' },
-            { value: like, type: 'string' },
-            { value: like, type: 'string' },
-            { value: like, type: 'string' },
-          ],
+        const needle = opts.q.trim().toUpperCase();
+        filtered = all.filter(
+          (v) =>
+            v.code.toUpperCase().includes(needle) ||
+            v.name.toUpperCase().includes(needle) ||
+            v.mailName.toUpperCase().includes(needle) ||
+            (v.manuName ?? '').toUpperCase().includes(needle),
         );
-        const limit = opts.limit ?? 100;
-        return Ok(rows.slice(0, limit).map(mapVendor));
       }
-      const rows = executeQuery<VendorRow>(
-        path,
-        password,
-        `SELECT ${cols} FROM [Vendor Master] ORDER BY [Code]`,
-      );
-      return Ok(rows.map(mapVendor));
+      const limit = opts.limit ?? (opts.q ? 100 : filtered.length);
+      return Ok(filtered.slice(0, limit));
     } catch (err) {
       return Err(toRepoError(err));
     }
+  },
+
+  /** Preload the full vendor list into cache. Called from startup warmup. */
+  async warmup(): Promise<void> {
+    await vendorListCache.get(loadFullVendorList);
   },
 
   async findByCode(code: string): Promise<Result<Vendor>> {
     try {
       const { path, password } = openRicsDb(RicsDb.Vendors);
       const normalized = normalizeCode(code);
-      const rows = executeQuery<VendorRow>(
+      const rows = await executeQuery<VendorRow>(
         path,
         password,
         `SELECT ${allColumnsSql()} FROM [Vendor Master] WHERE [Code] = ?`,
@@ -354,7 +360,7 @@ export const VendorRepository = {
 
       // Uniqueness check (mirrors DepartmentRepository pattern — Code isn't a
       // declared PK, so we can't rely on a DB constraint violation).
-      const existing = executeQuery<{ n: number }>(
+      const existing = await executeQuery<{ n: number }>(
         path,
         password,
         'SELECT COUNT(*) AS n FROM [Vendor Master] WHERE [Code] = ?',
@@ -368,12 +374,13 @@ export const VendorRepository = {
       }
 
       const params = insertParams({ ...input, code: normalized }, new Date());
-      executeNonQuery(
+      await executeNonQuery(
         path,
         password,
         `INSERT INTO [Vendor Master] (${allColumnsSql()}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         params,
       );
+      vendorListCache.invalidate();
       return this.findByCode(normalized);
     } catch (err) {
       return Err(toRepoError(err));
@@ -442,7 +449,7 @@ export const VendorRepository = {
         { value: new Date(), type: 'date' },
         { value: merged.code, type: 'string' },
       ];
-      executeNonQuery(
+      await executeNonQuery(
         path,
         password,
         `UPDATE [Vendor Master] SET
@@ -472,6 +479,7 @@ export const VendorRepository = {
       );
       // Flaky-rowcount note (see DepartmentRepository.update): re-read and
       // return the row rather than trust rowsAffected from Jet.
+      vendorListCache.invalidate();
       return this.findByCode(merged.code);
     } catch (err) {
       return Err(toRepoError(err));
@@ -482,7 +490,7 @@ export const VendorRepository = {
     try {
       const { path, password } = openRicsDb(RicsDb.Vendors);
       const normalized = normalizeCode(code);
-      const rows = executeNonQuery(
+      const rows = await executeNonQuery(
         path,
         password,
         'DELETE FROM [Vendor Master] WHERE [Code] = ?',
@@ -490,7 +498,7 @@ export const VendorRepository = {
       );
       if (rows === 0) {
         // Could be a legit Jet-rowcount flake; double-check with a SELECT.
-        const check = executeQuery<{ n: number }>(
+        const check = await executeQuery<{ n: number }>(
           path,
           password,
           'SELECT COUNT(*) AS n FROM [Vendor Master] WHERE [Code] = ?',
@@ -504,6 +512,7 @@ export const VendorRepository = {
         }
         return Err({ kind: 'NotFound', message: `Vendor '${normalized}' not found.` });
       }
+      vendorListCache.invalidate();
       return Ok(undefined);
     } catch (err) {
       return Err(toRepoError(err));
@@ -515,7 +524,7 @@ export const VendorRepository = {
   async findStoreAccounts(code: string): Promise<Result<VendorStoreAccount[]>> {
     try {
       const { path, password } = openRicsDb(RicsDb.Vendors);
-      const rows = executeQuery<VendorAccountRow>(
+      const rows = await executeQuery<VendorAccountRow>(
         path,
         password,
         'SELECT [Code], [Store], [Account], [DateLastChanged] FROM [Vendor Accounts] WHERE [Code] = ? ORDER BY [Store]',
@@ -546,7 +555,7 @@ export const VendorRepository = {
       // (separated by a SELECT) because wrapping it in a transaction would
       // require callers to hold one MDB connection open and we'd rather keep
       // the PowerShell-per-op model consistent with the rest of Phase 1.
-      const existing = executeQuery<{ n: number }>(
+      const existing = await executeQuery<{ n: number }>(
         path,
         password,
         'SELECT COUNT(*) AS n FROM [Vendor Accounts] WHERE [Code] = ? AND [Store] = ?',
@@ -557,7 +566,7 @@ export const VendorRepository = {
       );
       const now = new Date();
       if ((existing[0]?.n ?? 0) > 0) {
-        executeNonQuery(
+        await executeNonQuery(
           path,
           password,
           'UPDATE [Vendor Accounts] SET [Account] = ?, [DateLastChanged] = ? WHERE [Code] = ? AND [Store] = ?',
@@ -569,7 +578,7 @@ export const VendorRepository = {
           ],
         );
       } else {
-        executeNonQuery(
+        await executeNonQuery(
           path,
           password,
           'INSERT INTO [Vendor Accounts] ([Code], [Store], [Account], [DateLastChanged]) VALUES (?, ?, ?, ?)',
@@ -581,7 +590,7 @@ export const VendorRepository = {
           ],
         );
       }
-      const rows = executeQuery<VendorAccountRow>(
+      const rows = await executeQuery<VendorAccountRow>(
         path,
         password,
         'SELECT [Code], [Store], [Account], [DateLastChanged] FROM [Vendor Accounts] WHERE [Code] = ? AND [Store] = ?',
@@ -611,7 +620,7 @@ export const VendorRepository = {
     }
     try {
       const { path, password } = openRicsDb(RicsDb.Vendors);
-      const rows = executeNonQuery(
+      const rows = await executeNonQuery(
         path,
         password,
         'DELETE FROM [Vendor Accounts] WHERE [Code] = ? AND [Store] = ?',
@@ -642,7 +651,7 @@ export const VendorRepository = {
   async countSkusUsingVendor(code: string): Promise<Result<number>> {
     try {
       const { path, password } = openRicsDb(RicsDb.InventoryMaster);
-      const rows = executeQuery<{ n: number }>(
+      const rows = await executeQuery<{ n: number }>(
         path,
         password,
         'SELECT COUNT(*) AS n FROM [InventoryMaster] WHERE [Vendor] = ?',
@@ -664,7 +673,7 @@ export const VendorRepository = {
   async countSkusPerVendor(): Promise<Result<Record<string, number>>> {
     try {
       const { path, password } = openRicsDb(RicsDb.InventoryMaster);
-      const rows = executeQuery<{ Vendor: string | null; n: number }>(
+      const rows = await executeQuery<{ Vendor: string | null; n: number }>(
         path,
         password,
         'SELECT [Vendor], COUNT(*) AS n FROM [InventoryMaster] WHERE [Vendor] IS NOT NULL GROUP BY [Vendor]',

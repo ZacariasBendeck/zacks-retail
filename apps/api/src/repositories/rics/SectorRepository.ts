@@ -76,7 +76,7 @@ export const SectorRepository = {
   async list(): Promise<Result<Sector[]>> {
     try {
       const { path, password } = openRicsDb(RicsDb.Sectors);
-      const rows = executeQuery<SectorRow>(
+      const rows = await executeQuery<SectorRow>(
         path,
         password,
         'SELECT [Number], [Desc], [BegDept], [EndDept], [DateLastChanged] FROM [Sectors] ORDER BY [Number]',
@@ -90,7 +90,7 @@ export const SectorRepository = {
   async getByNumber(number: number): Promise<Result<Sector>> {
     try {
       const { path, password } = openRicsDb(RicsDb.Sectors);
-      const rows = executeQuery<SectorRow>(
+      const rows = await executeQuery<SectorRow>(
         path,
         password,
         'SELECT [Number], [Desc], [BegDept], [EndDept], [DateLastChanged] FROM [Sectors] WHERE [Number] = ?',
@@ -111,7 +111,7 @@ export const SectorRepository = {
 
     try {
       const { path, password } = openRicsDb(RicsDb.Sectors);
-      const existing = executeQuery<{ n: number }>(
+      const existing = await executeQuery<{ n: number }>(
         path,
         password,
         'SELECT COUNT(*) AS n FROM [Sectors] WHERE [Number] = ?',
@@ -127,7 +127,7 @@ export const SectorRepository = {
         { value: input.endDept, type: 'integer' },
         { value: new Date(), type: 'date' },
       ];
-      executeNonQuery(
+      await executeNonQuery(
         path,
         password,
         'INSERT INTO [Sectors] ([Number], [Desc], [BegDept], [EndDept], [DateLastChanged]) VALUES (?, ?, ?, ?, ?)',
@@ -161,7 +161,7 @@ export const SectorRepository = {
         { value: new Date(), type: 'date' },
         { value: number, type: 'integer' },
       ];
-      executeNonQuery(
+      await executeNonQuery(
         path,
         password,
         'UPDATE [Sectors] SET [Desc] = ?, [BegDept] = ?, [EndDept] = ?, [DateLastChanged] = ? WHERE [Number] = ?',
@@ -181,7 +181,7 @@ export const SectorRepository = {
   async findByDepartment(departmentNumber: number): Promise<Result<Sector>> {
     try {
       const { path, password } = openRicsDb(RicsDb.Sectors);
-      const rows = executeQuery<SectorRow>(
+      const rows = await executeQuery<SectorRow>(
         path,
         password,
         `SELECT [Number], [Desc], [BegDept], [EndDept], [DateLastChanged]
@@ -208,7 +208,7 @@ export const SectorRepository = {
   async delete(number: number): Promise<Result<void>> {
     try {
       const { path, password } = openRicsDb(RicsDb.Sectors);
-      const rows = executeNonQuery(
+      const rows = await executeNonQuery(
         path,
         password,
         'DELETE FROM [Sectors] WHERE [Number] = ?',
