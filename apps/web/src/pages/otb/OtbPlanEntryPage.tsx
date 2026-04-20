@@ -1,5 +1,5 @@
 import {
-  Button, Card, Col, Form, Input, InputNumber, Layout, Modal, Row, Space, Table, Tag, Tooltip, Typography, message,
+  Button, Card, Col, Form, Input, InputNumber, Layout, Modal, Row, Select, Space, Table, Tag, Tooltip, Typography, message,
 } from 'antd'
 import { useEffect, useMemo, useState } from 'react'
 import {
@@ -12,14 +12,15 @@ import {
   useUpdateOtbPlanRow,
 } from '../../hooks/useOtbPlanRows'
 import { useOtbEntryMethod } from '../../hooks/useCompanySettings'
+import { useStores } from '../../hooks/useStores'
 import type { CreateOtbPlanRowPayload, MonthlyArray, OtbPlanRow } from '../../types/otbPlanRow'
 
 const MONTH_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 const EMPTY_MONTHLY: MonthlyArray = Array(12).fill(null)
 
-function emptyRowInput(fiscalYear: number): CreateOtbPlanRowPayload {
+function emptyRowInput(storeId: string, fiscalYear: number): CreateOtbPlanRowPayload {
   return {
-    storeId: 'MAIN',
+    storeId,
     categoryId: '',
     fiscalYear,
     pctChangeLyToCy: null,
@@ -35,15 +36,24 @@ function emptyRowInput(fiscalYear: number): CreateOtbPlanRowPayload {
 
 export default function OtbPlanEntryPage() {
   const [fiscalYear, setFiscalYear] = useState<number>(new Date().getFullYear())
-  const storeId = 'MAIN' // Phase 1: single store — to be replaced by store-ops contract
+  const [storeId, setStoreId] = useState<string | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [isNew, setIsNew] = useState(false)
-  const [draft, setDraft] = useState<CreateOtbPlanRowPayload>(emptyRowInput(fiscalYear))
+  const [draft, setDraft] = useState<CreateOtbPlanRowPayload>(emptyRowInput('', fiscalYear))
   const [copyModalOpen, setCopyModalOpen] = useState(false)
-  const [copyTarget, setCopyTarget] = useState({ storeId: 'MAIN', categoryId: '' })
+  const [copyTarget, setCopyTarget] = useState<{ storeId: string | null; categoryId: string }>({ storeId: null, categoryId: '' })
 
+  const storesQ = useStores()
   const entryMethodQ = useOtbEntryMethod()
-  const rowsQ = useOtbPlanRows({ storeId, fiscalYear, page: 1, pageSize: 200 })
+
+  // Default storeId to the first active store once the list loads
+  useEffect(() => {
+    if (storeId !== null || !storesQ.data) return
+    const firstActive = storesQ.data.find((s) => s.active) ?? storesQ.data[0]
+    if (firstActive) setStoreId(String(firstActive.id))
+  }, [storesQ.data, storeId])
+
+  const rowsQ = useOtbPlanRows({ storeId: storeId ?? undefined, fiscalYear, page: 1, pageSize: 200 })
   const rowQ = useOtbPlanRow(selectedId)
 
   const createMut = useCreateOtbPlanRow()
@@ -64,9 +74,13 @@ export default function OtbPlanEntryPage() {
   }
 
   function onStartNew() {
+    if (!storeId) {
+      message.error('Select a store first')
+      return
+    }
     setIsNew(true)
     setSelectedId(null)
-    setDraft(emptyRowInput(fiscalYear))
+    setDraft(emptyRowInput(storeId, fiscalYear))
   }
 
   async function onSave() {
@@ -108,6 +122,14 @@ export default function OtbPlanEntryPage() {
 
   async function onConfirmCopy() {
     if (!selectedId) return
+    if (!copyTarget.storeId) {
+      message.error('Pick a target store')
+      return
+    }
+    if (!copyTarget.categoryId.trim()) {
+      message.error('Enter a target category')
+      return
+    }
     try {
       const copied = await copyMut.mutateAsync({
         id: selectedId,
@@ -157,12 +179,22 @@ export default function OtbPlanEntryPage() {
 
   return (
     <Layout style={{ padding: 16 }}>
-      <Space style={{ marginBottom: 12 }}>
+      <Space style={{ marginBottom: 12 }} wrap>
         <Typography.Text>Store:</Typography.Text>
-        <Tag>MAIN</Tag>
+        <Select
+          style={{ minWidth: 220 }}
+          loading={storesQ.isLoading}
+          value={storeId}
+          onChange={(v) => { setStoreId(v); setSelectedId(null); setIsNew(false); }}
+          placeholder="Select a store"
+          options={(storesQ.data ?? []).map((s) => ({
+            value: String(s.id),
+            label: `${s.code} — ${s.name}${s.active ? '' : ' (inactive)'}`,
+          }))}
+        />
         <Typography.Text>Fiscal year:</Typography.Text>
         <InputNumber value={fiscalYear} onChange={(v) => setFiscalYear(Number(v ?? fiscalYear))} min={2020} max={2099} />
-        <Button type="primary" onClick={onStartNew}>New row</Button>
+        <Button type="primary" onClick={onStartNew} disabled={!storeId}>New row</Button>
         <Tag color="blue">Method: {method}</Tag>
       </Space>
 
@@ -273,7 +305,17 @@ export default function OtbPlanEntryPage() {
       >
         <Form layout="vertical">
           <Form.Item label="Target store">
-            <Input value={copyTarget.storeId} onChange={(e) => setCopyTarget((t) => ({ ...t, storeId: e.target.value }))} />
+            <Select
+              style={{ width: '100%' }}
+              loading={storesQ.isLoading}
+              value={copyTarget.storeId}
+              onChange={(v) => setCopyTarget((t) => ({ ...t, storeId: v }))}
+              placeholder="Select a store"
+              options={(storesQ.data ?? []).map((s) => ({
+                value: String(s.id),
+                label: `${s.code} — ${s.name}`,
+              }))}
+            />
           </Form.Item>
           <Form.Item label="Target category">
             <Input value={copyTarget.categoryId} onChange={(e) => setCopyTarget((t) => ({ ...t, categoryId: e.target.value }))} />

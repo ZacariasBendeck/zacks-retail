@@ -48,6 +48,9 @@ describe('OtbPlanEntryPage', () => {
       if (url.includes('/otb-entry-method')) {
         return mockResponse({ value: 'CHANGE_OVER_LAST_YEAR' })
       }
+      if (url.includes('/pos/stores')) {
+        return mockResponse({ stores: [{ id: 1, code: 'MAIN', name: 'Main Store', active: true }] })
+      }
       return mockResponse({})
     })
 
@@ -76,6 +79,9 @@ describe('OtbPlanEntryPage', () => {
       if (url.includes('/otb-entry-method')) {
         return mockResponse({ value: 'CHANGE_OVER_LAST_YEAR' })
       }
+      if (url.includes('/pos/stores')) {
+        return mockResponse({ stores: [{ id: 1, code: 'MAIN', name: 'Main Store', active: true }] })
+      }
       return mockResponse({})
     })
 
@@ -101,6 +107,9 @@ describe('OtbPlanEntryPage', () => {
       }
       if (url.includes('/otb-entry-method')) {
         return mockResponse({ value: 'CHANGE_OVER_LAST_YEAR' })
+      }
+      if (url.includes('/pos/stores')) {
+        return mockResponse({ stores: [{ id: 1, code: 'MAIN', name: 'Main Store', active: true }] })
       }
       return mockResponse({})
     })
