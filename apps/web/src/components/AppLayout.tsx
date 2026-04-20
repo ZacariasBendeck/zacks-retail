@@ -101,6 +101,11 @@ const menuItems = [
     ],
   },
   {
+    key: '/purchase-planning',
+    icon: <FundOutlined />,
+    label: 'Plan de Compras',
+  },
+  {
     key: '/customers',
     icon: <TeamOutlined />,
     label: 'Customers',

@@ -36,6 +36,7 @@ const PurchaseOrderDetailPage = lazy(() => import('./pages/purchasing/PurchaseOr
 const PoEntryMockPage = lazy(() => import('./pages/purchasing/PoEntryMockPage'))
 const PoReceiveMockPage = lazy(() => import('./pages/purchasing/PoReceiveMockPage'))
 const OtbDashboardPage = lazy(() => import('./pages/otb/OtbDashboardPage'))
+const PurchasePlanningPage = lazy(() => import('./pages/purchasePlanning/PurchasePlanningPage'))
 const OtbMonthlyPlansPage = lazy(() => import('./pages/otb/OtbMonthlyPlansPage'))
 const OtbPlanEntryPage = lazy(() => import('./pages/otb/OtbPlanEntryPage'))
 const SalesReportsHubPage = lazy(() => import('./pages/salesReporting/SalesReportsHubPage'))
@@ -166,6 +167,7 @@ export default function App() {
             <Route path="/otb/monthly-plans" element={<OtbMonthlyPlansPage />} />
             <Route path="/otb/dashboard" element={<OtbDashboardPage />} />
             <Route path="/otb/plan" element={<OtbPlanEntryPage />} />
+            <Route path="/purchase-planning" element={<PurchasePlanningPage />} />
             <Route path="/reports" element={<Navigate to="/reports/sales" replace />} />
             <Route path="/reports/on-hand" element={<OnHandReportPage />} />
             <Route path="/reports/sales" element={<SalesReportsHubPage />} />

@@ -192,6 +192,95 @@ WHERE ([Status] IS NULL OR [Status] <> 'D')`;
   return out;
 }
 
+// ─────────────────────────── units-by-SKU export (purchase-planning) ──────
+//
+// Returns a pre-joined flat list of per-(SKU × Store) on-hand units together
+// with the master fields needed to bucket the rows at a caller-defined
+// dimension (department / category / vendor / etc).
+//
+// Purpose: the purchase-planning module (docs/modules/purchase-planning.md)
+// needs on-hand **in units**, not dollars, grouped by arbitrary dimensions
+// it owns the mapping of. Rather than adding N dimension-specific functions
+// to this file, we expose the raw join so callers can bucket however they
+// need. Reuses the two 5-minute caches above, so the OLEDB round-trip is
+// amortised across every caller.
+//
+// Each row:
+//   - `sku`, `store`, `onHand` (units, already summed across the 18 size
+//     segments; zero-on-hand rows are dropped by the underlying query)
+//   - `category`, `vendor`, `currentCost` (from InventoryMaster; only rows
+//     with non-deleted Status are included)
+//
+// Rows with no master match (orphan QUA rows) are excluded.
+
+export interface OnHandUnitsRow {
+  sku: string;
+  store: number;
+  onHand: number;
+  category: number | null;
+  vendor: string | null;
+  currentCost: number;
+}
+
+export async function getOnHandSkuRows(params: {
+  storeNumbers?: number[];
+} = {}): Promise<OnHandUnitsRow[]> {
+  const qua = await cached('onhand:qua', async () => {
+    const pw = getOrRecoverPassword(INVQUA_MDB());
+    const onHandExpr = Array.from({ length: 18 }, (_, i) =>
+      `IIF([OnHand_${pad2(i + 1)}] IS NULL, 0, [OnHand_${pad2(i + 1)}])`,
+    ).join(' + ');
+    const quaSql = `SELECT [SKU], [Store], SUM(${onHandExpr}) AS TotalOnHand
+FROM [Inventory Quantities]
+GROUP BY [SKU], [Store]
+HAVING SUM(${onHandExpr}) > 0`;
+    return (
+      (await runPowerShellJson<QuaRow[]>(buildSelectScript(INVQUA_MDB(), pw, quaSql))) ?? []
+    );
+  });
+
+  const masters = await cached('onhand:master', async () => {
+    const pw = getOrRecoverPassword(INVMAS_MDB());
+    const masterSql = `SELECT [SKU], [Category], [Vendor], [Season], [CurrentCost]
+FROM [InventoryMaster]
+WHERE ([Status] IS NULL OR [Status] <> 'D')`;
+    return (
+      (await runPowerShellJson<MasterRow[]>(buildSelectScript(INVMAS_MDB(), pw, masterSql))) ?? []
+    );
+  });
+
+  const masterBySku = new Map<string, MasterRow>();
+  for (const m of masters) {
+    if (!m.SKU) continue;
+    masterBySku.set(m.SKU.trim(), m);
+  }
+
+  const storeFilter = params.storeNumbers && params.storeNumbers.length > 0
+    ? new Set(params.storeNumbers.map((n) => Number(n)))
+    : null;
+
+  const out: OnHandUnitsRow[] = [];
+  for (const q of qua) {
+    const sku = q.SKU?.trim();
+    if (!sku) continue;
+    const store = Number(q.Store ?? 0);
+    if (storeFilter && !storeFilter.has(store)) continue;
+    const m = masterBySku.get(sku);
+    if (!m) continue;
+    const onHand = Number(q.TotalOnHand ?? 0);
+    if (onHand <= 0) continue;
+    out.push({
+      sku,
+      store,
+      onHand,
+      category: m.Category != null ? Number(m.Category) : null,
+      vendor: m.Vendor?.trim() || null,
+      currentCost: Number(m.CurrentCost ?? 0),
+    });
+  }
+  return out;
+}
+
 function dimensionKeyFor(
   reportType: SalesAnalysisReportType,
   sku: string,
