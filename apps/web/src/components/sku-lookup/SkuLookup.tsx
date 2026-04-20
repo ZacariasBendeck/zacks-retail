@@ -72,6 +72,22 @@ export const SkuLookup: React.FC<SkuLookupProps> = ({
 
   const columns: ColumnsType<SkuLookupRow> = [
     {
+      title: '',
+      key: 'thumb',
+      width: 44,
+      render: (_: unknown, record: SkuLookupRow) =>
+        record.pictureUrl ? (
+          <img
+            src={record.pictureUrl}
+            alt=""
+            loading="lazy"
+            style={{ width: 32, height: 32, objectFit: 'cover', border: '1px solid #eee', borderRadius: 2 }}
+          />
+        ) : (
+          <span style={{ display: 'inline-block', width: 32, height: 32, border: '1px dashed #ddd', borderRadius: 2, color: '#ccc', textAlign: 'center', lineHeight: '32px', fontSize: 10 }}>—</span>
+        ),
+    },
+    {
       title: 'SKU',
       dataIndex: 'skuCode',
       key: 'skuCode',

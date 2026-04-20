@@ -19,6 +19,14 @@ export default defineConfig({
         target: 'http://localhost:4000',
         changeOrigin: true,
       },
+      // Product pictures served by the API from RICS_IMAGES_DIR (defaults to
+      // C:/RICSWIN/ricspics). Without this proxy the <img src="/rics-images/…"/>
+      // hits the Vite dev server, which returns the SPA HTML and the image fails
+      // silently.
+      '/rics-images': {
+        target: 'http://localhost:4000',
+        changeOrigin: true,
+      },
     },
   },
   build: {

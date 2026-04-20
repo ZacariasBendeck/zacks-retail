@@ -1052,7 +1052,7 @@ const SKU_LOOKUP_INDEX_TTL_MS = 10 * 60_000;
 
 type SkuLookupIndexRow = Pick<
   InventoryMasterRow,
-  'SKU' | 'Desc' | 'Vendor' | 'Category' | 'StyleColor'
+  'SKU' | 'Desc' | 'Vendor' | 'Category' | 'StyleColor' | 'PictureFileName'
     | 'ListPrice' | 'RetailPrice' | 'MarkDownPrice1' | 'MarkDownPrice2' | 'CurrentPrice'
 >;
 
@@ -1071,7 +1071,7 @@ async function loadSkuLookupIndex(): Promise<SkuLookupIndexRow[]> {
     // need to look up any SKU, not just currently-priced ones.
     const sql = `
 SELECT
-  [SKU], [Desc], [Vendor], [Category], [StyleColor],
+  [SKU], [Desc], [Vendor], [Category], [StyleColor], [PictureFileName],
   [ListPrice], [RetailPrice], [MarkDownPrice1], [MarkDownPrice2], [CurrentPrice]
 FROM [InventoryMaster]
 WHERE ([Status] IS NULL OR [Status] <> 'D')
@@ -1186,6 +1186,8 @@ export interface SkuLookupRow {
   category: string;
   styleColor: string | null;
   currentPrice: number | null;
+  /** `/rics-images/<filename>` URL for the SKU's picture, or null. */
+  pictureUrl: string | null;
 }
 
 export interface SkuLookupParams {
@@ -1249,15 +1251,19 @@ export async function searchSkusForLookup(
   const limit = Math.max(1, Math.min(params.limit ?? 50, 500));
   const page = filtered.slice(offset, offset + limit);
 
-  const rows: SkuLookupRow[] = page.map((row) => ({
-    skuId: String(row.SKU ?? ''),
-    skuCode: String(row.SKU ?? ''),
-    description: String(row.Desc ?? ''),
-    vendor: String(row.Vendor ?? ''),
-    category: String(row.Category ?? ''),
-    styleColor: row.StyleColor ? String(row.StyleColor) : null,
-    currentPrice: resolveCurrentPrice(row) || null,
-  }));
+  const rows: SkuLookupRow[] = page.map((row) => {
+    const pictureFile = row.PictureFileName?.trim();
+    return {
+      skuId: String(row.SKU ?? ''),
+      skuCode: String(row.SKU ?? ''),
+      description: String(row.Desc ?? ''),
+      vendor: String(row.Vendor ?? ''),
+      category: String(row.Category ?? ''),
+      styleColor: row.StyleColor ? String(row.StyleColor) : null,
+      currentPrice: resolveCurrentPrice(row) || null,
+      pictureUrl: pictureFile ? `/rics-images/${encodeURIComponent(pictureFile)}` : null,
+    };
+  });
 
   return { rows, total };
 }
