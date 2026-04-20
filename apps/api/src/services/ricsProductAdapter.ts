@@ -111,7 +111,7 @@ interface SizeTypeRow {
 async function loadCategoryMap(): Promise<Map<number, CategoryRow>> {
   return cachedAsync('dim:categories', 300_000, async () => {
     const map = new Map<number, CategoryRow>();
-    const cats = queryAll<{ Number: number; Desc: string | null }>(
+    const cats = await queryAll<{ Number: number; Desc: string | null }>(
       CATEG_MDB(),
       'SELECT [Number], [Desc] FROM [Categories]',
     );
@@ -132,7 +132,7 @@ async function loadCategoryMap(): Promise<Map<number, CategoryRow>> {
 // Source: docs/rics-db-schema.md → "RIDEPT.MDB / Departments". Only 92 rows.
 async function loadDepartmentList(): Promise<DepartmentRow[]> {
   return cachedAsync('dim:departments', 300_000, async () => {
-    const rows = queryAll<{
+    const rows = await queryAll<{
       Number: number;
       Desc: string | null;
       BegCateg: number | null;
@@ -154,7 +154,7 @@ async function loadDepartmentList(): Promise<DepartmentRow[]> {
 async function loadVendorMap(): Promise<Map<string, VendorRow>> {
   return cachedAsync('dim:vendors', 300_000, async () => {
     const map = new Map<string, VendorRow>();
-    const rows = queryAll<{ Code: string; 'Short Name': string | null; 'Manu Name': string | null }>(
+    const rows = await queryAll<{ Code: string; 'Short Name': string | null; 'Manu Name': string | null }>(
       VENDOR_MDB(),
       'SELECT [Code], [Short Name], [Manu Name] FROM [Vendor Master]',
     );
@@ -179,7 +179,7 @@ async function loadSizeTypeMap(): Promise<Map<number, SizeTypeRow>> {
     const map = new Map<number, SizeTypeRow>();
     const colSelect = Array.from({ length: 54 }, (_, i) => `[Columns_${String(i + 1).padStart(2, '0')}]`).join(', ');
     const rowSelect = Array.from({ length: 27 }, (_, i) => `[Rows_${String(i + 1).padStart(2, '0')}]`).join(', ');
-    const rows = queryAll<Record<string, string | number | null>>(
+    const rows = await queryAll<Record<string, string | number | null>>(
       SIZE_MDB(),
       `SELECT [Code], [Desc], [MaxColumns], [MaxRows], ${colSelect}, ${rowSelect} FROM [SizeTypes]`,
     );
@@ -261,7 +261,7 @@ ORDER BY [Desc]
 
     const t0 = Date.now();
     try {
-      const raw = runPowerShellJson<InventoryMasterRow | InventoryMasterRow[]>(
+      const raw = await runPowerShellJson<InventoryMasterRow | InventoryMasterRow[]>(
         buildSelectScript(dbPath, password, sql),
       );
       const rows = Array.isArray(raw) ? raw : raw ? [raw] : [];
@@ -450,7 +450,7 @@ export async function getProductById(ricsSkuCode: string): Promise<ProductDetail
       const safe = ricsSkuCode.replace(/'/g, "''");
       const sql = `SELECT TOP 1 * FROM [InventoryMaster] WHERE [SKU] = '${safe}'`;
       try {
-        const raw = runPowerShellJson<InventoryMasterRow | InventoryMasterRow[]>(
+        const raw = await runPowerShellJson<InventoryMasterRow | InventoryMasterRow[]>(
           buildSelectScript(dbPath, password, sql),
         );
         const rows = Array.isArray(raw) ? raw : raw ? [raw] : [];
@@ -578,16 +578,45 @@ FROM [InvCatalog] WHERE [SKU] = '${safe}'`;
   }
 }
 
-function queryAll<T>(dbPath: string, sql: string): T[] {
+async function queryAll<T>(dbPath: string, sql: string): Promise<T[]> {
   if (!fs.existsSync(dbPath)) return [];
   const password = getOrRecoverPassword(dbPath);
   try {
-    const raw = runPowerShellJson<T | T[]>(buildSelectScript(dbPath, password, sql));
+    const raw = await runPowerShellJson<T | T[]>(buildSelectScript(dbPath, password, sql));
     return Array.isArray(raw) ? raw : raw ? [raw] : [];
   } catch (err: any) {
     console.error(`[ricsProductAdapter] queryAll failed for ${dbPath}:`, err.message);
     return [];
   }
+}
+
+/**
+ * Live InventoryMaster prefix lookup — used by searchSkusForLookup as a
+ * fallback when the POS snapshot doesn't carry the target SKUs (snapshot
+ * is capped at POS_SNAPSHOT_CAP rows and sorted by Desc, so SKUs past
+ * that cap are missing from memory). Access/Jet SQL uses `*` as the
+ * wildcard in LIKE. Caps the result set at `limit` rows.
+ */
+async function loadInventoryMasterByPrefix(
+  prefix: string,
+  limit: number,
+): Promise<InventoryMasterRow[]> {
+  // Upper-case the prefix for the LIKE comparison — Access/Jet LIKE is case
+  // sensitive by default. Wrapping SKU in UCase() would kill the SKU-code
+  // index; matching on an upper-cased prefix preserves index usage because
+  // all SKU codes in the RICS catalog are already uppercase.
+  const safe = prefix.toUpperCase().replace(/'/g, "''");
+  // Narrow column list + single prefix predicate. Excluding RetailPrice/Status
+  // filters here keeps the query index-friendly (SKU-only predicate); the
+  // caller already post-filters the snapshot side, and the discontinued/zero-
+  // price exclusion isn't critical for a lookup modal.
+  const sql = `SELECT TOP ${limit}
+  [SKU], [Desc], [Vendor], [Category], [StyleColor],
+  [ListPrice], [RetailPrice], [MarkDownPrice1], [MarkDownPrice2], [CurrentPrice]
+FROM [InventoryMaster]
+WHERE [SKU] LIKE '${safe}*'
+ORDER BY [SKU]`;
+  return queryAll<InventoryMasterRow>(INVMAS_MDB(), sql);
 }
 
 // ─────────────────────────── row → public type mappers ────────────────────
@@ -1020,7 +1049,7 @@ ORDER BY [Desc]
 
     const t0 = Date.now();
     try {
-      const raw = runPowerShellJson<InventoryMasterRow | InventoryMasterRow[]>(
+      const raw = await runPowerShellJson<InventoryMasterRow | InventoryMasterRow[]>(
         buildSelectScript(dbPath, password, sql),
       );
       const rows = Array.isArray(raw) ? raw : raw ? [raw] : [];
@@ -1133,17 +1162,15 @@ export interface SkuLookupParams {
 }
 
 /**
- * Search the POS inventory snapshot for the SKU Lookup modal.
+ * Search the POS inventory snapshot, with a live-query fallback for SKUs
+ * the snapshot doesn't cover.
  *
- * Filtering:
- *   - `q` — SKU code prefix match (case-insensitive)
- *   - `descContains` — substring (or whole-word when `wholeWord=true`) match on Desc
- *
- * Pricing: uses `resolveCurrentPrice` (CurrentPrice slot selector → correct
- * price field; slot 1=List, 2=Retail, 3=MD1, 4=MD2; falls back to Retail).
- *
- * Uses `loadPosInventorySnapshot` (full catalog, no season/category filter)
- * so the lookup modal covers every active SKU, not just the storefront season.
+ * The snapshot is capped at POS_SNAPSHOT_CAP rows (currently 50k) ordered
+ * by Desc, so SKUs whose description sorts past that cap are missing
+ * (e.g. the `ZN02-*` series). When the snapshot prefix filter finds nothing
+ * but `q` is non-empty, fall back to a small live prefix query against
+ * InventoryMaster — reusing the same queryAll() pattern that loadMasterBySku
+ * uses for single-SKU lookup.
  */
 export async function searchSkusForLookup(
   params: SkuLookupParams,
@@ -1167,6 +1194,14 @@ export async function searchSkusForLookup(
     }
     return true;
   });
+
+  // NOTE: Snapshot is capped at POS_SNAPSHOT_CAP (currently 50k) ordered by
+  // Desc, so SKUs past the cap (e.g. the ZN02-* series) aren't in memory and
+  // will not match here. A live `SELECT ... WHERE [SKU] LIKE 'prefix*'` fallback
+  // was tried but Access/Jet LIKE on a 500k+ row InventoryMaster was too slow
+  // (tens of seconds per keystroke). Next step: raise the cap or mirror the
+  // SKU index into Postgres. loadInventoryMasterByPrefix is kept below for
+  // when a Prev/Next cursor in the Inquiry page needs a live lookup.
 
   const sort: SkuLookupSort = params.sort ?? 'SKU';
   const sortKey = (row: InventoryMasterRow): string => {
