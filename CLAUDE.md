@@ -86,6 +86,10 @@ Superpowers does not replace these. `subagent-driven-development` dispatches wor
 - **`.env`** is the only place for secrets — never hardcode
 - **`odoo-addons/`** and **`db/migrations/`** (legacy Odoo cutover plumbing) are NOT the target of new work. The Odoo migration was abandoned.
 
+## HARD RULE — SKU Lookup index warmup must stay in place
+
+The API pre-loads the full `InventoryMaster` table into an in-memory index at startup. This powers the SKU Lookup modal on the Inventory Inquiry screen and **must cover every SKU in the catalog** — never a capped subset. Details, call sites, and the canonical log line to watch for live in [`docs/operations/sku-lookup-index-warmup.md`](docs/operations/sku-lookup-index-warmup.md). Read it before touching `loadSkuLookupIndex()`, `searchSkusForLookup()`, or the `warmup()` `Promise.all` in `apps/api/src/services/ricsProductAdapter.ts`.
+
 ## HARD RULE — no new branches, no worktrees
 
 The operator does **not** want branches or worktrees created for this project, ever. All work is committed directly to `master`. This overrides the default behavior of several superpowers skills and the Claude Code `Agent` tool's `isolation` parameter.
