@@ -1195,13 +1195,26 @@ export async function searchSkusForLookup(
     return true;
   });
 
-  // NOTE: Snapshot is capped at POS_SNAPSHOT_CAP (currently 50k) ordered by
-  // Desc, so SKUs past the cap (e.g. the ZN02-* series) aren't in memory and
-  // will not match here. A live `SELECT ... WHERE [SKU] LIKE 'prefix*'` fallback
-  // was tried but Access/Jet LIKE on a 500k+ row InventoryMaster was too slow
-  // (tens of seconds per keystroke). Next step: raise the cap or mirror the
-  // SKU index into Postgres. loadInventoryMasterByPrefix is kept below for
-  // when a Prev/Next cursor in the Inquiry page needs a live lookup.
+  // Snapshot is capped at POS_SNAPSHOT_CAP rows ordered by [Desc], so SKUs
+  // past the cap (e.g. the ZN02-* series) aren't in memory. When the snapshot
+  // filter returns empty and a prefix was supplied, fall back to a live
+  // indexed prefix query against InventoryMaster.[SKU] (primary key → Jet
+  // uses the index for LIKE 'prefix*', so the query is sub-second per call
+  // through the persistent PowerShell host).
+  if (filtered.length === 0 && q) {
+    const t0 = Date.now();
+    const live = await loadInventoryMasterByPrefix(q, 500);
+    console.log(`[searchSkusForLookup] live prefix "${q}" → ${live.length} rows in ${Date.now() - t0}ms`);
+    filtered = live.filter((row) => {
+      const description = String(row.Desc ?? '').toLowerCase();
+      if (!desc) return true;
+      if (whole) {
+        const tokens = description.split(/\s+/);
+        return tokens.includes(desc);
+      }
+      return description.includes(desc);
+    });
+  }
 
   const sort: SkuLookupSort = params.sort ?? 'SKU';
   const sortKey = (row: InventoryMasterRow): string => {
