@@ -105,15 +105,16 @@ interface SizeTypeRow {
   rows: string[];    // non-blank cell labels in row order (≤ 27)
 }
 
-// Source: docs/rics-db-schema.md → "RICATEG.MDB / Categories" + "RIDEPT.MDB / Departments".
-// Departments resolve via range lookup: BegCateg ≤ Category.Number ≤ EndCateg
-// (RIDEPT carries 92 rows, RICATEG ~616 — both trivial to cache.)
+// Dimension loaders — all read from `rics_mirror.*` as of the Phase-A cutover.
+// Source tables mirror the RICS MDB layouts 1:1 (snake_case column names); the
+// SQL aliases columns back to the PascalCase shape the downstream consumers
+// expect, so Map/return types are unchanged.
+
 async function loadCategoryMap(): Promise<Map<number, CategoryRow>> {
   return cachedAsync('dim:categories', 300_000, async () => {
     const map = new Map<number, CategoryRow>();
-    const cats = await queryAll<{ Number: number; Desc: string | null }>(
-      CATEG_MDB(),
-      'SELECT [Number], [Desc] FROM [Categories]',
+    const cats = await prisma.$queryRawUnsafe<{ Number: number; Desc: string | null }[]>(
+      `SELECT number AS "Number", "desc" AS "Desc" FROM rics_mirror.categories`,
     );
     const depts = await loadDepartmentList();
     for (const c of cats) {
@@ -129,34 +130,38 @@ async function loadCategoryMap(): Promise<Map<number, CategoryRow>> {
   });
 }
 
-// Source: docs/rics-db-schema.md → "RIDEPT.MDB / Departments". Only 92 rows.
 async function loadDepartmentList(): Promise<DepartmentRow[]> {
   return cachedAsync('dim:departments', 300_000, async () => {
-    const rows = await queryAll<{
+    const rows = await prisma.$queryRawUnsafe<{
       Number: number;
       Desc: string | null;
       BegCateg: number | null;
       EndCateg: number | null;
-    }>(DEPT_MDB(), 'SELECT [Number], [Desc], [BegCateg], [EndCateg] FROM [Departments]');
-    return rows
-      .filter((r) => r.BegCateg != null && r.EndCateg != null)
-      .map((r) => ({
-        number: r.Number,
-        name: (r.Desc || '').trim(),
-        begCateg: r.BegCateg as number,
-        endCateg: r.EndCateg as number,
-      }));
+    }[]>(
+      `SELECT number AS "Number", "desc" AS "Desc",
+              beg_categ AS "BegCateg", end_categ AS "EndCateg"
+         FROM rics_mirror.departments
+        WHERE beg_categ IS NOT NULL AND end_categ IS NOT NULL`,
+    );
+    return rows.map((r) => ({
+      number: r.Number,
+      name: (r.Desc || '').trim(),
+      begCateg: r.BegCateg as number,
+      endCateg: r.EndCateg as number,
+    }));
   });
 }
 
-// Source: docs/rics-db-schema.md → "RIVENDOR.MDB / Vendor Master". 22 cols, 2 254
-// rows in this customer's data. Code is the FK target for InventoryMaster.Vendor.
 async function loadVendorMap(): Promise<Map<string, VendorRow>> {
   return cachedAsync('dim:vendors', 300_000, async () => {
     const map = new Map<string, VendorRow>();
-    const rows = await queryAll<{ Code: string; 'Short Name': string | null; 'Manu Name': string | null }>(
-      VENDOR_MDB(),
-      'SELECT [Code], [Short Name], [Manu Name] FROM [Vendor Master]',
+    const rows = await prisma.$queryRawUnsafe<
+      { Code: string | null; 'Short Name': string | null; 'Manu Name': string | null }[]
+    >(
+      `SELECT code AS "Code",
+              short_name AS "Short Name",
+              manu_name AS "Manu Name"
+         FROM rics_mirror.vendor_master`,
     );
     for (const r of rows) {
       if (!r.Code) continue;
@@ -170,18 +175,24 @@ async function loadVendorMap(): Promise<Map<string, VendorRow>> {
   });
 }
 
-// Source: docs/rics-db-schema.md → "RISIZE.MDB / SizeTypes". The wide-column
-// shape (`Columns_01..54`, `Rows_01..27`) is unwound into ordered arrays so the
-// adapter can produce a flat sizes facet without additional MDB hits.
-// `NRMACodes` is empty for this customer — intentionally not loaded.
 async function loadSizeTypeMap(): Promise<Map<number, SizeTypeRow>> {
   return cachedAsync('dim:sizeTypes', 300_000, async () => {
     const map = new Map<number, SizeTypeRow>();
-    const colSelect = Array.from({ length: 54 }, (_, i) => `[Columns_${String(i + 1).padStart(2, '0')}]`).join(', ');
-    const rowSelect = Array.from({ length: 27 }, (_, i) => `[Rows_${String(i + 1).padStart(2, '0')}]`).join(', ');
-    const rows = await queryAll<Record<string, string | number | null>>(
-      SIZE_MDB(),
-      `SELECT [Code], [Desc], [MaxColumns], [MaxRows], ${colSelect}, ${rowSelect} FROM [SizeTypes]`,
+    // Build aliased SELECT for the wide columns/rows_NN fields so the shape
+    // matches the former MDB projection (PascalCase keys like "Columns_01").
+    const colSelect = Array.from({ length: 54 }, (_, i) => {
+      const n = String(i + 1).padStart(2, '0');
+      return `columns_${n} AS "Columns_${n}"`;
+    }).join(', ');
+    const rowSelect = Array.from({ length: 27 }, (_, i) => {
+      const n = String(i + 1).padStart(2, '0');
+      return `rows_${n} AS "Rows_${n}"`;
+    }).join(', ');
+    const rows = await prisma.$queryRawUnsafe<Record<string, string | number | null>[]>(
+      `SELECT code AS "Code", "desc" AS "Desc",
+              max_columns AS "MaxColumns", max_rows AS "MaxRows",
+              ${colSelect}, ${rowSelect}
+         FROM rics_mirror.size_types`,
     );
     for (const r of rows) {
       const code = Number(r.Code);
@@ -234,41 +245,60 @@ const STOREFRONT_CATEGORY_MAX = Number(process.env.RICS_STOREFRONT_CATEGORY_MAX 
 
 async function loadInventorySnapshot(): Promise<InventoryMasterRow[]> {
   return cachedAsync('inv:snapshot', SNAPSHOT_TTL_MS, async () => {
-    const dbPath = INVMAS_MDB();
-    if (!fs.existsSync(dbPath)) {
-      console.warn(`[ricsProductAdapter] RIINVMAS not found at ${dbPath}; snapshot empty.`);
-      return [];
-    }
-    const password = getOrRecoverPassword(dbPath);
-
-    const safeSeason = STOREFRONT_SEASON.replace(/'/g, "''");
-    const sql = `
-SELECT TOP ${INVENTORY_SNAPSHOT_CAP}
-  [SKU], [VendorSKU], [Category], [Vendor], [SizeType], [Desc], [StyleColor],
-  [Season], [Location],
-  [ListPrice], [RetailPrice], [MarkDownPrice1], [MarkDownPrice2], [CurrentPrice], [CurrentCost],
-  [OverSizeColumn], [OverSizeAmount], [Perks],
-  [Manufacturer], [LabelCode], [ColorCode], [Comment], [GroupCode], [KeyWords],
-  [PictureFileName], [Coupon], [LastPriceChange], [Status],
-  [DateLastChanged], [OrderMultiple], [OrderUOM]
-FROM [InventoryMaster]
-WHERE [RetailPrice] > 0
-  AND ([Status] IS NULL OR [Status] <> 'D')
-  AND [Season] = '${safeSeason}'
-  AND [Category] BETWEEN ${STOREFRONT_CATEGORY_MIN} AND ${STOREFRONT_CATEGORY_MAX}
-ORDER BY [Desc]
-`.trim();
-
+    // Filter values are env-set, not user input, but still parameterize to
+    // keep the raw-SQL path safe by default.
     const t0 = Date.now();
     try {
-      const raw = await runPowerShellJson<InventoryMasterRow | InventoryMasterRow[]>(
-        buildSelectScript(dbPath, password, sql),
+      const rows = await prisma.$queryRawUnsafe<InventoryMasterRow[]>(
+        `
+        SELECT
+          sku               AS "SKU",
+          vendor_sku        AS "VendorSKU",
+          category          AS "Category",
+          vendor            AS "Vendor",
+          size_type         AS "SizeType",
+          "desc"            AS "Desc",
+          style_color       AS "StyleColor",
+          season            AS "Season",
+          location          AS "Location",
+          list_price::float8        AS "ListPrice",
+          retail_price::float8      AS "RetailPrice",
+          mark_down_price1::float8  AS "MarkDownPrice1",
+          mark_down_price2::float8  AS "MarkDownPrice2",
+          current_price             AS "CurrentPrice",
+          current_cost::float8      AS "CurrentCost",
+          over_size_column          AS "OverSizeColumn",
+          over_size_amount::float8  AS "OverSizeAmount",
+          perks::float8     AS "Perks",
+          manufacturer      AS "Manufacturer",
+          label_code        AS "LabelCode",
+          color_code        AS "ColorCode",
+          comment           AS "Comment",
+          group_code        AS "GroupCode",
+          key_words         AS "KeyWords",
+          picture_file_name AS "PictureFileName",
+          coupon            AS "Coupon",
+          to_char(last_price_change AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS') AS "LastPriceChange",
+          status            AS "Status",
+          to_char(date_last_changed AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS') AS "DateLastChanged",
+          order_multiple    AS "OrderMultiple",
+          order_uom         AS "OrderUOM"
+        FROM rics_mirror.inventory_master
+        WHERE retail_price > 0
+          AND (status IS NULL OR status <> 'D')
+          AND season = $1
+          AND category BETWEEN $2 AND $3
+        ORDER BY "desc"
+        LIMIT ${INVENTORY_SNAPSHOT_CAP}
+        `,
+        STOREFRONT_SEASON,
+        STOREFRONT_CATEGORY_MIN,
+        STOREFRONT_CATEGORY_MAX,
       );
-      const rows = Array.isArray(raw) ? raw : raw ? [raw] : [];
-      console.log(`[ricsProductAdapter] snapshot loaded: ${rows.length} rows in ${Date.now() - t0}ms`);
+      console.log(`[ricsProductAdapter] snapshot loaded from rics_mirror: ${rows.length} rows in ${Date.now() - t0}ms`);
       return rows;
     } catch (err: any) {
-      console.error('[ricsProductAdapter] snapshot load failed:', err.message);
+      console.error('[ricsProductAdapter] snapshot load from rics_mirror failed:', err.message);
       return [];
     }
   });
@@ -448,19 +478,37 @@ export async function getProductById(ricsSkuCode: string): Promise<ProductDetail
 
     let row = snapshot.find((r) => r.SKU === ricsSkuCode) ?? null;
     if (!row) {
-      const dbPath = INVMAS_MDB();
-      if (!fs.existsSync(dbPath)) return null;
-      const password = getOrRecoverPassword(dbPath);
-      const safe = ricsSkuCode.replace(/'/g, "''");
-      const sql = `SELECT TOP 1 * FROM [InventoryMaster] WHERE [SKU] = '${safe}'`;
       try {
-        const raw = await runPowerShellJson<InventoryMasterRow | InventoryMasterRow[]>(
-          buildSelectScript(dbPath, password, sql),
+        const rows = await prisma.$queryRawUnsafe<InventoryMasterRow[]>(
+          `
+          SELECT
+            sku AS "SKU", vendor_sku AS "VendorSKU", category AS "Category",
+            vendor AS "Vendor", size_type AS "SizeType", "desc" AS "Desc",
+            style_color AS "StyleColor", season AS "Season", location AS "Location",
+            list_price::float8 AS "ListPrice", retail_price::float8 AS "RetailPrice",
+            mark_down_price1::float8 AS "MarkDownPrice1",
+            mark_down_price2::float8 AS "MarkDownPrice2",
+            current_price AS "CurrentPrice", current_cost::float8 AS "CurrentCost",
+            over_size_column AS "OverSizeColumn",
+            over_size_amount::float8 AS "OverSizeAmount",
+            perks::float8 AS "Perks", manufacturer AS "Manufacturer",
+            label_code AS "LabelCode", color_code AS "ColorCode",
+            comment AS "Comment", group_code AS "GroupCode",
+            key_words AS "KeyWords", picture_file_name AS "PictureFileName",
+            coupon AS "Coupon",
+            to_char(last_price_change AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS') AS "LastPriceChange",
+            status AS "Status",
+            to_char(date_last_changed AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS') AS "DateLastChanged",
+            order_multiple AS "OrderMultiple", order_uom AS "OrderUOM"
+          FROM rics_mirror.inventory_master
+          WHERE sku = $1
+          LIMIT 1
+          `,
+          ricsSkuCode,
         );
-        const rows = Array.isArray(raw) ? raw : raw ? [raw] : [];
         row = rows[0] ?? null;
       } catch (err: any) {
-        console.error('[ricsProductAdapter] getProduct fallback failed:', err.message);
+        console.error('[ricsProductAdapter] getProduct rics_mirror fallback failed:', err.message);
         return null;
       }
     }
@@ -468,7 +516,7 @@ export async function getProductById(ricsSkuCode: string): Promise<ProductDetail
 
     const card = rowToProductCard(row, categories, vendors);
     if (!card) return null;
-    const catalog = queryInvCatalog(row.SKU || ricsSkuCode);
+    const catalog = await queryInvCatalog(row.SKU || ricsSkuCode);
     const detail = rowToProductDetail(card, row, categories, vendors, sizeTypes, catalog);
     return mergeOverlayOntoDetail(detail);
   });
@@ -560,24 +608,40 @@ interface InvCatalogRow {
   WebFileName: string | null;
 }
 
-function queryInvCatalog(sku: string): InvCatalogRow | null {
-  const dbPath = INVMAS_MDB();
-  if (!fs.existsSync(dbPath)) return null;
-  const password = getOrRecoverPassword(dbPath);
-  const safe = sku.replace(/'/g, "''");
-  const sql = `SELECT TOP 1 [SKU], [LongColor], [BoldDesc], [ParaDesc], [CatalogSKU],
-  [BulletText_01], [BulletText_02], [BulletText_03], [BulletText_04], [BulletText_05],
-  [PictureName_01], [PictureName_02], [SizeText], [WebFileName]
-FROM [InvCatalog] WHERE [SKU] = '${safe}'`;
+// Reads `rics_mirror.inv_catalog` — the per-SKU rich-text overlay (bullet text,
+// bold/paragraph descriptions, extra pictures). Made async during the Phase-A
+// cutover; previous signature returned `InvCatalogRow | null` synchronously
+// but the underlying call was already async (unawaited Promise) — this fix
+// actually wires the catalog into detail responses for the first time.
+async function queryInvCatalog(sku: string): Promise<InvCatalogRow | null> {
   try {
-    const raw = runPowerShellJson<InvCatalogRow | InvCatalogRow[]>(
-      buildSelectScript(dbPath, password, sql),
+    const rows = await prisma.$queryRawUnsafe<InvCatalogRow[]>(
+      `
+      SELECT
+        sku             AS "SKU",
+        long_color      AS "LongColor",
+        bold_desc       AS "BoldDesc",
+        para_desc       AS "ParaDesc",
+        catalog_sku     AS "CatalogSKU",
+        bullet_text_01  AS "BulletText_01",
+        bullet_text_02  AS "BulletText_02",
+        bullet_text_03  AS "BulletText_03",
+        bullet_text_04  AS "BulletText_04",
+        bullet_text_05  AS "BulletText_05",
+        picture_name_01 AS "PictureName_01",
+        picture_name_02 AS "PictureName_02",
+        size_text       AS "SizeText",
+        web_file_name   AS "WebFileName"
+      FROM rics_mirror.inv_catalog
+      WHERE sku = $1
+      LIMIT 1
+      `,
+      sku,
     );
-    const arr = Array.isArray(raw) ? raw : raw ? [raw] : [];
-    return arr[0] ?? null;
+    return rows[0] ?? null;
   } catch (err: any) {
     // InvCatalog is optional — failure here just means no extra description.
-    console.warn('[ricsProductAdapter] InvCatalog lookup failed:', err.message);
+    console.warn('[ricsProductAdapter] InvCatalog lookup (rics_mirror) failed:', err.message);
     return null;
   }
 }
