@@ -2,8 +2,8 @@
  * Per-SKU sales rollup for the Inventory Inquiry screen (RICS Ch. 4 p. 75).
  *
  * Reports four sliding windows — Week / Month / Season / Year — each with
- * Qty, Net Sales and Profit. One PowerShell round-trip per SKU: a single
- * aggregate query with conditional SUMs keyed off `h.RealDate`.
+ * Qty, Net Sales and Profit. A single aggregate query with conditional SUMs
+ * keyed off `h.real_date`.
  *
  * Window semantics match typical retail conventions:
  *   - Week   = last 7 days ending today (inclusive)
@@ -12,30 +12,14 @@
  *   - Year   = calendar year to date (Jan 1 → today)
  *
  * The Markdown column (present in the RICS inquiry rollup panel) is not
- * filled from TicketDetail because `d.Extension` is already the net amount
+ * filled from ticket_detail because `d.extension` is already the net amount
  * after any markdown that was applied at sale time. Pricing original-retail
  * vs. sale-price requires a per-line pricing history we don't have in
- * Phase 1; markdown is left at 0 for every window.
+ * Phase A; markdown is left at 0 for every window.
  */
 
-import fs from 'node:fs';
-import { ricsDbPath, getOrRecoverPassword, runPowerShellJson, buildSelectScript } from '../accessOleDb';
+import { prisma } from '../../db/prisma';
 import type { InquiryRollup, InquiryRollupCell } from '../ricsInventoryAdapter';
-
-const SALES_MDB = (): string =>
-  ricsDbPath(process.env.RICS_SALES_DB_FILE || 'RITRNSSV.MDB');
-
-function accessDate(d: Date): string {
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${m}/${day}/${d.getFullYear()}`;
-}
-
-function dayAfter(d: Date): Date {
-  const copy = new Date(d);
-  copy.setDate(copy.getDate() + 1);
-  return copy;
-}
 
 interface RollupWindows {
   weekStart: Date;
@@ -43,6 +27,12 @@ interface RollupWindows {
   seasonStart: Date;
   yearStart: Date;
   endExclusive: Date;
+}
+
+function dayAfter(d: Date): Date {
+  const copy = new Date(d);
+  copy.setDate(copy.getDate() + 1);
+  return copy;
 }
 
 function resolveWindows(today: Date): RollupWindows {
@@ -98,44 +88,58 @@ export async function getInquirySalesRollup(sku: string): Promise<InquiryRollup>
   const code = (sku ?? '').trim();
   if (!code) return emptyRollup();
 
-  const dbPath = SALES_MDB();
-  if (!fs.existsSync(dbPath)) return emptyRollup();
-
   const w = resolveWindows(new Date());
-  const safe = code.replace(/'/g, "''");
 
-  // Single aggregate query: a SUM IIF(...) per (window × metric).
-  // Scope is the SKU itself; TransType=1 and Voided=False match the same
-  // filters used by the Sales History by Month adapter.
-  const sql = `SELECT
-  SUM(IIF(h.RealDate >= #${accessDate(w.weekStart)}#, IIF(d.Qty IS NULL, 0, d.Qty), 0))                                         AS WeekQty,
-  SUM(IIF(h.RealDate >= #${accessDate(w.weekStart)}#, IIF(d.Extension IS NULL, 0, d.Extension), 0))                             AS WeekNet,
-  SUM(IIF(h.RealDate >= #${accessDate(w.weekStart)}#, IIF(d.Extension IS NULL, 0, d.Extension) - IIF(d.Cost IS NULL, 0, d.Cost) * IIF(d.Qty IS NULL, 0, d.Qty), 0)) AS WeekProfit,
-  SUM(IIF(h.RealDate >= #${accessDate(w.monthStart)}#, IIF(d.Qty IS NULL, 0, d.Qty), 0))                                        AS MonthQty,
-  SUM(IIF(h.RealDate >= #${accessDate(w.monthStart)}#, IIF(d.Extension IS NULL, 0, d.Extension), 0))                            AS MonthNet,
-  SUM(IIF(h.RealDate >= #${accessDate(w.monthStart)}#, IIF(d.Extension IS NULL, 0, d.Extension) - IIF(d.Cost IS NULL, 0, d.Cost) * IIF(d.Qty IS NULL, 0, d.Qty), 0)) AS MonthProfit,
-  SUM(IIF(h.RealDate >= #${accessDate(w.seasonStart)}#, IIF(d.Qty IS NULL, 0, d.Qty), 0))                                       AS SeasonQty,
-  SUM(IIF(h.RealDate >= #${accessDate(w.seasonStart)}#, IIF(d.Extension IS NULL, 0, d.Extension), 0))                           AS SeasonNet,
-  SUM(IIF(h.RealDate >= #${accessDate(w.seasonStart)}#, IIF(d.Extension IS NULL, 0, d.Extension) - IIF(d.Cost IS NULL, 0, d.Cost) * IIF(d.Qty IS NULL, 0, d.Qty), 0)) AS SeasonProfit,
-  SUM(IIF(h.RealDate >= #${accessDate(w.yearStart)}#, IIF(d.Qty IS NULL, 0, d.Qty), 0))                                         AS YearQty,
-  SUM(IIF(h.RealDate >= #${accessDate(w.yearStart)}#, IIF(d.Extension IS NULL, 0, d.Extension), 0))                             AS YearNet,
-  SUM(IIF(h.RealDate >= #${accessDate(w.yearStart)}#, IIF(d.Extension IS NULL, 0, d.Extension) - IIF(d.Cost IS NULL, 0, d.Cost) * IIF(d.Qty IS NULL, 0, d.Qty), 0)) AS YearProfit
-FROM TicketHeader h INNER JOIN TicketDetail d
-  ON h.UserID = d.UserID AND h.BatchDate = d.BatchDate AND h.Terminal = d.Terminal
- AND h.Store = d.Store AND h.Ticket = d.Ticket AND h.RealDate = d.RealDate
-WHERE
-  d.SKU = '${safe}'
-  AND h.TransType = 1
-  AND h.Voided = False
-  AND h.RealDate >= #${accessDate(w.yearStart)}#
-  AND h.RealDate < #${accessDate(w.endExclusive)}#`;
+  // Single aggregate query against `rics_mirror.ticket_header` join
+  // `rics_mirror.ticket_detail`, with one conditional SUM per (window × metric).
+  // Scope: trans_type=1 (regular sales) and voided=false (same filters the
+  // sales-history adapter uses).
+  //
+  // Parameter layout:
+  //   $1 = sku               $4 = seasonStart
+  //   $2 = weekStart         $5 = yearStart  (also lower bound of scan)
+  //   $3 = monthStart        $6 = endExclusive
+  const sql = `
+    SELECT
+      SUM(CASE WHEN h.real_date >= $2::timestamptz THEN COALESCE(d.qty, 0)                                    ELSE 0 END)::float8 AS "WeekQty",
+      SUM(CASE WHEN h.real_date >= $2::timestamptz THEN COALESCE(d.extension, 0)                              ELSE 0 END)::float8 AS "WeekNet",
+      SUM(CASE WHEN h.real_date >= $2::timestamptz THEN COALESCE(d.extension, 0) - COALESCE(d.cost, 0) * COALESCE(d.qty, 0) ELSE 0 END)::float8 AS "WeekProfit",
+      SUM(CASE WHEN h.real_date >= $3::timestamptz THEN COALESCE(d.qty, 0)                                    ELSE 0 END)::float8 AS "MonthQty",
+      SUM(CASE WHEN h.real_date >= $3::timestamptz THEN COALESCE(d.extension, 0)                              ELSE 0 END)::float8 AS "MonthNet",
+      SUM(CASE WHEN h.real_date >= $3::timestamptz THEN COALESCE(d.extension, 0) - COALESCE(d.cost, 0) * COALESCE(d.qty, 0) ELSE 0 END)::float8 AS "MonthProfit",
+      SUM(CASE WHEN h.real_date >= $4::timestamptz THEN COALESCE(d.qty, 0)                                    ELSE 0 END)::float8 AS "SeasonQty",
+      SUM(CASE WHEN h.real_date >= $4::timestamptz THEN COALESCE(d.extension, 0)                              ELSE 0 END)::float8 AS "SeasonNet",
+      SUM(CASE WHEN h.real_date >= $4::timestamptz THEN COALESCE(d.extension, 0) - COALESCE(d.cost, 0) * COALESCE(d.qty, 0) ELSE 0 END)::float8 AS "SeasonProfit",
+      SUM(CASE WHEN h.real_date >= $5::timestamptz THEN COALESCE(d.qty, 0)                                    ELSE 0 END)::float8 AS "YearQty",
+      SUM(CASE WHEN h.real_date >= $5::timestamptz THEN COALESCE(d.extension, 0)                              ELSE 0 END)::float8 AS "YearNet",
+      SUM(CASE WHEN h.real_date >= $5::timestamptz THEN COALESCE(d.extension, 0) - COALESCE(d.cost, 0) * COALESCE(d.qty, 0) ELSE 0 END)::float8 AS "YearProfit"
+    FROM rics_mirror.ticket_header h
+    INNER JOIN rics_mirror.ticket_detail d
+      ON h.user_id    = d.user_id
+     AND h.batch_date = d.batch_date
+     AND h.terminal   = d.terminal
+     AND h.store      = d.store
+     AND h.ticket     = d.ticket
+     AND h.real_date  = d.real_date
+    WHERE
+      d.sku            = RPAD($1, 15)  -- ticket_detail.sku is right-padded to 15
+      AND h.trans_type = 1
+      AND h.voided     = false
+      AND h.real_date >= $5::timestamptz
+      AND h.real_date <  $6::timestamptz
+  `;
 
   try {
-    const password = getOrRecoverPassword(dbPath);
-    const raw = await runPowerShellJson<RollupAggregateRow | RollupAggregateRow[]>(
-      buildSelectScript(dbPath, password, sql),
+    const rows = await prisma.$queryRawUnsafe<RollupAggregateRow[]>(
+      sql,
+      code,
+      w.weekStart,
+      w.monthStart,
+      w.seasonStart,
+      w.yearStart,
+      w.endExclusive,
     );
-    const row = Array.isArray(raw) ? raw[0] : raw;
+    const row = rows[0];
     if (!row) return emptyRollup();
 
     const n = (v: number | null) => Number(v ?? 0);
