@@ -1,16 +1,21 @@
 # Zack's Retail — Agent Instructions
 
-This repo uses **Subagent-Driven Development (SDD)** via the [`obra/superpowers`](https://github.com/obra/superpowers) skill pack.
+This repo uses slash commands under [`.claude/commands/`](.claude/commands/) as the primary workflow surface. Subagents are not used.
 
 > The human-facing version of this guide is in [`WORKFLOW.md`](./WORKFLOW.md) at the repo root. This file is for you (the agent); that one is for the programmer.
-
-> Note: the grandparent `CompartidoZBIA/CLAUDE.md` describes an older **WAT (Workflows-Agents-Tools)** framework. That document does **not** apply to this project. Use this file's guidance for Zack's Retail.
 
 ## Project goal
 
 This repo builds **Zack's Retail** — a modern, web-based inventory and retail-operations system. The mandate is to re-implement the full functionality of **RICS**, the team's legacy Windows/Access-based inventory control system, as a web application that a cashier, buyer, or operator can run from a browser. RICS defines the baseline feature set; Zack's Retail matches it first, then improves on it for a web-first workflow (real-time sync instead of modems, Postgres instead of diskette transfer, in-app notifications instead of stored reminders, etc.).
 
-**Source of truth for requirements.** The RICS v7.7 User Manual at [`docs/rics-reference/`](docs/rics-reference/) is the spec. When porting a feature, cite the manual page so the behavior is traceable. Do not invent behavior from scratch or derive it from whatever happens to be in [`apps/api`](apps/api) today — that code is a snapshot, not the spec.
+**Sources of truth for requirements.** Read in this order when porting or designing a feature:
+
+1. **[`docs/modules/<slug>.md`](docs/modules/)** — the module's governed contract. Cite this first; it's authoritative for what the module does today and what it promises to other modules.
+2. **[`docs/dev/specs/`](docs/dev/specs/)** — dated architecture and per-module phase-design specs. Binding contracts for in-flight work. Check here before implementing any non-trivial feature.
+3. **[`docs/zacks-retail-manual/`](docs/zacks-retail-manual/)** — the forward-facing end-user manual. The eventual replacement for the RICS manual; treat as the forward spec for UX and operator workflows.
+4. **[`docs/rics-reference/`](docs/rics-reference/)** — the legacy RICS v7.7 User Manual. Ancestor document — cite page numbers when porting behavior so the trail back to the baseline stays intact, but do not treat it as the live spec for features already specified above.
+
+Do not invent behavior from scratch or derive it from whatever happens to be in [`apps/api`](apps/api) today — that code is a snapshot, not the spec.
 
 **Data surfaces (post 2026-04 reshape):**
 - **Legacy RICS MDB files** in `E:/data/rics-mdbs/` are **read-only and never written to**. They're touched by exactly one process: the operator-invoked `pnpm sync:rics` ETL, which copies them into Postgres. Request handlers never open an MDB at request time.
@@ -49,15 +54,30 @@ The project rolls out in three phases. Always know which phase a piece of work b
 
 ## The framework: slash commands and skills only
 
-**Subagents are retired (2026-04-21).** The files at `.claude/agents/products-dev.md`, `.claude/agents/storefront-dev.md`, and `.claude/agents/rics-module-analyst.md` are archived history — do **not** invoke them via the `Agent` tool. Work that used to be delegated (e.g. "ask `rics-module-analyst` to draft a spec from the RICS manual") is now operator-driven: read the manual chapter, draft the content, commit.
+**Subagents are not used on this project (retired 2026-04-21).** The old `.claude/agents/` definitions (`products-dev`, `storefront-dev`, `rics-module-analyst`) have been removed. Do **not** invoke any agent via the `Agent` tool for this repo's work. Work that used to be delegated is now either (a) handled by a slash command — e.g. writing a module spec is `/new-module-spec <slug>` — or (b) operator-driven in plain chat.
 
 Work happens in three surfaces, in this order of preference:
 
-1. **Slash commands in [`.claude/commands/`](.claude/commands/)** — project-specific rituals tailored to this repo's paths and conventions. Invoke via `/<name>`. Current: `/sync-module-docs`, `/new-manual-chapter`, `/verify-rics-mirror`, `/milestone` (see that folder for the current set). These beat generic marketplace agents for this codebase.
+1. **Slash commands in [`.claude/commands/`](.claude/commands/)** — project-specific rituals tailored to this repo's paths and conventions. Invoke via `/<name>`. Current: `/sync-module-docs`, `/new-manual-chapter`, `/new-module-spec`, `/verify-rics-mirror` (see that folder for the full set). These beat generic marketplace agents for this codebase.
 2. **Skills** — content bundles whose rule files can be referenced directly. Example: the Supabase Postgres best-practices skill at `E:/dev/.claude/skills/supabase-postgres-best-practices/`.
 3. **Plain Claude Code** — for architectural, cross-module, or scope-unclear work.
 
 **Rule of thumb:** project-specific workflow → write a slash command. One-off investigation → plain Claude Code. Reusable domain rules → install a skill.
+
+## Conversational triggers
+
+Natural-language requests that map to specific slash commands. When the operator phrases a request that matches one of these, invoke the command rather than improvising:
+
+| When the operator says something like… | Invoke |
+|---|---|
+| "gather / index / capture / save / distill / extract / route knowledge from this conversation" | `/index-knowledge` |
+| "record a milestone" / "snapshot where we are" | `/milestone <label>` |
+| "audit module docs" / "check which modules are out of date" | `/sync-module-docs` |
+| "scaffold a manual chapter" | `/new-manual-chapter <slug>` |
+| "scaffold a module spec" | `/new-module-spec <slug>` |
+| "verify the mirror" / "prove the rics sync" | `/verify-rics-mirror` |
+
+Match on intent, not exact phrasing. If the operator's ask plausibly maps to a command above, use the command — its safety rails (sandwich commits, cap checks, staleness annotation) beat improvising.
 
 ## Project stack
 
@@ -85,32 +105,16 @@ The API pre-loads the full `InventoryMaster` table into an in-memory index at st
 
 ## HARD RULE — no new branches, no worktrees
 
-The operator does **not** want branches or worktrees created for this project, ever. All work is committed directly to `master`. This overrides the default behavior of several superpowers skills and the Claude Code `Agent` tool's `isolation` parameter.
+The operator does **not** want branches or worktrees created for this project, ever. All work is committed directly to `master`.
 
 **Enforce this by:**
 
-- Never invoking `superpowers:using-git-worktrees`. If another skill (e.g. `brainstorming`, `writing-plans`, `subagent-driven-development`, `executing-plans`) says "required: set up an isolated workspace" — skip that step and proceed on `master`.
 - Never calling the `Agent` tool with `isolation: "worktree"`. Omit the parameter entirely.
-- Never invoking `superpowers:finishing-a-development-branch` if it would create a PR or merge branch. That skill's guidance assumes a branch-per-feature workflow; here it's out of scope.
 - Never creating a new branch with `git checkout -b …`, `git branch …`, or any equivalent. Commit directly to `master` with `git commit`.
-- When writing implementation plans, omit the "create a worktree" step. Plans on this project execute on `master` only.
+- When writing implementation plans, omit any "create a worktree" step. Plans on this project execute on `master` only.
 
 If the operator ever explicitly asks for a branch, you can create one — but the default is always `master`.
 
-## Skill expectations (post-install)
-
-Once `/plugin install superpowers@claude-plugins-official` is run, expect these to trigger automatically:
-
-- `brainstorming` — gates you to "design approved before code"
-- `writing-plans` — TDD-first, bite-sized plan files
-- `subagent-driven-development` — implement → spec-review → code-review loop
-- `dispatching-parallel-agents` — when independent investigations can run in parallel
-- `using-git-worktrees` — isolated workspace per feature
-- `test-driven-development` — RED-GREEN-REFACTOR
-- `systematic-debugging` — root-cause first; circuit-break after 3 failed fixes
-- `verification-before-completion` — no "done" without fresh evidence (run the dev server, run the test, show the output)
-- `finishing-a-development-branch` — merge + cleanup
-
 ## Bottom line
 
-Read the relevant module spec in `docs/modules/` before touching a module. Prefer slash commands from `.claude/commands/` over ad-hoc work. Subagents are retired — do not invoke them. The **Zack's Retail user manual** at [`docs/zacks-retail-manual/`](docs/zacks-retail-manual/) is the forward spec going forward; the RICS v7.7 manual at [`docs/rics-reference/`](docs/rics-reference/) is the ancestor document — cite it as lineage, not as the live spec. Never claim done without verification evidence.
+Read the relevant module spec in `docs/modules/` before touching a module. Prefer slash commands from `.claude/commands/` over ad-hoc work. Subagents are not used — do not invoke them. The **Zack's Retail user manual** at [`docs/zacks-retail-manual/`](docs/zacks-retail-manual/) is the forward spec going forward; the RICS v7.7 manual at [`docs/rics-reference/`](docs/rics-reference/) is the ancestor document — cite it as lineage, not as the live spec. Never claim done without verification evidence.
