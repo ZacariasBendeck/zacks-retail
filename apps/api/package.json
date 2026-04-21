@@ -13,13 +13,8 @@
     "prisma:studio": "prisma studio",
     "rics:discover": "tsx scripts/discover-rics-schema.ts",
     "rics:convert": "tsx scripts/convert-rics-mdbs.ts",
-    "db:verify:migration010": "npx tsx --experimental-sqlite scripts/verifyMigration010.ts",
-    "db:verify:migration011": "npx tsx --experimental-sqlite scripts/verifyMigration011.ts",
-    "db:verify:migration014": "npx tsx --experimental-sqlite scripts/verifyMigration014.ts",
-    "db:verify:migration015": "npx tsx --experimental-sqlite scripts/verifyMigration015.ts",
-    "db:verify:migration016": "npx tsx --experimental-sqlite scripts/verifyMigration016.ts",
-    "db:verify:migration017": "npx tsx --experimental-sqlite scripts/verifyMigration017.ts",
-    "db:verify:migration019": "npx tsx --experimental-sqlite scripts/verifyMigration019.ts"
+    "sync:rics": "node --env-file-if-exists=.env -r tsx/cjs scripts/sync-rics.ts",
+    "verify:rics-mirror": "node --env-file-if-exists=.env -r tsx/cjs scripts/verify-rics-mirror.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.80.0",
@@ -31,6 +26,8 @@
     "exceljs": "^4.4.0",
     "express": "^4.21.0",
     "multer": "^2.1.1",
+    "pg": "^8.20.0",
+    "pg-copy-streams": "^7.0.0",
     "swagger-jsdoc": "^6.2.8",
     "swagger-ui-express": "^5.0.1",
     "uuid": "^10.0.0",
@@ -42,6 +39,8 @@
     "@types/express": "^5.0.0",
     "@types/jest": "^29.5.14",
     "@types/multer": "^2.1.0",
+    "@types/pg": "^8.20.0",
+    "@types/pg-copy-streams": "^1.2.5",
     "@types/supertest": "^6.0.2",
     "@types/swagger-jsdoc": "^6.0.4",
     "@types/swagger-ui-express": "^4.1.7",

@@ -106,7 +106,7 @@ If any of these files are missing, stop and tell the user.
 - [docs/MODULES.md](docs/MODULES.md) — cross-module registry, out of scope.
 - Other `docs/modules/*.md` — other modules' specs, out of scope.
 - Non-products `apps/web/**` pages (inventory, purchasing, customers, OTB, sales reporting) — other modules' admin UI, not your scope.
-- `legacy/**` — artifacts from the abandoned Odoo plan; never extend.
+- `legacy/**` — removed from the repo. Do not recreate.
 
 ---
 

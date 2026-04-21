@@ -74,6 +74,21 @@
 13. **Retention of the audit log itself is policy-driven, not hardcoded.** `otbPolicyAuditService` today bakes in a 400-day retention at the row level. Platform generalises this to `audit_retention_by_resource_type { resourceType, retentionDays }` with a 400-day default. Sensitive resource types (`crm.pii_change`, `accounts-receivable.statement_sent`) can be overridden to longer retention without changing the write path.
 14. **A single CLI and a single admin page for every policy write.** No `RICS.CFG` editor, no text-file hand-edits, no SSH into the server. Settings, flags, retention policies, integration endpoints, and notification templates all go through the `/admin/platform/*` routes with audit trails attached. When an engineer needs to bulk-edit for incident response, the CLI (`pnpm admin settings:set`) is a thin wrapper over the same HTTP API, not a bypass.
 
+## Implemented — RICS → Postgres mirror sync
+
+The pipeline that hydrates every module's future reads from RICS lives in `platform`, because it's cross-cutting infrastructure with a single audit surface (`platform.etl_run` + `platform.etl_run_table`) and no business-domain owner.
+
+- **What it does.** Full one-way reload from the 13 canonical RICS MDB files into the `rics_mirror` Postgres schema, in ~5 minutes, atomically (staging schema + rename swap inside a transaction). Writes one row to `platform.etl_run` per invocation and one row per table to `platform.etl_run_table`.
+- **Direction.** RICS → Postgres only. Never the other way. Preserves the read-only-MDB hard rule from [CLAUDE.md](../../CLAUDE.md).
+- **App data survival.** The reload only rebuilds `rics_mirror`; `public.*` (existing Prisma models) and `app.*` (future overlays) are untouched, so operator work persists across reloads by design.
+- **Triggering.** Operator-invoked — `pnpm --filter @benlow-rics/api sync:rics` or the `/verify-rics-mirror` slash command. No cron by default; each module can schedule its own refresh cadence via the job subsystem (decision #1) once the module cuts over.
+- **Extractor.** C# class hosted in PowerShell via `Add-Type`; streams rows from ACE.OLEDB.12.0 into a CSV intermediate, which Node pipes into `COPY FROM STDIN WITH (FORMAT csv)`. Rewrite of the original PowerShell + JSON path (which was O(table size) RAM on every hop); new path is bounded by ACE read speed.
+- **Audit surface.** `platform.etl_run` and `platform.etl_run_table` are the first two `platform`-owned tables in production. Their data model is specified below; their Prisma models live in [`apps/api/prisma/schema.prisma`](../../apps/api/prisma/schema.prisma).
+
+Full architecture, type mapping, canonical table list, troubleshooting, and hard rules: **[docs/operations/rics-mirror-sync.md](../operations/rics-mirror-sync.md)**.
+
+This capability does not replace the broader `platform` scope described above — it's one concrete piece of it, landed early because every module's Postgres cutover depends on it.
+
 ## Contracts with other modules
 
 **Outbound (this module exposes — everyone consumes these)**
@@ -210,6 +225,8 @@ Postgres-first; owned exclusively by `platform`.
 - **`integration_messages`** — `id`, `endpointId`, `direction`, `payloadHash`, `payloadObjectKey` (object-storage URL), `status ∈ { received, parsed, handed_off, succeeded, failed, dead_letter }`, `parsedSummaryJson?`, `errorMessage?`, `correlationId?`, `handlerModule?`, `handlerOutputJson?`, `receivedAt`, `processedAt?`, `traceId`. Indexes: `(endpointId, receivedAt DESC)`, `(correlationId)`, `(status, receivedAt)` for retry scans.
 - **`backup_snapshots`** — read model synced from the managed-Postgres provider's API. `id`, `provider`, `providerSnapshotId`, `kind ∈ { pitr, logical_export }`, `startedAt`, `finishedAt`, `sizeBytes?`, `retentionExpiresAt?`, `objectStorageRef?` (for logical exports only).
 - **`saved_views`** — `(userId, moduleKey, viewName)` unique; `filtersJson`, `sortJson`, `columnsJson`, `sharedWithRoles?`, `createdAt`.
+- **`etl_run`** (implemented) — `id`, `startedAt`, `finishedAt?`, `status ∈ { running, ok, failed }`, `totalRows`, `tableCount`, `errorText?`. One row per invocation of `pnpm sync:rics`. Index on `startedAt`. See [rics-mirror-sync.md](../operations/rics-mirror-sync.md).
+- **`etl_run_table`** (implemented) — `id`, `runId` (FK to `etl_run`), `mdbFile`, `sourceTable`, `targetTable`, `rowCount`, `durationMs`, `status`, `errorText?`, `startedAt`. One row per (run, source MDB table).
 
 **Migration path for the two existing OTB audit tables.** Step 1 (ZAI-???): create `audit_log`, dual-write from `otbPolicyAuditService` and `otbBudgetService`. Step 2: backfill historical rows from `otb_policy_audit_log` + `otb_budget_audit` into `audit_log` with `resourceType = 'otb.policy_decision'` and `'otb.budget_field_change'`. Step 3: flip reads. Step 4: drop the two legacy tables. During steps 1–3 the existing migrations 0007+ stay intact; the `otb_policy_audit_log` table remains the source of truth until step 3.
 

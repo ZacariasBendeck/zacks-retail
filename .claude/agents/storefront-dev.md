@@ -43,7 +43,7 @@ You write code, run tests, and verify changes in a browser. You do not write mod
 - `apps/api/src/services/ricsReportService.ts` — the existing PowerShell+OLEDB pattern. Lift from, don't modify.
 - `apps/api/src/db/database.ts` — legacy SQLite. Read-only for you.
 - `apps/web/**` — admin UI. Not your scope.
-- `legacy/**` — abandoned Odoo plumbing. Never touch.
+- `legacy/**` — removed from the repo. Do not recreate.
 
 ---
 

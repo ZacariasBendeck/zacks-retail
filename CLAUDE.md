@@ -12,9 +12,14 @@ This repo builds **Zack's Retail** — a modern, web-based inventory and retail-
 
 **Source of truth for requirements.** The RICS v7.7 User Manual at [`docs/rics-reference/`](docs/rics-reference/) is the spec. When porting a feature, cite the manual page so the behavior is traceable. Do not invent behavior from scratch or derive it from whatever happens to be in [`apps/api`](apps/api) today — that code is a snapshot, not the spec.
 
-**Two live data surfaces:**
-- **Legacy RICS MDB files** in `Rics Databases/` are read **live and read-only** via a PowerShell + `Microsoft.ACE.OLEDB.12.0` adapter ([`apps/api/src/services/ricsProductAdapter.ts`](apps/api/src/services/ricsProductAdapter.ts)). This lets the new storefront serve real product data while the new system is still being built. Toggled with `PRODUCT_SOURCE=rics|local`.
-- **Net-new system data** lives in a modern stack: Postgres (via Prisma) for storefront concerns (content overlay, cart, orders) and SQLite (admin DB initialized at runtime) for in-progress admin domains (SKUs, inventory, vendors, POs, OTB). Migrating the admin DB to Postgres is a separate workstream.
+**Data surfaces (post 2026-04 reshape):**
+- **Legacy RICS MDB files** in `E:/data/rics-mdbs/` are **read-only and never written to**. They're touched by exactly one process: the operator-invoked `pnpm sync:rics` ETL, which copies them into Postgres. Request handlers never open an MDB at request time.
+- **Postgres `rics_mirror` schema** holds a 1:1 mirror of every canonical RICS table, rebuilt atomically on each `sync:rics` invocation. Every module's read of RICS data comes from here (in progress; most adapters still go through the OLEDB path and will be flipped per-module — see [docs/operations/rics-mirror-sync.md](docs/operations/rics-mirror-sync.md)).
+- **Postgres `public` + `app` schemas** hold net-new Zack's Retail data (content overlays, cart, orders, auth — currently in `public`; `app` is reserved for future module-owned additive tables). These are **preserved across reloads** — the ETL only touches `rics_mirror`.
+- **Postgres `platform` schema** holds the cross-cutting admin spine: `etl_run`, `etl_run_table` (sync audit log). Future platform tables listed in [docs/modules/platform.md](docs/modules/platform.md).
+- **SQLite (admin DB initialized at runtime)** is legacy — inherited from the pre-Postgres design. Tables here migrate into Postgres over time; do not add new tables to it.
+
+The OLEDB adapter ([`apps/api/src/services/accessOleDb.ts`](apps/api/src/services/accessOleDb.ts), [`ricsProductAdapter.ts`](apps/api/src/services/ricsProductAdapter.ts)) stays in the codebase during Phase A — the sync ETL itself uses it for column introspection. The per-request read paths that still use it (listed in [docs/operations/rics-mirror-sync.md](docs/operations/rics-mirror-sync.md)) migrate to `rics_mirror` reads module by module. The `PRODUCT_SOURCE=rics|local` flag is legacy from the prior design and is no longer the cutover mechanism.
 
 **Module-driven decomposition.** The system is broken into bounded modules at [`docs/modules/`](docs/modules/), with the registry at [`docs/MODULES.md`](docs/MODULES.md). Each module maps to one or more RICS chapters. Read the relevant `docs/modules/<name>.md` before touching that module's code — the spec is the contract.
 
@@ -28,55 +33,39 @@ Do **not** hardcode `$`, `USD`, or `en-US` currency formatters anywhere. For `In
 
 ## Rollout phases
 
-The project rolls out in three phases. Always know which phase a piece of work belongs to — it determines what data sources are legal, what regressions matter, and whether a feature can be Postgres-only.
+The project rolls out in three phases. Always know which phase a piece of work belongs to — it determines what data source is legal and which audiences are affected by a regression. **The plan shifted in 2026-04 to a one-way mirror approach** (no bidirectional sync, no writes back to RICS); the phases below reflect that revised direction.
 
-**Phase 1 — Mirror RICS on the existing Access database.** The web app reproduces RICS functionality module by module, but every read and write still goes against the original RICS Access MDB files. No schema changes to the legacy DB. Goal: feature parity in a browser, with zero risk to existing RICS workflows. Operators can use either RICS or Zack's Retail and see the same data.
+**Phase A — Mirror-backed dev against live RICS.** RICS stays live in the stores; store operators keep entering sales and POs into it as usual. Separately, an operator-invoked ETL ([docs/operations/rics-mirror-sync.md](docs/operations/rics-mirror-sync.md)) reloads every canonical RICS table from the MDB files into the Postgres `rics_mirror` schema in ~5 min. Zack's Retail reads exclusively from `rics_mirror` (not from the MDBs at request time); writes land in `public`/`app` Postgres tables that the reload explicitly does not touch. This is where the project sits today. No reverse sync — Zack's Retail and RICS are independent surfaces during this phase.
 
-**Phase 2 — Hybrid: some modules on Postgres, others still on Access.** Selected modules cut over to a new Postgres database whose tables either (a) duplicate RICS structure (so behavior stays identical) or (b) extend it with new tables that represent improvements over RICS (richer content, web-only fields, audit trails, etc.). Other modules continue to read/write the Access DB. The two stores must stay coherent for any data shared across module boundaries — when in doubt, design for read-from-Access, write-to-both, then read-from-Postgres once a module is fully cut over.
+**Phase B — Zack's Retail becomes the operator UI; RICS stops changing.** Store operators cut over from RICS to Zack's Retail (module by module or all at once, TBD per module plan). RICS MDBs become historical — no new writes from cashiers. The `sync:rics` reload stops being periodic because the source stopped moving; one final reload captures the last RICS state, then `rics_mirror` is merged with any app-side extensions to become the authoritative tables. The product, inventory, and sales-history data in `rics_mirror` either gets promoted into module-owned schemas (`products.*`, `inventory.*`, `sales_pos.*`) or is preserved as-is for historical reads.
 
-**Phase 3 — Postgres-only.** The Access MDB files are retired entirely. All data lives in the managed Postgres instance. The RICS adapter (`ricsProductAdapter.ts`, `accessOleDb.ts`) and the `PRODUCT_SOURCE=rics|local` flag exist only to support phases 1–2; in phase 3 they're removed. Zack's Retail is the system of record.
+**Phase C — Postgres-only.** The MDB files are retired. The C# bulk extractor, the `bulk-extract.ps1` host, the `accessOleDb.ts` + `persistentPwsh.ts` helpers, and the `rics_mirror` schema itself all come out. Only module-owned schemas remain. Zack's Retail is the system of record.
 
 **How this affects day-to-day decisions:**
-- A new feature spec must declare which phase it targets. A "Phase 1" feature MUST work against the live RICS MDBs read-only — no schema changes, no new tables. A "Phase 2" feature MAY introduce a new Postgres table but MUST keep the legacy RICS read path intact for modules that haven't cut over.
-- Module specs in `docs/modules/<name>.md` should record which phase the module currently sits in and what gates the next transition.
-- When porting RICS behavior, default to Phase 1 fidelity first (cite the manual page, match the behavior). "Improvements on the old system" are Phase 2 work and need their own justification — don't sneak them into a Phase 1 port.
+- A new feature's spec must declare which phase it targets. A "Phase A" feature reads from `rics_mirror.*` via raw SQL (or a generated Prisma view) and writes to `public.*` or `app.*`. It MUST NOT write into `rics_mirror` (reload drops everything) and MUST NOT write back to the MDBs (hard rule; see below).
+- Module specs in `docs/modules/<name>.md` should record which phase the module currently sits in and what gates the next transition. Most modules are pre-Phase-A today (still reading MDBs at request time via the OLEDB adapter); migrating them to `rics_mirror` reads is the first concrete phase-A cutover.
+- When porting RICS behavior, default to matching it exactly (cite the manual page). App-native improvements — new columns, richer content, audit trails — live in `public`/`app` schemas alongside the mirror, never inside `rics_mirror`.
+- "Phase 1 / Phase 2 / Phase 3" are the old naming from before 2026-04. If you see those in older specs, they map: old Phase 1 (live MDB reads) never became permanent; old Phase 2 (hybrid writes) is no longer planned; old Phase 3 ≈ new Phase C.
 
-## The framework in one paragraph
+## The framework: slash commands and skills only
 
-Superpowers ships auto-triggered skills that form a disciplined SDLC loop:
+**Subagents are retired (2026-04-21).** The files at `.claude/agents/products-dev.md`, `.claude/agents/storefront-dev.md`, and `.claude/agents/rics-module-analyst.md` are archived history — do **not** invoke them via the `Agent` tool. Work that used to be delegated (e.g. "ask `rics-module-analyst` to draft a spec from the RICS manual") is now operator-driven: read the manual chapter, draft the content, commit.
 
-**brainstorm → write-plan → use-worktree → subagent-execute (with TDD) → verify → code-review → finish-branch**
+Work happens in three surfaces, in this order of preference:
 
-You don't invoke skills by name. They trigger from context. What you *do* choose is the **starting surface** — plain Claude Code or a domain subagent — and the **mode** (plan mode vs. normal).
+1. **Slash commands in [`.claude/commands/`](.claude/commands/)** — project-specific rituals tailored to this repo's paths and conventions. Invoke via `/<name>`. Current: `/sync-module-docs`, `/new-manual-chapter`, `/verify-rics-mirror`, `/milestone` (see that folder for the current set). These beat generic marketplace agents for this codebase.
+2. **Skills** — content bundles whose rule files can be referenced directly. Example: the Supabase Postgres best-practices skill at `E:/dev/.claude/skills/supabase-postgres-best-practices/`.
+3. **Plain Claude Code** — for architectural, cross-module, or scope-unclear work.
 
-## When to use which agent
-
-| Scenario | Start with | Mode |
-|---|---|---|
-| Whole-project architecture, scope, cross-module decisions | Plain Claude Code | Plan mode |
-| Module-scoped plan (products, storefront, or RICS analysis) | Domain subagent (`products-dev`, `storefront-dev`, `rics-module-analyst`) | Plan mode |
-| Brainstorm general specs | Plain Claude Code | Normal |
-| Brainstorm a spec derived from the RICS v7.7 manual | `rics-module-analyst` | Normal |
-| "Write the code, I'll test and iterate" | Plain Claude Code (delegates automatically) | Normal |
-| Debug layout / UI / bugs (cross-layer) | Plain Claude Code | Normal |
-| Debug a clearly module-scoped bug | The owning subagent | Normal |
-
-**Rule of thumb:** one module's surface → start with that subagent. Crosses modules, architectural, or scope unclear → plain Claude Code and let it delegate.
-
-## Existing subagents (`.claude/agents/`)
-
-- **`products-dev`** — SKUs, taxonomy, pricing, content overlay, facets, ProductCard, ProductDetail, RICS product adapter, `docs/modules/products.md`.
-- **`storefront-dev`** — cart, checkout, orders, account, header/footer/layout, public API routes/services.
-- **`rics-module-analyst`** — translates RICS v7.7 manual chapters into module specs in `docs/modules/`.
-
-Superpowers does not replace these. `subagent-driven-development` dispatches work to them.
+**Rule of thumb:** project-specific workflow → write a slash command. One-off investigation → plain Claude Code. Reusable domain rules → install a skill.
 
 ## Project stack
 
 - Monorepo: **pnpm workspaces + Turbo**
-- Backend: Node 20+, TypeScript, Express, **Jest**, **Prisma**, SQLite/PostgreSQL
+- Backend: Node 20+, TypeScript, Express, **Jest**, **Prisma** (multi-schema), **PostgreSQL 16** as the system-of-record; SQLite still present for legacy admin tables pending migration
 - Frontend: React 18, Vite, Ant Design, TanStack Query, Zustand, **Vitest**, ECharts
-- Legacy read-only: RICS v7.7 Access MDB files (adapter in `apps/api/.../services/ricsProductAdapter.ts`, flagged by `PRODUCT_SOURCE=rics|local`)
+- ETL: PowerShell + C# (hosted via `Add-Type`) reads ACE.OLEDB.12.0, writes CSV, Node pipes into Postgres COPY. One-way RICS → Postgres, operator-invoked. See [docs/operations/rics-mirror-sync.md](docs/operations/rics-mirror-sync.md).
+- Legacy read-only: RICS v7.7 Access MDB files at `E:/data/rics-mdbs/`, reached only via the sync ETL; never written.
 - Module specs: `docs/modules/*.md` are governed contracts, not scratchpads
 
 ## Non-WAT project rules that still apply
@@ -84,7 +73,7 @@ Superpowers does not replace these. `subagent-driven-development` dispatches wor
 - **Deliverables** land in cloud services (Google Sheets, Slides, etc.), not local files
 - **`.tmp/`** is disposable — regenerate as needed; don't rely on it persisting
 - **`.env`** is the only place for secrets — never hardcode
-- **`legacy/`** holds artifacts from the abandoned Odoo cutover (`MIGRATION_RUNBOOK.md`, `README.md`) plus `legacy/sqlite-migrations/` SQL files that are still read at runtime by `apps/api/scripts/verifyMigration*.ts` and a couple of tests. Do not extend any of it, and do not move `legacy/sqlite-migrations/` without updating every caller in the same commit.
+- **`legacy/` no longer exists.** It previously held abandoned Odoo artifacts and pre-Postgres SQLite migrations; all of it was removed when Postgres became the system-of-record. Do not recreate.
 
 ## HARD RULE — SKU Lookup index warmup must stay in place
 
@@ -124,4 +113,4 @@ Once `/plugin install superpowers@claude-plugins-official` is run, expect these 
 
 ## Bottom line
 
-Read the relevant module spec in `docs/modules/` before touching a module. Start in the right surface (plain Claude Code vs. subagent). Trust skills to trigger — don't invoke them manually. Never claim done without verification evidence.
+Read the relevant module spec in `docs/modules/` before touching a module. Prefer slash commands from `.claude/commands/` over ad-hoc work. Subagents are retired — do not invoke them. The **Zack's Retail user manual** at [`docs/zacks-retail-manual/`](docs/zacks-retail-manual/) is the forward spec going forward; the RICS v7.7 manual at [`docs/rics-reference/`](docs/rics-reference/) is the ancestor document — cite it as lineage, not as the live spec. Never claim done without verification evidence.

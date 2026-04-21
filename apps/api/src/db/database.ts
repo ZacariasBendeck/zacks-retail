@@ -802,9 +802,6 @@ const MIGRATIONS: Migration[] = [
     version: '0004',
     description: 'Integrate SQL migration 010 into runtime migrations (RICS import staging + SKU natural key safeguards)',
     up(db) {
-      // Non-obvious design decision:
-      // keep migration 010 semantics in runtime to avoid drift between legacy/sqlite-migrations SQL
-      // and the application bootstrap path that executes MIGRATIONS[].
       ensureSchemaTableCommentsTable(db);
 
       db.exec(`

@@ -54,7 +54,7 @@ The data layer and the bare lifecycle. Operators can create sessions, freeze the
 - `apps/api/src/services/physicalInventoryService.ts` — `createSession`, `openSession`, `freezeSession` (calls `ricsInventoryAdapter.getInventoryInquiry` per SKU in scope), `addEntry`, `addBulkEntries`, `getSession`, `listSessions`, `getEntriesForSku`, `getRunningTotalsForSku`, `cancelSession`.
 - `apps/api/src/routes/physicalInventoryRoutes.ts` — REST endpoints for the above.
 - `app.ts` wiring — `app.use('/api/v1/count-sessions', physicalInventoryRoutes)`.
-- `apps/api/tests/physicalInventory.test.ts` — lifecycle (create → open → freeze → entry → cancel) and basic invariants.
+- Lifecycle tests (create → open → freeze → entry → cancel) and basic invariants — previously at `apps/api/tests/physicalInventory.test.ts`; removed with the SQLite retirement and to be re-added against Postgres when the module is rebuilt.
 
 ### Wave 2 — Variance + review + export
 
@@ -95,7 +95,7 @@ Hooks into `platform` for the soft pieces. Depends on `platform` having a notifi
 - [apps/api/src/services/ricsInventoryAdapter.ts](../../../apps/api/src/services/ricsInventoryAdapter.ts) — the snapshot read path.
 - [apps/api/src/services/inventoryService.ts](../../../apps/api/src/services/inventoryService.ts) — service patterns + DB transaction style.
 - [apps/api/src/db/database.ts](../../../apps/api/src/db/database.ts) — `getDb()`.
-- [legacy/sqlite-migrations/019_inventory_movement_ledger_normalization.up.sql](../../../legacy/sqlite-migrations/019_inventory_movement_ledger_normalization.up.sql) — migration style + constraint patterns.
+- Migration style + constraint patterns — original SQLite file `019_inventory_movement_ledger_normalization.up.sql` has been removed; see Prisma migrations under `apps/api/prisma/migrations/` for the current pattern.
 - [apps/api/src/app.ts](../../../apps/api/src/app.ts) — router mount pattern.
 
 ## Verification at end of Wave 1
