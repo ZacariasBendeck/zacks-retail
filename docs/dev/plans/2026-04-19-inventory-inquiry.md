@@ -1,14 +1,12 @@
 # Inventory Inquiry + Shared SKU Primitives Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
-
 **Goal:** Deliver the functional v1 of the Product Inquiry page at `/products/inquiry/:skuCode` (matching the RICS Inventory Inquiry screen) plus two shared SKU primitives (`<SkuLookup />` modal, `<SkuLink />` inline link) that the whole app uses to pick and navigate to SKUs.
 
 **Architecture:** Phase-1 RICS-adapter-backed page owned by the `products` module. Frontend: React 18 + TanStack Query + Ant Design + Vitest. Backend: Express + Jest, reading from legacy Access MDBs through `accessOleDb.ts` + `ricsProductAdapter.ts`. Reuses the existing `/rics-images` static route; no new schema changes; all stubbed features (POs / Trend / Print / some view modes) render explicit "waiting on" placeholders.
 
 **Tech Stack:** TypeScript, React 18, Ant Design 5, TanStack Query v5, React Router v6, Vitest, Express, Jest, PowerShell + Microsoft.ACE.OLEDB.12.0 (read-only).
 
-**Spec:** [docs/superpowers/specs/2026-04-19-inventory-inquiry-design.md](../specs/2026-04-19-inventory-inquiry-design.md)
+**Spec:** [docs/dev/specs/2026-04-19-inventory-inquiry-design.md](../specs/2026-04-19-inventory-inquiry-design.md)
 
 **Commit convention:** `feat(products): …` / `feat(api): …` / `refactor(inventory): …` (conventional commits with module scope, matching `feat(sales-reporting): …` style visible in `git log`).
 
@@ -2660,7 +2658,7 @@ Open `docs/modules/products.md`. In the `## Product Inquiry` section, append (af
 
 For the canonical list of view modes, action tabs, and features that v1 stubs (plus the cross-module contract each one is waiting on), see the design doc:
 
-[`docs/superpowers/specs/2026-04-19-inventory-inquiry-design.md` § Deferred / waiting on](../superpowers/specs/2026-04-19-inventory-inquiry-design.md#deferred--waiting-on).
+[`docs/dev/specs/2026-04-19-inventory-inquiry-design.md` § Deferred / waiting on](../dev/specs/2026-04-19-inventory-inquiry-design.md#deferred--waiting-on).
 ```
 
 - [ ] **Step 25.2: Commit**

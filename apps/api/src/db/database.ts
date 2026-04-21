@@ -2746,7 +2746,7 @@ const MIGRATIONS: Migration[] = [
   },
   {
     version: '0019',
-    description: 'physical-inventory module (P1.a Slice 3): count sessions, snapshots + cells, batches, entries, variances, review acks, worksheet exports. Per docs/modules/physical-inventory.md and docs/superpowers/specs/2026-04-19-physical-inventory-p1a-slice3-design.md.',
+    description: 'physical-inventory module (P1.a Slice 3): count sessions, snapshots + cells, batches, entries, variances, review acks, worksheet exports. Per docs/modules/physical-inventory.md and docs/dev/specs/2026-04-19-physical-inventory-p1a-slice3-design.md.',
     up(db: DatabaseSync) {
       db.exec(`
         CREATE TABLE IF NOT EXISTS count_sessions (

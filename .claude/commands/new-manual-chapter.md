@@ -193,7 +193,6 @@ Next steps:
 - **Don't auto-fill Screens or Common-tasks from the module spec.** The spec describes code boundaries; the manual describes user flows. Auto-copying creates confusion. Leave TODOs and let the operator draft.
 - **Don't link forward from module specs to manual chapters.** Links go manual → spec only.
 - **Don't touch `legacy/`.** Never reference it.
-- **Don't subagent-delegate this work.** Subagents are retired; run this command in plain Claude Code or as-is.
 - **Don't compile PDFs here.** PDF is a separate (future) workflow.
 
 ## Example invocations

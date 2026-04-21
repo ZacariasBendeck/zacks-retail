@@ -1402,6 +1402,69 @@ export interface SkuLookupParams {
   searchField?: SkuLookupSort;
   limit?: number;
   offset?: number;
+  /** Restrict to SKUs whose Season code matches exactly (case-insensitive). */
+  season?: string;
+  /** Restrict to SKUs whose Vendor code matches exactly (case-insensitive). */
+  vendor?: string;
+  /**
+   * Restrict to SKUs whose Category falls inside the given Department's
+   * `beg_categ..end_categ` range. Matches the same mapping used by the
+   * Categories/Departments admin screens.
+   */
+  department?: number;
+}
+
+export interface SkuLookupFacets {
+  seasons: string[];
+  vendors: Array<{ code: string; label: string }>;
+  departments: Array<{ number: number; name: string }>;
+}
+
+/**
+ * Distinct Season / Vendor / Department values across the live SKU index —
+ * drives the three filter dropdowns on the SKU Lookup modal. Built from the
+ * same warmed index `searchSkusForLookup` uses, so it stays consistent.
+ */
+export async function getSkuLookupFacets(): Promise<SkuLookupFacets> {
+  const [{ rows: index }, vendorMap, departments] = await Promise.all([
+    loadSkuLookupIndex(),
+    loadVendorMap(),
+    loadDepartmentList(),
+  ]);
+
+  const seasons = new Set<string>();
+  const vendorCodes = new Set<string>();
+  const departmentNumbers = new Set<number>();
+  for (const r of index) {
+    const s = r.Season?.trim();
+    if (s) seasons.add(s);
+    const v = r.Vendor?.trim();
+    if (v) vendorCodes.add(v);
+    const cat = Number(r.Category ?? 0);
+    if (cat > 0) {
+      const dept = departments.find((d) => cat >= d.begCateg && cat <= d.endCateg);
+      if (dept) departmentNumbers.add(dept.number);
+    }
+  }
+
+  const vendors = Array.from(vendorCodes)
+    .sort()
+    .map((code) => {
+      const v = vendorMap.get(code);
+      const label = v?.shortName || v?.manuName || code;
+      return { code, label: label === code ? code : `${code} — ${label}` };
+    });
+
+  const departmentsOut = departments
+    .filter((d) => departmentNumbers.has(d.number))
+    .sort((a, b) => a.number - b.number)
+    .map((d) => ({ number: d.number, name: d.name || `Dept ${d.number}` }));
+
+  return {
+    seasons: Array.from(seasons).sort(),
+    vendors,
+    departments: departmentsOut,
+  };
 }
 
 /**
@@ -1422,6 +1485,19 @@ export async function searchSkusForLookup(
   const desc = (params.descContains ?? '').trim().toLowerCase();
   const whole = !!params.wholeWord;
   const searchField: SkuLookupSort = params.searchField ?? 'SKU';
+  const seasonFilter = params.season?.trim().toUpperCase();
+  const vendorFilter = params.vendor?.trim().toUpperCase();
+  const departmentFilter = params.department;
+
+  // Pre-resolve the department's category range once so we're not scanning
+  // the tiny departments list per row.
+  const deptRange = departmentFilter != null
+    ? (await loadDepartmentList()).find((d) => d.number === departmentFilter)
+    : null;
+  if (departmentFilter != null && !deptRange) {
+    // Unknown department → no results.
+    return { rows: [], total: 0 };
+  }
 
   // Extract the text to match against the configured column for each row.
   const fieldOf = (row: SkuLookupIndexRow): string => {
@@ -1444,6 +1520,16 @@ export async function searchSkusForLookup(
       } else if (!description.includes(desc)) {
         return false;
       }
+    }
+    if (seasonFilter && String(row.Season ?? '').trim().toUpperCase() !== seasonFilter) {
+      return false;
+    }
+    if (vendorFilter && String(row.Vendor ?? '').trim().toUpperCase() !== vendorFilter) {
+      return false;
+    }
+    if (deptRange) {
+      const cat = Number(row.Category ?? 0);
+      if (cat < deptRange.begCateg || cat > deptRange.endCateg) return false;
     }
     return true;
   });

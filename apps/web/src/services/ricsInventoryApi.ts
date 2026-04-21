@@ -175,6 +175,8 @@ export interface ChangeDetailParams {
   fromDate?: string
   toDate?: string
   limit?: number
+  /** When true, union in SKU sales rows from ticket_detail as `changeType = 'SAL'`. */
+  includeSales?: boolean
 }
 
 export interface TransferSummaryParams {
@@ -365,6 +367,7 @@ export function fetchChangeDetail(params: ChangeDetailParams): Promise<ChangeDet
   if (params.fromDate) qs.set('fromDate', params.fromDate)
   if (params.toDate) qs.set('toDate', params.toDate)
   if (params.limit != null) qs.set('limit', String(params.limit))
+  if (params.includeSales) qs.set('includeSales', 'true')
   return fetchJson<ChangeDetailResponse>(`/api/v1/inventory/change-detail?${qs}`)
 }
 

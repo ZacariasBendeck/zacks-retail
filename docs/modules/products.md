@@ -48,7 +48,7 @@
 
 ## Modernization decisions
 
-- **Sectors (p. 144) — DEFERRED, not dropped (Phase 1 update).** Original v1 plan was to drop Sectors; Phase 1 data discovery revealed 9 active sector rows the business uses for reporting rollups. Phase 1 mirrors Access including full Sector CRUD. The original "drop Sectors" modernization decision re-enters Phase 2+ as "revisit — either migrate as a taxonomy layer or replace with report-time rollups." See `docs/superpowers/specs/2026-04-18-products-phase1-design.md` Step 2 implementation log.
+- **Sectors (p. 144) — DEFERRED, not dropped (Phase 1 update).** Original v1 plan was to drop Sectors; Phase 1 data discovery revealed 9 active sector rows the business uses for reporting rollups. Phase 1 mirrors Access including full Sector CRUD. The original "drop Sectors" modernization decision re-enters Phase 2+ as "revisit — either migrate as a taxonomy layer or replace with report-time rollups." See `docs/dev/specs/2026-04-18-products-phase1-design.md` Step 2 implementation log.
 - **Future-dated price changes + discounts become scheduled jobs in `platform`.** RICS's "prompt the user on next login to apply today's changes" (p. 67, p. 73) is replaced by a background worker that fires at store-open. This module exposes the schedule; `platform` runs the worker. Users also gain an admin view of upcoming changes.
 - **Average cost is owned here, updated by `inventory`.** Avg cost is a property of (SKU × Store). On receive/transfer, `inventory` calls `products.updateAverageCost(skuId, storeId, newAvg)`. The manual-override UI (p. 67) lives in `products`. Reporting GP% reads avg cost from here.
 - **Pictures move to object storage.** The `RICSPICS` directory + `RICS.CFG ShowPictures` toggle (p. 157) → images in an S3-compatible bucket, served via CDN. Per-screen show/hide becomes a user preference in `platform` settings, not a config file.
@@ -349,7 +349,7 @@ The owning agent for the page itself is `products-dev`. When implementing:
 
 For the canonical list of view modes, action tabs, and features that v1 stubs (plus the cross-module contract each one is waiting on), see the design doc:
 
-[`docs/superpowers/specs/2026-04-19-inventory-inquiry-design.md` § Deferred / waiting on](../superpowers/specs/2026-04-19-inventory-inquiry-design.md#deferred--waiting-on).
+[`docs/dev/specs/2026-04-19-inventory-inquiry-design.md` § Deferred / waiting on](../dev/specs/2026-04-19-inventory-inquiry-design.md#deferred--waiting-on).
 
 ### Runtime dependency — SKU Lookup index warmup
 
@@ -416,3 +416,11 @@ Source: [docs/rics-db-schema.md](../rics-db-schema.md), generated 2026-04-17 by 
 10. **Should Manufacturer be a first-class entity?** Data has `InventoryMaster.Manufacturer` + `Vendor Master.Manu Code` / `Manu Name`. Either model a separate `Manufacturer` entity and point both Vendor and SKU at it, or keep Manufacturer as a string on SKU and a denormalized code on Vendor (matches RICS).
 11. **Where do `OrderMultiple` + `OrderUOM` live in Zack's Retail?** RICS puts them on the SKU row. Natural home in Zack's Retail is a `SkuOrderingPolicy` sub-record under `products` (exposed to `purchasing` via contract). Confirm before implementation.
 12. **~~Revisit the v1 decision to drop Sectors.~~ RESOLVED 2026-04-18 (Phase 1 Step 2).** Option (a) chosen: Sectors are a first-class taxonomy entity with full CRUD in the Phase 1 products module. The Modernization decisions section above records the reversal; the Phase 2+ question of whether to keep them once modern report-time grouping lands is tracked separately in the Step 2 implementation log.
+
+### Storefront launch gaps (open as of 2026-04-17, migrated from `products-dev` agent)
+
+These are the three things blocking a real storefront launch — each is a concrete code bug in the current adapter / storefront, not a design question. Fix in this order unless the operator specifies otherwise. Move each item into "Data findings reconciliation" with a resolution note once fixed.
+
+13. **`availableSizes[].inStock` is stubbed `true` everywhere.** Every SKU appears in-stock for every size on the storefront. Needs a batched join into `Inventory Quantities` (wide-column unwind across `OnHand_01..18` per store) so the flag reflects actual on-hand. Oversell risk on launch.
+14. **Department filter mismatch (storefront enum ↔ RICS descriptions).** The storefront filter enum is English (`FORMAL`, `CASUAL`, …) but RICS category descriptions are Spanish (`SECTOR DE MARCAS H`, `ROPA NIÑOS MARCA`). The facet doesn't actually filter. Either retranslate the storefront enum to map to the real Spanish descriptions, or add a category-grouping layer in Postgres that the storefront filters by.
+15. **`brandId` is a synthetic array index.** Storefront currently sends `brandId: 0 | 1 | 2 …` (the array position of the vendor in the facet response), not the real RICS vendor code. Contract change needed so the real codes flow through — storefront types + adapter + service + all consumers.

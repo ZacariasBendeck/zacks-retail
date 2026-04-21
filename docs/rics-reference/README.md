@@ -15,7 +15,7 @@ The legacy **RICS (Retail Inventory Control System) v7.7 User Manual** is the au
 - **Cite the manual page number** in every spec: e.g., "RICS manual p. 88, *Sales Analysis Report*".
 - **For fuzzy search / concept lookup**: Grep `77manual.txt`. Page numbers appear on their own line periodically (format: `                                                                                           88`) so a grep hit can usually be anchored to the nearest page.
 - **For precise / authoritative reading**: Read `77manual.pdf` with the `pages` parameter. PDF page ≈ manual page + 7 (there are ~7 prefix pages for cover + TOC).
-- The `rics-module-analyst` sub-agent (at `.claude/agents/rics-module-analyst.md`) knows to use both files — grep the txt first to locate content, then read the pdf for the authoritative text.
+- The [`/new-module-spec`](../../.claude/commands/new-module-spec.md) slash command wraps this workflow — grep the txt first to locate content, then read the pdf for the authoritative text — and uses the canonical 9-section template when writing specs into `docs/modules/`.
 
 ## Regenerating the text file
 
@@ -33,4 +33,4 @@ Features that should survive conceptually: SKUs & size types, vendors & categori
 
 Infrastructure that should be **dropped and replaced**: batch-of-sales + copy-to-diskette (→ real-time sync), modem / dial-up / ISP config (→ cloud APIs), job list + super jobs (→ background workers), screen spool files (→ browser PDF/CSV downloads), RICS.CFG (→ feature flags + settings UI), macros (→ keyboard shortcuts + saved views), main-computer-vs-POS-computer (→ single source of truth).
 
-The `rics-module-analyst` agent is explicitly instructed to make these cuts.
+The [`/new-module-spec`](../../.claude/commands/new-module-spec.md) slash command is explicitly instructed to make these cuts — every modernization decision in a module spec must name the RICS concept being dropped and cite the manual page.

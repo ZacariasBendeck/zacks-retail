@@ -6,17 +6,16 @@ A reference for **you, the programmer**, on how to drive Claude Code on this pro
 
 ---
 
-## The framework (2026-04-21 reshape)
+## The framework
 
-**No more subagents.** The old Subagent-Driven Development (SDD) setup is retired. The `.claude/agents/` folder is archived history — don't invoke `@products-dev`, `@storefront-dev`, or `@rics-module-analyst`, and don't expect Claude to fan out to them. That approach produced stale rule files faster than useful delegation.
+**No subagents.** The `.claude/agents/` folder was removed and no subagents are configured — don't expect Claude to fan out to them.
 
-Three work surfaces, in order of preference:
+Two work surfaces, in order of preference:
 
 1. **Slash commands in [`.claude/commands/`](./.claude/commands/)** — project-specific rituals that know this repo's paths and conventions. Invoke via `/<name>`. If there's a slash command for what you want, use it first.
-2. **Skills** (from the Superpowers plugin) — content bundles that auto-trigger on context. Still worth having installed because the workflow skills (`brainstorming`, `writing-plans`, `verification-before-completion`, `systematic-debugging`) are generic and useful. You don't invoke skills by name; they kick in when the topic matches.
-3. **Plain Claude Code** — for architectural questions, cross-module scope, one-off investigations, anything that doesn't fit a command.
+2. **Plain Claude Code** — for architectural questions, cross-module scope, one-off investigations, anything that doesn't fit a command.
 
-**Rule of thumb:** project-specific recurring workflow → write a slash command. One-off investigation → plain chat. Reusable domain rules → a skill.
+**Rule of thumb:** project-specific recurring workflow → write a slash command. One-off investigation → plain chat.
 
 ---
 
@@ -28,6 +27,7 @@ Every command lives in [`.claude/commands/`](./.claude/commands/). Each is a mar
 
 | Command | What it does | When to use |
 |---|---|---|
+| `/new-module-spec <slug>` | Scaffolds or refreshes a module spec at `docs/modules/<slug>.md` using the canonical 9-section template (Goal → RICS features covered → Modernization decisions → Data model sketch → API surface → UI surface → Dependencies → Contracts exposed → Out of scope → Open questions). Cites RICS manual pages; never invents behavior. | You're starting a new module, or revising one's spec from the RICS manual. |
 | `/new-manual-chapter <slug>` | Scaffolds an end-user manual chapter at `docs/zacks-retail-manual/<slug>.md`, patterned after the RICS v7.7 manual. Updates the manual's `INDEX.md`. | You're starting a new module's end-user docs. |
 | `/sync-module-docs [module] [--apply]` | Audits module specs (`docs/modules/*.md` + `docs/MODULES.md`) against reality — Prisma schema, migrations, route files, recent git log — and proposes edits to close drift. Read-only by default; pass `--apply` to write. | You suspect a module's doc is stale (new migrations landed, routes moved, phase advanced). |
 
@@ -57,18 +57,15 @@ Every command lives in [`.claude/commands/`](./.claude/commands/). Each is a mar
 
 **Small bug fix.**
 1. Describe the bug to plain Claude Code in normal mode.
-2. The `systematic-debugging` skill triggers. Claude investigates root cause before suggesting a fix.
-3. Fix proposed → you approve → Claude edits.
-4. `verification-before-completion` triggers. Claude runs the test / dev server and shows evidence.
-5. You commit (or ask Claude to).
+2. Claude investigates, proposes a fix, and edits on approval.
+3. Claude runs the test / dev server and shows evidence before claiming done.
+4. You commit (or ask Claude to).
 
 **New feature inside one module.**
-1. Plan mode (Shift+Tab twice). Describe the feature in plain chat — no subagent routing.
-2. `brainstorming` triggers → design conversation → approval.
-3. `writing-plans` triggers → plan file saved under `C:\Users\zbend\.claude\plans\`.
-4. Exit plan mode. Claude executes the plan with `test-driven-development` and `verification-before-completion` running alongside.
-5. You review each iteration.
-6. When done, commit to `master` (no branches on this project).
+1. Describe the feature in plain chat — no subagent routing. Use plan mode (Shift+Tab twice) for anything non-trivial.
+2. Design conversation → approval → Claude executes in bite-sized steps.
+3. You review each iteration.
+4. When done, commit to `master` (no branches on this project).
 
 **Auditing doc drift in a module.**
 1. `/sync-module-docs <module>` → Claude compares the spec against code/migrations/git log and proposes edits.
@@ -83,58 +80,15 @@ Every command lives in [`.claude/commands/`](./.claude/commands/). Each is a mar
 2. Wait ~5 min. Watch per-table progress. Final line reads `OK — <N> rows total in <T>`.
 3. Sanity-check with `/verify-rics-mirror --counts-only` if you want counts.
 
-**Flipping a module from OLEDB reads to `rics_mirror` reads** (future work — no command for this yet; describe the module to plain Claude, reference [`docs/operations/rics-mirror-sync.md`](./docs/operations/rics-mirror-sync.md), let the workflow skills take it from there).
-
----
-
-## Skills (via the Superpowers plugin)
-
-Workflow skills still auto-trigger. What you'll see:
-
-- `brainstorming` — gates "design approved before code" in plan mode.
-- `writing-plans` — TDD-first, bite-sized plan files.
-- `test-driven-development` — RED-GREEN-REFACTOR.
-- `systematic-debugging` — root cause first; circuit-break after 3 failed fixes.
-- `verification-before-completion` — no "done" without fresh evidence.
-
-**Skills NOT used on this project:**
-
-- `using-git-worktrees` — we don't use worktrees (hard rule: commit directly to `master`).
-- `finishing-a-development-branch` — no feature branches to finish.
-- `subagent-driven-development`, `dispatching-parallel-agents` — no subagents anymore.
-
-## Install / reinstall the plugin
-
-```
-/plugin marketplace add claude-plugins-official
-/plugin install superpowers@claude-plugins-official
-/plugin list
-```
-
-## Smoke test
-
-In a fresh session:
-
-1. `/plugin list` — `superpowers` should appear.
-2. Ask Claude to plan a trivial feature — `brainstorming` or `writing-plans` should kick in.
-3. Ask for a bug fix on a failing test — `systematic-debugging` should kick in.
-4. When Claude says "done," check it actually ran the test and showed output.
-
-## Rollback the plugin
-
-```
-/plugin uninstall superpowers
-```
-
-No app code changes.
+**Flipping a module from OLEDB reads to `rics_mirror` reads** (future work — no command for this yet; describe the module to plain Claude, reference [`docs/operations/rics-mirror-sync.md`](./docs/operations/rics-mirror-sync.md)).
 
 ---
 
 ## Daily reminders
 
-- **Start in plan mode for anything non-trivial.** Shift+Tab twice. Let the brainstorming/planning skills do their job before code gets written.
+- **Start in plan mode for anything non-trivial.** Shift+Tab twice. Get the design right before code gets written.
 - **Prefer a slash command to a freeform request** when one fits. The command knows the paths; you save context.
-- **No subagents.** If an old doc or handoff tells you to call `@products-dev`, ignore it.
+- **No subagents.** If an old doc or handoff tells you to call a specific sub-agent, ignore it.
 - **Watch for verification evidence.** If Claude claims "done" without showing a test run or dev-server output, push back.
 - **Commit to `master` directly.** No branches, no worktrees, no PRs on this project.
 - **Don't touch `rics_mirror` by hand.** It's rebuilt on every `sync:rics`. Operator data goes in `public` / `app`. Full rules: [`docs/operations/rics-mirror-sync.md`](./docs/operations/rics-mirror-sync.md).
@@ -151,7 +105,7 @@ Everything under the repo root, top-down. Folders not listed here are either sta
 |---|---|
 | [`apps/`](./apps/) | Every runnable app in the monorepo. Four workspaces: `api`, `web`, `pos`, `storefront`. Each is a pnpm workspace with its own `package.json`. |
 | [`docs/`](./docs/) | All documentation — module specs, operations runbooks, design specs, session handoffs, the RICS v7.7 reference manual, and the forward-facing Zack's Retail end-user manual. |
-| [`.claude/`](./.claude/) | Claude Code project configuration. Currently holds `commands/` (active slash commands) and `agents/` (retired subagent definitions — keep as history, don't invoke). |
+| [`.claude/`](./.claude/) | Claude Code project configuration. Holds `commands/` — active slash commands. The old `agents/` folder was removed; subagents are not used on this project. |
 | `docker-compose.yml` | Local dev Postgres (`zacks-retail-postgres` on port `5433`). The only container Zack's Retail needs for development. |
 | `turbo.json` | Turbo task pipeline config for the monorepo. |
 | `pnpm-workspace.yaml`, `package.json`, `pnpm-lock.yaml` | pnpm monorepo wiring. |
@@ -216,9 +170,10 @@ Everything under the repo root, top-down. Folders not listed here are either sta
 | [`docs/operations/`](./docs/operations/) | Ops runbooks. Currently: `rics-mirror-sync.md` (the ETL pipeline), `access-oledb-async-spawn.md` (async-spawn hard rule), `sku-lookup-index-warmup.md` (startup warmup hard rule). Add one here per new operational concern. |
 | [`docs/rics-reference/`](./docs/rics-reference/) | The RICS v7.7 user manual (PDF + any extracted text). Source of lineage; cite page numbers when porting behavior. |
 | [`docs/zacks-retail-manual/`](./docs/zacks-retail-manual/) | Forward-facing end-user manual for Zack's Retail. The eventual replacement for the RICS manual. Written chapter by chapter via `/new-manual-chapter`. |
-| [`docs/superpowers/specs/`](./docs/superpowers/specs/) | Dated architecture + design specs. Filename pattern: `YYYY-MM-DD-<topic>-design.md`. |
-| [`docs/superpowers/plans/`](./docs/superpowers/plans/) | Implementation plans, typically one per feature/migration. |
-| [`docs/superpowers/handoffs/`](./docs/superpowers/handoffs/) | Session handoffs between Claude sessions. Dated. Never edit historical handoffs. |
+| [`docs/dev/specs/`](./docs/dev/specs/) | Dated architecture + design specs. Filename pattern: `YYYY-MM-DD-<topic>-design.md`. |
+| [`docs/dev/plans/`](./docs/dev/plans/) | Implementation plans, typically one per feature/migration. |
+| [`docs/dev/handoffs/`](./docs/dev/handoffs/) | Session handoffs between Claude sessions. Dated. Never edit historical handoffs. |
+| [`docs/dev/milestones/`](./docs/dev/milestones/) | Dated milestone notes. |
 | [`docs/rics-db-schema.md`](./docs/rics-db-schema.md) | Reference dump of RICS MDB schemas — useful when something in `rics_mirror` looks surprising. |
 | `docs/triage-2026-04-18.md` | One-off architecture review from 2026-04-18. Historical. |
 
@@ -227,7 +182,6 @@ Everything under the repo root, top-down. Folders not listed here are either sta
 | Path | What's inside |
 |---|---|
 | [`.claude/commands/`](./.claude/commands/) | Active slash commands (see the "Commands you'll use" table above). One markdown file per command. |
-| `.claude/agents/` | Retired subagent definitions from the pre-2026-04-21 framework. Kept as history; never invoke. |
 
 ---
 
@@ -237,14 +191,11 @@ Everything under the repo root, top-down. Folders not listed here are either sta
 |---|---|
 | Agent instructions for Claude | [`CLAUDE.md`](./CLAUDE.md) |
 | Slash commands | [`.claude/commands/`](./.claude/commands/) |
-| Retired subagent definitions (don't use) | `.claude/agents/` |
 | Module specs (source of truth per module) | [`docs/modules/`](./docs/modules/) |
 | End-user manual (forward spec) | [`docs/zacks-retail-manual/`](./docs/zacks-retail-manual/) |
 | RICS v7.7 manual (ancestor / lineage reference) | [`docs/rics-reference/`](./docs/rics-reference/) |
 | Operations runbooks | [`docs/operations/`](./docs/operations/) |
-| Design specs (dated, for architecture + per-module Phase designs) | [`docs/superpowers/specs/`](./docs/superpowers/specs/) |
-| Session handoffs | [`docs/superpowers/handoffs/`](./docs/superpowers/handoffs/) |
-| Plans Claude writes in plan mode | `C:\Users\zbend\.claude\plans\` |
-| Installed plugins | `C:\Users\zbend\.claude\plugins\` |
+| Design specs (dated, for architecture + per-module Phase designs) | [`docs/dev/specs/`](./docs/dev/specs/) |
+| Session handoffs | [`docs/dev/handoffs/`](./docs/dev/handoffs/) |
 | Legacy RICS MDB files (read-only, ETL only) | `E:/data/rics-mdbs/` |
 | This workflow guide | `WORKFLOW.md` (you are here) |

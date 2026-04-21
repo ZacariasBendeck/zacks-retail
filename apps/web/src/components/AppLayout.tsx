@@ -20,6 +20,7 @@ import {
   ColumnHeightOutlined,
   HistoryOutlined,
   TeamOutlined,
+  AuditOutlined,
 } from '@ant-design/icons'
 import { Outlet, useNavigate, useLocation } from 'react-router-dom'
 import { useAuth } from '../auth/useAuth'
@@ -62,6 +63,8 @@ const menuItems = [
       { key: '/inventory/transfers/auto-preview', icon: <ExperimentOutlined />, label: 'Transfer \u2014 Auto (preview)' },
       { key: '/inventory/transfers/balancing-preview', icon: <ExperimentOutlined />, label: 'Transfer \u2014 Balancing (preview)' },
       { key: '/inventory/movements', icon: <SyncOutlined />, label: 'Movements' },
+      { key: '/inventory/change-detail', icon: <HistoryOutlined />, label: 'Change Detail' },
+      { key: '/inventory/audit', icon: <AuditOutlined />, label: 'Audit' },
     ],
   },
   {

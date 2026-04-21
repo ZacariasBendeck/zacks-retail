@@ -46,7 +46,7 @@ Further refinements after user review (2026-04-17):
 |---|---|---|---|---|
 | N1 | **purchase-planning** | Forecast-driven replenishment calculator. Given historical sales and current on-hand, project 12 months of buy quantities per department / category / vendor with four selectable forecast methods (same-month-last-year, trailing average, YoY growth %, blended multi-year) and two EOH target methods (forward-demand cover, seasonal multiplier). Read-only; no persisted plans in v1. | [`docs/modules/purchase-planning.md`](modules/purchase-planning.md) — derived from four Python scripts (`presupuesto_compras*.py`), no RICS chapter. **Independent of `otb-planning`.** | _unassigned_ |
 
-> The cross-module storefront UI surface (cart, checkout, orders, account pages) and its supporting public API routes are operator-owned. No subagent backs this surface — invoke slash commands from `.claude/commands/` when relevant, otherwise work in plain Claude Code.
+> The cross-module storefront UI surface (cart, checkout, orders, account pages) and its supporting public API routes are operator-owned. Invoke slash commands from `.claude/commands/` when relevant, otherwise work in plain Claude Code.
 
 ---
 
@@ -78,25 +78,21 @@ Further refinements after user review (2026-04-17):
 ## How to evolve this registry
 
 1. Drop the RICS manual PDF at [rics-reference/77manual.pdf](rics-reference/77manual.pdf).
-2. Invoke the `rics-module-analyst` sub-agent with "propose initial module breakdown" to get a refined module list, or with a specific module name (e.g., `products`) to produce a deep spec at `docs/modules/<name>.md`.
+2. Use the `/new-module-spec <slug>` slash command to scaffold or refresh a module spec at `docs/modules/<slug>.md` against the RICS manual.
 3. Work through the modules one at a time. Don't try to spec everything in parallel — the point of this structure is that each module can be picked up independently.
 
 ---
 
 ## How to use this registry
 
-New here? Start with this file, then walk into the spec for whichever module you need to touch. Each spec at [modules/](modules/)`<name>.md` follows the strict template defined in [.claude/agents/rics-module-analyst.md](../.claude/agents/rics-module-analyst.md) (sections: Goal · RICS features covered · Modernization decisions · Data model sketch · API surface · UI surface · Dependencies · Contracts exposed · Out of scope for v1 · Open questions).
+New here? Start with this file, then walk into the spec for whichever module you need to touch. Each spec at [modules/](modules/)`<name>.md` follows the canonical 9-section template scaffolded by `/new-module-spec <slug>` (sections: Goal · RICS features covered · Modernization decisions · Data model sketch · API surface · UI surface · Dependencies · Contracts exposed · Out of scope for v1 · Open questions).
 
 **Routing guide for changes**
 
-| You want to… | Invoke |
+| You want to… | How |
 |---|---|
-| Change the module decomposition (split, merge, rename, add a new module) | `@rics-module-analyst` in Mode A ("propose initial module breakdown" or "refine the registry because…") |
-| Produce or update a single module's spec | `@rics-module-analyst` in Mode B with the module name (e.g. "produce the spec for `crm`") |
-| Implement, fix, or RICS-map anything in the **products** module | `@products-dev` |
-| Build, fix, or refine any storefront feature that crosses modules (cart, checkout, orders, account pages, public API) | `@storefront-dev` |
-| Implement / fix any other module | No dedicated agent yet — use the general-purpose flow and reference the module's spec for scope |
-
-Agents themselves live in [.claude/agents/](../.claude/agents/) and are versioned alongside the code — they are team tooling, not personal preferences. If you change an agent definition, commit it.
+| Change the module decomposition (split, merge, rename, add a new module) | Edit this file directly. Describe the change to plain Claude Code and iterate. |
+| Produce or update a single module's spec | `/new-module-spec <slug>` to scaffold or refresh against the RICS manual. |
+| Implement / fix any module | Open the relevant `docs/modules/<slug>.md` and work in plain Claude Code. |
 
 The "RICS features explicitly **not** being ported" table above is the canonical cut list. New specs' Modernization decisions sections should reference it rather than restate it.

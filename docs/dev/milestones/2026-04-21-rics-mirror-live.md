@@ -7,7 +7,7 @@
 
 ## Summary
 
-Phase A goes live: the RICS → Postgres one-way mirror ETL is implemented, the foundational schemas (`rics_mirror`, `platform`, `app`) are in place, `legacy/` is retired along with its runtime consumers, subagents are retired in favor of slash commands, and the Zack's Retail user manual is scaffolded as the forward spec (supersedes the RICS v7.7 manual).
+Phase A goes live: the RICS → Postgres one-way mirror ETL is implemented, the foundational schemas (`rics_mirror`, `platform`, `app`) are in place, `legacy/` is retired along with its runtime consumers, subagents are retired in favor of slash commands, and the Zack's Retail user manual is scaffolded as the forward spec (replaces the RICS v7.7 manual).
 
 ## What shipped
 
@@ -33,7 +33,7 @@ Phase A goes live: the RICS → Postgres one-way mirror ETL is implemented, the 
 
 ### Docs
 - **Zack's Retail user manual scaffolded** at [docs/zacks-retail-manual/](docs/zacks-retail-manual/): [INDEX.md](docs/zacks-retail-manual/INDEX.md) + 14 chapter stubs (products, inventory, physical-inventory, purchasing, otb-planning, sales-pos, customer-transactions, sales-reporting, crm, accounts-receivable, employees, store-ops, platform, purchase-planning). This manual **supersedes the RICS v7.7 manual** as the forward spec; the RICS manual is now ancestry only.
-- [CLAUDE.md](CLAUDE.md) rewritten: data-surfaces reshape documented; rollout phases renamed A/B/C (old 1/1.5/2/3 explicitly deprecated with migration notes); agents section replaced with slash-commands-and-skills-only model.
+- [CLAUDE.md](CLAUDE.md) rewritten: data-surfaces reshape documented; rollout phases renamed A/B/C (old 1/1.5/2/3 explicitly deprecated with migration notes); agents section replaced with slash-commands-only model.
 - [docs/MODULES.md](docs/MODULES.md): Owner columns reassigned to operator-owned; storefront-dev footnote rewritten.
 - [docs/operations/rics-mirror-sync.md](docs/operations/rics-mirror-sync.md): new ETL operations reference.
 
@@ -44,7 +44,7 @@ Phase A goes live: the RICS → Postgres one-way mirror ETL is implemented, the 
 - Stale spec artifact removed: `Project Specifications/Faceted_Search_Spec_v2.docx.txt`.
 
 ### Subagents retired
-- Files at [.claude/agents/products-dev.md](.claude/agents/products-dev.md), [storefront-dev.md](.claude/agents/storefront-dev.md), [rics-module-analyst.md](.claude/agents/rics-module-analyst.md) remain on disk as historical record but are no longer invoked. See CLAUDE.md and `docs/MODULES.md` for the new operator-owned model.
+- Agent definition files deleted from `.claude/agents/`. See CLAUDE.md and `docs/MODULES.md` for the new operator-owned model.
 
 ## Migrations applied
 
@@ -53,7 +53,7 @@ Phase A goes live: the RICS → Postgres one-way mirror ETL is implemented, the 
 
 ## Next
 
-Pick the first module to cut over from OLEDB-at-request-time reads to `rics_mirror` reads. Recommended candidate: **products** (the spec is the most mature; the SKU Lookup index warmup path is the obvious first target). A Phase-A-cutover plan for products belongs in `docs/superpowers/plans/` before code changes.
+Pick the first module to cut over from OLEDB-at-request-time reads to `rics_mirror` reads. Recommended candidate: **products** (the spec is the most mature; the SKU Lookup index warmup path is the obvious first target). A Phase-A-cutover plan for products belongs in `docs/dev/plans/` before code changes.
 
 ## Notes
 

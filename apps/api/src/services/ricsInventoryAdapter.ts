@@ -205,6 +205,14 @@ export interface ChangeDetailParams {
   fromDate?: string;         // YYYY-MM-DD (inclusive)
   toDate?: string;           // YYYY-MM-DD (inclusive)
   limit?: number;            // default 200, max 1000
+  /**
+   * When true, UNION in SKU-level sales rows from rics_mirror.ticket_detail
+   * (joined to ticket_header) as `changeType = 'SAL'` with negated quantity.
+   * Sales are not recorded in RIINVCHG; this flag brings them into the same
+   * ledger for audit use. RICS Ch. 5 Post-Sales-to-Inventory (p. 45) is the
+   * original "sales-as-movements" path we're replicating here.
+   */
+  includeSales?: boolean;
 }
 
 export class ChangeDetailQueryTooBroadError extends Error {
@@ -1030,39 +1038,14 @@ LIMIT ${limit}`;
  */
 export async function getChangeDetail(params: ChangeDetailParams): Promise<ChangeDetailRow[]> {
   const limit = clamp(params.limit ?? 200, 1, 1000);
+  const requestedType = params.changeType?.trim().toUpperCase() || undefined;
+  const wantInvChanges = !requestedType || requestedType !== 'SAL';
+  const wantSales = !!params.includeSales && (!requestedType || requestedType === 'SAL');
 
   const sqlParams: unknown[] = [];
-  const wheres: string[] = [];
-  if (params.sku) {
-    const safe = params.sku.trim();
-    if (safe) {
-      sqlParams.push(safe);
-      wheres.push(`sku = $${sqlParams.length}`);
-    }
-  }
-  if (params.store != null) {
-    sqlParams.push(Number(params.store));
-    wheres.push(`store = $${sqlParams.length}`);
-  }
-  if (params.changeType) {
-    const safe = params.changeType.trim().toUpperCase();
-    if (safe) {
-      sqlParams.push(safe);
-      wheres.push(`UPPER(chg_type) = $${sqlParams.length}`);
-    }
-  }
 
+  // Resolve and validate the date window once; applied to both branches.
   const { from, to } = normalizeDateRange(params.fromDate, params.toDate);
-  if (from) {
-    sqlParams.push(from);
-    wheres.push(`date >= $${sqlParams.length}::date`);
-  }
-  if (to) {
-    sqlParams.push(addDays(to, 1));
-    wheres.push(`date < $${sqlParams.length}::date`);
-  }
-
-  // Enforce a scope: no SKU + no date range means refuse.
   const haveSku = !!params.sku?.trim();
   const spanDays = from && to ? daysBetween(from, to) + 1 : null;
   if (!haveSku) {
@@ -1078,16 +1061,90 @@ export async function getChangeDetail(params: ChangeDetailParams): Promise<Chang
     }
   }
 
-  const whereClause = wheres.length ? ` WHERE ${wheres.join(' AND ')}` : '';
-  const sql = `SELECT
+  // Shared parameter indices — populate once, reference from both branches.
+  let skuIdx: number | null = null;
+  if (params.sku?.trim()) {
+    sqlParams.push(params.sku.trim());
+    skuIdx = sqlParams.length;
+  }
+  let storeIdx: number | null = null;
+  if (params.store != null) {
+    sqlParams.push(Number(params.store));
+    storeIdx = sqlParams.length;
+  }
+  let typeIdx: number | null = null;
+  if (requestedType) {
+    sqlParams.push(requestedType);
+    typeIdx = sqlParams.length;
+  }
+  let fromIdx: number | null = null;
+  if (from) {
+    sqlParams.push(from);
+    fromIdx = sqlParams.length;
+  }
+  let toIdx: number | null = null;
+  if (to) {
+    sqlParams.push(addDays(to, 1));
+    toIdx = sqlParams.length;
+  }
+
+  const branches: string[] = [];
+
+  if (wantInvChanges) {
+    const wheres: string[] = [];
+    if (skuIdx != null) wheres.push(`sku = $${skuIdx}`);
+    if (storeIdx != null) wheres.push(`store = $${storeIdx}`);
+    if (typeIdx != null) wheres.push(`UPPER(chg_type) = $${typeIdx}`);
+    if (fromIdx != null) wheres.push(`date >= $${fromIdx}::date`);
+    if (toIdx != null) wheres.push(`date <  $${toIdx}::date`);
+    const whereClause = wheres.length ? ` WHERE ${wheres.join(' AND ')}` : '';
+    branches.push(`SELECT
   sku AS "SKU", orig_sku AS "OrigSKU", store AS "Store",
   chg_type AS "ChgType",
   to_char(date AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS') AS "Date",
   col AS "Col", "row" AS "Row",
   po AS "PO", oth_store AS "OthStore",
   qty AS "Qty", cost::float8 AS "Cost", rma_number AS "RMANumber"
-FROM rics_mirror.inv_changes${whereClause}
-ORDER BY date DESC
+FROM rics_mirror.inv_changes${whereClause}`);
+  }
+
+  if (wantSales) {
+    // ticket_detail.sku is right-padded to 15 chars — wrap the filter with RPAD.
+    const wheres: string[] = [
+      `h.trans_type = 1`,
+      `h.voided     = false`,
+    ];
+    if (skuIdx != null) wheres.push(`d.sku = RPAD($${skuIdx}, 15)`);
+    if (storeIdx != null) wheres.push(`h.store = $${storeIdx}`);
+    if (fromIdx != null) wheres.push(`h.real_date >= $${fromIdx}::date`);
+    if (toIdx != null) wheres.push(`h.real_date <  $${toIdx}::date`);
+    branches.push(`SELECT
+  d.sku AS "SKU", NULL::text AS "OrigSKU", h.store AS "Store",
+  'SAL'::text AS "ChgType",
+  to_char(h.real_date AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS') AS "Date",
+  NULL::text AS "Col", NULL::text AS "Row",
+  NULL::text AS "PO", NULL::int AS "OthStore",
+  (-COALESCE(d.qty, 0))::int AS "Qty",
+  COALESCE(d.cost, 0)::float8 AS "Cost",
+  NULL::text AS "RMANumber"
+FROM rics_mirror.ticket_header h
+INNER JOIN rics_mirror.ticket_detail d
+  ON h.user_id = d.user_id
+ AND h.batch_date = d.batch_date
+ AND h.terminal = d.terminal
+ AND h.store = d.store
+ AND h.ticket = d.ticket
+ AND h.real_date = d.real_date
+WHERE ${wheres.join(' AND ')}`);
+  }
+
+  if (branches.length === 0) {
+    return [];
+  }
+
+  const union = branches.length === 1 ? branches[0] : branches.map((b) => `(${b})`).join(' UNION ALL ');
+  const sql = `${union}
+ORDER BY "Date" DESC
 LIMIT ${limit}`;
 
   interface RawRow {

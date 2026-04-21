@@ -7,7 +7,7 @@ import type { InventoryInquiry, InquiryInfo } from '../../../types/inventoryInqu
 // changing the legacy shape. This hook flattens the legacy `master.*` block
 // onto the top-level flat contract the new Inquiry page consumes.
 //
-// See docs/superpowers/specs/2026-04-19-inventory-inquiry-design.md § 6 for the
+// See docs/dev/specs/2026-04-19-inventory-inquiry-design.md § 6 for the
 // canonical flat contract. When the old InventoryInquiryPage is removed
 // (Task 24), the backend can drop the legacy nested block and this transform
 // collapses to a pass-through.

@@ -21,6 +21,8 @@ const BalancingTransferPreviewPage = lazy(() => import('./pages/inventory/Balanc
 const ManualTransferEntryPage = lazy(() => import('./pages/inventory/ManualTransferEntryPage'))
 const InventoryDetailReportPage = lazy(() => import('./pages/inventory/InventoryDetailReportPage'))
 const ChangeDetailPage = lazy(() => import('./pages/inventory/ChangeDetailPage'))
+const SkuChangeDetailPage = lazy(() => import('./pages/inventory/SkuChangeDetailPage'))
+const InventoryAuditPage = lazy(() => import('./pages/inventory/InventoryAuditPage'))
 const AdjustmentListPage = lazy(() => import('./pages/inventory/AdjustmentListPage'))
 const AdjustmentFormPage = lazy(() => import('./pages/inventory/AdjustmentFormPage'))
 const AdjustmentDetailPage = lazy(() => import('./pages/inventory/AdjustmentDetailPage'))
@@ -154,6 +156,8 @@ export default function App() {
             <Route path="/reports/recommended-transfers" element={<RecommendedTransferReportPage />} />
             <Route path="/reports/inventory-detail" element={<InventoryDetailReportPage />} />
             <Route path="/inventory/change-detail" element={<ChangeDetailPage />} />
+            <Route path="/inventory/change-detail/:sku" element={<SkuChangeDetailPage />} />
+            <Route path="/inventory/audit" element={<InventoryAuditPage />} />
             <Route path="/purchasing" element={<Navigate to="/purchasing/orders" replace />} />
             <Route path="/purchasing/orders" element={<PurchaseOrdersPage />} />
             <Route path="/purchasing/orders/new" element={<PurchaseOrderFormPage />} />

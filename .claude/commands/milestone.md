@@ -28,7 +28,7 @@ No flags, no pauses. The operator's invocation is the authorization — run end-
 
 ## 3. Write the milestone doc
 
-At `docs/superpowers/milestones/<YYYY-MM-DD>-<label>.md`:
+At `docs/dev/milestones/<YYYY-MM-DD>-<label>.md`:
 
 ```markdown
 # Milestone: <label>
@@ -64,14 +64,14 @@ If the file doesn't exist, create it:
 ```markdown
 # Zack's Retail — Project Status
 
-**Latest milestone:** [<label>](superpowers/milestones/<YYYY-MM-DD>-<label>.md) — <date>
+**Latest milestone:** [<label>](dev/milestones/<YYYY-MM-DD>-<label>.md) — <date>
 **Tag to check out:** `milestone-<YYYY-MM-DD>-<label>`
 **Current phase:** <A | B | C>
 **Next:** <one line from the milestone doc>
 
 ## Milestone history
 
-- [<label>](superpowers/milestones/<YYYY-MM-DD>-<label>.md) — <date> — <one-line summary>
+- [<label>](dev/milestones/<YYYY-MM-DD>-<label>.md) — <date> — <one-line summary>
 ```
 
 If it exists, update the top block (latest milestone / tag / phase / next) and prepend a row to Milestone history.
@@ -94,7 +94,7 @@ Migrations:
 
 Next: <one line from milestone doc>
 
-See: docs/superpowers/milestones/<YYYY-MM-DD>-<label>.md
+See: docs/dev/milestones/<YYYY-MM-DD>-<label>.md
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 ```
@@ -124,7 +124,7 @@ Milestone recorded — <label>
 Commit: <short SHA>  <subject>
 Tag:    milestone-<YYYY-MM-DD>-<label>
 Push:   origin/master + tag
-Doc:    docs/superpowers/milestones/<YYYY-MM-DD>-<label>.md
+Doc:    docs/dev/milestones/<YYYY-MM-DD>-<label>.md
 
 Next: <one line>
 ```

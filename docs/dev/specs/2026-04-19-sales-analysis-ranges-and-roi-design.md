@@ -317,7 +317,7 @@ Ant Design column headers remain click-to-re-sort as today — this change only 
 
 ## Implementation plan preview
 
-The writing-plans skill will take this spec and produce a TDD-first bite-sized plan. Rough shape:
+A TDD-first bite-sized plan built from this spec takes roughly this shape:
 
 1. Fix default row ordering in the RICS adapter (§7) + test.
 2. Add `sqlNumericBounds` + tests in `criteriaGrammar.ts`.

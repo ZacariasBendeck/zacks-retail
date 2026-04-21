@@ -3,7 +3,7 @@
 **Module:** `sales-reporting`
 **RICS reference:** Ch. 6 p. 95 (docs/modules/sales-reporting.md lines 103–112)
 **Phase:** 1 — live read-only from RICS Access MDB via existing PowerShell + OLEDB adapter
-**Author:** brainstorming session 2026-04-18
+**Author:** design session 2026-04-18
 
 ## Scope (v1)
 

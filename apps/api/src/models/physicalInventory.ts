@@ -2,7 +2,7 @@
  * Physical Inventory module — Phase 1.a (Slice 3) types and row mappers.
  *
  * See docs/modules/physical-inventory.md for the spec and
- * docs/superpowers/specs/2026-04-19-physical-inventory-p1a-slice3-design.md
+ * docs/dev/specs/2026-04-19-physical-inventory-p1a-slice3-design.md
  * for the P1.a deltas + open-question resolutions.
  *
  * Phase 1.a status pipeline:

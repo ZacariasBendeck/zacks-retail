@@ -193,7 +193,7 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({ skuCode, storeId, onPi
         <div style={{ marginTop: 8 }}>
           {activeTab === 'UPCS' && <UpcsTab skuCode={data.sku} />}
           {activeTab === 'INFO' && data.info && <InfoTab info={data.info} />}
-          {activeTab === 'DETAIL' && <DetailTab skuCode={data.sku} />}
+          {activeTab === 'DETAIL' && <DetailTab skuCode={data.sku} description={data.description} />}
           {activeTab === 'POS' && <PosTab />}
           {activeTab === 'TREND' && <TrendTab />}
         </div>

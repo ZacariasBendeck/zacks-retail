@@ -241,8 +241,9 @@ router.get('/change-detail', async (req: Request, res: Response, next: NextFunct
     const toDate = (req.query.toDate as string | undefined)?.trim() || undefined;
     const store = parseIntOrUndefined(req.query.store);
     const limit = parseIntOrUndefined(req.query.limit);
+    const includeSales = req.query.includeSales === 'true' || req.query.includeSales === '1';
 
-    const rows = await getChangeDetail({ sku, store, changeType, fromDate, toDate, limit });
+    const rows = await getChangeDetail({ sku, store, changeType, fromDate, toDate, limit, includeSales });
     res.json({ rows, total: rows.length });
   } catch (err) {
     next(err);

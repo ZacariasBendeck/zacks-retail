@@ -1,14 +1,12 @@
 # Sales Analysis — criteria ranges + ROI/Turns/GP% Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
-
 **Goal:** Let users type RICS-grammar ranges (`556-599`, `<>575`, `KISS*BK`) into Sales Analysis criteria; render ROI%, Turns, GP%, and Inv Value at Cost on every row and total; fix default row ordering so Department Summary starts at the lowest dept number instead of alphabetically by name.
 
 **Architecture:** Extend the existing `criteriaGrammar.ts` parser with `sqlNumericBounds`. Add a new `metrics.ts` helper that computes GP%/Turns/ROI% from sales + on-hand-at-cost. Add a new `ricsOnHandAtCostAdapter.ts` that groups Σ(OnHand×CurrentCost) by the same dimension the sales query uses. Extend `SalesAnalysisCriteria` with `*Raw` grammar fields and apply them in the RICS adapter via merge-semantics (structured dropdown picks ∪ grammar, with exclusion-only narrowing picks). Build a reusable `CriteriaInput.tsx` that pairs the existing multi-select with a grammar text box. Wire it into `SalesAnalysisPage.tsx` and add the new columns.
 
 **Tech Stack:** Node 20 + TypeScript + Express + Jest for the API; React 18 + Vite + Ant Design + TanStack Query + Vitest for the web app.
 
-**Reference spec:** [`docs/superpowers/specs/2026-04-19-sales-analysis-ranges-and-roi-design.md`](docs/superpowers/specs/2026-04-19-sales-analysis-ranges-and-roi-design.md)
+**Reference spec:** [`docs/dev/specs/2026-04-19-sales-analysis-ranges-and-roi-design.md`](docs/dev/specs/2026-04-19-sales-analysis-ranges-and-roi-design.md)
 
 ---
 
@@ -2273,7 +2271,7 @@ alphabetically by department name."
 
 ## Self-Review
 
-**Spec coverage check (against `docs/superpowers/specs/2026-04-19-sales-analysis-ranges-and-roi-design.md`):**
+**Spec coverage check (against `docs/dev/specs/2026-04-19-sales-analysis-ranges-and-roi-design.md`):**
 
 - §1 `CriteriaInput` widget → Task 8.
 - §2 Extended `SalesAnalysisCriteria` wire shape + merge semantics → Task 4 (types) + Task 7 (merge semantics in `facetKeeps`).
@@ -2295,11 +2293,4 @@ alphabetically by department name."
 
 ## Execution Handoff
 
-Plan complete and saved to `docs/superpowers/plans/2026-04-19-sales-analysis-ranges-and-roi.md`.
-
-Two execution options:
-
-1. **Subagent-Driven (recommended)** — I dispatch a fresh subagent per task, review between tasks, fast iteration.
-2. **Inline Execution** — Execute tasks in this session using executing-plans, batch execution with checkpoints for review.
-
-Which approach?
+Plan complete and saved to `docs/dev/plans/2026-04-19-sales-analysis-ranges-and-roi.md`. Execute task-by-task in plain Claude Code; checkboxes track progress.

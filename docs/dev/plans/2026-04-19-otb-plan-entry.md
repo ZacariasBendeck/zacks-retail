@@ -1,14 +1,12 @@
 # OTB Plan Entry (% Change Method) Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
-
 **Goal:** Phase-1 RICS parity for the OTB Plan entry file (p. 158) with the *"% change over last year's sales for each category"* method — CRUD for plan rows, `[ReCalculate]`, `[Copy]`, a company-level entry-method toggle, and a minimal web entry page.
 
 **Architecture:** Backend Express + Jest + better-sqlite3, mirroring `otbBudgetService` / `otbBudgetRoutes` patterns ([apps/api/src/services/otbBudgetService.ts](../../../apps/api/src/services/otbBudgetService.ts), [apps/api/src/routes/otbBudgetRoutes.ts](../../../apps/api/src/routes/otbBudgetRoutes.ts)). Frontend React 18 + TanStack Query + Ant Design, mirroring `useOtb.ts` + `otbApi.ts` + `OtbMonthlyPlansPage.tsx`. New migration 0021 adds `otb_plan_rows` (wide-format 12-month cells), `otb_plan_row_audit`, `company_settings`. **No new cross-module contract files in this slice** — the service stores `storeId` / `categoryId` as opaque TEXT columns, and the web UI populates dropdowns via existing admin APIs (`/api/v1/taxonomy/categories`, `/api/v1/pos/stores` or single-store default). This deviates from the spec's "Must exist" language for `productsContract.ts` / `storeContract.ts`; the rationale is that no Phase-1 server-side code path in this slice crosses module boundaries, so adding empty passthroughs would be dead weight. Contracts are re-scoped to the follow-up slice that wires the OTB Report (which *does* need to read last-year sales from `sales-reporting`).
 
 **Tech Stack:** TypeScript, Express 4, `better-sqlite3` via `DatabaseSync`, Jest + supertest, React 18, Ant Design 5, TanStack Query v5, Vitest + React Testing Library, zod.
 
-**Spec:** [docs/superpowers/specs/2026-04-19-otb-plan-entry-design.md](../specs/2026-04-19-otb-plan-entry-design.md)
+**Spec:** [docs/dev/specs/2026-04-19-otb-plan-entry-design.md](../specs/2026-04-19-otb-plan-entry-design.md)
 
 **Module:** [docs/modules/otb-planning.md](../../modules/otb-planning.md)
 
@@ -2368,7 +2366,7 @@ git commit -m "feat(web): register /otb/plan route for OTB Plan entry page"
 
 - [ ] **Step 12.1: Annotate the manual-features section**
 
-Under "RICS features covered" → "OTB Plan setup (Ch. 11)", prefix each implemented bullet with `✅ [implemented: 2026-04-19 — see [plan](../superpowers/plans/2026-04-19-otb-plan-entry.md)]`:
+Under "RICS features covered" → "OTB Plan setup (Ch. 11)", prefix each implemented bullet with `✅ [implemented: 2026-04-19 — see [plan](../dev/plans/2026-04-19-otb-plan-entry.md)]`:
 
 - p. 158, Open To Buy Plan – File Setup (CHANGE_OVER_LAST_YEAR path only)
 - p. 158, [Copy] (category)
@@ -2396,4 +2394,4 @@ git commit -m "docs(otb): mark plan-entry % change method implemented (slice 1)"
 - [ ] `pnpm --filter api dev` + `pnpm --filter web dev`: manual click-through on `/otb/plan` — create, edit, recalculate, copy, delete
 - [ ] `git log --oneline` shows 12 feature commits (one per task)
 - [ ] `docs/modules/otb-planning.md` has implementation-date markers
-- [ ] No new entries in `docs/superpowers/specs/` or `docs/superpowers/plans/` are left stale (this plan is final)
+- [ ] No new entries in `docs/dev/specs/` or `docs/dev/plans/` are left stale (this plan is final)

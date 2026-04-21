@@ -357,4 +357,4 @@ None that block Phase-1 implementation. The deferred-list table above captures e
 5. Add `/inventory/inquiry` redirect + remove the old page.
 6. Tabs: UPCs, Info, Detail wired; POs, Trend, Print rendered as stubs.
 
-The `writing-plans` skill turns this into numbered, bite-sized steps with TDD checkpoints.
+Turn this into numbered, bite-sized steps with TDD checkpoints during plan-mode.

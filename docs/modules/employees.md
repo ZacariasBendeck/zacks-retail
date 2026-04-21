@@ -1,6 +1,6 @@
 # Module: employees
 
-> **Status — Slice 1 shipped (2026-04-18).** The first slice of this module is live on branch `feature/employees-auth-slice`: **Users + Roles + Permissions + Sessions + argon2id password login + user CRUD + a seeded OWNER**. Everything below about `Employee`, `TimeClockEntry`, `CommissionOverride`, `SalesPassword` (modernized), `EmployeePeriod`, MFA/TOTP, and the legacy RICS import is still spec-only — planned for slices 2+. See [`docs/superpowers/plans/2026-04-18-employees-auth-slice.md`](../superpowers/plans/2026-04-18-employees-auth-slice.md) for what actually landed.
+> **Status — Slice 1 shipped (2026-04-18).** The first slice of this module is live on branch `feature/employees-auth-slice`: **Users + Roles + Permissions + Sessions + argon2id password login + user CRUD + a seeded OWNER**. Everything below about `Employee`, `TimeClockEntry`, `CommissionOverride`, `SalesPassword` (modernized), `EmployeePeriod`, MFA/TOTP, and the legacy RICS import is still spec-only — planned for slices 2+. See [`docs/dev/plans/2026-04-18-employees-auth-slice.md`](../dev/plans/2026-04-18-employees-auth-slice.md) for what actually landed.
 >
 > **Shipped surface:**
 > - `POST /api/v1/auth/login`, `POST /api/v1/auth/logout`, `GET /api/v1/auth/me`, `POST /api/v1/auth/change-password`

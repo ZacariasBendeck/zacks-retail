@@ -6,7 +6,7 @@
  * observability — product correctness is enforced by the Access write, not by
  * the presence of this row. Failures here DO NOT block the mutation.
  *
- * See [docs/superpowers/specs/2026-04-18-products-phase1-design.md](../../../../../docs/superpowers/specs/2026-04-18-products-phase1-design.md).
+ * See [docs/dev/specs/2026-04-18-products-phase1-design.md](../../../../../docs/dev/specs/2026-04-18-products-phase1-design.md).
  */
 
 import type { PrismaClient } from '@prisma/client';

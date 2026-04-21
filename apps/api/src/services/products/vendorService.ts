@@ -11,7 +11,7 @@
  * cross-field or cross-table lives here.
  *
  * See Phase 1 design doc:
- *   docs/superpowers/specs/2026-04-18-products-phase1-design.md
+ *   docs/dev/specs/2026-04-18-products-phase1-design.md
  */
 
 import { VendorRepository, type Vendor, type VendorInput, type VendorStoreAccount } from '../../repositories/rics/VendorRepository';

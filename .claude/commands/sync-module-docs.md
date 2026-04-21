@@ -17,9 +17,9 @@ Argument handling: `$ARGUMENTS`
 |---|---|
 | `docs/MODULES.md` | Module registry — the canonical table of 14 modules, owners, RICS chapter mapping, and the "not being ported" list. |
 | `docs/modules/<slug>.md` | Per-module spec. One file per module. Narrative prose — no checkbox/percentage bars. |
-| `docs/superpowers/specs/` | Design specs (architecture, per-module phase designs). Dated filenames like `2026-04-18-products-phase1-design.md`. |
-| `docs/superpowers/plans/` | Implementation plans. |
-| `docs/superpowers/handoffs/` | Session handoffs. Dated filenames `YYYY-MM-DD-*.md`. |
+| `docs/dev/specs/` | Design specs (architecture, per-module phase designs). Dated filenames like `2026-04-18-products-phase1-design.md`. |
+| `docs/dev/plans/` | Implementation plans. |
+| `docs/dev/handoffs/` | Session handoffs. Dated filenames `YYYY-MM-DD-*.md`. |
 | `CLAUDE.md` | Agent guide + rollout-phase narrative. |
 | `WORKFLOW.md` | Human-facing workflow. |
 | `apps/api/prisma/schema.prisma` | Prisma schema. Will eventually use `@@schema("<module>")` annotations post-Postgres migration. |
@@ -39,7 +39,7 @@ Argument handling: `$ARGUMENTS`
 2. **Per-module audit** (for each module in scope):
    - **Read the spec** at `docs/modules/<slug>.md`. Identify:
      - Does it declare a current rollout phase? Look for phrases like "Phase 1", "Phase 1.5", "Phase 2", "Phase 3", or section headings like "Rollout phase" / "Current status" / "Phase-gate state."
-     - Does it reference a design-spec date file in `docs/superpowers/specs/`? If so, does that file exist?
+     - Does it reference a design-spec date file in `docs/dev/specs/`? If so, does that file exist?
      - Does it reference a feature flag (e.g. `PRODUCT_SOURCE=rics|local`, `SALES_SOURCE`)? Record them.
    - **Check the Prisma schema** for module-matching models. Initially (pre-Postgres-migration) everything is in `public`. Post-migration (once `previewFeatures = ["multiSchema"]` is enabled) look for `@@schema("<module-schema-name>")` — note the schema name uses **underscore_case** of the slug (e.g. `otb_planning`, not `otb-planning`).
    - **Check migrations** at `apps/api/prisma/migrations/`. For any migration whose name hints at the module (e.g. `*products*`, `*audit*`, `*season*`), confirm the spec mentions it.
@@ -47,7 +47,7 @@ Argument handling: `$ARGUMENTS`
    - **Check flag defaults in code** against the spec's claimed phase. If `docs/modules/products.md` says "Phase 1 — RICS live reads" and the code default is `PRODUCT_SOURCE=local`, that's drift.
 
 3. **Handoff / commit freshness check.**
-   - List `docs/superpowers/handoffs/*.md`. Sort by filename date. The most recent handoff date is the drift baseline.
+   - List `docs/dev/handoffs/*.md`. Sort by filename date. The most recent handoff date is the drift baseline.
    - Run `git log --since="<latest-handoff-date>" --oneline -- docs/modules/ docs/MODULES.md apps/api/prisma/ apps/api/src/routes/ apps/api/src/services/`.
    - Any commit that touched a module's code path but no corresponding doc update → drift warning.
 

@@ -159,7 +159,7 @@ export async function listSalesDimensions(): Promise<import('./ricsSalesReportAd
 // Net Sales, Profit, Gross Profit %) at three detail levels (SKU / Vendor-or-
 // Category subtotals / Department summary), filtered by RICS criteria grammar
 // across 7 facets (Stores, Categories, Vendors, Seasons, Style/Colors, Groups,
-// Keywords). See docs/superpowers/specs/2026-04-18-sales-history-by-month-design.md
+// Keywords). See docs/dev/specs/2026-04-18-sales-history-by-month-design.md
 // for the v1→v2 delta.
 //
 // v2.1 (2026-04-18): Beginning On-Hand Qty, ROI%, and Turns ship after the

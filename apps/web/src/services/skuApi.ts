@@ -171,6 +171,12 @@ export interface SkuLookupQuery {
   searchField?: SkuLookupSort
   limit?: number
   offset?: number
+  /** Filter to rows whose Season code matches exactly. */
+  season?: string
+  /** Filter to rows whose Vendor code matches exactly. */
+  vendor?: string
+  /** Filter to rows whose Category falls inside the Department's range. */
+  department?: number
 }
 
 export async function searchSkusForLookup(query: SkuLookupQuery): Promise<SkuLookupResult> {
@@ -181,9 +187,24 @@ export async function searchSkusForLookup(query: SkuLookupQuery): Promise<SkuLoo
   if (query.searchField) params.set('searchField', query.searchField)
   if (query.limit) params.set('limit', String(query.limit))
   if (query.offset) params.set('offset', String(query.offset))
+  if (query.season) params.set('season', query.season)
+  if (query.vendor) params.set('vendor', query.vendor)
+  if (query.department != null) params.set('department', String(query.department))
 
   const response = await fetch(`/api/v1/skus/search?${params.toString()}`)
   if (!response.ok) throw new SkuApiError(`SKU search failed: ${response.status}`, response.status)
+  return response.json()
+}
+
+export interface SkuLookupFacets {
+  seasons: string[]
+  vendors: Array<{ code: string; label: string }>
+  departments: Array<{ number: number; name: string }>
+}
+
+export async function fetchSkuLookupFacets(): Promise<SkuLookupFacets> {
+  const response = await fetch('/api/v1/skus/lookup-facets')
+  if (!response.ok) throw new SkuApiError(`Facet fetch failed: ${response.status}`, response.status)
   return response.json()
 }
 

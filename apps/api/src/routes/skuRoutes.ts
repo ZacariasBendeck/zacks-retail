@@ -11,7 +11,11 @@ import {
   validateQuery,
 } from '../middleware/validation';
 import { SkuListParams } from '../models/sku';
-import { searchSkusForLookup, type SkuLookupSort } from '../services/ricsProductAdapter';
+import {
+  searchSkusForLookup,
+  getSkuLookupFacets,
+  type SkuLookupSort,
+} from '../services/ricsProductAdapter';
 
 const router: IRouter = Router();
 
@@ -225,9 +229,35 @@ router.get('/search', async (req: Request, res: Response, next): Promise<void> =
     const wholeWord = req.query.wholeWord === 'true';
     const limit = req.query.limit ? Number(req.query.limit) : 50;
     const offset = req.query.offset ? Number(req.query.offset) : 0;
+    const season = typeof req.query.season === 'string' && req.query.season.trim()
+      ? req.query.season.trim()
+      : undefined;
+    const vendor = typeof req.query.vendor === 'string' && req.query.vendor.trim()
+      ? req.query.vendor.trim()
+      : undefined;
+    const department = req.query.department != null && req.query.department !== ''
+      ? Number(req.query.department)
+      : undefined;
 
-    const result = await searchSkusForLookup({ q, descContains, wholeWord, searchField, limit, offset });
+    const result = await searchSkusForLookup({
+      q, descContains, wholeWord, searchField, limit, offset,
+      season, vendor,
+      department: department != null && Number.isFinite(department) ? department : undefined,
+    });
     res.json(result);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * Distinct Season / Vendor / Department values over the live SKU index —
+ * powers the dropdown filters on the SKU Lookup modal.
+ */
+router.get('/lookup-facets', async (_req: Request, res: Response, next): Promise<void> => {
+  try {
+    const facets = await getSkuLookupFacets();
+    res.json(facets);
   } catch (err) {
     next(err);
   }

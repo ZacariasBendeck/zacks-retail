@@ -1,7 +1,5 @@
 # Employees Module — Auth Slice (Slice 1) Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
-
 **Goal:** Ship the first slice of the `employees` module — web-based password authentication, roles, permissions, permission middleware, user CRUD, and a bootstrapped `OWNER` account — so every other module has an identity to attribute actions to.
 
 **Architecture:** Net-new Postgres tables (`User`, `Role`, `Session`) added to the existing Prisma schema at [apps/api/prisma/schema.prisma](../../../apps/api/prisma/schema.prisma). Passwords hashed with argon2id via `@node-rs/argon2` (prebuilt binary, works on Windows). Sessions are server-side rows with UUID cookies — no JWTs. Permission enforcement happens in an Express middleware at `apps/api/src/middleware/authMiddleware.ts`. Frontend wraps the router in an `AuthContext` that calls `GET /auth/me` on mount; a `<RequireAuth>` element redirects to `/login` when unauthenticated.
@@ -2292,10 +2290,4 @@ After writing the complete plan, skim the spec at `docs/modules/employees.md` wi
 
 ## Execution Handoff
 
-**Plan complete and saved to `docs/superpowers/plans/2026-04-18-employees-auth-slice.md`. Two execution options:**
-
-**1. Subagent-Driven (recommended)** — I dispatch a fresh subagent per task, review between tasks, fast iteration.
-
-**2. Inline Execution** — Execute tasks in this session using executing-plans, batch execution with checkpoints.
-
-**Which approach?**
+Plan complete and saved to `docs/dev/plans/2026-04-18-employees-auth-slice.md`. Execute task-by-task in plain Claude Code; checkboxes track progress.

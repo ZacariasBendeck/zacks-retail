@@ -34,7 +34,7 @@
  * by the pictures static route (Step 8).
  *
  * Phase 1 design contract:
- *   docs/superpowers/specs/2026-04-18-products-phase1-design.md
+ *   docs/dev/specs/2026-04-18-products-phase1-design.md
  */
 
 import {
