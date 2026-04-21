@@ -150,6 +150,19 @@ Units are whole integers with thousands separators. Any monetary column uses pla
 - Cross-store transfer recommendations.
 - Persisting the user's last-used filter set.
 
+## v2 scope (in design, 2026-04-21)
+
+Operator directive to extend v1 from a read-only calculator toward an interactive, persisted buying-plan tool. Full design rationale in [`../dev/specs/2026-04-21-purchase-planning-v2-scope.md`](../dev/specs/2026-04-21-purchase-planning-v2-scope.md). Summary of the new surfaces:
+
+- **Chain-scoped plans, not per-store.** Plans run per chain (Unlimited / Magic Shoes & Fashion / TBD / TBD — see [`../COMPANY.md`](../COMPANY.md) "Chain structure") × category range × fiscal window. Stores in the same chain roll up together.
+- **Persistence in `app.*`.** First real inhabitant of the `app` schema. Draft tables: `app.store_group`, `app.store_group_member`, `app.purchase_plan`, `app.purchase_plan_row`, `app.purchase_plan_adjustment`, `app.purchase_plan_audit`.
+- **Forecasting upgrade.** Add Holt-Winters triple exponential smoothing as a new default method; keep the existing four methods pickable per dimension. Add trimmed-mean option for robustness. Add realized-price normalization as a preprocessing pass to dampen discount-driven historical spikes.
+- **Lift factors.** Buyer-entered signed % multipliers on top of the mechanical forecast, scoped per (plan × dimension × optional month), with a required reason string. Comparable across plan revisions.
+- **Vendor exclusions.** Special case of lift factor: `buy = 0` from month M onward for a named vendor.
+- **Plan comparison.** Saved plans support month-over-month and year-over-year diff views.
+- **On-order in the Buy math.** Known gap in v1: [`compute.ts:102`](../../apps/api/src/services/purchasePlanning/compute.ts#L102) uses on-hand only. v2 replaces `runningBoh` with `onHand + currentOnOrder + futureOnOrder`. Data already in `rics_mirror.inventory_quantities`. This is the smallest v2 increment — ships first.
+- **Surplus signal deferred.** Exposing the negative raw-buy (over-bought units) as a buyer-visible signal was considered and deferred in favor of the forecasting + persistence work above.
+
 ## Open questions
 
 1. **History window for forecasting.** `blendedMultiYear` with 3 years needs ~36 months of history. `queryMonthlyMeasures` already reads `RITRNSSV` + `RITRANS*`; confirm end-to-end that 36 months is reachable for all dims.
