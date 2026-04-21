@@ -21,13 +21,7 @@
  * spec prescribes. Segment N covers size-grid columns `(N-1)*18 + 1 .. N*18`.
  */
 
-import fs from 'node:fs';
-import {
-  ricsDbPath,
-  getOrRecoverPassword,
-  runPowerShellJson,
-  buildSelectScript,
-} from './accessOleDb';
+import { prisma } from '../db/prisma';
 import { findIndexedMaster, findNeighborSku } from './ricsProductAdapter';
 import { getInquirySalesRollup } from './salesReporting/ricsInquiryRollupAdapter';
 
@@ -286,17 +280,40 @@ export function clearCache(): void {
   cache.clear();
 }
 
-// ─────────────────────────── MDB paths ────────────────────────────────────
+// ─────────────────────────── data source ──────────────────────────────────
+// Phase A: reads come from `rics_mirror.*` Postgres tables, populated by
+// `pnpm sync:rics` from the legacy MDBs. Projections alias snake_case columns
+// back to the PascalCase shape the rest of this file expects.
 
-function mdbPath(envKey: string, defaultFile: string): string {
-  return ricsDbPath(process.env[envKey] || defaultFile);
+/** Map an MDB wide-column prefix (e.g. "OnHand_", "M-T-DSales_") to its
+ *  rics_mirror.inventory_quantities snake_case equivalent prefix. Explicit
+ *  map covers the known RICS prefixes; anything else falls back to a
+ *  camel/hyphen-to-snake heuristic. */
+const MDB_TO_MIRROR_QUA_PREFIX: Record<string, string> = {
+  'OnHand_': 'on_hand_',
+  'CurrentOnOrder_': 'current_on_order_',
+  'FutureOnOrder_': 'future_on_order_',
+  'Model_': 'model_',
+  'MaxQtys_': 'max_qtys_',
+  'Reorder_': 'reorder_',
+  'M-T-DSales_': 'm_t_d_sales_',
+  'S-T-DSales_': 's_t_d_sales_',
+  'Y-T-DSales_': 'y_t_d_sales_',
+  'LYSales_': 'ly_sales_',
+};
+
+function toMirrorQuaPrefix(mdbPrefix: string): string {
+  const hit = MDB_TO_MIRROR_QUA_PREFIX[mdbPrefix];
+  if (hit) return hit;
+  // Fallback heuristic for anything unmapped.
+  const core = mdbPrefix.replace(/_$/, '');
+  const snake = core
+    .replace(/-/g, '_')
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2')
+    .toLowerCase();
+  return `${snake}_`;
 }
-const INVQUA_MDB = () => mdbPath('RICS_INVQUA_DB_FILE', 'RIINVQUA.MDB');
-const INVCHG_MDB = () => mdbPath('RICS_INVCHG_DB_FILE', 'RIINVCHG.MDB');
-const INVMAS_MDB = () => mdbPath('RICS_INVMAS_DB_FILE', 'RIINVMAS.MDB');
-const SIZE_MDB   = () => mdbPath('RICS_SIZE_DB_FILE',   'RISIZE.MDB');
-const STORE_MDB  = () => mdbPath('RICS_STORE_DB_FILE',  'RISTORE.MDB');
-const VENDOR_MDB = () => mdbPath('RICS_VENDOR_DB_FILE', 'RIVENDOR.MDB');
 
 // ─────────────────────────── dimension loaders ────────────────────────────
 
@@ -307,9 +324,8 @@ interface StoreRow {
 
 async function loadStoreMap(): Promise<Map<number, StoreRow>> {
   return cachedAsync('dim:stores', 300_000, async () => {
-    const rows = await queryAll<{ Number: number; Desc: string | null }>(
-      STORE_MDB(),
-      'SELECT [Number], [Desc] FROM [StoreMaster]',
+    const rows = await prisma.$queryRawUnsafe<{ Number: number; Desc: string | null }[]>(
+      `SELECT number AS "Number", "desc" AS "Desc" FROM rics_mirror.store_master`,
     );
     const map = new Map<number, StoreRow>();
     for (const r of rows) {
@@ -334,11 +350,19 @@ interface SizeTypeRow {
 
 async function loadSizeTypeMap(): Promise<Map<number, SizeTypeRow>> {
   return cachedAsync('dim:sizeTypes', 300_000, async () => {
-    const colSelect = Array.from({ length: 54 }, (_, i) => `[Columns_${pad2(i + 1)}]`).join(', ');
-    const rowSelect = Array.from({ length: 27 }, (_, i) => `[Rows_${pad2(i + 1)}]`).join(', ');
-    const rows = await queryAll<Record<string, string | number | null>>(
-      SIZE_MDB(),
-      `SELECT [Code], [Desc], [MaxColumns], [MaxRows], ${colSelect}, ${rowSelect} FROM [SizeTypes]`,
+    const colSelect = Array.from({ length: 54 }, (_, i) => {
+      const n = pad2(i + 1);
+      return `columns_${n} AS "Columns_${n}"`;
+    }).join(', ');
+    const rowSelect = Array.from({ length: 27 }, (_, i) => {
+      const n = pad2(i + 1);
+      return `rows_${n} AS "Rows_${n}"`;
+    }).join(', ');
+    const rows = await prisma.$queryRawUnsafe<Record<string, string | number | null>[]>(
+      `SELECT code AS "Code", "desc" AS "Desc",
+              max_columns AS "MaxColumns", max_rows AS "MaxRows",
+              ${colSelect}, ${rowSelect}
+         FROM rics_mirror.size_types`,
     );
     const map = new Map<number, SizeTypeRow>();
     for (const r of rows) {
@@ -377,9 +401,13 @@ interface VendorRow {
 
 async function loadVendorMap(): Promise<Map<string, VendorRow>> {
   return cachedAsync('dim:vendors', 300_000, async () => {
-    const rows = await queryAll<{ Code: string; 'Short Name': string | null; 'Manu Name': string | null }>(
-      VENDOR_MDB(),
-      'SELECT [Code], [Short Name], [Manu Name] FROM [Vendor Master]',
+    const rows = await prisma.$queryRawUnsafe<
+      { Code: string | null; 'Short Name': string | null; 'Manu Name': string | null }[]
+    >(
+      `SELECT code AS "Code",
+              short_name AS "Short Name",
+              manu_name AS "Manu Name"
+         FROM rics_mirror.vendor_master`,
     );
     const map = new Map<string, VendorRow>();
     for (const r of rows) {
@@ -457,13 +485,28 @@ async function loadMasterBySku(sku: string): Promise<MasterRow | null> {
   }
 
   // Fallback: index not yet warmed, or SKU not in it (discontinued / new).
-  const safe = sku.replace(/'/g, "''");
-  const sql = `SELECT TOP 1
-  [SKU], [Desc], [Vendor], [Manufacturer], [Category], [SizeType], [Season], [LabelCode], [GroupCode],
-  [StyleColor], [VendorSku], [ListPrice], [RetailPrice], [MarkDownPrice1], [MarkDownPrice2],
-  [CurrentPrice], [CurrentCost], [LastPriceChange], [PictureFileName], [Perks], [Comment], [Status]
-FROM [InventoryMaster] WHERE [SKU] = '${safe}'`;
-  const rows = await queryAll<MasterRow>(INVMAS_MDB(), sql);
+  const rows = await prisma.$queryRawUnsafe<MasterRow[]>(
+    `
+    SELECT
+      sku AS "SKU", "desc" AS "Desc", vendor AS "Vendor",
+      manufacturer AS "Manufacturer", category AS "Category",
+      size_type AS "SizeType", season AS "Season",
+      label_code AS "LabelCode", group_code AS "GroupCode",
+      style_color AS "StyleColor", vendor_sku AS "VendorSku",
+      list_price::float8 AS "ListPrice", retail_price::float8 AS "RetailPrice",
+      mark_down_price1::float8 AS "MarkDownPrice1",
+      mark_down_price2::float8 AS "MarkDownPrice2",
+      current_price AS "CurrentPrice",
+      current_cost::float8 AS "CurrentCost",
+      to_char(last_price_change AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS') AS "LastPriceChange",
+      picture_file_name AS "PictureFileName",
+      perks::float8 AS "Perks", comment AS "Comment", status AS "Status"
+    FROM rics_mirror.inventory_master
+    WHERE sku = $1
+    LIMIT 1
+    `,
+    sku,
+  );
   return rows[0] ?? null;
 }
 
@@ -510,12 +553,21 @@ const CELL_METRICS: MetricFamily[] = [
   { prefix: 'LYSales_',        key: 'lySales' },
 ];
 
-/** SELECT column list covering all metric families for segments 01–18. */
+/** Postgres SELECT column list covering all metric families for segments 01–18.
+ *  Aliases snake_case mirror columns back to the PascalCase/hyphenated MDB names
+ *  so `expandQuaRow`'s dynamic `q[prefix + NN]` lookups keep working unchanged. */
 function buildQuaSelect(): string {
-  const cols = ['[SKU]', '[Store]', '[Row]', '[Segment]'];
+  const cols = [
+    `sku AS "SKU"`,
+    `store AS "Store"`,
+    `"row" AS "Row"`,
+    `segment AS "Segment"`,
+  ];
   for (const m of CELL_METRICS) {
+    const mirrorPrefix = toMirrorQuaPrefix(m.prefix);
     for (let i = 1; i <= 18; i++) {
-      cols.push(`[${m.prefix}${pad2(i)}]`);
+      const n = pad2(i);
+      cols.push(`${mirrorPrefix}${n} AS "${m.prefix}${n}"`);
     }
   }
   return cols.join(',\n  ');
@@ -678,21 +730,19 @@ export async function getInventoryInquiry(sku: string): Promise<InventoryInquiry
   const master = await loadMasterBySku(trimmed);
   if (!master || !master.SKU) return null;
 
-  const safe = trimmed.replace(/'/g, "''");
   const quaSql = `SELECT ${buildQuaSelect()}
-FROM [Inventory Quantities]
-WHERE [SKU] = '${safe}'
-ORDER BY [Store], [Row], [Segment]`;
+FROM rics_mirror.inventory_quantities
+WHERE sku = $1
+ORDER BY store, "row", segment`;
 
   // Parallel legs: dimension maps (cached; fast), RIINVQUA per-SKU cells
-  // (the dominant cost), and the per-SKU sales rollup against RITRNSSV.
-  // Rolling them together hides the rollup's PowerShell latency behind the
-  // RIINVQUA query on fast connections.
+  // (the dominant cost), and the per-SKU sales rollup. Rolling them together
+  // hides each leg's latency behind the others on fast connections.
   const [stores, sizeTypes, vendors, rows, salesRollup] = await Promise.all([
     loadStoreMap(),
     loadSizeTypeMap(),
     loadVendorMap(),
-    queryAll<QuaRow>(INVQUA_MDB(), quaSql),
+    prisma.$queryRawUnsafe<QuaRow[]>(quaSql, trimmed),
     getInquirySalesRollup(trimmed),
   ]);
 
@@ -852,35 +902,27 @@ export async function getInventoryDetailReport(
   const [stores, vendors] = await Promise.all([loadStoreMap(), loadVendorMap()]);
   void stores;
 
-  // 1) Aggregate RIINVQUA rows by SKU. On-hand / on-order / sales rollups are
-  //    simple per-metric sums over every cell of every (store, row, segment).
-  const storeFilter =
-    params.storeNumber != null ? ` WHERE [Store] = ${Number(params.storeNumber)}` : '';
-  const sumParts = CELL_METRICS
-    .filter((m) =>
-      m.key === 'onHand' ||
-      m.key === 'currentOnOrder' ||
-      m.key === 'ytdSales' ||
-      m.key === 'lySales',
-    )
-    .flatMap((m) =>
-      Array.from({ length: 18 }, (_, i) => `IIF([${m.prefix}${pad2(i + 1)}] IS NULL, 0, [${m.prefix}${pad2(i + 1)}])`),
-    );
-  // Break the sum into four named rollups matching the MetricFamily filter
-  // above. The order is preserved: onHand | currentOnOrder | ytdSales | lySales,
-  // 18 columns each.
-  const onHandSum = sumParts.slice(0, 18).join(' + ');
-  const onOrderSum = sumParts.slice(18, 36).join(' + ');
-  const ytdSum = sumParts.slice(36, 54).join(' + ');
-  const lySum = sumParts.slice(54, 72).join(' + ');
+  // 1) Aggregate rics_mirror.inventory_quantities by SKU. On-hand / on-order /
+  //    sales rollups are per-metric sums over every cell of every (store, row,
+  //    segment).
+  const quaParams: unknown[] = [];
+  let storeFilter = '';
+  if (params.storeNumber != null) {
+    quaParams.push(Number(params.storeNumber));
+    storeFilter = ` WHERE store = $${quaParams.length}`;
+  }
+  const onHandSum = sumOfMetric('OnHand_');
+  const onOrderSum = sumOfMetric('CurrentOnOrder_');
+  const ytdSum = sumOfMetric('Y-T-DSales_');
+  const lySum = sumOfMetric('LYSales_');
 
-  const sqlQua = `SELECT [SKU],
-  SUM(${onHandSum}) AS TotalOnHand,
-  SUM(${onOrderSum}) AS TotalCurrentOnOrder,
-  SUM(${ytdSum}) AS TotalYtdSales,
-  SUM(${lySum}) AS TotalLySales
-FROM [Inventory Quantities]${storeFilter}
-GROUP BY [SKU]`;
+  const sqlQua = `SELECT sku AS "SKU",
+  SUM(${onHandSum}) AS "TotalOnHand",
+  SUM(${onOrderSum}) AS "TotalCurrentOnOrder",
+  SUM(${ytdSum}) AS "TotalYtdSales",
+  SUM(${lySum}) AS "TotalLySales"
+FROM rics_mirror.inventory_quantities${storeFilter}
+GROUP BY sku`;
 
   interface QuaAgg {
     SKU: string | null;
@@ -889,34 +931,45 @@ GROUP BY [SKU]`;
     TotalYtdSales: number | null;
     TotalLySales: number | null;
   }
-  const aggs = await queryAll<QuaAgg>(INVQUA_MDB(), sqlQua);
+  const aggs = await prisma.$queryRawUnsafe<QuaAgg[]>(sqlQua, ...quaParams);
 
   // 2) Pull the master rows for those SKUs (bounded by any caller filters).
+  const masterParams: unknown[] = [];
   const wheres: string[] = [];
   if (params.vendorCode) {
-    const safe = params.vendorCode.trim().replace(/'/g, "''");
-    wheres.push(`[Vendor] = '${safe}'`);
+    masterParams.push(params.vendorCode.trim());
+    wheres.push(`vendor = $${masterParams.length}`);
   }
   if (params.categoryMin != null && params.categoryMax != null) {
-    wheres.push(`[Category] BETWEEN ${Number(params.categoryMin)} AND ${Number(params.categoryMax)}`);
+    masterParams.push(Number(params.categoryMin), Number(params.categoryMax));
+    wheres.push(`category BETWEEN $${masterParams.length - 1} AND $${masterParams.length}`);
   } else if (params.categoryMin != null) {
-    wheres.push(`[Category] >= ${Number(params.categoryMin)}`);
+    masterParams.push(Number(params.categoryMin));
+    wheres.push(`category >= $${masterParams.length}`);
   } else if (params.categoryMax != null) {
-    wheres.push(`[Category] <= ${Number(params.categoryMax)}`);
+    masterParams.push(Number(params.categoryMax));
+    wheres.push(`category <= $${masterParams.length}`);
   }
   if (params.season) {
-    const safe = params.season.trim().replace(/'/g, "''");
-    wheres.push(`[Season] = '${safe}'`);
+    masterParams.push(params.season.trim());
+    wheres.push(`season = $${masterParams.length}`);
   }
-  wheres.push(`([Status] IS NULL OR [Status] <> 'D')`);
-  const whereClause = wheres.length ? ` WHERE ${wheres.join(' AND ')}` : '';
+  wheres.push(`(status IS NULL OR status <> 'D')`);
+  const whereClause = ` WHERE ${wheres.join(' AND ')}`;
 
-  const sqlMaster = `SELECT TOP ${limit}
-  [SKU], [Desc], [Vendor], [Manufacturer], [Category], [Season], [StyleColor],
-  [ListPrice], [RetailPrice], [MarkDownPrice1], [MarkDownPrice2], [CurrentPrice], [CurrentCost]
-FROM [InventoryMaster]${whereClause}
-ORDER BY [Desc]`;
-  const masters = await queryAll<MasterRow>(INVMAS_MDB(), sqlMaster);
+  const sqlMaster = `SELECT
+  sku AS "SKU", "desc" AS "Desc", vendor AS "Vendor",
+  manufacturer AS "Manufacturer", category AS "Category",
+  season AS "Season", style_color AS "StyleColor",
+  list_price::float8 AS "ListPrice", retail_price::float8 AS "RetailPrice",
+  mark_down_price1::float8 AS "MarkDownPrice1",
+  mark_down_price2::float8 AS "MarkDownPrice2",
+  current_price AS "CurrentPrice",
+  current_cost::float8 AS "CurrentCost"
+FROM rics_mirror.inventory_master${whereClause}
+ORDER BY "desc"
+LIMIT ${limit}`;
+  const masters = await prisma.$queryRawUnsafe<MasterRow[]>(sqlMaster, ...masterParams);
 
   const aggBySku = new Map<string, QuaAgg>();
   for (const a of aggs) {
@@ -978,22 +1031,36 @@ ORDER BY [Desc]`;
 export async function getChangeDetail(params: ChangeDetailParams): Promise<ChangeDetailRow[]> {
   const limit = clamp(params.limit ?? 200, 1, 1000);
 
+  const sqlParams: unknown[] = [];
   const wheres: string[] = [];
   if (params.sku) {
-    const safe = params.sku.trim().replace(/'/g, "''");
-    if (safe) wheres.push(`[SKU] = '${safe}'`);
+    const safe = params.sku.trim();
+    if (safe) {
+      sqlParams.push(safe);
+      wheres.push(`sku = $${sqlParams.length}`);
+    }
   }
   if (params.store != null) {
-    wheres.push(`[Store] = ${Number(params.store)}`);
+    sqlParams.push(Number(params.store));
+    wheres.push(`store = $${sqlParams.length}`);
   }
   if (params.changeType) {
-    const safe = params.changeType.trim().replace(/'/g, "''").toUpperCase();
-    if (safe) wheres.push(`UCASE([ChgType]) = '${safe}'`);
+    const safe = params.changeType.trim().toUpperCase();
+    if (safe) {
+      sqlParams.push(safe);
+      wheres.push(`UPPER(chg_type) = $${sqlParams.length}`);
+    }
   }
 
   const { from, to } = normalizeDateRange(params.fromDate, params.toDate);
-  if (from) wheres.push(`[Date] >= #${accessDate(from)}#`);
-  if (to) wheres.push(`[Date] < #${accessDate(addDays(to, 1))}#`);
+  if (from) {
+    sqlParams.push(from);
+    wheres.push(`date >= $${sqlParams.length}::date`);
+  }
+  if (to) {
+    sqlParams.push(addDays(to, 1));
+    wheres.push(`date < $${sqlParams.length}::date`);
+  }
 
   // Enforce a scope: no SKU + no date range means refuse.
   const haveSku = !!params.sku?.trim();
@@ -1012,11 +1079,16 @@ export async function getChangeDetail(params: ChangeDetailParams): Promise<Chang
   }
 
   const whereClause = wheres.length ? ` WHERE ${wheres.join(' AND ')}` : '';
-  const sql = `SELECT TOP ${limit}
-  [SKU], [OrigSKU], [Store], [ChgType], [Date], [Col], [Row],
-  [PO], [OthStore], [Qty], [Cost], [RMANumber]
-FROM [InvChanges]${whereClause}
-ORDER BY [Date] DESC`;
+  const sql = `SELECT
+  sku AS "SKU", orig_sku AS "OrigSKU", store AS "Store",
+  chg_type AS "ChgType",
+  to_char(date AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS') AS "Date",
+  col AS "Col", "row" AS "Row",
+  po AS "PO", oth_store AS "OthStore",
+  qty AS "Qty", cost::float8 AS "Cost", rma_number AS "RMANumber"
+FROM rics_mirror.inv_changes${whereClause}
+ORDER BY date DESC
+LIMIT ${limit}`;
 
   interface RawRow {
     SKU: string | null;
@@ -1032,7 +1104,7 @@ ORDER BY [Date] DESC`;
     Cost: number | null;
     RMANumber: string | null;
   }
-  const rows = await queryAll<RawRow>(INVCHG_MDB(), sql);
+  const rows = await prisma.$queryRawUnsafe<RawRow[]>(sql, ...sqlParams);
 
   return rows.map((r) => ({
     sku: (r.SKU ?? '').trim(),
@@ -1141,34 +1213,38 @@ export async function getSkuStoreCellRollup(
     loadVendorMap(),
   ]);
 
-  const masterWheres: string[] = [`([Status] IS NULL OR [Status] <> 'D')`];
+  const masterParams: unknown[] = [];
+  const masterWheres: string[] = [`(status IS NULL OR status <> 'D')`];
   if (params.vendorCode) {
-    const safe = params.vendorCode.trim().replace(/'/g, "''");
-    masterWheres.push(`[Vendor] = '${safe}'`);
+    masterParams.push(params.vendorCode.trim());
+    masterWheres.push(`vendor = $${masterParams.length}`);
   }
   if (params.categoryMin != null && params.categoryMax != null) {
-    masterWheres.push(`[Category] BETWEEN ${Number(params.categoryMin)} AND ${Number(params.categoryMax)}`);
+    masterParams.push(Number(params.categoryMin), Number(params.categoryMax));
+    masterWheres.push(`category BETWEEN $${masterParams.length - 1} AND $${masterParams.length}`);
   } else if (params.categoryMin != null) {
-    masterWheres.push(`[Category] >= ${Number(params.categoryMin)}`);
+    masterParams.push(Number(params.categoryMin));
+    masterWheres.push(`category >= $${masterParams.length}`);
   } else if (params.categoryMax != null) {
-    masterWheres.push(`[Category] <= ${Number(params.categoryMax)}`);
+    masterParams.push(Number(params.categoryMax));
+    masterWheres.push(`category <= $${masterParams.length}`);
   }
   if (params.season) {
-    const safe = params.season.trim().replace(/'/g, "''");
-    masterWheres.push(`[Season] = '${safe}'`);
+    masterParams.push(params.season.trim());
+    masterWheres.push(`season = $${masterParams.length}`);
   }
   if (params.skus?.length) {
-    const list = params.skus
-      .slice(0, 200)
-      .map((s) => `'${s.replace(/'/g, "''")}'`)
-      .join(',');
-    masterWheres.push(`[SKU] IN (${list})`);
+    masterParams.push(params.skus.slice(0, 200));
+    masterWheres.push(`sku = ANY($${masterParams.length}::text[])`);
   }
   const masterWhere = ` WHERE ${masterWheres.join(' AND ')}`;
-  const sqlMaster = `SELECT TOP ${limit}
-  [SKU], [Desc], [Vendor], [Manufacturer], [Category], [Season], [SizeType]
-FROM [InventoryMaster]${masterWhere}
-ORDER BY [SKU]`;
+  const sqlMaster = `SELECT
+  sku AS "SKU", "desc" AS "Desc", vendor AS "Vendor",
+  manufacturer AS "Manufacturer", category AS "Category",
+  season AS "Season", size_type AS "SizeType"
+FROM rics_mirror.inventory_master${masterWhere}
+ORDER BY sku
+LIMIT ${limit}`;
   interface MasterSlim {
     SKU: string | null;
     Desc: string | null;
@@ -1178,7 +1254,7 @@ ORDER BY [SKU]`;
     Season: string | null;
     SizeType: number | null;
   }
-  const masters = await queryAll<MasterSlim>(INVMAS_MDB(), sqlMaster);
+  const masters = await prisma.$queryRawUnsafe<MasterSlim[]>(sqlMaster, ...masterParams);
   if (masters.length === 0) return [];
 
   const masterBySku = new Map<string, MasterSlim>();
@@ -1193,15 +1269,16 @@ ORDER BY [SKU]`;
 
   for (let i = 0; i < skuList.length; i += CHUNK) {
     const chunk = skuList.slice(i, i + CHUNK);
-    const inList = chunk.map((s) => `'${s.replace(/'/g, "''")}'`).join(',');
-    const chunkWheres = [`[SKU] IN (${inList})`];
+    const chunkParams: unknown[] = [chunk];
+    const chunkWheres = [`sku = ANY($1::text[])`];
     if (params.storeNumbers?.length) {
-      chunkWheres.push(`[Store] IN (${params.storeNumbers.map((n) => Number(n)).join(',')})`);
+      chunkParams.push(params.storeNumbers.map((n) => Number(n)));
+      chunkWheres.push(`store = ANY($${chunkParams.length}::int[])`);
     }
     const sql = `SELECT ${buildQuaSelect()}
-FROM [Inventory Quantities]
+FROM rics_mirror.inventory_quantities
 WHERE ${chunkWheres.join(' AND ')}`;
-    const quaRows = await queryAll<QuaRow>(INVQUA_MDB(), sql);
+    const quaRows = await prisma.$queryRawUnsafe<QuaRow[]>(sql, ...chunkParams);
 
     for (const r of quaRows) {
       const sku = (r.SKU ?? '').toString();
@@ -1256,36 +1333,38 @@ export async function getSkuStoreRollup(
   const [stores, vendors] = await Promise.all([loadStoreMap(), loadVendorMap()]);
 
   // ── Step 1: pull the master rows that satisfy the filter — scoped SKU list ──
-  const masterWheres: string[] = [`([Status] IS NULL OR [Status] <> 'D')`];
+  const masterParams: unknown[] = [];
+  const masterWheres: string[] = [`(status IS NULL OR status <> 'D')`];
   if (params.vendorCode) {
-    const safe = params.vendorCode.trim().replace(/'/g, "''");
-    masterWheres.push(`[Vendor] = '${safe}'`);
+    masterParams.push(params.vendorCode.trim());
+    masterWheres.push(`vendor = $${masterParams.length}`);
   }
   if (params.categoryMin != null && params.categoryMax != null) {
-    masterWheres.push(
-      `[Category] BETWEEN ${Number(params.categoryMin)} AND ${Number(params.categoryMax)}`,
-    );
+    masterParams.push(Number(params.categoryMin), Number(params.categoryMax));
+    masterWheres.push(`category BETWEEN $${masterParams.length - 1} AND $${masterParams.length}`);
   } else if (params.categoryMin != null) {
-    masterWheres.push(`[Category] >= ${Number(params.categoryMin)}`);
+    masterParams.push(Number(params.categoryMin));
+    masterWheres.push(`category >= $${masterParams.length}`);
   } else if (params.categoryMax != null) {
-    masterWheres.push(`[Category] <= ${Number(params.categoryMax)}`);
+    masterParams.push(Number(params.categoryMax));
+    masterWheres.push(`category <= $${masterParams.length}`);
   }
   if (params.season) {
-    const safe = params.season.trim().replace(/'/g, "''");
-    masterWheres.push(`[Season] = '${safe}'`);
+    masterParams.push(params.season.trim());
+    masterWheres.push(`season = $${masterParams.length}`);
   }
   if (params.skus?.length) {
-    const list = params.skus
-      .slice(0, 200)
-      .map((s) => `'${s.replace(/'/g, "''")}'`)
-      .join(',');
-    masterWheres.push(`[SKU] IN (${list})`);
+    masterParams.push(params.skus.slice(0, 200));
+    masterWheres.push(`sku = ANY($${masterParams.length}::text[])`);
   }
   const masterWhere = ` WHERE ${masterWheres.join(' AND ')}`;
-  const sqlMaster = `SELECT TOP ${limit}
-  [SKU], [Desc], [Vendor], [Manufacturer], [Category], [Season]
-FROM [InventoryMaster]${masterWhere}
-ORDER BY [SKU]`;
+  const sqlMaster = `SELECT
+  sku AS "SKU", "desc" AS "Desc", vendor AS "Vendor",
+  manufacturer AS "Manufacturer", category AS "Category",
+  season AS "Season"
+FROM rics_mirror.inventory_master${masterWhere}
+ORDER BY sku
+LIMIT ${limit}`;
   interface MasterSlim {
     SKU: string | null;
     Desc: string | null;
@@ -1294,7 +1373,7 @@ ORDER BY [SKU]`;
     Category: number | null;
     Season: string | null;
   }
-  const masters = await queryAll<MasterSlim>(INVMAS_MDB(), sqlMaster);
+  const masters = await prisma.$queryRawUnsafe<MasterSlim[]>(sqlMaster, ...masterParams);
   if (masters.length === 0) return [];
 
   const skuSet = new Set<string>();
@@ -1324,25 +1403,26 @@ ORDER BY [SKU]`;
 
   for (let i = 0; i < skuList.length; i += CHUNK) {
     const chunk = skuList.slice(i, i + CHUNK);
-    const inList = chunk.map((s) => `'${s.replace(/'/g, "''")}'`).join(',');
-    const chunkWheres = [...quaWheres, `[SKU] IN (${inList})`];
+    const chunkParams: unknown[] = [chunk];
+    const chunkWheres = [...quaWheres, `sku = ANY($1::text[])`];
     if (params.storeNumbers?.length) {
-      chunkWheres.push(`[Store] IN (${params.storeNumbers.map((n) => Number(n)).join(',')})`);
+      chunkParams.push(params.storeNumbers.map((n) => Number(n)));
+      chunkWheres.push(`store = ANY($${chunkParams.length}::int[])`);
     }
-    const sql = `SELECT [SKU], [Store],
-  SUM(${onHandSum}) AS OnHand,
-  SUM(${modelSum}) AS Model,
-  SUM(${maxSum}) AS MaxQ,
-  SUM(${reorderSum}) AS Reord,
-  SUM(${onOrderSum}) AS OnOrder,
-  SUM(${mtdSum}) AS MtdS,
-  SUM(${stdSum}) AS StdS,
-  SUM(${ytdSum}) AS YtdS,
-  SUM(${lySum}) AS LyS
-FROM [Inventory Quantities]
+    const sql = `SELECT sku AS "SKU", store AS "Store",
+  SUM(${onHandSum})::float8 AS "OnHand",
+  SUM(${modelSum})::float8 AS "Model",
+  SUM(${maxSum})::float8 AS "MaxQ",
+  SUM(${reorderSum})::float8 AS "Reord",
+  SUM(${onOrderSum})::float8 AS "OnOrder",
+  SUM(${mtdSum})::float8 AS "MtdS",
+  SUM(${stdSum})::float8 AS "StdS",
+  SUM(${ytdSum})::float8 AS "YtdS",
+  SUM(${lySum})::float8 AS "LyS"
+FROM rics_mirror.inventory_quantities
 WHERE ${chunkWheres.join(' AND ')}
-GROUP BY [SKU], [Store]`;
-    const chunkRows = await queryAll<QuaStoreAgg>(INVQUA_MDB(), sql);
+GROUP BY sku, store`;
+    const chunkRows = await prisma.$queryRawUnsafe<QuaStoreAgg[]>(sql, ...chunkParams);
     allAggRows.push(...chunkRows);
   }
 
@@ -1396,9 +1476,10 @@ interface QuaStoreAgg {
 }
 
 function sumOfMetric(prefix: string): string {
+  const mirrorPrefix = toMirrorQuaPrefix(prefix);
   const parts: string[] = [];
   for (let i = 1; i <= 18; i++) {
-    parts.push(`IIF([${prefix}${pad2(i)}] IS NULL, 0, [${prefix}${pad2(i)}])`);
+    parts.push(`COALESCE(${mirrorPrefix}${pad2(i)}, 0)`);
   }
   return parts.join(' + ');
 }
@@ -1581,29 +1662,34 @@ export async function getTransferSummary(
 
   const stores = await loadStoreMap();
 
+  const sqlParams: unknown[] = [from, addDays(to, 1)];
   const wheres: string[] = [
-    `UCASE([ChgType]) = 'TOU'`,
-    `[Date] >= #${accessDate(from)}#`,
-    `[Date] < #${accessDate(addDays(to, 1))}#`,
+    `UPPER(chg_type) = 'TOU'`,
+    `date >= $1::date`,
+    `date < $2::date`,
   ];
   if (params.fromStoreNumbers?.length) {
-    wheres.push(`[Store] IN (${params.fromStoreNumbers.map((n) => Number(n)).join(',')})`);
+    sqlParams.push(params.fromStoreNumbers.map((n) => Number(n)));
+    wheres.push(`store = ANY($${sqlParams.length}::int[])`);
   }
   if (params.toStoreNumbers?.length) {
-    wheres.push(`[OthStore] IN (${params.toStoreNumbers.map((n) => Number(n)).join(',')})`);
+    sqlParams.push(params.toStoreNumbers.map((n) => Number(n)));
+    wheres.push(`oth_store = ANY($${sqlParams.length}::int[])`);
   }
   const whereClause = ` WHERE ${wheres.join(' AND ')}`;
 
-  // Aggregate in SQL so the PowerShell bridge round-trips a bounded payload
-  // (O(stores² × months)) instead of every raw transfer line. Access's
-  // DatePart() gives us year+month without DATE_TRUNC.
-  const sql = `SELECT [Store] AS FromStore, [OthStore] AS ToStore,
-  DatePart('yyyy', [Date]) AS Yr, DatePart('m', [Date]) AS Mo,
-  COUNT(*) AS Events,
-  SUM(IIF([Qty] IS NULL, 0, [Qty])) AS TotalQty,
-  SUM(IIF([Cost] IS NULL, 0, [Cost])) AS TotalCost
-FROM [InvChanges]${whereClause}
-GROUP BY [Store], [OthStore], DatePart('yyyy', [Date]), DatePart('m', [Date])`;
+  // Aggregate in SQL so the payload is bounded (O(stores² × months)) instead
+  // of every raw transfer line. Postgres EXTRACT gives us year+month directly.
+  const sql = `SELECT
+  store AS "FromStore",
+  oth_store AS "ToStore",
+  EXTRACT(YEAR FROM date)::int  AS "Yr",
+  EXTRACT(MONTH FROM date)::int AS "Mo",
+  COUNT(*)::int AS "Events",
+  SUM(COALESCE(qty, 0))::int AS "TotalQty",
+  SUM(COALESCE(cost, 0))::float8 AS "TotalCost"
+FROM rics_mirror.inv_changes${whereClause}
+GROUP BY store, oth_store, EXTRACT(YEAR FROM date), EXTRACT(MONTH FROM date)`;
 
   interface AggRow {
     FromStore: number | null;
@@ -1614,7 +1700,7 @@ GROUP BY [Store], [OthStore], DatePart('yyyy', [Date]), DatePart('m', [Date])`;
     TotalQty: number | null;
     TotalCost: number | null;
   }
-  const rows = await queryAll<AggRow>(INVCHG_MDB(), sql);
+  const rows = await prisma.$queryRawUnsafe<AggRow[]>(sql, ...sqlParams);
 
   const monthMap = new Map<string, Map<string, TransferSummaryCell>>();
   const matrixMap = new Map<string, TransferSummaryCell>();
@@ -1723,22 +1809,6 @@ export async function warmup(): Promise<void> {
 }
 
 // ─────────────────────────── internals ────────────────────────────────────
-
-async function queryAll<T>(dbPath: string, sql: string): Promise<T[]> {
-  if (!fs.existsSync(dbPath)) {
-    console.warn(`[ricsInventoryAdapter] MDB not found at ${dbPath}`);
-    return [];
-  }
-  const password = getOrRecoverPassword(dbPath);
-  try {
-    const raw = await runPowerShellJson<T | T[]>(buildSelectScript(dbPath, password, sql));
-    return Array.isArray(raw) ? raw : raw ? [raw] : [];
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[ricsInventoryAdapter] query failed on ${dbPath}:`, msg);
-    return [];
-  }
-}
 
 function pad2(n: number): string {
   return String(n).padStart(2, '0');
