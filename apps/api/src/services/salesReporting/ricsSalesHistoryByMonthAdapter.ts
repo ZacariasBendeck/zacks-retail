@@ -30,23 +30,7 @@
  *                     query returns.
  */
 
-import fs from 'node:fs';
-import {
-  ricsDbPath,
-  getOrRecoverPassword,
-  runPowerShellJson,
-  buildSelectScript,
-} from '../accessOleDb';
-
-// ─────────────────────────── MDB path resolvers ───────────────────────────
-
-function mdbPath(envKey: string, defaultFile: string): string {
-  return ricsDbPath(process.env[envKey] || defaultFile);
-}
-const SALES_MDB  = (): string => mdbPath('RICS_SALES_DB_FILE',  'RITRNSSV.MDB');
-const CATEG_MDB  = (): string => mdbPath('RICS_CATEG_DB_FILE',  'RICATEG.MDB');
-const INVMAS_MDB = (): string => mdbPath('RICS_INVMAS_DB_FILE', 'RIINVMAS.MDB');
-const INVHIS_MDB = (): string => mdbPath('RICS_INVHIS_DB_FILE', 'RIINVHIS.MDB');
+import { prisma } from '../../db/prisma';
 
 // ─────────────────────────── public types ─────────────────────────────────
 
@@ -129,17 +113,6 @@ function firstDayAfterMonth(yearMonth: string): string {
   return `${String(nextYear).padStart(4, '0')}-${String(nextMonth).padStart(2, '0')}-01`;
 }
 
-function accessDate(isoDate: string): string {
-  const [y, m, d] = isoDate.split('-');
-  return `${m}/${d}/${y}`;
-}
-
-function sqlStringList(values: string[]): string {
-  return values
-    .map((v) => `'${String(v).trim().replace(/'/g, "''")}'`)
-    .join(',');
-}
-
 // ─────────────────────────── category label cache ─────────────────────────
 
 interface CategoryRowRaw {
@@ -153,14 +126,10 @@ let categoryLabelCacheExpiry = 0;
 async function loadCategoryLabels(): Promise<Map<number, string>> {
   const now = Date.now();
   if (categoryLabelCache && categoryLabelCacheExpiry > now) return categoryLabelCache;
-  const dbPath = CATEG_MDB();
-  if (!fs.existsSync(dbPath)) {
-    categoryLabelCache = new Map();
-    categoryLabelCacheExpiry = now + 60_000;
-    return categoryLabelCache;
-  }
   try {
-    const rows = await queryAll<CategoryRowRaw>(dbPath, 'SELECT [Number], [Desc] FROM [Categories]');
+    const rows = await prisma.$queryRawUnsafe<CategoryRowRaw[]>(
+      `SELECT number AS "Number", "desc" AS "Desc" FROM rics_mirror.categories`,
+    );
     const map = new Map<number, string>();
     for (const r of rows) {
       if (r.Number == null) continue;
@@ -210,14 +179,8 @@ let skuMasterLookupExpiry = 0;
 export async function loadSkuMasterForCriteria(): Promise<SkuMasterRow[]> {
   const now = Date.now();
   if (skuMasterLookupCache && skuMasterLookupExpiry > now) return skuMasterLookupCache;
-  const dbPath = INVMAS_MDB();
-  if (!fs.existsSync(dbPath)) {
-    skuMasterLookupCache = [];
-    skuMasterLookupExpiry = now + 60_000;
-    return skuMasterLookupCache;
-  }
   try {
-    const rows = await queryAll<{
+    const rows = await prisma.$queryRawUnsafe<{
       SKU: string | null;
       Vendor: string | null;
       Category: number | null;
@@ -225,9 +188,12 @@ export async function loadSkuMasterForCriteria(): Promise<SkuMasterRow[]> {
       StyleColor: string | null;
       GroupCode: string | null;
       KeyWords: string | null;
-    }>(
-      dbPath,
-      'SELECT [SKU], [Vendor], [Category], [Season], [StyleColor], [GroupCode], [KeyWords] FROM [InventoryMaster] WHERE [Status] IS NULL OR [Status] <> \'D\'',
+    }[]>(
+      `SELECT sku AS "SKU", vendor AS "Vendor", category AS "Category",
+              season AS "Season", style_color AS "StyleColor",
+              group_code AS "GroupCode", key_words AS "KeyWords"
+         FROM rics_mirror.inventory_master
+        WHERE status IS NULL OR status <> 'D'`,
     );
     const parsed: SkuMasterRow[] = rows
       .filter((r) => !!r.SKU)
@@ -297,66 +263,77 @@ export async function queryMonthlyMeasures(
 
   const startIso = firstDayOfMonth(params.fromYearMonth);
   const endExclusiveIso = firstDayAfterMonth(params.toYearMonth);
-  const storeList = params.storeNumbers.map((n) => Number(n)).join(',');
 
-  // Pick the grouping dim. For 'sku' we group by SKU; otherwise by vendor or category.
+  // Pick the grouping dim. For 'sku' we group by SKU; otherwise by vendor or
+  // category. Ticket-detail vendor/sku fields are text and may be NULL; return
+  // '(none)' / 0 as the null sentinel so the facade doesn't have to fan out.
   let dimExpr: string;
   if (params.detailLevel === 'sku') {
-    dimExpr = `IIF(d.SKU IS NULL, '(none)', d.SKU)`;
+    dimExpr = `COALESCE(d.sku, '(none)')`;
   } else if (params.detailLevel === 'department') {
-    // Department rolls categories up at the facade layer — still group by category here.
-    dimExpr = `IIF(d.Category IS NULL, 0, d.Category)`;
+    dimExpr = `COALESCE(d.category, 0)`;
   } else {
     dimExpr =
       params.sortBy === 'vendor'
-        ? `IIF(d.Vendor IS NULL, '(none)', d.Vendor)`
-        : `IIF(d.Category IS NULL, 0, d.Category)`;
+        ? `COALESCE(d.vendor, '(none)')`
+        : `COALESCE(d.category, 0)`;
   }
 
-  // Optional criteria pushdowns. The facade resolves complex facets (seasons,
-  // style/color, groups, keywords, wildcards) into an `skuFilter` list.
+  // Parameterize values; keep identifiers as literals.
+  const sqlParams: unknown[] = [
+    startIso,
+    endExclusiveIso,
+    params.storeNumbers.map((n) => Number(n)),
+  ];
   const wheres: string[] = [
-    `h.RealDate >= #${accessDate(startIso)}#`,
-    `h.RealDate < #${accessDate(endExclusiveIso)}#`,
-    `h.TransType = 1`,
-    `h.Voided = False`,
-    `h.Store IN (${storeList})`,
+    `h.real_date >= $1::date`,
+    `h.real_date <  $2::date`,
+    `h.trans_type = 1`,
+    `h.voided     = false`,
+    `h.store      = ANY($3::int[])`,
   ];
   if (params.skuFilter && params.skuFilter.length > 0) {
-    // Access has a ~1000-entry cap on IN; if we go over that, chunk the query.
-    // For v2 we cap the chunk at 500 SKUs and OR the chunks together inside
-    // the WHERE. In practice most criteria sets are small enough to fit.
-    const chunks = chunkArray(params.skuFilter, 500);
-    const orParts = chunks.map((c) => `d.SKU IN (${sqlStringList(c)})`);
-    wheres.push(`(${orParts.join(' OR ')})`);
+    // ticket_detail.sku is right-padded to 15 chars in the mirror — pad each
+    // caller SKU before comparing. `ANY($N::text[])` keeps the index usable.
+    const padded = params.skuFilter.map((s) => s.padEnd(15, ' '));
+    sqlParams.push(padded);
+    wheres.push(`d.sku = ANY($${sqlParams.length}::text[])`);
   }
   if (params.vendorFilter && params.vendorFilter.length > 0) {
-    wheres.push(`d.Vendor IN (${sqlStringList(params.vendorFilter)})`);
+    sqlParams.push(params.vendorFilter);
+    wheres.push(`d.vendor = ANY($${sqlParams.length}::text[])`);
   }
   if (params.categoryFilter && params.categoryFilter.length > 0) {
-    wheres.push(`d.Category IN (${params.categoryFilter.map((c) => Number(c)).join(',')})`);
+    sqlParams.push(params.categoryFilter.map((c) => Number(c)));
+    wheres.push(`d.category = ANY($${sqlParams.length}::int[])`);
   }
 
   const sql = `SELECT
-  h.Store AS StoreNumber,
-  Year(h.RealDate) AS Y,
-  Month(h.RealDate) AS M,
-  ${dimExpr} AS DimKey,
-  IIF(d.Vendor IS NULL, '(none)', d.Vendor) AS Vendor,
-  IIF(d.Category IS NULL, 0, d.Category) AS Category,
-  SUM(IIF(d.Qty IS NULL, 0, d.Qty)) AS Qty,
-  SUM(d.Extension) AS NetSales,
-  SUM(IIF(d.Cost IS NULL, 0, d.Cost) * IIF(d.Qty IS NULL, 0, d.Qty)) AS CostTotal
-FROM TicketHeader h INNER JOIN TicketDetail d
-  ON h.UserID = d.UserID AND h.BatchDate = d.BatchDate AND h.Terminal = d.Terminal
- AND h.Store = d.Store AND h.Ticket = d.Ticket AND h.RealDate = d.RealDate
+  h.store AS "StoreNumber",
+  EXTRACT(YEAR  FROM h.real_date)::int AS "Y",
+  EXTRACT(MONTH FROM h.real_date)::int AS "M",
+  ${dimExpr} AS "DimKey",
+  COALESCE(d.vendor, '(none)')    AS "Vendor",
+  COALESCE(d.category, 0)         AS "Category",
+  SUM(COALESCE(d.qty, 0))::int    AS "Qty",
+  SUM(d.extension)::float8        AS "NetSales",
+  SUM(COALESCE(d.cost, 0) * COALESCE(d.qty, 0))::float8 AS "CostTotal"
+FROM rics_mirror.ticket_header h
+INNER JOIN rics_mirror.ticket_detail d
+  ON h.user_id    = d.user_id
+ AND h.batch_date = d.batch_date
+ AND h.terminal   = d.terminal
+ AND h.store      = d.store
+ AND h.ticket     = d.ticket
+ AND h.real_date  = d.real_date
 WHERE
   ${wheres.join(' AND ')}
-GROUP BY h.Store, Year(h.RealDate), Month(h.RealDate), ${dimExpr},
-  IIF(d.Vendor IS NULL, '(none)', d.Vendor),
-  IIF(d.Category IS NULL, 0, d.Category)`;
+GROUP BY h.store, EXTRACT(YEAR FROM h.real_date), EXTRACT(MONTH FROM h.real_date),
+  ${dimExpr},
+  COALESCE(d.vendor, '(none)'),
+  COALESCE(d.category, 0)`;
 
-  const raw = await queryAll<RawMonthlyRow>(SALES_MDB(), sql);
+  const raw = await prisma.$queryRawUnsafe<RawMonthlyRow[]>(sql, ...sqlParams);
 
   const categoryLabels =
     params.sortBy === 'category' || params.detailLevel === 'department'
@@ -522,14 +499,20 @@ interface RawInvHisRow {
   LYMonthOnHand_11: number | null; LYMonthOnHand_12: number | null;
 }
 
-const INVHIS_SELECT_COLUMNS =
-  '[SKU],[Store],[AverageCost],[OnHand],' +
-  '[LYMonthQtyOH_01],[LYMonthQtyOH_02],[LYMonthQtyOH_03],[LYMonthQtyOH_04],' +
-  '[LYMonthQtyOH_05],[LYMonthQtyOH_06],[LYMonthQtyOH_07],[LYMonthQtyOH_08],' +
-  '[LYMonthQtyOH_09],[LYMonthQtyOH_10],[LYMonthQtyOH_11],[LYMonthQtyOH_12],' +
-  '[LYMonthOnHand_01],[LYMonthOnHand_02],[LYMonthOnHand_03],[LYMonthOnHand_04],' +
-  '[LYMonthOnHand_05],[LYMonthOnHand_06],[LYMonthOnHand_07],[LYMonthOnHand_08],' +
-  '[LYMonthOnHand_09],[LYMonthOnHand_10],[LYMonthOnHand_11],[LYMonthOnHand_12]';
+const INVHIS_SELECT_COLUMNS = [
+  `sku AS "SKU"`,
+  `store AS "Store"`,
+  `average_cost::float8 AS "AverageCost"`,
+  `on_hand AS "OnHand"`,
+  ...Array.from({ length: 12 }, (_, i) => {
+    const n = String(i + 1).padStart(2, '0');
+    return `ly_month_qty_oh_${n} AS "LYMonthQtyOH_${n}"`;
+  }),
+  ...Array.from({ length: 12 }, (_, i) => {
+    const n = String(i + 1).padStart(2, '0');
+    return `ly_month_on_hand_${n}::float8 AS "LYMonthOnHand_${n}"`;
+  }),
+].join(', ');
 
 /**
  * Pull the 12-slot calendar-month inventory-history snapshots from
@@ -554,32 +537,36 @@ export async function queryMonthlyInventoryHistory(
     throw new Error('storeNumbers must have at least one entry');
   }
 
-  const storeList = params.storeNumbers.map((n) => Number(n)).join(',');
-  const wheres: string[] = [`[Store] IN (${storeList})`];
+  const sqlParams: unknown[] = [params.storeNumbers.map((n) => Number(n))];
+  const wheres: string[] = [`store = ANY($1::int[])`];
 
   if (params.skuFilter && params.skuFilter.length > 0) {
-    const chunks = chunkArray(params.skuFilter, 500);
-    const orParts = chunks.map((c) => `[SKU] IN (${sqlStringList(c)})`);
-    wheres.push(`(${orParts.join(' OR ')})`);
+    // inv_his.sku padding is uncertain here (unlike ticket_detail which is
+    // known-padded to 15). Check both the raw and padded forms so we tolerate
+    // either shape.
+    const pairs = new Set<string>();
+    for (const s of params.skuFilter) {
+      pairs.add(s);
+      pairs.add(s.padEnd(15, ' '));
+    }
+    sqlParams.push([...pairs]);
+    wheres.push(`sku = ANY($${sqlParams.length}::text[])`);
   } else if (params.nonZeroOnly !== false) {
     // Skip the long tail of all-zero (store, sku) pairs that bloat the scan.
-    // Any row with either a current on-hand or any LY snapshot or a cost
-    // counts as historically meaningful.
-    wheres.push(
-      '(' +
-        '[OnHand] <> 0 OR [AverageCost] > 0 OR ' +
-        '[LYMonthQtyOH_01] <> 0 OR [LYMonthQtyOH_02] <> 0 OR [LYMonthQtyOH_03] <> 0 OR ' +
-        '[LYMonthQtyOH_04] <> 0 OR [LYMonthQtyOH_05] <> 0 OR [LYMonthQtyOH_06] <> 0 OR ' +
-        '[LYMonthQtyOH_07] <> 0 OR [LYMonthQtyOH_08] <> 0 OR [LYMonthQtyOH_09] <> 0 OR ' +
-        '[LYMonthQtyOH_10] <> 0 OR [LYMonthQtyOH_11] <> 0 OR [LYMonthQtyOH_12] <> 0' +
-      ')',
-    );
+    wheres.push(`(
+      on_hand <> 0 OR average_cost > 0 OR
+      ly_month_qty_oh_01 <> 0 OR ly_month_qty_oh_02 <> 0 OR ly_month_qty_oh_03 <> 0 OR
+      ly_month_qty_oh_04 <> 0 OR ly_month_qty_oh_05 <> 0 OR ly_month_qty_oh_06 <> 0 OR
+      ly_month_qty_oh_07 <> 0 OR ly_month_qty_oh_08 <> 0 OR ly_month_qty_oh_09 <> 0 OR
+      ly_month_qty_oh_10 <> 0 OR ly_month_qty_oh_11 <> 0 OR ly_month_qty_oh_12 <> 0
+    )`);
   }
 
-  const sql =
-    `SELECT ${INVHIS_SELECT_COLUMNS} FROM [InvHis] WHERE ${wheres.join(' AND ')}`;
+  const sql = `SELECT ${INVHIS_SELECT_COLUMNS}
+                 FROM rics_mirror.inv_his
+                WHERE ${wheres.join(' AND ')}`;
 
-  const raw = await queryAll<RawInvHisRow>(INVHIS_MDB(), sql);
+  const raw = await prisma.$queryRawUnsafe<RawInvHisRow[]>(sql, ...sqlParams);
   const rows: MonthlyInventoryHistoryRow[] = [];
   for (const r of raw) {
     if (r.SKU == null || r.Store == null) continue;
@@ -619,18 +606,3 @@ function chunkArray<T>(arr: T[], size: number): T[][] {
   return out;
 }
 
-async function queryAll<T>(dbPath: string, sql: string): Promise<T[]> {
-  if (!fs.existsSync(dbPath)) {
-    console.warn(`[ricsSalesHistoryByMonthAdapter] MDB not found at ${dbPath}`);
-    return [];
-  }
-  const password = getOrRecoverPassword(dbPath);
-  try {
-    const raw = await runPowerShellJson<T | T[]>(buildSelectScript(dbPath, password, sql));
-    return Array.isArray(raw) ? raw : raw ? [raw] : [];
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[ricsSalesHistoryByMonthAdapter] query failed on ${dbPath}:`, msg);
-    return [];
-  }
-}
