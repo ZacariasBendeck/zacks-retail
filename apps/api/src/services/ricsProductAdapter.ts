@@ -1071,20 +1071,81 @@ interface SkuLookupIndex {
   byCode: Map<string, SkuLookupIndexRow>;
 }
 
-async function loadSkuLookupIndex(): Promise<SkuLookupIndex> {
-  return cachedAsync('sku:lookup:index', SKU_LOOKUP_INDEX_TTL_MS, async () => {
-    const dbPath = INVMAS_MDB();
-    if (!fs.existsSync(dbPath)) {
-      console.warn(`[ricsProductAdapter] RIINVMAS not found at ${dbPath}; SKU lookup index empty.`);
-      return { rows: [], byCode: new Map() };
-    }
-    const password = getOrRecoverPassword(dbPath);
+// Phase-A cutover: default source is the Postgres `rics_mirror.inventory_master`
+// table, populated by `pnpm sync:rics`. Set SKU_LOOKUP_SOURCE=mdb to fall back
+// to the OLEDB path (kept for rollback while other adapter paths still hit MDBs).
+const SKU_LOOKUP_SOURCE: 'mirror' | 'mdb' =
+  process.env.SKU_LOOKUP_SOURCE?.toLowerCase() === 'mdb' ? 'mdb' : 'mirror';
 
-    // No TOP cap + sort by [SKU] so the modal's default sort (SKU ascending)
-    // can stream straight from the cached array. Omit discontinued SKUs
-    // (Status='D') but keep zero-price SKUs — operators need to look up any
-    // SKU, not just currently-priced ones.
-    const sql = `
+async function loadSkuLookupIndex(): Promise<SkuLookupIndex> {
+  return cachedAsync('sku:lookup:index', SKU_LOOKUP_INDEX_TTL_MS, () =>
+    SKU_LOOKUP_SOURCE === 'mirror'
+      ? loadSkuLookupIndexFromMirror()
+      : loadSkuLookupIndexFromMdb(),
+  );
+}
+
+async function loadSkuLookupIndexFromMirror(): Promise<SkuLookupIndex> {
+  const t0 = Date.now();
+  try {
+    // Column order and PascalCase aliases match the InventoryMaster projection
+    // used by the MDB path, so downstream consumers see identical shape. `::float8`
+    // casts turn Postgres NUMERIC into JS `number` (matching the old JSON path);
+    // LastPriceChange is emitted as an ISO-like string to match the OLEDB shape.
+    const rows = await prisma.$queryRawUnsafe<SkuLookupIndexRow[]>(`
+      SELECT
+        sku               AS "SKU",
+        "desc"            AS "Desc",
+        vendor            AS "Vendor",
+        manufacturer      AS "Manufacturer",
+        category          AS "Category",
+        style_color       AS "StyleColor",
+        vendor_sku        AS "VendorSKU",
+        size_type         AS "SizeType",
+        season            AS "Season",
+        label_code        AS "LabelCode",
+        group_code        AS "GroupCode",
+        picture_file_name AS "PictureFileName",
+        list_price::float8        AS "ListPrice",
+        retail_price::float8      AS "RetailPrice",
+        mark_down_price1::float8  AS "MarkDownPrice1",
+        mark_down_price2::float8  AS "MarkDownPrice2",
+        current_price             AS "CurrentPrice",
+        current_cost::float8      AS "CurrentCost",
+        to_char(last_price_change AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS') AS "LastPriceChange",
+        perks::float8     AS "Perks",
+        comment           AS "Comment",
+        status            AS "Status"
+      FROM rics_mirror.inventory_master
+      WHERE status IS NULL OR status <> 'D'
+      ORDER BY sku
+    `);
+    const byCode = new Map<string, SkuLookupIndexRow>();
+    for (const r of rows) {
+      const code = r.SKU?.trim().toUpperCase();
+      if (code) byCode.set(code, r);
+    }
+    console.log(`[ricsProductAdapter] SKU lookup index loaded from rics_mirror: ${rows.length} rows in ${Date.now() - t0}ms`);
+    return { rows, byCode };
+  } catch (err: any) {
+    console.error('[ricsProductAdapter] SKU lookup index load from rics_mirror failed:', err.message);
+    return { rows: [], byCode: new Map() };
+  }
+}
+
+async function loadSkuLookupIndexFromMdb(): Promise<SkuLookupIndex> {
+  const dbPath = INVMAS_MDB();
+  if (!fs.existsSync(dbPath)) {
+    console.warn(`[ricsProductAdapter] RIINVMAS not found at ${dbPath}; SKU lookup index empty.`);
+    return { rows: [], byCode: new Map() };
+  }
+  const password = getOrRecoverPassword(dbPath);
+
+  // No TOP cap + sort by [SKU] so the modal's default sort (SKU ascending)
+  // can stream straight from the cached array. Omit discontinued SKUs
+  // (Status='D') but keep zero-price SKUs — operators need to look up any
+  // SKU, not just currently-priced ones.
+  const sql = `
 SELECT
   [SKU], [Desc], [Vendor], [Manufacturer], [Category], [StyleColor],
   [VendorSKU], [SizeType], [Season], [LabelCode], [GroupCode],
@@ -1097,24 +1158,23 @@ WHERE ([Status] IS NULL OR [Status] <> 'D')
 ORDER BY [SKU]
 `.trim();
 
-    const t0 = Date.now();
-    try {
-      const raw = await runPowerShellJson<SkuLookupIndexRow | SkuLookupIndexRow[]>(
-        buildSelectScript(dbPath, password, sql),
-      );
-      const rows = Array.isArray(raw) ? raw : raw ? [raw] : [];
-      const byCode = new Map<string, SkuLookupIndexRow>();
-      for (const r of rows) {
-        const code = r.SKU?.trim().toUpperCase();
-        if (code) byCode.set(code, r);
-      }
-      console.log(`[ricsProductAdapter] SKU lookup index loaded: ${rows.length} rows in ${Date.now() - t0}ms`);
-      return { rows, byCode };
-    } catch (err: any) {
-      console.error('[ricsProductAdapter] SKU lookup index load failed:', err.message);
-      return { rows: [], byCode: new Map() };
+  const t0 = Date.now();
+  try {
+    const raw = await runPowerShellJson<SkuLookupIndexRow | SkuLookupIndexRow[]>(
+      buildSelectScript(dbPath, password, sql),
+    );
+    const rows = Array.isArray(raw) ? raw : raw ? [raw] : [];
+    const byCode = new Map<string, SkuLookupIndexRow>();
+    for (const r of rows) {
+      const code = r.SKU?.trim().toUpperCase();
+      if (code) byCode.set(code, r);
     }
-  });
+    console.log(`[ricsProductAdapter] SKU lookup index loaded from MDB: ${rows.length} rows in ${Date.now() - t0}ms`);
+    return { rows, byCode };
+  } catch (err: any) {
+    console.error('[ricsProductAdapter] SKU lookup index load from MDB failed:', err.message);
+    return { rows: [], byCode: new Map() };
+  }
 }
 
 /** Warmup hook — pull the index on startup so the first user request is fast. */
