@@ -32,13 +32,7 @@
  *     `reports.view_gp`) is NOT implemented — no permission system yet.
  */
 
-import fs from 'node:fs';
-import {
-  ricsDbPath,
-  getOrRecoverPassword,
-  runPowerShellJson,
-  buildSelectScript,
-} from '../accessOleDb';
+import { prisma } from '../../db/prisma';
 import { getOnHandAtCostByDimension } from './ricsOnHandAtCostAdapter';
 import { computeRoiTurnsGp } from './metrics';
 import {
@@ -82,20 +76,6 @@ import type {
   StockStatusPrintQty,
 } from './types';
 
-// ─────────────────────────── MDB path resolvers ───────────────────────────
-
-function mdbPath(envKey: string, defaultFile: string): string {
-  return ricsDbPath(process.env[envKey] || defaultFile);
-}
-const SALES_MDB  = () => mdbPath('RICS_SALES_DB_FILE',  'RITRNSSV.MDB');
-const STORE_MDB  = () => mdbPath('RICS_STORE_DB_FILE',  'RISTORE.MDB');
-const SLSPSN_MDB = () => mdbPath('RICS_SLSPSN_DB_FILE', 'RISLSPSN.MDB');
-const INVQUA_MDB = () => mdbPath('RICS_INVQUA_DB_FILE', 'RIINVQUA.MDB');
-const INVMAS_MDB = () => mdbPath('RICS_INVMAS_DB_FILE', 'RIINVMAS.MDB');
-const PODET_MDB  = () => mdbPath('RICS_PODET_DB_FILE',  'RIPODET.MDB');
-const CATEG_MDB  = () => mdbPath('RICS_CATEG_DB_FILE',  'RICATEG.MDB');
-const GROUP_MDB  = () => mdbPath('RICS_GROUP_DB_FILE',  'RIGROUP.MDB');
-
 // ─────────────────────────── TTL cache ────────────────────────────────────
 
 interface CacheEntry<T> {
@@ -126,9 +106,8 @@ interface StoreRow {
 
 async function loadStoreMap(): Promise<Map<number, StoreRow>> {
   return cachedAsync('sr:dim:stores', 300_000, async () => {
-    const rows = await queryAll<{ Number: number; Desc: string | null }>(
-      STORE_MDB(),
-      'SELECT [Number], [Desc] FROM [StoreMaster]',
+    const rows = await prisma.$queryRawUnsafe<{ Number: number; Desc: string | null }[]>(
+      `SELECT number AS "Number", "desc" AS "Desc" FROM rics_mirror.store_master`,
     );
     const map = new Map<number, StoreRow>();
     for (const r of rows) {
@@ -149,9 +128,8 @@ interface SalespersonInfo {
 
 async function loadSalespersonMap(): Promise<Map<string, SalespersonInfo>> {
   return cachedAsync('sr:dim:salespeople', 300_000, async () => {
-    const rows = await queryAll<{ Code: string; Name: string | null }>(
-      SLSPSN_MDB(),
-      'SELECT [Code], [Name] FROM [Salespeople]',
+    const rows = await prisma.$queryRawUnsafe<{ Code: string | null; Name: string | null }[]>(
+      `SELECT code AS "Code", name AS "Name" FROM rics_mirror.salespeople`,
     );
     const map = new Map<string, SalespersonInfo>();
     for (const r of rows) {
@@ -174,9 +152,8 @@ interface CategoryRow {
 
 async function loadCategoryList(): Promise<CategoryRow[]> {
   return cachedAsync('sr:dim:categories', 300_000, async () => {
-    const rows = await queryAll<{ Number: number; Desc: string | null }>(
-      CATEG_MDB(),
-      'SELECT [Number], [Desc] FROM [Categories]',
+    const rows = await prisma.$queryRawUnsafe<{ Number: number; Desc: string | null }[]>(
+      `SELECT number AS "Number", "desc" AS "Desc" FROM rics_mirror.categories`,
     );
     return rows
       .filter((r) => r.Number != null)
@@ -195,12 +172,11 @@ interface GroupRow {
 
 async function loadGroupList(): Promise<GroupRow[]> {
   return cachedAsync('sr:dim:groups', 300_000, async () => {
-    const rows = await queryAll<{ Code: string; Desc: string | null }>(
-      GROUP_MDB(),
-      'SELECT [Code], [Desc] FROM [GroupCodes]',
+    const rows = await prisma.$queryRawUnsafe<{ Code: string | null; Desc: string | null }[]>(
+      `SELECT code AS "Code", "desc" AS "Desc" FROM rics_mirror.group_codes`,
     );
     return rows
-      .filter((r) => !!r.Code)
+      .filter((r): r is { Code: string; Desc: string | null } => !!r.Code)
       .map<GroupRow>((r) => ({
         code: r.Code.trim(),
         desc: r.Desc?.trim() || null,
@@ -363,12 +339,6 @@ function parseMsDateToHour(raw: string | null): number {
   return Number.isNaN(d.getTime()) ? 0 : d.getUTCHours();
 }
 
-function accessDate(date: string): string {
-  // Access is happy with mm/dd/yyyy inside `#` delimiters, locale-independent.
-  const [y, m, d] = date.split('-');
-  return `${m}/${d}/${y}`;
-}
-
 // ─────────────────────────── ticket-line query (bounded) ──────────────────
 
 /**
@@ -392,40 +362,51 @@ async function loadTicketLines(params: {
   const endExclusive = addDays(endDate, 1);
   const includeUnposted = params.includeUnposted !== false;
 
-  const storeFilter =
-    params.storeNumbers && params.storeNumbers.length > 0
-      ? ` AND h.Store IN (${params.storeNumbers.map((n) => Number(n)).join(',')})`
-      : '';
-  const postedFilter = includeUnposted ? '' : ` AND h.Posted = 'Y'`;
-
-  const cacheKey = `sr:ticketLines:${startDate}:${endDate}:${storeFilter}:${postedFilter}`;
+  const cacheKey = `sr:ticketLines:${startDate}:${endDate}:${(params.storeNumbers ?? []).join(',')}:${includeUnposted}`;
   return cachedAsync(cacheKey, 600_000, async () => {
-    const sql = `SELECT TOP ${MAX_TICKET_ROWS}
-  h.Store AS H_Store,
-  h.Ticket AS H_Ticket,
-  h.RealDate AS H_RealDate,
-  h.Cashier AS H_Cashier,
-  h.Posted AS H_Posted,
-  d.SKU AS D_SKU,
-  d.[Column] AS D_Column,
-  d.[Row] AS D_Row,
-  d.Qty AS D_Qty,
-  d.Extension AS D_Extension,
-  d.Perks AS D_Perks,
-  d.SalesPerson AS D_SalesPerson,
-  d.Category AS D_Category,
-  d.Vendor AS D_Vendor,
-  d.Cost AS D_Cost,
-  d.ReturnCode AS D_ReturnCode,
-  d.RealPrice AS D_RealPrice
-FROM TicketHeader h INNER JOIN TicketDetail d
-  ON h.UserID = d.UserID AND h.BatchDate = d.BatchDate AND h.Terminal = d.Terminal
- AND h.Store = d.Store AND h.Ticket = d.Ticket AND h.RealDate = d.RealDate
+    const sqlParams: unknown[] = [startDate, endExclusive];
+    const extraWheres: string[] = [];
+    if (params.storeNumbers && params.storeNumbers.length > 0) {
+      sqlParams.push(params.storeNumbers.map((n) => Number(n)));
+      extraWheres.push(`h.store = ANY($${sqlParams.length}::int[])`);
+    }
+    if (!includeUnposted) {
+      extraWheres.push(`h.posted = 'Y'`);
+    }
+    const extraClause = extraWheres.length ? ' AND ' + extraWheres.join(' AND ') : '';
+
+    const sql = `SELECT
+  h.store       AS "H_Store",
+  h.ticket      AS "H_Ticket",
+  to_char(h.real_date AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS') AS "H_RealDate",
+  h.cashier     AS "H_Cashier",
+  h.posted      AS "H_Posted",
+  d.sku         AS "D_SKU",
+  d."column"    AS "D_Column",
+  d."row"       AS "D_Row",
+  d.qty         AS "D_Qty",
+  d.extension::float8   AS "D_Extension",
+  d.perks::float8       AS "D_Perks",
+  d.sales_person        AS "D_SalesPerson",
+  d.category            AS "D_Category",
+  d.vendor              AS "D_Vendor",
+  d.cost::float8        AS "D_Cost",
+  d.return_code         AS "D_ReturnCode",
+  d.real_price::float8  AS "D_RealPrice"
+FROM rics_mirror.ticket_header h
+INNER JOIN rics_mirror.ticket_detail d
+  ON h.user_id    = d.user_id
+ AND h.batch_date = d.batch_date
+ AND h.terminal   = d.terminal
+ AND h.store      = d.store
+ AND h.ticket     = d.ticket
+ AND h.real_date  = d.real_date
 WHERE
-  h.RealDate >= #${accessDate(startDate)}#
-  AND h.RealDate < #${accessDate(endExclusive)}#
-  AND h.TransType = 1
-  AND h.Voided = False${storeFilter}${postedFilter}`;
+  h.real_date  >= $1::date
+  AND h.real_date <  $2::date
+  AND h.trans_type = 1
+  AND h.voided     = false${extraClause}
+LIMIT ${MAX_TICKET_ROWS}`;
 
     interface Raw {
       H_Store: number | null; H_Ticket: number | null; H_RealDate: string | null;
@@ -436,7 +417,7 @@ WHERE
       D_Vendor: string | null; D_Cost: number | null; D_ReturnCode: number | null;
       D_RealPrice: number | null;
     }
-    const raw = await queryAll<Raw>(SALES_MDB(), sql);
+    const raw = await prisma.$queryRawUnsafe<Raw[]>(sql, ...sqlParams);
     return raw.map<TicketLine>((r) => ({
       store: Number(r.H_Store ?? 0),
       ticket: Number(r.H_Ticket ?? 0),
@@ -473,24 +454,35 @@ async function loadTicketHeaders(params: {
   const endExclusive = addDays(endDate, 1);
   const includeUnposted = params.includeUnposted !== false;
 
-  const storeFilter =
-    params.storeNumbers && params.storeNumbers.length > 0
-      ? ` AND h.Store IN (${params.storeNumbers.map((n) => Number(n)).join(',')})`
-      : '';
-  const postedFilter = includeUnposted ? '' : ` AND h.Posted = 'Y'`;
-
-  const key = `sr:ticketHeaders:${startDate}:${endDate}:${storeFilter}:${postedFilter}`;
+  const key = `sr:ticketHeaders:${startDate}:${endDate}:${(params.storeNumbers ?? []).join(',')}:${includeUnposted}`;
   return cachedAsync(key, 600_000, async () => {
+    const sqlParams: unknown[] = [startDate, endExclusive];
+    const extraWheres: string[] = [];
+    if (params.storeNumbers && params.storeNumbers.length > 0) {
+      sqlParams.push(params.storeNumbers.map((n) => Number(n)));
+      extraWheres.push(`h.store = ANY($${sqlParams.length}::int[])`);
+    }
+    if (!includeUnposted) {
+      extraWheres.push(`h.posted = 'Y'`);
+    }
+    const extraClause = extraWheres.length ? ' AND ' + extraWheres.join(' AND ') : '';
+
     const sql = `SELECT
-  h.UserID, h.BatchDate, h.Terminal, h.Store, h.Ticket, h.RealDate,
-  h.Cashier, h.Posted
-FROM TicketHeader h
+  h.user_id AS "UserID",
+  to_char(h.batch_date AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS') AS "BatchDate",
+  h.terminal AS "Terminal",
+  h.store AS "Store",
+  h.ticket AS "Ticket",
+  to_char(h.real_date AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS') AS "RealDate",
+  h.cashier AS "Cashier",
+  h.posted AS "Posted"
+FROM rics_mirror.ticket_header h
 WHERE
-  h.RealDate >= #${accessDate(startDate)}#
-  AND h.RealDate < #${accessDate(endExclusive)}#
-  AND h.TransType = 1
-  AND h.Voided = False${storeFilter}${postedFilter}`;
-    const raw = await queryAll<RawTicketHeaderFlag>(SALES_MDB(), sql);
+  h.real_date  >= $1::date
+  AND h.real_date <  $2::date
+  AND h.trans_type = 1
+  AND h.voided     = false${extraClause}`;
+    const raw = await prisma.$queryRawUnsafe<RawTicketHeaderFlag[]>(sql, ...sqlParams);
     return raw.map<TicketHeaderFlag>((r) => ({
       store: Number(r.Store ?? 0),
       ticket: Number(r.Ticket ?? 0),
@@ -1438,9 +1430,13 @@ interface DeptRow {
 
 async function loadDepartmentMap(): Promise<DeptRow[]> {
   return cachedAsync('sr:dim:departments', 300_000, async () => {
-    const rows = await queryAll<{ Number: number; Desc: string | null; BegCateg: number; EndCateg: number }>(
-      mdbPath('RICS_DEPT_DB_FILE', 'RIDEPT.MDB'),
-      'SELECT [Number], [Desc], [BegCateg], [EndCateg] FROM [Departments]',
+    const rows = await prisma.$queryRawUnsafe<
+      { Number: number; Desc: string | null; BegCateg: number; EndCateg: number }[]
+    >(
+      `SELECT number AS "Number", "desc" AS "Desc",
+              beg_categ AS "BegCateg", end_categ AS "EndCateg"
+         FROM rics_mirror.departments
+        WHERE beg_categ IS NOT NULL AND end_categ IS NOT NULL`,
     );
     return rows
       .filter((r) => r.Number != null)
@@ -1536,43 +1532,60 @@ export async function getStockStatus(params: {
   const itemFilter: StockStatusItemFilter = params.itemFilter ?? 'ALL';
   const criteria = params.criteria ?? {};
 
-  // 1) Aggregate RIINVQUA: per (SKU, Store) sum of OnHand / OnOrder / Model across all size cells.
-  const onHandParts = Array.from({ length: 18 }, (_, i) => `IIF([OnHand_${pad2(i + 1)}] IS NULL, 0, [OnHand_${pad2(i + 1)}])`).join(' + ');
-  const onOrderParts = Array.from({ length: 18 }, (_, i) => `IIF([CurrentOnOrder_${pad2(i + 1)}] IS NULL, 0, [CurrentOnOrder_${pad2(i + 1)}]) + IIF([FutureOnOrder_${pad2(i + 1)}] IS NULL, 0, [FutureOnOrder_${pad2(i + 1)}])`).join(' + ');
-  const modelParts = Array.from({ length: 18 }, (_, i) => `IIF([Model_${pad2(i + 1)}] IS NULL, 0, [Model_${pad2(i + 1)}])`).join(' + ');
+  // 1) Aggregate rics_mirror.inventory_quantities: per (SKU, Store) sum of
+  //    OnHand / OnOrder / Model across all 18 size cells.
+  const onHandParts = Array.from({ length: 18 }, (_, i) => {
+    const n = pad2(i + 1);
+    return `COALESCE(on_hand_${n}, 0)`;
+  }).join(' + ');
+  const onOrderParts = Array.from({ length: 18 }, (_, i) => {
+    const n = pad2(i + 1);
+    return `COALESCE(current_on_order_${n}, 0) + COALESCE(future_on_order_${n}, 0)`;
+  }).join(' + ');
+  const modelParts = Array.from({ length: 18 }, (_, i) => {
+    const n = pad2(i + 1);
+    return `COALESCE(model_${n}, 0)`;
+  }).join(' + ');
 
-  const quaSql = `SELECT [SKU], [Store],
-  SUM(${onHandParts}) AS TotalOnHand,
-  SUM(${onOrderParts}) AS TotalOnOrder,
-  SUM(${modelParts}) AS TotalModel
-FROM [Inventory Quantities]
-GROUP BY [SKU], [Store]`;
+  const quaSql = `SELECT sku AS "SKU", store AS "Store",
+  SUM(${onHandParts})::int  AS "TotalOnHand",
+  SUM(${onOrderParts})::int AS "TotalOnOrder",
+  SUM(${modelParts})::int   AS "TotalModel"
+FROM rics_mirror.inventory_quantities
+GROUP BY sku, store`;
 
-  const qua = await queryAll<QuaAggRow>(INVQUA_MDB(), quaSql);
+  const qua = await prisma.$queryRawUnsafe<QuaAggRow[]>(quaSql);
 
-  // 2) Pull master data (filtered by criteria).
-  const masterWheres: string[] = [`([Status] IS NULL OR [Status] <> 'D')`];
+  // 2) Pull master data (filtered by criteria). Parameterize caller-supplied
+  //    filter values.
+  const masterParams: unknown[] = [];
+  const masterWheres: string[] = [`(status IS NULL OR status <> 'D')`];
   if (criteria.vendors?.length) {
-    const list = criteria.vendors.map((v) => `'${String(v).trim().replace(/'/g, "''")}'`).join(',');
-    masterWheres.push(`[Vendor] IN (${list})`);
+    masterParams.push(criteria.vendors.map((v) => String(v).trim()));
+    masterWheres.push(`vendor = ANY($${masterParams.length}::text[])`);
   }
   if (criteria.categories?.length) {
-    masterWheres.push(`[Category] IN (${criteria.categories.map((c) => Number(c)).join(',')})`);
+    masterParams.push(criteria.categories.map((c) => Number(c)));
+    masterWheres.push(`category = ANY($${masterParams.length}::int[])`);
   }
   if (criteria.seasons?.length) {
-    const list = criteria.seasons.map((s) => `'${String(s).trim().replace(/'/g, "''")}'`).join(',');
-    masterWheres.push(`[Season] IN (${list})`);
+    masterParams.push(criteria.seasons.map((s) => String(s).trim()));
+    masterWheres.push(`season = ANY($${masterParams.length}::text[])`);
   }
   if (criteria.skus?.length) {
-    const list = criteria.skus.map((s) => `'${String(s).trim().replace(/'/g, "''")}'`).join(',');
-    masterWheres.push(`[SKU] IN (${list})`);
+    masterParams.push(criteria.skus.map((s) => String(s).trim()));
+    masterWheres.push(`sku = ANY($${masterParams.length}::text[])`);
   }
   const masterSql = `SELECT
-  [SKU], [Desc], [Vendor], [Category], [RetailPrice], [CurrentCost], [Season]
-FROM [InventoryMaster]
+  sku AS "SKU", "desc" AS "Desc", vendor AS "Vendor",
+  category AS "Category",
+  retail_price::float8  AS "RetailPrice",
+  current_cost::float8  AS "CurrentCost",
+  season AS "Season"
+FROM rics_mirror.inventory_master
 WHERE ${masterWheres.join(' AND ')}`;
 
-  const masters = await queryAll<MasterLiteRow>(INVMAS_MDB(), masterSql);
+  const masters = await prisma.$queryRawUnsafe<MasterLiteRow[]>(masterSql, ...masterParams);
   const masterBySku = new Map<string, MasterLiteRow>();
   for (const m of masters) {
     if (m.SKU) masterBySku.set(m.SKU, m);
@@ -1682,22 +1695,6 @@ export async function warmup(): Promise<void> {
 // ══════════════════════════════════════════════════════════════════════════
 // Internals
 // ══════════════════════════════════════════════════════════════════════════
-
-async function queryAll<T>(dbPath: string, sql: string): Promise<T[]> {
-  if (!fs.existsSync(dbPath)) {
-    console.warn(`[ricsSalesReportAdapter] MDB not found at ${dbPath}`);
-    return [];
-  }
-  const password = getOrRecoverPassword(dbPath);
-  try {
-    const raw = await runPowerShellJson<T | T[]>(buildSelectScript(dbPath, password, sql));
-    return Array.isArray(raw) ? raw : raw ? [raw] : [];
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[ricsSalesReportAdapter] query failed on ${dbPath}:`, msg);
-    return [];
-  }
-}
 
 function pad2(n: number): string {
   return String(n).padStart(2, '0');
