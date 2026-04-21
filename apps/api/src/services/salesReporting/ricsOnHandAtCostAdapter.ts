@@ -12,12 +12,7 @@
  * sales facade renders null for ROI/Turns on those reports until Phase 2.5.
  */
 
-import {
-  ricsDbPath,
-  getOrRecoverPassword,
-  runPowerShellJson,
-  buildSelectScript,
-} from '../accessOleDb';
+import { prisma } from '../../db/prisma';
 import {
   parseCriteria,
   matchesCriteria,
@@ -29,10 +24,10 @@ import type {
   SalesAnalysisStoreOption,
 } from './types';
 
-const INVQUA_MDB = () =>
-  ricsDbPath(process.env.RICS_INVQUA_DB_FILE || 'RIINVQUA.MDB');
-const INVMAS_MDB = () =>
-  ricsDbPath(process.env.RICS_INVMAS_DB_FILE || 'RIINVMAS.MDB');
+/** 18-column ON-HAND sum, Postgres syntax against rics_mirror.inventory_quantities. */
+const ON_HAND_SUM_SQL = Array.from({ length: 18 }, (_, i) =>
+  `COALESCE(on_hand_${String(i + 1).padStart(2, '0')}, 0)`,
+).join(' + ');
 
 // The RIINVQUA GROUP BY aggregation and the RIINVMAS lite pull are both
 // expensive over OLEDB (tens of thousands of rows × wide-column sums).
@@ -78,8 +73,31 @@ interface MasterRow {
   CurrentCost: number | null;
 }
 
-function pad2(n: number): string {
-  return n < 10 ? `0${n}` : String(n);
+async function loadQuaAggregate(): Promise<QuaRow[]> {
+  return cached('onhand:qua', () =>
+    prisma.$queryRawUnsafe<QuaRow[]>(`
+      SELECT sku AS "SKU",
+             store AS "Store",
+             SUM(${ON_HAND_SUM_SQL})::int AS "TotalOnHand"
+        FROM rics_mirror.inventory_quantities
+       GROUP BY sku, store
+      HAVING SUM(${ON_HAND_SUM_SQL}) > 0
+    `),
+  );
+}
+
+async function loadMasterSnapshot(): Promise<MasterRow[]> {
+  return cached('onhand:master', () =>
+    prisma.$queryRawUnsafe<MasterRow[]>(`
+      SELECT sku AS "SKU",
+             category AS "Category",
+             vendor AS "Vendor",
+             season AS "Season",
+             current_cost::float8 AS "CurrentCost"
+        FROM rics_mirror.inventory_master
+       WHERE status IS NULL OR status <> 'D'
+    `),
+  );
 }
 
 /**
@@ -129,29 +147,8 @@ export async function getOnHandAtCostByDimension(params: {
     return new Map();
   }
 
-  const qua = await cached('onhand:qua', async () => {
-    const pw = getOrRecoverPassword(INVQUA_MDB());
-    const onHandExpr = Array.from({ length: 18 }, (_, i) =>
-      `IIF([OnHand_${pad2(i + 1)}] IS NULL, 0, [OnHand_${pad2(i + 1)}])`,
-    ).join(' + ');
-    const quaSql = `SELECT [SKU], [Store], SUM(${onHandExpr}) AS TotalOnHand
-FROM [Inventory Quantities]
-GROUP BY [SKU], [Store]
-HAVING SUM(${onHandExpr}) > 0`;
-    return (
-      (await runPowerShellJson<QuaRow[]>(buildSelectScript(INVQUA_MDB(), pw, quaSql))) ?? []
-    );
-  });
-
-  const masters = await cached('onhand:master', async () => {
-    const pw = getOrRecoverPassword(INVMAS_MDB());
-    const masterSql = `SELECT [SKU], [Category], [Vendor], [Season], [CurrentCost]
-FROM [InventoryMaster]
-WHERE ([Status] IS NULL OR [Status] <> 'D')`;
-    return (
-      (await runPowerShellJson<MasterRow[]>(buildSelectScript(INVMAS_MDB(), pw, masterSql))) ?? []
-    );
-  });
+  const qua = await loadQuaAggregate();
+  const masters = await loadMasterSnapshot();
 
   const categoryExpr = parseCriteria(params.criteria.categoriesRaw);
   const vendorExpr = parseCriteria(params.criteria.vendorsRaw);
@@ -225,29 +222,8 @@ export interface OnHandUnitsRow {
 export async function getOnHandSkuRows(params: {
   storeNumbers?: number[];
 } = {}): Promise<OnHandUnitsRow[]> {
-  const qua = await cached('onhand:qua', async () => {
-    const pw = getOrRecoverPassword(INVQUA_MDB());
-    const onHandExpr = Array.from({ length: 18 }, (_, i) =>
-      `IIF([OnHand_${pad2(i + 1)}] IS NULL, 0, [OnHand_${pad2(i + 1)}])`,
-    ).join(' + ');
-    const quaSql = `SELECT [SKU], [Store], SUM(${onHandExpr}) AS TotalOnHand
-FROM [Inventory Quantities]
-GROUP BY [SKU], [Store]
-HAVING SUM(${onHandExpr}) > 0`;
-    return (
-      (await runPowerShellJson<QuaRow[]>(buildSelectScript(INVQUA_MDB(), pw, quaSql))) ?? []
-    );
-  });
-
-  const masters = await cached('onhand:master', async () => {
-    const pw = getOrRecoverPassword(INVMAS_MDB());
-    const masterSql = `SELECT [SKU], [Category], [Vendor], [Season], [CurrentCost]
-FROM [InventoryMaster]
-WHERE ([Status] IS NULL OR [Status] <> 'D')`;
-    return (
-      (await runPowerShellJson<MasterRow[]>(buildSelectScript(INVMAS_MDB(), pw, masterSql))) ?? []
-    );
-  });
+  const qua = await loadQuaAggregate();
+  const masters = await loadMasterSnapshot();
 
   const masterBySku = new Map<string, MasterRow>();
   for (const m of masters) {
