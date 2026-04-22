@@ -207,6 +207,18 @@ async function main(): Promise<void> {
       console.log('\n  mirror row counts (post-sync):');
       printCountsTable(postCounts);
 
+      // SKU-extended-attribute orphans — assignments pointing at SKUs that
+      // no longer exist in the mirror. Non-fatal; surfaces for operator review.
+      // Spec: docs/dev/specs/2026-04-22-sku-extended-attributes-foundation-design.md §5.
+      try {
+        const { rows } = await postClient.query<{ n: string }>(
+          `SELECT COUNT(*)::text AS n FROM app.sku_attribute_orphans`
+        );
+        console.log(`\n  sku_attribute orphans (post-sync): ${fmtNum(Number(rows[0].n))}`);
+      } catch {
+        console.log('\n  sku_attribute orphans (post-sync): view not present (migration not yet applied)');
+      }
+
       // Clean up canary now that the check passed; done inside the finally
       // block so it's removed even if a later assertion throws.
       await deleteCanary(postClient);

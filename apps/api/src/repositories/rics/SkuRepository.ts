@@ -44,6 +44,7 @@ import {
   type AccessParam,
   type AccessWriteOperation,
 } from '../../services/accessOleDb';
+import { prisma } from '../../db/prisma';
 import { Err, Ok, type Result } from './repoResult';
 import { openRicsDb, RicsDb, toRepoError, trimString, coerceNumber, coerceBoolean } from './ricsAccess';
 import { parseAccessDate } from './parseAccessDate';
@@ -158,8 +159,21 @@ export interface FindAllOptions {
   seasons?: string[];
   groups?: string[];
   keywords?: string[];
+  /**
+   * Restrict to SKUs whose code is in this allowlist. Used by the products
+   * routes when an `attr.<dim>=<value>` filter has been resolved upstream via
+   * the extended-attributes service.
+   */
+  codes?: string[];
   /** Style/Color substring match (case-insensitive). */
   styleColor?: string;
+  /**
+   * Description filter, case-insensitive.
+   * - No asterisks → substring match (same as `includes`).
+   * - With asterisks → glob match where `*` is zero-or-more chars, anchored at both ends.
+   *   `BOOT*` = starts-with; `*BOOT` = ends-with; `BOOT*CUERO` = starts BOOT, ends CUERO.
+   */
+  description?: string;
   limit?: number;
   offset?: number;
 }
@@ -300,17 +314,19 @@ const INVENTORY_MASTER_COLS = `[SKU], [VendorSKU], [Category], [Vendor], [SizeTy
 
 /**
  * Narrow column set for the list view. Drops long text columns (`Comment`,
- * `KeyWords`, `PictureFileName`, `Manufacturer`, `Location`) and the
- * rarely-read `OrderMultiple`/`OrderUOM`/`Perks`/`OverSize*`/`LabelCode`/
- * `ColorCode`/`CurrentCost`/`LastPriceChange`/`DateLastChanged`/`Coupon` —
- * the list page only renders code, desc, vendor, category, styleColor,
- * season, current-price slot+amount, and status. Pulling ~12 columns over
- * 25k rows is roughly 2-3× faster than pulling all 31 and drops the JSON
- * payload from ~25 MB to ~9 MB.
+ * `Manufacturer`, `Location`) and the rarely-read `OrderMultiple`/`OrderUOM`/
+ * `Perks`/`OverSize*`/`LabelCode`/`ColorCode`/`CurrentCost`/`LastPriceChange`/
+ * `DateLastChanged`/`Coupon` — the list page renders code, desc, vendor,
+ * category, styleColor, season, current-price slot+amount, status, and a
+ * small thumbnail derived from `PictureFileName`. `KeyWords` and `GroupCode`
+ * are retained even though no list column shows them: filter dropdowns on
+ * the list page narrow by keyword and group, so `applyFilters` needs those
+ * fields populated.
  */
 const INVENTORY_MASTER_LIST_COLS = `[SKU], [Category], [Vendor], [Desc],
   [StyleColor], [Season], [ListPrice], [RetailPrice],
-  [MarkDownPrice1], [MarkDownPrice2], [CurrentPrice], [Status]`;
+  [MarkDownPrice1], [MarkDownPrice2], [CurrentPrice], [Status],
+  [PictureFileName], [KeyWords], [GroupCode]`;
 
 const INV_CATALOG_COLS = `[SKU], [LongColor], [BoldDesc], [ParaDesc], [CatalogSKU],
   [BulletText_01], [BulletText_02], [BulletText_03], [BulletText_04], [BulletText_05],
@@ -437,14 +453,25 @@ function invCatalogParams(input: SkuInput): AccessParam[] | null {
 // ────────────── Cache ──────────────
 
 // The full SKU snapshot is loaded once and filtered in memory. 60-minute TTL
-// means after a user visits the SKUs page (and pays the ~60-100 s one-time
-// load cost), every subsequent view in the hour is instant. Mutations call
-// `skuListCache.invalidate()` so writes surface immediately without the user
-// noticing the stale period. The storefront adapter uses a similar long TTL.
+// covers the mirror-read path too (sub-second now) as a belt-and-suspenders
+// against any spike; mutations call `skuListCache.invalidate()` so writes
+// surface immediately. The storefront adapter uses a similar long TTL.
 const SKU_LIST_TTL_MS = 60 * 60 * 1000;
 const skuListCache = createTtlCache<Sku[]>(SKU_LIST_TTL_MS);
 
+// Phase A cutover: default source is `rics_mirror.inventory_master` (Postgres,
+// populated by `pnpm sync:rics`). Set PRODUCTS_SKU_SOURCE=mdb to fall back to
+// the legacy OLEDB path for rollback.
+const PRODUCTS_SKU_SOURCE: 'mirror' | 'mdb' =
+  process.env.PRODUCTS_SKU_SOURCE?.toLowerCase() === 'mdb' ? 'mdb' : 'mirror';
+
 async function loadFullSkuList(): Promise<Sku[]> {
+  return PRODUCTS_SKU_SOURCE === 'mirror'
+    ? loadFullSkuListFromMirror()
+    : loadFullSkuListFromMdb();
+}
+
+async function loadFullSkuListFromMdb(): Promise<Sku[]> {
   const { path, password } = openRicsDb(RicsDb.InventoryMaster);
   const rows = await executeQuery<InventoryMasterRow>(
     path,
@@ -454,6 +481,34 @@ async function loadFullSkuList(): Promise<Sku[]> {
   // mapSku tolerates missing columns — `trimString` / `coerceNumber` both
   // return null for undefined inputs, so dropped columns surface as null on
   // the domain object. Detail view (`findByCode`) still pulls the full row.
+  return rows.map((r) => mapSku(r, null));
+}
+
+// Mirror-backed variant of the same snapshot. Column aliases match the MDB
+// projection verbatim so `mapSku` is unchanged. Only the narrow list-column
+// subset is pulled (see INVENTORY_MASTER_LIST_COLS for the rationale); the
+// detail view still calls `findByCode` which pulls the full row.
+async function loadFullSkuListFromMirror(): Promise<Sku[]> {
+  const rows = await prisma.$queryRawUnsafe<InventoryMasterRow[]>(`
+    SELECT
+      sku                        AS "SKU",
+      category                   AS "Category",
+      vendor                     AS "Vendor",
+      "desc"                     AS "Desc",
+      style_color                AS "StyleColor",
+      season                     AS "Season",
+      list_price::float8         AS "ListPrice",
+      retail_price::float8       AS "RetailPrice",
+      mark_down_price1::float8   AS "MarkDownPrice1",
+      mark_down_price2::float8   AS "MarkDownPrice2",
+      current_price              AS "CurrentPrice",
+      status                     AS "Status",
+      picture_file_name          AS "PictureFileName",
+      key_words                  AS "KeyWords",
+      group_code                 AS "GroupCode"
+    FROM rics_mirror.inventory_master
+    ORDER BY sku
+  `);
   return rows.map((r) => mapSku(r, null));
 }
 
@@ -467,6 +522,10 @@ function applyFilters(all: Sku[], opts: FindAllOptions): Sku[] {
         s.description.toUpperCase().includes(q) ||
         (s.styleColor ?? '').toUpperCase().includes(q),
     );
+  }
+  if (opts.description && opts.description.trim().length > 0) {
+    const matcher = buildDescriptionMatcher(opts.description.trim());
+    out = out.filter((s) => matcher(s.description));
   }
   // Multi-value filters — unioned within a dimension, intersected across
   // dimensions. Arrays override their single-value counterparts.
@@ -494,6 +553,10 @@ function applyFilters(all: Sku[], opts: FindAllOptions): Sku[] {
     const needle = opts.styleColor.trim().toUpperCase();
     out = out.filter((s) => (s.styleColor ?? '').toUpperCase().includes(needle));
   }
+  if (opts.codes && opts.codes.length > 0) {
+    const allow = new Set(opts.codes.map((c) => c.trim().toUpperCase()).filter((c) => c.length > 0));
+    out = out.filter((s) => allow.has(s.code.toUpperCase()));
+  }
   return out;
 }
 
@@ -502,6 +565,25 @@ function setOf(xs: string[]): Set<string> {
 }
 function numSet(xs: number[]): Set<number> {
   return new Set(xs.filter((x) => Number.isFinite(x)));
+}
+
+/**
+ * Build a description matcher with asterisk-wildcard support.
+ *   "BOOT"        → substring (case-insensitive)
+ *   "BOOT*"       → starts-with BOOT
+ *   "*BOOT"       → ends-with BOOT
+ *   "*BOOT*"      → contains BOOT (same as substring)
+ *   "BOOT*CUERO"  → starts BOOT, ends CUERO (any chars between)
+ *   "BO*CU*RO"    → BO then CU then RO, in order
+ */
+function buildDescriptionMatcher(pattern: string): (desc: string) => boolean {
+  const p = pattern.toUpperCase();
+  if (!p.includes('*')) {
+    return (desc) => desc.toUpperCase().includes(p);
+  }
+  const escaped = p.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
+  const re = new RegExp('^' + escaped + '$');
+  return (desc) => re.test(desc.toUpperCase());
 }
 
 // ────────────── Repository ──────────────

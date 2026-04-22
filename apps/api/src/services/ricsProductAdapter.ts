@@ -1156,33 +1156,38 @@ async function loadSkuLookupIndexFromMirror(): Promise<SkuLookupIndex> {
     // used by the MDB path, so downstream consumers see identical shape. `::float8`
     // casts turn Postgres NUMERIC into JS `number` (matching the old JSON path);
     // LastPriceChange is emitted as an ISO-like string to match the OLEDB shape.
+    //
+    // LEFT JOIN app.sku_attribute_override merges operator-applied batch changes
+    // (utilities module) so the SKU Lookup modal reflects effective values.
+    // See docs/modules/utilities.md and docs/dev/specs/2026-04-21-utilities-batch-change-design.md.
     const rows = await prisma.$queryRawUnsafe<SkuLookupIndexRow[]>(`
       SELECT
-        sku               AS "SKU",
-        "desc"            AS "Desc",
-        vendor            AS "Vendor",
-        manufacturer      AS "Manufacturer",
-        category          AS "Category",
-        style_color       AS "StyleColor",
-        vendor_sku        AS "VendorSKU",
-        size_type         AS "SizeType",
-        season            AS "Season",
-        label_code        AS "LabelCode",
-        group_code        AS "GroupCode",
-        picture_file_name AS "PictureFileName",
-        list_price::float8        AS "ListPrice",
-        retail_price::float8      AS "RetailPrice",
-        mark_down_price1::float8  AS "MarkDownPrice1",
-        mark_down_price2::float8  AS "MarkDownPrice2",
-        current_price             AS "CurrentPrice",
-        current_cost::float8      AS "CurrentCost",
-        to_char(last_price_change AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS') AS "LastPriceChange",
-        perks::float8     AS "Perks",
-        comment           AS "Comment",
-        status            AS "Status"
-      FROM rics_mirror.inventory_master
-      WHERE status IS NULL OR status <> 'D'
-      ORDER BY sku
+        im.sku                                       AS "SKU",
+        im."desc"                                    AS "Desc",
+        COALESCE(o.vendor, im.vendor)                AS "Vendor",
+        im.manufacturer                              AS "Manufacturer",
+        COALESCE(o.category, im.category)            AS "Category",
+        im.style_color                               AS "StyleColor",
+        im.vendor_sku                                AS "VendorSKU",
+        im.size_type                                 AS "SizeType",
+        COALESCE(o.season, im.season)                AS "Season",
+        im.label_code                                AS "LabelCode",
+        COALESCE(o.group_code, im.group_code)        AS "GroupCode",
+        im.picture_file_name                         AS "PictureFileName",
+        im.list_price::float8                        AS "ListPrice",
+        im.retail_price::float8                      AS "RetailPrice",
+        im.mark_down_price1::float8                  AS "MarkDownPrice1",
+        im.mark_down_price2::float8                  AS "MarkDownPrice2",
+        im.current_price                             AS "CurrentPrice",
+        im.current_cost::float8                      AS "CurrentCost",
+        to_char(im.last_price_change AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS') AS "LastPriceChange",
+        im.perks::float8                             AS "Perks",
+        im.comment                                   AS "Comment",
+        im.status                                    AS "Status"
+      FROM rics_mirror.inventory_master im
+      LEFT JOIN app.sku_attribute_override o ON im.sku = o.rics_sku_code
+      WHERE im.status IS NULL OR im.status <> 'D'
+      ORDER BY im.sku
     `);
     const byCode = new Map<string, SkuLookupIndexRow>();
     for (const r of rows) {
@@ -1244,6 +1249,74 @@ ORDER BY [SKU]
 /** Warmup hook — pull the index on startup so the first user request is fast. */
 export async function warmupSkuLookupIndex(): Promise<void> {
   await loadSkuLookupIndex();
+}
+
+/**
+ * Targeted invalidation — re-fetch effective values for specific SKUs and patch
+ * the in-memory index in place. Called by the utilities module after each batch
+ * operation completes so the SKU Lookup modal reflects operator-applied changes
+ * within seconds, without waiting for the 10-minute TTL or a full re-warmup.
+ *
+ * Cost is O(|skuCodes|) for the DB round-trip + O(|skuCodes| * log |rows|) for
+ * the sorted-array patching. Full re-warmup (~60-120 s on this customer's
+ * catalog) is reserved for startup and sync:rics completion.
+ *
+ * Spec: docs/dev/specs/2026-04-21-utilities-batch-change-design.md § "SKU warmup integration"
+ */
+export async function invalidateWarmupForSkus(skuCodes: string[]): Promise<void> {
+  if (skuCodes.length === 0) return;
+  const index = cache.get('sku:lookup:index') as CacheEntry<SkuLookupIndex> | undefined;
+  if (!index) return; // not warmed yet — next call loads fresh, which is already effective-value-aware
+
+  try {
+    const refreshed = await prisma.$queryRawUnsafe<SkuLookupIndexRow[]>(
+      `
+      SELECT
+        im.sku                                       AS "SKU",
+        im."desc"                                    AS "Desc",
+        COALESCE(o.vendor, im.vendor)                AS "Vendor",
+        im.manufacturer                              AS "Manufacturer",
+        COALESCE(o.category, im.category)            AS "Category",
+        im.style_color                               AS "StyleColor",
+        im.vendor_sku                                AS "VendorSKU",
+        im.size_type                                 AS "SizeType",
+        COALESCE(o.season, im.season)                AS "Season",
+        im.label_code                                AS "LabelCode",
+        COALESCE(o.group_code, im.group_code)        AS "GroupCode",
+        im.picture_file_name                         AS "PictureFileName",
+        im.list_price::float8                        AS "ListPrice",
+        im.retail_price::float8                      AS "RetailPrice",
+        im.mark_down_price1::float8                  AS "MarkDownPrice1",
+        im.mark_down_price2::float8                  AS "MarkDownPrice2",
+        im.current_price                             AS "CurrentPrice",
+        im.current_cost::float8                      AS "CurrentCost",
+        to_char(im.last_price_change AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS') AS "LastPriceChange",
+        im.perks::float8                             AS "Perks",
+        im.comment                                   AS "Comment",
+        im.status                                    AS "Status"
+      FROM rics_mirror.inventory_master im
+      LEFT JOIN app.sku_attribute_override o ON im.sku = o.rics_sku_code
+      WHERE im.sku = ANY($1::text[])
+      `,
+      skuCodes,
+    );
+
+    // Patch byCode + rows. Keep rows sorted by SKU (the warmup invariant).
+    const { byCode, rows } = index.value;
+    const rowsByUpper = new Map(rows.map((r, i) => [r.SKU?.trim().toUpperCase() ?? '', i]));
+    for (const r of refreshed) {
+      const key = r.SKU?.trim().toUpperCase();
+      if (!key) continue;
+      byCode.set(key, r);
+      const existingIdx = rowsByUpper.get(key);
+      if (existingIdx != null) rows[existingIdx] = r;
+      // NEW SKUs (not present in the index) are rare here — they'd have to be
+      // created since the last warmup. We skip them; next TTL-driven reload picks them up.
+    }
+  } catch (err) {
+    console.warn('[ricsProductAdapter] invalidateWarmupForSkus failed:', (err as Error).message);
+    // Non-blocking — next TTL reload will sweep in the new values.
+  }
 }
 
 /**

@@ -14,7 +14,8 @@
     "rics:discover": "tsx scripts/discover-rics-schema.ts",
     "rics:convert": "tsx scripts/convert-rics-mdbs.ts",
     "sync:rics": "node --env-file-if-exists=.env -r tsx/cjs scripts/sync-rics.ts",
-    "verify:rics-mirror": "node --env-file-if-exists=.env -r tsx/cjs scripts/verify-rics-mirror.ts"
+    "verify:rics-mirror": "node --env-file-if-exists=.env -r tsx/cjs scripts/verify-rics-mirror.ts",
+    "seed:sku-attributes": "node --env-file-if-exists=.env -r tsx/cjs scripts/seed-sku-attributes.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.80.0",

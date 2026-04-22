@@ -1,6 +1,6 @@
 # Module: platform — Development plan
 
-Companion to [platform.md](platform.md). The spec is the "what"; this document is the "how and when". Sequencing is driven by **dependency depth** (things other modules will call into) and **blast radius** (the smaller the first ship, the cheaper the mistake).
+Companion to [`rics-module-specs.md`](./rics-module-specs.md). The spec is the "what"; this document is the "how and when". Sequencing is driven by **dependency depth** (things other modules will call into) and **blast radius** (the smaller the first ship, the cheaper the mistake).
 
 **Target delivery cadence**: 8 phases, ~12 sprints total, ~1 quarter of wall-clock if staffed with one full-time engineer. Phases are not equal — see per-phase estimates.
 
@@ -24,7 +24,7 @@ Companion to [platform.md](platform.md). The spec is the "what"; this document i
 **Work packages**
 
 - **ZAI-P0-1 — Decide Open Questions that gate work.** The following must be answered before Phase 3 begins (Phases 1–2 are unblocked regardless):
-  - **Q1 — BullMQ vs pg-boss.** Recommendation in spec: BullMQ. Decision gate: ops sign-off on adding Redis to the deployment topology. Document the decision in [platform.md](platform.md) §Open questions.
+  - **Q1 — BullMQ vs pg-boss.** Recommendation in spec: BullMQ. Decision gate: ops sign-off on adding Redis to the deployment topology. Document the decision in [`rics-module-specs.md`](./rics-module-specs.md) §Open questions.
   - **Q2 — Email provider.** Recommendation: Resend or SES. Decision gate: commercial sign-off + a 15-min provider-account bootstrap.
   - Q3–Q10 can defer to their owning phase.
 - **ZAI-P0-2 — Extend Prisma schema with `platform_*` table naming convention.** Not yet adding tables; just establishing the convention in a README block so every subsequent phase uses it. Decision: prefix every platform table with `platform_` (e.g. `platform_audit_log`, `platform_settings`) so ownership is unambiguous in mixed-schema database listings.
@@ -307,7 +307,7 @@ Phase 8 is marked last because it's the smallest user impact; it can slide up to
 3. **Worker process shape**: one `apps/worker` package vs API hosts workers. Recommendation: separate process. Blocks Phase 3-3.
 4. **Redis deployment topology** (if BullMQ wins): managed vs self-hosted. Blocks Phase 3-1.
 
-All remaining Open Questions (#3–#10 in [platform.md](platform.md)) can be resolved in-phase.
+All remaining Open Questions (#3–#10 in [`rics-module-specs.md`](./rics-module-specs.md)) can be resolved in-phase.
 
 ---
 

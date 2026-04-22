@@ -76,6 +76,7 @@ Natural-language requests that map to specific slash commands. When the operator
 | "scaffold a manual chapter" | `/new-manual-chapter <slug>` |
 | "scaffold a module spec" | `/new-module-spec <slug>` |
 | "verify the mirror" / "prove the rics sync" | `/verify-rics-mirror` |
+| "analyze this odoo module" / "look at Odoo's X addon" / "steal patterns from Odoo's Y" | `/analyze-odoo-module <module>` |
 
 Match on intent, not exact phrasing. If the operator's ask plausibly maps to a command above, use the command — its safety rails (sandwich commits, cap checks, staleness annotation) beat improvising.
 

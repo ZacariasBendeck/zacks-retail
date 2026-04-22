@@ -1,0 +1,53 @@
+dimension_code,code,label_es,sort_order
+buyer,zb,Zacarias Bendeck,10
+buyer,ab,AB,20
+buyer,axb,AXB,30
+buyer,dm,Doña Mónica,40
+company,ibl,Inversiones Benlow,10
+company,cxn,Corporación Xena,20
+company,cct,Compañía Comercial de Tegucigalpa,30
+store_chain,magi,Magic Shoes,10
+store_chain,unli,Unlimited,20
+store_chain,fash,Fashion,30
+discount_type,pct_10,10% off,110
+discount_type,pct_20,20% off,120
+discount_type,pct_25,25% off,125
+discount_type,pct_30,30% off,130
+discount_type,pct_40,40% off,140
+discount_type,pct_45,45% off,145
+discount_type,pct_50,50% off,150
+discount_type,pct_60,60% off,160
+discount_type,pct_70,70% off,170
+discount_type,pct_80,80% off,180
+discount_type,pct_85,85% off,185
+discount_type,pct_90,90% off,190
+discount_type,bogo_15,2do al 15%,215
+discount_type,bogo_20,2do al 20%,220
+discount_type,bogo_30,2do al 30%,230
+discount_type,bogo_35,2do al 35%,235
+discount_type,bogo_40,2do al 40%,240
+discount_type,bogo_45,2do al 45%,245
+discount_type,bogo_50,2do al 50%,250
+discount_type,bogo_55,2do al 55%,255
+discount_type,bogo_60,2do al 60%,260
+discount_type,bogo_75,2do al 75%,275
+discount_type,bogo_99,2do al 99%,299
+discount_type,multi_2x1,2x1,320
+discount_type,multi_3x1,3x1,330
+discount_type,multi_4x1,4x1,340
+discount_type,multi_3x2,3x2,332
+discount_type,fixed_l19,L19 precio fijo,410
+discount_type,fixed_l25,L25 precio fijo,411
+discount_type,fixed_l29,L29 precio fijo,412
+discount_type,fixed_l39,L39 precio fijo,413
+discount_type,fixed_l49,L49 precio fijo,414
+discount_type,fixed_l59,L59 precio fijo,415
+discount_type,fixed_l69,L69 precio fijo,416
+discount_type,fixed_l79,L79 precio fijo,417
+discount_type,fixed_l99,L99 precio fijo,418
+discount_type,fixed_l199,L199 precio fijo,419
+discount_type,fixed_l299,L299 precio fijo,420
+discount_type,fixed_l399,L399 precio fijo,421
+discount_type,fixed_l499,L499 precio fijo,422
+discount_type,fixed_l599,L599 precio fijo,423
+discount_type,fixed_l1999,L1999 precio fijo,424

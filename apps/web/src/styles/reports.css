@@ -1,0 +1,19 @@
+/**
+ * Shared visual polish for every report table.
+ *
+ * `.report-zebra-row` — subtle alternating row tint so pivot tables with 13+
+ * columns stay readable as the eye tracks across. Scoped tightly so it only
+ * applies to the body rows, not header / summary / hover states.
+ *
+ * Applied via `rowClassName={(_, i) => i % 2 === 1 ? 'report-zebra-row' : ''}`
+ * on the Ant Table.
+ */
+
+.report-zebra-row > .ant-table-cell {
+  background: rgba(0, 0, 0, 0.015);
+}
+
+/* Hover and selection still win over zebra so the interaction state reads. */
+.ant-table-tbody > tr.report-zebra-row:hover > .ant-table-cell {
+  background: rgba(0, 0, 0, 0.04);
+}

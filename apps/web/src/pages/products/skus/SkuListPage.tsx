@@ -4,6 +4,7 @@ import {
   App,
   Button,
   Card,
+  Image,
   Input,
   Popconfirm,
   Select,
@@ -26,6 +27,7 @@ import {
   useDeleteProductsSku,
 } from '../../../hooks/useProductsSkus'
 import { productsSkuApi } from '../../../services/productsSkuApi'
+import { SkuLink } from '../../../components/sku-link'
 import {
   useCategories,
   useDepartments,
@@ -35,6 +37,7 @@ import {
   useSectors,
 } from '../../../hooks/useProductsTaxonomy'
 import { useVendors } from '../../../hooks/useProductsVendors'
+import { useAttributeDimensions } from '../../../hooks/useProductsAttributes'
 import type { SkuListFilters } from '../../../types/productsSku'
 import type { Department, Sector } from '../../../types/productsTaxonomy'
 
@@ -71,6 +74,8 @@ export default function SkuListPage() {
   const [seasonCodes, setSeasonCodes] = useState<string[]>([])
   const [vendorCodes, setVendorCodes] = useState<string[]>([])
   const [styleColor, setStyleColor] = useState('')
+  // Extended-attribute filter state: one entry per dim, each an array of value codes.
+  const [attrSelections, setAttrSelections] = useState<Record<string, string[]>>({})
 
   // Selection persists across filter/sort changes for bulk ops.
   const [selectedCodes, setSelectedCodes] = useState<string[]>([])
@@ -83,6 +88,7 @@ export default function SkuListPage() {
   const { data: keywords } = useKeywords()
   const { data: seasons } = useSeasons()
   const { data: vendors } = useVendors()
+  const { data: attrDimensions } = useAttributeDimensions()
 
   // Expand a Department pick to its category range.
   const deptCategoryRange = useMemo(() => {
@@ -138,6 +144,16 @@ export default function SkuListPage() {
     staleTime: 5 * 60_000,
   })
 
+  // Parallel on-hand totals — one aggregate query over rics_mirror.inventory_quantities
+  // keyed by the result set's SKU codes. Rendered in the On Hand column below.
+  const skuCodes = useMemo(() => (skus ?? []).map((s) => s.code), [skus])
+  const { data: onHandTotals } = useQuery({
+    queryKey: ['products-skus', 'on-hand-totals', skuCodes],
+    queryFn: () => productsSkuApi.onHandTotals(skuCodes),
+    enabled: skuCodes.length > 0,
+    staleTime: 5 * 60_000,
+  })
+
   const del = useDeleteProductsSku()
 
   // Range-based rollup for the rendered Department/Sector columns.
@@ -174,12 +190,70 @@ export default function SkuListPage() {
 
   const columns = [
     {
+      title: '',
+      key: 'thumb',
+      // Column width only sizes the portrait case; wider (landscape) shots can
+      // exceed it because maxWidth below is larger. The Table handles overflow
+      // by expanding the column as needed.
+      width: 56,
+      // Strip the cell's own padding so the image fills the whole row height —
+      // no top/bottom cushion. Row height is then driven by the image height
+      // below; other cells vertically center into the same row.
+      onCell: () => ({ style: { padding: 0, verticalAlign: 'middle' as const } }),
+      render: (_: unknown, r: EnrichedSku) => {
+        if (!r.pictureFileName) {
+          return (
+            <span
+              aria-hidden
+              style={{
+                display: 'block',
+                width: 50,
+                height: 50,
+                margin: '0 auto',
+                border: '1px dashed #e0e0e0',
+                borderRadius: 2,
+              }}
+            />
+          )
+        }
+        const url = `/rics-images/${encodeURIComponent(r.pictureFileName)}`
+        return (
+          // Ant's <Image> gives us a click-to-enlarge lightbox (zoom, rotate,
+          // fullscreen) for free, while keeping the inline thumbnail the same
+          // size as before. preview={{ src }} is what powers the large view;
+          // we don't pass a separate `previewSrc` since the source is already
+          // the full-res image from /rics-images.
+          <Image
+            src={url}
+            alt=""
+            loading="lazy"
+            // Fixed height = row height (no cushion). width: auto preserves
+            // the aspect ratio so portrait shots stay narrow and landscape
+            // shots widen the cell naturally, capped at maxWidth.
+            style={{
+              height: 50,
+              width: 'auto',
+              maxWidth: 120,
+              objectFit: 'contain',
+              display: 'block',
+              cursor: 'zoom-in',
+            }}
+            preview={{ mask: false }}
+            onError={(e) => {
+              (e.currentTarget as HTMLImageElement).style.visibility = 'hidden'
+            }}
+          />
+        )
+      },
+    },
+    {
       title: 'SKU',
       dataIndex: 'code',
       key: 'code',
       width: 140,
       sorter: (a: EnrichedSku, b: EnrichedSku) => a.code.localeCompare(b.code),
       defaultSortOrder: 'ascend' as const,
+      render: (_: unknown, r: EnrichedSku) => <SkuLink skuCode={r.code} />,
     },
     {
       title: 'Description',
@@ -276,6 +350,23 @@ export default function SkuListPage() {
         ),
     },
     {
+      title: 'On Hand',
+      key: 'onHand',
+      width: 90,
+      align: 'right' as const,
+      sorter: (a: EnrichedSku, b: EnrichedSku) =>
+        (onHandTotals?.[a.code] ?? 0) - (onHandTotals?.[b.code] ?? 0),
+      render: (_: unknown, r: EnrichedSku) => {
+        if (!onHandTotals) return <Typography.Text type="secondary">…</Typography.Text>
+        const n = onHandTotals[r.code] ?? 0
+        return n === 0 ? (
+          <Typography.Text type="secondary">0</Typography.Text>
+        ) : (
+          n.toLocaleString()
+        )
+      },
+    },
+    {
       title: 'Status',
       dataIndex: 'status',
       key: 'status',
@@ -313,15 +404,22 @@ export default function SkuListPage() {
     },
   ]
 
-  const buildFilters = (): SkuListFilters => ({
-    q: q.trim() || undefined,
-    vendors: vendorCodes.length > 0 ? vendorCodes : undefined,
-    categories: effectiveCategories,
-    seasons: seasonCodes.length > 0 ? seasonCodes : undefined,
-    groups: groupCodes.length > 0 ? groupCodes : undefined,
-    keywords: keywordCodes.length > 0 ? keywordCodes : undefined,
-    styleColor: styleColor.trim() || undefined,
-  })
+  const buildFilters = (): SkuListFilters => {
+    const attrsPayload: Record<string, string[]> = {}
+    for (const [dim, vals] of Object.entries(attrSelections)) {
+      if (vals.length > 0) attrsPayload[dim] = vals
+    }
+    return {
+      q: q.trim() || undefined,
+      vendors: vendorCodes.length > 0 ? vendorCodes : undefined,
+      categories: effectiveCategories,
+      seasons: seasonCodes.length > 0 ? seasonCodes : undefined,
+      groups: groupCodes.length > 0 ? groupCodes : undefined,
+      keywords: keywordCodes.length > 0 ? keywordCodes : undefined,
+      styleColor: styleColor.trim() || undefined,
+      attributes: Object.keys(attrsPayload).length > 0 ? attrsPayload : undefined,
+    }
+  }
 
   const runQuery = () => {
     setActiveFilters(buildFilters())
@@ -343,7 +441,10 @@ export default function SkuListPage() {
     setSeasonCodes([])
     setVendorCodes([])
     setStyleColor('')
+    setAttrSelections({})
   }
+
+  const attrFiltersSet = Object.values(attrSelections).some((v) => v.length > 0)
 
   const anyFilterSet =
     q.trim().length > 0 ||
@@ -354,7 +455,8 @@ export default function SkuListPage() {
     keywordCodes.length > 0 ||
     seasonCodes.length > 0 ||
     vendorCodes.length > 0 ||
-    styleColor.trim().length > 0
+    styleColor.trim().length > 0 ||
+    attrFiltersSet
 
   const isRunning = isLoading || isFetching
   const hasRun = activeFilters != null
@@ -509,6 +611,35 @@ export default function SkuListPage() {
             style={{ width: 200 }}
           />
         </Space>
+
+        {/* Extended-attribute filter row — one multi-select per dim. */}
+        {attrDimensions && attrDimensions.length > 0 ? (
+          <Space wrap size={8}>
+            <Typography.Text type="secondary" style={{ fontSize: 12, marginRight: 4 }}>
+              Atributos:
+            </Typography.Text>
+            {attrDimensions.map((dim) => (
+              <Select
+                key={dim.code}
+                mode="multiple"
+                placeholder={dim.labelEs}
+                value={attrSelections[dim.code] ?? []}
+                onChange={(v) =>
+                  setAttrSelections((prev) => ({ ...prev, [dim.code]: v as string[] }))
+                }
+                allowClear
+                showSearch
+                optionFilterProp="label"
+                style={{ minWidth: 200 }}
+                maxTagCount="responsive"
+                options={dim.values.map((val) => ({
+                  value: val.code,
+                  label: val.labelEs,
+                }))}
+              />
+            ))}
+          </Space>
+        ) : null}
 
         {/* Run / clear / load-all controls */}
         <Space>

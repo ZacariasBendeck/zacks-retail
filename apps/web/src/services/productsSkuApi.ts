@@ -52,6 +52,14 @@ function buildParams(f?: SkuListFilters): string {
   if (f.groups && f.groups.length > 0) p.set('groups', f.groups.join(','))
   if (f.keywords && f.keywords.length > 0) p.set('keywords', f.keywords.join(','))
   if (f.styleColor) p.set('styleColor', f.styleColor)
+  if (f.description) p.set('description', f.description)
+  if (f.attributes) {
+    for (const [dim, vals] of Object.entries(f.attributes)) {
+      if (vals && vals.length > 0) {
+        p.set(`attr.${dim}`, vals.join(','))
+      }
+    }
+  }
   if (f.limit != null) p.set('limit', String(f.limit))
   if (f.offset != null) p.set('offset', String(f.offset))
   return p.toString() ? `?${p.toString()}` : ''
@@ -75,5 +83,15 @@ export const productsSkuApi = {
   },
   remove(code: string): Promise<void> {
     return request<void>(`${BASE}/${encodeURIComponent(code)}`, { method: 'DELETE' })
+  },
+  /**
+   * Batch on-hand totals — one aggregate query across rics_mirror.inventory_quantities.
+   * Returns a Record<sku, total>; SKUs with no inventory row are included with total=0.
+   */
+  onHandTotals(skuCodes: string[]): Promise<Record<string, number>> {
+    return request<Record<string, number>>(`${BASE}/on-hand-totals`, {
+      method: 'POST',
+      body: JSON.stringify({ skus: skuCodes }),
+    })
   },
 }

@@ -22,6 +22,16 @@ function parseStores(s: string): number[] | undefined {
   return arr.length ? arr : undefined
 }
 
+// Grouped thousands separators per CLAUDE.md "Currency" policy (no symbol).
+function fmtMoney(v: number | null | undefined): string {
+  if (v == null || Number.isNaN(v)) return '—'
+  return v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+function fmtInt(v: number | null | undefined): string {
+  if (v == null || Number.isNaN(v)) return '—'
+  return v.toLocaleString('en-US')
+}
+
 export default function SalespersonSummaryPage() {
   const qc = useQueryClient()
   const [dateRange, setDateRange] = useState<[string, string]>(() => {
@@ -56,14 +66,17 @@ export default function SalespersonSummaryPage() {
     { title: 'Code', dataIndex: 'salespersonCode', key: 'salespersonCode', width: 120 },
     { title: 'Name', dataIndex: 'salespersonName', key: 'salespersonName', width: 200, render: (v: string | null) => v ?? '—' },
     { title: 'Store', dataIndex: 'storeNumber', key: 'storeNumber', width: 80 },
-    { title: 'Qty', dataIndex: 'qty', key: 'qty', width: 90, align: 'right' as const },
+    {
+      title: 'Qty', dataIndex: 'qty', key: 'qty', width: 90, align: 'right' as const,
+      render: (v: number) => fmtInt(v),
+    },
     {
       title: 'Dollars', dataIndex: 'dollars', key: 'dollars', width: 140,
-      align: 'right' as const, render: (v: number) => v.toFixed(2),
+      align: 'right' as const, render: (v: number) => fmtMoney(v),
     },
     {
       title: 'Perks', dataIndex: 'perks', key: 'perks', width: 120,
-      align: 'right' as const, render: (v: number) => v.toFixed(2),
+      align: 'right' as const, render: (v: number) => fmtMoney(v),
     },
   ]
 
@@ -71,10 +84,13 @@ export default function SalespersonSummaryPage() {
     { title: 'Code', dataIndex: 'cashierCode', key: 'cashierCode', width: 120 },
     { title: 'Name', dataIndex: 'cashierName', key: 'cashierName', width: 200, render: (v: string | null) => v ?? '—' },
     { title: 'Store', dataIndex: 'storeNumber', key: 'storeNumber', width: 80 },
-    { title: 'Tickets', dataIndex: 'tickets', key: 'tickets', width: 100, align: 'right' as const },
+    {
+      title: 'Tickets', dataIndex: 'tickets', key: 'tickets', width: 100, align: 'right' as const,
+      render: (v: number) => fmtInt(v),
+    },
     {
       title: 'Dollars', dataIndex: 'dollars', key: 'dollars', width: 140,
-      align: 'right' as const, render: (v: number) => v.toFixed(2),
+      align: 'right' as const, render: (v: number) => fmtMoney(v),
     },
   ]
 
@@ -168,10 +184,13 @@ export default function SalespersonSummaryPage() {
                             dataSource={record.subtotals}
                             columns={[
                               { title: 'Key', dataIndex: 'key', width: 150 },
-                              { title: 'Qty', dataIndex: 'qty', align: 'right' as const, width: 100 },
+                              {
+                                title: 'Qty', dataIndex: 'qty', align: 'right' as const, width: 100,
+                                render: (v: number) => fmtInt(v),
+                              },
                               {
                                 title: 'Dollars', dataIndex: 'dollars',
-                                align: 'right' as const, render: (v: number) => v.toFixed(2),
+                                align: 'right' as const, render: (v: number) => fmtMoney(v),
                               },
                             ]}
                             rowKey="key"

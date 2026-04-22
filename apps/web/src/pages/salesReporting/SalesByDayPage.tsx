@@ -15,6 +15,16 @@ import RunReportControls from './RunReportControls'
 const { RangePicker } = DatePicker
 const { Title, Paragraph } = Typography
 
+// Grouped thousands separators per CLAUDE.md "Currency" policy (no symbol).
+function fmtMoney(v: number | null | undefined): string {
+  if (v == null || Number.isNaN(v)) return '—'
+  return v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+function fmtPct1(v: number | null | undefined): string {
+  if (v == null || Number.isNaN(v)) return '—'
+  return v.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 })
+}
+
 export default function SalesByDayPage() {
   const qc = useQueryClient()
   const [storeNumber, setStoreNumber] = useState<number | undefined>(2)
@@ -55,7 +65,7 @@ export default function SalesByDayPage() {
     },
     {
       title: 'Net Sales', dataIndex: 'netSales', key: 'netSales', width: 140,
-      align: 'right' as const, render: (v: number) => v.toFixed(2),
+      align: 'right' as const, render: (v: number) => fmtMoney(v),
       sorter: (a: SalesByDayRow, b: SalesByDayRow) => a.netSales - b.netSales,
     },
     {
@@ -65,20 +75,20 @@ export default function SalesByDayPage() {
     },
     {
       title: 'Compared Net', dataIndex: 'comparedNetSales', key: 'comparedNetSales', width: 140,
-      align: 'right' as const, render: (v: number) => v.toFixed(2),
+      align: 'right' as const, render: (v: number) => fmtMoney(v),
       sorter: (a: SalesByDayRow, b: SalesByDayRow) => a.comparedNetSales - b.comparedNetSales,
     },
     {
       title: 'Change', dataIndex: 'dollarChange', key: 'dollarChange', width: 120,
       align: 'right' as const,
-      render: (v: number) => <Tag color={v >= 0 ? 'green' : 'red'}>{v.toFixed(2)}</Tag>,
+      render: (v: number) => <Tag color={v >= 0 ? 'green' : 'red'}>{fmtMoney(v)}</Tag>,
       sorter: (a: SalesByDayRow, b: SalesByDayRow) => a.dollarChange - b.dollarChange,
     },
     {
       title: '% Change', dataIndex: 'pctChange', key: 'pctChange', width: 110,
       align: 'right' as const,
       render: (v: number | null) =>
-        v == null ? '—' : <Tag color={v >= 0 ? 'green' : 'red'}>{v.toFixed(1)}%</Tag>,
+        v == null ? '—' : <Tag color={v >= 0 ? 'green' : 'red'}>{fmtPct1(v)}%</Tag>,
       // Null pctChange (when comparedNetSales is 0) sorts to the bottom of
       // ascending order.
       sorter: (a: SalesByDayRow, b: SalesByDayRow) =>

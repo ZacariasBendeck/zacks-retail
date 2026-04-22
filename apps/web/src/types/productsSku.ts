@@ -99,6 +99,20 @@ export interface SkuListFilters {
   groups?: string[]
   keywords?: string[]
   styleColor?: string
+  /**
+   * Description filter with asterisk wildcards.
+   *   "BOOT"        → substring
+   *   "BOOT*"       → starts-with
+   *   "*BOOT"       → ends-with
+   *   "BOOT*CUERO"  → starts BOOT, ends CUERO
+   */
+  description?: string
+  /**
+   * Extended-attribute filters: `{ buyer: ['zb', 'ab'], discount_type: ['pct_50'] }`.
+   * Union within a dim, intersection across dims — matches the `attr.<dim>=<v>[,<v>...]`
+   * HTTP contract.
+   */
+  attributes?: Record<string, string[]>
   limit?: number
   offset?: number
 }

@@ -1,0 +1,5 @@
+code,label_es,description_es,sort_order,is_multi_value
+buyer,Comprador,Comprador responsable del SKU,10,false
+company,Empresa,Empresa dueña del SKU dentro del grupo,20,false
+store_chain,Cadena,Cadena de tiendas donde se vende el SKU,30,false
+discount_type,Tipo de Descuento,Mecánica de descuento aplicada al SKU (puede tener varios simultáneos),40,true

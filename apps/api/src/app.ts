@@ -41,6 +41,10 @@ import physicalInventoryRoutes from './routes/physicalInventoryRoutes';
 import productsTaxonomyRoutes from './routes/products/taxonomyRoutes';
 import productsVendorRoutes from './routes/products/vendorRoutes';
 import productsSkuRoutes from './routes/products/skuRoutes';
+import productsSkuLookupRoutes from './routes/products/skuLookupRoutes';
+import productsOnHandTotalsRoutes from './routes/products/onHandTotalsRoutes';
+import productsAttributesRoutes from './routes/products/attributesRoutes';
+import utilitiesBatchRoutes from './routes/utilities/batchRoutes';
 import { createAuthRoutes } from './routes/authRoutes';
 import { createUserRoutes } from './routes/userRoutes';
 import { attachUser } from './middleware/authMiddleware';
@@ -132,7 +136,13 @@ app.use('/api/v1/count-sessions', physicalInventoryRoutes);
 // products module — Phase 1 Step 2 taxonomy CRUD
 app.use('/api/v1/taxonomy', productsTaxonomyRoutes);
 app.use('/api/v1/products/vendors', productsVendorRoutes);
+app.use('/api/v1/products/skus/lookup', productsSkuLookupRoutes); // criteria lookup — must mount BEFORE /products/skus
+app.use('/api/v1/products/skus/on-hand-totals', productsOnHandTotalsRoutes);
+app.use('/api/v1/products', productsAttributesRoutes); // /attributes/* + /skus/:code/attributes
 app.use('/api/v1/products/skus', productsSkuRoutes);
+
+// utilities module — batch-change primitives (spec: docs/modules/utilities.md)
+app.use('/api/v1/utilities', utilitiesBatchRoutes);
 
 // employees module
 app.use('/api/v1/auth', createAuthRoutes(prisma));

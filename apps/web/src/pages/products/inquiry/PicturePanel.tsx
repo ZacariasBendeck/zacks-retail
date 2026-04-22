@@ -11,7 +11,7 @@ export const PicturePanel: React.FC<{ pictureUrl: string | null; alt: string }> 
       src={pictureUrl}
       alt={alt}
       onError={() => setFailed(true)}
-      style={{ maxWidth: 220, maxHeight: 220, objectFit: 'contain' }}
+      style={{ maxWidth: 561, maxHeight: 561, objectFit: 'contain' }}
     />
   );
 };

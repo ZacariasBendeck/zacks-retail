@@ -18,6 +18,20 @@ function parseStores(s: string): number[] | undefined {
   return arr.length ? arr : undefined
 }
 
+// Grouped thousands separators per CLAUDE.md "Currency" policy (no symbol).
+function fmtMoney(v: number | null | undefined): string {
+  if (v == null || Number.isNaN(v)) return '—'
+  return v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+function fmtInt(v: number | null | undefined): string {
+  if (v == null || Number.isNaN(v)) return '—'
+  return v.toLocaleString('en-US')
+}
+function fmtPct1(v: number | null | undefined): string {
+  if (v == null || Number.isNaN(v)) return '—'
+  return v.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 })
+}
+
 export default function SalesByTimePage() {
   const qc = useQueryClient()
   const [dateRange, setDateRange] = useState<[string, string]>(() => {
@@ -50,17 +64,23 @@ export default function SalesByTimePage() {
       title: 'Hour', dataIndex: 'hour', key: 'hour', width: 90,
       render: (h: number) => `${String(h).padStart(2, '0')}:00`,
     },
-    { title: 'Tickets', dataIndex: 'tickets', key: 'tickets', width: 100, align: 'right' as const },
-    { title: 'Qty', dataIndex: 'qty', key: 'qty', width: 100, align: 'right' as const },
+    {
+      title: 'Tickets', dataIndex: 'tickets', key: 'tickets', width: 100, align: 'right' as const,
+      render: (v: number) => fmtInt(v),
+    },
+    {
+      title: 'Qty', dataIndex: 'qty', key: 'qty', width: 100, align: 'right' as const,
+      render: (v: number) => fmtInt(v),
+    },
     {
       title: 'Dollars', dataIndex: 'dollars', key: 'dollars', width: 140,
-      align: 'right' as const, render: (v: number) => v.toFixed(2),
+      align: 'right' as const, render: (v: number) => fmtMoney(v),
     },
     ...(showPct
       ? [{
           title: '% of Total', dataIndex: 'pctOfTotal', key: 'pctOfTotal', width: 120,
           align: 'right' as const,
-          render: (v: number | null) => (v == null ? '—' : `${v.toFixed(1)}%`),
+          render: (v: number | null) => (v == null ? '—' : `${fmtPct1(v)}%`),
         }]
       : []),
   ]
@@ -134,10 +154,10 @@ export default function SalesByTimePage() {
             <Table.Summary fixed>
               <Table.Summary.Row>
                 <Table.Summary.Cell index={0}>Totals</Table.Summary.Cell>
-                <Table.Summary.Cell index={1} align="right">{data.totalsA.tickets}</Table.Summary.Cell>
-                <Table.Summary.Cell index={2} align="right">{data.totalsA.qty}</Table.Summary.Cell>
+                <Table.Summary.Cell index={1} align="right">{fmtInt(data.totalsA.tickets)}</Table.Summary.Cell>
+                <Table.Summary.Cell index={2} align="right">{fmtInt(data.totalsA.qty)}</Table.Summary.Cell>
                 <Table.Summary.Cell index={3} align="right">
-                  {data.totalsA.dollars.toFixed(2)}
+                  {fmtMoney(data.totalsA.dollars)}
                 </Table.Summary.Cell>
                 {showPct && <Table.Summary.Cell index={4} align="right">100.0%</Table.Summary.Cell>}
               </Table.Summary.Row>

@@ -25,6 +25,16 @@ function parseStrs(s: string): string[] | undefined {
   return arr.length ? arr : undefined
 }
 
+// Grouped thousands separators per CLAUDE.md "Currency" policy (no symbol).
+function fmtMoney(v: number | null | undefined): string {
+  if (v == null || Number.isNaN(v)) return '—'
+  return v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+function fmtInt(v: number | null | undefined): string {
+  if (v == null || Number.isNaN(v)) return '—'
+  return v.toLocaleString('en-US')
+}
+
 export default function StockStatusPage() {
   const qc = useQueryClient()
   const [sortBy, setSortBy] = useState<StockStatusSortBy>('CATEGORY')
@@ -60,30 +70,37 @@ export default function StockStatusPage() {
     { title: 'Vendor', dataIndex: 'vendorCode', key: 'vendorCode', width: 90 },
     { title: 'Cat', dataIndex: 'category', key: 'category', width: 80 },
     { title: 'Store', dataIndex: 'storeNumber', key: 'storeNumber', width: 70 },
-    { title: 'On Hand', dataIndex: 'onHand', key: 'onHand', width: 100, align: 'right' as const },
-    { title: 'On Order', dataIndex: 'onOrder', key: 'onOrder', width: 100, align: 'right' as const },
-    { title: 'Model', dataIndex: 'model', key: 'model', width: 90, align: 'right' as const },
+    {
+      title: 'On Hand', dataIndex: 'onHand', key: 'onHand', width: 100, align: 'right' as const,
+      render: (v: number) => fmtInt(v),
+    },
+    {
+      title: 'On Order', dataIndex: 'onOrder', key: 'onOrder', width: 100, align: 'right' as const,
+      render: (v: number) => fmtInt(v),
+    },
+    {
+      title: 'Model', dataIndex: 'model', key: 'model', width: 90, align: 'right' as const,
+      render: (v: number) => fmtInt(v),
+    },
     {
       title: 'Short', dataIndex: 'short', key: 'short', width: 90,
       align: 'right' as const,
-      render: (v: number) => (v > 0 ? <Tag color="gold">{v}</Tag> : v),
+      render: (v: number) => (v > 0 ? <Tag color="gold">{fmtInt(v)}</Tag> : fmtInt(v)),
     },
     {
       title: 'Critical', dataIndex: 'critical', key: 'critical', width: 100,
       align: 'right' as const,
-      render: (v: number) => (v > 0 ? <Tag color="red">{v}</Tag> : v),
+      render: (v: number) => (v > 0 ? <Tag color="red">{fmtInt(v)}</Tag> : fmtInt(v)),
     },
     {
       title: 'Retail Value', dataIndex: 'retailValue', key: 'retailValue', width: 120,
       align: 'right' as const,
-      render: (v: number) =>
-        v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+      render: (v: number) => fmtMoney(v),
     },
     {
       title: 'Cost Value', dataIndex: 'costValue', key: 'costValue', width: 120,
       align: 'right' as const,
-      render: (v: number) =>
-        v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+      render: (v: number) => fmtMoney(v),
     },
   ]
 
@@ -203,16 +220,16 @@ export default function StockStatusPage() {
             <Table.Summary fixed>
               <Table.Summary.Row>
                 <Table.Summary.Cell index={0} colSpan={5}>Totals</Table.Summary.Cell>
-                <Table.Summary.Cell index={5} align="right">{data.totals.onHand}</Table.Summary.Cell>
-                <Table.Summary.Cell index={6} align="right">{data.totals.onOrder}</Table.Summary.Cell>
-                <Table.Summary.Cell index={7} align="right">{data.totals.model}</Table.Summary.Cell>
-                <Table.Summary.Cell index={8} align="right">{data.totals.short}</Table.Summary.Cell>
-                <Table.Summary.Cell index={9} align="right">{data.totals.critical}</Table.Summary.Cell>
+                <Table.Summary.Cell index={5} align="right">{fmtInt(data.totals.onHand)}</Table.Summary.Cell>
+                <Table.Summary.Cell index={6} align="right">{fmtInt(data.totals.onOrder)}</Table.Summary.Cell>
+                <Table.Summary.Cell index={7} align="right">{fmtInt(data.totals.model)}</Table.Summary.Cell>
+                <Table.Summary.Cell index={8} align="right">{fmtInt(data.totals.short)}</Table.Summary.Cell>
+                <Table.Summary.Cell index={9} align="right">{fmtInt(data.totals.critical)}</Table.Summary.Cell>
                 <Table.Summary.Cell index={10} align="right">
-                  {data.totals.retailValue.toFixed(2)}
+                  {fmtMoney(data.totals.retailValue)}
                 </Table.Summary.Cell>
                 <Table.Summary.Cell index={11} align="right">
-                  {data.totals.costValue.toFixed(2)}
+                  {fmtMoney(data.totals.costValue)}
                 </Table.Summary.Cell>
               </Table.Summary.Row>
             </Table.Summary>

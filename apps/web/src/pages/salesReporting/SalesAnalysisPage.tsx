@@ -57,6 +57,22 @@ const STORE_OPTIONS: { value: SalesAnalysisStoreOption; label: string }[] = [
   { value: 'COMBINE', label: 'Combine Stores' },
 ]
 
+// Currency is Honduran Lempira (HNL) system-wide — labeled once at the top of
+// the page, not repeated in every cell (see CLAUDE.md "Currency" policy). All
+// numeric cells use grouped thousands separators (e.g. 1,234,567.89).
+function fmtMoney(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) return '—'
+  return value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+function fmtQty(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) return '—'
+  return value.toLocaleString('en-US')
+}
+function fmtPct1(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) return '—'
+  return value.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 })
+}
+
 export default function SalesAnalysisPage() {
   const qc = useQueryClient()
   const [dimension, setDimension] = useState<SalesAnalysisDimension>('CATEGORY')
@@ -141,52 +157,55 @@ export default function SalesAnalysisPage() {
       title: 'Store', dataIndex: 'storeNumber', key: 'storeNumber', width: 80,
       render: (v: number | null) => v ?? '(all)',
     },
-    { title: 'Qty', dataIndex: 'qty', key: 'qty', width: 80, align: 'right' as const },
+    {
+      title: 'Qty', dataIndex: 'qty', key: 'qty', width: 80, align: 'right' as const,
+      render: (v: number) => fmtQty(v),
+    },
     {
       title: 'Net Sales', dataIndex: 'netSales', key: 'netSales', width: 130,
-      align: 'right' as const, render: (v: number) => v.toFixed(2),
+      align: 'right' as const, render: (v: number) => fmtMoney(v),
     },
     {
       title: 'COGS', dataIndex: 'cogs', key: 'cogs', width: 130,
-      align: 'right' as const, render: (v: number) => v.toFixed(2),
+      align: 'right' as const, render: (v: number) => fmtMoney(v),
     },
     {
       title: 'Gross Profit', dataIndex: 'grossProfit', key: 'grossProfit', width: 130,
-      align: 'right' as const, render: (v: number) => v.toFixed(2),
+      align: 'right' as const, render: (v: number) => fmtMoney(v),
     },
     {
       title: 'GP %', dataIndex: 'gpPct', key: 'gpPct', width: 90,
       align: 'right' as const,
       render: (v: number | null) =>
-        v == null ? '—' : <Tag color={v >= 30 ? 'green' : v >= 10 ? 'gold' : 'red'}>{v.toFixed(1)}%</Tag>,
+        v == null ? '—' : <Tag color={v >= 30 ? 'green' : v >= 10 ? 'gold' : 'red'}>{fmtPct1(v)}%</Tag>,
     },
     {
       title: 'Inv (Cost)', dataIndex: 'onHandAtCost', key: 'onHandAtCost', width: 130,
-      align: 'right' as const, render: (v: number) => v.toFixed(2),
+      align: 'right' as const, render: (v: number) => fmtMoney(v),
     },
     {
       title: 'Turns', dataIndex: 'turns', key: 'turns', width: 80,
       align: 'right' as const,
-      render: (v: number | null) => (v == null ? '—' : v.toFixed(1)),
+      render: (v: number | null) => fmtPct1(v),
     },
     {
       title: 'ROI', dataIndex: 'roiPct', key: 'roiPct', width: 90,
       align: 'right' as const,
       render: (v: number | null) =>
-        v == null ? '—' : <Tag color={v >= 5 ? 'green' : v >= 2 ? 'gold' : 'red'}>{v.toFixed(1)}×</Tag>,
+        v == null ? '—' : <Tag color={v >= 5 ? 'green' : v >= 2 ? 'gold' : 'red'}>{fmtPct1(v)}×</Tag>,
     },
     ...(query?.priorYear
       ? [
           {
             title: 'Prior Yr Net', dataIndex: 'priorYearNetSales', key: 'priorYearNetSales', width: 130,
             align: 'right' as const,
-            render: (v: number | null) => (v == null ? '—' : v.toFixed(2)),
+            render: (v: number | null) => fmtMoney(v),
           },
           {
             title: 'PY % Δ', dataIndex: 'pyPctChange', key: 'pyPctChange', width: 90,
             align: 'right' as const,
             render: (v: number | null) =>
-              v == null ? '—' : <Tag color={v >= 0 ? 'green' : 'red'}>{v.toFixed(1)}%</Tag>,
+              v == null ? '—' : <Tag color={v >= 0 ? 'green' : 'red'}>{fmtPct1(v)}%</Tag>,
           },
         ]
       : []),
@@ -420,7 +439,7 @@ export default function SalesAnalysisPage() {
             <Text type="secondary">
               {query.reportType.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, c => c.toUpperCase())}
             </Text>
-            <Text type="secondary">Net sales: {data.totals.netSales.toLocaleString('en-US')}</Text>
+            <Text type="secondary">Net sales: {fmtMoney(data.totals.netSales)}</Text>
           </Space>
         </Card>
         <Table<SalesAnalysisRow>
@@ -435,16 +454,16 @@ export default function SalesAnalysisPage() {
             cells.push('Totals')
             if (query.reportType === 'DEPT_SUMMARY') cells.push('')
             cells.push('') // Store
-            cells.push(t.qty)
-            cells.push(t.netSales.toFixed(2))
-            cells.push(t.cogs.toFixed(2))
-            cells.push(t.grossProfit.toFixed(2))
-            cells.push(t.gpPct == null ? '—' : `${t.gpPct.toFixed(1)}%`)
-            cells.push(t.onHandAtCost.toFixed(2))
-            cells.push(t.turns == null ? '—' : t.turns.toFixed(1))
-            cells.push(t.roiPct == null ? '—' : `${t.roiPct.toFixed(1)}×`)
+            cells.push(fmtQty(t.qty))
+            cells.push(fmtMoney(t.netSales))
+            cells.push(fmtMoney(t.cogs))
+            cells.push(fmtMoney(t.grossProfit))
+            cells.push(t.gpPct == null ? '—' : `${fmtPct1(t.gpPct)}%`)
+            cells.push(fmtMoney(t.onHandAtCost))
+            cells.push(fmtPct1(t.turns))
+            cells.push(t.roiPct == null ? '—' : `${fmtPct1(t.roiPct)}×`)
             if (query.priorYear) {
-              cells.push(t.priorYearNetSales == null ? '—' : t.priorYearNetSales.toFixed(2))
+              cells.push(fmtMoney(t.priorYearNetSales))
               cells.push('') // PY % Δ total omitted
             }
             return (

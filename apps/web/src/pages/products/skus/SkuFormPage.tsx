@@ -22,6 +22,7 @@ import {
 } from '../../../hooks/useProductsSkus'
 import { useResolveTaxonomy } from '../../../hooks/useProductsTaxonomy'
 import type { SkuInput } from '../../../types/productsSku'
+import SkuAttributesTab from './SkuAttributesTab'
 
 type FormShape = Omit<SkuInput, 'keywords' | 'bulletText'> & {
   keywordsText?: string
@@ -395,6 +396,20 @@ export default function SkuFormPage() {
                     <Input />
                   </Form.Item>
                 </>
+              ),
+            },
+            {
+              key: 'attributes',
+              label: 'Atributos',
+              // Only meaningful once the SKU exists — a new-SKU flow needs a
+              // code first. For new SKUs we render a short hint and defer.
+              children: editing && codeParam ? (
+                <SkuAttributesTab skuCode={codeParam} />
+              ) : (
+                <Typography.Paragraph type="secondary">
+                  Guarde primero el SKU; después podrá asignar atributos extendidos
+                  (comprador, empresa, cadena, tipo de descuento).
+                </Typography.Paragraph>
               ),
             },
           ]}

@@ -6,6 +6,7 @@
 
 import { Router, Request, Response, IRouter } from 'express';
 import { skuService } from '../../services/products/skuService';
+import { attributesService } from '../../services/products/attributesService';
 import {
   repoHttpStatus,
   repoHttpCode,
@@ -77,6 +78,24 @@ function parseIntArray(raw: unknown): number[] | undefined {
   return out.length > 0 ? out : undefined;
 }
 
+/**
+ * Extract `attr.<dimension_code>=<value_code>[,<value_code>...]` filters from
+ * the query string. Returns one entry per dimension present.
+ */
+function parseAttrFilters(query: Record<string, unknown>): { dimensionCode: string; valueCodes: string[] }[] {
+  const out: { dimensionCode: string; valueCodes: string[] }[] = [];
+  for (const key of Object.keys(query)) {
+    if (!key.startsWith('attr.')) continue;
+    const dim = key.slice('attr.'.length);
+    if (dim.length === 0) continue;
+    const values = parseStringArray(query[key]);
+    if (values && values.length > 0) {
+      out.push({ dimensionCode: dim, valueCodes: values });
+    }
+  }
+  return out;
+}
+
 router.get('/', async (req: Request, res: Response) => {
   const q = typeof req.query.q === 'string' ? req.query.q : undefined;
   // Single-value aliases kept for back-compat; the admin workbench sends arrays.
@@ -93,8 +112,26 @@ router.get('/', async (req: Request, res: Response) => {
   const keywords = parseStringArray(req.query.keywords);
   const styleColor =
     typeof req.query.styleColor === 'string' ? req.query.styleColor : undefined;
+  const description =
+    typeof req.query.description === 'string' ? req.query.description : undefined;
   const limit = parseInt32(req.query.limit) ?? undefined;
   const offset = parseInt32(req.query.offset) ?? undefined;
+  // Extended-attribute filters: resolve `attr.<dim>=<value>[,<value>...]` to
+  // a SKU-code allowlist (intersection across dims, union within a dim).
+  const attrFilters = parseAttrFilters(req.query as Record<string, unknown>);
+  let codes: string[] | undefined;
+  if (attrFilters.length > 0) {
+    const attrResult = await attributesService.findSkuCodesByAttributeFilters(attrFilters);
+    if (!attrResult.ok) {
+      const err = attrResult.error;
+      res
+        .status(repoHttpStatus(err))
+        .json({ error: { code: repoHttpCode(err), message: err.message } });
+      return;
+    }
+    // Zero matches = empty list (not "no filter"). Sentinel: ['\0__NO_MATCH__'].
+    codes = attrResult.value.size === 0 ? ['\0__NO_MATCH__'] : Array.from(attrResult.value);
+  }
   send(
     res,
     await skuService.list({
@@ -110,6 +147,8 @@ router.get('/', async (req: Request, res: Response) => {
       groups,
       keywords,
       styleColor,
+      description,
+      codes,
       limit,
       offset,
     }),

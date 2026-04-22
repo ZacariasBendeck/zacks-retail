@@ -16,6 +16,7 @@ import { InfoTab } from './tabs/InfoTab';
 import { DetailTab } from './tabs/DetailTab';
 import { PosTab } from './tabs/PosTab';
 import { TrendTab } from './tabs/TrendTab';
+import AttributeBadgeStrip from '../../../components/products/AttributeBadgeStrip';
 
 const GRID_KEY_BY_MODE: Partial<Record<ViewMode, keyof InquiryGrids>> = {
   ON_HAND:            'onHand',
@@ -158,6 +159,9 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({ skuCode, storeId, onPi
           )}
         </div>
       </div>
+
+      {/* Extended-attribute badge strip — one pill per dim (buyer, company, cadena, descuento). */}
+      <AttributeBadgeStrip skuCode={data.sku} />
 
       {/* View-mode selector */}
       <div style={{ marginBottom: 4 }}>

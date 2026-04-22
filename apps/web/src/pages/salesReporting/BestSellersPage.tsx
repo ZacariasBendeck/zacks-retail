@@ -21,6 +21,16 @@ function parseStores(s: string): number[] | undefined {
   return arr.length ? arr : undefined
 }
 
+// Grouped thousands separators per CLAUDE.md "Currency" policy (no symbol).
+function fmtMoney(v: number | null | undefined): string {
+  if (v == null || Number.isNaN(v)) return '—'
+  return v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+function fmtPct1(v: number | null | undefined): string {
+  if (v == null || Number.isNaN(v)) return '—'
+  return v.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 })
+}
+
 export default function BestSellersPage() {
   const qc = useQueryClient()
   const [dimension, setDimension] = useState<BestSellersDimension>('SKU')
@@ -52,20 +62,23 @@ export default function BestSellersPage() {
     { title: 'Rank', dataIndex: 'rank', key: 'rank', width: 70, align: 'right' as const },
     { title: 'Key', dataIndex: 'key', key: 'key', width: 180 },
     { title: 'Label', dataIndex: 'label', key: 'label', width: 200, render: (v: string | null) => v ?? '—' },
-    { title: 'Qty', dataIndex: 'qty', key: 'qty', width: 100, align: 'right' as const },
+    {
+      title: 'Qty', dataIndex: 'qty', key: 'qty', width: 100, align: 'right' as const,
+      render: (v: number) => v.toLocaleString('en-US'),
+    },
     {
       title: 'Net Sales', dataIndex: 'netSales', key: 'netSales', width: 140,
-      align: 'right' as const, render: (v: number) => v.toFixed(2),
+      align: 'right' as const, render: (v: number) => fmtMoney(v),
     },
     {
       title: 'Profit', dataIndex: 'profit', key: 'profit', width: 140,
-      align: 'right' as const, render: (v: number) => v.toFixed(2),
+      align: 'right' as const, render: (v: number) => fmtMoney(v),
     },
     {
       title: 'Profit %', dataIndex: 'profitPct', key: 'profitPct', width: 100,
       align: 'right' as const,
       render: (v: number | null) =>
-        v == null ? '—' : <Tag color={v >= 30 ? 'green' : v >= 10 ? 'gold' : 'red'}>{v.toFixed(1)}%</Tag>,
+        v == null ? '—' : <Tag color={v >= 30 ? 'green' : v >= 10 ? 'gold' : 'red'}>{fmtPct1(v)}%</Tag>,
     },
   ]
 
