@@ -1,4 +1,4 @@
-import { Card, Col, Row, Typography, Breadcrumb } from 'antd'
+import { Card, Col, Row, Tag, Typography } from 'antd'
 import {
   LineChartOutlined,
   TrophyOutlined,
@@ -8,8 +8,9 @@ import {
   FundOutlined,
 } from '@ant-design/icons'
 import { Link } from 'react-router-dom'
+import ReportHeader from '../../components/reports/ReportHeader'
 
-const { Title, Paragraph } = Typography
+const { Paragraph } = Typography
 
 interface ReportCard {
   title: string
@@ -17,6 +18,7 @@ interface ReportCard {
   citation: string
   to: string
   icon: React.ReactNode
+  status?: 'live' | 'planned'
 }
 
 const REPORTS: ReportCard[] = [
@@ -27,6 +29,7 @@ const REPORTS: ReportCard[] = [
     citation: 'RICS Ch. 6 p. 88',
     to: '/reports/sales/analysis',
     icon: <LineChartOutlined />,
+    status: 'live',
   },
   {
     title: 'Best Sellers',
@@ -34,6 +37,7 @@ const REPORTS: ReportCard[] = [
     citation: 'RICS Ch. 6 p. 93',
     to: '/reports/sales/best-sellers',
     icon: <TrophyOutlined />,
+    status: 'live',
   },
   {
     title: 'Sales History by Month',
@@ -41,6 +45,7 @@ const REPORTS: ReportCard[] = [
     citation: 'RICS Ch. 6 p. 95',
     to: '/reports/sales/history-by-month',
     icon: <CalendarOutlined />,
+    status: 'live',
   },
   {
     title: 'Stock Status',
@@ -49,6 +54,7 @@ const REPORTS: ReportCard[] = [
     citation: 'RICS Ch. 6 p. 96',
     to: '/reports/sales/stock-status',
     icon: <DatabaseOutlined />,
+    status: 'live',
   },
   {
     title: 'Size Type Analysis',
@@ -57,6 +63,7 @@ const REPORTS: ReportCard[] = [
     citation: 'RICS Ch. 6 p. 99',
     to: '/reports/sales/size-type-analysis',
     icon: <ColumnHeightOutlined />,
+    status: 'planned',
   },
   {
     title: 'Open To Buy vs Sales',
@@ -65,38 +72,67 @@ const REPORTS: ReportCard[] = [
     citation: 'RICS Ch. 6 p. 100',
     to: '/reports/sales/otb-vs-sales',
     icon: <FundOutlined />,
+    status: 'planned',
   },
 ]
 
 export default function SalesReportsHubPage() {
   return (
     <div>
-      <Breadcrumb
-        style={{ marginBottom: 16 }}
-        items={[{ title: 'Reports' }, { title: 'Sales' }]}
+      <ReportHeader
+        title="Sales Reports"
+        description="Live read-through to the legacy RICS sales database. Data reflects posted and unposted sales tickets as they appear in RITRNSSV."
+        breadcrumb={[{ title: 'Reports' }, { title: 'Sales' }]}
+        showCurrencyNote={false}
       />
-      <Title level={2} style={{ marginBottom: 0 }}>
-        Sales Reports
-      </Title>
-      <Paragraph type="secondary" style={{ marginBottom: 24 }}>
-        Live read-through to the legacy RICS sales database. Data reflects posted and unposted
-        sales tickets as they appear in RITRNSSV.
-      </Paragraph>
       <Row gutter={[16, 16]}>
         {REPORTS.map((r) => (
           <Col key={r.to} xs={24} sm={12} lg={8}>
-            <Link to={r.to} style={{ display: 'block' }}>
-              <Card hoverable style={{ height: '100%' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
-                  <span style={{ fontSize: 24, color: '#1677ff' }}>{r.icon}</span>
-                  <Title level={4} style={{ margin: 0 }}>
-                    {r.title}
-                  </Title>
+            <Link to={r.to} style={{ display: 'block', height: '100%' }}>
+              <Card
+                hoverable
+                style={{
+                  height: '100%',
+                  opacity: r.status === 'planned' ? 0.85 : 1,
+                }}
+                styles={{ body: { display: 'flex', flexDirection: 'column', gap: 8, height: '100%' } }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <span
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      width: 38,
+                      height: 38,
+                      borderRadius: 8,
+                      background: 'rgba(22, 119, 255, 0.08)',
+                      color: '#1677ff',
+                      fontSize: 20,
+                    }}
+                  >
+                    {r.icon}
+                  </span>
+                  <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <strong style={{ fontSize: 16 }}>{r.title}</strong>
+                    {r.status === 'planned' && (
+                      <Tag color="default" style={{ margin: 0, fontSize: 11 }}>Planned</Tag>
+                    )}
+                  </div>
                 </div>
-                <Paragraph style={{ marginBottom: 8 }}>{r.description}</Paragraph>
-                <Paragraph type="secondary" style={{ margin: 0, fontSize: 12 }}>
+                <Paragraph style={{ margin: 0, flex: 1 }}>{r.description}</Paragraph>
+                <Tag
+                  style={{
+                    alignSelf: 'flex-start',
+                    margin: 0,
+                    fontSize: 11,
+                    background: 'transparent',
+                    borderStyle: 'dashed',
+                    color: 'rgba(0, 0, 0, 0.45)',
+                  }}
+                >
                   {r.citation}
-                </Paragraph>
+                </Tag>
               </Card>
             </Link>
           </Col>

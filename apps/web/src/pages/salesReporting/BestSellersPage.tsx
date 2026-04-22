@@ -1,8 +1,8 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState, useMemo } from 'react'
 import {
-  Alert, Breadcrumb, Card, Checkbox, Empty, Input, InputNumber, Select, Space, Table, Tag, Typography, Spin,
+  Alert, Card, Checkbox, Input, InputNumber, Select, Space, Table, Spin, Tag,
 } from 'antd'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { useBestSellers, type BestSellersArgs } from '../../hooks/useReports'
 import type {
@@ -13,26 +13,37 @@ import type {
 } from '../../services/reportApi'
 import { getErrorMessage } from '../../utils/errors'
 import RunReportControls from './RunReportControls'
-
-const { Title, Paragraph } = Typography
+import SaveAsTemplateButton from '../../components/reports/SaveAsTemplateButton'
+import ReportHeader from '../../components/reports/ReportHeader'
+import FilterChips from '../../components/reports/FilterChips'
+import ReportEmptyState from '../../components/reports/ReportEmptyState'
+import { GpBadge } from '../../components/reports/gpBadge'
+import ShareBar from '../../components/reports/ShareBar'
+import { fmtMoney, fmtInt } from '../../utils/reportFormatters'
+import { useReportTemplate, useTouchReportTemplate } from '../../hooks/useReportTemplates'
 
 function parseStores(s: string): number[] | undefined {
   const arr = s.split(',').map((x) => Number(x.trim())).filter((n) => Number.isFinite(n) && n > 0)
   return arr.length ? arr : undefined
 }
 
-// Grouped thousands separators per CLAUDE.md "Currency" policy (no symbol).
-function fmtMoney(v: number | null | undefined): string {
-  if (v == null || Number.isNaN(v)) return '—'
-  return v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+const DIMENSION_LABELS: Record<BestSellersDimension, string> = {
+  SKU: 'SKUs',
+  VENDOR: 'Vendors',
+  CATEGORY: 'Categories',
+  STORE: 'Stores',
 }
-function fmtPct1(v: number | null | undefined): string {
-  if (v == null || Number.isNaN(v)) return '—'
-  return v.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 })
+
+const METRIC_LABELS: Record<BestSellersMetric, string> = {
+  NET_SALES: 'Net Sales',
+  QTY: 'Qty',
+  PROFIT: 'Profit',
 }
 
 export default function BestSellersPage() {
   const qc = useQueryClient()
+  const [searchParams] = useSearchParams()
+  const templateId = searchParams.get('templateId') ?? undefined
   const [dimension, setDimension] = useState<BestSellersDimension>('SKU')
   const [metric, setMetric] = useState<BestSellersMetric>('NET_SALES')
   const [period, setPeriod] = useState<BestSellersPeriodFlag>('YTD')
@@ -43,6 +54,37 @@ export default function BestSellersPage() {
 
   const { data, isFetching, error } = useBestSellers(query)
   const running = query != null && isFetching
+
+  // ?templateId=... replay. Hydrates state + fires the query with the template's
+  // saved params. Runs once per template id via hydratedFor ref.
+  const { data: templateData } = useReportTemplate(templateId)
+  const touchTemplate = useTouchReportTemplate()
+  const hydratedFor = useRef<string | null>(null)
+  useEffect(() => {
+    if (!templateId || !templateData) return
+    if (hydratedFor.current === templateId) return
+    const t = templateData.template
+    if (t.reportType !== 'best-sellers') return
+    hydratedFor.current = templateId
+    const p = t.paramsJson as Partial<BestSellersArgs> & { storesText?: string }
+    if (p.dimension) setDimension(p.dimension)
+    if (p.metric) setMetric(p.metric)
+    if (p.period) setPeriod(p.period)
+    if (p.topN) setTopN(p.topN)
+    if (p.combineStores !== undefined) setCombineStores(p.combineStores)
+    if (p.storesText !== undefined) setStoresText(p.storesText)
+    else if (Array.isArray(p.stores)) setStoresText(p.stores.join(','))
+    setQuery({
+      dimension: p.dimension ?? 'SKU',
+      metric: p.metric ?? 'NET_SALES',
+      period: p.period ?? 'YTD',
+      topN: p.topN ?? 25,
+      stores: Array.isArray(p.stores) && p.stores.length ? p.stores : undefined,
+      combineStores: p.combineStores ?? true,
+    })
+    touchTemplate.mutate(templateId)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [templateId, templateData])
 
   function onRun(): void {
     setQuery({
@@ -58,43 +100,65 @@ export default function BestSellersPage() {
     qc.cancelQueries({ queryKey: ['best-sellers', query] })
   }
 
+  // Max of the ranking metric across the rendered set; powers the share bar.
+  // Falls back to 0 when the set is empty so ShareBar hides its visual.
+  const sortedMetric = query?.metric ?? metric
+  const maxMetricValue = useMemo(() => {
+    if (!data?.rows?.length) return 0
+    const pickValue = (r: BestSellerRow): number =>
+      sortedMetric === 'QTY' ? r.qty : sortedMetric === 'PROFIT' ? r.profit : r.netSales
+    return data.rows.reduce((max, r) => Math.max(max, pickValue(r) ?? 0), 0)
+  }, [data, sortedMetric])
+
   const columns = [
-    { title: 'Rank', dataIndex: 'rank', key: 'rank', width: 70, align: 'right' as const },
+    {
+      title: 'Rank', dataIndex: 'rank', key: 'rank', width: 74, align: 'center' as const,
+      render: (r: number) => <RankBadge rank={r} />,
+    },
     { title: 'Key', dataIndex: 'key', key: 'key', width: 180 },
     { title: 'Label', dataIndex: 'label', key: 'label', width: 200, render: (v: string | null) => v ?? '—' },
     {
-      title: 'Qty', dataIndex: 'qty', key: 'qty', width: 100, align: 'right' as const,
-      render: (v: number) => v.toLocaleString('en-US'),
+      title: 'Qty', dataIndex: 'qty', key: 'qty', width: 140, align: 'right' as const,
+      render: (v: number, row: BestSellerRow) =>
+        sortedMetric === 'QTY'
+          ? <ShareBar value={v} max={maxMetricValue} label={fmtInt(v)} color="#13c2c2" />
+          : <span data-row-rank={row.rank}>{fmtInt(v)}</span>,
     },
     {
-      title: 'Net Sales', dataIndex: 'netSales', key: 'netSales', width: 140,
-      align: 'right' as const, render: (v: number) => fmtMoney(v),
+      title: 'Net Sales', dataIndex: 'netSales', key: 'netSales', width: 180,
+      align: 'right' as const,
+      render: (v: number) =>
+        sortedMetric === 'NET_SALES'
+          ? <ShareBar value={v} max={maxMetricValue} label={fmtMoney(v)} />
+          : fmtMoney(v),
     },
     {
-      title: 'Profit', dataIndex: 'profit', key: 'profit', width: 140,
-      align: 'right' as const, render: (v: number) => fmtMoney(v),
+      title: 'Profit', dataIndex: 'profit', key: 'profit', width: 180,
+      align: 'right' as const,
+      render: (v: number) =>
+        sortedMetric === 'PROFIT'
+          ? <ShareBar value={v} max={maxMetricValue} label={fmtMoney(v)} color="#52c41a" />
+          : fmtMoney(v),
     },
     {
       title: 'Profit %', dataIndex: 'profitPct', key: 'profitPct', width: 100,
       align: 'right' as const,
-      render: (v: number | null) =>
-        v == null ? '—' : <Tag color={v >= 30 ? 'green' : v >= 10 ? 'gold' : 'red'}>{fmtPct1(v)}%</Tag>,
+      render: (v: number | null) => <GpBadge value={v} />,
     },
   ]
 
   return (
     <div>
-      <Breadcrumb
-        style={{ marginBottom: 16 }}
-        items={[
+      <ReportHeader
+        title="Best Sellers"
+        description="Top-N ranked by qty, net sales, or profit across SKU / vendor / category / store."
+        citation="RICS Ch. 6 p. 93"
+        breadcrumb={[
           { title: <Link to="/reports/sales">Sales Reports</Link> },
           { title: 'Best Sellers' },
         ]}
+        rightMeta={data ? `${data.rows.length.toLocaleString()} ${data.rows.length === 1 ? 'row' : 'rows'}` : undefined}
       />
-      <Title level={2} style={{ marginBottom: 0 }}>Best Sellers</Title>
-      <Paragraph type="secondary">
-        Top-N ranked by qty, net sales, or profit across SKU / vendor / category / store (RICS Ch. 6 p. 93).
-      </Paragraph>
 
       <Card style={{ marginBottom: 16 }}>
         <Space wrap>
@@ -149,7 +213,22 @@ export default function BestSellersPage() {
           </Checkbox>
         </Space>
         <div style={{ marginTop: 12 }}>
-          <RunReportControls running={running} hasRun={query != null} onRun={onRun} onStop={onStop} />
+          <Space>
+            <RunReportControls running={running} hasRun={query != null} onRun={onRun} onStop={onStop} />
+            <SaveAsTemplateButton
+              reportType="best-sellers"
+              disabled={query == null}
+              getParamsJson={() => ({
+                dimension,
+                metric,
+                period,
+                topN,
+                stores: parseStores(storesText),
+                storesText,
+                combineStores,
+              })}
+            />
+          </Space>
         </div>
       </Card>
 
@@ -163,26 +242,71 @@ export default function BestSellersPage() {
       )}
 
       {!query ? (
-        <Empty
-          description="Configure filters, then click Run Report."
-          image={Empty.PRESENTED_IMAGE_SIMPLE}
-          style={{ padding: 40 }}
+        <ReportEmptyState
+          reason="idle"
+          message="Configure filters, then click Run Report."
         />
       ) : running ? (
         <div style={{ textAlign: 'center', padding: 40 }}>
           <Spin size="large" tip="Querying RICS databases…" />
         </div>
       ) : data && data.rows.length === 0 ? (
-        <Empty description="No sales in the selected period." style={{ padding: 40 }} />
-      ) : data ? (
-        <Table<BestSellerRow>
-          dataSource={data.rows}
-          columns={columns}
-          rowKey="rank"
-          size="small"
-          pagination={{ pageSize: 50 }}
+        <ReportEmptyState
+          reason="no-results"
+          hint="No sales in the selected period."
         />
+      ) : data ? (
+        <>
+          <FilterChips
+            chips={[
+              { label: 'Best', value: DIMENSION_LABELS[query.dimension] },
+              { label: 'Order by', value: METRIC_LABELS[query.metric] },
+              { label: 'Period', value: query.period ?? 'YTD' },
+              { label: 'Top', value: `N=${query.topN ?? 25}` },
+              query.stores?.length
+                ? { label: 'Stores', value: query.stores.join(', ') }
+                : { label: 'Stores', value: 'All' },
+              query.combineStores === false ? { label: 'Separate', value: 'per store' } : null,
+            ]}
+          />
+          <Table<BestSellerRow>
+            dataSource={data.rows}
+            columns={columns}
+            rowKey="rank"
+            size="small"
+            pagination={{ pageSize: 50 }}
+            rowClassName={(_r, i) => (i % 2 === 1 ? 'report-zebra-row' : '')}
+          />
+        </>
       ) : null}
     </div>
   )
+}
+
+const TOP_COLORS: Record<number, { bg: string; text: string }> = {
+  1: { bg: '#faad14', text: '#fff' },
+  2: { bg: '#a3a3a3', text: '#fff' },
+  3: { bg: '#d4843d', text: '#fff' },
+}
+
+function RankBadge({ rank }: { rank: number }) {
+  const c = TOP_COLORS[rank]
+  if (c) {
+    return (
+      <Tag
+        style={{
+          margin: 0,
+          minWidth: 40,
+          textAlign: 'center',
+          background: c.bg,
+          color: c.text,
+          borderColor: c.bg,
+          fontWeight: 600,
+        }}
+      >
+        #{rank}
+      </Tag>
+    )
+  }
+  return <span style={{ color: 'rgba(0,0,0,0.65)', fontVariantNumeric: 'tabular-nums' }}>#{rank}</span>
 }

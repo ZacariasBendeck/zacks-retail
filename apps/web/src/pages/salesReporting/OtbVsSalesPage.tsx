@@ -1,22 +1,19 @@
-import { Alert, Breadcrumb, Typography } from 'antd'
+import { Alert } from 'antd'
 import { Link } from 'react-router-dom'
-
-const { Title, Paragraph } = Typography
+import ReportHeader from '../../components/reports/ReportHeader'
 
 export default function OtbVsSalesPage() {
   return (
     <div>
-      <Breadcrumb
-        style={{ marginBottom: 16 }}
-        items={[
+      <ReportHeader
+        title="Open To Buy vs Sales"
+        description="Planned OTB dollars vs. actual sales — variance per store × category × month."
+        citation="RICS Ch. 6 p. 100"
+        breadcrumb={[
           { title: <Link to="/reports/sales">Sales Reports</Link> },
           { title: 'Open To Buy vs Sales' },
         ]}
       />
-      <Title level={2} style={{ marginBottom: 0 }}>Open To Buy vs Sales</Title>
-      <Paragraph type="secondary">
-        Planned OTB dollars vs. actual sales — variance per store × category × month (RICS Ch. 6 p. 100).
-      </Paragraph>
 
       <Alert
         type="info"

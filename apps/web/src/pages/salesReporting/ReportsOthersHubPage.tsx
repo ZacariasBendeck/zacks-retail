@@ -1,12 +1,13 @@
-import { Card, Col, Row, Typography, Breadcrumb } from 'antd'
+import { Card, Col, Row, Tag, Typography } from 'antd'
 import {
   BarChartOutlined,
   ClockCircleOutlined,
   UserOutlined,
 } from '@ant-design/icons'
 import { Link } from 'react-router-dom'
+import ReportHeader from '../../components/reports/ReportHeader'
 
-const { Title, Paragraph } = Typography
+const { Paragraph } = Typography
 
 interface ReportCard {
   title: string
@@ -43,32 +44,52 @@ const REPORTS: ReportCard[] = [
 export default function ReportsOthersHubPage() {
   return (
     <div>
-      <Breadcrumb
-        style={{ marginBottom: 16 }}
-        items={[{ title: 'Reports' }, { title: 'Others' }]}
+      <ReportHeader
+        title="Other Reports"
+        description="Operational reports that complement the main Sales hub. Live read-through to the legacy RICS databases."
+        breadcrumb={[{ title: 'Reports' }, { title: 'Others' }]}
+        showCurrencyNote={false}
       />
-      <Title level={2} style={{ marginBottom: 0 }}>
-        Other Reports
-      </Title>
-      <Paragraph type="secondary" style={{ marginBottom: 24 }}>
-        Operational reports that complement the main Sales hub. Live read-through to the legacy
-        RICS databases.
-      </Paragraph>
       <Row gutter={[16, 16]}>
         {REPORTS.map((r) => (
           <Col key={r.to} xs={24} sm={12} lg={8}>
-            <Link to={r.to} style={{ display: 'block' }}>
-              <Card hoverable style={{ height: '100%' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
-                  <span style={{ fontSize: 24, color: '#1677ff' }}>{r.icon}</span>
-                  <Title level={4} style={{ margin: 0 }}>
-                    {r.title}
-                  </Title>
+            <Link to={r.to} style={{ display: 'block', height: '100%' }}>
+              <Card
+                hoverable
+                style={{ height: '100%' }}
+                styles={{ body: { display: 'flex', flexDirection: 'column', gap: 8, height: '100%' } }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <span
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      width: 38,
+                      height: 38,
+                      borderRadius: 8,
+                      background: 'rgba(22, 119, 255, 0.08)',
+                      color: '#1677ff',
+                      fontSize: 20,
+                    }}
+                  >
+                    {r.icon}
+                  </span>
+                  <strong style={{ fontSize: 16 }}>{r.title}</strong>
                 </div>
-                <Paragraph style={{ marginBottom: 8 }}>{r.description}</Paragraph>
-                <Paragraph type="secondary" style={{ margin: 0, fontSize: 12 }}>
+                <Paragraph style={{ margin: 0, flex: 1 }}>{r.description}</Paragraph>
+                <Tag
+                  style={{
+                    alignSelf: 'flex-start',
+                    margin: 0,
+                    fontSize: 11,
+                    background: 'transparent',
+                    borderStyle: 'dashed',
+                    color: 'rgba(0, 0, 0, 0.45)',
+                  }}
+                >
                   {r.citation}
-                </Paragraph>
+                </Tag>
               </Card>
             </Link>
           </Col>

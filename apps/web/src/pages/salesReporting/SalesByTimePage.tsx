@@ -1,55 +1,82 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
-  Alert, Breadcrumb, Card, Checkbox, DatePicker, Empty, Input, Space, Table, Typography, Spin,
+  Alert, Card, Checkbox, Input, Segmented, Space, Table, Tooltip, Typography, Spin,
 } from 'antd'
-import dayjs from 'dayjs'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { useSalesByTime, type SalesByTimeArgs } from '../../hooks/useReports'
 import type { SalesHourlyBucket } from '../../services/reportApi'
 import { getErrorMessage } from '../../utils/errors'
 import RunReportControls from './RunReportControls'
+import SaveAsTemplateButton from '../../components/reports/SaveAsTemplateButton'
+import DateRangeControl from '../../components/reports/DateRangeControl'
+import ReportHeader from '../../components/reports/ReportHeader'
+import FilterChips from '../../components/reports/FilterChips'
+import ReportEmptyState from '../../components/reports/ReportEmptyState'
+import {
+  SummaryLabelCell,
+  SummaryNumericCell,
+} from '../../components/reports/SummaryRow'
+import { fmtMoney, fmtInt, fmtPct1 } from '../../utils/reportFormatters'
+import { useReportTemplate, useTouchReportTemplate } from '../../hooks/useReportTemplates'
+import { readDateSpecFromParams, resolveDateSpec, type DateSpec } from '../../utils/dateSpec'
 
-const { RangePicker } = DatePicker
-const { Title, Paragraph } = Typography
+const { Text } = Typography
+
+const DEFAULT_DATE_SPEC: DateSpec = { type: 'trailing_days', days: 7 }
 
 function parseStores(s: string): number[] | undefined {
   const arr = s.split(',').map((x) => Number(x.trim())).filter((n) => Number.isFinite(n) && n > 0)
   return arr.length ? arr : undefined
 }
 
-// Grouped thousands separators per CLAUDE.md "Currency" policy (no symbol).
-function fmtMoney(v: number | null | undefined): string {
-  if (v == null || Number.isNaN(v)) return '—'
-  return v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-}
-function fmtInt(v: number | null | undefined): string {
-  if (v == null || Number.isNaN(v)) return '—'
-  return v.toLocaleString('en-US')
-}
-function fmtPct1(v: number | null | undefined): string {
-  if (v == null || Number.isNaN(v)) return '—'
-  return v.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 })
-}
+type ChartMetric = 'dollars' | 'qty' | 'tickets'
 
 export default function SalesByTimePage() {
   const qc = useQueryClient()
-  const [dateRange, setDateRange] = useState<[string, string]>(() => {
-    const end = dayjs()
-    const start = end.subtract(6, 'day')
-    return [start.format('YYYY-MM-DD'), end.format('YYYY-MM-DD')]
-  })
+  const [searchParams] = useSearchParams()
+  const templateId = searchParams.get('templateId') ?? undefined
+  const [dateSpec, setDateSpec] = useState<DateSpec>(DEFAULT_DATE_SPEC)
   const [storesText, setStoresText] = useState('')
   const [pctOfTotal, setPctOfTotal] = useState(false)
+  const [chartMetric, setChartMetric] = useState<ChartMetric>('dollars')
   const [query, setQuery] = useState<SalesByTimeArgs | null>(null)
 
   const { data, isFetching, error } = useSalesByTime(query)
   const running = query != null && isFetching
 
-  function onRun(): void {
+  // ?templateId=... replay.
+  const { data: templateData } = useReportTemplate(templateId)
+  const touchTemplate = useTouchReportTemplate()
+  const hydratedFor = useRef<string | null>(null)
+  useEffect(() => {
+    if (!templateId || !templateData) return
+    if (hydratedFor.current === templateId) return
+    const t = templateData.template
+    if (t.reportType !== 'sales-by-time') return
+    hydratedFor.current = templateId
+    const p = t.paramsJson as Partial<SalesByTimeArgs> & { storesText?: string }
+    const spec = readDateSpecFromParams(t.paramsJson) ?? DEFAULT_DATE_SPEC
+    const { startDate, endDate } = resolveDateSpec(spec)
+    setDateSpec(spec)
+    if (p.storesText !== undefined) setStoresText(p.storesText)
+    else if (Array.isArray(p.stores)) setStoresText(p.stores.join(','))
+    if (p.pctOfTotal !== undefined) setPctOfTotal(!!p.pctOfTotal)
     setQuery({
-      startDate: dateRange[0],
-      endDate: dateRange[1],
+      startDate,
+      endDate,
+      stores: Array.isArray(p.stores) && p.stores.length ? p.stores : undefined,
+      pctOfTotal: !!p.pctOfTotal,
+    })
+    touchTemplate.mutate(templateId)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [templateId, templateData])
+
+  function onRun(): void {
+    const { startDate, endDate } = resolveDateSpec(dateSpec)
+    setQuery({
+      startDate,
+      endDate,
       stores: parseStores(storesText),
       pctOfTotal,
     })
@@ -80,35 +107,26 @@ export default function SalesByTimePage() {
       ? [{
           title: '% of Total', dataIndex: 'pctOfTotal', key: 'pctOfTotal', width: 120,
           align: 'right' as const,
-          render: (v: number | null) => (v == null ? '—' : `${fmtPct1(v)}%`),
+          render: (v: number | null) => fmtPct1(v),
         }]
       : []),
   ]
 
   return (
     <div>
-      <Breadcrumb
-        style={{ marginBottom: 16 }}
-        items={[
+      <ReportHeader
+        title="Sales by Time"
+        description="Ticket count, units, and dollars bucketed by hour-of-day."
+        citation="RICS Ch. 2 p. 41"
+        breadcrumb={[
           { title: <Link to="/reports/others">Other Reports</Link> },
           { title: 'Sales by Time' },
         ]}
       />
-      <Title level={2} style={{ marginBottom: 0 }}>Sales by Time</Title>
-      <Paragraph type="secondary">
-        Ticket count, units, and dollars bucketed by hour-of-day (RICS Ch. 2 p. 41).
-      </Paragraph>
 
       <Card style={{ marginBottom: 16 }}>
         <Space wrap>
-          <RangePicker
-            value={[dayjs(dateRange[0]), dayjs(dateRange[1])]}
-            onChange={(range) => {
-              if (range && range[0] && range[1]) {
-                setDateRange([range[0].format('YYYY-MM-DD'), range[1].format('YYYY-MM-DD')])
-              }
-            }}
-          />
+          <DateRangeControl value={dateSpec} onChange={setDateSpec} />
           <Input
             placeholder="Stores (csv, blank=all)"
             value={storesText}
@@ -120,7 +138,19 @@ export default function SalesByTimePage() {
           </Checkbox>
         </Space>
         <div style={{ marginTop: 12 }}>
-          <RunReportControls running={running} hasRun={query != null} onRun={onRun} onStop={onStop} />
+          <Space>
+            <RunReportControls running={running} hasRun={query != null} onRun={onRun} onStop={onStop} />
+            <SaveAsTemplateButton
+              reportType="sales-by-time"
+              disabled={query == null}
+              getParamsJson={() => ({
+                dateSpec,
+                stores: parseStores(storesText),
+                storesText,
+                pctOfTotal,
+              })}
+            />
+          </Space>
         </div>
       </Card>
 
@@ -134,37 +164,146 @@ export default function SalesByTimePage() {
       )}
 
       {!query ? (
-        <Empty
-          description="Pick a date range, then click Run Report."
-          image={Empty.PRESENTED_IMAGE_SIMPLE}
-          style={{ padding: 40 }}
+        <ReportEmptyState
+          reason="idle"
+          message="Pick a date range, then click Run Report."
         />
       ) : running ? (
         <div style={{ textAlign: 'center', padding: 40 }}>
           <Spin size="large" tip="Querying RICS databases…" />
         </div>
       ) : data ? (
-        <Table<SalesHourlyBucket>
-          dataSource={data.rangeA}
-          columns={columns}
-          rowKey="hour"
-          pagination={false}
-          size="small"
-          summary={() => (
-            <Table.Summary fixed>
-              <Table.Summary.Row>
-                <Table.Summary.Cell index={0}>Totals</Table.Summary.Cell>
-                <Table.Summary.Cell index={1} align="right">{fmtInt(data.totalsA.tickets)}</Table.Summary.Cell>
-                <Table.Summary.Cell index={2} align="right">{fmtInt(data.totalsA.qty)}</Table.Summary.Cell>
-                <Table.Summary.Cell index={3} align="right">
-                  {fmtMoney(data.totalsA.dollars)}
-                </Table.Summary.Cell>
-                {showPct && <Table.Summary.Cell index={4} align="right">100.0%</Table.Summary.Cell>}
-              </Table.Summary.Row>
-            </Table.Summary>
-          )}
-        />
+        <>
+          <FilterChips
+            chips={[
+              { label: 'Period', value: `${query.startDate} → ${query.endDate}` },
+              query.stores?.length
+                ? { label: 'Stores', value: query.stores.join(', ') }
+                : { label: 'Stores', value: 'All' },
+              showPct ? { label: 'Columns', value: 'incl. % of total' } : null,
+            ]}
+          />
+          <Card size="small" style={{ marginBottom: 16 }} styles={{ body: { padding: 12 } }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                Hour-of-day curve — hover a bar for exact values.
+              </Text>
+              <Segmented<ChartMetric>
+                size="small"
+                value={chartMetric}
+                onChange={(v) => setChartMetric(v as ChartMetric)}
+                options={[
+                  { value: 'dollars', label: 'Dollars' },
+                  { value: 'qty', label: 'Qty' },
+                  { value: 'tickets', label: 'Tickets' },
+                ]}
+              />
+            </div>
+            <HourlyBarChart rows={data.rangeA} metric={chartMetric} />
+          </Card>
+          <Table<SalesHourlyBucket>
+            dataSource={data.rangeA}
+            columns={columns}
+            rowKey="hour"
+            pagination={false}
+            size="small"
+            rowClassName={(_r, i) => (i % 2 === 1 ? 'report-zebra-row' : '')}
+            summary={() => (
+              <Table.Summary fixed>
+                <Table.Summary.Row>
+                  <SummaryLabelCell index={0} variant="grand">Totals</SummaryLabelCell>
+                  <SummaryNumericCell index={1} variant="grand">{fmtInt(data.totalsA.tickets)}</SummaryNumericCell>
+                  <SummaryNumericCell index={2} variant="grand">{fmtInt(data.totalsA.qty)}</SummaryNumericCell>
+                  <SummaryNumericCell index={3} variant="grand">{fmtMoney(data.totalsA.dollars)}</SummaryNumericCell>
+                  {showPct ? (
+                    <SummaryNumericCell index={4} variant="grand">100.0%</SummaryNumericCell>
+                  ) : null}
+                </Table.Summary.Row>
+              </Table.Summary>
+            )}
+          />
+        </>
       ) : null}
+    </div>
+  )
+}
+
+interface HourlyBarChartProps {
+  rows: SalesHourlyBucket[]
+  metric: ChartMetric
+}
+
+const HOURS = Array.from({ length: 24 }, (_, h) => h)
+const CHART_HEIGHT = 120
+
+function HourlyBarChart({ rows, metric }: HourlyBarChartProps) {
+  // Index rows by hour so zero-sales hours still render as an empty slot and
+  // the 24-hour axis reads left-to-right regardless of row order.
+  const byHour = new Map<number, SalesHourlyBucket>()
+  for (const r of rows) byHour.set(r.hour, r)
+  const values = HOURS.map((h) => {
+    const r = byHour.get(h)
+    if (!r) return 0
+    return metric === 'dollars' ? r.dollars : metric === 'qty' ? r.qty : r.tickets
+  })
+  const max = values.reduce((m, v) => (v > m ? v : m), 0)
+  const fmt = metric === 'dollars' ? fmtMoney : fmtInt
+  const color = metric === 'dollars' ? '#1677ff' : metric === 'qty' ? '#13c2c2' : '#722ed1'
+
+  return (
+    <div>
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(24, 1fr)',
+          gap: 2,
+          alignItems: 'end',
+          height: CHART_HEIGHT,
+        }}
+      >
+        {values.map((v, i) => {
+          const pct = max > 0 ? (v / max) * 100 : 0
+          return (
+            <Tooltip
+              key={i}
+              title={
+                <div>
+                  <div>{`${String(i).padStart(2, '0')}:00`}</div>
+                  <div>{fmt(v)}</div>
+                </div>
+              }
+            >
+              <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', height: '100%' }}>
+                <div
+                  style={{
+                    height: `${pct}%`,
+                    background: v > 0 ? color : 'rgba(0, 0, 0, 0.04)',
+                    borderRadius: '2px 2px 0 0',
+                    minHeight: v > 0 ? 2 : 0,
+                    transition: 'height 0.2s ease',
+                  }}
+                />
+              </div>
+            </Tooltip>
+          )
+        })}
+      </div>
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(24, 1fr)',
+          gap: 2,
+          marginTop: 4,
+          fontSize: 10,
+          color: 'rgba(0, 0, 0, 0.45)',
+          textAlign: 'center',
+          fontVariantNumeric: 'tabular-nums',
+        }}
+      >
+        {HOURS.map((h) => (
+          <div key={h}>{h % 3 === 0 ? String(h).padStart(2, '0') : ''}</div>
+        ))}
+      </div>
     </div>
   )
 }

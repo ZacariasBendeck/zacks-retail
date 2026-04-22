@@ -1,13 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Alert,
-  Breadcrumb,
   Button,
   Card,
   Checkbox,
   Col,
   DatePicker,
-  Empty,
   Radio,
   Row,
   Segmented,
@@ -22,7 +20,7 @@ import {
 import type { ColumnsType } from 'antd/es/table'
 import { DownloadOutlined, FileExcelOutlined } from '@ant-design/icons'
 import dayjs, { type Dayjs } from 'dayjs'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import * as echarts from 'echarts/core'
 import { LineChart } from 'echarts/charts'
@@ -49,6 +47,19 @@ import {
 } from '../../services/reportApi'
 import { getErrorMessage } from '../../utils/errors'
 import RunReportControls from './RunReportControls'
+import SaveAsTemplateButton from '../../components/reports/SaveAsTemplateButton'
+import ReportHeader from '../../components/reports/ReportHeader'
+import FilterChips, { type FilterChip } from '../../components/reports/FilterChips'
+import ReportEmptyState from '../../components/reports/ReportEmptyState'
+import { SummaryLabelCell, SummaryNumericCell } from '../../components/reports/SummaryRow'
+import {
+  fmtMoney,
+  fmtMoneyInt,
+  fmtInt,
+  fmtPct1,
+  DASH,
+} from '../../utils/reportFormatters'
+import { useReportTemplate, useTouchReportTemplate } from '../../hooks/useReportTemplates'
 import CriteriaInput from './CriteriaInput'
 
 echarts.use([LineChart, GridComponent, TooltipComponent, LegendComponent, TitleComponent, CanvasRenderer])
@@ -87,32 +98,26 @@ interface DeferredMetricDef {
 const DEFERRED_METRIC_DEFS: readonly DeferredMetricDef[] = []
 
 // ─────────────────────────── formatters ─────────────────────────────────
-
-const currencyFmt = new Intl.NumberFormat('en-US', {
-  maximumFractionDigits: 0,
-})
-const currencyFmtCents = new Intl.NumberFormat('en-US', {
-  minimumFractionDigits: 2,
-  maximumFractionDigits: 2,
-})
-const integerFmt = new Intl.NumberFormat('en-US')
+// Per-cell formatting dispatches on MetricDef.format. Money cells get the
+// integer display in the table (0 dp) so monthly columns stay dense; the
+// totals column uses the 2 dp variant so the grand total reads precisely.
+// Percent / decimal2 / integer variants come straight from the shared
+// utils/reportFormatters module.
 
 function formatMetricValue(def: MetricDef | undefined, value: number | undefined): string {
-  if (value == null || Number.isNaN(value)) return '—'
-  if (!def) return currencyFmt.format(value)
-  if (def.format === 'money') return currencyFmt.format(value)
-  if (def.format === 'integer') return integerFmt.format(Math.round(value))
-  if (def.format === 'decimal2') return value.toFixed(2)
-  return `${value.toFixed(1)}%`
+  if (value == null || Number.isNaN(value)) return DASH
+  if (!def || def.format === 'money') return fmtMoneyInt(value)
+  if (def.format === 'integer') return fmtInt(value)
+  if (def.format === 'decimal2') return fmtMoney(value)
+  return fmtPct1(value)
 }
 
 function formatMetricValuePrecise(def: MetricDef | undefined, value: number | undefined): string {
-  if (value == null || Number.isNaN(value)) return '—'
-  if (!def) return currencyFmtCents.format(value)
-  if (def.format === 'money') return currencyFmtCents.format(value)
-  if (def.format === 'integer') return integerFmt.format(Math.round(value))
-  if (def.format === 'decimal2') return value.toFixed(2)
-  return `${value.toFixed(1)}%`
+  if (value == null || Number.isNaN(value)) return DASH
+  if (!def || def.format === 'money') return fmtMoney(value)
+  if (def.format === 'integer') return fmtInt(value)
+  if (def.format === 'decimal2') return fmtMoney(value)
+  return fmtPct1(value)
 }
 
 function formatMonthLabel(yyyyMm: string): string {
@@ -134,7 +139,7 @@ function SalesHistoryChart({ months, series, height = 280 }: HistoryChartProps) 
     () => ({
       tooltip: {
         trigger: 'axis',
-        valueFormatter: (value: number) => currencyFmt.format(value),
+        valueFormatter: (value: number) => fmtMoneyInt(value),
       },
       legend: { top: 0 },
       grid: { left: 16, right: 16, top: 40, bottom: 24, containLabel: true },
@@ -247,19 +252,20 @@ function HistoryTable({ block, months, dimLabel, metric, detailLevel }: HistoryT
       // through a long pivot table. Fixed first + last columns stay pinned
       // during horizontal scroll via `fixed: 'left' | 'right'` on those cols.
       sticky
+      // Zebra striping only at the data-row level; the sticky first + last
+      // columns ride along with the row, so the whole row reads as one.
+      rowClassName={(_r, i) => (i % 2 === 1 ? 'report-zebra-row' : '')}
       summary={() => (
         <Table.Summary.Row>
-          <Table.Summary.Cell index={0}>
-            <Text strong>Total</Text>
-          </Table.Summary.Cell>
+          <SummaryLabelCell index={0} variant="grand">Total</SummaryLabelCell>
           {colTotals.map((total, idx) => (
-            <Table.Summary.Cell index={idx + 1} key={`ct-${idx}`} align="right">
-              <Text strong>{formatMetricValue(metric, total)}</Text>
-            </Table.Summary.Cell>
+            <SummaryNumericCell index={idx + 1} key={`ct-${idx}`} variant="grand">
+              {formatMetricValue(metric, total)}
+            </SummaryNumericCell>
           ))}
-          <Table.Summary.Cell index={months.length + 1} align="right">
-            <Text strong>{formatMetricValuePrecise(metric, grandTotal)}</Text>
-          </Table.Summary.Cell>
+          <SummaryNumericCell index={months.length + 1} variant="grand">
+            {formatMetricValuePrecise(metric, grandTotal)}
+          </SummaryNumericCell>
         </Table.Summary.Row>
       )}
     />
@@ -345,6 +351,8 @@ function Results({ report, activeMetric, onMetricChange }: ResultsProps) {
 
 export default function SalesHistoryByMonthPage() {
   const qc = useQueryClient()
+  const [searchParams] = useSearchParams()
+  const templateId = searchParams.get('templateId') ?? undefined
 
   // Form state
   const [sortBy, setSortBy] = useState<SalesHistoryByMonthSortBy>('vendor')
@@ -383,6 +391,53 @@ export default function SalesHistoryByMonthPage() {
       resultRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' })
     }
   }, [query])
+
+  // ?templateId=... replay.
+  const { data: templateData } = useReportTemplate(templateId)
+  const touchTemplate = useTouchReportTemplate()
+  const hydratedFor = useRef<string | null>(null)
+  useEffect(() => {
+    if (!templateId || !templateData) return
+    if (hydratedFor.current === templateId) return
+    const t = templateData.template
+    if (t.reportType !== 'sales-history-by-month') return
+    hydratedFor.current = templateId
+    const p = t.paramsJson as Partial<SalesHistoryByMonthParams> & {
+      selectedCategories?: number[]; selectedGroups?: string[];
+      storesRaw?: string; categoriesRaw?: string; vendorsRaw?: string;
+      seasonsRaw?: string; styleColorsRaw?: string; groupsRaw?: string; keywordsRaw?: string;
+    }
+    if (p.sortBy) setSortBy(p.sortBy)
+    if (p.combineStores !== undefined) setCombineStores(!!p.combineStores)
+    if (p.endMonth) setEndMonth(dayjs(`${p.endMonth}-01`))
+    if (p.detailLevel) setDetailLevel(p.detailLevel)
+    if (Array.isArray(p.dataToPrint)) setDataToPrint(p.dataToPrint)
+    if (Array.isArray(p.deferredMetrics)) setDeferredChecked(p.deferredMetrics)
+    if (Array.isArray(p.stores)) setSelectedStores(p.stores)
+    if (Array.isArray(p.selectedCategories)) setSelectedCategories(p.selectedCategories)
+    if (Array.isArray(p.selectedGroups)) setSelectedGroups(p.selectedGroups)
+    if (p.storesRaw !== undefined) setStoresRaw(p.storesRaw)
+    if (p.categoriesRaw !== undefined) setCategoriesRaw(p.categoriesRaw)
+    if (p.vendorsRaw !== undefined) setVendorsRaw(p.vendorsRaw)
+    if (p.seasonsRaw !== undefined) setSeasonsRaw(p.seasonsRaw)
+    if (p.styleColorsRaw !== undefined) setStyleColorsRaw(p.styleColorsRaw)
+    if (p.groupsRaw !== undefined) setGroupsRaw(p.groupsRaw)
+    if (p.keywordsRaw !== undefined) setKeywordsRaw(p.keywordsRaw)
+    if (Array.isArray(p.stores) && p.stores.length && p.endMonth && Array.isArray(p.dataToPrint) && p.dataToPrint.length) {
+      setQuery({
+        stores: p.stores,
+        endMonth: p.endMonth,
+        sortBy: p.sortBy ?? 'vendor',
+        combineStores: p.combineStores ?? true,
+        detailLevel: p.detailLevel ?? 'subtotals',
+        dataToPrint: p.dataToPrint,
+        deferredMetrics: Array.isArray(p.deferredMetrics) ? p.deferredMetrics : [],
+        criteria: (p.criteria as SalesHistoryByMonthCriteria | undefined) ?? {},
+      })
+    }
+    touchTemplate.mutate(templateId)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [templateId, templateData])
 
   const hasStores = selectedStores.length > 0
   const hasAnyMetric = dataToPrint.length > 0
@@ -442,22 +497,15 @@ export default function SalesHistoryByMonthPage() {
 
   return (
     <div>
-      <Breadcrumb
-        style={{ marginBottom: 16 }}
-        items={[
+      <ReportHeader
+        title="Sales History by Month"
+        description="12-month trailing sales by vendor, category, department, or SKU."
+        citation="RICS Ch. 6 p. 95"
+        breadcrumb={[
           { title: <Link to="/reports/sales">Sales Reports</Link> },
           { title: 'Sales History by Month' },
         ]}
       />
-      <Title level={2} style={{ marginBottom: 0 }}>
-        Sales History by Month
-      </Title>
-      <Paragraph type="secondary" style={{ marginBottom: 4 }}>
-        12-month trailing sales by vendor, category, department, or SKU (RICS Ch. 6 p. 95).
-      </Paragraph>
-      <Paragraph type="secondary" style={{ marginTop: 0, fontSize: 12 }}>
-        All monetary values are in <strong>Lempira (HNL)</strong>.
-      </Paragraph>
 
       <Card style={{ marginBottom: 16 }}>
         <Row gutter={24}>
@@ -656,6 +704,32 @@ export default function SalesHistoryByMonthPage() {
         <div style={{ marginTop: 16, borderTop: '1px solid #f0f0f0', paddingTop: 16 }}>
           <Space align="center">
             <RunReportControls running={running} hasRun={query != null} onRun={onRun} onStop={onStop} />
+            <SaveAsTemplateButton
+              reportType="sales-history-by-month"
+              disabled={query == null}
+              getParamsJson={() => ({
+                stores: selectedStores,
+                endMonth: endMonth.format('YYYY-MM'),
+                sortBy,
+                combineStores,
+                detailLevel,
+                dataToPrint,
+                deferredMetrics: deferredChecked,
+                criteria: buildCriteria(),
+                // Extra fields preserve the UI state across replay so the user
+                // sees the same form values they saved — not just the computed
+                // criteria bag consumed by the backend.
+                selectedCategories,
+                selectedGroups,
+                storesRaw,
+                categoriesRaw,
+                vendorsRaw,
+                seasonsRaw,
+                styleColorsRaw,
+                groupsRaw,
+                keywordsRaw,
+              })}
+            />
             <Button
               icon={<DownloadOutlined />}
               disabled={!csvUrl}
@@ -696,10 +770,9 @@ export default function SalesHistoryByMonthPage() {
         )}
 
         {!query ? (
-          <Empty
-            description="Configure your options and click Run Report to load the report."
-            image={Empty.PRESENTED_IMAGE_SIMPLE}
-            style={{ padding: 40 }}
+          <ReportEmptyState
+            reason="idle"
+            message="Configure your options and click Run Report to load the report."
           />
         ) : isFetching && !data ? (
           <Card>
@@ -707,9 +780,51 @@ export default function SalesHistoryByMonthPage() {
             <Skeleton active paragraph={{ rows: 6 }} />
           </Card>
         ) : data ? (
-          <Results report={data} activeMetric={activeMetric} onMetricChange={setActiveMetric} />
+          <>
+            <FilterChips
+              chips={[
+                { label: 'Period', value: `${data.months[0] ?? ''} → ${data.months.at(-1) ?? ''}` },
+                { label: 'Sort', value: query.sortBy === 'vendor' ? 'Vendor' : 'Category' },
+                query.detailLevel ? { label: 'Detail', value: detailLevelLabel(query.detailLevel) } : null,
+                query.stores ? { label: 'Stores', value: storesChipValue(query.stores, query.combineStores ?? true) } : null,
+                query.dataToPrint && query.dataToPrint.length
+                  ? { label: 'Metrics', value: metricsChipValue(query.dataToPrint) }
+                  : null,
+                chipFromRaw('Stores in', query.criteria?.stores),
+                chipFromRaw('Categories', query.criteria?.categories),
+                chipFromRaw('Vendors', query.criteria?.vendors),
+                chipFromRaw('Seasons', query.criteria?.seasons),
+                chipFromRaw('Style/Color', query.criteria?.styleColors),
+                chipFromRaw('Groups', query.criteria?.groups),
+                chipFromRaw('Keywords', query.criteria?.keywords),
+              ]}
+            />
+            <Results report={data} activeMetric={activeMetric} onMetricChange={setActiveMetric} />
+          </>
         ) : null}
       </div>
     </div>
   )
+}
+
+function detailLevelLabel(level: SalesHistoryByMonthDetailLevel): string {
+  if (level === 'sku') return 'SKU Detail'
+  if (level === 'department') return 'Department Summary'
+  return 'Category/Vendor Subtotals'
+}
+
+function storesChipValue(stores: number[], combined: boolean): string {
+  const list = stores.length > 5 ? `${stores.slice(0, 5).join(', ')}…` : stores.join(', ')
+  return `${list} ${combined ? '(combined)' : '(separate)'}`
+}
+
+function metricsChipValue(keys: readonly SalesHistoryByMonthMetricKey[]): string {
+  const labels = keys.map((k) => METRIC_DEFS_BY_KEY.get(k)?.short ?? k)
+  return labels.join(', ')
+}
+
+function chipFromRaw(label: string, raw: string | undefined): FilterChip | null {
+  const t = raw?.trim()
+  if (!t) return null
+  return { label, value: t.length > 40 ? `${t.slice(0, 37)}…` : t, hint: t }
 }

@@ -1,50 +1,81 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Alert, Breadcrumb, Button, Card, DatePicker, Empty, InputNumber, Row, Col, Space,
-  Statistic, Table, Tag, Typography, Spin,
+  Alert, Button, Card, InputNumber, Row, Col, Space,
+  Statistic, Table, Tooltip, Typography, Spin,
 } from 'antd'
-import { DownloadOutlined } from '@ant-design/icons'
-import dayjs from 'dayjs'
-import { Link } from 'react-router-dom'
+import { DownloadOutlined, QuestionCircleOutlined } from '@ant-design/icons'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { useSalesByDay, type SalesByDayArgs } from '../../hooks/useReports'
 import { getSalesByDayCsvUrl, getSalesByDayXlsxUrl, type SalesByDayRow } from '../../services/reportApi'
 import { getErrorMessage } from '../../utils/errors'
 import RunReportControls from './RunReportControls'
+import SaveAsTemplateButton from '../../components/reports/SaveAsTemplateButton'
+import DateRangeControl from '../../components/reports/DateRangeControl'
+import ReportHeader from '../../components/reports/ReportHeader'
+import FilterChips from '../../components/reports/FilterChips'
+import ReportEmptyState from '../../components/reports/ReportEmptyState'
+import { ChangePctBadge } from '../../components/reports/gpBadge'
+import { fmtMoney, fmtChangeMoney } from '../../utils/reportFormatters'
+import { useReportTemplate, useTouchReportTemplate } from '../../hooks/useReportTemplates'
+import { readDateSpecFromParams, resolveDateSpec, type DateSpec } from '../../utils/dateSpec'
 
-const { RangePicker } = DatePicker
-const { Title, Paragraph } = Typography
+const { Text } = Typography
 
-// Grouped thousands separators per CLAUDE.md "Currency" policy (no symbol).
-function fmtMoney(v: number | null | undefined): string {
-  if (v == null || Number.isNaN(v)) return '—'
-  return v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-}
-function fmtPct1(v: number | null | undefined): string {
-  if (v == null || Number.isNaN(v)) return '—'
-  return v.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 })
-}
+const DEFAULT_DATE_SPEC: DateSpec = { type: 'trailing_days', days: 7 }
 
 export default function SalesByDayPage() {
   const qc = useQueryClient()
+  const [searchParams] = useSearchParams()
+  const templateId = searchParams.get('templateId') ?? undefined
   const [storeNumber, setStoreNumber] = useState<number | undefined>(2)
-  const [dateRange, setDateRange] = useState<[string, string]>(() => {
-    const end = dayjs()
-    const start = end.subtract(6, 'day')
-    return [start.format('YYYY-MM-DD'), end.format('YYYY-MM-DD')]
-  })
+  const [dateSpec, setDateSpec] = useState<DateSpec>(DEFAULT_DATE_SPEC)
   const [offset, setOffset] = useState<number>(364)
   const [query, setQuery] = useState<SalesByDayArgs | null>(null)
 
   const { data, isFetching, error } = useSalesByDay(query)
   const running = query != null && isFetching
 
+  // Download URLs need the resolved start/end right now — they reflect the
+  // current form state, not the last-run state, which matches the previous
+  // behavior (users could tweak dates after a run and the buttons followed).
+  const resolvedDates = useMemo(() => resolveDateSpec(dateSpec), [dateSpec])
+
+  // ?templateId=... replay.
+  const { data: templateData } = useReportTemplate(templateId)
+  const touchTemplate = useTouchReportTemplate()
+  const hydratedFor = useRef<string | null>(null)
+  useEffect(() => {
+    if (!templateId || !templateData) return
+    if (hydratedFor.current === templateId) return
+    const t = templateData.template
+    if (t.reportType !== 'sales-by-day') return
+    hydratedFor.current = templateId
+    const p = t.paramsJson as Partial<SalesByDayArgs>
+    const spec = readDateSpecFromParams(t.paramsJson) ?? DEFAULT_DATE_SPEC
+    const { startDate, endDate } = resolveDateSpec(spec)
+    if (typeof p.storeNumber === 'number') setStoreNumber(p.storeNumber)
+    setDateSpec(spec)
+    if (typeof p.comparisonOffsetDays === 'number') setOffset(p.comparisonOffsetDays)
+    if (typeof p.storeNumber === 'number') {
+      setQuery({
+        storeNumber: p.storeNumber,
+        startDate,
+        endDate,
+        comparisonOffsetDays: p.comparisonOffsetDays ?? 364,
+      })
+    }
+    touchTemplate.mutate(templateId)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [templateId, templateData])
+
   function onRun(): void {
     if (storeNumber == null) return
+    const { startDate, endDate } = resolveDateSpec(dateSpec)
     setQuery({
       storeNumber,
-      startDate: dateRange[0],
-      endDate: dateRange[1],
+      startDate,
+      endDate,
       comparisonOffsetDays: offset,
     })
   }
@@ -69,7 +100,16 @@ export default function SalesByDayPage() {
       sorter: (a: SalesByDayRow, b: SalesByDayRow) => a.netSales - b.netSales,
     },
     {
-      title: 'Compared To', dataIndex: 'comparedToDate', key: 'comparedToDate', width: 120,
+      title: (
+        <Tooltip
+          title={`Comparison date = this row's date minus the offset (${query?.comparisonOffsetDays ?? 364} days). Default 364 pairs each day to the same weekday one year ago.`}
+        >
+          <span>
+            Compared To <QuestionCircleOutlined style={{ color: 'rgba(0,0,0,0.35)' }} />
+          </span>
+        </Tooltip>
+      ),
+      dataIndex: 'comparedToDate', key: 'comparedToDate', width: 140,
       sorter: (a: SalesByDayRow, b: SalesByDayRow) =>
         a.comparedToDate.localeCompare(b.comparedToDate),
     },
@@ -79,16 +119,22 @@ export default function SalesByDayPage() {
       sorter: (a: SalesByDayRow, b: SalesByDayRow) => a.comparedNetSales - b.comparedNetSales,
     },
     {
-      title: 'Change', dataIndex: 'dollarChange', key: 'dollarChange', width: 120,
+      title: 'Change', dataIndex: 'dollarChange', key: 'dollarChange', width: 130,
       align: 'right' as const,
-      render: (v: number) => <Tag color={v >= 0 ? 'green' : 'red'}>{fmtMoney(v)}</Tag>,
+      // Signed money with +/− prefix — replaces the all-green/all-red Tag for
+      // a denser, easier-to-scan column. Color comes from ChangePctBadge's
+      // sibling on the %Change column.
+      render: (v: number) => (
+        <span style={{ color: v > 0 ? '#3f8600' : v < 0 ? '#cf1322' : undefined }}>
+          {fmtChangeMoney(v)}
+        </span>
+      ),
       sorter: (a: SalesByDayRow, b: SalesByDayRow) => a.dollarChange - b.dollarChange,
     },
     {
       title: '% Change', dataIndex: 'pctChange', key: 'pctChange', width: 110,
       align: 'right' as const,
-      render: (v: number | null) =>
-        v == null ? '—' : <Tag color={v >= 0 ? 'green' : 'red'}>{fmtPct1(v)}%</Tag>,
+      render: (v: number | null) => <ChangePctBadge value={v} />,
       // Null pctChange (when comparedNetSales is 0) sorts to the bottom of
       // ascending order.
       sorter: (a: SalesByDayRow, b: SalesByDayRow) =>
@@ -98,20 +144,15 @@ export default function SalesByDayPage() {
 
   return (
     <div>
-      <Breadcrumb
-        style={{ marginBottom: 16 }}
-        items={[
+      <ReportHeader
+        title="Sales by Day"
+        description="Net sales by day for one store, paired against a prior-period baseline."
+        citation="RICS Ch. 6 p. 52"
+        breadcrumb={[
           { title: <Link to="/reports/others">Other Reports</Link> },
           { title: 'Sales by Day' },
         ]}
       />
-      <Title level={2} style={{ marginBottom: 0 }}>Sales by Day</Title>
-      <Paragraph type="secondary">
-        Net sales by day for one store (RICS Ch. 6 p. 52). Sourced live from RITRNSSV.
-      </Paragraph>
-      <Paragraph type="secondary" style={{ marginTop: 0, fontSize: 12 }}>
-        Amounts in Lempira (HNL).
-      </Paragraph>
 
       <Card style={{ marginBottom: 16 }}>
         <Space wrap>
@@ -121,14 +162,7 @@ export default function SalesByDayPage() {
             value={storeNumber}
             onChange={(v) => setStoreNumber(v ?? undefined)}
           />
-          <RangePicker
-            value={[dayjs(dateRange[0]), dayjs(dateRange[1])]}
-            onChange={(range) => {
-              if (range && range[0] && range[1]) {
-                setDateRange([range[0].format('YYYY-MM-DD'), range[1].format('YYYY-MM-DD')])
-              }
-            }}
-          />
+          <DateRangeControl value={dateSpec} onChange={setDateSpec} />
           <InputNumber
             min={1}
             max={732}
@@ -142,13 +176,13 @@ export default function SalesByDayPage() {
             <>
               <Button
                 icon={<DownloadOutlined />}
-                href={getSalesByDayCsvUrl(storeNumber, dateRange[0], dateRange[1], offset)}
+                href={getSalesByDayCsvUrl(storeNumber, resolvedDates.startDate, resolvedDates.endDate, offset)}
               >
                 CSV
               </Button>
               <Button
                 icon={<DownloadOutlined />}
-                href={getSalesByDayXlsxUrl(storeNumber, dateRange[0], dateRange[1], offset)}
+                href={getSalesByDayXlsxUrl(storeNumber, resolvedDates.startDate, resolvedDates.endDate, offset)}
               >
                 XLSX
               </Button>
@@ -156,7 +190,18 @@ export default function SalesByDayPage() {
           )}
         </Space>
         <div style={{ marginTop: 12 }}>
-          <RunReportControls running={running} hasRun={query != null} onRun={onRun} onStop={onStop} />
+          <Space>
+            <RunReportControls running={running} hasRun={query != null} onRun={onRun} onStop={onStop} />
+            <SaveAsTemplateButton
+              reportType="sales-by-day"
+              disabled={query == null || storeNumber == null}
+              getParamsJson={() => ({
+                storeNumber,
+                dateSpec,
+                comparisonOffsetDays: offset,
+              })}
+            />
+          </Space>
         </div>
       </Card>
 
@@ -170,10 +215,9 @@ export default function SalesByDayPage() {
       )}
 
       {!query ? (
-        <Empty
-          description="Pick a store + date range, then click Run Report."
-          image={Empty.PRESENTED_IMAGE_SIMPLE}
-          style={{ padding: 40 }}
+        <ReportEmptyState
+          reason="idle"
+          message="Pick a store + date range, then click Run Report."
         />
       ) : running ? (
         <div style={{ textAlign: 'center', padding: 40 }}>
@@ -181,18 +225,38 @@ export default function SalesByDayPage() {
         </div>
       ) : data ? (
         <>
+          <FilterChips
+            chips={[
+              { label: 'Store', value: data.storeLabel },
+              { label: 'Period', value: `${query.startDate} → ${query.endDate}` },
+              { label: 'Compare offset', value: `${query.comparisonOffsetDays ?? 364} days` },
+            ]}
+          />
           <Row gutter={16} style={{ marginBottom: 16 }}>
             <Col span={6}>
-              <Card><Statistic title="Store" value={data.storeLabel} /></Card>
-            </Col>
-            <Col span={6}>
               <Card>
-                <Statistic title="Weekly Net Sales" value={data.weeklyTotals.netSales} precision={2} />
+                <Statistic title="Store" value={data.storeLabel} />
               </Card>
             </Col>
             <Col span={6}>
               <Card>
-                <Statistic title="Compared Net" value={data.weeklyTotals.comparedNetSales} precision={2} />
+                <Statistic
+                  title="Weekly Net Sales"
+                  // Using formatter (not `precision`) so the number follows
+                  // the shared fmtMoney rule: thousands separator, 2 dp, no
+                  // currency symbol.
+                  value={data.weeklyTotals.netSales}
+                  formatter={(v) => fmtMoney(Number(v))}
+                />
+              </Card>
+            </Col>
+            <Col span={6}>
+              <Card>
+                <Statistic
+                  title="Compared Net"
+                  value={data.weeklyTotals.comparedNetSales}
+                  formatter={(v) => fmtMoney(Number(v))}
+                />
               </Card>
             </Col>
             <Col span={6}>
@@ -206,6 +270,11 @@ export default function SalesByDayPage() {
                     color: (data.weeklyTotals.pctChange ?? 0) >= 0 ? '#3f8600' : '#cf1322',
                   }}
                 />
+                {data.weeklyTotals.pctChange == null && (
+                  <Text type="secondary" style={{ fontSize: 11 }}>
+                    No baseline sales in compared period
+                  </Text>
+                )}
               </Card>
             </Col>
           </Row>
@@ -215,6 +284,7 @@ export default function SalesByDayPage() {
             rowKey="date"
             pagination={false}
             size="small"
+            rowClassName={(_r, i) => (i % 2 === 1 ? 'report-zebra-row' : '')}
           />
         </>
       ) : null}

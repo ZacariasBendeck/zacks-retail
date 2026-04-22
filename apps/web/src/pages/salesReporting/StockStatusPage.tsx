@@ -1,8 +1,8 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
-  Alert, Breadcrumb, Card, Empty, Input, Select, Space, Table, Tag, Typography, Spin,
+  Alert, Card, Input, Select, Space, Table, Tag, Spin,
 } from 'antd'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { useStockStatus, type StockStatusArgs } from '../../hooks/useReports'
 import type {
@@ -13,8 +13,13 @@ import type {
 } from '../../services/reportApi'
 import { getErrorMessage } from '../../utils/errors'
 import RunReportControls from './RunReportControls'
-
-const { Title, Paragraph } = Typography
+import SaveAsTemplateButton from '../../components/reports/SaveAsTemplateButton'
+import ReportHeader from '../../components/reports/ReportHeader'
+import FilterChips, { type FilterChip } from '../../components/reports/FilterChips'
+import ReportEmptyState from '../../components/reports/ReportEmptyState'
+import { SummaryLabelCell, SummaryNumericCell } from '../../components/reports/SummaryRow'
+import { fmtMoney, fmtInt } from '../../utils/reportFormatters'
+import { useReportTemplate, useTouchReportTemplate } from '../../hooks/useReportTemplates'
 
 function parseInts(s: string): number[] | undefined {
   const arr = s.split(',').map((x) => Number(x.trim())).filter((n) => Number.isFinite(n) && n > 0)
@@ -25,18 +30,19 @@ function parseStrs(s: string): string[] | undefined {
   return arr.length ? arr : undefined
 }
 
-// Grouped thousands separators per CLAUDE.md "Currency" policy (no symbol).
-function fmtMoney(v: number | null | undefined): string {
-  if (v == null || Number.isNaN(v)) return '—'
-  return v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-}
-function fmtInt(v: number | null | undefined): string {
-  if (v == null || Number.isNaN(v)) return '—'
-  return v.toLocaleString('en-US')
+const ITEM_FILTER_LABELS: Record<StockStatusItemFilter, string> = {
+  ALL: 'All items',
+  ONLY_SHORT: 'Only short',
+  ONLY_CRITICAL: 'Only critical',
+  ONLY_ON_ORDER: 'Only on order',
+  ONLY_NEGATIVE_OH: 'Only negative on-hand',
+  ONLY_WITH_MODELS: 'Only with models',
 }
 
 export default function StockStatusPage() {
   const qc = useQueryClient()
+  const [searchParams] = useSearchParams()
+  const templateId = searchParams.get('templateId') ?? undefined
   const [sortBy, setSortBy] = useState<StockStatusSortBy>('CATEGORY')
   const [storeOption, setStoreOption] = useState<StockStatusStoreOption>('SEPARATE')
   const [itemFilter, setItemFilter] = useState<StockStatusItemFilter>('ALL')
@@ -48,6 +54,39 @@ export default function StockStatusPage() {
 
   const { data, isFetching, error } = useStockStatus(query)
   const running = query != null && isFetching
+
+  // ?templateId=... replay.
+  const { data: templateData } = useReportTemplate(templateId)
+  const touchTemplate = useTouchReportTemplate()
+  const hydratedFor = useRef<string | null>(null)
+  useEffect(() => {
+    if (!templateId || !templateData) return
+    if (hydratedFor.current === templateId) return
+    const t = templateData.template
+    if (t.reportType !== 'stock-status') return
+    hydratedFor.current = templateId
+    const p = t.paramsJson as Partial<StockStatusArgs> & {
+      vendorsText?: string; categoriesText?: string; seasonsText?: string; skusText?: string
+    }
+    if (p.sortBy) setSortBy(p.sortBy)
+    if (p.storeOption) setStoreOption(p.storeOption)
+    if (p.itemFilter) setItemFilter(p.itemFilter)
+    setVendorsText(p.vendorsText ?? (Array.isArray(p.vendors) ? p.vendors.join(',') : ''))
+    setCategoriesText(p.categoriesText ?? (Array.isArray(p.categories) ? p.categories.join(',') : ''))
+    setSeasonsText(p.seasonsText ?? (Array.isArray(p.seasons) ? p.seasons.join(',') : ''))
+    setSkusText(p.skusText ?? (Array.isArray(p.skus) ? p.skus.join(',') : ''))
+    setQuery({
+      sortBy: p.sortBy ?? 'CATEGORY',
+      storeOption: p.storeOption ?? 'SEPARATE',
+      itemFilter: p.itemFilter ?? 'ALL',
+      vendors: Array.isArray(p.vendors) && p.vendors.length ? p.vendors : undefined,
+      categories: Array.isArray(p.categories) && p.categories.length ? p.categories : undefined,
+      seasons: Array.isArray(p.seasons) && p.seasons.length ? p.seasons : undefined,
+      skus: Array.isArray(p.skus) && p.skus.length ? p.skus : undefined,
+    })
+    touchTemplate.mutate(templateId)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [templateId, templateData])
 
   function onRun(): void {
     setQuery({
@@ -106,21 +145,16 @@ export default function StockStatusPage() {
 
   return (
     <div>
-      <Breadcrumb
-        style={{ marginBottom: 16 }}
-        items={[
+      <ReportHeader
+        title="Stock Status"
+        description="On-hand / on-order / model / short / critical per SKU. Unfiltered runs can scan thousands of SKUs — use criteria filters to narrow the scope."
+        citation="RICS Ch. 6 p. 96"
+        breadcrumb={[
           { title: <Link to="/reports/sales">Sales Reports</Link> },
           { title: 'Stock Status' },
         ]}
+        rightMeta={data ? `${data.rows.length.toLocaleString()} ${data.rows.length === 1 ? 'row' : 'rows'}` : undefined}
       />
-      <Title level={2} style={{ marginBottom: 0 }}>Stock Status</Title>
-      <Paragraph type="secondary">
-        On-hand / on-order / model / short / critical per SKU (RICS Ch. 6 p. 96). Unfiltered runs
-        can scan thousands of SKUs — use criteria filters to narrow the scope.
-      </Paragraph>
-      <Paragraph type="secondary" style={{ marginTop: 0, fontSize: 12 }}>
-        Amounts in Lempira (HNL).
-      </Paragraph>
 
       <Card style={{ marginBottom: 16 }}>
         <Space wrap>
@@ -183,7 +217,26 @@ export default function StockStatusPage() {
           />
         </Space>
         <div style={{ marginTop: 12 }}>
-          <RunReportControls running={running} hasRun={query != null} onRun={onRun} onStop={onStop} />
+          <Space>
+            <RunReportControls running={running} hasRun={query != null} onRun={onRun} onStop={onStop} />
+            <SaveAsTemplateButton
+              reportType="stock-status"
+              disabled={query == null}
+              getParamsJson={() => ({
+                sortBy,
+                storeOption,
+                itemFilter,
+                vendors: parseStrs(vendorsText),
+                categories: parseInts(categoriesText),
+                seasons: parseStrs(seasonsText),
+                skus: parseStrs(skusText),
+                vendorsText,
+                categoriesText,
+                seasonsText,
+                skusText,
+              })}
+            />
+          </Space>
         </div>
       </Card>
 
@@ -197,45 +250,63 @@ export default function StockStatusPage() {
       )}
 
       {!query ? (
-        <Empty
-          description="Configure filters above, then click Run Report."
-          image={Empty.PRESENTED_IMAGE_SIMPLE}
-          style={{ padding: 40 }}
+        <ReportEmptyState
+          reason="idle"
+          message="Configure filters above, then click Run Report."
         />
       ) : running ? (
         <div style={{ textAlign: 'center', padding: 40 }}>
           <Spin size="large" tip="Querying RICS databases…" />
         </div>
       ) : data && data.rows.length === 0 ? (
-        <Empty description="No rows match the current filters." style={{ padding: 40 }} />
-      ) : data ? (
-        <Table<StockStatusRow>
-          dataSource={data.rows}
-          columns={columns}
-          rowKey={(r) => `${r.sku}|${r.storeNumber}`}
-          size="small"
-          pagination={{ pageSize: 50 }}
-          scroll={{ x: 1400 }}
-          summary={() => (
-            <Table.Summary fixed>
-              <Table.Summary.Row>
-                <Table.Summary.Cell index={0} colSpan={5}>Totals</Table.Summary.Cell>
-                <Table.Summary.Cell index={5} align="right">{fmtInt(data.totals.onHand)}</Table.Summary.Cell>
-                <Table.Summary.Cell index={6} align="right">{fmtInt(data.totals.onOrder)}</Table.Summary.Cell>
-                <Table.Summary.Cell index={7} align="right">{fmtInt(data.totals.model)}</Table.Summary.Cell>
-                <Table.Summary.Cell index={8} align="right">{fmtInt(data.totals.short)}</Table.Summary.Cell>
-                <Table.Summary.Cell index={9} align="right">{fmtInt(data.totals.critical)}</Table.Summary.Cell>
-                <Table.Summary.Cell index={10} align="right">
-                  {fmtMoney(data.totals.retailValue)}
-                </Table.Summary.Cell>
-                <Table.Summary.Cell index={11} align="right">
-                  {fmtMoney(data.totals.costValue)}
-                </Table.Summary.Cell>
-              </Table.Summary.Row>
-            </Table.Summary>
-          )}
+        <ReportEmptyState
+          reason="no-results"
+          hint="No SKUs match the current filters. Try a less restrictive Items filter or widen the criteria."
         />
+      ) : data ? (
+        <>
+          <FilterChips
+            chips={[
+              { label: 'Sort', value: query.sortBy === 'VENDOR' ? 'Vendor' : 'Category' },
+              { label: 'Stores', value: query.storeOption === 'COMBINE' ? 'Combined' : 'Per-store' },
+              { label: 'Items', value: ITEM_FILTER_LABELS[query.itemFilter ?? 'ALL'] },
+              listChip('Vendors', query.vendors),
+              listChip('Categories', query.categories),
+              listChip('Seasons', query.seasons),
+              listChip('SKUs', query.skus),
+            ]}
+          />
+          <Table<StockStatusRow>
+            dataSource={data.rows}
+            columns={columns}
+            rowKey={(r) => `${r.sku}|${r.storeNumber}`}
+            size="small"
+            pagination={{ pageSize: 50 }}
+            scroll={{ x: 1400 }}
+            rowClassName={(_r, i) => (i % 2 === 1 ? 'report-zebra-row' : '')}
+            summary={() => (
+              <Table.Summary fixed>
+                <Table.Summary.Row>
+                  <SummaryLabelCell index={0} colSpan={5} variant="grand">Totals</SummaryLabelCell>
+                  <SummaryNumericCell index={1} variant="grand">{fmtInt(data.totals.onHand)}</SummaryNumericCell>
+                  <SummaryNumericCell index={2} variant="grand">{fmtInt(data.totals.onOrder)}</SummaryNumericCell>
+                  <SummaryNumericCell index={3} variant="grand">{fmtInt(data.totals.model)}</SummaryNumericCell>
+                  <SummaryNumericCell index={4} variant="grand">{fmtInt(data.totals.short)}</SummaryNumericCell>
+                  <SummaryNumericCell index={5} variant="grand">{fmtInt(data.totals.critical)}</SummaryNumericCell>
+                  <SummaryNumericCell index={6} variant="grand">{fmtMoney(data.totals.retailValue)}</SummaryNumericCell>
+                  <SummaryNumericCell index={7} variant="grand">{fmtMoney(data.totals.costValue)}</SummaryNumericCell>
+                </Table.Summary.Row>
+              </Table.Summary>
+            )}
+          />
+        </>
       ) : null}
     </div>
   )
+}
+
+function listChip(label: string, values: readonly (string | number)[] | undefined): FilterChip | null {
+  if (!values || !values.length) return null
+  const joined = values.map(String).join(', ')
+  return { label, value: joined.length > 40 ? `${joined.slice(0, 37)}…` : joined, hint: joined }
 }

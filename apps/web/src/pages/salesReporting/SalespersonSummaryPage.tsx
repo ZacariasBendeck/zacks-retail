@@ -1,9 +1,8 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Alert, Breadcrumb, Card, Checkbox, DatePicker, Empty, Input, Select, Space, Table, Typography, Spin,
+  Alert, Card, Checkbox, Input, Select, Space, Table, Typography, Spin,
 } from 'antd'
-import dayjs from 'dayjs'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { useSalespersonSummary, type SalespersonSummaryArgs } from '../../hooks/useReports'
 import type {
@@ -13,32 +12,31 @@ import type {
 } from '../../services/reportApi'
 import { getErrorMessage } from '../../utils/errors'
 import RunReportControls from './RunReportControls'
-
-const { RangePicker } = DatePicker
-const { Title, Paragraph } = Typography
+import SaveAsTemplateButton from '../../components/reports/SaveAsTemplateButton'
+import DateRangeControl from '../../components/reports/DateRangeControl'
+import ReportHeader from '../../components/reports/ReportHeader'
+import FilterChips from '../../components/reports/FilterChips'
+import ReportEmptyState from '../../components/reports/ReportEmptyState'
+import ShareBar from '../../components/reports/ShareBar'
+import { fmtMoney, fmtInt } from '../../utils/reportFormatters'
+import { useReportTemplate, useTouchReportTemplate } from '../../hooks/useReportTemplates'
+import { readDateSpecFromParams, resolveDateSpec, type DateSpec } from '../../utils/dateSpec'
 
 function parseStores(s: string): number[] | undefined {
   const arr = s.split(',').map((x) => Number(x.trim())).filter((n) => Number.isFinite(n) && n > 0)
   return arr.length ? arr : undefined
 }
 
-// Grouped thousands separators per CLAUDE.md "Currency" policy (no symbol).
-function fmtMoney(v: number | null | undefined): string {
-  if (v == null || Number.isNaN(v)) return '—'
-  return v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-}
-function fmtInt(v: number | null | undefined): string {
-  if (v == null || Number.isNaN(v)) return '—'
-  return v.toLocaleString('en-US')
-}
+// Salesperson summary defaults to a 30-day trailing window (matches the
+// pre-DateSpec default); templates saved with this default replay a fresh
+// 30-day window every time.
+const DEFAULT_DATE_SPEC: DateSpec = { type: 'trailing_days', days: 30 }
 
 export default function SalespersonSummaryPage() {
   const qc = useQueryClient()
-  const [dateRange, setDateRange] = useState<[string, string]>(() => {
-    const end = dayjs()
-    const start = end.subtract(30, 'day')
-    return [start.format('YYYY-MM-DD'), end.format('YYYY-MM-DD')]
-  })
+  const [searchParams] = useSearchParams()
+  const templateId = searchParams.get('templateId') ?? undefined
+  const [dateSpec, setDateSpec] = useState<DateSpec>(DEFAULT_DATE_SPEC)
   const [storesText, setStoresText] = useState('')
   const [subtotalBy, setSubtotalBy] = useState<SalespersonSubtotalBy | undefined>(undefined)
   const [combineStores, setCombineStores] = useState(true)
@@ -48,10 +46,42 @@ export default function SalespersonSummaryPage() {
   const { data, isFetching, error } = useSalespersonSummary(query)
   const running = query != null && isFetching
 
-  function onRun(): void {
+  // ?templateId=... replay.
+  const { data: templateData } = useReportTemplate(templateId)
+  const touchTemplate = useTouchReportTemplate()
+  const hydratedFor = useRef<string | null>(null)
+  useEffect(() => {
+    if (!templateId || !templateData) return
+    if (hydratedFor.current === templateId) return
+    const t = templateData.template
+    if (t.reportType !== 'salesperson-summary') return
+    hydratedFor.current = templateId
+    const p = t.paramsJson as Partial<SalespersonSummaryArgs> & { storesText?: string }
+    const spec = readDateSpecFromParams(t.paramsJson) ?? DEFAULT_DATE_SPEC
+    const { startDate, endDate } = resolveDateSpec(spec)
+    setDateSpec(spec)
+    if (p.storesText !== undefined) setStoresText(p.storesText)
+    else if (Array.isArray(p.stores)) setStoresText(p.stores.join(','))
+    setSubtotalBy(p.subtotalBy)
+    if (p.combineStores !== undefined) setCombineStores(!!p.combineStores)
+    if (p.cashierSummary !== undefined) setCashierSummary(!!p.cashierSummary)
     setQuery({
-      startDate: dateRange[0],
-      endDate: dateRange[1],
+      startDate,
+      endDate,
+      stores: Array.isArray(p.stores) && p.stores.length ? p.stores : undefined,
+      subtotalBy: p.subtotalBy,
+      combineStores: p.combineStores ?? true,
+      cashierSummary: !!p.cashierSummary,
+    })
+    touchTemplate.mutate(templateId)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [templateId, templateData])
+
+  function onRun(): void {
+    const { startDate, endDate } = resolveDateSpec(dateSpec)
+    setQuery({
+      startDate,
+      endDate,
       stores: parseStores(storesText),
       subtotalBy,
       combineStores,
@@ -62,6 +92,17 @@ export default function SalespersonSummaryPage() {
     qc.cancelQueries({ queryKey: ['salesperson-summary', query] })
   }
 
+  // Max $ across the visible salespeople — powers the contribution bar.
+  const maxSalespersonDollars = useMemo(() => {
+    if (!data?.salespeople?.length) return 0
+    return data.salespeople.reduce((m, r) => Math.max(m, r.dollars ?? 0), 0)
+  }, [data])
+
+  const maxCashierDollars = useMemo(() => {
+    if (!data?.cashierSummary?.length) return 0
+    return data.cashierSummary.reduce((m, r) => Math.max(m, r.dollars ?? 0), 0)
+  }, [data])
+
   const spColumns = [
     { title: 'Code', dataIndex: 'salespersonCode', key: 'salespersonCode', width: 120 },
     { title: 'Name', dataIndex: 'salespersonName', key: 'salespersonName', width: 200, render: (v: string | null) => v ?? '—' },
@@ -69,14 +110,21 @@ export default function SalespersonSummaryPage() {
     {
       title: 'Qty', dataIndex: 'qty', key: 'qty', width: 90, align: 'right' as const,
       render: (v: number) => fmtInt(v),
+      sorter: (a: SalespersonSummaryRow, b: SalespersonSummaryRow) => a.qty - b.qty,
     },
     {
-      title: 'Dollars', dataIndex: 'dollars', key: 'dollars', width: 140,
-      align: 'right' as const, render: (v: number) => fmtMoney(v),
+      title: 'Dollars', dataIndex: 'dollars', key: 'dollars', width: 200,
+      align: 'right' as const,
+      render: (v: number) => (
+        <ShareBar value={v} max={maxSalespersonDollars} label={fmtMoney(v)} />
+      ),
+      sorter: (a: SalespersonSummaryRow, b: SalespersonSummaryRow) => a.dollars - b.dollars,
+      defaultSortOrder: 'descend' as const,
     },
     {
       title: 'Perks', dataIndex: 'perks', key: 'perks', width: 120,
       align: 'right' as const, render: (v: number) => fmtMoney(v),
+      sorter: (a: SalespersonSummaryRow, b: SalespersonSummaryRow) => a.perks - b.perks,
     },
   ]
 
@@ -87,37 +135,34 @@ export default function SalespersonSummaryPage() {
     {
       title: 'Tickets', dataIndex: 'tickets', key: 'tickets', width: 100, align: 'right' as const,
       render: (v: number) => fmtInt(v),
+      sorter: (a: CashierRow, b: CashierRow) => a.tickets - b.tickets,
     },
     {
-      title: 'Dollars', dataIndex: 'dollars', key: 'dollars', width: 140,
-      align: 'right' as const, render: (v: number) => fmtMoney(v),
+      title: 'Dollars', dataIndex: 'dollars', key: 'dollars', width: 200,
+      align: 'right' as const,
+      render: (v: number) => (
+        <ShareBar value={v} max={maxCashierDollars} label={fmtMoney(v)} color="#722ed1" />
+      ),
+      sorter: (a: CashierRow, b: CashierRow) => a.dollars - b.dollars,
+      defaultSortOrder: 'descend' as const,
     },
   ]
 
   return (
     <div>
-      <Breadcrumb
-        style={{ marginBottom: 16 }}
-        items={[
+      <ReportHeader
+        title="Salesperson Summary"
+        description="Quantity, dollars, and perks per salesperson with optional subtotal breakdown."
+        citation="RICS Ch. 2 p. 42"
+        breadcrumb={[
           { title: <Link to="/reports/others">Other Reports</Link> },
           { title: 'Salesperson Summary' },
         ]}
       />
-      <Title level={2} style={{ marginBottom: 0 }}>Salesperson Summary</Title>
-      <Paragraph type="secondary">
-        Quantity, dollars, and perks per salesperson with optional subtotal breakdown (RICS Ch. 2 p. 42).
-      </Paragraph>
 
       <Card style={{ marginBottom: 16 }}>
         <Space wrap>
-          <RangePicker
-            value={[dayjs(dateRange[0]), dayjs(dateRange[1])]}
-            onChange={(range) => {
-              if (range && range[0] && range[1]) {
-                setDateRange([range[0].format('YYYY-MM-DD'), range[1].format('YYYY-MM-DD')])
-              }
-            }}
-          />
+          <DateRangeControl value={dateSpec} onChange={setDateSpec} />
           <Input
             placeholder="Stores (csv, blank=all)"
             value={storesText}
@@ -143,7 +188,21 @@ export default function SalespersonSummaryPage() {
           </Checkbox>
         </Space>
         <div style={{ marginTop: 12 }}>
-          <RunReportControls running={running} hasRun={query != null} onRun={onRun} onStop={onStop} />
+          <Space>
+            <RunReportControls running={running} hasRun={query != null} onRun={onRun} onStop={onStop} />
+            <SaveAsTemplateButton
+              reportType="salesperson-summary"
+              disabled={query == null}
+              getParamsJson={() => ({
+                dateSpec,
+                stores: parseStores(storesText),
+                storesText,
+                subtotalBy,
+                combineStores,
+                cashierSummary,
+              })}
+            />
+          </Space>
         </div>
       </Card>
 
@@ -157,10 +216,9 @@ export default function SalespersonSummaryPage() {
       )}
 
       {!query ? (
-        <Empty
-          description="Pick a date range, then click Run Report."
-          image={Empty.PRESENTED_IMAGE_SIMPLE}
-          style={{ padding: 40 }}
+        <ReportEmptyState
+          reason="idle"
+          message="Pick a date range, then click Run Report."
         />
       ) : running ? (
         <div style={{ textAlign: 'center', padding: 40 }}>
@@ -168,53 +226,69 @@ export default function SalespersonSummaryPage() {
         </div>
       ) : data ? (
         <>
-          <Card title="Salespeople" style={{ marginBottom: 16 }}>
-            <Table<SalespersonSummaryRow>
-              dataSource={data.salespeople}
-              columns={spColumns}
-              rowKey={(r) => `${r.salespersonCode}|${r.storeNumber}`}
-              size="small"
-              pagination={{ pageSize: 25 }}
-              expandable={
-                query.subtotalBy
-                  ? {
-                      expandedRowRender: (record) =>
-                        record.subtotals.length ? (
-                          <Table
-                            dataSource={record.subtotals}
-                            columns={[
-                              { title: 'Key', dataIndex: 'key', width: 150 },
-                              {
-                                title: 'Qty', dataIndex: 'qty', align: 'right' as const, width: 100,
-                                render: (v: number) => fmtInt(v),
-                              },
-                              {
-                                title: 'Dollars', dataIndex: 'dollars',
-                                align: 'right' as const, render: (v: number) => fmtMoney(v),
-                              },
-                            ]}
-                            rowKey="key"
-                            pagination={false}
-                            size="small"
-                          />
-                        ) : (
-                          <em>No subtotals</em>
-                        ),
-                    }
-                  : undefined
-              }
-            />
-          </Card>
+          <FilterChips
+            chips={[
+              { label: 'Period', value: `${query.startDate} → ${query.endDate}` },
+              query.stores?.length
+                ? { label: 'Stores', value: query.stores.join(', ') }
+                : { label: 'Stores', value: 'All' },
+              query.combineStores === false ? { label: 'Separate', value: 'per store' } : null,
+              query.subtotalBy
+                ? { label: 'Subtotal', value: query.subtotalBy === 'VENDOR' ? 'by vendor' : 'by category' }
+                : null,
+              query.cashierSummary ? { label: 'Extra', value: 'Cashier summary' } : null,
+            ]}
+          />
+          <Typography.Title level={4} style={{ marginTop: 0, marginBottom: 8 }}>Salespeople</Typography.Title>
+          <Table<SalespersonSummaryRow>
+            dataSource={data.salespeople}
+            columns={spColumns}
+            rowKey={(r) => `${r.salespersonCode}|${r.storeNumber}`}
+            size="small"
+            pagination={{ pageSize: 25 }}
+            rowClassName={(_r, i) => (i % 2 === 1 ? 'report-zebra-row' : '')}
+            style={{ marginBottom: 16 }}
+            expandable={
+              query.subtotalBy
+                ? {
+                    expandedRowRender: (record) =>
+                      record.subtotals.length ? (
+                        <Table
+                          dataSource={record.subtotals}
+                          columns={[
+                            { title: 'Key', dataIndex: 'key', width: 150 },
+                            {
+                              title: 'Qty', dataIndex: 'qty', align: 'right' as const, width: 100,
+                              render: (v: number) => fmtInt(v),
+                            },
+                            {
+                              title: 'Dollars', dataIndex: 'dollars',
+                              align: 'right' as const, render: (v: number) => fmtMoney(v),
+                            },
+                          ]}
+                          rowKey="key"
+                          pagination={false}
+                          size="small"
+                        />
+                      ) : (
+                        <Typography.Text type="secondary">No subtotals</Typography.Text>
+                      ),
+                  }
+                : undefined
+            }
+          />
           {query.cashierSummary && data.cashierSummary && (
-            <Card title="Cashier Summary">
+            <>
+              <Typography.Title level={4} style={{ marginTop: 24, marginBottom: 8 }}>Cashier Summary</Typography.Title>
               <Table<CashierRow>
                 dataSource={data.cashierSummary}
                 columns={cashierColumns}
                 rowKey={(r) => `${r.cashierCode}|${r.storeNumber}`}
                 size="small"
                 pagination={{ pageSize: 25 }}
+                rowClassName={(_r, i) => (i % 2 === 1 ? 'report-zebra-row' : '')}
               />
-            </Card>
+            </>
           )}
         </>
       ) : null}
