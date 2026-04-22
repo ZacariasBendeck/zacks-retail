@@ -58,7 +58,7 @@
 - **SKU code renaming is hard-forbidden post-activity** (matches RICS p. 154). Enforce at the API; the UI surfaces Discontinue SKUs as the only path.
 - **Keywords become a proper many-to-many join.** RICS's 60-char-per-SKU cap (p. 165) disappears; keyword-per-string length stays as a UX guideline only.
 - **Style/Color stays one field** (RICS p. 155 policy: "style OR color, not both"), but it's indexed case-normalized. Existing scaffolding (`StyleColorLink` in `apps/api/src/models/sku.ts`) stays.
-- **Change-utilities collapsed.** Change Salespeople / Size Columns / Size Types / Categories / Vendors / Seasons / Groups / Keywords (Ch. 15 renumber tools) are merged into ordinary admin edits. Renumbering a foreign key is a DB-level concern, not a user feature.
+- **Change-utilities live in the `utilities` module**, not here. Criteria-based batch edits (Change Categories / Vendors / Seasons / Groups / Keywords / Size Columns / Size Types) are operator-facing features owned by [`utilities`](utilities.md). This module still exposes the read primitive (`listSkusByCriteria`) and the overlay tables (`app.sku_attribute_override`, `app.sku_keyword_override`) that the utilities module consumes.
 
 ## Data model sketch
 
@@ -424,3 +424,20 @@ These are the three things blocking a real storefront launch — each is a concr
 13. **`availableSizes[].inStock` is stubbed `true` everywhere.** Every SKU appears in-stock for every size on the storefront. Needs a batched join into `Inventory Quantities` (wide-column unwind across `OnHand_01..18` per store) so the flag reflects actual on-hand. Oversell risk on launch.
 14. **Department filter mismatch (storefront enum ↔ RICS descriptions).** The storefront filter enum is English (`FORMAL`, `CASUAL`, …) but RICS category descriptions are Spanish (`SECTOR DE MARCAS H`, `ROPA NIÑOS MARCA`). The facet doesn't actually filter. Either retranslate the storefront enum to map to the real Spanish descriptions, or add a category-grouping layer in Postgres that the storefront filters by.
 15. **`brandId` is a synthetic array index.** Storefront currently sends `brandId: 0 | 1 | 2 …` (the array position of the vendor in the facet response), not the real RICS vendor code. Contract change needed so the real codes flow through — storefront types + adapter + service + all consumers.
+
+## Extended attributes layer (added 2026-04-22)
+
+A new app-native taxonomy layer sits on top of every SKU at `app.attribute_dimension` / `app.attribute_value` / `app.sku_attribute_assignment`. **Phase 1 of the layer covers four dimensions derivable from `InventoryMaster.KeyWords`** — Comprador (buyer), Empresa (company), Cadena (store chain), Tipo de Descuento (discount type). Future phases extend the same schema to a 15-dim footwear classification populated by operator entry and Excel import.
+
+The keyword field on `inventory_master` is **read-only** to this layer; derived data lives only in the app schema. Operator overrides are immune to re-seeding.
+
+Detail lives in the canonical module files, not here:
+
+- [`schema.md`](schema.md) — DDL, indexes, seed catalog, the full value list per dim.
+- [`api.md`](api.md) — `/api/v1/products/attributes/*` endpoints + the `attr.*` extension to the SKU list filter.
+- [`business-functional.md`](business-functional.md) — features (catalog viewer, SKU form Atributos tab, list filter group, inquiry badge strip), users, workflow, acceptance criteria.
+- [`tasks.md`](tasks.md) — the 9-step build order.
+- [`decisions.md`](decisions.md) — six ADRs covering the layer's design.
+- [`docs/dev/specs/2026-04-22-sku-extended-attributes-foundation-design.md`](../../dev/specs/2026-04-22-sku-extended-attributes-foundation-design.md) — original brainstorm session record.
+
+Open Question #6 above (keyword length cap) is unrelated and remains as-is — the new layer reads keyword tokens, it does not change the keyword storage model.

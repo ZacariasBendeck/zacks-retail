@@ -1,5 +1,9 @@
 # SKU Extended Attributes — Foundation Design
 
+> **Distributed into [`docs/modules/products/`](../../modules/products/) on 2026-04-22.**
+> The module folder is the living source of truth: see [`schema.md`](../../modules/products/schema.md), [`api.md`](../../modules/products/api.md), [`business-functional.md`](../../modules/products/business-functional.md), [`tasks.md`](../../modules/products/tasks.md), [`decisions.md`](../../modules/products/decisions.md), and the Extended-attributes-layer section appended to [`rics-module-specs.md`](../../modules/products/rics-module-specs.md).
+> This file is the original brainstorm-session record, kept for chronology and `/index-knowledge` queries. Treat module-folder content as canonical when in doubt.
+
 **Date:** 2026-04-22
 **Source:** `/brainstorm` session — adding a multi-dimension extended-attribute layer to SKUs, starting with four dimensions derivable from existing RICS keywords (Buyer, Company, Store Chain, Discount Type).
 **Type:** Design decision
