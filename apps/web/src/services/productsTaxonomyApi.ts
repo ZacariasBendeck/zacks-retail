@@ -64,6 +64,15 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 
 const BASE = '/api/v1/taxonomy'
 
+// System-wide SKU total — denominator for the per-taxonomy coverage footer.
+export interface SkuTotal {
+  total: number
+}
+
+export const skuTotalApi = {
+  get: () => request<SkuTotal>(`${BASE}/sku-total`),
+}
+
 // Resolve Category → Department → Sector
 export interface TaxonomyResolution {
   category: number

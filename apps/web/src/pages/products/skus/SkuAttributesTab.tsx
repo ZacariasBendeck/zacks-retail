@@ -25,7 +25,11 @@ function mechanicPrefix(code: string): string {
  */
 function discountTypeOptions(dim: AttributeDimension) {
   const byPrefix = new Map<string, { label: string; options: { value: string; label: string }[] }>()
+  // Only active values are offered for new assignments. Existing assignments
+  // to inactive values stay intact — the backend returns them via /attributes
+  // and the Select renders them as selected even if not in the options list.
   for (const v of dim.values) {
+    if (!v.isActive) continue
     const p = mechanicPrefix(v.code)
     const group =
       byPrefix.get(p) ?? { label: DISCOUNT_GROUP_LABELS[p] ?? p, options: [] }
@@ -141,6 +145,7 @@ export default function SkuAttributesTab({ skuCode }: Props) {
           dim.code === 'discount_type'
             ? discountTypeOptions(dim)
             : dim.values
+                .filter((v) => v.isActive)
                 .slice()
                 .sort((a, b) => a.sortOrder - b.sortOrder)
                 .map((v) => ({ value: v.code, label: v.labelEs }))

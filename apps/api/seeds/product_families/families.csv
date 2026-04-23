@@ -1,0 +1,12 @@
+code,label_es,description_es,sort_order
+zapatos,Zapatos,"Todo el calzado (dama, caballero, niño)",10
+tops,Tops,"Blusas, camisas, t-shirts, tanks, sweaters, cardigans",20
+vestidos,Vestidos,Vestidos de todo tipo,30
+pantalones,Pantalones,"Pantalones y jeans (no shorts, no pantalón de traje)",40
+ropa_otros,Ropa – Otros,"Shorts, faldas, ropa de baño, deportiva, dormir, interior",50
+jackets_outerwear,Chaquetas y Abrigos,"Chaquetas, abrigos, blazers no-traje, gabardinas, parkas, puffers, capas, chalecos estructurados",60
+suits,Trajes / Conjuntos,"Saco, pantalón de traje, chaleco de traje, conjunto completo — piezas enlazadas vía Matching Set",70
+carteras,Carteras,"Bolsos, mochilas, clutches, maletines",80
+cinturones,Cinturones,Todos los cinturones,90
+accesorios,Accesorios,"Joyería, pulseras, aretes, collares, bufandas, sombreros, billeteras (atributos TBD)",100
+general,General,"Catchall para categorías sin familia específica (gift cards, promocionales, operaciones)",999

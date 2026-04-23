@@ -229,6 +229,43 @@ export interface SalesAnalysisPrinting {
   priorYear?: boolean;
 }
 
+/**
+ * Per-SKU attributes that accompany a SKU_DETAIL row when the caller asks
+ * for them via `includeAttributes=true`. `extended` carries any app-side
+ * extended attributes (see apps/api/src/services/products/attributesService),
+ * keyed by dimension code (e.g. "material", "heel_height").
+ *
+ * Only populated for reportType=SKU_DETAIL — summary rows aggregate across
+ * SKUs and these fields are meaningless. Null-valued fields mean the
+ * attribute was absent on that SKU, not that the enrichment failed.
+ */
+export interface SkuAttributeColumns {
+  description: string | null;
+  vendorCode: string | null;
+  /** RICS `inventory_master.manufacturer` — the private-label brand or
+   *  parent company behind the SKU (e.g. "Inversiones Benlow"). Distinct from
+   *  `vendorCode`, which is the 4-char trading code. Surfaced as the
+   *  "Company" column on the viewer, default-hidden. */
+  manufacturer: string | null;
+  /** RICS category number (e.g. 591). Rendered as a separate identity column
+   *  on the viewer so operators can see the numeric category alongside its desc. */
+  categoryNumber: number | null;
+  categoryDesc: string | null;
+  /** Dept number + desc derived from `departments.beg_categ/end_categ` range
+   *  over the effective category number. */
+  departmentNumber: number | null;
+  departmentDesc: string | null;
+  styleColor: string | null;
+  currentPrice: number | null;
+  /** Per-unit cost from inventory_master.current_cost. Distinct from the row's
+   *  `onHandAtCost` which is Σ(onHand × currentCost). */
+  currentCost: number | null;
+  /** Total on-hand units across every store (sum of inventory_quantities.on_hand_01..18). */
+  unitsOnHand: number | null;
+  pictureUrl: string | null;
+  extended: Record<string, string>;
+}
+
 export interface SalesAnalysisRow {
   dimensionKey: string;
   dimensionLabel: string | null;
@@ -243,6 +280,12 @@ export interface SalesAnalysisRow {
   roiPct: number | null;        // GMROI, annualized; null when onHandAtCost=0
   priorYearNetSales: number | null;
   pyPctChange: number | null;
+  /**
+   * Populated only for SKU_DETAIL rows when `includeAttributes=true` was
+   * passed to the endpoint. Left undefined otherwise so the default payload
+   * stays lean for large runs and non-viewer callers.
+   */
+  attributes?: SkuAttributeColumns;
 }
 
 export interface SalesAnalysisReport {
@@ -264,6 +307,147 @@ export interface SalesAnalysisReport {
     priorYearNetSales: number | null;
   };
   periodDays: number;
+}
+
+// ─────────────────────────── Sales Hierarchy Drill-Down (Dept → Cat → SKU) ──
+//
+// App-native. Same filter surface as Sales Analysis, but the response is a
+// nested tree instead of a flat row list. Departments are collapsed by default
+// in the UI; clicking expands to categories, clicking a category expands to
+// its SKUs. When `storeOption=SEPARATE` there is an extra Store level wrapping
+// the tree; `storeOption=COMBINE` aggregates across stores so the roots are
+// departments directly. `COMPARE` is not supported for this report — the
+// side-by-side store axis conflicts with the row hierarchy.
+
+export type SalesHierarchyStoreOption = 'SEPARATE' | 'COMBINE';
+
+export interface SalesHierarchyNode {
+  level: 'store' | 'department' | 'category' | 'sku';
+  /** Stable identity within `level`: store number / dept number / category
+   *  number / SKU code. Rendered upstream combined with `level` to form a
+   *  tree-wide unique row key. */
+  key: string;
+  label: string;
+  /** The store this row belongs to. Null on COMBINE roots; otherwise set on
+   *  every row under a store bucket. */
+  storeNumber: number | null;
+  qty: number;
+  netSales: number;
+  cogs: number;
+  grossProfit: number;
+  gpPct: number | null;
+  onHandAtCost: number;
+  turns: number | null;
+  roiPct: number | null;
+  priorYearNetSales: number | null;
+  pyPctChange: number | null;
+  /** Only populated on SKU rows when `includeAttributes=true`. */
+  attributes?: SkuAttributeColumns;
+  children?: SalesHierarchyNode[];
+}
+
+export interface SalesHierarchyReport {
+  storeOption: SalesHierarchyStoreOption;
+  criteria: SalesAnalysisCriteria;
+  priorYear: boolean;
+  startDate: string;
+  endDate: string;
+  periodDays: number;
+  roots: SalesHierarchyNode[];
+  totals: {
+    qty: number;
+    netSales: number;
+    cogs: number;
+    grossProfit: number;
+    onHandAtCost: number;
+    gpPct: number | null;
+    turns: number | null;
+    roiPct: number | null;
+    priorYearNetSales: number | null;
+  };
+}
+
+// ─────────────────────────── Sales Pivot (three variants) ────────────────
+//
+// One endpoint, three interchangeable hierarchies selected by `variant`:
+//
+//   department               Sector → Dept → Category → SKU         (stores aggregated)
+//   department-separate-store  Store → Sector → Dept → Category → SKU
+//   buyer                    Buyer → Dept → Category → SKU          (stores aggregated)
+//
+// "Buyer" is the `buyer` extended-attribute dimension (aka "Comprador") on
+// the SKU. SKUs without a buyer assignment land under `(Unassigned)`.
+// The TY window is `[startDate, endDate]`; LY is the same window shifted one
+// year back. OnHand is a point-in-time snapshot — reported current-only,
+// never split by year.
+//
+// The leaf row is a single unified shape: identity fields that don't apply
+// to the chosen variant are `null`. Frontend groups into the appropriate
+// tree based on `variant`.
+
+export type SalesPivotVariant =
+  | 'department'
+  | 'department-separate-store'
+  | 'buyer'
+  | 'buyer-vendor'
+  | 'buyer-vendor-separate-store';
+
+export interface SalesPivotLeafRow {
+  /** Set for `department-separate-store` only. Null otherwise. */
+  storeNumber: number | null;
+  storeName: string | null;
+
+  /** Set for `buyer*` variants. Null otherwise. */
+  buyerCode: string | null;
+  buyerLabel: string | null;
+
+  /** Set for `buyer-vendor*` variants. Null otherwise. */
+  vendorCode: string | null;
+  vendorLabel: string | null;
+
+  /** Set for `department*` variants. Null on `buyer*` variants. */
+  sector: number | null;
+  sectorDesc: string | null;
+
+  dept: number | null;
+  deptDesc: string | null;
+  categ: number | null;
+  categDesc: string | null;
+  sku: string;
+  skuDescription: string | null;
+
+  onHandQty: number;
+  onHandCostVal: number;
+
+  qtyTY: number;
+  netSalesTY: number;
+  profitTY: number;
+
+  qtyLY: number;
+  netSalesLY: number;
+  profitLY: number;
+}
+
+export interface SalesPivotTotals {
+  onHandQty: number;
+  onHandCostVal: number;
+  qtyTY: number;
+  netSalesTY: number;
+  profitTY: number;
+  qtyLY: number;
+  netSalesLY: number;
+  profitLY: number;
+}
+
+export interface SalesPivotReport {
+  variant: SalesPivotVariant;
+  startDate: string;      // YYYY-MM-DD, TY window start
+  endDate: string;        // YYYY-MM-DD, TY window end
+  currentYear: number;    // derived from startDate.getFullYear()
+  priorYear: number;      // currentYear - 1
+  storeNumbers: number[]; // echoed filter; empty array = all stores
+  rows: SalesPivotLeafRow[];
+  totals: SalesPivotTotals;
 }
 
 // ─────────────────────────── Stock Status (RICS p. 96) ────────────────────

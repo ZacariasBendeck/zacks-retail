@@ -1,35 +1,67 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Alert, Card, Col, Menu, Row, Spin, Typography } from 'antd'
-import { useAttributeCoverage, useAttributeDimensions } from '../../../hooks/useProductsAttributes'
-import CatalogDimensionPanel from './CatalogDimensionPanel'
+import {
+  Alert,
+  App,
+  Button,
+  Card,
+  Col,
+  Menu,
+  Popconfirm,
+  Row,
+  Space,
+  Spin,
+  Tabs,
+  Tag,
+  Tooltip,
+  Typography,
+} from 'antd'
+import {
+  DeleteOutlined,
+  EditOutlined,
+  PlusOutlined,
+} from '@ant-design/icons'
+import {
+  useAttributeDimensions,
+  useDeleteDimension,
+} from '../../../hooks/useProductsAttributes'
+import CoverageTab from './CoverageTab'
+import DimensionFormModal from './DimensionFormModal'
+import RulesTab from './RulesTab'
+import ValuesTab from './ValuesTab'
+import type { AttributeDimension } from '../../../types/productsAttributes'
 
+/**
+ * Extended-attributes admin — the "mini PIM" console.
+ *
+ * Left: dimensions menu with "+ Nueva" header button and per-row edit/delete
+ * affordances. Right: three tabs (Valores | Reglas | Cobertura) for the
+ * currently selected dimension.
+ *
+ * Mutations go through useProductsAttributes hooks which share invalidation
+ * keys with /products/families so both pages stay in sync.
+ */
 export default function CatalogPage() {
+  const { message } = App.useApp()
   const { data: dimensions, isLoading, error } = useAttributeDimensions(true)
-  const { data: coverage } = useAttributeCoverage()
+  const del = useDeleteDimension()
   const [selected, setSelected] = useState<string | null>(null)
+  const [formOpen, setFormOpen] = useState(false)
+  const [formEditing, setFormEditing] = useState<AttributeDimension | null>(null)
 
   useEffect(() => {
-    if (!selected && dimensions && dimensions.length > 0) {
+    if (!dimensions || dimensions.length === 0) {
+      setSelected(null)
+      return
+    }
+    if (!selected || !dimensions.some((d) => d.code === selected)) {
       const first = dimensions[0]
       if (first) setSelected(first.code)
     }
   }, [dimensions, selected])
 
-  const coverageByDim = useMemo(() => {
-    const map = new Map<string, { coveragePct: number; classifiedSkus: number; totalSkus: number }>()
-    for (const c of coverage ?? []) {
-      map.set(c.dimensionCode, {
-        coveragePct: c.coveragePct,
-        classifiedSkus: c.classifiedSkus,
-        totalSkus: c.totalSkus,
-      })
-    }
-    return map
-  }, [coverage])
-
   const selectedDim = useMemo(
-    () => dimensions?.find((d) => d.code === selected),
-    [dimensions, selected]
+    () => dimensions?.find((d) => d.code === selected) ?? null,
+    [dimensions, selected],
   )
 
   if (isLoading) {
@@ -48,23 +80,51 @@ export default function CatalogPage() {
       />
     )
   }
-  if (!dimensions || dimensions.length === 0) {
-    return <Alert type="info" message="No hay dimensiones configuradas. Ejecute `pnpm seed:sku-attributes`." />
-  }
 
-  const menuItems = dimensions.map((d) => ({
+  const menuItems = (dimensions ?? []).map((d) => ({
     key: d.code,
     label: (
-      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
-        <span>{d.labelEs}</span>
-        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          {coverageByDim.get(d.code)?.coveragePct.toFixed(1) ?? '—'}%
-        </Typography.Text>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
+        <Space size={6}>
+          <span>{d.labelEs}</span>
+          {d.familyRules.length === 0 ? (
+            <Tag color="blue" style={{ marginInlineEnd: 0 }}>
+              universal
+            </Tag>
+          ) : (
+            <Tag style={{ marginInlineEnd: 0 }}>{d.familyRules.length} fam.</Tag>
+          )}
+        </Space>
+        <Space size={0} onClick={(e) => e.stopPropagation()}>
+          <Tooltip title="Editar">
+            <Button
+              type="text"
+              size="small"
+              icon={<EditOutlined />}
+              onClick={() => {
+                setFormEditing(d)
+                setFormOpen(true)
+              }}
+            />
+          </Tooltip>
+          <Popconfirm
+            title="¿Eliminar esta dimensión?"
+            description="Esta acción se bloquea si hay SKUs con asignaciones activas."
+            onConfirm={async () => {
+              try {
+                await del.mutateAsync(d.code)
+                message.success(`Dimensión '${d.code}' eliminada`)
+              } catch (e) {
+                message.error((e as Error).message)
+              }
+            }}
+          >
+            <Button type="text" size="small" danger icon={<DeleteOutlined />} />
+          </Popconfirm>
+        </Space>
       </div>
     ),
   }))
-
-  const selectedCoverage = selected ? coverageByDim.get(selected) : undefined
 
   return (
     <div>
@@ -72,34 +132,93 @@ export default function CatalogPage() {
         Atributos extendidos
       </Typography.Title>
       <Typography.Paragraph type="secondary">
-        Catálogo de dimensiones y valores usados para clasificar SKUs más allá del vendor, categoría
-        y temporada.
+        Catálogo de dimensiones y valores que clasifican SKUs más allá de categoría, temporada y
+        vendor. Cada dimensión puede aplicarse universalmente o ser específica de ciertas familias
+        (ver pestaña <strong>Reglas</strong>). La administración de familias vive en{' '}
+        <a href="/products/families">Familias de producto</a>.
       </Typography.Paragraph>
       <Row gutter={16}>
-        <Col xs={24} md={6}>
-          <Card size="small" styles={{ body: { padding: 0 } }}>
-            <Menu
-              mode="inline"
-              selectedKeys={selected ? [selected] : []}
-              items={menuItems}
-              onClick={({ key }) => setSelected(String(key))}
-              style={{ borderRight: 0 }}
-            />
+        <Col xs={24} md={8} lg={7}>
+          <Card
+            size="small"
+            title="Dimensiones"
+            extra={
+              <Button
+                type="primary"
+                size="small"
+                icon={<PlusOutlined />}
+                onClick={() => {
+                  setFormEditing(null)
+                  setFormOpen(true)
+                }}
+              >
+                Nueva
+              </Button>
+            }
+            styles={{ body: { padding: 0 } }}
+          >
+            {dimensions && dimensions.length > 0 ? (
+              <Menu
+                mode="inline"
+                selectedKeys={selected ? [selected] : []}
+                items={menuItems}
+                onClick={({ key }) => setSelected(String(key))}
+                style={{ borderRight: 0 }}
+              />
+            ) : (
+              <Alert
+                type="info"
+                message="No hay dimensiones"
+                description="Cree una con el botón 'Nueva' arriba."
+                style={{ margin: 12 }}
+              />
+            )}
           </Card>
         </Col>
-        <Col xs={24} md={18}>
-          <Card size="small" title={selectedDim?.labelEs ?? '—'}>
-            {selectedCoverage ? (
-              <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
-                {selectedCoverage.classifiedSkus.toLocaleString('en-US')} SKUs clasificados de{' '}
-                {selectedCoverage.totalSkus.toLocaleString('en-US')} ·{' '}
-                {selectedCoverage.coveragePct.toFixed(1)}% de cobertura
-              </Typography.Paragraph>
-            ) : null}
-            <CatalogDimensionPanel dimension={selectedDim} />
-          </Card>
+        <Col xs={24} md={16} lg={17}>
+          {selectedDim ? (
+            <Card
+              size="small"
+              title={
+                <Space>
+                  <Typography.Text strong>{selectedDim.labelEs}</Typography.Text>
+                  <Tag>{selectedDim.code}</Tag>
+                  {selectedDim.familyRules.length === 0 ? (
+                    <Tag color="blue">universal</Tag>
+                  ) : null}
+                </Space>
+              }
+              extra={
+                selectedDim.descriptionEs ? (
+                  <Typography.Text type="secondary">{selectedDim.descriptionEs}</Typography.Text>
+                ) : null
+              }
+            >
+              <Tabs
+                items={[
+                  { key: 'valores', label: 'Valores', children: <ValuesTab dimension={selectedDim} /> },
+                  { key: 'reglas', label: 'Reglas', children: <RulesTab dimension={selectedDim} /> },
+                  {
+                    key: 'cobertura',
+                    label: 'Cobertura',
+                    children: <CoverageTab dimension={selectedDim} />,
+                  },
+                ]}
+              />
+            </Card>
+          ) : (
+            <Card size="small">
+              <Typography.Text type="secondary">Seleccione una dimensión.</Typography.Text>
+            </Card>
+          )}
         </Col>
       </Row>
+      <DimensionFormModal
+        open={formOpen}
+        editing={formEditing}
+        onClose={() => setFormOpen(false)}
+        onSaved={(code) => setSelected(code)}
+      />
     </div>
   )
 }

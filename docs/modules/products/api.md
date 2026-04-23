@@ -184,12 +184,62 @@ productsAttributes.bulkAssign({
 
 Same validation as `PUT .../attributes`. Same atomic-replace semantics, applied per SKU. Wraps the whole batch in a single transaction; rolls back fully on any per-SKU validation error.
 
+## Admin endpoints (added 2026-04-23)
+
+The attribute catalog + family rules are administered in-app at `/products/attributes` (dimensions + values + dim-side family rules) and `/products/families` (families, category mapping, family-side rules). Every write audits into `ProductsAuditLog`.
+
+### Dimension CRUD
+
+| Method + path | Purpose | Notable response |
+|---|---|---|
+| `POST   /products/attributes/dimensions` | Create a dimension (`{ code, labelEs, descriptionEs?, sortOrder, isMultiValue }`). | `201` with the created row. |
+| `PATCH  /products/attributes/dimensions/:code` | Update labelEs / descriptionEs / sortOrder / isMultiValue. | `200`. |
+| `DELETE /products/attributes/dimensions/:code` | Hard delete. **409** if any `sku_attribute_assignment` references it. |  |
+| `POST   /products/attributes/dimensions/reorder` | Bulk `sortOrder` update (`{ entries: [{code, sortOrder}...] }`). | `200`. |
+
+### Family rules (dimension side)
+
+| Method + path | Purpose |
+|---|---|
+| `GET /products/attributes/dimensions/:code/family-rules` | Return the dim's rule rows (empty array = universal). |
+| `PUT /products/attributes/dimensions/:code/family-rules` | Replace set. Body: `{ universal: true }` for universal, or `{ universal: false, rules: [{familyCode, enabled, isRequired, sortOrder?}...] }`. |
+
+### Value CRUD
+
+| Method + path | Purpose |
+|---|---|
+| `POST   /products/attributes/dimensions/:code/values` | Create value. `201`. |
+| `PATCH  /products/attributes/values/:id` | Update labelEs / sortOrder / isActive. |
+| `DELETE /products/attributes/values/:id` | Hard delete. **409** if referenced by assignments. |
+| `POST   /products/attributes/values/:id/deactivate` | Shortcut: sets `isActive=false` (survives FK Restrict; preserves history). |
+| `POST   /products/attributes/values/:id/merge-into/:targetId` | Reassign all `sku_attribute_assignment` rows from `:id` to `:targetId` (skipping SKUs that already carry the target), delete source. Both must share dimension. |
+| `POST   /products/attributes/dimensions/:code/values/reorder` | Bulk `sortOrder` update. |
+
+### Family admin
+
+| Method + path | Purpose |
+|---|---|
+| `PATCH /products/families/:code` | Update labelEs / descriptionEs / sortOrder. |
+| `PUT /products/families/:code/categories` | Replace the set of RICS category numbers mapped to this family (one category maps to one family — reassignment is upsert). Body: `{ categories: number[] }`. Appends `?force=true` to override the orphan-assignment soft block. |
+| `GET /products/families/:code/attribute-rules` | Reverse view of rule rows for this family. |
+| `PUT /products/families/:code/attribute-rules` | Replace the family's full rule set (inverse of the dimension-side endpoint). |
+| `PATCH /products/families/:code/attribute-rules/:dimCode` | Toggle `enabled`/`isRequired`/`sortOrder` for one (dim, family) pair. |
+| `DELETE /products/families/:code/attribute-rules/:dimCode` | Remove the rule row. |
+
+### SKU-save validation (enforced in `PUT /products/skus/:code/attributes`)
+
+1. **Value-dimension integrity** — `value_id` must belong to `dimension_id`.
+2. **`is_active` gate** — new assignments can only reference `is_active=true` values.
+3. **Family gating** — if the dim has ≥1 rule row, the SKU's family must have an enabled rule. Universal dims (zero rule rows) always pass. Errors: `409 "Dimensión X no aplica a la familia Y"`.
+4. **Required-attribute enforcement** — for every dim with `is_required=true` for the SKU's family, the post-replace state must have ≥1 assignment (keyword-derived assignments that stay through the replace also satisfy the requirement). Errors: `409` with the list of missing dim codes.
+
 ## Out of scope (Phase 1)
 
 - **Public storefront facet endpoints.** Storefront has its own router with anonymous auth + edge caching requirements. The shape of `/attributes/dimensions?withCounts=true` is the data the storefront facet endpoint will consume internally; the storefront-side endpoint is a separate brainstorm.
-- **Catalog editing endpoints** (`POST /attributes/dimensions`, etc.). Catalog is CSV-edited and seed-script-applied for now.
 - **Per-source filtering** ("give me only operator-overridden assignments"). The `assigned_by` field is in the read response; clients filter if needed.
 - **Bulk SKU-attribute fetch** (`POST /attributes/by-sku-codes`). Not building speculatively; add when a use case lands.
+- **Create / delete of `ProductFamily` rows** — the 11 families are fixed; admin UI surfaces the actions disabled.
+- **Matching Set / Conjuntos admin** — separate module, separate plan.
 
 ## Related
 

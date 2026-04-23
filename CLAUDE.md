@@ -8,6 +8,144 @@ This repo uses slash commands under [`.claude/commands/`](.claude/commands/) as 
 
 This repo builds **Zack's Retail** — a modern, web-based inventory and retail-operations system. The mandate is to re-implement the full functionality of **RICS**, the team's legacy Windows/Access-based inventory control system, as a web application that a cashier, buyer, or operator can run from a browser. RICS defines the baseline feature set; Zack's Retail matches it first, then improves on it for a web-first workflow (real-time sync instead of modems, Postgres instead of diskette transfer, in-app notifications instead of stored reminders, etc.).
 
+# RICS Parity Rule — Cutover Requirement
+
+## Overview
+
+Zack’s Retail must fully replicate the operational behavior of RICS before cutover.
+
+Cutover is not based on code completion — it is based on **verified operational parity**.
+
+---
+
+## Core Requirement
+
+Every RICS workflow must be:
+
+1. Implemented in Zack’s Retail
+2. Tested against real RICS data
+3. Re-tested through multiple rehearsal cycles
+4. Verified by real operators (not just developers)
+
+Only then is it considered ready for cutover.
+
+---
+
+## Critical Workflows That Must Be Covered
+
+At minimum, the following workflows must be validated:
+
+### Product / SKU
+- SKU lookup and search
+- SKU creation (both Postgres-first and RICS-first flows)
+- SKU modification and updates
+- Attribute enrichment and classification
+
+### Purchasing
+- Purchase order creation
+- Editing POs
+- Receiving merchandise
+- Handling partial receipts
+
+### Inventory
+- Inventory tracking by SKU and store
+- Inventory adjustments
+- Transfers between stores
+- Stock availability queries
+
+### Pricing
+- Price assignment
+- Markdown pricing
+- Price slot handling (list, retail, markdowns)
+- Price changes over time
+
+### Barcode
+- Barcode assignment
+- Barcode lookup
+- Barcode printing readiness
+
+### POS
+- Item scan
+- Add/remove items from ticket
+- Price resolution at POS
+- Transaction completion
+
+### Reporting (minimum)
+- Inventory inquiries
+- SKU-level reports
+- Basic operational reports used by staff
+
+---
+
+## Rehearsal Requirement
+
+The system must pass multiple rehearsal cycles before cutover.
+
+Each rehearsal includes:
+
+1. Migration of RICS data into Postgres
+2. Execution of real workflows in Zack’s Retail
+3. Comparison of outputs vs RICS behavior
+4. Identification of mismatches
+5. Fixes applied
+6. Re-run
+
+This loop continues until:
+
+> Zack’s Retail behaves consistently and predictably across all workflows.
+
+---
+
+## No Assumptions Allowed
+
+- Do not assume a feature is correct because it compiles
+- Do not assume parity without comparing to RICS
+- Do not skip workflows because they seem minor
+
+If RICS supports a behavior, Zack’s Retail must either:
+- support it, or
+- explicitly document why it is not being ported
+
+---
+
+## Operator Validation
+
+Technical correctness is not sufficient.
+
+Real users must be able to perform their workflows:
+
+- Warehouse staff
+- Buyers
+- Store operators
+
+If operators cannot use the system effectively, parity is not achieved.
+
+---
+
+## Cutover Gate
+
+Cutover is allowed only when:
+
+- All critical workflows have been tested
+- Rehearsal migrations succeed without blocking issues
+- No unresolved high-impact mismatches remain
+- Operators can complete daily tasks in Zack’s Retail
+
+---
+
+## Design Implications
+
+- All feature work must consider how it will be tested against RICS
+- Migration tooling must support repeated rehearsal cycles
+- Differences between RICS and Zack’s Retail must be visible and explainable
+- Testing is a first-class requirement, not a final step
+
+---
+
+## Guiding Principle
+
+> Zack’s Retail replaces RICS only when it has already proven it can run the business.
+
 **Sources of truth for requirements.** Read in this order when porting or designing a feature:
 
 1. **[`docs/modules/<slug>.md`](docs/modules/)** — the module's governed contract. Cite this first; it's authoritative for what the module does today and what it promises to other modules.
@@ -44,7 +182,7 @@ The project rolls out in three phases. Always know which phase a piece of work b
 
 **Phase B — Zack's Retail becomes the operator UI; RICS stops changing.** Store operators cut over from RICS to Zack's Retail (module by module or all at once, TBD per module plan). RICS MDBs become historical — no new writes from cashiers. The `sync:rics` reload stops being periodic because the source stopped moving; one final reload captures the last RICS state, then `rics_mirror` is merged with any app-side extensions to become the authoritative tables. The product, inventory, and sales-history data in `rics_mirror` either gets promoted into module-owned schemas (`products.*`, `inventory.*`, `sales_pos.*`) or is preserved as-is for historical reads.
 
-**Phase C — Postgres-only.** The MDB files are retired. The C# bulk extractor, the `bulk-extract.ps1` host, the `accessOleDb.ts` + `persistentPwsh.ts` helpers, and the `rics_mirror` schema itself all come out. Only module-owned schemas remain. Zack's Retail is the system of record.
+**Phase C — Postgres-only.** The MDB files are retired. The C# bulk extractor, the `bulk-extract.ps1` host, the `accessOleDb.ts` + `persistentPwsh.ts` helpers, and the `rics_mirror` schema itself all come out. Only module-owned schemas remain. Zack's Retail is the system of record. Because every RICS SKU has already been mirrored into `app.sku` as ACTIVE on every `sync:rics` run (see [docs/operations/sku-lifecycle-backfill.md](docs/operations/sku-lifecycle-backfill.md)), the SKU side of Phase C is a pure `DROP SCHEMA rics_mirror` — no cutover migration for product records.
 
 **How this affects day-to-day decisions:**
 - A new feature's spec must declare which phase it targets. A "Phase A" feature reads from `rics_mirror.*` via raw SQL (or a generated Prisma view) and writes to `public.*` or `app.*`. It MUST NOT write into `rics_mirror` (reload drops everything) and MUST NOT write back to the MDBs (hard rule; see below).
@@ -83,7 +221,7 @@ Match on intent, not exact phrasing. If the operator's ask plausibly maps to a c
 ## Project stack
 
 - Monorepo: **pnpm workspaces + Turbo**
-- Backend: Node 20+, TypeScript, Express, **Jest**, **Prisma** (multi-schema), **PostgreSQL 16** as the system-of-record; SQLite still present for legacy admin tables pending migration
+- Backend: Node 20+, TypeScript, Express, **Jest**, **Prisma** (multi-schema), **PostgreSQL 16** as the system-of-record. SQLite is present only as a **frozen** read-store for legacy admin tables (ref_colors, ref_patterns, …) that are being migrated piecewise into `app.*` dimensions — see the Postgres-only HARD RULE below. No new SQLite writes.
 - Frontend: React 18, Vite, Ant Design, TanStack Query, Zustand, **Vitest**, ECharts
 - ETL: PowerShell + C# (hosted via `Add-Type`) reads ACE.OLEDB.12.0, writes CSV, Node pipes into Postgres COPY. One-way RICS → Postgres, operator-invoked. See [docs/operations/rics-mirror-sync.md](docs/operations/rics-mirror-sync.md).
 - Legacy read-only: RICS v7.7 Access MDB files at `E:/data/rics-mdbs/`, reached only via the sync ETL; never written.
@@ -103,6 +241,20 @@ The API pre-loads the full `InventoryMaster` table into an in-memory index at st
 ## HARD RULE — Access OLE DB helper must stay async
 
 `runPowerShellJson()` in [`apps/api/src/services/accessOleDb.ts`](apps/api/src/services/accessOleDb.ts) **must use `child_process.spawn`, never `spawnSync`**. Every read and write against the legacy RICS MDBs goes through this one helper; if it becomes synchronous, the Node event loop freezes for the full duration of every PowerShell call (0.7–60 s each) and the server stops answering HTTP even though port 4000 is still listening. Operators see "every tab hangs" on restart. Full explanation, verification steps, and the list of edits that would re-introduce the bug live in [`docs/operations/access-oledb-async-spawn.md`](docs/operations/access-oledb-async-spawn.md).
+
+## HARD RULE — Postgres-only for new development (as of 2026-04-23)
+
+Every new feature built on Zack's Retail from this date forward writes **exclusively to Postgres**. No new columns on SQLite (`apps/api/src/db/database.ts`), no new `legacy_attrs` keys, no new dependencies on the SQLite ref tables.
+
+**Concretely this means:**
+
+- **New SKU attributes** land as proper **dimensional assignments** in `app.attribute_dimension` / `app.attribute_value` / `app.sku_attribute_assignment`. Never in `app.sku.legacy_attrs`. The 11 legacy Apariencia / Diseño ref tables (colors, patterns, finishes, heel-heights, heel-shapes, toe-shapes, accessories, upper-materials, outsole-materials, heel-materials, width-types) were migrated into dimensions on 2026-04-23 via `pnpm seed:legacy-ref-dimensions`. Any further ref table should follow that same script's pattern.
+- **New SKU columns** land on `app.sku` (or a new `app.*` table), with a Prisma migration. Never on a SQLite admin table.
+- **New lookup data** (families, brands, stores, employees, promotion codes) lives in `app.*` or `rics_mirror.*` — never a fresh SQLite table.
+- **`legacy_attrs` is frozen.** It still carries the shoe-specific AI attributes that haven't been migrated yet (shoeTypeId, closureTypeId, seasonId, occasionId, genderId, labelTypeId, brandText), but no new key should be added to it. Those seven are the migration backlog — each becomes a dimension when touched.
+- **Existing SQLite reads** (legacy `/api/v1/skus/*` endpoints, `useReferenceData`) continue to work as-is so the rest of the admin doesn't rot — but new code reads from Postgres.
+
+If a task seems to require a SQLite write, stop and surface it to the operator before proceeding — it's almost certainly a sign the feature should use the dimensional framework or a new `app.*` table.
 
 ## HARD RULE — no new branches, no worktrees
 

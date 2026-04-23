@@ -1,9 +1,45 @@
 import type {
   AttributeCoverageRow,
   AttributeDimension,
+  AttributeDimensionValue,
+  AttributeFamilyRule,
   SetSkuAttributesInput,
   SkuAttributes,
 } from '../types/productsAttributes'
+
+export interface DimensionInput {
+  code: string
+  labelEs: string
+  descriptionEs?: string | null
+  sortOrder: number
+  isMultiValue: boolean
+}
+
+export interface DimensionPatch {
+  labelEs?: string
+  descriptionEs?: string | null
+  sortOrder?: number
+  isMultiValue?: boolean
+}
+
+export interface ValueInput {
+  code: string
+  labelEs: string
+  sortOrder: number
+}
+
+export interface ValuePatch {
+  labelEs?: string
+  sortOrder?: number
+  isActive?: boolean
+}
+
+export type FamilyRulesReplaceInput =
+  | { universal: true }
+  | {
+      universal: false
+      rules: { familyCode: string; enabled: boolean; isRequired: boolean; sortOrder?: number }[]
+    }
 
 export class AttributesApiError extends Error {
   status: number
@@ -55,5 +91,80 @@ export const productsAttributesApi = {
   },
   coverage(): Promise<AttributeCoverageRow[]> {
     return request<AttributeCoverageRow[]>(`${BASE}/attributes/coverage`)
+  },
+
+  // ──────────────── Dimension CRUD ────────────────
+  createDimension(input: DimensionInput): Promise<AttributeDimension> {
+    return request<AttributeDimension>(`${BASE}/attributes/dimensions`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    })
+  },
+  updateDimension(code: string, patch: DimensionPatch): Promise<AttributeDimension> {
+    return request<AttributeDimension>(`${BASE}/attributes/dimensions/${encodeURIComponent(code)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    })
+  },
+  deleteDimension(code: string): Promise<void> {
+    return request<void>(`${BASE}/attributes/dimensions/${encodeURIComponent(code)}`, {
+      method: 'DELETE',
+    })
+  },
+  reorderDimensions(entries: { code: string; sortOrder: number }[]): Promise<{ updated: number }> {
+    return request<{ updated: number }>(`${BASE}/attributes/dimensions/reorder`, {
+      method: 'POST',
+      body: JSON.stringify({ entries }),
+    })
+  },
+
+  // ──────────────── Family rules (dim side) ────────────────
+  getFamilyRules(dimensionCode: string): Promise<AttributeFamilyRule[]> {
+    return request<AttributeFamilyRule[]>(
+      `${BASE}/attributes/dimensions/${encodeURIComponent(dimensionCode)}/family-rules`,
+    )
+  },
+  replaceFamilyRules(dimensionCode: string, input: FamilyRulesReplaceInput): Promise<AttributeFamilyRule[]> {
+    return request<AttributeFamilyRule[]>(
+      `${BASE}/attributes/dimensions/${encodeURIComponent(dimensionCode)}/family-rules`,
+      { method: 'PUT', body: JSON.stringify(input) },
+    )
+  },
+
+  // ──────────────── Value CRUD ────────────────
+  createValue(dimensionCode: string, input: ValueInput): Promise<AttributeDimensionValue> {
+    return request<AttributeDimensionValue>(
+      `${BASE}/attributes/dimensions/${encodeURIComponent(dimensionCode)}/values`,
+      { method: 'POST', body: JSON.stringify(input) },
+    )
+  },
+  updateValue(id: number, patch: ValuePatch): Promise<AttributeDimensionValue> {
+    return request<AttributeDimensionValue>(`${BASE}/attributes/values/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    })
+  },
+  deleteValue(id: number): Promise<void> {
+    return request<void>(`${BASE}/attributes/values/${id}`, { method: 'DELETE' })
+  },
+  deactivateValue(id: number): Promise<AttributeDimensionValue> {
+    return request<AttributeDimensionValue>(`${BASE}/attributes/values/${id}/deactivate`, {
+      method: 'POST',
+    })
+  },
+  mergeValues(sourceId: number, targetId: number): Promise<{ moved: number }> {
+    return request<{ moved: number }>(
+      `${BASE}/attributes/values/${sourceId}/merge-into/${targetId}`,
+      { method: 'POST' },
+    )
+  },
+  reorderValues(
+    dimensionCode: string,
+    entries: { valueId: number; sortOrder: number }[],
+  ): Promise<{ updated: number }> {
+    return request<{ updated: number }>(
+      `${BASE}/attributes/dimensions/${encodeURIComponent(dimensionCode)}/values/reorder`,
+      { method: 'POST', body: JSON.stringify({ entries }) },
+    )
   },
 }

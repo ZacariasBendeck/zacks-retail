@@ -35,6 +35,7 @@
 import { prisma } from '../../db/prisma';
 import { getOnHandAtCostByDimension } from './ricsOnHandAtCostAdapter';
 import { computeRoiTurnsGp } from './metrics';
+import { loadSkuAttributesBySku } from './skuAttributesEnricher';
 import {
   parseCriteria,
   matchesCriteria,
@@ -68,6 +69,9 @@ import type {
   SalesAnalysisCriteria,
   SalesAnalysisPrinting,
   SalesAnalysisRow,
+  SalesHierarchyReport,
+  SalesHierarchyNode,
+  SalesHierarchyStoreOption,
   StockStatusReport,
   StockStatusRow,
   StockStatusSortBy,
@@ -1100,6 +1104,16 @@ export async function getSalesAnalysis(params: {
   printing: SalesAnalysisPrinting;
   startDate?: string;           // overrides printing.* when provided
   endDate?: string;
+  /**
+   * When true AND reportType=SKU_DETAIL, each row gets an `attributes`
+   * object with description / vendor / category-desc / style-color /
+   * current price / picture URL (from the in-memory SkuLookupIndex) plus
+   * any extended SKU attributes assigned in app.sku_attribute_assignment.
+   *
+   * Defaults to false to keep the preview-grid response small. The
+   * full-screen ReportViewerPage opts in to get the richer payload.
+   */
+  includeAttributes?: boolean;
 }): Promise<SalesAnalysisReport> {
   const { startDate, endDate } = resolveAnalysisWindow(params);
 
@@ -1320,6 +1334,18 @@ export async function getSalesAnalysis(params: {
       : null,
   };
 
+  // Optional per-SKU enrichment for SKU_DETAIL runs — only attached when the
+  // caller asks via includeAttributes=true (the viewer opts in; the inline
+  // builder preview does not, to keep payloads small).
+  if (params.includeAttributes && params.reportType === 'SKU_DETAIL' && rows.length > 0) {
+    const skuCodes = rows.map((r) => r.dimensionKey);
+    const attrsBySku = await loadSkuAttributesBySku(skuCodes);
+    for (const row of rows) {
+      const attrs = attrsBySku.get(row.dimensionKey.trim().toUpperCase());
+      if (attrs) row.attributes = attrs;
+    }
+  }
+
   return {
     dimension: params.dimension,
     reportType: params.reportType,
@@ -1330,6 +1356,388 @@ export async function getSalesAnalysis(params: {
     totals,
     periodDays,
   };
+}
+
+// ─────────────────────────── Sales Hierarchy Drill-Down ───────────────────
+//
+// Same criteria surface as `getSalesAnalysis`, but the output is a nested
+// tree (Store? → Department → Category → SKU) instead of a flat row list.
+// Ticket lines feed all three row grains at once — one pass, one cache hit.
+// On-hand at cost is loaded at SKU grain and rolled up; prior-year uses the
+// same bucketing on a 364-day-shifted window.
+
+export async function getSalesHierarchy(params: {
+  storeOption: SalesHierarchyStoreOption;
+  criteria: SalesAnalysisCriteria;
+  startDate: string;
+  endDate: string;
+  priorYear?: boolean;
+  includeAttributes?: boolean;
+}): Promise<SalesHierarchyReport> {
+  const startDate = normalizeDate(params.startDate);
+  const endDate = normalizeDate(params.endDate);
+  const combine = params.storeOption === 'COMBINE';
+
+  const parsed: ParsedAnalysisCriteria = {
+    stores: parseCriteria(params.criteria.storesRaw),
+    categories: parseCriteria(params.criteria.categoriesRaw),
+    vendors: parseCriteria(params.criteria.vendorsRaw),
+    skus: parseCriteria(params.criteria.skusRaw),
+  };
+
+  const structuredStoresList = params.criteria.stores ?? [];
+  const storesBounds = sqlNumericBounds(parsed.stores);
+  let expandedStoresFromGrammar: number[] | null = null;
+  if (storesBounds) {
+    expandedStoresFromGrammar = [];
+    for (let n = storesBounds.min; n <= storesBounds.max; n++) {
+      expandedStoresFromGrammar.push(n);
+    }
+  }
+  const filteredStores = (() => {
+    if (!structuredStoresList.length && !expandedStoresFromGrammar) return undefined;
+    if (!structuredStoresList.length) return expandedStoresFromGrammar ?? undefined;
+    if (!expandedStoresFromGrammar) return structuredStoresList;
+    return Array.from(new Set([...structuredStoresList, ...expandedStoresFromGrammar]));
+  })();
+
+  const [lines, deptMap, categoryList, storeMap] = await Promise.all([
+    loadTicketLines({ startDate, endDate, storeNumbers: filteredStores }),
+    loadDepartmentMap(),
+    loadCategoryList(),
+    loadStoreMap(),
+  ]);
+
+  const categoryDescByNumber = new Map<number, string>();
+  for (const c of categoryList) {
+    if (c.desc) categoryDescByNumber.set(c.number, c.desc);
+  }
+
+  // Bucket ticket lines at SKU grain, tagging each SKU with its (dept, cat)
+  // so rollup is a single walk later. Lines with no category map to a
+  // synthetic "unmapped" department so the tree still renders them rather
+  // than silently dropping rows.
+  type SkuBucket = {
+    storeNumber: number | null;
+    deptKey: string;             // `${deptNum}` or '_unmapped'
+    catKey: string;              // `${catNum}` or '_unmapped'
+    sku: string;
+    qty: number;
+    netSales: number;
+    cogs: number;
+  };
+  const skuBuckets = new Map<string, SkuBucket>();
+
+  for (const l of lines) {
+    if (!applyAnalysisCriteria(l, params.criteria, parsed)) continue;
+    if (!l.sku) continue;
+    const storeNumber = combine ? null : l.store;
+    const catNum = l.category ?? null;
+    const catKey = catNum != null ? String(catNum) : '_unmapped';
+    const deptNum = deptNumberForCategory(catNum, deptMap);
+    const deptKey = deptNum != null ? String(deptNum) : '_unmapped';
+    const mapKey = `${storeNumber ?? '*'}|${deptKey}|${catKey}|${l.sku}`;
+    let b = skuBuckets.get(mapKey);
+    if (!b) {
+      b = {
+        storeNumber,
+        deptKey,
+        catKey,
+        sku: l.sku,
+        qty: 0,
+        netSales: 0,
+        cogs: 0,
+      };
+      skuBuckets.set(mapKey, b);
+    }
+    b.qty += l.qty;
+    b.netSales += l.extension;
+    b.cogs += l.cost * l.qty;
+  }
+
+  // Prior-year netSales at the same SKU grain. 364-day shift matches the
+  // Sales Analysis adapter so weekday alignment is preserved.
+  let priorYearBySku: Map<string, number> | null = null;
+  if (params.priorYear) {
+    const pyStart = addDays(startDate, -364);
+    const pyEnd = addDays(endDate, -364);
+    const pyLines = await loadTicketLines({
+      startDate: pyStart,
+      endDate: pyEnd,
+      storeNumbers: filteredStores,
+    });
+    priorYearBySku = new Map();
+    for (const l of pyLines) {
+      if (!applyAnalysisCriteria(l, params.criteria, parsed)) continue;
+      if (!l.sku) continue;
+      const storeNumber = combine ? null : l.store;
+      const catNum = l.category ?? null;
+      const catKey = catNum != null ? String(catNum) : '_unmapped';
+      const deptNum = deptNumberForCategory(catNum, deptMap);
+      const deptKey = deptNum != null ? String(deptNum) : '_unmapped';
+      const mapKey = `${storeNumber ?? '*'}|${deptKey}|${catKey}|${l.sku}`;
+      priorYearBySku.set(mapKey, (priorYearBySku.get(mapKey) ?? 0) + l.extension);
+    }
+  }
+
+  // On-hand at SKU grain, fed by the existing SKU_DETAIL path so we benefit
+  // from its 5-min cache + criteria filtering.
+  const onHandSkuMap = await getOnHandAtCostByDimension({
+    reportType: 'SKU_DETAIL',
+    storeOption: params.storeOption === 'SEPARATE' ? 'SEPARATE' : 'COMBINE',
+    criteria: params.criteria,
+  });
+  // Key shape: COMBINE => '<sku>', SEPARATE => '<sku>|<store>'.
+  function onHandFor(sku: string, storeNumber: number | null): number {
+    const key = storeNumber == null ? sku : `${sku}|${storeNumber}`;
+    return onHandSkuMap.get(key) ?? 0;
+  }
+
+  // SKU attribute enrichment (description-as-label, etc.) — opt-in.
+  const allSkuCodes = Array.from(new Set([...skuBuckets.values()].map((b) => b.sku)));
+  const attrsBySku = params.includeAttributes && allSkuCodes.length > 0
+    ? await loadSkuAttributesBySku(allSkuCodes)
+    : new Map<string, import('./types').SkuAttributeColumns>();
+
+  const periodDays =
+    Math.round(
+      (new Date(endDate).getTime() - new Date(startDate).getTime()) / 86_400_000,
+    ) + 1;
+
+  // Build the tree. Intermediate node shape owns its accumulators; we wrap
+  // into the public SalesHierarchyNode shape at the end so metrics stay
+  // computed from aggregate (net, cogs, onHand) rather than row averages.
+  type InternalAgg = {
+    qty: number;
+    netSales: number;
+    cogs: number;
+    onHandAtCost: number;
+    priorYearNetSales: number;
+    priorYearHit: boolean;
+  };
+  function emptyAgg(): InternalAgg {
+    return { qty: 0, netSales: 0, cogs: 0, onHandAtCost: 0, priorYearNetSales: 0, priorYearHit: false };
+  }
+  function addInto(acc: InternalAgg, src: InternalAgg): void {
+    acc.qty += src.qty;
+    acc.netSales += src.netSales;
+    acc.cogs += src.cogs;
+    acc.onHandAtCost += src.onHandAtCost;
+    acc.priorYearNetSales += src.priorYearNetSales;
+    if (src.priorYearHit) acc.priorYearHit = true;
+  }
+
+  type StoreBucket = {
+    storeNumber: number | null;
+    departments: Map<string, DeptBucket>;
+    agg: InternalAgg;
+  };
+  type DeptBucket = {
+    key: string;
+    categories: Map<string, CategoryBucket>;
+    agg: InternalAgg;
+  };
+  type CategoryBucket = {
+    key: string;
+    skus: Map<string, SkuLeaf>;
+    agg: InternalAgg;
+  };
+  type SkuLeaf = {
+    sku: string;
+    agg: InternalAgg;
+  };
+
+  const storeBuckets = new Map<string, StoreBucket>();
+  function getStoreBucket(storeNumber: number | null): StoreBucket {
+    const k = storeNumber == null ? '*' : String(storeNumber);
+    let s = storeBuckets.get(k);
+    if (!s) {
+      s = { storeNumber, departments: new Map(), agg: emptyAgg() };
+      storeBuckets.set(k, s);
+    }
+    return s;
+  }
+
+  for (const b of skuBuckets.values()) {
+    const store = getStoreBucket(b.storeNumber);
+    let dept = store.departments.get(b.deptKey);
+    if (!dept) {
+      dept = { key: b.deptKey, categories: new Map(), agg: emptyAgg() };
+      store.departments.set(b.deptKey, dept);
+    }
+    let cat = dept.categories.get(b.catKey);
+    if (!cat) {
+      cat = { key: b.catKey, skus: new Map(), agg: emptyAgg() };
+      dept.categories.set(b.catKey, cat);
+    }
+    const pyKey = `${b.storeNumber ?? '*'}|${b.deptKey}|${b.catKey}|${b.sku}`;
+    const pyValue = priorYearBySku?.get(pyKey);
+    const leafAgg: InternalAgg = {
+      qty: b.qty,
+      netSales: b.netSales,
+      cogs: b.cogs,
+      onHandAtCost: onHandFor(b.sku, b.storeNumber),
+      priorYearNetSales: pyValue ?? 0,
+      priorYearHit: pyValue != null,
+    };
+    cat.skus.set(b.sku, { sku: b.sku, agg: leafAgg });
+    addInto(cat.agg, leafAgg);
+    addInto(dept.agg, leafAgg);
+    addInto(store.agg, leafAgg);
+  }
+
+  function finalize(
+    level: SalesHierarchyNode['level'],
+    key: string,
+    label: string,
+    storeNumber: number | null,
+    agg: InternalAgg,
+    children?: SalesHierarchyNode[],
+    attributes?: import('./types').SkuAttributeColumns,
+  ): SalesHierarchyNode {
+    const grossProfit = agg.netSales - agg.cogs;
+    const metrics = computeRoiTurnsGp({
+      netSales: agg.netSales,
+      cogs: agg.cogs,
+      grossProfit,
+      onHandAtCost: agg.onHandAtCost,
+      periodDays,
+    });
+    const priorYearNetSales = params.priorYear
+      ? (agg.priorYearHit ? round2(agg.priorYearNetSales) : null)
+      : null;
+    const pyPctChange =
+      priorYearNetSales == null || priorYearNetSales === 0
+        ? null
+        : round1(((agg.netSales - priorYearNetSales) / priorYearNetSales) * 100);
+    return {
+      level,
+      key,
+      label,
+      storeNumber,
+      qty: agg.qty,
+      netSales: round2(agg.netSales),
+      cogs: round2(agg.cogs),
+      grossProfit: round2(grossProfit),
+      gpPct: metrics.gpPct,
+      onHandAtCost: round2(agg.onHandAtCost),
+      turns: metrics.turns,
+      roiPct: metrics.roiPct,
+      priorYearNetSales,
+      pyPctChange,
+      ...(attributes ? { attributes } : {}),
+      ...(children ? { children } : {}),
+    };
+  }
+
+  function deptLabel(key: string): string {
+    if (key === '_unmapped') return '(Unmapped)';
+    const d = deptMap.find((r) => String(r.number) === key);
+    return d?.desc ? `${key} — ${d.desc}` : `Dept ${key}`;
+  }
+  function catLabel(key: string): string {
+    if (key === '_unmapped') return '(Unmapped)';
+    const n = Number(key);
+    const desc = Number.isFinite(n) ? categoryDescByNumber.get(n) : undefined;
+    return desc ? `${key} — ${desc}` : `Cat ${key}`;
+  }
+  function skuLabel(sku: string): string {
+    const a = attrsBySku.get(sku.trim().toUpperCase());
+    return a?.description ? `${sku} — ${a.description}` : sku;
+  }
+  function storeLabel(num: number): string {
+    const s = storeMap.get(num);
+    return s?.name ? `${num} — ${s.name}` : `Store ${num}`;
+  }
+
+  function buildDept(storeNumber: number | null, d: DeptBucket): SalesHierarchyNode {
+    const catNodes = [...d.categories.values()]
+      .sort((a, b) => sortKeyCompare(a.key, b.key))
+      .map((c) => {
+        const skuNodes = [...c.skus.values()]
+          .sort((a, b) => a.sku.localeCompare(b.sku, undefined, { numeric: true, sensitivity: 'base' }))
+          .map((s) => finalize(
+            'sku',
+            s.sku,
+            skuLabel(s.sku),
+            storeNumber,
+            s.agg,
+            undefined,
+            attrsBySku.get(s.sku.trim().toUpperCase()),
+          ));
+        return finalize('category', c.key, catLabel(c.key), storeNumber, c.agg, skuNodes);
+      });
+    return finalize('department', d.key, deptLabel(d.key), storeNumber, d.agg, catNodes);
+  }
+
+  const storeList = [...storeBuckets.values()].sort((a, b) => {
+    if (a.storeNumber == null) return -1;
+    if (b.storeNumber == null) return 1;
+    return a.storeNumber - b.storeNumber;
+  });
+
+  let roots: SalesHierarchyNode[];
+  if (combine) {
+    // Single store bucket (storeNumber=null); unwrap to department roots.
+    const bucket = storeList[0];
+    roots = bucket
+      ? [...bucket.departments.values()]
+          .sort((a, b) => sortKeyCompare(a.key, b.key))
+          .map((d) => buildDept(null, d))
+      : [];
+  } else {
+    roots = storeList.map((store) => {
+      const sNum = store.storeNumber ?? 0;
+      const deptNodes = [...store.departments.values()]
+        .sort((a, b) => sortKeyCompare(a.key, b.key))
+        .map((d) => buildDept(store.storeNumber, d));
+      return finalize('store', String(sNum), storeLabel(sNum), store.storeNumber, store.agg, deptNodes);
+    });
+  }
+
+  // Grand totals: aggregate fresh from all store buckets so the metrics line
+  // up with what the rolled-up rows compute (aggregate num/denom, not sum of
+  // row ratios).
+  const grandAgg = emptyAgg();
+  for (const s of storeList) addInto(grandAgg, s.agg);
+  const grandGp = grandAgg.netSales - grandAgg.cogs;
+  const grandMetrics = computeRoiTurnsGp({
+    netSales: grandAgg.netSales,
+    cogs: grandAgg.cogs,
+    grossProfit: grandGp,
+    onHandAtCost: grandAgg.onHandAtCost,
+    periodDays,
+  });
+
+  return {
+    storeOption: params.storeOption,
+    criteria: params.criteria,
+    priorYear: !!params.priorYear,
+    startDate,
+    endDate,
+    periodDays,
+    roots,
+    totals: {
+      qty: grandAgg.qty,
+      netSales: round2(grandAgg.netSales),
+      cogs: round2(grandAgg.cogs),
+      grossProfit: round2(grandGp),
+      onHandAtCost: round2(grandAgg.onHandAtCost),
+      gpPct: grandMetrics.gpPct,
+      turns: grandMetrics.turns,
+      roiPct: grandMetrics.roiPct,
+      priorYearNetSales: params.priorYear && grandAgg.priorYearHit
+        ? round2(grandAgg.priorYearNetSales)
+        : null,
+    },
+  };
+}
+
+function sortKeyCompare(a: string, b: string): number {
+  // '_unmapped' sinks to the bottom so populated groups are shown first.
+  if (a === '_unmapped' && b !== '_unmapped') return 1;
+  if (b === '_unmapped' && a !== '_unmapped') return -1;
+  return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
 }
 
 function resolveAnalysisWindow(params: { startDate?: string; endDate?: string; printing: SalesAnalysisPrinting }): { startDate: string; endDate: string } {

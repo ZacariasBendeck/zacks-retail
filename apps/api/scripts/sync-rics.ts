@@ -39,6 +39,24 @@ function onProgress(evt: ProgressEvent): void {
     case 'swap':
       console.log(`[sync:rics] atomic swap: ${evt.staging} -> ${evt.final}`);
       break;
+    case 'sku-backfill-start':
+      console.log(`[sync:rics] SKU backfill starting (rics_mirror.inventory_master -> app.sku)`);
+      break;
+    case 'sku-backfill-ok': {
+      const r = evt.result;
+      console.log(
+        `[sync:rics] SKU backfill OK — inserted=${fmtNum(r.inserted)} updated=${fmtNum(r.updated)} ` +
+          `reactivated=${fmtNum(r.reactivated)} discontinued=${fmtNum(r.discontinued)} ` +
+          `operatorCollisions=${r.operatorCollisions} in ${fmtDuration(r.durationMs)}`,
+      );
+      break;
+    }
+    case 'sku-backfill-err':
+      console.error(
+        `[sync:rics] SKU backfill FAILED — ${evt.error.message}. Mirror is committed; ` +
+          `re-run with \`pnpm sync:rics-skus\` to heal app.sku.`,
+      );
+      break;
     case 'run-end':
       if (evt.status === 'ok') {
         console.log(

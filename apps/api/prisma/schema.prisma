@@ -93,19 +93,21 @@ model OrderLine {
 }
 
 model User {
-  id              String    @id @default(uuid())
-  email           String    @unique
-  passwordHash    String
-  displayName     String
-  active          Boolean   @default(true)
-  ricsUserId      String?
-  salespersonCode String?
-  roleId          String
-  role            Role      @relation(fields: [roleId], references: [id])
-  sessions        Session[]
-  lastLoginAt     DateTime?
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  id                   String           @id @default(uuid())
+  email                String           @unique
+  passwordHash         String
+  displayName          String
+  active               Boolean          @default(true)
+  ricsUserId           String?
+  salespersonCode      String?
+  roleId               String
+  role                 Role             @relation(fields: [roleId], references: [id])
+  sessions             Session[]
+  ownedReportTemplates ReportTemplate[] @relation("OwnedReportTemplates")
+  reportRuns           ReportRun[]      @relation("ReportRuns")
+  lastLoginAt          DateTime?
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
 
   @@index([roleId])
   @@schema("public")
@@ -291,6 +293,163 @@ model ProductsBatchOperationItem {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
+// Product Family — named bundles of attribute dimensions, selected per SKU
+// via the RICS category → family mapping.
+//
+// Spec: docs/dev/plans/http-localhost-3000-inventory-skus-new-i-piped-galaxy.md
+//
+// Phase A contract: families + mapping live in app.*. Category numbers soft-ref
+// rics_mirror.categories.number (no FK; mirror rebuilt on each sync:rics).
+// Unmapped categories surface via app.category_family_orphans (DB view).
+// ─────────────────────────────────────────────────────────────────────────
+
+/// One of the 11 named Product Families (zapatos, tops, vestidos, pantalones,
+/// ropa_otros, jackets_outerwear, suits, carteras, cinturones, accesorios,
+/// general). Seeded from seeds/product_families/families.csv.
+model ProductFamily {
+  code              String                  @id
+  labelEs           String                  @map("label_es")
+  descriptionEs     String?                 @map("description_es")
+  sortOrder         Int                     @map("sort_order") @db.SmallInt
+  createdAt         DateTime                @default(now()) @map("created_at")
+  categoryMappings  CategoryProductFamily[]
+  attributeRules    AttributeFamilyRule[]
+  skus              Sku[]
+
+  @@index([sortOrder], map: "product_family_sort_order_idx")
+  @@map("product_family")
+  @@schema("app")
+}
+
+/// One row per RICS category mapping it to exactly one Product Family.
+/// `category_number` soft-refs rics_mirror.categories.number.
+/// Seeded from seeds/product_families/category_mapping.csv.
+model CategoryProductFamily {
+  categoryNumber Int           @id @map("category_number")
+  familyCode     String        @map("family_code")
+  family         ProductFamily @relation(fields: [familyCode], references: [code], onDelete: Restrict, onUpdate: Cascade)
+  updatedAt      DateTime      @updatedAt @map("updated_at")
+  updatedBy      String        @default("seed") @map("updated_by")
+
+  @@index([familyCode], map: "category_product_family_family_code_idx")
+  @@map("category_product_family")
+  @@schema("app")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// SKU lifecycle — net-new SKUs created in Zack's Retail.
+//
+// Spec: docs/dev/plans/http-localhost-3000-inventory-skus-new-i-piped-galaxy.md
+//       §"Phase 5 — SKU lifecycle (DRAFT → ACTIVE → DISCONTINUED)"
+//
+// State machine:
+//   DRAFT        — provisional_code set, final `code` NULL, all fields editable.
+//                  Receipt into WH allowed; allocate/barcode/POS/ecommerce blocked.
+//   ACTIVE       — finalize flipped the row. `code` populated, rename blocked,
+//                  all downstream ops unlocked.
+//   DISCONTINUED — merged-into-another-SKU or retired. Read-only.
+//
+// Legacy RICS SKUs still live in `rics_mirror.inventory_master` during Phase A.
+// The products-module read paths UNION both sources; write path is `app.sku` only.
+// ─────────────────────────────────────────────────────────────────────────
+
+/// A SKU created in Zack's Retail (net-new). Lifecycle-managed.
+/// The `sku_code_matches_state` check constraint enforces:
+///   state=DRAFT  → code IS NULL
+///   state≠DRAFT  → code IS NOT NULL
+/// The service layer owns the transitions (see skuLifecycleService).
+model Sku {
+  id                String          @id @default(uuid()) @db.Uuid
+  provisionalCode   String          @map("provisional_code") @db.VarChar(32)
+  code              String?         @db.VarChar(15)
+  skuState          String          @default("DRAFT") @map("sku_state")
+
+  familyCode        String?         @map("family_code")
+  family            ProductFamily?  @relation(fields: [familyCode], references: [code], onDelete: Restrict, onUpdate: Cascade)
+  categoryNumber    Int?            @map("category_number")
+  vendorId          String?         @map("vendor_id")
+  vendorSku         String?         @map("vendor_sku")
+  brandId           Int?            @map("brand_id")
+
+  descriptionRics   String?         @map("description_rics")
+  descriptionWeb    String?         @map("description_web")
+  comment           String?
+  keywords          String?
+
+  listPrice         Decimal?        @map("list_price") @db.Decimal(12, 2)
+  retailPrice       Decimal?        @map("retail_price") @db.Decimal(12, 2)
+  markDownPrice1    Decimal?        @map("mark_down_price1") @db.Decimal(12, 2)
+  markDownPrice2    Decimal?        @map("mark_down_price2") @db.Decimal(12, 2)
+  currentCost       Decimal?        @map("current_cost") @db.Decimal(12, 2)
+  currentPriceSlot  String?         @map("current_price_slot")
+
+  sizeType          Int?            @map("size_type") @db.SmallInt
+  style             String?
+  styleColor        String?         @map("style_color")
+  season            String?         @db.VarChar(2)
+  location          String?
+  labelCode         String?         @map("label_code")
+  colorCode         String?         @map("color_code")
+  groupCode         String?         @map("group_code")
+  pictureFileName   String?         @map("picture_file_name")
+  manufacturer      String?
+  coupon            Boolean         @default(false)
+  orderMultiple     Int?            @map("order_multiple") @db.SmallInt
+  orderUom          String?         @map("order_uom")
+  perks             Decimal?        @db.Decimal(12, 2)
+  discountCode      String?         @map("discount_code")
+
+  activatedAt       DateTime?       @map("activated_at")
+  activatedBy       String?         @map("activated_by")
+  discontinuedAt    DateTime?       @map("discontinued_at")
+  discontinuedBy   String?          @map("discontinued_by")
+  createdAt         DateTime        @default(now()) @map("created_at")
+  createdBy         String          @map("created_by")
+  updatedAt         DateTime?       @map("updated_at")
+
+  /// Transitional — carries legacy form-attribute IDs (colorId, shoeTypeId, …).
+  /// Phase 4 replaces this with proper dimension assignments.
+  legacyAttrs       Json?           @map("legacy_attrs")
+
+  /// Provenance: 'app' = operator-created via POST /sku-drafts (sync NEVER
+  /// touches these). 'rics' = mirrored from rics_mirror.inventory_master by
+  /// sync:rics (upsertable on every run). See skuLifecycleBackfill.ts.
+  source            String          @default("app")
+  ricsLastSyncedAt  DateTime?       @map("rics_last_synced_at")
+  ricsStatus        String?         @map("rics_status") @db.Char(1)
+
+  activity          SkuActivity[]
+
+  @@unique([provisionalCode], map: "sku_provisional_code_key")
+  @@index([skuState, familyCode], map: "sku_state_family_idx")
+  @@index([vendorId], map: "sku_vendor_idx")
+  @@index([categoryNumber], map: "sku_category_idx")
+  @@index([createdAt], map: "sku_created_at_idx")
+  @@index([source, skuState], map: "sku_source_state_idx")
+  @@map("sku")
+  @@schema("app")
+}
+
+/// State-transition audit log. Written by skuLifecycleService — no DB trigger,
+/// because we want the service to own the who/why context (actor, reason).
+model SkuActivity {
+  id          String   @id @default(uuid()) @db.Uuid
+  skuId       String   @map("sku_id") @db.Uuid
+  sku         Sku      @relation(fields: [skuId], references: [id], onDelete: Cascade)
+  event       String   // 'created' | 'updated' | 'finalized' | 'discontinued' | 'reactivated'
+  fromState   String?  @map("from_state")
+  toState     String?  @map("to_state")
+  actor       String
+  payloadJson Json?    @map("payload_json")
+  occurredAt  DateTime @default(now()) @map("occurred_at")
+
+  @@index([skuId, occurredAt(sort: Desc)], map: "sku_activity_sku_id_idx")
+  @@index([occurredAt(sort: Desc)], map: "sku_activity_occurred_at_idx")
+  @@map("sku_activity")
+  @@schema("app")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 // SKU extended attributes — dimension catalog + per-SKU assignments.
 //
 // Spec: docs/dev/specs/2026-04-22-sku-extended-attributes-foundation-design.md
@@ -305,22 +464,50 @@ model ProductsBatchOperationItem {
 /// Multi-value dims allow a SKU to carry more than one value (e.g. a SKU can
 /// run two discount mechanics simultaneously). Single-value dims are enforced
 /// at the service layer, not the DB, so cardinality can flip without migration.
+///
+/// Family scoping is many-to-many via `AttributeFamilyRule`. A dimension with
+/// zero rule rows is **universal** — renders for every family. A dimension with
+/// one or more rules renders only for families whose rule has `enabled=true`.
+/// Required enforcement (`is_required` on the rule) is validated on SKU save.
 model AttributeDimension {
-  id            Int                    @id @default(autoincrement()) @db.SmallInt
-  code          String                 @unique
-  labelEs       String                 @map("label_es")
-  descriptionEs String?                @map("description_es")
-  sortOrder     Int                    @map("sort_order") @db.SmallInt
-  isMultiValue  Boolean                @default(false) @map("is_multi_value")
-  createdAt     DateTime               @default(now()) @map("created_at")
-  values        AttributeValue[]
-  assignments   SkuAttributeAssignment[]
+  id             Int                    @id @default(autoincrement()) @db.SmallInt
+  code           String                 @unique
+  labelEs        String                 @map("label_es")
+  descriptionEs  String?                @map("description_es")
+  sortOrder      Int                    @map("sort_order") @db.SmallInt
+  isMultiValue   Boolean                @default(false) @map("is_multi_value")
+  createdAt      DateTime               @default(now()) @map("created_at")
+  values         AttributeValue[]
+  assignments    SkuAttributeAssignment[]
+  familyRules    AttributeFamilyRule[]
 
   @@map("attribute_dimension")
   @@schema("app")
 }
 
+/// One (dimension, family) rule row. Presence of ≥1 rule for a dimension flips
+/// it from universal to family-scoped. `enabled=false` hides the dimension for
+/// that family without deleting the row (preserves `is_required` + history).
+model AttributeFamilyRule {
+  dimensionId Int                @map("dimension_id") @db.SmallInt
+  dimension   AttributeDimension @relation(fields: [dimensionId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  familyCode  String             @map("family_code")
+  family      ProductFamily      @relation(fields: [familyCode], references: [code], onDelete: Restrict, onUpdate: Cascade)
+  enabled     Boolean            @default(true)
+  isRequired  Boolean            @default(false) @map("is_required")
+  sortOrder   Int                @default(0) @map("sort_order") @db.SmallInt
+  updatedAt   DateTime           @updatedAt @map("updated_at")
+  updatedBy   String             @default("seed") @map("updated_by")
+
+  @@id([dimensionId, familyCode])
+  @@index([familyCode], map: "attribute_family_rule_family_idx")
+  @@map("attribute_family_rule")
+  @@schema("app")
+}
+
 /// A value available within a dimension (e.g. buyer:zb, discount_type:pct_50).
+/// `is_active=false` hides the value from new-assignment dropdowns but
+/// preserves it for existing assignments and audit history.
 model AttributeValue {
   id          Int                     @id @default(autoincrement()) @db.SmallInt
   dimensionId Int                     @map("dimension_id") @db.SmallInt
@@ -328,6 +515,7 @@ model AttributeValue {
   code        String
   labelEs     String                  @map("label_es")
   sortOrder   Int                     @map("sort_order") @db.SmallInt
+  isActive    Boolean                 @default(true) @map("is_active")
   createdAt   DateTime                @default(now()) @map("created_at")
   assignments SkuAttributeAssignment[]
 
@@ -341,7 +529,7 @@ model AttributeValue {
 /// or an operator user id / email. Precedence (enforced in service layer):
 ///   operator-edit > seed:excel:* > seed:keyword:* > no row.
 model SkuAttributeAssignment {
-  skuCode     String             @map("sku_code") @db.VarChar(15)
+  skuCode     String             @map("sku_code") @db.VarChar(32)
   dimensionId Int                @map("dimension_id") @db.SmallInt
   dimension   AttributeDimension @relation(fields: [dimensionId], references: [id], onDelete: Restrict, onUpdate: Cascade)
   valueId     Int                @map("value_id") @db.SmallInt
@@ -373,4 +561,59 @@ model EtlRunTable {
   @@index([runId])
   @@map("etl_run_table")
   @@schema("platform")
+}
+
+/// Reports module — saved/reusable report query (a.k.a. "template").
+/// Captures (report_type + params) for later replay against fresh data.
+/// Owner has full control; visibility='shared' grants read-only access to any
+/// authenticated user. Runs/snapshots of frozen results live in a separate
+/// table added in Phase 1.1 (docs/dev/plans/2026-04-22-report-templates-and-runs.md).
+model ReportTemplate {
+  id         String    @id @default(uuid())
+  ownerId    String    @map("owner_id")
+  owner      User      @relation("OwnedReportTemplates", fields: [ownerId], references: [id], onDelete: Cascade)
+  reportType String    @map("report_type")
+  title      String
+  paramsJson Json      @map("params_json")
+  visibility String    @default("private") // 'private' | 'shared'
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+  lastUsedAt DateTime? @map("last_used_at")
+
+  runs       ReportRun[] @relation("ReportRunsFromTemplate")
+
+  @@unique([ownerId, reportType, title])
+  @@index([visibility, reportType])
+  @@map("report_templates")
+  @@schema("app")
+}
+
+/// A frozen snapshot of a report run. Captured explicitly via "Save snapshot"
+/// after reviewing a result (never auto-saved). Stores the full response
+/// payload so the page can re-render exactly what was on screen at capture.
+/// Envelope columns (rowCount, resultSizeBytes, reportTypeVersion) are
+/// computed server-side so the list view does not deserialize the blob, and
+/// so clients cannot lie about them.
+/// Spec: docs/dev/plans/2026-04-22-report-templates-and-runs.md Phase 1.1.
+model ReportRun {
+  id                String          @id @default(uuid())
+  userId            String          @map("user_id")
+  user              User            @relation("ReportRuns", fields: [userId], references: [id], onDelete: Cascade)
+  reportType        String          @map("report_type")
+  sourceTemplateId  String?         @map("source_template_id")
+  sourceTemplate    ReportTemplate? @relation("ReportRunsFromTemplate", fields: [sourceTemplateId], references: [id], onDelete: SetNull)
+  title             String?
+  paramsJson        Json            @map("params_json")
+  resultJson        Json            @map("result_json")
+  rowCount          Int             @map("row_count")
+  resultSizeBytes   Int             @map("result_size_bytes")
+  reportTypeVersion Int             @default(1) @map("report_type_version")
+  visibility        String          @default("private")
+  createdAt         DateTime        @default(now()) @map("created_at")
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([visibility, reportType, createdAt(sort: Desc)])
+  @@index([sourceTemplateId])
+  @@map("report_runs")
+  @@schema("app")
 }

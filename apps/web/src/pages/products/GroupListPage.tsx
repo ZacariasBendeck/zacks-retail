@@ -1,18 +1,35 @@
 import { Button, Card, Popconfirm, Space, Table, Typography, App } from 'antd'
 import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons'
 import { Link, useNavigate } from 'react-router-dom'
-import { useDeleteGroup, useGroups } from '../../hooks/useProductsTaxonomy'
+import { useMemo } from 'react'
+import { useDeleteGroup, useGroups, useSkuTotal } from '../../hooks/useProductsTaxonomy'
 import type { Group } from '../../types/productsTaxonomy'
+import TaxonomyCoverageFooter from '../../components/products/TaxonomyCoverageFooter'
 
 export default function GroupListPage() {
   const navigate = useNavigate()
   const { message } = App.useApp()
   const { data, isLoading } = useGroups()
+  const { data: skuTotal } = useSkuTotal()
   const del = useDeleteGroup()
+
+  const assigned = useMemo(
+    () => (data ?? []).reduce((sum, r) => sum + (r.skuCount ?? 0), 0),
+    [data],
+  )
 
   const columns = [
     { title: 'Code', dataIndex: 'code', key: 'code', sorter: (a: Group, b: Group) => a.code.localeCompare(b.code), width: 120 },
     { title: 'Description', dataIndex: 'description', key: 'description' },
+    {
+      title: 'SKUs',
+      dataIndex: 'skuCount',
+      key: 'skuCount',
+      width: 100,
+      align: 'right' as const,
+      sorter: (a: Group, b: Group) => a.skuCount - b.skuCount,
+      render: (v: number) => (v ?? 0).toLocaleString('en-US'),
+    },
     {
       title: '',
       key: 'actions',
@@ -55,6 +72,7 @@ export default function GroupListPage() {
         columns={columns}
         loading={isLoading}
         pagination={{ defaultPageSize: 25, showSizeChanger: true, pageSizeOptions: [25, 50, 100, 200] }}
+        footer={() => <TaxonomyCoverageFooter assigned={assigned} systemTotal={skuTotal?.total} />}
       />
     </Card>
   )

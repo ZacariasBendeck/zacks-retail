@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import {
   Form,
   Input,
@@ -23,16 +23,28 @@ import {
 } from 'antd'
 import { ArrowLeftOutlined, SaveOutlined, CameraOutlined, LoadingOutlined, SearchOutlined, ThunderboltOutlined, CheckCircleOutlined, ExclamationCircleOutlined, ReloadOutlined, EyeInvisibleOutlined } from '@ant-design/icons'
 import {
-  useSku,
-  useCreateSku,
-  useUpdateSku,
-  useVendors,
   useAnalyzeImage,
   useReferenceData,
   useLookupSku,
   useAutocompleteSkus,
   useStyleColors,
 } from '../../hooks/useSkus'
+// 2026-04-23 — switched from legacy SQLite /api/v1/vendors (UUID-keyed) to the
+// Postgres-backed /api/v1/products/vendors (4-letter RICS code). The old hook
+// returned synthetic UUIDs as `id`; the new one returns the real 4-letter code
+// that matches rics_mirror.vendors and app.sku.vendor_id.
+import { useVendors } from '../../hooks/useProductsVendors'
+import {
+  useSkuDraft,
+  useCreateSkuDraft,
+  useUpdateSkuDraft,
+  useFinalizeSkuDraft,
+} from '../../hooks/useSkuDrafts'
+import type { SkuLifecycleRow, CreateDraftInput } from '../../types/skuLifecycle'
+import { productsAttributesApi } from '../../services/productsAttributesApi'
+import { useSkuAttributes } from '../../hooks/useProductsAttributes'
+import { useProductFamilies } from '../../hooks/useProductFamilies'
+import { useAllPostgresCategories, type PostgresCategory } from '../../hooks/useProductCategories'
 import type {
   Department,
   SkuCreatePayload,
@@ -44,9 +56,6 @@ import type {
 } from '../../types/sku'
 import {
   ALLOWED_DEPARTMENTS,
-  CATEGORY_MAX,
-  CATEGORY_MIN,
-  isValidCategoryCode,
   isValidDepartment,
 } from '../../constants/domain'
 import { SkuApiError } from '../../services/skuApi'
@@ -57,19 +66,27 @@ type SkuFormValues = SkuCreatePayload & {
   styleColorId?: string | null
 }
 
-/** Mapping: AI response key -> form field name + reference table slug */
+/** Mapping: AI response key -> form field name + reference table slug.
+ *  `colorId` / `department` are derived downstream: colorId drives color_family via
+ *  ref_colors.color_family_id, and department is auto-filled when category is picked. */
 const AI_FIELD_MAP: { aiKey: keyof ImageAnalysisResult; formField: string; type: 'text' | 'enum' | 'reference'; refTable?: string }[] = [
   { aiKey: 'description', formField: 'webDescription', type: 'text' },
-  { aiKey: 'department', formField: 'department', type: 'enum' },
-  { aiKey: 'color_family', formField: 'colorId', type: 'reference', refTable: 'colors' },
+  { aiKey: 'color', formField: 'colorId', type: 'reference', refTable: 'colors' },
   { aiKey: 'shoe_type', formField: 'shoeTypeId', type: 'reference', refTable: 'shoe-types' },
   { aiKey: 'heel_height', formField: 'heelHeightId', type: 'reference', refTable: 'heel-heights' },
   { aiKey: 'heel_shape', formField: 'heelShapeId', type: 'reference', refTable: 'heel-shapes' },
   { aiKey: 'toe_shape', formField: 'toeShapeId', type: 'reference', refTable: 'toe-shapes' },
   { aiKey: 'upper_material', formField: 'upperMaterialId', type: 'reference', refTable: 'upper-materials' },
+  { aiKey: 'outsole_material', formField: 'outsoleMaterialId', type: 'reference', refTable: 'outsole-materials' },
+  { aiKey: 'heel_material', formField: 'heelMaterialId', type: 'reference', refTable: 'heel-materials' },
   { aiKey: 'finish', formField: 'finishId', type: 'reference', refTable: 'finishes' },
   { aiKey: 'pattern', formField: 'patternId', type: 'reference', refTable: 'patterns' },
   { aiKey: 'occasion', formField: 'occasionId', type: 'reference', refTable: 'occasions' },
+  // Form key is `genderId` — matches the "Género" UI label. The AI raw key
+  // stays `target_audience` (that's what Claude returns) and the ref table is
+  // still `target-audiences`; only the form/storage key was renamed 2026-04-23.
+  { aiKey: 'target_audience', formField: 'genderId', type: 'reference', refTable: 'target-audiences' },
+  { aiKey: 'accessory', formField: 'accessoryId', type: 'reference', refTable: 'accessories' },
   { aiKey: 'category', formField: 'categoryId', type: 'reference', refTable: 'categories' },
 ]
 
@@ -132,18 +149,274 @@ function aiLabel(label: string, fieldName: string, filledSet: Set<string>): Reac
   )
 }
 
+/**
+ * Adapt a lifecycle-shaped SKU row (Postgres `app.sku` + legacy_attrs JSONB) back
+ * to the form's historical `Sku` shape. Phase 5f keeps the full form working
+ * against the new lifecycle backend by round-tripping the SQLite-era ref IDs
+ * through a JSONB bag. Phase 4 replaces legacyAttrs with proper dimensions.
+ */
+function lifecycleToLegacySku(r: SkuLifecycleRow): import('../../types/sku').Sku {
+  const legacy = (r.legacyAttrs ?? {}) as Record<string, unknown>
+  const asNum = (k: string): number | null => {
+    const v = legacy[k]
+    return typeof v === 'number' ? v : null
+  }
+  const asStr = (k: string): string | null => {
+    const v = legacy[k]
+    return typeof v === 'string' ? v : null
+  }
+  return {
+    // The form uses `skuCode` as the primary identifier. While DRAFT, the final
+    // code isn't set — show the provisional so the user has context.
+    skuCode: r.code ?? r.provisionalCode,
+    id: r.id,
+    style: r.style ?? '',
+    price: r.retailPrice ?? 0,
+    cost: r.currentCost ?? null,
+    listPrice: r.listPrice ?? null,
+    markDownPrice1: r.markDownPrice1 ?? null,
+    markDownPrice2: r.markDownPrice2 ?? null,
+    perks: r.perks ?? null,
+    discountCode: r.discountCode ?? null,
+    sizeType: r.sizeType ?? null,
+    location: r.location ?? null,
+    groupCode: r.groupCode ?? null,
+    pictureFileName: r.pictureFileName ?? null,
+    coupon: !!r.coupon,
+    // Phase 4 — categoryId on the form holds the RICS category_number. Prefer
+    // the app.sku column over any legacyAttrs.categoryId left from pre-Phase-4
+    // drafts (which held SQLite ref_categories.id and wouldn't match anything
+    // in the new Postgres-backed picker).
+    categoryId: r.categoryNumber ?? null,
+    department: (legacy.department as import('../../types/sku').Department) ?? null,
+    vendorId: r.vendorId ?? '',
+    vendorSku: r.vendorSku ?? null,
+    barcode: asStr('barcode'),
+    ricsDescription: r.descriptionRics ?? null,
+    webDescription: r.descriptionWeb ?? null,
+    comment: r.comment ?? null,
+    keywords: r.keywords ?? null,
+    season: r.season ?? null,
+    manufacturer: null,
+    brandId: r.brandId,
+    colorId: asNum('colorId'),
+    heelMaterialId: asNum('heelMaterialId'),
+    heelTypeCode: asStr('heelTypeCode'),
+    heelMaterialTypeCode: asStr('heelMaterialTypeCode'),
+    shoeTypeId: asNum('shoeTypeId'),
+    heelShapeId: asNum('heelShapeId'),
+    heelHeightId: asNum('heelHeightId'),
+    toeShapeId: asNum('toeShapeId'),
+    closureTypeId: asNum('closureTypeId'),
+    upperMaterialId: asNum('upperMaterialId'),
+    outsoleMaterialId: asNum('outsoleMaterialId'),
+    finishId: asNum('finishId'),
+    widthTypeId: asNum('widthTypeId'),
+    patternId: asNum('patternId'),
+    occasionId: asNum('occasionId'),
+    // Read from either key so old DRAFTs that still carry `targetAudienceId`
+    // in legacy_attrs still populate correctly on edit.
+    genderId: asNum('genderId') ?? asNum('targetAudienceId'),
+    accessoryId: asNum('accessoryId'),
+    seasonId: asNum('seasonId'),
+    labelTypeId: asNum('labelTypeId'),
+    // styleColor block is legacy; no equivalent in app.sku yet
+    styleColor: null,
+    // The form shape is a superset of the legacy Sku type (it carries the new
+    // RICS-parity columns on top of the ref-ID bag). Cast via unknown so TS
+    // doesn't balk at the extra fields.
+  } as unknown as import('../../types/sku').Sku
+}
+
+/** Column fields known to app.sku. Everything else on the form goes into legacy_attrs.
+ *  2026-04-23 expansion surfaces every RICS InventoryMaster column the lifecycle
+ *  service now accepts (listPrice, markDownPrice1/2, sizeType, location, …). */
+const APP_SKU_COLUMN_KEYS = new Set<string>([
+  'vendorId', 'vendorSku', 'brandId', 'style', 'season', 'styleColorId',
+  'listPrice', 'markDownPrice1', 'markDownPrice2', 'perks', 'discountCode',
+  'sizeType', 'location', 'groupCode', 'pictureFileName', 'coupon',
+  'currentPriceSlot', 'manufacturer', 'orderMultiple', 'orderUom',
+  // skuCode is set via finalize, never via create/update on app.sku
+])
+
+/**
+ * Apariencia / Diseño attributes that moved from the legacy_attrs JSONB bag
+ * into proper dimensional assignments on 2026-04-23. Each entry maps the
+ * form field name to the Postgres dimension `code`. The form-field value is
+ * a numeric ref-id (from the old SQLite ref tables); the matching
+ * `attribute_value.code` is that same id stringified (seeded by
+ * `seed:legacy-ref-dimensions`).
+ *
+ * Keys here get EXCLUDED from legacy_attrs serialization so they don't get
+ * double-stored. The form posts them to `/skus/:code/attributes` after the
+ * SKU save succeeds; see `writeDimensionalAttributes()`.
+ */
+const DIMENSIONAL_ATTR_MAP: readonly { formField: string; dimensionCode: string }[] = [
+  { formField: 'colorId',           dimensionCode: 'color' },
+  { formField: 'widthTypeId',       dimensionCode: 'width_type' },
+  { formField: 'patternId',         dimensionCode: 'pattern' },
+  { formField: 'finishId',          dimensionCode: 'finish' },
+  { formField: 'accessoryId',       dimensionCode: 'accessory' },
+  { formField: 'heelHeightId',      dimensionCode: 'heel_height' },
+  { formField: 'heelShapeId',       dimensionCode: 'heel_shape' },
+  { formField: 'toeShapeId',        dimensionCode: 'toe_shape' },
+  { formField: 'upperMaterialId',   dimensionCode: 'upper_material' },
+  { formField: 'outsoleMaterialId', dimensionCode: 'outsole_material' },
+  { formField: 'heelMaterialId',    dimensionCode: 'heel_material' },
+] as const
+const DIMENSIONAL_FORM_FIELDS = new Set(DIMENSIONAL_ATTR_MAP.map((m) => m.formField))
+
+function splitFormValuesForLifecycle(
+  values: Record<string, unknown>,
+  derivedFamilyCode: string | null = null,
+): CreateDraftInput {
+  const retailPrice =
+    typeof values.price === 'number' ? values.price : values.price == null ? null : Number(values.price)
+  const currentCost =
+    typeof values.cost === 'number' ? values.cost : values.cost == null ? null : Number(values.cost)
+
+  // Phase 4 — categoryId form-field value is now the RICS category_number
+  // (not a SQLite ref_categories.id). It maps directly to app.sku.category_number.
+  const categoryNumber =
+    typeof values.categoryId === 'number' && Number.isInteger(values.categoryId)
+      ? (values.categoryId as number)
+      : null
+
+  const legacyAttrs: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(values)) {
+    if (APP_SKU_COLUMN_KEYS.has(k)) continue
+    // 2026-04-23 — Apariencia/Diseño attributes write to
+    // app.sku_attribute_assignment via the dimensional framework, not into
+    // this JSONB bag. See writeDimensionalAttributes() for the follow-up call.
+    if (DIMENSIONAL_FORM_FIELDS.has(k)) continue
+    // Phase 4 — categoryId + department are now app.sku columns (categoryNumber
+    // + derived-from-category). Don't duplicate them into legacyAttrs.
+    if (k === 'skuCode' || k === 'price' || k === 'cost') continue
+    if (k === 'categoryId' || k === 'department') continue
+    if (k === 'ricsDescription' || k === 'webDescription' || k === 'comment' || k === 'keywords') continue
+    if (v === undefined) continue
+    legacyAttrs[k] = v
+  }
+
+  const numOrNull = (v: unknown): number | null => {
+    const n = typeof v === 'number' ? v : v == null ? null : Number(v)
+    return Number.isFinite(n) ? (n as number) : null
+  }
+  const strOrNull = (v: unknown): string | null => {
+    const s = typeof v === 'string' ? v.trim() : null
+    return s ? s : null
+  }
+
+  return {
+    vendorId: (values.vendorId as string | null | undefined) ?? null,
+    vendorSku: strOrNull(values.vendorSku),
+    brandId: (values.brandId as number | null | undefined) ?? null,
+    style: strOrNull(values.style),
+    season: strOrNull(values.season),
+    descriptionRics: strOrNull(values.ricsDescription),
+    descriptionWeb: strOrNull(values.webDescription),
+    comment: strOrNull(values.comment),
+    keywords: strOrNull(values.keywords),
+    retailPrice: Number.isFinite(retailPrice as number) ? (retailPrice as number) : null,
+    currentCost: Number.isFinite(currentCost as number) ? (currentCost as number) : null,
+    // 2026-04-23 — surface the full RICS-parity columns now that lifecycle
+    // service round-trips them. Pass only fields the user actually touched
+    // (null on empty input instead of undefined so a cleared field wipes).
+    listPrice: numOrNull(values.listPrice),
+    markDownPrice1: numOrNull(values.markDownPrice1),
+    markDownPrice2: numOrNull(values.markDownPrice2),
+    perks: numOrNull(values.perks),
+    discountCode: strOrNull(values.discountCode),
+    sizeType: numOrNull(values.sizeType),
+    location: strOrNull(values.location),
+    groupCode: strOrNull(values.groupCode),
+    pictureFileName: strOrNull(values.pictureFileName),
+    coupon: typeof values.coupon === 'boolean' ? values.coupon : null,
+    categoryNumber,
+    familyCode: derivedFamilyCode,
+    legacyAttrs,
+  }
+}
+
+// ── Small inline helpers used inside the Detalles / Prices cards. Kept in this
+//    file to avoid inventing a components directory for two 10-line readouts.
+
+/**
+ * Readonly input that shows the vendor *name* resolved from the selected
+ * vendor *code*. Sits next to the Vendor Code Select so the operator can
+ * verify the code without opening the dropdown.
+ */
+function VendorNameAutofill({ vendors }: { vendors: { code: string; name: string }[] | undefined }) {
+  // `vendorId` form field holds the 4-letter RICS vendor code — e.g. "NIKE",
+  // "03EV". Matches the new Postgres-backed hook's primary key.
+  const selectedCode = Form.useWatch('vendorId') as string | undefined
+  const resolved = vendors?.find((v) => v.code === selectedCode)
+  return (
+    <Input
+      value={resolved?.name ?? ''}
+      readOnly
+      placeholder="Auto"
+      style={{ background: '#fafafa' }}
+    />
+  )
+}
+
+/**
+ * Displays gross-profit percentage computed live from the Retail Price +
+ * Current Cost form fields. GP% = (retail - cost) / retail × 100, rounded to
+ * one decimal. Shows a dash if either input is missing or retail is 0.
+ */
+function GpPercentDisplay() {
+  const retail = Form.useWatch('price') as number | undefined
+  const cost = Form.useWatch('cost') as number | undefined
+  let label = '—'
+  if (typeof retail === 'number' && retail > 0 && typeof cost === 'number') {
+    const pct = ((retail - cost) / retail) * 100
+    label = `${(Math.round(pct * 10) / 10).toFixed(1)} %`
+  }
+  return (
+    <Input
+      value={label}
+      readOnly
+      style={{ background: '#fafafa', fontFamily: 'monospace', textAlign: 'right' }}
+    />
+  )
+}
+
 export default function SkuFormPage() {
   const { skuId } = useParams<{ skuId: string }>()
   const navigate = useNavigate()
+  const location = useLocation()
   const { message } = App.useApp()
   const [form] = Form.useForm()
 
+  // Primary creator lives at `/products/skus/new`; the legacy `/inventory/skus/*`
+  // URLs still render this form (edit flow). Branch navigation by current path
+  // so a /products creation lands back in the products tree, not inventory.
+  const skuRootPath = location.pathname.startsWith('/products/') ? '/products/skus' : '/inventory/skus'
+
   const isRouteEdit = !!skuId
-  const { data: sku, isLoading: skuLoading } = useSku(skuId)
+  const { data: lifecycleSku, isLoading: skuLoading } = useSkuDraft(skuId)
   const { data: vendors, isLoading: vendorsLoading } = useVendors()
   const { data: refData, isLoading: refLoading } = useReferenceData()
-  const createMutation = useCreateSku()
-  const updateMutation = useUpdateSku()
+  const createMutation = useCreateSkuDraft()
+  const updateMutation = useUpdateSkuDraft()
+  const finalizeMutation = useFinalizeSkuDraft()
+  // Dimensional attribute assignments for this SKU (Apariencia / Diseño moved
+  // off legacy_attrs on 2026-04-23). Keyed by provisional_code during DRAFT,
+  // by final code after finalize.
+  const skuLookupKey = lifecycleSku?.code ?? lifecycleSku?.provisionalCode ?? undefined
+  const { data: skuDimAttrs } = useSkuAttributes(skuLookupKey)
+  // Adapt the lifecycle row to the legacy `Sku` shape the rest of this form
+  // (populateForm, header tags, style-color picker) was written against.
+  const sku = useMemo(
+    () => (lifecycleSku ? lifecycleToLegacySku(lifecycleSku) : undefined),
+    [lifecycleSku],
+  )
+  const skuState = lifecycleSku?.skuState ?? null
+  const isDraft = skuState === 'DRAFT'
+  const isActive = skuState === 'ACTIVE'
+  const isDiscontinued = skuState === 'DISCONTINUED'
   const analyzeMutation = useAnalyzeImage()
   const lookupMutation = useLookupSku()
   const [aiPanelOpen, setAiPanelOpen] = useState(true)
@@ -153,6 +426,18 @@ export default function SkuFormPage() {
   const [aiFillSummary, setAiFillSummary] = useState<AiFillSummary | null>(null)
   const [analysisError, setAnalysisError] = useState<string | null>(null)
   const [lastUploadedFile, setLastUploadedFile] = useState<File | null>(null)
+  // Product Family is required before the AI can analyze — it scopes which
+  // real Postgres categories get injected into the prompt.
+  const [selectedFamily, setSelectedFamily] = useState<string | null>(null)
+  const { data: productFamilies, isLoading: familiesLoading } = useProductFamilies()
+  // Phase 4 — Postgres categories replace the SQLite ref_categories seed
+  const { data: postgresCategories } = useAllPostgresCategories()
+  // Derived family code for the currently-selected category — drives the
+  // read-only "Familia" badge next to Categoría + populates app.sku.familyCode
+  // on submit. Stored in component state (not a Form field) so it round-trips
+  // through handleCategoryChange without an extra Form.useWatch.
+  const [derivedFamilyCode, setDerivedFamilyCode] = useState<string | null>(null)
+  const [derivedDepartmentLabel, setDerivedDepartmentLabel] = useState<string | null>(null)
 
   // Inline lookup state: tracks when a user-entered SKU code matches an existing SKU
   const [matchedSku, setMatchedSku] = useState<import('../../types/sku').Sku | null>(null)
@@ -167,7 +452,21 @@ export default function SkuFormPage() {
   }, [])
   const { data: autocompleteResults, isFetching: isSearching } = useAutocompleteSkus(debouncedSearch)
   const watchedDepartment = Form.useWatch('department', form) as Department | undefined
-  const watchedBrandId = Form.useWatch('brandId', form) as number | undefined
+  // brandId is now a free-text string (Marca accepts any value). For the
+  // style-color filter we only apply it when the typed name exactly matches
+  // an existing brand; otherwise we leave the filter off.
+  const watchedBrandRaw = Form.useWatch('brandId', form) as unknown
+  const watchedBrandId: number | undefined = (() => {
+    if (typeof watchedBrandRaw === 'number') return watchedBrandRaw
+    if (typeof watchedBrandRaw === 'string' && watchedBrandRaw.trim()) {
+      const lower = watchedBrandRaw.trim().toLowerCase()
+      const match = (refData?.['brands'] as ReferenceItem[] | undefined)?.find(
+        (b) => b.name.toLowerCase() === lower,
+      )
+      return match?.id
+    }
+    return undefined
+  })()
   const watchedColorId = Form.useWatch('colorId', form) as number | undefined
 
   const styleColorFilters = useMemo(
@@ -214,47 +513,62 @@ export default function SkuFormPage() {
     }))
   }, [styleColors])
 
+  // Phase 4 — Postgres-backed Category map. `categoryId` on the form holds
+  // the RICS category_number (int), which is what app.sku.category_number
+  // expects. The legacy SQLite ref_categories.id is no longer used.
   const validCategoriesById = useMemo(() => {
-    const map = new Map<number, { id: number; ricsCode?: number; name: string; deptMacro?: string }>()
-    const categories = (refData?.['categories'] ?? []) as {
-      id: number
-      ricsCode?: number
-      name: string
-      deptMacro?: string
-    }[]
-
-    for (const category of categories) {
-      if (!isValidCategoryCode(category.ricsCode)) continue
-      if (!isValidDepartment(category.deptMacro)) continue
-      map.set(category.id, category)
+    const map = new Map<number, PostgresCategory>()
+    for (const cat of postgresCategories ?? []) {
+      map.set(cat.categoryNumber, cat)
     }
     return map
-  }, [refData])
+  }, [postgresCategories])
 
-  // Auto-fill department when category changes
-  const handleCategoryChange = useCallback((categoryId: number | null) => {
-    if (!categoryId) {
+  // Derive family + dept when the form loads an existing SKU. Keeps the
+  // family badge + department label in sync with the pre-existing categoryId.
+  useEffect(() => {
+    if (!lifecycleSku) return
+    const cat = lifecycleSku.categoryNumber
+    if (cat == null) return
+    const row = validCategoriesById.get(cat)
+    if (row) {
+      setDerivedFamilyCode(row.familyCode || null)
+      setDerivedDepartmentLabel(
+        row.departmentNumber != null && row.departmentDesc
+          ? `${row.departmentNumber} — ${row.departmentDesc}`
+          : null,
+      )
+    }
+  }, [lifecycleSku, validCategoriesById])
+
+  // Category change → look up family + dept locally (no roundtrip since
+  // useAllPostgresCategories already cached the full catalog) and push the
+  // derived values into component state + the Departamento display field.
+  const handleCategoryChange = useCallback((categoryNumber: number | null) => {
+    if (!categoryNumber) {
+      setDerivedFamilyCode(null)
+      setDerivedDepartmentLabel(null)
       form.setFieldsValue({ department: undefined })
       return
     }
-    const category = validCategoriesById.get(categoryId)
-    if (category?.deptMacro && isValidDepartment(category.deptMacro)) {
-      form.setFields([
-        { name: 'categoryId', errors: [] },
-        { name: 'department', errors: [] },
-      ])
-      form.setFieldsValue({ department: category.deptMacro })
-    } else {
-      form.setFields([
-        {
-          name: 'categoryId',
-          errors: [
-            `Category must be between ${CATEGORY_MIN}-${CATEGORY_MAX} and mapped to an allowed macro-department.`,
-          ],
-        },
-      ])
+    const row = validCategoriesById.get(categoryNumber)
+    if (!row) {
+      setDerivedFamilyCode(null)
+      setDerivedDepartmentLabel(null)
       form.setFieldsValue({ department: undefined })
+      return
     }
+    setDerivedFamilyCode(row.familyCode || null)
+    const deptLabel = row.departmentNumber != null && row.departmentDesc
+      ? `${row.departmentNumber} — ${row.departmentDesc}`
+      : null
+    setDerivedDepartmentLabel(deptLabel)
+    form.setFields([{ name: 'categoryId', errors: [] }, { name: 'department', errors: [] }])
+    // Legacy `department` field still exists on the form for the style-color
+    // picker's compat shape — set it to the dept description so existing
+    // filters/render paths don't crash. The real department number is in
+    // derivedDepartmentLabel and gets sent to the backend as app.sku.
+    form.setFieldsValue({ department: row.departmentDesc ?? undefined })
   }, [form, validCategoriesById])
 
   const handleStyleColorChange = useCallback((styleColorId: string | null) => {
@@ -262,9 +576,14 @@ export default function SkuFormPage() {
     const styleColor = styleColorMap.get(styleColorId)
     if (!styleColor) return
 
+    const brandName =
+      (refData?.['brands'] as ReferenceItem[] | undefined)?.find(
+        (b) => b.id === styleColor.brandId,
+      )?.name ?? ''
+
     const nextValues: Partial<SkuFormValues> = {
       style: styleColor.style,
-      brandId: styleColor.brandId,
+      brandId: brandName as unknown as number,
       colorId: styleColor.colorId,
       categoryId: styleColor.categoryId,
       department: styleColor.department,
@@ -275,7 +594,7 @@ export default function SkuFormPage() {
 
     form.setFieldsValue(nextValues)
     message.success('Plantilla style-color aplicada al formulario')
-  }, [form, message, styleColorMap])
+  }, [form, message, styleColorMap, refData])
 
   /** Apply AI results to form fields using client-side matching */
   const applyAiFill = useCallback((result: EnhancedAnalysisResult) => {
@@ -304,17 +623,43 @@ export default function SkuFormPage() {
           skipped.push(mapping.formField)
         }
       } else if (mapping.type === 'reference' && mapping.refTable) {
-        // Use backend-mapped ID if available, else client-side match
-        const mappedId = result.mapped?.[mapping.formField]
+        // Use backend-mapped ID if available, else client-side match.
+        // `mapped` was widened to `string | number | null` to carry new
+        // Postgres-resolved string fields (categoryName, departmentName, etc.)
+        // alongside the legacy numeric ref-IDs. For `reference` mappings we
+        // only want the numeric branch; a string here means we'd mis-pass a
+        // category-name to a dropdown expecting a numeric id.
+        const rawMappedId = result.mapped?.[mapping.formField]
+        const mappedId = typeof rawMappedId === 'number' ? rawMappedId : null
         const refItems = refData[mapping.refTable] ?? []
         const matchedId = mappedId ?? matchReference(aiValue, refItems)
         if (matchedId != null) {
           if (mapping.formField === 'categoryId') {
+            // Phase 4 — matchedId is now the Postgres category_number. If it
+            // resolves to a known row, set the form field + let the normal
+            // handleCategoryChange effect derive family/dept later (we don't
+            // call it here directly since setFieldsValue doesn't fire onChange).
+            //
+            // Cross-family guard: if the resolved category belongs to a family
+            // other than the one the operator picked at the top of the page,
+            // refuse to apply it. The backend should already block this via
+            // isCategoryInFamilyAllowList, but a belt-and-suspenders check here
+            // catches any leftover legacy fuzzy-match leaks (e.g. the old
+            // SQLite reference table mapping "Pend Clasificar" to a suits
+            // category for a shoe image).
             const cat = validCategoriesById.get(matchedId)
-            if (cat?.deptMacro && isValidDepartment(cat.deptMacro)) {
+            if (cat && (!selectedFamily || !cat.familyCode || cat.familyCode === selectedFamily)) {
               fieldsToSet[mapping.formField] = matchedId
               filled.push(mapping.formField)
-              fieldsToSet['department'] = cat.deptMacro
+              // Also push the derived state so the family badge / dept readout
+              // refresh immediately, matching what handleCategoryChange would do.
+              setDerivedFamilyCode(cat.familyCode || null)
+              setDerivedDepartmentLabel(
+                cat.departmentNumber != null && cat.departmentDesc
+                  ? `${cat.departmentNumber} — ${cat.departmentDesc}`
+                  : null,
+              )
+              fieldsToSet['department'] = cat.departmentDesc ?? undefined
             } else {
               skipped.push('categoryId')
             }
@@ -331,10 +676,16 @@ export default function SkuFormPage() {
     form.setFieldsValue(fieldsToSet)
     setAiFilledFields(new Set(filled))
     setAiFillSummary({ filled, skipped, total: AI_FIELD_MAP.length })
-  }, [refData, form, validCategoriesById])
+  }, [refData, form, validCategoriesById, selectedFamily])
 
   /** Populate form fields from a SKU object */
   const populateForm = useCallback((s: import('../../types/sku').Sku) => {
+    const brandName =
+      s.brandId != null
+        ? (refData?.['brands'] as ReferenceItem[] | undefined)?.find(
+            (b) => b.id === s.brandId,
+          )?.name ?? ''
+        : ''
     form.setFieldsValue({
       skuCode: s.skuCode,
       style: s.style,
@@ -351,7 +702,7 @@ export default function SkuFormPage() {
       keywords: s.keywords,
       season: s.season,
       manufacturer: s.manufacturer,
-      brandId: s.brandId,
+      brandId: brandName as unknown as number,
       colorId: s.colorId,
       heelMaterialId: s.heelMaterialId,
       heelTypeCode: s.heelTypeCode ?? null,
@@ -367,17 +718,39 @@ export default function SkuFormPage() {
       widthTypeId: s.widthTypeId,
       patternId: s.patternId,
       occasionId: s.occasionId,
-      targetAudienceId: s.targetAudienceId,
+      genderId: s.targetAudienceId,
       accessoryId: s.accessoryId,
       seasonId: s.seasonId,
       labelTypeId: s.labelTypeId,
       styleColorId: s.styleColor?.styleColorId ?? null,
     })
-  }, [form])
+  }, [form, refData])
 
   useEffect(() => {
     if (sku) populateForm(sku)
   }, [sku, populateForm])
+
+  // 2026-04-23 — hydrate the 11 Apariencia / Diseño form fields from the
+  // dimensional attribute store (`app.sku_attribute_assignment`). Values
+  // live as string codes there but the form fields expect numeric ref ids
+  // (seed:legacy-ref-dimensions wrote `code = String(refId)`), so parseInt
+  // round-trips cleanly. Runs on mount + whenever skuDimAttrs changes, so
+  // the latest assignment wins if an edit happens outside the form.
+  useEffect(() => {
+    if (!skuDimAttrs) return
+    const patch: Record<string, number | null> = {}
+    for (const m of DIMENSIONAL_ATTR_MAP) {
+      const entry = skuDimAttrs.byDimension[m.dimensionCode]
+      const first = entry?.values?.[0]
+      if (first) {
+        const n = Number.parseInt(first.code, 10)
+        if (Number.isFinite(n)) patch[m.formField] = n
+      } else {
+        patch[m.formField] = null
+      }
+    }
+    form.setFieldsValue(patch)
+  }, [skuDimAttrs, form])
 
   /** Look up SKU code — if it exists, populate form & switch to update mode */
   const handleSkuCodeLookup = useCallback(async (code: string) => {
@@ -410,25 +783,94 @@ export default function SkuFormPage() {
 
   const handleSubmit = async (values: SkuFormValues) => {
     try {
-      const { styleColorId: _styleColorId, ...payload } = values
-      const editId = skuId ?? matchedSku?.id
-      if (editId) {
-        const { skuCode: _omit, ...updateValues } = payload as SkuCreatePayload & { skuCode?: string }
-        await updateMutation.mutateAsync({ skuId: editId, payload: updateValues })
-        message.success('SKU actualizado exitosamente')
-      } else {
-        await createMutation.mutateAsync(payload)
-        message.success('SKU creado exitosamente')
+      // Marca is now free-text. Resolve the typed name against refData; if it
+      // matches an existing brand (case-insensitive), link the numeric id;
+      // otherwise preserve the free text in legacyAttrs.brandText so no data
+      // is lost until a formal brand is created.
+      const rawBrand = values.brandId as unknown
+      const brandText =
+        typeof rawBrand === 'string' ? rawBrand.trim() : null
+      let resolvedBrandId: number | null =
+        typeof rawBrand === 'number' ? rawBrand : null
+      let unresolvedBrandText: string | null = null
+      if (brandText) {
+        const lower = brandText.toLowerCase()
+        const match = (refData?.['brands'] as ReferenceItem[] | undefined)?.find(
+          (b) => b.name.toLowerCase() === lower,
+        )
+        if (match) {
+          resolvedBrandId = match.id
+        } else {
+          resolvedBrandId = null
+          unresolvedBrandText = brandText
+        }
+      } else if (brandText === '') {
+        resolvedBrandId = null
       }
-      navigate('/inventory/skus')
+      const normalized: Record<string, unknown> = {
+        ...values,
+        brandId: resolvedBrandId,
+      }
+      if (unresolvedBrandText) {
+        normalized.brandText = unresolvedBrandText
+      }
+      const lifecyclePayload = splitFormValuesForLifecycle(normalized, derivedFamilyCode)
+      const editId = skuId ?? matchedSku?.id
+
+      // Extract the 11 Apariencia / Diseño dim values from the form so we can
+      // write them to app.sku_attribute_assignment after the SKU row saves.
+      // Null / undefined values are still sent (as empty assignments) so the
+      // scoped replace clears any previous pick — that's how a user "unsets"
+      // e.g. Color by reopening the select and pressing clear.
+      const dimAssignments: { dimension_code: string; value_code: string }[] = []
+      const scope: string[] = []
+      for (const m of DIMENSIONAL_ATTR_MAP) {
+        scope.push(m.dimensionCode)
+        const v = (normalized as Record<string, unknown>)[m.formField]
+        if (typeof v === 'number' && Number.isFinite(v)) {
+          dimAssignments.push({ dimension_code: m.dimensionCode, value_code: String(v) })
+        }
+      }
+      const writeDims = async (skuKey: string) => {
+        // Non-blocking — if the dimensional write fails we still consider the
+        // SKU save successful, so we log + surface a warning but don't throw.
+        try {
+          await productsAttributesApi.setForSku(skuKey, { assignments: dimAssignments, scope })
+        } catch (e) {
+          // eslint-disable-next-line no-console
+          console.warn('[sku-form] dimensional attribute write failed', e)
+          message.warning('SKU guardado, pero los atributos (color, patrón, etc.) no se pudieron guardar. Reintente.')
+        }
+      }
+
+      if (editId) {
+        const updated = await updateMutation.mutateAsync({ id: editId, patch: lifecyclePayload })
+        const skuKey = updated.code ?? updated.provisionalCode
+        if (skuKey) await writeDims(skuKey)
+        message.success('Borrador guardado')
+      } else {
+        const created = await createMutation.mutateAsync(lifecyclePayload)
+        // DRAFT has no final code yet — write dim assignments keyed by
+        // provisional_code; finalize() rekeys them to the real code atomically.
+        await writeDims(created.code ?? created.provisionalCode)
+        message.success(`Borrador creado: ${created.provisionalCode}`)
+        // Redirect to the edit page for the new draft so the user can keep
+        // editing the same record (per Phase 5f spec: after first save, user
+        // edits the actual draft, not a stateless new form).
+        navigate(`${skuRootPath}/${created.id}/edit`)
+        return
+      }
     } catch (err) {
       if (err instanceof SkuApiError && err.code === 'DUPLICATE_BARCODE') {
         form.setFields([{ name: 'barcode', errors: ['Este codigo de barras ya esta en uso'] }])
         return
       }
 
+      // Phase 4 — range-check error path is dead (legacy SQLite backend is no
+      // longer reached from this form). Left as a defensive forward — if any
+      // backend resurrects that error code, surface its own message verbatim.
       if (err instanceof SkuApiError && err.code === 'VALIDATION_CATEGORY_RANGE') {
-        const rangeMessage = err.message || `Categoria fuera de rango permitido (${CATEGORY_MIN}-${CATEGORY_MAX}).`
+        const rangeMessage = err.message || 'Categoría fuera de rango permitido.'
         form.setFields([{ name: 'categoryId', errors: [rangeMessage] }])
         message.error(rangeMessage)
         return
@@ -439,6 +881,42 @@ export default function SkuFormPage() {
     }
   }
 
+  /**
+   * Finalize transitions the current DRAFT to ACTIVE. Before the state flip, we
+   * first PATCH any pending form edits through as a draft-save so the server
+   * has the latest version of every column + legacyAttrs. Then the finalize
+   * call validates required fields server-side and sets the final `code`.
+   *
+   * Failures on the required-fields check come back as a 422 with a Spanish
+   * message listing what's missing — we surface the whole message so the
+   * operator can go fix it and retry.
+   */
+  const handleFinalize = useCallback(async () => {
+    if (!lifecycleSku) return
+    const codeValue = form.getFieldValue('skuCode')
+    const finalCode = typeof codeValue === 'string' ? codeValue.trim() : ''
+    if (!finalCode) {
+      form.setFields([{ name: 'skuCode', errors: ['Código SKU es requerido para finalizar.'] }])
+      message.error('Ingresa el código SKU final antes de finalizar.')
+      return
+    }
+    try {
+      // Single atomic call: the backend patches all fields + flips state in one
+      // transaction, so there's no "half-edited DRAFT" failure mode from the
+      // earlier two-call (PATCH-then-finalize) flow.
+      const values = form.getFieldsValue()
+      const lifecyclePayload = splitFormValuesForLifecycle(values as Record<string, unknown>, derivedFamilyCode)
+      await finalizeMutation.mutateAsync({
+        id: lifecycleSku.id,
+        input: { code: finalCode, data: lifecyclePayload },
+      })
+      message.success(`SKU finalizado: ${finalCode}`)
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : 'Error al finalizar'
+      message.error(errMsg)
+    }
+  }, [lifecycleSku, form, finalizeMutation, message])
+
   const handleImageUpload = async (file: File) => {
     const previewUrl = URL.createObjectURL(file)
     setImagePreview(previewUrl)
@@ -448,15 +926,54 @@ export default function SkuFormPage() {
     setAnalysisResult(null)
     setLastUploadedFile(file)
 
+    if (!selectedFamily) {
+      setAnalysisError('Selecciona una Familia de Producto antes de analizar la imagen.')
+      return
+    }
+
     try {
-      const result = await analyzeMutation.mutateAsync(file)
+      const result = await analyzeMutation.mutateAsync({ file, family: selectedFamily })
       setAnalysisResult(result)
-      message.success('Imagen analizada. Haz clic en "Llenar con IA" para auto-completar campos.')
+      if (result.warning) {
+        // Backend rejected the AI's category (usually: out-of-family hallucination).
+        // Show a longer-duration warning so the operator notices the empty category
+        // field isn't a bug — it's a deliberate refusal.
+        message.warning({ content: result.warning, duration: 8 })
+      } else {
+        message.success('Imagen analizada. Haz clic en "Llenar con IA" para auto-completar campos.')
+      }
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : 'Fallo el analisis de imagen'
       setAnalysisError(errMsg)
     }
   }
+
+  // Clipboard-paste support — pastes an image from anywhere on the page (Ctrl+V)
+  // go through the same `handleImageUpload` pipeline as the drag-drop dragger.
+  // A ref keeps the listener body stable while always calling the current handler.
+  const handleImageUploadRef = useRef(handleImageUpload)
+  useEffect(() => {
+    handleImageUploadRef.current = handleImageUpload
+  })
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent) => {
+      const items = e.clipboardData?.items
+      if (!items) return
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i]
+        if (it && it.kind === 'file' && it.type.startsWith('image/')) {
+          const file = it.getAsFile()
+          if (file) {
+            e.preventDefault()
+            void handleImageUploadRef.current(file)
+            return
+          }
+        }
+      }
+    }
+    window.addEventListener('paste', onPaste)
+    return () => window.removeEventListener('paste', onPaste)
+  }, [])
 
   const handleRetryAnalysis = () => {
     if (lastUploadedFile) {
@@ -477,22 +994,36 @@ export default function SkuFormPage() {
 
   // Build category options with search by name or RICS code
   // NOTE: must be above early returns to satisfy Rules of Hooks
+  //
+  // Phase 4 — options grouped by Product Family label. Inside each group,
+  // entries are sub-grouped by department for context, but AntD's grouped
+  // Select doesn't support nested groups so we inline the dept in the label.
+  const familyLabelByCode = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const f of productFamilies ?? []) m.set(f.code, f.labelEs)
+    return m
+  }, [productFamilies])
   const categoryOptions = useMemo(() => {
     const cats = Array.from(validCategoriesById.values())
-    const grouped = cats.reduce<Record<string, typeof cats>>((acc, c) => {
-      const group = c.deptMacro || 'OTHER'
-      if (!acc[group]) acc[group] = []
-      acc[group].push(c)
+    const grouped = cats.reduce<Record<string, PostgresCategory[]>>((acc, c) => {
+      const groupKey = c.familyCode || 'sin_familia'
+      if (!acc[groupKey]) acc[groupKey] = []
+      acc[groupKey].push(c)
       return acc
     }, {})
-    return Object.entries(grouped).map(([macro, items]) => ({
-      label: macro,
+    return Object.entries(grouped).map(([familyCode, items]) => ({
+      label:
+        familyCode === 'sin_familia'
+          ? '— Sin familia'
+          : familyLabelByCode.get(familyCode) ?? familyCode,
       options: items.map((c) => ({
-        label: `${c.ricsCode ?? ''} ${c.name}`,
-        value: c.id,
+        label: `${c.categoryNumber} · ${c.categoryDesc.trim()}${
+          c.departmentDesc ? `  (${c.departmentDesc})` : ''
+        }`,
+        value: c.categoryNumber,
       })),
     }))
-  }, [validCategoriesById])
+  }, [validCategoriesById, familyLabelByCode])
 
   if (isRouteEdit && skuLoading) {
     return (
@@ -522,7 +1053,7 @@ export default function SkuFormPage() {
               <Space>
                 <Button
                   icon={<ArrowLeftOutlined />}
-                  onClick={() => navigate('/inventory/skus')}
+                  onClick={() => navigate(skuRootPath)}
                   size="small"
                 >
                   Volver
@@ -530,11 +1061,26 @@ export default function SkuFormPage() {
                 <Typography.Title level={4} style={{ margin: 0 }}>
                   {isEdit ? 'Editar SKU' : 'Nuevo SKU'}
                 </Typography.Title>
-                {isRouteEdit && sku && (
+                {isDraft && (
+                  <Tag color="gold" style={{ fontWeight: 700, letterSpacing: 0.5 }}>
+                    BORRADOR
+                  </Tag>
+                )}
+                {isActive && (
+                  <Tag color="green">ACTIVO</Tag>
+                )}
+                {isDiscontinued && (
+                  <Tag color="red">DISCONTINUADO</Tag>
+                )}
+                {isRouteEdit && lifecycleSku && (
                   <Space size={4}>
-                    <Tag color="blue">{sku.skuCode}</Tag>
-                    {sku.styleColor?.styleColorId && (
-                      <Tag color="gold">StyleColor: {sku.styleColor.styleColorId.slice(0, 8)}</Tag>
+                    <Tag color="blue" style={{ fontFamily: 'monospace' }}>
+                      {lifecycleSku.code ?? lifecycleSku.provisionalCode}
+                    </Tag>
+                    {isDraft && lifecycleSku.code == null && (
+                      <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                        (código provisional — se asigna el final al finalizar)
+                      </Typography.Text>
                     )}
                   </Space>
                 )}
@@ -585,6 +1131,29 @@ export default function SkuFormPage() {
               </Col>
             </Row>
 
+            <Row gutter={16} style={{ marginTop: 8 }} align="middle">
+              <Col xs={24} sm={12}>
+                <label style={{ fontSize: 12, color: '#666', display: 'block', marginBottom: 4 }}>
+                  Familia de Producto <span style={{ color: '#ff4d4f' }}>*</span>
+                </label>
+                <Select
+                  placeholder="Selecciona una familia antes de subir la imagen…"
+                  value={selectedFamily}
+                  onChange={(v) => setSelectedFamily(v)}
+                  loading={familiesLoading}
+                  disabled={analyzeMutation.isPending}
+                  style={{ width: '100%' }}
+                  options={(productFamilies ?? []).map((f) => ({ label: f.labelEs, value: f.code }))}
+                />
+              </Col>
+              <Col xs={24} sm={12}>
+                <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                  La IA usa esta familia para filtrar las categorías reales de Postgres que puede escoger.
+                  {selectedFamily === 'zapatos' && ' Solo zapatos hoy está cableado al AI — otras familias vienen en la siguiente iteración.'}
+                </Typography.Text>
+              </Col>
+            </Row>
+
             <Row gutter={16} style={{ marginTop: 8 }} align="top">
               <Col xs={24} sm={imagePreview ? 12 : 24}>
                 <Upload.Dragger
@@ -594,7 +1163,7 @@ export default function SkuFormPage() {
                     handleImageUpload(file)
                     return false
                   }}
-                  disabled={analyzeMutation.isPending}
+                  disabled={analyzeMutation.isPending || !selectedFamily}
                   style={{ padding: '8px 0' }}
                 >
                   {analyzeMutation.isPending ? (
@@ -605,7 +1174,7 @@ export default function SkuFormPage() {
                   ) : (
                     <div>
                       <CameraOutlined style={{ fontSize: 20, color: '#999' }} />
-                      <p style={{ marginTop: 4, marginBottom: 0, fontSize: 12 }}>Haz clic o arrastra imagen del zapato</p>
+                      <p style={{ marginTop: 4, marginBottom: 0, fontSize: 12 }}>Haz clic, arrastra, o pega (Ctrl+V) imagen del zapato</p>
                     </div>
                   )}
                 </Upload.Dragger>
@@ -654,13 +1223,21 @@ export default function SkuFormPage() {
                 message="Imagen analizada — lista para llenar"
                 description={
                   <div style={{ fontSize: 12 }}>
+                    {analysisResult.resolution && (
+                      <div style={{ marginBottom: 4, padding: '4px 8px', background: '#f0f9ff', borderRadius: 4 }}>
+                        <strong>Categoría sugerida (Postgres):</strong>{' '}
+                        <Tag color="blue">{analysisResult.resolution.categoryNumber} — {analysisResult.resolution.categoryDesc}</Tag>
+                        <strong style={{ marginLeft: 8 }}>Dept:</strong>{' '}
+                        <Tag color="geekblue">{analysisResult.resolution.departmentNumber} — {analysisResult.resolution.departmentDesc}</Tag>
+                      </div>
+                    )}
                     {analysisResult.raw.shoe_type && <span><strong>Tipo:</strong> {analysisResult.raw.shoe_type} | </span>}
                     {analysisResult.raw.heel_height && <span><strong>Tacon:</strong> {analysisResult.raw.heel_height} | </span>}
                     {analysisResult.raw.upper_material && <span><strong>Material:</strong> {analysisResult.raw.upper_material} | </span>}
-                    {analysisResult.raw.color_family && <span><strong>Color:</strong> {analysisResult.raw.color_family} | </span>}
+                    {analysisResult.raw.color && <span><strong>Color:</strong> {analysisResult.raw.color} | </span>}
                     {analysisResult.raw.occasion && <span><strong>Ocasion:</strong> {analysisResult.raw.occasion}</span>}
                     <br />
-                    <Typography.Text type="secondary">Haz clic en "Llenar con IA" para completar los campos.</Typography.Text>
+                    <Typography.Text type="secondary">Haz clic en "Llenar con IA" para completar los campos. La categoría real de Postgres se mostrará aquí pero NO se auto-llena al dropdown viejo todavía (Phase 5).</Typography.Text>
                   </div>
                 }
               />
@@ -720,7 +1297,7 @@ export default function SkuFormPage() {
                       label="Codigo SKU"
                       name="skuCode"
                       style={compactItem}
-                      extra={matchedSku ? undefined : 'Escribe para buscar SKUs existentes o ingresa un codigo nuevo'}
+                      extra={matchedSku ? undefined : 'Opcional en creación — se autogenera un código provisional si lo dejas vacío.'}
                     >
                       <AutoComplete
                         options={skuSearchOptions}
@@ -737,7 +1314,7 @@ export default function SkuFormPage() {
                           const code = form.getFieldValue('skuCode')
                           if (code) handleSkuCodeLookup(code)
                         }}
-                        placeholder="ej. FORMAL-NIKE-BLK-001"
+                        placeholder="ej. FORMAL-NIKE-BLK-001 (opcional)"
                         disabled={!!matchedSku}
                         popupMatchSelectWidth={400}
                         notFoundContent={isSearching ? <Spin size="small" /> : (skuSearchText.length >= 1 ? 'No se encontraron SKUs' : null)}
@@ -757,143 +1334,378 @@ export default function SkuFormPage() {
               </>
             )}
 
-            {/* -- Detalles del Producto -- */}
-            <Typography.Text strong style={{ fontSize: 13 }}>Detalles del Producto</Typography.Text>
+            {/* -- Codigo SKU (edit mode) -- */}
+            {isRouteEdit && lifecycleSku && (
+              <>
+                <Typography.Text strong style={{ fontSize: 13 }}>Codigo SKU</Typography.Text>
+                <Row gutter={12} style={{ marginTop: 8 }}>
+                  <Col xs={24} sm={6}>
+                    <Form.Item
+                      label="Código SKU final"
+                      name="skuCode"
+                      style={compactItem}
+                      extra={
+                        isDraft
+                          ? 'Define el código SKU final antes de hacer clic en "Finalizar SKU".'
+                          : isActive
+                          ? 'El código ya no puede renombrarse (SKU ACTIVO).'
+                          : 'SKU descontinuado — solo lectura.'
+                      }
+                      rules={[{ max: 15, message: 'Máximo 15 caracteres' }]}
+                    >
+                      <Input
+                        placeholder={isDraft ? 'ej. NAVY-ZARA-42R' : ''}
+                        disabled={!isDraft}
+                        maxLength={15}
+                      />
+                    </Form.Item>
+                  </Col>
+                  <Col xs={24} sm={6}>
+                    <Form.Item label="Código provisional" style={compactItem}>
+                      <Input
+                        value={lifecycleSku.provisionalCode}
+                        readOnly
+                        style={{ fontFamily: 'monospace', background: '#fafafa' }}
+                      />
+                    </Form.Item>
+                  </Col>
+                </Row>
+                <Divider style={{ margin: '8px 0' }} />
+              </>
+            )}
 
-            <Row gutter={12} style={{ marginTop: 8 }}>
-              <Col xs={12} sm={4}>
-                <Form.Item label="Marca" name="brandId" style={compactItem}>
-                  <Select placeholder="Seleccionar" allowClear showSearch optionFilterProp="label" options={refOptions(refData?.['brands'])} />
-                </Form.Item>
-              </Col>
-              <Col xs={24} sm={4}>
-                <Form.Item label="Estilo" name="style" rules={[{ required: true, message: 'Estilo es requerido' }, { max: 100 }]} style={compactItem}>
-                  <Input placeholder="ej. Oxford" />
-                </Form.Item>
-              </Col>
-              <Col xs={12} sm={3}>
-                <Form.Item label={aiLabel('Color', 'colorId', aiFilledFields)} name="colorId" style={{ ...compactItem, ...(aiFilledFields.has('colorId') ? AI_FILLED_STYLE : {}) }}>
-                  <Select placeholder="Seleccionar" allowClear showSearch optionFilterProp="label" options={refOptions(refData?.['colors'])} />
-                </Form.Item>
-              </Col>
-              <Col xs={12} sm={3}>
-                <Form.Item label="Ancho" name="widthTypeId" style={compactItem}>
-                  <Select placeholder="Seleccionar" allowClear options={refOptions(refData?.['width-types'])} />
-                </Form.Item>
-              </Col>
-            </Row>
+            {/* ─────────────────────────────────────────────────────────────
+                Detalles del Producto (left) + Default Prices (right)
 
-            <Row gutter={12}>
-              <Col xs={24} sm={10}>
-                <Form.Item
-                  label="Style-Color Canonico"
-                  name="styleColorId"
-                  tooltip="Selector basado en /api/v1/skus/style-colors para copiar combinaciones existentes."
-                  style={compactItem}
+                Field order matches the operator's 2026-04-23 request. The
+                right-side Card scopes the pricing block into its own visual
+                group so it tab-navigates as a coherent unit.
+
+                Field → backend column map:
+                  vendorId        → vendor_id  (Code). Name auto-fills via
+                                    lookup on the vendors list.
+                  vendorSku       → vendor_sku
+                  categoryId      → category_number (dept auto from ranges)
+                  sizeType        → size_type (RICS SmallInt)
+                  groupCode       → group_code
+                  ricsDescription → description_rics
+                  style/colorId   → style + legacy color ref id
+                  location        → location
+                  comment         → comment
+                  cost            → current_cost
+                  season          → season (2-char RICS code)
+                  seasonId        → legacyAttrs (ref-table fk; auto-fills
+                                    human name from ref data)
+                  keywords        → keywords
+                  pictureFileName → picture_file_name
+                  coupon          → coupon
+                  labelTypeId     → legacyAttrs (stays in bag until app.sku
+                                    gets a label_type_id column)
+
+                Right box pricing:
+                  listPrice, price (retailPrice), markDownPrice1,
+                  markDownPrice2, perks, discountCode. GP% computed via
+                  Form.useWatch on price + cost.
+                ───────────────────────────────────────────────────────────── */}
+            <Row gutter={16} style={{ marginTop: 4 }}>
+              <Col xs={24} lg={18}>
+                <Card title="Detalles del Producto" size="small" styles={{ body: { padding: 12 } }}>
+                  {/* Row 1 — Vendor + SKU Proveedor + Category/Dept + Size Type + Group */}
+                  <Row gutter={8}>
+                    <Col xs={12} sm={4}>
+                      <Form.Item
+                        label="Vendor Code"
+                        name="vendorId"
+                        rules={[{ required: true, message: 'Vendor requerido' }]}
+                        style={compactItem}
+                      >
+                        <Select
+                          placeholder="Código"
+                          showSearch
+                          optionFilterProp="label"
+                          loading={vendorsLoading}
+                          options={vendors?.map((v) => ({ label: v.code, value: v.code, name: v.name }))}
+                          filterOption={(input, option) => {
+                            const s = input.toLowerCase()
+                            const code = String(option?.value ?? '').toLowerCase()
+                            const name = String((option as { name?: string } | undefined)?.name ?? '').toLowerCase()
+                            return code.includes(s) || name.includes(s)
+                          }}
+                        />
+                      </Form.Item>
+                    </Col>
+                    <Col xs={12} sm={5}>
+                      <Form.Item label="Vendor Name" style={compactItem}>
+                        <VendorNameAutofill vendors={vendors} />
+                      </Form.Item>
+                    </Col>
+                    <Col xs={12} sm={3}>
+                      <Form.Item label="Vendor SKU" name="vendorSku" style={compactItem}>
+                        <Input placeholder="SKU Proveedor" />
+                      </Form.Item>
+                    </Col>
+                    <Col xs={24} sm={6}>
+                      <Form.Item
+                        label={
+                          <span>
+                            {aiLabel('Category', 'categoryId', aiFilledFields)}
+                            {derivedFamilyCode && (
+                              <Tag color="blue" style={{ marginLeft: 8, fontSize: 11 }}>
+                                Familia: {familyLabelByCode.get(derivedFamilyCode) ?? derivedFamilyCode}
+                              </Tag>
+                            )}
+                          </span>
+                        }
+                        name="categoryId"
+                        rules={[
+                          {
+                            validator: (_, value: number | null | undefined) => {
+                              if (value == null) return Promise.resolve()
+                              if (!validCategoriesById.has(value)) {
+                                return Promise.reject(new Error('Categoría no encontrada en Postgres.'))
+                              }
+                              return Promise.resolve()
+                            },
+                          },
+                        ]}
+                        style={{ ...compactItem, ...(aiFilledFields.has('categoryId') ? AI_FILLED_STYLE : {}) }}
+                      >
+                        <Select
+                          placeholder="Buscar"
+                          allowClear
+                          showSearch
+                          optionFilterProp="label"
+                          options={categoryOptions}
+                          onChange={handleCategoryChange}
+                          filterOption={(input, option) => {
+                            const label = String(option?.label ?? '').toLowerCase()
+                            return label.includes(input.toLowerCase())
+                          }}
+                        />
+                      </Form.Item>
+                    </Col>
+                    <Col xs={12} sm={4}>
+                      <Form.Item label="Department (auto)" style={compactItem}>
+                        <Input
+                          value={derivedDepartmentLabel ?? ''}
+                          readOnly
+                          placeholder="Deriva de categoría"
+                          style={{ background: '#fafafa', fontFamily: 'monospace' }}
+                        />
+                      </Form.Item>
+                    </Col>
+                    <Col xs={12} sm={2}>
+                      <Form.Item label="Size Type" name="sizeType" style={compactItem}>
+                        <InputNumber min={1} max={99} style={{ width: '100%' }} placeholder="0" />
+                      </Form.Item>
+                    </Col>
+                  </Row>
+
+                  {/* Row 2 — Group + Description + Style/Color + Location + Comment + Cost */}
+                  <Row gutter={8}>
+                    <Col xs={12} sm={2}>
+                      <Form.Item label="Group" name="groupCode" style={compactItem}>
+                        <Input placeholder="Grupo" maxLength={3} />
+                      </Form.Item>
+                    </Col>
+                    <Col xs={24} sm={6}>
+                      <Form.Item
+                        label="Description"
+                        name="ricsDescription"
+                        rules={[{ max: 500 }]}
+                        style={compactItem}
+                      >
+                        <Input placeholder="Descripción" />
+                      </Form.Item>
+                    </Col>
+                    <Col xs={12} sm={5}>
+                      <Form.Item label="Style / Color" style={compactItem}>
+                        <Space.Compact style={{ width: '100%' }}>
+                          <Form.Item
+                            name="style"
+                            noStyle
+                            rules={[{ required: true, message: 'Estilo requerido' }, { max: 100 }]}
+                          >
+                            <Input style={{ width: '55%' }} placeholder="Estilo" />
+                          </Form.Item>
+                          <Form.Item name="colorId" noStyle>
+                            <Select
+                              style={{ width: '45%' }}
+                              placeholder="Color"
+                              allowClear
+                              showSearch
+                              optionFilterProp="label"
+                              options={refOptions(refData?.['colors'])}
+                            />
+                          </Form.Item>
+                        </Space.Compact>
+                      </Form.Item>
+                    </Col>
+                    <Col xs={12} sm={3}>
+                      <Form.Item label="Location" name="location" style={compactItem}>
+                        <Input placeholder="Ubicación" />
+                      </Form.Item>
+                    </Col>
+                    <Col xs={24} sm={5}>
+                      <Form.Item label="Comment" name="comment" rules={[{ max: 1000 }]} style={compactItem}>
+                        <Input placeholder="Notas internas" />
+                      </Form.Item>
+                    </Col>
+                    <Col xs={12} sm={3}>
+                      <Form.Item label="Current Cost" name="cost" style={compactItem}>
+                        <InputNumber style={{ width: '100%' }} min={0} step={0.01} precision={2} placeholder="0.00" />
+                      </Form.Item>
+                    </Col>
+                  </Row>
+
+                  {/* Row 3 — Season code + Season autofill + Keywords + Picture + Coupon + Label Type */}
+                  <Row gutter={8}>
+                    <Col xs={12} sm={2}>
+                      <Form.Item label="Season Code" name="season" style={compactItem}>
+                        <Input placeholder="ej. SS" maxLength={2} />
+                      </Form.Item>
+                    </Col>
+                    <Col xs={12} sm={3}>
+                      <Form.Item label="Season (auto)" name="seasonId" style={compactItem}>
+                        <Select
+                          placeholder="Auto"
+                          allowClear
+                          options={refOptions(refData?.['seasons'])}
+                        />
+                      </Form.Item>
+                    </Col>
+                    <Col xs={24} sm={6}>
+                      <Form.Item label="Keywords" name="keywords" rules={[{ max: 500 }]} style={compactItem}>
+                        <Input placeholder="separadas por coma" />
+                      </Form.Item>
+                    </Col>
+                    <Col xs={24} sm={5}>
+                      <Form.Item label="Picture File 1" name="pictureFileName" style={compactItem}>
+                        <Input placeholder="ej. SKU123.jpg" />
+                      </Form.Item>
+                    </Col>
+                    <Col xs={12} sm={2}>
+                      <Form.Item label="Coupon" name="coupon" valuePropName="checked" style={compactItem}>
+                        <Switch />
+                      </Form.Item>
+                    </Col>
+                    <Col xs={12} sm={3}>
+                      <Form.Item label="Label Type" name="labelTypeId" style={compactItem}>
+                        <Select
+                          placeholder="Tipo"
+                          allowClear
+                          options={refOptions(refData?.['label-types'])}
+                        />
+                      </Form.Item>
+                    </Col>
+                  </Row>
+
+                  {/* Row 4 — Brand + StyleColor Canonico + Shoe Type (AI fields kept). */}
+                  <Row gutter={8}>
+                    <Col xs={12} sm={4}>
+                      <Form.Item label="Marca" name="brandId" style={compactItem}>
+                        <Input placeholder="Escriba la marca" allowClear />
+                      </Form.Item>
+                    </Col>
+                    <Col xs={12} sm={4}>
+                      <Form.Item
+                        label={aiLabel('Tipo de Zapato', 'shoeTypeId', aiFilledFields)}
+                        name="shoeTypeId"
+                        style={{ ...compactItem, ...(aiFilledFields.has('shoeTypeId') ? AI_FILLED_STYLE : {}) }}
+                      >
+                        <Select placeholder="Seleccionar" allowClear showSearch optionFilterProp="label" options={refOptions(refData?.['shoe-types'])} />
+                      </Form.Item>
+                    </Col>
+                    <Col xs={24} sm={10}>
+                      <Form.Item
+                        label="Style-Color Canonico"
+                        name="styleColorId"
+                        tooltip="Selector basado en /api/v1/skus/style-colors para copiar combinaciones existentes."
+                        style={compactItem}
+                      >
+                        <Select
+                          placeholder="Combinación existente (opcional)"
+                          allowClear
+                          showSearch
+                          optionFilterProp="label"
+                          loading={styleColorsLoading}
+                          options={styleColorOptions}
+                          onChange={handleStyleColorChange}
+                        />
+                      </Form.Item>
+                    </Col>
+                    <Col xs={24} sm={6}>
+                      <Form.Item label={aiLabel('Descripción Web', 'webDescription', aiFilledFields)} name="webDescription" rules={[{ max: 1000 }]} style={{ ...compactItem, ...(aiFilledFields.has('webDescription') ? AI_FILLED_STYLE : {}) }}>
+                        <Input placeholder="Descripción larga" />
+                      </Form.Item>
+                    </Col>
+                  </Row>
+                </Card>
+              </Col>
+
+              <Col xs={24} lg={6}>
+                <Card
+                  title="Default Prices"
+                  size="small"
+                  styles={{ body: { padding: 12 } }}
                 >
-                  <Select
-                    placeholder="Seleccionar combinacion existente (opcional)"
-                    allowClear
-                    showSearch
-                    optionFilterProp="label"
-                    loading={styleColorsLoading}
-                    options={styleColorOptions}
-                    onChange={handleStyleColorChange}
-                  />
-                </Form.Item>
-              </Col>
-            </Row>
-
-            <Row gutter={12}>
-              <Col xs={12} sm={4}>
-                <Form.Item label={aiLabel('Tipo de Zapato', 'shoeTypeId', aiFilledFields)} name="shoeTypeId" style={{ ...compactItem, ...(aiFilledFields.has('shoeTypeId') ? AI_FILLED_STYLE : {}) }}>
-                  <Select placeholder="Seleccionar" allowClear showSearch optionFilterProp="label" options={refOptions(refData?.['shoe-types'])} />
-                </Form.Item>
-              </Col>
-              <Col xs={24} sm={10}>
-                <Form.Item label={aiLabel('Descripcion Web', 'webDescription', aiFilledFields)} name="webDescription" rules={[{ max: 1000 }]} style={{ ...compactItem, ...(aiFilledFields.has('webDescription') ? AI_FILLED_STYLE : {}) }}>
-                  <Input.TextArea rows={1} placeholder="Descripcion en espanol" />
-                </Form.Item>
-              </Col>
-              <Col xs={24} sm={10}>
-                <Form.Item label="Descripcion RICS" name="ricsDescription" rules={[{ max: 500 }]} style={compactItem}>
-                  <Input placeholder="Auto-generado si se deja vacio" />
-                </Form.Item>
-              </Col>
-            </Row>
-
-            <Row gutter={12}>
-              <Col xs={24} sm={12}>
-                <Form.Item label="Comentario" name="comment" rules={[{ max: 1000 }]} style={compactItem}>
-                  <Input.TextArea rows={1} placeholder="Notas internas" />
-                </Form.Item>
+                  <Form.Item label="List Price" name="listPrice" style={compactItem}>
+                    <InputNumber style={{ width: '100%' }} min={0} step={0.01} precision={2} placeholder="0.00" />
+                  </Form.Item>
+                  <Form.Item
+                    label="Retail Price"
+                    name="price"
+                    rules={[{ required: true, message: 'Retail requerido' }, { type: 'number', min: 0.01 }]}
+                    style={compactItem}
+                  >
+                    <InputNumber style={{ width: '100%' }} min={0.01} step={0.01} precision={2} placeholder="0.00" />
+                  </Form.Item>
+                  <Form.Item label="Markdown 1" name="markDownPrice1" style={compactItem}>
+                    <InputNumber style={{ width: '100%' }} min={0} step={0.01} precision={2} placeholder="0.00" />
+                  </Form.Item>
+                  <Form.Item label="Markdown 2" name="markDownPrice2" style={compactItem}>
+                    <InputNumber style={{ width: '100%' }} min={0} step={0.01} precision={2} placeholder="0.00" />
+                  </Form.Item>
+                  <Form.Item label="Perks" name="perks" style={compactItem}>
+                    <InputNumber style={{ width: '100%' }} min={0} step={0.01} precision={2} placeholder="0.00" />
+                  </Form.Item>
+                  <Form.Item label="GP %" style={compactItem}>
+                    <GpPercentDisplay />
+                  </Form.Item>
+                  <Form.Item label="Discount Code" name="discountCode" style={compactItem}>
+                    <Input placeholder="Código de promoción" maxLength={20} />
+                  </Form.Item>
+                </Card>
               </Col>
             </Row>
 
             <Divider style={{ margin: '8px 0' }} />
 
-            {/* -- Clasificacion y Proveedor -- */}
-            <Typography.Text strong style={{ fontSize: 13 }}>Clasificacion y Proveedor</Typography.Text>
+            {/* -- Clasificacion — what's left after the move: merchandising attrs + dept (auto) -- */}
+            <Typography.Text strong style={{ fontSize: 13 }}>Clasificacion</Typography.Text>
 
             <Row gutter={12} style={{ marginTop: 8 }}>
-              <Col xs={12} sm={5}>
+              <Col xs={24} sm={6}>
+                {/*
+                  Phase 4 — Departamento is now a display-only readout of the
+                  real Postgres dept derived from the selected category. The
+                  actual column write to app.sku uses categoryNumber + a join,
+                  so the form doesn't submit a dept value directly. We keep
+                  the "department" Form.Item to preserve the legacy style-color
+                  picker's compat shape, but render a plain Input so the user
+                  sees the real dept name ("BOTAS MUJER") instead of the
+                  legacy macro enum (BOOTS).
+                */}
                 <Form.Item
-                  label={aiLabel('Categoria', 'categoryId', aiFilledFields)}
-                  name="categoryId"
-                  extra={`Solo categorias RICS ${CATEGORY_MIN}-${CATEGORY_MAX}; el departamento se deriva automaticamente.`}
-                  rules={[
-                    { required: true, message: 'Categoria es requerida' },
-                    {
-                      validator: (_, value: number | null | undefined) => {
-                        if (value == null) return Promise.resolve()
-                        const category = validCategoriesById.get(value)
-                        if (!category || !isValidCategoryCode(category.ricsCode)) {
-                          return Promise.reject(
-                            new Error(`Categoria fuera de rango permitido (${CATEGORY_MIN}-${CATEGORY_MAX}).`),
-                          )
-                        }
-                        if (!isValidDepartment(category.deptMacro)) {
-                          return Promise.reject(
-                            new Error('Categoria sin macro-departamento valido.'),
-                          )
-                        }
-                        return Promise.resolve()
-                      },
-                    },
-                  ]}
-                  style={{ ...compactItem, ...(aiFilledFields.has('categoryId') ? AI_FILLED_STYLE : {}) }}
+                  label="Departamento"
+                  style={compactItem}
                 >
-                  <Select
-                    placeholder="Buscar por nombre o codigo RICS"
-                    allowClear
-                    showSearch
-                    optionFilterProp="label"
-                    options={categoryOptions}
-                    onChange={handleCategoryChange}
-                    filterOption={(input, option) => {
-                      const label = String(option?.label ?? '').toLowerCase()
-                      const search = input.toLowerCase()
-                      return label.includes(search)
-                    }}
+                  <Input
+                    value={derivedDepartmentLabel ?? ''}
+                    readOnly
+                    placeholder="Se deriva de la categoría"
+                    style={{ background: '#fafafa', fontFamily: 'monospace' }}
                   />
-                </Form.Item>
-              </Col>
-              <Col xs={12} sm={4}>
-                <Form.Item
-                  label={aiLabel('Departamento', 'department', aiFilledFields)}
-                  name="department"
-                  rules={[
-                    { required: true, message: 'Departamento es requerido' },
-                    {
-                      validator: (_, value: string | undefined) =>
-                        isValidDepartment(value)
-                          ? Promise.resolve()
-                          : Promise.reject(new Error('Departamento invalido para estandar macro.')),
-                    },
-                  ]}
-                  style={{ ...compactItem, ...(aiFilledFields.has('department') ? AI_FILLED_STYLE : {}) }}
-                >
-                  <Select placeholder="Se llena con categoria" options={DEPARTMENTS.map((d) => ({ label: d, value: d }))} disabled />
                 </Form.Item>
               </Col>
               <Col xs={12} sm={3}>
@@ -901,31 +1713,13 @@ export default function SkuFormPage() {
                   <Select placeholder="Seleccionar" allowClear options={refOptions(refData?.['seasons'])} />
                 </Form.Item>
               </Col>
-              <Col xs={24} sm={4}>
-                <Form.Item label="Proveedor" name="vendorId" rules={[{ required: true, message: 'Proveedor es requerido' }]} style={compactItem}>
-                  <Select placeholder="Buscar..." showSearch optionFilterProp="label" loading={vendorsLoading} options={vendors?.map((v) => ({ label: v.name, value: v.id }))} />
-                </Form.Item>
-              </Col>
-              <Col xs={12} sm={3}>
-                <Form.Item label="SKU Proveedor" name="vendorSku" style={compactItem}>
-                  <Input placeholder="SKU Proveedor" />
-                </Form.Item>
-              </Col>
-              <Col xs={12} sm={3}>
-                <Form.Item label="Fabricante" name="manufacturer" style={compactItem}>
-                  <Input placeholder="Fabricante" />
-                </Form.Item>
-              </Col>
-            </Row>
-
-            <Row gutter={12}>
               <Col xs={12} sm={4}>
                 <Form.Item label={aiLabel('Ocasion', 'occasionId', aiFilledFields)} name="occasionId" style={{ ...compactItem, ...(aiFilledFields.has('occasionId') ? AI_FILLED_STYLE : {}) }}>
                   <Select placeholder="Seleccionar" allowClear options={refOptions(refData?.['occasions'])} />
                 </Form.Item>
               </Col>
               <Col xs={12} sm={4}>
-                <Form.Item label="Publico Objetivo" name="targetAudienceId" style={compactItem}>
+                <Form.Item label={aiLabel('Género', 'genderId', aiFilledFields)} name="genderId" style={{ ...compactItem, ...(aiFilledFields.has('genderId') ? AI_FILLED_STYLE : {}) }}>
                   <Select placeholder="Seleccionar" allowClear options={refOptions(refData?.['target-audiences'])} />
                 </Form.Item>
               </Col>
@@ -938,10 +1732,20 @@ export default function SkuFormPage() {
 
             <Divider style={{ margin: '8px 0' }} />
 
-            {/* -- Apariencia, Diseno y Materiales -- */}
+            {/* -- Apariencia, Diseno y Materiales — Color + Ancho moved in from Detalles -- */}
             <Typography.Text strong style={{ fontSize: 13 }}>Apariencia, Diseno y Materiales</Typography.Text>
 
             <Row gutter={12} style={{ marginTop: 8 }}>
+              <Col xs={12} sm={3}>
+                <Form.Item label={aiLabel('Color', 'colorId', aiFilledFields)} name="colorId" style={{ ...compactItem, ...(aiFilledFields.has('colorId') ? AI_FILLED_STYLE : {}) }}>
+                  <Select placeholder="Seleccionar" allowClear showSearch optionFilterProp="label" options={refOptions(refData?.['colors'])} />
+                </Form.Item>
+              </Col>
+              <Col xs={12} sm={3}>
+                <Form.Item label="Ancho" name="widthTypeId" style={compactItem}>
+                  <Select placeholder="Seleccionar" allowClear options={refOptions(refData?.['width-types'])} />
+                </Form.Item>
+              </Col>
               <Col xs={12} sm={3}>
                 <Form.Item label={aiLabel('Patron', 'patternId', aiFilledFields)} name="patternId" style={{ ...compactItem, ...(aiFilledFields.has('patternId') ? AI_FILLED_STYLE : {}) }}>
                   <Select placeholder="Seleccionar" allowClear options={refOptions(refData?.['patterns'])} />
@@ -953,7 +1757,7 @@ export default function SkuFormPage() {
                 </Form.Item>
               </Col>
               <Col xs={12} sm={3}>
-                <Form.Item label="Accesorio" name="accessoryId" style={compactItem}>
+                <Form.Item label={aiLabel('Accesorio', 'accessoryId', aiFilledFields)} name="accessoryId" style={{ ...compactItem, ...(aiFilledFields.has('accessoryId') ? AI_FILLED_STYLE : {}) }}>
                   <Select placeholder="Seleccionar" allowClear options={refOptions(refData?.['accessories'])} />
                 </Form.Item>
               </Col>
@@ -972,11 +1776,6 @@ export default function SkuFormPage() {
                   <Select placeholder="Seleccionar" allowClear options={refOptions(refData?.['toe-shapes'])} />
                 </Form.Item>
               </Col>
-              <Col xs={12} sm={3}>
-                <Form.Item label="Tipo de Zapato" name="closureTypeId" style={compactItem}>
-                  <Select placeholder="Seleccionar" allowClear options={refOptions(refData?.['closure-types'])} />
-                </Form.Item>
-              </Col>
             </Row>
 
             <Row gutter={12}>
@@ -986,82 +1785,26 @@ export default function SkuFormPage() {
                 </Form.Item>
               </Col>
               <Col xs={12} sm={4}>
-                <Form.Item label="Material de Suela" name="outsoleMaterialId" style={compactItem}>
+                <Form.Item label={aiLabel('Material de Suela', 'outsoleMaterialId', aiFilledFields)} name="outsoleMaterialId" style={{ ...compactItem, ...(aiFilledFields.has('outsoleMaterialId') ? AI_FILLED_STYLE : {}) }}>
                   <Select placeholder="Seleccionar" allowClear options={refOptions(refData?.['outsole-materials'])} />
                 </Form.Item>
               </Col>
               <Col xs={12} sm={4}>
-                <Form.Item label="Material del Tacon" name="heelMaterialId" style={compactItem}>
+                <Form.Item label={aiLabel('Material del Tacon', 'heelMaterialId', aiFilledFields)} name="heelMaterialId" style={{ ...compactItem, ...(aiFilledFields.has('heelMaterialId') ? AI_FILLED_STYLE : {}) }}>
                   <Select placeholder="Seleccionar" allowClear options={refOptions(refData?.['heel-materials'])} />
-                </Form.Item>
-              </Col>
-              <Col xs={12} sm={5}>
-                <Form.Item
-                  label="Tipo de Tacon (canonico)"
-                  name="heelTypeCode"
-                  style={compactItem}
-                >
-                  <Select
-                    placeholder="Codigo canonico"
-                    allowClear
-                    showSearch
-                    optionFilterProp="label"
-                    options={(refData?.['heel-types'] ?? []).map((item) => ({
-                      value: item.code,
-                      label: item.code ? `${item.code} · ${item.name}` : item.name,
-                    }))}
-                  />
-                </Form.Item>
-              </Col>
-              <Col xs={12} sm={5}>
-                <Form.Item
-                  label="Material Tacon (canonico)"
-                  name="heelMaterialTypeCode"
-                  style={compactItem}
-                >
-                  <Select
-                    placeholder="Codigo canonico"
-                    allowClear
-                    showSearch
-                    optionFilterProp="label"
-                    options={(refData?.['heel-material-types'] ?? []).map((item) => ({
-                      value: item.code,
-                      label: item.code ? `${item.code} · ${item.name}` : item.name,
-                    }))}
-                  />
                 </Form.Item>
               </Col>
             </Row>
 
             <Divider style={{ margin: '8px 0' }} />
 
-            {/* -- Precios y Codigos -- */}
-            <Typography.Text strong style={{ fontSize: 13 }}>Precios y Codigos</Typography.Text>
+            {/* -- Codigos — just barcode now (Precio, Costo, Temporada, Palabras Clave moved up) -- */}
+            <Typography.Text strong style={{ fontSize: 13 }}>Codigo de Barras</Typography.Text>
 
             <Row gutter={12} style={{ marginTop: 8 }}>
-              <Col xs={12} sm={4}>
-                <Form.Item label="Precio" name="price" rules={[{ required: true, message: 'Precio es requerido' }, { type: 'number', min: 0.01 }]} style={compactItem}>
-                  <InputNumber  style={{ width: '100%' }} min={0.01} step={0.01} precision={2} placeholder="0.00" />
-                </Form.Item>
-              </Col>
-              <Col xs={12} sm={4}>
-                <Form.Item label="Costo" name="cost" style={compactItem}>
-                  <InputNumber  style={{ width: '100%' }} min={0} step={0.01} precision={2} placeholder="0.00" />
-                </Form.Item>
-              </Col>
-              <Col xs={12} sm={4}>
+              <Col xs={24} sm={6}>
                 <Form.Item label="Codigo de Barras / UPC" name="barcode" style={compactItem}>
                   <Input placeholder="Auto si vacio" />
-                </Form.Item>
-              </Col>
-              <Col xs={12} sm={4}>
-                <Form.Item label="Codigo de Temporada" name="season" style={compactItem}>
-                  <Input placeholder="ej. SS26" />
-                </Form.Item>
-              </Col>
-              <Col xs={24} sm={8}>
-                <Form.Item label="Palabras Clave" name="keywords" rules={[{ max: 500 }]} style={compactItem}>
-                  <Input placeholder="Palabras clave (separadas por coma)" />
                 </Form.Item>
               </Col>
             </Row>
@@ -1075,12 +1818,27 @@ export default function SkuFormPage() {
                   htmlType="submit"
                   icon={<SaveOutlined />}
                   loading={isSaving}
+                  disabled={isDiscontinued}
                 >
-                  {isEdit ? 'Actualizar SKU' : 'Crear SKU'}
+                  {isDraft ? 'Guardar borrador' : isEdit ? 'Guardar cambios' : 'Crear borrador'}
                 </Button>
-                <Button onClick={() => navigate('/inventory/skus')}>
+                {isDraft && lifecycleSku && (
+                  <Button
+                    type="primary"
+                    style={{ background: '#389e0d', borderColor: '#389e0d' }}
+                    icon={<ThunderboltOutlined />}
+                    loading={finalizeMutation.isPending}
+                    onClick={() => handleFinalize()}
+                  >
+                    Finalizar SKU
+                  </Button>
+                )}
+                <Button onClick={() => navigate(skuRootPath)}>
                   Cancelar
                 </Button>
+                {isDiscontinued && (
+                  <Tag color="red" style={{ alignSelf: 'center' }}>DISCONTINUADO · solo lectura</Tag>
+                )}
               </Space>
             </Form.Item>
           </Form>

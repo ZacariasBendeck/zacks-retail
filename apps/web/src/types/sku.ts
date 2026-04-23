@@ -162,13 +162,15 @@ export interface ImageAnalysisResult {
   heel_height: string | null
   heel_shape: string | null
   toe_shape: string | null
-  color_family: string | null
+  color: string | null
   upper_material: string | null
+  outsole_material: string | null
+  heel_material: string | null
   finish: string | null
   pattern: string | null
   occasion: string | null
-  department: string | null
-  color: string | null
+  target_audience: string | null
+  accessory: string | null
   description: string | null
   category: string | null
 }
@@ -180,11 +182,38 @@ export interface AiFillConfigEntry {
   refTable?: string
 }
 
+/** Resolved Postgres category + department the AI picked. Null when AI returned
+ *  no category or the picked category isn't mapped in app.category_product_family. */
+export interface AiCategoryResolution {
+  categoryNumber: number
+  categoryDesc: string
+  departmentNumber: number
+  departmentDesc: string
+  familyCode: string
+  familyLabelEs: string
+}
+
 /** Canonical analyze-image response */
 export interface EnhancedAnalysisResult {
   raw: ImageAnalysisResult
-  mapped?: Record<string, number | null>
+  mapped?: Record<string, number | string | null>
   config?: AiFillConfigEntry[]
+  resolution?: AiCategoryResolution | null
+  /**
+   * Non-null when the backend rejected the AI's category pick (e.g. a number
+   * outside the selected family's allow-list). The form should surface this
+   * so the operator knows why the category field stayed blank and picks one
+   * manually.
+   */
+  warning?: string | null
+}
+
+/** One Product Family from the catalog. Pulled from GET /api/v1/products/families. */
+export interface ProductFamily {
+  code: string
+  labelEs: string
+  descriptionEs: string | null
+  sortOrder: number
 }
 
 /** Mapping from AI attribute key to form field + reference table */

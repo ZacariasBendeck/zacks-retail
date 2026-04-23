@@ -9,6 +9,8 @@
 
 import * as ricsAdapter from './ricsSalesReportAdapter';
 import * as monthlyAdapter from './ricsSalesHistoryByMonthAdapter';
+import * as pivotAdapter from './ricsSalesPivotAdapter';
+import * as pivotByBuyerAdapter from './ricsSalesPivotByBuyerAdapter';
 import {
   parseCriteria,
   matchesCriteria,
@@ -40,6 +42,10 @@ import type {
   SalesAnalysisStoreOption,
   SalesAnalysisCriteria,
   SalesAnalysisPrinting,
+  SalesHierarchyReport,
+  SalesHierarchyStoreOption,
+  SalesPivotReport,
+  SalesPivotVariant,
   StockStatusReport,
   StockStatusSortBy,
   StockStatusStoreOption,
@@ -132,9 +138,54 @@ export async function getSalesAnalysis(params: {
   printing: SalesAnalysisPrinting;
   startDate?: string;
   endDate?: string;
+  /** Opt-in per-SKU attribute enrichment (SKU_DETAIL only). See adapter. */
+  includeAttributes?: boolean;
 }): Promise<SalesAnalysisReport> {
   if (!sourceIsRics()) throw new SalesSourceNotImplementedError(source());
   return ricsAdapter.getSalesAnalysis(params);
+}
+
+/**
+ * Sales Pivot — dispatches to one of three variants based on `variant`:
+ *   department                 Sector → Dept → Category → SKU
+ *   department-separate-store  Store → Sector → Dept → Category → SKU
+ *   buyer                      Buyer → Dept → Category → SKU
+ */
+export async function getSalesPivot(params: {
+  startDate: string;
+  endDate: string;
+  storeNumbers?: number[];
+  variant: SalesPivotVariant;
+}): Promise<SalesPivotReport> {
+  if (!sourceIsRics()) throw new SalesSourceNotImplementedError(source());
+  if (params.variant === 'buyer' ||
+      params.variant === 'buyer-vendor' ||
+      params.variant === 'buyer-vendor-separate-store') {
+    return pivotByBuyerAdapter.getSalesPivotByBuyer({
+      startDate: params.startDate,
+      endDate: params.endDate,
+      storeNumbers: params.storeNumbers,
+      variant: params.variant,
+    });
+  }
+  return pivotAdapter.getSalesPivotByDepartment({
+    startDate: params.startDate,
+    endDate: params.endDate,
+    storeNumbers: params.storeNumbers,
+    separateStore: params.variant === 'department-separate-store',
+  });
+}
+
+export async function getSalesHierarchy(params: {
+  storeOption: SalesHierarchyStoreOption;
+  criteria: SalesAnalysisCriteria;
+  startDate: string;
+  endDate: string;
+  priorYear?: boolean;
+  includeAttributes?: boolean;
+}): Promise<SalesHierarchyReport> {
+  if (!sourceIsRics()) throw new SalesSourceNotImplementedError(source());
+  return ricsAdapter.getSalesHierarchy(params);
 }
 
 export async function getStockStatus(params: {

@@ -11,12 +11,6 @@
       "type": "text",
       "aiKey": "description"
     },
-    "department": {
-      "enabled": true,
-      "type": "enum",
-      "field": "department",
-      "aiKey": "department"
-    },
     "shoeTypeId": {
       "enabled": true,
       "type": "reference",
@@ -45,13 +39,25 @@
       "enabled": true,
       "type": "reference",
       "refTable": "colors",
-      "aiKey": "color_family"
+      "aiKey": "color"
     },
     "upperMaterialId": {
       "enabled": true,
       "type": "reference",
       "refTable": "upper-materials",
       "aiKey": "upper_material"
+    },
+    "outsoleMaterialId": {
+      "enabled": true,
+      "type": "reference",
+      "refTable": "outsole-materials",
+      "aiKey": "outsole_material"
+    },
+    "heelMaterialId": {
+      "enabled": true,
+      "type": "reference",
+      "refTable": "heel-materials",
+      "aiKey": "heel_material"
     },
     "finishId": {
       "enabled": true,
@@ -70,6 +76,18 @@
       "type": "reference",
       "refTable": "occasions",
       "aiKey": "occasion"
+    },
+    "targetAudienceId": {
+      "enabled": true,
+      "type": "reference",
+      "refTable": "target-audiences",
+      "aiKey": "target_audience"
+    },
+    "accessoryId": {
+      "enabled": true,
+      "type": "reference",
+      "refTable": "accessories",
+      "aiKey": "accessory"
     },
     "categoryId": {
       "enabled": true,

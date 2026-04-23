@@ -41,6 +41,7 @@ export interface SizeType {
   maxColumns: number;
   maxRows: number;
   dateLastChanged: Date | null;
+  skuCount: number;
 }
 
 export interface SizeTypeInput {
@@ -88,7 +89,33 @@ function mapRow(row: SizeTypeRow): SizeType {
     maxColumns,
     maxRows,
     dateLastChanged: parseAccessDate(row.DateLastChanged),
+    skuCount: 0,
   };
+}
+
+/**
+ * Returns a map of SizeType code → SKU count from InventoryMaster.[SizeType].
+ */
+async function loadSkuCountsBySizeType(): Promise<Map<number, number>> {
+  const out = new Map<number, number>();
+  try {
+    const { path, password } = openRicsDb(RicsDb.InventoryMaster);
+    const rows = await executeQuery<{ SizeType: number | null; N: number }>(
+      path,
+      password,
+      `SELECT [SizeType], COUNT(*) AS N FROM [InventoryMaster]
+         WHERE [SizeType] IS NOT NULL
+         GROUP BY [SizeType]`,
+    );
+    for (const r of rows) {
+      const code = coerceNumber(r.SizeType);
+      if (code == null) continue;
+      out.set(code, Number(r.N ?? 0));
+    }
+  } catch {
+    // leave counts at 0
+  }
+  return out;
 }
 
 function validate(input: SizeTypeInput): RepoError | null {
@@ -183,7 +210,8 @@ export const SizeTypeRepository = {
         password,
         `SELECT ${LIST_COLUMNS} FROM [SizeTypes] ORDER BY [Code]`,
       );
-      return Ok(rows.map(mapRow));
+      const counts = await loadSkuCountsBySizeType();
+      return Ok(rows.map(mapRow).map((s) => ({ ...s, skuCount: counts.get(s.code) ?? 0 })));
     } catch (err) {
       return Err(toRepoError(err));
     }
@@ -201,7 +229,8 @@ export const SizeTypeRepository = {
       if (rows.length === 0) {
         return Err({ kind: 'NotFound', message: `Size type ${code} not found.` });
       }
-      return Ok(mapRow(rows[0]));
+      const counts = await loadSkuCountsBySizeType();
+      return Ok({ ...mapRow(rows[0]), skuCount: counts.get(code) ?? 0 });
     } catch (err) {
       return Err(toRepoError(err));
     }

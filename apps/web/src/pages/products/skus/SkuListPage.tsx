@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Alert,
   App,
@@ -21,7 +21,7 @@ import {
   PlusOutlined,
   SearchOutlined,
 } from '@ant-design/icons'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import {
   useDeleteProductsSku,
@@ -63,19 +63,44 @@ import type { Department, Sector } from '../../../types/productsTaxonomy'
 export default function SkuListPage() {
   const navigate = useNavigate()
   const { message } = App.useApp()
+  const [searchParams] = useSearchParams()
+
+  // Deep-link hydration: pages that link here (e.g., the attribute admin's
+  // "usado en N SKUs") can pre-seed filters via URL — `?attr.color=rojo&run=1`.
+  // We read once on mount; changing URL after mount doesn't re-hydrate.
+  const initialFilters = useMemo(() => {
+    const q = searchParams.get('q') ?? ''
+    const styleColor = searchParams.get('styleColor') ?? ''
+    const splitCsv = (v: string | null) =>
+      v ? v.split(',').map((s) => s.trim()).filter(Boolean) : []
+    const vendorCodes = splitCsv(searchParams.get('vendors'))
+    const seasonCodes = splitCsv(searchParams.get('seasons'))
+    const groupCodes = splitCsv(searchParams.get('groups'))
+    const keywordCodes = splitCsv(searchParams.get('keywords'))
+    const attrSelections: Record<string, string[]> = {}
+    for (const [k, v] of searchParams.entries()) {
+      if (k.startsWith('attr.')) {
+        const dim = k.slice(5)
+        attrSelections[dim] = v.split(',').map((s) => s.trim()).filter(Boolean)
+      }
+    }
+    return { q, styleColor, vendorCodes, seasonCodes, groupCodes, keywordCodes, attrSelections }
+  }, [searchParams])
 
   // Filter state (not yet applied — becomes `activeFilters` when Run clicked)
-  const [q, setQ] = useState('')
+  const [q, setQ] = useState(initialFilters.q)
   const [departmentNumber, setDepartmentNumber] = useState<number | null>(null)
   const [sectorNumber, setSectorNumber] = useState<number | null>(null)
   const [categoryNumbers, setCategoryNumbers] = useState<number[]>([])
-  const [groupCodes, setGroupCodes] = useState<string[]>([])
-  const [keywordCodes, setKeywordCodes] = useState<string[]>([])
-  const [seasonCodes, setSeasonCodes] = useState<string[]>([])
-  const [vendorCodes, setVendorCodes] = useState<string[]>([])
-  const [styleColor, setStyleColor] = useState('')
+  const [groupCodes, setGroupCodes] = useState<string[]>(initialFilters.groupCodes)
+  const [keywordCodes, setKeywordCodes] = useState<string[]>(initialFilters.keywordCodes)
+  const [seasonCodes, setSeasonCodes] = useState<string[]>(initialFilters.seasonCodes)
+  const [vendorCodes, setVendorCodes] = useState<string[]>(initialFilters.vendorCodes)
+  const [styleColor, setStyleColor] = useState(initialFilters.styleColor)
   // Extended-attribute filter state: one entry per dim, each an array of value codes.
-  const [attrSelections, setAttrSelections] = useState<Record<string, string[]>>({})
+  const [attrSelections, setAttrSelections] = useState<Record<string, string[]>>(
+    initialFilters.attrSelections,
+  )
 
   // Selection persists across filter/sort changes for bulk ops.
   const [selectedCodes, setSelectedCodes] = useState<string[]>([])
@@ -424,6 +449,20 @@ export default function SkuListPage() {
   const runQuery = () => {
     setActiveFilters(buildFilters())
   }
+
+  // Auto-run if the URL asked for it (deep link from the attribute admin, etc.).
+  // We guard with a ref so this only fires once — subsequent state changes from
+  // the user shouldn't re-trigger just because `run=1` is still in the bar.
+  const autoRanRef = useRef(false)
+  useEffect(() => {
+    if (autoRanRef.current) return
+    if (searchParams.get('run') !== '1') return
+    autoRanRef.current = true
+    // Defer one tick so all initial state settles first.
+    const id = setTimeout(() => runQuery(), 0)
+    return () => clearTimeout(id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams])
 
   const runQueryLoadAll = () => {
     // Bypass all filters — pulls the full 200 k-row snapshot. Slow on first

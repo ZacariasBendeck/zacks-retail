@@ -47,14 +47,17 @@ const MOCK_AI_PUMP_RESULT: imageAnalysisService.ImageAnalysisResult = {
   heel_height: 'High (3-4in)',
   heel_shape: 'Stiletto',
   toe_shape: 'Pointed',
-  color_family: 'Black',
+  color: 'Black',
   upper_material: 'Leather',
+  outsole_material: null,
+  heel_material: null,
   finish: 'Glossy',
   pattern: 'Solid',
   occasion: 'Formal',
-  department: 'FORMAL',
-  color: 'Black Patent',
+  target_audience: 'Women',
+  accessory: 'None',
   description: 'A classic black leather stiletto pump with pointed toe',
+  category: 'Pump Formal',
 };
 
 /** Realistic AI response for a casual brown sandal */
@@ -63,30 +66,36 @@ const MOCK_AI_SANDAL_RESULT: imageAnalysisService.ImageAnalysisResult = {
   heel_height: 'Flat',
   heel_shape: 'Flat',
   toe_shape: 'Open Toe',
-  color_family: 'Brown',
+  color: 'Tan',
   upper_material: 'Leather',
+  outsole_material: 'Rubber',
+  heel_material: 'None',
   finish: 'Natural',
   pattern: 'Solid',
   occasion: 'Casual',
-  department: 'SANDALIAS',
-  color: 'Tan Brown',
+  target_audience: 'Women',
+  accessory: 'Buckle',
   description: 'A casual tan leather flat sandal with open toe',
+  category: 'Sandal Flat',
 };
 
 /** AI response with partial nulls (ambiguous shoe) */
 const MOCK_AI_PARTIAL_RESULT: imageAnalysisService.ImageAnalysisResult = {
-  shoe_type: 'Boot',
+  shoe_type: 'Ankle Boot',
   heel_height: null,
   heel_shape: null,
   toe_shape: 'Round',
-  color_family: 'Red',
+  color: 'Burgundy',
   upper_material: 'Suede',
+  outsole_material: null,
+  heel_material: null,
   finish: null,
   pattern: null,
   occasion: null,
-  department: 'BOOTS',
-  color: 'Wine Red',
+  target_audience: null,
+  accessory: null,
   description: 'A red suede ankle boot',
+  category: 'Ankle Boot',
 };
 
 beforeEach(() => {
@@ -255,9 +264,8 @@ describe('mapAiResultsToReferenceIds — realistic scenarios', () => {
     expect(typeof mapped.occasionId).toBe('number');
 
     // Text/enum fields preserved as-is
-    expect(mapped.color).toBe('Black Patent');
+    expect(mapped.color).toBe('Black');
     expect(mapped.description).toBe('A classic black leather stiletto pump with pointed toe');
-    expect(mapped.department).toBe('FORMAL');
   });
 
   it('maps a casual brown sandal correctly', () => {
@@ -268,8 +276,7 @@ describe('mapAiResultsToReferenceIds — realistic scenarios', () => {
     expect(typeof mapped.shoeTypeId).toBe('number');
     expect(typeof mapped.colorId).toBe('number');
     expect(typeof mapped.upperMaterialId).toBe('number');
-    expect(mapped.department).toBe('SANDALIAS');
-    expect(mapped.color).toBe('Tan Brown');
+    expect(mapped.color).toBe('Tan');
   });
 
   it('handles partial nulls from AI (ambiguous shoe)', () => {
@@ -291,8 +298,7 @@ describe('mapAiResultsToReferenceIds — realistic scenarios', () => {
     expect(mapped.occasionId).toBeNull();
 
     // Text/enum should be preserved
-    expect(mapped.department).toBe('BOOTS');
-    expect(mapped.color).toBe('Wine Red');
+    expect(mapped.color).toBe('Burgundy');
   });
 
   it('returns only enabled attributes from config', () => {
@@ -320,10 +326,11 @@ describe('POST /api/v1/skus/analyze-image (mocked AI)', () => {
 
   it('returns raw, mapped, and config for a valid image', async () => {
     analyzeSpy = jest.spyOn(imageAnalysisService, 'analyzeShoeImage')
-      .mockResolvedValue(MOCK_AI_PUMP_RESULT);
+      .mockResolvedValue({ raw: MOCK_AI_PUMP_RESULT, resolution: null, warning: null });
 
     const res = await request(app)
       .post('/api/v1/skus/analyze-image')
+      .field('family', 'zapatos')
       .attach('image', VALID_PNG, { filename: 'shoe.png', contentType: 'image/png' });
 
     expect(res.status).toBe(200);
@@ -336,8 +343,7 @@ describe('POST /api/v1/skus/analyze-image (mocked AI)', () => {
     // Raw should contain AI output
     expect(res.body.raw.shoe_type).toBe('Pump');
     expect(res.body.raw.heel_shape).toBe('Stiletto');
-    expect(res.body.raw.color_family).toBe('Black');
-    expect(res.body.raw.department).toBe('FORMAL');
+    expect(res.body.raw.color).toBe('Black');
 
     // Mapped should have numeric IDs for reference fields
     expect(typeof res.body.mapped.shoeTypeId).toBe('number');
@@ -345,34 +351,35 @@ describe('POST /api/v1/skus/analyze-image (mocked AI)', () => {
     expect(typeof res.body.mapped.colorId).toBe('number');
 
     // Text/enum preserved
-    expect(res.body.mapped.color).toBe('Black Patent');
-    expect(res.body.mapped.department).toBe('FORMAL');
+    expect(res.body.mapped.color).toBe('Black');
 
     // Config should have version and attributes
     expect(res.body.config.version).toBe(1);
-    expect(Object.keys(res.body.config.attributes).length).toBe(13);
+    expect(Object.keys(res.body.config.attributes).length).toBe(16);
   });
 
   it('returns correct mapping for a sandal image', async () => {
     analyzeSpy = jest.spyOn(imageAnalysisService, 'analyzeShoeImage')
-      .mockResolvedValue(MOCK_AI_SANDAL_RESULT);
+      .mockResolvedValue({ raw: MOCK_AI_SANDAL_RESULT, resolution: null, warning: null });
 
     const res = await request(app)
       .post('/api/v1/skus/analyze-image')
+      .field('family', 'zapatos')
       .attach('image', VALID_PNG, { filename: 'sandal.jpg', contentType: 'image/jpeg' });
 
     expect(res.status).toBe(200);
     expect(res.body.raw.shoe_type).toBe('Sandal');
     expect(typeof res.body.mapped.shoeTypeId).toBe('number');
-    expect(res.body.mapped.department).toBe('SANDALIAS');
+    expect(typeof res.body.mapped.categoryId).toBe('number');
   });
 
   it('handles partial null AI response gracefully', async () => {
     analyzeSpy = jest.spyOn(imageAnalysisService, 'analyzeShoeImage')
-      .mockResolvedValue(MOCK_AI_PARTIAL_RESULT);
+      .mockResolvedValue({ raw: MOCK_AI_PARTIAL_RESULT, resolution: null, warning: null });
 
     const res = await request(app)
       .post('/api/v1/skus/analyze-image')
+      .field('family', 'zapatos')
       .attach('image', VALID_PNG, { filename: 'boot.png', contentType: 'image/png' });
 
     expect(res.status).toBe(200);
@@ -393,6 +400,7 @@ describe('POST /api/v1/skus/analyze-image (mocked AI)', () => {
 
     const res = await request(app)
       .post('/api/v1/skus/analyze-image')
+      .field('family', 'zapatos')
       .attach('image', VALID_PNG, { filename: 'shoe.png', contentType: 'image/png' });
 
     expect(res.status).toBe(500);
@@ -405,6 +413,7 @@ describe('POST /api/v1/skus/analyze-image (mocked AI)', () => {
 
     const res = await request(app)
       .post('/api/v1/skus/analyze-image')
+      .field('family', 'zapatos')
       .attach('image', VALID_PNG, { filename: 'shoe.png', contentType: 'image/png' });
 
     expect(res.status).toBe(500);
@@ -413,10 +422,11 @@ describe('POST /api/v1/skus/analyze-image (mocked AI)', () => {
 
   it('accepts WebP images', async () => {
     analyzeSpy = jest.spyOn(imageAnalysisService, 'analyzeShoeImage')
-      .mockResolvedValue(MOCK_AI_PUMP_RESULT);
+      .mockResolvedValue({ raw: MOCK_AI_PUMP_RESULT, resolution: null, warning: null });
 
     const res = await request(app)
       .post('/api/v1/skus/analyze-image')
+      .field('family', 'zapatos')
       .attach('image', VALID_PNG, { filename: 'shoe.webp', contentType: 'image/webp' });
 
     expect(res.status).toBe(200);
@@ -424,10 +434,11 @@ describe('POST /api/v1/skus/analyze-image (mocked AI)', () => {
 
   it('accepts GIF images', async () => {
     analyzeSpy = jest.spyOn(imageAnalysisService, 'analyzeShoeImage')
-      .mockResolvedValue(MOCK_AI_PUMP_RESULT);
+      .mockResolvedValue({ raw: MOCK_AI_PUMP_RESULT, resolution: null, warning: null });
 
     const res = await request(app)
       .post('/api/v1/skus/analyze-image')
+      .field('family', 'zapatos')
       .attach('image', VALID_PNG, { filename: 'shoe.gif', contentType: 'image/gif' });
 
     expect(res.status).toBe(200);
@@ -467,14 +478,13 @@ describe('AI analysis → SKU creation integration', () => {
       categoryId,
       brandId: brandRow?.id ?? null,
       colorId: colorRow?.id ?? null,
-      department: mapped.department as string,
+      department: 'FORMAL',
       vendorId: VENDOR_ID,
       sizes: ['7.5'],
       shoeTypeId: mapped.shoeTypeId,
       heelHeightId: mapped.heelHeightId,
       heelShapeId: mapped.heelShapeId,
       toeShapeId: mapped.toeShapeId,
-      colorFamilyId: mapped.colorFamilyId,
       upperMaterialId: mapped.upperMaterialId,
       finishId: mapped.finishId,
       patternId: mapped.patternId,
@@ -526,12 +536,11 @@ describe('AI analysis → SKU creation integration', () => {
       categoryId,
       brandId: brandRow2?.id ?? null,
       colorId: colorRow2?.id ?? null,
-      department: mapped.department as string,
+      department: 'BOOTS',
       vendorId: VENDOR_ID,
       sizes: ['8'],
       shoeTypeId: mapped.shoeTypeId,
       toeShapeId: mapped.toeShapeId,
-      colorFamilyId: mapped.colorFamilyId,
       upperMaterialId: mapped.upperMaterialId,
       // null fields omitted — they should default to null
     };
@@ -600,9 +609,13 @@ describe('English-to-Spanish mapping — completeness for all AI prompt values',
     'toe-shapes': ['Pointed', 'Round', 'Square', 'Almond', 'Peep Toe', 'Open Toe'],
     'color-families': ['Black', 'Brown', 'Tan', 'White', 'Red', 'Blue', 'Pink', 'Green', 'Gold', 'Silver', 'Multi', 'Nude', 'Navy', 'Burgundy'],
     'upper-materials': ['Leather', 'Suede', 'Patent Leather', 'Synthetic', 'Canvas', 'Satin', 'Mesh', 'Velvet', 'Fabric'],
+    'outsole-materials': ['Rubber', 'TPR', 'PU', 'Leather', 'Synthetic', 'EVA'],
+    'heel-materials': ['Plastic', 'Wrapped', 'Rubber', 'None', 'Stacked Leather'],
     'finishes': ['Matte', 'Glossy', 'Patent', 'Metallic', 'Distressed', 'Brushed', 'Natural'],
     'patterns': ['Solid', 'Two-Tone', 'Animal Print', 'Floral', 'Striped', 'Plaid', 'Embossed', 'Studded', 'Woven'],
     'occasions': ['Formal', 'Business', 'Casual', 'Evening', 'Party', 'Bridal', 'Athletic', 'Outdoor'],
+    'target-audiences': ['Women', 'Men', 'Girls', 'Boys'],
+    'accessories': ['None', 'Buckle', 'Studs', 'Bows', 'Fringe', 'Embroidery', 'Rhinestones', 'Chain'],
   };
 
   for (const [table, values] of Object.entries(AI_PROMPT_VALUES)) {

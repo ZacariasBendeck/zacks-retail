@@ -16,6 +16,7 @@ import { getErrorMessage } from '../../utils/errors'
 import RunReportControls from './RunReportControls'
 import CriteriaInput from './CriteriaInput'
 import SaveAsTemplateButton from '../../components/reports/SaveAsTemplateButton'
+import SaveSnapshotButton from '../../components/reports/SaveSnapshotButton'
 import DateRangeControl from '../../components/reports/DateRangeControl'
 import { readDateSpecFromParams, resolveDateSpec, type DateSpec } from '../../utils/dateSpec'
 import ReportHeader from '../../components/reports/ReportHeader'
@@ -339,6 +340,30 @@ export default function SalesAnalysisPage() {
                 keywordsRaw: keywordsRaw.trim() || undefined,
                 priorYear,
               })}
+            />
+            <SaveSnapshotButton
+              reportType="sales-analysis"
+              disabled={query == null || !data}
+              sourceTemplateId={templateId}
+              getParamsJson={() => ({
+                dimension,
+                reportType,
+                storeOption,
+                dateSpec,
+                stores: selectedStores.length ? selectedStores : undefined,
+                categories: selectedCategories.length ? selectedCategories : undefined,
+                groups: selectedGroups.length ? selectedGroups : undefined,
+                storesRaw: storesRaw.trim() || undefined,
+                categoriesRaw: categoriesRaw.trim() || undefined,
+                vendorsRaw: vendorsRaw.trim() || undefined,
+                seasonsRaw: seasonsRaw.trim() || undefined,
+                styleColorRaw: styleColorRaw.trim() || undefined,
+                skusRaw: skusRaw.trim() || undefined,
+                groupsRaw: groupsRaw.trim() || undefined,
+                keywordsRaw: keywordsRaw.trim() || undefined,
+                priorYear,
+              })}
+              getResultJson={() => data}
             />
           </Space>
         }

@@ -16,6 +16,8 @@ import {
   fetchSalespersonSummary,
   fetchBestSellers,
   fetchSalesAnalysis,
+  fetchSalesHierarchy,
+  fetchSalesPivot,
   fetchStockStatus,
   fetchSalesDimensions,
   fetchSalesHistoryByMonth,
@@ -28,6 +30,7 @@ import {
   type SalesAnalysisDimension,
   type SalesAnalysisReportType,
   type SalesAnalysisStoreOption,
+  type SalesHierarchyStoreOption,
   type StockStatusSortBy,
   type StockStatusStoreOption,
   type StockStatusItemFilter,
@@ -253,11 +256,59 @@ export type SalesAnalysisArgs = {
   std?: boolean
   ytd?: boolean
   priorYear?: boolean
+  /** Opt-in per-SKU attribute columns. ReportViewerPage sets this; the
+   *  inline builder preview does not, to keep payloads small. */
+  includeAttributes?: boolean
 }
 export function useSalesAnalysis(args: SalesAnalysisArgs | null) {
   return useQuery({
     queryKey: ['sales-analysis', args] as const,
     queryFn: ({ signal }) => fetchSalesAnalysis({ ...args!, signal }),
+    enabled: !!args,
+  })
+}
+
+export type SalesHierarchyArgs = {
+  storeOption?: SalesHierarchyStoreOption
+  startDate: string
+  endDate: string
+  stores?: number[]
+  categories?: number[]
+  vendors?: string[]
+  seasons?: string[]
+  skus?: string[]
+  styleColor?: string
+  groups?: string[]
+  keywords?: string[]
+  storesRaw?: string
+  categoriesRaw?: string
+  vendorsRaw?: string
+  seasonsRaw?: string
+  skusRaw?: string
+  groupsRaw?: string
+  keywordsRaw?: string
+  styleColorRaw?: string
+  priorYear?: boolean
+  includeAttributes?: boolean
+}
+export function useSalesHierarchy(args: SalesHierarchyArgs | null) {
+  return useQuery({
+    queryKey: ['sales-hierarchy', args] as const,
+    queryFn: ({ signal }) => fetchSalesHierarchy({ ...args!, signal }),
+    enabled: !!args,
+  })
+}
+
+export type SalesPivotArgs = {
+  startDate: string
+  endDate: string
+  stores?: number[]
+  variant: import('../services/reportApi').SalesPivotVariant
+}
+export function useSalesPivot(args: SalesPivotArgs | null) {
+  return useQuery({
+    queryKey: ['sales-pivot', args] as const,
+    queryFn: ({ signal }) => fetchSalesPivot({ ...args!, signal }),
     enabled: !!args,
   })
 }

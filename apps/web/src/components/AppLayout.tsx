@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { Avatar, Button, Dropdown, Layout, Menu, Typography } from 'antd'
+import { useState, type ReactNode } from 'react'
+import { Avatar, Button, Dropdown, Layout, Menu, Tooltip, Typography } from 'antd'
 import {
   UserOutlined,
   ShopOutlined,
@@ -12,17 +12,20 @@ import {
   ClockCircleOutlined,
   FundOutlined,
   ShoppingOutlined,
-  ShoppingCartOutlined,
   ExperimentOutlined,
   AppstoreOutlined,
   CalendarOutlined,
   SearchOutlined,
+  PlusOutlined,
   ColumnHeightOutlined,
   HistoryOutlined,
   TeamOutlined,
   AuditOutlined,
+  BookOutlined,
+  CameraOutlined,
+  FullscreenExitOutlined,
 } from '@ant-design/icons'
-import { Outlet, useNavigate, useLocation } from 'react-router-dom'
+import { Outlet, useNavigate, useLocation, useSearchParams } from 'react-router-dom'
 import { useAuth } from '../auth/useAuth'
 
 const { Header, Sider, Content } = Layout
@@ -33,6 +36,8 @@ const menuItems = [
     icon: <AppstoreOutlined />,
     label: 'Products',
     children: [
+      { key: '/products/skus/new', icon: <PlusOutlined />, label: 'New SKU' },
+      { key: '/products/skus/new-alt', icon: <FileTextOutlined />, label: 'New SKU alt' },
       { key: '/products/inquiry', icon: <SearchOutlined />, label: 'Inquiry' },
       { key: '/inventory/skus', icon: <AppstoreOutlined />, label: 'SKU List' },
       { key: '/products/taxonomy', icon: <AppstoreOutlined />, label: 'Taxonomy' },
@@ -47,6 +52,8 @@ const menuItems = [
       { key: '/products/taxonomy/size-types', icon: <FileTextOutlined />, label: '\u2014 Size Types' },
       { key: '/products/vendors', icon: <AppstoreOutlined />, label: 'Vendors' },
       { key: '/products/skus', icon: <AppstoreOutlined />, label: 'SKUs (Phase 1)' },
+      { key: '/products/attributes', icon: <AppstoreOutlined />, label: 'Atributos' },
+      { key: '/products/families', icon: <AppstoreOutlined />, label: 'Familias' },
     ],
   },
   {
@@ -54,9 +61,7 @@ const menuItems = [
     icon: <ShopOutlined />,
     label: 'Inventory',
     children: [
-      { key: '/inventory/dashboard', icon: <DashboardOutlined />, label: 'Dashboard' },
-      { key: '/inventory/find-by-size', icon: <ColumnHeightOutlined />, label: 'Find by Size' },
-      { key: '/inventory/replenishment', icon: <FundOutlined />, label: 'Replenishment' },
+      { key: '/inventory/sales-ledger', icon: <HistoryOutlined />, label: 'Sales Ledger' },
       { key: '/inventory/balances', icon: <InboxOutlined />, label: 'Balances' },
       { key: '/inventory/adjustments', icon: <SwapOutlined />, label: 'Adjustments' },
       { key: '/inventory/transfers/manual', icon: <SwapOutlined />, label: 'Transfer \u2014 Manual' },
@@ -65,20 +70,60 @@ const menuItems = [
       { key: '/inventory/movements', icon: <SyncOutlined />, label: 'Movements' },
       { key: '/inventory/change-detail', icon: <HistoryOutlined />, label: 'Change Detail' },
       { key: '/inventory/audit', icon: <AuditOutlined />, label: 'Audit' },
+      // Demoted — not in active use (muted style)
+      { key: '/inventory/dashboard', icon: <DashboardOutlined />, label: <DemotedLabel>Dashboard</DemotedLabel> },
+      { key: '/inventory/find-by-size', icon: <ColumnHeightOutlined />, label: <DemotedLabel>Find by Size</DemotedLabel> },
+      { key: '/inventory/replenishment', icon: <FundOutlined />, label: <DemotedLabel>Replenishment</DemotedLabel> },
     ],
   },
   {
-    key: '/sales',
-    icon: <ShoppingCartOutlined />,
-    label: 'Sales',
+    key: '/purchase-planning',
+    icon: <FundOutlined />,
+    label: 'Plan de Compras',
+  },
+  {
+    key: '/customers',
+    icon: <TeamOutlined />,
+    label: 'Customers',
+  },
+  {
+    key: '/reports',
+    icon: <FileTextOutlined />,
+    label: 'Reports',
     children: [
-      { key: '/inventory/sales-ledger', icon: <HistoryOutlined />, label: 'Sales Ledger' },
+      { key: '/reports/inventory-detail', icon: <InboxOutlined />, label: 'Inventory Detail' },
+      { key: '/reports/transfer-summary', icon: <SwapOutlined />, label: 'Transfer Summary' },
+      { key: '/reports/recommended-transfers', icon: <FundOutlined />, label: 'Recommended Transfers' },
+      { key: '/reports/sales', icon: <BarChartOutlined />, label: 'Sales' },
+      { key: '/reports/others', icon: <AppstoreOutlined />, label: 'Others' },
+      { key: '/reports/templates', icon: <BookOutlined />, label: 'Templates' },
+      { key: '/reports/runs', icon: <CameraOutlined />, label: 'Snapshots' },
+      // Demoted — not in active use (muted style)
+      { key: '/reports/on-hand', icon: <FileTextOutlined />, label: <DemotedLabel>On-Hand</DemotedLabel> },
+      { key: '/reports/turnover', icon: <SyncOutlined />, label: <DemotedLabel>Turnover</DemotedLabel> },
+      { key: '/reports/sell-through', icon: <FundOutlined />, label: <DemotedLabel>Sell-Through</DemotedLabel> },
+      { key: '/reports/aging', icon: <ClockCircleOutlined />, label: <DemotedLabel>Aging</DemotedLabel> },
     ],
   },
+  {
+    key: '/utilities',
+    icon: <ExperimentOutlined />,
+    label: 'Utilities',
+    children: [
+      { key: '/utilities', icon: <ExperimentOutlined />, label: 'Overview' },
+      { key: '/utilities/change-sku-attributes', icon: <FileTextOutlined />, label: 'Change SKU Attributes' },
+      { key: '/utilities/change-keywords', icon: <FileTextOutlined />, label: 'Change Keywords' },
+      { key: '/utilities/batch-history', icon: <HistoryOutlined />, label: 'Batch History' },
+    ],
+  },
+  // ──────────────── Demoted: modules not in active use ────────────────
+  // Parents render with a muted/italic style so they read as deprioritised
+  // against the dark sider. Routes stay mounted in App.tsx — direct URLs
+  // still resolve.
   {
     key: '/purchasing',
     icon: <ShoppingOutlined />,
-    label: 'Purchasing',
+    label: <DemotedLabel>Purchasing</DemotedLabel>,
     children: [
       { key: '/purchasing/orders', icon: <FileTextOutlined />, label: 'Control Tower' },
       { key: '/purchasing/receive', icon: <InboxOutlined />, label: 'Receive POs' },
@@ -97,45 +142,65 @@ const menuItems = [
   {
     key: '/otb',
     icon: <BarChartOutlined />,
-    label: 'OTB',
+    label: <DemotedLabel>OTB</DemotedLabel>,
     children: [
       { key: '/otb/monthly-plans', icon: <CalendarOutlined />, label: 'Monthly Plans' },
       { key: '/otb/dashboard', icon: <DashboardOutlined />, label: 'Budget Dashboard' },
     ],
   },
-  {
-    key: '/purchase-planning',
-    icon: <FundOutlined />,
-    label: 'Plan de Compras',
-  },
-  {
-    key: '/customers',
-    icon: <TeamOutlined />,
-    label: 'Customers',
-  },
-  {
-    key: '/reports',
-    icon: <FileTextOutlined />,
-    label: 'Reports',
-    children: [
-      { key: '/reports/on-hand', icon: <FileTextOutlined />, label: 'On-Hand' },
-      { key: '/reports/inventory-detail', icon: <InboxOutlined />, label: 'Inventory Detail' },
-      { key: '/reports/transfer-summary', icon: <SwapOutlined />, label: 'Transfer Summary' },
-      { key: '/reports/recommended-transfers', icon: <FundOutlined />, label: 'Recommended Transfers' },
-      { key: '/reports/sales', icon: <BarChartOutlined />, label: 'Sales' },
-      { key: '/reports/turnover', icon: <SyncOutlined />, label: 'Turnover' },
-      { key: '/reports/aging', icon: <ClockCircleOutlined />, label: 'Aging' },
-      { key: '/reports/sell-through', icon: <FundOutlined />, label: 'Sell-Through' },
-      { key: '/reports/others', icon: <AppstoreOutlined />, label: 'Others' },
-    ],
-  },
 ]
+
+function DemotedLabel({ children }: { children: ReactNode }) {
+  return (
+    <span style={{ opacity: 0.55, fontStyle: 'italic' }}>
+      {children}{' '}
+      <span style={{ fontSize: 11, opacity: 0.85 }}>— no en uso</span>
+    </span>
+  )
+}
 
 export default function AppLayout() {
   const navigate = useNavigate()
   const location = useLocation()
   const currentPath = location.pathname
   const { user, logout } = useAuth()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const isFullscreen = searchParams.get('fullscreen') === '1'
+
+  // Fullscreen mode: hide sidebar + header so reports (and any page that
+  // wants more canvas) get the entire viewport. The floating "Exit full
+  // screen" pill in the top-right clears the flag and restores chrome.
+  if (isFullscreen) {
+    return (
+      <Layout style={{ minHeight: '100vh' }}>
+        <Content style={{ margin: 16, position: 'relative' }}>
+          <div
+            style={{
+              position: 'fixed',
+              top: 12,
+              right: 16,
+              zIndex: 1000,
+            }}
+          >
+            <Tooltip title="Exit full screen">
+              <Button
+                size="small"
+                icon={<FullscreenExitOutlined />}
+                onClick={() => {
+                  const next = new URLSearchParams(searchParams)
+                  next.delete('fullscreen')
+                  setSearchParams(next, { replace: true })
+                }}
+              >
+                Exit full screen
+              </Button>
+            </Tooltip>
+          </div>
+          <Outlet />
+        </Content>
+      </Layout>
+    )
+  }
 
   const userMenuItems = [
     {

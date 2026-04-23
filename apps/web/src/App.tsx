@@ -8,6 +8,7 @@ import { RequirePermission } from './auth/RequirePermission'
 
 const SkuListPage = lazy(() => import('./pages/inventory/SkuListPage'))
 const SkuFormPage = lazy(() => import('./pages/inventory/SkuFormPage'))
+const SkuDraftsListPage = lazy(() => import('./pages/inventory/SkuDraftsListPage'))
 const DashboardPage = lazy(() => import('./pages/inventory/DashboardPage'))
 const InventoryBalancesPage = lazy(() => import('./pages/inventory/InventoryBalancesPage'))
 const SalesLedgerPage = lazy(() => import('./pages/inventory/SalesLedgerPage'))
@@ -43,6 +44,8 @@ const OtbMonthlyPlansPage = lazy(() => import('./pages/otb/OtbMonthlyPlansPage')
 const OtbPlanEntryPage = lazy(() => import('./pages/otb/OtbPlanEntryPage'))
 const SalesReportsHubPage = lazy(() => import('./pages/salesReporting/SalesReportsHubPage'))
 const SalesAnalysisPage = lazy(() => import('./pages/salesReporting/SalesAnalysisPage'))
+const SalesHierarchyDrillDownPage = lazy(() => import('./pages/salesReporting/SalesHierarchyDrillDownPage'))
+const SalesPivotPage = lazy(() => import('./pages/salesReporting/SalesPivotPage'))
 const BestSellersPage = lazy(() => import('./pages/salesReporting/BestSellersPage'))
 const SalesHistoryByMonthPage = lazy(() => import('./pages/salesReporting/SalesHistoryByMonthPage'))
 const StockStatusPage = lazy(() => import('./pages/salesReporting/StockStatusPage'))
@@ -52,6 +55,9 @@ const ReportsOthersHubPage = lazy(() => import('./pages/salesReporting/ReportsOt
 const SalesByDayPage = lazy(() => import('./pages/salesReporting/SalesByDayPage'))
 const SalesByTimePage = lazy(() => import('./pages/salesReporting/SalesByTimePage'))
 const SalespersonSummaryPage = lazy(() => import('./pages/salesReporting/SalespersonSummaryPage'))
+const TemplatesListPage = lazy(() => import('./pages/reports/templates/TemplatesListPage'))
+const RunsListPage = lazy(() => import('./pages/reports/runs/RunsListPage'))
+const RunViewPage = lazy(() => import('./pages/reports/runs/RunViewPage'))
 const ReportViewerPage = lazy(() => import('./pages/reports/ReportViewerPage'))
 const CustomerListPage = lazy(() => import('./pages/customers/CustomerListPage'))
 const CustomerFormPage = lazy(() => import('./pages/customers/CustomerFormPage'))
@@ -89,6 +95,19 @@ const VendorFormPage = lazy(() => import('./pages/products/vendors/VendorFormPag
 // products module — Phase 1 Step 4 SKU pages (distinct from legacy inventory SkuListPage)
 const ProductsSkuListPage = lazy(() => import('./pages/products/skus/SkuListPage'))
 const ProductsSkuFormPage = lazy(() => import('./pages/products/skus/SkuFormPage'))
+
+// products module — extended-attributes catalog (spec: 2026-04-22)
+const AttributesCatalogPage = lazy(() => import('./pages/products/attributes/CatalogPage'))
+
+// products module — Product Family admin (category mapping + attribute rules)
+const ProductFamiliesPage = lazy(() => import('./pages/products/families/FamiliesPage'))
+
+// utilities module — RICS Ch. 15 batch-change ports (spec: docs/modules/utilities.md)
+const UtilitiesHubPage = lazy(() => import('./pages/utilities/UtilitiesHubPage'))
+const ChangeKeywordsPage = lazy(() => import('./pages/utilities/ChangeKeywordsPage'))
+const ChangeSkuAttributesPage = lazy(() => import('./pages/utilities/ChangeSkuAttributesPage'))
+const BatchHistoryPage = lazy(() => import('./pages/utilities/BatchHistoryPage'))
+const BatchHistoryDetailPage = lazy(() => import('./pages/utilities/BatchHistoryDetailPage'))
 
 // products module — Inventory Inquiry (/inventory/inquiry now redirects here)
 const InquiryPage = lazy(() => import('./pages/products/inquiry/InquiryPage').then(m => ({ default: m.InquiryPage })))
@@ -147,8 +166,11 @@ export default function App() {
             <Route path="/inventory/dashboard" element={<DashboardPage />} />
             <Route path="/inventory/balances" element={<InventoryBalancesPage />} />
             <Route path="/inventory/skus" element={<SkuListPage />} />
-            <Route path="/inventory/skus/new" element={<SkuFormPage />} />
+            {/* Primary SKU creator moved to /products/skus/new (2026-04-22 request).
+                Legacy URL kept as a redirect so in-app links / bookmarks still work. */}
+            <Route path="/inventory/skus/new" element={<Navigate to="/products/skus/new" replace />} />
             <Route path="/inventory/skus/:skuId/edit" element={<SkuFormPage />} />
+            <Route path="/inventory/sku-drafts" element={<SkuDraftsListPage />} />
             <Route path="/inventory/adjustments" element={<AdjustmentListPage />} />
             <Route path="/inventory/adjustments/new" element={<AdjustmentFormPage />} />
             <Route path="/inventory/adjustments/:adjustmentId" element={<AdjustmentDetailPage />} />
@@ -184,10 +206,15 @@ export default function App() {
             <Route path="/otb/plan" element={<OtbPlanEntryPage />} />
             <Route path="/purchase-planning" element={<PurchasePlanningPage />} />
             <Route path="/reports" element={<Navigate to="/reports/sales" replace />} />
+            <Route path="/reports/templates" element={<TemplatesListPage />} />
+            <Route path="/reports/runs" element={<RunsListPage />} />
+            <Route path="/reports/runs/:id" element={<RunViewPage />} />
             <Route path="/reports/on-hand" element={<OnHandReportPage />} />
             <Route path="/reports/sales" element={<SalesReportsHubPage />} />
             <Route path="/reports/sales/performance" element={<SalesReportPage />} />
             <Route path="/reports/sales/analysis" element={<SalesAnalysisPage />} />
+            <Route path="/reports/sales/hierarchy-drill-down" element={<SalesHierarchyDrillDownPage />} />
+            <Route path="/reports/sales/pivot" element={<SalesPivotPage />} />
             <Route path="/reports/sales/best-sellers" element={<BestSellersPage />} />
             <Route path="/reports/sales/history-by-month" element={<SalesHistoryByMonthPage />} />
             <Route path="/reports/sales/stock-status" element={<StockStatusPage />} />
@@ -238,8 +265,26 @@ export default function App() {
             <Route path="/products/vendors/new" element={<VendorFormPage />} />
             <Route path="/products/vendors/:code" element={<VendorFormPage />} />
             <Route path="/products/skus" element={<ProductsSkuListPage />} />
-            <Route path="/products/skus/new" element={<ProductsSkuFormPage />} />
+            {/* Primary SKU creator (AI-powered, moved from /inventory/skus/new). */}
+            <Route path="/products/skus/new" element={<SkuFormPage />} />
+            {/* Legacy RICS-tabs creator, kept as an alternate entry. */}
+            <Route path="/products/skus/new-alt" element={<ProductsSkuFormPage />} />
             <Route path="/products/skus/:code" element={<ProductsSkuFormPage />} />
+            <Route path="/products/attributes" element={<AttributesCatalogPage />} />
+            <Route path="/products/families" element={<ProductFamiliesPage />} />
+
+            {/* utilities module — RICS Ch. 15 batch-change ports */}
+            <Route path="/utilities" element={<UtilitiesHubPage />} />
+            <Route path="/utilities/change-keywords" element={<ChangeKeywordsPage />} />
+            <Route path="/utilities/change-sku-attributes" element={<ChangeSkuAttributesPage />} />
+            {/* Backward-compat redirects from the four pre-consolidation routes. */}
+            <Route path="/utilities/change-categories" element={<Navigate to="/utilities/change-sku-attributes" replace />} />
+            <Route path="/utilities/change-vendors" element={<Navigate to="/utilities/change-sku-attributes" replace />} />
+            <Route path="/utilities/change-seasons" element={<Navigate to="/utilities/change-sku-attributes" replace />} />
+            <Route path="/utilities/change-group-codes" element={<Navigate to="/utilities/change-sku-attributes" replace />} />
+            <Route path="/utilities/batch-history" element={<BatchHistoryPage />} />
+            <Route path="/utilities/batch-history/:id" element={<BatchHistoryDetailPage />} />
+
             <Route path="/me" element={<MePage />} />
             <Route path="/change-password" element={<ChangePasswordPage />} />
             <Route

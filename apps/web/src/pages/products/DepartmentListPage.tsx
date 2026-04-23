@@ -2,15 +2,22 @@ import { Button, Card, Popconfirm, Space, Table, Tag, Typography, App } from 'an
 import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons'
 import { Link, useNavigate } from 'react-router-dom'
 import { useMemo } from 'react'
-import { useDeleteDepartment, useDepartments, useSectors } from '../../hooks/useProductsTaxonomy'
+import { useDeleteDepartment, useDepartments, useSectors, useSkuTotal } from '../../hooks/useProductsTaxonomy'
 import type { Department, Sector } from '../../types/productsTaxonomy'
+import TaxonomyCoverageFooter from '../../components/products/TaxonomyCoverageFooter'
 
 export default function DepartmentListPage() {
   const navigate = useNavigate()
   const { message } = App.useApp()
   const { data, isLoading } = useDepartments()
   const { data: sectors } = useSectors()
+  const { data: skuTotal } = useSkuTotal()
   const del = useDeleteDepartment()
+
+  const assigned = useMemo(
+    () => (data ?? []).reduce((sum, r) => sum + (r.skuCount ?? 0), 0),
+    [data],
+  )
 
   const sectorFor = useMemo(() => {
     return (deptNum: number): Sector | null => {
@@ -42,6 +49,15 @@ export default function DepartmentListPage() {
     },
     { title: 'BegCateg', dataIndex: 'begCateg', key: 'begCateg', width: 110 },
     { title: 'EndCateg', dataIndex: 'endCateg', key: 'endCateg', width: 110 },
+    {
+      title: 'SKUs',
+      dataIndex: 'skuCount',
+      key: 'skuCount',
+      width: 100,
+      align: 'right' as const,
+      sorter: (a: Department, b: Department) => a.skuCount - b.skuCount,
+      render: (v: number) => (v ?? 0).toLocaleString('en-US'),
+    },
     {
       title: '',
       key: 'actions',
@@ -89,6 +105,7 @@ export default function DepartmentListPage() {
         columns={columns}
         loading={isLoading}
         pagination={{ defaultPageSize: 25, showSizeChanger: true, pageSizeOptions: [25, 50, 100, 200] }}
+        footer={() => <TaxonomyCoverageFooter assigned={assigned} systemTotal={skuTotal?.total} />}
       />
     </Card>
   )

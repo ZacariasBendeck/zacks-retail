@@ -14,14 +14,20 @@ import {
   AttributesRepository,
   type AssignmentInput,
   type AssignmentDetail,
+  type DimensionRow,
+  type DimensionValueRow,
   type DimensionWithValues,
+  type FamilyRuleRow,
   type SkuAttributesResponse,
   type CoverageRow,
 } from '../../repositories/products/AttributesRepository';
-import { type Result } from '../../repositories/rics/repoResult';
+import { Err, Ok, type Result } from '../../repositories/rics/repoResult';
 import { auditLog, type AuditLogger } from './auditLog';
 
 const TABLE = 'app.sku_attribute_assignment';
+const TABLE_DIM = 'app.attribute_dimension';
+const TABLE_VAL = 'app.attribute_value';
+const TABLE_RULE = 'app.attribute_family_rule';
 
 export interface AttributesServiceOptions {
   actor?: string;
@@ -56,12 +62,17 @@ export function createAttributesService(opts: AttributesServiceOptions = {}) {
     /**
      * Atomic-replace for operator overrides — PUT /skus/:code/attributes.
      * Returns the fresh read-back of the per-SKU attribute set.
+     *
+     * `scopedDimensionCodes` (optional) narrows the wipe to just those dims.
+     * Used by the main SKU form so saving Apariencia / Diseño doesn't clobber
+     * Buyer / Company / Cadena (which live under a different form tab).
      */
     async setForSku(
       skuCode: string,
-      assignments: AssignmentInput[]
+      assignments: AssignmentInput[],
+      scopedDimensionCodes?: string[],
     ): Promise<Result<SkuAttributesResponse>> {
-      const result = await repo.replaceSkuAttributes(skuCode, assignments, actor);
+      const result = await repo.replaceSkuAttributes(skuCode, assignments, actor, scopedDimensionCodes);
       if (!result.ok) return result;
 
       await audit.record({
@@ -73,6 +84,7 @@ export function createAttributesService(opts: AttributesServiceOptions = {}) {
           previous: result.value.previous.map((a) => ({ code: a.code, by: a.assignedBy })),
           next: result.value.next.map((a) => ({ code: a.code, by: a.assignedBy })),
           requested: assignments,
+          ...(scopedDimensionCodes ? { scope: scopedDimensionCodes } : {}),
         },
       });
 
@@ -105,6 +117,225 @@ export function createAttributesService(opts: AttributesServiceOptions = {}) {
         },
       });
       return { ok: true, value: { affected: result.value } };
+    },
+
+    // ──────────────── Dimension CRUD (admin) ────────────────
+
+    async createDimension(input: {
+      code: string;
+      labelEs: string;
+      descriptionEs: string | null;
+      sortOrder: number;
+      isMultiValue: boolean;
+    }): Promise<Result<DimensionRow>> {
+      const result = await repo.createDimension(input);
+      if (!result.ok) return result;
+      await audit.record({
+        actor,
+        action: 'attribute_dimension_create',
+        targetTable: TABLE_DIM,
+        targetPk: input.code,
+        payload: { ...input },
+      });
+      return result;
+    },
+
+    async updateDimension(
+      code: string,
+      patch: Partial<{ labelEs: string; descriptionEs: string | null; sortOrder: number; isMultiValue: boolean }>,
+    ): Promise<Result<DimensionRow>> {
+      const result = await repo.updateDimension(code, patch);
+      if (!result.ok) return result;
+      await audit.record({
+        actor,
+        action: 'attribute_dimension_update',
+        targetTable: TABLE_DIM,
+        targetPk: code,
+        payload: { patch },
+      });
+      return result;
+    },
+
+    async deleteDimension(code: string): Promise<Result<{ deleted: true }>> {
+      const result = await repo.deleteDimension(code);
+      if (!result.ok) return result;
+      await audit.record({
+        actor,
+        action: 'attribute_dimension_delete',
+        targetTable: TABLE_DIM,
+        targetPk: code,
+        payload: {},
+      });
+      return result;
+    },
+
+    async reorderDimensions(entries: { code: string; sortOrder: number }[]): Promise<Result<{ updated: number }>> {
+      const result = await repo.reorderDimensions(entries);
+      if (!result.ok) return result;
+      await audit.record({
+        actor,
+        action: 'attribute_dimension_reorder',
+        targetTable: TABLE_DIM,
+        targetPk: 'batch',
+        payload: { entries },
+      });
+      return result;
+    },
+
+    // ──────────────── Value CRUD (admin) ────────────────
+
+    async createValue(
+      dimensionCode: string,
+      input: { code: string; labelEs: string; sortOrder: number },
+    ): Promise<Result<DimensionValueRow>> {
+      const result = await repo.createValue(dimensionCode, input);
+      if (!result.ok) return result;
+      await audit.record({
+        actor,
+        action: 'attribute_value_create',
+        targetTable: TABLE_VAL,
+        targetPk: `${dimensionCode}/${input.code}`,
+        payload: { ...input, dimensionCode },
+      });
+      return result;
+    },
+
+    async updateValue(
+      valueId: number,
+      patch: Partial<{ labelEs: string; sortOrder: number; isActive: boolean }>,
+    ): Promise<Result<DimensionValueRow>> {
+      const result = await repo.updateValue(valueId, patch);
+      if (!result.ok) return result;
+      await audit.record({
+        actor,
+        action: patch.isActive === false
+          ? 'attribute_value_deactivate'
+          : patch.isActive === true
+            ? 'attribute_value_reactivate'
+            : 'attribute_value_update',
+        targetTable: TABLE_VAL,
+        targetPk: String(valueId),
+        payload: { patch },
+      });
+      return result;
+    },
+
+    async deleteValue(valueId: number): Promise<Result<{ deleted: true }>> {
+      const result = await repo.deleteValue(valueId);
+      if (!result.ok) return result;
+      await audit.record({
+        actor,
+        action: 'attribute_value_delete',
+        targetTable: TABLE_VAL,
+        targetPk: String(valueId),
+        payload: {},
+      });
+      return result;
+    },
+
+    async reorderValues(
+      dimensionCode: string,
+      entries: { valueId: number; sortOrder: number }[],
+    ): Promise<Result<{ updated: number }>> {
+      const result = await repo.reorderValues(dimensionCode, entries);
+      if (!result.ok) return result;
+      await audit.record({
+        actor,
+        action: 'attribute_value_reorder',
+        targetTable: TABLE_VAL,
+        targetPk: dimensionCode,
+        payload: { entries },
+      });
+      return result;
+    },
+
+    async mergeValues(sourceId: number, targetId: number): Promise<Result<{ moved: number }>> {
+      const result = await repo.mergeValues(sourceId, targetId);
+      if (!result.ok) return result;
+      await audit.record({
+        actor,
+        action: 'attribute_value_merge',
+        targetTable: TABLE_VAL,
+        targetPk: `${sourceId}->${targetId}`,
+        payload: { sourceId, targetId, moved: result.value.moved },
+      });
+      return result;
+    },
+
+    // ──────────────── Family-rule management ────────────────
+
+    listRulesForDimension(dimensionCode: string): Promise<Result<FamilyRuleRow[]>> {
+      return repo.listFamilyRulesForDimension(dimensionCode);
+    },
+
+    async replaceRulesForDimension(
+      dimensionCode: string,
+      input: { universal: true } | { universal: false; rules: { familyCode: string; enabled: boolean; isRequired: boolean; sortOrder?: number }[] },
+    ): Promise<Result<FamilyRuleRow[]>> {
+      const result = await repo.replaceDimensionFamilyRules(
+        dimensionCode,
+        input.universal ? null : input.rules,
+        actor,
+      );
+      if (!result.ok) return result;
+      await audit.record({
+        actor,
+        action: 'attribute_family_rules_replace_by_dim',
+        targetTable: TABLE_RULE,
+        targetPk: dimensionCode,
+        payload: input,
+      });
+      return result;
+    },
+
+    async upsertRule(
+      dimensionCode: string,
+      familyCode: string,
+      patch: { enabled?: boolean; isRequired?: boolean; sortOrder?: number },
+    ): Promise<Result<FamilyRuleRow>> {
+      const result = await repo.upsertFamilyRule(dimensionCode, familyCode, patch, actor);
+      if (!result.ok) return result;
+      await audit.record({
+        actor,
+        action: 'attribute_family_rule_upsert',
+        targetTable: TABLE_RULE,
+        targetPk: `${dimensionCode}/${familyCode}`,
+        payload: { patch },
+      });
+      return result;
+    },
+
+    async deleteRule(dimensionCode: string, familyCode: string): Promise<Result<{ deleted: true }>> {
+      const result = await repo.deleteFamilyRule(dimensionCode, familyCode);
+      if (!result.ok) return result;
+      await audit.record({
+        actor,
+        action: 'attribute_family_rule_delete',
+        targetTable: TABLE_RULE,
+        targetPk: `${dimensionCode}/${familyCode}`,
+        payload: {},
+      });
+      return result;
+    },
+
+    listRulesForFamily(familyCode: string) {
+      return repo.listRulesForFamily(familyCode);
+    },
+
+    async replaceRulesForFamily(
+      familyCode: string,
+      rules: { dimensionCode: string; enabled: boolean; isRequired: boolean; sortOrder?: number }[],
+    ): Promise<Result<{ updated: number }>> {
+      const result = await repo.replaceFamilyAttributeRules(familyCode, rules, actor);
+      if (!result.ok) return result;
+      await audit.record({
+        actor,
+        action: 'attribute_family_rules_replace_by_family',
+        targetTable: TABLE_RULE,
+        targetPk: familyCode,
+        payload: { rules },
+      });
+      return result;
     },
   };
 }

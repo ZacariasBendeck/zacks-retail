@@ -1,19 +1,28 @@
 import { Alert, App, Button, Card, Popconfirm, Space, Table, Tag, Typography } from 'antd'
 import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons'
 import { Link, useNavigate } from 'react-router-dom'
+import { useMemo } from 'react'
 import {
   useDeleteSeason,
   useSeasons,
   useSeasonSource,
+  useSkuTotal,
 } from '../../hooks/useProductsTaxonomy'
 import type { Season } from '../../types/productsTaxonomy'
+import TaxonomyCoverageFooter from '../../components/products/TaxonomyCoverageFooter'
 
 export default function SeasonListPage() {
   const navigate = useNavigate()
   const { message } = App.useApp()
   const { data, isLoading } = useSeasons()
   const { data: source } = useSeasonSource()
+  const { data: skuTotal } = useSkuTotal()
   const del = useDeleteSeason()
+
+  const assigned = useMemo(
+    () => (data ?? []).reduce((sum, r) => sum + (r.skuCount ?? 0), 0),
+    [data],
+  )
 
   const columns = [
     {
@@ -121,6 +130,7 @@ export default function SeasonListPage() {
           columns={columns}
           loading={isLoading}
           pagination={{ defaultPageSize: 25, showSizeChanger: true, pageSizeOptions: [25, 50, 100, 200] }}
+          footer={() => <TaxonomyCoverageFooter assigned={assigned} systemTotal={skuTotal?.total} />}
         />
       </Space>
     </Card>

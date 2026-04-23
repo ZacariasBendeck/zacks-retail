@@ -10,6 +10,7 @@ export interface Department {
   begCateg: number
   endCateg: number
   dateLastChanged: string | null
+  skuCount: number
 }
 
 export interface DepartmentInput {
@@ -23,6 +24,7 @@ export interface Category {
   number: number
   description: string
   dateLastChanged: string | null
+  skuCount: number
 }
 
 export interface CategoryInput {
@@ -34,6 +36,7 @@ export interface Group {
   code: string
   description: string
   dateLastChanged: string | null
+  skuCount: number
 }
 
 export interface GroupInput {
@@ -45,6 +48,7 @@ export interface Keyword {
   keyword: string
   description: string
   dateLastChanged: string | null
+  skuCount: number
 }
 
 export interface KeywordInput {
@@ -58,6 +62,7 @@ export interface Sector {
   begDept: number
   endDept: number
   dateLastChanged: string | null
+  skuCount: number
 }
 
 export interface SectorInput {
@@ -119,6 +124,7 @@ export interface SizeType {
   maxColumns: number
   maxRows: number
   dateLastChanged: string | null
+  skuCount: number
 }
 
 export interface SizeTypeInput {

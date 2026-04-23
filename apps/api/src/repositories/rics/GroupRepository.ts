@@ -17,6 +17,7 @@ export interface Group {
   code: string;
   description: string;
   dateLastChanged: Date | null;
+  skuCount: number;
 }
 
 export interface GroupInput {
@@ -37,7 +38,33 @@ function mapRow(row: GroupRow): Group {
     code: trimString(row.Code) ?? '',
     description: trimString(row.Desc) ?? '',
     dateLastChanged: parseAccessDate(row.DateLastChanged),
+    skuCount: 0,
   };
+}
+
+/**
+ * Returns a map of group code → SKU count from InventoryMaster.[GroupCode].
+ * Codes are uppercased/trimmed to match how the Group master stores them.
+ */
+async function loadSkuCountsByGroup(): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  try {
+    const { path, password } = openRicsDb(RicsDb.InventoryMaster);
+    const rows = await executeQuery<{ GroupCode: string | null; N: number }>(
+      path,
+      password,
+      `SELECT [GroupCode], COUNT(*) AS N FROM [InventoryMaster]
+         WHERE [GroupCode] IS NOT NULL AND [GroupCode] <> ''
+         GROUP BY [GroupCode]`,
+    );
+    for (const r of rows) {
+      const code = (trimString(r.GroupCode) ?? '').toUpperCase();
+      if (code) out.set(code, Number(r.N ?? 0));
+    }
+  } catch {
+    // leave counts at 0
+  }
+  return out;
 }
 
 function validate(input: GroupInput): RepoError | null {
@@ -64,7 +91,10 @@ export const GroupRepository = {
         password,
         'SELECT [Code], [Desc], [DateLastChanged] FROM [GroupCodes] ORDER BY [Code]',
       );
-      return Ok(rows.map(mapRow));
+      const counts = await loadSkuCountsByGroup();
+      return Ok(
+        rows.map(mapRow).map((g) => ({ ...g, skuCount: counts.get(g.code.toUpperCase()) ?? 0 })),
+      );
     } catch (err) {
       return Err(toRepoError(err));
     }
@@ -82,7 +112,9 @@ export const GroupRepository = {
       if (rows.length === 0) {
         return Err({ kind: 'NotFound', message: `Group ${code} not found.` });
       }
-      return Ok(mapRow(rows[0]));
+      const mapped = mapRow(rows[0]);
+      const counts = await loadSkuCountsByGroup();
+      return Ok({ ...mapped, skuCount: counts.get(mapped.code.toUpperCase()) ?? 0 });
     } catch (err) {
       return Err(toRepoError(err));
     }

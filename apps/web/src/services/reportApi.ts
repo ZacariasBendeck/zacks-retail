@@ -855,6 +855,32 @@ export type SalesAnalysisReportType =
   | 'SECTOR_SUMMARY'
 export type SalesAnalysisStoreOption = 'SEPARATE' | 'COMPARE' | 'COMBINE'
 
+/**
+ * Per-SKU attribute columns attached to SKU_DETAIL rows when the caller
+ * asks for them via `includeAttributes=true`. The inline builder-page preview
+ * does not ask for these (keeps the payload small); the fullscreen viewer
+ * does, and renders whichever columns the operator has toggled on.
+ */
+export interface SkuAttributeColumns {
+  description: string | null
+  vendorCode: string | null
+  /** RICS `inventory_master.manufacturer` — the private-label brand / parent
+   *  company name, distinct from the trading vendor code. Shown in the
+   *  viewer as the "Company" column, default-hidden. */
+  manufacturer: string | null
+  categoryNumber: number | null
+  categoryDesc: string | null
+  departmentNumber: number | null
+  departmentDesc: string | null
+  styleColor: string | null
+  currentPrice: number | null
+  currentCost: number | null
+  unitsOnHand: number | null
+  pictureUrl: string | null
+  /** Operator-assigned extended attributes keyed by dimension code. */
+  extended: Record<string, string>
+}
+
 export interface SalesAnalysisRow {
   dimensionKey: string
   dimensionLabel: string | null
@@ -869,6 +895,8 @@ export interface SalesAnalysisRow {
   roiPct: number | null
   priorYearNetSales: number | null
   pyPctChange: number | null
+  /** Present only when the endpoint was called with includeAttributes=true. */
+  attributes?: SkuAttributeColumns
 }
 
 export interface SalesAnalysisReport {
@@ -917,6 +945,8 @@ export async function fetchSalesAnalysis(args: {
   std?: boolean
   ytd?: boolean
   priorYear?: boolean
+  /** Request per-SKU attribute columns (description / color / extended). SKU_DETAIL only. */
+  includeAttributes?: boolean
   signal?: AbortSignal
 }): Promise<SalesAnalysisReport> {
   const params = new URLSearchParams({
@@ -947,8 +977,104 @@ export async function fetchSalesAnalysis(args: {
   if (args.std) params.set('std', 'true')
   if (args.ytd) params.set('ytd', 'true')
   if (args.priorYear) params.set('priorYear', 'true')
+  if (args.includeAttributes) params.set('includeAttributes', 'true')
   const res = await fetch(`/api/v1/reports/sales/sales-analysis?${params}`, { signal: args.signal })
   if (!res.ok) await throwReportApiError(res, `Failed to fetch sales analysis: ${res.status}`)
+  return res.json()
+}
+
+// ── Sales Hierarchy Drill-Down (Dept → Cat → SKU) ────────────────────────
+
+export type SalesHierarchyStoreOption = 'SEPARATE' | 'COMBINE'
+
+export interface SalesHierarchyNode {
+  level: 'store' | 'department' | 'category' | 'sku'
+  key: string
+  label: string
+  storeNumber: number | null
+  qty: number
+  netSales: number
+  cogs: number
+  grossProfit: number
+  gpPct: number | null
+  onHandAtCost: number
+  turns: number | null
+  roiPct: number | null
+  priorYearNetSales: number | null
+  pyPctChange: number | null
+  attributes?: SkuAttributeColumns
+  children?: SalesHierarchyNode[]
+}
+
+export interface SalesHierarchyReport {
+  storeOption: SalesHierarchyStoreOption
+  priorYear: boolean
+  startDate: string
+  endDate: string
+  periodDays: number
+  roots: SalesHierarchyNode[]
+  totals: {
+    qty: number
+    netSales: number
+    cogs: number
+    grossProfit: number
+    onHandAtCost: number
+    gpPct: number | null
+    turns: number | null
+    roiPct: number | null
+    priorYearNetSales: number | null
+  }
+}
+
+export async function fetchSalesHierarchy(args: {
+  storeOption?: SalesHierarchyStoreOption
+  startDate: string
+  endDate: string
+  stores?: number[]
+  categories?: number[]
+  vendors?: string[]
+  seasons?: string[]
+  skus?: string[]
+  styleColor?: string
+  groups?: string[]
+  keywords?: string[]
+  storesRaw?: string
+  categoriesRaw?: string
+  vendorsRaw?: string
+  seasonsRaw?: string
+  skusRaw?: string
+  groupsRaw?: string
+  keywordsRaw?: string
+  styleColorRaw?: string
+  priorYear?: boolean
+  includeAttributes?: boolean
+  signal?: AbortSignal
+}): Promise<SalesHierarchyReport> {
+  const params = new URLSearchParams({
+    storeOption: args.storeOption ?? 'COMBINE',
+    startDate: args.startDate,
+    endDate: args.endDate,
+  })
+  if (args.stores?.length) params.set('stores', args.stores.join(','))
+  if (args.categories?.length) params.set('categories', args.categories.join(','))
+  if (args.vendors?.length) params.set('vendors', args.vendors.join(','))
+  if (args.seasons?.length) params.set('seasons', args.seasons.join(','))
+  if (args.skus?.length) params.set('skus', args.skus.join(','))
+  if (args.styleColor) params.set('styleColor', args.styleColor)
+  if (args.groups?.length) params.set('groups', args.groups.join(','))
+  if (args.keywords?.length) params.set('keywords', args.keywords.join(','))
+  if (args.storesRaw) params.set('storesRaw', args.storesRaw)
+  if (args.categoriesRaw) params.set('categoriesRaw', args.categoriesRaw)
+  if (args.vendorsRaw) params.set('vendorsRaw', args.vendorsRaw)
+  if (args.seasonsRaw) params.set('seasonsRaw', args.seasonsRaw)
+  if (args.skusRaw) params.set('skusRaw', args.skusRaw)
+  if (args.groupsRaw) params.set('groupsRaw', args.groupsRaw)
+  if (args.keywordsRaw) params.set('keywordsRaw', args.keywordsRaw)
+  if (args.styleColorRaw) params.set('styleColorRaw', args.styleColorRaw)
+  if (args.priorYear) params.set('priorYear', 'true')
+  if (args.includeAttributes) params.set('includeAttributes', 'true')
+  const res = await fetch(`/api/v1/reports/sales/hierarchy-drill-down?${params}`, { signal: args.signal })
+  if (!res.ok) await throwReportApiError(res, `Failed to fetch sales hierarchy: ${res.status}`)
   return res.json()
 }
 
@@ -1016,6 +1142,87 @@ export async function fetchStockStatus(args: {
   if (args.skus?.length) params.set('skus', args.skus.join(','))
   const res = await fetch(`/api/v1/reports/sales/stock-status?${params}`, { signal: args.signal })
   if (!res.ok) await throwReportApiError(res, `Failed to fetch stock status: ${res.status}`)
+  return res.json()
+}
+
+// ── Sales Pivot (three variants) ─────────────────────────────────────────
+//
+// One endpoint, three interchangeable hierarchies selected by `variant`:
+//   department                 Sector → Dept → Category → SKU
+//   department-separate-store  Store → Sector → Dept → Category → SKU
+//   buyer                      Buyer → Dept → Category → SKU
+// The response shape is unified — identity fields not applicable to the
+// chosen variant are null. The client builds the tree based on `variant`.
+
+export type SalesPivotVariant =
+  | 'department'
+  | 'department-separate-store'
+  | 'buyer'
+  | 'buyer-vendor'
+  | 'buyer-vendor-separate-store'
+
+export interface SalesPivotLeafRow {
+  storeNumber: number | null
+  storeName: string | null
+  buyerCode: string | null
+  buyerLabel: string | null
+  vendorCode: string | null
+  vendorLabel: string | null
+  sector: number | null
+  sectorDesc: string | null
+  dept: number | null
+  deptDesc: string | null
+  categ: number | null
+  categDesc: string | null
+  sku: string
+  skuDescription: string | null
+  onHandQty: number
+  onHandCostVal: number
+  qtyTY: number
+  netSalesTY: number
+  profitTY: number
+  qtyLY: number
+  netSalesLY: number
+  profitLY: number
+}
+
+export interface SalesPivotTotals {
+  onHandQty: number
+  onHandCostVal: number
+  qtyTY: number
+  netSalesTY: number
+  profitTY: number
+  qtyLY: number
+  netSalesLY: number
+  profitLY: number
+}
+
+export interface SalesPivotReport {
+  variant: SalesPivotVariant
+  startDate: string
+  endDate: string
+  currentYear: number
+  priorYear: number
+  storeNumbers: number[]
+  rows: SalesPivotLeafRow[]
+  totals: SalesPivotTotals
+}
+
+export async function fetchSalesPivot(args: {
+  startDate: string
+  endDate: string
+  stores?: number[]
+  variant: SalesPivotVariant
+  signal?: AbortSignal
+}): Promise<SalesPivotReport> {
+  const params = new URLSearchParams({
+    startDate: args.startDate,
+    endDate: args.endDate,
+    variant: args.variant,
+  })
+  if (args.stores?.length) params.set('stores', args.stores.join(','))
+  const res = await fetch(`/api/v1/reports/sales/sales-pivot?${params}`, { signal: args.signal })
+  if (!res.ok) await throwReportApiError(res, `Failed to fetch sales pivot: ${res.status}`)
   return res.json()
 }
 

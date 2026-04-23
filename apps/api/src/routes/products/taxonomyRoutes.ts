@@ -55,6 +55,19 @@ function parseInt32(raw: unknown): number | null {
   return n;
 }
 
+// ────────────────── System-wide SKU total (coverage denominator) ──────────
+
+/**
+ * GET /api/v1/taxonomy/sku-total
+ *
+ * Returns `{ total: number }`, the count of every row in InventoryMaster.
+ * Frontend list pages sum their per-row `skuCount` and compare against this
+ * to show coverage (how many SKUs have the attribute assigned).
+ */
+router.get('/sku-total', async (_req: Request, res: Response) => {
+  res.status(200).json(await taxonomyService.skuTotal());
+});
+
 // ────────────────── Resolve Category → Department → Sector ────────────────
 
 /**

@@ -18,6 +18,7 @@ export interface Keyword {
   keyword: string;
   description: string;
   dateLastChanged: Date | null;
+  skuCount: number;
 }
 
 export interface KeywordInput {
@@ -36,7 +37,46 @@ function mapRow(row: KeywordRow): Keyword {
     keyword: trimString(row.Keyword) ?? '',
     description: trimString(row.Desc) ?? '',
     dateLastChanged: parseAccessDate(row.DateLastChanged),
+    skuCount: 0,
   };
+}
+
+/**
+ * Returns a map of keyword → SKU count. InventoryMaster.[KeyWords] stores a
+ * space-separated list per SKU, so we GROUP BY the raw string (to dedupe
+ * identical combinations), then tokenize each distinct value and attribute its
+ * count to every keyword it contains. Comparison is uppercased to match the
+ * Keyword master's case-insensitive convention.
+ */
+async function loadSkuCountsByKeyword(): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  try {
+    const { path, password } = openRicsDb(RicsDb.InventoryMaster);
+    const rows = await executeQuery<{ KeyWords: string | null; N: number }>(
+      path,
+      password,
+      `SELECT [KeyWords], COUNT(*) AS N FROM [InventoryMaster]
+         WHERE [KeyWords] IS NOT NULL AND [KeyWords] <> ''
+         GROUP BY [KeyWords]`,
+    );
+    for (const r of rows) {
+      const raw = trimString(r.KeyWords) ?? '';
+      if (!raw) continue;
+      const n = Number(r.N ?? 0);
+      const tokens = new Set(
+        raw
+          .split(/\s+/)
+          .map((t) => t.trim().toUpperCase())
+          .filter((t) => t.length > 0),
+      );
+      for (const kw of tokens) {
+        out.set(kw, (out.get(kw) ?? 0) + n);
+      }
+    }
+  } catch {
+    // leave counts at 0
+  }
+  return out;
 }
 
 function validate(input: KeywordInput): RepoError | null {
@@ -66,7 +106,12 @@ export const KeywordRepository = {
         password,
         'SELECT [Keyword], [Desc], [DateLastChanged] FROM [Keywords] ORDER BY [Keyword]',
       );
-      return Ok(rows.map(mapRow));
+      const counts = await loadSkuCountsByKeyword();
+      return Ok(
+        rows
+          .map(mapRow)
+          .map((k) => ({ ...k, skuCount: counts.get(k.keyword.toUpperCase()) ?? 0 })),
+      );
     } catch (err) {
       return Err(toRepoError(err));
     }
@@ -84,7 +129,9 @@ export const KeywordRepository = {
       if (rows.length === 0) {
         return Err({ kind: 'NotFound', message: `Keyword '${keyword}' not found.` });
       }
-      return Ok(mapRow(rows[0]));
+      const mapped = mapRow(rows[0]);
+      const counts = await loadSkuCountsByKeyword();
+      return Ok({ ...mapped, skuCount: counts.get(mapped.keyword.toUpperCase()) ?? 0 });
     } catch (err) {
       return Err(toRepoError(err));
     }

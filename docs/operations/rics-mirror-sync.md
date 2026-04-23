@@ -178,8 +178,23 @@ Not acceptable:
 - **Dropping the CSV intermediate for a live pipe between the C# process and pg-copy-streams.** Adds inter-process backpressure complexity for negligible speed gain. The disk I/O isn't the bottleneck.
 - **Putting the reload on a cron by default.** Operator-invoked only. Automated schedules can live in a module-specific runbook later if a module actually needs one.
 
+## Phase: `app.sku` backfill (post-swap, 2026-04-23+)
+
+After the mirror swap commits, the sync invokes a second phase that mirrors every non-deleted row from `rics_mirror.inventory_master` into `app.sku` as ACTIVE (`source='rics'`). This is what unifies the SKU surface: every RICS SKU becomes visible to the lifecycle gate (`findActiveSku`, `gateForSell`, etc.) the same way operator-created SKUs are. Operator rows (`source='app'`) are never touched — the UPSERT's `WHERE app.sku.source = 'rics'` predicate guards them.
+
+Separate transaction, separate failure mode: a backfill error does NOT roll back the mirror swap. Mirror is committed; the operator re-runs:
+
+```
+pnpm --filter @benlow-rics/api sync:rics-skus
+```
+
+which is idempotent. Typical run: ~6 seconds for 203k rows.
+
+Full contract + column mapping + edge cases: [docs/operations/sku-lifecycle-backfill.md](sku-lifecycle-backfill.md).
+
 ## Related docs
 
+- [docs/operations/sku-lifecycle-backfill.md](sku-lifecycle-backfill.md) — the post-swap `app.sku` backfill: design, SQL, column mapping, runbook.
 - [docs/modules/platform.md](../modules/platform.md) — owns `platform.etl_run` + `etl_run_table` as part of the cross-cutting admin spine.
 - [docs/operations/access-oledb-async-spawn.md](access-oledb-async-spawn.md) — the async-spawn invariant that the sync pipeline depends on for its column-introspection path.
 - [docs/operations/sku-lookup-index-warmup.md](sku-lookup-index-warmup.md) — the in-memory index that today reads from the MDB adapter. Once the products adapter cuts over to `rics_mirror`, the warmup will read from Postgres instead — a future edit to this file.

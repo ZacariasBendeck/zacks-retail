@@ -1,20 +1,37 @@
 import { Button, Card, Popconfirm, Space, Table, Typography, App } from 'antd'
 import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons'
 import { Link, useNavigate } from 'react-router-dom'
-import { useDeleteSector, useSectors } from '../../hooks/useProductsTaxonomy'
+import { useMemo } from 'react'
+import { useDeleteSector, useSectors, useSkuTotal } from '../../hooks/useProductsTaxonomy'
 import type { Sector } from '../../types/productsTaxonomy'
+import TaxonomyCoverageFooter from '../../components/products/TaxonomyCoverageFooter'
 
 export default function SectorListPage() {
   const navigate = useNavigate()
   const { message } = App.useApp()
   const { data, isLoading } = useSectors()
+  const { data: skuTotal } = useSkuTotal()
   const del = useDeleteSector()
+
+  const assigned = useMemo(
+    () => (data ?? []).reduce((sum, r) => sum + (r.skuCount ?? 0), 0),
+    [data],
+  )
 
   const columns = [
     { title: 'Number', dataIndex: 'number', key: 'number', width: 100, sorter: (a: Sector, b: Sector) => a.number - b.number },
     { title: 'Description', dataIndex: 'description', key: 'description' },
     { title: 'BegDept', dataIndex: 'begDept', key: 'begDept', width: 100 },
     { title: 'EndDept', dataIndex: 'endDept', key: 'endDept', width: 100 },
+    {
+      title: 'SKUs',
+      dataIndex: 'skuCount',
+      key: 'skuCount',
+      width: 100,
+      align: 'right' as const,
+      sorter: (a: Sector, b: Sector) => a.skuCount - b.skuCount,
+      render: (v: number) => (v ?? 0).toLocaleString('en-US'),
+    },
     {
       title: '',
       key: 'actions',
@@ -57,6 +74,7 @@ export default function SectorListPage() {
         columns={columns}
         loading={isLoading}
         pagination={{ defaultPageSize: 25, showSizeChanger: true, pageSizeOptions: [25, 50, 100, 200] }}
+        footer={() => <TaxonomyCoverageFooter assigned={assigned} systemTotal={skuTotal?.total} />}
       />
     </Card>
   )

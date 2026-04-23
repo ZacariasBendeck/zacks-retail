@@ -7,8 +7,10 @@ import {
   useDeleteCategory,
   useDepartments,
   useSectors,
+  useSkuTotal,
 } from '../../hooks/useProductsTaxonomy'
 import type { Category, Department, Sector } from '../../types/productsTaxonomy'
+import TaxonomyCoverageFooter from '../../components/products/TaxonomyCoverageFooter'
 
 export default function CategoryListPage() {
   const navigate = useNavigate()
@@ -16,7 +18,13 @@ export default function CategoryListPage() {
   const { data, isLoading } = useCategories()
   const { data: departments } = useDepartments()
   const { data: sectors } = useSectors()
+  const { data: skuTotal } = useSkuTotal()
   const del = useDeleteCategory()
+
+  const assigned = useMemo(
+    () => (data ?? []).reduce((sum, r) => sum + (r.skuCount ?? 0), 0),
+    [data],
+  )
 
   // Client-side range rollups — tables are ≤99 rows each, so one pass per render
   // is fine and avoids a /resolve call per row.
@@ -79,6 +87,15 @@ export default function CategoryListPage() {
       },
     },
     {
+      title: 'SKUs',
+      dataIndex: 'skuCount',
+      key: 'skuCount',
+      width: 100,
+      align: 'right' as const,
+      sorter: (a: Category, b: Category) => a.skuCount - b.skuCount,
+      render: (v: number) => (v ?? 0).toLocaleString('en-US'),
+    },
+    {
       title: '',
       key: 'actions',
       width: 100,
@@ -120,6 +137,7 @@ export default function CategoryListPage() {
         columns={columns}
         loading={isLoading}
         pagination={{ defaultPageSize: 25, showSizeChanger: true, pageSizeOptions: [25, 50, 100, 200] }}
+        footer={() => <TaxonomyCoverageFooter assigned={assigned} systemTotal={skuTotal?.total} />}
       />
     </Card>
   )

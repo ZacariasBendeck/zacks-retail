@@ -19,7 +19,8 @@ import type {
 import { getErrorMessage } from '../../utils/errors'
 import FilterChips from '../../components/reports/FilterChips'
 import { GpBadge, ChangePctBadge } from '../../components/reports/gpBadge'
-import { fmtMoney, fmtQty, fmtPct1, fmtPctBare1, DASH } from '../../utils/reportFormatters'
+import { fmtMoney, fmtQty, fmtPctBare1, DASH } from '../../utils/reportFormatters'
+import ReportThumbnail from '../../components/reports/ReportThumbnail'
 
 const { Title, Text } = Typography
 
@@ -67,78 +68,277 @@ const ZONE_LABELS: Record<Zone, string> = {
   comparison: 'Comparison period',
 }
 
-function buildColumnDefs(keyColumnTitle: string, hasPriorYear: boolean): ColumnDef[] {
-  const cols: ColumnDef[] = [
+// Extended-attribute dimensions whose rendering is already covered by a
+// dedicated fixed column, so surfacing them as a tier-2 "ext:" column would
+// produce a visible duplicate. `company` is the obvious case — it aliases
+// `inventory_master.manufacturer`, which is already rendered as the
+// "Company" column (attr:manufacturer).
+const REDUNDANT_EXTENDED_DIMS: ReadonlySet<string> = new Set(['company', 'manufacturer'])
+
+// Extended (tier-2) dimension columns — one per operator-assigned dimension
+// that actually appeared in the current result. Default-hidden (there can be
+// many; operator ticks what they want). Identity zone so the color band stays
+// contiguous with the other SKU-attribute columns.
+//
+// Dimensions listed in REDUNDANT_EXTENDED_DIMS are skipped entirely — their
+// data is already surfaced by a dedicated fixed column elsewhere, so showing
+// them twice just confuses operators.
+function buildExtendedColumnDefs(dimensions: string[]): ColumnDef[] {
+  return dimensions
+    .filter((dim) => !REDUNDANT_EXTENDED_DIMS.has(dim.toLowerCase()))
+    .map((dim) => ({
+      key: `ext:${dim}`,
+      title: dim.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
+      zone: 'identity' as const,
+      width: 110,
+      render: (r: SalesAnalysisRow) => r.attributes?.extended?.[dim] ?? DASH,
+      sortValue: (r: SalesAnalysisRow) => r.attributes?.extended?.[dim] ?? '',
+    }))
+}
+
+/**
+ * Column layout for SKU_DETAIL runs in the fullscreen viewer.
+ *
+ * Order (operator-requested):
+ *   Image · Dept · Category · Vendor · SKU · Description · Label · Style/Color
+ *     · <extended dims>
+ *     · Inv (Units) · Current Cost · Total Cost · Current Price
+ *     · Qty (Sales) · Net Sales · COGS · Gross Profit · GP% · ROI · Turns
+ *     · [Prior Yr Net · PY% Δ when priorYear=true]
+ *     · Store
+ *
+ * Store moves to the far right per operator request. Widths tuned slim so
+ * the SKU_DETAIL grid fits more columns on screen; money columns stay wide
+ * enough for 6-digit totals (999,999.99).
+ */
+function buildSkuDetailColumns(hasPriorYear: boolean, extendedDimensions: string[]): ColumnDef[] {
+  return [
+    // ── Identity — SKU context chain ─────────────────────────────────
+    // Dept → Cat → Vendor → SKU → Image → Description, with less-used
+    // identity columns (Label, Style/Color, Company, extended dims) trailing
+    // and default-hidden. Widths trimmed vs the prior pass so the default
+    // row fits more columns without horizontal scrolling.
     {
-      key: 'dimensionKey', title: keyColumnTitle, zone: 'identity', width: 180,
+      key: 'attr:departmentDesc', title: 'Dept', zone: 'identity', width: 100,
+      render: (r) => {
+        const n = r.attributes?.departmentNumber
+        const d = r.attributes?.departmentDesc
+        if (n == null && !d) return DASH
+        if (n != null && d) return `${n} — ${d}`
+        return d ?? String(n ?? '')
+      },
+      sortValue: (r) => r.attributes?.departmentNumber ?? 0,
+    },
+    {
+      key: 'attr:category', title: 'Category', zone: 'identity', width: 120,
+      render: (r) => {
+        const n = r.attributes?.categoryNumber
+        const d = r.attributes?.categoryDesc
+        if (n == null && !d) return DASH
+        if (n != null && d) return `${n} — ${d}`
+        return d ?? String(n ?? '')
+      },
+      sortValue: (r) => r.attributes?.categoryNumber ?? 0,
+    },
+    {
+      key: 'attr:vendorCode', title: 'Vendor', zone: 'identity', width: 70,
+      render: (r) => r.attributes?.vendorCode ?? DASH,
+      sortValue: (r) => r.attributes?.vendorCode ?? '',
+    },
+    {
+      key: 'dimensionKey', title: 'SKU', zone: 'identity', width: 130,
       render: (r) => r.dimensionKey,
       sortValue: (r) => r.dimensionKey,
     },
+    // Thumbnail immediately after the SKU — matches operator's scanning flow
+    // (find the SKU by code, then confirm by image). Uses the shared
+    // ReportThumbnail component so the size matches Products → SKUs.
     {
-      key: 'dimensionLabel', title: 'Label', zone: 'identity', width: 220,
+      key: 'attr:pictureUrl', title: 'Image', zone: 'identity', width: 135,
+      render: (r) => <ReportThumbnail url={r.attributes?.pictureUrl} />,
+      sortValue: (r) => r.attributes?.pictureUrl ?? '',
+    },
+    {
+      key: 'attr:description', title: 'Description', zone: 'identity', width: 190,
+      render: (r) => r.attributes?.description ?? DASH,
+      sortValue: (r) => r.attributes?.description ?? '',
+    },
+    // Default-hidden identity columns — still available in the chooser.
+    {
+      key: 'dimensionLabel', title: 'Label', zone: 'identity', width: 130,
       render: (r) => r.dimensionLabel ?? DASH,
       sortValue: (r) => r.dimensionLabel ?? '',
     },
     {
-      key: 'storeNumber', title: 'Store', zone: 'identity', width: 80,
-      render: (r) => r.storeNumber ?? '(all)',
-      sortValue: (r) => r.storeNumber ?? 0,
+      key: 'attr:styleColor', title: 'Style/Color', zone: 'identity', width: 95,
+      render: (r) => r.attributes?.styleColor ?? DASH,
+      sortValue: (r) => r.attributes?.styleColor ?? '',
     },
     {
-      key: 'onHandAtCost', title: 'Inv (Cost)', zone: 'on-hand', align: 'right', width: 130, sumable: true,
+      key: 'attr:manufacturer', title: 'Company', zone: 'identity', width: 150,
+      render: (r) => r.attributes?.manufacturer ?? DASH,
+      sortValue: (r) => r.attributes?.manufacturer ?? '',
+    },
+    ...buildExtendedColumnDefs(extendedDimensions),
+    // ── On-hand / Inventory ──────────────────────────────────────────
+    {
+      key: 'attr:unitsOnHand', title: 'Inv (Units)', zone: 'on-hand', align: 'right', width: 80, sumable: true,
+      render: (r) => fmtQty(r.attributes?.unitsOnHand ?? 0),
+      sortValue: (r) => r.attributes?.unitsOnHand ?? 0,
+    },
+    {
+      key: 'attr:currentCost', title: 'Current Cost', zone: 'on-hand', align: 'right', width: 90,
+      render: (r) => fmtMoney(r.attributes?.currentCost ?? null),
+      sortValue: (r) => r.attributes?.currentCost ?? 0,
+    },
+    {
+      key: 'onHandAtCost', title: 'Total Cost', zone: 'on-hand', align: 'right', width: 100, sumable: true,
       render: (r) => fmtMoney(r.onHandAtCost),
       sortValue: (r) => r.onHandAtCost,
     },
     {
-      key: 'turns', title: 'Turns', zone: 'on-hand', align: 'right', width: 80,
-      render: (r) => fmtPctBare1(r.turns),
-      sortValue: (r) => r.turns ?? 0,
+      key: 'attr:currentPrice', title: 'Current Price', zone: 'on-hand', align: 'right', width: 90,
+      render: (r) => fmtMoney(r.attributes?.currentPrice ?? null),
+      sortValue: (r) => r.attributes?.currentPrice ?? 0,
     },
+    // ── Current period sales + derived metrics ───────────────────────
     {
-      key: 'roiPct', title: 'ROI', zone: 'on-hand', align: 'right', width: 90,
-      render: (r) => r.roiPct == null ? DASH : `${fmtPctBare1(r.roiPct)}×`,
-      sortValue: (r) => r.roiPct ?? 0,
-    },
-    {
-      key: 'qty', title: 'Qty', zone: 'current', align: 'right', width: 90, sumable: true,
+      key: 'qty', title: 'Qty (Sales)', zone: 'current', align: 'right', width: 75, sumable: true,
       render: (r) => fmtQty(r.qty),
       sortValue: (r) => r.qty,
     },
     {
-      key: 'netSales', title: 'Net Sales', zone: 'current', align: 'right', width: 140, sumable: true,
+      key: 'netSales', title: 'Net Sales', zone: 'current', align: 'right', width: 100, sumable: true,
       render: (r) => fmtMoney(r.netSales),
       sortValue: (r) => r.netSales,
     },
     {
-      key: 'cogs', title: 'COGS', zone: 'current', align: 'right', width: 140, sumable: true,
+      key: 'cogs', title: 'COGS', zone: 'current', align: 'right', width: 95, sumable: true,
       render: (r) => fmtMoney(r.cogs),
       sortValue: (r) => r.cogs,
     },
     {
-      key: 'grossProfit', title: 'Gross Profit', zone: 'current', align: 'right', width: 140, sumable: true,
+      key: 'grossProfit', title: 'Gross Profit', zone: 'current', align: 'right', width: 100, sumable: true,
       render: (r) => fmtMoney(r.grossProfit),
       sortValue: (r) => r.grossProfit,
     },
     {
-      key: 'gpPct', title: 'GP %', zone: 'current', align: 'right', width: 90,
+      key: 'gpPct', title: 'GP %', zone: 'current', align: 'right', width: 60,
       render: (r) => <GpBadge value={r.gpPct} />,
       sortValue: (r) => r.gpPct ?? 0,
+    },
+    {
+      key: 'roiPct', title: 'ROI', zone: 'current', align: 'right', width: 65,
+      render: (r) => r.roiPct == null ? DASH : `${fmtPctBare1(r.roiPct)}×`,
+      sortValue: (r) => r.roiPct ?? 0,
+    },
+    {
+      key: 'turns', title: 'Turns', zone: 'current', align: 'right', width: 60,
+      render: (r) => fmtPctBare1(r.turns),
+      sortValue: (r) => r.turns ?? 0,
+    },
+    // ── Comparison period (optional) ─────────────────────────────────
+    ...(hasPriorYear
+      ? ([
+          {
+            key: 'priorYearNetSales', title: 'Prior Yr Net', zone: 'comparison', align: 'right', width: 100, sumable: true,
+            render: (r: SalesAnalysisRow) => fmtMoney(r.priorYearNetSales),
+            sortValue: (r: SalesAnalysisRow) => r.priorYearNetSales ?? 0,
+          },
+          {
+            key: 'pyPctChange', title: 'PY % Δ', zone: 'comparison', align: 'right', width: 70,
+            render: (r: SalesAnalysisRow) => <ChangePctBadge value={r.pyPctChange} />,
+            sortValue: (r: SalesAnalysisRow) => r.pyPctChange ?? 0,
+          },
+        ] as ColumnDef[])
+      : []),
+    // ── Store — far right, per operator request ──────────────────────
+    {
+      key: 'storeNumber', title: 'Store', zone: 'identity', width: 60,
+      render: (r) => r.storeNumber ?? '(all)',
+      sortValue: (r) => r.storeNumber ?? 0,
+    },
+  ]
+}
+
+/**
+ * Column layout for summary report types (CATEGORY_SUMMARY, DEPT_SUMMARY,
+ * VENDOR_SUMMARY, PRICE_POINT_SUMMARY). These aggregate across SKUs so the
+ * per-SKU attributes aren't meaningful. Widths slimmed to match the denser
+ * SKU_DETAIL grid.
+ */
+function buildSummaryColumns(keyColumnTitle: string, hasPriorYear: boolean): ColumnDef[] {
+  const cols: ColumnDef[] = [
+    {
+      key: 'dimensionKey', title: keyColumnTitle, zone: 'identity', width: 140,
+      render: (r) => r.dimensionKey,
+      sortValue: (r) => r.dimensionKey,
+    },
+    {
+      key: 'dimensionLabel', title: 'Label', zone: 'identity', width: 180,
+      render: (r) => r.dimensionLabel ?? DASH,
+      sortValue: (r) => r.dimensionLabel ?? '',
+    },
+    {
+      key: 'onHandAtCost', title: 'Total Cost', zone: 'on-hand', align: 'right', width: 105, sumable: true,
+      render: (r) => fmtMoney(r.onHandAtCost),
+      sortValue: (r) => r.onHandAtCost,
+    },
+    {
+      key: 'qty', title: 'Qty (Sales)', zone: 'current', align: 'right', width: 80, sumable: true,
+      render: (r) => fmtQty(r.qty),
+      sortValue: (r) => r.qty,
+    },
+    {
+      key: 'netSales', title: 'Net Sales', zone: 'current', align: 'right', width: 105, sumable: true,
+      render: (r) => fmtMoney(r.netSales),
+      sortValue: (r) => r.netSales,
+    },
+    {
+      key: 'cogs', title: 'COGS', zone: 'current', align: 'right', width: 100, sumable: true,
+      render: (r) => fmtMoney(r.cogs),
+      sortValue: (r) => r.cogs,
+    },
+    {
+      key: 'grossProfit', title: 'Gross Profit', zone: 'current', align: 'right', width: 105, sumable: true,
+      render: (r) => fmtMoney(r.grossProfit),
+      sortValue: (r) => r.grossProfit,
+    },
+    {
+      key: 'gpPct', title: 'GP %', zone: 'current', align: 'right', width: 65,
+      render: (r) => <GpBadge value={r.gpPct} />,
+      sortValue: (r) => r.gpPct ?? 0,
+    },
+    {
+      key: 'roiPct', title: 'ROI', zone: 'current', align: 'right', width: 70,
+      render: (r) => r.roiPct == null ? DASH : `${fmtPctBare1(r.roiPct)}×`,
+      sortValue: (r) => r.roiPct ?? 0,
+    },
+    {
+      key: 'turns', title: 'Turns', zone: 'current', align: 'right', width: 65,
+      render: (r) => fmtPctBare1(r.turns),
+      sortValue: (r) => r.turns ?? 0,
     },
   ]
   if (hasPriorYear) {
     cols.push(
       {
-        key: 'priorYearNetSales', title: 'Prior Yr Net', zone: 'comparison', align: 'right', width: 140, sumable: true,
+        key: 'priorYearNetSales', title: 'Prior Yr Net', zone: 'comparison', align: 'right', width: 105, sumable: true,
         render: (r) => fmtMoney(r.priorYearNetSales),
         sortValue: (r) => r.priorYearNetSales ?? 0,
       },
       {
-        key: 'pyPctChange', title: 'PY % Δ', zone: 'comparison', align: 'right', width: 100,
+        key: 'pyPctChange', title: 'PY % Δ', zone: 'comparison', align: 'right', width: 75,
         render: (r) => <ChangePctBadge value={r.pyPctChange} />,
         sortValue: (r) => r.pyPctChange ?? 0,
       },
     )
   }
+  cols.push({
+    key: 'storeNumber', title: 'Store', zone: 'identity', width: 65,
+    render: (r) => r.storeNumber ?? '(all)',
+    sortValue: (r) => r.storeNumber ?? 0,
+  })
   return cols
 }
 
@@ -159,13 +359,26 @@ interface DataRowWrap {
 
 type RenderRow = DataRowWrap | SubtotalRow
 
+// Resolve a column key to a numeric value on a row. Metric columns map
+// directly to top-level fields; `attr:*` columns route through the row's
+// `attributes` bag so we can sum units-on-hand, current cost, etc.
+function getNumericForKey(row: SalesAnalysisRow, key: string): number | null {
+  if (key.startsWith('attr:')) {
+    const field = key.slice('attr:'.length) as keyof NonNullable<SalesAnalysisRow['attributes']>
+    const v = row.attributes?.[field]
+    return typeof v === 'number' && !Number.isNaN(v) ? v : null
+  }
+  const v = (row as unknown as Record<string, number | null | undefined>)[key]
+  return typeof v === 'number' && !Number.isNaN(v) ? v : null
+}
+
 function computeSubtotals(rows: SalesAnalysisRow[], sumableKeys: readonly string[]): Record<string, number> {
   const sums: Record<string, number> = {}
   for (const k of sumableKeys) sums[k] = 0
   for (const r of rows) {
     for (const k of sumableKeys) {
-      const v = (r as unknown as Record<string, number | null | undefined>)[k]
-      if (typeof v === 'number' && !Number.isNaN(v)) sums[k]! += v
+      const v = getNumericForKey(r, k)
+      if (v != null) sums[k]! += v
     }
   }
   return sums
@@ -236,13 +449,40 @@ function readSalesAnalysisArgs(sp: URLSearchParams): SalesAnalysisArgs {
 
 // ─────────────────────── Main page ─────────────────────────────────────
 
-const COLUMN_STORAGE_KEY = 'report-viewer:sales-analysis:columns'
+// Bumped to :v3 when thumbnail moved after SKU and default-hidden list was
+// expanded to include operator-side extended dims (Buyer / Discount type /
+// Company). Earlier preferences are invalidated so operators see the new
+// defaults on their next visit. Bump again on any future reshape.
+const COLUMN_STORAGE_KEY = 'report-viewer:sales-analysis:columns:v3'
+
+// Columns hidden by default on SKU_DETAIL's first run. Operator still has
+// them one click away via the Columns chooser; we just don't show them out
+// of the box because the default grid is meant to be lean.
+//
+// Extended ("ext:*") dimensions are ALSO added to the hidden set dynamically
+// (every run — see defaultHiddenKeys in the component). The explicit entries
+// below are the ones we know the operator always wants default-hidden
+// regardless of whether they show up in the data — listing them here means
+// a stale localStorage set carried over from v2 still gets the toggle fix.
+const DEFAULT_HIDDEN_SKU_DETAIL_KEYS: ReadonlySet<string> = new Set([
+  'dimensionLabel',          // "Label" — redundant with SKU + Description
+  'attr:styleColor',          // Style/Color — operator-opts-in
+  'attr:manufacturer',        // "Company" — operator-opts-in
+  'ext:buyer',                // "Buyer" extended dim — operator-opts-in
+  'ext:discount_type',        // "Discount type" extended dim — operator-opts-in
+  'ext:discount-type',        // tolerate either kebab-case variant of the dim code
+])
 
 export default function ReportViewerPage() {
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
   const type = searchParams.get('type') ?? 'sales-analysis'
-  const args = useMemo(() => readSalesAnalysisArgs(searchParams), [searchParams])
+  // The viewer always asks for per-SKU attribute enrichment so the column
+  // chooser has data to work with. The inline builder preview does not.
+  const args = useMemo(() => {
+    const base = readSalesAnalysisArgs(searchParams)
+    return base.reportType === 'SKU_DETAIL' ? { ...base, includeAttributes: true } : base
+  }, [searchParams])
   const { data, isFetching, error } = useSalesAnalysis(args)
 
   const keyColumnTitle =
@@ -253,43 +493,69 @@ export default function ReportViewerPage() {
     : args.reportType === 'PRICE_POINT_SUMMARY' ? 'Price Point'
     : 'Key'
 
-  const allColumns = useMemo(
-    () => buildColumnDefs(keyColumnTitle, !!args.priorYear),
-    [keyColumnTitle, args.priorYear],
-  )
+  // Extended attribute dimensions that actually showed up in this response.
+  // Empty when reportType isn't SKU_DETAIL or no operator has assigned any.
+  const extendedDimensions = useMemo(() => {
+    if (!data?.rows?.length) return [] as string[]
+    const seen = new Set<string>()
+    for (const r of data.rows) {
+      if (r.attributes?.extended) {
+        for (const k of Object.keys(r.attributes.extended)) seen.add(k)
+      }
+    }
+    return Array.from(seen).sort()
+  }, [data])
 
-  // Column visibility — persisted per user in localStorage. Default: all on.
+  // Build the final ordered column set. SKU_DETAIL gets the rich attribute
+  // layout (image, dept/category/vendor before SKU, units/costs, store at
+  // the end). Summary report types use the slimmer aggregate layout — they
+  // aggregate across SKUs so per-SKU attributes don't apply.
+  const allColumns = useMemo(() => {
+    if (args.reportType === 'SKU_DETAIL') {
+      return buildSkuDetailColumns(!!args.priorYear, extendedDimensions)
+    }
+    return buildSummaryColumns(keyColumnTitle, !!args.priorYear)
+  }, [keyColumnTitle, args.priorYear, args.reportType, extendedDimensions])
+
+  // Every column in `allColumns` that should be hidden by default on this
+  // run. SKU_DETAIL combines the fixed hidden set with every extended-dim
+  // column (those are default-opt-in). Summary reports hide nothing by
+  // default — every column in the layout is useful out of the box.
+  const defaultHiddenKeys = useMemo(() => {
+    if (args.reportType !== 'SKU_DETAIL') return new Set<string>()
+    const hidden = new Set<string>(DEFAULT_HIDDEN_SKU_DETAIL_KEYS)
+    for (const dim of extendedDimensions) hidden.add(`ext:${dim}`)
+    return hidden
+  }, [args.reportType, extendedDimensions])
+
+  // Column visibility — persisted per user in localStorage under the v2 key.
+  // Initial set: every column in `allColumns` EXCEPT `defaultHiddenKeys`.
   const [visibleKeys, setVisibleKeys] = useState<Set<string>>(() => {
-    if (typeof window === 'undefined') return new Set(allColumns.map((c) => c.key))
+    const seedFromDefaults = (): Set<string> =>
+      new Set(allColumns.filter((c) => !defaultHiddenKeys.has(c.key)).map((c) => c.key))
+    if (typeof window === 'undefined') return seedFromDefaults()
     try {
       const saved = window.localStorage.getItem(COLUMN_STORAGE_KEY)
       if (saved) return new Set(JSON.parse(saved) as string[])
     } catch {
       // ignore parse errors, fall through to default
     }
-    return new Set(allColumns.map((c) => c.key))
+    return seedFromDefaults()
   })
 
   useEffect(() => {
-    // Whenever priorYear toggles, make sure newly-added columns are visible
-    // by default. Existing preferences for other columns are preserved.
+    // When the column set changes (priorYear toggles, reportType changes,
+    // new extended dim shows up) add any newly-available columns to the
+    // visible set — except those that should be hidden by default, which
+    // stay off until the operator opts in via the Columns chooser.
     setVisibleKeys((prev) => {
       const next = new Set(prev)
       for (const c of allColumns) {
-        if (!prev.has(c.key) && !saved(c.key)) next.add(c.key)
+        if (!prev.has(c.key) && !defaultHiddenKeys.has(c.key)) next.add(c.key)
       }
       return next
     })
-    function saved(_key: string): boolean {
-      try {
-        const s = window.localStorage.getItem(COLUMN_STORAGE_KEY)
-        if (!s) return false
-        return JSON.parse(s) === false
-      } catch {
-        return false
-      }
-    }
-  }, [allColumns])
+  }, [allColumns, defaultHiddenKeys])
 
   useEffect(() => {
     try {
@@ -350,9 +616,12 @@ export default function ReportViewerPage() {
           )
         }
         if (c.sumable) {
+          // Unit-count columns use the integer formatter; everything else
+          // (money sums) uses the 2-dp money formatter.
+          const isUnitCol = c.key === 'qty' || c.key === 'attr:unitsOnHand'
           return (
             <Text strong>
-              {c.key === 'qty' ? fmtQty(record.sums[c.key] ?? 0) : fmtMoney(record.sums[c.key] ?? 0)}
+              {isUnitCol ? fmtQty(record.sums[c.key] ?? 0) : fmtMoney(record.sums[c.key] ?? 0)}
             </Text>
           )
         }
@@ -393,8 +662,21 @@ export default function ReportViewerPage() {
           zIndex: 10,
         }}
       >
-        <Button icon={<ArrowLeftOutlined />} onClick={() => navigate(-1)}>
-          Back
+        <Button
+          icon={<ArrowLeftOutlined />}
+          onClick={() => {
+            // Prefer browser Back when there's meaningful history (user clicked
+            // through from /reports/templates or a list page); fall back to the
+            // Sales Analysis builder when the viewer was opened directly from a
+            // bookmarked URL — that's the most useful place to land.
+            if (window.history.length > 1) {
+              navigate(-1)
+            } else {
+              navigate('/reports/sales/analysis')
+            }
+          }}
+        >
+          <span>Back</span>
         </Button>
         <Title level={4} style={{ margin: 0 }}>
           Sales Analysis

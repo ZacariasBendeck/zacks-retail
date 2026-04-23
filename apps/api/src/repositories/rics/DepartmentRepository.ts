@@ -29,6 +29,7 @@ export interface Department {
   begCateg: number;
   endCateg: number;
   dateLastChanged: Date | null;
+  skuCount: number;
 }
 
 export interface DepartmentInput {
@@ -62,7 +63,47 @@ function mapRow(row: DepartmentRow): Department {
     begCateg: coerceNumber(row.BegCateg) ?? 0,
     endCateg: coerceNumber(row.EndCateg) ?? 0,
     dateLastChanged: parseAccessDate(row.DateLastChanged),
+    skuCount: 0,
   };
+}
+
+/**
+ * Returns a map of category → SKU count from the live InventoryMaster.
+ * Used to derive per-Department totals by summing counts for every Category
+ * whose number falls inside a Department's [BegCateg, EndCateg] range.
+ * Errors are swallowed so a transient Access failure collapses counts to 0
+ * rather than hiding the whole departments list.
+ */
+async function loadSkuCountsByCategory(): Promise<Map<number, number>> {
+  const out = new Map<number, number>();
+  try {
+    const { path, password } = openRicsDb(RicsDb.InventoryMaster);
+    const rows = await executeQuery<{ Category: number | null; N: number }>(
+      path,
+      password,
+      `SELECT [Category], COUNT(*) AS N FROM [InventoryMaster]
+         WHERE [Category] IS NOT NULL
+         GROUP BY [Category]`,
+    );
+    for (const r of rows) {
+      const cat = coerceNumber(r.Category);
+      if (cat == null) continue;
+      out.set(cat, Number(r.N ?? 0));
+    }
+  } catch {
+    // leave counts at 0
+  }
+  return out;
+}
+
+function applySkuCounts(departments: Department[], counts: Map<number, number>): Department[] {
+  return departments.map((d) => {
+    let total = 0;
+    for (const [cat, n] of counts) {
+      if (cat >= d.begCateg && cat <= d.endCateg) total += n;
+    }
+    return { ...d, skuCount: total };
+  });
 }
 
 function validateInput(input: DepartmentInput): RepoError | null {
@@ -97,7 +138,9 @@ export const DepartmentRepository = {
         password,
         'SELECT [Number], [Desc], [BegCateg], [EndCateg], [DateLastChanged] FROM [Departments] ORDER BY [Number]',
       );
-      return Ok(rows.map(mapRow));
+      const mapped = rows.map(mapRow);
+      const counts = await loadSkuCountsByCategory();
+      return Ok(applySkuCounts(mapped, counts));
     } catch (err) {
       return Err(toRepoError(err));
     }
@@ -116,7 +159,8 @@ export const DepartmentRepository = {
       if (rows.length === 0) {
         return Err({ kind: 'NotFound', message: `Department ${number} not found.` });
       }
-      return Ok(mapRow(rows[0]));
+      const [enriched] = applySkuCounts([mapRow(rows[0])], await loadSkuCountsByCategory());
+      return Ok(enriched);
     } catch (err) {
       return Err(toRepoError(err));
     }

@@ -16,6 +16,7 @@ import {
   seasonsApi,
   sectorsApi,
   sizeTypesApi,
+  skuTotalApi,
 } from '../services/productsTaxonomyApi'
 
 /**
@@ -37,6 +38,15 @@ import type {
   SectorInput,
   SizeTypeInput,
 } from '../types/productsTaxonomy'
+
+// System-wide SKU total — shared denominator for the coverage footers.
+export function useSkuTotal() {
+  return useQuery({
+    queryKey: ['taxonomy', 'sku-total'],
+    queryFn: skuTotalApi.get,
+    staleTime: LIST_STALE_MS,
+  })
+}
 
 // Resolve Category → Department → Sector
 export function useResolveTaxonomy(category: number | undefined) {

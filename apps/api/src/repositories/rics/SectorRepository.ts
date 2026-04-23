@@ -15,6 +15,7 @@ import { executeQuery, executeNonQuery, type AccessParam } from '../../services/
 import { Err, Ok, type Result, type RepoError } from './repoResult';
 import { openRicsDb, RicsDb, toRepoError, trimString } from './ricsAccess';
 import { parseAccessDate } from './parseAccessDate';
+import { DepartmentRepository, type Department } from './DepartmentRepository';
 
 export interface Sector {
   number: number;
@@ -22,6 +23,7 @@ export interface Sector {
   begDept: number;
   endDept: number;
   dateLastChanged: Date | null;
+  skuCount: number;
 }
 
 export interface SectorInput {
@@ -46,7 +48,30 @@ function mapRow(row: SectorRow): Sector {
     begDept: Number(row.BegDept ?? 0),
     endDept: Number(row.EndDept ?? 0),
     dateLastChanged: parseAccessDate(row.DateLastChanged),
+    skuCount: 0,
   };
+}
+
+/**
+ * Loads Departments (each carrying its own range-derived skuCount) so Sector
+ * counts can be summed over the dept range [BegDept, EndDept]. Errors collapse
+ * to an empty list so counts default to 0 instead of hiding the sectors page.
+ */
+async function loadDepartmentsForCounts(): Promise<Department[]> {
+  try {
+    const result = await DepartmentRepository.list();
+    return result.ok ? result.value : [];
+  } catch {
+    return [];
+  }
+}
+
+function countForSector(departments: Department[], s: Sector): number {
+  let total = 0;
+  for (const d of departments) {
+    if (d.number >= s.begDept && d.number <= s.endDept) total += d.skuCount ?? 0;
+  }
+  return total;
 }
 
 function validate(input: SectorInput): RepoError | null {
@@ -81,7 +106,9 @@ export const SectorRepository = {
         password,
         'SELECT [Number], [Desc], [BegDept], [EndDept], [DateLastChanged] FROM [Sectors] ORDER BY [Number]',
       );
-      return Ok(rows.map(mapRow));
+      const depts = await loadDepartmentsForCounts();
+      const mapped = rows.map(mapRow);
+      return Ok(mapped.map((s) => ({ ...s, skuCount: countForSector(depts, s) })));
     } catch (err) {
       return Err(toRepoError(err));
     }
@@ -99,7 +126,9 @@ export const SectorRepository = {
       if (rows.length === 0) {
         return Err({ kind: 'NotFound', message: `Sector ${number} not found.` });
       }
-      return Ok(mapRow(rows[0]));
+      const mapped = mapRow(rows[0]);
+      const depts = await loadDepartmentsForCounts();
+      return Ok({ ...mapped, skuCount: countForSector(depts, mapped) });
     } catch (err) {
       return Err(toRepoError(err));
     }

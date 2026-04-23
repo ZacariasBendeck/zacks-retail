@@ -16,6 +16,8 @@ import {
   getSalespersonSummary,
   getBestSellers,
   getSalesAnalysis,
+  getSalesHierarchy,
+  getSalesPivot,
   getStockStatus,
   listSalesDimensions,
   SalesSourceNotImplementedError,
@@ -369,6 +371,9 @@ const salesAnalysisSchema = z.object({
   std: z.coerce.boolean().default(false),
   ytd: z.coerce.boolean().default(false),
   priorYear: z.coerce.boolean().default(false),
+  // Opt-in per-SKU enrichment. Defaults to false so the preview endpoint
+  // stays fast — only the full-screen viewer asks for these columns.
+  includeAttributes: z.coerce.boolean().default(false),
   format: z.enum(['json', 'csv']).default('json'),
 });
 
@@ -411,6 +416,7 @@ router.get('/sales-analysis', validateQuery(salesAnalysisSchema), async (req: Re
       printing: { wtd: q.wtd, mtd: q.mtd, std: q.std, ytd: q.ytd, priorYear: q.priorYear },
       startDate: q.startDate,
       endDate: q.endDate,
+      includeAttributes: q.includeAttributes,
     });
     if (q.format === 'csv') {
       const header = ['Dimension', 'Label', 'Store', 'Qty', 'Net Sales', 'COGS', 'Gross Profit', 'GP %', 'Prior Yr Net', 'PY % Change'];
@@ -424,6 +430,189 @@ router.get('/sales-analysis', validateQuery(salesAnalysisSchema), async (req: Re
       sendCsv(res, header, rows, `sales-analysis-${q.dimension}.csv`);
       return;
     }
+    res.json(report);
+  } catch (err) { next(err); }
+});
+
+// ─────────────────────────── /sales-pivot (app-native, no RICS ancestor) ─
+//
+// One endpoint, three variants selected by `variant`:
+//   department                 Sector → Dept → Category → SKU       (default)
+//   department-separate-store  Store → Sector → Dept → Category → SKU
+//   buyer                      Buyer → Dept → Category → SKU
+//
+// The response shape is unified: identity fields that don't apply to the
+// requested variant are null. The client groups the flat leaves into the
+// appropriate tree.
+
+const salesPivotSchema = z.object({
+  startDate: dateField,
+  endDate: dateField,
+  stores: csvIntList,
+  variant: z.enum([
+    'department',
+    'department-separate-store',
+    'buyer',
+    'buyer-vendor',
+    'buyer-vendor-separate-store',
+  ]).default('department'),
+  format: z.enum(['json', 'csv']).default('json'),
+});
+
+router.get('/sales-pivot', validateQuery(salesPivotSchema), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const q = (req as any).validatedQuery as z.infer<typeof salesPivotSchema>;
+    if (q.startDate > q.endDate) {
+      res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'startDate must be <= endDate' } });
+      return;
+    }
+    const report = await getSalesPivot({
+      startDate: q.startDate,
+      endDate: q.endDate,
+      storeNumbers: q.stores,
+      variant: q.variant,
+    });
+    if (q.format === 'csv') {
+      const yr = (label: string) => `${label} ${report.currentYear}`;
+      const py = (label: string) => `${label} ${report.priorYear}`;
+      const measureHeader = [
+        'OnHand Qty', 'OnHand Cost Val',
+        yr('Qty'), yr('Net Sales'), yr('Profit'),
+        py('Qty'), py('Net Sales'), py('Profit'),
+      ];
+      const measureCells = (r: typeof report.rows[number]) => [
+        r.onHandQty, r.onHandCostVal.toFixed(2),
+        r.qtyTY, r.netSalesTY.toFixed(2), r.profitTY.toFixed(2),
+        r.qtyLY, r.netSalesLY.toFixed(2), r.profitLY.toFixed(2),
+      ];
+
+      if (q.variant === 'buyer') {
+        const header = [
+          'Buyer Code', 'Buyer',
+          'Dept #', 'Dept', 'Category #', 'Category',
+          'SKU', 'Description',
+          ...measureHeader,
+        ];
+        const rows = report.rows.map((r) => [
+          r.buyerCode ?? '', r.buyerLabel ?? '',
+          r.dept ?? '', r.deptDesc ?? '',
+          r.categ ?? '', r.categDesc ?? '',
+          r.sku, r.skuDescription ?? '',
+          ...measureCells(r),
+        ]);
+        sendCsv(res, header, rows, `sales-pivot-buyer-${q.startDate}-to-${q.endDate}.csv`);
+        return;
+      }
+
+      if (q.variant === 'buyer-vendor' || q.variant === 'buyer-vendor-separate-store') {
+        const separate = q.variant === 'buyer-vendor-separate-store';
+        const header = [
+          ...(separate ? ['Store #', 'Store'] : []),
+          'Buyer Code', 'Buyer',
+          'Vendor Code', 'Vendor',
+          'SKU', 'Description',
+          ...measureHeader,
+        ];
+        const rows = report.rows.map((r) => [
+          ...(separate ? [r.storeNumber ?? '', r.storeName ?? ''] : []),
+          r.buyerCode ?? '', r.buyerLabel ?? '',
+          r.vendorCode ?? '', r.vendorLabel ?? '',
+          r.sku, r.skuDescription ?? '',
+          ...measureCells(r),
+        ]);
+        const base = separate ? 'sales-pivot-store-buyer-vendor' : 'sales-pivot-buyer-vendor';
+        sendCsv(res, header, rows, `${base}-${q.startDate}-to-${q.endDate}.csv`);
+        return;
+      }
+
+      const separate = q.variant === 'department-separate-store';
+      const header = [
+        ...(separate ? ['Store #', 'Store'] : []),
+        'Sector #', 'Sector',
+        'Dept #', 'Dept',
+        'Category #', 'Category',
+        'SKU', 'Description',
+        ...measureHeader,
+      ];
+      const rows = report.rows.map((r) => [
+        ...(separate ? [r.storeNumber ?? '', r.storeName ?? ''] : []),
+        r.sector ?? '', r.sectorDesc ?? '',
+        r.dept ?? '', r.deptDesc ?? '',
+        r.categ ?? '', r.categDesc ?? '',
+        r.sku, r.skuDescription ?? '',
+        ...measureCells(r),
+      ]);
+      const base = separate ? 'sales-pivot-store-department' : 'sales-pivot-department';
+      sendCsv(res, header, rows, `${base}-${q.startDate}-to-${q.endDate}.csv`);
+      return;
+    }
+    res.json(report);
+  } catch (err) { next(err); }
+});
+
+// ─────────────────────────── /hierarchy-drill-down (app-native) ──────────
+//
+// Same filter surface as /sales-analysis, but the response is a nested tree
+// of Department → Category → SKU rows (with an outer Store level when
+// storeOption=SEPARATE). The UI renders this with Ant Design's tree table —
+// departments are collapsed by default, each click drills one level deeper.
+
+const hierarchyDrillDownSchema = z.object({
+  storeOption: z.enum(['SEPARATE', 'COMBINE']).default('COMBINE'),
+  startDate: dateField,
+  endDate: dateField,
+  stores: csvIntList,
+  categories: csvIntList,
+  vendors: csvStringList,
+  seasons: csvStringList,
+  skus: csvStringList,
+  styleColor: z.string().optional(),
+  groups: csvStringList,
+  keywords: csvStringList,
+  storesRaw: z.string().optional(),
+  categoriesRaw: z.string().optional(),
+  vendorsRaw: z.string().optional(),
+  seasonsRaw: z.string().optional(),
+  skusRaw: z.string().optional(),
+  groupsRaw: z.string().optional(),
+  keywordsRaw: z.string().optional(),
+  styleColorRaw: z.string().optional(),
+  priorYear: z.coerce.boolean().default(false),
+  includeAttributes: z.coerce.boolean().default(false),
+});
+
+router.get('/hierarchy-drill-down', validateQuery(hierarchyDrillDownSchema), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const q = (req as any).validatedQuery as z.infer<typeof hierarchyDrillDownSchema>;
+    if (q.startDate > q.endDate) {
+      res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'startDate must be <= endDate' } });
+      return;
+    }
+    const report = await getSalesHierarchy({
+      storeOption: q.storeOption,
+      criteria: {
+        stores: q.stores,
+        categories: q.categories,
+        vendors: q.vendors,
+        seasons: q.seasons,
+        skus: q.skus,
+        styleColor: q.styleColor || undefined,
+        groups: q.groups,
+        keywords: q.keywords,
+        storesRaw: q.storesRaw?.trim() || undefined,
+        categoriesRaw: q.categoriesRaw?.trim() || undefined,
+        vendorsRaw: q.vendorsRaw?.trim() || undefined,
+        seasonsRaw: q.seasonsRaw?.trim() || undefined,
+        skusRaw: q.skusRaw?.trim() || undefined,
+        groupsRaw: q.groupsRaw?.trim() || undefined,
+        keywordsRaw: q.keywordsRaw?.trim() || undefined,
+        styleColorRaw: q.styleColorRaw?.trim() || undefined,
+      },
+      startDate: q.startDate,
+      endDate: q.endDate,
+      priorYear: q.priorYear,
+      includeAttributes: q.includeAttributes,
+    });
     res.json(report);
   } catch (err) { next(err); }
 });

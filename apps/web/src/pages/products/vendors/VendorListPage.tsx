@@ -17,7 +17,9 @@ import {
   useVendorSkuCounts,
   useVendors,
 } from '../../../hooks/useProductsVendors'
+import { useSkuTotal } from '../../../hooks/useProductsTaxonomy'
 import type { Vendor } from '../../../types/productsVendor'
+import TaxonomyCoverageFooter from '../../../components/products/TaxonomyCoverageFooter'
 
 export default function VendorListPage() {
   const navigate = useNavigate()
@@ -26,6 +28,7 @@ export default function VendorListPage() {
   const [searchValue, setSearchValue] = useState('')
   const { data, isLoading } = useVendors(q || undefined)
   const { data: skuCounts } = useVendorSkuCounts()
+  const { data: skuTotal } = useSkuTotal()
   const del = useDeleteVendor()
 
   const withCounts = useMemo(
@@ -35,6 +38,11 @@ export default function VendorListPage() {
         skuCount: skuCounts?.[v.code] ?? 0,
       })),
     [data, skuCounts],
+  )
+
+  const assigned = useMemo(
+    () => withCounts.reduce((sum, r) => sum + (r.skuCount ?? 0), 0),
+    [withCounts],
   )
 
   const columns = [
@@ -161,6 +169,7 @@ export default function VendorListPage() {
         columns={columns}
         loading={isLoading}
         pagination={{ defaultPageSize: 25, showSizeChanger: true, pageSizeOptions: [25, 50, 100, 200] }}
+        footer={() => <TaxonomyCoverageFooter assigned={assigned} systemTotal={skuTotal?.total} />}
       />
     </Card>
   )

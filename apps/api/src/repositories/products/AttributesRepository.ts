@@ -15,18 +15,31 @@ import { Err, Ok, type Result, type RepoError } from '../rics/repoResult';
 export interface DimensionRow {
   code: string;
   labelEs: string;
+  descriptionEs: string | null;
   sortOrder: number;
   isMultiValue: boolean;
 }
 
 export interface DimensionValueRow {
+  id: number;
   code: string;
   labelEs: string;
   sortOrder: number;
+  isActive: boolean;
   skuCount?: number;
 }
 
+export interface FamilyRuleRow {
+  familyCode: string;
+  enabled: boolean;
+  isRequired: boolean;
+  sortOrder: number;
+}
+
 export interface DimensionWithValues extends DimensionRow {
+  id: number;
+  /** When zero, the dimension is universal (applies to every family). */
+  familyRules: FamilyRuleRow[];
   values: DimensionValueRow[];
 }
 
@@ -66,12 +79,46 @@ function toRepoError(err: unknown, fallback = 'Database error'): RepoError {
   return { kind: 'AccessConnectionError', message, cause: err };
 }
 
-async function skuExistsInMirror(skuCode: string): Promise<boolean> {
+/**
+ * True if the SKU exists and isn't discontinued. Checks `app.sku` first
+ * because post sync:rics-skus every code lives there, then falls back to
+ * `rics_mirror.inventory_master` for the brief window between a mirror swap
+ * and the subsequent backfill. Retaining both arms means attribute writes
+ * never reject a valid SKU because of sync timing.
+ */
+async function skuExists(skuCode: string): Promise<boolean> {
+  // Accepts the final `code`, the `provisional_code` (DRAFTs don't have a
+  // final code yet), or a RICS mirror code. DRAFT SKUs write their
+  // Apariencia / Diseño dimensions via the provisional code; `finalize`
+  // renames the assignment rows to the final code in the same txn.
   const rows = await prisma.$queryRawUnsafe<{ exists: boolean }[]>(
-    `SELECT EXISTS (SELECT 1 FROM rics_mirror.inventory_master WHERE sku = $1) AS exists`,
+    `SELECT EXISTS (
+       SELECT 1 FROM app.sku
+         WHERE (code = $1 OR provisional_code = $1)
+           AND sku_state <> 'DISCONTINUED'
+       UNION ALL
+       SELECT 1 FROM rics_mirror.inventory_master
+         WHERE sku = $1 AND (status IS NULL OR status <> 'D')
+     ) AS exists`,
     skuCode
   );
   return Boolean(rows[0]?.exists);
+}
+
+/**
+ * Resolve a SKU to its product family (via category → category_product_family).
+ * Returns null if the SKU has no category or the category isn't mapped.
+ */
+async function resolveSkuFamily(skuCode: string): Promise<string | null> {
+  const rows = await prisma.$queryRawUnsafe<{ family_code: string | null }[]>(
+    `SELECT cpf.family_code
+     FROM rics_mirror.inventory_master im
+     LEFT JOIN app.category_product_family cpf ON cpf.category_number = im.category
+     WHERE im.sku = $1
+     LIMIT 1`,
+    skuCode,
+  );
+  return rows[0]?.family_code ?? null;
 }
 
 export const AttributesRepository = {
@@ -79,12 +126,19 @@ export const AttributesRepository = {
    * Dimension catalog. If `withCounts`, populates `sku_count` per value by
    * joining to `sku_attribute_assignment`. Used by the admin catalog viewer
    * and the storefront facet UI.
+   *
+   * Every dim ships its `familyRules` — empty array means universal. Values
+   * include `isActive`; callers that render a new-assignment dropdown should
+   * filter to `isActive=true` themselves.
    */
   async listDimensionsWithValues(opts: { withCounts?: boolean } = {}): Promise<Result<DimensionWithValues[]>> {
     try {
       const dims = await prisma.attributeDimension.findMany({
         orderBy: { sortOrder: 'asc' },
-        include: { values: { orderBy: { sortOrder: 'asc' } } },
+        include: {
+          values: { orderBy: { sortOrder: 'asc' } },
+          familyRules: { orderBy: { sortOrder: 'asc' } },
+        },
       });
 
       let counts: Map<number, number> | null = null;
@@ -98,14 +152,24 @@ export const AttributesRepository = {
       }
 
       const out: DimensionWithValues[] = dims.map((d) => ({
+        id: d.id,
         code: d.code,
         labelEs: d.labelEs,
+        descriptionEs: d.descriptionEs,
         sortOrder: d.sortOrder,
         isMultiValue: d.isMultiValue,
+        familyRules: d.familyRules.map((r) => ({
+          familyCode: r.familyCode,
+          enabled: r.enabled,
+          isRequired: r.isRequired,
+          sortOrder: r.sortOrder,
+        })),
         values: d.values.map((v) => ({
+          id: v.id,
           code: v.code,
           labelEs: v.labelEs,
           sortOrder: v.sortOrder,
+          isActive: v.isActive,
           ...(counts ? { skuCount: counts.get(v.id) ?? 0 } : {}),
         })),
       }));
@@ -122,7 +186,7 @@ export const AttributesRepository = {
    */
   async getSkuAttributes(skuCode: string): Promise<Result<SkuAttributesResponse>> {
     try {
-      if (!(await skuExistsInMirror(skuCode))) {
+      if (!(await skuExists(skuCode))) {
         return Err({ kind: 'NotFound', message: `SKU '${skuCode}' not found.` });
       }
 
@@ -166,23 +230,39 @@ export const AttributesRepository = {
    *   2. Insert the new set tagged with `actor`.
    * Keyword-derived rows stay untouched — they rebuild on the next seed run.
    *
+   * Optional `scopedDimensionCodes`: when non-empty, the wipe AND the
+   * required-dimension check both narrow to those dim codes. Assignments for
+   * other dims stay in place — used by the main SKU form so a save of
+   * Apariencia / Diseño doesn't blow away Buyer / Company / Cadena.
+   *
    * Validation (422 on violation):
    *   - every dimensionCode + valueCode exists
    *   - valueCode belongs to the named dim
    *   - single-value dims receive at most one assignment
+   *   - if scoped, every incoming dim must be in `scopedDimensionCodes`
    */
   async replaceSkuAttributes(
     skuCode: string,
     assignments: AssignmentInput[],
-    actor: string
+    actor: string,
+    scopedDimensionCodes?: string[],
   ): Promise<Result<{ previous: AssignmentDetail[]; next: AssignmentDetail[] }>> {
     try {
-      if (!(await skuExistsInMirror(skuCode))) {
+      if (!(await skuExists(skuCode))) {
         return Err({ kind: 'NotFound', message: `SKU '${skuCode}' not found.` });
       }
 
-      const dims = await prisma.attributeDimension.findMany({ include: { values: true } });
+      const dims = await prisma.attributeDimension.findMany({
+        include: { values: true, familyRules: true },
+      });
       const dimByCode = new Map(dims.map((d) => [d.code, d] as const));
+      const skuFamily = await resolveSkuFamily(skuCode);
+
+      // Scope set — when provided, every incoming assignment must belong to one
+      // of these dims, and the wipe/required-check only touches these dims.
+      const scopeSet = scopedDimensionCodes && scopedDimensionCodes.length > 0
+        ? new Set(scopedDimensionCodes)
+        : null;
 
       // Resolve every (dimensionCode, valueCode) to (dimensionId, valueId).
       const resolved: { dimensionId: number; valueId: number; dimCode: string; valCode: string; valLabel: string }[] = [];
@@ -195,12 +275,43 @@ export const AttributesRepository = {
             message: `Unknown dimension '${a.dimensionCode}'.`,
           });
         }
+        if (scopeSet && !scopeSet.has(a.dimensionCode)) {
+          return Err({
+            kind: 'ConstraintViolation',
+            message: `Dimension '${a.dimensionCode}' is not in scope for this write.`,
+          });
+        }
         const val = dim.values.find((v) => v.code === a.valueCode);
         if (!val) {
           return Err({
             kind: 'ConstraintViolation',
             message: `Value '${a.valueCode}' does not belong to dimension '${a.dimensionCode}'.`,
           });
+        }
+        // is_active gate — new assignments can only reference active values.
+        // Existing assignments (not being replaced) remain valid regardless.
+        if (!val.isActive) {
+          return Err({
+            kind: 'ConstraintViolation',
+            message: `Value '${a.valueCode}' in dimension '${a.dimensionCode}' is inactive; cannot be assigned.`,
+          });
+        }
+        // Family gating — if this dim has rules, the SKU's family must be in
+        // them with enabled=true. Zero rules = universal = always allowed.
+        if (dim.familyRules.length > 0) {
+          if (skuFamily == null) {
+            return Err({
+              kind: 'ConstraintViolation',
+              message: `Dimension '${a.dimensionCode}' is family-scoped but SKU '${skuCode}' has no family mapping for its category.`,
+            });
+          }
+          const rule = dim.familyRules.find((r) => r.familyCode === skuFamily);
+          if (!rule || !rule.enabled) {
+            return Err({
+              kind: 'ConstraintViolation',
+              message: `Dimension '${a.dimensionCode}' does not apply to family '${skuFamily}'.`,
+            });
+          }
         }
         byDimCount.set(a.dimensionCode, (byDimCount.get(a.dimensionCode) ?? 0) + 1);
         resolved.push({
@@ -221,6 +332,42 @@ export const AttributesRepository = {
         }
       }
 
+      // Required-attribute gate — for every dim with is_required=true for this
+      // SKU's family, the post-replace state must have ≥1 assignment. We check
+      // against the combined set: incoming `resolved` (operator edits) PLUS any
+      // existing keyword-derived rows (they stay after the delete).
+      //
+      // Scoped writes only need to satisfy requireds that fall within scope;
+      // out-of-scope required dims are unchanged by this write and thus
+      // validated against their existing state (if any).
+      if (skuFamily != null) {
+        const requiredDims = dims.filter((d) =>
+          d.familyRules.some((r) => r.familyCode === skuFamily && r.enabled && r.isRequired) &&
+          (!scopeSet || scopeSet.has(d.code)),
+        );
+        if (requiredDims.length > 0) {
+          const dimsCovered = new Set<number>();
+          for (const r of resolved) dimsCovered.add(r.dimensionId);
+          // Preserved keyword-derived rows also satisfy the requirement.
+          const keywordRows = await prisma.skuAttributeAssignment.findMany({
+            where: {
+              skuCode,
+              assignedBy: { startsWith: 'seed:keyword:' },
+              dimensionId: { in: requiredDims.map((d) => d.id) },
+            },
+            select: { dimensionId: true },
+          });
+          for (const r of keywordRows) dimsCovered.add(r.dimensionId);
+          const missing = requiredDims.filter((d) => !dimsCovered.has(d.id));
+          if (missing.length > 0) {
+            return Err({
+              kind: 'ConstraintViolation',
+              message: `Required dimension(s) missing for family '${skuFamily}': ${missing.map((d) => d.code).join(', ')}.`,
+            });
+          }
+        }
+      }
+
       // Capture previous operator + excel set (what we're about to delete) for audit.
       const previousRows = await prisma.skuAttributeAssignment.findMany({
         where: {
@@ -236,13 +383,27 @@ export const AttributesRepository = {
         assignedAt: r.assignedAt.toISOString(),
       }));
 
+      const scopedDimIds = scopeSet
+        ? dims.filter((d) => scopeSet.has(d.code)).map((d) => d.id)
+        : null;
       await prisma.$transaction(async (tx) => {
-        await tx.$executeRawUnsafe(
-          `DELETE FROM app.sku_attribute_assignment
-           WHERE sku_code = $1
-             AND (assigned_by IS NULL OR assigned_by NOT LIKE 'seed:keyword:%')`,
-          skuCode
-        );
+        if (scopedDimIds) {
+          await tx.$executeRawUnsafe(
+            `DELETE FROM app.sku_attribute_assignment
+             WHERE sku_code = $1
+               AND dimension_id = ANY($2::smallint[])
+               AND (assigned_by IS NULL OR assigned_by NOT LIKE 'seed:keyword:%')`,
+            skuCode,
+            scopedDimIds,
+          );
+        } else {
+          await tx.$executeRawUnsafe(
+            `DELETE FROM app.sku_attribute_assignment
+             WHERE sku_code = $1
+               AND (assigned_by IS NULL OR assigned_by NOT LIKE 'seed:keyword:%')`,
+            skuCode,
+          );
+        }
         if (resolved.length > 0) {
           await tx.skuAttributeAssignment.createMany({
             data: resolved.map((r) => ({
@@ -375,6 +536,520 @@ export const AttributesRepository = {
     }
   },
 
+  // ────────────────────────────────────────────────────────────────────
+  // Dimension CRUD (admin) — mutations below. Each returns a Result so the
+  // service layer can map DB constraint violations to HTTP 409 cleanly.
+  // ────────────────────────────────────────────────────────────────────
+
+  async createDimension(input: {
+    code: string;
+    labelEs: string;
+    descriptionEs: string | null;
+    sortOrder: number;
+    isMultiValue: boolean;
+  }): Promise<Result<DimensionRow>> {
+    try {
+      const existing = await prisma.attributeDimension.findUnique({ where: { code: input.code } });
+      if (existing) {
+        return Err({
+          kind: 'DuplicatePrimaryKey',
+          message: `Dimension code '${input.code}' already exists.`,
+        });
+      }
+      const created = await prisma.attributeDimension.create({
+        data: {
+          code: input.code,
+          labelEs: input.labelEs,
+          descriptionEs: input.descriptionEs,
+          sortOrder: input.sortOrder,
+          isMultiValue: input.isMultiValue,
+        },
+      });
+      return Ok({
+        code: created.code,
+        labelEs: created.labelEs,
+        descriptionEs: created.descriptionEs,
+        sortOrder: created.sortOrder,
+        isMultiValue: created.isMultiValue,
+      });
+    } catch (err) {
+      return Err(toRepoError(err));
+    }
+  },
+
+  async updateDimension(
+    code: string,
+    patch: Partial<{ labelEs: string; descriptionEs: string | null; sortOrder: number; isMultiValue: boolean }>,
+  ): Promise<Result<DimensionRow>> {
+    try {
+      const existing = await prisma.attributeDimension.findUnique({ where: { code } });
+      if (!existing) {
+        return Err({ kind: 'NotFound', message: `Dimension '${code}' not found.` });
+      }
+      const updated = await prisma.attributeDimension.update({
+        where: { code },
+        data: {
+          ...(patch.labelEs !== undefined ? { labelEs: patch.labelEs } : {}),
+          ...(patch.descriptionEs !== undefined ? { descriptionEs: patch.descriptionEs } : {}),
+          ...(patch.sortOrder !== undefined ? { sortOrder: patch.sortOrder } : {}),
+          ...(patch.isMultiValue !== undefined ? { isMultiValue: patch.isMultiValue } : {}),
+        },
+      });
+      return Ok({
+        code: updated.code,
+        labelEs: updated.labelEs,
+        descriptionEs: updated.descriptionEs,
+        sortOrder: updated.sortOrder,
+        isMultiValue: updated.isMultiValue,
+      });
+    } catch (err) {
+      return Err(toRepoError(err));
+    }
+  },
+
+  async deleteDimension(code: string): Promise<Result<{ deleted: true }>> {
+    try {
+      const dim = await prisma.attributeDimension.findUnique({ where: { code } });
+      if (!dim) return Err({ kind: 'NotFound', message: `Dimension '${code}' not found.` });
+
+      const assignmentCount = await prisma.skuAttributeAssignment.count({
+        where: { dimensionId: dim.id },
+      });
+      if (assignmentCount > 0) {
+        return Err({
+          kind: 'ConcurrentModification', // maps to 409
+          message: `Dimension '${code}' has ${assignmentCount} SKU assignment(s). Reassign or merge values, then retry.`,
+        });
+      }
+
+      // Cascade-delete of values + family rules is handled by FK onDelete=Cascade
+      // on attribute_family_rule (the rule → dim FK cascades). attribute_value
+      // has onDelete=Restrict against the dim, so delete values explicitly first.
+      await prisma.$transaction(async (tx) => {
+        await tx.attributeValue.deleteMany({ where: { dimensionId: dim.id } });
+        await tx.attributeFamilyRule.deleteMany({ where: { dimensionId: dim.id } });
+        await tx.attributeDimension.delete({ where: { id: dim.id } });
+      });
+      return Ok({ deleted: true });
+    } catch (err) {
+      return Err(toRepoError(err));
+    }
+  },
+
+  async reorderDimensions(entries: { code: string; sortOrder: number }[]): Promise<Result<{ updated: number }>> {
+    try {
+      await prisma.$transaction(
+        entries.map((e) =>
+          prisma.attributeDimension.update({
+            where: { code: e.code },
+            data: { sortOrder: e.sortOrder },
+          }),
+        ),
+      );
+      return Ok({ updated: entries.length });
+    } catch (err) {
+      return Err(toRepoError(err));
+    }
+  },
+
+  // ────────────────────────────────────────────────────────────────────
+  // Value CRUD (admin)
+  // ────────────────────────────────────────────────────────────────────
+
+  async createValue(
+    dimensionCode: string,
+    input: { code: string; labelEs: string; sortOrder: number },
+  ): Promise<Result<DimensionValueRow>> {
+    try {
+      const dim = await prisma.attributeDimension.findUnique({ where: { code: dimensionCode } });
+      if (!dim) return Err({ kind: 'NotFound', message: `Dimension '${dimensionCode}' not found.` });
+
+      const dup = await prisma.attributeValue.findUnique({
+        where: { dimensionId_code: { dimensionId: dim.id, code: input.code } },
+      });
+      if (dup) {
+        return Err({
+          kind: 'DuplicatePrimaryKey',
+          message: `Value '${input.code}' already exists in dimension '${dimensionCode}'.`,
+        });
+      }
+
+      const created = await prisma.attributeValue.create({
+        data: {
+          dimensionId: dim.id,
+          code: input.code,
+          labelEs: input.labelEs,
+          sortOrder: input.sortOrder,
+          isActive: true,
+        },
+      });
+      return Ok({
+        id: created.id,
+        code: created.code,
+        labelEs: created.labelEs,
+        sortOrder: created.sortOrder,
+        isActive: created.isActive,
+      });
+    } catch (err) {
+      return Err(toRepoError(err));
+    }
+  },
+
+  async updateValue(
+    valueId: number,
+    patch: Partial<{ labelEs: string; sortOrder: number; isActive: boolean }>,
+  ): Promise<Result<DimensionValueRow>> {
+    try {
+      const existing = await prisma.attributeValue.findUnique({ where: { id: valueId } });
+      if (!existing) return Err({ kind: 'NotFound', message: `Value ${valueId} not found.` });
+
+      const updated = await prisma.attributeValue.update({
+        where: { id: valueId },
+        data: {
+          ...(patch.labelEs !== undefined ? { labelEs: patch.labelEs } : {}),
+          ...(patch.sortOrder !== undefined ? { sortOrder: patch.sortOrder } : {}),
+          ...(patch.isActive !== undefined ? { isActive: patch.isActive } : {}),
+        },
+      });
+      return Ok({
+        id: updated.id,
+        code: updated.code,
+        labelEs: updated.labelEs,
+        sortOrder: updated.sortOrder,
+        isActive: updated.isActive,
+      });
+    } catch (err) {
+      return Err(toRepoError(err));
+    }
+  },
+
+  async deleteValue(valueId: number): Promise<Result<{ deleted: true }>> {
+    try {
+      const existing = await prisma.attributeValue.findUnique({ where: { id: valueId } });
+      if (!existing) return Err({ kind: 'NotFound', message: `Value ${valueId} not found.` });
+
+      const assignmentCount = await prisma.skuAttributeAssignment.count({
+        where: { valueId },
+      });
+      if (assignmentCount > 0) {
+        return Err({
+          kind: 'ConcurrentModification',
+          message: `Value has ${assignmentCount} SKU assignment(s). Merge to another value or deactivate instead.`,
+        });
+      }
+      await prisma.attributeValue.delete({ where: { id: valueId } });
+      return Ok({ deleted: true });
+    } catch (err) {
+      return Err(toRepoError(err));
+    }
+  },
+
+  async reorderValues(
+    dimensionCode: string,
+    entries: { valueId: number; sortOrder: number }[],
+  ): Promise<Result<{ updated: number }>> {
+    try {
+      const dim = await prisma.attributeDimension.findUnique({ where: { code: dimensionCode } });
+      if (!dim) return Err({ kind: 'NotFound', message: `Dimension '${dimensionCode}' not found.` });
+      await prisma.$transaction(
+        entries.map((e) =>
+          prisma.attributeValue.update({
+            where: { id: e.valueId },
+            data: { sortOrder: e.sortOrder },
+          }),
+        ),
+      );
+      return Ok({ updated: entries.length });
+    } catch (err) {
+      return Err(toRepoError(err));
+    }
+  },
+
+  /**
+   * Merge `sourceId` → `targetId`. Both values must belong to the same dimension.
+   * Reassigns every `sku_attribute_assignment.value_id = sourceId` to `targetId`
+   * (ON CONFLICT DO NOTHING handles SKUs already carrying the target value),
+   * then deletes the source value. Returns the count of rows moved.
+   */
+  async mergeValues(sourceId: number, targetId: number): Promise<Result<{ moved: number }>> {
+    try {
+      if (sourceId === targetId) {
+        return Err({ kind: 'ConstraintViolation', message: 'Cannot merge a value into itself.' });
+      }
+      const [src, tgt] = await Promise.all([
+        prisma.attributeValue.findUnique({ where: { id: sourceId } }),
+        prisma.attributeValue.findUnique({ where: { id: targetId } }),
+      ]);
+      if (!src) return Err({ kind: 'NotFound', message: `Source value ${sourceId} not found.` });
+      if (!tgt) return Err({ kind: 'NotFound', message: `Target value ${targetId} not found.` });
+      if (src.dimensionId !== tgt.dimensionId) {
+        return Err({
+          kind: 'ConstraintViolation',
+          message: 'Source and target values must belong to the same dimension.',
+        });
+      }
+
+      let moved = 0;
+      await prisma.$transaction(async (tx) => {
+        // Insert target rows for every SKU currently carrying source, skipping conflicts.
+        const insertRes = await tx.$executeRawUnsafe(
+          `INSERT INTO app.sku_attribute_assignment (sku_code, dimension_id, value_id, assigned_at, assigned_by)
+           SELECT sku_code, dimension_id, $1::SMALLINT, assigned_at, assigned_by
+           FROM app.sku_attribute_assignment
+           WHERE value_id = $2::SMALLINT
+           ON CONFLICT (sku_code, dimension_id, value_id) DO NOTHING`,
+          targetId,
+          sourceId,
+        );
+        moved = Number(insertRes);
+        // Delete source rows (orphans the merged source rows from assignment view).
+        await tx.$executeRawUnsafe(
+          `DELETE FROM app.sku_attribute_assignment WHERE value_id = $1::SMALLINT`,
+          sourceId,
+        );
+        // Remove the source value definition itself.
+        await tx.attributeValue.delete({ where: { id: sourceId } });
+      });
+      return Ok({ moved });
+    } catch (err) {
+      return Err(toRepoError(err));
+    }
+  },
+
+  // ────────────────────────────────────────────────────────────────────
+  // Family rule management
+  // ────────────────────────────────────────────────────────────────────
+
+  async listFamilyRulesForDimension(
+    dimensionCode: string,
+  ): Promise<Result<FamilyRuleRow[]>> {
+    try {
+      const dim = await prisma.attributeDimension.findUnique({
+        where: { code: dimensionCode },
+        include: { familyRules: { orderBy: { sortOrder: 'asc' } } },
+      });
+      if (!dim) return Err({ kind: 'NotFound', message: `Dimension '${dimensionCode}' not found.` });
+      return Ok(
+        dim.familyRules.map((r) => ({
+          familyCode: r.familyCode,
+          enabled: r.enabled,
+          isRequired: r.isRequired,
+          sortOrder: r.sortOrder,
+        })),
+      );
+    } catch (err) {
+      return Err(toRepoError(err));
+    }
+  },
+
+  /**
+   * Replace the full rule set for a dimension. `null` = universal (delete every
+   * existing rule row). An array = full replace (delete missing rows, upsert
+   * the rest). Rows without an explicit `sortOrder` land at 0.
+   */
+  async replaceDimensionFamilyRules(
+    dimensionCode: string,
+    rules: { familyCode: string; enabled: boolean; isRequired: boolean; sortOrder?: number }[] | null,
+    actor: string,
+  ): Promise<Result<FamilyRuleRow[]>> {
+    try {
+      const dim = await prisma.attributeDimension.findUnique({ where: { code: dimensionCode } });
+      if (!dim) return Err({ kind: 'NotFound', message: `Dimension '${dimensionCode}' not found.` });
+
+      await prisma.$transaction(async (tx) => {
+        if (rules === null) {
+          // Universal — wipe all rules.
+          await tx.attributeFamilyRule.deleteMany({ where: { dimensionId: dim.id } });
+          return;
+        }
+        const keepFamilyCodes = new Set(rules.map((r) => r.familyCode));
+        await tx.attributeFamilyRule.deleteMany({
+          where: {
+            dimensionId: dim.id,
+            familyCode: { notIn: Array.from(keepFamilyCodes) },
+          },
+        });
+        for (const r of rules) {
+          await tx.attributeFamilyRule.upsert({
+            where: { dimensionId_familyCode: { dimensionId: dim.id, familyCode: r.familyCode } },
+            create: {
+              dimensionId: dim.id,
+              familyCode: r.familyCode,
+              enabled: r.enabled,
+              isRequired: r.isRequired,
+              sortOrder: r.sortOrder ?? 0,
+              updatedBy: actor,
+            },
+            update: {
+              enabled: r.enabled,
+              isRequired: r.isRequired,
+              sortOrder: r.sortOrder ?? 0,
+              updatedBy: actor,
+            },
+          });
+        }
+      });
+
+      const fresh = await prisma.attributeFamilyRule.findMany({
+        where: { dimensionId: dim.id },
+        orderBy: { sortOrder: 'asc' },
+      });
+      return Ok(
+        fresh.map((r) => ({
+          familyCode: r.familyCode,
+          enabled: r.enabled,
+          isRequired: r.isRequired,
+          sortOrder: r.sortOrder,
+        })),
+      );
+    } catch (err) {
+      return Err(toRepoError(err));
+    }
+  },
+
+  /**
+   * Upsert a single rule row — used by the per-row toggles on the Families page.
+   */
+  async upsertFamilyRule(
+    dimensionCode: string,
+    familyCode: string,
+    patch: { enabled?: boolean; isRequired?: boolean; sortOrder?: number },
+    actor: string,
+  ): Promise<Result<FamilyRuleRow>> {
+    try {
+      const dim = await prisma.attributeDimension.findUnique({ where: { code: dimensionCode } });
+      if (!dim) return Err({ kind: 'NotFound', message: `Dimension '${dimensionCode}' not found.` });
+      const family = await prisma.productFamily.findUnique({ where: { code: familyCode } });
+      if (!family) return Err({ kind: 'NotFound', message: `Family '${familyCode}' not found.` });
+
+      const saved = await prisma.attributeFamilyRule.upsert({
+        where: { dimensionId_familyCode: { dimensionId: dim.id, familyCode } },
+        create: {
+          dimensionId: dim.id,
+          familyCode,
+          enabled: patch.enabled ?? true,
+          isRequired: patch.isRequired ?? false,
+          sortOrder: patch.sortOrder ?? 0,
+          updatedBy: actor,
+        },
+        update: {
+          ...(patch.enabled !== undefined ? { enabled: patch.enabled } : {}),
+          ...(patch.isRequired !== undefined ? { isRequired: patch.isRequired } : {}),
+          ...(patch.sortOrder !== undefined ? { sortOrder: patch.sortOrder } : {}),
+          updatedBy: actor,
+        },
+      });
+      return Ok({
+        familyCode: saved.familyCode,
+        enabled: saved.enabled,
+        isRequired: saved.isRequired,
+        sortOrder: saved.sortOrder,
+      });
+    } catch (err) {
+      return Err(toRepoError(err));
+    }
+  },
+
+  async deleteFamilyRule(
+    dimensionCode: string,
+    familyCode: string,
+  ): Promise<Result<{ deleted: true }>> {
+    try {
+      const dim = await prisma.attributeDimension.findUnique({ where: { code: dimensionCode } });
+      if (!dim) return Err({ kind: 'NotFound', message: `Dimension '${dimensionCode}' not found.` });
+      await prisma.attributeFamilyRule.deleteMany({
+        where: { dimensionId: dim.id, familyCode },
+      });
+      return Ok({ deleted: true });
+    } catch (err) {
+      return Err(toRepoError(err));
+    }
+  },
+
+  /** Inverse view — all rules keyed by family, for the Families-page editor. */
+  async listRulesForFamily(familyCode: string): Promise<
+    Result<{ dimensionId: number; dimensionCode: string; labelEs: string; enabled: boolean; isRequired: boolean; sortOrder: number }[]>
+  > {
+    try {
+      const rows = await prisma.attributeFamilyRule.findMany({
+        where: { familyCode },
+        include: { dimension: true },
+        orderBy: [{ sortOrder: 'asc' }, { dimension: { sortOrder: 'asc' } }],
+      });
+      return Ok(
+        rows.map((r) => ({
+          dimensionId: r.dimensionId,
+          dimensionCode: r.dimension.code,
+          labelEs: r.dimension.labelEs,
+          enabled: r.enabled,
+          isRequired: r.isRequired,
+          sortOrder: r.sortOrder,
+        })),
+      );
+    } catch (err) {
+      return Err(toRepoError(err));
+    }
+  },
+
+  /**
+   * Bulk upsert of a family's rule list (Families page "+ Agregar atributo"
+   * / toggle workflow). Any dimension not in the input list has its rule row
+   * deleted for this family (it may still be universal or ruled for others).
+   */
+  async replaceFamilyAttributeRules(
+    familyCode: string,
+    rules: { dimensionCode: string; enabled: boolean; isRequired: boolean; sortOrder?: number }[],
+    actor: string,
+  ): Promise<Result<{ updated: number }>> {
+    try {
+      const family = await prisma.productFamily.findUnique({ where: { code: familyCode } });
+      if (!family) return Err({ kind: 'NotFound', message: `Family '${familyCode}' not found.` });
+
+      const dimLookup = await prisma.attributeDimension.findMany({
+        where: { code: { in: rules.map((r) => r.dimensionCode) } },
+      });
+      const byCode = new Map(dimLookup.map((d) => [d.code, d.id]));
+      for (const r of rules) {
+        if (!byCode.has(r.dimensionCode)) {
+          return Err({ kind: 'NotFound', message: `Dimension '${r.dimensionCode}' not found.` });
+        }
+      }
+
+      await prisma.$transaction(async (tx) => {
+        const keepDimIds = new Set(rules.map((r) => byCode.get(r.dimensionCode)!));
+        await tx.attributeFamilyRule.deleteMany({
+          where: {
+            familyCode,
+            dimensionId: { notIn: Array.from(keepDimIds) },
+          },
+        });
+        for (const r of rules) {
+          const dimensionId = byCode.get(r.dimensionCode)!;
+          await tx.attributeFamilyRule.upsert({
+            where: { dimensionId_familyCode: { dimensionId, familyCode } },
+            create: {
+              dimensionId,
+              familyCode,
+              enabled: r.enabled,
+              isRequired: r.isRequired,
+              sortOrder: r.sortOrder ?? 0,
+              updatedBy: actor,
+            },
+            update: {
+              enabled: r.enabled,
+              isRequired: r.isRequired,
+              sortOrder: r.sortOrder ?? 0,
+              updatedBy: actor,
+            },
+          });
+        }
+      });
+      return Ok({ updated: rules.length });
+    } catch (err) {
+      return Err(toRepoError(err));
+    }
+  },
+
   /**
    * Bulk assign: for each SKU in `skuCodes`, apply the same dim+value_codes.
    * Same atomic-replace semantics as `replaceSkuAttributes` per-SKU (keyword
@@ -411,6 +1086,12 @@ export const AttributesRepository = {
           return Err({
             kind: 'ConstraintViolation',
             message: `Value '${vc}' does not belong to dimension '${dimensionCode}'.`,
+          });
+        }
+        if (!v.isActive) {
+          return Err({
+            kind: 'ConstraintViolation',
+            message: `Value '${vc}' in dimension '${dimensionCode}' is inactive; cannot be bulk-assigned.`,
           });
         }
         valuesById.set(vc, v.id);

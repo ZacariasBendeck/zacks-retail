@@ -3,6 +3,8 @@ import { z } from 'zod';
 import { validateQuery } from '../middleware/validation';
 import * as publicProductService from '../services/publicProductFacade';
 import type { ProductListParams, FacetFilterParams } from '../services/publicProductService';
+import { skuGate } from '../services/products/skuLifecycleGate';
+import { repoHttpStatus, repoHttpCode } from '../repositories/rics/repoResult';
 
 const router: IRouter = Router();
 
@@ -302,6 +304,18 @@ router.get('/:productId', async (req: Request, res: Response): Promise<void> => 
   // Only guard against obviously malformed input.
   if (!productId || productId.length > 64 || /[\r\n\t]/.test(productId)) {
     res.status(400).json({ error: { code: 'INVALID_ID', message: 'productId is missing or malformed.' } });
+    return;
+  }
+
+  // Phase 5g gate — block if the identifier matches a non-ACTIVE SKU in app.sku
+  // (DRAFT provisional codes, DISCONTINUED finalized codes). Keeps customers
+  // from hitting public URLs that would leak in-progress SKUs. Legacy RICS SKUs
+  // pass through. See docs/operations/sku-lifecycle-gate.md.
+  const gated = await skuGate.findActiveSku({ code: productId });
+  if (!gated.ok) {
+    res.status(repoHttpStatus(gated.error)).json({
+      error: { code: repoHttpCode(gated.error), message: gated.error.message },
+    });
     return;
   }
 

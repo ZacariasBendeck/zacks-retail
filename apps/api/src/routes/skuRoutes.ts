@@ -1,4 +1,24 @@
-import { Router, Request, Response, IRouter } from 'express';
+/**
+ * Legacy SKU routes — backed by the SQLite `skus` table.
+ *
+ * **DEPRECATED** — Phase 5g. The SKU form (`/inventory/skus/new`) now writes
+ * through `/api/v1/products/sku-drafts/*` (the lifecycle-aware Postgres path).
+ * These routes remain mounted only for:
+ *   - The legacy SKU list page (`/inventory/skus`)
+ *   - The AI image analyze endpoint (`/api/v1/skus/analyze-image`)
+ *   - Reference-data reads (`/api/v1/skus/reference/*`)
+ *   - The SKU Inquiry search modal (`/api/v1/skus/search`)
+ *
+ * Do NOT add new write paths here. New writes go through
+ * `apps/api/src/routes/products/skuDraftRoutes.ts`. Every response from this
+ * router carries a `Deprecation: true` + `Sunset` header per RFC 8594 so
+ * operators and future tooling can surface the migration path.
+ *
+ * Sunset target: after two sprints of products-module usage in prod.
+ * Tracking: the Phase 5g checklist in
+ * docs/operations/sku-lifecycle-gate.md.
+ */
+import { Router, Request, Response, IRouter, NextFunction } from 'express';
 import multer from 'multer';
 import * as skuService from '../services/skuService';
 import { analyzeShoeImage } from '../services/imageAnalysisService';
@@ -18,6 +38,26 @@ import {
 } from '../services/ricsProductAdapter';
 
 const router: IRouter = Router();
+
+/**
+ * Phase 5g — every response from this router signals the RFC 8594 deprecation
+ * contract. Operators + any future tooling that watches for the header can
+ * detect usage of the legacy path and migrate. The Link header points at the
+ * replacement route.
+ */
+router.use((req: Request, res: Response, next: NextFunction) => {
+  res.set('Deprecation', 'true');
+  res.set('Link', '</api/v1/products/sku-drafts>; rel="successor-version"');
+  // Write paths (POST/PATCH/DELETE on /api/v1/skus/*) are the real concern —
+  // log them so operators see who's still hitting the old surface.
+  if (req.method !== 'GET') {
+    console.warn(
+      `[deprecation] legacy SQLite write hit: ${req.method} /api/v1/skus${req.path} — ` +
+        `route to /api/v1/products/sku-drafts`,
+    );
+  }
+  next();
+});
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -141,11 +181,45 @@ router.post('/analyze-image', upload.single('image'), async (req: Request, res: 
       res.status(400).json({ error: { code: 'NO_IMAGE', message: 'An image file is required. Upload a JPEG, PNG, GIF, or WebP image.' } });
       return;
     }
+    // Family is required: it scopes which real Postgres categories get injected
+    // into the prompt. Without it, the AI would have to pick from 615 categories
+    // across every sector (accuracy tanks). Accept via form field or query param.
+    const family = (
+      (req.body && typeof req.body.family === 'string' && req.body.family.trim()) ||
+      (typeof req.query.family === 'string' && req.query.family.trim()) ||
+      ''
+    );
+    if (!family) {
+      res.status(400).json({ error: { code: 'MISSING_FAMILY', message: 'A product family is required. Select a family before uploading an image.' } });
+      return;
+    }
 
-    const raw = await analyzeShoeImage(req.file.buffer, req.file.mimetype);
+    const { raw, resolution, warning } = await analyzeShoeImage(req.file.buffer, req.file.mimetype, family);
     const config = getAiFillConfig();
     const mapped = mapAiResultsToReferenceIds(raw as unknown as Record<string, string | null>);
-    res.json({ raw, mapped, config });
+    // Overlay the resolved Postgres values on top of `mapped`. These take
+    // precedence over the legacy SQLite-backed categoryId fuzzy match — the
+    // frontend should prefer `mapped.categoryCode` / `mapped.departmentCode`
+    // when present.
+    //
+    // `mapped.categoryId` is emitted by the legacy fuzzy matcher
+    // (aiFieldMappingService.matchReferenceValue) and does NOT know about the
+    // selected family — substring matching on "Pend Clasificar" can return a
+    // category from a totally different family. Always align it with the
+    // family-validated resolution so the frontend can't apply a cross-family id.
+    if (resolution) {
+      (mapped as Record<string, unknown>).categoryId = resolution.categoryNumber;
+      (mapped as Record<string, unknown>).categoryCode = resolution.categoryNumber;
+      (mapped as Record<string, unknown>).categoryName = resolution.categoryDesc;
+      (mapped as Record<string, unknown>).departmentCode = resolution.departmentNumber;
+      (mapped as Record<string, unknown>).departmentName = resolution.departmentDesc;
+      (mapped as Record<string, unknown>).familyCode = resolution.familyCode;
+    } else {
+      // Family check rejected (or AI returned no category): clear the legacy
+      // fuzzy-matched id so the frontend doesn't silently apply a cross-family row.
+      (mapped as Record<string, unknown>).categoryId = null;
+    }
+    res.json({ raw, mapped, config, resolution, warning });
   } catch (err: any) {
     if (err.message?.includes('ANTHROPIC_API_KEY')) {
       res.status(500).json({ error: { code: 'CONFIG_ERROR', message: 'AI service is not configured. Set the ANTHROPIC_API_KEY environment variable.' } });

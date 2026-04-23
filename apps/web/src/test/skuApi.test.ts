@@ -58,7 +58,7 @@ describe('skuApi canonical contracts', () => {
     vi.mocked(fetch).mockResolvedValue(buildOkResponse(apiPayload))
 
     const file = new File(['binary'], 'pump.jpg', { type: 'image/jpeg' })
-    const result = await analyzeImage(file)
+    const result = await analyzeImage({ file, family: 'zapatos' })
 
     expect(fetch).toHaveBeenCalledWith(
       '/api/v1/skus/analyze-image',

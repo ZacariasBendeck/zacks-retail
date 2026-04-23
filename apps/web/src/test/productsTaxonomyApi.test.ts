@@ -51,7 +51,7 @@ describe('productsTaxonomyApi', () => {
 
   it('POSTs to create a department', async () => {
     vi.mocked(fetch).mockResolvedValue(
-      ok({ number: 1, description: 'a', begCateg: 1, endCateg: 2, dateLastChanged: null }, 201),
+      ok({ number: 1, description: 'a', begCateg: 1, endCateg: 2, dateLastChanged: null, skuCount: 0 }, 201),
     )
     await departmentsApi.create({ number: 1, description: 'a', begCateg: 1, endCateg: 2 })
     expect(urlOf()).toBe('/api/v1/taxonomy/departments')

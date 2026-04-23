@@ -16,17 +16,17 @@ import { Ok, Err } from '../../../src/repositories/rics/repoResult';
 // what taxonomyService imports exactly so jest module swap catches them.
 jest.mock('../../../src/repositories/rics/DepartmentRepository', () => ({
   DepartmentRepository: {
-    list: jest.fn(async () => Ok([{ number: 1, description: 'Dept 1', begCateg: 1, endCateg: 10, dateLastChanged: null }])),
+    list: jest.fn(async () => Ok([{ number: 1, description: 'Dept 1', begCateg: 1, endCateg: 10, dateLastChanged: null, skuCount: 0 }])),
     getByNumber: jest.fn(async (n: number) =>
       n === 1
-        ? Ok({ number: 1, description: 'Dept 1', begCateg: 1, endCateg: 10, dateLastChanged: null })
+        ? Ok({ number: 1, description: 'Dept 1', begCateg: 1, endCateg: 10, dateLastChanged: null, skuCount: 0 })
         : Err({ kind: 'NotFound', message: `Department ${n} not found.` }),
     ),
     create: jest.fn(async (input: { number: number; description: string }) =>
-      Ok({ number: input.number, description: input.description, begCateg: 1, endCateg: 10, dateLastChanged: null }),
+      Ok({ number: input.number, description: input.description, begCateg: 1, endCateg: 10, dateLastChanged: null, skuCount: 0 }),
     ),
     update: jest.fn(async () =>
-      Ok({ number: 1, description: 'Updated', begCateg: 1, endCateg: 10, dateLastChanged: null }),
+      Ok({ number: 1, description: 'Updated', begCateg: 1, endCateg: 10, dateLastChanged: null, skuCount: 0 }),
     ),
     delete: jest.fn(async () => Ok(undefined)),
   },
@@ -36,8 +36,8 @@ jest.mock('../../../src/repositories/rics/CategoryRepository', () => ({
   CategoryRepository: {
     list: jest.fn(async () => Ok([])),
     getByNumber: jest.fn(async () => Err({ kind: 'NotFound', message: 'not found' })),
-    create: jest.fn(async () => Ok({ number: 1, description: 'x', dateLastChanged: null })),
-    update: jest.fn(async () => Ok({ number: 1, description: 'x', dateLastChanged: null })),
+    create: jest.fn(async () => Ok({ number: 1, description: 'x', dateLastChanged: null, skuCount: 0 })),
+    update: jest.fn(async () => Ok({ number: 1, description: 'x', dateLastChanged: null, skuCount: 0 })),
     delete: jest.fn(async () => Ok(undefined)),
   },
 }));
@@ -46,8 +46,8 @@ jest.mock('../../../src/repositories/rics/GroupRepository', () => ({
   GroupRepository: {
     list: jest.fn(async () => Ok([])),
     getByCode: jest.fn(async () => Err({ kind: 'NotFound', message: 'not found' })),
-    create: jest.fn(async () => Ok({ code: 'ABC', description: 'x', dateLastChanged: null })),
-    update: jest.fn(async () => Ok({ code: 'ABC', description: 'x', dateLastChanged: null })),
+    create: jest.fn(async () => Ok({ code: 'ABC', description: 'x', dateLastChanged: null, skuCount: 0 })),
+    update: jest.fn(async () => Ok({ code: 'ABC', description: 'x', dateLastChanged: null, skuCount: 0 })),
     delete: jest.fn(async () => Ok(undefined)),
   },
 }));
@@ -56,8 +56,8 @@ jest.mock('../../../src/repositories/rics/KeywordRepository', () => ({
   KeywordRepository: {
     list: jest.fn(async () => Ok([])),
     getByKeyword: jest.fn(async () => Err({ kind: 'NotFound', message: 'not found' })),
-    create: jest.fn(async () => Ok({ keyword: 'ZTEST1', description: 'x', dateLastChanged: null })),
-    update: jest.fn(async () => Ok({ keyword: 'ZTEST1', description: 'x', dateLastChanged: null })),
+    create: jest.fn(async () => Ok({ keyword: 'ZTEST1', description: 'x', dateLastChanged: null, skuCount: 0 })),
+    update: jest.fn(async () => Ok({ keyword: 'ZTEST1', description: 'x', dateLastChanged: null, skuCount: 0 })),
     delete: jest.fn(async () => Ok(undefined)),
   },
 }));
@@ -118,10 +118,11 @@ jest.mock('../../../src/repositories/rics/SectorRepository', () => ({
         begDept: 1,
         endDept: 2,
         dateLastChanged: null,
+        skuCount: 0,
       }),
     ),
     update: jest.fn(async () =>
-      Ok({ number: 1, description: 'x', begDept: 1, endDept: 2, dateLastChanged: null }),
+      Ok({ number: 1, description: 'x', begDept: 1, endDept: 2, dateLastChanged: null, skuCount: 0 }),
     ),
     delete: jest.fn(async () => Ok(undefined)),
   },
@@ -143,6 +144,7 @@ jest.mock('../../../src/repositories/rics/SizeTypeRepository', () => ({
         maxColumns: 2,
         maxRows: 1,
         dateLastChanged: null,
+        skuCount: 0,
       }),
     ),
     update: jest.fn(async () =>
@@ -157,6 +159,7 @@ jest.mock('../../../src/repositories/rics/SizeTypeRepository', () => ({
         maxColumns: 3,
         maxRows: 1,
         dateLastChanged: null,
+        skuCount: 0,
       }),
     ),
     delete: jest.fn(async () => Ok(undefined)),

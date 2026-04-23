@@ -15,13 +15,13 @@ Per [`CLAUDE.md`](../../../CLAUDE.md), `app.*` is reserved for module-owned addi
 
 ### `app.attribute_dimension`
 
-The 4 (today) classification dimensions. Bounded by what the catalog defines; new dims are data-only inserts, no migration required.
+Classification dimensions. Bounded by what the catalog defines; new dims are data-only inserts via the admin UI (no migration required).
 
 ```sql
 CREATE TABLE app.attribute_dimension (
   id              SMALLSERIAL PRIMARY KEY,
-  code            TEXT NOT NULL UNIQUE,         -- 'buyer', 'company', 'store_chain', 'discount_type'
-  label_es        TEXT NOT NULL,                -- 'Comprador', 'Empresa', 'Cadena', 'Tipo de Descuento'
+  code            TEXT NOT NULL UNIQUE,         -- 'buyer', 'company', 'color', 'fit', 'closure_type', ...
+  label_es        TEXT NOT NULL,
   description_es  TEXT,
   sort_order      SMALLINT NOT NULL,
   is_multi_value  BOOLEAN NOT NULL DEFAULT false,
@@ -37,21 +37,55 @@ CREATE TABLE app.attribute_dimension (
 | `sort_order` | `smallint` | UI display order across dims. |
 | `is_multi_value` | `boolean` | When `true`, a single SKU may carry multiple values for this dim (e.g. `discount_type` = `pct_50` AND `fixed_l99`). Enforced at the service layer, not via DB constraint — see `decisions.md`. |
 
+**Family scoping is many-to-many** via `app.attribute_family_rule` (see below). A dim with zero rule rows is **universal** — applies to every family. Introduced 2026-04-23 via migration `20260423120000_attribute_family_rules`; the previous single-FK `product_family` column was dropped.
+
+### `app.attribute_family_rule`
+
+Join table between `attribute_dimension` and `product_family`. Presence of ≥1 rule flips a dim from universal to family-scoped.
+
+```sql
+CREATE TABLE app.attribute_family_rule (
+  dimension_id  SMALLINT NOT NULL REFERENCES app.attribute_dimension(id) ON DELETE CASCADE,
+  family_code   TEXT     NOT NULL REFERENCES app.product_family(code)    ON DELETE RESTRICT,
+  enabled       BOOLEAN  NOT NULL DEFAULT true,
+  is_required   BOOLEAN  NOT NULL DEFAULT false,
+  sort_order    SMALLINT NOT NULL DEFAULT 0,
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_by    TEXT     NOT NULL DEFAULT 'seed',
+  PRIMARY KEY (dimension_id, family_code)
+);
+
+CREATE INDEX attribute_family_rule_family_idx
+  ON app.attribute_family_rule(family_code);
+```
+
+| Column | Type | Notes |
+|---|---|---|
+| `enabled` | `boolean` | When `false`, the dim is hidden for this family on new-assignment dropdowns (but existing rows stay valid). |
+| `is_required` | `boolean` | When `true`, saving a SKU in this family without a value in this dim returns 409. |
+| `sort_order` | `smallint` | Per-family render order, overrides `attribute_dimension.sort_order` when rendering a family-specific form. |
+| `updated_by` | `text` | Seed migration (`migration:20260423120000`), operator email, or `seed`. |
+
+Deletion cascade: removing an `attribute_dimension` also removes its rule rows. Removing a `product_family` is blocked (`ON DELETE RESTRICT`) if any rule still points at it — this matches the current UI policy that the 11 families are a fixed set.
+
 ### `app.attribute_value`
 
-The allowed values for each dimension. ~62 rows on initial seed.
+The allowed values for each dimension.
 
 ```sql
 CREATE TABLE app.attribute_value (
   id              SMALLSERIAL PRIMARY KEY,
   dimension_id    SMALLINT NOT NULL REFERENCES app.attribute_dimension(id) ON DELETE RESTRICT,
-  code            TEXT NOT NULL,                 -- 'zb', 'pct_50', 'magi', ...
-  label_es        TEXT NOT NULL,                 -- 'Zacarias Bendeck', '50% off', 'Magic Shoes', ...
+  code            TEXT NOT NULL,                 -- 'zb', 'pct_50', 'magi', 'rojo', ...
+  label_es        TEXT NOT NULL,
   sort_order      SMALLINT NOT NULL,
+  is_active       BOOLEAN NOT NULL DEFAULT true,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (dimension_id, code)
 );
 ```
+
+`is_active=false` hides the value from new-assignment dropdowns without deleting; existing rows in `sku_attribute_assignment` stay intact. The admin UI offers **Desactivar** as a soft alternative to the FK-Restrict hard delete.
 
 | Column | Type | Notes |
 |---|---|---|

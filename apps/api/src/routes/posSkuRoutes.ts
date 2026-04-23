@@ -6,8 +6,29 @@ import {
   listActivePromotions,
   listReturnCodes,
 } from '../services/ricsProductAdapter';
+import { skuGate } from '../services/products/skuLifecycleGate';
+import { repoHttpStatus, repoHttpCode } from '../repositories/rics/repoResult';
 
 const router: IRouter = Router();
+
+/**
+ * Phase 5g gate — checks if the given `code` matches a non-ACTIVE SKU in
+ * `app.sku` (the lifecycle table). If so, we short-circuit with the typed
+ * error so a cashier can't ring up a DRAFT or DISCONTINUED SKU. Legacy RICS
+ * SKUs (not in app.sku) pass through and hit the normal RICS adapter below.
+ *
+ * Returns `true` when the route handler must stop (response already sent).
+ * See docs/operations/sku-lifecycle-gate.md.
+ */
+async function gateBlocksPosRead(code: string, res: Response): Promise<boolean> {
+  const result = await skuGate.findActiveSku({ code });
+  if (result.ok) return false; // either no match (Ok(null)) or ACTIVE match — proceed
+  // Non-ACTIVE SKU matched — block with the gate's Spanish message.
+  res.status(repoHttpStatus(result.error)).json({
+    error: { code: repoHttpCode(result.error), message: result.error.message },
+  });
+  return true;
+}
 
 /**
  * @openapi
@@ -50,7 +71,9 @@ router.get('/skus', async (req: Request, res: Response): Promise<void> => {
  */
 router.get('/skus/:skuCode', async (req: Request, res: Response): Promise<void> => {
   try {
-    const sku = await getPosSku(req.params.skuCode as string);
+    const code = req.params.skuCode as string;
+    if (await gateBlocksPosRead(code, res)) return;
+    const sku = await getPosSku(code);
     if (!sku) {
       res.status(404).json({ error: { code: 'NOT_FOUND', message: 'SKU not found' } });
       return;
@@ -71,7 +94,9 @@ router.get('/skus/:skuCode', async (req: Request, res: Response): Promise<void> 
  */
 router.get('/skus/:skuCode/price-slots', async (req: Request, res: Response): Promise<void> => {
   try {
-    const slots = await getPriceSlots(req.params.skuCode as string);
+    const code = req.params.skuCode as string;
+    if (await gateBlocksPosRead(code, res)) return;
+    const slots = await getPriceSlots(code);
     if (!slots) {
       res.status(404).json({ error: { code: 'NOT_FOUND', message: 'SKU not found' } });
       return;

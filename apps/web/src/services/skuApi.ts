@@ -90,9 +90,10 @@ export async function deactivateSku(skuId: string): Promise<void> {
   if (!res.ok) throw new Error(`Failed to deactivate SKU: ${res.status}`)
 }
 
-export async function analyzeImage(file: File): Promise<EnhancedAnalysisResult> {
+export async function analyzeImage(args: { file: File; family: string }): Promise<EnhancedAnalysisResult> {
   const formData = new FormData()
-  formData.append('image', file)
+  formData.append('image', args.file)
+  formData.append('family', args.family)
 
   const res = await fetch('/api/v1/skus/analyze-image', {
     method: 'POST',

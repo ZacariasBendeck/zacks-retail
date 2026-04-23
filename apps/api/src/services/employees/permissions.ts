@@ -27,6 +27,7 @@ export const PERMISSIONS = {
   PURCHASING_VIEW:        'purchasing.view',
 
   // reports (cross-cutting)
+  REPORTS_ADMIN:          'reports.admin',
   REPORTS_VIEW:           'reports.view',
 
   // sales-pos

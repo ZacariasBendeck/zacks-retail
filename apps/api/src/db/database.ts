@@ -3119,14 +3119,43 @@ function seedReferenceData(db: DatabaseSync): void {
     db.exec(`INSERT OR IGNORE INTO ref_occasions (name) VALUES ('${name}')`);
   }
 
-  // Target audiences
-  const targetAudiences = ['Joven/Trendy','Adulta/Clasica','Plus Size','Trabajo','Fiesta','Deportista','Unisex'];
+  // Género — the target_audience ref table is now strictly gender (4 values).
+  // Any previous seed values (styling tags, Unisex, etc.) are stripped on boot
+  // so the dropdown stays clean. SKUs that referenced a removed value get
+  // target_audience_id = NULL first, to avoid FK violations on delete.
+  const targetAudiences = ['Mujer', 'Hombre', 'Niña', 'Niño'];
+  const keepList = targetAudiences.map((n) => `'${n}'`).join(',');
+  db.exec(
+    `UPDATE skus SET target_audience_id = NULL
+     WHERE target_audience_id IN (
+       SELECT id FROM ref_target_audiences WHERE name NOT IN (${keepList})
+     )`,
+  );
+  db.exec(`DELETE FROM ref_target_audiences WHERE name NOT IN (${keepList})`);
   for (const name of targetAudiences) {
     db.exec(`INSERT OR IGNORE INTO ref_target_audiences (name) VALUES ('${name}')`);
   }
 
-  // Accessories
-  const accessories = ['Sin Accesorio','Hebilla','Tachuelas','Lazos','Flecos','Bordado','Pedreria','Cadena'];
+  // Accessories — expanded vocabulary for decorative ornaments. The AI was
+  // collapsing items like "gold metal heart" to "Sin Accesorio"; these extra
+  // values give it better matches for metal charms, studs, pearls, etc.
+  const accessories = [
+    'Sin Accesorio',
+    'Hebilla',
+    'Adorno Metalico',
+    'Dije / Charm',
+    'Tachuelas',
+    'Lazos',
+    'Moño',
+    'Flecos',
+    'Bordado',
+    'Pedreria',
+    'Perlas',
+    'Piedras',
+    'Cadena',
+    'Cordones',
+    'Cintas',
+  ];
   for (const name of accessories) {
     db.exec(`INSERT OR IGNORE INTO ref_accessories (name) VALUES ('${name}')`);
   }

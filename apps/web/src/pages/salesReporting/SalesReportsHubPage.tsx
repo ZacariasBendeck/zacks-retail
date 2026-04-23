@@ -6,6 +6,8 @@ import {
   DatabaseOutlined,
   ColumnHeightOutlined,
   FundOutlined,
+  TableOutlined,
+  ApartmentOutlined,
 } from '@ant-design/icons'
 import { Link } from 'react-router-dom'
 import ReportHeader from '../../components/reports/ReportHeader'
@@ -29,6 +31,24 @@ const REPORTS: ReportCard[] = [
     citation: 'RICS Ch. 6 p. 88',
     to: '/reports/sales/analysis',
     icon: <LineChartOutlined />,
+    status: 'live',
+  },
+  {
+    title: 'Sales Hierarchy Drill-Down',
+    description:
+      'Department → Category → SKU tree. Collapse each department to its subtotal; click a category to show its SKUs. Same filters as Sales Analysis.',
+    citation: 'App-native (extends RICS Ch. 6 p. 88)',
+    to: '/reports/sales/hierarchy-drill-down',
+    icon: <ApartmentOutlined />,
+    status: 'live',
+  },
+  {
+    title: 'Sales Pivot',
+    description:
+      'Department, Separate-Store Department, or Buyer pivot — pick inside. YoY sales + on-hand at each level down to SKU.',
+    citation: 'App-native',
+    to: '/reports/sales/pivot',
+    icon: <TableOutlined />,
     status: 'live',
   },
   {
@@ -84,6 +104,7 @@ export default function SalesReportsHubPage() {
         description="Live read-through to the legacy RICS sales database. Data reflects posted and unposted sales tickets as they appear in RITRNSSV."
         breadcrumb={[{ title: 'Reports' }, { title: 'Sales' }]}
         showCurrencyNote={false}
+        enableFullscreen={false}
       />
       <Row gutter={[16, 16]}>
         {REPORTS.map((r) => (

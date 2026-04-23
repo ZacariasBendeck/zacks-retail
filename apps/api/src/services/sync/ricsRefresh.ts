@@ -6,6 +6,7 @@ import { CANONICAL_MDBS } from './canonicalRicsTables';
 import { copyMdbTableToPostgres, CopyResult } from './copyFromMdb';
 import { ricsDbPath, getOrRecoverPassword } from '../accessOleDb';
 import { stagingRoot, ensureStagingDir } from './bulkExtract';
+import { skuLifecycleBackfill, BackfillResult } from './skuLifecycleBackfill';
 
 export type ProgressEvent =
   | { type: 'run-start'; runId: string; mdbCount: number }
@@ -13,6 +14,9 @@ export type ProgressEvent =
   | { type: 'table-ok'; file: string; result: CopyResult }
   | { type: 'table-err'; file: string; table: string; error: Error }
   | { type: 'swap'; staging: string; final: string }
+  | { type: 'sku-backfill-start' }
+  | { type: 'sku-backfill-ok'; result: BackfillResult }
+  | { type: 'sku-backfill-err'; error: Error }
   | { type: 'run-end'; runId: string; status: 'ok' | 'failed'; totalRows: number; totalMs: number; errorText?: string };
 
 export interface RefreshOptions {
@@ -34,6 +38,14 @@ export interface RefreshResult {
   durationMs: number;
   errorText?: string;
   tables: CopyResult[];
+  /**
+   * Present when the post-swap SKU backfill ran. Absent on mirror failure
+   * (backfill is skipped). A backfill error here does NOT flip the top-level
+   * status to 'failed' — the mirror is already committed; re-run via
+   * `pnpm sync:rics-skus` to heal `app.sku`.
+   */
+  skuBackfill?: BackfillResult;
+  skuBackfillError?: string;
 }
 
 /**
@@ -152,6 +164,21 @@ export async function ricsRefresh(opts: RefreshOptions = {}): Promise<RefreshRes
 
     await client.query('COMMIT');
 
+    // Post-swap phase: mirror `rics_mirror.inventory_master` → `app.sku`.
+    // Separate transaction so a backfill failure does NOT invalidate the
+    // mirror — the operator re-runs `pnpm sync:rics-skus` to heal.
+    let skuBackfill: BackfillResult | undefined;
+    let skuBackfillError: string | undefined;
+    progress({ type: 'sku-backfill-start' });
+    try {
+      skuBackfill = await skuLifecycleBackfill({ pgClient: client, runId });
+      progress({ type: 'sku-backfill-ok', result: skuBackfill });
+    } catch (err) {
+      const error = err as Error;
+      skuBackfillError = error.message;
+      progress({ type: 'sku-backfill-err', error });
+    }
+
     const totalRows = tables.reduce((sum, t) => sum + t.rowCount, 0);
     const durationMs = Date.now() - runStartMs;
 
@@ -170,6 +197,8 @@ export async function ricsRefresh(opts: RefreshOptions = {}): Promise<RefreshRes
       tableCount: tables.length,
       durationMs,
       tables,
+      skuBackfill,
+      skuBackfillError,
     };
   } catch (err) {
     // Roll back the mirror transaction. The etl_run row was inserted in its

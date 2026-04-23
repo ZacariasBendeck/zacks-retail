@@ -14,6 +14,7 @@ import type {
 import { getErrorMessage } from '../../utils/errors'
 import RunReportControls from './RunReportControls'
 import SaveAsTemplateButton from '../../components/reports/SaveAsTemplateButton'
+import SaveSnapshotButton from '../../components/reports/SaveSnapshotButton'
 import ReportHeader from '../../components/reports/ReportHeader'
 import FilterChips from '../../components/reports/FilterChips'
 import ReportEmptyState from '../../components/reports/ReportEmptyState'
@@ -186,6 +187,21 @@ export default function BestSellersPage() {
                 storesText,
                 combineStores,
               })}
+            />
+            <SaveSnapshotButton
+              reportType="best-sellers"
+              disabled={query == null || !data}
+              sourceTemplateId={templateId}
+              getParamsJson={() => ({
+                dimension,
+                metric,
+                period,
+                topN,
+                stores: parseStores(storesText),
+                storesText,
+                combineStores,
+              })}
+              getResultJson={() => data}
             />
           </Space>
         }

@@ -20,6 +20,8 @@ import { SeasonRepository } from '../../repositories/rics/SeasonRepository';
 import { SectorRepository, type Sector } from '../../repositories/rics/SectorRepository';
 import { SizeTypeRepository } from '../../repositories/rics/SizeTypeRepository';
 import { Err, Ok, type Result } from '../../repositories/rics/repoResult';
+import { executeQuery } from '../accessOleDb';
+import { openRicsDb, RicsDb } from '../../repositories/rics/ricsAccess';
 
 /**
  * Resolved Category→Department→Sector chain for a given Category number.
@@ -51,6 +53,25 @@ async function resolveForCategory(category: number): Promise<Result<TaxonomyReso
   return Ok({ category, department: dept.value, sector: sector.value });
 }
 
+/**
+ * System-wide SKU total (denominator for the per-taxonomy coverage footer).
+ * Matches the counting convention of the per-taxonomy GROUP BY helpers:
+ * no status filter, so discontinued SKUs are included. Errors collapse to 0.
+ */
+async function skuTotal(): Promise<{ total: number }> {
+  try {
+    const { path, password } = openRicsDb(RicsDb.InventoryMaster);
+    const rows = await executeQuery<{ N: number }>(
+      path,
+      password,
+      'SELECT COUNT(*) AS N FROM [InventoryMaster]',
+    );
+    return { total: Number(rows[0]?.N ?? 0) };
+  } catch {
+    return { total: 0 };
+  }
+}
+
 export const taxonomyService = {
   departments: DepartmentRepository,
   categories: CategoryRepository,
@@ -63,6 +84,7 @@ export const taxonomyService = {
   sizeTypes: SizeTypeRepository,
   nrfCodes: NrfCodeRepository,
   resolveForCategory,
+  skuTotal,
 };
 
 export type TaxonomyService = typeof taxonomyService;

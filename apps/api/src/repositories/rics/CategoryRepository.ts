@@ -21,6 +21,7 @@ export interface Category {
   number: number;
   description: string;
   dateLastChanged: Date | null;
+  skuCount: number;
 }
 
 export interface CategoryInput {
@@ -47,7 +48,35 @@ function mapRow(row: CategoryRow): Category {
     number: Number(row.Number),
     description: trimString(row.Desc) ?? '',
     dateLastChanged: parseAccessDate(row.DateLastChanged),
+    skuCount: 0,
   };
+}
+
+/**
+ * Returns a map of category number → SKU count from InventoryMaster.[Category].
+ * Errors collapse to an empty map so a transient Access failure leaves counts
+ * at 0 rather than hiding the categories list.
+ */
+async function loadSkuCountsByCategory(): Promise<Map<number, number>> {
+  const out = new Map<number, number>();
+  try {
+    const { path, password } = openRicsDb(RicsDb.InventoryMaster);
+    const rows = await executeQuery<{ Category: number | null; N: number }>(
+      path,
+      password,
+      `SELECT [Category], COUNT(*) AS N FROM [InventoryMaster]
+         WHERE [Category] IS NOT NULL
+         GROUP BY [Category]`,
+    );
+    for (const r of rows) {
+      const cat = Number(r.Category);
+      if (!Number.isFinite(cat)) continue;
+      out.set(cat, Number(r.N ?? 0));
+    }
+  } catch {
+    // leave counts at 0
+  }
+  return out;
 }
 
 function validate(input: CategoryInput): RepoError | null {
@@ -73,7 +102,8 @@ export const CategoryRepository = {
         password,
         'SELECT [Number], [Desc], [DateLastChanged] FROM [Categories] ORDER BY [Number]',
       );
-      return Ok(rows.map(mapRow));
+      const counts = await loadSkuCountsByCategory();
+      return Ok(rows.map(mapRow).map((c) => ({ ...c, skuCount: counts.get(c.number) ?? 0 })));
     } catch (err) {
       return Err(toRepoError(err));
     }
@@ -91,7 +121,8 @@ export const CategoryRepository = {
       if (rows.length === 0) {
         return Err({ kind: 'NotFound', message: `Category ${number} not found.` });
       }
-      return Ok(mapRow(rows[0]));
+      const counts = await loadSkuCountsByCategory();
+      return Ok({ ...mapRow(rows[0]), skuCount: counts.get(number) ?? 0 });
     } catch (err) {
       return Err(toRepoError(err));
     }

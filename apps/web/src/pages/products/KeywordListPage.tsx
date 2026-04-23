@@ -1,18 +1,35 @@
 import { Button, Card, Popconfirm, Space, Table, Typography, App } from 'antd'
 import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons'
 import { Link, useNavigate } from 'react-router-dom'
-import { useDeleteKeyword, useKeywords } from '../../hooks/useProductsTaxonomy'
+import { useMemo } from 'react'
+import { useDeleteKeyword, useKeywords, useSkuTotal } from '../../hooks/useProductsTaxonomy'
 import type { Keyword } from '../../types/productsTaxonomy'
+import TaxonomyCoverageFooter from '../../components/products/TaxonomyCoverageFooter'
 
 export default function KeywordListPage() {
   const navigate = useNavigate()
   const { message } = App.useApp()
   const { data, isLoading } = useKeywords()
+  const { data: skuTotal } = useSkuTotal()
   const del = useDeleteKeyword()
+
+  const assigned = useMemo(
+    () => (data ?? []).reduce((sum, r) => sum + (r.skuCount ?? 0), 0),
+    [data],
+  )
 
   const columns = [
     { title: 'Keyword', dataIndex: 'keyword', key: 'keyword', sorter: (a: Keyword, b: Keyword) => a.keyword.localeCompare(b.keyword), width: 140 },
     { title: 'Description', dataIndex: 'description', key: 'description' },
+    {
+      title: 'SKUs',
+      dataIndex: 'skuCount',
+      key: 'skuCount',
+      width: 100,
+      align: 'right' as const,
+      sorter: (a: Keyword, b: Keyword) => a.skuCount - b.skuCount,
+      render: (v: number) => (v ?? 0).toLocaleString('en-US'),
+    },
     {
       title: '',
       key: 'actions',
@@ -55,6 +72,9 @@ export default function KeywordListPage() {
         columns={columns}
         loading={isLoading}
         pagination={{ defaultPageSize: 25, showSizeChanger: true, pageSizeOptions: [25, 50, 100, 200] }}
+        footer={() => (
+          <TaxonomyCoverageFooter assigned={assigned} systemTotal={skuTotal?.total} multiValued />
+        )}
       />
     </Card>
   )

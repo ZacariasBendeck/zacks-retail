@@ -51,6 +51,8 @@ vi.mock('../hooks/useProductsTaxonomy', () => ({
   useUpdateSizeType: vi.fn(),
   useDeleteSizeType: vi.fn(),
   useNrfLookup: vi.fn(),
+  useSkuTotal: vi.fn(),
+  useResolveTaxonomy: vi.fn(),
 }))
 
 import DepartmentListPage from '../pages/products/DepartmentListPage'
@@ -88,6 +90,7 @@ describe('Products taxonomy pages', () => {
     vi.mocked(hooks.useDeleteReturnCode).mockReturnValue(noopMutation)
     vi.mocked(hooks.useDeletePromotionCode).mockReturnValue(noopMutation)
     vi.mocked(hooks.useDeleteSizeType).mockReturnValue(noopMutation)
+    vi.mocked(hooks.useSkuTotal).mockReturnValue({ data: { total: 0 } } as never)
   })
 
   it('TaxonomyHomePage lists every entity tile', () => {
@@ -106,15 +109,15 @@ describe('Products taxonomy pages', () => {
   it('DepartmentListPage renders rows from useDepartments', () => {
     vi.mocked(hooks.useDepartments).mockReturnValue({
       data: [
-        { number: 1, description: 'ROPA HOMBRE', begCateg: 1, endCateg: 10, dateLastChanged: null },
-        { number: 2, description: 'ROPA MUJER', begCateg: 11, endCateg: 20, dateLastChanged: null },
+        { number: 1, description: 'ROPA HOMBRE', begCateg: 1, endCateg: 10, dateLastChanged: null, skuCount: 0 },
+        { number: 2, description: 'ROPA MUJER', begCateg: 11, endCateg: 20, dateLastChanged: null, skuCount: 0 },
       ],
       isLoading: false,
     } as never)
     // DepartmentListPage now computes a derived Sector column — mock useSectors.
     vi.mocked(hooks.useSectors).mockReturnValue({
       data: [
-        { number: 1, description: 'MARCAS', begDept: 1, endDept: 20, dateLastChanged: null },
+        { number: 1, description: 'MARCAS', begDept: 1, endDept: 20, dateLastChanged: null, skuCount: 0 },
       ],
       isLoading: false,
     } as never)
@@ -142,7 +145,7 @@ describe('Products taxonomy pages', () => {
 
   it('CategoryListPage renders categories', () => {
     vi.mocked(hooks.useCategories).mockReturnValue({
-      data: [{ number: 100, description: 'TEST CAT', dateLastChanged: null }],
+      data: [{ number: 100, description: 'TEST CAT', dateLastChanged: null, skuCount: 0 }],
       isLoading: false,
     } as never)
     renderPage(<CategoryListPage />)
@@ -151,7 +154,7 @@ describe('Products taxonomy pages', () => {
 
   it('GroupListPage renders groups', () => {
     vi.mocked(hooks.useGroups).mockReturnValue({
-      data: [{ code: 'IBL', description: 'IBL group', dateLastChanged: null }],
+      data: [{ code: 'IBL', description: 'IBL group', dateLastChanged: null, skuCount: 0 }],
       isLoading: false,
     } as never)
     renderPage(<GroupListPage />)
@@ -161,7 +164,7 @@ describe('Products taxonomy pages', () => {
 
   it('KeywordListPage renders keywords', () => {
     vi.mocked(hooks.useKeywords).mockReturnValue({
-      data: [{ keyword: 'SUMMER25', description: 'summer ’25', dateLastChanged: null }],
+      data: [{ keyword: 'SUMMER25', description: 'summer ’25', dateLastChanged: null, skuCount: 0 }],
       isLoading: false,
     } as never)
     renderPage(<KeywordListPage />)
@@ -170,7 +173,7 @@ describe('Products taxonomy pages', () => {
 
   it('SectorListPage renders sectors', () => {
     vi.mocked(hooks.useSectors).mockReturnValue({
-      data: [{ number: 1, description: 'SECTOR H', begDept: 1, endDept: 14, dateLastChanged: null }],
+      data: [{ number: 1, description: 'SECTOR H', begDept: 1, endDept: 14, dateLastChanged: null, skuCount: 0 }],
       isLoading: false,
     } as never)
     renderPage(<SectorListPage />)
