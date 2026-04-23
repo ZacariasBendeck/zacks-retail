@@ -14,7 +14,8 @@ export type RepoErrorKind =
   | 'ConstraintViolation'
   | 'DuplicatePrimaryKey'
   | 'ConcurrentModification'
-  | 'AccessConnectionError';
+  | 'AccessConnectionError'
+  | 'WriteNotSupported';
 
 export interface RepoError {
   kind: RepoErrorKind;
@@ -61,6 +62,8 @@ export function repoHttpStatus(err: RepoError): number {
     case 'DuplicatePrimaryKey':
     case 'ConcurrentModification':
       return 409;
+    case 'WriteNotSupported':
+      return 501;
     case 'AccessConnectionError':
     default:
       return 503;
@@ -77,6 +80,8 @@ export function repoHttpCode(err: RepoError): string {
       return 'DUPLICATE_PRIMARY_KEY';
     case 'ConcurrentModification':
       return 'CONCURRENT_MODIFICATION';
+    case 'WriteNotSupported':
+      return 'WRITE_NOT_SUPPORTED';
     case 'AccessConnectionError':
     default:
       return 'ACCESS_CONNECTION_ERROR';

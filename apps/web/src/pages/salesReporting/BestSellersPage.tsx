@@ -173,8 +173,10 @@ export default function BestSellersPage() {
         running={running}
         onRun={onRun}
         actions={
-          <Space>
-            <RunReportControls running={running} hasRun={query != null} onRun={onRun} onStop={onStop} />
+          <RunReportControls running={running} hasRun={query != null} onRun={onRun} onStop={onStop} />
+        }
+        persistentActions={
+          <>
             <SaveAsTemplateButton
               reportType="best-sellers"
               disabled={query == null}
@@ -203,7 +205,7 @@ export default function BestSellersPage() {
               })}
               getResultJson={() => data}
             />
-          </Space>
+          </>
         }
       >
         <Space wrap>

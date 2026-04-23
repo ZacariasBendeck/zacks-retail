@@ -190,26 +190,92 @@ async function loadGroupList(): Promise<GroupRow[]> {
 }
 
 /**
- * Returns the dimension lookups UI dropdowns need: stores, categories, and
- * groups. All three are small (<500 rows each), cached 5 min, returned in one
- * response so the page loads its criteria controls in a single round trip.
+ * Returns the dimension lookups UI dropdowns need. Every list is small
+ * (<500 rows each), cached 5 min, returned in one response so a page loads
+ * its criteria controls in a single round trip. The Custom Pivot filter
+ * card pulls sectors / departments / seasons / buyers from here too —
+ * adding them to the shared endpoint is cheaper than a parallel one
+ * because every response shares the same server-side cache.
  */
 export interface SalesDimensionsResponse {
   stores: Array<{ number: number; name: string | null }>;
   categories: CategoryRow[];
   groups: GroupRow[];
+  sectors: Array<{ number: number; name: string | null }>;
+  departments: Array<{ number: number; name: string | null }>;
+  seasons: Array<{ code: string; description: string | null }>;
+  buyers: Array<{ code: string; label: string | null }>;
+}
+
+async function loadSectorList(): Promise<Array<{ number: number; name: string | null }>> {
+  return cachedAsync('sr:dim:sectors', 300_000, async () => {
+    const rows = await prisma.$queryRawUnsafe<{ number: number | null; desc: string | null }[]>(
+      `SELECT number, "desc" FROM rics_mirror.sectors`,
+    );
+    return rows
+      .filter((r): r is { number: number; desc: string | null } => r.number != null)
+      .map((r) => ({ number: Number(r.number), name: r.desc?.trim() || null }))
+      .sort((a, b) => a.number - b.number);
+  });
+}
+
+async function loadDepartmentList(): Promise<Array<{ number: number; name: string | null }>> {
+  return cachedAsync('sr:dim:departments', 300_000, async () => {
+    const rows = await prisma.$queryRawUnsafe<{ number: number | null; desc: string | null }[]>(
+      `SELECT number, "desc" FROM rics_mirror.departments`,
+    );
+    return rows
+      .filter((r): r is { number: number; desc: string | null } => r.number != null)
+      .map((r) => ({ number: Number(r.number), name: r.desc?.trim() || null }))
+      .sort((a, b) => a.number - b.number);
+  });
+}
+
+async function loadSeasonList(): Promise<Array<{ code: string; description: string | null }>> {
+  return cachedAsync('sr:dim:seasons', 300_000, async () => {
+    // Seasons live in public.season_overlay per CLAUDE.md — operator-editable
+    // Postgres list, not RICS MDB. Fall back to an empty list if the table
+    // hasn't been seeded yet so the report still runs.
+    try {
+      const rows = await prisma.$queryRawUnsafe<{ code: string; description: string | null }[]>(
+        `SELECT code, description FROM public.season_overlay ORDER BY code`,
+      );
+      return rows.map((r) => ({ code: r.code, description: r.description?.trim() || null }));
+    } catch {
+      return [];
+    }
+  });
+}
+
+async function loadBuyerList(): Promise<Array<{ code: string; label: string | null }>> {
+  return cachedAsync('sr:dim:buyers', 300_000, async () => {
+    const rows = await prisma.$queryRawUnsafe<{ code: string; label: string | null }[]>(
+      `
+        SELECT av.code, av.label_es AS label
+          FROM app.attribute_value av
+         INNER JOIN app.attribute_dimension ad ON ad.id = av.dimension_id
+         WHERE ad.code = 'buyer' AND av.is_active = true
+         ORDER BY av.sort_order NULLS LAST, av.code
+      `,
+    );
+    return rows.map((r) => ({ code: r.code, label: r.label?.trim() || null }));
+  });
 }
 
 export async function listSalesDimensions(): Promise<SalesDimensionsResponse> {
-  const [storeMap, categories, groups] = await Promise.all([
+  const [storeMap, categories, groups, sectors, departments, seasons, buyers] = await Promise.all([
     loadStoreMap(),
     loadCategoryList(),
     loadGroupList(),
+    loadSectorList(),
+    loadDepartmentList(),
+    loadSeasonList(),
+    loadBuyerList(),
   ]);
   const stores = [...storeMap.values()]
     .map(({ number, name }) => ({ number, name }))
     .sort((a, b) => a.number - b.number);
-  return { stores, categories, groups };
+  return { stores, categories, groups, sectors, departments, seasons, buyers };
 }
 
 // ─────────────────────────── row shapes (raw from MDB) ────────────────────

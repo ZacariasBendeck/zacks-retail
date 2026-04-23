@@ -304,6 +304,15 @@ export type SalesPivotArgs = {
   endDate: string
   stores?: number[]
   variant: import('../services/reportApi').SalesPivotVariant
+  levels?: [
+    import('../services/reportApi').PivotDimension,
+    import('../services/reportApi').PivotDimension,
+    import('../services/reportApi').PivotDimension,
+  ]
+  sectors?: number[]
+  departments?: number[]
+  seasons?: string[]
+  buyers?: string[]
 }
 export function useSalesPivot(args: SalesPivotArgs | null) {
   return useQuery({

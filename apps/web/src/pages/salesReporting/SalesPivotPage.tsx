@@ -18,6 +18,8 @@ import FilterChips from '../../components/reports/FilterChips'
 import ReportEmptyState from '../../components/reports/ReportEmptyState'
 import CollapsibleFilterCard from '../../components/reports/CollapsibleFilterCard'
 import { fmtMoney, fmtQty, DASH } from '../../utils/reportFormatters'
+import { SkuLink } from '../../components/sku-link'
+import SaveSnapshotButton from '../../components/reports/SaveSnapshotButton'
 
 const { Text } = Typography
 
@@ -33,7 +35,10 @@ const REPORT_CHOICES: { value: ReportChoice; label: string }[] = [
   { value: 'buyer-vendor', label: 'Buyer Vendor Report' },
 ]
 
-/** Full display names per the spec — used in the page header + chips. */
+/** Full display names per the spec — used in the page header + chips.
+ *  The `'custom'` variant is served by a separate page (SalesPivotCustomPage)
+ *  and never selected here; it's in the union purely because the API type is
+ *  shared. The fallback keeps the switch exhaustive for TypeScript. */
 function titleFor(variant: SalesPivotVariant): string {
   switch (variant) {
     case 'department': return 'Department Pivot Report'
@@ -41,6 +46,7 @@ function titleFor(variant: SalesPivotVariant): string {
     case 'buyer': return 'Buyer Pivot Report'
     case 'buyer-vendor': return 'Buyer Vendor Report'
     case 'buyer-vendor-separate-store': return 'Separate Store Buyer Vendor Report'
+    case 'custom': return 'Custom Pivot Report'
   }
 }
 
@@ -64,6 +70,9 @@ const SUPPORTS_SEPARATE_STORE: Record<ReportChoice, boolean> = {
 interface TreeNode {
   rowKey: string
   label: string
+  /** Populated only on SKU leaves — makes the Group column render as a
+   *  SkuLink that opens the inventory-inquiry popup on click. */
+  skuCode?: string
   onHandQty: number
   onHandCostVal: number
   qtyTY: number
@@ -165,6 +174,7 @@ function buildDepartmentTree(rows: SalesPivotLeafRow[]): TreeNode[] {
                 const node: TreeNode = {
                   rowKey: `se:${sb.keyPart}/d:${db.keyPart}/c:${cb.keyPart}/s:${leaf.sku}`,
                   label: labelFor(leaf.sku, leaf.skuDescription, leaf.sku),
+                  skuCode: leaf.sku,
                   ...emptyMeasures(),
                 }
                 addMeasures(node, leaf)
@@ -289,6 +299,7 @@ function buildBuyerTree(rows: SalesPivotLeafRow[]): TreeNode[] {
                 const node: TreeNode = {
                   rowKey: `b:${bb.keyPart}/d:${db.keyPart}/c:${cb.keyPart}/s:${leaf.sku}`,
                   label: labelFor(leaf.sku, leaf.skuDescription, leaf.sku),
+                  skuCode: leaf.sku,
                   ...emptyMeasures(),
                 }
                 addMeasures(node, leaf)
@@ -352,38 +363,49 @@ function buildBuyerVendorTree(rows: SalesPivotLeafRow[]): TreeNode[] {
     if (b.keyPart === '__unassigned__') return -1
     return a.label.localeCompare(b.label)
   }
-  const byVendor = (a: { isUnknown: boolean; label: string }, b: { isUnknown: boolean; label: string }): number => {
-    if (a.isUnknown && !b.isUnknown) return 1
-    if (!a.isUnknown && b.isUnknown) return -1
-    return a.label.localeCompare(b.label)
-  }
 
   return [...buyers.values()].sort(byBuyer).map<TreeNode>((bb) => {
+    // Build vendor nodes first, then sort by their aggregated Net Sales TY
+    // descending — the sort key isn't knowable until each vendor's SKUs are
+    // rolled up. `(no vendor)` and any vendor with zero TY sales sort last
+    // (ties broken by label) so missing vendors don't steal the top slot.
+    const vendorNodes: Array<TreeNode & { __isUnknown: boolean }> = [...bb.vendors.values()].map((vb) => {
+      const vendorNode: TreeNode & { __isUnknown: boolean } = {
+        rowKey: `b:${bb.keyPart}/v:${vb.keyPart}`,
+        label: vb.label,
+        ...emptyMeasures(),
+        __isUnknown: vb.isUnknown,
+        children: [...vb.skus]
+          // Per spec: SKUs under a vendor sort by Net Sales (this year) descending.
+          // Ties fall back to SKU code for stable ordering.
+          .sort((a, z) => {
+            if (z.netSalesTY !== a.netSalesTY) return z.netSalesTY - a.netSalesTY
+            return a.sku.localeCompare(z.sku)
+          })
+          .map<TreeNode>((leaf) => {
+            const node: TreeNode = {
+              rowKey: `b:${bb.keyPart}/v:${vb.keyPart}/s:${leaf.sku}`,
+              label: labelFor(leaf.sku, leaf.skuDescription, leaf.sku),
+              skuCode: leaf.sku,
+              ...emptyMeasures(),
+            }
+            addMeasures(node, leaf)
+            return node
+          }),
+      }
+      for (const ch of vendorNode.children!) addMeasures(vendorNode, ch)
+      return vendorNode
+    })
+    vendorNodes.sort((a, b) => {
+      if (a.__isUnknown && !b.__isUnknown) return 1
+      if (!a.__isUnknown && b.__isUnknown) return -1
+      if (b.netSalesTY !== a.netSalesTY) return b.netSalesTY - a.netSalesTY
+      return a.label.localeCompare(b.label)
+    })
+
     const buyerNode: TreeNode = {
       rowKey: `b:${bb.keyPart}`, label: bb.label, ...emptyMeasures(),
-      children: [...bb.vendors.values()].sort(byVendor).map<TreeNode>((vb) => {
-        const vendorNode: TreeNode = {
-          rowKey: `b:${bb.keyPart}/v:${vb.keyPart}`, label: vb.label, ...emptyMeasures(),
-          children: [...vb.skus]
-            // Per spec: SKUs under a vendor sort by Net Sales (this year) descending.
-            // Ties fall back to SKU code for stable ordering.
-            .sort((a, z) => {
-              if (z.netSalesTY !== a.netSalesTY) return z.netSalesTY - a.netSalesTY
-              return a.sku.localeCompare(z.sku)
-            })
-            .map<TreeNode>((leaf) => {
-              const node: TreeNode = {
-                rowKey: `b:${bb.keyPart}/v:${vb.keyPart}/s:${leaf.sku}`,
-                label: labelFor(leaf.sku, leaf.skuDescription, leaf.sku),
-                ...emptyMeasures(),
-              }
-              addMeasures(node, leaf)
-              return node
-            }),
-        }
-        for (const ch of vendorNode.children!) addMeasures(vendorNode, ch)
-        return vendorNode
-      }),
+      children: vendorNodes.map(({ __isUnknown: _u, ...rest }) => rest),
     }
     for (const ch of buyerNode.children!) addMeasures(buyerNode, ch)
     return buyerNode
@@ -432,6 +454,10 @@ function buildTree(rows: SalesPivotLeafRow[], variant: SalesPivotVariant): TreeN
     case 'buyer': return buildBuyerTree(rows)
     case 'buyer-vendor': return buildBuyerVendorTree(rows)
     case 'buyer-vendor-separate-store': return buildStoreBuyerVendorTree(rows)
+    // `'custom'` is served by SalesPivotCustomPage; this switch should never
+    // see it in practice. Fall back to the department tree so a misrouted
+    // response doesn't crash the page.
+    case 'custom': return buildDepartmentTree(rows)
   }
 }
 
@@ -504,7 +530,14 @@ export default function SalesPivotPage() {
         key: 'label',
         width: 420,
         fixed: 'left' as const,
-        render: (v: string) => v,
+        // SKU leaves render as a SkuLink so clicking opens the inventory
+        // inquiry popup (see InquiryPopupProvider mounted at app root).
+        // Rollup rows (Buyer/Vendor/Store/Sector/Dept/Category) stay as
+        // plain text since there's nothing to drill into at those levels.
+        render: (_v: string, record: TreeNode) =>
+          record.skuCode
+            ? <SkuLink skuCode={record.skuCode}>{record.label}</SkuLink>
+            : record.label,
       },
       {
         title: 'On Hand',
@@ -556,6 +589,22 @@ export default function SalesPivotPage() {
           { title: variantTitle },
         ]}
         rightMeta={data ? `${data.rows.length.toLocaleString()} leaf ${data.rows.length === 1 ? 'row' : 'rows'}` : undefined}
+        actions={
+          <SaveSnapshotButton
+            reportType="sales-pivot"
+            disabled={!data}
+            getParamsJson={() => ({
+              variant: query?.variant ?? effectiveVariant(choice, separateStore),
+              startDate: query?.startDate,
+              endDate: query?.endDate,
+              stores: query?.stores,
+              dateSpec,
+              choice,
+              separateStore,
+            })}
+            getResultJson={() => data}
+          />
+        }
       />
 
       <CollapsibleFilterCard

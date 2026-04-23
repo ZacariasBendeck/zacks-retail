@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react'
-import { Avatar, Button, Dropdown, Layout, Menu, Tooltip, Typography } from 'antd'
+import { Avatar, Button, Dropdown, Layout, Menu, Typography } from 'antd'
 import {
   UserOutlined,
   ShopOutlined,
@@ -23,9 +23,8 @@ import {
   AuditOutlined,
   BookOutlined,
   CameraOutlined,
-  FullscreenExitOutlined,
 } from '@ant-design/icons'
-import { Outlet, useNavigate, useLocation, useSearchParams } from 'react-router-dom'
+import { Outlet, useNavigate, useLocation } from 'react-router-dom'
 import { useAuth } from '../auth/useAuth'
 
 const { Header, Sider, Content } = Layout
@@ -164,43 +163,6 @@ export default function AppLayout() {
   const location = useLocation()
   const currentPath = location.pathname
   const { user, logout } = useAuth()
-  const [searchParams, setSearchParams] = useSearchParams()
-  const isFullscreen = searchParams.get('fullscreen') === '1'
-
-  // Fullscreen mode: hide sidebar + header so reports (and any page that
-  // wants more canvas) get the entire viewport. The floating "Exit full
-  // screen" pill in the top-right clears the flag and restores chrome.
-  if (isFullscreen) {
-    return (
-      <Layout style={{ minHeight: '100vh' }}>
-        <Content style={{ margin: 16, position: 'relative' }}>
-          <div
-            style={{
-              position: 'fixed',
-              top: 12,
-              right: 16,
-              zIndex: 1000,
-            }}
-          >
-            <Tooltip title="Exit full screen">
-              <Button
-                size="small"
-                icon={<FullscreenExitOutlined />}
-                onClick={() => {
-                  const next = new URLSearchParams(searchParams)
-                  next.delete('fullscreen')
-                  setSearchParams(next, { replace: true })
-                }}
-              >
-                Exit full screen
-              </Button>
-            </Tooltip>
-          </div>
-          <Outlet />
-        </Content>
-      </Layout>
-    )
-  }
 
   const userMenuItems = [
     {

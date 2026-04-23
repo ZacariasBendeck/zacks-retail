@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { App, Button, Form, Input, Modal, Radio, Typography } from 'antd'
 import { CameraOutlined } from '@ant-design/icons'
 import { useCreateReportRun } from '../../hooks/useReportRuns'
-import type { ReportType, RunVisibility } from '../../services/reportRunsApi'
+import { defaultSnapshotTitle, type ReportType, type RunVisibility } from '../../services/reportRunsApi'
 
 const { Text } = Typography
 
@@ -48,6 +48,15 @@ export default function SaveSnapshotButton({
   const { message } = App.useApp()
   const create = useCreateReportRun()
 
+  // Computed once when the modal opens so the timestamp freezes at open-time
+  // rather than flickering as the user types. Displayed as the input's
+  // placeholder AND used as the submit-time fallback when the field is blank.
+  const autoTitle = useMemo(() => {
+    if (!open) return ''
+    return defaultSnapshotTitle(reportType)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, reportType])
+
   useEffect(() => {
     if (open) {
       form.resetFields()
@@ -63,15 +72,19 @@ export default function SaveSnapshotButton({
         message.error('Nothing to snapshot yet — run the report first.')
         return
       }
+      // Fall back to the auto-generated title when the operator left the
+      // field blank. Backend cap is 100 chars; auto-title is ~40 so it fits
+      // comfortably. The operator sees the final title in the success toast.
+      const effectiveTitle = vals.title?.trim() ? vals.title.trim() : autoTitle
       await create.mutateAsync({
         reportType,
-        title: vals.title.trim(),
+        title: effectiveTitle,
         paramsJson: getParamsJson(),
         resultJson: result,
         visibility: vals.visibility,
         sourceTemplateId,
       })
-      message.success(`Snapshot "${vals.title}" saved`)
+      message.success(`Snapshot "${effectiveTitle}" saved`)
       setOpen(false)
     } catch (e) {
       message.error((e as Error).message)
@@ -107,13 +120,14 @@ export default function SaveSnapshotButton({
           <Form.Item
             label="Title"
             name="title"
-            rules={[
-              { required: true, message: 'Title required' },
-              { max: 100, message: 'Title must be 100 characters or fewer' },
-            ]}
-            extra="Shown in the Snapshots list."
+            rules={[{ max: 100, message: 'Title must be 100 characters or fewer' }]}
+            extra={
+              <>
+                Optional — leave blank to use <Text code>{autoTitle}</Text>.
+              </>
+            }
           >
-            <Input placeholder="e.g. Q1 2026 close-out review" autoFocus />
+            <Input placeholder={autoTitle} autoFocus />
           </Form.Item>
           <Form.Item
             label="Visibility"

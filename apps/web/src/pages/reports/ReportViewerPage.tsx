@@ -68,12 +68,26 @@ const ZONE_LABELS: Record<Zone, string> = {
   comparison: 'Comparison period',
 }
 
-// Extended-attribute dimensions whose rendering is already covered by a
-// dedicated fixed column, so surfacing them as a tier-2 "ext:" column would
-// produce a visible duplicate. `company` is the obvious case — it aliases
-// `inventory_master.manufacturer`, which is already rendered as the
-// "Company" column (attr:manufacturer).
+// Extended-attribute dimensions that we never want surfaced as a tier-2
+// "ext:" column — either because the operator asked us to erase them, or
+// because they aliased a dedicated fixed column and produced a visible
+// duplicate. `company` and `manufacturer` fall under the latter; listing
+// them here means a stray operator-assigned dim with one of these codes
+// won't leak back into the viewer as a second Company column.
 const REDUNDANT_EXTENDED_DIMS: ReadonlySet<string> = new Set(['company', 'manufacturer'])
+
+/**
+ * Shared CSS for identity string cells that should truncate rather than
+ * wrap. Keeping everything on one line prevents a long Dept / Category /
+ * Description from inflating row height. `title={text}` on the wrapping
+ * element gives hover-reveal of the full value so truncation is non-lossy.
+ */
+const ELLIPSIS_CELL: React.CSSProperties = {
+  whiteSpace: 'nowrap',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  maxWidth: '100%',
+}
 
 // Extended (tier-2) dimension columns — one per operator-assigned dimension
 // that actually appeared in the current result. Default-hidden (there can be
@@ -114,29 +128,32 @@ function buildExtendedColumnDefs(dimensions: string[]): ColumnDef[] {
 function buildSkuDetailColumns(hasPriorYear: boolean, extendedDimensions: string[]): ColumnDef[] {
   return [
     // ── Identity — SKU context chain ─────────────────────────────────
-    // Dept → Cat → Vendor → SKU → Image → Description, with less-used
-    // identity columns (Label, Style/Color, Company, extended dims) trailing
-    // and default-hidden. Widths trimmed vs the prior pass so the default
-    // row fits more columns without horizontal scrolling.
+    // Dept → Cat → Vendor → SKU → Image → Description. Identity string
+    // columns truncate via ellipsis rather than wrapping so a long
+    // department name doesn't push the row height up.
     {
-      key: 'attr:departmentDesc', title: 'Dept', zone: 'identity', width: 100,
+      key: 'attr:departmentDesc', title: 'Dept', zone: 'identity', width: 95,
       render: (r) => {
         const n = r.attributes?.departmentNumber
         const d = r.attributes?.departmentDesc
         if (n == null && !d) return DASH
-        if (n != null && d) return `${n} — ${d}`
-        return d ?? String(n ?? '')
+        const text = n != null && d ? `${n} — ${d}` : (d ?? String(n ?? ''))
+        return (
+          <div title={text} style={ELLIPSIS_CELL}>{text}</div>
+        )
       },
       sortValue: (r) => r.attributes?.departmentNumber ?? 0,
     },
     {
-      key: 'attr:category', title: 'Category', zone: 'identity', width: 120,
+      key: 'attr:category', title: 'Category', zone: 'identity', width: 115,
       render: (r) => {
         const n = r.attributes?.categoryNumber
         const d = r.attributes?.categoryDesc
         if (n == null && !d) return DASH
-        if (n != null && d) return `${n} — ${d}`
-        return d ?? String(n ?? '')
+        const text = n != null && d ? `${n} — ${d}` : (d ?? String(n ?? ''))
+        return (
+          <div title={text} style={ELLIPSIS_CELL}>{text}</div>
+        )
       },
       sortValue: (r) => r.attributes?.categoryNumber ?? 0,
     },
@@ -146,38 +163,38 @@ function buildSkuDetailColumns(hasPriorYear: boolean, extendedDimensions: string
       sortValue: (r) => r.attributes?.vendorCode ?? '',
     },
     {
-      key: 'dimensionKey', title: 'SKU', zone: 'identity', width: 130,
+      key: 'dimensionKey', title: 'SKU', zone: 'identity', width: 125,
       render: (r) => r.dimensionKey,
       sortValue: (r) => r.dimensionKey,
     },
     // Thumbnail immediately after the SKU — matches operator's scanning flow
-    // (find the SKU by code, then confirm by image). Uses the shared
-    // ReportThumbnail component so the size matches Products → SKUs.
+    // (find the SKU by code, then confirm by image). Column is ~70px wide;
+    // thumbnail is 36px tall via the shared ReportThumbnail component which
+    // keeps row height compact (click the thumbnail to enlarge).
     {
-      key: 'attr:pictureUrl', title: 'Image', zone: 'identity', width: 135,
-      render: (r) => <ReportThumbnail url={r.attributes?.pictureUrl} />,
+      key: 'attr:pictureUrl', title: 'Image', zone: 'identity', width: 70,
+      render: (r) => <ReportThumbnail url={r.attributes?.pictureUrl} height={36} />,
       sortValue: (r) => r.attributes?.pictureUrl ?? '',
     },
     {
-      key: 'attr:description', title: 'Description', zone: 'identity', width: 190,
-      render: (r) => r.attributes?.description ?? DASH,
+      key: 'attr:description', title: 'Description', zone: 'identity', width: 180,
+      render: (r) => {
+        const text = r.attributes?.description ?? null
+        if (!text) return DASH
+        return (
+          <div title={text} style={ELLIPSIS_CELL}>{text}</div>
+        )
+      },
       sortValue: (r) => r.attributes?.description ?? '',
     },
-    // Default-hidden identity columns — still available in the chooser.
-    {
-      key: 'dimensionLabel', title: 'Label', zone: 'identity', width: 130,
-      render: (r) => r.dimensionLabel ?? DASH,
-      sortValue: (r) => r.dimensionLabel ?? '',
-    },
+    // Style/Color stays in the chooser (default-hidden) because operators
+    // occasionally need to filter by it. Label and Company were removed
+    // entirely — Label duplicated SKU + Description, and Company (the
+    // manufacturer field) was surfaced by a separate extended dim already.
     {
       key: 'attr:styleColor', title: 'Style/Color', zone: 'identity', width: 95,
       render: (r) => r.attributes?.styleColor ?? DASH,
       sortValue: (r) => r.attributes?.styleColor ?? '',
-    },
-    {
-      key: 'attr:manufacturer', title: 'Company', zone: 'identity', width: 150,
-      render: (r) => r.attributes?.manufacturer ?? DASH,
-      sortValue: (r) => r.attributes?.manufacturer ?? '',
     },
     ...buildExtendedColumnDefs(extendedDimensions),
     // ── On-hand / Inventory ──────────────────────────────────────────
@@ -449,28 +466,26 @@ function readSalesAnalysisArgs(sp: URLSearchParams): SalesAnalysisArgs {
 
 // ─────────────────────── Main page ─────────────────────────────────────
 
-// Bumped to :v3 when thumbnail moved after SKU and default-hidden list was
-// expanded to include operator-side extended dims (Buyer / Discount type /
-// Company). Earlier preferences are invalidated so operators see the new
-// defaults on their next visit. Bump again on any future reshape.
-const COLUMN_STORAGE_KEY = 'report-viewer:sales-analysis:columns:v3'
+// Bumped to :v4 when Label + Company columns were removed entirely, the
+// thumbnail shrank, and horizontal scroll moved inside the Table. Prior
+// preferences are invalidated so every operator lands on the clean new
+// defaults without having to clear their browser storage.
+const COLUMN_STORAGE_KEY = 'report-viewer:sales-analysis:columns:v4'
 
 // Columns hidden by default on SKU_DETAIL's first run. Operator still has
-// them one click away via the Columns chooser; we just don't show them out
-// of the box because the default grid is meant to be lean.
+// them one click away via the Columns chooser; they just don't show out of
+// the box because the default grid is meant to be lean.
 //
-// Extended ("ext:*") dimensions are ALSO added to the hidden set dynamically
-// (every run — see defaultHiddenKeys in the component). The explicit entries
-// below are the ones we know the operator always wants default-hidden
-// regardless of whether they show up in the data — listing them here means
-// a stale localStorage set carried over from v2 still gets the toggle fix.
+// Extended ("ext:*") dimensions are ALSO added to this set dynamically
+// every run (see defaultHiddenKeys in the component) — so any operator-side
+// dim that isn't explicitly listed here is still default-hidden. The
+// explicit entries below are the ones we pin no matter what: they survive
+// even if the operator's extended-dim catalog shrinks.
 const DEFAULT_HIDDEN_SKU_DETAIL_KEYS: ReadonlySet<string> = new Set([
-  'dimensionLabel',          // "Label" — redundant with SKU + Description
-  'attr:styleColor',          // Style/Color — operator-opts-in
-  'attr:manufacturer',        // "Company" — operator-opts-in
-  'ext:buyer',                // "Buyer" extended dim — operator-opts-in
-  'ext:discount_type',        // "Discount type" extended dim — operator-opts-in
-  'ext:discount-type',        // tolerate either kebab-case variant of the dim code
+  'attr:styleColor',   // Style/Color — operator-opts-in
+  'ext:buyer',         // "Buyer" extended dim — operator-opts-in
+  'ext:discount_type', // "Discount type" extended dim — operator-opts-in
+  'ext:discount-type', // tolerate either kebab-case variant of the dim code
 ])
 
 export default function ReportViewerPage() {
@@ -764,6 +779,11 @@ export default function ReportViewerPage() {
             size="small"
             pagination={{ pageSize: 100, showSizeChanger: true }}
             sticky
+            // Contain horizontal overflow inside the Table so the sticky
+            // header bar (Back · title · Columns) stays in place. Without this,
+            // a wide table scrolls the whole page horizontally and the header
+            // bar drifts out of alignment with the visible data.
+            scroll={{ x: 'max-content' }}
             rowClassName={(r, i) =>
               r._type === 'subtotal' ? 'report-viewer-subtotal' : (i % 2 === 1 ? 'report-zebra-row' : '')
             }

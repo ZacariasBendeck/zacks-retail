@@ -2,12 +2,41 @@
 // Companion to reportTemplatesApi.ts; same error / request conventions.
 // Spec: docs/dev/plans/2026-04-22-report-templates-and-runs.md Phase 1.1.
 
+import dayjs from 'dayjs'
 import { REPORT_TYPES, type ReportType, type TemplateVisibility, type TemplateListScope } from './reportTemplatesApi'
 
 const API_BASE = '/api/v1/reports/runs'
 
 export { REPORT_TYPES }
 export type { ReportType, TemplateVisibility as RunVisibility, TemplateListScope as RunListScope }
+
+/**
+ * Human-friendly labels for every report type, keyed by the API slug. Used
+ * by the runs / templates list columns AND by the default-title generator
+ * below so a snapshot saved without a title reads like a real report name.
+ */
+export const REPORT_TYPE_LABELS: Record<ReportType, string> = {
+  'sales-analysis': 'Sales Analysis',
+  'sales-hierarchy-drill-down': 'Sales Hierarchy Drill-Down',
+  'sales-pivot': 'Sales Pivot',
+  'best-sellers': 'Best Sellers',
+  'stock-status': 'Stock Status',
+  'sales-by-day': 'Sales by Day',
+  'sales-by-time': 'Sales by Time',
+  'salesperson-summary': 'Salesperson Summary',
+  'sales-history-by-month': 'Sales History by Month',
+}
+
+/**
+ * Default title when the operator saves a snapshot without typing one.
+ * Format: `{Report name} — YYYY-MM-DD HH:mm` (e.g. "Sales Analysis — 2026-04-23 14:23").
+ * Readable in the snapshots list without further metadata, sorts naturally
+ * by timestamp, and fits comfortably within the 100-char backend cap.
+ */
+export function defaultSnapshotTitle(reportType: ReportType, now: dayjs.Dayjs = dayjs()): string {
+  const label = REPORT_TYPE_LABELS[reportType] ?? reportType
+  return `${label} — ${now.format('YYYY-MM-DD HH:mm')}`
+}
 
 // Envelope-only summary — the list endpoint returns 50 of these. The full
 // resultJson is only fetched when the operator opens a specific snapshot.

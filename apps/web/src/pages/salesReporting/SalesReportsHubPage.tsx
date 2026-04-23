@@ -52,6 +52,15 @@ const REPORTS: ReportCard[] = [
     status: 'live',
   },
   {
+    title: 'Custom Pivot',
+    description:
+      'Pick any three dimensions (Buyer / Sector / Dept / Season / Group / Vendor / Store, plus Category at level 3) → SKU. YoY sales + on-hand at every level.',
+    citation: 'App-native',
+    to: '/reports/sales/pivot-custom',
+    icon: <TableOutlined />,
+    status: 'live',
+  },
+  {
     title: 'Best Sellers',
     description: 'Top-N ranked by qty / net sales / profit across SKU / vendor / category / store.',
     citation: 'RICS Ch. 6 p. 93',
@@ -104,7 +113,6 @@ export default function SalesReportsHubPage() {
         description="Live read-through to the legacy RICS sales database. Data reflects posted and unposted sales tickets as they appear in RITRNSSV."
         breadcrumb={[{ title: 'Reports' }, { title: 'Sales' }]}
         showCurrencyNote={false}
-        enableFullscreen={false}
       />
       <Row gutter={[16, 16]}>
         {REPORTS.map((r) => (

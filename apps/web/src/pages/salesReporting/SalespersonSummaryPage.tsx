@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Alert, Card, Checkbox, Input, Select, Space, Table, Typography, Spin,
+  Alert, Checkbox, Input, Select, Space, Table, Typography, Spin,
 } from 'antd'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
@@ -13,6 +13,7 @@ import type {
 import { getErrorMessage } from '../../utils/errors'
 import RunReportControls from './RunReportControls'
 import SaveAsTemplateButton from '../../components/reports/SaveAsTemplateButton'
+import SaveSnapshotButton from '../../components/reports/SaveSnapshotButton'
 import DateRangeControl from '../../components/reports/DateRangeControl'
 import ReportHeader from '../../components/reports/ReportHeader'
 import FilterChips from '../../components/reports/FilterChips'
@@ -172,8 +173,10 @@ export default function SalespersonSummaryPage() {
         running={running}
         onRun={onRun}
         actions={
-          <Space>
-            <RunReportControls running={running} hasRun={query != null} onRun={onRun} onStop={onStop} />
+          <RunReportControls running={running} hasRun={query != null} onRun={onRun} onStop={onStop} />
+        }
+        persistentActions={
+          <>
             <SaveAsTemplateButton
               reportType="salesperson-summary"
               disabled={query == null}
@@ -186,7 +189,21 @@ export default function SalespersonSummaryPage() {
                 cashierSummary,
               })}
             />
-          </Space>
+            <SaveSnapshotButton
+              reportType="salesperson-summary"
+              disabled={query == null || !data}
+              sourceTemplateId={templateId}
+              getParamsJson={() => ({
+                dateSpec,
+                stores: parseStores(storesText),
+                storesText,
+                subtotalBy,
+                combineStores,
+                cashierSummary,
+              })}
+              getResultJson={() => data}
+            />
+          </>
         }
       >
         <Space wrap>

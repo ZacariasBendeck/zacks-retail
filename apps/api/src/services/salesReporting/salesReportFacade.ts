@@ -11,6 +11,7 @@ import * as ricsAdapter from './ricsSalesReportAdapter';
 import * as monthlyAdapter from './ricsSalesHistoryByMonthAdapter';
 import * as pivotAdapter from './ricsSalesPivotAdapter';
 import * as pivotByBuyerAdapter from './ricsSalesPivotByBuyerAdapter';
+import * as pivotCustomAdapter from './ricsSalesPivotCustomAdapter';
 import {
   parseCriteria,
   matchesCriteria,
@@ -44,6 +45,7 @@ import type {
   SalesAnalysisPrinting,
   SalesHierarchyReport,
   SalesHierarchyStoreOption,
+  PivotDimension,
   SalesPivotReport,
   SalesPivotVariant,
   StockStatusReport,
@@ -156,8 +158,30 @@ export async function getSalesPivot(params: {
   endDate: string;
   storeNumbers?: number[];
   variant: SalesPivotVariant;
+  /** Required when variant === 'custom'; ignored otherwise. */
+  levels?: [PivotDimension, PivotDimension, PivotDimension];
+  /** Criteria filters — variant='custom' only. Empty/undefined = no filter. */
+  sectors?: number[];
+  departments?: number[];
+  seasons?: string[];
+  buyers?: string[];
 }): Promise<SalesPivotReport> {
   if (!sourceIsRics()) throw new SalesSourceNotImplementedError(source());
+  if (params.variant === 'custom') {
+    if (!params.levels) {
+      throw new Error('levels are required when variant=custom');
+    }
+    return pivotCustomAdapter.getSalesPivotCustom({
+      startDate: params.startDate,
+      endDate: params.endDate,
+      storeNumbers: params.storeNumbers,
+      levels: params.levels,
+      sectors: params.sectors,
+      departments: params.departments,
+      seasons: params.seasons,
+      buyers: params.buyers,
+    });
+  }
   if (params.variant === 'buyer' ||
       params.variant === 'buyer-vendor' ||
       params.variant === 'buyer-vendor-separate-store') {

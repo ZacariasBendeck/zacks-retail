@@ -34,6 +34,9 @@ export const CANONICAL_MDBS: CanonicalMdb[] = [
   { file: 'RIINVHIS.MDB', tables: ['InvHis'] },
   { file: 'RIINVQUA.MDB', tables: ['Inventory Quantities'] },
   { file: 'RIINVCHG.MDB', tables: ['InvChanges'] },
+  // RITRNSSV.TimeClock is always empty on this install — the live data lives in
+  // RITRNSTC.TimeClock (49k rows). Only one can claim `rics_mirror.time_clock`,
+  // so RITRNSTC wins; RITRNSSV drops TimeClock from its table list.
   {
     file: 'RITRNSSV.MDB',
     tables: [
@@ -42,15 +45,65 @@ export const CANONICAL_MDBS: CanonicalMdb[] = [
       'TicketDetail',
       'TicketHeader',
       'TicketTender',
-      'TimeClock',
       'Transmitted',
     ],
   },
   { file: 'RIRETURN.MDB', tables: ['ReturnCodes'] },
-  // RISEMF.MDB intentionally omitted. The file does open in ACE.OLEDB.12.0
-  // (contrary to the legacy comment in SeasonRepository.ts), but its contents
-  // are 19 "SEMF <domain>" tables that don't map 1:1 to a "Seasons" table the
-  // app expects. Add targeted entries here once the consumer surface is clear.
+
+  // ---- Added 2026-04-23 ---- /index-knowledge-unrelated batch
+  // Canonical data surfaced by the RICSWIN-wide MDB scan. All row counts as
+  // of scan date; see `apps/api/scripts/scan-mdbs.ts` for how these were found.
+
+  // Barcode → SKU lookup. 840k rows; required for POS scan + barcode parity.
+  { file: 'RIUPC.MDB', tables: ['UPC Cross Reference'] },
+
+  // Purchase Orders: headers + lines. Purchasing module depends on these.
+  // AsnCartonHead / AsnCartonDet cover Advanced Shipping Notice receiving.
+  { file: 'RIPOMAS.MDB', tables: ['Purchase Master'] },
+  { file: 'RIPODET.MDB', tables: ['Purchase Detail', 'AsnCartonDet', 'AsnCartonHead'] },
+
+  // Open-to-Buy plan. 21k rows; consumed by the Sales-Analysis OTB-vs-Sales report.
+  { file: 'RIOTB.MDB', tables: ['Open To Buy'] },
+
+  // Case pack dimension taxonomy. Referenced by receiving / transfer flows.
+  { file: 'RICASEPK.MDB', tables: ['Case_Packs', 'Case_Pack_Qtys'] },
+
+  // Per-store / per-category tax rate overrides. Small but canonical.
+  { file: 'RITAX.MDB', tables: ['Tax OverRide'] },
+
+  // Inter-store transfer summaries (214 rows). Detail rows live in RITRNPCK
+  // which is currently empty on this install — add later if it starts filling.
+  { file: 'RITRANSF.MDB', tables: ['InvTransfers'] },
+
+  // Time clock (49k rows). Owns `rics_mirror.time_clock` (see note above).
+  { file: 'RITRNSTC.MDB', tables: ['TimeClock'] },
+
+  // Scheduled future price changes (505 rows). Pricing module.
+  { file: 'RIFUTURE.MDB', tables: ['Future Price Changes'] },
+
+  // Customer master (1.6M customers) + family members. Large — this single
+  // MDB is ~530 MB. Kept in the mirror so we have "all customer data" in
+  // Postgres when RICS goes away.
+  { file: 'RIMAIL.MDB', tables: ['MailListFamily', 'MailListNames'] },
+
+  // Per-customer transaction history (14.7M rows across 4 tables). Partial
+  // duplicate of RITRNSSV but indexed by customer Account, so joins by
+  // customer are cheap. 2 GB MDB; adds meaningfully to sync runtime.
+  {
+    file: 'RIMAILED.MDB',
+    tables: [
+      'Mail Comment Detail',
+      'Mail Purch Detail',
+      'Mail Tender Detail',
+      'Mail Ticket Detail',
+    ],
+  },
+
+  // RISEMF.MDB still intentionally omitted. The file's 19 "SEMF <domain>"
+  // tables are per-user screen-queue state, not canonical business data.
+  // Seasons (originally suspected to live here) are not in any MDB in this
+  // install — the Season Code Setup screen appears to write to the Windows
+  // registry. Seasons are maintained in `public.SeasonOverlay` in Postgres.
 ];
 
 /**

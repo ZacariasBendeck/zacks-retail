@@ -39,20 +39,19 @@ jest.mock('../../../src/repositories/rics/VendorRepository', () => {
       findByCode: jest.fn(async (code: string) =>
         code === 'ABCD' ? Ok(base) : Err({ kind: 'NotFound', message: 'missing' }),
       ),
-      create: jest.fn(async (input: any) =>
-        input.code === 'DUPE'
-          ? Err({ kind: 'DuplicatePrimaryKey', message: 'already exists' })
-          : Ok({ ...base, code: input.code, name: input.name, mailName: input.mailName }),
-      ),
-      update: jest.fn(async (code: string) => Ok({ ...base, code })),
-      delete: jest.fn(async () => Ok(undefined)),
+      // Writes return WriteNotSupported — MDB endpoint removed 2026-04-23.
+      create: jest.fn(async () => Err({ kind: 'WriteNotSupported', message: 'writes disabled' })),
+      update: jest.fn(async () => Err({ kind: 'WriteNotSupported', message: 'writes disabled' })),
+      delete: jest.fn(async () => Err({ kind: 'WriteNotSupported', message: 'writes disabled' })),
       findStoreAccounts: jest.fn(async (code: string) =>
         Ok([{ code, storeId: 1, accountNo: 'ACCT', dateLastChanged: null }]),
       ),
-      upsertStoreAccount: jest.fn(async (code: string, storeId: number, accountNo: string) =>
-        Ok({ code, storeId, accountNo, dateLastChanged: null }),
+      upsertStoreAccount: jest.fn(async () =>
+        Err({ kind: 'WriteNotSupported', message: 'writes disabled' }),
       ),
-      deleteStoreAccount: jest.fn(async () => Ok(undefined)),
+      deleteStoreAccount: jest.fn(async () =>
+        Err({ kind: 'WriteNotSupported', message: 'writes disabled' }),
+      ),
       countSkusUsingVendor: jest.fn(async (code: string) =>
         code === 'INUSE' ? Ok(5) : code === 'DOWN' ? Err({ kind: 'AccessConnectionError', message: 'down' }) : Ok(0),
       ),
@@ -105,24 +104,16 @@ describe('GET /api/v1/products/vendors/:code', () => {
   });
 });
 
-describe('POST /api/v1/products/vendors', () => {
-  it('returns 201 on create', async () => {
+describe('POST /api/v1/products/vendors (writes disabled 2026-04-23)', () => {
+  it('returns 501 WRITE_NOT_SUPPORTED because writes were removed with the MDB endpoint', async () => {
     const res = await request(app)
       .post('/api/v1/products/vendors')
       .send({ code: 'NEW1', name: 'ACME New', mailName: 'ACME' });
-    expect(res.status).toBe(201);
-    expect(res.body.code).toBe('NEW1');
+    expect(res.status).toBe(501);
+    expect(res.body.error.code).toBe('WRITE_NOT_SUPPORTED');
   });
 
-  it('maps DuplicatePrimaryKey to 409', async () => {
-    const res = await request(app)
-      .post('/api/v1/products/vendors')
-      .send({ code: 'DUPE', name: 'dupe', mailName: 'dupe' });
-    expect(res.status).toBe(409);
-    expect(res.body.error.code).toBe('DUPLICATE_PRIMARY_KEY');
-  });
-
-  it('rejects EDI half-populated with 422', async () => {
+  it('still rejects EDI half-populated with 422 before reaching the repo', async () => {
     const res = await request(app)
       .post('/api/v1/products/vendors')
       .send({ code: 'NEW2', name: 'n', mailName: 'm', qualifierId: '01' });
@@ -131,29 +122,30 @@ describe('POST /api/v1/products/vendors', () => {
   });
 });
 
-describe('PATCH /api/v1/products/vendors/:code', () => {
-  it('returns 200 on update', async () => {
+describe('PATCH /api/v1/products/vendors/:code (writes disabled)', () => {
+  it('returns 501 WRITE_NOT_SUPPORTED', async () => {
     const res = await request(app)
       .patch('/api/v1/products/vendors/ABCD')
       .send({ name: 'Renamed' });
-    expect(res.status).toBe(200);
-    expect(res.body.code).toBe('ABCD');
+    expect(res.status).toBe(501);
+    expect(res.body.error.code).toBe('WRITE_NOT_SUPPORTED');
   });
 });
 
-describe('DELETE /api/v1/products/vendors/:code', () => {
-  it('returns 204 on successful delete', async () => {
+describe('DELETE /api/v1/products/vendors/:code (writes disabled)', () => {
+  it('returns 501 when the SKU-reference guard passes (writes disabled downstream)', async () => {
     const res = await request(app).delete('/api/v1/products/vendors/ABCD');
-    expect(res.status).toBe(204);
+    expect(res.status).toBe(501);
+    expect(res.body.error.code).toBe('WRITE_NOT_SUPPORTED');
   });
 
-  it('returns 422 when SKUs reference the vendor', async () => {
+  it('still returns 422 when SKUs reference the vendor (guard runs before the write)', async () => {
     const res = await request(app).delete('/api/v1/products/vendors/INUSE');
     expect(res.status).toBe(422);
     expect(res.body.error.code).toBe('CONSTRAINT_VIOLATION');
   });
 
-  it('returns 503 when Access is down', async () => {
+  it('propagates AccessConnectionError from the SKU-count probe as 503', async () => {
     const res = await request(app).delete('/api/v1/products/vendors/DOWN');
     expect(res.status).toBe(503);
     expect(res.body.error.code).toBe('ACCESS_CONNECTION_ERROR');
@@ -179,17 +171,18 @@ describe('store accounts', () => {
     expect(res.status).toBe(400);
   });
 
-  it('PUT 200 on valid upsert', async () => {
+  it('PUT returns 501 when payload is valid (writes disabled 2026-04-23)', async () => {
     const res = await request(app)
       .put('/api/v1/products/vendors/ABCD/store-accounts/1')
       .send({ accountNo: 'ACCT-9' });
-    expect(res.status).toBe(200);
-    expect(res.body.accountNo).toBe('ACCT-9');
+    expect(res.status).toBe(501);
+    expect(res.body.error.code).toBe('WRITE_NOT_SUPPORTED');
   });
 
-  it('DELETE 204 on valid delete', async () => {
+  it('DELETE returns 501 when payload is valid (writes disabled)', async () => {
     const res = await request(app).delete('/api/v1/products/vendors/ABCD/store-accounts/1');
-    expect(res.status).toBe(204);
+    expect(res.status).toBe(501);
+    expect(res.body.error.code).toBe('WRITE_NOT_SUPPORTED');
   });
 
   it('DELETE 400 on non-integer storeId', async () => {

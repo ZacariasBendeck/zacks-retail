@@ -1,8 +1,6 @@
-import { Breadcrumb, Button, Space, Tooltip, Typography } from 'antd'
-import { FullscreenOutlined } from '@ant-design/icons'
+import { Breadcrumb, Typography } from 'antd'
 import type { BreadcrumbProps } from 'antd'
 import type { ReactNode } from 'react'
-import { useSearchParams } from 'react-router-dom'
 
 const { Title, Paragraph, Text } = Typography
 
@@ -24,10 +22,9 @@ interface Props {
   // CLAUDE.md. Defaults to true; pages that already render the line elsewhere
   // can pass false.
   showCurrencyNote?: boolean
-  // Full-screen toggle button ships next to `actions`. AppLayout honors the
-  // `?fullscreen=1` query param and drops the sidebar + header chrome. Pages
-  // that want to hide the toggle (e.g. pages already embedded in a fullscreen
-  // shell) can pass false.
+  // Retained for backward compatibility with call sites that still pass it —
+  // the old full-screen toggle was removed (it was unreliable), so the flag
+  // is now a no-op. Safe to drop from callers.
   enableFullscreen?: boolean
 }
 
@@ -45,30 +42,7 @@ export default function ReportHeader({
   rightMeta,
   actions,
   showCurrencyNote = true,
-  enableFullscreen = true,
 }: Props) {
-  const [searchParams, setSearchParams] = useSearchParams()
-  const isFullscreen = searchParams.get('fullscreen') === '1'
-
-  // Fullscreen button preserves every other query param, so pivot variants,
-  // date ranges, store filters, etc. carry across the toggle. When already
-  // fullscreen the button disappears — the floating exit pill in AppLayout
-  // owns the opposite direction.
-  const fullscreenButton = enableFullscreen && !isFullscreen ? (
-    <Tooltip title="Expand to full screen">
-      <Button
-        icon={<FullscreenOutlined />}
-        onClick={() => {
-          const next = new URLSearchParams(searchParams)
-          next.set('fullscreen', '1')
-          setSearchParams(next, { replace: false })
-        }}
-      >
-        Full screen
-      </Button>
-    </Tooltip>
-  ) : null
-
   return (
     <div style={{ marginBottom: 16 }}>
       {breadcrumb && breadcrumb.length > 0 ? (
@@ -104,7 +78,7 @@ export default function ReportHeader({
             </Text>
           ) : null}
         </div>
-        {(rightMeta || actions || fullscreenButton) && (
+        {(rightMeta || actions) && (
           <div
             style={{
               display: 'flex',
@@ -116,11 +90,7 @@ export default function ReportHeader({
             {rightMeta ? (
               <div style={{ color: 'rgba(0, 0, 0, 0.45)', fontSize: 13 }}>{rightMeta}</div>
             ) : null}
-            {actions && fullscreenButton ? (
-              <Space>{actions}{fullscreenButton}</Space>
-            ) : (
-              actions ?? fullscreenButton
-            )}
+            {actions}
           </div>
         )}
       </div>

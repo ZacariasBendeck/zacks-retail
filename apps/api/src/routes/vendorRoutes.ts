@@ -1,4 +1,12 @@
-import { Router, Request, Response, IRouter } from 'express';
+/**
+ * Legacy vendor routes — now a read-only projection over rics_mirror.vendor_master.
+ *
+ * Writes (POST/PATCH/DELETE) respond with 501 NOT_IMPLEMENTED pointing at the
+ * RICS-backed endpoints under `/api/v1/products/vendors/*`. The read paths
+ * (GET list + GET by id) stream through the Postgres mirror.
+ */
+
+import { Router, Request, Response, NextFunction, IRouter } from 'express';
 import * as vendorService from '../services/vendorService';
 import {
   createVendorSchema,
@@ -10,34 +18,35 @@ import {
 
 const router: IRouter = Router();
 
+const WRITE_NOT_SUPPORTED_BODY = {
+  error: {
+    code: 'WRITE_NOT_SUPPORTED',
+    message:
+      'Legacy /api/v1/vendors is read-only (projection over rics_mirror.vendor_master). ' +
+      'Use /api/v1/products/vendors/* for create/update/delete — those go through the RICS ' +
+      'write path with EDI validation and SKU-reference guards.',
+  },
+};
+
 /**
  * @openapi
  * /api/v1/vendors:
  *   post:
- *     summary: Create a new vendor
+ *     summary: DEPRECATED — writes go to /api/v1/products/vendors
  *     tags: [Vendors]
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             $ref: '#/components/schemas/CreateVendorInput'
  *     responses:
- *       201:
- *         description: Vendor created
- *       400:
- *         description: Validation error
+ *       501:
+ *         description: Not implemented — use /api/v1/products/vendors
  */
-router.post('/', validate(createVendorSchema), (req: Request, res: Response): void => {
-  const vendor = vendorService.createVendor(req.body);
-  res.status(201).json(vendor);
+router.post('/', validate(createVendorSchema), (_req: Request, res: Response): void => {
+  res.status(501).json(WRITE_NOT_SUPPORTED_BODY);
 });
 
 /**
  * @openapi
  * /api/v1/vendors:
  *   get:
- *     summary: List vendors sorted by name
+ *     summary: List vendors (read-only projection over rics_mirror.vendor_master)
  *     tags: [Vendors]
  *     parameters:
  *       - name: page
@@ -49,126 +58,103 @@ router.post('/', validate(createVendorSchema), (req: Request, res: Response): vo
  *       - name: active
  *         in: query
  *         schema: { type: boolean }
+ *         description: Accepted for back-compat; ignored (all mirror rows are current).
  *       - name: q
  *         in: query
  *         schema: { type: string }
- *         description: Search by name, email, or phone
+ *         description: Search by short_name, mail_name, e_mail, or phone
  *       - name: sort
  *         in: query
  *         schema: { type: string, enum: [name, createdAt, leadTimeDays], default: name }
- *         description: Field to sort by
  *       - name: order
  *         in: query
  *         schema: { type: string, enum: [asc, desc], default: asc }
- *         description: Sort direction
  *     responses:
  *       200:
  *         description: Paginated list of vendors
  */
-router.get('/', validateQuery(vendorListQuerySchema), (req: Request, res: Response): void => {
-  const params = (req as any).validatedQuery as { page: number; pageSize: number; active?: boolean; q?: string };
-  const result = vendorService.listVendors(params);
-  res.json(result);
-});
+router.get(
+  '/',
+  validateQuery(vendorListQuerySchema),
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const params = (req as any).validatedQuery as {
+        page: number;
+        pageSize: number;
+        sort?: string;
+        order?: 'asc' | 'desc';
+        active?: boolean;
+        q?: string;
+      };
+      const result = await vendorService.listVendors(params);
+      res.json(result);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
 
 /**
  * @openapi
  * /api/v1/vendors/{vendorId}:
  *   get:
- *     summary: Get a vendor by ID
+ *     summary: Get a vendor by RICS code (back-compat: param is named vendorId)
  *     tags: [Vendors]
  *     parameters:
  *       - name: vendorId
  *         in: path
  *         required: true
- *         schema: { type: string, format: uuid }
+ *         schema: { type: string }
+ *         description: RICS vendor code (string); the legacy UUID shape is gone.
  *     responses:
  *       200:
  *         description: Vendor found
  *       404:
  *         description: Vendor not found
  */
-router.get('/:vendorId', (req: Request, res: Response): void => {
-  const vendorId = req.params.vendorId as string;
-  const vendor = vendorService.getVendorById(vendorId);
-  if (!vendor) {
-    res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Vendor not found.' } });
-    return;
-  }
-  res.json(vendor);
-});
+router.get(
+  '/:vendorId',
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const vendorId = req.params.vendorId as string;
+      const vendor = await vendorService.getVendorById(vendorId);
+      if (!vendor) {
+        res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Vendor not found.' } });
+        return;
+      }
+      res.json(vendor);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
 
 /**
  * @openapi
  * /api/v1/vendors/{vendorId}:
  *   patch:
- *     summary: Update a vendor
+ *     summary: DEPRECATED — writes go to /api/v1/products/vendors
  *     tags: [Vendors]
- *     parameters:
- *       - name: vendorId
- *         in: path
- *         required: true
- *         schema: { type: string, format: uuid }
- *     requestBody:
- *       content:
- *         application/json:
- *           schema:
- *             $ref: '#/components/schemas/UpdateVendorInput'
  *     responses:
- *       200:
- *         description: Vendor updated
- *       404:
- *         description: Vendor not found
+ *       501:
+ *         description: Not implemented — use /api/v1/products/vendors
  */
-router.patch('/:vendorId', validate(updateVendorSchema), (req: Request, res: Response): void => {
-  const vendorId = req.params.vendorId as string;
-  const vendor = vendorService.updateVendor(vendorId, req.body);
-  if (!vendor) {
-    res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Vendor not found.' } });
-    return;
-  }
-  res.json(vendor);
+router.patch('/:vendorId', validate(updateVendorSchema), (_req: Request, res: Response): void => {
+  res.status(501).json(WRITE_NOT_SUPPORTED_BODY);
 });
 
 /**
  * @openapi
  * /api/v1/vendors/{vendorId}:
  *   delete:
- *     summary: Delete a vendor (blocked if vendor has associated SKUs/POs)
+ *     summary: DEPRECATED — writes go to /api/v1/products/vendors
  *     tags: [Vendors]
- *     parameters:
- *       - name: vendorId
- *         in: path
- *         required: true
- *         schema: { type: string, format: uuid }
  *     responses:
- *       204:
- *         description: Vendor deleted
- *       404:
- *         description: Vendor not found
- *       409:
- *         description: Vendor has associated records, deletion blocked
+ *       501:
+ *         description: Not implemented — use /api/v1/products/vendors
  */
-router.delete('/:vendorId', (req: Request, res: Response): void => {
-  const vendorId = req.params.vendorId as string;
-  const result = vendorService.deleteVendor(vendorId);
-
-  if (!result.deleted && result.blocked) {
-    res.status(409).json({
-      error: {
-        code: 'VENDOR_HAS_ASSOCIATIONS',
-        message: 'Cannot delete vendor with associated SKUs or purchase orders.',
-      },
-    });
-    return;
-  }
-
-  if (!result.deleted) {
-    res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Vendor not found.' } });
-    return;
-  }
-
-  res.status(204).send();
+router.delete('/:vendorId', (_req: Request, res: Response): void => {
+  res.status(501).json(WRITE_NOT_SUPPORTED_BODY);
 });
 
 export default router;

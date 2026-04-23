@@ -25,6 +25,7 @@ import {
 } from '../services/salesReporting/salesReportFacade';
 import { validateQuery } from '../middleware/validation';
 import { sendXlsx, XLSX_NUMFMT } from '../utils/xlsxExport';
+import type { PivotDimension } from '../services/salesReporting/types';
 
 const router: IRouter = Router();
 
@@ -455,7 +456,19 @@ const salesPivotSchema = z.object({
     'buyer',
     'buyer-vendor',
     'buyer-vendor-separate-store',
+    'custom',
   ]).default('department'),
+  // Three hierarchy dimensions, required when variant='custom'. Zod leaves
+  // them optional so the fixed variants don't have to pass them.
+  level1: z.enum(['buyer', 'sector', 'department', 'season', 'group', 'vendor', 'store']).optional(),
+  level2: z.enum(['buyer', 'sector', 'department', 'season', 'group', 'vendor', 'store']).optional(),
+  level3: z.enum(['buyer', 'sector', 'department', 'season', 'group', 'vendor', 'store', 'category']).optional(),
+  // Criteria filters (variant='custom'). CSV lists. Each narrows the SKU
+  // universe before aggregation; passing none = include every SKU.
+  sectors: csvIntList,
+  departments: csvIntList,
+  seasons: csvStringList,
+  buyers: csvStringList,
   format: z.enum(['json', 'csv']).default('json'),
 });
 
@@ -466,11 +479,35 @@ router.get('/sales-pivot', validateQuery(salesPivotSchema), async (req: Request,
       res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'startDate must be <= endDate' } });
       return;
     }
+    let levels: [PivotDimension, PivotDimension, PivotDimension] | undefined;
+    if (q.variant === 'custom') {
+      if (!q.level1 || !q.level2 || !q.level3) {
+        res.status(400).json({ error: {
+          code: 'VALIDATION_ERROR',
+          message: 'level1, level2, and level3 are required when variant=custom',
+        } });
+        return;
+      }
+      const set = new Set<PivotDimension>([q.level1, q.level2, q.level3]);
+      if (set.size !== 3) {
+        res.status(400).json({ error: {
+          code: 'VALIDATION_ERROR',
+          message: 'level1, level2, level3 must be three distinct dimensions',
+        } });
+        return;
+      }
+      levels = [q.level1, q.level2, q.level3];
+    }
     const report = await getSalesPivot({
       startDate: q.startDate,
       endDate: q.endDate,
       storeNumbers: q.stores,
       variant: q.variant,
+      levels,
+      sectors: q.sectors,
+      departments: q.departments,
+      seasons: q.seasons,
+      buyers: q.buyers,
     });
     if (q.format === 'csv') {
       const yr = (label: string) => `${label} ${report.currentYear}`;
@@ -501,6 +538,53 @@ router.get('/sales-pivot', validateQuery(salesPivotSchema), async (req: Request,
           ...measureCells(r),
         ]);
         sendCsv(res, header, rows, `sales-pivot-buyer-${q.startDate}-to-${q.endDate}.csv`);
+        return;
+      }
+
+      if (q.variant === 'custom' && levels) {
+        // Dimension → (code header, label header, code cell, label cell).
+        // Emits a pair of columns per chosen level so the CSV is readable
+        // without a schema — "Buyer Code / Buyer", "Sector # / Sector", etc.
+        const dimCols = (r: typeof report.rows[number], dim: PivotDimension): [string | number, string] => {
+          switch (dim) {
+            case 'buyer':      return [r.buyerCode ?? '', r.buyerLabel ?? ''];
+            case 'sector':     return [r.sector ?? '', r.sectorDesc ?? ''];
+            case 'department': return [r.dept ?? '', r.deptDesc ?? ''];
+            case 'season':     return [r.season ?? '', r.seasonDesc ?? ''];
+            case 'group':      return [r.groupCode ?? '', r.groupDesc ?? ''];
+            case 'vendor':     return [r.vendorCode ?? '', r.vendorLabel ?? ''];
+            case 'store':      return [r.storeNumber ?? '', r.storeName ?? ''];
+            case 'category':   return [r.categ ?? '', r.categDesc ?? ''];
+          }
+        };
+        const dimHeader = (dim: PivotDimension): [string, string] => {
+          switch (dim) {
+            case 'buyer':      return ['Buyer Code', 'Buyer'];
+            case 'sector':     return ['Sector #', 'Sector'];
+            case 'department': return ['Dept #', 'Dept'];
+            case 'season':     return ['Season', 'Season Desc'];
+            case 'group':      return ['Group Code', 'Group'];
+            case 'vendor':     return ['Vendor Code', 'Vendor'];
+            case 'store':      return ['Store #', 'Store'];
+            case 'category':   return ['Category #', 'Category'];
+          }
+        };
+        const header = [
+          ...dimHeader(levels[0]), ...dimHeader(levels[1]), ...dimHeader(levels[2]),
+          'SKU', 'Description',
+          ...measureHeader,
+        ];
+        const rows = report.rows.map((r) => [
+          ...dimCols(r, levels[0]), ...dimCols(r, levels[1]), ...dimCols(r, levels[2]),
+          r.sku, r.skuDescription ?? '',
+          ...measureCells(r),
+        ]);
+        sendCsv(
+          res,
+          header,
+          rows,
+          `sales-pivot-${levels.join('-')}-${q.startDate}-to-${q.endDate}.csv`,
+        );
         return;
       }
 

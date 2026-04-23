@@ -390,7 +390,22 @@ export type SalesPivotVariant =
   | 'department-separate-store'
   | 'buyer'
   | 'buyer-vendor'
-  | 'buyer-vendor-separate-store';
+  | 'buyer-vendor-separate-store'
+  | 'custom';
+
+/** Dimensions selectable in the custom pivot builder. Store rows split the
+ *  leaf grain; every other dimension is a per-SKU attribute. `category` is
+ *  only valid at level 3 (deepest rollup) since it's the narrowest grouping
+ *  just above the SKU leaves. */
+export type PivotDimension =
+  | 'buyer'
+  | 'sector'
+  | 'department'
+  | 'season'
+  | 'group'
+  | 'vendor'
+  | 'store'
+  | 'category';
 
 export interface SalesPivotLeafRow {
   /** Set for `department-separate-store` only. Null otherwise. */
@@ -413,6 +428,17 @@ export interface SalesPivotLeafRow {
   deptDesc: string | null;
   categ: number | null;
   categDesc: string | null;
+
+  /** Season code (1–2 char) from rics_mirror.inventory_master.season. */
+  season: string | null;
+  /** Operator-editable label from public.season_overlay. */
+  seasonDesc: string | null;
+
+  /** Group code from rics_mirror.inventory_master.group_code. */
+  groupCode: string | null;
+  /** Description from rics_mirror.group_codes. */
+  groupDesc: string | null;
+
   sku: string;
   skuDescription: string | null;
 
@@ -441,6 +467,9 @@ export interface SalesPivotTotals {
 
 export interface SalesPivotReport {
   variant: SalesPivotVariant;
+  /** The three hierarchy dimensions when variant === 'custom'. Absent for
+   *  the fixed variants — their hierarchies are implied by the variant name. */
+  levels?: [PivotDimension, PivotDimension, PivotDimension];
   startDate: string;      // YYYY-MM-DD, TY window start
   endDate: string;        // YYYY-MM-DD, TY window end
   currentYear: number;    // derived from startDate.getFullYear()

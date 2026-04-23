@@ -20,6 +20,17 @@ export class RunForbiddenError extends Error {
   }
 }
 
+// Distinct from RunForbiddenError (403) — this is a 400 because the problem
+// is the payload shape, not the caller's permissions. Thrown when the
+// result cannot be JSON-serialized (BigInt, circular, etc.).
+export class RunInvalidPayloadError extends Error {
+  readonly code = 'RUN_INVALID_PAYLOAD';
+  constructor(reason: string) {
+    super(reason);
+    this.name = 'RunInvalidPayloadError';
+  }
+}
+
 export interface ViewerContext {
   id: string;
   isAdmin: boolean;
@@ -134,7 +145,20 @@ export async function createRun(
   prisma: PrismaClient,
   input: CreateRunInput,
 ): Promise<RunDetail> {
-  const serialized = JSON.stringify(input.resultJson);
+  // JSON.stringify throws on BigInt and on circular structures. Turn that
+  // into a 400-friendly error so the frontend sees a useful message instead
+  // of a raw 500 from the global handler. Payloads with BigInt tend to come
+  // from newer report shapes that didn't cast integer columns to ::float8
+  // at the SQL layer — fix there if this fires.
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(input.resultJson);
+  } catch (err) {
+    throw new RunInvalidPayloadError(
+      `resultJson is not JSON-serializable: ${(err as Error).message}. ` +
+        `This usually means the report's response contains a BigInt or circular reference.`,
+    );
+  }
   const resultSizeBytes = Buffer.byteLength(serialized, 'utf8');
   const rowCount = inferRowCount(input.resultJson);
 

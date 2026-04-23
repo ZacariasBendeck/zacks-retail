@@ -9,6 +9,7 @@ import type { SalesHourlyBucket } from '../../services/reportApi'
 import { getErrorMessage } from '../../utils/errors'
 import RunReportControls from './RunReportControls'
 import SaveAsTemplateButton from '../../components/reports/SaveAsTemplateButton'
+import SaveSnapshotButton from '../../components/reports/SaveSnapshotButton'
 import DateRangeControl from '../../components/reports/DateRangeControl'
 import ReportHeader from '../../components/reports/ReportHeader'
 import FilterChips from '../../components/reports/FilterChips'
@@ -136,8 +137,10 @@ export default function SalesByTimePage() {
         running={running}
         onRun={onRun}
         actions={
-          <Space>
-            <RunReportControls running={running} hasRun={query != null} onRun={onRun} onStop={onStop} />
+          <RunReportControls running={running} hasRun={query != null} onRun={onRun} onStop={onStop} />
+        }
+        persistentActions={
+          <>
             <SaveAsTemplateButton
               reportType="sales-by-time"
               disabled={query == null}
@@ -148,7 +151,19 @@ export default function SalesByTimePage() {
                 pctOfTotal,
               })}
             />
-          </Space>
+            <SaveSnapshotButton
+              reportType="sales-by-time"
+              disabled={query == null || !data}
+              sourceTemplateId={templateId}
+              getParamsJson={() => ({
+                dateSpec,
+                stores: parseStores(storesText),
+                storesText,
+                pctOfTotal,
+              })}
+              getResultJson={() => data}
+            />
+          </>
         }
       >
         <Space wrap>

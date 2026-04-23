@@ -165,10 +165,20 @@ app.get('/health', (_req, res) => {
   res.json({ status: 'ok' });
 });
 
-// Global error handler
-app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-  console.error('Unhandled error:', err);
-  res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'An internal server error occurred.' } });
+// Global error handler. Logs the request method/path alongside the stack so
+// operators can trace a client-side 500 back to the exact route without
+// guessing. In dev, we also echo the error name in the response body — the
+// client still only sees INTERNAL_ERROR in prod so we don't leak details.
+app.use((err: Error, req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  console.error(`Unhandled error on ${req.method} ${req.originalUrl}:`, err);
+  const isDev = process.env.NODE_ENV !== 'production';
+  res.status(500).json({
+    error: {
+      code: 'INTERNAL_ERROR',
+      message: 'An internal server error occurred.',
+      ...(isDev ? { devDetail: `${err.name}: ${err.message}` } : {}),
+    },
+  });
 });
 
 export default app;

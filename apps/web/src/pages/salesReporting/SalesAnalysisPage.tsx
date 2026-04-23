@@ -1,8 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import {
-  Alert, Button, Card, Checkbox, Col, Radio, Row, Space, Table, Tag, Typography, Spin,
+  Alert, Card, Checkbox, Col, Radio, Row, Space, Table, Tag, Typography, Spin,
 } from 'antd'
-import { FullscreenOutlined } from '@ant-design/icons'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { useSalesAnalysis, useSalesDimensions, type SalesAnalysisArgs } from '../../hooks/useReports'
@@ -299,16 +298,6 @@ export default function SalesAnalysisPage() {
           { title: 'Sales Analysis' },
         ]}
         rightMeta={data ? `${data.rows.length.toLocaleString()} ${data.rows.length === 1 ? 'row' : 'rows'}` : undefined}
-        actions={query ? (
-          <Button
-            icon={<FullscreenOutlined />}
-            href={buildViewerUrl(query)}
-            target="_blank"
-            rel="noopener"
-          >
-            Open in Report Viewer
-          </Button>
-        ) : null}
       />
 
       <CollapsibleFilterCard
@@ -317,8 +306,10 @@ export default function SalesAnalysisPage() {
         running={running}
         onRun={onRun}
         actions={
-          <Space>
-            <RunReportControls running={running} hasRun={query != null} onRun={onRun} onStop={onStop} />
+          <RunReportControls running={running} hasRun={query != null} onRun={onRun} onStop={onStop} />
+        }
+        persistentActions={
+          <>
             <SaveAsTemplateButton
               reportType="sales-analysis"
               disabled={query == null}
@@ -365,7 +356,7 @@ export default function SalesAnalysisPage() {
               })}
               getResultJson={() => data}
             />
-          </Space>
+          </>
         }
       >
         <Row gutter={24}>
@@ -632,36 +623,3 @@ function chipFromRaw(label: string, raw: string | undefined): FilterChip | null 
   return { label, value: t.length > 40 ? `${t.slice(0, 37)}…` : t, hint: t }
 }
 
-function buildViewerUrl(q: SalesAnalysisArgs): string {
-  // Mirror SalesAnalysisArgs into /report-viewer query params. Only the
-  // fields the viewer consumes are forwarded — keeps the URL short and
-  // bookmarkable. Booleans stringify to "true"/"false" so the viewer's
-  // `sp.get('priorYear') === 'true'` check works.
-  const params = new URLSearchParams({ type: 'sales-analysis' })
-  const set = (k: string, v: string | number | boolean | undefined | null) => {
-    if (v == null || v === '') return
-    params.set(k, String(v))
-  }
-  const setList = (k: string, v: readonly (string | number)[] | undefined) => {
-    if (!v || !v.length) return
-    params.set(k, v.join(','))
-  }
-  set('dimension', q.dimension)
-  set('reportType', q.reportType)
-  set('storeOption', q.storeOption)
-  set('startDate', q.startDate)
-  set('endDate', q.endDate)
-  setList('stores', q.stores)
-  setList('categories', q.categories)
-  setList('groups', q.groups)
-  set('storesRaw', q.storesRaw)
-  set('categoriesRaw', q.categoriesRaw)
-  set('vendorsRaw', q.vendorsRaw)
-  set('seasonsRaw', q.seasonsRaw)
-  set('styleColorRaw', q.styleColorRaw)
-  set('skusRaw', q.skusRaw)
-  set('groupsRaw', q.groupsRaw)
-  set('keywordsRaw', q.keywordsRaw)
-  if (q.priorYear) set('priorYear', true)
-  return `/report-viewer?${params}`
-}

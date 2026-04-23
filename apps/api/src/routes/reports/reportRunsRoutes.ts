@@ -4,6 +4,7 @@ import { requireAuth } from '../../middleware/authMiddleware';
 import { PERMISSIONS } from '../../services/employees/permissions';
 import {
   RunForbiddenError,
+  RunInvalidPayloadError,
   RunNotFoundError,
   createRun,
   deleteRun,
@@ -28,6 +29,10 @@ function handleServiceError(err: unknown, res: Response, next: NextFunction): vo
   }
   if (err instanceof RunForbiddenError) {
     res.status(403).json({ error: { code: err.code, message: err.message } });
+    return;
+  }
+  if (err instanceof RunInvalidPayloadError) {
+    res.status(400).json({ error: { code: err.code, message: err.message } });
     return;
   }
   next(err);

@@ -1,304 +1,259 @@
 /**
- * Integration tests for VendorRepository against the .tmp/test-mdbs/ clone.
+ * VendorRepository tests — read-only projection over rics_mirror.vendor_master
+ * (and vendor_accounts, inventory_master for counts). The MDB write path was
+ * removed on 2026-04-23; all write methods now return WriteNotSupported.
  *
- * Covers:
- *  - list + search (`?q=`) against live fixture rows
- *  - getByCode (NotFound + Ok)
- *  - create / update / delete round-trip for Vendor Master
- *  - LongComment 2 KB memo round-trip
- *  - DateLastChanged is stamped on every write
- *  - per-store account CRUD via Vendor Accounts
- *  - countSkusUsingVendor against InventoryMaster
- *
- * Test scope: ZTEST* codes so the live fixtures are never touched. Codes are
- * cleaned up via afterAll + defensive beforeEach deletes.
+ * Prisma is mocked so this suite runs without a real Postgres connection.
  */
 
-import { setupTestMdbs } from './testMdbSetup';
+jest.mock('../../../src/db/prisma', () => ({
+  prisma: {
+    $queryRawUnsafe: jest.fn(),
+  },
+}));
 
-const ctx = setupTestMdbs();
-const d = ctx.available ? describe : describe.skip;
-
-// IMPORTANT: imports must come AFTER setupTestMdbs so RICS_DB_DIR is set
-// before any module resolves a path.
+import { prisma } from '../../../src/db/prisma';
 import { VendorRepository } from '../../../src/repositories/rics/VendorRepository';
 
-const TEST_CODE = 'ZTST'; // 4-char, safely outside live fixture space
-const TEST_CODE_2 = 'ZTS2';
+const mockQuery = prisma.$queryRawUnsafe as jest.MockedFunction<
+  typeof prisma.$queryRawUnsafe
+>;
 
-async function cleanup(): Promise<void> {
-  // Store accounts first (FK-ish), then vendor row, for both test codes.
-  try {
-    await VendorRepository.deleteStoreAccount(TEST_CODE, 1);
-  } catch {
-    /* ignore */
-  }
-  try {
-    await VendorRepository.deleteStoreAccount(TEST_CODE, 2);
-  } catch {
-    /* ignore */
-  }
-  try {
-    await VendorRepository.deleteStoreAccount(TEST_CODE_2, 1);
-  } catch {
-    /* ignore */
-  }
-  await VendorRepository.delete(TEST_CODE);
-  await VendorRepository.delete(TEST_CODE_2);
-}
+const ROW_1 = {
+  code: '03EV',
+  short_name: '03 EVERLY',
+  mail_name: '03 EVERLY',
+  addr1: '1001 Crocker Street#2',
+  addr2: null,
+  city: 'Los Angeles',
+  state: 'CA',
+  zip: '90021',
+  phone: '213-765-5333',
+  fax: '213-765-718',
+  contact: null,
+  terms: null,
+  ship_inst: null,
+  comment: null,
+  manu_code: null,
+  manu_name: null,
+  qualifier_id: null,
+  qualifier_code: null,
+  color_code: false,
+  long_comment: null,
+  e_mail: 'info@03everly.com',
+  date_last_changed: new Date('2010-11-19T07:36:00Z'),
+};
 
-d('VendorRepository (integration against .tmp/test-mdbs/)', () => {
-  beforeEach(async () => {
-    await cleanup();
-  });
+const ROW_2 = {
+  ...ROW_1,
+  code: '138I',
+  short_name: '138 INTERNAT',
+  mail_name: '138 INTERNATIONAL',
+  addr1: null,
+  city: 'MIAMI',
+  state: null,
+  zip: null,
+  phone: null,
+  e_mail: null,
+  date_last_changed: new Date('2002-09-20T13:35:30Z'),
+};
 
-  afterAll(async () => {
-    await cleanup();
-  });
+beforeEach(() => {
+  mockQuery.mockReset();
+});
 
-  it('lists vendors from RIVENDOR.Vendor Master', async () => {
+// ────────────── Reads ──────────────
+
+describe('VendorRepository.findAll', () => {
+  it('pulls the whole vendor catalog when no filter is given', async () => {
+    mockQuery.mockResolvedValueOnce([ROW_1, ROW_2] as never);
+
     const result = await VendorRepository.findAll();
-    if (!result.ok) throw new Error('findAll() failed: ' + JSON.stringify(result.error));
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(Array.isArray(result.value)).toBe(true);
-    expect(result.value.length).toBeGreaterThan(0);
-    const first = result.value[0];
-    expect(typeof first.code).toBe('string');
-    expect(typeof first.name).toBe('string');
+    expect(result.value).toHaveLength(2);
+    expect(result.value[0].code).toBe('03EV');
+    expect(result.value[0].name).toBe('03 EVERLY');
+    expect(result.value[0].city).toBe('Los Angeles');
+
+    const [sql] = mockQuery.mock.calls[0];
+    expect(sql).toMatch(/FROM rics_mirror\.vendor_master/);
+    expect(sql).toMatch(/ORDER BY code/);
   });
 
-  it('creates a new vendor with all 22 fields', async () => {
+  it('applies an LIMIT when passed', async () => {
+    mockQuery.mockResolvedValueOnce([ROW_1] as never);
+
+    await VendorRepository.findAll({ limit: 5 });
+    const call = mockQuery.mock.calls[0];
+    expect(call[0]).toMatch(/LIMIT \$1/);
+    expect(call[1]).toBe(5);
+  });
+
+  it('runs a case-insensitive LIKE filter across code/short_name/mail_name/manu_name', async () => {
+    mockQuery.mockResolvedValueOnce([ROW_1] as never);
+
+    const result = await VendorRepository.findAll({ q: 'Everly' });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value).toHaveLength(1);
+
+    const [sql, needle, limit] = mockQuery.mock.calls[0];
+    expect(sql).toMatch(/LOWER\(code\) LIKE \$1/);
+    expect(sql).toMatch(/LOWER\(COALESCE\(short_name,''\)\) LIKE \$1/);
+    expect(sql).toMatch(/LOWER\(COALESCE\(mail_name,''\)\)  LIKE \$1/);
+    expect(sql).toMatch(/LOWER\(COALESCE\(manu_name,''\)\)  LIKE \$1/);
+    expect(needle).toBe('%everly%');
+    expect(limit).toBe(100); // default when q is set
+  });
+
+  it('returns AccessConnectionError when Postgres query throws', async () => {
+    mockQuery.mockRejectedValueOnce(new Error('connection refused'));
+
+    const result = await VendorRepository.findAll();
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.kind).toBe('AccessConnectionError');
+    expect(result.error.message).toMatch(/connection refused/);
+  });
+});
+
+describe('VendorRepository.findByCode', () => {
+  it('returns the vendor when Postgres has the code', async () => {
+    mockQuery.mockResolvedValueOnce([ROW_1] as never);
+
+    const result = await VendorRepository.findByCode('03EV');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.code).toBe('03EV');
+    expect(result.value.email).toBe('info@03everly.com');
+
+    const [sql, code] = mockQuery.mock.calls[0];
+    expect(sql).toMatch(/WHERE UPPER\(code\) = \$1/);
+    expect(code).toBe('03EV');
+  });
+
+  it('normalizes lowercase codes to uppercase before querying', async () => {
+    mockQuery.mockResolvedValueOnce([] as never);
+
+    await VendorRepository.findByCode('03ev');
+    const [, code] = mockQuery.mock.calls[0];
+    expect(code).toBe('03EV');
+  });
+
+  it('returns NotFound for missing codes', async () => {
+    mockQuery.mockResolvedValueOnce([] as never);
+
+    const result = await VendorRepository.findByCode('ZZNOPE');
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.kind).toBe('NotFound');
+  });
+});
+
+describe('VendorRepository.findStoreAccounts', () => {
+  it('pulls rows from rics_mirror.vendor_accounts', async () => {
+    mockQuery.mockResolvedValueOnce([
+      { code: '138I', store: 1, account: '67', date_last_changed: new Date('2002-09-20Z') },
+      { code: '138I', store: 2, account: '67', date_last_changed: new Date('2002-09-20Z') },
+    ] as never);
+
+    const result = await VendorRepository.findStoreAccounts('138I');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value).toHaveLength(2);
+    expect(result.value[0].storeId).toBe(1);
+    expect(result.value[1].storeId).toBe(2);
+
+    const [sql] = mockQuery.mock.calls[0];
+    expect(sql).toMatch(/FROM rics_mirror\.vendor_accounts/);
+  });
+});
+
+describe('VendorRepository.countSkusUsingVendor', () => {
+  it('counts SKUs with matching vendor (case-insensitive)', async () => {
+    mockQuery.mockResolvedValueOnce([{ n: 42n }] as never);
+
+    const result = await VendorRepository.countSkusUsingVendor('03EV');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value).toBe(42);
+
+    const [sql, code] = mockQuery.mock.calls[0];
+    expect(sql).toMatch(/FROM rics_mirror\.inventory_master/);
+    expect(sql).toMatch(/UPPER\(vendor\) = \$1/);
+    expect(code).toBe('03EV');
+  });
+});
+
+describe('VendorRepository.countSkusPerVendor', () => {
+  it('returns a per-vendor code→count map with uppercased keys', async () => {
+    mockQuery.mockResolvedValueOnce([
+      { vendor: 'GRAN', n: 7079n },
+      { vendor: 'kyiw', n: 4458n }, // lowercase in source — should be uppercased
+      { vendor: null, n: 999n }, // should be filtered out
+    ] as never);
+
+    const result = await VendorRepository.countSkusPerVendor();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value).toEqual({
+      GRAN: 7079,
+      KYIW: 4458,
+    });
+
+    const [sql] = mockQuery.mock.calls[0];
+    expect(sql).toMatch(/GROUP BY vendor/);
+  });
+});
+
+describe('VendorRepository.warmup', () => {
+  it('is a no-op (no queries issued)', async () => {
+    await expect(VendorRepository.warmup()).resolves.toBeUndefined();
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+});
+
+// ────────────── Writes — all disabled ──────────────
+
+describe('VendorRepository writes are disabled (WriteNotSupported)', () => {
+  it('create returns WriteNotSupported without touching Postgres', async () => {
     const result = await VendorRepository.create({
-      code: TEST_CODE,
-      name: 'ZTEST VENDOR',
-      mailName: 'ZTEST MAIL NAME',
-      addr1: '123 Main St',
-      addr2: 'Suite 200',
-      city: 'Chicago',
-      state: 'IL',
-      zip: '60601',
-      phone: '312-555-0101',
-      fax: '312-555-0102',
-      contact: 'J. Doe',
-      terms: 'NET30',
-      shipInst: 'FOB destination',
-      comment: 'short comment',
-      manuCode: 'MNU1',
-      manuName: 'ZTEST MANU',
-      qualifierId: 'ZZ',
-      qualifierCode: 'ZTQC',
-      colorCode: true,
-      longComment: 'long comment',
-      email: 'zt@example.com',
-    });
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.value.code).toBe(TEST_CODE);
-    expect(result.value.name).toBe('ZTEST VENDOR');
-    expect(result.value.mailName).toBe('ZTEST MAIL NAME');
-    expect(result.value.colorCode).toBe(true);
-    expect(result.value.email).toBe('zt@example.com');
-    expect(result.value.dateLastChanged).toBeInstanceOf(Date);
-  });
-
-  it('rejects a duplicate primary key', async () => {
-    const first = await VendorRepository.create({
-      code: TEST_CODE,
+      code: 'ZTST',
       name: 'ZTEST',
       mailName: 'ZTEST',
     });
-    expect(first.ok).toBe(true);
-    await new Promise((r) => setTimeout(r, 400));
-
-    const dup = await VendorRepository.create({
-      code: TEST_CODE,
-      name: 'OTHER',
-      mailName: 'OTHER',
-    });
-    expect(dup.ok).toBe(false);
-    if (dup.ok) return;
-    expect(dup.error.kind).toBe('DuplicatePrimaryKey');
-  });
-
-  it('round-trips a 2 KB LongComment memo field', async () => {
-    // 2 KB of varied content to exercise the memo column encoding.
-    const longText = Array.from({ length: 2048 })
-      .map((_, i) => String.fromCharCode(33 + (i % 94)))
-      .join('');
-
-    const created = await VendorRepository.create({
-      code: TEST_CODE,
-      name: 'ZTEST LONG',
-      mailName: 'ZTEST LONG',
-      longComment: longText,
-    });
-    expect(created.ok).toBe(true);
-    await new Promise((r) => setTimeout(r, 400));
-
-    const read = await VendorRepository.findByCode(TEST_CODE);
-    expect(read.ok).toBe(true);
-    if (!read.ok) return;
-    expect(read.value.longComment).toBe(longText);
-  });
-
-  it('returns NotFound for findByCode on a missing vendor', async () => {
-    const result = await VendorRepository.findByCode('ZNOP');
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.error.kind).toBe('NotFound');
+    expect(result.error.kind).toBe('WriteNotSupported');
+    expect(mockQuery).not.toHaveBeenCalled();
   });
 
-  it('updates a vendor', async () => {
-    const seed = await VendorRepository.create({
-      code: TEST_CODE,
-      name: 'ZTEST',
-      mailName: 'ZTEST',
-      city: 'CHICAGO',
-    });
-    expect(seed.ok).toBe(true);
-    await new Promise((r) => setTimeout(r, 400));
-
-    const updated = await VendorRepository.update(TEST_CODE, {
-      name: 'ZTEST UPDATED',
-      city: 'BOSTON',
-    });
-    expect(updated.ok).toBe(true);
-    if (!updated.ok) return;
-    expect(updated.value.name).toBe('ZTEST UPDATED');
-    expect(updated.value.city).toBe('BOSTON');
-    expect(updated.value.mailName).toBe('ZTEST'); // unchanged
-  });
-
-  it('returns NotFound when updating a missing vendor', async () => {
-    const result = await VendorRepository.update('ZNOP', { name: 'x' });
+  it('update returns WriteNotSupported', async () => {
+    const result = await VendorRepository.update('03EV', { name: 'X' });
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.error.kind).toBe('NotFound');
+    expect(result.error.kind).toBe('WriteNotSupported');
   });
 
-  it('deletes a vendor', async () => {
-    await VendorRepository.create({ code: TEST_CODE, name: 'ZTEST', mailName: 'ZTEST' });
-    await new Promise((r) => setTimeout(r, 400));
-    const del = await VendorRepository.delete(TEST_CODE);
-    expect(del.ok).toBe(true);
-    await new Promise((r) => setTimeout(r, 400));
-    const after = await VendorRepository.findByCode(TEST_CODE);
-    expect(after.ok).toBe(false);
-    if (after.ok) return;
-    expect(after.error.kind).toBe('NotFound');
+  it('delete returns WriteNotSupported', async () => {
+    const result = await VendorRepository.delete('03EV');
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.kind).toBe('WriteNotSupported');
   });
 
-  it('findAll(q) filters case-insensitively on code/name/manuName', async () => {
-    await VendorRepository.create({
-      code: TEST_CODE,
-      name: 'UNIQUE ZTEST VENDOR MARK',
-      mailName: 'MARK',
-      manuName: 'UNIQUE MANU MARK',
-    });
-    await new Promise((r) => setTimeout(r, 400));
-
-    const byName = await VendorRepository.findAll({ q: 'UNIQUE ZTEST' });
-    expect(byName.ok).toBe(true);
-    if (!byName.ok) return;
-    expect(byName.value.some((v) => v.code === TEST_CODE)).toBe(true);
-
-    const byLowercaseName = await VendorRepository.findAll({ q: 'unique ztest' });
-    expect(byLowercaseName.ok).toBe(true);
-    if (!byLowercaseName.ok) return;
-    expect(byLowercaseName.value.some((v) => v.code === TEST_CODE)).toBe(true);
-
-    const byCode = await VendorRepository.findAll({ q: TEST_CODE });
-    expect(byCode.ok).toBe(true);
-    if (!byCode.ok) return;
-    expect(byCode.value.some((v) => v.code === TEST_CODE)).toBe(true);
+  it('upsertStoreAccount returns WriteNotSupported', async () => {
+    const result = await VendorRepository.upsertStoreAccount('03EV', 1, 'ACCT');
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.kind).toBe('WriteNotSupported');
   });
 
-  // ────────────── Store accounts ──────────────
-
-  it('findStoreAccounts returns [] for a vendor with no accounts', async () => {
-    await VendorRepository.create({ code: TEST_CODE, name: 'ZTEST', mailName: 'ZTEST' });
-    await new Promise((r) => setTimeout(r, 400));
-    const res = await VendorRepository.findStoreAccounts(TEST_CODE);
-    expect(res.ok).toBe(true);
-    if (!res.ok) return;
-    expect(res.value).toEqual([]);
-  });
-
-  it('upsertStoreAccount creates and updates a per-store account', async () => {
-    await VendorRepository.create({ code: TEST_CODE, name: 'ZTEST', mailName: 'ZTEST' });
-    await new Promise((r) => setTimeout(r, 400));
-
-    const created = await VendorRepository.upsertStoreAccount(TEST_CODE, 1, 'ACCT-001');
-    expect(created.ok).toBe(true);
-    if (!created.ok) return;
-    expect(created.value.account).toBe('ACCT-001');
-    expect(created.value.storeId).toBe(1);
-    expect(created.value.dateLastChanged).toBeInstanceOf(Date);
-
-    await new Promise((r) => setTimeout(r, 400));
-
-    const updated = await VendorRepository.upsertStoreAccount(TEST_CODE, 1, 'ACCT-002');
-    expect(updated.ok).toBe(true);
-    if (!updated.ok) return;
-    expect(updated.value.account).toBe('ACCT-002');
-
-    await new Promise((r) => setTimeout(r, 400));
-
-    const list = await VendorRepository.findStoreAccounts(TEST_CODE);
-    expect(list.ok).toBe(true);
-    if (!list.ok) return;
-    expect(list.value).toHaveLength(1);
-    expect(list.value[0].account).toBe('ACCT-002');
-  });
-
-  it('deleteStoreAccount removes only the targeted row', async () => {
-    await VendorRepository.create({ code: TEST_CODE, name: 'ZTEST', mailName: 'ZTEST' });
-    await new Promise((r) => setTimeout(r, 400));
-    await VendorRepository.upsertStoreAccount(TEST_CODE, 1, 'A1');
-    await new Promise((r) => setTimeout(r, 400));
-    await VendorRepository.upsertStoreAccount(TEST_CODE, 2, 'A2');
-    await new Promise((r) => setTimeout(r, 400));
-
-    const del = await VendorRepository.deleteStoreAccount(TEST_CODE, 1);
-    expect(del.ok).toBe(true);
-    await new Promise((r) => setTimeout(r, 400));
-
-    const list = await VendorRepository.findStoreAccounts(TEST_CODE);
-    expect(list.ok).toBe(true);
-    if (!list.ok) return;
-    expect(list.value).toHaveLength(1);
-    expect(list.value[0].storeId).toBe(2);
-  });
-
-  // ────────────── SKU usage ──────────────
-
-  it('countSkusUsingVendor returns 0 for a newly-created vendor', async () => {
-    await VendorRepository.create({ code: TEST_CODE, name: 'ZTEST', mailName: 'ZTEST' });
-    await new Promise((r) => setTimeout(r, 400));
-    const res = await VendorRepository.countSkusUsingVendor(TEST_CODE);
-    expect(res.ok).toBe(true);
-    if (!res.ok) return;
-    expect(res.value).toBe(0);
-  });
-
-  it('countSkusUsingVendor returns >0 for a vendor referenced by real SKUs', async () => {
-    // Pick a real vendor from the live fixture data. We trust findAll to
-    // surface one that has SKUs in InventoryMaster; if the first row has 0,
-    // we walk forward until we find one that does (bounded to a reasonable
-    // number of round-trips so a fully-empty DB still exits cleanly).
-    const vendors = await VendorRepository.findAll();
-    expect(vendors.ok).toBe(true);
-    if (!vendors.ok) return;
-
-    let hit = false;
-    for (const v of vendors.value.slice(0, 20)) {
-      const count = await VendorRepository.countSkusUsingVendor(v.code);
-      if (count.ok && count.value > 0) {
-        hit = true;
-        break;
-      }
-    }
-    expect(hit).toBe(true);
+  it('deleteStoreAccount returns WriteNotSupported', async () => {
+    const result = await VendorRepository.deleteStoreAccount('03EV', 1);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.kind).toBe('WriteNotSupported');
   });
 });

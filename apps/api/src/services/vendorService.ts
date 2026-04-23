@@ -1,141 +1,154 @@
-import { v4 as uuidv4 } from 'uuid';
-import { getDb } from '../db/database';
-import { Vendor, VendorRow, rowToVendor } from '../models/vendor';
+/**
+ * Legacy vendor service — now a read-only projection over `rics_mirror.vendor_master`.
+ *
+ * Historical: this service used to CRUD the SQLite `vendors` table in
+ * `inventory.db`. The SQLite vendor table held only synthetic test rows (5) and
+ * the real vendor catalog lives in RICS (2,200+ rows) mirrored into
+ * `rics_mirror.vendor_master` by `sync:rics`.
+ *
+ * Writes now go through the RICS-backed products module at
+ * `/api/v1/products/vendors/*` (see [services/products/vendorService.ts]). This
+ * legacy service's create/update/delete paths throw a clear error to redirect
+ * callers.
+ *
+ * The read shape is preserved so the one remaining consumer
+ * (`apps/web/src/services/skuApi.ts#fetchVendors`, a dropdown feed for the
+ * legacy SKU list) continues working against the real RICS vendor catalog.
+ *
+ * Shape adapter — RICS columns → legacy `Vendor`:
+ *   code              → id            (string; was UUID, now RICS code)
+ *   short_name        → name          (falls back to mail_name, then code)
+ *   e_mail            → contactEmail
+ *   phone             → phone
+ *   — (no RICS equiv) → paymentTerms  (null)
+ *   — (no RICS equiv) → leadTimeDays  (null)
+ *   — (no RICS equiv) → active        (true — every mirror row is current)
+ *   date_last_changed → createdAt/updatedAt  (ISO string)
+ */
+
+import { prisma } from '../db/prisma';
+import { Vendor } from '../models/vendor';
 import { PaginationEnvelope } from '../models/sku';
 
-type DbValue = null | number | bigint | string;
-
-export function createVendor(data: {
-  name: string;
-  contactEmail?: string | null;
-  phone?: string | null;
-  paymentTerms?: string | null;
-  leadTimeDays?: number | null;
-}): Vendor {
-  const db = getDb();
-  const id = uuidv4();
-
-  db.prepare(
-    'INSERT INTO vendors (id, name, contact_email, phone, payment_terms, lead_time_days) VALUES (?, ?, ?, ?, ?, ?)'
-  ).run(
-    id,
-    data.name,
-    data.contactEmail ?? null,
-    data.phone ?? null,
-    data.paymentTerms ?? null,
-    data.leadTimeDays ?? null
-  );
-
-  const row = db.prepare('SELECT * FROM vendors WHERE id = ?').get(id) as unknown as VendorRow;
-  return rowToVendor(row);
+interface RicsVendorRow {
+  code: string;
+  short_name: string | null;
+  mail_name: string | null;
+  e_mail: string | null;
+  phone: string | null;
+  date_last_changed: Date | null;
 }
 
-export function getVendorById(id: string): Vendor | null {
-  const db = getDb();
-  const row = db.prepare('SELECT * FROM vendors WHERE id = ?').get(id) as unknown as VendorRow | undefined;
-  if (!row) return null;
-  return rowToVendor(row);
-}
-
-export function updateVendor(id: string, data: Record<string, unknown>): Vendor | null {
-  const db = getDb();
-  const existing = db.prepare('SELECT id FROM vendors WHERE id = ?').get(id);
-  if (!existing) return null;
-
-  const fieldMap: Record<string, string> = {
-    name: 'name',
-    contactEmail: 'contact_email',
-    phone: 'phone',
-    paymentTerms: 'payment_terms',
-    leadTimeDays: 'lead_time_days',
-    active: 'active',
+function rowToLegacyVendor(row: RicsVendorRow): Vendor {
+  const iso = row.date_last_changed
+    ? new Date(row.date_last_changed).toISOString()
+    : new Date(0).toISOString();
+  const rawName = (row.short_name ?? row.mail_name ?? '').trim();
+  return {
+    id: row.code,
+    name: rawName.length > 0 ? rawName : row.code,
+    contactEmail: (row.e_mail ?? '').trim() || null,
+    phone: (row.phone ?? '').trim() || null,
+    paymentTerms: null, // RICS doesn't track NET_30/60/90
+    leadTimeDays: null, // RICS doesn't track lead time here
+    active: true, // RICS mirror has no "inactive" flag — every row is current
+    createdAt: iso,
+    updatedAt: iso,
   };
-
-  const setClauses: string[] = [];
-  const values: DbValue[] = [];
-
-  for (const [key, value] of Object.entries(data)) {
-    const col = fieldMap[key];
-    if (!col) continue;
-    setClauses.push(`${col} = ?`);
-    values.push(key === 'active' ? (value ? 1 : 0) : value as DbValue);
-  }
-
-  if (setClauses.length === 0) return getVendorById(id);
-
-  setClauses.push("updated_at = datetime('now')");
-  values.push(id);
-
-  db.prepare(`UPDATE vendors SET ${setClauses.join(', ')} WHERE id = ?`).run(...values);
-  return getVendorById(id);
 }
 
-export function deleteVendor(id: string): { deleted: boolean; blocked?: boolean } {
-  const db = getDb();
-  const existing = db.prepare('SELECT id FROM vendors WHERE id = ?').get(id);
-  if (!existing) return { deleted: false };
-
-  // Check if vendor has associated SKUs (acting as PO proxy since PO table doesn't exist yet)
-  const skuCount = db.prepare(
-    'SELECT COUNT(*) as total FROM skus WHERE vendor_id = ?'
-  ).get(id) as unknown as { total: number };
-
-  if (skuCount.total > 0) {
-    return { deleted: false, blocked: true };
+export class VendorWriteNotSupportedError extends Error {
+  code = 'WRITE_NOT_SUPPORTED';
+  constructor() {
+    super(
+      'Legacy /api/v1/vendors is now a read-only projection over ' +
+        'rics_mirror.vendor_master. Writes are not supported here — use ' +
+        '/api/v1/products/vendors/* which goes through the RICS write path with ' +
+        'EDI validation and SKU-reference guards.',
+    );
+    this.name = 'VendorWriteNotSupportedError';
   }
+}
 
-  db.prepare('DELETE FROM vendors WHERE id = ?').run(id);
-  return { deleted: true };
+export function createVendor(_data: unknown): never {
+  throw new VendorWriteNotSupportedError();
+}
+
+export function updateVendor(_id: string, _data: unknown): never {
+  throw new VendorWriteNotSupportedError();
+}
+
+export function deleteVendor(_id: string): never {
+  throw new VendorWriteNotSupportedError();
+}
+
+export async function getVendorById(code: string): Promise<Vendor | null> {
+  const rows = await prisma.$queryRawUnsafe<RicsVendorRow[]>(
+    `SELECT code, short_name, mail_name, e_mail, phone, date_last_changed
+     FROM rics_mirror.vendor_master
+     WHERE code = $1
+     LIMIT 1`,
+    code,
+  );
+  if (rows.length === 0) return null;
+  return rowToLegacyVendor(rows[0]);
 }
 
 const VENDOR_SORT_MAP: Record<string, string> = {
-  name: 'name',
-  createdAt: 'created_at',
-  leadTimeDays: 'lead_time_days',
+  name: 'short_name',
+  createdAt: 'date_last_changed',
+  // leadTimeDays has no RICS equivalent; fall through to default sort
 };
 
-export function listVendors(params: {
+export async function listVendors(params: {
   page: number;
   pageSize: number;
   sort?: string;
   order?: 'asc' | 'desc';
-  active?: boolean;
+  active?: boolean; // accepted for back-compat; ignored (all mirror rows are active)
   q?: string;
-}): PaginationEnvelope<Vendor> {
-  const db = getDb();
-  const conditions: string[] = [];
-  const values: DbValue[] = [];
+}): Promise<PaginationEnvelope<Vendor>> {
+  const values: unknown[] = [];
+  const where: string[] = [];
 
-  if (params.active !== undefined) {
-    conditions.push('active = ?');
-    values.push(params.active ? 1 : 0);
+  if (params.q && params.q.trim().length > 0) {
+    values.push(`%${params.q.trim().toLowerCase()}%`);
+    const i = values.length;
+    where.push(
+      `(LOWER(COALESCE(short_name,'')) LIKE $${i} OR ` +
+        `LOWER(COALESCE(mail_name,'')) LIKE $${i} OR ` +
+        `LOWER(COALESCE(e_mail,'')) LIKE $${i} OR ` +
+        `LOWER(COALESCE(phone,'')) LIKE $${i})`,
+    );
   }
 
-  if (params.q) {
-    const pattern = `%${params.q}%`;
-    conditions.push('(name LIKE ? OR contact_email LIKE ? OR phone LIKE ?)');
-    values.push(pattern, pattern, pattern);
-  }
-
-  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-
-  const countRow = db.prepare(
-    `SELECT COUNT(*) as total FROM vendors ${whereClause}`
-  ).get(...values) as unknown as { total: number };
-
-  const totalItems = countRow.total;
-  const totalPages = Math.ceil(totalItems / params.pageSize);
+  const whereClause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
+  const sortCol = VENDOR_SORT_MAP[params.sort ?? 'name'] ?? 'short_name';
+  const sortDir = params.order === 'desc' ? 'DESC' : 'ASC';
   const offset = (params.page - 1) * params.pageSize;
 
-  const sortCol = VENDOR_SORT_MAP[params.sort ?? 'name'] || 'name';
-  const sortDir = params.order === 'desc' ? 'DESC' : 'ASC';
+  const countRows = await prisma.$queryRawUnsafe<{ total: bigint }[]>(
+    `SELECT COUNT(*)::bigint AS total FROM rics_mirror.vendor_master ${whereClause}`,
+    ...values,
+  );
+  const totalItems = Number(countRows[0]?.total ?? 0n);
+  const totalPages = Math.max(1, Math.ceil(totalItems / params.pageSize));
 
-  const rows = db.prepare(
-    `SELECT * FROM vendors ${whereClause} ORDER BY ${sortCol} ${sortDir} LIMIT ? OFFSET ?`
-  ).all(...values, params.pageSize, offset) as unknown as VendorRow[];
+  const limitIdx = values.length + 1;
+  const offsetIdx = values.length + 2;
+  const rows = await prisma.$queryRawUnsafe<RicsVendorRow[]>(
+    `SELECT code, short_name, mail_name, e_mail, phone, date_last_changed
+     FROM rics_mirror.vendor_master
+     ${whereClause}
+     ORDER BY ${sortCol} ${sortDir} NULLS LAST, code ASC
+     LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
+    ...values,
+    params.pageSize,
+    offset,
+  );
 
   return {
-    data: rows.map(rowToVendor),
+    data: rows.map(rowToLegacyVendor),
     pagination: {
       page: params.page,
       pageSize: params.pageSize,

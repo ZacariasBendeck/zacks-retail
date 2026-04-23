@@ -11,6 +11,7 @@ import { getSalesByDayCsvUrl, getSalesByDayXlsxUrl, type SalesByDayRow } from '.
 import { getErrorMessage } from '../../utils/errors'
 import RunReportControls from './RunReportControls'
 import SaveAsTemplateButton from '../../components/reports/SaveAsTemplateButton'
+import SaveSnapshotButton from '../../components/reports/SaveSnapshotButton'
 import DateRangeControl from '../../components/reports/DateRangeControl'
 import ReportHeader from '../../components/reports/ReportHeader'
 import FilterChips from '../../components/reports/FilterChips'
@@ -167,8 +168,10 @@ export default function SalesByDayPage() {
         onRun={onRun}
         canRun={storeNumber != null}
         actions={
-          <Space>
-            <RunReportControls running={running} hasRun={query != null} onRun={onRun} onStop={onStop} />
+          <RunReportControls running={running} hasRun={query != null} onRun={onRun} onStop={onStop} />
+        }
+        persistentActions={
+          <>
             <SaveAsTemplateButton
               reportType="sales-by-day"
               disabled={query == null || storeNumber == null}
@@ -178,7 +181,18 @@ export default function SalesByDayPage() {
                 comparisonOffsetDays: offset,
               })}
             />
-          </Space>
+            <SaveSnapshotButton
+              reportType="sales-by-day"
+              disabled={query == null || !data}
+              sourceTemplateId={templateId}
+              getParamsJson={() => ({
+                storeNumber,
+                dateSpec,
+                comparisonOffsetDays: offset,
+              })}
+              getResultJson={() => data}
+            />
+          </>
         }
       >
         <Space wrap>

@@ -544,10 +544,18 @@ export interface SalesGroupDim {
   code: string
   desc: string | null
 }
+export interface SalesSectorDim { number: number; name: string | null }
+export interface SalesDepartmentDim { number: number; name: string | null }
+export interface SalesSeasonDim { code: string; description: string | null }
+export interface SalesBuyerDim { code: string; label: string | null }
 export interface SalesDimensionsResponse {
   stores: SalesStoreDim[]
   categories: SalesCategoryDim[]
   groups: SalesGroupDim[]
+  sectors: SalesSectorDim[]
+  departments: SalesDepartmentDim[]
+  seasons: SalesSeasonDim[]
+  buyers: SalesBuyerDim[]
 }
 
 export async function fetchSalesDimensions(signal?: AbortSignal): Promise<SalesDimensionsResponse> {
@@ -1160,6 +1168,20 @@ export type SalesPivotVariant =
   | 'buyer'
   | 'buyer-vendor'
   | 'buyer-vendor-separate-store'
+  | 'custom'
+
+/** Dimensions selectable in the Custom Pivot builder. `category` is valid
+ *  only at level 3 (narrowest grouping above SKU); level 1 and 2 take the
+ *  other seven. */
+export type PivotDimension =
+  | 'buyer'
+  | 'sector'
+  | 'department'
+  | 'season'
+  | 'group'
+  | 'vendor'
+  | 'store'
+  | 'category'
 
 export interface SalesPivotLeafRow {
   storeNumber: number | null
@@ -1174,6 +1196,10 @@ export interface SalesPivotLeafRow {
   deptDesc: string | null
   categ: number | null
   categDesc: string | null
+  season: string | null
+  seasonDesc: string | null
+  groupCode: string | null
+  groupDesc: string | null
   sku: string
   skuDescription: string | null
   onHandQty: number
@@ -1199,6 +1225,8 @@ export interface SalesPivotTotals {
 
 export interface SalesPivotReport {
   variant: SalesPivotVariant
+  /** Present when variant === 'custom'. The three hierarchy dimensions. */
+  levels?: [PivotDimension, PivotDimension, PivotDimension]
   startDate: string
   endDate: string
   currentYear: number
@@ -1213,6 +1241,13 @@ export async function fetchSalesPivot(args: {
   endDate: string
   stores?: number[]
   variant: SalesPivotVariant
+  /** Required when variant === 'custom'. */
+  levels?: [PivotDimension, PivotDimension, PivotDimension]
+  /** Criteria filters — variant='custom' only. */
+  sectors?: number[]
+  departments?: number[]
+  seasons?: string[]
+  buyers?: string[]
   signal?: AbortSignal
 }): Promise<SalesPivotReport> {
   const params = new URLSearchParams({
@@ -1221,6 +1256,15 @@ export async function fetchSalesPivot(args: {
     variant: args.variant,
   })
   if (args.stores?.length) params.set('stores', args.stores.join(','))
+  if (args.variant === 'custom' && args.levels) {
+    params.set('level1', args.levels[0])
+    params.set('level2', args.levels[1])
+    params.set('level3', args.levels[2])
+    if (args.sectors?.length) params.set('sectors', args.sectors.join(','))
+    if (args.departments?.length) params.set('departments', args.departments.join(','))
+    if (args.seasons?.length) params.set('seasons', args.seasons.join(','))
+    if (args.buyers?.length) params.set('buyers', args.buyers.join(','))
+  }
   const res = await fetch(`/api/v1/reports/sales/sales-pivot?${params}`, { signal: args.signal })
   if (!res.ok) await throwReportApiError(res, `Failed to fetch sales pivot: ${res.status}`)
   return res.json()

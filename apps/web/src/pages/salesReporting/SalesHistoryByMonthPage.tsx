@@ -48,6 +48,7 @@ import {
 import { getErrorMessage } from '../../utils/errors'
 import RunReportControls from './RunReportControls'
 import SaveAsTemplateButton from '../../components/reports/SaveAsTemplateButton'
+import SaveSnapshotButton from '../../components/reports/SaveSnapshotButton'
 import ReportHeader from '../../components/reports/ReportHeader'
 import FilterChips, { type FilterChip } from '../../components/reports/FilterChips'
 import ReportEmptyState from '../../components/reports/ReportEmptyState'
@@ -544,6 +545,20 @@ export default function SalesHistoryByMonthPage() {
         actions={
           <Space align="center">
             <RunReportControls running={running} hasRun={query != null} onRun={onRun} onStop={onStop} />
+            {!hasStores && (
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                Select at least one store under Criteria to enable Run Report.
+              </Text>
+            )}
+            {hasStores && !hasAnyMetric && (
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                Select at least one metric under Data to Print.
+              </Text>
+            )}
+          </Space>
+        }
+        persistentActions={
+          <>
             <SaveAsTemplateButton
               reportType="sales-history-by-month"
               disabled={query == null}
@@ -567,17 +582,32 @@ export default function SalesHistoryByMonthPage() {
                 keywordsRaw,
               })}
             />
-            {!hasStores && (
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                Select at least one store under Criteria to enable Run Report.
-              </Text>
-            )}
-            {hasStores && !hasAnyMetric && (
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                Select at least one metric under Data to Print.
-              </Text>
-            )}
-          </Space>
+            <SaveSnapshotButton
+              reportType="sales-history-by-month"
+              disabled={query == null || !data}
+              sourceTemplateId={templateId}
+              getParamsJson={() => ({
+                stores: selectedStores,
+                endMonth: endMonth.format('YYYY-MM'),
+                sortBy,
+                combineStores,
+                detailLevel,
+                dataToPrint,
+                deferredMetrics: deferredChecked,
+                criteria: buildCriteria(),
+                selectedCategories,
+                selectedGroups,
+                storesRaw,
+                categoriesRaw,
+                vendorsRaw,
+                seasonsRaw,
+                styleColorsRaw,
+                groupsRaw,
+                keywordsRaw,
+              })}
+              getResultJson={() => data}
+            />
+          </>
         }
       >
         <Row gutter={24}>

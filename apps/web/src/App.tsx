@@ -46,6 +46,7 @@ const SalesReportsHubPage = lazy(() => import('./pages/salesReporting/SalesRepor
 const SalesAnalysisPage = lazy(() => import('./pages/salesReporting/SalesAnalysisPage'))
 const SalesHierarchyDrillDownPage = lazy(() => import('./pages/salesReporting/SalesHierarchyDrillDownPage'))
 const SalesPivotPage = lazy(() => import('./pages/salesReporting/SalesPivotPage'))
+const SalesPivotCustomPage = lazy(() => import('./pages/salesReporting/SalesPivotCustomPage'))
 const BestSellersPage = lazy(() => import('./pages/salesReporting/BestSellersPage'))
 const SalesHistoryByMonthPage = lazy(() => import('./pages/salesReporting/SalesHistoryByMonthPage'))
 const StockStatusPage = lazy(() => import('./pages/salesReporting/StockStatusPage'))
@@ -215,6 +216,7 @@ export default function App() {
             <Route path="/reports/sales/analysis" element={<SalesAnalysisPage />} />
             <Route path="/reports/sales/hierarchy-drill-down" element={<SalesHierarchyDrillDownPage />} />
             <Route path="/reports/sales/pivot" element={<SalesPivotPage />} />
+            <Route path="/reports/sales/pivot-custom" element={<SalesPivotCustomPage />} />
             <Route path="/reports/sales/best-sellers" element={<BestSellersPage />} />
             <Route path="/reports/sales/history-by-month" element={<SalesHistoryByMonthPage />} />
             <Route path="/reports/sales/stock-status" element={<StockStatusPage />} />

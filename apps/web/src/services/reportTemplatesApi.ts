@@ -9,6 +9,7 @@ const API_BASE = '/api/v1/reports/templates'
 export const REPORT_TYPES = [
   'sales-analysis',
   'sales-hierarchy-drill-down',
+  'sales-pivot',
   'best-sellers',
   'stock-status',
   'sales-by-day',

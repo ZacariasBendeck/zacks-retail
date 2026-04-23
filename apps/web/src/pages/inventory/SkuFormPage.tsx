@@ -34,6 +34,11 @@ import {
 // returned synthetic UUIDs as `id`; the new one returns the real 4-letter code
 // that matches rics_mirror.vendors and app.sku.vendor_id.
 import { useVendors } from '../../hooks/useProductsVendors'
+// Size-type Select options come from rics_mirror.size_types (the real RICS
+// grids), not the legacy SQLite `size-types` ref table which only carries
+// size-standard names (EU, CN, MX, …). app.sku.size_type is a SmallInt
+// matching rics_mirror.inventory_master.size_type.
+import { useSizeTypes } from '../../hooks/useProductsTaxonomy'
 import {
   useSkuDraft,
   useCreateSkuDraft,
@@ -43,6 +48,7 @@ import {
 import type { SkuLifecycleRow, CreateDraftInput } from '../../types/skuLifecycle'
 import { productsAttributesApi } from '../../services/productsAttributesApi'
 import { useSkuAttributes } from '../../hooks/useProductsAttributes'
+import { VendorLookup } from '../../components/vendor-lookup'
 import { useProductFamilies } from '../../hooks/useProductFamilies'
 import { useAllPostgresCategories, type PostgresCategory } from '../../hooks/useProductCategories'
 import type {
@@ -361,6 +367,55 @@ function VendorNameAutofill({ vendors }: { vendors: { code: string; name: string
   )
 }
 
+// ── Shared styles + <PriceField> wrapper for the horizontal "Default Prices"
+//    card. Each row renders label-left / input-right with the label in a
+//    fixed-width span and the InputNumber capped at 120 px — keeps the card
+//    visually dense in the narrow lg=6 column.
+const PRICE_ROW_STYLE: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  marginBottom: 6,
+}
+const PRICE_LABEL_STYLE: React.CSSProperties = {
+  flex: '0 0 96px',
+  fontSize: 12,
+  color: 'rgba(0, 0, 0, 0.88)',
+}
+const PRICE_INPUT_WRAP_STYLE: React.CSSProperties = {
+  flex: '1 1 auto',
+  minWidth: 0,
+}
+const PRICE_INPUT_STYLE: React.CSSProperties = {
+  width: '100%',
+  maxWidth: 120,
+}
+
+interface PriceFieldProps {
+  name: string
+  label: string
+  rules?: import('antd').FormRule[]
+}
+
+function PriceField({ name, label, rules }: PriceFieldProps) {
+  return (
+    <div style={PRICE_ROW_STYLE}>
+      <span style={PRICE_LABEL_STYLE}>{label}</span>
+      <div style={PRICE_INPUT_WRAP_STYLE}>
+        <Form.Item name={name} rules={rules} noStyle>
+          <InputNumber
+            style={PRICE_INPUT_STYLE}
+            min={0}
+            step={0.01}
+            precision={2}
+            placeholder="0.00"
+          />
+        </Form.Item>
+      </div>
+    </div>
+  )
+}
+
 /**
  * Displays gross-profit percentage computed live from the Retail Price +
  * Current Cost form fields. GP% = (retail - cost) / retail × 100, rounded to
@@ -399,6 +454,17 @@ export default function SkuFormPage() {
   const { data: lifecycleSku, isLoading: skuLoading } = useSkuDraft(skuId)
   const { data: vendors, isLoading: vendorsLoading } = useVendors()
   const { data: refData, isLoading: refLoading } = useReferenceData()
+  // RICS size-type grids (rics_mirror.size_types). Each row's `code` maps
+  // directly to app.sku.size_type; description is the operator-facing label.
+  const { data: sizeTypes, isLoading: sizeTypesLoading } = useSizeTypes()
+  const sizeTypeOptions = useMemo(
+    () =>
+      (sizeTypes ?? []).map((s) => ({
+        value: s.code,
+        label: `${s.code} — ${s.description}`,
+      })),
+    [sizeTypes],
+  )
   const createMutation = useCreateSkuDraft()
   const updateMutation = useUpdateSkuDraft()
   const finalizeMutation = useFinalizeSkuDraft()
@@ -438,6 +504,10 @@ export default function SkuFormPage() {
   // through handleCategoryChange without an extra Form.useWatch.
   const [derivedFamilyCode, setDerivedFamilyCode] = useState<string | null>(null)
   const [derivedDepartmentLabel, setDerivedDepartmentLabel] = useState<string | null>(null)
+  // Vendor Lookup modal — RICS-style popup with Code / Name table. The
+  // quick-select dropdown on the form still works for operators who already
+  // know the code; the modal is for browsing by name or exploring the list.
+  const [vendorLookupOpen, setVendorLookupOpen] = useState(false)
 
   // Inline lookup state: tracks when a user-entered SKU code matches an existing SKU
   const [matchedSku, setMatchedSku] = useState<import('../../types/sku').Sku | null>(null)
@@ -525,14 +595,19 @@ export default function SkuFormPage() {
   }, [postgresCategories])
 
   // Derive family + dept when the form loads an existing SKU. Keeps the
-  // family badge + department label in sync with the pre-existing categoryId.
+  // family badge + department label in sync with the pre-existing categoryId,
+  // AND auto-sets the Familia picker so the Category Select stays enabled on
+  // the edit page (without this, the category-scope effect below would wipe
+  // the just-loaded value).
   useEffect(() => {
     if (!lifecycleSku) return
     const cat = lifecycleSku.categoryNumber
     if (cat == null) return
     const row = validCategoriesById.get(cat)
     if (row) {
-      setDerivedFamilyCode(row.familyCode || null)
+      const nextFamily = row.familyCode || lifecycleSku.familyCode || null
+      if (nextFamily) setSelectedFamily(nextFamily)
+      setDerivedFamilyCode(nextFamily)
       setDerivedDepartmentLabel(
         row.departmentNumber != null && row.departmentDesc
           ? `${row.departmentNumber} — ${row.departmentDesc}`
@@ -540,6 +615,29 @@ export default function SkuFormPage() {
       )
     }
   }, [lifecycleSku, validCategoriesById])
+
+  // When the operator changes Familia de Producto, clear any stale Category
+  // pick that belongs to a different family. The Category dropdown is scoped
+  // to the current family, so leaving the prior value would render as
+  // "valor desconocido". Skip the clear if the current category already lives
+  // in the new family (e.g. we just derived the family from it on load).
+  useEffect(() => {
+    const current = form.getFieldValue('categoryId') as number | null | undefined
+    if (current == null) return
+    const row = validCategoriesById.get(current)
+    if (!selectedFamily) {
+      // Family was unset — category can't be validated, wipe it.
+      form.setFieldsValue({ categoryId: null })
+      setDerivedFamilyCode(null)
+      setDerivedDepartmentLabel(null)
+      return
+    }
+    if (row && row.familyCode !== selectedFamily) {
+      form.setFieldsValue({ categoryId: null })
+      setDerivedFamilyCode(null)
+      setDerivedDepartmentLabel(null)
+    }
+  }, [selectedFamily, validCategoriesById, form])
 
   // Category change → look up family + dept locally (no roundtrip since
   // useAllPostgresCategories already cached the full catalog) and push the
@@ -1004,26 +1102,26 @@ export default function SkuFormPage() {
     return m
   }, [productFamilies])
   const categoryOptions = useMemo(() => {
-    const cats = Array.from(validCategoriesById.values())
-    const grouped = cats.reduce<Record<string, PostgresCategory[]>>((acc, c) => {
-      const groupKey = c.familyCode || 'sin_familia'
-      if (!acc[groupKey]) acc[groupKey] = []
-      acc[groupKey].push(c)
-      return acc
-    }, {})
-    return Object.entries(grouped).map(([familyCode, items]) => ({
-      label:
-        familyCode === 'sin_familia'
-          ? '— Sin familia'
-          : familyLabelByCode.get(familyCode) ?? familyCode,
-      options: items.map((c) => ({
+    // Scope the dropdown to the currently-selected Product Family. The Family
+    // picker at the top of the page is the single source of truth for which
+    // categories are legal — without that scope the operator sees 600+ mostly-
+    // irrelevant rows and the grouped label ends up hiding most families
+    // behind virtualization anyway. If no family is picked, the Select is
+    // disabled by its own prop (see the Select render below), so what we
+    // return here is a moot set — we return [] to make that explicit.
+    if (!selectedFamily) return []
+    const cats = Array.from(validCategoriesById.values()).filter(
+      (c) => c.familyCode === selectedFamily,
+    )
+    return cats
+      .sort((a, b) => a.categoryNumber - b.categoryNumber)
+      .map((c) => ({
         label: `${c.categoryNumber} · ${c.categoryDesc.trim()}${
           c.departmentDesc ? `  (${c.departmentDesc})` : ''
         }`,
         value: c.categoryNumber,
-      })),
-    }))
-  }, [validCategoriesById, familyLabelByCode])
+      }))
+  }, [validCategoriesById, selectedFamily])
 
   if (isRouteEdit && skuLoading) {
     return (
@@ -1284,9 +1382,23 @@ export default function SkuFormPage() {
             form={form}
             layout="vertical"
             onFinish={handleSubmit}
-            requiredMark="optional"
+            // requiredMark defaults to true — shows a red asterisk on required
+            // fields and NOTHING on optional ones. The previous value
+            // `"optional"` inverted this and plastered "(optional)" on every
+            // unrequired field including derived-display ones, which the
+            // operator found noisy.
             size="small"
           >
+            {/* Vendor lookup modal lives inside the Form so a selected code
+                flows into the vendorId field via setFieldsValue. */}
+            <VendorLookup
+              open={vendorLookupOpen}
+              onClose={() => setVendorLookupOpen(false)}
+              onSelect={(picked) => {
+                form.setFieldsValue({ vendorId: picked.code })
+              }}
+              initialQuery={(form.getFieldValue('vendorId') as string | undefined) ?? ''}
+            />
             {/* -- Codigo SKU -- */}
             {!isRouteEdit && (
               <>
@@ -1410,11 +1522,26 @@ export default function SkuFormPage() {
             <Row gutter={16} style={{ marginTop: 4 }}>
               <Col xs={24} lg={18}>
                 <Card title="Detalles del Producto" size="small" styles={{ body: { padding: 12 } }}>
-                  {/* Row 1 — Vendor + SKU Proveedor + Category/Dept + Size Type + Group */}
+                  {/* Row 1 — Vendor identity alone, so Vendor SKU can breathe.
+                      Everything after Vendor SKU wraps to the next row. */}
                   <Row gutter={8}>
                     <Col xs={12} sm={4}>
                       <Form.Item
-                        label="Vendor Code"
+                        label={
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                            Vendor Code
+                            <Button
+                              type="link"
+                              size="small"
+                              icon={<SearchOutlined />}
+                              onClick={() => setVendorLookupOpen(true)}
+                              style={{ padding: 0, height: 'auto', lineHeight: 1 }}
+                              title="Abrir lookup de vendors (Code / Name)"
+                            >
+                              Buscar
+                            </Button>
+                          </span>
+                        }
                         name="vendorId"
                         rules={[{ required: true, message: 'Vendor requerido' }]}
                         style={compactItem}
@@ -1424,7 +1551,15 @@ export default function SkuFormPage() {
                           showSearch
                           optionFilterProp="label"
                           loading={vendorsLoading}
-                          options={vendors?.map((v) => ({ label: v.code, value: v.code, name: v.name }))}
+                          // Render each option as "CODE — Name" so the operator
+                          // sees both while scrolling the native dropdown. The
+                          // stored value stays the 4-letter code.
+                          options={vendors?.map((v) => ({
+                            label: `${v.code} — ${v.name}`,
+                            value: v.code,
+                            name: v.name,
+                          }))}
+                          // Matches on either the code or the name substring.
                           filterOption={(input, option) => {
                             const s = input.toLowerCase()
                             const code = String(option?.value ?? '').toLowerCase()
@@ -1434,17 +1569,21 @@ export default function SkuFormPage() {
                         />
                       </Form.Item>
                     </Col>
-                    <Col xs={12} sm={5}>
+                    <Col xs={12} sm={6}>
                       <Form.Item label="Vendor Name" style={compactItem}>
                         <VendorNameAutofill vendors={vendors} />
                       </Form.Item>
                     </Col>
-                    <Col xs={12} sm={3}>
+                    <Col xs={24} sm={14}>
                       <Form.Item label="Vendor SKU" name="vendorSku" style={compactItem}>
-                        <Input placeholder="SKU Proveedor" />
+                        <Input placeholder="SKU del proveedor (referencia original)" />
                       </Form.Item>
                     </Col>
-                    <Col xs={24} sm={6}>
+                  </Row>
+
+                  {/* Row 2 — Category / Department (auto) / Size Type / Group. */}
+                  <Row gutter={8}>
+                    <Col xs={24} sm={8}>
                       <Form.Item
                         label={
                           <span>
@@ -1458,6 +1597,7 @@ export default function SkuFormPage() {
                         }
                         name="categoryId"
                         rules={[
+                          { required: true, message: 'Categoría requerida' },
                           {
                             validator: (_, value: number | null | undefined) => {
                               if (value == null) return Promise.resolve()
@@ -1471,7 +1611,12 @@ export default function SkuFormPage() {
                         style={{ ...compactItem, ...(aiFilledFields.has('categoryId') ? AI_FILLED_STYLE : {}) }}
                       >
                         <Select
-                          placeholder="Buscar"
+                          placeholder={
+                            selectedFamily
+                              ? 'Buscar'
+                              : 'Selecciona una Familia primero'
+                          }
+                          disabled={!selectedFamily}
                           allowClear
                           showSearch
                           optionFilterProp="label"
@@ -1484,7 +1629,7 @@ export default function SkuFormPage() {
                         />
                       </Form.Item>
                     </Col>
-                    <Col xs={12} sm={4}>
+                    <Col xs={12} sm={6}>
                       <Form.Item label="Department (auto)" style={compactItem}>
                         <Input
                           value={derivedDepartmentLabel ?? ''}
@@ -1494,31 +1639,41 @@ export default function SkuFormPage() {
                         />
                       </Form.Item>
                     </Col>
-                    <Col xs={12} sm={2}>
+                    <Col xs={12} sm={6}>
                       <Form.Item label="Size Type" name="sizeType" style={compactItem}>
-                        <InputNumber min={1} max={99} style={{ width: '100%' }} placeholder="0" />
+                        <Select
+                          placeholder="Seleccionar grid"
+                          allowClear
+                          showSearch
+                          optionFilterProp="label"
+                          loading={sizeTypesLoading}
+                          options={sizeTypeOptions}
+                        />
                       </Form.Item>
                     </Col>
-                  </Row>
-
-                  {/* Row 2 — Group + Description + Style/Color + Location + Comment + Cost */}
-                  <Row gutter={8}>
-                    <Col xs={12} sm={2}>
+                    <Col xs={12} sm={4}>
                       <Form.Item label="Group" name="groupCode" style={compactItem}>
                         <Input placeholder="Grupo" maxLength={3} />
                       </Form.Item>
                     </Col>
-                    <Col xs={24} sm={6}>
+                  </Row>
+
+                  {/* Row 3 — Description / Style-Color / Current Cost / Season code / Season auto. */}
+                  <Row gutter={8}>
+                    <Col xs={24} sm={8}>
                       <Form.Item
                         label="Description"
                         name="ricsDescription"
-                        rules={[{ max: 500 }]}
+                        rules={[
+                          { required: true, message: 'Descripción requerida' },
+                          { max: 500 },
+                        ]}
                         style={compactItem}
                       >
                         <Input placeholder="Descripción" />
                       </Form.Item>
                     </Col>
-                    <Col xs={12} sm={5}>
+                    <Col xs={24} sm={5}>
                       <Form.Item label="Style / Color" style={compactItem}>
                         <Space.Compact style={{ width: '100%' }}>
                           <Form.Item
@@ -1541,31 +1696,17 @@ export default function SkuFormPage() {
                         </Space.Compact>
                       </Form.Item>
                     </Col>
-                    <Col xs={12} sm={3}>
-                      <Form.Item label="Location" name="location" style={compactItem}>
-                        <Input placeholder="Ubicación" />
-                      </Form.Item>
-                    </Col>
-                    <Col xs={24} sm={5}>
-                      <Form.Item label="Comment" name="comment" rules={[{ max: 1000 }]} style={compactItem}>
-                        <Input placeholder="Notas internas" />
-                      </Form.Item>
-                    </Col>
-                    <Col xs={12} sm={3}>
+                    <Col xs={8} sm={3}>
                       <Form.Item label="Current Cost" name="cost" style={compactItem}>
                         <InputNumber style={{ width: '100%' }} min={0} step={0.01} precision={2} placeholder="0.00" />
                       </Form.Item>
                     </Col>
-                  </Row>
-
-                  {/* Row 3 — Season code + Season autofill + Keywords + Picture + Coupon + Label Type */}
-                  <Row gutter={8}>
-                    <Col xs={12} sm={2}>
+                    <Col xs={8} sm={3}>
                       <Form.Item label="Season Code" name="season" style={compactItem}>
                         <Input placeholder="ej. SS" maxLength={2} />
                       </Form.Item>
                     </Col>
-                    <Col xs={12} sm={3}>
+                    <Col xs={8} sm={5}>
                       <Form.Item label="Season (auto)" name="seasonId" style={compactItem}>
                         <Select
                           placeholder="Auto"
@@ -1574,36 +1715,36 @@ export default function SkuFormPage() {
                         />
                       </Form.Item>
                     </Col>
-                    <Col xs={24} sm={6}>
+                  </Row>
+
+                  {/* Row 4 — Keywords / Picture File 1 / Coupon. */}
+                  <Row gutter={8}>
+                    <Col xs={24} sm={10}>
                       <Form.Item label="Keywords" name="keywords" rules={[{ max: 500 }]} style={compactItem}>
                         <Input placeholder="separadas por coma" />
                       </Form.Item>
                     </Col>
-                    <Col xs={24} sm={5}>
+                    <Col xs={24} sm={10}>
                       <Form.Item label="Picture File 1" name="pictureFileName" style={compactItem}>
                         <Input placeholder="ej. SKU123.jpg" />
                       </Form.Item>
                     </Col>
-                    <Col xs={12} sm={2}>
+                    <Col xs={12} sm={4}>
                       <Form.Item label="Coupon" name="coupon" valuePropName="checked" style={compactItem}>
                         <Switch />
                       </Form.Item>
                     </Col>
-                    <Col xs={12} sm={3}>
-                      <Form.Item label="Label Type" name="labelTypeId" style={compactItem}>
-                        <Select
-                          placeholder="Tipo"
-                          allowClear
-                          options={refOptions(refData?.['label-types'])}
-                        />
-                      </Form.Item>
-                    </Col>
                   </Row>
 
-                  {/* Row 4 — Brand + StyleColor Canonico + Shoe Type (AI fields kept). */}
+                  {/* Row 5 — AI keeper row: Brand / Shoe Type / Style-Color Canónico / Web Desc. */}
                   <Row gutter={8}>
                     <Col xs={12} sm={4}>
-                      <Form.Item label="Marca" name="brandId" style={compactItem}>
+                      <Form.Item
+                        label="Marca"
+                        name="brandId"
+                        rules={[{ required: true, message: 'Marca requerida' }]}
+                        style={compactItem}
+                      >
                         <Input placeholder="Escriba la marca" allowClear />
                       </Form.Item>
                     </Col>
@@ -1640,6 +1781,31 @@ export default function SkuFormPage() {
                       </Form.Item>
                     </Col>
                   </Row>
+
+                  {/* Row 6 — END ROW: Location (wide), Comment (widest), Label Type.
+                      Duplicate copies of Label Type / Departamento / Tipo de Etiqueta
+                      removed from the legacy "Clasificacion" block below on 2026-04-23. */}
+                  <Row gutter={8}>
+                    <Col xs={12} sm={5}>
+                      <Form.Item label="Location" name="location" style={compactItem}>
+                        <Input placeholder="Ubicación" />
+                      </Form.Item>
+                    </Col>
+                    <Col xs={24} sm={14}>
+                      <Form.Item label="Comment" name="comment" rules={[{ max: 1000 }]} style={compactItem}>
+                        <Input placeholder="Notas internas" />
+                      </Form.Item>
+                    </Col>
+                    <Col xs={12} sm={5}>
+                      <Form.Item label="Tipo de Etiqueta" name="labelTypeId" style={compactItem}>
+                        <Select
+                          placeholder="Tipo"
+                          allowClear
+                          options={refOptions(refData?.['label-types'])}
+                        />
+                      </Form.Item>
+                    </Col>
+                  </Row>
                 </Card>
               </Col>
 
@@ -1649,65 +1815,47 @@ export default function SkuFormPage() {
                   size="small"
                   styles={{ body: { padding: 12 } }}
                 >
-                  <Form.Item label="List Price" name="listPrice" style={compactItem}>
-                    <InputNumber style={{ width: '100%' }} min={0} step={0.01} precision={2} placeholder="0.00" />
-                  </Form.Item>
-                  <Form.Item
-                    label="Retail Price"
+                  {/*
+                    Horizontal layout — label on the left, compact input on the
+                    right. Each row uses a flex container with a fixed-width
+                    label span; the Form.Item itself renders `noStyle` so the
+                    label column isn't the Ant-generated one. Inputs are capped
+                    at 120px so the card stays visually dense.
+                  */}
+                  <PriceField name="listPrice" label="List Price" />
+                  <PriceField
                     name="price"
+                    label="Retail Price"
                     rules={[{ required: true, message: 'Retail requerido' }, { type: 'number', min: 0.01 }]}
-                    style={compactItem}
-                  >
-                    <InputNumber style={{ width: '100%' }} min={0.01} step={0.01} precision={2} placeholder="0.00" />
-                  </Form.Item>
-                  <Form.Item label="Markdown 1" name="markDownPrice1" style={compactItem}>
-                    <InputNumber style={{ width: '100%' }} min={0} step={0.01} precision={2} placeholder="0.00" />
-                  </Form.Item>
-                  <Form.Item label="Markdown 2" name="markDownPrice2" style={compactItem}>
-                    <InputNumber style={{ width: '100%' }} min={0} step={0.01} precision={2} placeholder="0.00" />
-                  </Form.Item>
-                  <Form.Item label="Perks" name="perks" style={compactItem}>
-                    <InputNumber style={{ width: '100%' }} min={0} step={0.01} precision={2} placeholder="0.00" />
-                  </Form.Item>
-                  <Form.Item label="GP %" style={compactItem}>
-                    <GpPercentDisplay />
-                  </Form.Item>
-                  <Form.Item label="Discount Code" name="discountCode" style={compactItem}>
-                    <Input placeholder="Código de promoción" maxLength={20} />
-                  </Form.Item>
+                  />
+                  <PriceField name="markDownPrice1" label="Markdown 1" />
+                  <PriceField name="markDownPrice2" label="Markdown 2" />
+                  <PriceField name="perks" label="Perks" />
+                  <div style={PRICE_ROW_STYLE}>
+                    <span style={PRICE_LABEL_STYLE}>GP %</span>
+                    <div style={PRICE_INPUT_WRAP_STYLE}>
+                      <GpPercentDisplay />
+                    </div>
+                  </div>
+                  <div style={PRICE_ROW_STYLE}>
+                    <span style={PRICE_LABEL_STYLE}>Discount Code</span>
+                    <Form.Item name="discountCode" noStyle>
+                      <Input style={PRICE_INPUT_STYLE} placeholder="Promoción" maxLength={20} />
+                    </Form.Item>
+                  </div>
                 </Card>
               </Col>
             </Row>
 
             <Divider style={{ margin: '8px 0' }} />
 
-            {/* -- Clasificacion — what's left after the move: merchandising attrs + dept (auto) -- */}
+            {/* -- Clasificacion — trimmed 2026-04-23. Departamento and Tipo de
+                   Etiqueta moved up into Detalles del Producto (the canonical
+                   home); this section now only carries merchandising facets
+                   not yet migrated to the dimensional framework. -- */}
             <Typography.Text strong style={{ fontSize: 13 }}>Clasificacion</Typography.Text>
 
             <Row gutter={12} style={{ marginTop: 8 }}>
-              <Col xs={24} sm={6}>
-                {/*
-                  Phase 4 — Departamento is now a display-only readout of the
-                  real Postgres dept derived from the selected category. The
-                  actual column write to app.sku uses categoryNumber + a join,
-                  so the form doesn't submit a dept value directly. We keep
-                  the "department" Form.Item to preserve the legacy style-color
-                  picker's compat shape, but render a plain Input so the user
-                  sees the real dept name ("BOTAS MUJER") instead of the
-                  legacy macro enum (BOOTS).
-                */}
-                <Form.Item
-                  label="Departamento"
-                  style={compactItem}
-                >
-                  <Input
-                    value={derivedDepartmentLabel ?? ''}
-                    readOnly
-                    placeholder="Se deriva de la categoría"
-                    style={{ background: '#fafafa', fontFamily: 'monospace' }}
-                  />
-                </Form.Item>
-              </Col>
               <Col xs={12} sm={3}>
                 <Form.Item label="Temporada" name="seasonId" style={compactItem}>
                   <Select placeholder="Seleccionar" allowClear options={refOptions(refData?.['seasons'])} />
@@ -1721,11 +1869,6 @@ export default function SkuFormPage() {
               <Col xs={12} sm={4}>
                 <Form.Item label={aiLabel('Género', 'genderId', aiFilledFields)} name="genderId" style={{ ...compactItem, ...(aiFilledFields.has('genderId') ? AI_FILLED_STYLE : {}) }}>
                   <Select placeholder="Seleccionar" allowClear options={refOptions(refData?.['target-audiences'])} />
-                </Form.Item>
-              </Col>
-              <Col xs={12} sm={4}>
-                <Form.Item label="Tipo de Etiqueta" name="labelTypeId" style={compactItem}>
-                  <Select placeholder="Seleccionar" allowClear options={refOptions(refData?.['label-types'])} />
                 </Form.Item>
               </Col>
             </Row>

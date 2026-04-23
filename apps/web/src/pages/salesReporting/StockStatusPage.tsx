@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import {
-  Alert, Card, Input, Select, Space, Table, Tag, Spin,
+  Alert, Input, Select, Space, Table, Tag, Spin,
 } from 'antd'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
@@ -14,6 +14,7 @@ import type {
 import { getErrorMessage } from '../../utils/errors'
 import RunReportControls from './RunReportControls'
 import SaveAsTemplateButton from '../../components/reports/SaveAsTemplateButton'
+import SaveSnapshotButton from '../../components/reports/SaveSnapshotButton'
 import ReportHeader from '../../components/reports/ReportHeader'
 import FilterChips, { type FilterChip } from '../../components/reports/FilterChips'
 import ReportEmptyState from '../../components/reports/ReportEmptyState'
@@ -168,8 +169,10 @@ export default function StockStatusPage() {
         running={running}
         onRun={onRun}
         actions={
-          <Space>
-            <RunReportControls running={running} hasRun={query != null} onRun={onRun} onStop={onStop} />
+          <RunReportControls running={running} hasRun={query != null} onRun={onRun} onStop={onStop} />
+        }
+        persistentActions={
+          <>
             <SaveAsTemplateButton
               reportType="stock-status"
               disabled={query == null}
@@ -187,7 +190,26 @@ export default function StockStatusPage() {
                 skusText,
               })}
             />
-          </Space>
+            <SaveSnapshotButton
+              reportType="stock-status"
+              disabled={query == null || !data}
+              sourceTemplateId={templateId}
+              getParamsJson={() => ({
+                sortBy,
+                storeOption,
+                itemFilter,
+                vendors: parseStrs(vendorsText),
+                categories: parseInts(categoriesText),
+                seasons: parseStrs(seasonsText),
+                skus: parseStrs(skusText),
+                vendorsText,
+                categoriesText,
+                seasonsText,
+                skusText,
+              })}
+              getResultJson={() => data}
+            />
+          </>
         }
       >
         <Space wrap>

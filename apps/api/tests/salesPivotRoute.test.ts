@@ -12,6 +12,9 @@ jest.mock('../src/services/salesReporting/ricsSalesPivotAdapter', () => ({
 jest.mock('../src/services/salesReporting/ricsSalesPivotByBuyerAdapter', () => ({
   getSalesPivotByBuyer: jest.fn(),
 }));
+jest.mock('../src/services/salesReporting/ricsSalesPivotCustomAdapter', () => ({
+  getSalesPivotCustom: jest.fn(),
+}));
 
 jest.mock('../src/services/salesReporting/ricsSalesReportAdapter', () => {
   const actual = jest.requireActual('../src/services/salesReporting/ricsSalesReportAdapter');
@@ -63,6 +66,17 @@ function getBuyerAdapterMock(): jest.Mock {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const adapter = require('../src/services/salesReporting/ricsSalesPivotByBuyerAdapter');
   return adapter.getSalesPivotByBuyer as jest.Mock;
+}
+function setCustomAdapterReport(report: SalesPivotReport): void {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const adapter = require('../src/services/salesReporting/ricsSalesPivotCustomAdapter');
+  (adapter.getSalesPivotCustom as jest.Mock).mockReset();
+  (adapter.getSalesPivotCustom as jest.Mock).mockResolvedValue(report);
+}
+function getCustomAdapterMock(): jest.Mock {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const adapter = require('../src/services/salesReporting/ricsSalesPivotCustomAdapter');
+  return adapter.getSalesPivotCustom as jest.Mock;
 }
 
 describe('GET /api/v1/reports/sales/sales-pivot', () => {
@@ -159,6 +173,8 @@ describe('GET /api/v1/reports/sales/sales-pivot', () => {
           sector: 1, sectorDesc: 'APPAREL',
           dept: 10, deptDesc: 'MENS',
           categ: 556, categDesc: 'SHIRTS',
+          season: null, seasonDesc: null,
+          groupCode: null, groupDesc: null,
           sku: 'SKU-A', skuDescription: 'Blue shirt',
           onHandQty: 12, onHandCostVal: 240.5,
           qtyTY: 3, netSalesTY: 180.25, profitTY: 60.5,
@@ -190,6 +206,8 @@ describe('GET /api/v1/reports/sales/sales-pivot', () => {
           sector: 1, sectorDesc: 'APPAREL',
           dept: 10, deptDesc: 'MENS',
           categ: 556, categDesc: 'SHIRTS',
+          season: null, seasonDesc: null,
+          groupCode: null, groupDesc: null,
           sku: 'SKU-A', skuDescription: 'Blue shirt',
           onHandQty: 12, onHandCostVal: 240.5,
           qtyTY: 3, netSalesTY: 180.25, profitTY: 60.5,
@@ -219,6 +237,9 @@ describe('GET /api/v1/reports/sales/sales-pivot', () => {
   });
 
   it('dispatches to the buyer adapter when variant=buyer-vendor-separate-store', async () => {
+    // Reset the department mock so "not called" below refers to this test's
+    // dispatch path only, not cumulative across earlier tests in the suite.
+    getDeptAdapterMock().mockReset();
     setBuyerAdapterReport(emptyReport('buyer-vendor-separate-store'));
     const res = await request(app).get(
       '/api/v1/reports/sales/sales-pivot?startDate=2026-04-01&endDate=2026-04-22&variant=buyer-vendor-separate-store',
@@ -240,6 +261,8 @@ describe('GET /api/v1/reports/sales/sales-pivot', () => {
           sector: null, sectorDesc: null,
           dept: 10, deptDesc: 'MENS',
           categ: 556, categDesc: 'SHIRTS',
+          season: null, seasonDesc: null,
+          groupCode: null, groupDesc: null,
           sku: 'SKU-A', skuDescription: 'Blue shirt',
           onHandQty: 12, onHandCostVal: 240.5,
           qtyTY: 3, netSalesTY: 180.25, profitTY: 60.5,
@@ -270,6 +293,8 @@ describe('GET /api/v1/reports/sales/sales-pivot', () => {
           sector: null, sectorDesc: null,
           dept: 10, deptDesc: 'MENS',
           categ: 556, categDesc: 'SHIRTS',
+          season: null, seasonDesc: null,
+          groupCode: null, groupDesc: null,
           sku: 'SKU-A', skuDescription: 'Blue shirt',
           onHandQty: 12, onHandCostVal: 240.5,
           qtyTY: 3, netSalesTY: 180.25, profitTY: 60.5,
@@ -288,6 +313,52 @@ describe('GET /api/v1/reports/sales/sales-pivot', () => {
     expect(body).toContain('SKU-A');
   });
 
+  it('rejects variant=custom without levels', async () => {
+    const res = await request(app).get(
+      '/api/v1/reports/sales/sales-pivot?startDate=2026-04-01&endDate=2026-04-22&variant=custom',
+    );
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('rejects variant=custom with duplicate dimensions', async () => {
+    const res = await request(app).get(
+      '/api/v1/reports/sales/sales-pivot?startDate=2026-04-01&endDate=2026-04-22&variant=custom&level1=buyer&level2=buyer&level3=vendor',
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('dispatches to the custom adapter with the chosen levels', async () => {
+    getDeptAdapterMock().mockReset();
+    getBuyerAdapterMock().mockReset();
+    setCustomAdapterReport({
+      variant: 'custom',
+      levels: ['buyer', 'vendor', 'category'],
+      startDate: '2026-04-01', endDate: '2026-04-22',
+      currentYear: 2026, priorYear: 2025,
+      storeNumbers: [], rows: [],
+      totals: {
+        onHandQty: 0, onHandCostVal: 0,
+        qtyTY: 0, netSalesTY: 0, profitTY: 0,
+        qtyLY: 0, netSalesLY: 0, profitLY: 0,
+      },
+    });
+    const res = await request(app).get(
+      '/api/v1/reports/sales/sales-pivot?startDate=2026-04-01&endDate=2026-04-22&variant=custom&level1=buyer&level2=vendor&level3=category',
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.variant).toBe('custom');
+    expect(res.body.levels).toEqual(['buyer', 'vendor', 'category']);
+    const call = getCustomAdapterMock().mock.calls.at(-1)?.[0];
+    expect(call).toMatchObject({
+      startDate: '2026-04-01',
+      endDate: '2026-04-22',
+      levels: ['buyer', 'vendor', 'category'],
+    });
+    expect(getDeptAdapterMock()).not.toHaveBeenCalled();
+    expect(getBuyerAdapterMock()).not.toHaveBeenCalled();
+  });
+
   it('returns a buyer CSV with buyer + SKU columns', async () => {
     setBuyerAdapterReport(emptyReport('buyer', {
       rows: [
@@ -298,6 +369,8 @@ describe('GET /api/v1/reports/sales/sales-pivot', () => {
           sector: null, sectorDesc: null,
           dept: 10, deptDesc: 'MENS',
           categ: 556, categDesc: 'SHIRTS',
+          season: null, seasonDesc: null,
+          groupCode: null, groupDesc: null,
           sku: 'SKU-A', skuDescription: 'Blue shirt',
           onHandQty: 12, onHandCostVal: 240.5,
           qtyTY: 3, netSalesTY: 180.25, profitTY: 60.5,
@@ -314,5 +387,74 @@ describe('GET /api/v1/reports/sales/sales-pivot', () => {
     expect(body).not.toContain('Sector');
     expect(body).toContain('zb');
     expect(body).toContain('Blue shirt');
+  });
+
+  it('forwards sector/department/season/buyer filters to the custom adapter', async () => {
+    setCustomAdapterReport({
+      variant: 'custom',
+      levels: ['buyer', 'vendor', 'category'],
+      startDate: '2026-04-01', endDate: '2026-04-22',
+      currentYear: 2026, priorYear: 2025,
+      storeNumbers: [], rows: [],
+      totals: {
+        onHandQty: 0, onHandCostVal: 0,
+        qtyTY: 0, netSalesTY: 0, profitTY: 0,
+        qtyLY: 0, netSalesLY: 0, profitLY: 0,
+      },
+    });
+    await request(app).get(
+      '/api/v1/reports/sales/sales-pivot' +
+      '?startDate=2026-04-01&endDate=2026-04-22' +
+      '&variant=custom&level1=buyer&level2=vendor&level3=category' +
+      '&sectors=1,2&departments=10,11&seasons=A,B&buyers=zb,ab',
+    );
+    const call = getCustomAdapterMock().mock.calls.at(-1)?.[0];
+    expect(call).toMatchObject({
+      sectors: [1, 2],
+      departments: [10, 11],
+      seasons: ['A', 'B'],
+      buyers: ['zb', 'ab'],
+    });
+  });
+
+  it('emits a custom CSV with a column pair per chosen level', async () => {
+    setCustomAdapterReport({
+      variant: 'custom',
+      levels: ['sector', 'group', 'category'],
+      startDate: '2026-04-01', endDate: '2026-04-22',
+      currentYear: 2026, priorYear: 2025,
+      storeNumbers: [],
+      rows: [
+        {
+          storeNumber: null, storeName: null,
+          buyerCode: null, buyerLabel: null,
+          vendorCode: null, vendorLabel: null,
+          sector: 1, sectorDesc: 'APPAREL',
+          dept: 10, deptDesc: 'MENS',
+          categ: 556, categDesc: 'SHIRTS',
+          season: 'A', seasonDesc: 'Primavera/Verano',
+          groupCode: 'G1', groupDesc: 'Premium',
+          sku: 'SKU-A', skuDescription: 'Blue shirt',
+          onHandQty: 12, onHandCostVal: 240.5,
+          qtyTY: 3, netSalesTY: 180.25, profitTY: 60.5,
+          qtyLY: 2, netSalesLY: 120, profitLY: 40,
+        },
+      ],
+      totals: {
+        onHandQty: 12, onHandCostVal: 240.5,
+        qtyTY: 3, netSalesTY: 180.25, profitTY: 60.5,
+        qtyLY: 2, netSalesLY: 120, profitLY: 40,
+      },
+    });
+    const res = await request(app).get(
+      '/api/v1/reports/sales/sales-pivot?startDate=2026-04-01&endDate=2026-04-22&variant=custom&level1=sector&level2=group&level3=category&format=csv',
+    );
+    expect(res.status).toBe(200);
+    const body = res.text;
+    expect(body).toContain('Sector');
+    expect(body).toContain('Group Code');
+    expect(body).toContain('Category #');
+    expect(body).toContain('Premium');
+    expect(body).toContain('SKU-A');
   });
 });

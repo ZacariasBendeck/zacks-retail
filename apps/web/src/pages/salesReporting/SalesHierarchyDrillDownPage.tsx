@@ -286,8 +286,10 @@ export default function SalesHierarchyDrillDownPage() {
         running={running}
         onRun={onRun}
         actions={
-          <Space>
-            <RunReportControls running={running} hasRun={query != null} onRun={onRun} onStop={onStop} />
+          <RunReportControls running={running} hasRun={query != null} onRun={onRun} onStop={onStop} />
+        }
+        persistentActions={
+          <>
             <SaveAsTemplateButton
               reportType="sales-hierarchy-drill-down"
               disabled={query == null}
@@ -330,7 +332,7 @@ export default function SalesHierarchyDrillDownPage() {
               })}
               getResultJson={() => data}
             />
-          </Space>
+          </>
         }
       >
         <Row gutter={24}>

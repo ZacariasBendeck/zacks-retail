@@ -57,19 +57,21 @@ function makeMockRepo() {
       calls.push(`findByCode:${code}`);
       return code === 'ABCD' ? Ok(makeVendor()) : Err({ kind: 'NotFound', message: 'missing' });
     }),
+    // Writes now return WriteNotSupported — the MDB endpoint was removed
+    // 2026-04-23 and Postgres has no vendor write target yet.
     create: jest.fn(async (input: VendorInput): Promise<Result<Vendor>> => {
       calls.push(`create:${input.code}`);
-      return Ok(makeVendor({ code: input.code, name: input.name, mailName: input.mailName }));
+      return Err({ kind: 'WriteNotSupported', message: 'writes disabled' });
     }),
     update: jest.fn(
       async (code: string, _patch: Partial<VendorInput>): Promise<Result<Vendor>> => {
         calls.push(`update:${code}`);
-        return Ok(makeVendor({ code }));
+        return Err({ kind: 'WriteNotSupported', message: 'writes disabled' });
       },
     ),
     delete: jest.fn(async (code: string): Promise<Result<void>> => {
       calls.push(`delete:${code}`);
-      return Ok(undefined);
+      return Err({ kind: 'WriteNotSupported', message: 'writes disabled' });
     }),
     findStoreAccounts: jest.fn(async (code: string): Promise<Result<VendorStoreAccount[]>> => {
       calls.push(`findStoreAccounts:${code}`);
@@ -79,15 +81,15 @@ function makeMockRepo() {
       async (
         code: string,
         storeId: number,
-        accountNo: string,
+        _accountNo: string,
       ): Promise<Result<VendorStoreAccount>> => {
         calls.push(`upsertStoreAccount:${code}:${storeId}`);
-        return Ok({ code, storeId, accountNo, dateLastChanged: null });
+        return Err({ kind: 'WriteNotSupported', message: 'writes disabled' });
       },
     ),
     deleteStoreAccount: jest.fn(async (code: string, storeId: number): Promise<Result<void>> => {
       calls.push(`deleteStoreAccount:${code}:${storeId}`);
-      return Ok(undefined);
+      return Err({ kind: 'WriteNotSupported', message: 'writes disabled' });
     }),
     countSkusUsingVendor: jest.fn(async (_code: string): Promise<Result<number>> => {
       calls.push('countSkusUsingVendor');
@@ -132,19 +134,15 @@ describe('vendorService', () => {
     expect(repo.findByCode).toHaveBeenCalledWith('ABCD');
   });
 
-  test('create happy path writes audit log', async () => {
+  test('create propagates WriteNotSupported from repo; no audit written', async () => {
     const { repo } = makeMockRepo();
     const { audit, records } = makeMockAudit();
     const svc = createVendorService({ repo: repo as any, audit, actor: 'tester' });
     const result = await svc.create(VALID_INPUT);
-    expect(result.ok).toBe(true);
-    expect(records).toHaveLength(1);
-    expect(records[0]).toMatchObject({
-      actor: 'tester',
-      action: 'CREATE',
-      targetTable: 'Vendor Master',
-      targetPk: 'ABCD',
-    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.kind).toBe('WriteNotSupported');
+    // audit only records on success — the write failed, so no log
+    expect(records).toHaveLength(0);
   });
 
   test('create with only qualifierId set returns ConstraintViolation', async () => {
@@ -166,7 +164,11 @@ describe('vendorService', () => {
     expect(repo.create).not.toHaveBeenCalled();
   });
 
-  test('create with both qualifier fields set passes', async () => {
+  test('create with both qualifier fields set passes EDI check then fails at write', async () => {
+    // EDI validation passes, so the service calls repo.create — which returns
+    // WriteNotSupported. The point of this test is that the service doesn't
+    // short-circuit the EDI check when writes are disabled; full validation
+    // still runs before reaching the repo layer.
     const { repo } = makeMockRepo();
     const svc = createVendorService({ repo: repo as any, audit: makeMockAudit().audit });
     const result = await svc.create({
@@ -174,17 +176,19 @@ describe('vendorService', () => {
       qualifierId: '01',
       qualifierCode: '025',
     });
-    expect(result.ok).toBe(true);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.kind).toBe('WriteNotSupported');
     expect(repo.create).toHaveBeenCalledTimes(1);
   });
 
-  test('update writes audit log on success', async () => {
+  test('update propagates WriteNotSupported from repo; no audit written', async () => {
     const { repo } = makeMockRepo();
     const { audit, records } = makeMockAudit();
     const svc = createVendorService({ repo: repo as any, audit });
-    await svc.update('ABCD', { name: 'Renamed' });
-    expect(records).toHaveLength(1);
-    expect(records[0].action).toBe('UPDATE');
+    const result = await svc.update('ABCD', { name: 'Renamed' });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.kind).toBe('WriteNotSupported');
+    expect(records).toHaveLength(0);
   });
 
   test('update with qualifierId but no qualifierCode (existing has neither) fails EDI', async () => {
@@ -198,14 +202,20 @@ describe('vendorService', () => {
     if (!result.ok) expect(result.error.kind).toBe('ConstraintViolation');
   });
 
-  test('update with qualifierId when existing already has qualifierCode passes', async () => {
+  test('update with qualifierId when existing already has qualifierCode passes EDI check', async () => {
+    // EDI check passes (existing has qualifierCode, patch adds qualifierId);
+    // the actual update then fails at the repo with WriteNotSupported. This
+    // test asserts EDI validation runs before the repo call, not that writes
+    // succeed.
     const { repo } = makeMockRepo();
     repo.findByCode = jest.fn(async () =>
       Ok(makeVendor({ qualifierId: null, qualifierCode: '025' })),
     );
     const svc = createVendorService({ repo: repo as any, audit: makeMockAudit().audit });
     const result = await svc.update('ABCD', { qualifierId: '01' });
-    expect(result.ok).toBe(true);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.kind).toBe('WriteNotSupported');
+    expect(repo.update).toHaveBeenCalled();
   });
 
   test('delete blocks when SKUs reference the vendor', async () => {
@@ -221,15 +231,16 @@ describe('vendorService', () => {
     expect(repo.delete).not.toHaveBeenCalled();
   });
 
-  test('delete proceeds and audits when no SKUs reference the vendor', async () => {
+  test('delete propagates WriteNotSupported from repo when no SKUs block it', async () => {
+    // Guard passes (0 SKUs), repo.delete is called, but returns WriteNotSupported.
     const { repo } = makeMockRepo();
     const { audit, records } = makeMockAudit();
     const svc = createVendorService({ repo: repo as any, audit });
     const result = await svc.delete('ABCD');
-    expect(result.ok).toBe(true);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.kind).toBe('WriteNotSupported');
     expect(repo.delete).toHaveBeenCalledWith('ABCD');
-    expect(records).toHaveLength(1);
-    expect(records[0].action).toBe('DELETE');
+    expect(records).toHaveLength(0);
   });
 
   test('delete propagates AccessConnectionError from count', async () => {
@@ -243,28 +254,23 @@ describe('vendorService', () => {
     if (!result.ok) expect(result.error.kind).toBe('AccessConnectionError');
   });
 
-  test('upsertStoreAccount audits on success', async () => {
+  test('upsertStoreAccount propagates WriteNotSupported; no audit written', async () => {
     const { repo } = makeMockRepo();
     const { audit, records } = makeMockAudit();
     const svc = createVendorService({ repo: repo as any, audit });
-    await svc.upsertStoreAccount('ABCD', 1, 'ACCT-001');
-    expect(records).toHaveLength(1);
-    expect(records[0]).toMatchObject({
-      action: 'UPSERT_STORE_ACCOUNT',
-      targetTable: 'Vendor Accounts',
-      targetPk: 'ABCD:1',
-    });
+    const result = await svc.upsertStoreAccount('ABCD', 1, 'ACCT-001');
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.kind).toBe('WriteNotSupported');
+    expect(records).toHaveLength(0);
   });
 
-  test('deleteStoreAccount audits on success', async () => {
+  test('deleteStoreAccount propagates WriteNotSupported; no audit written', async () => {
     const { repo } = makeMockRepo();
     const { audit, records } = makeMockAudit();
     const svc = createVendorService({ repo: repo as any, audit });
-    await svc.deleteStoreAccount('ABCD', 2);
-    expect(records).toHaveLength(1);
-    expect(records[0]).toMatchObject({
-      action: 'DELETE_STORE_ACCOUNT',
-      targetPk: 'ABCD:2',
-    });
+    const result = await svc.deleteStoreAccount('ABCD', 2);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.kind).toBe('WriteNotSupported');
+    expect(records).toHaveLength(0);
   });
 });
