@@ -20,6 +20,53 @@ Each entry follows this shape:
 
 <!-- Decisions go below this line, most recent first. -->
 
+## 2026-04-23 — Sales Pivot family: one endpoint + unified leaf row + variant dispatch
+
+**Context:** Operators wanted a family of pivot reports against live sales + on-hand data: a fixed Department-led tree, a Buyer-led tree, a Buyer-Vendor tree, optionally per-store splits, and eventually a free-form three-dimension builder. The fixed trees share measures (On-Hand qty/cost, TY qty/net-sales/profit, LY qty/net-sales/profit over a user-picked date window with a one-year-shifted comparison); only the identity columns change across variants. A naive design would mint one endpoint + one leaf-row type per variant.
+
+**Decision:** One endpoint `GET /api/v1/reports/sales/sales-pivot` dispatches on a `variant` query param. One shared `SalesPivotLeafRow` type carries every identity field (`storeNumber`, `buyerCode`, `vendorCode`, `sector`, `dept`, `categ`, `season`, `groupCode`, `sku`, each plus a label) — identity fields that don't apply to the chosen variant are `null`. The client groups the flat leaves into the appropriate tree based on `variant` and, for the Custom variant, the three chosen dimensions (echoed in the response as `levels`).
+
+Three adapters back the dispatch:
+- `ricsSalesPivotAdapter.ts` — Department + Separate-Store Department (Sector/Dept/Category taxonomy via `rics_mirror.departments.beg_categ..end_categ BETWEEN` + `rics_mirror.sectors.beg_dept..end_dept BETWEEN`).
+- `ricsSalesPivotByBuyerAdapter.ts` — Buyer, Buyer-Vendor, Separate-Store Buyer-Vendor (Buyer pulled from `app.sku_attribute_assignment` where `dimension.code='buyer'`; Vendor labels from `rics_mirror.vendor_master` via `COALESCE(short_name, manu_name)`).
+- `ricsSalesPivotCustomAdapter.ts` — accepts `levels: [PivotDimension, PivotDimension, PivotDimension]` plus Sector / Department / Season / Buyer criteria filters; resolves the filter set to a SKU whitelist in a single pre-aggregation pass, then feeds it to the two aggregation queries via `UPPER(TRIM(sku)) = ANY($::text[])`.
+
+Store is the one dimension that splits leaf grain — when it appears in the chosen levels (or via the `*-separate-store` fixed variants) leaves are keyed by `(store, sku)`; otherwise stores are summed into `(sku)` leaves. SKUs inside each deepest bucket sort by Net Sales TY descending (SKU code tiebreaker); rollup rows at every level do the same, with `(Unassigned)` / `(no vendor)` / `(no sector)` buckets pinned last. SKU leaf labels render as `<SkuLink>` so plain click opens the inventory-inquiry popup, modifier-click opens the full-page inquiry in a new tab.
+
+Criteria-filter SQL resolves in two steps: (1) Sector ∨ Department widens to a category set via the taxonomy join; (2) that category set intersects with Season (from `rics_mirror.inventory_master.season`, labels from `public.season_overlay`) via the SKU master, then intersects with Buyer SKUs from `app.sku_attribute_assignment`. An impossible filter (e.g. a sector + department that don't overlap) resolves to an empty whitelist and the endpoint returns zero rows rather than running unfiltered.
+
+**Consequences:**
+- Adding a new fixed variant = one case in the route dispatch + one branch in the frontend page's tree builder. No new endpoint, no new response type.
+- Snapshots (`reportType: 'sales-pivot'`) capture the full `SalesPivotReport` shape including `variant` and (when present) `levels` — a frozen snapshot has enough information to replay its exact hierarchy without re-querying. However, `RunViewPage.tsx` does not yet have a dedicated `sales-pivot` renderer; viewing a saved pivot snapshot currently falls through to the "rendering not implemented yet — Open in builder" fallback. Building the renderer is the obvious next step.
+- `listSalesDimensions` (`GET /api/v1/reports/sales/dimensions`) gained four new lists — `sectors`, `departments`, `seasons`, `buyers` — alongside the existing `stores` / `categories` / `groups`. All share one 5-min server-side cache and one round-trip to the client.
+- The `buyer` attribute dimension in `app.attribute_value` becomes a de-facto read dependency for the sales-reporting module; any migration that renames it breaks the buyer adapters.
+
+**Alternatives considered:**
+- One endpoint + one response shape **per** fixed variant — rejected; duplicates ~90% of adapter code and makes the Custom variant impossible without a third system.
+- Server-side tree construction (backend returns nested nodes) — rejected; flat leaves let the client swap hierarchies without a round-trip, and keep snapshots small + diff-friendly.
+- Push the criteria-filter intersection into each aggregation query via a master JOIN — rejected; the upfront whitelist pass runs once and its `ANY($::text[])` gets reused by both sales + on-hand queries, avoiding a repeated join.
+
+**Related:** `apps/api/src/routes/salesReportRoutes.ts` (variant dispatch + CSV emitter), `apps/api/src/services/salesReporting/ricsSalesPivot{,ByBuyer,Custom}Adapter.ts`, `apps/web/src/pages/salesReporting/SalesPivotPage.tsx`, `apps/web/src/pages/salesReporting/SalesPivotCustomPage.tsx`, tests at `apps/api/tests/salesPivotRoute.test.ts`. No RICS ancestor — these reports are new.
+
+---
+
+## 2026-04-23 — Fullscreen report toggle attempted and rolled back
+
+**Context:** A session experiment added a **Full screen** button to `ReportHeader` that set `?fullscreen=1` on the URL, with `AppLayout` reading the flag and rendering its children without the sidebar + top header (floating "Exit full screen" pill in the corner). Operator feedback during the same session: the behaviour was unreliable in practice.
+
+**Decision:** The `enableFullscreen` prop on `ReportHeader` is retained for call-site backward compatibility but is now a **no-op** (an inline comment in `ReportHeader.tsx` flags it as removed). The `?fullscreen=1` handling in `AppLayout` may linger at the code level but no UI surface triggers it. Report pages should **not** add new fullscreen triggers through this prop. If genuine full-viewport UX is needed later, treat it as a new design exercise rather than reviving this hook.
+
+**Consequences:**
+- Sales-report pages that already passed `enableFullscreen={false}` (e.g. `SalesReportsHubPage`) keep the prop for clarity but it changes nothing.
+- `/report-viewer` (chromeless route registered as a sibling of the `AppLayout` group) remains the supported full-viewport path — a dedicated route outside `AppLayout`, not a toggle on the wrapper. Use the same sibling-route pattern for any future full-viewport screen.
+
+**Alternatives considered:**
+- Ship the header-level toggle as originally planned — rejected as unreliable mid-session; context for the rejection wasn't captured beyond the operator note and should not be relitigated without a reproducer.
+
+**Related:** `apps/web/src/components/AppLayout.tsx` (`?fullscreen=1` logic), `apps/web/src/components/reports/ReportHeader.tsx` (`enableFullscreen` prop — no-op with comment flagging the rollback).
+
+---
+
 ## 2026-04-23 — Sales Hierarchy Drill-Down is a new app-native report
 
 **Context:** Operator wanted the legacy RICS "Sales Analysis by Category" Excel pivot — a collapsible Department subtotal with a click-to-expand Category row revealing SKU detail. RICS itself offers `CATEGORY_SUMMARY` and `DEPT_SUMMARY` as separate flat-row dimensions, not a unified tree. The existing `ReportViewerPage` tree is per-report-type (built around Sales Analysis rows) and doesn't cover the Dept→Cat→SKU axis out of the box.
@@ -44,6 +91,8 @@ Each entry follows this shape:
 - Add a `HIERARCHY` mode to the existing Sales Analysis `reportType` union — rejected; would have to bifurcate the response shape (flat rows vs. tree) and forced every consumer to branch on reportType.
 - Client-side tree build from three separate calls (`DEPT_SUMMARY`, `CATEGORY_SUMMARY`, `SKU_DETAIL`) — rejected; three server round-trips, three sets of totals, and no way to guarantee consistency across them.
 - Reuse `SalesPivotPage` (Sector → Dept → Category → SKU) — rejected; pivot is flat (no expand/collapse interaction), and its filter surface diverges from Sales Analysis's.
+
+  > ⚠️ May be stale per 2026-04-23 /index-knowledge pass: the "pivot is flat" clause no longer holds — `SalesPivotPage` now renders a full AntD tree-data hierarchy with expand/collapse at every level and SKU leaves. The rejection still stands on the filter-surface-divergence grounds. Review and trim if confirmed.
 
 **Related:** Feature session 2026-04-22 / 2026-04-23. Files: `apps/api/src/services/salesReporting/ricsSalesReportAdapter.ts::getSalesHierarchy`, `apps/web/src/pages/salesReporting/SalesHierarchyDrillDownPage.tsx`, `apps/web/src/components/reports/renderers/renderSalesHierarchyDrillDown.tsx`.
 
