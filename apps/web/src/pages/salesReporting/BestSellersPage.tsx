@@ -17,6 +17,7 @@ import SaveAsTemplateButton from '../../components/reports/SaveAsTemplateButton'
 import ReportHeader from '../../components/reports/ReportHeader'
 import FilterChips from '../../components/reports/FilterChips'
 import ReportEmptyState from '../../components/reports/ReportEmptyState'
+import CollapsibleFilterCard from '../../components/reports/CollapsibleFilterCard'
 import { GpBadge } from '../../components/reports/gpBadge'
 import ShareBar from '../../components/reports/ShareBar'
 import { fmtMoney, fmtInt } from '../../utils/reportFormatters'
@@ -51,9 +52,14 @@ export default function BestSellersPage() {
   const [storesText, setStoresText] = useState('')
   const [combineStores, setCombineStores] = useState(true)
   const [query, setQuery] = useState<BestSellersArgs | null>(null)
+  const [filterOpen, setFilterOpen] = useState(true)
 
   const { data, isFetching, error } = useBestSellers(query)
   const running = query != null && isFetching
+
+  useEffect(() => {
+    if (query && data && !isFetching) setFilterOpen(false)
+  }, [query, data, isFetching])
 
   // ?templateId=... replay. Hydrates state + fires the query with the template's
   // saved params. Runs once per template id via hydratedFor ref.
@@ -160,7 +166,30 @@ export default function BestSellersPage() {
         rightMeta={data ? `${data.rows.length.toLocaleString()} ${data.rows.length === 1 ? 'row' : 'rows'}` : undefined}
       />
 
-      <Card style={{ marginBottom: 16 }}>
+      <CollapsibleFilterCard
+        open={filterOpen}
+        onOpenChange={setFilterOpen}
+        running={running}
+        onRun={onRun}
+        actions={
+          <Space>
+            <RunReportControls running={running} hasRun={query != null} onRun={onRun} onStop={onStop} />
+            <SaveAsTemplateButton
+              reportType="best-sellers"
+              disabled={query == null}
+              getParamsJson={() => ({
+                dimension,
+                metric,
+                period,
+                topN,
+                stores: parseStores(storesText),
+                storesText,
+                combineStores,
+              })}
+            />
+          </Space>
+        }
+      >
         <Space wrap>
           <Select
             value={dimension}
@@ -212,25 +241,7 @@ export default function BestSellersPage() {
             Combine stores
           </Checkbox>
         </Space>
-        <div style={{ marginTop: 12 }}>
-          <Space>
-            <RunReportControls running={running} hasRun={query != null} onRun={onRun} onStop={onStop} />
-            <SaveAsTemplateButton
-              reportType="best-sellers"
-              disabled={query == null}
-              getParamsJson={() => ({
-                dimension,
-                metric,
-                period,
-                topN,
-                stores: parseStores(storesText),
-                storesText,
-                combineStores,
-              })}
-            />
-          </Space>
-        </div>
-      </Card>
+      </CollapsibleFilterCard>
 
       {error && (
         <Alert

@@ -17,6 +17,7 @@ import DateRangeControl from '../../components/reports/DateRangeControl'
 import ReportHeader from '../../components/reports/ReportHeader'
 import FilterChips from '../../components/reports/FilterChips'
 import ReportEmptyState from '../../components/reports/ReportEmptyState'
+import CollapsibleFilterCard from '../../components/reports/CollapsibleFilterCard'
 import ShareBar from '../../components/reports/ShareBar'
 import { fmtMoney, fmtInt } from '../../utils/reportFormatters'
 import { useReportTemplate, useTouchReportTemplate } from '../../hooks/useReportTemplates'
@@ -42,9 +43,14 @@ export default function SalespersonSummaryPage() {
   const [combineStores, setCombineStores] = useState(true)
   const [cashierSummary, setCashierSummary] = useState(false)
   const [query, setQuery] = useState<SalespersonSummaryArgs | null>(null)
+  const [filterOpen, setFilterOpen] = useState(true)
 
   const { data, isFetching, error } = useSalespersonSummary(query)
   const running = query != null && isFetching
+
+  useEffect(() => {
+    if (query && data && !isFetching) setFilterOpen(false)
+  }, [query, data, isFetching])
 
   // ?templateId=... replay.
   const { data: templateData } = useReportTemplate(templateId)
@@ -160,7 +166,29 @@ export default function SalespersonSummaryPage() {
         ]}
       />
 
-      <Card style={{ marginBottom: 16 }}>
+      <CollapsibleFilterCard
+        open={filterOpen}
+        onOpenChange={setFilterOpen}
+        running={running}
+        onRun={onRun}
+        actions={
+          <Space>
+            <RunReportControls running={running} hasRun={query != null} onRun={onRun} onStop={onStop} />
+            <SaveAsTemplateButton
+              reportType="salesperson-summary"
+              disabled={query == null}
+              getParamsJson={() => ({
+                dateSpec,
+                stores: parseStores(storesText),
+                storesText,
+                subtotalBy,
+                combineStores,
+                cashierSummary,
+              })}
+            />
+          </Space>
+        }
+      >
         <Space wrap>
           <DateRangeControl value={dateSpec} onChange={setDateSpec} />
           <Input
@@ -187,24 +215,7 @@ export default function SalespersonSummaryPage() {
             Cashier summary
           </Checkbox>
         </Space>
-        <div style={{ marginTop: 12 }}>
-          <Space>
-            <RunReportControls running={running} hasRun={query != null} onRun={onRun} onStop={onStop} />
-            <SaveAsTemplateButton
-              reportType="salesperson-summary"
-              disabled={query == null}
-              getParamsJson={() => ({
-                dateSpec,
-                stores: parseStores(storesText),
-                storesText,
-                subtotalBy,
-                combineStores,
-                cashierSummary,
-              })}
-            />
-          </Space>
-        </div>
-      </Card>
+      </CollapsibleFilterCard>
 
       {error && (
         <Alert

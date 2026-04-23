@@ -15,6 +15,7 @@ import DateRangeControl from '../../components/reports/DateRangeControl'
 import ReportHeader from '../../components/reports/ReportHeader'
 import FilterChips from '../../components/reports/FilterChips'
 import ReportEmptyState from '../../components/reports/ReportEmptyState'
+import CollapsibleFilterCard from '../../components/reports/CollapsibleFilterCard'
 import { ChangePctBadge } from '../../components/reports/gpBadge'
 import { fmtMoney, fmtChangeMoney } from '../../utils/reportFormatters'
 import { useReportTemplate, useTouchReportTemplate } from '../../hooks/useReportTemplates'
@@ -32,9 +33,14 @@ export default function SalesByDayPage() {
   const [dateSpec, setDateSpec] = useState<DateSpec>(DEFAULT_DATE_SPEC)
   const [offset, setOffset] = useState<number>(364)
   const [query, setQuery] = useState<SalesByDayArgs | null>(null)
+  const [filterOpen, setFilterOpen] = useState(true)
 
   const { data, isFetching, error } = useSalesByDay(query)
   const running = query != null && isFetching
+
+  useEffect(() => {
+    if (query && data && !isFetching) setFilterOpen(false)
+  }, [query, data, isFetching])
 
   // Download URLs need the resolved start/end right now — they reflect the
   // current form state, not the last-run state, which matches the previous
@@ -154,7 +160,27 @@ export default function SalesByDayPage() {
         ]}
       />
 
-      <Card style={{ marginBottom: 16 }}>
+      <CollapsibleFilterCard
+        open={filterOpen}
+        onOpenChange={setFilterOpen}
+        running={running}
+        onRun={onRun}
+        canRun={storeNumber != null}
+        actions={
+          <Space>
+            <RunReportControls running={running} hasRun={query != null} onRun={onRun} onStop={onStop} />
+            <SaveAsTemplateButton
+              reportType="sales-by-day"
+              disabled={query == null || storeNumber == null}
+              getParamsJson={() => ({
+                storeNumber,
+                dateSpec,
+                comparisonOffsetDays: offset,
+              })}
+            />
+          </Space>
+        }
+      >
         <Space wrap>
           <InputNumber
             min={1}
@@ -189,21 +215,7 @@ export default function SalesByDayPage() {
             </>
           )}
         </Space>
-        <div style={{ marginTop: 12 }}>
-          <Space>
-            <RunReportControls running={running} hasRun={query != null} onRun={onRun} onStop={onStop} />
-            <SaveAsTemplateButton
-              reportType="sales-by-day"
-              disabled={query == null || storeNumber == null}
-              getParamsJson={() => ({
-                storeNumber,
-                dateSpec,
-                comparisonOffsetDays: offset,
-              })}
-            />
-          </Space>
-        </div>
-      </Card>
+      </CollapsibleFilterCard>
 
       {error && (
         <Alert

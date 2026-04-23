@@ -51,6 +51,7 @@ import SaveAsTemplateButton from '../../components/reports/SaveAsTemplateButton'
 import ReportHeader from '../../components/reports/ReportHeader'
 import FilterChips, { type FilterChip } from '../../components/reports/FilterChips'
 import ReportEmptyState from '../../components/reports/ReportEmptyState'
+import CollapsibleFilterCard from '../../components/reports/CollapsibleFilterCard'
 import { SummaryLabelCell, SummaryNumericCell } from '../../components/reports/SummaryRow'
 import {
   fmtMoney,
@@ -379,10 +380,18 @@ export default function SalesHistoryByMonthPage() {
   // Committed params — null until Run Report is clicked. Mirrors the pattern
   // used by SalesAnalysisPage so the query only fires on user intent.
   const [query, setQuery] = useState<SalesHistoryByMonthParams | null>(null)
+  const [filterOpen, setFilterOpen] = useState(true)
 
   const { data: dims, isLoading: dimsLoading } = useSalesDimensions()
   const { data, isFetching, error } = useSalesHistoryByMonth(query)
   const running = query != null && isFetching
+
+  useEffect(() => {
+    // Only collapse after a user-initiated run. `query` is null on first
+    // mount; tests and cached TanStack hits can populate `data` before the
+    // user clicks Run, and we don't want to hide the filter form then.
+    if (query && data && !isFetching) setFilterOpen(false)
+  }, [query, data, isFetching])
 
   const resultRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -505,9 +514,72 @@ export default function SalesHistoryByMonthPage() {
           { title: <Link to="/reports/sales">Sales Reports</Link> },
           { title: 'Sales History by Month' },
         ]}
+        actions={
+          <Space>
+            <Button
+              icon={<DownloadOutlined />}
+              disabled={!csvUrl}
+              href={csvUrl}
+            >
+              Export CSV
+            </Button>
+            <Button
+              icon={<FileExcelOutlined />}
+              disabled={!xlsxUrl}
+              href={xlsxUrl}
+              data-testid="export-xlsx"
+            >
+              Export XLSX
+            </Button>
+          </Space>
+        }
       />
 
-      <Card style={{ marginBottom: 16 }}>
+      <CollapsibleFilterCard
+        open={filterOpen}
+        onOpenChange={setFilterOpen}
+        running={running}
+        onRun={onRun}
+        canRun={canRun}
+        actions={
+          <Space align="center">
+            <RunReportControls running={running} hasRun={query != null} onRun={onRun} onStop={onStop} />
+            <SaveAsTemplateButton
+              reportType="sales-history-by-month"
+              disabled={query == null}
+              getParamsJson={() => ({
+                stores: selectedStores,
+                endMonth: endMonth.format('YYYY-MM'),
+                sortBy,
+                combineStores,
+                detailLevel,
+                dataToPrint,
+                deferredMetrics: deferredChecked,
+                criteria: buildCriteria(),
+                selectedCategories,
+                selectedGroups,
+                storesRaw,
+                categoriesRaw,
+                vendorsRaw,
+                seasonsRaw,
+                styleColorsRaw,
+                groupsRaw,
+                keywordsRaw,
+              })}
+            />
+            {!hasStores && (
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                Select at least one store under Criteria to enable Run Report.
+              </Text>
+            )}
+            {hasStores && !hasAnyMetric && (
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                Select at least one metric under Data to Print.
+              </Text>
+            )}
+          </Space>
+        }
+      >
         <Row gutter={24}>
           <Col xs={24} md={6}>
             <Card size="small" title={<Text strong>Sort by</Text>} style={{ marginBottom: 16 }}>
@@ -701,63 +773,7 @@ export default function SalesHistoryByMonthPage() {
           </Space>
         </Card>
 
-        <div style={{ marginTop: 16, borderTop: '1px solid #f0f0f0', paddingTop: 16 }}>
-          <Space align="center">
-            <RunReportControls running={running} hasRun={query != null} onRun={onRun} onStop={onStop} />
-            <SaveAsTemplateButton
-              reportType="sales-history-by-month"
-              disabled={query == null}
-              getParamsJson={() => ({
-                stores: selectedStores,
-                endMonth: endMonth.format('YYYY-MM'),
-                sortBy,
-                combineStores,
-                detailLevel,
-                dataToPrint,
-                deferredMetrics: deferredChecked,
-                criteria: buildCriteria(),
-                // Extra fields preserve the UI state across replay so the user
-                // sees the same form values they saved — not just the computed
-                // criteria bag consumed by the backend.
-                selectedCategories,
-                selectedGroups,
-                storesRaw,
-                categoriesRaw,
-                vendorsRaw,
-                seasonsRaw,
-                styleColorsRaw,
-                groupsRaw,
-                keywordsRaw,
-              })}
-            />
-            <Button
-              icon={<DownloadOutlined />}
-              disabled={!csvUrl}
-              href={csvUrl}
-            >
-              Export CSV
-            </Button>
-            <Button
-              icon={<FileExcelOutlined />}
-              disabled={!xlsxUrl}
-              href={xlsxUrl}
-              data-testid="export-xlsx"
-            >
-              Export XLSX
-            </Button>
-            {!hasStores && (
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                Select at least one store under Criteria to enable Run Report.
-              </Text>
-            )}
-            {hasStores && !hasAnyMetric && (
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                Select at least one metric under Data to Print.
-              </Text>
-            )}
-          </Space>
-        </div>
-      </Card>
+      </CollapsibleFilterCard>
 
       <div ref={resultRef} style={{ scrollMarginTop: 12 }}>
         {error && (

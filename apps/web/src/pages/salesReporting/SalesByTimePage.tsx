@@ -13,6 +13,7 @@ import DateRangeControl from '../../components/reports/DateRangeControl'
 import ReportHeader from '../../components/reports/ReportHeader'
 import FilterChips from '../../components/reports/FilterChips'
 import ReportEmptyState from '../../components/reports/ReportEmptyState'
+import CollapsibleFilterCard from '../../components/reports/CollapsibleFilterCard'
 import {
   SummaryLabelCell,
   SummaryNumericCell,
@@ -41,9 +42,14 @@ export default function SalesByTimePage() {
   const [pctOfTotal, setPctOfTotal] = useState(false)
   const [chartMetric, setChartMetric] = useState<ChartMetric>('dollars')
   const [query, setQuery] = useState<SalesByTimeArgs | null>(null)
+  const [filterOpen, setFilterOpen] = useState(true)
 
   const { data, isFetching, error } = useSalesByTime(query)
   const running = query != null && isFetching
+
+  useEffect(() => {
+    if (query && data && !isFetching) setFilterOpen(false)
+  }, [query, data, isFetching])
 
   // ?templateId=... replay.
   const { data: templateData } = useReportTemplate(templateId)
@@ -124,20 +130,12 @@ export default function SalesByTimePage() {
         ]}
       />
 
-      <Card style={{ marginBottom: 16 }}>
-        <Space wrap>
-          <DateRangeControl value={dateSpec} onChange={setDateSpec} />
-          <Input
-            placeholder="Stores (csv, blank=all)"
-            value={storesText}
-            onChange={(e) => setStoresText(e.target.value)}
-            style={{ width: 200 }}
-          />
-          <Checkbox checked={pctOfTotal} onChange={(e) => setPctOfTotal(e.target.checked)}>
-            Show % of total
-          </Checkbox>
-        </Space>
-        <div style={{ marginTop: 12 }}>
+      <CollapsibleFilterCard
+        open={filterOpen}
+        onOpenChange={setFilterOpen}
+        running={running}
+        onRun={onRun}
+        actions={
           <Space>
             <RunReportControls running={running} hasRun={query != null} onRun={onRun} onStop={onStop} />
             <SaveAsTemplateButton
@@ -151,8 +149,21 @@ export default function SalesByTimePage() {
               })}
             />
           </Space>
-        </div>
-      </Card>
+        }
+      >
+        <Space wrap>
+          <DateRangeControl value={dateSpec} onChange={setDateSpec} />
+          <Input
+            placeholder="Stores (csv, blank=all)"
+            value={storesText}
+            onChange={(e) => setStoresText(e.target.value)}
+            style={{ width: 200 }}
+          />
+          <Checkbox checked={pctOfTotal} onChange={(e) => setPctOfTotal(e.target.checked)}>
+            Show % of total
+          </Checkbox>
+        </Space>
+      </CollapsibleFilterCard>
 
       {error && (
         <Alert

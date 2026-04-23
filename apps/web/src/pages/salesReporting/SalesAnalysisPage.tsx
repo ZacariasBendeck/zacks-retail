@@ -20,6 +20,7 @@ import { readDateSpecFromParams, resolveDateSpec, type DateSpec } from '../../ut
 import ReportHeader from '../../components/reports/ReportHeader'
 import FilterChips, { type FilterChip } from '../../components/reports/FilterChips'
 import ReportEmptyState from '../../components/reports/ReportEmptyState'
+import CollapsibleFilterCard from '../../components/reports/CollapsibleFilterCard'
 import { SummaryLabelCell, SummaryNumericCell } from '../../components/reports/SummaryRow'
 import { GpBadge, ChangePctBadge } from '../../components/reports/gpBadge'
 import {
@@ -94,10 +95,18 @@ export default function SalesAnalysisPage() {
   const [keywordsRaw, setKeywordsRaw] = useState('')
   const [priorYear, setPriorYear] = useState(false)
   const [query, setQuery] = useState<SalesAnalysisArgs | null>(null)
+  // Auto-collapses after a successful report run so results get the
+  // vertical real-estate instead of the tall filter form. Operators expand
+  // again via the "Modify filters" button.
+  const [filterOpen, setFilterOpen] = useState(true)
 
   const { data: dims, isLoading: dimsLoading } = useSalesDimensions()
   const { data, isFetching, error } = useSalesAnalysis(query)
   const running = query != null && isFetching
+
+  useEffect(() => {
+    if (query && data && !isFetching) setFilterOpen(false)
+  }, [query, data, isFetching])
 
   // ?templateId=... replay. Fetch the template, hydrate form state, fire the
   // query with the loaded params, and bump lastUsedAt. Runs exactly once per
@@ -290,7 +299,39 @@ export default function SalesAnalysisPage() {
         rightMeta={data ? `${data.rows.length.toLocaleString()} ${data.rows.length === 1 ? 'row' : 'rows'}` : undefined}
       />
 
-      <Card style={{ marginBottom: 16 }}>
+      <CollapsibleFilterCard
+        open={filterOpen}
+        onOpenChange={setFilterOpen}
+        running={running}
+        onRun={onRun}
+        actions={
+          <Space>
+            <RunReportControls running={running} hasRun={query != null} onRun={onRun} onStop={onStop} />
+            <SaveAsTemplateButton
+              reportType="sales-analysis"
+              disabled={query == null}
+              getParamsJson={() => ({
+                dimension,
+                reportType,
+                storeOption,
+                dateSpec,
+                stores: selectedStores.length ? selectedStores : undefined,
+                categories: selectedCategories.length ? selectedCategories : undefined,
+                groups: selectedGroups.length ? selectedGroups : undefined,
+                storesRaw: storesRaw.trim() || undefined,
+                categoriesRaw: categoriesRaw.trim() || undefined,
+                vendorsRaw: vendorsRaw.trim() || undefined,
+                seasonsRaw: seasonsRaw.trim() || undefined,
+                styleColorRaw: styleColorRaw.trim() || undefined,
+                skusRaw: skusRaw.trim() || undefined,
+                groupsRaw: groupsRaw.trim() || undefined,
+                keywordsRaw: keywordsRaw.trim() || undefined,
+                priorYear,
+              })}
+            />
+          </Space>
+        }
+      >
         <Row gutter={24}>
           <Col xs={24} md={6}>
             <Card size="small" title={<Text strong>Analyze by</Text>} style={{ marginBottom: 16 }}>
@@ -455,34 +496,7 @@ export default function SalesAnalysisPage() {
             />
           </Space>
         </Card>
-        <div style={{ marginTop: 16, borderTop: '1px solid #f0f0f0', paddingTop: 16 }}>
-          <Space>
-            <RunReportControls running={running} hasRun={query != null} onRun={onRun} onStop={onStop} />
-            <SaveAsTemplateButton
-              reportType="sales-analysis"
-              disabled={query == null}
-              getParamsJson={() => ({
-                dimension,
-                reportType,
-                storeOption,
-                dateSpec,
-                stores: selectedStores.length ? selectedStores : undefined,
-                categories: selectedCategories.length ? selectedCategories : undefined,
-                groups: selectedGroups.length ? selectedGroups : undefined,
-                storesRaw: storesRaw.trim() || undefined,
-                categoriesRaw: categoriesRaw.trim() || undefined,
-                vendorsRaw: vendorsRaw.trim() || undefined,
-                seasonsRaw: seasonsRaw.trim() || undefined,
-                styleColorRaw: styleColorRaw.trim() || undefined,
-                skusRaw: skusRaw.trim() || undefined,
-                groupsRaw: groupsRaw.trim() || undefined,
-                keywordsRaw: keywordsRaw.trim() || undefined,
-                priorYear,
-              })}
-            />
-          </Space>
-        </div>
-      </Card>
+      </CollapsibleFilterCard>
 
       <div ref={resultRef} style={{ scrollMarginTop: 12 }}>
       {error && (

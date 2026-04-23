@@ -17,6 +17,7 @@ import SaveAsTemplateButton from '../../components/reports/SaveAsTemplateButton'
 import ReportHeader from '../../components/reports/ReportHeader'
 import FilterChips, { type FilterChip } from '../../components/reports/FilterChips'
 import ReportEmptyState from '../../components/reports/ReportEmptyState'
+import CollapsibleFilterCard from '../../components/reports/CollapsibleFilterCard'
 import { SummaryLabelCell, SummaryNumericCell } from '../../components/reports/SummaryRow'
 import { fmtMoney, fmtInt } from '../../utils/reportFormatters'
 import { useReportTemplate, useTouchReportTemplate } from '../../hooks/useReportTemplates'
@@ -51,9 +52,14 @@ export default function StockStatusPage() {
   const [seasonsText, setSeasonsText] = useState('')
   const [skusText, setSkusText] = useState('')
   const [query, setQuery] = useState<StockStatusArgs | null>(null)
+  const [filterOpen, setFilterOpen] = useState(true)
 
   const { data, isFetching, error } = useStockStatus(query)
   const running = query != null && isFetching
+
+  useEffect(() => {
+    if (query && data && !isFetching) setFilterOpen(false)
+  }, [query, data, isFetching])
 
   // ?templateId=... replay.
   const { data: templateData } = useReportTemplate(templateId)
@@ -156,7 +162,34 @@ export default function StockStatusPage() {
         rightMeta={data ? `${data.rows.length.toLocaleString()} ${data.rows.length === 1 ? 'row' : 'rows'}` : undefined}
       />
 
-      <Card style={{ marginBottom: 16 }}>
+      <CollapsibleFilterCard
+        open={filterOpen}
+        onOpenChange={setFilterOpen}
+        running={running}
+        onRun={onRun}
+        actions={
+          <Space>
+            <RunReportControls running={running} hasRun={query != null} onRun={onRun} onStop={onStop} />
+            <SaveAsTemplateButton
+              reportType="stock-status"
+              disabled={query == null}
+              getParamsJson={() => ({
+                sortBy,
+                storeOption,
+                itemFilter,
+                vendors: parseStrs(vendorsText),
+                categories: parseInts(categoriesText),
+                seasons: parseStrs(seasonsText),
+                skus: parseStrs(skusText),
+                vendorsText,
+                categoriesText,
+                seasonsText,
+                skusText,
+              })}
+            />
+          </Space>
+        }
+      >
         <Space wrap>
           <Select
             value={sortBy}
@@ -216,29 +249,7 @@ export default function StockStatusPage() {
             style={{ width: 240 }}
           />
         </Space>
-        <div style={{ marginTop: 12 }}>
-          <Space>
-            <RunReportControls running={running} hasRun={query != null} onRun={onRun} onStop={onStop} />
-            <SaveAsTemplateButton
-              reportType="stock-status"
-              disabled={query == null}
-              getParamsJson={() => ({
-                sortBy,
-                storeOption,
-                itemFilter,
-                vendors: parseStrs(vendorsText),
-                categories: parseInts(categoriesText),
-                seasons: parseStrs(seasonsText),
-                skus: parseStrs(skusText),
-                vendorsText,
-                categoriesText,
-                seasonsText,
-                skusText,
-              })}
-            />
-          </Space>
-        </div>
-      </Card>
+      </CollapsibleFilterCard>
 
       {error && (
         <Alert
