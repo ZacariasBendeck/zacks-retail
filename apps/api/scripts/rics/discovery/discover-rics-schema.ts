@@ -18,7 +18,7 @@ import {
   buildListTablesScript,
   buildListColumnsScript,
   buildSelectScript,
-} from '../src/services/accessOleDb';
+} from '../../../src/services/accessOleDb';
 
 interface RicsDb {
   envKey: string;
@@ -93,7 +93,7 @@ function normalizeRowValue(value: unknown): string {
 }
 
 async function run(): Promise<void> {
-  const outPath = path.resolve(__dirname, '../../../docs/rics-db-schema.md');
+  const outPath = path.resolve(__dirname, '../../../../../docs/rics-db-schema.md');
   const generatedAt = new Date().toISOString();
   const lines: string[] = [
     '# RICS MDB Schema (auto-generated)',

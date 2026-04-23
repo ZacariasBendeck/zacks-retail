@@ -153,7 +153,7 @@ async function main(): Promise<void> {
   const byFamily = new Map<Family, number>();
   const lowConfidence: Row[] = [];
 
-  const outPath = path.resolve(__dirname, '../seeds/product_families/category_mapping.csv');
+  const outPath = path.resolve(__dirname, '../../seeds/product_families/category_mapping.csv');
   const lines: string[] = [];
   lines.push('category_number,category_desc,department_number,department_desc,sector_number,sector_desc,suggested_family,confidence,review_notes');
 

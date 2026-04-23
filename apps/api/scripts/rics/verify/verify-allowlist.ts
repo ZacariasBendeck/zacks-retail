@@ -1,4 +1,4 @@
-import { CANONICAL_MDBS, toSnakeCase } from '../src/services/sync/canonicalRicsTables';
+import { CANONICAL_MDBS, toSnakeCase } from '../../../src/services/sync/canonicalRicsTables';
 
 console.log('MDB count:', CANONICAL_MDBS.length);
 const byTarget = new Map<string, string>();

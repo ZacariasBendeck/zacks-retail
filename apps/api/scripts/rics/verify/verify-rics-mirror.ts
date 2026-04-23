@@ -26,8 +26,8 @@
  * unless you know the prior run is dead.
  */
 import { Client } from 'pg';
-import { ricsRefresh, ProgressEvent } from '../src/services/sync/ricsRefresh';
-import { CANONICAL_MDBS, toSnakeCase } from '../src/services/sync/canonicalRicsTables';
+import { ricsRefresh, ProgressEvent } from '../../../src/services/sync/ricsRefresh';
+import { CANONICAL_MDBS, toSnakeCase } from '../../../src/services/sync/canonicalRicsTables';
 
 const CANARY_SKU = '__SYNC_VERIFY_CANARY__';
 

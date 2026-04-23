@@ -3,7 +3,7 @@
  * Proves listVendors + getVendorById hit rics_mirror.vendor_master correctly
  * and createVendor throws as expected.
  */
-import { listVendors, getVendorById, createVendor } from '../src/services/vendorService';
+import { listVendors, getVendorById, createVendor } from '../../src/services/vendorService';
 
 (async () => {
   console.log('--- listVendors (page 1, pageSize 3) ---');

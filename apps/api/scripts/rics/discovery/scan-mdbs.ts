@@ -15,7 +15,7 @@ import {
   getOrRecoverPassword,
   runPowerShellJson,
   escapePowerShellLiteral,
-} from '../src/services/accessOleDb';
+} from '../../../src/services/accessOleDb';
 
 const DIR = process.argv[2] ?? 'C:/RICSWIN';
 

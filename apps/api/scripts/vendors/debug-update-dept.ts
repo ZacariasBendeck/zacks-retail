@@ -1,5 +1,5 @@
-import { DepartmentRepository } from '../src/repositories/rics/DepartmentRepository';
-process.env.RICS_DB_DIR = require('path').resolve(__dirname, '../../../.tmp/test-mdbs');
+import { DepartmentRepository } from '../../src/repositories/rics/DepartmentRepository';
+process.env.RICS_DB_DIR = require('path').resolve(__dirname, '../../../../.tmp/test-mdbs');
 
 (async () => {
   await DepartmentRepository.delete(97);

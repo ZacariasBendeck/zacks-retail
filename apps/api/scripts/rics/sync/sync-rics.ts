@@ -6,7 +6,7 @@
  * Reads DATABASE_URL + RICS_DB_DIR from the env. Prints one line per table
  * as it loads, then a summary. Exits with code 0 on success, 1 on failure.
  */
-import { ricsRefresh, ProgressEvent } from '../src/services/sync/ricsRefresh';
+import { ricsRefresh, ProgressEvent } from '../../../src/services/sync/ricsRefresh';
 
 function fmtNum(n: number): string {
   return n.toLocaleString('en-US');

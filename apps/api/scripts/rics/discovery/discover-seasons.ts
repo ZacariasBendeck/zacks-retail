@@ -5,7 +5,7 @@ import {
   getOrRecoverPassword,
   runPowerShellJson,
   buildSelectScript,
-} from '../src/services/accessOleDb';
+} from '../../../src/services/accessOleDb';
 
 // Try riparms.mdb to see what's in UserOptions for seasons
 const p = ricsDbPath('riparms.mdb');

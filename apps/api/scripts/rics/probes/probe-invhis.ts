@@ -11,7 +11,7 @@ import {
   getOrRecoverPassword,
   runPowerShellJson,
   buildSelectScript,
-} from '../src/services/accessOleDb';
+} from '../../../src/services/accessOleDb';
 
 function probe(sql: string) {
   const dbPath = ricsDbPath('RIINVHIS.MDB');

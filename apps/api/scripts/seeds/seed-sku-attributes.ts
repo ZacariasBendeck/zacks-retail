@@ -25,7 +25,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { Client } from 'pg';
 
-const SEEDS_DIR = path.resolve(__dirname, '../seeds/sku_extended_attributes');
+const SEEDS_DIR = path.resolve(__dirname, '../../seeds/sku_extended_attributes');
 
 interface DimensionRow {
   code: string;

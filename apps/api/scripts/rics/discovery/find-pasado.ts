@@ -8,7 +8,7 @@ import {
   buildListColumnsScript,
   buildSelectScript,
   escapePowerShellLiteral,
-} from '../src/services/accessOleDb';
+} from '../../../src/services/accessOleDb';
 
 const folder = ricsDbPath('');
 const files = fs.readdirSync(folder)

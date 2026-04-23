@@ -1,6 +1,6 @@
 # Report Templates + Snapshots — Implementation Plan
 
-**Status:** revised 2026-04-22 after design review. Supersedes the prior draft (auto-save policy dropped; snapshots phased behind templates).
+**Status:** Phase 1 shipped 2026-04-22. **Phase 1.1 shipped 2026-04-23.** Phase 1.2 deferred. The post-ship delta section at the bottom records where the landed implementation diverged from the pre-ship plan.
 
 **Goal:** Add two complementary Reports surfaces.
 

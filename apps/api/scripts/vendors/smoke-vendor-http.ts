@@ -7,7 +7,7 @@
  * Exercises the full Express → route → service → repo → Postgres chain.
  */
 import request from 'supertest';
-import app from '../src/app';
+import app from '../../src/app';
 
 (async () => {
   console.log('--- GET /api/v1/products/vendors?limit=3 ---');

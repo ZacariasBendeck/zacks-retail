@@ -2,7 +2,7 @@
  * Ad-hoc read-only peek at the legacy SQLite `vendors` table so we can decide
  * whether the rewrite needs to preserve rows.
  */
-import { getDb } from '../src/db/database';
+import { getDb } from '../../src/db/database';
 
 const db = getDb();
 const count = db.prepare('SELECT COUNT(*) AS n FROM vendors').get() as { n: number };

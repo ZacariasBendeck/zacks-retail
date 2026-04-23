@@ -5,7 +5,7 @@ import {
   runPowerShellJson,
   buildListTablesScript,
   buildSelectScript,
-} from '../src/services/accessOleDb';
+} from '../../../src/services/accessOleDb';
 
 const CANDIDATES = [
   'ricomm.mdb',

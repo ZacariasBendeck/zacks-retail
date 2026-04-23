@@ -9,7 +9,7 @@ import {
   getOrRecoverPassword,
   runPowerShellJson,
   escapePowerShellLiteral,
-} from '../src/services/accessOleDb';
+} from '../../../src/services/accessOleDb';
 
 const DIR = 'E:/data/rics-mdbs';
 

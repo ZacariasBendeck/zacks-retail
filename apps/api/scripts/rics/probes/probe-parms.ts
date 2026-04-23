@@ -5,7 +5,7 @@ import {
   buildListTablesScript,
   buildListColumnsScript,
   buildSelectScript,
-} from '../src/services/accessOleDb';
+} from '../../../src/services/accessOleDb';
 
 const CANDIDATES = ['riparms.mdb', 'RICSW4D.MDB', 'RIPASS.MDB', 'RIADDRS.MDB'];
 for (const file of CANDIDATES) {

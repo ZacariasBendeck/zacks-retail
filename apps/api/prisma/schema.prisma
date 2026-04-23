@@ -238,6 +238,55 @@ model SkuAttributeOverride {
   @@schema("app")
 }
 
+/// Vendor write-surface overlay. Replaces the MDB write path that was removed
+/// 2026-04-23. Single table with a `source` discriminator:
+///   - 'native'    = vendor born in Postgres (no RICS mirror twin)
+///   - 'override'  = sparse per-column override of a RICS mirror vendor
+///                   (null → fall back to mirror; non-null → override)
+///   - 'tombstone' = hide a RICS mirror vendor from reads
+///
+/// Read path (VendorRepository): rics_mirror.vendor_master FULL OUTER JOIN
+/// this table ON code, filtering source='tombstone', with COALESCE per column.
+///
+/// No FK to rics_mirror (sync:rics drops + recreates rics_mirror). Natural-key
+/// only — the 4-char RICS code.
+model VendorOverlay {
+  code          String   @id @db.VarChar(4)
+  /// 'native' | 'override' | 'tombstone' — CHECK constraint on the column.
+  source        String   @db.VarChar(10)
+
+  // Vendor value columns (nullable — used only when non-null per source semantics)
+  shortName     String?  @map("short_name")
+  mailName      String?  @map("mail_name")
+  addr1         String?
+  addr2         String?
+  city          String?
+  state         String?
+  zip           String?
+  phone         String?
+  fax           String?
+  contact       String?
+  terms         String?
+  shipInst      String?  @map("ship_inst")
+  comment       String?
+  manuCode      String?  @map("manu_code")
+  manuName      String?  @map("manu_name")
+  qualifierId   String?  @map("qualifier_id")
+  qualifierCode String?  @map("qualifier_code")
+  colorCode     Boolean? @map("color_code")
+  longComment   String?  @map("long_comment")
+  eMail         String?  @map("e_mail")
+
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy     String   @map("created_by")
+  updatedBy     String   @map("updated_by")
+
+  @@index([source])
+  @@map("vendor_overlay")
+  @@schema("app")
+}
+
 /// Add/remove overlay for keywords, layered on the RICS space-separated KeyWords string.
 /// Effective keywords = (split mirror.key_words) ∪ ADD-overrides − REMOVE-overrides.
 model SkuKeywordOverride {

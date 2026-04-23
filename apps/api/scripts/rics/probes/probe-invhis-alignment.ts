@@ -16,7 +16,7 @@ import {
   getOrRecoverPassword,
   runPowerShellJson,
   buildSelectScript,
-} from '../src/services/accessOleDb';
+} from '../../../src/services/accessOleDb';
 
 function probe(dbPath: string, sql: string): any[] {
   if (!fs.existsSync(dbPath)) {

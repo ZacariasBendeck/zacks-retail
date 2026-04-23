@@ -16,7 +16,7 @@ import {
   buildListTablesScript,
   buildListColumnsScript,
   buildSelectScript,
-} from '../src/services/accessOleDb';
+} from '../../../src/services/accessOleDb';
 
 interface ColumnInfo {
   name: string;

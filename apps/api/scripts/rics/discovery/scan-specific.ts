@@ -8,7 +8,7 @@ import {
   getOrRecoverPassword,
   runPowerShellJson,
   escapePowerShellLiteral,
-} from '../src/services/accessOleDb';
+} from '../../../src/services/accessOleDb';
 
 const FILES = [
   'E:/data/rics-mdbs/FR.MDB',

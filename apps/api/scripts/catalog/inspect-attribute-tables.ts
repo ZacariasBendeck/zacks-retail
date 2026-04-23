@@ -1,7 +1,7 @@
 /**
  * Ad-hoc diagnostic — print the current contents of the app attribute tables.
  *
- *   pnpm --filter @benlow-rics/api tsx scripts/inspect-attribute-tables.ts
+ *   pnpm --filter @benlow-rics/api tsx scripts/catalog/inspect-attribute-tables.ts
  *
  * Reports:
  *   - per-dimension row counts

@@ -14,7 +14,7 @@
  */
 import { Client } from 'pg';
 import { randomUUID } from 'node:crypto';
-import { skuLifecycleBackfill } from '../src/services/sync/skuLifecycleBackfill';
+import { skuLifecycleBackfill } from '../../../src/services/sync/skuLifecycleBackfill';
 
 function fmtNum(n: number): string {
   return n.toLocaleString('en-US');

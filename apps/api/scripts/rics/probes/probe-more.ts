@@ -5,7 +5,7 @@ import {
   runPowerShellJson,
   buildListTablesScript,
   buildSelectScript,
-} from '../src/services/accessOleDb';
+} from '../../../src/services/accessOleDb';
 
 const CANDIDATES = ['RISIZE.MDB', 'RISTORE.MDB', 'RITAX.MDB', 'RIARTICK.MDB', 'RICASEPK.MDB', 'RICATEG.MDB'];
 for (const file of CANDIDATES) {

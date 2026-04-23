@@ -91,7 +91,7 @@ function parseArgs(): Args {
 const args = parseArgs();
 
 // Wire RICS_DB_DIR BEFORE importing any rics/* module. Mirror the Jest setup.
-const REPO_ROOT = path.resolve(__dirname, '../../..');
+const REPO_ROOT = path.resolve(__dirname, '../../../../..');
 const LIVE_DIR = path.resolve(REPO_ROOT, 'Rics Databases');
 const TEST_DIR = path.resolve(REPO_ROOT, '.tmp', 'test-mdbs');
 const chosenDir = args.live ? LIVE_DIR : TEST_DIR;
@@ -106,7 +106,7 @@ if (!fs.existsSync(chosenDir)) {
 process.env.RICS_DB_DIR = chosenDir;
 
 // Imports AFTER env is set.
-import { SkuRepository, type SkuInput } from '../src/repositories/rics/SkuRepository';
+import { SkuRepository, type SkuInput } from '../../../../src/repositories/rics/SkuRepository';
 
 // Small console helpers — keep log output scannable.
 const step = (label: string, body: string) => console.log(`\n──── ${label} ────\n${body}`);

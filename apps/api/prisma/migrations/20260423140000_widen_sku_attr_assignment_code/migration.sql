@@ -16,13 +16,27 @@ DROP VIEW IF EXISTS "app"."sku_attribute_orphans";
 ALTER TABLE "app"."sku_attribute_assignment"
     ALTER COLUMN "sku_code" TYPE VARCHAR(32);
 
-CREATE VIEW "app"."sku_attribute_orphans" AS
-    SELECT a."sku_code", COUNT(*)::INTEGER AS "assignment_count"
-    FROM "app"."sku_attribute_assignment" a
-    WHERE NOT EXISTS (
-        SELECT 1 FROM "rics_mirror"."inventory_master" im WHERE im."sku" = a."sku_code"
-    )
-    AND NOT EXISTS (
-        SELECT 1 FROM "app"."sku" s WHERE s."code" = a."sku_code" OR s."provisional_code" = a."sku_code"
-    )
-    GROUP BY a."sku_code";
+-- Bootstrap-safe: skipped on from-scratch boot when rics_mirror.inventory_master
+-- doesn't yet exist. sync:rics drops rics_mirror CASCADE on every reload
+-- (cascade-dropping this view), so leaving it absent on first boot is consistent
+-- with the lifecycle. See sibling migration 20260422120000_app_sku_extended_attributes.
+DO $mig$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = 'rics_mirror' AND table_name = 'inventory_master'
+    ) THEN
+        EXECUTE $v$
+            CREATE VIEW "app"."sku_attribute_orphans" AS
+                SELECT a."sku_code", COUNT(*)::INTEGER AS "assignment_count"
+                FROM "app"."sku_attribute_assignment" a
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM "rics_mirror"."inventory_master" im WHERE im."sku" = a."sku_code"
+                )
+                AND NOT EXISTS (
+                    SELECT 1 FROM "app"."sku" s WHERE s."code" = a."sku_code" OR s."provisional_code" = a."sku_code"
+                )
+                GROUP BY a."sku_code"
+        $v$;
+    END IF;
+END $mig$;

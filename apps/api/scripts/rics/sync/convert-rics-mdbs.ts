@@ -36,7 +36,7 @@ import {
   runPowerShellJson,
   buildListTablesScript,
   escapePowerShellLiteral,
-} from '../src/services/accessOleDb';
+} from '../../../src/services/accessOleDb';
 
 // ─────────────────── Args ───────────────────
 

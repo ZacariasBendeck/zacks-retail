@@ -5,7 +5,7 @@ import {
   buildListTablesScript,
   buildListColumnsScript,
   buildSelectScript,
-} from '../src/services/accessOleDb';
+} from '../../../src/services/accessOleDb';
 
 async function main() {
   const path = ricsDbPath('RISEMF.MDB');

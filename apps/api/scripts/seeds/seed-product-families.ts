@@ -22,7 +22,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { Client } from 'pg';
 
-const SEEDS_DIR = path.resolve(__dirname, '../seeds/product_families');
+const SEEDS_DIR = path.resolve(__dirname, '../../seeds/product_families');
 
 interface FamilyRow {
   code: string;

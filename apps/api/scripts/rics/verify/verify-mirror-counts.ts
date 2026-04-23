@@ -3,7 +3,7 @@ import path from 'node:path';
 import { Client } from 'pg';
 
 // Tiny .env loader so we don't pull in a dep.
-const envPath = path.resolve(__dirname, '..', '.env');
+const envPath = path.resolve(__dirname, '..', '..', '..', '.env');
 if (fs.existsSync(envPath)) {
   for (const line of fs.readFileSync(envPath, 'utf8').split(/\r?\n/)) {
     const m = /^([A-Z_][A-Z0-9_]*)=(.*)$/i.exec(line.trim());

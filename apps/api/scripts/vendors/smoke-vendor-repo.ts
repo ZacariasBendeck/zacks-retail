@@ -1,7 +1,7 @@
 /**
  * Smoke the rewritten VendorRepository (Postgres-backed) end-to-end.
  */
-import { VendorRepository } from '../src/repositories/rics/VendorRepository';
+import { VendorRepository } from '../../src/repositories/rics/VendorRepository';
 
 (async () => {
   console.log('--- findAll (no filter, default) ---');
