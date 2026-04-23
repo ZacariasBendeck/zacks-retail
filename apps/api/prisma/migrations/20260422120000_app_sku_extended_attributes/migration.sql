@@ -73,10 +73,26 @@ ALTER TABLE "app"."sku_attribute_assignment"
 
 -- CreateView: sku_attribute_orphans — assignments whose sku_code no longer exists in the mirror.
 -- Watched by pnpm verify:rics-mirror after each reload.
-CREATE VIEW "app"."sku_attribute_orphans" AS
-    SELECT a."sku_code", COUNT(*)::INTEGER AS "assignment_count"
-    FROM "app"."sku_attribute_assignment" a
-    WHERE NOT EXISTS (
-        SELECT 1 FROM "rics_mirror"."inventory_master" im WHERE im."sku" = a."sku_code"
-    )
-    GROUP BY a."sku_code";
+--
+-- Bootstrap-safe: wrapped in a DO block that skips view creation when
+-- rics_mirror.inventory_master doesn't yet exist (from-scratch boot, before
+-- the first sync:rics). sync:rics drops rics_mirror CASCADE on every run
+-- anyway — cascading away this view — so skipping it here is consistent
+-- with the actual lifecycle. A post-sync hook recreates it when needed.
+DO $mig$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = 'rics_mirror' AND table_name = 'inventory_master'
+    ) THEN
+        EXECUTE $v$
+            CREATE VIEW "app"."sku_attribute_orphans" AS
+                SELECT a."sku_code", COUNT(*)::INTEGER AS "assignment_count"
+                FROM "app"."sku_attribute_assignment" a
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM "rics_mirror"."inventory_master" im WHERE im."sku" = a."sku_code"
+                )
+                GROUP BY a."sku_code"
+        $v$;
+    END IF;
+END $mig$;

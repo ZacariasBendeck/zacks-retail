@@ -456,8 +456,8 @@ export async function queryMonthlyNetSales(
 // most recent month-end close.
 //
 // The discovery pass that produced this mapping lives in
-// `apps/api/scripts/discover-invhis.ts` and
-// `apps/api/scripts/probe-invhis-alignment.ts`.
+// `apps/api/scripts/rics/discovery/discover-invhis.ts` and
+// `apps/api/scripts/rics/probes/probe-invhis-alignment.ts`.
 
 export interface MonthlyInventoryHistoryRow {
   storeNumber: number;

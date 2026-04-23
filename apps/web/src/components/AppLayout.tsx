@@ -36,23 +36,51 @@ const menuItems = [
     label: 'Products',
     children: [
       { key: '/products/skus/new', icon: <PlusOutlined />, label: 'New SKU' },
-      { key: '/products/skus/new-alt', icon: <FileTextOutlined />, label: 'New SKU alt' },
-      { key: '/products/inquiry', icon: <SearchOutlined />, label: 'Inquiry' },
       { key: '/inventory/skus', icon: <AppstoreOutlined />, label: 'SKU List' },
-      { key: '/products/taxonomy', icon: <AppstoreOutlined />, label: 'Taxonomy' },
-      { key: '/products/taxonomy/departments', icon: <FileTextOutlined />, label: '\u2014 Departments' },
-      { key: '/products/taxonomy/categories', icon: <FileTextOutlined />, label: '\u2014 Categories' },
-      { key: '/products/taxonomy/sectors', icon: <FileTextOutlined />, label: '\u2014 Sectors' },
-      { key: '/products/taxonomy/groups', icon: <FileTextOutlined />, label: '\u2014 Groups' },
-      { key: '/products/taxonomy/keywords', icon: <FileTextOutlined />, label: '\u2014 Keywords' },
-      { key: '/products/taxonomy/seasons', icon: <FileTextOutlined />, label: '\u2014 Seasons' },
-      { key: '/products/taxonomy/return-codes', icon: <FileTextOutlined />, label: '\u2014 Return Codes' },
-      { key: '/products/taxonomy/promotion-codes', icon: <FileTextOutlined />, label: '\u2014 Promotion Codes' },
-      { key: '/products/taxonomy/size-types', icon: <FileTextOutlined />, label: '\u2014 Size Types' },
-      { key: '/products/vendors', icon: <AppstoreOutlined />, label: 'Vendors' },
-      { key: '/products/skus', icon: <AppstoreOutlined />, label: 'SKUs (Phase 1)' },
-      { key: '/products/attributes', icon: <AppstoreOutlined />, label: 'Atributos' },
-      { key: '/products/families', icon: <AppstoreOutlined />, label: 'Familias' },
+      { key: '/inventory/sku-drafts', icon: <FileTextOutlined />, label: 'Borradores de SKU' },
+      { key: '/products/inquiry', icon: <SearchOutlined />, label: 'Inquiry' },
+      { type: 'divider' as const },
+      {
+        type: 'group' as const,
+        label: 'Taxonomy',
+        children: [
+          { key: '/products/taxonomy/categories', icon: <FileTextOutlined />, label: 'Categories' },
+          { key: '/products/taxonomy/departments', icon: <FileTextOutlined />, label: 'Departments' },
+          { key: '/products/taxonomy/sectors', icon: <FileTextOutlined />, label: 'Sectors' },
+          { key: '/products/taxonomy/groups', icon: <FileTextOutlined />, label: 'Groups' },
+          { key: '/products/taxonomy/keywords', icon: <FileTextOutlined />, label: 'Keywords' },
+          { key: '/products/taxonomy/seasons', icon: <FileTextOutlined />, label: 'Seasons' },
+        ],
+      },
+      { type: 'divider' as const },
+      {
+        type: 'group' as const,
+        label: 'PIM',
+        children: [
+          { key: '/products/attributes', icon: <AppstoreOutlined />, label: 'Attributes' },
+          { key: '/products/families', icon: <AppstoreOutlined />, label: 'Product Families' },
+        ],
+      },
+      { type: 'divider' as const },
+      {
+        type: 'group' as const,
+        label: 'Reference',
+        children: [
+          { key: '/products/vendors', icon: <AppstoreOutlined />, label: 'Vendors' },
+          { key: '/products/taxonomy/size-types', icon: <FileTextOutlined />, label: 'Size Types' },
+          { key: '/products/taxonomy/return-codes', icon: <FileTextOutlined />, label: 'Return Codes' },
+          { key: '/products/taxonomy/promotion-codes', icon: <FileTextOutlined />, label: 'Promotion Codes' },
+        ],
+      },
+      { type: 'divider' as const },
+      {
+        type: 'group' as const,
+        label: 'Legacy (temporary)',
+        children: [
+          { key: '/products/skus', icon: <AppstoreOutlined />, label: 'SKUs (Phase 1)' },
+          { key: '/products/skus/new-alt', icon: <FileTextOutlined />, label: 'New SKU alt' },
+        ],
+      },
     ],
   },
   {
@@ -186,8 +214,21 @@ export default function AppLayout() {
     },
   ]
 
+  // Walk nested items (SubMenu children may themselves be Group items with
+  // their own children) and collect every leaf key. Dividers and Groups carry
+  // no clickable key of their own — only the inner leaves do.
+  const collectLeafKeys = (items: readonly any[]): string[] => {
+    const out: string[] = []
+    for (const item of items) {
+      if (!item || item.type === 'divider') continue
+      if (Array.isArray(item.children)) out.push(...collectLeafKeys(item.children))
+      else if (typeof item.key === 'string') out.push(item.key)
+    }
+    return out
+  }
+
   const allLeafKeys = menuItems.flatMap((item) =>
-    item.children ? item.children.map((child) => child.key) : [item.key],
+    item.children ? collectLeafKeys(item.children) : typeof item.key === 'string' ? [item.key] : [],
   )
 
   const selectedLeaf =
@@ -196,8 +237,12 @@ export default function AppLayout() {
       .sort((a, b) => b.length - a.length)[0] ?? '/inventory/dashboard'
 
   const activeModule =
-    menuItems.find((item) => currentPath === item.key || currentPath.startsWith(`${item.key}/`)) ??
-    menuItems.find((item) => item.children?.some((child) => child.key === selectedLeaf)) ??
+    menuItems.find(
+      (item) =>
+        typeof item.key === 'string' &&
+        (currentPath === item.key || currentPath.startsWith(`${item.key}/`)),
+    ) ??
+    menuItems.find((item) => item.children && collectLeafKeys(item.children).includes(selectedLeaf)) ??
     menuItems[0]
   const [openKeys, setOpenKeys] = useState<string[]>(() => (activeModule ? [activeModule.key] : []))
 

@@ -1,13 +1,24 @@
-// Zack's Retail — storefront-only Prisma schema.
+// Zack's Retail — API Prisma schema.
 //
-// Scope: net-new tables that back the storefront (content overlay, cart, orders).
-// Products, inventory, and sizes still come from the legacy RICS MDBs live
-// via the PowerShell + OLEDB adapter (see apps/api/src/services/ricsProductAdapter.ts).
-// The RICS SKU code is treated as an opaque external string key.
+// Scope: Postgres-backed application tables for storefront, admin,
+// product/catalog, reporting, and operational workflows.
 //
-// Admin-side data (SKUs, vendors, POs, OTB, etc.) continues to live in the
-// SQLite DB initialized from apps/api/src/db/database.ts until that migration
-// is scoped separately.
+// PostgreSQL is the system of record for all net-new application data.
+// SQLite remains only as a frozen read-store for legacy admin reference tables
+// such as ref_colors, ref_patterns, and related dimensions while they are
+// migrated piecewise into app.* Postgres dimensions.
+//
+// Legacy RICS v7.7 Access MDB files are read only through the operator-invoked
+// RICS mirror sync pipeline:
+//
+//   RICS MDB → PowerShell/C# ACE.OLEDB export → CSV → Node COPY → Postgres
+//
+// The API must not read directly from or write to RICS MDB files.
+// The API must not create new SQLite writes.
+//
+// RICS SKU codes are treated as opaque external string keys.
+// Module specs in docs/modules/*.md are governed contracts and should stay
+// aligned with this schema.
 
 generator client {
   provider        = "prisma-client-js"

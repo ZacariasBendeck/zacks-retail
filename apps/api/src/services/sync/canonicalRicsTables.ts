@@ -52,7 +52,7 @@ export const CANONICAL_MDBS: CanonicalMdb[] = [
 
   // ---- Added 2026-04-23 ---- /index-knowledge-unrelated batch
   // Canonical data surfaced by the RICSWIN-wide MDB scan. All row counts as
-  // of scan date; see `apps/api/scripts/scan-mdbs.ts` for how these were found.
+  // of scan date; see `apps/api/scripts/rics/discovery/scan-mdbs.ts` for how these were found.
 
   // Barcode → SKU lookup. 840k rows; required for POS scan + barcode parity.
   { file: 'RIUPC.MDB', tables: ['UPC Cross Reference'] },

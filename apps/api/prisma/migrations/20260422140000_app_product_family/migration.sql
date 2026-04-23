@@ -63,10 +63,25 @@ ALTER TABLE "app"."attribute_dimension"
 -- CreateView: category_orphans — categories in rics_mirror with no family mapping.
 -- Expected to be empty after the seed runs. Surfaces new categories added via
 -- sync:rics so the operator knows to map them.
-CREATE VIEW "app"."category_family_orphans" AS
-    SELECT c."number" AS category_number, c."desc" AS category_desc
-    FROM "rics_mirror"."categories" c
-    WHERE NOT EXISTS (
-        SELECT 1 FROM "app"."category_product_family" cpf
-        WHERE cpf."category_number" = c."number"
-    );
+--
+-- Bootstrap-safe: skipped when rics_mirror.categories doesn't yet exist
+-- (from-scratch boot). sync:rics drops rics_mirror CASCADE on every reload
+-- which cascades-drops this view anyway. See sibling migration
+-- 20260422120000_app_sku_extended_attributes for the same pattern.
+DO $mig$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = 'rics_mirror' AND table_name = 'categories'
+    ) THEN
+        EXECUTE $v$
+            CREATE VIEW "app"."category_family_orphans" AS
+                SELECT c."number" AS category_number, c."desc" AS category_desc
+                FROM "rics_mirror"."categories" c
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM "app"."category_product_family" cpf
+                    WHERE cpf."category_number" = c."number"
+                )
+        $v$;
+    END IF;
+END $mig$;
