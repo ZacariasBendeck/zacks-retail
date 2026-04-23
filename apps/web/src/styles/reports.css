@@ -17,3 +17,14 @@
 .ant-table-tbody > tr.report-zebra-row:hover > .ant-table-cell {
   background: rgba(0, 0, 0, 0.04);
 }
+
+/*
+ * Report-viewer client-side grouping subtotal row: sits between per-group
+ * data rows, drawn stronger than zebra so the group boundary reads. Not
+ * used on the per-page report screens — those use Ant's Table.Summary.
+ */
+.report-viewer-subtotal > .ant-table-cell {
+  background: rgba(22, 119, 255, 0.05) !important;
+  border-top: 1px solid rgba(22, 119, 255, 0.2);
+  font-weight: 600;
+}

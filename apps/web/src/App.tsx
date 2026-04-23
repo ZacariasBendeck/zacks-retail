@@ -52,6 +52,7 @@ const ReportsOthersHubPage = lazy(() => import('./pages/salesReporting/ReportsOt
 const SalesByDayPage = lazy(() => import('./pages/salesReporting/SalesByDayPage'))
 const SalesByTimePage = lazy(() => import('./pages/salesReporting/SalesByTimePage'))
 const SalespersonSummaryPage = lazy(() => import('./pages/salesReporting/SalespersonSummaryPage'))
+const ReportViewerPage = lazy(() => import('./pages/reports/ReportViewerPage'))
 const CustomerListPage = lazy(() => import('./pages/customers/CustomerListPage'))
 const CustomerFormPage = lazy(() => import('./pages/customers/CustomerFormPage'))
 const LoginPage = lazy(() => import('./pages/auth/LoginPage'))
@@ -126,6 +127,16 @@ export default function App() {
             <Suspense fallback={<RouteLoadingFallback />}>
               <LoginPage />
             </Suspense>
+          }
+        />
+        <Route
+          path="/report-viewer"
+          element={
+            <RequireAuth>
+              <Suspense fallback={<RouteLoadingFallback />}>
+                <ReportViewerPage />
+              </Suspense>
+            </RequireAuth>
           }
         />
         <Route element={<RequireAuth><AppLayout /></RequireAuth>}>
