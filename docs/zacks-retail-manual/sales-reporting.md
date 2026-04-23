@@ -3,7 +3,7 @@
 > **Status:** Draft
 > **Module spec:** [../modules/sales-reporting.md](../modules/sales-reporting.md)
 > **RICS ancestry:** Ch. 6 (most, minus OTB), Ch. 2 (Sales by Time, Sales by SKU, Sales Journal)
-> **Last updated:** 2026-04-21
+> **Last updated:** 2026-04-23
 
 ## What this module does
 
@@ -52,9 +52,51 @@ _TODO — this module IS reports. Full list will enumerate below as UI ships._
 
 | Report | Where | Filters | Exports |
 |---|---|---|---|
-| Sales Analysis | — | Many | CSV / XLSX / PDF |
+| Sales Analysis | Reports → Sales → Sales Analysis | Stores, Categories, Vendors, Seasons, SKUs, Style/Color, Groups, Keywords; period; prior-year compare | CSV / XLSX / PDF |
+| Sales Hierarchy Drill-Down | Reports → Sales → Sales Hierarchy Drill-Down | Same as Sales Analysis | CSV / XLSX / PDF |
 | 8-Week Trending | — | SKU, category, store | CSV / PDF |
-| Best Sellers | — | Period, store, category | CSV / PDF |
+| Best Sellers | Reports → Sales → Best Sellers | Period, store, category | CSV / PDF |
+
+### Sales Hierarchy Drill-Down
+
+A three-level tree view — **Department → Category → SKU** — with subtotals at every level. Departments are collapsed by default; click a department to see its category subtotals, click a category to see the SKUs under it. Turn on **Separate Stores** in Store Options to wrap the tree in an outer Store level (one tree per store). **Combine Stores** (default) produces a single tree aggregated across every store.
+
+Filters match Sales Analysis exactly — whatever criteria narrow Sales Analysis narrow the tree the same way. Turn on **Compare to prior year** to add **Prior Yr Net** and **PY % Δ** columns at every row in the tree.
+
+## Saved templates and snapshots
+
+Two small actions ride alongside **Run Report** on each report page: **Save as template** and **Save snapshot**.
+
+### Save as template
+
+A template is a named set of filters. Click **Save as template**, give it a title (e.g. *Q1 Footwear Categories*), and pick a visibility:
+
+- **Private** — only you see it.
+- **Visible to all signed-in users** — anyone logged in can find it under **Reports → Templates**.
+
+Later, open **Reports → Templates**, click **Run** on any saved row, and the report page re-opens with your filters already filled in and the report auto-running against today's data. Templates are the right tool when you want **the same question, answered against fresh data each time** — monthly reviews, standing dashboards, etc.
+
+### Save snapshot
+
+A snapshot freezes the exact result that is on your screen. Click **Save snapshot** after a run, give it a title (default is *Report Name — YYYY-MM-DD HH:mm*), and pick a visibility. The snapshot appears under **Reports → Snapshots**.
+
+Opening a saved snapshot shows you the same rows, same totals, same drill-downs you captured — no re-query against the sales database. Useful for:
+
+- Bookmarking a result before a meeting.
+- Sharing a point-in-time view with a teammate.
+- Keeping a record of how numbers looked right before a process change.
+
+Snapshots never refresh on their own. If you need current numbers, re-run the report in the builder (**Open builder (live data)** on the snapshot view page).
+
+### Templates vs. snapshots — quick pick
+
+| Want… | Use |
+|---|---|
+| The same filters replayed against fresh data | Template |
+| A frozen copy of today's numbers | Snapshot |
+| Both | Save as template first, then save a snapshot of the run |
+
+When you take a snapshot after running a template, the snapshot remembers which template produced it — you'll see an **Open source template** link on the snapshot view page.
 
 ## Keyboard shortcuts
 

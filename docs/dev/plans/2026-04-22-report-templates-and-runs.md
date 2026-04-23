@@ -150,6 +150,20 @@ Per-report deep validation of `paramsJson` is **deferred**. Frontend TS types ow
 13. `/reports/runs` list page + `/reports/runs/:id` frozen view page. Renderer dispatch: Sales Analysis + Best Sellers render fully; other 5 show fallback + "Open in builder" CTA.
 14. Phase 1.1 verification walk-through.
 
+## Phase 1.1 post-ship delta (2026-04-23)
+
+Records where the landed implementation diverged from the plan. Captured via `/index-knowledge` immediately after ship so the plan doc stays the source of truth.
+
+- **Three renderers shipped, not two.** `renderSalesAnalysis.tsx`, `renderBestSellers.tsx`, and `renderSalesHierarchyDrillDown.tsx` all landed. The drill-down report was added late in the same session (see `docs/modules/sales-reporting/decisions.md` → "Sales Hierarchy Drill-Down is a new app-native report"), and extracting its renderer at the same time was cheaper than deferring to Phase 1.2.
+- **Save-snapshot button wired into 3 priority pages, not 7.** Sales Analysis, Best Sellers, and Sales Hierarchy Drill-Down. The remaining 4 pages (Stock Status, Sales by Day, Sales by Time, Salesperson Summary, Sales History by Month) can be wired with a 3-line edit each when their renderers land in Phase 1.2; shipping them without renderers would give "Save snapshot" a button that leads only to the fallback view, which is confusing.
+- **`ReportRun.title` added (nullable).** Not in the pre-ship Prisma model. Rationale: list / view pages need a human-readable name; filter chips alone are too cryptic in the runs list. Paired with a `defaultSnapshotTitle(reportType, now)` helper in `apps/web/src/services/reportRunsApi.ts` that produces `"{Report name} — YYYY-MM-DD HH:mm"` when the operator leaves the title field blank.
+- **`RunInvalidPayloadError` (HTTP 400).** Added to `reportRunsService.ts` for payloads that can't round-trip through `JSON.stringify`. Most commonly triggered by BigInt columns coming from newer adapter code that forgot to cast integer columns to `::float8` at the SQL edge. A 400 with a specific message beats a raw 500 from the global handler.
+- **`inferRowCount` heuristic.** Server-side envelope's `rowCount` walks four conventional shapes: top-level array, `{rows: [...]}`, `{roots: [...]}` (hierarchy drill-down tree — counts leaf SKU nodes), `{blocks: [{rows: [...]}]}` (sales history by month). Anything else falls back to 0. Lives in `reportRunsService.ts`.
+- **`persistentActions` slot on `CollapsibleFilterCard`.** Save-as-template and Save-snapshot buttons need to stay visible after the filter card auto-collapses post-Run (auto-collapse decision: `docs/modules/sales-reporting/decisions.md` → 2026-04-23). `actions` (which is inside the card body) gets hidden on collapse; `persistentActions` renders in the collapsed-state header alongside `[Modify filters] [Re-run]`. Applied on Best Sellers first; every report page using `CollapsibleFilterCard` can adopt the same slot incrementally.
+- **Snapshots list page lives at `/reports/runs` (plural of the table name), nav label is "Snapshots".** Route + DB name + UI label intentionally differ because the URL needs to match the API path (`/api/v1/reports/runs`) and the DB table is `report_runs`, but operators think in terms of "snapshots" — the route + table name are implementation detail the operator never reads.
+- **`sales-pivot` was added to the REPORT_TYPES registry on the client.** Out of session but intentional; landed alongside a new `SalesPivotCustomPage` that's a variant of the existing `SalesPivotPage`. Template and snapshot save for that report still need wiring; filed as follow-up.
+- **Blocker noted:** On Windows, `prisma generate` fails with `EPERM` when the API dev server is running (it holds `query_engine-windows.dll.node` open). Stop the server before running `pnpm exec prisma generate` after Prisma-model changes. Happens to every Prisma schema change, not specific to this plan — worth calling out because it cost cycles in this session.
+
 ## Phase 1.2 (deferred)
 
 - Automatic run history toggle (opt-in user preference, default off).

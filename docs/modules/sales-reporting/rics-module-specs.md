@@ -218,6 +218,8 @@ These are not individual reports but are shared options every report in this mod
 
 ## Data model sketch
 
+> ⚠️ May be stale per 2026-04-23 /index-knowledge pass: the `SavedView` / `ReportRun` (with status enum + artifacts) / `ReportSnapshot` (15-min TTL cache) three-table design below was superseded by the simpler two-table design that shipped in Phase 1.1. Current truth lives in [`../../dev/plans/2026-04-22-report-templates-and-runs.md`](../../dev/plans/2026-04-22-report-templates-and-runs.md) and [`./decisions.md`](./decisions.md) → "2026-04-23 — Report Snapshot = single `ReportRun` table". In the shipped model: `app.report_templates` holds saved filter presets (the `SavedView` equivalent), and `app.report_runs` holds frozen snapshots with the full `result_json` payload (the `ReportRun` + `ReportSnapshot` concepts merged). No status enum, no artifact table, no TTL. Retain the sections below only for the ambition they still express around `SalesFactDaily` / `WeeklyTrendFact` / NPD export — those are unaffected by the templates/runs decision. Review and prune the three obsolete models when confirmed.
+
 This module's Postgres footprint is small — it is mostly a read-model over `sales-pos`. The tables below define report catalog, saved filters, scheduled runs, and the materialized sales aggregate that backs every report.
 
 ```prisma

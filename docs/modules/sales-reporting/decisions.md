@@ -20,6 +20,60 @@ Each entry follows this shape:
 
 <!-- Decisions go below this line, most recent first. -->
 
+## 2026-04-23 — Sales Hierarchy Drill-Down is a new app-native report
+
+**Context:** Operator wanted the legacy RICS "Sales Analysis by Category" Excel pivot — a collapsible Department subtotal with a click-to-expand Category row revealing SKU detail. RICS itself offers `CATEGORY_SUMMARY` and `DEPT_SUMMARY` as separate flat-row dimensions, not a unified tree. The existing `ReportViewerPage` tree is per-report-type (built around Sales Analysis rows) and doesn't cover the Dept→Cat→SKU axis out of the box.
+
+**Decision:** Add **Sales Hierarchy Drill-Down** as a first-class sales report alongside Sales Analysis.
+
+- Route: `/reports/sales/hierarchy-drill-down`.
+- API: `GET /api/v1/reports/sales/hierarchy-drill-down`. Same filter surface as `/sales-analysis` (stores, categories, vendors, seasons, SKUs, style/color, groups, keywords, all structured + RICS-grammar-raw variants; period + optional prior-year compare). No "Analyze by" / "Report Type" radios — this report *is* the hierarchy.
+- Store options: Separate + Combine only; **`COMPARE` is rejected** (side-by-side store axis conflicts with a row-hierarchy tree).
+- Data shape: nested `{ roots: SalesHierarchyNode[], totals, storeOption, priorYear, startDate, endDate, periodDays }`, where each node has `level: 'store' | 'department' | 'category' | 'sku'`, metric fields, and optional `children`. `storeOption=SEPARATE` wraps the tree in a Store level; `COMBINE` roots are departments directly.
+- Adapter: new `getSalesHierarchy()` in `ricsSalesReportAdapter.ts` loads ticket lines once (cached), buckets at SKU grain, rolls up to Category and Department, and pulls on-hand at SKU level via the existing `getOnHandAtCostByDimension({ reportType: 'SKU_DETAIL' })` so its cache + criteria filters are reused. Prior-year uses the same 364-day-shifted window Sales Analysis uses.
+- ROI / Turns / GP% computed from aggregate numerators/denominators at every level (not averages of row ratios) to avoid Simpson's paradox at rollup.
+- Renderer extraction followed immediately — `renderSalesHierarchyDrillDown.tsx` is the read-only view used by the Phase 1.1 snapshot viewer.
+
+**Consequences:**
+- Operators who previously lived in the Excel pivot for "which SKUs drove this department this month?" have an interactive, filterable, snapshotable web equivalent.
+- Hub card added to `SalesReportsHubPage` next to Sales Analysis.
+- Registered as `sales-hierarchy-drill-down` in both `apps/api/src/services/reports/reportTypes.ts` and `apps/web/src/services/reportTemplatesApi.ts` REPORT_TYPES arrays. These two lists must stay in sync — adding a new report means touching both.
+- SKUs with on-hand but zero sales in the period do NOT appear in the tree (tree is built from ticket lines). Intentional — matches Sales Analysis behavior; on-hand is a denominator column, not a driver.
+
+**Alternatives considered:**
+- Add a `HIERARCHY` mode to the existing Sales Analysis `reportType` union — rejected; would have to bifurcate the response shape (flat rows vs. tree) and forced every consumer to branch on reportType.
+- Client-side tree build from three separate calls (`DEPT_SUMMARY`, `CATEGORY_SUMMARY`, `SKU_DETAIL`) — rejected; three server round-trips, three sets of totals, and no way to guarantee consistency across them.
+- Reuse `SalesPivotPage` (Sector → Dept → Category → SKU) — rejected; pivot is flat (no expand/collapse interaction), and its filter surface diverges from Sales Analysis's.
+
+**Related:** Feature session 2026-04-22 / 2026-04-23. Files: `apps/api/src/services/salesReporting/ricsSalesReportAdapter.ts::getSalesHierarchy`, `apps/web/src/pages/salesReporting/SalesHierarchyDrillDownPage.tsx`, `apps/web/src/components/reports/renderers/renderSalesHierarchyDrillDown.tsx`.
+
+---
+
+## 2026-04-23 — Report Snapshot = single `ReportRun` table; no separate ephemeral cache
+
+**Context:** The sales-reporting module spec (`rics-module-specs.md` lines 240-383) designed three related concepts: `SavedView` (filter presets), `ReportRun` (status-enum audit log with artifact URLs, 18-month retention), and `ReportSnapshot` (ephemeral 15-min-TTL result cache keyed to a `ReportRun`). That design predates the Phase 1 / 1.1 plan doc at `docs/dev/plans/2026-04-22-report-templates-and-runs.md`.
+
+**Decision:** Ship the plan doc's simpler two-table design and treat the module spec's three-table design as superseded on this topic.
+
+- `app.report_templates` — named filter presets (the `SavedView` equivalent). Columns: `id`, `ownerId`, `reportType`, `title`, `paramsJson`, `visibility` (`'private' | 'shared'`), `createdAt`, `updatedAt`, `lastUsedAt`.
+- `app.report_runs` — frozen **snapshots** (the `ReportRun` and `ReportSnapshot` concepts merged). Columns: `id`, `userId`, `reportType`, `sourceTemplateId?` (FK → templates, ON DELETE SET NULL), `title?`, `paramsJson`, `resultJson` (full response payload, ≤ 20 MB), envelope columns (`rowCount`, `resultSizeBytes`, `reportTypeVersion`) computed server-side, `visibility`, `createdAt`.
+- **No TTL / cleanup job.** Snapshots are explicit operator saves; retention = forever until the owner deletes. Phase 1.2 will add retention tooling if storage pressure appears.
+- **No artifact table, no status enum, no scheduler trigger.** `ReportArtifact`, `RunTrigger`, `RunStatus`, `AsOfMode` from the module spec are not built. Exports from a snapshot are Phase 1.2; scheduled runs are unscoped (may never ship if operators find ad-hoc sufficient).
+
+**Consequences:**
+- One HTTP POST (`/api/v1/reports/runs`) captures everything. Envelope columns are set server-side so clients cannot lie about size/row count.
+- Snapshot viewer at `/reports/runs/:id` re-renders from `resultJson` verbatim via per-report renderers in `apps/web/src/components/reports/renderers/`. No re-query against RICS.
+- The module spec's `ReportSnapshot { runId @unique, expiresAt }` cache concept is retired. If we later want a 15-min anti-rerun cache, the obvious home is a TanStack Query layer in the frontend — not a DB table.
+- The module spec's `ReportRun.status` / `completedAt` / `errorReason` fields are gone. A snapshot either exists (succeeded) or it doesn't (the POST 4xx'd and nothing persisted). Much simpler mental model.
+
+**Alternatives considered:**
+- Ship the three-table spec — rejected; over-engineered for current operator need (manual save, no scheduler yet).
+- Put snapshots in `rics_mirror` alongside the frozen sales data — rejected; `rics_mirror` is drop-and-reload on every ETL pass, which would nuke snapshots.
+
+**Related:** Plan doc [`../../dev/plans/2026-04-22-report-templates-and-runs.md`](../../dev/plans/2026-04-22-report-templates-and-runs.md) Phase 1.1. Migration `apps/api/prisma/migrations/20260423140000_report_runs/migration.sql`. Files: `apps/api/src/services/reports/reportRunsService.ts`, `apps/api/src/routes/reports/reportRunsRoutes.ts`, `apps/web/src/pages/reports/runs/*`.
+
+---
+
 ## 2026-04-23 — Shared report chrome replaces per-page formatters and inline styling
 
 **Context:** Every sales-report page had re-implemented its own `fmtMoney` / `fmtPct1` / `fmtQty`, its own GP%-coloring thresholds, its own "Amounts in Lempira (HNL)" footnote, and its own ad-hoc summary-row styling. `apps/web/src/utils/` contained only `errors.ts` — there was no obvious place for a page author to share presentation primitives, so every page re-invented them. Any change to the currency rule or color threshold required touching every file.

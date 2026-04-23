@@ -85,13 +85,32 @@ Writes (new app data, cart, orders, content overlay)
 
 **Phase A invariant:** request handlers never open an MDB at request time. The only process that touches MDBs is the sync ETL.
 
+### Net-new SKU creation — write paths
+
+When an operator creates a SKU via `/products/skus/new` (the AI-powered creator):
+
+| Step | Writes to |
+|---|---|
+| Draft save (first save + every edit) | `app.sku` (DRAFT row), `app.sku_activity` (event=`created`/`updated`) |
+| Apariencia / Diseño dimensional save | `app.sku_attribute_assignment` (scoped to the 11 Apariencia dims), `public.products_audit_log` |
+| Finalize (DRAFT → ACTIVE) | `app.sku` (state flip + `code` set), `app.sku_activity` (event=`finalized`), `UPDATE app.sku_attribute_assignment SET sku_code = <final> WHERE sku_code = <provisional>` |
+| AI image analysis | No DB writes — reads `app.category_product_family` + `rics_mirror.categories` to build the Claude prompt |
+
+Never written during this flow: `rics_mirror.*` (read-only), RICS MDB files (forbidden), any SQLite admin table (Postgres-only policy), `app.sku_drafts` (it's a VIEW over `app.sku WHERE sku_state='DRAFT'`).
+
+### SKU attribute assignment keying
+
+`app.sku_attribute_assignment.sku_code` is **VARCHAR(32)** (was VARCHAR(15)) so it can hold both a DRAFT provisional code (`DRF-YYMMDD-XXXXXX` = 17 chars) and a final RICS-compatible code (≤15 chars). During DRAFT, assignments are keyed by `provisional_code`; on finalize, `skuLifecycleService.finalize()` runs `UPDATE ... SET sku_code = <final> WHERE sku_code = <provisional>` inside the state-flip transaction to rekey them atomically. The `app.sku_attribute_orphans` view recognizes both `app.sku.code` and `app.sku.provisional_code` as valid targets, so orphan counts stay accurate throughout the lifecycle.
+
 ## Schemas
 
 Four schemas in the Postgres DB (`zacks_retail`):
 
 - **`rics_mirror`** — Read-only, atomic reload. 1:1 mirror of every canonical RICS MDB table. Every request-side read hits this schema. Rebuilt by `pnpm sync:rics`. Never write at request time — the next reload drops everything not owned by the ETL.
 - **`public`** — Storefront-baseline tables that predate Phase A (`Cart`, `CartLine`, `Order`, `OrderLine`, `User`, `Session`, `Role`, `ProductContent`, `SeasonOverlay`, `ProductsAuditLog`). Preserved across ETL reloads. App writes freely here.
-- **`app`** — Reserved namespace for **module-owned additive tables** — net-new things Zack's Retail invents that RICS never had. Currently empty. First populated when a module needs a persistent data surface for a non-RICS concept (e.g. purchase-planning saved plans + chains + lift factors, physical-inventory count sessions).
+- **`app`** — Module-owned additive tables — net-new things Zack's Retail invents that RICS never had. Active surface as of 2026-04-23: products (`sku`, `sku_activity`, `sku_attribute_override`, `sku_keyword_override`, `size_type_override`, `products_batch_operation*`), extended attributes (`attribute_dimension`, `attribute_value`, `sku_attribute_assignment` + orphans view, `attribute_family_rule`), product family (`product_family`, `category_product_family`), plus the legacy-ref migration targets seeded 2026-04-23. Phase-A contract: writes go here freely; the `sync:rics` ETL never touches this schema.
+
+> ⚠️ May be stale per 2026-04-23 /index-knowledge pass: the previous description said "Currently empty. First populated when a module needs a persistent data surface for a non-RICS concept." That has long since happened — the schema now carries the full products-module surface plus the dimensional attribute framework. Review and remove if confirmed.
 - **`platform`** — Cross-cutting admin spine. Currently `etl_run`, `etl_run_table`. Future: `audit_log`, `notification`, `feature_flag`, `scheduled_task`.
 
 ## Adapter layer (request-side)
@@ -142,6 +161,7 @@ Short summary; each has a canonical longer doc linked.
 - **OLEDB helper stays async.** `child_process.spawn` only, never `spawnSync`. See [`docs/operations/access-oledb-async-spawn.md`](operations/access-oledb-async-spawn.md).
 - **Currency: HNL plain numbers.** No `$` / `USD` / `L` symbol inside data cells, charts, CSV, or XLSX. See [`docs/COMPANY.md`](COMPANY.md) for the business context and [`CLAUDE.md`](../CLAUDE.md) for the rendering policy.
 - **`legacy/` is retired.** Do not recreate.
+- **Postgres-only for new development (as of 2026-04-23).** No new SQLite columns, no new keys on `app.sku.legacy_attrs`, no new dependencies on the legacy SQLite ref tables. New attributes use the dimensional framework (`app.attribute_dimension` + `app.attribute_value` + `app.sku_attribute_assignment`); new SKU columns land on `app.sku` via a Prisma migration. See [`docs/dev/specs/2026-04-23-postgres-only-development-policy.md`](dev/specs/2026-04-23-postgres-only-development-policy.md) for the rule text + the migration backlog. Canonical restatement in [`CLAUDE.md`](../CLAUDE.md).
 
 ## Authentication
 

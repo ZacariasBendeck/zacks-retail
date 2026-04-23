@@ -20,6 +20,132 @@ Each entry follows this shape:
 
 <!-- Decisions go below this line, most recent first. -->
 
+## 2026-04-23 — `/products/skus/new` is the primary SKU creator; legacy `/products/skus/new-alt` kept as fallback
+
+**Context:** Two SKU creators existed in parallel: the AI-powered lifecycle form at `/inventory/skus/new` (drag/paste a boot image, Claude auto-fills ~14 of ~15 attributes, writes to `app.sku`) and the legacy RICS-tabbed form at `/products/skus/new` (manual entry of every column, no AI). The AI form is the intended long-term surface but lived under the `/inventory/*` URL tree that predates the products module.
+
+**Decision:**
+
+- `/products/skus/new` renders the AI-powered `SkuFormPage` (the one previously at `/inventory/skus/new`).
+- `/products/skus/new-alt` renders the legacy RICS-tabbed `ProductsSkuFormPage` under a "New SKU alt" nav label — reachable for cases the AI form doesn't cover yet.
+- `/inventory/skus/new` is a `<Navigate>` redirect to `/products/skus/new`. Bookmarks and inbound links keep working.
+- Post-save navigation is context-aware: creating under `/products/*` lands on `/products/skus`, creating under `/inventory/*` lands on `/inventory/skus`. The form derives the branch from `location.pathname`.
+
+**Consequences:**
+
+- The primary nav button "New SKU" (Products menu) now opens the AI form directly.
+- The legacy form continues to accept edits on `/products/skus/:code`; only the *create* entry point moved.
+- Image paste support (clipboard → `handleImageUpload`) is the default — the "drag or paste (Ctrl+V)" caption on the dropzone makes it discoverable.
+
+**Alternatives considered:**
+
+- Delete the legacy form outright — rejected, operator wanted an escape hatch until the AI form covers every field RICS needs.
+- Keep AI form only at `/inventory/skus/new` — rejected, the URL tree doesn't match the module boundary and the Products nav would lack a top-level "New SKU" entry.
+
+**Related:**
+
+- `apps/web/src/App.tsx` — route table.
+- `apps/web/src/pages/inventory/SkuFormPage.tsx` — `skuRootPath` derivation, image paste listener.
+
+---
+
+## 2026-04-23 — `app.sku` now carries every RICS InventoryMaster column the lifecycle service needs; `legacy_attrs` is frozen
+
+**Context:** The `SkuRow` / `CreateSkuInput` / `UpdateSkuInput` triple on `skuLifecycleService` exposed only a thin slice of what `app.sku` stores — retailPrice, currentCost, season, style, keywords, plus a catch-all `legacy_attrs` JSONB bag. The SKU form stashed everything else (listPrice, markDownPrice1/2, sizeType, location, groupCode, labelCode, pictureFileName, coupon, etc.) in that bag, keyed by form field name. Round-tripping required matching string keys on both sides, and the JSONB had no schema.
+
+**Decision:**
+
+- Add `perks NUMERIC(12,2)` and `discount_code TEXT` columns to `app.sku` (migration `20260423120000_sku_add_perks_discount_code`). These were the only RICS InventoryMaster columns `app.sku` was still missing.
+- Expand `SkuRow`, `CreateSkuInput`, `UpdateSkuInput`, and `mapRow()` on `skuLifecycleService` to surface the full set: `listPrice, markDownPrice1, markDownPrice2, currentPriceSlot, sizeType, location, labelCode, colorCode, groupCode, pictureFileName, manufacturer, coupon, orderMultiple, orderUom, perks, discountCode`.
+- Mirror the expansion in `apps/web/src/types/skuLifecycle.ts`.
+- Freeze `legacy_attrs`. Seven keys still live there pending migration to the dimensional framework: `shoeTypeId, closureTypeId, seasonId, occasionId, genderId, labelTypeId, brandText`. No new key should be added.
+
+**Consequences:**
+
+- The SKU form's `splitFormValuesForLifecycle` serializer now passes these fields as typed values rather than JSONB keys. `APP_SKU_COLUMN_KEYS` grew to include them.
+- `perks` + `discountCode` are written via raw SQL overlay (matching the existing `legacy_attrs` pattern) so a running dev server holding the Prisma DLL doesn't block development. Cleanup to the typed Prisma path happens on the next `prisma generate` cycle.
+
+**Related:**
+
+- `apps/api/prisma/migrations/20260423120000_sku_add_perks_discount_code/`.
+- `apps/api/src/services/products/skuLifecycleService.ts` — `mapRow`, `fetchExtraColsMap`, expanded create/update/finalize.
+
+---
+
+## 2026-04-23 — Vendor form field keys the 4-letter RICS code, not a UUID
+
+**Context:** The SKU form was wired to the legacy SQLite `/api/v1/vendors` endpoint, which returns synthetic UUIDs as `id`. The displayed dropdown showed names but stored UUIDs on `app.sku.vendor_id` — a column whose intent is the 4-letter RICS code matching `rics_mirror.inventory_master.vendor`. Operators searching "24.7 FAISCA" saw the name but had no way to see or edit the RICS code.
+
+**Decision:**
+
+- Switch the form to `useVendors()` from `apps/web/src/hooks/useProductsVendors.ts` (Postgres-backed, sourced from `/api/v1/products/vendors` → `rics_mirror.vendors`). Each row exposes `code` (4-letter) + `name` + full RICS contact fields.
+- The Vendor Code Select stores `v.code` as its value. Option labels render as `"{code} — {name}"` so both are visible while scrolling.
+- `VendorNameAutofill` (readonly component next to the Select) watches `vendorId` and renders `v.name` for the resolved code.
+- A `VendorLookup` modal (`apps/web/src/components/vendor-lookup/VendorLookup.tsx`) opens from a 🔍 Buscar link next to the Vendor Code label — RICS-style Code/Name table with Quick Search, radio-row select, single-match Enter auto-pick, double-click-to-select.
+
+**Consequences:**
+
+- `app.sku.vendor_id` now stores clean 4-letter codes (`NIKE`, `03EV`, `24.7`, …) matching both the legacy RICS column and the Postgres mirror.
+- The VendorLookup is data-coupled to the same `useVendors()` cache as the inline Select — no duplicate round-trip.
+
+**Alternatives considered:**
+
+- Keep UUIDs on the form and translate at the route boundary — rejected, introduces a second id space with no benefit and fights what RICS and every downstream report already does.
+- Make the vendor field a plain text input — rejected, loses the autofill-name UX and lets the operator type codes that don't exist.
+
+**Related:**
+
+- `apps/web/src/components/vendor-lookup/VendorLookup.tsx`.
+- `apps/web/src/pages/inventory/SkuFormPage.tsx` — Vendor Code Form.Item.
+
+---
+
+## 2026-04-23 — Main-form save uses scoped `setForSku` so it only touches Apariencia dims
+
+**Context:** After the 11 Apariencia ref tables migrated to dimensional assignments, the SKU form needed to call `PUT /skus/:code/attributes` on save. The existing `setForSku` does atomic-replace: it wipes every assignment for that SKU whose `assigned_by` doesn't start with `seed:keyword:`. The main form only knows about the 11 Apariencia dims; if it called the full-replace contract it would wipe Buyer / Company / Cadena / Discount Type assignments that live under the separate "Atributos" tab.
+
+**Decision:**
+
+- Extend `replaceSkuAttributes(skuCode, assignments, actor, scopedDimensionCodes?)` — when `scopedDimensionCodes` is present and non-empty, both the DELETE and the required-dim check narrow to those dims. Out-of-scope dims stay untouched.
+- Mirror the option through `attributesService.setForSku`, the PUT route body (`body.scope: string[]`), and the web client `productsAttributesApi.setForSku(code, { assignments, scope })`.
+- Callers that want the original full-replace semantics simply omit `scope`.
+- The main SKU form passes `scope = [all 11 Apariencia dim codes]` so each save touches only those dims.
+
+**Consequences:**
+
+- Per-dim operator assignments are now independently editable — the "Atributos" tab can set Buyer without risk, the main form can set Color without risk.
+- Required-dim enforcement naturally follows scope: out-of-scope required dims don't fail the write (they were unchanged by it anyway).
+
+**Related:**
+
+- `apps/api/src/repositories/products/AttributesRepository.ts` — `replaceSkuAttributes`.
+- `apps/api/src/routes/products/attributesRoutes.ts` — PUT body parsing.
+- `docs/dev/specs/2026-04-23-postgres-only-development-policy.md`.
+
+---
+
+## 2026-04-23 — Category picker is scoped by Product Family and requires one
+
+**Context:** The Category `<Select>` pulled from `useAllPostgresCategories()` (615 rows across 12 family groups). With the full list loaded, the grouped Ant Select surfaced "zapatos" first and virtualization hid the rest; more importantly, picking a non-Zapatos category while Familia=Zapatos was selected broke the AI's family-scoped prompt and produced cross-family mis-classifications.
+
+**Decision:**
+
+- `categoryOptions` filters `validCategoriesById` to rows where `familyCode === selectedFamily`. Result set shrinks to ~4–122 rows (per family) with consistent ordering by category number.
+- When `selectedFamily` is null the Select is `disabled={true}` with placeholder "Selecciona una Familia primero" — the operator can't pick a category out of context.
+- When `selectedFamily` changes, a `useEffect` checks the current `categoryId`: if it belongs to a different family it's cleared (along with the derived family/dept state). If it already matches the new family it's preserved.
+- Edit-mode load now seeds `selectedFamily` from the loaded SKU's category's `familyCode`, so opening an existing SKU keeps its category visible (without this, the clear-effect would wipe it).
+
+**Consequences:**
+
+- The AI-image-fill flow and the manual pick flow both stay inside the chosen family.
+- Operators must pick Familia first; the UX signals this with the disabled state.
+
+**Related:**
+
+- `docs/dev/specs/2026-04-23-ai-image-fill-cross-family-guard.md` — the bug this scoping prevents in the manual-pick path.
+
+---
+
 ## 2026-04-22 — Exclude `MB` and `CXB` from initial extended-attributes catalog; use `CXN` for Corporación Xena; ignore `UN`
 
 **Context:** During the brainstorm of the keyword-derived attribute layer, the operator initially named `MB` as both a buyer and a company value, and `CXB` as the company code for Corporación Xena. A discovery query against `rics_mirror.inventory_master.key_words` (split on whitespace, top tokens by frequency) showed `MB` has 0 occurrences and `CXB` has 0 occurrences, while `CXN` has 10,397 occurrences. A `DM` token (45,854 occurrences, third-largest buyer) and a `UN` token (5,766 occurrences, distinct from `UNLI`) had not been mentioned.
