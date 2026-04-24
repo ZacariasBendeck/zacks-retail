@@ -6,7 +6,7 @@
  * exploratory tool — the goal is to surface canonical data sources the
  * sync allowlist is missing, and to find where RICS stores Season Code Setup.
  *
- * Usage:  npx tsx apps/api/scripts/scan-mdbs.ts [dir]
+ * Usage:  npx tsx apps/api/scripts/rics/discovery/scan-mdbs.ts [dir]
  *   dir defaults to C:/RICSWIN
  */
 import fs from 'node:fs';

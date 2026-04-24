@@ -364,9 +364,9 @@ sufficient for the default trailing-12 window.
 ### Discovery findings (RIINVHIS.MDB → `InvHis` table)
 
 Discovery scripts live at:
-- `apps/api/scripts/discover-invhis.ts` — enumerates tables, columns, row counts.
-- `apps/api/scripts/probe-invhis.ts` — non-zero / cost-coverage probes.
-- `apps/api/scripts/probe-invhis-alignment.ts` — aligns `LYMonth*_NN` against
+- `apps/api/scripts/rics/discovery/discover-invhis.ts` — enumerates tables, columns, row counts.
+- `apps/api/scripts/rics/probes/probe-invhis.ts` — non-zero / cost-coverage probes.
+- `apps/api/scripts/rics/probes/probe-invhis-alignment.ts` — aligns `LYMonth*_NN` against
   `RITRNSSV.TicketDetail` to prove the index semantics.
 
 Key columns on `InvHis` (one row per `(SKU, Store)`):

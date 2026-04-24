@@ -5,7 +5,7 @@
  * historical on-hand snapshots exist and can power Beginning On-Hand / ROI% /
  * Turns in Sales History by Month.
  *
- * Run with:  pnpm --filter @benlow-rics/api tsx scripts/discover-invhis.ts
+ * Run with:  pnpm --filter @benlow-rics/api tsx scripts/rics/discovery/discover-invhis.ts
  */
 
 import fs from 'node:fs';

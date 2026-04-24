@@ -15,7 +15,7 @@ pnpm --filter @benlow-rics/api verify:rics-mirror  # full end-to-end proof (~5 m
 /verify-rics-mirror --counts-only                  # fast sanity check, no sync
 ```
 
-The pipeline lives entirely in [`apps/api/src/services/sync/`](../../apps/api/src/services/sync/) and [`apps/api/scripts/sync-rics.ts`](../../apps/api/scripts/sync-rics.ts) + [`verify-rics-mirror.ts`](../../apps/api/scripts/verify-rics-mirror.ts).
+The pipeline lives entirely in [`apps/api/src/services/sync/`](../../apps/api/src/services/sync/) and [`apps/api/scripts/rics/sync/sync-rics.ts`](../../apps/api/scripts/rics/sync/sync-rics.ts) + [`apps/api/scripts/rics/verify/verify-rics-mirror.ts`](../../apps/api/scripts/rics/verify/verify-rics-mirror.ts).
 
 ## Schema layout
 

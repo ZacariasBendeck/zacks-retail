@@ -3,7 +3,7 @@
  * about but that are NOT yet in the canonical schema doc: RIPASS.MDB, ricomm.mdb,
  * riparms.mdb. Prints tables, columns, and a sample row per table to stdout.
  *
- * Run with:  pnpm --filter @benlow-rics/api tsx scripts/discover-auth-mdbs.ts
+ * Run with:  pnpm --filter @benlow-rics/api tsx scripts/rics/discovery/discover-auth-mdbs.ts
  */
 
 import fs from 'node:fs';

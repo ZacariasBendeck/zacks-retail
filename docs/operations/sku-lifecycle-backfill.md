@@ -4,7 +4,7 @@
 
 ## What it is
 
-A second phase of the RICS → Postgres sync that mirrors every non-deleted row from `rics_mirror.inventory_master` into `app.sku` as an ACTIVE row with `source = 'rics'`. Operator-created rows (`source = 'app'`) are never touched. Source lives at [`apps/api/src/services/sync/skuLifecycleBackfill.ts`](../../apps/api/src/services/sync/skuLifecycleBackfill.ts); standalone CLI at [`apps/api/scripts/sync-rics-skus.ts`](../../apps/api/scripts/sync-rics-skus.ts).
+A second phase of the RICS → Postgres sync that mirrors every non-deleted row from `rics_mirror.inventory_master` into `app.sku` as an ACTIVE row with `source = 'rics'`. Operator-created rows (`source = 'app'`) are never touched. Source lives at [`apps/api/src/services/sync/skuLifecycleBackfill.ts`](../../apps/api/src/services/sync/skuLifecycleBackfill.ts); standalone CLI at [`apps/api/scripts/rics/sync/sync-rics-skus.ts`](../../apps/api/scripts/rics/sync/sync-rics-skus.ts).
 
 Invocation:
 

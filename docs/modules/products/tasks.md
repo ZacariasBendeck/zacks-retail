@@ -35,8 +35,8 @@
   - `apps/api/seeds/sku_extended_attributes/dimensions.csv` — 4 rows.
   - `apps/api/seeds/sku_extended_attributes/values.csv` — ~62 rows (4 buyer, 3 company, 3 store_chain, ~52 discount_type).
   - `apps/api/seeds/sku_extended_attributes/keyword_rules.csv` — ~62 rules (one per value, plus a few synonyms if discovered).
-  - `apps/api/scripts/seed-sku-attributes.ts` — implements the four phases (catalog upsert; excel import skipped; keyword derivation; coverage report).
-  - `apps/api/package.json` — adds `"seed:sku-attributes": "tsx scripts/seed-sku-attributes.ts"`.
+  - `apps/api/scripts/seeds/seed-sku-attributes.ts` — implements the four phases (catalog upsert; excel import skipped; keyword derivation; coverage report).
+  - `apps/api/package.json` — adds `"seed:sku-attributes": "tsx scripts/seeds/seed-sku-attributes.ts"`.
   - `apps/api/tests/seeds/skuAttributesSeed.test.ts` — catalog upsert idempotency, CSV-to-DB orphan detection, tokenizer correctness (the `50` / `2D50` false-positive case), token-rule mapping (every rule resolves to a real `(dim, value)`), precedence (operator row preserved across re-seed).
 - **Acceptance**:
   - Running `pnpm --filter @benlow-rics/api seed:sku-attributes` against a populated `rics_mirror` produces non-zero coverage for all four dims.
@@ -143,7 +143,7 @@
 - **Size**: S
 - **Dependencies**: Task 1
 - **Scope deliverables**:
-  - Update [`apps/api/scripts/verify-rics-mirror.ts`](../../../apps/api/scripts/verify-rics-mirror.ts) — query `app.sku_attribute_orphans` and log the row count + the top 10 orphan SKU codes.
+  - Update [`apps/api/scripts/rics/verify/verify-rics-mirror.ts`](../../../apps/api/scripts/rics/verify/verify-rics-mirror.ts) — query `app.sku_attribute_orphans` and log the row count + the top 10 orphan SKU codes.
   - Update [`docs/operations/rics-mirror-sync.md`](../../operations/rics-mirror-sync.md) — document the orphan check and the recommended workflow `pnpm sync:rics && pnpm seed:sku-attributes`.
 - **Acceptance**:
   - `pnpm verify:rics-mirror` prints the orphan count line at the end of its output.

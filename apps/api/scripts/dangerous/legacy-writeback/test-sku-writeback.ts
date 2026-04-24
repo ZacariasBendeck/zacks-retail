@@ -159,7 +159,7 @@ async function pickDefaultFkTargets(): Promise<{ vendor: string; category: numbe
     currentCost: args.retail * 0.4,
     manufacturer: 'ZTEST MFG',
     keywords: ['ZTEST', 'WRITEBACK'],
-    comment: 'smoke test via scripts/test-sku-writeback.ts',
+    comment: 'smoke test via scripts/dangerous/legacy-writeback/test-sku-writeback.ts',
     coupon: false,
     orderMultiple: 1,
     orderUom: 'EACH',

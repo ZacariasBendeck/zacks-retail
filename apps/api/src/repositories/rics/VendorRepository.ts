@@ -1,26 +1,30 @@
 /**
- * Vendor repository — read-only projection over `rics_mirror.vendor_master`,
- * `rics_mirror.vendor_accounts`, and `rics_mirror.inventory_master` (for SKU
- * counts). Populated by `sync:rics` from RIVENDOR.MDB / RIINVMAS.MDB.
+ * Vendor repository — Postgres-backed reads + writes using the `app.vendor_overlay`
+ * overlay pattern. The MDB read/write path was deleted 2026-04-23.
  *
- * Previously this repo read and wrote the Access MDB directly via OLE DB.
- * 2026-04-23: the MDB endpoint was deleted. All reads now come from Postgres;
- * writes are no longer supported through this service. A future sync agent
- * will carry Postgres-originated vendor changes back to RICS — until that
- * exists, vendor master-data changes must be made directly in RICS.
+ * Storage layout
+ * ──────────────
+ *   `rics_mirror.vendor_master`        mirrored RICS data (read-only; rebuilt by sync:rics)
+ *   `rics_mirror.vendor_accounts`      per-store account numbers (read-only)
+ *   `rics_mirror.inventory_master`     source for countSkusUsingVendor / countSkusPerVendor
+ *   `app.vendor_overlay`               write surface — three roles via `source`:
+ *                                        'native'    — born in Postgres, no RICS twin
+ *                                        'override'  — sparse per-column override of a mirror row
+ *                                                      (NULL = use mirror, non-NULL = override)
+ *                                        'tombstone' — hide a mirror row from reads
  *
- * Public read API (unchanged shape so services/products/vendorService.ts
- * doesn't have to know the source flipped):
- *   findAll({ q?, limit? })
- *   findByCode(code)
- *   findStoreAccounts(code)
- *   countSkusUsingVendor(code)
- *   countSkusPerVendor()
- *   warmup()  — no-op (Postgres reads are fast; no warm cache needed)
+ * Read path: rics_mirror.vendor_master FULL OUTER JOIN app.vendor_overlay ON code,
+ * filtering source='tombstone', with COALESCE(overlay.col, mirror.col) per column.
  *
- * Write API — throws `VendorWriteNotSupportedError`:
- *   create, update, delete
- *   upsertStoreAccount, deleteStoreAccount
+ * Delete semantics
+ * ────────────────
+ *   native vendor in overlay              → DELETE row
+ *   override of mirror vendor             → flip to tombstone (mirror still exists; tombstone hides it)
+ *   mirror vendor with no overlay row     → INSERT tombstone row
+ *   already tombstoned                    → NotFound
+ *
+ * Until the Postgres→RICS sync agent is implemented, overlay rows don't reach
+ * RICS — the warehouse still sees only mirror data.
  */
 
 import { prisma } from '../../db/prisma';
@@ -86,13 +90,10 @@ export interface VendorStoreAccount {
 
 export interface FindAllOptions {
   q?: string;
-  /** Hard cap on results when `q` is provided; default 100. No cap without `q`. */
+  /** Hard cap on results when `q` is provided; default 100. */
   limit?: number;
 }
 
-// Pragmatic column caps retained so the service layer can keep its validation
-// intact even though writes are disabled here. (They may move to a Postgres
-// overlay table later.)
 export const VENDOR_FIELD_LIMITS = {
   code: 4,
   name: 30,
@@ -116,33 +117,9 @@ export const VENDOR_FIELD_LIMITS = {
   longComment: 32_768,
 } as const;
 
-// ────────────── Error type for disabled writes ──────────────
+// ────────────── Internal helpers ──────────────
 
-export class VendorWriteNotSupportedError extends Error {
-  kind: 'WriteNotSupported' = 'WriteNotSupported';
-  constructor() {
-    super(
-      'Vendor writes are not supported through the mirror-backed repository. ' +
-        'The MDB write path was removed on 2026-04-23. Vendor master-data ' +
-        'changes must be made directly in RICS until the Postgres→RICS sync ' +
-        'agent is implemented.',
-    );
-    this.name = 'VendorWriteNotSupportedError';
-  }
-}
-
-function writeNotSupported<T>(): Result<T> {
-  return Err({
-    kind: 'WriteNotSupported',
-    message:
-      'Vendor writes are disabled on this endpoint. Changes must be made ' +
-      'directly in RICS until the Postgres→RICS sync agent is built.',
-  } as RepoError);
-}
-
-// ────────────── Internal row shapes (Postgres snake_case) ──────────────
-
-interface VendorDbRow {
+interface VendorEffectiveRow {
   code: string;
   short_name: string | null;
   mail_name: string | null;
@@ -180,7 +157,7 @@ function trimOrNull(v: string | null | undefined): string | null {
   return t.length === 0 ? null : t;
 }
 
-function mapVendor(row: VendorDbRow): Vendor {
+function mapEffective(row: VendorEffectiveRow): Vendor {
   return {
     code: row.code.trim(),
     name: (row.short_name ?? '').trim(),
@@ -201,8 +178,8 @@ function mapVendor(row: VendorDbRow): Vendor {
     qualifierId: trimOrNull(row.qualifier_id),
     qualifierCode: trimOrNull(row.qualifier_code),
     colorCode: row.color_code === true,
-    // long_comment is a memo — preserve whitespace, but map empty string → null
-    longComment: row.long_comment == null || row.long_comment === '' ? null : row.long_comment,
+    longComment:
+      row.long_comment == null || row.long_comment === '' ? null : row.long_comment,
     email: trimOrNull(row.e_mail),
     dateLastChanged: row.date_last_changed ? new Date(row.date_last_changed) : null,
   };
@@ -222,34 +199,95 @@ function normalizeCode(raw: string): string {
 }
 
 function toPgError(err: unknown): RepoError {
-  const message = err instanceof Error ? err.message : String(err ?? 'Postgres read failed');
+  const message = err instanceof Error ? err.message : String(err ?? 'Postgres operation failed');
+  // Heuristic: Postgres raises 23505 unique_violation on PK collision.
+  if (err && typeof err === 'object' && 'code' in err && (err as { code: string }).code === '23505') {
+    return { kind: 'DuplicatePrimaryKey', message, cause: err };
+  }
   return { kind: 'AccessConnectionError', message, cause: err };
 }
 
-const VENDOR_COLS = `
-  code, short_name, mail_name, addr1, addr2, city, state, zip,
-  phone, fax, contact, terms, ship_inst, comment, manu_code, manu_name,
-  qualifier_id, qualifier_code, color_code, long_comment, e_mail, date_last_changed
+/**
+ * Effective-vendor projection. Combines the RICS mirror with the overlay:
+ *   - mirror only, no overlay           → mirror row as-is
+ *   - mirror + overlay source='override' → sparse COALESCE(overlay, mirror)
+ *   - mirror + overlay source='tombstone' → filtered out
+ *   - overlay source='native', no mirror → overlay row as-is (with last_changed from overlay.updated_at)
+ *
+ * A WHERE clause can be injected via `whereSql` (uses m./o. aliases + $N params).
+ * `params` is appended to the base SELECT; `$N` placeholders start from `paramOffset+1`.
+ */
+function buildEffectiveSelect(whereSql = '', extraSql = ''): string {
+  return `
+SELECT
+  COALESCE(o.code, m.code) AS code,
+  COALESCE(o.short_name,    m.short_name)    AS short_name,
+  COALESCE(o.mail_name,     m.mail_name)     AS mail_name,
+  COALESCE(o.addr1,         m.addr1)         AS addr1,
+  COALESCE(o.addr2,         m.addr2)         AS addr2,
+  COALESCE(o.city,          m.city)          AS city,
+  COALESCE(o.state,         m.state)         AS state,
+  COALESCE(o.zip,           m.zip)           AS zip,
+  COALESCE(o.phone,         m.phone)         AS phone,
+  COALESCE(o.fax,           m.fax)           AS fax,
+  COALESCE(o.contact,       m.contact)       AS contact,
+  COALESCE(o.terms,         m.terms)         AS terms,
+  COALESCE(o.ship_inst,     m.ship_inst)     AS ship_inst,
+  COALESCE(o.comment,       m.comment)       AS comment,
+  COALESCE(o.manu_code,     m.manu_code)     AS manu_code,
+  COALESCE(o.manu_name,     m.manu_name)     AS manu_name,
+  COALESCE(o.qualifier_id,  m.qualifier_id)  AS qualifier_id,
+  COALESCE(o.qualifier_code, m.qualifier_code) AS qualifier_code,
+  COALESCE(o.color_code,    m.color_code)    AS color_code,
+  COALESCE(o.long_comment,  m.long_comment)  AS long_comment,
+  COALESCE(o.e_mail,        m.e_mail)        AS e_mail,
+  COALESCE(o.updated_at,    m.date_last_changed) AS date_last_changed
+FROM rics_mirror.vendor_master m
+FULL OUTER JOIN app.vendor_overlay o ON o.code = m.code
+WHERE (o.source IS NULL OR o.source != 'tombstone')
+  AND (m.code IS NOT NULL OR o.code IS NOT NULL)
+  ${whereSql}
+${extraSql}
 `;
+}
 
 // ────────────── Repository ──────────────
 
 export const VendorRepository = {
   async findAll(opts: FindAllOptions = {}): Promise<Result<Vendor[]>> {
     try {
+      if (opts.q && opts.q.trim().length > 0) {
+        const needle = `%${opts.q.trim().toLowerCase()}%`;
+        const limit = opts.limit ?? 100;
+        const sql = buildEffectiveSelect(
+          `AND (
+             LOWER(COALESCE(o.code, m.code)) LIKE $1
+             OR LOWER(COALESCE(o.short_name, m.short_name, '')) LIKE $1
+             OR LOWER(COALESCE(o.mail_name, m.mail_name, ''))  LIKE $1
+             OR LOWER(COALESCE(o.manu_name, m.manu_name, ''))  LIKE $1
+           )`,
+          'ORDER BY code LIMIT $2',
+        );
+        const rows = await prisma.$queryRawUnsafe<VendorEffectiveRow[]>(sql, needle, limit);
+        return Ok(rows.map(mapEffective));
+      }
+
+      const sql = buildEffectiveSelect(
+        '',
+        opts.limit != null ? 'ORDER BY code LIMIT $1' : 'ORDER BY code',
+      );
       const rows =
-        opts.q && opts.q.trim().length > 0
-          ? await findAllFiltered(opts.q.trim(), opts.limit ?? 100)
-          : await findAllUnfiltered(opts.limit);
-      return Ok(rows.map(mapVendor));
+        opts.limit != null
+          ? await prisma.$queryRawUnsafe<VendorEffectiveRow[]>(sql, opts.limit)
+          : await prisma.$queryRawUnsafe<VendorEffectiveRow[]>(sql);
+      return Ok(rows.map(mapEffective));
     } catch (err) {
       return Err(toPgError(err));
     }
   },
 
   /** No-op. Postgres reads are fast enough that the old in-memory TTL cache
-   * was dropped. Retained so the startup warmup in `services/products/warmup.ts`
-   * still resolves. */
+   * was dropped. Retained so the startup warmup still resolves. */
   async warmup(): Promise<void> {
     // intentional no-op
   },
@@ -257,34 +295,236 @@ export const VendorRepository = {
   async findByCode(code: string): Promise<Result<Vendor>> {
     try {
       const normalized = normalizeCode(code);
-      const rows = await prisma.$queryRawUnsafe<VendorDbRow[]>(
-        `SELECT ${VENDOR_COLS} FROM rics_mirror.vendor_master WHERE UPPER(code) = $1 LIMIT 1`,
-        normalized,
+      const sql = buildEffectiveSelect(
+        'AND UPPER(COALESCE(o.code, m.code)) = $1',
+        'LIMIT 1',
       );
+      const rows = await prisma.$queryRawUnsafe<VendorEffectiveRow[]>(sql, normalized);
       if (rows.length === 0) {
         return Err({ kind: 'NotFound', message: `Vendor '${normalized}' not found.` });
       }
-      return Ok(mapVendor(rows[0]));
+      return Ok(mapEffective(rows[0]));
     } catch (err) {
       return Err(toPgError(err));
     }
   },
 
-  // Writes are disabled — the MDB endpoint was removed 2026-04-23.
-  async create(_input: VendorInput): Promise<Result<Vendor>> {
-    return writeNotSupported<Vendor>();
+  async create(input: VendorInput, actor = 'system'): Promise<Result<Vendor>> {
+    const code = normalizeCode(input.code);
+    try {
+      // Duplicate check: either the mirror has this code (can't create — use update
+      // instead) or the overlay already has a live (non-tombstone) row.
+      const collision = await prisma.$queryRawUnsafe<{ source: string | null }[]>(
+        `SELECT
+           CASE
+             WHEN m.code IS NOT NULL AND (o.source IS NULL OR o.source != 'tombstone') THEN 'mirror'
+             WHEN o.code IS NOT NULL AND o.source IN ('native', 'override') THEN 'overlay'
+             ELSE NULL
+           END AS source
+         FROM (SELECT $1::text AS code) c
+         LEFT JOIN rics_mirror.vendor_master m ON m.code = c.code
+         LEFT JOIN app.vendor_overlay o ON o.code = c.code
+         LIMIT 1`,
+        code,
+      );
+      if (collision[0]?.source) {
+        return Err({
+          kind: 'DuplicatePrimaryKey',
+          message: `Vendor '${code}' already exists (${collision[0].source}). Use update instead.`,
+        });
+      }
+
+      // If a tombstone row is already there for this code (orphan from a prior
+      // delete), flip it to native with fresh column values via UPSERT.
+      await prisma.vendorOverlay.upsert({
+        where: { code },
+        create: {
+          code,
+          source: 'native',
+          shortName: input.name,
+          mailName: input.mailName,
+          addr1: input.addr1 ?? null,
+          addr2: input.addr2 ?? null,
+          city: input.city ?? null,
+          state: input.state ?? null,
+          zip: input.zip ?? null,
+          phone: input.phone ?? null,
+          fax: input.fax ?? null,
+          contact: input.contact ?? null,
+          terms: input.terms ?? null,
+          shipInst: input.shipInst ?? null,
+          comment: input.comment ?? null,
+          manuCode: input.manuCode ?? null,
+          manuName: input.manuName ?? null,
+          qualifierId: input.qualifierId ?? null,
+          qualifierCode: input.qualifierCode ?? null,
+          colorCode: input.colorCode ?? false,
+          longComment: input.longComment ?? null,
+          eMail: input.email ?? null,
+          createdBy: actor,
+          updatedBy: actor,
+        },
+        update: {
+          source: 'native',
+          shortName: input.name,
+          mailName: input.mailName,
+          addr1: input.addr1 ?? null,
+          addr2: input.addr2 ?? null,
+          city: input.city ?? null,
+          state: input.state ?? null,
+          zip: input.zip ?? null,
+          phone: input.phone ?? null,
+          fax: input.fax ?? null,
+          contact: input.contact ?? null,
+          terms: input.terms ?? null,
+          shipInst: input.shipInst ?? null,
+          comment: input.comment ?? null,
+          manuCode: input.manuCode ?? null,
+          manuName: input.manuName ?? null,
+          qualifierId: input.qualifierId ?? null,
+          qualifierCode: input.qualifierCode ?? null,
+          colorCode: input.colorCode ?? false,
+          longComment: input.longComment ?? null,
+          eMail: input.email ?? null,
+          updatedBy: actor,
+        },
+      });
+
+      return this.findByCode(code);
+    } catch (err) {
+      return Err(toPgError(err));
+    }
   },
+
   async update(
-    _code: string,
-    _patch: Partial<Omit<VendorInput, 'code'>>,
+    code: string,
+    patch: Partial<Omit<VendorInput, 'code'>>,
+    actor = 'system',
   ): Promise<Result<Vendor>> {
-    return writeNotSupported<Vendor>();
+    const normalized = normalizeCode(code);
+    try {
+      // Figure out whether this is a mirror row (→ override), an existing native
+      // row (→ update in place), or missing (→ NotFound).
+      const status = await prisma.$queryRawUnsafe<
+        { has_mirror: boolean; overlay_source: string | null }[]
+      >(
+        `SELECT
+           (m.code IS NOT NULL) AS has_mirror,
+           o.source AS overlay_source
+         FROM (SELECT $1::text AS code) c
+         LEFT JOIN rics_mirror.vendor_master m ON m.code = c.code
+         LEFT JOIN app.vendor_overlay o ON o.code = c.code`,
+        normalized,
+      );
+      const row = status[0] ?? { has_mirror: false, overlay_source: null };
+
+      if (row.overlay_source === 'tombstone' || (!row.has_mirror && row.overlay_source == null)) {
+        return Err({ kind: 'NotFound', message: `Vendor '${normalized}' not found.` });
+      }
+
+      // Target source: native stays native; override/(missing over mirror) → override.
+      const nextSource =
+        row.overlay_source === 'native' ? 'native' : 'override';
+
+      // Build the overlay payload. Only provided fields are written; unspecified
+      // fields keep their existing value if the overlay row already exists, or
+      // remain NULL so the mirror shows through (for 'override' rows).
+      const payload: Record<string, unknown> = { updatedBy: actor };
+      if (patch.name !== undefined) payload.shortName = patch.name;
+      if (patch.mailName !== undefined) payload.mailName = patch.mailName;
+      if (patch.addr1 !== undefined) payload.addr1 = patch.addr1;
+      if (patch.addr2 !== undefined) payload.addr2 = patch.addr2;
+      if (patch.city !== undefined) payload.city = patch.city;
+      if (patch.state !== undefined) payload.state = patch.state;
+      if (patch.zip !== undefined) payload.zip = patch.zip;
+      if (patch.phone !== undefined) payload.phone = patch.phone;
+      if (patch.fax !== undefined) payload.fax = patch.fax;
+      if (patch.contact !== undefined) payload.contact = patch.contact;
+      if (patch.terms !== undefined) payload.terms = patch.terms;
+      if (patch.shipInst !== undefined) payload.shipInst = patch.shipInst;
+      if (patch.comment !== undefined) payload.comment = patch.comment;
+      if (patch.manuCode !== undefined) payload.manuCode = patch.manuCode;
+      if (patch.manuName !== undefined) payload.manuName = patch.manuName;
+      if (patch.qualifierId !== undefined) payload.qualifierId = patch.qualifierId;
+      if (patch.qualifierCode !== undefined) payload.qualifierCode = patch.qualifierCode;
+      if (patch.colorCode !== undefined) payload.colorCode = patch.colorCode;
+      if (patch.longComment !== undefined) payload.longComment = patch.longComment;
+      if (patch.email !== undefined) payload.eMail = patch.email;
+
+      if (row.overlay_source == null) {
+        // No overlay row yet — insert a fresh override (or native if the code
+        // was never in the mirror, which the guard above already ruled out).
+        await prisma.vendorOverlay.create({
+          data: {
+            code: normalized,
+            source: nextSource,
+            createdBy: actor,
+            ...payload,
+          } as any,
+        });
+      } else {
+        await prisma.vendorOverlay.update({
+          where: { code: normalized },
+          data: { source: nextSource, ...payload } as any,
+        });
+      }
+
+      return this.findByCode(normalized);
+    } catch (err) {
+      return Err(toPgError(err));
+    }
   },
-  async delete(_code: string): Promise<Result<void>> {
-    return writeNotSupported<void>();
+
+  async delete(code: string, actor = 'system'): Promise<Result<void>> {
+    const normalized = normalizeCode(code);
+    try {
+      const status = await prisma.$queryRawUnsafe<
+        { has_mirror: boolean; overlay_source: string | null }[]
+      >(
+        `SELECT
+           (m.code IS NOT NULL) AS has_mirror,
+           o.source AS overlay_source
+         FROM (SELECT $1::text AS code) c
+         LEFT JOIN rics_mirror.vendor_master m ON m.code = c.code
+         LEFT JOIN app.vendor_overlay o ON o.code = c.code`,
+        normalized,
+      );
+      const row = status[0] ?? { has_mirror: false, overlay_source: null };
+
+      if (row.overlay_source === 'tombstone' || (!row.has_mirror && row.overlay_source == null)) {
+        return Err({ kind: 'NotFound', message: `Vendor '${normalized}' not found.` });
+      }
+
+      if (row.overlay_source === 'native') {
+        await prisma.vendorOverlay.delete({ where: { code: normalized } });
+        return Ok(undefined);
+      }
+
+      // has_mirror = true here (either overlay=null+mirror, or overlay='override'+mirror)
+      if (row.overlay_source == null) {
+        await prisma.vendorOverlay.create({
+          data: {
+            code: normalized,
+            source: 'tombstone',
+            createdBy: actor,
+            updatedBy: actor,
+          },
+        });
+      } else {
+        await prisma.vendorOverlay.update({
+          where: { code: normalized },
+          data: { source: 'tombstone', updatedBy: actor },
+        });
+      }
+      return Ok(undefined);
+    } catch (err) {
+      return Err(toPgError(err));
+    }
   },
 
   // ────────────── Per-store accounts ──────────────
+  // Store-account reads hit rics_mirror.vendor_accounts only. Writes still disabled
+  // pending a separate app.vendor_store_account_overlay design.
 
   async findStoreAccounts(code: string): Promise<Result<VendorStoreAccount[]>> {
     try {
@@ -306,11 +546,21 @@ export const VendorRepository = {
     _storeId: number,
     _account: string,
   ): Promise<Result<VendorStoreAccount>> {
-    return writeNotSupported<VendorStoreAccount>();
+    return Err({
+      kind: 'WriteNotSupported',
+      message:
+        'Vendor store-account writes are not supported yet. The vendor_overlay was ' +
+        'added 2026-04-23 for vendor master data; a separate store-account overlay is pending.',
+    });
   },
 
   async deleteStoreAccount(_code: string, _storeId: number): Promise<Result<void>> {
-    return writeNotSupported<void>();
+    return Err({
+      kind: 'WriteNotSupported',
+      message:
+        'Vendor store-account writes are not supported yet. The vendor_overlay was ' +
+        'added 2026-04-23 for vendor master data; a separate store-account overlay is pending.',
+    });
   },
 
   // ────────────── SKU usage (against rics_mirror.inventory_master) ──────────────
@@ -349,36 +599,3 @@ export const VendorRepository = {
     }
   },
 };
-
-// ────────────── Internal queries ──────────────
-
-async function findAllUnfiltered(limit?: number): Promise<VendorDbRow[]> {
-  if (limit != null) {
-    return prisma.$queryRawUnsafe<VendorDbRow[]>(
-      `SELECT ${VENDOR_COLS}
-       FROM rics_mirror.vendor_master
-       ORDER BY code
-       LIMIT $1`,
-      limit,
-    );
-  }
-  return prisma.$queryRawUnsafe<VendorDbRow[]>(
-    `SELECT ${VENDOR_COLS} FROM rics_mirror.vendor_master ORDER BY code`,
-  );
-}
-
-async function findAllFiltered(q: string, limit: number): Promise<VendorDbRow[]> {
-  const needle = `%${q.toLowerCase()}%`;
-  return prisma.$queryRawUnsafe<VendorDbRow[]>(
-    `SELECT ${VENDOR_COLS}
-     FROM rics_mirror.vendor_master
-     WHERE LOWER(code) LIKE $1
-        OR LOWER(COALESCE(short_name,'')) LIKE $1
-        OR LOWER(COALESCE(mail_name,''))  LIKE $1
-        OR LOWER(COALESCE(manu_name,''))  LIKE $1
-     ORDER BY code
-     LIMIT $2`,
-    needle,
-    limit,
-  );
-}

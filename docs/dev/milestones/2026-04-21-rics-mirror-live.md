@@ -15,7 +15,7 @@ Phase A goes live: the RICS → Postgres one-way mirror ETL is implemented, the 
 - C#-hosted-in-PowerShell bulk extractor at [apps/api/src/services/sync/bulk-extract.ps1](apps/api/src/services/sync/bulk-extract.ps1) — streams ACE.OLEDB.12.0 reads directly to Postgres COPY TEXT format, no JSON round-trip.
 - Node-side pipe at [apps/api/src/services/sync/bulkExtract.ts](apps/api/src/services/sync/bulkExtract.ts), [copyFromMdb.ts](apps/api/src/services/sync/copyFromMdb.ts), [ricsRefresh.ts](apps/api/src/services/sync/ricsRefresh.ts) — owns the atomic swap transaction.
 - Canonical RICS table list at [apps/api/src/services/sync/canonicalRicsTables.ts](apps/api/src/services/sync/canonicalRicsTables.ts); type mapping at [typeMapping.ts](apps/api/src/services/sync/typeMapping.ts).
-- Runner scripts: [scripts/sync-rics.ts](apps/api/scripts/sync-rics.ts), [scripts/verify-rics-mirror.ts](apps/api/scripts/verify-rics-mirror.ts).
+- Runner scripts: [scripts/rics/sync/sync-rics.ts](apps/api/scripts/rics/sync/sync-rics.ts), [scripts/rics/verify/verify-rics-mirror.ts](apps/api/scripts/rics/verify/verify-rics-mirror.ts).
 - Package scripts: `sync:rics` and `verify:rics-mirror`.
 - Tests: [apps/api/tests/sync-typeMapping.test.ts](apps/api/tests/sync-typeMapping.test.ts).
 - Operations doc: [docs/operations/rics-mirror-sync.md](docs/operations/rics-mirror-sync.md).

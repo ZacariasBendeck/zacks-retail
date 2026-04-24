@@ -40,51 +40,49 @@ The big one. Reads every MDB in `Rics Databases/` via the OLE DB bridge, streams
 
 This is the only step that touches Access — after this, Postgres is self-sufficient.
 
-## 4. Seed `app.*` overlays (in this order — each depends on the prior)
-
-### 4a. Product families + category mapping
+## 4. Bootstrap `app.*` data (single command)
 
 ```bash
-pnpm --filter @benlow-rics/api seed:product-families
+pnpm --filter @benlow-rics/api bootstrap:app-data
 ```
 
-Upserts `app.product_family` (11 families from `seeds/product_families/families.csv`) and `app.category_product_family` (every RICS category → family). **Must run after `sync:rics`** because it validates against `rics_mirror.categories`. Post-run, `SELECT * FROM app.category_family_orphans` should be empty.
+Runs four dependent steps in order, halting on any failure. **Must run after `sync:rics`** — every step reads from `rics_mirror.*`.
 
-### 4b. Attribute framework catalog (JSON import)
+The orchestrator auto-detects the latest `attribute-catalog-export-*.json` in `docs/Important-Final-Docs/` (falling back to repo root or `apps/api/` if missing). Override with `--snapshot <path>`.
+
+Dry-run preview before running:
 
 ```bash
-pnpm --filter @benlow-rics/api import:attributes -- --in docs/Important-Final-Docs/attribute-catalog-export-YYYY-MM-DD.json
+pnpm --filter @benlow-rics/api bootstrap:app-data -- --dry-run
 ```
 
-Loads the full attribute framework — dimensions, values, family rules, and any operator-authored SKU assignments — from a portable JSON snapshot. **This is the authoritative path** for restoring the attribute catalog; it replaces the older CSV-seeded and SQLite-sourced imports (documented as "seed:sku-attributes catalog phase" and "seed:legacy-ref-dimensions" in prior versions of this guide).
+### What the four steps do
 
-The snapshot captures all 15 dimensions (4 business + 11 shoe-spec) in a single file. Upsert-only; safe to re-run.
+| # | Step | What it does | Re-runnable alone |
+|---|---|---|---|
+| 1 | `seed:product-families` | Upserts `app.product_family` (11 families) + `app.category_product_family` (every RICS category → family). Post-run, `SELECT * FROM app.category_family_orphans` should be empty. | `pnpm seed:product-families` |
+| 2 | `import:attributes` | Loads the full attribute framework — dimensions, values, family rules, operator-authored SKU assignments — from the JSON snapshot. Authoritative path for the catalog. | `pnpm import:attributes -- --in <path>` |
+| 3 | `seed:sku-attributes` | Scans `rics_mirror.inventory_master.key_words` and applies `seeds/sku_extended_attributes/keyword_rules.csv` to create `seed:keyword:*` rows in `app.sku_attribute_assignment`. Catalog phase is now a no-op after step 2; only keyword derivation does real work here. | `pnpm seed:sku-attributes` |
+| 4 | `sync:rics-skus` | Walks `rics_mirror.inventory_master` and upserts one `app.sku` row per legacy SKU with `source='rics'`. Only touches `source='rics'` rows — operator-created DRAFT SKUs are never mutated. | `pnpm sync:rics-skus` |
 
-**Maintaining the snapshot:** whenever you add a new dimension / value / family rule through the UI, re-run the exporter so the checked-in snapshot stays current:
+### Targeted re-runs via bootstrap
+
+Skip individual steps when you only need to refresh one area:
+
+```bash
+pnpm --filter @benlow-rics/api bootstrap:app-data -- --skip-product-families
+pnpm --filter @benlow-rics/api bootstrap:app-data -- --skip-attributes-import --skip-sku-sync
+```
+
+### Maintaining the attribute snapshot
+
+Whenever you add a new dimension / value / family rule through the UI, re-run the exporter so the checked-in snapshot stays current:
 
 ```bash
 pnpm --filter @benlow-rics/api export:attributes -- --out docs/Important-Final-Docs/attribute-catalog-export-YYYY-MM-DD.json
 ```
 
-Commit the updated JSON. The next fresh-bootstrap picks it up automatically.
-
-### 4c. Keyword-derive SKU attribute assignments
-
-```bash
-pnpm --filter @benlow-rics/api seed:sku-attributes
-```
-
-Scans `rics_mirror.inventory_master.key_words` and applies `seeds/sku_extended_attributes/keyword_rules.csv` to create `seed:keyword:*` rows in `app.sku_attribute_assignment`. After a fresh `sync:rics`, this is what populates the attribute workbench with real data. **Must run after 4b** (catalog must exist) and **after `sync:rics`** (needs the mirror).
-
-The catalog phase of this script is now a no-op since 4b already upserted every dimension and value. Only the keyword derivation phase (and the coverage report at the end) does real work here. Operator-authored assignments and `seed:excel:*` rows from 4b survive untouched — this script only rebuilds the `seed:keyword:*` subset.
-
-### 4d. Backfill `app.sku` from the mirror
-
-```bash
-pnpm --filter @benlow-rics/api sync:rics-skus
-```
-
-Walks `rics_mirror.inventory_master` and upserts one `app.sku` row per legacy SKU with `source='rics'`. Idempotent and only touches `source='rics'` rows — operator-created `source='app'` drafts are never mutated. **Can run anytime after `sync:rics`**, but running it after 4a–4c means each new `app.sku` row already resolves its family and attribute assignments correctly.
+Commit the updated JSON. The next fresh bootstrap picks it up automatically.
 
 ## 5. Verify (optional but recommended)
 
@@ -110,11 +108,12 @@ Not part of the build — smoke-tests that `SkuRepository.create/update/delete` 
 pnpm install
  └─ prisma:generate              # Prisma client
  └─ prisma:migrate               # schemas + tables created
-     └─ sync:rics                # rics_mirror.* populated from MDBs ─────┐
-         ├─ seed:product-families                                         │ depends on
-         │   └─ import:attributes   ← JSON snapshot restores catalog     │ rics_mirror
-         │       └─ seed:sku-attributes  # keyword derivation only       │
-         └─ sync:rics-skus       # app.sku backfill ──────────────────────┘
+     └─ sync:rics                # rics_mirror.* populated from MDBs
+         └─ bootstrap:app-data   # runs 4 dependent steps in order:
+             │   1. seed:product-families
+             │   2. import:attributes (auto-detects latest snapshot)
+             │   3. seed:sku-attributes (keyword derivation)
+             │   4. sync:rics-skus (app.sku backfill)
              └─ verify:rics-mirror   # optional sanity check
 ```
 
@@ -162,11 +161,40 @@ pnpm install
 pnpm --filter @benlow-rics/api prisma:generate
 pnpm --filter @benlow-rics/api prisma:migrate
 pnpm --filter @benlow-rics/api sync:rics
-pnpm --filter @benlow-rics/api seed:product-families
-pnpm --filter @benlow-rics/api import:attributes -- --in docs/Important-Final-Docs/attribute-catalog-export-YYYY-MM-DD.json
-pnpm --filter @benlow-rics/api seed:sku-attributes
-pnpm --filter @benlow-rics/api sync:rics-skus
+pnpm --filter @benlow-rics/api bootstrap:app-data
 pnpm --filter @benlow-rics/api verify:rics-mirror    # optional
 ```
 
-Replace `YYYY-MM-DD` with the actual date stamp on the latest export in `docs/Important-Final-Docs/`.
+`bootstrap:app-data` auto-detects the attribute-catalog JSON in `docs/Important-Final-Docs/`. Pass `--snapshot <path>` to override.
+
+---
+
+## Migration Authoring Helpers
+
+Use these whenever you add or modify the Postgres schema.
+
+### Create a new migration — `pnpm migrate:new <description>`
+
+```bash
+pnpm --filter @benlow-rics/api migrate:new add vendor store account overlay
+#  → prisma/migrations/20260424033052_add_vendor_store_account_overlay/migration.sql
+```
+
+Generates a Prisma migration folder with a seconds-precision timestamp (prevents duplicate-timestamp collisions — the main authoring bug this guards against) and a header template with `TODO` markers for schema, rationale, and rollback plan. Does not run `prisma migrate deploy` — edit the SQL + matching model in `schema.prisma`, then apply.
+
+### Lint existing migrations — `pnpm migrate:lint`
+
+```bash
+pnpm --filter @benlow-rics/api migrate:lint
+```
+
+Checks every folder under `prisma/migrations/` for:
+
+- **Duplicate timestamps** — two folders with the same 14-char prefix (errors).
+- **Missing header comment** — first non-blank line should be `--`-prefixed and descriptive (warns).
+- **Unsafe DROPs** — `DROP TABLE/COLUMN/CONSTRAINT/INDEX/SCHEMA/VIEW/TYPE` without `IF EXISTS` (warns — rollback-safety smell).
+- **Undeclared schemas** — schema-qualified identifiers referencing a schema not in `schema.prisma` `datasource db { schemas = [...] }` (errors).
+
+Exit 0 on clean, 1 on any error. Wire into CI before `prisma migrate deploy`.
+
+Current audit output notes 3 pre-existing duplicate-timestamp pairs and 3 unsafe-DROP warnings in `20260423120000_attribute_family_rules`. These are legacy and can't be safely rewritten without breaking every environment's `_prisma_migrations` tracker — the legitimate moment to squash is the Phase B cutover on the fresh production DB.

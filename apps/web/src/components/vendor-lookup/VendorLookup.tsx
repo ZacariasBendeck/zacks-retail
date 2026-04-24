@@ -1,18 +1,13 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { Button, Input, Modal, Space, Table, Typography } from 'antd'
-import type { InputRef } from 'antd'
+import React, { useCallback, useMemo } from 'react'
+import { Typography } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useVendors } from '../../hooks/useProductsVendors'
+import { LookupModal } from '../lookup-modal/LookupModal'
 
 /**
- * Lookup modal for the 4-letter RICS vendor codes. Mirrors the RICS desktop
- * "Vendor Lookup" dialog shown to operators: two columns (Code / Name),
- * a Quick-Search field, keyboard navigation, and a Select / Cancel pair.
- *
- * Data comes from the Postgres-backed `useVendors()` hook (same source the
- * main SKU form uses). All filtering is client-side — the vendor list is
- * short enough (~hundreds) that shipping it once and filtering in-memory is
- * both faster and simpler than round-tripping to the server on each keystroke.
+ * Lookup modal for the 4-letter RICS vendor codes. Thin wrapper around the
+ * shared LookupModal — the vendor list is short (~hundreds) so the search
+ * runs entirely client-side.
  */
 export interface VendorLookupPicked {
   code: string
@@ -23,8 +18,6 @@ export interface VendorLookupProps {
   open: boolean
   onClose: () => void
   onSelect: (picked: VendorLookupPicked) => void
-  /** Pre-populate the Quick Search box — typically the current form value so
-   *  the operator doesn't have to re-type what they already entered. */
   initialQuery?: string
 }
 
@@ -36,32 +29,35 @@ export const VendorLookup: React.FC<VendorLookupProps> = ({
   onSelect,
   initialQuery = '',
 }) => {
-  const { data: vendors, isLoading } = useVendors()
-  const [q, setQ] = useState(initialQuery)
-  const [selectedCode, setSelectedCode] = useState<string | null>(null)
-  const inputRef = useRef<InputRef>(null)
+  const { data: vendors } = useVendors()
 
-  // Autofocus Quick Search + reset selection every time the modal opens, so
-  // the operator can start typing immediately. `initialQuery` seeds the
-  // search so they don't retype what they already had in the form field.
-  useEffect(() => {
-    if (open) {
-      setQ(initialQuery)
-      setSelectedCode(null)
-      setTimeout(() => inputRef.current?.focus(), 50)
-    }
-  }, [open, initialQuery])
+  // Stable view of the vendor list so searchFn's identity only changes when
+  // the fetched list changes.
+  const all = useMemo<VendorRow[]>(
+    () => (vendors ?? []).map((v) => ({ code: v.code, name: v.name })),
+    [vendors],
+  )
 
-  const filtered = useMemo<VendorRow[]>(() => {
-    const all: VendorRow[] = (vendors ?? []).map((v) => ({ code: v.code, name: v.name }))
-    const needle = q.trim().toLowerCase()
-    if (!needle) return all
-    return all.filter(
-      (v) => v.code.toLowerCase().includes(needle) || v.name.toLowerCase().includes(needle),
-    )
-  }, [vendors, q])
+  // Adapt client-side filter to the async searchFn contract. Matches on
+  // substring of either code or name (not prefix-only) — vendor codes are
+  // short enough that operators expect substring behaviour here.
+  const searchFn = useCallback(
+    async ({ query, page, pageSize }: { query: string; page: number; pageSize: number }) => {
+      const needle = query.trim().toLowerCase()
+      const filtered = needle
+        ? all.filter(
+            (v) =>
+              v.code.toLowerCase().includes(needle) ||
+              v.name.toLowerCase().includes(needle),
+          )
+        : all
+      const start = (page - 1) * pageSize
+      return { rows: filtered.slice(start, start + pageSize), total: filtered.length }
+    },
+    [all],
+  )
 
-  const columns: ColumnsType<VendorRow> = [
+  const columns: ColumnsType<VendorRow> = useMemo(() => [
     {
       title: 'Code',
       dataIndex: 'code',
@@ -69,7 +65,9 @@ export const VendorLookup: React.FC<VendorLookupProps> = ({
       width: 100,
       sorter: (a, b) => a.code.localeCompare(b.code),
       defaultSortOrder: 'ascend',
-      render: (c: string) => <Typography.Text strong style={{ fontFamily: 'monospace' }}>{c}</Typography.Text>,
+      render: (c: string) => (
+        <Typography.Text strong style={{ fontFamily: 'monospace' }}>{c}</Typography.Text>
+      ),
     },
     {
       title: 'Name',
@@ -77,74 +75,23 @@ export const VendorLookup: React.FC<VendorLookupProps> = ({
       key: 'name',
       sorter: (a, b) => a.name.localeCompare(b.name),
     },
-  ]
-
-  const confirmSelection = (row: VendorRow) => {
-    onSelect({ code: row.code, name: row.name })
-    onClose()
-  }
+  ], [])
 
   return (
-    <Modal
+    <LookupModal<VendorRow>
       open={open}
-      onCancel={onClose}
+      onClose={onClose}
+      onSelect={(row) => onSelect({ code: row.code, name: row.name })}
       title="Vendor Lookup"
+      searchFn={searchFn}
+      columns={columns}
+      rowKey="code"
       width={640}
-      destroyOnClose
-      footer={
-        <Space>
-          <Button
-            type="primary"
-            disabled={!selectedCode}
-            onClick={() => {
-              const row = filtered.find((r) => r.code === selectedCode)
-              if (row) confirmSelection(row)
-            }}
-          >
-            Select
-          </Button>
-          <Button onClick={onClose}>Cancel</Button>
-        </Space>
-      }
-    >
-      <Space direction="vertical" size="small" style={{ width: '100%' }}>
-        <Input
-          ref={inputRef}
-          placeholder="Quick Search (code or name)"
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          onPressEnter={() => {
-            // Enter: pick the first result if it's a unique match.
-            if (filtered.length === 1) confirmSelection(filtered[0]!)
-            else if (selectedCode) {
-              const row = filtered.find((r) => r.code === selectedCode)
-              if (row) confirmSelection(row)
-            }
-          }}
-          allowClear
-        />
-        <Table<VendorRow>
-          size="small"
-          rowKey="code"
-          columns={columns}
-          dataSource={filtered}
-          loading={isLoading}
-          pagination={{ pageSize: 15, showSizeChanger: false, size: 'small' }}
-          rowSelection={{
-            type: 'radio',
-            selectedRowKeys: selectedCode ? [selectedCode] : [],
-            onChange: (keys) => setSelectedCode((keys[0] as string | undefined) ?? null),
-          }}
-          onRow={(record) => ({
-            onClick: () => setSelectedCode(record.code),
-            onDoubleClick: () => confirmSelection(record),
-            style: { cursor: 'pointer' },
-          })}
-        />
-        <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-          Enter para seleccionar · Doble click para seleccionar directo · Esc para cerrar
-        </Typography.Text>
-      </Space>
-    </Modal>
+      pageSize={15}
+      placeholder="Quick Search (code or name)"
+      initialQuery={initialQuery}
+      saveLabel="Select"
+      helperText="Enter para seleccionar · Doble click para seleccionar directo · Esc para cerrar"
+    />
   )
 }

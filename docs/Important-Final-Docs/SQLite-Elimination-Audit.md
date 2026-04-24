@@ -207,7 +207,7 @@ Each needs inspection to confirm whether its SQLite use is load-bearing or a sta
 33 test files under `apps/api/tests/` touch SQLite. All use `:memory:` via `NODE_ENV === 'test'`, so **they don't depend on the on-disk files** — but they do depend on `database.ts` / `posDatabase.ts` continuing to exist and run `initSchema()`. When the init code is deleted, every failing test has to migrate to Postgres test-DB fixtures first.
 
 ### 4.6 Seed scripts that write to SQLite
-- [apps/api/scripts/seed.ts](../../apps/api/scripts/seed.ts) — synthetic shoe-store data. Retire.
+- [apps/api/scripts/seeds/seed.ts](../../apps/api/scripts/seeds/seed.ts) — synthetic shoe-store data. Retire.
 - [apps/api/seed.js](../../apps/api/seed.js) — older root-level seed. Retire.
 
 ### 4.7 HTTP endpoints backed by SQLite
@@ -290,7 +290,7 @@ Things that are already dead weight. Per table: drop from `initSchema()` in `dat
 
 - `rics_import_*` (5 tables) — obsoleted by `sync:rics`
 - `womens_shoe_categories`, `ref_seasons`, `ref_size_types`, `ref_size_labels`, `ref_label_types`, `ref_categories`, `ref_departments`, `ref_heel_types`, `ref_heel_material_types` — superseded by `rics_mirror` / Postgres `app.*`
-- Legacy root seed scripts (`apps/api/scripts/seed.ts`, `apps/api/seed.js`)
+- Legacy root seed scripts (`apps/api/scripts/seeds/seed.ts`, `apps/api/seed.js`)
 
 Effort: ~1–2 days. Risk: low.
 

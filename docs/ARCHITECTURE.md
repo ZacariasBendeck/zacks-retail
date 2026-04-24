@@ -110,7 +110,6 @@ Four schemas in the Postgres DB (`zacks_retail`):
 - **`public`** — Storefront-baseline tables that predate Phase A (`Cart`, `CartLine`, `Order`, `OrderLine`, `User`, `Session`, `Role`, `ProductContent`, `SeasonOverlay`, `ProductsAuditLog`). Preserved across ETL reloads. App writes freely here.
 - **`app`** — Module-owned additive tables — net-new things Zack's Retail invents that RICS never had. Active surface as of 2026-04-23: products (`sku`, `sku_activity`, `sku_attribute_override`, `sku_keyword_override`, `size_type_override`, `products_batch_operation*`), extended attributes (`attribute_dimension`, `attribute_value`, `sku_attribute_assignment` + orphans view, `attribute_family_rule`), product family (`product_family`, `category_product_family`), plus the legacy-ref migration targets seeded 2026-04-23. Phase-A contract: writes go here freely; the `sync:rics` ETL never touches this schema.
 
-> ⚠️ May be stale per 2026-04-23 /index-knowledge pass: the previous description said "Currently empty. First populated when a module needs a persistent data surface for a non-RICS concept." That has long since happened — the schema now carries the full products-module surface plus the dimensional attribute framework. Review and remove if confirmed.
 - **`platform`** — Cross-cutting admin spine. Currently `etl_run`, `etl_run_table`. Future: `audit_log`, `notification`, `feature_flag`, `scheduled_task`.
 
 ## Adapter layer (request-side)

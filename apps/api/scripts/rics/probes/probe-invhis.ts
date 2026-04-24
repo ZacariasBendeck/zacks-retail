@@ -2,7 +2,7 @@
  * Probe RIINVHIS for non-zero rows so we can understand the semantics of the
  * LYMonthQtyOH_NN / LYMonthOnHand_NN / LastMonthOnHand columns.
  *
- * Run with:  pnpm --filter @benlow-rics/api tsx scripts/probe-invhis.ts
+ * Run with:  pnpm --filter @benlow-rics/api tsx scripts/rics/probes/probe-invhis.ts
  */
 
 import fs from 'node:fs';

@@ -78,7 +78,7 @@ Five non-obvious calls, each load-bearing:
 
 ### 2. Seed and keyword-derivation pipeline
 
-The Prisma migration only creates the tables. All data loading lives in a script (`apps/api/scripts/seed-sku-attributes.ts`), invoked as `pnpm --filter @benlow-rics/api seed:sku-attributes`. Idempotent; safe to re-run.
+The Prisma migration only creates the tables. All data loading lives in a script (`apps/api/scripts/seeds/seed-sku-attributes.ts`), invoked as `pnpm --filter @benlow-rics/api seed:sku-attributes`. Idempotent; safe to re-run.
 
 #### Source artifacts (repo-tracked CSVs)
 

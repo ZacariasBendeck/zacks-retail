@@ -90,9 +90,6 @@ Criteria-filter SQL resolves in two steps: (1) Sector ∨ Department widens to a
 **Alternatives considered:**
 - Add a `HIERARCHY` mode to the existing Sales Analysis `reportType` union — rejected; would have to bifurcate the response shape (flat rows vs. tree) and forced every consumer to branch on reportType.
 - Client-side tree build from three separate calls (`DEPT_SUMMARY`, `CATEGORY_SUMMARY`, `SKU_DETAIL`) — rejected; three server round-trips, three sets of totals, and no way to guarantee consistency across them.
-- Reuse `SalesPivotPage` (Sector → Dept → Category → SKU) — rejected; pivot is flat (no expand/collapse interaction), and its filter surface diverges from Sales Analysis's.
-
-  > ⚠️ May be stale per 2026-04-23 /index-knowledge pass: the "pivot is flat" clause no longer holds — `SalesPivotPage` now renders a full AntD tree-data hierarchy with expand/collapse at every level and SKU leaves. The rejection still stands on the filter-surface-divergence grounds. Review and trim if confirmed.
 
 **Related:** Feature session 2026-04-22 / 2026-04-23. Files: `apps/api/src/services/salesReporting/ricsSalesReportAdapter.ts::getSalesHierarchy`, `apps/web/src/pages/salesReporting/SalesHierarchyDrillDownPage.tsx`, `apps/web/src/components/reports/renderers/renderSalesHierarchyDrillDown.tsx`.
 

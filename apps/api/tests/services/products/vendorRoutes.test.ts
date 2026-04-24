@@ -39,18 +39,23 @@ jest.mock('../../../src/repositories/rics/VendorRepository', () => {
       findByCode: jest.fn(async (code: string) =>
         code === 'ABCD' ? Ok(base) : Err({ kind: 'NotFound', message: 'missing' }),
       ),
-      // Writes return WriteNotSupported — MDB endpoint removed 2026-04-23.
-      create: jest.fn(async () => Err({ kind: 'WriteNotSupported', message: 'writes disabled' })),
-      update: jest.fn(async () => Err({ kind: 'WriteNotSupported', message: 'writes disabled' })),
-      delete: jest.fn(async () => Err({ kind: 'WriteNotSupported', message: 'writes disabled' })),
+      // Vendor master writes route through app.vendor_overlay (2026-04-23 overlay).
+      // Store-account writes remain disabled pending a separate overlay.
+      create: jest.fn(async (input: any) =>
+        input.code === 'DUPE'
+          ? Err({ kind: 'DuplicatePrimaryKey', message: 'already exists' })
+          : Ok({ ...base, code: input.code, name: input.name, mailName: input.mailName }),
+      ),
+      update: jest.fn(async (code: string) => Ok({ ...base, code })),
+      delete: jest.fn(async () => Ok(undefined)),
       findStoreAccounts: jest.fn(async (code: string) =>
         Ok([{ code, storeId: 1, accountNo: 'ACCT', dateLastChanged: null }]),
       ),
       upsertStoreAccount: jest.fn(async () =>
-        Err({ kind: 'WriteNotSupported', message: 'writes disabled' }),
+        Err({ kind: 'WriteNotSupported', message: 'store-account writes pending separate overlay' }),
       ),
       deleteStoreAccount: jest.fn(async () =>
-        Err({ kind: 'WriteNotSupported', message: 'writes disabled' }),
+        Err({ kind: 'WriteNotSupported', message: 'store-account writes pending separate overlay' }),
       ),
       countSkusUsingVendor: jest.fn(async (code: string) =>
         code === 'INUSE' ? Ok(5) : code === 'DOWN' ? Err({ kind: 'AccessConnectionError', message: 'down' }) : Ok(0),
@@ -104,16 +109,24 @@ describe('GET /api/v1/products/vendors/:code', () => {
   });
 });
 
-describe('POST /api/v1/products/vendors (writes disabled 2026-04-23)', () => {
-  it('returns 501 WRITE_NOT_SUPPORTED because writes were removed with the MDB endpoint', async () => {
+describe('POST /api/v1/products/vendors (writes via app.vendor_overlay)', () => {
+  it('returns 201 on create', async () => {
     const res = await request(app)
       .post('/api/v1/products/vendors')
       .send({ code: 'NEW1', name: 'ACME New', mailName: 'ACME' });
-    expect(res.status).toBe(501);
-    expect(res.body.error.code).toBe('WRITE_NOT_SUPPORTED');
+    expect(res.status).toBe(201);
+    expect(res.body.code).toBe('NEW1');
   });
 
-  it('still rejects EDI half-populated with 422 before reaching the repo', async () => {
+  it('maps DuplicatePrimaryKey to 409', async () => {
+    const res = await request(app)
+      .post('/api/v1/products/vendors')
+      .send({ code: 'DUPE', name: 'dupe', mailName: 'dupe' });
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe('DUPLICATE_PRIMARY_KEY');
+  });
+
+  it('rejects EDI half-populated with 422 before reaching the repo', async () => {
     const res = await request(app)
       .post('/api/v1/products/vendors')
       .send({ code: 'NEW2', name: 'n', mailName: 'm', qualifierId: '01' });
@@ -122,24 +135,23 @@ describe('POST /api/v1/products/vendors (writes disabled 2026-04-23)', () => {
   });
 });
 
-describe('PATCH /api/v1/products/vendors/:code (writes disabled)', () => {
-  it('returns 501 WRITE_NOT_SUPPORTED', async () => {
+describe('PATCH /api/v1/products/vendors/:code', () => {
+  it('returns 200 on update', async () => {
     const res = await request(app)
       .patch('/api/v1/products/vendors/ABCD')
       .send({ name: 'Renamed' });
-    expect(res.status).toBe(501);
-    expect(res.body.error.code).toBe('WRITE_NOT_SUPPORTED');
+    expect(res.status).toBe(200);
+    expect(res.body.code).toBe('ABCD');
   });
 });
 
-describe('DELETE /api/v1/products/vendors/:code (writes disabled)', () => {
-  it('returns 501 when the SKU-reference guard passes (writes disabled downstream)', async () => {
+describe('DELETE /api/v1/products/vendors/:code', () => {
+  it('returns 204 on successful delete', async () => {
     const res = await request(app).delete('/api/v1/products/vendors/ABCD');
-    expect(res.status).toBe(501);
-    expect(res.body.error.code).toBe('WRITE_NOT_SUPPORTED');
+    expect(res.status).toBe(204);
   });
 
-  it('still returns 422 when SKUs reference the vendor (guard runs before the write)', async () => {
+  it('returns 422 when SKUs reference the vendor (guard runs before the write)', async () => {
     const res = await request(app).delete('/api/v1/products/vendors/INUSE');
     expect(res.status).toBe(422);
     expect(res.body.error.code).toBe('CONSTRAINT_VIOLATION');

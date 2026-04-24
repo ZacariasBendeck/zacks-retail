@@ -223,7 +223,7 @@ model SkuAttributeAssignment {
 
 ## Seed catalog
 
-All values land via [`apps/api/scripts/seed-sku-attributes.ts`](../../../apps/api/scripts/seed-sku-attributes.ts) reading three CSVs:
+All values land via [`apps/api/scripts/seeds/seed-sku-attributes.ts`](../../../apps/api/scripts/seeds/seed-sku-attributes.ts) reading three CSVs:
 
 ```
 apps/api/seeds/sku_extended_attributes/

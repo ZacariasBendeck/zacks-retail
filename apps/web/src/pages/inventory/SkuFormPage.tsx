@@ -38,7 +38,7 @@ import { useVendors } from '../../hooks/useProductsVendors'
 // grids), not the legacy SQLite `size-types` ref table which only carries
 // size-standard names (EU, CN, MX, …). app.sku.size_type is a SmallInt
 // matching rics_mirror.inventory_master.size_type.
-import { useSizeTypes } from '../../hooks/useProductsTaxonomy'
+import { useSizeTypes, useSeasons } from '../../hooks/useProductsTaxonomy'
 import {
   useSkuDraft,
   useCreateSkuDraft,
@@ -95,6 +95,27 @@ const AI_FIELD_MAP: { aiKey: keyof ImageAnalysisResult; formField: string; type:
   { aiKey: 'accessory', formField: 'accessoryId', type: 'reference', refTable: 'accessories' },
   { aiKey: 'category', formField: 'categoryId', type: 'reference', refTable: 'categories' },
 ]
+
+// Apariencia / Diseño field visibility per Product Family. Client-side stop-gap
+// until the dimensional framework (app.attribute_family_rule) replaces this
+// hardcoded block. Rule: the 11 legacy shoe attributes only render for
+// `zapatos`; every other family sees Color / Pattern / Finish only.
+const APARIENCIA_SHOE_ONLY_FIELDS = new Set([
+  'widthTypeId',
+  'accessoryId',
+  'heelHeightId',
+  'heelShapeId',
+  'toeShapeId',
+  'upperMaterialId',
+  'outsoleMaterialId',
+  'heelMaterialId',
+])
+
+function isApparienciaFieldVisible(field: string, family: string | null): boolean {
+  if (!family) return true
+  if (family === 'zapatos') return true
+  return !APARIENCIA_SHOE_ONLY_FIELDS.has(field)
+}
 
 /** Normalize string for comparison: lowercase, trim, remove accents */
 function normalize(s: string): string {
@@ -367,6 +388,30 @@ function VendorNameAutofill({ vendors }: { vendors: { code: string; name: string
   )
 }
 
+/**
+ * Readonly description for the 2-character Season Code. Resolves via
+ * `useSeasons()` (Postgres — `public.SeasonOverlay` joined with
+ * `rics_mirror.seasons`), keyed by the `season` form field. Case-insensitive
+ * match so typing `SS` lines up with a stored `Ss` etc.
+ */
+function SeasonAutofill({
+  seasons,
+}: {
+  seasons: { code: string; description: string }[] | undefined
+}) {
+  const code = (Form.useWatch('season') as string | undefined) ?? ''
+  const norm = code.trim().toUpperCase()
+  const match = seasons?.find((s) => s.code.trim().toUpperCase() === norm)
+  return (
+    <Input
+      value={match?.description ?? ''}
+      readOnly
+      placeholder={norm ? 'Código no encontrado' : 'Auto'}
+      style={{ background: '#fafafa' }}
+    />
+  )
+}
+
 // ── Shared styles + <PriceField> wrapper for the horizontal "Default Prices"
 //    card. Each row renders label-left / input-right with the label in a
 //    fixed-width span and the InputNumber capped at 120 px — keeps the card
@@ -465,6 +510,10 @@ export default function SkuFormPage() {
       })),
     [sizeTypes],
   )
+  // Seasons from Postgres (SeasonOverlay + rics_mirror.seasons join). Powers
+  // the Season Code autofill readout; the 2-char `season` form field is the
+  // primary input and this just shows the resolved description.
+  const { data: seasonsCatalog } = useSeasons()
   const createMutation = useCreateSkuDraft()
   const updateMutation = useUpdateSkuDraft()
   const finalizeMutation = useFinalizeSkuDraft()
@@ -879,7 +928,59 @@ export default function SkuFormPage() {
     message.info('Modo crear activado')
   }, [form, message])
 
+  // Ref — when true, handleSubmit runs create-then-finalize in one flow so the
+  // operator can skip the DRAFT stage and land directly on an ACTIVE SKU.
+  // Reset on every save attempt so the flag can't leak into a subsequent save.
+  const finalizeAfterSaveRef = useRef(false)
+
+  /**
+   * Antd Form onFinishFailed — fires when validateFields rejects. The default
+   * behavior is silent (no toast, no scroll), so when a required field is
+   * off-screen the operator sees "nothing happens" after clicking Crear
+   * borrador. Surface the first field name as a toast + let `scrollToFirstError`
+   * bring it into view.
+   */
+  const handleFinishFailed = useCallback(
+    (e: { errorFields: { name: (string | number)[]; errors: string[] }[] }) => {
+      const first = e.errorFields[0]
+      if (!first) return
+      const fieldName = first.name.join('.')
+      const errMsg = first.errors[0] ?? 'Campo inválido'
+      message.error(`${fieldName}: ${errMsg}`)
+      // Clear the finalize-intent flag so a failed first click doesn't leave
+      // it armed for a later Crear borrador click.
+      finalizeAfterSaveRef.current = false
+    },
+    [message],
+  )
+
+  /**
+   * "Crear SKU final (sin borrador)" — skip the DRAFT stage. Requires the
+   * final SKU code to be set on the form. Sets a ref flag the existing
+   * handleSubmit reads to branch into create-then-finalize.
+   */
+  const handleCreateFinalClick = useCallback(() => {
+    const codeValue = form.getFieldValue('skuCode')
+    const code = typeof codeValue === 'string' ? codeValue.trim() : ''
+    if (!code) {
+      form.setFields([
+        {
+          name: 'skuCode',
+          errors: ['Código SKU es requerido para guardar directo como SKU final (sin borrador).'],
+        },
+      ])
+      message.error('Ingresa el Código SKU final antes de guardar sin borrador.')
+      return
+    }
+    finalizeAfterSaveRef.current = true
+    form.submit()
+  }, [form, message])
+
   const handleSubmit = async (values: SkuFormValues) => {
+    // Capture + reset the finalize-intent flag at the very top so a thrown
+    // error inside the try block doesn't leave it armed for a later save.
+    const finalizeAfter = finalizeAfterSaveRef.current
+    finalizeAfterSaveRef.current = false
     try {
       // Marca is now free-text. Resolve the typed name against refData; if it
       // matches an existing brand (case-insensitive), link the numeric id;
@@ -941,16 +1042,44 @@ export default function SkuFormPage() {
         }
       }
 
+      // If the operator wants to skip the DRAFT stage, we need the final code
+      // up-front (the finalize call is the only place a final code is ever
+      // accepted). Pull it from the form value stashed on the skuCode field.
+      const finalCodeRaw = (values as { skuCode?: unknown }).skuCode
+      const finalCode = typeof finalCodeRaw === 'string' ? finalCodeRaw.trim() : ''
+
       if (editId) {
         const updated = await updateMutation.mutateAsync({ id: editId, patch: lifecyclePayload })
         const skuKey = updated.code ?? updated.provisionalCode
         if (skuKey) await writeDims(skuKey)
-        message.success('Borrador guardado')
+        if (finalizeAfter && finalCode) {
+          // Edit-mode direct-finalize: after the patch lands, flip to ACTIVE.
+          await finalizeMutation.mutateAsync({
+            id: updated.id,
+            input: { code: finalCode },
+          })
+          message.success(`SKU finalizado: ${finalCode}`)
+        } else {
+          message.success('Borrador guardado')
+        }
       } else {
         const created = await createMutation.mutateAsync(lifecyclePayload)
         // DRAFT has no final code yet — write dim assignments keyed by
         // provisional_code; finalize() rekeys them to the real code atomically.
         await writeDims(created.code ?? created.provisionalCode)
+        if (finalizeAfter && finalCode) {
+          // Create-mode direct-finalize: create DRAFT, immediately flip it
+          // ACTIVE with the operator-supplied code. One round-trip extra but
+          // no new backend endpoint needed — reuses the existing finalize path
+          // (which carries the provisional→final rekey for attribute rows).
+          await finalizeMutation.mutateAsync({
+            id: created.id,
+            input: { code: finalCode },
+          })
+          message.success(`SKU creado y finalizado: ${finalCode}`)
+          navigate(`${skuRootPath}/${created.id}/edit`)
+          return
+        }
         message.success(`Borrador creado: ${created.provisionalCode}`)
         // Redirect to the edit page for the new draft so the user can keep
         // editing the same record (per Phase 5f spec: after first save, user
@@ -1204,184 +1333,19 @@ export default function SkuFormPage() {
           </Row>
         </Card>
 
-        {/* AI Image Analysis — collapsible */}
-        {aiPanelOpen && (
-          <Card size="small" bodyStyle={{ padding: '8px 16px' }}>
-            <Row align="middle" justify="space-between">
-              <Col>
-                <Typography.Text strong style={{ fontSize: 13 }}><CameraOutlined /> Analisis de Imagen con IA</Typography.Text>
-                <Typography.Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
-                  Sube una foto del zapato, luego llena atributos con IA
-                </Typography.Text>
-              </Col>
-              <Col>
-                <Tooltip title={!analysisResult && !analyzeMutation.isPending ? (analysisError ? 'Analisis fallido — ver error abajo' : 'Sube una imagen primero') : undefined}>
-                  <Button
-                    type="primary"
-                    icon={<ThunderboltOutlined />}
-                    onClick={handleFillWithAi}
-                    disabled={!analysisResult || analyzeMutation.isPending}
-                    style={{ fontWeight: 600 }}
-                  >
-                    Llenar con IA
-                  </Button>
-                </Tooltip>
-              </Col>
-            </Row>
-
-            <Row gutter={16} style={{ marginTop: 8 }} align="middle">
-              <Col xs={24} sm={12}>
-                <label style={{ fontSize: 12, color: '#666', display: 'block', marginBottom: 4 }}>
-                  Familia de Producto <span style={{ color: '#ff4d4f' }}>*</span>
-                </label>
-                <Select
-                  placeholder="Selecciona una familia antes de subir la imagen…"
-                  value={selectedFamily}
-                  onChange={(v) => setSelectedFamily(v)}
-                  loading={familiesLoading}
-                  disabled={analyzeMutation.isPending}
-                  style={{ width: '100%' }}
-                  options={(productFamilies ?? []).map((f) => ({ label: f.labelEs, value: f.code }))}
-                />
-              </Col>
-              <Col xs={24} sm={12}>
-                <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-                  La IA usa esta familia para filtrar las categorías reales de Postgres que puede escoger.
-                  {selectedFamily === 'zapatos' && ' Solo zapatos hoy está cableado al AI — otras familias vienen en la siguiente iteración.'}
-                </Typography.Text>
-              </Col>
-            </Row>
-
-            <Row gutter={16} style={{ marginTop: 8 }} align="top">
-              <Col xs={24} sm={imagePreview ? 12 : 24}>
-                <Upload.Dragger
-                  accept="image/jpeg,image/png,image/gif,image/webp"
-                  showUploadList={false}
-                  beforeUpload={(file) => {
-                    handleImageUpload(file)
-                    return false
-                  }}
-                  disabled={analyzeMutation.isPending || !selectedFamily}
-                  style={{ padding: '8px 0' }}
-                >
-                  {analyzeMutation.isPending ? (
-                    <div>
-                      <LoadingOutlined style={{ fontSize: 20, color: '#1677ff' }} />
-                      <p style={{ marginTop: 4, marginBottom: 0, fontSize: 12 }}>Analizando...</p>
-                    </div>
-                  ) : (
-                    <div>
-                      <CameraOutlined style={{ fontSize: 20, color: '#999' }} />
-                      <p style={{ marginTop: 4, marginBottom: 0, fontSize: 12 }}>Haz clic, arrastra, o pega (Ctrl+V) imagen del zapato</p>
-                    </div>
-                  )}
-                </Upload.Dragger>
-              </Col>
-              {imagePreview && (
-                <Col xs={24} sm={12}>
-                  <img
-                    src={imagePreview}
-                    alt="Zapato subido"
-                    style={{ width: '100%', maxHeight: 120, objectFit: 'contain', borderRadius: 8, border: '1px solid #d9d9d9' }}
-                  />
-                </Col>
-              )}
-            </Row>
-
-            {analysisError && (
-              <Alert
-                type="error"
-                showIcon
-                icon={<ExclamationCircleOutlined />}
-                style={{ marginTop: 8 }}
-                message="Fallo el analisis de imagen"
-                description={
-                  <div>
-                    <Typography.Text>{analysisError}</Typography.Text>
-                    <div style={{ marginTop: 8 }}>
-                      <Button
-                        size="small"
-                        icon={<ReloadOutlined />}
-                        onClick={handleRetryAnalysis}
-                        loading={analyzeMutation.isPending}
-                      >
-                        Reintentar
-                      </Button>
-                    </div>
-                  </div>
-                }
-              />
-            )}
-
-            {analysisResult && !aiFillSummary && (
-              <Alert
-                type="info"
-                showIcon
-                style={{ marginTop: 8 }}
-                message="Imagen analizada — lista para llenar"
-                description={
-                  <div style={{ fontSize: 12 }}>
-                    {analysisResult.resolution && (
-                      <div style={{ marginBottom: 4, padding: '4px 8px', background: '#f0f9ff', borderRadius: 4 }}>
-                        <strong>Categoría sugerida (Postgres):</strong>{' '}
-                        <Tag color="blue">{analysisResult.resolution.categoryNumber} — {analysisResult.resolution.categoryDesc}</Tag>
-                        <strong style={{ marginLeft: 8 }}>Dept:</strong>{' '}
-                        <Tag color="geekblue">{analysisResult.resolution.departmentNumber} — {analysisResult.resolution.departmentDesc}</Tag>
-                      </div>
-                    )}
-                    {analysisResult.raw.shoe_type && <span><strong>Tipo:</strong> {analysisResult.raw.shoe_type} | </span>}
-                    {analysisResult.raw.heel_height && <span><strong>Tacon:</strong> {analysisResult.raw.heel_height} | </span>}
-                    {analysisResult.raw.upper_material && <span><strong>Material:</strong> {analysisResult.raw.upper_material} | </span>}
-                    {analysisResult.raw.color && <span><strong>Color:</strong> {analysisResult.raw.color} | </span>}
-                    {analysisResult.raw.occasion && <span><strong>Ocasion:</strong> {analysisResult.raw.occasion}</span>}
-                    <br />
-                    <Typography.Text type="secondary">Haz clic en "Llenar con IA" para completar los campos. La categoría real de Postgres se mostrará aquí pero NO se auto-llena al dropdown viejo todavía (Phase 5).</Typography.Text>
-                  </div>
-                }
-              />
-            )}
-
-            {aiFillSummary && (
-              <Alert
-                type="success"
-                showIcon
-                icon={<CheckCircleOutlined />}
-                style={{ marginTop: 8 }}
-                message={`IA lleno ${aiFillSummary.filled.length} de ${aiFillSummary.total} campos`}
-                description={
-                  <div style={{ fontSize: 12 }}>
-                    {aiFillSummary.filled.length > 0 && (
-                      <div>
-                        <strong>Llenados:</strong>{' '}
-                        {aiFillSummary.filled.map((f) => (
-                          <Tag key={f} color="green" style={{ marginBottom: 2 }}>{f}</Tag>
-                        ))}
-                      </div>
-                    )}
-                    {aiFillSummary.skipped.length > 0 && (
-                      <div style={{ marginTop: 4 }}>
-                        <strong>No determinados:</strong>{' '}
-                        {aiFillSummary.skipped.map((f) => (
-                          <Tag key={f} style={{ marginBottom: 2 }}>{f}</Tag>
-                        ))}
-                      </div>
-                    )}
-                    <Typography.Text type="secondary" style={{ display: 'block', marginTop: 4 }}>
-                      Todos los valores llenados por IA son editables — ajusta segun sea necesario.
-                    </Typography.Text>
-                  </div>
-                }
-              />
-            )}
-          </Card>
-        )}
-
         {/* Main Form — compact layout */}
         <Card size="small" bodyStyle={{ padding: '12px 16px' }}>
           <Form
             form={form}
             layout="vertical"
             onFinish={handleSubmit}
+            // Surface validation failures as a toast + scroll the first
+            // offending field into view. Without these, clicking "Crear
+            // borrador" while a required field was off-screen produced no
+            // visible response — the error landed under the hidden field and
+            // the operator thought the button was broken.
+            onFinishFailed={handleFinishFailed}
+            scrollToFirstError
             // requiredMark defaults to true — shows a red asterisk on required
             // fields and NOTHING on optional ones. The previous value
             // `"optional"` inverted this and plastered "(optional)" on every
@@ -1399,93 +1363,6 @@ export default function SkuFormPage() {
               }}
               initialQuery={(form.getFieldValue('vendorId') as string | undefined) ?? ''}
             />
-            {/* -- Codigo SKU -- */}
-            {!isRouteEdit && (
-              <>
-                <Typography.Text strong style={{ fontSize: 13 }}>Codigo SKU</Typography.Text>
-                <Row gutter={12} style={{ marginTop: 8 }}>
-                  <Col xs={24} sm={8}>
-                    <Form.Item
-                      label="Codigo SKU"
-                      name="skuCode"
-                      style={compactItem}
-                      extra={matchedSku ? undefined : 'Opcional en creación — se autogenera un código provisional si lo dejas vacío.'}
-                    >
-                      <AutoComplete
-                        options={skuSearchOptions}
-                        onSearch={(text) => {
-                          setSkuSearchText(text)
-                          if (debounceTimer.current) clearTimeout(debounceTimer.current)
-                          debounceTimer.current = setTimeout(() => setDebouncedSearch(text), 300)
-                        }}
-                        onSelect={(value: string) => {
-                          form.setFieldsValue({ skuCode: value })
-                          handleSkuCodeLookup(value)
-                        }}
-                        onBlur={() => {
-                          const code = form.getFieldValue('skuCode')
-                          if (code) handleSkuCodeLookup(code)
-                        }}
-                        placeholder="ej. FORMAL-NIKE-BLK-001 (opcional)"
-                        disabled={!!matchedSku}
-                        popupMatchSelectWidth={400}
-                        notFoundContent={isSearching ? <Spin size="small" /> : (skuSearchText.length >= 1 ? 'No se encontraron SKUs' : null)}
-                      >
-                        <Input
-                          suffix={lookupMutation.isPending || isSearching ? <LoadingOutlined /> : <SearchOutlined style={{ color: '#999' }} />}
-                          onPressEnter={(e) => {
-                            e.preventDefault()
-                            handleSkuCodeLookup((e.target as HTMLInputElement).value)
-                          }}
-                        />
-                      </AutoComplete>
-                    </Form.Item>
-                  </Col>
-                </Row>
-                <Divider style={{ margin: '8px 0' }} />
-              </>
-            )}
-
-            {/* -- Codigo SKU (edit mode) -- */}
-            {isRouteEdit && lifecycleSku && (
-              <>
-                <Typography.Text strong style={{ fontSize: 13 }}>Codigo SKU</Typography.Text>
-                <Row gutter={12} style={{ marginTop: 8 }}>
-                  <Col xs={24} sm={6}>
-                    <Form.Item
-                      label="Código SKU final"
-                      name="skuCode"
-                      style={compactItem}
-                      extra={
-                        isDraft
-                          ? 'Define el código SKU final antes de hacer clic en "Finalizar SKU".'
-                          : isActive
-                          ? 'El código ya no puede renombrarse (SKU ACTIVO).'
-                          : 'SKU descontinuado — solo lectura.'
-                      }
-                      rules={[{ max: 15, message: 'Máximo 15 caracteres' }]}
-                    >
-                      <Input
-                        placeholder={isDraft ? 'ej. NAVY-ZARA-42R' : ''}
-                        disabled={!isDraft}
-                        maxLength={15}
-                      />
-                    </Form.Item>
-                  </Col>
-                  <Col xs={24} sm={6}>
-                    <Form.Item label="Código provisional" style={compactItem}>
-                      <Input
-                        value={lifecycleSku.provisionalCode}
-                        readOnly
-                        style={{ fontFamily: 'monospace', background: '#fafafa' }}
-                      />
-                    </Form.Item>
-                  </Col>
-                </Row>
-                <Divider style={{ margin: '8px 0' }} />
-              </>
-            )}
-
             {/* ─────────────────────────────────────────────────────────────
                 Detalles del Producto (left) + Default Prices (right)
 
@@ -1522,6 +1399,87 @@ export default function SkuFormPage() {
             <Row gutter={16} style={{ marginTop: 4 }}>
               <Col xs={24} lg={18}>
                 <Card title="Detalles del Producto" size="small" styles={{ body: { padding: 12 } }}>
+                  {/* Row 0 — Codigo SKU at the top of the Detalles box. Two
+                      variants: create (AutoComplete lookup) vs. edit (plain
+                      Input; disabled unless DRAFT; shows provisional code
+                      next to it). */}
+                  {!isRouteEdit && (
+                    <Row gutter={8}>
+                      <Col xs={24} sm={10}>
+                        <Form.Item
+                          label="Codigo SKU"
+                          name="skuCode"
+                          style={compactItem}
+                          extra={matchedSku ? undefined : 'Opcional en creación — se autogenera un código provisional si lo dejas vacío.'}
+                        >
+                          <AutoComplete
+                            options={skuSearchOptions}
+                            onSearch={(text) => {
+                              setSkuSearchText(text)
+                              if (debounceTimer.current) clearTimeout(debounceTimer.current)
+                              debounceTimer.current = setTimeout(() => setDebouncedSearch(text), 300)
+                            }}
+                            onSelect={(value: string) => {
+                              form.setFieldsValue({ skuCode: value })
+                              handleSkuCodeLookup(value)
+                            }}
+                            onBlur={() => {
+                              const code = form.getFieldValue('skuCode')
+                              if (code) handleSkuCodeLookup(code)
+                            }}
+                            placeholder="ej. FORMAL-NIKE-BLK-001 (opcional)"
+                            disabled={!!matchedSku}
+                            popupMatchSelectWidth={400}
+                            notFoundContent={isSearching ? <Spin size="small" /> : (skuSearchText.length >= 1 ? 'No se encontraron SKUs' : null)}
+                          >
+                            <Input
+                              suffix={lookupMutation.isPending || isSearching ? <LoadingOutlined /> : <SearchOutlined style={{ color: '#999' }} />}
+                              onPressEnter={(e) => {
+                                e.preventDefault()
+                                handleSkuCodeLookup((e.target as HTMLInputElement).value)
+                              }}
+                            />
+                          </AutoComplete>
+                        </Form.Item>
+                      </Col>
+                    </Row>
+                  )}
+
+                  {isRouteEdit && lifecycleSku && (
+                    <Row gutter={8}>
+                      <Col xs={12} sm={6}>
+                        <Form.Item
+                          label="Código SKU final"
+                          name="skuCode"
+                          style={compactItem}
+                          extra={
+                            isDraft
+                              ? 'Define el código SKU final antes de finalizar.'
+                              : isActive
+                              ? 'El código ya no puede renombrarse (SKU ACTIVO).'
+                              : 'SKU descontinuado — solo lectura.'
+                          }
+                          rules={[{ max: 15, message: 'Máximo 15 caracteres' }]}
+                        >
+                          <Input
+                            placeholder={isDraft ? 'ej. NAVY-ZARA-42R' : ''}
+                            disabled={!isDraft}
+                            maxLength={15}
+                          />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={12} sm={6}>
+                        <Form.Item label="Código provisional" style={compactItem}>
+                          <Input
+                            value={lifecycleSku.provisionalCode}
+                            readOnly
+                            style={{ fontFamily: 'monospace', background: '#fafafa' }}
+                          />
+                        </Form.Item>
+                      </Col>
+                    </Row>
+                  )}
+
                   {/* Row 1 — Vendor identity alone, so Vendor SKU can breathe.
                       Everything after Vendor SKU wraps to the next row. */}
                   <Row gutter={8}>
@@ -1707,12 +1665,17 @@ export default function SkuFormPage() {
                       </Form.Item>
                     </Col>
                     <Col xs={8} sm={5}>
-                      <Form.Item label="Season (auto)" name="seasonId" style={compactItem}>
-                        <Select
-                          placeholder="Auto"
-                          allowClear
-                          options={refOptions(refData?.['seasons'])}
-                        />
+                      {/*
+                        Season description autofills from Postgres (SeasonOverlay
+                        joined with rics_mirror.seasons) keyed by the 2-char code
+                        in the adjacent "Season Code" field. The legacy seasonId
+                        ref-table Select was unrelated to the 2-char RICS code —
+                        it keyed on a numeric SQLite id and couldn't line up with
+                        app.sku.season, so typing a code and picking a name
+                        produced two disconnected values.
+                      */}
+                      <Form.Item label="Season (auto)" style={compactItem}>
+                        <SeasonAutofill seasons={seasonsCatalog} />
                       </Form.Item>
                     </Col>
                   </Row>
@@ -1748,16 +1711,13 @@ export default function SkuFormPage() {
                         <Input placeholder="Escriba la marca" allowClear />
                       </Form.Item>
                     </Col>
-                    <Col xs={12} sm={4}>
-                      <Form.Item
-                        label={aiLabel('Tipo de Zapato', 'shoeTypeId', aiFilledFields)}
-                        name="shoeTypeId"
-                        style={{ ...compactItem, ...(aiFilledFields.has('shoeTypeId') ? AI_FILLED_STYLE : {}) }}
-                      >
-                        <Select placeholder="Seleccionar" allowClear showSearch optionFilterProp="label" options={refOptions(refData?.['shoe-types'])} />
-                      </Form.Item>
-                    </Col>
-                    <Col xs={24} sm={10}>
+                    {/* Tipo de Zapato removed from Detalles 2026-04-23 per
+                        operator request. The AI still writes `shoeTypeId` into
+                        legacy_attrs when an image is analyzed (see AI_FIELD_MAP);
+                        it just isn't rendered on the form. When shoe-types
+                        migrates to a dimension, the field returns with its new
+                        home — until then, the AI value round-trips invisibly. */}
+                    <Col xs={24} sm={14}>
                       <Form.Item
                         label="Style-Color Canonico"
                         name="styleColorId"
@@ -1847,6 +1807,197 @@ export default function SkuFormPage() {
               </Col>
             </Row>
 
+            {/* Familia de Producto (always visible — drives attribute visibility
+                + is required before saving) | AI Image Analysis (collapsible).
+                Moved below Detalles del Producto on operator request. When IA
+                is off, Familia spans the full width; when on, Familia takes
+                the left column and the IA card takes the right. */}
+            <Row gutter={16} style={{ marginTop: 8 }}>
+              <Col xs={24} lg={aiPanelOpen ? 10 : 24}>
+                <Card size="small" styles={{ body: { padding: '8px 16px' } }}>
+                  <Row align="middle" gutter={16}>
+                    <Col xs={24} sm={aiPanelOpen ? 24 : 12}>
+                      <label style={{ fontSize: 12, color: '#666', display: 'block', marginBottom: 4 }}>
+                        Familia de Producto <span style={{ color: '#ff4d4f' }}>*</span>
+                      </label>
+                      <Select
+                        placeholder="Selecciona una familia…"
+                        value={selectedFamily}
+                        onChange={(v) => setSelectedFamily(v)}
+                        loading={familiesLoading}
+                        disabled={analyzeMutation.isPending}
+                        style={{ width: '100%' }}
+                        options={(productFamilies ?? []).map((f) => ({ label: f.labelEs, value: f.code }))}
+                      />
+                    </Col>
+                    {!aiPanelOpen && (
+                      <Col xs={24} sm={12}>
+                        <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                          La familia filtra las categorías disponibles y qué atributos se muestran abajo.
+                        </Typography.Text>
+                      </Col>
+                    )}
+                  </Row>
+                </Card>
+              </Col>
+
+              {aiPanelOpen && (
+                <Col xs={24} lg={14}>
+                  <Card size="small" styles={{ body: { padding: '8px 16px' } }}>
+                    <Row align="middle" justify="space-between">
+                      <Col>
+                        <Typography.Text strong style={{ fontSize: 13 }}><CameraOutlined /> Analisis de Imagen con IA</Typography.Text>
+                        <Typography.Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
+                          Sube una foto del zapato, luego llena atributos con IA
+                        </Typography.Text>
+                      </Col>
+                      <Col>
+                        <Tooltip title={!analysisResult && !analyzeMutation.isPending ? (analysisError ? 'Analisis fallido — ver error abajo' : 'Sube una imagen primero') : undefined}>
+                          <Button
+                            type="primary"
+                            icon={<ThunderboltOutlined />}
+                            onClick={handleFillWithAi}
+                            disabled={!analysisResult || analyzeMutation.isPending}
+                            style={{ fontWeight: 600 }}
+                          >
+                            Llenar con IA
+                          </Button>
+                        </Tooltip>
+                      </Col>
+                    </Row>
+
+                    {selectedFamily && selectedFamily !== 'zapatos' && (
+                      <Typography.Text type="secondary" style={{ fontSize: 11, display: 'block', marginTop: 6 }}>
+                        Solo zapatos hoy está cableado al AI — otras familias vienen en la siguiente iteración.
+                      </Typography.Text>
+                    )}
+
+                    <Row gutter={16} style={{ marginTop: 8 }} align="top">
+                      <Col xs={24} sm={imagePreview ? 12 : 24}>
+                        <Upload.Dragger
+                          accept="image/jpeg,image/png,image/gif,image/webp"
+                          showUploadList={false}
+                          beforeUpload={(file) => {
+                            handleImageUpload(file)
+                            return false
+                          }}
+                          disabled={analyzeMutation.isPending || !selectedFamily}
+                          style={{ padding: '8px 0' }}
+                        >
+                          {analyzeMutation.isPending ? (
+                            <div>
+                              <LoadingOutlined style={{ fontSize: 20, color: '#1677ff' }} />
+                              <p style={{ marginTop: 4, marginBottom: 0, fontSize: 12 }}>Analizando...</p>
+                            </div>
+                          ) : (
+                            <div>
+                              <CameraOutlined style={{ fontSize: 20, color: '#999' }} />
+                              <p style={{ marginTop: 4, marginBottom: 0, fontSize: 12 }}>Haz clic, arrastra, o pega (Ctrl+V) imagen del zapato</p>
+                            </div>
+                          )}
+                        </Upload.Dragger>
+                      </Col>
+                      {imagePreview && (
+                        <Col xs={24} sm={12}>
+                          <img
+                            src={imagePreview}
+                            alt="Zapato subido"
+                            style={{ width: '100%', maxHeight: 120, objectFit: 'contain', borderRadius: 8, border: '1px solid #d9d9d9' }}
+                          />
+                        </Col>
+                      )}
+                    </Row>
+
+                    {analysisError && (
+                      <Alert
+                        type="error"
+                        showIcon
+                        icon={<ExclamationCircleOutlined />}
+                        style={{ marginTop: 8 }}
+                        message="Fallo el analisis de imagen"
+                        description={
+                          <div>
+                            <Typography.Text>{analysisError}</Typography.Text>
+                            <div style={{ marginTop: 8 }}>
+                              <Button
+                                size="small"
+                                icon={<ReloadOutlined />}
+                                onClick={handleRetryAnalysis}
+                                loading={analyzeMutation.isPending}
+                              >
+                                Reintentar
+                              </Button>
+                            </div>
+                          </div>
+                        }
+                      />
+                    )}
+
+                    {analysisResult && !aiFillSummary && (
+                      <Alert
+                        type="info"
+                        showIcon
+                        style={{ marginTop: 8 }}
+                        message="Imagen analizada — lista para llenar"
+                        description={
+                          <div style={{ fontSize: 12 }}>
+                            {analysisResult.resolution && (
+                              <div style={{ marginBottom: 4, padding: '4px 8px', background: '#f0f9ff', borderRadius: 4 }}>
+                                <strong>Categoría sugerida (Postgres):</strong>{' '}
+                                <Tag color="blue">{analysisResult.resolution.categoryNumber} — {analysisResult.resolution.categoryDesc}</Tag>
+                                <strong style={{ marginLeft: 8 }}>Dept:</strong>{' '}
+                                <Tag color="geekblue">{analysisResult.resolution.departmentNumber} — {analysisResult.resolution.departmentDesc}</Tag>
+                              </div>
+                            )}
+                            {analysisResult.raw.shoe_type && <span><strong>Tipo:</strong> {analysisResult.raw.shoe_type} | </span>}
+                            {analysisResult.raw.heel_height && <span><strong>Tacon:</strong> {analysisResult.raw.heel_height} | </span>}
+                            {analysisResult.raw.upper_material && <span><strong>Material:</strong> {analysisResult.raw.upper_material} | </span>}
+                            {analysisResult.raw.color && <span><strong>Color:</strong> {analysisResult.raw.color} | </span>}
+                            {analysisResult.raw.occasion && <span><strong>Ocasion:</strong> {analysisResult.raw.occasion}</span>}
+                            <br />
+                            <Typography.Text type="secondary">Haz clic en "Llenar con IA" para completar los campos. La categoría real de Postgres se mostrará aquí pero NO se auto-llena al dropdown viejo todavía (Phase 5).</Typography.Text>
+                          </div>
+                        }
+                      />
+                    )}
+
+                    {aiFillSummary && (
+                      <Alert
+                        type="success"
+                        showIcon
+                        icon={<CheckCircleOutlined />}
+                        style={{ marginTop: 8 }}
+                        message={`IA lleno ${aiFillSummary.filled.length} de ${aiFillSummary.total} campos`}
+                        description={
+                          <div style={{ fontSize: 12 }}>
+                            {aiFillSummary.filled.length > 0 && (
+                              <div>
+                                <strong>Llenados:</strong>{' '}
+                                {aiFillSummary.filled.map((f) => (
+                                  <Tag key={f} color="green" style={{ marginBottom: 2 }}>{f}</Tag>
+                                ))}
+                              </div>
+                            )}
+                            {aiFillSummary.skipped.length > 0 && (
+                              <div style={{ marginTop: 4 }}>
+                                <strong>No determinados:</strong>{' '}
+                                {aiFillSummary.skipped.map((f) => (
+                                  <Tag key={f} style={{ marginBottom: 2 }}>{f}</Tag>
+                                ))}
+                              </div>
+                            )}
+                            <Typography.Text type="secondary" style={{ display: 'block', marginTop: 4 }}>
+                              Todos los valores llenados por IA son editables — ajusta segun sea necesario.
+                            </Typography.Text>
+                          </div>
+                        }
+                      />
+                    )}
+                  </Card>
+                </Col>
+              )}
+            </Row>
+
             <Divider style={{ margin: '8px 0' }} />
 
             {/* -- Clasificacion — trimmed 2026-04-23. Departamento and Tipo de
@@ -1875,7 +2026,9 @@ export default function SkuFormPage() {
 
             <Divider style={{ margin: '8px 0' }} />
 
-            {/* -- Apariencia, Diseno y Materiales — Color + Ancho moved in from Detalles -- */}
+            {/* -- Apariencia, Diseno y Materiales — filtered by Product Family.
+                   Shoe-specific dims (width, accessory, heel/toe, materials)
+                   only render for family=zapatos. See isApparienciaFieldVisible. -- */}
             <Typography.Text strong style={{ fontSize: 13 }}>Apariencia, Diseno y Materiales</Typography.Text>
 
             <Row gutter={12} style={{ marginTop: 8 }}>
@@ -1884,11 +2037,13 @@ export default function SkuFormPage() {
                   <Select placeholder="Seleccionar" allowClear showSearch optionFilterProp="label" options={refOptions(refData?.['colors'])} />
                 </Form.Item>
               </Col>
-              <Col xs={12} sm={3}>
-                <Form.Item label="Ancho" name="widthTypeId" style={compactItem}>
-                  <Select placeholder="Seleccionar" allowClear options={refOptions(refData?.['width-types'])} />
-                </Form.Item>
-              </Col>
+              {isApparienciaFieldVisible('widthTypeId', selectedFamily) && (
+                <Col xs={12} sm={3}>
+                  <Form.Item label="Ancho" name="widthTypeId" style={compactItem}>
+                    <Select placeholder="Seleccionar" allowClear options={refOptions(refData?.['width-types'])} />
+                  </Form.Item>
+                </Col>
+              )}
               <Col xs={12} sm={3}>
                 <Form.Item label={aiLabel('Patron', 'patternId', aiFilledFields)} name="patternId" style={{ ...compactItem, ...(aiFilledFields.has('patternId') ? AI_FILLED_STYLE : {}) }}>
                   <Select placeholder="Seleccionar" allowClear options={refOptions(refData?.['patterns'])} />
@@ -1899,45 +2054,63 @@ export default function SkuFormPage() {
                   <Select placeholder="Seleccionar" allowClear options={refOptions(refData?.['finishes'])} />
                 </Form.Item>
               </Col>
-              <Col xs={12} sm={3}>
-                <Form.Item label={aiLabel('Accesorio', 'accessoryId', aiFilledFields)} name="accessoryId" style={{ ...compactItem, ...(aiFilledFields.has('accessoryId') ? AI_FILLED_STYLE : {}) }}>
-                  <Select placeholder="Seleccionar" allowClear options={refOptions(refData?.['accessories'])} />
-                </Form.Item>
-              </Col>
-              <Col xs={12} sm={3}>
-                <Form.Item label={aiLabel('Altura del Tacon', 'heelHeightId', aiFilledFields)} name="heelHeightId" style={{ ...compactItem, ...(aiFilledFields.has('heelHeightId') ? AI_FILLED_STYLE : {}) }}>
-                  <Select placeholder="Seleccionar" allowClear options={refOptions(refData?.['heel-heights'])} />
-                </Form.Item>
-              </Col>
-              <Col xs={12} sm={3}>
-                <Form.Item label={aiLabel('Forma del Tacon', 'heelShapeId', aiFilledFields)} name="heelShapeId" style={{ ...compactItem, ...(aiFilledFields.has('heelShapeId') ? AI_FILLED_STYLE : {}) }}>
-                  <Select placeholder="Seleccionar" allowClear options={refOptions(refData?.['heel-shapes'])} />
-                </Form.Item>
-              </Col>
-              <Col xs={12} sm={3}>
-                <Form.Item label={aiLabel('Forma de la Punta', 'toeShapeId', aiFilledFields)} name="toeShapeId" style={{ ...compactItem, ...(aiFilledFields.has('toeShapeId') ? AI_FILLED_STYLE : {}) }}>
-                  <Select placeholder="Seleccionar" allowClear options={refOptions(refData?.['toe-shapes'])} />
-                </Form.Item>
-              </Col>
+              {isApparienciaFieldVisible('accessoryId', selectedFamily) && (
+                <Col xs={12} sm={3}>
+                  <Form.Item label={aiLabel('Accesorio', 'accessoryId', aiFilledFields)} name="accessoryId" style={{ ...compactItem, ...(aiFilledFields.has('accessoryId') ? AI_FILLED_STYLE : {}) }}>
+                    <Select placeholder="Seleccionar" allowClear options={refOptions(refData?.['accessories'])} />
+                  </Form.Item>
+                </Col>
+              )}
+              {isApparienciaFieldVisible('heelHeightId', selectedFamily) && (
+                <Col xs={12} sm={3}>
+                  <Form.Item label={aiLabel('Altura del Tacon', 'heelHeightId', aiFilledFields)} name="heelHeightId" style={{ ...compactItem, ...(aiFilledFields.has('heelHeightId') ? AI_FILLED_STYLE : {}) }}>
+                    <Select placeholder="Seleccionar" allowClear options={refOptions(refData?.['heel-heights'])} />
+                  </Form.Item>
+                </Col>
+              )}
+              {isApparienciaFieldVisible('heelShapeId', selectedFamily) && (
+                <Col xs={12} sm={3}>
+                  <Form.Item label={aiLabel('Forma del Tacon', 'heelShapeId', aiFilledFields)} name="heelShapeId" style={{ ...compactItem, ...(aiFilledFields.has('heelShapeId') ? AI_FILLED_STYLE : {}) }}>
+                    <Select placeholder="Seleccionar" allowClear options={refOptions(refData?.['heel-shapes'])} />
+                  </Form.Item>
+                </Col>
+              )}
+              {isApparienciaFieldVisible('toeShapeId', selectedFamily) && (
+                <Col xs={12} sm={3}>
+                  <Form.Item label={aiLabel('Forma de la Punta', 'toeShapeId', aiFilledFields)} name="toeShapeId" style={{ ...compactItem, ...(aiFilledFields.has('toeShapeId') ? AI_FILLED_STYLE : {}) }}>
+                    <Select placeholder="Seleccionar" allowClear options={refOptions(refData?.['toe-shapes'])} />
+                  </Form.Item>
+                </Col>
+              )}
             </Row>
 
-            <Row gutter={12}>
-              <Col xs={12} sm={4}>
-                <Form.Item label={aiLabel('Material Superior', 'upperMaterialId', aiFilledFields)} name="upperMaterialId" style={{ ...compactItem, ...(aiFilledFields.has('upperMaterialId') ? AI_FILLED_STYLE : {}) }}>
-                  <Select placeholder="Seleccionar" allowClear showSearch optionFilterProp="label" options={refOptions(refData?.['upper-materials'])} />
-                </Form.Item>
-              </Col>
-              <Col xs={12} sm={4}>
-                <Form.Item label={aiLabel('Material de Suela', 'outsoleMaterialId', aiFilledFields)} name="outsoleMaterialId" style={{ ...compactItem, ...(aiFilledFields.has('outsoleMaterialId') ? AI_FILLED_STYLE : {}) }}>
-                  <Select placeholder="Seleccionar" allowClear options={refOptions(refData?.['outsole-materials'])} />
-                </Form.Item>
-              </Col>
-              <Col xs={12} sm={4}>
-                <Form.Item label={aiLabel('Material del Tacon', 'heelMaterialId', aiFilledFields)} name="heelMaterialId" style={{ ...compactItem, ...(aiFilledFields.has('heelMaterialId') ? AI_FILLED_STYLE : {}) }}>
-                  <Select placeholder="Seleccionar" allowClear options={refOptions(refData?.['heel-materials'])} />
-                </Form.Item>
-              </Col>
-            </Row>
+            {(isApparienciaFieldVisible('upperMaterialId', selectedFamily)
+              || isApparienciaFieldVisible('outsoleMaterialId', selectedFamily)
+              || isApparienciaFieldVisible('heelMaterialId', selectedFamily)) && (
+              <Row gutter={12}>
+                {isApparienciaFieldVisible('upperMaterialId', selectedFamily) && (
+                  <Col xs={12} sm={4}>
+                    <Form.Item label={aiLabel('Material Superior', 'upperMaterialId', aiFilledFields)} name="upperMaterialId" style={{ ...compactItem, ...(aiFilledFields.has('upperMaterialId') ? AI_FILLED_STYLE : {}) }}>
+                      <Select placeholder="Seleccionar" allowClear showSearch optionFilterProp="label" options={refOptions(refData?.['upper-materials'])} />
+                    </Form.Item>
+                  </Col>
+                )}
+                {isApparienciaFieldVisible('outsoleMaterialId', selectedFamily) && (
+                  <Col xs={12} sm={4}>
+                    <Form.Item label={aiLabel('Material de Suela', 'outsoleMaterialId', aiFilledFields)} name="outsoleMaterialId" style={{ ...compactItem, ...(aiFilledFields.has('outsoleMaterialId') ? AI_FILLED_STYLE : {}) }}>
+                      <Select placeholder="Seleccionar" allowClear options={refOptions(refData?.['outsole-materials'])} />
+                    </Form.Item>
+                  </Col>
+                )}
+                {isApparienciaFieldVisible('heelMaterialId', selectedFamily) && (
+                  <Col xs={12} sm={4}>
+                    <Form.Item label={aiLabel('Material del Tacon', 'heelMaterialId', aiFilledFields)} name="heelMaterialId" style={{ ...compactItem, ...(aiFilledFields.has('heelMaterialId') ? AI_FILLED_STYLE : {}) }}>
+                      <Select placeholder="Seleccionar" allowClear options={refOptions(refData?.['heel-materials'])} />
+                    </Form.Item>
+                  </Col>
+                )}
+              </Row>
+            )}
 
             <Divider style={{ margin: '8px 0' }} />
 
@@ -1955,20 +2128,37 @@ export default function SkuFormPage() {
             <Divider style={{ margin: '8px 0' }} />
 
             <Form.Item style={{ marginBottom: 0 }}>
-              <Space>
+              <Space wrap>
                 <Button
                   type="primary"
                   htmlType="submit"
                   icon={<SaveOutlined />}
-                  loading={isSaving}
+                  loading={isSaving && !finalizeMutation.isPending}
                   disabled={isDiscontinued}
                 >
                   {isDraft ? 'Guardar borrador' : isEdit ? 'Guardar cambios' : 'Crear borrador'}
                 </Button>
-                {isDraft && lifecycleSku && (
+                {/*
+                  Skip-the-draft path — create (or update) + finalize in one
+                  click. Requires the operator to have typed the final SKU
+                  code. `handleCreateFinalClick` sets a ref flag that
+                  handleSubmit reads to chain into finalize after create/update.
+                */}
+                {!isDiscontinued && !isActive && (
                   <Button
                     type="primary"
                     style={{ background: '#389e0d', borderColor: '#389e0d' }}
+                    icon={<ThunderboltOutlined />}
+                    loading={isSaving && finalizeMutation.isPending}
+                    onClick={handleCreateFinalClick}
+                  >
+                    {isDraft ? 'Guardar y finalizar' : 'Crear SKU final (sin borrador)'}
+                  </Button>
+                )}
+                {isDraft && lifecycleSku && (
+                  <Button
+                    type="primary"
+                    style={{ background: '#1677ff', borderColor: '#1677ff' }}
                     icon={<ThunderboltOutlined />}
                     loading={finalizeMutation.isPending}
                     onClick={() => handleFinalize()}

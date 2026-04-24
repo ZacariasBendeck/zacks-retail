@@ -84,13 +84,13 @@ LEFT JOIN app.city               c ON c.id               = m.city_id;
 - `docker exec zacks-retail-postgres psql -U zacks -d zacks_retail -c '\dv app.*'` → shows `store_location_view`.
 - `SELECT * FROM app.store_location_view LIMIT 5;` → returns 5 rows with `kind IS NULL` (no overlay seeded yet).
 
-### Task 3 — Seed script `apps/api/scripts/seed-store-locations.ts`
+### Task 3 — Seed script `apps/api/scripts/seeds/seed-store-locations.ts`
 
 **Goal:** Idempotent script that writes 2 cities, 11 malls, 36 `store_location` rows. Re-runnable against a DB that already has them — no duplicates, no constraint violations.
 
 **Files:**
-- New: `apps/api/scripts/seed-store-locations.ts`
-- Edit: `apps/api/package.json` — add `"seed:stores": "node --env-file-if-exists=.env -r tsx/cjs scripts/seed-store-locations.ts"`
+- New: `apps/api/scripts/seeds/seed-store-locations.ts`
+- Edit: `apps/api/package.json` — add `"seed:stores": "node --env-file-if-exists=.env -r tsx/cjs scripts/seeds/seed-store-locations.ts"`
 
 **Seed tables:**
 

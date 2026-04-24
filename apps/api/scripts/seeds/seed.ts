@@ -1,6 +1,6 @@
 /**
  * Seed script — populates the SQLite database with realistic shoe store data.
- * Run: npx tsx --experimental-sqlite scripts/seed.ts
+ * Run: npx tsx --experimental-sqlite scripts/seeds/seed.ts
  */
 import { getDb } from '../../src/db/database';
 import { v4 as uuidv4 } from 'uuid';

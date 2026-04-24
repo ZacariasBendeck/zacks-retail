@@ -8,7 +8,7 @@
  * Writes to: apps/api/seeds/product_families/category_mapping.csv
  *
  * Run:
- *   pnpm --filter @benlow-rics/api exec node --env-file-if-exists=.env -r tsx/cjs scripts/suggest-category-families.ts
+ *   pnpm --filter @benlow-rics/api exec node --env-file-if-exists=.env -r tsx/cjs scripts/catalog/suggest-category-families.ts
  */
 import fs from 'node:fs';
 import path from 'node:path';

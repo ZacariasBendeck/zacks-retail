@@ -7,7 +7,7 @@
  * should match:
  *   SUM(TicketDetail.Extension) where Month(RealDate) == NN AND Year == (current_year - 1)
  *
- * Run with:  npx tsx scripts/probe-invhis-alignment.ts
+ * Run with:  npx tsx scripts/rics/probes/probe-invhis-alignment.ts
  */
 
 import fs from 'node:fs';
