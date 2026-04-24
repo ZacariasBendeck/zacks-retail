@@ -2457,73 +2457,12 @@ const MIGRATIONS: Migration[] = [
   },
   {
     version: '0017',
-    description: 'crm module: customers + family_members + mail_list_settings. Slim Stage 1 subset per docs/modules/crm.md.',
+    description: 'crm module: mail_list_settings only. customers + customer_family_members moved to Postgres (app schema) — see prisma migration 20260423150000_customers.',
     up(db: DatabaseSync) {
       db.exec(`
-        -- Customers (RICS Mailing List entry, Ch. 9 p. 117). Slim subset for Stage 1 POS.
-        -- Loyalty / quotes / mail detail tables deferred until those surfaces are built.
-        CREATE TABLE IF NOT EXISTS customers (
-          id TEXT PRIMARY KEY,
-          account_number TEXT NOT NULL UNIQUE,
-          phone_e164 TEXT,
-          first_name TEXT,
-          last_name TEXT,
-          display_name TEXT NOT NULL,
-          email TEXT,
-          address_line1 TEXT,
-          address_line2 TEXT,
-          city TEXT,
-          state_region TEXT,
-          postal_code TEXT,
-          country TEXT,
-          credit_limit REAL CHECK(credit_limit IS NULL OR credit_limit >= 0),
-          alert_flag INTEGER NOT NULL DEFAULT 0,
-          alert_message TEXT,
-          comments TEXT,
-          ptd_qty INTEGER NOT NULL DEFAULT 0,
-          ptd_sales_cents INTEGER NOT NULL DEFAULT 0,
-          ytd_qty INTEGER NOT NULL DEFAULT 0,
-          ytd_sales_cents INTEGER NOT NULL DEFAULT 0,
-          ttd_qty INTEGER NOT NULL DEFAULT 0,
-          ttd_sales_cents INTEGER NOT NULL DEFAULT 0,
-          last_year_sales_cents INTEGER NOT NULL DEFAULT 0,
-          date_added TEXT NOT NULL DEFAULT (datetime('now')),
-          date_of_last_purchase TEXT,
-          last_known_ar_balance_cents INTEGER NOT NULL DEFAULT 0,
-          ar_balance_as_of TEXT,
-          last_known_store_credit_cents INTEGER NOT NULL DEFAULT 0,
-          store_credit_as_of TEXT,
-          extra_fields_json TEXT,
-          marketing_opt_in INTEGER NOT NULL DEFAULT 0,
-          active INTEGER NOT NULL DEFAULT 1,
-          created_at TEXT NOT NULL DEFAULT (datetime('now')),
-          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-        );
-        CREATE INDEX IF NOT EXISTS idx_customers_phone ON customers(phone_e164);
-        CREATE INDEX IF NOT EXISTS idx_customers_last_first ON customers(last_name, first_name);
-        CREATE INDEX IF NOT EXISTS idx_customers_postal ON customers(postal_code);
-        CREATE INDEX IF NOT EXISTS idx_customers_account ON customers(account_number);
-
-        -- Family members (RICS p. 118). Slim subset.
-        CREATE TABLE IF NOT EXISTS customer_family_members (
-          id TEXT PRIMARY KEY,
-          customer_id TEXT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
-          code TEXT NOT NULL,
-          first_name TEXT,
-          last_name TEXT,
-          gender TEXT CHECK(gender IS NULL OR gender IN ('M','F','C')),
-          birthday TEXT,
-          comments TEXT,
-          alert_flag INTEGER NOT NULL DEFAULT 0,
-          alert_message TEXT,
-          extra_fields_json TEXT,
-          created_at TEXT NOT NULL DEFAULT (datetime('now')),
-          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-          UNIQUE(customer_id, code)
-        );
-        CREATE INDEX IF NOT EXISTS idx_family_members_customer ON customer_family_members(customer_id);
-
         -- Mail List Setup (RICS p. 218). Single-row tenant-wide config.
+        -- Customers + family_members live in Postgres as of 2026-04-23; this
+        -- table stays on SQLite until a future pass migrates it.
         CREATE TABLE IF NOT EXISTS mail_list_settings (
           id INTEGER PRIMARY KEY CHECK(id = 1),
           save_mail_detail INTEGER NOT NULL DEFAULT 1,
@@ -2541,8 +2480,6 @@ const MIGRATIONS: Migration[] = [
     down(db: DatabaseSync) {
       db.exec(`
         DROP TABLE IF EXISTS mail_list_settings;
-        DROP TABLE IF EXISTS customer_family_members;
-        DROP TABLE IF EXISTS customers;
       `);
     },
   },

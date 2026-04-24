@@ -1,5 +1,18 @@
 import { randomUUID } from 'node:crypto';
 import { getDb } from '../db/database';
+import { prisma } from '../db/prisma';
+
+// Replaces the historical SQLite `SELECT id FROM customers WHERE id = ?`
+// preflight check. Customers live in Postgres (app.customers) now; the rest
+// of this service still writes to SQLite for special_orders / layaways /
+// gift_certificates / house_charges until each migrates in its own pass.
+async function assertCustomerExists(customerId: string): Promise<void> {
+  const found = await prisma.customer.findUnique({
+    where: { id: customerId },
+    select: { id: true },
+  });
+  if (!found) throw new Error('CUSTOMER_NOT_FOUND');
+}
 import {
   GiftCertificate,
   GiftCertificateRow,
@@ -52,11 +65,10 @@ export interface CreateSpecialOrderInput {
   createdBy: string;
 }
 
-export function createSpecialOrder(input: CreateSpecialOrderInput): SpecialOrderWithChildren {
+export async function createSpecialOrder(input: CreateSpecialOrderInput): Promise<SpecialOrderWithChildren> {
   const db = getDb();
   if (input.lines.length === 0) throw new Error('AT_LEAST_ONE_LINE_REQUIRED');
-  const customer = db.prepare('SELECT id FROM customers WHERE id = ?').get(input.customerId);
-  if (!customer) throw new Error('CUSTOMER_NOT_FOUND');
+  await assertCustomerExists(input.customerId);
 
   const id = randomUUID();
   const totalOrdered = input.lines.reduce((s, l) => s + l.price * l.quantity, 0);
@@ -201,11 +213,10 @@ export interface CreateLayawayInput {
   createdBy: string;
 }
 
-export function createLayaway(input: CreateLayawayInput): LayawayWithChildren {
+export async function createLayaway(input: CreateLayawayInput): Promise<LayawayWithChildren> {
   const db = getDb();
   if (input.lines.length === 0) throw new Error('AT_LEAST_ONE_LINE_REQUIRED');
-  const customer = db.prepare('SELECT id FROM customers WHERE id = ?').get(input.customerId);
-  if (!customer) throw new Error('CUSTOMER_NOT_FOUND');
+  await assertCustomerExists(input.customerId);
 
   const settings = getSettings();
   if (settings.minLayawayDepositPercent != null) {
@@ -492,10 +503,9 @@ export interface RecordHouseChargeInput {
   tenderType?: string;
 }
 
-export function recordHouseCharge(input: RecordHouseChargeInput): HouseChargeTransaction {
+export async function recordHouseCharge(input: RecordHouseChargeInput): Promise<HouseChargeTransaction> {
   const db = getDb();
-  const customer = db.prepare('SELECT id FROM customers WHERE id = ?').get(input.customerId);
-  if (!customer) throw new Error('CUSTOMER_NOT_FOUND');
+  await assertCustomerExists(input.customerId);
   if (input.amount <= 0) throw new Error('AMOUNT_MUST_BE_POSITIVE');
   const id = randomUUID();
   db.prepare(

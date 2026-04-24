@@ -250,28 +250,6 @@ enum ReportCategory { ANALYSIS  TRENDING  STOCK  SALES  EXPORT  JOURNAL }
 // --- Saved filter presets (per-user, shareable) ---
 // Replaces RICS "Report Comment + Save Current Selection" (p. 7).
 
-model SavedReportView {
-  id              String   @id @default(uuid())
-  reportKey       String
-  ownerUserId     String
-  name            String                        // RICS's "Report Comment"; "DEFAULT" is a reserved name
-  filters         Json                          // serialized filter form state
-  criteriaRaw     String?                       // raw RICS-grammar string if user typed one (p. 8)
-  columnOverrides Json?                         // optional column-projection override
-  isUserDefault   Boolean  @default(false)      // one per (ownerUserId, reportKey)
-  sharingScope    SharingScope @default(PRIVATE) // PRIVATE | SHARED_READ_ONLY
-  sharedByUserId  String?                       // when SHARED_READ_ONLY, the admin who shared it
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-
-  report          ReportDefinition @relation(fields: [reportKey], references: [key])
-
-  @@unique([ownerUserId, reportKey, name])
-  @@index([reportKey, sharingScope])
-}
-
-enum SharingScope { PRIVATE  SHARED_READ_ONLY }
-
 // --- Report run history (ad-hoc + scheduled) ---
 
 model ReportRun {

@@ -8,6 +8,7 @@ import { RequirePermission } from './auth/RequirePermission'
 
 const SkuListPage = lazy(() => import('./pages/inventory/SkuListPage'))
 const SkuFormPage = lazy(() => import('./pages/inventory/SkuFormPage'))
+const SkuFormPageModern = lazy(() => import('./pages/inventory/SkuFormPageModern'))
 const SkuDraftsListPage = lazy(() => import('./pages/inventory/SkuDraftsListPage'))
 const DashboardPage = lazy(() => import('./pages/inventory/DashboardPage'))
 const InventoryBalancesPage = lazy(() => import('./pages/inventory/InventoryBalancesPage'))
@@ -269,6 +270,8 @@ export default function App() {
             <Route path="/products/skus" element={<ProductsSkuListPage />} />
             {/* Primary SKU creator (AI-powered, moved from /inventory/skus/new). */}
             <Route path="/products/skus/new" element={<SkuFormPage />} />
+            {/* Modern rework — clone of the primary creator for iteration. */}
+            <Route path="/products/skus/new-modern" element={<SkuFormPageModern />} />
             {/* Legacy RICS-tabs creator, kept as an alternate entry. */}
             <Route path="/products/skus/new-alt" element={<ProductsSkuFormPage />} />
             <Route path="/products/skus/:code" element={<ProductsSkuFormPage />} />

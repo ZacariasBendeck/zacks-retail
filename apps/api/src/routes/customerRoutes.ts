@@ -1,4 +1,5 @@
 import { Router, Request, Response, IRouter } from 'express';
+import { Prisma } from '@prisma/client';
 import * as customerService from '../services/customerService';
 import {
   createCustomerSchema,
@@ -13,6 +14,13 @@ import {
 
 const router: IRouter = Router();
 
+/** Postgres raises P2002 on a unique-constraint violation; both the POST and
+ *  PATCH handlers translate it to the same 409 the SQLite error-message-sniffing
+ *  used to emit. */
+function isUniqueConstraintError(err: unknown): boolean {
+  return err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002';
+}
+
 /**
  * @openapi
  * /api/v1/customers:
@@ -22,14 +30,15 @@ const router: IRouter = Router();
  *     responses:
  *       201: { description: Customer created }
  */
-router.post('/', validate(createCustomerSchema), (req: Request, res: Response): void => {
+router.post('/', validate(createCustomerSchema), async (req: Request, res: Response): Promise<void> => {
   try {
-    const customer = customerService.createCustomer(req.body);
+    const customer = await customerService.createCustomer(req.body);
     res.status(201).json(customer);
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    if (message.includes('UNIQUE constraint')) {
-      res.status(409).json({ error: { code: 'ACCOUNT_NUMBER_CONFLICT', message: 'Account number already exists.' } });
+    if (isUniqueConstraintError(err)) {
+      res.status(409).json({
+        error: { code: 'ACCOUNT_NUMBER_CONFLICT', message: 'Account number already exists.' },
+      });
       return;
     }
     throw err;
@@ -53,9 +62,9 @@ router.post('/', validate(createCustomerSchema), (req: Request, res: Response): 
  *     responses:
  *       200: { description: Matching customers }
  */
-router.get('/search', validateQuery(customerSearchQuerySchema), (req: Request, res: Response): void => {
+router.get('/search', validateQuery(customerSearchQuerySchema), async (req: Request, res: Response): Promise<void> => {
   const params = (req as unknown as { validatedQuery: { q: string; limit: number } }).validatedQuery;
-  const results = customerService.searchCustomers(params.q, params.limit);
+  const results = await customerService.searchCustomers(params.q, params.limit);
   res.json({ data: results });
 });
 
@@ -66,9 +75,9 @@ router.get('/search', validateQuery(customerSearchQuerySchema), (req: Request, r
  *     summary: List customers
  *     tags: [Customers]
  */
-router.get('/', validateQuery(customerListQuerySchema), (req: Request, res: Response): void => {
+router.get('/', validateQuery(customerListQuerySchema), async (req: Request, res: Response): Promise<void> => {
   const params = (req as unknown as { validatedQuery: customerService.CustomerListParams }).validatedQuery;
-  const result = customerService.listCustomers(params);
+  const result = await customerService.listCustomers(params);
   res.json(result);
 });
 
@@ -79,8 +88,8 @@ router.get('/', validateQuery(customerListQuerySchema), (req: Request, res: Resp
  *     summary: Get customer by account number
  *     tags: [Customers]
  */
-router.get('/by-account/:accountNumber', (req: Request, res: Response): void => {
-  const customer = customerService.getCustomerByAccountNumber(req.params.accountNumber as string);
+router.get('/by-account/:accountNumber', async (req: Request, res: Response): Promise<void> => {
+  const customer = await customerService.getCustomerByAccountNumber(req.params.accountNumber as string);
   if (!customer) {
     res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Customer not found.' } });
     return;
@@ -95,8 +104,8 @@ router.get('/by-account/:accountNumber', (req: Request, res: Response): void => 
  *     summary: Get customer by id (with family members)
  *     tags: [Customers]
  */
-router.get('/:customerId', (req: Request, res: Response): void => {
-  const customer = customerService.getCustomerWithFamily(req.params.customerId as string);
+router.get('/:customerId', async (req: Request, res: Response): Promise<void> => {
+  const customer = await customerService.getCustomerWithFamily(req.params.customerId as string);
   if (!customer) {
     res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Customer not found.' } });
     return;
@@ -111,8 +120,8 @@ router.get('/:customerId', (req: Request, res: Response): void => {
  *     summary: Get cached A/R + store-credit balance for the customer (Stage 1 placeholder)
  *     tags: [Customers]
  */
-router.get('/:customerId/balances', (req: Request, res: Response): void => {
-  const balances = customerService.getCustomerBalances(req.params.customerId as string);
+router.get('/:customerId/balances', async (req: Request, res: Response): Promise<void> => {
+  const balances = await customerService.getCustomerBalances(req.params.customerId as string);
   if (!balances) {
     res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Customer not found.' } });
     return;
@@ -127,18 +136,19 @@ router.get('/:customerId/balances', (req: Request, res: Response): void => {
  *     summary: Update customer
  *     tags: [Customers]
  */
-router.patch('/:customerId', validate(updateCustomerSchema), (req: Request, res: Response): void => {
+router.patch('/:customerId', validate(updateCustomerSchema), async (req: Request, res: Response): Promise<void> => {
   try {
-    const customer = customerService.updateCustomer(req.params.customerId as string, req.body);
+    const customer = await customerService.updateCustomer(req.params.customerId as string, req.body);
     if (!customer) {
       res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Customer not found.' } });
       return;
     }
     res.json(customer);
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    if (message.includes('UNIQUE constraint')) {
-      res.status(409).json({ error: { code: 'ACCOUNT_NUMBER_CONFLICT', message: 'Account number already exists.' } });
+    if (isUniqueConstraintError(err)) {
+      res.status(409).json({
+        error: { code: 'ACCOUNT_NUMBER_CONFLICT', message: 'Account number already exists.' },
+      });
       return;
     }
     throw err;
@@ -152,8 +162,8 @@ router.patch('/:customerId', validate(updateCustomerSchema), (req: Request, res:
  *     summary: Delete customer (blocked if referenced by a sales ticket)
  *     tags: [Customers]
  */
-router.delete('/:customerId', (req: Request, res: Response): void => {
-  const result = customerService.deleteCustomer(req.params.customerId as string);
+router.delete('/:customerId', async (req: Request, res: Response): Promise<void> => {
+  const result = await customerService.deleteCustomer(req.params.customerId as string);
   if (result.blocked) {
     res.status(409).json({
       error: {
@@ -181,8 +191,8 @@ router.delete('/:customerId', (req: Request, res: Response): void => {
  *     summary: List a customer's family members
  *     tags: [Customers]
  */
-router.get('/:customerId/family', (req: Request, res: Response): void => {
-  const members = customerService.listFamilyMembers(req.params.customerId as string);
+router.get('/:customerId/family', async (req: Request, res: Response): Promise<void> => {
+  const members = await customerService.listFamilyMembers(req.params.customerId as string);
   res.json({ data: members });
 });
 
@@ -193,9 +203,9 @@ router.get('/:customerId/family', (req: Request, res: Response): void => {
  *     summary: Add a family member to a customer
  *     tags: [Customers]
  */
-router.post('/:customerId/family', validate(createFamilyMemberSchema), (req: Request, res: Response): void => {
+router.post('/:customerId/family', validate(createFamilyMemberSchema), async (req: Request, res: Response): Promise<void> => {
   try {
-    const member = customerService.createFamilyMember(req.params.customerId as string, req.body);
+    const member = await customerService.createFamilyMember(req.params.customerId as string, req.body);
     res.status(201).json(member);
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
@@ -203,8 +213,13 @@ router.post('/:customerId/family', validate(createFamilyMemberSchema), (req: Req
       res.status(404).json({ error: { code: 'CUSTOMER_NOT_FOUND', message: 'Customer not found.' } });
       return;
     }
-    if (message.includes('UNIQUE constraint')) {
-      res.status(409).json({ error: { code: 'FAMILY_CODE_CONFLICT', message: 'Family member code already used for this customer.' } });
+    if (isUniqueConstraintError(err)) {
+      res.status(409).json({
+        error: {
+          code: 'FAMILY_CODE_CONFLICT',
+          message: 'Family member code already used for this customer.',
+        },
+      });
       return;
     }
     throw err;
@@ -218,8 +233,8 @@ router.post('/:customerId/family', validate(createFamilyMemberSchema), (req: Req
  *     summary: Update a family member
  *     tags: [Customers]
  */
-router.patch('/:customerId/family/:familyId', validate(updateFamilyMemberSchema), (req: Request, res: Response): void => {
-  const member = customerService.updateFamilyMember(req.params.familyId as string, req.body);
+router.patch('/:customerId/family/:familyId', validate(updateFamilyMemberSchema), async (req: Request, res: Response): Promise<void> => {
+  const member = await customerService.updateFamilyMember(req.params.familyId as string, req.body);
   if (!member) {
     res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Family member not found.' } });
     return;
@@ -234,8 +249,8 @@ router.patch('/:customerId/family/:familyId', validate(updateFamilyMemberSchema)
  *     summary: Delete a family member
  *     tags: [Customers]
  */
-router.delete('/:customerId/family/:familyId', (req: Request, res: Response): void => {
-  const deleted = customerService.deleteFamilyMember(req.params.familyId as string);
+router.delete('/:customerId/family/:familyId', async (req: Request, res: Response): Promise<void> => {
+  const deleted = await customerService.deleteFamilyMember(req.params.familyId as string);
   if (!deleted) {
     res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Family member not found.' } });
     return;

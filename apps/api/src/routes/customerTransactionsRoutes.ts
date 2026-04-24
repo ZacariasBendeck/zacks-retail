@@ -31,9 +31,9 @@ function handleErr(res: Response, err: unknown): void {
 
 // --- Special Orders --------------------------------------------------------
 
-router.post('/special-orders', (req: Request, res: Response): void => {
+router.post('/special-orders', async (req: Request, res: Response): Promise<void> => {
   try {
-    res.status(201).json(svc.createSpecialOrder(req.body));
+    res.status(201).json(await svc.createSpecialOrder(req.body));
   } catch (e) { handleErr(res, e); }
 });
 
@@ -66,8 +66,8 @@ router.patch('/special-orders/lines/:lineId/resolve-sku', (req: Request, res: Re
 
 // --- Layaways --------------------------------------------------------------
 
-router.post('/layaways', (req: Request, res: Response): void => {
-  try { res.status(201).json(svc.createLayaway(req.body)); }
+router.post('/layaways', async (req: Request, res: Response): Promise<void> => {
+  try { res.status(201).json(await svc.createLayaway(req.body)); }
   catch (e) { handleErr(res, e); }
 });
 
@@ -135,8 +135,8 @@ router.get('/gift-certificates/:id/transactions', (req: Request, res: Response):
 
 // --- House Charges ---------------------------------------------------------
 
-router.post('/house-charges', (req: Request, res: Response): void => {
-  try { res.status(201).json(svc.recordHouseCharge(req.body)); }
+router.post('/house-charges', async (req: Request, res: Response): Promise<void> => {
+  try { res.status(201).json(await svc.recordHouseCharge(req.body)); }
   catch (e) { handleErr(res, e); }
 });
 

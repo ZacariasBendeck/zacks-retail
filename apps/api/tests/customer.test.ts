@@ -1,6 +1,7 @@
 import request from 'supertest';
 import app from '../src/app';
 import { resetDb } from '../src/db/database';
+import { prisma } from '../src/db/prisma';
 
 const validCustomer = {
   firstName: 'Mary',
@@ -15,12 +16,22 @@ const validCustomer = {
   creditLimit: 500,
 };
 
-beforeEach(() => {
+// Customers + family_members live in Postgres now; `resetDb()` only resets the
+// legacy SQLite admin DB that other tests still depend on. We wipe the Postgres
+// customer tables explicitly so each test starts from a clean slate. The
+// delete on `customer` cascades to `familyMember` via the FK; the explicit
+// familyMember wipe first is belt-and-suspenders in case of a stray orphan.
+beforeEach(async () => {
   resetDb();
+  await prisma.familyMember.deleteMany({});
+  await prisma.customer.deleteMany({});
 });
 
-afterAll(() => {
+afterAll(async () => {
   resetDb();
+  await prisma.familyMember.deleteMany({});
+  await prisma.customer.deleteMany({});
+  await prisma.$disconnect();
 });
 
 describe('POST /api/v1/customers', () => {

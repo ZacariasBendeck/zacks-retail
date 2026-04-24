@@ -36,6 +36,7 @@ const menuItems = [
     label: 'Products',
     children: [
       { key: '/products/skus/new', icon: <PlusOutlined />, label: 'New SKU' },
+      { key: '/products/skus/new-modern', icon: <PlusOutlined />, label: 'New SKU (Modern)' },
       { key: '/inventory/skus', icon: <AppstoreOutlined />, label: 'SKU List' },
       { key: '/inventory/sku-drafts', icon: <FileTextOutlined />, label: 'Borradores de SKU' },
       { key: '/products/inquiry', icon: <SearchOutlined />, label: 'Inquiry' },

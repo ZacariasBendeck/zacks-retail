@@ -421,7 +421,7 @@ model CategoryProductFamily {
 model Sku {
   id                String          @id @default(uuid()) @db.Uuid
   provisionalCode   String          @map("provisional_code") @db.VarChar(32)
-  code              String?         @db.VarChar(15)
+  code              String?         @unique(map: "sku_code_key") @db.VarChar(15)
   skuState          String          @default("DRAFT") @map("sku_state")
 
   familyCode        String?         @map("family_code")
@@ -675,5 +675,89 @@ model ReportRun {
   @@index([visibility, reportType, createdAt(sort: Desc)])
   @@index([sourceTemplateId])
   @@map("report_runs")
+  @@schema("app")
+}
+
+/// crm module — Customer master. Mirrors the RICS Mailing List entry (Ch. 9 p. 117).
+/// Slim Stage 1 subset per docs/modules/crm.md; loyalty / quotes / mail detail
+/// tables land later. `account_number` is the RICS convention (phone with no
+/// formatting when not supplied — see `normalizePhoneForAccount` in the service).
+model Customer {
+  id                         String         @id @default(uuid())
+  accountNumber              String         @unique @map("account_number")
+  phoneE164                  String?        @map("phone_e164")
+  firstName                  String?        @map("first_name")
+  lastName                   String?        @map("last_name")
+  displayName                String         @map("display_name")
+  email                      String?
+  addressLine1               String?        @map("address_line1")
+  addressLine2               String?        @map("address_line2")
+  city                       String?
+  stateRegion                String?        @map("state_region")
+  postalCode                 String?        @map("postal_code")
+  country                    String?
+  /// Dollars (HNL). Null = no credit limit configured.
+  creditLimit                Decimal?       @map("credit_limit") @db.Decimal(12, 2)
+  alertFlag                  Boolean        @default(false) @map("alert_flag")
+  alertMessage               String?        @map("alert_message")
+  comments                   String?
+  /// Period-to-date / year-to-date / two-to-date counters, updated by the
+  /// sales-pos ticket close. Stored as integers: cents for money, units for qty.
+  ptdQty                     Int            @default(0) @map("ptd_qty")
+  ptdSalesCents              Int            @default(0) @map("ptd_sales_cents")
+  ytdQty                     Int            @default(0) @map("ytd_qty")
+  ytdSalesCents              Int            @default(0) @map("ytd_sales_cents")
+  ttdQty                     Int            @default(0) @map("ttd_qty")
+  ttdSalesCents              Int            @default(0) @map("ttd_sales_cents")
+  lastYearSalesCents         Int            @default(0) @map("last_year_sales_cents")
+  dateAdded                  DateTime       @default(now()) @map("date_added")
+  dateOfLastPurchase         DateTime?      @map("date_of_last_purchase")
+  /// Cached A/R balance + store-credit projections. Stage 1 placeholders until
+  /// accounts-receivable and customer-transactions wire their live sources.
+  lastKnownArBalanceCents    Int            @default(0) @map("last_known_ar_balance_cents")
+  arBalanceAsOf              DateTime?      @map("ar_balance_as_of")
+  lastKnownStoreCreditCents  Int            @default(0) @map("last_known_store_credit_cents")
+  storeCreditAsOf            DateTime?      @map("store_credit_as_of")
+  /// Free-form operator extensions; shape is caller-defined.
+  extraFieldsJson            Json?          @map("extra_fields_json")
+  marketingOptIn             Boolean        @default(false) @map("marketing_opt_in")
+  active                     Boolean        @default(true)
+  createdAt                  DateTime       @default(now()) @map("created_at")
+  updatedAt                  DateTime       @updatedAt @map("updated_at")
+
+  familyMembers              FamilyMember[]
+
+  @@index([phoneE164], map: "customers_phone_idx")
+  @@index([lastName, firstName], map: "customers_last_first_idx")
+  @@index([postalCode], map: "customers_postal_idx")
+  @@map("customers")
+  @@schema("app")
+}
+
+/// crm module — Family Member (RICS p. 118). A household sub-account under a
+/// Customer (spouse, children, etc.). `code` is unique per customer and
+/// typically a short label the operator types at POS ("WIFE", "SON1", …).
+model FamilyMember {
+  id              String   @id @default(uuid())
+  customerId      String   @map("customer_id")
+  customer        Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  code            String
+  firstName       String?  @map("first_name")
+  lastName        String?  @map("last_name")
+  /// M / F / C (child). Narrowed at the service layer; the column is plain text
+  /// so future values don't require a migration.
+  gender          String?
+  /// ISO date string; kept as text for the same partial-date tolerance RICS had.
+  birthday        String?
+  comments        String?
+  alertFlag       Boolean  @default(false) @map("alert_flag")
+  alertMessage    String?  @map("alert_message")
+  extraFieldsJson Json?    @map("extra_fields_json")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  @@unique([customerId, code])
+  @@index([customerId], map: "customer_family_members_customer_idx")
+  @@map("customer_family_members")
   @@schema("app")
 }

@@ -8,6 +8,7 @@
  * Routes:
  *   GET    /drafts                  — list all DRAFT rows, newest first
  *   POST   /                        — create a DRAFT
+ *   GET    /by-code/:code           — fetch any SKU by its RICS/final code
  *   GET    /:id                     — fetch any SKU by id (any state)
  *   PATCH  /:id                     — update fields (blocked when DISCONTINUED)
  *   POST   /:id/finalize            — transition DRAFT → ACTIVE (body: { code })
@@ -51,6 +52,14 @@ router.get('/drafts', async (_req: Request, res: Response) => {
 // POST / — create a DRAFT with an auto-generated provisional_code
 router.post('/', async (req: Request, res: Response) => {
   send(res, await skuLifecycle.create(req.body ?? {}, resolveActor(req)), 201);
+});
+
+// GET /by-code/:code — fetch a SKU by its final (RICS) code. Phase A: every
+// RICS SKU is mirrored into app.sku as ACTIVE on sync:rics, so this covers
+// both app-created and legacy-imported SKUs. Returns the same SkuRow shape
+// as GET /:id.
+router.get('/by-code/:code', async (req: Request, res: Response) => {
+  send(res, await skuLifecycle.getByCode(String(req.params.code)));
 });
 
 // GET /:id — fetch any SKU by id (any state; the name is a historical lie)

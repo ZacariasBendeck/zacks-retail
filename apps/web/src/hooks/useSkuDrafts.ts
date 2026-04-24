@@ -41,6 +41,26 @@ export function useSkuDraft(id: string | null | undefined) {
   })
 }
 
+/**
+ * Look up a SKU by its final (RICS) code. Returns the full app.sku row —
+ * covers both app-created SKUs and RICS SKUs mirrored by sync:rics. Used by
+ * the inline lookup on the SKU form + the SKU Lookup modal.
+ *
+ * 404 is surfaced as null (not an exception) so consumers can treat "unknown
+ * code" as a normal outcome.
+ */
+export async function fetchSkuDraftByCode(code: string): Promise<SkuLifecycleRow | null> {
+  const res = await fetch(`${BASE}/by-code/${encodeURIComponent(code)}`)
+  if (res.status === 404) return null
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    const message =
+      (body as { error?: { message?: string } })?.error?.message ?? `Request failed: ${res.status}`
+    throw new Error(message)
+  }
+  return res.json() as Promise<SkuLifecycleRow>
+}
+
 function invalidateAll(qc: ReturnType<typeof useQueryClient>) {
   qc.invalidateQueries({ queryKey: ['sku-drafts'] })
 }

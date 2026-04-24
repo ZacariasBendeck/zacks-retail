@@ -44,11 +44,13 @@ import {
   useCreateSkuDraft,
   useUpdateSkuDraft,
   useFinalizeSkuDraft,
+  fetchSkuDraftByCode,
 } from '../../hooks/useSkuDrafts'
 import type { SkuLifecycleRow, CreateDraftInput } from '../../types/skuLifecycle'
 import { productsAttributesApi } from '../../services/productsAttributesApi'
 import { useSkuAttributes } from '../../hooks/useProductsAttributes'
 import { VendorLookup } from '../../components/vendor-lookup'
+import { SkuLookup } from '../../components/sku-lookup'
 import { useProductFamilies } from '../../hooks/useProductFamilies'
 import { useAllPostgresCategories, type PostgresCategory } from '../../hooks/useProductCategories'
 import type {
@@ -557,8 +559,14 @@ export default function SkuFormPage() {
   // quick-select dropdown on the form still works for operators who already
   // know the code; the modal is for browsing by name or exploring the list.
   const [vendorLookupOpen, setVendorLookupOpen] = useState(false)
+  const [skuLookupOpen, setSkuLookupOpen] = useState(false)
 
-  // Inline lookup state: tracks when a user-entered SKU code matches an existing SKU
+  // Inline lookup state: tracks when a user-entered SKU code matches an
+  // existing SKU in Postgres `app.sku`. Both app-created and RICS-imported
+  // SKUs land here (the sync:rics ETL mirrors every RICS SKU into app.sku).
+  // The stored shape is the form-friendly legacy Sku (adapted from the
+  // lifecycle row via `lifecycleToLegacySku`); its `id` is the app.sku UUID,
+  // which handleSubmit uses as `editId` to drive the Postgres PATCH.
   const [matchedSku, setMatchedSku] = useState<import('../../types/sku').Sku | null>(null)
   const isEdit = isRouteEdit || !!matchedSku
 
@@ -899,25 +907,46 @@ export default function SkuFormPage() {
     form.setFieldsValue(patch)
   }, [skuDimAttrs, form])
 
-  /** Look up SKU code — if it exists, populate form & switch to update mode */
+  /**
+   * Look up SKU code — if it exists, populate form & switch to update mode.
+   *
+   * Single source of truth: Postgres `app.sku` via `/api/v1/products/sku-drafts/
+   * by-code/:code`. Every RICS SKU is mirrored into app.sku as ACTIVE on each
+   * `sync:rics` run (see docs/operations/sku-lifecycle-backfill.md), so this
+   * covers both app-created and RICS-imported SKUs.
+   *
+   * The row is adapted to the legacy form-shape via `lifecycleToLegacySku` so
+   * the existing `populateForm` fills every field. The preserved `id` is the
+   * app.sku UUID, which drives the `editId` branch in `handleSubmit` →
+   * `useUpdateSkuDraft` (Postgres PATCH) for subsequent saves.
+   */
   const handleSkuCodeLookup = useCallback(async (code: string) => {
-    if (!code.trim()) {
+    const trimmed = code.trim()
+    if (!trimmed) {
       setMatchedSku(null)
       return
     }
     try {
-      const found = await lookupMutation.mutateAsync(code.trim())
-      if (found) {
-        setMatchedSku(found)
-        populateForm(found)
-        message.info(`SKU existente encontrado: ${found.skuCode} — modo edicion`)
-      } else {
+      const row = await fetchSkuDraftByCode(trimmed)
+      if (!row) {
         setMatchedSku(null)
+        return
       }
-    } catch {
+      const legacy = lifecycleToLegacySku(row)
+      setMatchedSku(legacy)
+      populateForm(legacy)
+      // Unlock the Category selector + family-scoped attribute block when the
+      // matched SKU already has a family.
+      if (row.familyCode && row.familyCode !== selectedFamily) {
+        setSelectedFamily(row.familyCode)
+      }
+      message.info(`SKU existente encontrado: ${legacy.skuCode} — modo edición`)
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[SkuFormPage] SKU lookup failed:', err)
       setMatchedSku(null)
     }
-  }, [lookupMutation, populateForm, message])
+  }, [populateForm, selectedFamily, message])
 
   /** Reset form back to create mode */
   const handleResetToCreate = useCallback(() => {
@@ -1321,15 +1350,6 @@ export default function SkuFormPage() {
                 )}
               </Space>
             </Col>
-            <Col>
-              <Switch
-                checked={aiPanelOpen}
-                onChange={setAiPanelOpen}
-                checkedChildren={<><CameraOutlined /> IA</>}
-                unCheckedChildren={<><EyeInvisibleOutlined /> IA</>}
-                style={{ minWidth: 60 }}
-              />
-            </Col>
           </Row>
         </Card>
 
@@ -1362,6 +1382,20 @@ export default function SkuFormPage() {
                 form.setFieldsValue({ vendorId: picked.code })
               }}
               initialQuery={(form.getFieldValue('vendorId') as string | undefined) ?? ''}
+            />
+            {/* SKU lookup modal — on select, seeds the skuCode field and
+                triggers the existing handleSkuCodeLookup which in turn calls
+                populateForm (autofills every field) and sets matchedSku so
+                subsequent saves go through the update mutation. */}
+            <SkuLookup
+              open={skuLookupOpen}
+              onClose={() => setSkuLookupOpen(false)}
+              onSelect={(picked) => {
+                form.setFieldsValue({ skuCode: picked.skuCode })
+                setSkuLookupOpen(false)
+                void handleSkuCodeLookup(picked.skuCode)
+              }}
+              initialQuery={(form.getFieldValue('skuCode') as string | undefined) ?? ''}
             />
             {/* ─────────────────────────────────────────────────────────────
                 Detalles del Producto (left) + Default Prices (right)
@@ -1399,18 +1433,48 @@ export default function SkuFormPage() {
             <Row gutter={16} style={{ marginTop: 4 }}>
               <Col xs={24} lg={18}>
                 <Card title="Detalles del Producto" size="small" styles={{ body: { padding: 12 } }}>
-                  {/* Row 0 — Codigo SKU at the top of the Detalles box. Two
-                      variants: create (AutoComplete lookup) vs. edit (plain
-                      Input; disabled unless DRAFT; shows provisional code
-                      next to it). */}
+                  {/* IA toggle — small switch at the top-right of the Detalles
+                      box. Moved here from the outer page header so the toggle,
+                      the small IA dropzone, and the Codigo SKU all sit together
+                      at the top of the product details. */}
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 4 }}>
+                    <Switch
+                      size="small"
+                      checked={aiPanelOpen}
+                      onChange={setAiPanelOpen}
+                      checkedChildren={<><CameraOutlined /> IA</>}
+                      unCheckedChildren={<><EyeInvisibleOutlined /> IA</>}
+                      style={{ minWidth: 60 }}
+                    />
+                  </div>
+
+                  {/* Row 0 — Codigo SKU + small IA dropzone (when toggle on).
+                      Two variants: create (AutoComplete lookup) vs. edit (plain
+                      Input; disabled unless DRAFT; shows provisional code next
+                      to it). The small dropzone replaces the big Upload.Dragger
+                      that used to live in the AI card below. */}
                   {!isRouteEdit && (
-                    <Row gutter={8}>
-                      <Col xs={24} sm={10}>
+                    <Row gutter={8} align="top">
+                      <Col xs={24} sm={aiPanelOpen ? 10 : 16}>
                         <Form.Item
-                          label="Codigo SKU"
+                          label={
+                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                              Codigo SKU
+                              <Button
+                                type="link"
+                                size="small"
+                                icon={<SearchOutlined />}
+                                onClick={() => setSkuLookupOpen(true)}
+                                style={{ padding: 0, height: 'auto', lineHeight: 1 }}
+                                title="Abrir lookup de SKUs existentes (Code / Description / Vendor / Style-Color)"
+                              >
+                                Buscar
+                              </Button>
+                            </span>
+                          }
                           name="skuCode"
                           style={compactItem}
-                          extra={matchedSku ? undefined : 'Opcional en creación — se autogenera un código provisional si lo dejas vacío.'}
+                          extra={matchedSku ? undefined : 'Escribe para autocompletar, o haz clic en Buscar para abrir el lookup. Si dejas vacío, se autogenera un código provisional.'}
                         >
                           <AutoComplete
                             options={skuSearchOptions}
@@ -1442,11 +1506,45 @@ export default function SkuFormPage() {
                           </AutoComplete>
                         </Form.Item>
                       </Col>
+                      {aiPanelOpen && (
+                        <Col xs={24} sm={8}>
+                          <Form.Item label="Foto IA" style={compactItem}>
+                            <Upload.Dragger
+                              accept="image/jpeg,image/png,image/gif,image/webp"
+                              showUploadList={false}
+                              beforeUpload={(file) => {
+                                handleImageUpload(file)
+                                return false
+                              }}
+                              disabled={analyzeMutation.isPending || !selectedFamily}
+                              style={{ padding: 0, minHeight: 44 }}
+                            >
+                              {analyzeMutation.isPending ? (
+                                <div style={{ padding: '4px 8px' }}>
+                                  <LoadingOutlined style={{ fontSize: 14, color: '#1677ff' }} />
+                                  <span style={{ marginLeft: 6, fontSize: 11 }}>Analizando…</span>
+                                </div>
+                              ) : imagePreview ? (
+                                <img
+                                  src={imagePreview}
+                                  alt="Zapato"
+                                  style={{ maxHeight: 40, maxWidth: '100%', objectFit: 'contain' }}
+                                />
+                              ) : (
+                                <div style={{ padding: '4px 8px' }}>
+                                  <CameraOutlined style={{ fontSize: 14, color: '#999' }} />
+                                  <span style={{ marginLeft: 6, fontSize: 11 }}>Clic, drop, o Ctrl+V</span>
+                                </div>
+                              )}
+                            </Upload.Dragger>
+                          </Form.Item>
+                        </Col>
+                      )}
                     </Row>
                   )}
 
                   {isRouteEdit && lifecycleSku && (
-                    <Row gutter={8}>
+                    <Row gutter={8} align="top">
                       <Col xs={12} sm={6}>
                         <Form.Item
                           label="Código SKU final"
@@ -1477,13 +1575,48 @@ export default function SkuFormPage() {
                           />
                         </Form.Item>
                       </Col>
+                      {aiPanelOpen && (
+                        <Col xs={24} sm={8}>
+                          <Form.Item label="Foto IA" style={compactItem}>
+                            <Upload.Dragger
+                              accept="image/jpeg,image/png,image/gif,image/webp"
+                              showUploadList={false}
+                              beforeUpload={(file) => {
+                                handleImageUpload(file)
+                                return false
+                              }}
+                              disabled={analyzeMutation.isPending || !selectedFamily}
+                              style={{ padding: 0, minHeight: 44 }}
+                            >
+                              {analyzeMutation.isPending ? (
+                                <div style={{ padding: '4px 8px' }}>
+                                  <LoadingOutlined style={{ fontSize: 14, color: '#1677ff' }} />
+                                  <span style={{ marginLeft: 6, fontSize: 11 }}>Analizando…</span>
+                                </div>
+                              ) : imagePreview ? (
+                                <img
+                                  src={imagePreview}
+                                  alt="Zapato"
+                                  style={{ maxHeight: 40, maxWidth: '100%', objectFit: 'contain' }}
+                                />
+                              ) : (
+                                <div style={{ padding: '4px 8px' }}>
+                                  <CameraOutlined style={{ fontSize: 14, color: '#999' }} />
+                                  <span style={{ marginLeft: 6, fontSize: 11 }}>Clic, drop, o Ctrl+V</span>
+                                </div>
+                              )}
+                            </Upload.Dragger>
+                          </Form.Item>
+                        </Col>
+                      )}
                     </Row>
                   )}
 
                   {/* Row 1 — Vendor identity alone, so Vendor SKU can breathe.
-                      Everything after Vendor SKU wraps to the next row. */}
+                      Everything after Vendor SKU wraps to the next row.
+                      Vendor Code is a 4-letter RICS code — sized narrow. */}
                   <Row gutter={8}>
-                    <Col xs={12} sm={4}>
+                    <Col xs={12} sm={3}>
                       <Form.Item
                         label={
                           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
@@ -1532,7 +1665,7 @@ export default function SkuFormPage() {
                         <VendorNameAutofill vendors={vendors} />
                       </Form.Item>
                     </Col>
-                    <Col xs={24} sm={14}>
+                    <Col xs={24} sm={15}>
                       <Form.Item label="Vendor SKU" name="vendorSku" style={compactItem}>
                         <Input placeholder="SKU del proveedor (referencia original)" />
                       </Form.Item>
@@ -1624,11 +1757,11 @@ export default function SkuFormPage() {
                         name="ricsDescription"
                         rules={[
                           { required: true, message: 'Descripción requerida' },
-                          { max: 500 },
+                          { max: 30, message: 'Máximo 30 caracteres (RICS Desc WCHAR 30)' },
                         ]}
                         style={compactItem}
                       >
-                        <Input placeholder="Descripción" />
+                        <Input placeholder="Descripción" maxLength={30} />
                       </Form.Item>
                     </Col>
                     <Col xs={24} sm={5}>
@@ -1637,9 +1770,9 @@ export default function SkuFormPage() {
                           <Form.Item
                             name="style"
                             noStyle
-                            rules={[{ required: true, message: 'Estilo requerido' }, { max: 100 }]}
+                            rules={[{ required: true, message: 'Estilo requerido' }, { max: 17, message: 'Máximo 17 chars (RICS StyleColor WCHAR 20 menos 3 de color)' }]}
                           >
-                            <Input style={{ width: '55%' }} placeholder="Estilo" />
+                            <Input style={{ width: '55%' }} placeholder="Estilo" maxLength={17} />
                           </Form.Item>
                           <Form.Item name="colorId" noStyle>
                             <Select
@@ -1683,13 +1816,13 @@ export default function SkuFormPage() {
                   {/* Row 4 — Keywords / Picture File 1 / Coupon. */}
                   <Row gutter={8}>
                     <Col xs={24} sm={10}>
-                      <Form.Item label="Keywords" name="keywords" rules={[{ max: 500 }]} style={compactItem}>
-                        <Input placeholder="separadas por coma" />
+                      <Form.Item label="Keywords" name="keywords" rules={[{ max: 60, message: 'Máximo 60 caracteres (RICS KeyWords WCHAR 60, joined)' }]} style={compactItem}>
+                        <Input placeholder="separadas por coma" maxLength={60} />
                       </Form.Item>
                     </Col>
                     <Col xs={24} sm={10}>
-                      <Form.Item label="Picture File 1" name="pictureFileName" style={compactItem}>
-                        <Input placeholder="ej. SKU123.jpg" />
+                      <Form.Item label="Picture File 1" name="pictureFileName" rules={[{ max: 50, message: 'Máximo 50 caracteres (RICS PictureFileName WCHAR 50)' }]} style={compactItem}>
+                        <Input placeholder="ej. SKU123.jpg" maxLength={50} />
                       </Form.Item>
                     </Col>
                     <Col xs={12} sm={4}>
@@ -1747,13 +1880,13 @@ export default function SkuFormPage() {
                       removed from the legacy "Clasificacion" block below on 2026-04-23. */}
                   <Row gutter={8}>
                     <Col xs={12} sm={5}>
-                      <Form.Item label="Location" name="location" style={compactItem}>
-                        <Input placeholder="Ubicación" />
+                      <Form.Item label="Location" name="location" rules={[{ max: 10, message: 'Máximo 10 caracteres (RICS Location WCHAR 10)' }]} style={compactItem}>
+                        <Input placeholder="Ubicación" maxLength={10} />
                       </Form.Item>
                     </Col>
                     <Col xs={24} sm={14}>
-                      <Form.Item label="Comment" name="comment" rules={[{ max: 1000 }]} style={compactItem}>
-                        <Input placeholder="Notas internas" />
+                      <Form.Item label="Comment" name="comment" rules={[{ max: 30, message: 'Máximo 30 caracteres (RICS Comment WCHAR 30)' }]} style={compactItem}>
+                        <Input placeholder="Notas internas" maxLength={30} />
                       </Form.Item>
                     </Col>
                     <Col xs={12} sm={5}>
@@ -1872,41 +2005,9 @@ export default function SkuFormPage() {
                       </Typography.Text>
                     )}
 
-                    <Row gutter={16} style={{ marginTop: 8 }} align="top">
-                      <Col xs={24} sm={imagePreview ? 12 : 24}>
-                        <Upload.Dragger
-                          accept="image/jpeg,image/png,image/gif,image/webp"
-                          showUploadList={false}
-                          beforeUpload={(file) => {
-                            handleImageUpload(file)
-                            return false
-                          }}
-                          disabled={analyzeMutation.isPending || !selectedFamily}
-                          style={{ padding: '8px 0' }}
-                        >
-                          {analyzeMutation.isPending ? (
-                            <div>
-                              <LoadingOutlined style={{ fontSize: 20, color: '#1677ff' }} />
-                              <p style={{ marginTop: 4, marginBottom: 0, fontSize: 12 }}>Analizando...</p>
-                            </div>
-                          ) : (
-                            <div>
-                              <CameraOutlined style={{ fontSize: 20, color: '#999' }} />
-                              <p style={{ marginTop: 4, marginBottom: 0, fontSize: 12 }}>Haz clic, arrastra, o pega (Ctrl+V) imagen del zapato</p>
-                            </div>
-                          )}
-                        </Upload.Dragger>
-                      </Col>
-                      {imagePreview && (
-                        <Col xs={24} sm={12}>
-                          <img
-                            src={imagePreview}
-                            alt="Zapato subido"
-                            style={{ width: '100%', maxHeight: 120, objectFit: 'contain', borderRadius: 8, border: '1px solid #d9d9d9' }}
-                          />
-                        </Col>
-                      )}
-                    </Row>
+                    {/* Dropzone + imagePreview moved up into Detalles del
+                        Producto (right of Codigo SKU). This card now only
+                        carries the "Llenar con IA" button + analysis alerts. */}
 
                     {analysisError && (
                       <Alert
@@ -2119,8 +2220,8 @@ export default function SkuFormPage() {
 
             <Row gutter={12} style={{ marginTop: 8 }}>
               <Col xs={24} sm={6}>
-                <Form.Item label="Codigo de Barras / UPC" name="barcode" style={compactItem}>
-                  <Input placeholder="Auto si vacio" />
+                <Form.Item label="Codigo de Barras / UPC" name="barcode" rules={[{ max: 20, message: 'Máximo 20 caracteres (UPC-A/EAN-13 estándar ≤ 13)' }]} style={compactItem}>
+                  <Input placeholder="Auto si vacio" maxLength={20} />
                 </Form.Item>
               </Col>
             </Row>
