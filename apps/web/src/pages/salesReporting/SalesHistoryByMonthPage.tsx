@@ -66,7 +66,7 @@ import CriteriaInput from './CriteriaInput'
 
 echarts.use([LineChart, GridComponent, TooltipComponent, LegendComponent, TitleComponent, CanvasRenderer])
 
-const { Title, Paragraph, Text } = Typography
+const { Paragraph, Text } = Typography
 
 // ─────────────────────────── Metric definitions ─────────────────────────
 
@@ -829,7 +829,7 @@ export default function SalesHistoryByMonthPage() {
           <>
             <FilterChips
               chips={[
-                { label: 'Period', value: `${data.months[0] ?? ''} → ${data.months.at(-1) ?? ''}` },
+                { label: 'Period', value: `${data.months[0] ?? ''} → ${data.months[data.months.length - 1] ?? ''}` },
                 { label: 'Sort', value: query.sortBy === 'vendor' ? 'Vendor' : 'Category' },
                 query.detailLevel ? { label: 'Detail', value: detailLevelLabel(query.detailLevel) } : null,
                 query.stores ? { label: 'Stores', value: storesChipValue(query.stores, query.combineStores ?? true) } : null,

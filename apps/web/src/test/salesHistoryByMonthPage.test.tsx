@@ -49,6 +49,10 @@ function buildDims(): SalesDimensionsResponse {
     ],
     categories: [],
     groups: [],
+    sectors: [],
+    departments: [],
+    seasons: [],
+    buyers: [],
   }
 }
 

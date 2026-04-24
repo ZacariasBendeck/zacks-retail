@@ -22,6 +22,7 @@ const { Title, Paragraph, Text } = Typography
 const REPORT_TYPE_LABELS: Record<ReportType, string> = {
   'sales-analysis': 'Sales Analysis',
   'sales-hierarchy-drill-down': 'Sales Hierarchy Drill-Down',
+  'sales-pivot': 'Sales Pivot',
   'best-sellers': 'Best Sellers',
   'stock-status': 'Stock Status',
   'sales-by-day': 'Sales by Day',
@@ -34,6 +35,7 @@ const REPORT_TYPE_LABELS: Record<ReportType, string> = {
 const REPORT_TYPE_PATHS: Record<ReportType, string> = {
   'sales-analysis': '/reports/sales/analysis',
   'sales-hierarchy-drill-down': '/reports/sales/hierarchy-drill-down',
+  'sales-pivot': '/reports/sales/pivot',
   'best-sellers': '/reports/sales/best-sellers',
   'stock-status': '/reports/sales/stock-status',
   'sales-by-day': '/reports/others/sales-by-day',

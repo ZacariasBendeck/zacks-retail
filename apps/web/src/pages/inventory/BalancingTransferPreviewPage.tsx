@@ -435,6 +435,8 @@ function computeBalancingLines(
 
   for (const [sku, list] of bySku) {
     if (list.length < 2) continue
+    const seed = list[0]
+    if (!seed) continue
 
     // Filter participation by method.
     const hasModel = list.some((r) => r.model > 0)
@@ -461,7 +463,7 @@ function computeBalancingLines(
           if (salesFor(receiver) / donorSales < threshold) continue
           const move = Math.min(surplus, need)
           if (move <= 0) continue
-          out.push(mkLine(list[0], donor, receiver, move,
+          out.push(mkLine(seed, donor, receiver, move,
             `Donor over model by ${surplus}; receiver short by ${need}; sales ratio ${(salesFor(receiver) / donorSales).toFixed(2)}`,
             salesFor(donor), salesFor(receiver),
           ))
@@ -482,7 +484,7 @@ function computeBalancingLines(
             continue
           }
           if (salesFor(receiver) / donorSales < threshold) continue
-          out.push(mkLine(list[0], donor, receiver, 1,
+          out.push(mkLine(seed, donor, receiver, 1,
             `Slow seller donates 1; fast/new receiver at 0 (ratio ${salesFor(receiver) === 0 ? '—' : (salesFor(receiver) / donorSales).toFixed(2)})`,
             salesFor(donor), salesFor(receiver),
           ))
@@ -494,6 +496,7 @@ function computeBalancingLines(
       // WITHOUT_CONSIDERING_MODELS: balance by metric regardless.
       const sorted = [...participants].sort((a, b) => salesFor(b) - salesFor(a))
       const fastest = sorted[0]
+      if (!fastest) continue
       for (const slow of sorted.slice(1)) {
         if (slow.onHand <= 0) continue
         const slowSales = Math.max(salesFor(slow), 1)
@@ -504,7 +507,7 @@ function computeBalancingLines(
             ? 1
             : 0
         if (move <= 0) continue
-        out.push(mkLine(list[0], slow, fastest, move,
+        out.push(mkLine(seed, slow, fastest, move,
           `Fastest seller pulls from slower; ratio ${salesFor(fastest) / slowSales === Infinity ? '∞' : (salesFor(fastest) / slowSales).toFixed(2)}`,
           salesFor(slow), salesFor(fastest),
         ))

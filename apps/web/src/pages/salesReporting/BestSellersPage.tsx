@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useMemo } from 'react'
 import {
-  Alert, Card, Checkbox, Input, InputNumber, Select, Space, Table, Spin, Tag,
+  Alert, Checkbox, Input, InputNumber, Select, Space, Table, Spin, Tag,
 } from 'antd'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'

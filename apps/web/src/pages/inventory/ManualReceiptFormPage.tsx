@@ -63,7 +63,6 @@ export default function ManualReceiptFormPage() {
   const [skuCode, setSkuCode] = useState('')
   const [upc, setUpc] = useState('')
   const [skuLookupOpen, setSkuLookupOpen] = useState(false)
-  const [skuSearchText, setSkuSearchText] = useState('')
   const [debouncedSkuSearch, setDebouncedSkuSearch] = useState('')
   const [context, setContext] = useState<ManualReceiptContext | null>(null)
   const [unitCostOverride, setUnitCostOverride] = useState<number | null>(null)
@@ -113,7 +112,6 @@ export default function ManualReceiptFormPage() {
     setContext(null)
     setSkuCode('')
     setUpc('')
-    setSkuSearchText('')
     setDebouncedSkuSearch('')
     setUnitCostOverride(null)
     setRetailPriceOverride(null)
@@ -342,7 +340,6 @@ export default function ManualReceiptFormPage() {
                 options={skuSearchOptions}
                 onSearch={(text) => {
                   setSkuCode(text)
-                  setSkuSearchText(text)
                   setContext(null)
                   setCellValues({})
                   if (debounceTimer.current) clearTimeout(debounceTimer.current)

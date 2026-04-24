@@ -43,6 +43,13 @@ interface DraftLine {
   totalQty: number
 }
 
+interface EntryTableRow {
+  key: 'donor' | 'receiver' | 'entry'
+  label: string
+  rowType: 'donor' | 'receiver' | 'entry'
+  emphasize?: boolean
+}
+
 export default function ManualTransferEntryPage() {
   const [fromStore, setFromStore] = useState<number | null>(null)
   const [toStore, setToStore] = useState<number | null>(null)
@@ -102,7 +109,7 @@ export default function ManualTransferEntryPage() {
     let total = 0
     for (const [key, qty] of buffer.entries()) {
       if (qty <= 0) continue
-      const [rowLabel, columnLabel] = key.split('|')
+      const [rowLabel = '', columnLabel = ''] = key.split('|')
       const donorCell = donor?.cells.find(
         (c) => c.rowLabel === rowLabel && c.columnLabel === columnLabel,
       )
@@ -413,10 +420,10 @@ function SkuGridEntry({
               Row: {row}
             </Typography.Text>
           )}
-          <Table
+          <Table<EntryTableRow>
             size="small"
             pagination={false}
-            rowKey={(r) => `${(r as { label: string }).label}-${row}`}
+            rowKey="key"
             columns={[
               {
                 title: row ? `Size (${row})` : 'Metric',
@@ -424,14 +431,14 @@ function SkuGridEntry({
                 key: 'label',
                 fixed: 'left',
                 width: 160,
-                render: (v: string, r: { emphasize?: boolean }) =>
+                render: (v: string, r: EntryTableRow) =>
                   r.emphasize ? <strong>{v}</strong> : v,
               },
               ...cols.map((col) => ({
                 title: col || '(qty)',
                 key: col || '_',
                 align: 'right' as const,
-                render: (_: unknown, rec: { rowType: 'donor' | 'receiver' | 'entry' }) => {
+                render: (_: unknown, rec: EntryTableRow) => {
                   const key = `${row}|${col}`
                   const donorCell = donorCellMap.get(key)
                   const donorOh = donorCell?.onHand ?? 0
@@ -471,9 +478,9 @@ function SkuGridEntry({
               })),
             ]}
             dataSource={[
-              { label: 'Donor OH', rowType: 'donor', emphasize: true },
-              { label: 'Receiver OH', rowType: 'receiver' },
-              { label: 'Transfer qty', rowType: 'entry', emphasize: true },
+              { key: 'donor', label: 'Donor OH', rowType: 'donor', emphasize: true },
+              { key: 'receiver', label: 'Receiver OH', rowType: 'receiver' },
+              { key: 'entry', label: 'Transfer qty', rowType: 'entry', emphasize: true },
             ]}
           />
         </div>

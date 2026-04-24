@@ -23,6 +23,7 @@ const { Title, Paragraph, Text } = Typography
 const REPORT_TYPE_LABELS: Record<ReportType, string> = {
   'sales-analysis': 'Sales Analysis',
   'sales-hierarchy-drill-down': 'Sales Hierarchy Drill-Down',
+  'sales-pivot': 'Sales Pivot',
   'best-sellers': 'Best Sellers',
   'stock-status': 'Stock Status',
   'sales-by-day': 'Sales by Day',

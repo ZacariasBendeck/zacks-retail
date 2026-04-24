@@ -169,7 +169,7 @@ function TargetsContent({
     return { model, max, reorder, onHand, storesWithTargets }
   }, [stores])
 
-  const activeTab = TABS.find((t) => t.value === metric) ?? TABS[0]
+  const activeTab = TABS.find((t) => t.value === metric) ?? TABS[0]!
 
   return (
     <>
