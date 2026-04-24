@@ -5,7 +5,7 @@ import { sectionCard, sectionTitle, sectionSubtitle, tokens, monoInput } from '.
 import { aiLabel, fieldStyle, refOptions } from './formHelpers'
 import type { ProductFamily, ReferenceItem } from '../../../types/sku'
 import type { PostgresCategory } from '../../../hooks/useProductCategories'
-import type { SizeType } from '../../../types/productsTaxonomy'
+import type { Group, SizeType } from '../../../types/productsTaxonomy'
 
 interface ProductIdentitySectionProps {
   /** Image state. */
@@ -34,6 +34,10 @@ interface ProductIdentitySectionProps {
   refData: Record<string, ReferenceItem[]> | undefined
   sizeTypes: SizeType[] | undefined
   sizeTypesLoading: boolean
+
+  /** Group code dropdown (app.sku.group_code → ref_groups). */
+  groups: Group[] | undefined
+  groupsLoading: boolean
 
   /** Style-color canonical template. */
   styleColorOptions: { label: string; value: string }[]
@@ -64,6 +68,8 @@ export function ProductIdentitySection({
   refData,
   sizeTypes,
   sizeTypesLoading,
+  groups,
+  groupsLoading,
   styleColorOptions,
   styleColorsLoading,
   onStyleColorChange,
@@ -73,6 +79,10 @@ export function ProductIdentitySection({
   const sizeTypeOptions = (sizeTypes ?? []).map((s) => ({
     value: s.code,
     label: `${s.code} — ${s.description}`,
+  }))
+  const groupOptions = (groups ?? []).map((g) => ({
+    value: g.code,
+    label: `${g.code} — ${g.description}`,
   }))
 
   return (
@@ -85,76 +95,86 @@ export function ProductIdentitySection({
       </div>
 
       <Row gutter={tokens.rowGutter}>
-        {/* LEFT — 240px image column */}
+        {/* LEFT — 240px image column. Fixed-width wrapper keeps the Dragger +
+            button stacked as a single unit; using display:block ensures each
+            child takes full inline width. */}
         <Col xs={24} md={8} lg={7} xl={6}>
-          <Upload.Dragger
-            accept="image/jpeg,image/png,image/gif,image/webp"
-            showUploadList={false}
-            beforeUpload={(file) => {
-              onImageFile(file)
-              return false
-            }}
-            disabled={analyzing || !selectedFamily}
-            style={{
-              width: tokens.image.dropzoneSize,
-              height: tokens.image.dropzoneSize,
-              maxWidth: '100%',
-              borderRadius: tokens.image.borderRadius,
-              padding: 0,
-              overflow: 'hidden',
-              background: imagePreview ? '#fff' : tokens.colors.mutedBg,
-            }}
-          >
-            {analyzing ? (
-              <div style={{ textAlign: 'center' }}>
-                <LoadingOutlined style={{ fontSize: 32, color: '#1677ff' }} />
-                <div style={{ marginTop: 8, fontSize: 12 }}>Analizando…</div>
-              </div>
-            ) : imagePreview ? (
-              <img
-                src={imagePreview}
-                alt="Producto"
+          <div style={{ width: tokens.image.dropzoneSize, maxWidth: '100%' }}>
+            <div
+              style={{
+                width: '100%',
+                height: tokens.image.dropzoneSize,
+                marginBottom: 12,
+              }}
+            >
+              <Upload.Dragger
+                accept="image/jpeg,image/png,image/gif,image/webp"
+                showUploadList={false}
+                beforeUpload={(file) => {
+                  onImageFile(file)
+                  return false
+                }}
+                disabled={analyzing || !selectedFamily}
                 style={{
                   width: '100%',
                   height: '100%',
-                  objectFit: 'contain',
                   borderRadius: tokens.image.borderRadius,
+                  padding: 0,
+                  overflow: 'hidden',
+                  background: imagePreview ? '#fff' : tokens.colors.mutedBg,
                 }}
-              />
-            ) : (
-              <div style={{ textAlign: 'center', padding: 16 }}>
-                <CameraOutlined style={{ fontSize: 40, color: '#999' }} />
-                <div style={{ marginTop: 12, fontSize: 13, fontWeight: 500 }}>
-                  Clic, arrastra, o Ctrl+V
-                </div>
-                <div style={{ marginTop: 4, fontSize: 11, color: tokens.colors.textMuted }}>
-                  JPG · PNG · GIF · WebP
-                </div>
-              </div>
+              >
+                {analyzing ? (
+                  <div style={{ textAlign: 'center' }}>
+                    <LoadingOutlined style={{ fontSize: 32, color: '#1677ff' }} />
+                    <div style={{ marginTop: 8, fontSize: 12 }}>Analizando…</div>
+                  </div>
+                ) : imagePreview ? (
+                  <img
+                    src={imagePreview}
+                    alt="Producto"
+                    style={{
+                      width: '100%',
+                      height: '100%',
+                      objectFit: 'contain',
+                      borderRadius: tokens.image.borderRadius,
+                    }}
+                  />
+                ) : (
+                  <div style={{ textAlign: 'center', padding: 16 }}>
+                    <CameraOutlined style={{ fontSize: 40, color: '#999' }} />
+                    <div style={{ marginTop: 12, fontSize: 13, fontWeight: 500 }}>
+                      Clic, arrastra, o Ctrl+V
+                    </div>
+                    <div style={{ marginTop: 4, fontSize: 11, color: tokens.colors.textMuted }}>
+                      JPG · PNG · GIF · WebP
+                    </div>
+                  </div>
+                )}
+              </Upload.Dragger>
+            </div>
+
+            <Button
+              type="primary"
+              icon={<ThunderboltOutlined />}
+              onClick={onFillWithAi}
+              disabled={!canFillWithAi}
+              style={{ width: '100%', fontWeight: 600 }}
+            >
+              Llenar con IA
+            </Button>
+
+            {!selectedFamily && (
+              <Typography.Text type="secondary" style={{ fontSize: 11, display: 'block', marginTop: 8 }}>
+                Selecciona una Familia primero para habilitar el análisis.
+              </Typography.Text>
             )}
-          </Upload.Dragger>
-
-          <Button
-            type="primary"
-            icon={<ThunderboltOutlined />}
-            onClick={onFillWithAi}
-            disabled={!canFillWithAi}
-            block
-            style={{ marginTop: 12, fontWeight: 600 }}
-          >
-            Llenar con IA
-          </Button>
-
-          {!selectedFamily && (
-            <Typography.Text type="secondary" style={{ fontSize: 11, display: 'block', marginTop: 8 }}>
-              Selecciona una Familia primero para habilitar el análisis.
-            </Typography.Text>
-          )}
-          {analysisWarning && (
-            <Typography.Text type="warning" style={{ fontSize: 11, display: 'block', marginTop: 8 }}>
-              {analysisWarning}
-            </Typography.Text>
-          )}
+            {analysisWarning && (
+              <Typography.Text type="warning" style={{ fontSize: 11, display: 'block', marginTop: 8 }}>
+                {analysisWarning}
+              </Typography.Text>
+            )}
+          </div>
         </Col>
 
         {/* RIGHT — identity fields */}
@@ -270,8 +290,16 @@ export function ProductIdentitySection({
               </Form.Item>
             </Col>
             <Col xs={24} sm={4}>
-              <Form.Item label="Grupo" name="groupCode" style={{ marginBottom: 12 }}>
-                <Input placeholder="Grupo" maxLength={3} size="large" />
+              <Form.Item label="Group" name="groupCode" style={{ marginBottom: 12 }}>
+                <Select
+                  placeholder="Group"
+                  allowClear
+                  showSearch
+                  size="large"
+                  optionFilterProp="label"
+                  loading={groupsLoading}
+                  options={groupOptions}
+                />
               </Form.Item>
             </Col>
           </Row>
@@ -294,7 +322,7 @@ export function ProductIdentitySection({
               </Form.Item>
             </Col>
             <Col xs={24} sm={12}>
-              <Form.Item label="Tipo de Talla" name="sizeType" style={{ marginBottom: 12 }}>
+              <Form.Item label="Size Types" name="sizeType" style={{ marginBottom: 12 }}>
                 <Select
                   placeholder="Seleccionar grid"
                   allowClear

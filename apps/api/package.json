@@ -19,7 +19,7 @@
     "sync:rics": "node --env-file-if-exists=.env -r tsx/cjs scripts/rics/sync/sync-rics.ts",
     "sync:rics-skus": "node --env-file-if-exists=.env -r tsx/cjs scripts/rics/sync/sync-rics-skus.ts",
     "verify:rics-mirror": "node --env-file-if-exists=.env -r tsx/cjs scripts/rics/verify/verify-rics-mirror.ts",
-    "test:sku-writeback": "node --env-file-if-exists=.env -r tsx/cjs scripts/dangerous/legacy-writeback/test-sku-writeback.ts",
+    "verify:cutover-readiness": "node --env-file-if-exists=.env -r tsx/cjs scripts/rics/verify/verify-cutover-readiness.ts",
     "export:attributes": "node --env-file-if-exists=.env -r tsx/cjs scripts/catalog/export-attribute-catalog.ts",
     "import:attributes": "node --env-file-if-exists=.env -r tsx/cjs scripts/catalog/import-attribute-catalog.ts",
     "seed:sku-attributes": "node --env-file-if-exists=.env -r tsx/cjs scripts/seeds/seed-sku-attributes.ts",

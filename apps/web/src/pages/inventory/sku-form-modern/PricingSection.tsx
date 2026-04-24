@@ -1,8 +1,18 @@
-import { Col, Form, Input, Row, Typography } from 'antd'
+import { Col, Form, Row, Select, Typography } from 'antd'
 import { sectionCard, sectionTitle, sectionSubtitle, tokens } from './styles'
 import { MarginPercentDisplay, PriceField } from './formHelpers'
+import type { PromotionCode } from '../../../types/productsTaxonomy'
 
-export function PricingSection() {
+interface PricingSectionProps {
+  promotionCodes: PromotionCode[] | undefined
+  promotionCodesLoading: boolean
+}
+
+export function PricingSection({ promotionCodes, promotionCodesLoading }: PricingSectionProps) {
+  const discountOptions = (promotionCodes ?? []).map((p) => ({
+    value: p.code,
+    label: `${p.code} — ${p.description}`,
+  }))
   return (
     <div style={sectionCard}>
       <div style={{ marginBottom: tokens.card.headerMarginBottom }}>
@@ -40,7 +50,15 @@ export function PricingSection() {
         </Col>
         <Col xs={24} sm={12} md={8} lg={6}>
           <Form.Item label="Código de Descuento" name="discountCode" style={{ marginBottom: 12 }}>
-            <Input placeholder="Ej. PROMO20" maxLength={20} size="large" />
+            <Select
+              placeholder="Seleccionar promoción"
+              allowClear
+              showSearch
+              size="large"
+              optionFilterProp="label"
+              loading={promotionCodesLoading}
+              options={discountOptions}
+            />
           </Form.Item>
         </Col>
         <Col xs={24} sm={12} md={8} lg={6}>

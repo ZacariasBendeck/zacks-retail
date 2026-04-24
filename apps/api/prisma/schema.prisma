@@ -482,6 +482,10 @@ model Sku {
 
   @@unique([provisionalCode], map: "sku_provisional_code_key")
   @@index([skuState, familyCode], map: "sku_state_family_idx")
+  sizes       SkuSize[]
+  inventory   Inventory[]
+  auditLog    InventoryAuditLog[]
+
   @@index([vendorId], map: "sku_vendor_idx")
   @@index([categoryNumber], map: "sku_category_idx")
   @@index([createdAt], map: "sku_created_at_idx")
@@ -506,6 +510,89 @@ model SkuActivity {
   @@index([skuId, occurredAt(sort: Desc)], map: "sku_activity_sku_id_idx")
   @@index([occurredAt(sort: Desc)], map: "sku_activity_occurred_at_idx")
   @@map("sku_activity")
+  @@schema("app")
+}
+
+/// Per-SKU size-label rows. Each SKU carries an ordered list of the sizes it
+/// is sold in (e.g. "7", "7.5", "8", ...). `sort_order` controls display on
+/// the size grid; `active` hides a size from new assignments without dropping
+/// inventory rows that reference it. Matches the pre-migration SQLite shape
+/// 1:1 with native Postgres types.
+model SkuSize {
+  id         String      @id @default(uuid()) @db.Uuid
+  skuId      String      @map("sku_id") @db.Uuid
+  sku        Sku         @relation(fields: [skuId], references: [id], onDelete: Cascade)
+  sizeLabel  String      @map("size_label")
+  sortOrder  Int         @default(0) @map("sort_order")
+  active     Boolean     @default(true)
+  inventory  Inventory[]
+  auditLog   InventoryAuditLog[]
+
+  @@unique([skuId, sizeLabel])
+  @@index([skuId], map: "sku_size_sku_id_idx")
+  @@map("sku_size")
+  @@schema("app")
+}
+
+/// Per-(SKU × size) on-hand + reserved state. One row per size when the SKU
+/// has a size grid; `sku_size_id = null` for SKUs that don't (accessories,
+/// single-variant items). `(sku_id, sku_size_id)` is unique so the pair is
+/// the natural join key for mutations from adjustmentService / ticketService.
+model Inventory {
+  id               String    @id @default(uuid()) @db.Uuid
+  skuId            String    @map("sku_id") @db.Uuid
+  sku              Sku       @relation(fields: [skuId], references: [id])
+  skuSizeId        String?   @map("sku_size_id") @db.Uuid
+  skuSize          SkuSize?  @relation(fields: [skuSizeId], references: [id])
+  quantityOnHand   Int       @default(0) @map("quantity_on_hand")
+  quantityReserved Int       @default(0) @map("quantity_reserved")
+  lastCountedAt    DateTime? @map("last_counted_at")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  @@unique([skuId, skuSizeId], map: "inventory_sku_size_unique")
+  @@index([skuId], map: "inventory_sku_id_idx")
+  @@map("inventory")
+  @@schema("app")
+}
+
+/// Append-only trail of every quantity adjustment. Referenced by
+/// adjustmentService, inventoryService, and admin reports ("who moved
+/// stock when and why"). `resultingBalance` is the on-hand quantity
+/// AFTER the adjustment applied — lets the audit UI render a ledger
+/// without re-running the math.
+model InventoryAuditLog {
+  id                String   @id @default(uuid()) @db.Uuid
+  skuId             String   @map("sku_id") @db.Uuid
+  sku               Sku      @relation(fields: [skuId], references: [id])
+  skuSizeId         String?  @map("sku_size_id") @db.Uuid
+  skuSize           SkuSize? @relation(fields: [skuSizeId], references: [id])
+  adjustment        Int
+  reason            String
+  resultingBalance  Int      @map("resulting_balance")
+  performedBy       String   @default("system") @map("performed_by")
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  @@index([skuId], map: "inventory_audit_log_sku_id_idx")
+  @@index([createdAt], map: "inventory_audit_log_created_at_idx")
+  @@map("inventory_audit_log")
+  @@schema("app")
+}
+
+/// Per-prefix auto-increment counter used by skuService.generateSkuCode and
+/// purchaseOrderService for PO numbering. The upsert-and-read pattern
+/// (`INSERT ... ON CONFLICT DO UPDATE SET next_val = next_val + 1`) maps to
+/// Prisma's `upsert` cleanly: insert with next_val=1 on create, set
+/// next_val = { increment: 1 } on update, then return the row.
+///
+/// Postgres sequences (`CREATE SEQUENCE`) would be faster but require one
+/// sequence per prefix — which is unbounded. This table keeps all prefixes
+/// in one place and lets the operator inspect / reset them directly.
+model SkuCodeSequence {
+  prefix  String @id
+  nextVal Int    @default(1) @map("next_val")
+
+  @@map("sku_code_seq")
   @@schema("app")
 }
 

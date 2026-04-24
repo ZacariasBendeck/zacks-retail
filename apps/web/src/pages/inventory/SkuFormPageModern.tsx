@@ -17,7 +17,7 @@ import { useVendors } from '../../hooks/useProductsVendors'
 // grids), not the legacy SQLite `size-types` ref table which only carries
 // size-standard names (EU, CN, MX, …). app.sku.size_type is a SmallInt
 // matching rics_mirror.inventory_master.size_type.
-import { useSizeTypes, useSeasons } from '../../hooks/useProductsTaxonomy'
+import { useSizeTypes, useSeasons, useGroups, usePromotionCodes } from '../../hooks/useProductsTaxonomy'
 import {
   useSkuDraft,
   useCreateSkuDraft,
@@ -241,6 +241,8 @@ export default function SkuFormPageModern() {
   const { data: vendors, isLoading: vendorsLoading } = useVendors()
   const { data: refData, isLoading: refLoading } = useReferenceData()
   const { data: sizeTypes, isLoading: sizeTypesLoading } = useSizeTypes()
+  const { data: groups, isLoading: groupsLoading } = useGroups()
+  const { data: promotionCodes, isLoading: promotionCodesLoading } = usePromotionCodes()
   const { data: seasonsCatalog } = useSeasons()
   const createMutation = useCreateSkuDraft()
   const updateMutation = useUpdateSkuDraft()
@@ -929,6 +931,8 @@ export default function SkuFormPageModern() {
           refData={refData}
           sizeTypes={sizeTypes}
           sizeTypesLoading={sizeTypesLoading}
+          groups={groups}
+          groupsLoading={groupsLoading}
           styleColorOptions={styleColorOptions}
           styleColorsLoading={styleColorsLoading}
           onStyleColorChange={handleStyleColorChange}
@@ -941,7 +945,10 @@ export default function SkuFormPageModern() {
           onOpenVendorLookup={() => setVendorLookupOpen(true)}
         />
 
-        <PricingSection />
+        <PricingSection
+          promotionCodes={promotionCodes}
+          promotionCodesLoading={promotionCodesLoading}
+        />
 
         <AppearanceSection
           selectedFamily={selectedFamily}

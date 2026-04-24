@@ -1,5 +1,4 @@
 import { AutoComplete, Col, Form, Input, Row, Spin, Typography } from 'antd'
-import { LoadingOutlined, SearchOutlined } from '@ant-design/icons'
 import { useState } from 'react'
 import { sectionCard, sectionTitle, sectionSubtitle, readonlyInput } from './styles'
 import type { SkuLifecycleRow } from '../../../types/skuLifecycle'
@@ -60,32 +59,20 @@ export function SkuCodeStrip({
                   setText(v)
                   onSearch(v)
                 }}
-                onSelect={onSelect}
+                onSelect={(value) => onSelect(value as string)}
                 onBlur={onBlur}
                 placeholder="ej. FORMAL-NIKE-BLK-001 (opcional)"
                 disabled={matched}
+                allowClear
+                size="large"
+                style={{ width: '100%' }}
                 popupMatchSelectWidth={420}
                 notFoundContent={
-                  searchPending
+                  searchPending || lookupPending
                     ? <Spin size="small" />
                     : text.length >= 1 ? 'No se encontraron SKUs' : null
                 }
-              >
-                <Input
-                  size="large"
-                  suffix={
-                    lookupPending || searchPending ? (
-                      <LoadingOutlined />
-                    ) : (
-                      <SearchOutlined style={{ color: '#999' }} />
-                    )
-                  }
-                  onPressEnter={(e) => {
-                    e.preventDefault()
-                    onBlur()
-                  }}
-                />
-              </AutoComplete>
+              />
             </Form.Item>
           </Col>
         </Row>

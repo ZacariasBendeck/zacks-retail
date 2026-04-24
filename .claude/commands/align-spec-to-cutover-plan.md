@@ -2,6 +2,20 @@
 
 You are updating a Zack's Retail planning/spec file so it matches the current migration strategy.
 
+## Context Rules (CRITICAL)
+
+- Treat THIS command as the source of truth.
+- Ignore conflicting phase definitions in other files.
+- Do not import phase logic from other specs unless explicitly told.
+- Do not reintroduce:
+  - Phase A/B/C operational rollout language
+  - hybrid sync concepts
+  - bidirectional assumptions
+
+If another file conflicts with this plan, this plan wins.
+
+
+
 ## Current Strategy
 
 RICS remains the live production system until cutover day.
