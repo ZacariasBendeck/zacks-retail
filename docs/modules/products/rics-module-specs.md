@@ -157,6 +157,27 @@ model VendorStoreAccount {          // p. 153 per-store account #
   @@id([vendorId, storeId])
 }
 
+// app.vendor_overlay — Postgres-native write surface for vendors (added 2026-04-24).
+// The MDB write path was removed; reads/writes now go through rics_mirror.vendor_master
+// FULL OUTER JOIN app.vendor_overlay. See docs/dev/specs/2026-04-24-vendor-overlay-design.md.
+model VendorOverlay {
+  code          String   @id           // 4-char RICS code; natural-key, no FK to rics_mirror
+  source        String                 // 'native' | 'override' | 'tombstone'
+  // Every vendor value column mirrored here, all nullable. Semantics per source:
+  //   native    → columns are authoritative (short_name + mail_name NOT NULL)
+  //   override  → non-null columns override the mirror; nulls fall through via COALESCE
+  //   tombstone → all value columns ignored; row hides the mirror vendor from reads
+  shortName     String?
+  mailName      String?
+  // ... addr1, addr2, city, state, zip, phone, fax, contact, terms,
+  //     shipInst, comment, manuCode, manuName, qualifierId, qualifierCode,
+  //     colorCode, longComment, eMail
+  createdAt     DateTime
+  updatedAt     DateTime
+  createdBy     String
+  updatedBy     String
+}
+
 model Category {   id Int @id  name String  departmentId Int }
 model Department { id Int @id  name String }               // no Sector (dropped)
 model Group {      code String @id  name String }

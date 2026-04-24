@@ -291,3 +291,32 @@ The DB itself does NOT enforce single-value; the composite PK `(sku_code, dimens
 - *Single JSONB column.* Rejected — the dim catalog is bounded and known; JSONB's flexibility is unnecessary and the type-safety loss is real (invalid values can land silently if the validator is bypassed).
 
 **Related:** [`schema.md`](schema.md) — full DDL and indexes; [`docs/dev/specs/2026-04-22-sku-extended-attributes-foundation-design.md`](../../dev/specs/2026-04-22-sku-extended-attributes-foundation-design.md) — original brainstorm.
+
+---
+
+## 2026-04-24 — Vendor write surface is a single overlay with a `source` discriminator
+
+**Context:** The OLE DB write path in `VendorRepository` (create / update / delete / store-account upsert) was deleted because writes-to-RICS-at-request-time is incompatible with the Postgres-first direction. `rics_mirror.vendor_master` is read-only (atomically rebuilt by `sync:rics`), so vendor writes need a Postgres-side surface.
+
+**Decision:** Single `app.vendor_overlay` table with a `source` column taking one of `'native'` / `'override'` / `'tombstone'`. Reads do `rics_mirror.vendor_master FULL OUTER JOIN app.vendor_overlay ON code` with `COALESCE(overlay.col, mirror.col)` per column, filtering `source='tombstone'`. Writes route based on current state:
+
+- New code not in mirror → insert `source='native'` (required columns non-null per check constraint).
+- Edit of a mirror vendor → upsert `source='override'` with only the changed columns set (sparse override).
+- Edit of an existing native vendor → UPDATE in place, keeps `source='native'`.
+- Delete of a native → DELETE the overlay row.
+- Delete of a mirror vendor → upsert `source='tombstone'` (empty value columns; row hides the mirror from reads).
+
+**Consequences:**
+
+- `/api/v1/products/vendors` POST/PATCH/DELETE work against Postgres; no MDB opened on the request path.
+- Overlay edits don't reach RICS until the Postgres→RICS sync agent is built (Phase B). Warehouse/POS systems still see only what `sync:rics` copied.
+- Store-account writes (`PUT/DELETE /store-accounts/:storeId`) remain `WriteNotSupported` pending a separate `vendor_store_account_overlay` with the same pattern.
+- Orphan-override hygiene is deferred: if a RICS code disappears from the mirror between syncs, an `'override'` or `'tombstone'` row for that code silently points at nothing. Add a post-sync orphan-override report when the sync agent work starts.
+
+**Alternatives considered:**
+
+- *Three separate tables* (`app.vendor` for native, `app.vendor_override` for edits, `app.vendor_tombstone` for deletes). Rejected — three tables, three insert paths, harder to write the unified read projection.
+- *Full-row override* (copy entire mirror row into the overlay on first edit). Rejected — diverges from the established `app.sku_attribute_override` pattern (sparse per-column), and silently discards later RICS-side updates to unovered columns.
+- *No overlay at all; keep writes disabled until the sync agent ships.* Rejected — the Products admin UI already had New/Edit/Delete buttons; a multi-week regression waiting on the sync agent wasn't worth it.
+
+**Related:** [`docs/dev/specs/2026-04-24-vendor-overlay-design.md`](../../dev/specs/2026-04-24-vendor-overlay-design.md) — full design record; [`rics-module-specs.md`](rics-module-specs.md) §Data model sketch — `VendorOverlay` model.

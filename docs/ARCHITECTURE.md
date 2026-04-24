@@ -125,6 +125,33 @@ Request handlers consume adapters that read from `rics_mirror`. Every adapter ha
 | `salesReporting/ricsOnHandAtCostAdapter` | `...OnHandAtCostAdapter.ts` | ROI / Turns feeder for Sales Analysis |
 | `salesReporting/ricsInquiryRollupAdapter` | `...InquiryRollupAdapter.ts` | Per-SKU Week/Month/Season/Year rollup on the Inquiry screen |
 
+### Write surfaces (overlay pattern)
+
+Where a write target isn't directly mutable (e.g., `rics_mirror.*` is rebuilt atomically by `sync:rics`), the pattern is an `app.*_overlay` table with a `source` discriminator. Reads FULL OUTER JOIN the overlay against the mirror and pick effective values with COALESCE; tombstones hide mirror rows.
+
+| Overlay | File(s) | Scope |
+|---|---|---|
+| `app.sku_attribute_override` | `apps/api/src/services/utilities/effectiveInventory.ts` | Sparse per-column overrides for vendor/category/season/group_code on mirrored SKUs |
+| `app.sku_keyword_override` | same | ADD/REMOVE deltas layered on the space-separated `KeyWords` string |
+| `app.vendor_overlay` | `apps/api/src/repositories/rics/VendorRepository.ts` | Three modes via `source`: `'native'` (born in Postgres), `'override'` (sparse per-column override of a RICS vendor), `'tombstone'` (hide a RICS vendor from reads). See [`docs/dev/specs/2026-04-24-vendor-overlay-design.md`](dev/specs/2026-04-24-vendor-overlay-design.md). |
+
+Overlay writes don't reach RICS until the Postgres→RICS sync agent is implemented (Phase B work). Warehouse/POS systems see only what `sync:rics` copied.
+
+### Repo-result error taxonomy
+
+Repositories return `Result<T, RepoError>` (see `apps/api/src/repositories/rics/repoResult.ts`). The error kind maps to HTTP status:
+
+| `kind` | HTTP | Meaning |
+|---|---|---|
+| `NotFound` | 404 | Row absent |
+| `ConstraintViolation` | 422 | Shape or cross-row rule rejected |
+| `DuplicatePrimaryKey` | 409 | PK collision on insert |
+| `ConcurrentModification` | 409 | Lost-update detection |
+| `WriteNotSupported` | 501 | Endpoint exists as read-only; use the indicated write path instead |
+| `AccessConnectionError` | 503 | Backing store unreachable |
+
+`WriteNotSupported` covers the case where a legacy endpoint has been converted to a read-only projection but the write surface moved elsewhere (e.g., vendor store-account writes are still `WriteNotSupported` pending a separate `vendor_store_account_overlay`).
+
 ## ETL pipeline
 
 At `apps/api/src/services/sync/`:
@@ -203,6 +230,27 @@ Pattern used to flip one adapter path at a time from OLEDB to `rics_mirror`:
 5. Numeric casts: `::float8` for `NUMERIC`; `to_char(x AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS')` for `timestamptz` when caller expected a string.
 6. SKU-padding quirk: `rics_mirror.ticket_detail.sku` is right-padded to 15 chars; `inventory_master.sku` is not. Ticket-table filters use `RPAD($1, 15)`.
 7. Verify live via `curl` against the running dev server before committing. Commit per adapter with cross-source integrity checks.
+
+### Prisma migration authoring
+
+Two helper scripts gate the Prisma migration workflow. Conventions + the legacy-hygiene audit live in [`docs/dev/specs/2026-04-24-migration-tooling.md`](dev/specs/2026-04-24-migration-tooling.md).
+
+| Script | What it does |
+|---|---|
+| `pnpm migrate:new <description>` | Scaffolds `prisma/migrations/<YYYYMMDDHHMMSS>_<description>/migration.sql` with a **seconds-precision** timestamp (prevents duplicate-timestamp collisions) and a header template with TODO markers for schema / rationale / rollback. |
+| `pnpm migrate:lint` | Static check over the migrations folder. Flags duplicate timestamps, missing header comments, unsafe DROP without IF EXISTS, schema-qualified refs to schemas not declared in `datasource db { schemas = [...] }`. Exit 1 on any error. Ready to gate CI. |
+
+The `_prisma_migrations` tracker forbids rewriting applied migrations mid-project, so three pre-existing duplicate-timestamp pairs (ordered correctly today by lexicographic suffix) and three unsafe-DROP warnings in `20260423120000_attribute_family_rules` are deferred until the Phase B cutover's fresh production DB permits a squash.
+
+### App-data bootstrap
+
+After `prisma:migrate` and `sync:rics`, the four-step app-data seed runs as a single orchestrator:
+
+```bash
+pnpm --filter @benlow-rics/api bootstrap:app-data
+```
+
+Runs `seed:product-families` → `import:attributes` (auto-detects the latest `attribute-catalog-export-*.json` in `docs/Important-Final-Docs/`) → `seed:sku-attributes` → `sync:rics-skus`. Accepts `--dry-run`, `--snapshot <path>`, and per-step `--skip-*` flags. Individual scripts remain available for targeted re-runs. Full rebuild sequence documented in [`docs/Important-Final-Docs/Migration-Steps-From-Scratch.md`](Important-Final-Docs/Migration-Steps-From-Scratch.md).
 
 ### Milestone ritual
 
