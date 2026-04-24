@@ -33,7 +33,7 @@ describe('InquiryBody', () => {
       data: null,
       isLoading: false,
       error: null,
-    } as ReturnType<typeof useInquiryData>);
+    } as unknown as ReturnType<typeof useInquiryData>);
 
     const firstOnActiveTabChange = vi.fn();
     const { rerender } = render(
