@@ -26,9 +26,9 @@ const router: IRouter = Router();
  *       404:
  *         description: SKU not found
  */
-router.get('/:skuId/inventory', (req: Request, res: Response): void => {
+router.get('/:skuId/inventory', async (req: Request, res: Response): Promise<void> => {
   const skuId = req.params.skuId as string;
-  const inventory = inventoryService.getInventoryBySkuId(skuId);
+  const inventory = await inventoryService.getInventoryBySkuId(skuId);
   if (!inventory) {
     res.status(404).json({ error: { code: 'NOT_FOUND', message: 'SKU not found.' } });
     return;
@@ -72,10 +72,10 @@ router.get('/:skuId/inventory', (req: Request, res: Response): void => {
  *       404:
  *         description: SKU not found
  */
-router.post('/:skuId/inventory/adjustments', validate(stockAdjustmentSchema), (req: Request, res: Response): void => {
+router.post('/:skuId/inventory/adjustments', validate(stockAdjustmentSchema), async (req: Request, res: Response): Promise<void> => {
   const skuId = req.params.skuId as string;
   try {
-    const result = inventoryService.adjustStock(skuId, req.body);
+    const result = await inventoryService.adjustStock(skuId, req.body);
     res.json(result);
   } catch (err: any) {
     if (err.message === 'SKU_NOT_FOUND') {
@@ -126,10 +126,10 @@ router.post('/:skuId/inventory/adjustments', validate(stockAdjustmentSchema), (r
  *       404:
  *         description: SKU not found
  */
-router.get('/:skuId/inventory/audit-log', validateQuery(auditLogQuerySchema), (req: Request, res: Response): void => {
+router.get('/:skuId/inventory/audit-log', validateQuery(auditLogQuerySchema), async (req: Request, res: Response): Promise<void> => {
   const skuId = req.params.skuId as string;
   const params = (req as any).validatedQuery as { page: number; pageSize: number; sort?: string; order?: 'asc' | 'desc' };
-  const result = inventoryService.getAuditLog(skuId, params);
+  const result = await inventoryService.getAuditLog(skuId, params);
   if (!result) {
     res.status(404).json({ error: { code: 'NOT_FOUND', message: 'SKU not found.' } });
     return;

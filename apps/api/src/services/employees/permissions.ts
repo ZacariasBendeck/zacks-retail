@@ -8,6 +8,8 @@ export const PERMISSIONS = {
   // employees (this module)
   EMPLOYEES_MANAGE:       'employees.manage',
   EMPLOYEES_VIEW:         'employees.view',
+  TIME_CLOCK_MANAGE:      'employees.time_clock.manage',
+  TIME_CLOCK_SELF:        'employees.time_clock.self',
 
   // inventory
   INVENTORY_ADJUST:       'inventory.adjust',

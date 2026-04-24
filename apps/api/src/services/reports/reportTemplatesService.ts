@@ -1,4 +1,4 @@
-import { Prisma, PrismaClient, ReportTemplate } from '@prisma/client';
+import { Prisma, PrismaClient, ReportTemplate } from '../../prismaClient';
 import type { ReportType } from './reportTypes';
 import type { ListScope, Visibility } from '../../routes/reports/schemas';
 
@@ -222,3 +222,5 @@ export async function touchTemplate(
     data: { lastUsedAt: new Date() },
   });
 }
+
+

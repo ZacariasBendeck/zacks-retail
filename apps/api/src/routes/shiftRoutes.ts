@@ -62,9 +62,9 @@ router.post('/:id/close', validate(closeShiftSchema), (req: Request, res: Respon
   }
 });
 
-router.post('/:id/post', validate(postShiftSchema), (req: Request, res: Response): void => {
+router.post('/:id/post', validate(postShiftSchema), async (req: Request, res: Response): Promise<void> => {
   try {
-    const shift = shiftService.postShiftToInventory((req.params.id as string), req.body.postedByUserId);
+    const shift = await shiftService.postShiftToInventory((req.params.id as string), req.body.postedByUserId);
     res.json(shift);
   } catch (err: any) {
     sendPosError(res, err);

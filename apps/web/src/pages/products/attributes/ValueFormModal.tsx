@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
-import { App, Form, Input, InputNumber, Modal } from 'antd'
+import { App, Form, Input, InputNumber } from 'antd'
+import { DraggableModal } from '../../../components/draggable-modal'
 import { useCreateValue, useUpdateValue } from '../../../hooks/useProductsAttributes'
 import type { AttributeDimension, AttributeDimensionValue } from '../../../types/productsAttributes'
 
@@ -60,7 +61,7 @@ export default function ValueFormModal({ open, dimension, editing, onClose }: Pr
   }
 
   return (
-    <Modal
+    <DraggableModal
       title={isEdit ? `Editar valor · ${editing!.code}` : `Nuevo valor en '${dimension.code}'`}
       open={open}
       onCancel={onClose}
@@ -92,6 +93,6 @@ export default function ValueFormModal({ open, dimension, editing, onClose }: Pr
           <InputNumber min={0} step={10} style={{ width: 120 }} />
         </Form.Item>
       </Form>
-    </Modal>
+    </DraggableModal>
   )
 }

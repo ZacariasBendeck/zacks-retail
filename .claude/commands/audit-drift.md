@@ -51,13 +51,14 @@ For each module in scope:
 
 - **Phase declaration.** Read [`docs/modules/<slug>.md`](../../docs/modules/) and extract the current phase. Expected values are **Phase A**, **Phase B**, or **Phase C** per the Rollout-phases section of [`CLAUDE.md`](../../CLAUDE.md). If the spec still uses the pre-2026-04 "Phase 1 / 1.5 / 2 / 3" numbering, flag as stale vocabulary.
 - **Data-source state** — the real Phase-A cutover indicator:
-  - Phase A = reads go to `rics_mirror.*` (raw SQL or generated views), writes land in `public` / `app`.
+  - Phase A = reads may go to `rics_mirror.*` only for surfaces that do not yet have an app-owned authoritative table; once such a table exists, request handlers must read that app-owned surface instead. Writes land in `public` / `app`.
   - Search for the module's service / adapter files in [`apps/api/src/services/`](../../apps/api/src/services/).
   - If the service still imports from [`accessOleDb.ts`](../../apps/api/src/services/accessOleDb.ts) at request time, the module has **not yet been flipped** to `rics_mirror`. Cross-check against the per-request OLEDB consumer list in [`docs/operations/rics-mirror-sync.md`](../../docs/operations/rics-mirror-sync.md).
   - Drift: spec claims "reads from `rics_mirror`" but code still goes through OLEDB (or vice versa).
+  - Drift: an app-owned authoritative table exists for the surface, but request handlers still read `rics_mirror` for it.
 - **Flag defaults in code vs. spec.** Do NOT flag `PRODUCT_SOURCE=rics|local` — per [`CLAUDE.md`](../../CLAUDE.md) that flag is legacy and no longer the cutover mechanism. Do flag any feature flag declared in the spec that isn't actually read by code, or any code-read env var the spec doesn't mention.
 - **Prisma schema placement.** For each module model in [`schema.prisma`](../../apps/api/prisma/schema.prisma), verify `@@schema("<name>")` matches the correct home:
-  - RICS-canonical reads → `rics_mirror` (ETL-rebuilt; no app writes).
+  - RICS-canonical imported source tables → `rics_mirror` (ETL-rebuilt; no app writes).
   - Net-new Zack's Retail tables → `public` or `app`.
   - ETL audit / admin → `platform`.
   - Drift: a module-owned additive model landing in `rics_mirror` (reload would drop it), or a canonical RICS shape living in `public`.

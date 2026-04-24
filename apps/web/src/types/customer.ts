@@ -2,6 +2,7 @@ export type FamilyMemberGender = 'M' | 'F' | 'C'
 
 export interface Customer {
   id: string
+  source: 'app' | 'mirror'
   accountNumber: string
   phoneE164: string | null
   firstName: string | null

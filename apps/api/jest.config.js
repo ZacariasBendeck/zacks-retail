@@ -1,3 +1,7 @@
+const path = require('node:path');
+
+process.loadEnvFile?.(path.join(__dirname, '.env'));
+
 /** @type {import('ts-jest').JestConfigWithTsJest} */
 module.exports = {
   preset: 'ts-jest',

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
-import { App, Button, Form, Input, Modal, Radio, Typography } from 'antd'
+import { App, Button, Form, Input, Radio, Typography } from 'antd'
 import { CameraOutlined } from '@ant-design/icons'
+import { DraggableModal } from '../draggable-modal'
 import { useCreateReportRun } from '../../hooks/useReportRuns'
 import { defaultSnapshotTitle, type ReportType, type RunVisibility } from '../../services/reportRunsApi'
 
@@ -101,7 +102,7 @@ export default function SaveSnapshotButton({
       >
         Save snapshot
       </Button>
-      <Modal
+      <DraggableModal
         title="Save snapshot of this run"
         open={open}
         onCancel={() => setOpen(false)}
@@ -141,7 +142,7 @@ export default function SaveSnapshotButton({
             </Radio.Group>
           </Form.Item>
         </Form>
-      </Modal>
+      </DraggableModal>
     </>
   )
 }

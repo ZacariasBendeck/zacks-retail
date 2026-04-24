@@ -25,6 +25,12 @@ generator client {
   previewFeatures = ["multiSchema"]
 }
 
+generator apiClient {
+  provider        = "prisma-client-js"
+  previewFeatures = ["multiSchema"]
+  output          = "../generated/prisma-client-v5"
+}
+
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
@@ -109,11 +115,25 @@ model User {
   passwordHash         String
   displayName          String
   active               Boolean          @default(true)
+  isEmployee           Boolean          @default(false)
   ricsUserId           String?
   salespersonCode      String?
+  otherInformation     String?
+  commissionRate       Decimal?         @db.Decimal(5, 2)
+  commissionBase       String           @default("NET_SALES")
+  homeStoreId          String?
+  hireDate             DateTime?
+  terminatedAt         DateTime?
+  timeClockEnabled     Boolean          @default(true)
+  timeClockPinHash     String?
   roleId               String
   role                 Role             @relation(fields: [roleId], references: [id])
   sessions             Session[]
+  salesPasswords       EmployeeSalesPassword[]      @relation("EmployeeSalesPasswords")
+  salesPasswordAudits  EmployeeSalesPasswordAudit[] @relation("EmployeeSalesPasswordAuditEmployee")
+  salesOverrideTokens  EmployeeSalesOverrideToken[] @relation("EmployeeSalesOverrideTokens")
+  commissionOverrides  CommissionOverride[]
+  timeClockEntries     TimeClockEntry[]             @relation("EmployeeTimeClockEntries")
   ownedReportTemplates ReportTemplate[] @relation("OwnedReportTemplates")
   reportRuns           ReportRun[]      @relation("ReportRuns")
   lastLoginAt          DateTime?
@@ -121,6 +141,8 @@ model User {
   updatedAt            DateTime         @updatedAt
 
   @@index([roleId])
+  @@index([isEmployee, active])
+  @@index([salespersonCode])
   @@schema("public")
 }
 
@@ -144,6 +166,157 @@ model Session {
 
   @@index([userId])
   @@index([expiresAt])
+  @@schema("public")
+}
+
+model EmployeeSalesPassword {
+  id                         String                       @id @default(uuid())
+  employeeId                 String
+  employee                   User                         @relation("EmployeeSalesPasswords", fields: [employeeId], references: [id], onDelete: Cascade)
+  pinHash                    String
+  scopes                     String[]
+  active                     Boolean                      @default(true)
+  failedAttempts             Int                          @default(0)
+  failedAttemptWindowStartedAt DateTime?
+  dailyFailedCount           Int                          @default(0)
+  dailyFailedWindowStartedAt DateTime?
+  lockedUntil                DateTime?
+  revokedAt                  DateTime?
+  issuedByUserId             String
+  updatedByUserId            String?
+  audits                     EmployeeSalesPasswordAudit[]
+  overrideTokens             EmployeeSalesOverrideToken[]
+  createdAt                  DateTime                     @default(now())
+  updatedAt                  DateTime                     @updatedAt
+
+  @@index([employeeId, active])
+  @@index([lockedUntil])
+  @@schema("public")
+}
+
+model EmployeeSalesPasswordAudit {
+  id             String                 @id @default(uuid())
+  employeeId     String
+  employee       User                   @relation("EmployeeSalesPasswordAuditEmployee", fields: [employeeId], references: [id], onDelete: Cascade)
+  passwordId     String?
+  password       EmployeeSalesPassword? @relation(fields: [passwordId], references: [id], onDelete: SetNull)
+  scope          String
+  outcome        String
+  invokingUserId String?
+  ticketId       String?
+  action         String?
+  ipAddress      String?
+  createdAt      DateTime               @default(now())
+
+  @@index([employeeId, createdAt(sort: Desc)])
+  @@index([scope, createdAt(sort: Desc)])
+  @@schema("public")
+}
+
+model EmployeeSalesOverrideToken {
+  id             String                @id @default(uuid())
+  passwordId     String
+  password       EmployeeSalesPassword @relation(fields: [passwordId], references: [id], onDelete: Cascade)
+  employeeId     String
+  employee       User                  @relation("EmployeeSalesOverrideTokens", fields: [employeeId], references: [id], onDelete: Cascade)
+  scope          String
+  tokenHash      String                @unique
+  ticketId       String?
+  action         String?
+  invokingUserId String?
+  expiresAt      DateTime
+  consumedAt     DateTime?
+  createdAt      DateTime              @default(now())
+
+  @@index([employeeId, scope, expiresAt])
+  @@index([consumedAt])
+  @@schema("public")
+}
+
+model TimeClockPolicy {
+  storeId                  Int      @id
+  enabled                  Boolean  @default(false)
+  requireClockInBeforeSale Boolean  @default(false)
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+
+  @@schema("public")
+}
+
+model TimeClockEntry {
+  id                 String   @id @default(uuid())
+  employeeId         String
+  employee           User     @relation("EmployeeTimeClockEntries", fields: [employeeId], references: [id], onDelete: Cascade)
+  storeId            Int
+  clockedInAt        DateTime
+  clockedOutAt       DateTime?
+  nonSales           Boolean  @default(false)
+  clockedInByUserId  String
+  clockedOutByUserId String?
+  autoClosedAtCap    Boolean  @default(false)
+  note               String?
+  adjustments        TimeClockEntryAdjustment[]
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@index([employeeId, clockedOutAt])
+  @@index([storeId, clockedOutAt])
+  @@index([clockedInAt])
+  @@schema("public")
+}
+
+model TimeClockEntryAdjustment {
+  id                     String         @id @default(uuid())
+  timeClockEntryId       String
+  timeClockEntry         TimeClockEntry @relation(fields: [timeClockEntryId], references: [id], onDelete: Cascade)
+  employeeId             String
+  actedByUserId          String
+  reason                 String
+  previousStoreId        Int
+  nextStoreId            Int
+  previousClockedInAt    DateTime
+  nextClockedInAt        DateTime
+  previousClockedOutAt   DateTime?
+  nextClockedOutAt       DateTime?
+  previousNonSales       Boolean
+  nextNonSales           Boolean
+  previousAutoClosedAtCap Boolean
+  nextAutoClosedAtCap    Boolean
+  previousNote           String?
+  nextNote               String?
+  createdAt              DateTime       @default(now())
+
+  @@index([timeClockEntryId, createdAt(sort: Desc)])
+  @@index([employeeId, createdAt(sort: Desc)])
+  @@schema("public")
+}
+
+enum CommissionOverrideScope {
+  SKU
+  CATEGORY
+  DEPARTMENT
+
+  @@schema("public")
+}
+
+model CommissionOverride {
+  id             String                  @id @default(uuid())
+  employeeId     String
+  employee       User                    @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  scope          CommissionOverrideScope
+  skuId          String?
+  categoryId     String?
+  departmentId   String?
+  rate           Decimal                 @db.Decimal(5, 2)
+  effectiveFrom  DateTime                @default(now())
+  effectiveTo    DateTime?
+  createdByUserId String
+  updatedByUserId String?
+  createdAt      DateTime                @default(now())
+  updatedAt      DateTime                @updatedAt
+
+  @@index([employeeId, scope])
+  @@index([effectiveFrom, effectiveTo])
   @@schema("public")
 }
 
@@ -485,6 +658,10 @@ model Sku {
   sizes       SkuSize[]
   inventory   Inventory[]
   auditLog    InventoryAuditLog[]
+  stockLevels StockLevel[]
+  stockMovements StockMovement[]
+  manualReceipts ManualReceipt[]
+  inventoryAdjustmentLines InventoryAdjustmentLine[]
 
   @@index([vendorId], map: "sku_vendor_idx")
   @@index([categoryNumber], map: "sku_category_idx")
@@ -547,6 +724,7 @@ model Inventory {
   quantityOnHand   Int       @default(0) @map("quantity_on_hand")
   quantityReserved Int       @default(0) @map("quantity_reserved")
   lastCountedAt    DateTime? @map("last_counted_at")
+  version          Int       @default(1)
   createdAt        DateTime  @default(now()) @map("created_at")
   updatedAt        DateTime  @updatedAt @map("updated_at")
 
@@ -562,20 +740,155 @@ model Inventory {
 /// AFTER the adjustment applied — lets the audit UI render a ledger
 /// without re-running the math.
 model InventoryAuditLog {
-  id                String   @id @default(uuid()) @db.Uuid
-  skuId             String   @map("sku_id") @db.Uuid
-  sku               Sku      @relation(fields: [skuId], references: [id])
-  skuSizeId         String?  @map("sku_size_id") @db.Uuid
-  skuSize           SkuSize? @relation(fields: [skuSizeId], references: [id])
-  adjustment        Int
-  reason            String
-  resultingBalance  Int      @map("resulting_balance")
-  performedBy       String   @default("system") @map("performed_by")
-  createdAt         DateTime @default(now()) @map("created_at")
+  id                    String   @id @default(uuid()) @db.Uuid
+  skuId                 String   @map("sku_id") @db.Uuid
+  sku                   Sku      @relation(fields: [skuId], references: [id])
+  skuSizeId             String?  @map("sku_size_id") @db.Uuid
+  skuSize               SkuSize? @relation(fields: [skuSizeId], references: [id])
+  adjustment            Int
+  reason                String
+  resultingBalance      Int      @map("resulting_balance")
+  performedBy           String   @default("system") @map("performed_by")
+  sourceDocumentRefType String?  @map("source_document_ref_type")
+  sourceDocumentRefId   String?  @map("source_document_ref_id")
+  idempotencyKey        String?  @map("idempotency_key") @unique(map: "inventory_audit_log_idempotency_key")
+  createdAt             DateTime @default(now()) @map("created_at")
 
   @@index([skuId], map: "inventory_audit_log_sku_id_idx")
   @@index([createdAt], map: "inventory_audit_log_created_at_idx")
+  @@index([sourceDocumentRefType, sourceDocumentRefId], map: "inventory_audit_log_source_ref_idx")
   @@map("inventory_audit_log")
+  @@schema("app")
+}
+
+model InventoryAdjustment {
+  id             String                    @id @default(uuid()) @db.Uuid
+  type           String
+  fromLocationId String?                   @map("from_location_id")
+  toLocationId   String?                   @map("to_location_id")
+  reason         String?
+  createdBy      String                    @map("created_by")
+  createdAt      DateTime                  @default(now()) @map("created_at")
+  lines          InventoryAdjustmentLine[]
+
+  @@index([type, createdAt(sort: Desc)], map: "inventory_adjustment_type_created_idx")
+  @@index([createdAt(sort: Desc)], map: "inventory_adjustment_created_at_idx")
+  @@map("inventory_adjustment")
+  @@schema("app")
+}
+
+model InventoryAdjustmentLine {
+  id             String              @id @default(uuid()) @db.Uuid
+  adjustmentId   String              @map("adjustment_id") @db.Uuid
+  adjustment     InventoryAdjustment @relation(fields: [adjustmentId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  skuId          String              @map("sku_id") @db.Uuid
+  sku            Sku                 @relation(fields: [skuId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  quantity       Int
+  createdAt      DateTime            @default(now()) @map("created_at")
+
+  @@index([adjustmentId, createdAt], map: "inventory_adjustment_line_adjustment_created_idx")
+  @@index([skuId], map: "inventory_adjustment_line_sku_id_idx")
+  @@map("inventory_adjustment_line")
+  @@schema("app")
+}
+
+/// Store-aware stock projection keyed per (store × SKU × size-grid cell).
+/// This is the Phase-A additive surface for inventory-module writes that must
+/// not live in SQLite and must not write into rics_mirror.
+model StockLevel {
+  id             String   @id @default(uuid()) @db.Uuid
+  storeId        Int      @map("store_id")
+  skuId          String   @map("sku_id") @db.Uuid
+  sku            Sku      @relation(fields: [skuId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  columnLabel    String   @default("") @map("column_label")
+  rowLabel       String   @default("") @map("row_label")
+  onHand         Int      @default(0) @map("on_hand")
+  reserved       Int      @default(0)
+  lastReceivedAt DateTime? @map("last_received_at")
+  lastMovementAt DateTime? @map("last_movement_at")
+  version        Int      @default(1)
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@unique([storeId, skuId, columnLabel, rowLabel], map: "stock_level_store_sku_cell_key")
+  @@index([skuId, storeId], map: "stock_level_sku_store_idx")
+  @@index([storeId, onHand], map: "stock_level_store_on_hand_idx")
+  @@map("stock_level")
+  @@schema("app")
+}
+
+/// Append-only movement ledger for store-aware inventory operations.
+model StockMovement {
+  id                 String   @id @default(uuid()) @db.Uuid
+  storeId            Int      @map("store_id")
+  skuId              String   @map("sku_id") @db.Uuid
+  sku                Sku      @relation(fields: [skuId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  columnLabel        String   @default("") @map("column_label")
+  rowLabel           String   @default("") @map("row_label")
+  movementType       String   @map("movement_type")
+  quantityDelta      Int      @map("quantity_delta")
+  unitCostSnapshot   Decimal? @map("unit_cost_snapshot") @db.Decimal(12, 2)
+  retailPriceSnapshot Decimal? @map("retail_price_snapshot") @db.Decimal(12, 2)
+  sourceDocumentType String   @map("source_document_type")
+  sourceDocumentId   String   @map("source_document_id")
+  reasonCode         String?  @map("reason_code")
+  comment            String?
+  performedBy        String   @map("performed_by")
+  movementAt         DateTime @map("movement_at")
+  createdAt          DateTime @default(now()) @map("created_at")
+  idempotencyKey     String?  @unique(map: "stock_movement_idempotency_key") @map("idempotency_key")
+  manualReceiptLine  ManualReceiptLine? @relation("ManualReceiptLineMovement")
+
+  @@index([skuId, storeId, movementAt(sort: Desc)], map: "stock_movement_sku_store_movement_at_idx")
+  @@index([movementType, movementAt(sort: Desc)], map: "stock_movement_type_movement_at_idx")
+  @@index([storeId, movementAt(sort: Desc)], map: "stock_movement_store_movement_at_idx")
+  @@index([sourceDocumentType, sourceDocumentId], map: "stock_movement_source_document_idx")
+  @@map("stock_movement")
+  @@schema("app")
+}
+
+/// One saved "Enter Manual Receipts" document in the inventory module.
+/// One document represents one SKU receipt into one store, with one or more
+/// size-grid cell lines.
+model ManualReceipt {
+  id                   String   @id @default(uuid()) @db.Uuid
+  storeId              Int      @map("store_id")
+  skuId                String   @map("sku_id") @db.Uuid
+  sku                  Sku      @relation(fields: [skuId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  performedBy          String   @map("performed_by")
+  referenceNumber      String?  @map("reference_number")
+  storeLabelsOnReceive Boolean  @default(false) @map("store_labels_on_receive")
+  movementAt           DateTime @map("movement_at")
+  unitCostOverride     Decimal? @map("unit_cost_override") @db.Decimal(12, 2)
+  retailPriceOverride  Decimal? @map("retail_price_override") @db.Decimal(12, 2)
+  casePackId           String?  @map("case_pack_id")
+  casePackMultiplier   Int?     @map("case_pack_multiplier")
+  note                 String?
+  idempotencyKey       String?  @unique(map: "manual_receipt_idempotency_key") @map("idempotency_key")
+  createdAt            DateTime @default(now()) @map("created_at")
+  lines                ManualReceiptLine[]
+
+  @@index([storeId, movementAt(sort: Desc)], map: "manual_receipt_store_movement_at_idx")
+  @@index([skuId, movementAt(sort: Desc)], map: "manual_receipt_sku_movement_at_idx")
+  @@map("manual_receipt")
+  @@schema("app")
+}
+
+model ManualReceiptLine {
+  id              String        @id @default(uuid()) @db.Uuid
+  manualReceiptId String        @map("manual_receipt_id") @db.Uuid
+  manualReceipt   ManualReceipt @relation(fields: [manualReceiptId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  columnLabel     String        @default("") @map("column_label")
+  rowLabel        String        @default("") @map("row_label")
+  quantity        Int
+  unitCost        Decimal       @map("unit_cost") @db.Decimal(12, 2)
+  retailPrice     Decimal       @map("retail_price") @db.Decimal(12, 2)
+  movementId      String        @unique(map: "manual_receipt_line_movement_id_key") @map("movement_id") @db.Uuid
+  movement        StockMovement @relation("ManualReceiptLineMovement", fields: [movementId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@unique([manualReceiptId, columnLabel, rowLabel], map: "manual_receipt_line_cell_key")
+  @@index([manualReceiptId], map: "manual_receipt_line_receipt_id_idx")
+  @@map("manual_receipt_line")
   @@schema("app")
 }
 
@@ -769,6 +1082,204 @@ model ReportRun {
 /// Slim Stage 1 subset per docs/modules/crm.md; loyalty / quotes / mail detail
 /// tables land later. `account_number` is the RICS convention (phone with no
 /// formatting when not supplied — see `normalizePhoneForAccount` in the service).
+/// customer-intelligence module — direct CSV import landing tables.
+/// Contract: docs/modules/customer-intelligence-module/schema.md
+/// Import flow: docs/modules/customer-intelligence-module/import.md
+model CustomerIntelligenceCustomer {
+  id                   String                        @id @default(uuid()) @db.Uuid
+  honduranIdRaw        String?                       @map("honduran_id_raw")
+  honduranIdNormalized String?                       @unique @map("honduran_id_normalized")
+  fullName             String?                       @map("full_name")
+  gender               String?
+  birthDate            DateTime?                     @map("birth_date") @db.Date
+  status               String                        @default("active")
+  source               String                        @default("rics_csv")
+  firstSeenAt          DateTime?                     @map("first_seen_at") @db.Timestamptz(6)
+  lastSeenAt           DateTime?                     @map("last_seen_at") @db.Timestamptz(6)
+  importedFromBatchId  String?                       @map("imported_from_batch_id") @db.Uuid
+  importedFromBatch    CustomerImportBatch?          @relation(fields: [importedFromBatchId], references: [id], onDelete: SetNull)
+  ricsAccount          String?                       @unique @map("rics_account")
+  ricsCode             String?                       @unique @map("rics_code")
+  ricsDateAdded        DateTime?                     @map("rics_date_added") @db.Timestamptz(6)
+  ricsDateLastChanged  DateTime?                     @map("rics_date_last_changed") @db.Timestamptz(6)
+  createdAt            DateTime                      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime                      @updatedAt @map("updated_at") @db.Timestamptz(6)
+  identities           CustomerIdentity[]
+  contacts             CustomerContact[]
+  addresses            CustomerAddress[]
+  legacyProfile        CustomerLegacyProfile?
+  financialProfile     CustomerFinancialProfile?
+  salesSummaryLegacy   CustomerSalesSummaryLegacy?
+
+  @@index([importedFromBatchId], map: "customer_imported_from_batch_idx")
+  @@map("customer")
+  @@schema("app")
+}
+
+model CustomerIdentity {
+  id              String                       @id @default(uuid()) @db.Uuid
+  customerId      String                       @map("customer_id") @db.Uuid
+  customer        CustomerIntelligenceCustomer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  identityType    String                       @map("identity_type")
+  identityValue   String                       @map("identity_value")
+  normalizedValue String                       @map("normalized_value")
+  source          String                       @default("rics_csv")
+  isPrimary       Boolean                      @default(false) @map("is_primary")
+  createdAt       DateTime                     @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([identityType, normalizedValue], map: "customer_identity_type_normalized_key")
+  @@index([customerId], map: "customer_identity_customer_idx")
+  @@index([normalizedValue], map: "customer_identity_normalized_idx")
+  @@map("customer_identity")
+  @@schema("app")
+}
+
+model CustomerContact {
+  id               String                       @id @default(uuid()) @db.Uuid
+  customerId       String                       @map("customer_id") @db.Uuid
+  customer         CustomerIntelligenceCustomer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  contactType      String                       @map("contact_type")
+  value            String
+  normalizedValue  String?                      @map("normalized_value")
+  isPrimary        Boolean                      @default(false) @map("is_primary")
+  isVerified       Boolean                      @default(false) @map("is_verified")
+  acceptsMarketing Boolean                      @default(false) @map("accepts_marketing")
+  source           String                       @default("rics_csv")
+  createdAt        DateTime                     @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([customerId], map: "customer_contact_customer_idx")
+  @@index([contactType, normalizedValue], map: "customer_contact_lookup_idx")
+  @@map("customer_contact")
+  @@schema("app")
+}
+
+model CustomerAddress {
+  id         String                       @id @default(uuid()) @db.Uuid
+  customerId String                       @map("customer_id") @db.Uuid
+  customer   CustomerIntelligenceCustomer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  addr1      String?
+  addr2      String?
+  city       String?
+  state      String?
+  county     String?
+  zip        String?
+  country    String                       @default("HN")
+  source     String                       @default("rics_csv")
+  createdAt  DateTime                     @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([customerId], map: "customer_address_customer_idx")
+  @@map("customer_address")
+  @@schema("app")
+}
+
+model CustomerLegacyProfile {
+  id              String                       @id @default(uuid()) @db.Uuid
+  customerId      String                       @unique @map("customer_id") @db.Uuid
+  customer        CustomerIntelligenceCustomer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  customerExtra01 String?                      @map("customer_extra_01")
+  customerExtra02 String?                      @map("customer_extra_02")
+  customerExtra03 String?                      @map("customer_extra_03")
+  customerExtra04 String?                      @map("customer_extra_04")
+  customerExtra05 String?                      @map("customer_extra_05")
+  customerExtra06 String?                      @map("customer_extra_06")
+  mailExtra01     String?                      @map("mail_extra_01")
+  mailExtra02     String?                      @map("mail_extra_02")
+  mailExtra03     String?                      @map("mail_extra_03")
+  mailExtra04     String?                      @map("mail_extra_04")
+  mailExtra05     String?                      @map("mail_extra_05")
+  mailExtra06     String?                      @map("mail_extra_06")
+  customerComment String?                      @map("customer_comment")
+  mailComment     String?                      @map("mail_comment")
+  changeTo        String?                      @map("change_to")
+  createdAt       DateTime                     @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@map("customer_legacy_profile")
+  @@schema("app")
+}
+
+model CustomerFinancialProfile {
+  id                String                       @id @default(uuid()) @db.Uuid
+  customerId        String                       @unique @map("customer_id") @db.Uuid
+  customer          CustomerIntelligenceCustomer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  creditLimit       Decimal?                     @map("credit_limit") @db.Decimal(18, 4)
+  currentBalance    Decimal?                     @map("current_balance") @db.Decimal(18, 4)
+  creditSlipBalance Decimal?                     @map("credit_slip_balance") @db.Decimal(18, 4)
+  nonTaxable        Boolean                      @default(false) @map("non_taxable")
+  planNum           Int?                         @map("plan_num") @db.SmallInt
+  planCount         Int?                         @map("plan_count") @db.SmallInt
+  planDollars       Decimal?                     @map("plan_dollars") @db.Decimal(18, 4)
+  planLastCreditAt  DateTime?                    @map("plan_last_credit_at") @db.Timestamptz(6)
+  planCreditBalance Decimal?                     @map("plan_credit_balance") @db.Decimal(18, 4)
+  createdAt         DateTime                     @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@map("customer_financial_profile")
+  @@schema("app")
+}
+
+model CustomerSalesSummaryLegacy {
+  id               String                       @id @default(uuid()) @db.Uuid
+  customerId       String                       @unique @map("customer_id") @db.Uuid
+  customer         CustomerIntelligenceCustomer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  dateLastPurchase DateTime?                    @map("date_last_purchase") @db.Timestamptz(6)
+  qtySales01       Int?                         @map("qty_sales_01")
+  qtySales02       Int?                         @map("qty_sales_02")
+  qtySales03       Int?                         @map("qty_sales_03")
+  qtySales04       Int?                         @map("qty_sales_04")
+  dollarSales01    Decimal?                     @map("dollar_sales_01") @db.Decimal(18, 4)
+  dollarSales02    Decimal?                     @map("dollar_sales_02") @db.Decimal(18, 4)
+  dollarSales03    Decimal?                     @map("dollar_sales_03") @db.Decimal(18, 4)
+  dollarSales04    Decimal?                     @map("dollar_sales_04") @db.Decimal(18, 4)
+  createdAt        DateTime                     @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@map("customer_sales_summary_legacy")
+  @@schema("app")
+}
+
+model CustomerImportBatch {
+  id            String                        @id @default(uuid()) @db.Uuid
+  source        String                        @default("rics_csv")
+  fileName      String                        @map("file_name")
+  startedAt     DateTime                      @default(now()) @map("started_at") @db.Timestamptz(6)
+  finishedAt    DateTime?                     @map("finished_at") @db.Timestamptz(6)
+  totalRows     Int                           @default(0) @map("total_rows")
+  createdCount  Int                           @default(0) @map("created_count")
+  updatedCount  Int                           @default(0) @map("updated_count")
+  skippedCount  Int                           @default(0) @map("skipped_count")
+  rejectedCount Int                           @default(0) @map("rejected_count")
+  customers     CustomerIntelligenceCustomer[]
+  rejects       CustomerImportReject[]
+
+  @@index([startedAt], map: "customer_import_batch_started_at_idx")
+  @@map("customer_import_batch")
+  @@schema("app")
+}
+
+model CustomerImportReject {
+  id                   String              @id @default(uuid()) @db.Uuid
+  batchId              String              @map("batch_id") @db.Uuid
+  batch                CustomerImportBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  sourceFile           String              @map("source_file")
+  rowNumber            Int                 @map("row_number")
+  account              String?
+  code                 String?
+  name                 String?
+  honduranIdRaw        String?             @map("honduran_id_raw")
+  honduranIdNormalized String?             @map("honduran_id_normalized")
+  email                String?
+  rejectReason         String              @map("reject_reason")
+  rawRow               Json                @map("raw_row")
+  createdAt            DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([batchId], map: "customer_import_reject_batch_idx")
+  @@index([rejectReason], map: "customer_import_reject_reason_idx")
+  @@map("customer_import_reject")
+  @@schema("app")
+}
+
+/// crm module â€” Customer master. Mirrors the RICS Mailing List entry (Ch. 9 p. 117).
+/// Slim Stage 1 subset per docs/modules/crm.md; loyalty / quotes / mail detail
+/// tables land later. `account_number` is the RICS convention (phone with no
+/// formatting when not supplied â€” see `normalizePhoneForAccount` in the service).
 model Customer {
   id                         String         @id @default(uuid())
   accountNumber              String         @unique @map("account_number")

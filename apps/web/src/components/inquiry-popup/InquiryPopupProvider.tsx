@@ -1,6 +1,8 @@
 import React from 'react';
 import { Drawer } from 'antd';
 import { InquiryBody } from '../../pages/products/inquiry/InquiryBody';
+import type { InquiryTab, NeighborScope } from '../../pages/products/inquiry/ActionBar';
+import type { ViewMode } from '../../pages/products/inquiry/ViewModeSelector';
 
 interface OpenArgs {
   skuCode: string;
@@ -29,9 +31,15 @@ export const InquiryPopupProvider: React.FC<{ children: React.ReactNode }> = ({ 
     open: false,
     skuCode: '',
   });
+  const [mode, setMode] = React.useState<ViewMode>('ALL_STORES_SUMMARY');
+  const [activeTab, setActiveTab] = React.useState<InquiryTab | null>(null);
+  const [scope, setScope] = React.useState<NeighborScope>('general');
 
   const openInquiry = React.useCallback((args: OpenArgs) => {
     setState({ open: true, skuCode: args.skuCode, storeId: args.storeId });
+    setMode('ALL_STORES_SUMMARY');
+    setActiveTab(null);
+    setScope('general');
   }, []);
 
   const closeInquiry = React.useCallback(() => {
@@ -72,6 +80,12 @@ export const InquiryPopupProvider: React.FC<{ children: React.ReactNode }> = ({ 
             skuCode={state.skuCode}
             storeId={state.storeId}
             onPickSku={handlePickSku}
+            mode={mode}
+            activeTab={activeTab}
+            scope={scope}
+            onModeChange={setMode}
+            onActiveTabChange={setActiveTab}
+            onScopeChange={setScope}
           />
         )}
       </Drawer>

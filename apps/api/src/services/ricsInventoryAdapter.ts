@@ -130,6 +130,7 @@ export interface InventoryInquiry {
   };
   stores: InventoryInquiryStore[];
   totals: InventoryInquiryStore['totals'];
+  lastReceivedAt: string | null;
   pricing: InquiryPricing;
   rollup: InquiryRollup;
   grids: InquiryGrids;
@@ -137,17 +138,49 @@ export interface InventoryInquiry {
   info: InquiryInfo;
 }
 
-export interface FindBySizeResult {
+export type FindBySizeSort = 'SKU' | 'DESCRIPTION' | 'VENDOR' | 'CATEGORY';
+
+export interface FindBySizeParams {
+  seedSku?: string;
+  sizeTypeCode?: number;
+  columnLabel?: string;
+  rowLabel?: string;
+  restrictToSizeType?: boolean;
+  vendorCode?: string;
+  category?: number;
+  styleColor?: string;
+  storeNumbers?: number[];
+  sort?: FindBySizeSort;
+  separateByStore?: boolean;
+  limit?: number;
+}
+
+export interface FindBySizeRow {
   sku: string;
   description: string | null;
   brand: string | null;
-  sizeLabel: string;
-  matches: Array<{
-    storeNumber: number;
-    storeName: string | null;
-    rowLabel: string;
-    onHand: number;
-  }>;
+  vendorCode: string | null;
+  category: number | null;
+  styleColor: string | null;
+  sizeTypeCode: number | null;
+  sizeTypeDesc: string | null;
+  totalOnHand: number;
+  storeCount: number;
+  storeNumber: number | null;
+  storeName: string | null;
+}
+
+export interface FindBySizeResult {
+  seedSku: string | null;
+  columnLabel: string | null;
+  rowLabel: string | null;
+  sizeTypeCode: number | null;
+  sizeTypeDesc: string | null;
+  restrictToSizeType: boolean;
+  separateByStore: boolean;
+  sort: FindBySizeSort;
+  rows: FindBySizeRow[];
+  totalMatches: number;
   totalOnHand: number;
 }
 
@@ -407,6 +440,40 @@ interface VendorRow {
   manuName: string | null;
 }
 
+interface AppInventorySkuRow {
+  id: string;
+  code: string | null;
+  provisionalCode: string;
+  descriptionRics: string | null;
+  vendorId: string | null;
+  manufacturer: string | null;
+  categoryNumber: number | null;
+  sizeType: number | null;
+  season: string | null;
+  vendorSku: string | null;
+  styleColor: string | null;
+  listPrice: number | null;
+  retailPrice: number | null;
+  markDownPrice1: number | null;
+  markDownPrice2: number | null;
+  currentCost: number | null;
+  currentPriceSlot: string | null;
+  labelCode: string | null;
+  groupCode: string | null;
+  pictureFileName: string | null;
+  perks: number | null;
+  comment: string | null;
+}
+
+interface StockLevelCellRow {
+  storeId: number;
+  rowLabel: string;
+  columnLabel: string;
+  onHand: number;
+  lastReceivedAt: Date | null;
+  lastMovementAt: Date | null;
+}
+
 async function loadVendorMap(): Promise<Map<string, VendorRow>> {
   return cachedAsync('dim:vendors', 300_000, async () => {
     const rows = await prisma.$queryRawUnsafe<
@@ -429,6 +496,73 @@ async function loadVendorMap(): Promise<Map<string, VendorRow>> {
     }
     return map;
   });
+}
+
+async function loadAppInventorySkuByCode(skuCode: string): Promise<AppInventorySkuRow | null> {
+  const row = await prisma.sku.findFirst({
+    where: {
+      OR: [{ code: skuCode }, { provisionalCode: skuCode }],
+    },
+    select: {
+      id: true,
+      code: true,
+      provisionalCode: true,
+      descriptionRics: true,
+      vendorId: true,
+      manufacturer: true,
+      categoryNumber: true,
+      sizeType: true,
+      season: true,
+      vendorSku: true,
+      styleColor: true,
+      listPrice: true,
+      retailPrice: true,
+      markDownPrice1: true,
+      markDownPrice2: true,
+      currentCost: true,
+      currentPriceSlot: true,
+      labelCode: true,
+      groupCode: true,
+      pictureFileName: true,
+      perks: true,
+      comment: true,
+    },
+  });
+  if (!row) {
+    return null;
+  }
+  return {
+    ...row,
+    listPrice: row.listPrice == null ? null : Number(row.listPrice),
+    retailPrice: row.retailPrice == null ? null : Number(row.retailPrice),
+    markDownPrice1: row.markDownPrice1 == null ? null : Number(row.markDownPrice1),
+    markDownPrice2: row.markDownPrice2 == null ? null : Number(row.markDownPrice2),
+    currentCost: row.currentCost == null ? null : Number(row.currentCost),
+    perks: row.perks == null ? null : Number(row.perks),
+  };
+}
+
+async function loadStockLevelRowsForSkuId(skuId: string): Promise<StockLevelCellRow[]> {
+  const rows = await prisma.stockLevel.findMany({
+    where: { skuId },
+    select: {
+      storeId: true,
+      rowLabel: true,
+      columnLabel: true,
+      onHand: true,
+      lastReceivedAt: true,
+      lastMovementAt: true,
+    },
+  });
+
+  return rows.map((row) => ({
+    storeId: row.storeId,
+    rowLabel: row.rowLabel.trim(),
+    columnLabel: row.columnLabel.trim(),
+    onHand: row.onHand,
+    lastReceivedAt: row.lastReceivedAt,
+    lastMovementAt: row.lastMovementAt,
+  }));
 }
 
 // ─────────────────────────── master lookup ────────────────────────────────
@@ -672,16 +806,12 @@ function buildPricing(master: MasterRow): InquiryPricing {
  * Grid shape: { columns: string[], rows: [{ label: string, cells: [{value}] }] }
  * Each row is one store; each cell is one column label.
  */
-function buildGrids(storeEntries: InventoryInquiryStore[], columnLabels: string[]): InquiryGrids {
+function buildGrids(
+  storeEntries: InventoryInquiryStore[],
+  columnLabels: string[],
+  scopedStoreId?: number,
+): InquiryGrids {
   if (!storeEntries.length) return {};
-
-  type MetricKey = 'onHand' | 'model' | 'maxQty' | 'reorder';
-  const GRID_METRICS: Array<{ key: MetricKey; gridKey: keyof InquiryGrids }> = [
-    { key: 'onHand',  gridKey: 'onHand' },
-    { key: 'model',   gridKey: 'model' },
-    { key: 'maxQty',  gridKey: 'max' },
-    { key: 'reorder', gridKey: 'reorder' },
-  ];
 
   // Determine ordered columns: use the sizeType labels if available, else
   // collect from cells in order.
@@ -703,24 +833,78 @@ function buildGrids(storeEntries: InventoryInquiryStore[], columnLabels: string[
 
   if (!cols.length) return {};
 
-  const grids: InquiryGrids = {};
+  const scopedEntries =
+    scopedStoreId != null ? storeEntries.filter((store) => store.storeNumber === scopedStoreId) : storeEntries;
 
-  for (const { key, gridKey } of GRID_METRICS) {
-    const rows: InquirySizeGrid['rows'] = storeEntries.map((store) => {
+  return {
+    onHand: buildStoreMetricGrid(scopedEntries, cols, (cell) => cell.onHand),
+    model: buildStoreMetricGrid(scopedEntries, cols, (cell) => cell.model),
+    max: buildStoreMetricGrid(scopedEntries, cols, (cell) => cell.maxQty),
+    reorder: buildStoreMetricGrid(scopedEntries, cols, (cell) => cell.reorder),
+    short: buildStoreMetricGrid(scopedEntries, cols, (cell) => Math.max((cell.model ?? 0) - (cell.onHand ?? 0), 0)),
+    allStoresOnHand: buildStoreMetricGrid(storeEntries, cols, (cell) => cell.onHand),
+    allStoresSummary: buildSummaryGrid(storeEntries, cols, 'On Hand', (cell) => cell.onHand),
+  };
+}
+
+function resolveCurrentSlotFromSku(currentPriceSlot: string | null | undefined): PriceSlot {
+  const slot = (currentPriceSlot ?? '').trim().toUpperCase();
+  if (slot === 'LIST') return 'LIST';
+  if (slot === 'MD1' || slot === 'MARKDOWN1') return 'MARKDOWN1';
+  if (slot === 'MD2' || slot === 'MARKDOWN2') return 'MARKDOWN2';
+  return 'RETAIL';
+}
+
+function buildPricingFromSku(sku: AppInventorySkuRow): InquiryPricing {
+  return {
+    retail: Number(sku.retailPrice ?? 0),
+    markdown1: Number(sku.markDownPrice1 ?? 0),
+    markdown2: Number(sku.markDownPrice2 ?? 0),
+    avgCost: 0,
+    currentCost: Number(sku.currentCost ?? 0),
+    listPrice: Number(sku.listPrice ?? 0),
+    currentSlot: resolveCurrentSlotFromSku(sku.currentPriceSlot),
+  };
+}
+
+function buildStoreMetricGrid(
+  storeEntries: InventoryInquiryStore[],
+  columns: string[],
+  getValue: (cell: InventoryCell) => number,
+): InquirySizeGrid {
+  return {
+    columns,
+    rows: storeEntries.map((store) => {
       const byCol = new Map<string, number>();
-      for (const c of store.cells) {
-        if (!c.columnLabel) continue;
-        byCol.set(c.columnLabel, (byCol.get(c.columnLabel) ?? 0) + (c[key] as number));
+      for (const cell of store.cells) {
+        if (!cell.columnLabel) continue;
+        byCol.set(cell.columnLabel, (byCol.get(cell.columnLabel) ?? 0) + getValue(cell));
       }
       return {
         label: store.storeName ?? `Store ${store.storeNumber}`,
-        cells: cols.map((col) => ({ value: byCol.get(col) ?? null })),
+        cells: columns.map((column) => ({ value: byCol.get(column) ?? null })),
       };
-    });
-    grids[gridKey] = { columns: cols, rows };
-  }
+    }),
+  };
+}
 
-  return grids;
+function buildSummaryGrid(
+  storeEntries: InventoryInquiryStore[],
+  columns: string[],
+  label: string,
+  getValue: (cell: InventoryCell) => number,
+): InquirySizeGrid {
+  const totalsByCol = new Map<string, number>();
+  for (const store of storeEntries) {
+    for (const cell of store.cells) {
+      if (!cell.columnLabel) continue;
+      totalsByCol.set(cell.columnLabel, (totalsByCol.get(cell.columnLabel) ?? 0) + getValue(cell));
+    }
+  }
+  return {
+    columns,
+    rows: [{ label, cells: columns.map((column) => ({ value: totalsByCol.get(column) ?? null })) }],
+  };
 }
 
 function buildPictureUrl(master: MasterRow): string | null {
@@ -729,57 +913,90 @@ function buildPictureUrl(master: MasterRow): string | null {
   return `/rics-images/${encodeURIComponent(s)}`;
 }
 
+function buildPictureUrlFromSku(sku: AppInventorySkuRow): string | null {
+  const s = sku.pictureFileName?.trim();
+  if (!s) return null;
+  return `/rics-images/${encodeURIComponent(s)}`;
+}
+
+function mergeColumnLabels(storeEntries: InventoryInquiryStore[], preferred: string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+
+  for (const label of preferred) {
+    const trimmed = label.trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    out.push(trimmed);
+  }
+
+  for (const store of storeEntries) {
+    for (const cell of store.cells) {
+      const trimmed = cell.columnLabel.trim();
+      if (!trimmed || seen.has(trimmed)) continue;
+      seen.add(trimmed);
+      out.push(trimmed);
+    }
+  }
+
+  return out;
+}
+
 // ─────────────────────────── public: Inventory Inquiry ────────────────────
 
-export async function getInventoryInquiry(sku: string): Promise<InventoryInquiry | null> {
+export async function getInventoryInquiry(sku: string, storeId?: number): Promise<InventoryInquiry | null> {
   const trimmed = (sku ?? '').trim();
   if (!trimmed) return null;
 
-  const master = await loadMasterBySku(trimmed);
-  if (!master || !master.SKU) return null;
+  const skuRow = await loadAppInventorySkuByCode(trimmed);
+  if (!skuRow) return null;
 
-  const quaSql = `SELECT ${buildQuaSelect()}
-FROM rics_mirror.inventory_quantities
-WHERE sku = $1
-ORDER BY store, "row", segment`;
-
-  // Parallel legs: dimension maps (cached; fast), RIINVQUA per-SKU cells
-  // (the dominant cost), and the per-SKU sales rollup. Rolling them together
-  // hides each leg's latency behind the others on fast connections.
-  const [stores, sizeTypes, vendors, rows, salesRollup] = await Promise.all([
-    loadStoreMap(),
+  const [sizeTypes, stockRows, salesRollup] = await Promise.all([
     loadSizeTypeMap(),
-    loadVendorMap(),
-    prisma.$queryRawUnsafe<QuaRow[]>(quaSql, trimmed),
+    loadStockLevelRowsForSkuId(skuRow.id),
     getInquirySalesRollup(trimmed),
   ]);
 
-  const sizeType = master.SizeType != null ? sizeTypes.get(Number(master.SizeType)) ?? null : null;
-  const vendor = master.Vendor ? vendors.get(master.Vendor.trim()) ?? null : null;
+  const sizeType = skuRow.sizeType != null ? sizeTypes.get(Number(skuRow.sizeType)) ?? null : null;
 
   const byStore = new Map<number, InventoryCell[]>();
-  for (const r of rows) {
-    const cells = expandQuaRow(r, sizeType, { includeZero: true });
-    const list = byStore.get(Number(r.Store ?? 0)) ?? [];
+  let latestReceivedAt: Date | null = null;
+  for (const row of stockRows) {
+    const rowStore = Number(row.storeId ?? 0);
+    const cells: InventoryCell[] = [{
+      storeNumber: rowStore,
+      rowLabel: row.rowLabel,
+      columnLabel: row.columnLabel,
+      onHand: row.onHand,
+      currentOnOrder: 0,
+      futureOnOrder: 0,
+      model: 0,
+      maxQty: 0,
+      reorder: 0,
+      mtdSales: 0,
+      stdSales: 0,
+      ytdSales: 0,
+      lySales: 0,
+    }];
+    const list = byStore.get(rowStore) ?? [];
     list.push(...cells);
-    byStore.set(Number(r.Store ?? 0), list);
+    byStore.set(rowStore, list);
+
+    if (row.lastReceivedAt && (!latestReceivedAt || row.lastReceivedAt > latestReceivedAt)) {
+      latestReceivedAt = row.lastReceivedAt;
+    }
   }
 
   const storeEntries: InventoryInquiryStore[] = [...byStore.entries()]
     .sort((a, b) => a[0] - b[0])
     .map(([storeNumber, cells]) => ({
       storeNumber,
-      storeName: stores.get(storeNumber)?.name ?? null,
+      storeName: `Store ${storeNumber}`,
       cells,
       totals: sumCellTotals(cells),
     }));
 
-  const brand =
-    master.Manufacturer?.trim() ||
-    vendor?.manuName ||
-    vendor?.shortName ||
-    master.Vendor?.trim() ||
-    null;
+  const brand = skuRow.manufacturer?.trim() || skuRow.vendorId?.trim() || null;
 
   const rowLabelsPresent = new Set<string>();
   for (const entry of storeEntries) {
@@ -789,17 +1006,17 @@ ORDER BY store, "row", segment`;
   }
 
   return {
-    sku: master.SKU,
+    sku: skuRow.code ?? skuRow.provisionalCode,
     master: {
-      description: master.Desc?.trim() || null,
+      description: skuRow.descriptionRics?.trim() || null,
       brand,
-      vendorCode: master.Vendor?.trim() || null,
-      category: master.Category ?? null,
-      season: master.Season?.trim() || null,
-      retailPrice: resolveCurrentPrice(master),
-      currentCost: master.CurrentCost ?? null,
+      vendorCode: skuRow.vendorId?.trim() || null,
+      category: skuRow.categoryNumber ?? null,
+      season: skuRow.season?.trim() || null,
+      retailPrice: skuRow.retailPrice ?? null,
+      currentCost: skuRow.currentCost ?? null,
       sizeType: {
-        code: sizeType?.code ?? master.SizeType ?? null,
+        code: sizeType?.code ?? skuRow.sizeType ?? null,
         desc: sizeType?.desc ?? null,
         rowLabels: sizeType
           ? sizeType.rows.filter((lbl) => lbl && (rowLabelsPresent.size === 0 || rowLabelsPresent.has(lbl)))
@@ -818,18 +1035,23 @@ ORDER BY store, "row", segment`;
       }),
       { onHand: 0, currentOnOrder: 0, futureOnOrder: 0, ytdSales: 0, lySales: 0 },
     ),
-    pricing:    buildPricing(master),
+    lastReceivedAt: latestReceivedAt?.toISOString() ?? null,
+    pricing:    buildPricingFromSku(skuRow),
     rollup:     salesRollup,
-    grids:      buildGrids(storeEntries, sizeType ? sizeType.columns.filter((lbl) => !!lbl) : []),
-    pictureUrl: buildPictureUrl(master),
+    grids:      buildGrids(
+      storeEntries,
+      sizeType ? sizeType.columns.filter((lbl) => !!lbl) : [],
+      storeId != null && Number.isFinite(Number(storeId)) ? Math.trunc(Number(storeId)) : undefined,
+    ),
+    pictureUrl: buildPictureUrlFromSku(skuRow),
     info: {
-      seasonCode:     master.Season?.trim()        || null,
-      labelCode:      master.LabelCode?.trim()     || null,
-      groupCode:      master.GroupCode?.trim()      || null,
+      seasonCode:     skuRow.season?.trim()        || null,
+      labelCode:      skuRow.labelCode?.trim()     || null,
+      groupCode:      skuRow.groupCode?.trim()     || null,
       firstReceivedAt: null, // Phase 2: not stored on InventoryMaster
-      lastMarkdownAt: master.LastPriceChange?.trim() || null,
-      perks:          master.Perks ?? null,
-      comment:        master.Comment?.trim()        || null,
+      lastMarkdownAt: null,
+      perks:          skuRow.perks ?? null,
+      comment:        skuRow.comment?.trim()        || null,
     },
   };
 }
@@ -855,40 +1077,147 @@ function sumCellTotals(cells: InventoryCell[]): InventoryInquiryStore['totals'] 
  * Size matching is case-insensitive exact-match against the SizeType's column
  * labels (or row labels when the shoe grid uses rows for width).
  */
-export async function findBySize(sku: string, sizeLabel: string): Promise<FindBySizeResult | null> {
-  const skuTrim = (sku ?? '').trim();
-  const sizeTrim = (sizeLabel ?? '').trim();
-  if (!skuTrim || !sizeTrim) return null;
+export async function findBySize(params: FindBySizeParams = {}): Promise<FindBySizeResult> {
+  const seedSku = (params.seedSku ?? '').trim() || null;
+  const columnLabel = (params.columnLabel ?? '').trim() || null;
+  const rowLabel = (params.rowLabel ?? '').trim() || null;
+  const restrictToSizeType = params.restrictToSizeType !== false;
+  const separateByStore = params.separateByStore === true;
+  const sort: FindBySizeSort = params.sort ?? 'SKU';
+  const limit = clamp(params.limit ?? 2_000, 1, 10_000);
 
-  const inquiry = await getInventoryInquiry(skuTrim);
-  if (!inquiry) return null;
+  let effectiveSizeTypeCode =
+    params.sizeTypeCode != null && Number.isFinite(Number(params.sizeTypeCode))
+      ? Number(params.sizeTypeCode)
+      : null;
 
-  const target = sizeTrim.toLowerCase();
-  const matches: FindBySizeResult['matches'] = [];
-  for (const s of inquiry.stores) {
-    for (const c of s.cells) {
-      const labelMatches =
-        c.columnLabel.toLowerCase() === target ||
-        c.rowLabel.toLowerCase() === target;
-      if (!labelMatches) continue;
-      if (c.onHand === 0) continue;
-      matches.push({
-        storeNumber: s.storeNumber,
-        storeName: s.storeName,
-        rowLabel: c.rowLabel,
-        onHand: c.onHand,
-      });
+  if (seedSku && effectiveSizeTypeCode == null) {
+    const seedSkuRow = await loadAppInventorySkuByCode(seedSku);
+    if (seedSkuRow?.sizeType != null && Number.isFinite(Number(seedSkuRow.sizeType))) {
+      effectiveSizeTypeCode = Number(seedSkuRow.sizeType);
     }
   }
-  matches.sort((a, b) => b.onHand - a.onHand);
+
+  const [sizeTypes, stockRows] = await Promise.all([
+    loadSizeTypeMap(),
+    prisma.stockLevel.findMany({
+      where: {
+        ...(params.storeNumbers?.length
+          ? { storeId: { in: params.storeNumbers.map((n) => Number(n)) } }
+          : {}),
+        sku: {
+          is: {
+            ...(params.vendorCode ? { vendorId: params.vendorCode.trim() } : {}),
+            ...(params.category != null ? { categoryNumber: Number(params.category) } : {}),
+            ...(params.styleColor ? { styleColor: { contains: params.styleColor.trim(), mode: 'insensitive' } } : {}),
+            ...(restrictToSizeType && effectiveSizeTypeCode != null ? { sizeType: effectiveSizeTypeCode } : {}),
+          },
+        },
+      },
+      select: {
+        storeId: true,
+        rowLabel: true,
+        columnLabel: true,
+        onHand: true,
+        sku: {
+          select: {
+            code: true,
+            provisionalCode: true,
+            descriptionRics: true,
+            vendorId: true,
+            manufacturer: true,
+            categoryNumber: true,
+            sizeType: true,
+            styleColor: true,
+          },
+        },
+      },
+      take: limit * 50,
+    }),
+  ]);
+
+  const effectiveSizeType =
+    effectiveSizeTypeCode != null ? sizeTypes.get(effectiveSizeTypeCode) ?? null : null;
+
+  const rowFilter = normalizeSizeLabel(rowLabel);
+  const colFilter = normalizeSizeLabel(columnLabel);
+
+  type CandidateCell = {
+    sku: string;
+    description: string | null;
+    brand: string | null;
+    vendorCode: string | null;
+    category: number | null;
+    styleColor: string | null;
+    sizeTypeCode: number | null;
+    sizeTypeDesc: string | null;
+    storeNumber: number;
+    storeName: string | null;
+    onHand: number;
+  };
+
+  const matchedCells: CandidateCell[] = [];
+
+  for (const row of stockRows) {
+    const skuCode = row.sku.code ?? row.sku.provisionalCode;
+    if (!skuCode || row.onHand <= 0) continue;
+
+    const normalizedRowLabel = (row.rowLabel ?? '').trim();
+    const normalizedColumnLabel = (row.columnLabel ?? '').trim();
+    if (rowFilter && normalizeSizeLabel(normalizedRowLabel) !== rowFilter) continue;
+    if (colFilter && normalizeSizeLabel(normalizedColumnLabel) !== colFilter) continue;
+
+    const sizeType = row.sku.sizeType != null ? sizeTypes.get(Number(row.sku.sizeType)) ?? null : null;
+
+    matchedCells.push({
+      sku: skuCode,
+      description: row.sku.descriptionRics?.trim() || null,
+      brand: row.sku.manufacturer?.trim() || row.sku.vendorId?.trim() || null,
+      vendorCode: row.sku.vendorId?.trim() || null,
+      category: row.sku.categoryNumber ?? null,
+      styleColor: row.sku.styleColor?.trim() || null,
+      sizeTypeCode: sizeType?.code ?? row.sku.sizeType ?? null,
+      sizeTypeDesc: sizeType?.desc ?? null,
+      storeNumber: row.storeId,
+      storeName: `Store ${row.storeId}`,
+      onHand: row.onHand,
+    });
+  }
+
+  if (matchedCells.length === 0) {
+    return {
+      seedSku,
+      columnLabel,
+      rowLabel,
+      sizeTypeCode: restrictToSizeType ? effectiveSizeTypeCode : null,
+      sizeTypeDesc: restrictToSizeType ? effectiveSizeType?.desc ?? null : null,
+      restrictToSizeType,
+      separateByStore,
+      sort,
+      rows: [],
+      totalMatches: 0,
+      totalOnHand: 0,
+    }
+  }
+
+  const rows = separateByStore
+    ? aggregateFindBySizeByStore(matchedCells)
+    : aggregateFindBySizeBySku(matchedCells);
+
+  rows.sort(compareFindBySizeRows(sort));
 
   return {
-    sku: inquiry.sku,
-    description: inquiry.master.description,
-    brand: inquiry.master.brand,
-    sizeLabel: sizeTrim,
-    matches,
-    totalOnHand: matches.reduce((acc, m) => acc + m.onHand, 0),
+    seedSku,
+    columnLabel,
+    rowLabel,
+    sizeTypeCode: restrictToSizeType ? effectiveSizeTypeCode : null,
+    sizeTypeDesc: restrictToSizeType ? effectiveSizeType?.desc ?? null : null,
+    restrictToSizeType,
+    separateByStore,
+    sort,
+    rows,
+    totalMatches: rows.length,
+    totalOnHand: rows.reduce((sum, row) => sum + row.totalOnHand, 0),
   };
 }
 
@@ -1541,6 +1870,123 @@ function sumOfMetric(prefix: string): string {
   return parts.join(' + ');
 }
 
+function normalizeSizeLabel(value: string | null | undefined): string {
+  return (value ?? '').trim().toUpperCase();
+}
+
+function aggregateFindBySizeBySku(
+  cells: Array<{
+    sku: string;
+    description: string | null;
+    brand: string | null;
+    vendorCode: string | null;
+    category: number | null;
+    styleColor: string | null;
+    sizeTypeCode: number | null;
+    sizeTypeDesc: string | null;
+    storeNumber: number;
+    storeName: string | null;
+    onHand: number;
+  }>,
+): FindBySizeRow[] {
+  const bySku = new Map<string, FindBySizeRow>();
+  const storeSets = new Map<string, Set<number>>();
+
+  for (const cell of cells) {
+    const current = bySku.get(cell.sku);
+    const stores = storeSets.get(cell.sku) ?? new Set<number>();
+    stores.add(cell.storeNumber);
+    storeSets.set(cell.sku, stores);
+
+    if (!current) {
+      bySku.set(cell.sku, {
+        sku: cell.sku,
+        description: cell.description,
+        brand: cell.brand,
+        vendorCode: cell.vendorCode,
+        category: cell.category,
+        styleColor: cell.styleColor,
+        sizeTypeCode: cell.sizeTypeCode,
+        sizeTypeDesc: cell.sizeTypeDesc,
+        totalOnHand: cell.onHand,
+        storeCount: 1,
+        storeNumber: null,
+        storeName: null,
+      });
+      continue;
+    }
+
+    current.totalOnHand += cell.onHand;
+    current.storeCount = stores.size;
+  }
+
+  return [...bySku.values()];
+}
+
+function aggregateFindBySizeByStore(
+  cells: Array<{
+    sku: string;
+    description: string | null;
+    brand: string | null;
+    vendorCode: string | null;
+    category: number | null;
+    styleColor: string | null;
+    sizeTypeCode: number | null;
+    sizeTypeDesc: string | null;
+    storeNumber: number;
+    storeName: string | null;
+    onHand: number;
+  }>,
+): FindBySizeRow[] {
+  const bySkuStore = new Map<string, FindBySizeRow>();
+
+  for (const cell of cells) {
+    const key = `${cell.sku}::${cell.storeNumber}`;
+    const current = bySkuStore.get(key);
+    if (!current) {
+      bySkuStore.set(key, {
+        sku: cell.sku,
+        description: cell.description,
+        brand: cell.brand,
+        vendorCode: cell.vendorCode,
+        category: cell.category,
+        styleColor: cell.styleColor,
+        sizeTypeCode: cell.sizeTypeCode,
+        sizeTypeDesc: cell.sizeTypeDesc,
+        totalOnHand: cell.onHand,
+        storeCount: 1,
+        storeNumber: cell.storeNumber,
+        storeName: cell.storeName,
+      });
+      continue;
+    }
+
+    current.totalOnHand += cell.onHand;
+  }
+
+  return [...bySkuStore.values()];
+}
+
+function compareFindBySizeRows(sort: FindBySizeSort): (a: FindBySizeRow, b: FindBySizeRow) => number {
+  const text = (value: string | null | undefined) => (value ?? '').toUpperCase();
+  return (a, b) => {
+    const primary =
+      sort === 'DESCRIPTION'
+        ? text(a.description).localeCompare(text(b.description))
+        : sort === 'VENDOR'
+          ? text(a.vendorCode).localeCompare(text(b.vendorCode))
+          : sort === 'CATEGORY'
+            ? Number(a.category ?? 0) - Number(b.category ?? 0)
+            : text(a.sku).localeCompare(text(b.sku));
+    if (primary !== 0) return primary;
+    const bySku = text(a.sku).localeCompare(text(b.sku));
+    if (bySku !== 0) return bySku;
+    const byStore = Number(a.storeNumber ?? 0) - Number(b.storeNumber ?? 0);
+    if (byStore !== 0) return byStore;
+    return Number(b.totalOnHand) - Number(a.totalOnHand);
+  };
+}
+
 // ─────────────────────────── Recommended Transfer Report ──────────────────
 
 /**
@@ -1916,3 +2362,9 @@ function addDays(d: Date, n: number): Date {
 function daysBetween(a: Date, b: Date): number {
   return Math.abs(Math.round((b.getTime() - a.getTime()) / 86_400_000));
 }
+
+export const __test = {
+  buildGrids,
+  buildStoreMetricGrid,
+  buildSummaryGrid,
+};

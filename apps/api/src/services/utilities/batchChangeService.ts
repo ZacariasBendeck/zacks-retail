@@ -15,7 +15,7 @@
  * Writes never touch rics_mirror or MDBs — CLAUDE.md hard rule.
  */
 
-import { Prisma, type PrismaClient } from '@prisma/client';
+import { Prisma, type PrismaClient } from '../../prismaClient';
 import { prisma } from '../../db/prisma';
 import { auditLog } from '../products/auditLog';
 import { invalidateWarmupForSkus } from '../ricsProductAdapter';
@@ -352,3 +352,5 @@ export class BatchChangeValidationError extends Error {
     super(message);
   }
 }
+
+

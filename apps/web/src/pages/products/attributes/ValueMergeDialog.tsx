@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { App, Form, Modal, Select, Typography } from 'antd'
+import { App, Form, Select, Typography } from 'antd'
+import { DraggableModal } from '../../../components/draggable-modal'
 import { useMergeValues } from '../../../hooks/useProductsAttributes'
 import type { AttributeDimension, AttributeDimensionValue } from '../../../types/productsAttributes'
 
@@ -38,7 +39,7 @@ export default function ValueMergeDialog({ open, dimension, source, onClose }: P
   }
 
   return (
-    <Modal
+    <DraggableModal
       title={source ? `Combinar valor · ${source.code}` : 'Combinar valor'}
       open={open}
       onCancel={() => {
@@ -72,6 +73,6 @@ export default function ValueMergeDialog({ open, dimension, source, onClose }: P
           />
         </Form.Item>
       </Form>
-    </Modal>
+    </DraggableModal>
   )
 }

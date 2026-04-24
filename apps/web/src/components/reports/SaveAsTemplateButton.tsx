@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
-import { App, Button, Form, Input, Modal, Radio } from 'antd'
+import { App, Button, Form, Input, Radio } from 'antd'
 import { SaveOutlined } from '@ant-design/icons'
+import { DraggableModal } from '../draggable-modal'
 import { useCreateReportTemplate } from '../../hooks/useReportTemplates'
 import type { ReportType, TemplateVisibility } from '../../services/reportTemplatesApi'
 
@@ -63,7 +64,7 @@ export default function SaveAsTemplateButton({ reportType, getParamsJson, disabl
       >
         Save as template
       </Button>
-      <Modal
+      <DraggableModal
         title="Save report as template"
         open={open}
         onCancel={() => setOpen(false)}
@@ -97,7 +98,7 @@ export default function SaveAsTemplateButton({ reportType, getParamsJson, disabl
             </Radio.Group>
           </Form.Item>
         </Form>
-      </Modal>
+      </DraggableModal>
     </>
   )
 }

@@ -9,11 +9,11 @@
 
 ## Context
 
-The OLE DB write path in `VendorRepository` (create / update / delete / store-account upsert against `RIVENDOR.MDB`) was deleted 2026-04-23 because writes-to-RICS-at-request-time blocks the Postgres-first direction and exposes a load-bearing dependency on a Windows-local PowerShell-spawn bridge.
+The OLE DB write path in `VendorRepository` (create / update / delete / store-account upsert against `RIVENDOR.MDB`) was deleted 2026-04-23 because writes-to-RICS-at-request-time conflicts with the current mirror-first strategy and exposes a load-bearing dependency on a Windows-local PowerShell-spawn bridge.
 
 Reads moved to `rics_mirror.vendor_master` (2,256 rows, populated by `sync:rics`) in the same pass. That left writes without a home: the mirror is read-only (atomically rebuilt on every `sync:rics`, per `ricsRefresh.ts`), and there's no other Postgres table for vendor master data.
 
-The Products admin UI at `/products/vendors` already ships with New / Edit / Delete buttons + per-store account panels. Leaving writes disabled for "a few sprints" until a Postgres→RICS sync agent is designed was a non-starter — the UI would have 501-ed on every mutation.
+The Products admin UI at `/products/vendors` already ships with New / Edit / Delete buttons + per-store account panels. Leaving writes disabled for "a few sprints" while waiting for some later cutover-phase design was a non-starter — the UI would have 501-ed on every mutation.
 
 ## Decision
 
@@ -82,9 +82,9 @@ Collision guard on create: a single query checks both `rics_mirror.vendor_master
 ## Consequences
 
 - **Writes work end-to-end on `/api/v1/products/vendors`** — POST returns 201, PATCH 200, DELETE 204. `/api/v1/vendors` (legacy, read-only) is unchanged.
-- **Overlay rows don't reach RICS until the sync agent ships** (Phase B work). Warehouse/POS systems still see only what the last `sync:rics` copied. A new vendor created today is invisible to the cash register until cutover.
+- **Overlay rows do not reach RICS.** Warehouse/POS systems still see only what the last `sync:rics` copied. A new vendor created today is Zack's Retail-owned data and is not visible to the legacy operating surface until cutover.
 - **Store-account writes still 501** (`upsertStoreAccount` / `deleteStoreAccount` return `WriteNotSupported`). Scope-reduction; a separate `vendor_store_account_overlay` will follow the same pattern when needed.
-- **Orphan-override risk.** If a RICS code disappears from the mirror between syncs (vendor deleted in RICS), an `'override'` or `'tombstone'` row for that code silently points at nothing. The FULL OUTER JOIN tolerates it (returns the overlay row as if native for `'override'`; filters it for `'tombstone'`). Add a post-sync `app.vendor_orphan_overrides` report when the sync agent work starts.
+- **Orphan-override risk.** If a RICS code disappears from the mirror between syncs (vendor deleted in RICS), an `'override'` or `'tombstone'` row for that code silently points at nothing. The FULL OUTER JOIN tolerates it (returns the overlay row as if native for `'override'`; filters it for `'tombstone'`). Add a post-sync `app.vendor_orphan_overrides` report when cutover-readiness reporting starts.
 - **No schema prefixing of the code column.** Natural key only — no FK to `rics_mirror.vendor_master.code` because the mirror table is dropped every sync. Soft-ref pattern, matches `app.sku_attribute_override`.
 
 ## Alternatives considered
@@ -93,7 +93,7 @@ Collision guard on create: a single query checks both `rics_mirror.vendor_master
 
 **Full-row override** (on first edit of a RICS vendor, copy the entire mirror row into the overlay with every column populated): rejected. Diverges from the `app.sku_attribute_override` sparse pattern, wastes storage, and silently freezes out later RICS-side updates to columns the operator didn't touch. The sparse model means a RICS-side phone-number update still surfaces unless the operator explicitly overrode phone.
 
-**No overlay; keep writes disabled until the sync agent exists**: rejected. The UI has live New / Edit / Delete buttons; a multi-sprint regression for a design that's cheap to build now doesn't pay off.
+**No overlay; keep writes disabled until cutover**: rejected. The UI has live New / Edit / Delete buttons; a multi-sprint regression for a design that's cheap to build now doesn't pay off.
 
 **Separate `deleted_at` column + `is_native` boolean instead of a single `source` enum**: rejected. Two flags, four combinations, three of them meaningful — redundant. One enum is clearer and the check constraint easier to express.
 
@@ -115,4 +115,4 @@ Plus 24 unit tests under [`apps/api/tests/repositories/rics/VendorRepository.tes
 - [`docs/ARCHITECTURE.md`](../../ARCHITECTURE.md) §Write surfaces (overlay pattern) — catalogues this alongside `sku_attribute_override` / `sku_keyword_override`.
 - [`docs/modules/products/decisions.md`](../../modules/products/decisions.md) §2026-04-24 — decision summary with alternatives.
 - [`docs/modules/products/rics-module-specs.md`](../../modules/products/rics-module-specs.md) §Data model sketch — `VendorOverlay` model outline.
-- [`docs/dev/specs/2026-04-22-postgres-first-rics-sync-cutover.md`](2026-04-22-postgres-first-rics-sync-cutover.md) — the Phase A→B plan this overlay enables.
+- [`docs/dev/specs/2026-04-22-postgres-first-rics-sync-cutover.md`](2026-04-22-postgres-first-rics-sync-cutover.md) — the current cutover-preparation framing for app-owned SKU and vendor data.

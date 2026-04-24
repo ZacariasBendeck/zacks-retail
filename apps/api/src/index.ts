@@ -1,4 +1,4 @@
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient } from './prismaClient';
 import { bootstrapOwner } from './services/employees/bootstrapOwner';
 import app from './app';
 import { warmup as warmRicsAdapter } from './services/ricsProductAdapter';
@@ -60,3 +60,5 @@ app.listen(PORT, async () => {
   await Promise.allSettled(tasks);
   report.print();
 });
+
+

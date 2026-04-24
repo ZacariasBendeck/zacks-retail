@@ -35,7 +35,7 @@ Primary anchor is **current code state**, not the RICS manual:
 - **No branches / worktrees / PR language.**
 - **Do not write code.** No TypeScript, no SQL beyond illustrative one-liners.
 - **Preserve section order.** Empty sections written as `_none in current phase_`.
-- **Phase-aware.** Every description states the phase target (A / B / C) per [`CLAUDE.md`](../../CLAUDE.md) Rollout phases. Phase A = reads from `rics_mirror.*`, writes land in `public.*` / `app.*`.
+- **Phase-aware.** Every description states the phase target (A / B / C) per [`CLAUDE.md`](../../CLAUDE.md) Rollout phases. In Phase A, reads may come from `rics_mirror.*` only until the surface has an app-owned authoritative table; after that, request-path reads come only from the app-owned table. Writes land in `public.*` / `app.*`.
 
 ## Template — strict, follow exactly
 
@@ -70,9 +70,9 @@ How the module is structured in the codebase: route layer, service layer, adapte
 
 ## Data flow
 
-Where reads come from and where writes land. Be explicit about Postgres schemas (`rics_mirror`, `public`, `app`, `platform`) and any remaining per-request OLEDB paths (Phase A cutover state).
+Where reads come from and where writes land. Be explicit about Postgres schemas (`rics_mirror`, `public`, `app`, `platform`), the current authoritative request-path surface for each read, and any remaining per-request OLEDB paths (Phase A cutover state).
 
-- **Reads:** `<schema.table>` via `<service>` — used by `<route>`
+- **Reads:** `<schema.table>` via `<service>` — used by `<route>`; note whether this is still the temporary `rics_mirror` path or the app-owned authoritative request path
 - **Writes:** `<schema.table>` via `<service>` — emitted by `<route>`
 - **Per-request OLEDB (legacy):** list any service that still calls [`accessOleDb.ts`](../../apps/api/src/services/accessOleDb.ts) at request time; cross-link [`docs/operations/rics-mirror-sync.md`](../../docs/operations/rics-mirror-sync.md).
 

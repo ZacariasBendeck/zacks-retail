@@ -6,6 +6,10 @@
 
 Scope note: Chapter 4 of the RICS manual (Stock Maintenance) is split across two modules. `products` owns the SKU-pricing-and-identity half — Enter Price Changes (p. 67), Change Average Cost (p. 67), Discontinue SKUs (p. 69), Enter Price Discounts (p. 73). This module owns the stock-quantity half — everything else in Ch. 4 plus Inventory Change Detail (Ch. 2 p. 55). Where the two modules touch (e.g., Discontinue triggers an on-hand rollup, Change Average Cost re-reads avg cost owned by `products`), the contract is named here and in `products`.
 
+Current implementation note: the visible Manual Receipt tab/form under `/inventory/adjustments` is only a frontend shell today. The canonical backend contract for replacing the generic `RECEIPT` adjustment path is [docs/dev/specs/2026-04-23-inventory-manual-receipt-contract.md](../../dev/specs/2026-04-23-inventory-manual-receipt-contract.md).
+
+Canonical CSV-driven promotion map for Stock Maintenance migration: [docs/dev/specs/2026-04-24-inventory-stock-maintenance-migration-map.md](../../dev/specs/2026-04-24-inventory-stock-maintenance-migration-map.md).
+
 ## RICS features covered
 
 **Manual on-hand adjustments** (Ch. 4)

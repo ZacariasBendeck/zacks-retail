@@ -102,17 +102,49 @@ export interface InventoryInquiry {
   pictureUrl?: string | null
 }
 
-export interface FindBySizeResult {
+export type FindBySizeSort = 'SKU' | 'DESCRIPTION' | 'VENDOR' | 'CATEGORY'
+
+export interface FindBySizeParams {
+  seedSku?: string
+  sizeTypeCode?: number
+  columnLabel?: string
+  rowLabel?: string
+  restrictToSizeType?: boolean
+  vendorCode?: string
+  category?: number
+  styleColor?: string
+  storeNumbers?: number[]
+  sort?: FindBySizeSort
+  separateByStore?: boolean
+  limit?: number
+}
+
+export interface FindBySizeRow {
   sku: string
   description: string | null
   brand: string | null
-  sizeLabel: string
-  matches: Array<{
-    storeNumber: number
-    storeName: string | null
-    rowLabel: string
-    onHand: number
-  }>
+  vendorCode: string | null
+  category: number | null
+  styleColor: string | null
+  sizeTypeCode: number | null
+  sizeTypeDesc: string | null
+  totalOnHand: number
+  storeCount: number
+  storeNumber: number | null
+  storeName: string | null
+}
+
+export interface FindBySizeResult {
+  seedSku: string | null
+  columnLabel: string | null
+  rowLabel: string | null
+  sizeTypeCode: number | null
+  sizeTypeDesc: string | null
+  restrictToSizeType: boolean
+  separateByStore: boolean
+  sort: FindBySizeSort
+  rows: FindBySizeRow[]
+  totalMatches: number
   totalOnHand: number
 }
 
@@ -341,8 +373,20 @@ export function fetchInventoryInquiry(sku: string): Promise<InventoryInquiry> {
   return fetchJson<InventoryInquiry>(`/api/v1/inventory/inquiry/${encodeURIComponent(sku)}`)
 }
 
-export function fetchFindBySize(sku: string, size: string): Promise<FindBySizeResult> {
-  const qs = new URLSearchParams({ sku, size })
+export function fetchFindBySize(params: FindBySizeParams): Promise<FindBySizeResult> {
+  const qs = new URLSearchParams()
+  if (params.seedSku) qs.set('seedSku', params.seedSku)
+  if (params.sizeTypeCode != null) qs.set('sizeTypeCode', String(params.sizeTypeCode))
+  if (params.columnLabel) qs.set('columnLabel', params.columnLabel)
+  if (params.rowLabel) qs.set('rowLabel', params.rowLabel)
+  if (params.restrictToSizeType != null) qs.set('restrictToSizeType', String(params.restrictToSizeType))
+  if (params.vendorCode) qs.set('vendorCode', params.vendorCode)
+  if (params.category != null) qs.set('category', String(params.category))
+  if (params.styleColor) qs.set('styleColor', params.styleColor)
+  if (params.storeNumbers?.length) qs.set('storeNumbers', params.storeNumbers.join(','))
+  if (params.sort) qs.set('sort', params.sort)
+  if (params.separateByStore != null) qs.set('separateByStore', String(params.separateByStore))
+  if (params.limit != null) qs.set('limit', String(params.limit))
   return fetchJson<FindBySizeResult>(`/api/v1/inventory/find-by-size?${qs}`)
 }
 

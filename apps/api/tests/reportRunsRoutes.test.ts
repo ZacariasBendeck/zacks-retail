@@ -1,5 +1,5 @@
 import request from 'supertest';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient } from '../src/prismaClient';
 import app from '../src/app';
 import { hashPassword } from '../src/services/employees/passwordHash';
 import { PERMISSIONS } from '../src/services/employees/permissions';
@@ -147,3 +147,5 @@ describe('POST /api/v1/reports/runs — snapshot capture', () => {
     expect(res.status).toBe(400);
   });
 });
+
+

@@ -14,7 +14,6 @@ import {
   Input,
   InputNumber,
   List,
-  Modal,
   Radio,
   Row,
   Segmented,
@@ -53,6 +52,7 @@ import type {
   UnderReceiveAction,
 } from '../../types/purchasingSpec'
 import { SkuLink } from '../../components/sku-link'
+import { DraggableModal } from '../../components/draggable-modal'
 
 const { Text, Title, Paragraph } = Typography
 
@@ -633,7 +633,7 @@ export default function PoReceiveMockPage() {
       </Card>
 
       {/* Under-receive resolution modal */}
-      <Modal
+      <DraggableModal
         open={underReceiveOpen}
         title={
           <Space>
@@ -686,9 +686,9 @@ export default function PoReceiveMockPage() {
             )
           }}
         />
-      </Modal>
+      </DraggableModal>
 
-      <Modal
+      <DraggableModal
         open={previewOpen}
         onCancel={() => setPreviewOpen(false)}
         onOk={() => setPreviewOpen(false)}
@@ -709,7 +709,7 @@ export default function PoReceiveMockPage() {
         >
           {previewPayload ? JSON.stringify(previewPayload, null, 2) : ''}
         </pre>
-      </Modal>
+      </DraggableModal>
     </Space>
   )
 }

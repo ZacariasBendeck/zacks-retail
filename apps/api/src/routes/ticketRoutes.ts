@@ -79,18 +79,18 @@ router.post('/:id/tenders', validate(addTenderSchema), (req: Request, res: Respo
   }
 });
 
-router.post('/:id/end', validate(endTicketSchema), (req: Request, res: Response): void => {
+router.post('/:id/end', validate(endTicketSchema), async (req: Request, res: Response): Promise<void> => {
   try {
-    const ticket = ticketService.endTicket((req.params.id as string), req.body);
+    const ticket = await ticketService.endTicket((req.params.id as string), req.body);
     res.json(ticket);
   } catch (err: any) {
     sendTicketError(res, err);
   }
 });
 
-router.post('/:id/void', validate(voidTicketSchema), (req: Request, res: Response): void => {
+router.post('/:id/void', validate(voidTicketSchema), async (req: Request, res: Response): Promise<void> => {
   try {
-    const ticket = ticketService.voidTicket((req.params.id as string), req.body);
+    const ticket = await ticketService.voidTicket((req.params.id as string), req.body);
     res.json(ticket);
   } catch (err: any) {
     sendTicketError(res, err);

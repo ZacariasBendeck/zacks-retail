@@ -12,7 +12,7 @@ export type NeighborScope = 'general' | 'vendor' | 'category';
 
 interface Props {
   activeTab: InquiryTab | null;
-  onTab: (tab: InquiryTab) => void;
+  onTab: (tab: InquiryTab | null) => void;
   onPrev: () => void;
   onNext: () => void;
   onClear: () => void;
@@ -58,7 +58,7 @@ export const ActionBar: React.FC<Props> = ({
           style={btnStyle}
           type={activeTab === t.key ? 'primary' : 'default'}
           disabled={!t.live}
-          onClick={() => onTab(t.key)}
+          onClick={() => onTab(activeTab === t.key ? null : t.key)}
         >
           {t.label}
         </Button>

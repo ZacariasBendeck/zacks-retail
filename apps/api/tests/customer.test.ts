@@ -3,6 +3,8 @@ import app from '../src/app';
 import { resetDb } from '../src/db/database';
 import { prisma } from '../src/db/prisma';
 
+jest.setTimeout(30000);
+
 const validCustomer = {
   firstName: 'Mary',
   lastName: 'Johnson',
@@ -15,6 +17,87 @@ const validCustomer = {
   country: 'USA',
   creditLimit: 500,
 };
+
+async function cleanupMirrorFixtures(): Promise<void> {
+  await prisma.$executeRawUnsafe(`DELETE FROM rics_mirror.mail_list_family WHERE account LIKE 'TEST-MIRROR-%'`);
+  await prisma.$executeRawUnsafe(`DELETE FROM rics_mirror.mail_list_names WHERE account LIKE 'TEST-MIRROR-%'`);
+}
+
+async function insertMirrorCustomerFixture(input: {
+  account: string;
+  name: string;
+  city?: string | null;
+  state?: string | null;
+  email?: string | null;
+  currentBalance?: number;
+  storeCredit?: number;
+  dateAdded?: Date;
+  dateLastPurchase?: Date | null;
+}): Promise<void> {
+  await prisma.$executeRawUnsafe(
+    `INSERT INTO rics_mirror.mail_list_names (
+      account,
+      name,
+      city,
+      state,
+      e_mail,
+      curr_bal,
+      cred_slip,
+      qty_sales_01,
+      qty_sales_02,
+      qty_sales_03,
+      qty_sales_04,
+      dollar_sales_01,
+      dollar_sales_02,
+      dollar_sales_03,
+      dollar_sales_04,
+      date_added,
+      date_lst_purch,
+      date_last_changed,
+      non_taxable
+    ) VALUES (
+      $1, $2, $3, $4, $5, $6, $7,
+      0, 0, 0, 0,
+      0, 0, 0, 0,
+      $8, $9, $8, false
+    )`,
+    input.account,
+    input.name,
+    input.city ?? null,
+    input.state ?? null,
+    input.email ?? null,
+    input.currentBalance ?? 0,
+    input.storeCredit ?? 0,
+    input.dateAdded ?? new Date('2026-04-01T00:00:00.000Z'),
+    input.dateLastPurchase ?? null,
+  );
+}
+
+async function insertMirrorFamilyFixture(input: {
+  account: string;
+  code: string;
+  name: string;
+  gender?: 'M' | 'F' | 'C' | null;
+  birthday?: Date | null;
+}): Promise<void> {
+  await prisma.$executeRawUnsafe(
+    `INSERT INTO rics_mirror.mail_list_family (
+      account,
+      code,
+      name,
+      gender,
+      date_added,
+      birthday,
+      date_last_changed
+    ) VALUES ($1, $2, $3, $4, $5, $6, $5)`,
+    input.account,
+    input.code,
+    input.name,
+    input.gender ?? null,
+    new Date('2026-04-01T00:00:00.000Z'),
+    input.birthday ?? null,
+  );
+}
 
 // Customers + family_members live in Postgres now; `resetDb()` only resets the
 // legacy SQLite admin DB that other tests still depend on. We wipe the Postgres
@@ -29,6 +112,7 @@ beforeEach(async () => {
 
 afterAll(async () => {
   resetDb();
+  await cleanupMirrorFixtures();
   await prisma.familyMember.deleteMany({});
   await prisma.customer.deleteMany({});
   await prisma.$disconnect();
@@ -84,23 +168,36 @@ describe('POST /api/v1/customers', () => {
 
 describe('GET /api/v1/customers', () => {
   it('returns paginated customers sorted by displayName', async () => {
-    await request(app).post('/api/v1/customers').send({ ...validCustomer, lastName: 'Zimmerman', phoneE164: '+15551111111' });
-    await request(app).post('/api/v1/customers').send({ ...validCustomer, lastName: 'Adams', phoneE164: '+15552222222' });
-    const res = await request(app).get('/api/v1/customers?sort=displayName&order=asc');
+    await insertMirrorCustomerFixture({
+      account: 'TEST-MIRROR-SORT-2',
+      name: 'SORTTESTZIMMERMAN, Mary',
+    });
+    await insertMirrorCustomerFixture({
+      account: 'TEST-MIRROR-SORT-1',
+      name: 'SORTTESTADAMS, Mary',
+    });
+    const res = await request(app).get('/api/v1/customers?sort=displayName&order=asc&q=SORTTEST');
     expect(res.status).toBe(200);
     expect(res.body.data).toHaveLength(2);
-    expect(res.body.data[0].lastName).toBe('Adams');
-    expect(res.body.data[1].lastName).toBe('Zimmerman');
+    expect(res.body.data[0].source).toBe('mirror');
+    expect(res.body.data[0].lastName).toBe('SORTTESTADAMS');
+    expect(res.body.data[1].lastName).toBe('SORTTESTZIMMERMAN');
     expect(res.body.pagination.totalItems).toBe(2);
   });
 
   it('filters by q', async () => {
-    await request(app).post('/api/v1/customers').send({ ...validCustomer, lastName: 'Johnson', phoneE164: '+15551111111' });
-    await request(app).post('/api/v1/customers').send({ ...validCustomer, lastName: 'Smith', phoneE164: '+15552222222' });
-    const res = await request(app).get('/api/v1/customers?q=Johnson');
+    await insertMirrorCustomerFixture({
+      account: 'TEST-MIRROR-FILTER-1',
+      name: 'FILTERJOHNSON, Mary',
+    });
+    await insertMirrorCustomerFixture({
+      account: 'TEST-MIRROR-FILTER-2',
+      name: 'FILTERSMITH, Mary',
+    });
+    const res = await request(app).get('/api/v1/customers?q=FILTERJOHNSON');
     expect(res.status).toBe(200);
     expect(res.body.data).toHaveLength(1);
-    expect(res.body.data[0].lastName).toBe('Johnson');
+    expect(res.body.data[0].lastName).toBe('FILTERJOHNSON');
   });
 });
 
@@ -143,6 +240,28 @@ describe('GET /api/v1/customers/:id', () => {
     const res = await request(app).get('/api/v1/customers/00000000-0000-0000-0000-000000000099');
     expect(res.status).toBe(404);
   });
+
+  it('returns mirror customer with mirror family members when id is an account number', async () => {
+    await insertMirrorCustomerFixture({
+      account: 'TEST-MIRROR-DETAIL-1',
+      name: 'DETAILMOTHER, Maria',
+    });
+    await insertMirrorFamilyFixture({
+      account: 'TEST-MIRROR-DETAIL-1',
+      code: 'D1',
+      name: 'DETAILDAUGHTER, Sofia',
+      gender: 'F',
+      birthday: new Date('2015-05-15T00:00:00.000Z'),
+    });
+
+    const res = await request(app).get('/api/v1/customers/TEST-MIRROR-DETAIL-1');
+    expect(res.status).toBe(200);
+    expect(res.body.source).toBe('mirror');
+    expect(res.body.accountNumber).toBe('TEST-MIRROR-DETAIL-1');
+    expect(res.body.familyMembers).toHaveLength(1);
+    expect(res.body.familyMembers[0].code).toBe('D1');
+    expect(res.body.familyMembers[0].birthday).toBe('2015-05-15');
+  });
 });
 
 describe('GET /api/v1/customers/by-account/:accountNumber', () => {
@@ -168,6 +287,21 @@ describe('GET /api/v1/customers/:id/balances', () => {
     expect(res.body.storeCreditCents).toBe(0);
     expect(res.body.arBalanceAsOf).toBeNull();
     expect(res.body.storeCreditAsOf).toBeNull();
+  });
+
+  it('returns balances projected from the mirror customer row', async () => {
+    await insertMirrorCustomerFixture({
+      account: 'TEST-MIRROR-BAL-1',
+      name: 'BALANCES, Maria',
+      currentBalance: 125.5,
+      storeCredit: 20.25,
+      dateLastPurchase: new Date('2026-04-08T00:00:00.000Z'),
+    });
+
+    const res = await request(app).get('/api/v1/customers/TEST-MIRROR-BAL-1/balances');
+    expect(res.status).toBe(200);
+    expect(res.body.arBalanceCents).toBe(12550);
+    expect(res.body.storeCreditCents).toBe(2025);
   });
 });
 

@@ -49,6 +49,10 @@ describe('InquiryPage', () => {
         pricing: { retail: 0, markdown1: 0, markdown2: 0, avgCost: 0, currentCost: 0, listPrice: 0, currentSlot: 'RETAIL' },
         rollup: { week: {qty:0,net:0,markdown:0,profit:0}, month:{qty:0,net:0,markdown:0,profit:0}, season:{qty:0,net:0,markdown:0,profit:0}, year:{qty:0,net:0,markdown:0,profit:0} },
         grids: {
+          onHand: {
+            columns: ['6', 'TOT'],
+            rows: [{ label: 'Store 7', cells: [{ value: 2 }, { value: 2 }] }],
+          },
           allStoresSummary: {
             columns: ['6', 'TOT'],
             rows: [{ label: 'On Hand', cells: [{ value: 8 }, { value: 8 }] }],
@@ -60,6 +64,38 @@ describe('InquiryPage', () => {
     });
     renderPage();
     expect(screen.getByRole('row', { name: /On Hand/ })).toBeInTheDocument();
+  });
+
+  it('honors the mode query param from the URL', () => {
+    (useInquiryData as any).mockReturnValue({
+      isLoading: false, error: null,
+      data: {
+        sku: 'ZN02-NDPT',
+        description: '…',
+        category: { id: 0, name: '' }, vendor: { code: '', name: '' },
+        vendorSku: null, styleColor: null,
+        sizeType: { id: 0, name: '', columns: [], rows: [] },
+        lastReceivedAt: null,
+        pricing: { retail: 0, markdown1: 0, markdown2: 0, avgCost: 0, currentCost: 0, listPrice: 0, currentSlot: 'RETAIL' },
+        rollup: { week: {qty:0,net:0,markdown:0,profit:0}, month:{qty:0,net:0,markdown:0,profit:0}, season:{qty:0,net:0,markdown:0,profit:0}, year:{qty:0,net:0,markdown:0,profit:0} },
+        grids: {
+          onHand: {
+            columns: ['6'],
+            rows: [{ label: 'Store 7', cells: [{ value: 2 }] }],
+          },
+          allStoresSummary: {
+            columns: ['6'],
+            rows: [{ label: 'Summary Row', cells: [{ value: 8 }] }],
+          },
+        },
+        pictureUrl: null,
+        info: { seasonCode: null, labelCode: null, groupCode: null, firstReceivedAt: null, lastMarkdownAt: null, perks: null, comment: null },
+      },
+    });
+    renderPage(['/products/inquiry/ZN02-NDPT?mode=ON_HAND']);
+    expect(screen.getAllByText('On Hand').length).toBeGreaterThan(0);
+    expect(screen.getByRole('row', { name: /Store 7/ })).toBeInTheDocument();
+    expect(screen.queryByRole('row', { name: /Summary Row/ })).not.toBeInTheDocument();
   });
 
   it('renders the SKU code from the URL in the header on success', () => {

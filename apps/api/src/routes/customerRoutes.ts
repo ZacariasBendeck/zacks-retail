@@ -1,5 +1,5 @@
 import { Router, Request, Response, IRouter } from 'express';
-import { Prisma } from '@prisma/client';
+import { Prisma } from '../prismaClient';
 import * as customerService from '../services/customerService';
 import {
   createCustomerSchema,
@@ -259,3 +259,5 @@ router.delete('/:customerId/family/:familyId', async (req: Request, res: Respons
 });
 
 export default router;
+
+

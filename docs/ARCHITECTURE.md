@@ -84,6 +84,7 @@ Writes (new app data, cart, orders, content overlay)
 ```
 
 **Phase A invariant:** request handlers never open an MDB at request time. The only process that touches MDBs is the sync ETL.
+**Authority invariant:** once a surface has an app-owned authoritative table, request handlers read only from that table. `rics_mirror` is then ETL/bootstrap input only for that surface.
 
 ### Net-new SKU creation — write paths
 
@@ -106,7 +107,7 @@ Never written during this flow: `rics_mirror.*` (read-only), RICS MDB files (for
 
 Four schemas in the Postgres DB (`zacks_retail`):
 
-- **`rics_mirror`** — Read-only, atomic reload. 1:1 mirror of every canonical RICS MDB table. Every request-side read hits this schema. Rebuilt by `pnpm sync:rics`. Never write at request time — the next reload drops everything not owned by the ETL.
+- **`rics_mirror`** — Read-only, atomic reload. 1:1 mirror of every canonical RICS MDB table. Rebuilt by `pnpm sync:rics`. It may serve request-side reads only for surfaces that do not yet have an app-owned authoritative table. Once such a table exists, `rics_mirror` is ETL/bootstrap input only for that surface. Never write at request time — the next reload drops everything not owned by the ETL.
 - **`public`** — Storefront-baseline tables that predate Phase A (`Cart`, `CartLine`, `Order`, `OrderLine`, `User`, `Session`, `Role`, `ProductContent`, `SeasonOverlay`, `ProductsAuditLog`). Preserved across ETL reloads. App writes freely here.
 - **`app`** — Module-owned additive tables — net-new things Zack's Retail invents that RICS never had. Active surface as of 2026-04-23: products (`sku`, `sku_activity`, `sku_attribute_override`, `sku_keyword_override`, `size_type_override`, `products_batch_operation*`), extended attributes (`attribute_dimension`, `attribute_value`, `sku_attribute_assignment` + orphans view, `attribute_family_rule`), product family (`product_family`, `category_product_family`), plus the legacy-ref migration targets seeded 2026-04-23. Phase-A contract: writes go here freely; the `sync:rics` ETL never touches this schema.
 
@@ -114,7 +115,7 @@ Four schemas in the Postgres DB (`zacks_retail`):
 
 ## Adapter layer (request-side)
 
-Request handlers consume adapters that read from `rics_mirror`. Every adapter has an in-process TTL cache (`cachedAsync`, 5–10 min TTL) on top.
+Request handlers consume adapters that read from the current authoritative request-path surface. Early Phase-A adapters read from `rics_mirror`; after a surface gets an app-owned authoritative table, its request adapter must read only from that app-owned table. Every adapter has an in-process TTL cache (`cachedAsync`, 5–10 min TTL) on top.
 
 | Adapter | File | Serves |
 |---|---|---|
@@ -135,7 +136,7 @@ Where a write target isn't directly mutable (e.g., `rics_mirror.*` is rebuilt at
 | `app.sku_keyword_override` | same | ADD/REMOVE deltas layered on the space-separated `KeyWords` string |
 | `app.vendor_overlay` | `apps/api/src/repositories/rics/VendorRepository.ts` | Three modes via `source`: `'native'` (born in Postgres), `'override'` (sparse per-column override of a RICS vendor), `'tombstone'` (hide a RICS vendor from reads). See [`docs/dev/specs/2026-04-24-vendor-overlay-design.md`](dev/specs/2026-04-24-vendor-overlay-design.md). |
 
-Overlay writes don't reach RICS until the Postgres→RICS sync agent is implemented (Phase B work). Warehouse/POS systems see only what `sync:rics` copied.
+Overlay rows do not reach RICS. Warehouse/POS systems still see only what `sync:rics` copied; app-owned overlay and native rows become authoritative only when the module spec says they do. From that point on, request handlers read the app-owned authoritative surface, not `rics_mirror`.
 
 ### Repo-result error taxonomy
 

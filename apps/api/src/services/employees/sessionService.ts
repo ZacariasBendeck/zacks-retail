@@ -1,4 +1,4 @@
-import { PrismaClient, Session } from '@prisma/client';
+import { PrismaClient, Session } from '../../prismaClient';
 
 function ttlHours(): number {
   const raw = process.env.AUTH_SESSION_TTL_HOURS;
@@ -30,3 +30,5 @@ export async function revokeSession(
 ): Promise<void> {
   await prisma.session.deleteMany({ where: { id: sessionId } });
 }
+
+

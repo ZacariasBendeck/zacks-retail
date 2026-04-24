@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient } from '../prismaClient';
 import { authenticate, changePassword } from '../services/employees/userService';
 import { createSession, revokeSession } from '../services/employees/sessionService';
 import { requireAuth, SESSION_COOKIE } from '../middleware/authMiddleware';
@@ -107,3 +107,5 @@ export function createAuthRoutes(prisma: PrismaClient): Router {
 
   return router;
 }
+
+

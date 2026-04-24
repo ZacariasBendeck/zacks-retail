@@ -19,7 +19,7 @@
  */
 
 import { randomBytes } from 'node:crypto';
-import { Prisma } from '@prisma/client';
+import { Prisma } from '../../prismaClient';
 import { prisma } from '../../db/prisma';
 import { Err, Ok, type Result, type RepoError } from '../../repositories/rics/repoResult';
 
@@ -925,3 +925,5 @@ export const skuLifecycle = {
   assertCanPrintBarcode,
   assertCanSell,
 };
+
+

@@ -10,6 +10,7 @@ Salespeople, time clock (login / logout / admin / print), commission overrides, 
 
 | File | Purpose |
 |---|---|
+| [`employees-testing-checklist.md`](./employees-testing-checklist.md) | Cutover / rehearsal checklist for the RICS salespeople surface |
 | [`tech-description.md`](./tech-description.md) | Forward technical description (current implementation) |
 | [`rics-module-specs.md`](./rics-module-specs.md) | RICS port lineage — what RICS did, what we're changing |
 | [`business-functional.md`](./business-functional.md) | Business / functional spec |

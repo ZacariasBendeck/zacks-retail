@@ -1,632 +1,165 @@
-# Postgres-First SKU Creation + RICS Sync + Big-Bang Cutover
+# SKU Creation + Cutover Preparation
 
-Updated from the prior cutover plan to reflect the current operating strategy: RICS remains the live operational system until cutover, but new SKU creation and enrichment should start in Postgres now so the business does not have to re-create rich product data later.
+**Date:** 2026-04-22
+**Status:** realigned on 2026-04-24 to match the current mirror-first strategy
+**Scope:** products / SKU lifecycle / cutover preparation
 
-## Context
+## Re-alignment note
 
-Today, the warehouse runs RICS from a local Access database that is not naturally online. The new Postgres-backed app can live online and is where the richer SKU model, lifecycle, attributes, family/category structure, media, and future workflow will exist.
+This file previously described a **Postgres -> RICS sync** path, including:
 
-The original plan assumed a mostly migration-oriented flow where:
+- projecting app-created SKUs into RICS before cutover,
+- a warehouse-side sync agent,
+- explicit `Push to RICS` flows in the UI,
+- treating RICS as the operational consumer of Postgres-created records before cutover.
 
-- legacy RICS stayed authoritative until cutover,
-- `app.sku` was mainly prepared for later migration,
-- a rehearsal migration would materialize legacy rows into `app.sku`,
-- and post-cutover reads would switch over.
+That is **no longer the project strategy**.
 
-That is still directionally true for operations, but it misses a practical constraint: **creating SKUs manually in RICS and then duplicating that creation/enrichment work in Postgres is too expensive operationally.**
+The current strategy, per [CLAUDE.md](../../../CLAUDE.md), is:
 
-So the updated strategy is:
+1. **Development Against RICS Mirror**
+   - RICS stays live until cutover.
+   - Zack's Retail reads imported legacy data from `rics_mirror`.
+   - Zack's Retail writes only app-owned data to `app.*` / `public.*`.
+   - Zack's Retail does **not** write back to MDBs or to `rics_mirror`.
+2. **Cutover Migration**
+   - RICS usage stops.
+   - Final MDB backup + final reload run.
+   - `rics_mirror` plus app-owned data are promoted into module-owned schemas.
+   - PKs/FKs/reconciliation checks land here, not earlier.
+3. **Postgres-Only Operation**
+   - MDBs and `rics_mirror` retire.
+   - Zack's Retail is the system of record.
 
-- Postgres becomes the **SKU creation and enrichment system now** for all net-new SKUs.
-- RICS remains the **operational execution system** until cutover for warehouse / POS / existing flows.
-- A thin projection/sync path pushes the **minimum required SKU data** from Postgres into RICS.
-- Legacy RICS-created SKUs can still be enriched in Postgres gradually.
-- Periodic rehearsal migrations/reconciliations still matter, but the business goal is now to reduce duplicate labor and make cutover easier by accumulating rich product data ahead of time.
+## Decision
 
-This spec defines:
-
-- the target operating model during Phase A,
-- the UI and workflow expectations for the team,
-- the Postgres data model changes needed,
-- the RICS sync strategy and developer tasks,
-- the questions the team must answer about RICS SKU creation,
-- the rehearsal / reconciliation approach,
-- the final cutover path.
-
----
-
-## 1. Operating model during Phase A
-
-### 1.1 Source-of-truth by function
-
-During Phase A, source-of-truth is split by responsibility:
-
-**Postgres / `app.sku` is the source of truth for:**
-
-- SKU creation intent
-- rich attributes
-- product family/category structure
-- vendor SKU metadata
-- images/media
-- lifecycle state (`DRAFT`, `ACTIVE`, `DISCONTINUED`)
-- future-ready product identity
-
-**RICS / Access remains the source of truth for:**
-
-- current warehouse operations
-- current POS / inventory flows
-- current receiving / barcode workflows that still depend on RICS
-- any live operational function not yet cut over
-
-This is **not a long-lived runtime UNION design.** It is a **master creation in Postgres + operational projection into RICS** model.
-
-### 1.2 New rule for net-new SKUs
-
-For any new SKU introduced after this change:
-
-- the SKU is created in Postgres first,
-- rich data is captured there first,
-- a minimal RICS-compatible representation is then synced into RICS,
-- RICS continues to use that synced row operationally until cutover.
-
-### 1.3 Existing/legacy SKUs
-
-For legacy SKUs that already exist in RICS:
-
-- they do not need to be recreated manually in Postgres immediately,
-- they can be enriched gradually in Postgres,
-- the cutover migration/reconciliation process remains responsible for bringing legacy operational data into final Postgres shape.
-
-### 1.4 Hard rule
-
-**RICS should stop being the place where new SKU identity is invented.**
-
-After adoption of this flow, RICS should *receive* projected SKU records, not *originate* them.
-
----
-
-## 2. Team workflow / UI expectations
-
-### 2.1 Team-level operational rule
-
-All new SKUs start in the new web app, not in RICS.
-
-### 2.2 Roles
-
-**Buyer / merchandiser**
-
-- creates the new SKU in the web app
-- enters vendor SKU, family/category, core attributes, cost/price, etc.
-
-**Ops / admin**
-
-- reviews sync failures if needed
-- re-pushes or resolves mapping gaps
-
-**Warehouse / store staff**
-
-- continue operating in RICS until cutover
-
-### 2.3 Required UI flow
-
-The web app should support this sequence:
-
-#### A. Create New SKU
-
-Fast first-step form. Required fields should be the minimum needed to establish the item.
-
-Recommended fields:
-
-- vendor
-- vendor SKU
-- brand
-- product family
-- category
-- gender
-- short description
-- color
-- size or size run
-- cost
-- suggested retail price
-- optional image upload
-
-System-managed:
-
-- internal record ID
-- suggested final SKU code or provisional code
-- `sku_state = DRAFT`
-- `rics_sync_status = NOT_SYNCED`
-
-Actions:
-
-- `Save Draft`
-- `Save and Queue for RICS Sync`
-
-#### B. Draft SKU detail page
-
-After creation, the SKU detail page should allow progressive enrichment.
-
-Sections:
-
-- Core identity
-- Commercial
-- Attributes
-- Media
-- RICS sync
-- Finalization
-
-Must show:
-
-- SKU lifecycle badge
-- sync status badge
-- last sync attempt / error
-- `Push to RICS` action
-- `Retry sync` action
-- `Finalize SKU` action
-
-#### C. Pending RICS Sync admin view
-
-Dedicated view for operations/admin.
-
-Columns:
-
-- SKU code
-- description
-- vendor
-- vendor SKU
-- category/family
-- state
-- sync status
-- sync error
-- created by / created at
-
-Actions:
-
-- push selected to RICS
-- retry failed sync
-- open record
-
-#### D. Ready for barcode view
-
-Should only show records that satisfy the finalization/barcode criteria defined by the lifecycle rules.
-
-### 2.4 UX principle
-
-Do not force the entire rich attribute model into the first screen. Adoption will fail if the initial creation form is too heavy.
-
-Use:
-
-- fast create first
-- progressive enrichment second
-
----
-
-## 3. Postgres data model changes
-
-### 3.1 `app.sku` stays the master for new SKU creation
-
-Net-new SKUs should continue to be created via `skuLifecycleService.create()` and finalized via `finalize()` — see [apps/api/src/services/products/skuLifecycleService.ts](../../apps/api/src/services/products/skuLifecycleService.ts).
-
-### 3.2 Add explicit RICS sync tracking
-
-Add fields to `app.sku` (or a closely related projection table) to track operational projection status:
-
-- `rics_sync_status TEXT NOT NULL DEFAULT 'NOT_SYNCED'`
-  - `NOT_SYNCED`
-  - `PENDING`
-  - `SYNCED`
-  - `FAILED`
-- `rics_synced_at TIMESTAMPTZ`
-- `rics_sync_error TEXT`
-- `rics_legacy_code VARCHAR(15)` nullable
-- `rics_row_id TEXT` nullable if RICS has a stable surrogate identity
-
-If preferred, sync status can live in a dedicated projection table instead of `app.sku`, but the UI still needs a first-class way to read and filter it.
-
-### 3.3 Stable legacy linkage
-
-Every record intended to project into or reconcile with RICS should have a stable linkage field.
-
-Preferred approach:
-
-- keep the existing SKU `code` as the business-visible identifier,
-- store `rics_legacy_code` when the operational code in RICS must be tracked separately,
-- for legacy enriched rows created later, also maintain a linkage to the originating RICS record.
-
-### 3.4 Sync log table
-
-Add a dedicated sync log table. Example:
-
-`app.rics_sync_job`
-
-- `id`
-- `sku_id`
-- `job_type` (`CREATE_SKU`, `UPDATE_SKU`)
-- `status` (`PENDING`, `RUNNING`, `SUCCEEDED`, `FAILED`)
-- `attempt_number`
-- `payload_snapshot JSONB`
-- `error_message`
-- `created_at`
-- `finished_at`
-- `processed_by`
-
-This should be retry-safe and auditable.
-
-### 3.5 Mapping tables
-
-Do not bury RICS compatibility logic in ad hoc code. Create explicit mapping tables where needed, for example:
-
-- category → RICS category/class
-- family → RICS department/group
-- vendor → RICS vendor
-- brand → RICS brand field if applicable
-- tax / price class mappings if needed
-
----
-
-## 4. RICS sync strategy
-
-### 4.1 Strategic goal
-
-RICS does not need the full rich SKU model right now. It only needs the **minimum viable operational SKU payload** required for current warehouse/POS processes.
-
-So the sync path should be a **projection, not a mirror**.
-
-### 4.2 Recommended architecture
-
-Because the Access DB is local in the warehouse and not naturally online, the recommended approach is:
-
-```text
-Web App / Postgres (online)
-        ↓
-RICS Sync Queue
-        ↓
-Warehouse-side Sync Agent
-        ↓
-Local Access / RICS DB
-```
-
-### 4.3 Warehouse-side sync agent
-
-Build a small warehouse-local agent that:
-
-- authenticates to the online API,
-- polls for pending sync jobs,
-- loads the job payload,
-- writes the required SKU records into the Access DB,
-- reports success/failure back to the API,
-- logs locally as well.
-
-This can be implemented as:
-
-- Windows service,
-- scheduled script,
-- lightweight desktop utility.
-
-Preferred priority order:
-
-1. manual/semi-manual sync utility as MVP,
-2. automated local agent once the write path is understood and stable.
-
-### 4.4 Sync behavior
-
-Flow:
-
-1. user creates SKU in web app,
-2. system writes rich `app.sku` record,
-3. system creates a pending RICS sync job,
-4. sync agent transforms SKU into RICS payload,
-5. sync agent inserts/updates Access tables,
-6. API marks sync status.
-
-### 4.5 Idempotency
-
-The RICS sync path must be idempotent.
-
-Retrying the same job must not create duplicate SKUs in RICS.
-
-This requires the developers to identify the stable key RICS uses for SKU identity.
-
-### 4.6 MVP fallback option
-
-If direct DB writes are too risky initially, support one of these as an MVP:
-
-- CSV export in exact RICS-import shape,
-- desktop-assisted sync with manual confirmation,
-- UI automation only if RICS import/write semantics are too opaque.
-
----
-
-## 5. What developers must discover about RICS before coding the sync
-
-This is mandatory discovery work. The team cannot safely build the sync without it.
-
-### 5.1 Core questions
-
-**A. What table or tables define a SKU in RICS?**
-
-Developers must identify:
-
-- the main item master table,
-- any required related tables,
-- any reference/lookup tables that must already contain values.
-
-**B. What is the minimum viable payload for SKU creation?**
-
-For a SKU to be considered usable in RICS, what exact fields are required?
-
-Examples to verify:
-
-- code
-- description
-- vendor
-- category/class/department
-- cost
-- retail price
-- barcode
-- active flag
-- UOM
-- tax flags
-
-**C. What is the true identity key in RICS?**
-
-Need to know whether identity is based on:
-
-- SKU string,
-- numeric surrogate id,
-- composite key,
-- style/color/size matrix.
-
-**D. Are variants separate rows or matrix-driven?**
-
-Need to confirm whether each size/color is its own SKU row or part of a parent-child style structure.
-
-**E. What lookup tables or coded values must match?**
-
-Need to know all required foreign-key / coded-value dependencies.
-
-**F. What makes a SKU operationally usable in RICS?**
-
-Need to know what additional flags or rows are required before:
-
-- receiving,
-- barcode printing,
-- POS sale,
-- inventory movement.
-
-**G. What other records are created when a user creates a SKU manually in RICS?**
-
-This must be traced by comparing DB state before and after manual SKU creation.
-
-Possible side effects:
-
-- item master row
-- barcode row
-- price row
-- vendor cross-reference
-- inventory defaults
-- reorder/control rows
-- audit rows
-
-**H. Are there Access-side macros / VBA / form events involved?**
-
-Developers must inspect:
-
-- VBA modules,
-- macros,
-- form event handlers,
-- saved queries.
-
-Direct table writes may be insufficient if business logic lives in Access forms.
-
-**I. Is direct DB writing actually safe?**
-
-Developers must explicitly recommend one of:
-
-- direct DB write,
-- import/staging file,
-- UI automation,
-- hybrid.
-
-**J. How are barcodes handled?**
-
-Need to know:
-
-- required at create time or not,
-- one-per-SKU or many,
-- vendor UPC vs internal barcode handling,
-- barcode table relationships.
-
-**K. How are prices stored?**
-
-Need to know whether prices are:
-
-- required at creation,
-- per-store or global,
-- effective-dated,
-- tax-inclusive or tax-exclusive.
-
-**L. How are vendor relationships stored?**
-
-Need to know whether there is:
-
-- one primary vendor,
-- many vendor item codes,
-- separate cross-reference records.
-
-### 5.2 Required developer deliverable
-
-Before building the sync, the developer must produce a short technical note:
-
-`docs/dev/specs/rics-sku-creation-technical-note.md`
-
-It must contain:
-
-- manual RICS creation flow trace,
-- table map,
-- minimum viable creation payload,
-- Postgres → RICS field mapping,
-- recommended safe write strategy,
-- known risks / unknowns.
-
----
-
-## 6. Rehearsal and reconciliation strategy
-
-The big-bang cutover strategy still stands, but rehearsals now serve two purposes:
-
-1. validate migration of legacy operational data,
-2. validate that Postgres-first SKU creation is producing the data shape needed for cutover.
-
-### 6.1 Rehearsal objectives
-
-Each rehearsal should verify:
-
-- legacy RICS rows can be loaded/reconciled into the target Postgres model,
-- Postgres-created net-new SKUs already contain the rich data needed on day one,
-- mappings between RICS and Postgres are complete enough,
-- no duplicate manual work will be needed after cutover.
-
-### 6.2 Reconciliation reports
-
-Add reporting for:
-
-- SKUs in RICS with no matching/enriched record in Postgres,
-- SKUs in Postgres not yet synced to RICS when they should be,
-- category/family mapping gaps,
-- missing vendor mappings,
-- barcode mismatches,
-- price mismatches,
-- duplicate code collisions,
-- orphaned attribute assignments.
-
-### 6.3 Richness/readiness reporting
-
-Add a migration-readiness report showing, for the active SKU base:
-
-- % with family/category assigned,
-- % with required attribute coverage,
-- % with image,
-- % with vendor linkage,
-- % with barcode policy defined,
-- % synced to RICS,
-- % finalized/ACTIVE.
-
-This is critical because the business goal is not only migration parity, but arriving at cutover with most SKU richness already built.
-
----
-
-## 7. Cutover strategy
-
-### 7.1 Strategic posture
-
-The cutover is still **big-bang, not gradual**.
+SKU creation and enrichment work should continue in Postgres-owned tables during development, but **operational use before cutover still follows RICS**.
 
 That means:
 
-- RICS remains the live operational system until the cutover window,
-- Postgres accumulates SKU richness and future workflow capability ahead of time,
-- the final cutover switches reads/writes to the new system in one controlled window.
+- app-created SKUs can exist as Zack's Retail records before cutover,
+- rich product data can be accumulated before cutover,
+- but those records are **not treated as operationally live in RICS through a sync path**,
+- and cutover remains the moment where promotion into the app's canonical owned schemas happens.
 
-### 7.2 Pre-cutover objective
+## What is in scope before cutover
 
-By cutover day, the target condition is:
+### 1. Postgres-owned SKU lifecycle
 
-- all net-new SKUs since adoption have been created in Postgres first,
-- most important legacy SKUs have been enriched sufficiently in Postgres,
-- the remaining migration of legacy operational data is primarily reconciliation, not product re-authoring.
+Continue building and refining the SKU lifecycle in `app.sku` and related app-owned tables:
 
-### 7.3 Cutover runbook
+- draft creation,
+- progressive enrichment,
+- dimensional attributes,
+- family/category structure,
+- media,
+- audit/activity,
+- readiness reporting.
 
-**T-14d to T-3d**
+This is valid pre-cutover work because it is app-owned data that survives `sync:rics`.
 
-- run rehearsal migration(s),
-- fix mapping gaps,
-- review sync error backlog,
-- validate that new SKU creation is consistently happening in Postgres first.
+### 2. Legacy read parity
 
-**T-1d**
+Legacy operational SKU reads still come from:
 
-- final rehearsal,
-- sign off on reconciliation and readiness metrics,
-- verify sync agent stability.
+- `rics_mirror.inventory_master`
+- `rics_mirror.inv_catalog`
+- related mirrored lookup tables
 
-**T-0**
+Any operational page that still reflects live RICS behavior before cutover should read from `rics_mirror`, optionally merged with app-owned overlays where the module contract allows it.
 
-- freeze RICS writes,
-- run final legacy extract/import,
-- validate counts and critical flows,
-- switch operational consumers to Postgres-backed paths,
-- keep rollback available.
+### 3. Rehearsal readiness
 
-### 7.4 Rollback
+Before cutover, SKU work should support rehearsals by making these easy to measure:
 
-Rollback criteria and rollback mechanics must still be defined before cutover.
+- app-owned data completeness,
+- category/family mapping completeness,
+- attribute coverage,
+- image coverage,
+- orphan detection,
+- mirror/app parity checks where applicable.
 
-Until confidence is high, the first rollback move should be operationally simple:
+### 4. Promotion design
 
-- stop using the new read/write paths,
-- resume RICS as operational truth,
-- preserve migrated Postgres data for diagnosis.
+During development, the team should define:
 
----
+- the target module-owned post-cutover schema,
+- the mapping from `rics_mirror` into that schema,
+- the merge rules for app-owned overlays and draft/workflow data,
+- the reconciliation checks that must pass on migration day.
 
-## 8. Concrete implementation order for developers
+This design work should happen **during module development**, not after the module is "done", but the actual promotion remains cutover work.
 
-**Phase 1 — Product/UI foundation**
+## What is out of scope before cutover
 
-- implement/create the Postgres-first SKU create flow,
-- add sync status to the UI,
-- add pending-sync admin view,
-- add retry/push actions.
+The following are **not** part of the current strategy:
 
-**Phase 2 — RICS discovery**
+- writing app-created SKUs back into RICS,
+- a warehouse-side sync agent,
+- direct MDB mutation as part of normal app flows,
+- `Push to RICS`, `Retry RICS sync`, or queue-driven RICS projection UI,
+- treating app-created SKUs as sellable/live in the legacy operating system before cutover.
 
-- inspect Access schema,
-- trace manual SKU creation,
-- document required tables/fields/side effects,
-- choose safe write strategy.
+## Data-source rules
 
-**Phase 3 — Sync MVP**
+### During Development Against RICS Mirror
 
-- implement RICS payload builder,
-- implement queue/sync job model,
-- implement manual or semi-automated sync utility,
-- surface sync errors in UI.
+- Reads of legacy operational truth come from `rics_mirror.*`.
+- Writes of net-new app behavior go to `app.*` / `public.*`.
+- No writes to `rics_mirror`.
+- No writes to MDBs.
 
-**Phase 4 — Sync automation**
+### During Cutover Migration
 
-- implement warehouse-local sync agent,
-- make it retry-safe and idempotent,
-- add monitoring/logging.
+- Take the final MDB backup.
+- For Vercel-targeted cutovers, pre-extract immutable CSV artifacts from that frozen MDB backup on a Windows-capable workstation.
+- Run the final reload into `rics_mirror` from those artifacts (target shape) or, until the split tooling ships, via `sync:rics` on a Windows-capable runner (current fallback).
+- Promote `rics_mirror` plus app-owned data into module-owned schemas.
+- Create/validate PKs and FKs.
+- Run reconciliation checks.
+- Flip reads from `rics_mirror` to promoted module-owned schemas.
+- Promote the Vercel production deployment only after the load + reconciliation checks pass.
 
-**Phase 5 — Rehearsal and cutover readiness**
+### During Postgres-Only Operation
 
-- build reconciliation reports,
-- build readiness dashboard,
-- run rehearsal cycles,
-- define final cutover checklist and rollback criteria.
+- Retire `rics_mirror`.
+- Retire OLE DB helpers and MDB dependencies.
+- Keep only module-owned Postgres schemas.
 
----
+## Product/UI implications
 
-## 9. Hard rules
+The SKU UI before cutover should optimize for:
 
-- No long-lived runtime UNION is the goal.
-- No duplicate manual SKU authoring across both systems for net-new products.
-- Postgres is where new SKU identity and rich product thinking begin.
-- RICS receives a projection, not the full future model.
-- Direct Access writes are not allowed until the developer has documented why they are safe.
-- Rehearsals must validate workflows, not just row counts.
+- creating draft records quickly,
+- progressive enrichment,
+- showing lifecycle/readiness state,
+- making app-owned work visible and testable,
+- clearly distinguishing app-owned draft/workflow state from live mirrored RICS state.
 
----
+It should **not** imply that a record has been pushed into RICS or is operational there unless the system is actually post-cutover.
 
-## 10. Summary
+## Rehearsal and cutover preparation
 
-The updated strategy changes the project from "prepare a later migration" to **"start using the future product model now, while still operating through RICS."**
+Useful pre-cutover deliverables:
 
-The practical outcome should be:
+- readiness dashboards for SKU richness,
+- parity reports comparing mirror and app-owned structures,
+- reconciliation checks for category/vendor/attribute coverage,
+- promotion SQL/scripts drafted and rehearsed on staging copies,
+- operator smoke-test scripts for cutover-day validation.
 
-- less duplicate labor,
-- richer SKU data accumulated before cutover,
-- a simpler cutover day,
-- and much less post-cutover cleanup.
+## Practical rule for developers
+
+When building SKU-related features before cutover:
+
+1. ask what must read from `rics_mirror` now,
+2. ask what app-owned state belongs in `app.*` now,
+3. define where that data will land after promotion,
+4. do **not** build a runtime writeback path to RICS.
+
+## Related
+
+- [CLAUDE.md](../../../CLAUDE.md)
+- [docs/operations/migration-day-runbook.md](../../operations/migration-day-runbook.md)
+- [docs/dev/specs/2026-04-18-products-phase1-design.md](2026-04-18-products-phase1-design.md)
+- [docs/dev/specs/rics-sku-creation-technical-note.md](rics-sku-creation-technical-note.md)

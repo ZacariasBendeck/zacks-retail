@@ -105,7 +105,7 @@ One at a time. Prefer multiple choice when it fits; open-ended when it doesn't. 
 
 - Rollout phase target — A (mirror-backed), B (operator UI), or C (Postgres-only) per the Rollout-phases section of [`CLAUDE.md`](../../CLAUDE.md)
 - Module(s) affected and any cross-module contracts implied
-- Data-source plan — which reads come from `rics_mirror` vs. `public` / `app` / `platform`; where writes land
+- Data-source plan — which surfaces still legitimately read from `rics_mirror`, which already have an app-owned authoritative table and therefore must read only from `public` / `app` / module-owned Postgres tables, and where writes land
 - Hard-rule surfaces — SKU lookup warmup ([`docs/operations/sku-lookup-index-warmup.md`](../../docs/operations/sku-lookup-index-warmup.md)), OLE DB async helper ([`docs/operations/access-oledb-async-spawn.md`](../../docs/operations/access-oledb-async-spawn.md)), RICS mirror sync ([`docs/operations/rics-mirror-sync.md`](../../docs/operations/rics-mirror-sync.md))
 - Currency rendering if UI / reports / exports are in scope — HNL only, no `$` / `USD` / `en-US` formatters
 

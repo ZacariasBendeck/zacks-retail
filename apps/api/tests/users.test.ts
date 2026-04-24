@@ -1,11 +1,34 @@
 import request from 'supertest';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient } from '../src/prismaClient';
 import app from '../src/app';
 import { bootstrapOwner } from '../src/services/employees/bootstrapOwner';
+import { hashPassword } from '../src/services/employees/passwordHash';
 
 const prisma = new PrismaClient();
 const OWNER_EMAIL = `user-crud-${Date.now()}@example.com`;
 const OWNER_PASSWORD = 'owner-password-123';
+
+async function ensureOwnerUser(): Promise<void> {
+  await bootstrapOwner(prisma);
+  const ownerRole = await prisma.role.findUnique({ where: { name: 'OWNER' } });
+  const passwordHash = await hashPassword(OWNER_PASSWORD);
+  await prisma.user.upsert({
+    where: { email: OWNER_EMAIL },
+    update: {
+      passwordHash,
+      roleId: ownerRole!.id,
+      active: true,
+      displayName: 'Owner',
+    },
+    create: {
+      email: OWNER_EMAIL,
+      passwordHash,
+      roleId: ownerRole!.id,
+      active: true,
+      displayName: 'Owner',
+    },
+  });
+}
 
 async function ownerCookie(): Promise<string> {
   const res = await request(app)
@@ -20,7 +43,7 @@ describe('user CRUD routes', () => {
     process.env.AUTH_OWNER_PASSWORD = OWNER_PASSWORD;
     await prisma.session.deleteMany({});
     await prisma.user.deleteMany({ where: { email: { contains: 'user-crud-' } } });
-    await bootstrapOwner(prisma);
+    await ensureOwnerUser();
   });
 
   afterAll(async () => {
@@ -87,3 +110,5 @@ describe('user CRUD routes', () => {
     expect(del.status).toBe(204);
   });
 });
+
+

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   Button,
@@ -111,46 +111,66 @@ function collapseBySize(rows: ChangeDetailRow[]): ChangeDetailRow[] {
   return out;
 }
 
-// Turn raw rows into a display list with per-store subtotals and grand total.
-// Sort: store asc, date desc within store.
+function sortByMostRecentFirst(rows: ChangeDetailRow[]): ChangeDetailRow[] {
+  return [...rows].sort((a, b) => {
+    if (a.date < b.date) return 1;
+    if (a.date > b.date) return -1;
+    if (a.store !== b.store) return a.store - b.store;
+    if (a.changeType < b.changeType) return -1;
+    if (a.changeType > b.changeType) return 1;
+    if (a.rowLabel < b.rowLabel) return -1;
+    if (a.rowLabel > b.rowLabel) return 1;
+    if (a.columnLabel < b.columnLabel) return -1;
+    if (a.columnLabel > b.columnLabel) return 1;
+    return 0;
+  });
+}
+
+// Turn raw rows into a display list with recency-first data rows, then
+// per-store subtotals and a grand total footer.
 function buildLedgerRows(rows: ChangeDetailRow[], showSizeDetail: boolean): LedgerRow[] {
   const working = showSizeDetail ? rows : collapseBySize(rows);
-  const byStore = new Map<number, ChangeDetailRow[]>();
-  for (const r of working) {
+  const sorted = sortByMostRecentFirst(working);
+  const byStore = new Map<number, { quantity: number; count: number }>();
+  for (const r of sorted) {
     const key = r.store ?? 0;
-    const list = byStore.get(key);
-    if (list) list.push(r);
-    else byStore.set(key, [r]);
+    const current = byStore.get(key);
+    if (current) {
+      current.quantity += r.quantity;
+      current.count += 1;
+    } else {
+      byStore.set(key, { quantity: r.quantity, count: 1 });
+    }
   }
-  const stores = Array.from(byStore.keys()).sort((a, b) => a - b);
   const out: LedgerRow[] = [];
   let grandQty = 0;
   let grandCount = 0;
-  for (const store of stores) {
-    const storeRows = byStore.get(store) ?? [];
-    storeRows.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
-    let storeTotal = 0;
-    let i = 0;
-    for (const r of storeRows) {
-      storeTotal += r.quantity;
-      out.push({
-        kind: 'data',
-        rowKey: `d-${store}-${r.date}-${r.changeType}-${r.rowLabel}-${r.columnLabel}-${i}`,
-        store: r.store,
-        date: r.date,
-        changeType: r.changeType,
-        typeLabel: CHG_TYPE_META[r.changeType]?.label ?? r.changeType,
-        rowLabel: r.rowLabel,
-        columnLabel: r.columnLabel,
-        quantity: r.quantity,
-        cost: r.cost ?? null,
-        comment: buildComment(r),
-        purchaseOrder: r.purchaseOrder,
-        otherStore: r.otherStore,
-        rmaNumber: r.rmaNumber,
-      });
-      i += 1;
-    }
+  let i = 0;
+  for (const r of sorted) {
+    out.push({
+      kind: 'data',
+      rowKey: `d-${r.store}-${r.date}-${r.changeType}-${r.rowLabel}-${r.columnLabel}-${i}`,
+      store: r.store,
+      date: r.date,
+      changeType: r.changeType,
+      typeLabel: CHG_TYPE_META[r.changeType]?.label ?? r.changeType,
+      rowLabel: r.rowLabel,
+      columnLabel: r.columnLabel,
+      quantity: r.quantity,
+      cost: r.cost ?? null,
+      comment: buildComment(r),
+      purchaseOrder: r.purchaseOrder,
+      otherStore: r.otherStore,
+      rmaNumber: r.rmaNumber,
+    });
+    grandQty += r.quantity;
+    grandCount += 1;
+    i += 1;
+  }
+
+  for (const store of Array.from(byStore.keys()).sort((a, b) => a - b)) {
+    const summary = byStore.get(store);
+    if (!summary) continue;
     out.push({
       kind: 'subtotal',
       rowKey: `s-${store}`,
@@ -160,15 +180,13 @@ function buildLedgerRows(rows: ChangeDetailRow[], showSizeDetail: boolean): Ledg
       typeLabel: `*** Store ${store} Total ***`,
       rowLabel: '',
       columnLabel: '',
-      quantity: storeTotal,
+      quantity: summary.quantity,
       cost: null,
       comment: null,
       purchaseOrder: null,
       otherStore: null,
       rmaNumber: null,
     });
-    grandQty += storeTotal;
-    grandCount += storeRows.length;
   }
   out.push({
     kind: 'grand',
@@ -227,16 +245,28 @@ export interface SkuChangeLedgerProps {
   description?: string | null;
   /** Title shown above the summary strip; hidden when embedded as a tab. */
   title?: string;
+  /** Store to use when the operator turns off "Show All Stores". */
+  defaultStoreId?: number;
 }
 
-export function SkuChangeLedger({ skuCode, description, title }: SkuChangeLedgerProps) {
+export function SkuChangeLedger({ skuCode, description, title, defaultStoreId }: SkuChangeLedgerProps) {
   const [limit, setLimit] = useState(INITIAL_LIMIT);
   const [showSizeDetail, setShowSizeDetail] = useState(false);
   const [includeSales, setIncludeSales] = useState(false);
+  const [showAllStores, setShowAllStores] = useState(defaultStoreId == null);
+
+  useEffect(() => {
+    setShowAllStores(defaultStoreId == null);
+  }, [defaultStoreId]);
 
   const params = useMemo(
-    () => ({ sku: skuCode, limit, includeSales }),
-    [skuCode, limit, includeSales],
+    () => ({
+      sku: skuCode,
+      limit,
+      includeSales,
+      store: !showAllStores && defaultStoreId != null ? defaultStoreId : undefined,
+    }),
+    [skuCode, limit, includeSales, showAllStores, defaultStoreId],
   );
   const { data, isLoading, isFetching, error } = useChangeDetail(params);
 
@@ -301,6 +331,11 @@ export function SkuChangeLedger({ skuCode, description, title }: SkuChangeLedger
             {description && (
               <Typography.Text type="secondary">{description}</Typography.Text>
             )}
+            {defaultStoreId != null && (
+              <Typography.Text type="secondary">
+                {showAllStores ? 'All stores' : `Store ${defaultStoreId}`}
+              </Typography.Text>
+            )}
             {dateRangeLabel && (
               <Typography.Text type="secondary">{dateRangeLabel}</Typography.Text>
             )}
@@ -315,6 +350,14 @@ export function SkuChangeLedger({ skuCode, description, title }: SkuChangeLedger
           </Space>
         </Space>
         <Space style={{ marginTop: 12 }} wrap>
+          {defaultStoreId != null && (
+            <Checkbox
+              checked={showAllStores}
+              onChange={(e) => setShowAllStores(e.target.checked)}
+            >
+              Show All Stores
+            </Checkbox>
+          )}
           <Checkbox
             checked={showSizeDetail}
             onChange={(e) => setShowSizeDetail(e.target.checked)}

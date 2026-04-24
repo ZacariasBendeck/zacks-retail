@@ -340,6 +340,62 @@ export const otbEntryMethodSchema = z.object({
   changedBy: z.string().max(100).optional(),
 });
 
+// ── Inventory Manual Receipt schemas ──────────────────────────────────────────
+
+export const manualReceiptContextQuerySchema = z.object({
+  storeId: z.coerce.number().int().min(0),
+  skuCode: z.string().trim().min(1).optional(),
+  upc: z.string().trim().min(1).optional(),
+}).superRefine((value, ctx) => {
+  if (!value.skuCode && !value.upc) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['skuCode'],
+      message: 'Exactly one of skuCode or upc is required',
+    });
+  }
+  if (value.skuCode && value.upc) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['skuCode'],
+      message: 'Provide either skuCode or upc, not both',
+    });
+  }
+});
+
+const manualReceiptLineSchema = z.object({
+  columnLabel: z.string().max(32).optional().default(''),
+  rowLabel: z.string().max(32).optional().default(''),
+  quantity: z.number().int().positive(),
+});
+
+export const createManualReceiptSchema = z.object({
+  storeId: z.number().int().min(0),
+  skuId: z.string().uuid(),
+  referenceNumber: z.string().max(120).optional().nullable(),
+  storeLabelsOnReceive: z.boolean().optional().default(false),
+  movementAt: z.string().optional().nullable(),
+  performedBy: z.string().max(100).optional().nullable(),
+  unitCostOverride: z.coerce.number().nonnegative().refine(centPrecision, { message: CENT_PRECISION_MSG }).optional().nullable(),
+  retailPriceOverride: z.coerce.number().nonnegative().refine(centPrecision, { message: CENT_PRECISION_MSG }).optional().nullable(),
+  casePackId: z.string().max(120).optional().nullable(),
+  casePackMultiplier: z.coerce.number().int().min(1).optional().nullable(),
+  note: z.string().max(1000).optional().nullable(),
+  idempotencyKey: z.string().min(1).max(255).optional().nullable(),
+  lines: z.array(manualReceiptLineSchema).min(1, 'At least one line is required'),
+});
+
+export const manualReceiptListQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(200).default(25),
+  sort: z.enum(['movementAt', 'createdAt']).default('movementAt'),
+  order: z.enum(['asc', 'desc']).default('desc'),
+  storeId: z.coerce.number().int().min(0).optional(),
+  skuId: z.string().uuid().optional(),
+  fromDate: z.string().optional(),
+  toDate: z.string().optional(),
+});
+
 // ── Inventory Adjustment schemas ──────────────────────────────────
 
 const ADJUSTMENT_TYPES = ['RECEIPT', 'TRANSFER', 'MANUAL_ADJUST', 'RETURN', 'DAMAGE', 'SHRINKAGE'] as const;

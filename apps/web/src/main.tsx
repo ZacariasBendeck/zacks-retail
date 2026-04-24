@@ -8,6 +8,7 @@ import { InquiryPopupProvider } from './components/inquiry-popup'
 import { searchSkusForLookup } from './services/skuApi'
 import './styles/productsCompactTable.css'
 import './styles/reports.css'
+import './styles/draggableModal.css'
 
 const queryClient = new QueryClient({
   defaultOptions: {

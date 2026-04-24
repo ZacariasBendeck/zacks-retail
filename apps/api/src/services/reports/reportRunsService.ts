@@ -1,4 +1,4 @@
-import { Prisma, PrismaClient, ReportRun } from '@prisma/client';
+import { Prisma, PrismaClient, ReportRun } from '../../prismaClient';
 import type { ReportType } from './reportTypes';
 import type { ListScope, Visibility } from '../../routes/reports/schemas';
 
@@ -286,3 +286,5 @@ export async function deleteRun(
   }
   await prisma.reportRun.delete({ where: { id } });
 }
+
+

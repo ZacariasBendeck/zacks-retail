@@ -1,6 +1,7 @@
 import {
-  Button, Card, Col, Form, Input, InputNumber, Layout, Modal, Row, Select, Space, Table, Tag, Tooltip, Typography, message,
+  Button, Card, Col, Form, Input, InputNumber, Layout, Row, Select, Space, Table, Tag, Tooltip, Typography, message,
 } from 'antd'
+import { DraggableModal } from '../../components/draggable-modal'
 import { useEffect, useMemo, useState } from 'react'
 import {
   useCopyOtbPlanRow,
@@ -296,7 +297,7 @@ export default function OtbPlanEntryPage() {
         </Col>
       </Row>
 
-      <Modal
+      <DraggableModal
         open={copyModalOpen}
         title="Copy plan row"
         onCancel={() => setCopyModalOpen(false)}
@@ -321,7 +322,7 @@ export default function OtbPlanEntryPage() {
             <Input value={copyTarget.categoryId} onChange={(e) => setCopyTarget((t) => ({ ...t, categoryId: e.target.value }))} />
           </Form.Item>
         </Form>
-      </Modal>
+      </DraggableModal>
     </Layout>
   )
 }

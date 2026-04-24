@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Card, Button, Input, Space, Table, Tag, Typography, Row, Col } from 'antd'
-import { PlusOutlined, ReloadOutlined, SearchOutlined, WarningFilled } from '@ant-design/icons'
+import { ReloadOutlined, SearchOutlined, WarningFilled } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { useCustomers } from '../../hooks/useCustomers'
 import type { Customer, CustomerListParams } from '../../types/customer'
@@ -11,12 +11,16 @@ export default function CustomerListPage() {
   const [params, setParams] = useState<CustomerListParams>({
     page: 1,
     pageSize: 25,
-    sort: 'displayName',
-    order: 'asc',
+    sort: 'dateOfLastPurchase',
+    order: 'desc',
   })
   const [searchInput, setSearchInput] = useState('')
 
   const { data, isLoading, isFetching, refetch } = useCustomers(params)
+  const amountFormatter = new Intl.NumberFormat('es-HN', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })
 
   const handleSearch = () => {
     setParams((prev) => ({ ...prev, page: 1, q: searchInput.trim() || undefined }))
@@ -39,15 +43,17 @@ export default function CustomerListPage() {
       title: 'Name',
       dataIndex: 'displayName',
       key: 'displayName',
-      render: (v: string, r: Customer) => (
-        <a onClick={() => navigate(`/customers/${r.id}/edit`)}>{v}</a>
-      ),
+      render: (v: string, r: Customer) => {
+        const detailKey = r.source === 'mirror' ? r.accountNumber : r.id
+        if (!detailKey) return v
+        return <a onClick={() => navigate(`/customers/${detailKey}/edit`)}>{v}</a>
+      },
     },
     {
-      title: 'Phone',
-      dataIndex: 'phoneE164',
-      key: 'phoneE164',
-      width: 160,
+      title: 'Contact',
+      key: 'contact',
+      width: 220,
+      render: (_: unknown, r: Customer) => r.email ?? r.phoneE164 ?? <Typography.Text type="secondary">—</Typography.Text>,
     },
     {
       title: 'City / State',
@@ -60,11 +66,7 @@ export default function CustomerListPage() {
       key: 'ytdSales',
       width: 120,
       align: 'right' as const,
-      render: (_: unknown, r: Customer) =>
-        (r.ytdSalesCents / 100).toLocaleString('en-US', {
-          minimumFractionDigits: 2,
-          maximumFractionDigits: 2,
-        }),
+      render: (_: unknown, r: Customer) => amountFormatter.format(r.ytdSalesCents / 100),
     },
     {
       title: 'Last Purchase',
@@ -87,17 +89,19 @@ export default function CustomerListPage() {
       title="Customers"
       extra={
         <Space>
+          <Typography.Text type="secondary">Read-only RICS mirror</Typography.Text>
           <Button icon={<ReloadOutlined />} onClick={() => refetch()} loading={isFetching} />
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => navigate('/customers/new')}>
-            New Customer
-          </Button>
         </Space>
       }
     >
+      <Typography.Paragraph type="secondary" style={{ marginBottom: 16 }}>
+        Listing customer accounts from <code>rics_mirror.mail_list_names</code>. Writes stay disabled in Phase A.
+      </Typography.Paragraph>
+
       <Row gutter={8} style={{ marginBottom: 16 }}>
         <Col flex="auto">
           <Input
-            placeholder="Search by account #, name, phone, or email"
+            placeholder="Search by account #, name, email, city, or state"
             value={searchInput}
             onChange={(e) => setSearchInput(e.target.value)}
             onPressEnter={handleSearch}

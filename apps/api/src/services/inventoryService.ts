@@ -1,10 +1,9 @@
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/database';
+import { prisma } from '../db/prisma';
 import {
   Inventory,
-  InventoryRow,
   AuditLogEntry,
-  AuditLogRow,
   StockAdjustmentInput,
   InventoryMutationInput,
   OnHandSkuResult,
@@ -13,133 +12,64 @@ import {
   rowToAuditLog,
 } from '../models/inventory';
 import { PaginationEnvelope } from '../models/sku';
+import {
+  applyInventoryDelta,
+  auditRowToLegacyShape,
+  getAggregateInventoryRow,
+  getOrCreateAggregateInventoryRow,
+  inventoryRowToLegacyShape,
+} from './postgresInventoryLedger';
 
-export function getInventoryBySkuId(skuId: string): Inventory | null {
-  const db = getDb();
-
-  const skuExists = db.prepare('SELECT id FROM skus WHERE id = ?').get(skuId);
-  if (!skuExists) return null;
-
-  const row = db.prepare('SELECT * FROM inventory WHERE sku_id = ?').get(skuId) as unknown as InventoryRow | undefined;
+export async function getInventoryBySkuId(skuId: string): Promise<Inventory | null> {
+  const row = await getAggregateInventoryRow(skuId);
   if (!row) return null;
-
-  return rowToInventory(row);
+  return rowToInventory(inventoryRowToLegacyShape(row));
 }
 
-/**
- * Resolves the default inventory location (LOC_01 warehouse, or first available).
- * Used to guarantee ledger coverage via migration-019 triggers.
- */
-function getDefaultLocationId(db: ReturnType<typeof getDb>): string {
-  const loc = db.prepare(
-    "SELECT id FROM inventory_locations WHERE code = 'LOC_01' LIMIT 1"
-  ).get() as { id: string } | undefined;
-  if (loc) return loc.id;
+export async function adjustStock(
+  skuId: string,
+  input: StockAdjustmentInput,
+): Promise<{ inventory: Inventory; auditEntry: AuditLogEntry }> {
+  const result = await prisma.$transaction(async (tx) => {
+    const { inventory, audit } = await applyInventoryDelta({
+      skuId,
+      quantityDelta: input.adjustment,
+      reason: input.reason,
+      performedBy: input.performedBy ?? 'system',
+    }, tx);
+    return { inventory, audit };
+  });
 
-  const fallback = db.prepare(
-    "SELECT id FROM inventory_locations ORDER BY created_at ASC, id ASC LIMIT 1"
-  ).get() as { id: string } | undefined;
-  if (fallback) return fallback.id;
-
-  throw new Error('NO_LOCATION_AVAILABLE');
+  return {
+    inventory: rowToInventory(inventoryRowToLegacyShape(result.inventory)),
+    auditEntry: rowToAuditLog(auditRowToLegacyShape(result.audit)),
+  };
 }
 
-export function adjustStock(skuId: string, input: StockAdjustmentInput): { inventory: Inventory; auditEntry: AuditLogEntry } {
-  const db = getDb();
-
-  const skuExists = db.prepare('SELECT id FROM skus WHERE id = ?').get(skuId);
-  if (!skuExists) {
-    throw new Error('SKU_NOT_FOUND');
-  }
-
-  const invRow = db.prepare('SELECT * FROM inventory WHERE sku_id = ?').get(skuId) as unknown as InventoryRow | undefined;
-  if (!invRow) {
-    throw new Error('SKU_NOT_FOUND');
-  }
-
-  const newBalance = invRow.quantity_on_hand + input.adjustment;
-  if (newBalance < 0) {
-    throw new Error('INSUFFICIENT_STOCK');
-  }
-
-  const defaultLocationId = getDefaultLocationId(db);
-
-  db.exec('BEGIN TRANSACTION');
-  try {
-    // Create canonical adjustment source records so migration-019 triggers
-    // generate inventory_movement_ledger entries automatically.
-    const adjustmentId = uuidv4();
-    db.prepare(
-      'INSERT INTO inventory_adjustments (id, type, from_location_id, to_location_id, reason, created_by) VALUES (?, ?, ?, ?, ?, ?)'
-    ).run(
-      adjustmentId,
-      'MANUAL_ADJUST',
-      input.adjustment < 0 ? defaultLocationId : null,
-      input.adjustment >= 0 ? defaultLocationId : null,
-      input.reason,
-      input.performedBy ?? 'system',
-    );
-
-    db.prepare(
-      'INSERT INTO inventory_adjustment_lines (id, adjustment_id, sku_id, quantity) VALUES (?, ?, ?, ?)'
-    ).run(uuidv4(), adjustmentId, skuId, input.adjustment);
-
-    // Update inventory balance (triggers only create ledger rows, not balance updates)
-    db.prepare(
-      "UPDATE inventory SET quantity_on_hand = ?, version = version + 1, updated_at = datetime('now') WHERE sku_id = ?"
-    ).run(newBalance, skuId);
-
-    const auditId = uuidv4();
-    db.prepare(
-      'INSERT INTO inventory_audit_log (id, sku_id, adjustment, reason, resulting_balance, performed_by) VALUES (?, ?, ?, ?, ?, ?)'
-    ).run(auditId, skuId, input.adjustment, input.reason, newBalance, input.performedBy ?? 'system');
-
-    db.exec('COMMIT');
-
-    const updatedRow = db.prepare('SELECT * FROM inventory WHERE sku_id = ?').get(skuId) as unknown as InventoryRow;
-    const auditRow = db.prepare('SELECT * FROM inventory_audit_log WHERE id = ?').get(auditId) as unknown as AuditLogRow;
-
-    return {
-      inventory: rowToInventory(updatedRow),
-      auditEntry: rowToAuditLog(auditRow),
-    };
-  } catch (err) {
-    db.exec('ROLLBACK');
-    throw err;
-  }
-}
-
-const AUDIT_SORT_MAP: Record<string, string> = {
-  createdAt: 'created_at',
-  adjustment: 'adjustment',
-};
-
-export function getAuditLog(
+export async function getAuditLog(
   skuId: string,
   params: { page: number; pageSize: number; sort?: string; order?: 'asc' | 'desc' }
-): PaginationEnvelope<AuditLogEntry> | null {
-  const db = getDb();
+): Promise<PaginationEnvelope<AuditLogEntry> | null> {
+  const inventory = await getAggregateInventoryRow(skuId);
+  if (!inventory) return null;
 
-  const skuExists = db.prepare('SELECT id FROM skus WHERE id = ?').get(skuId);
-  if (!skuExists) return null;
-
-  const countRow = db.prepare(
-    'SELECT COUNT(*) as total FROM inventory_audit_log WHERE sku_id = ?'
-  ).get(skuId) as unknown as { total: number };
-
-  const totalItems = countRow.total;
+  const totalItems = await prisma.inventoryAuditLog.count({
+    where: { skuId, skuSizeId: null },
+  });
   const totalPages = Math.ceil(totalItems / params.pageSize);
   const offset = (params.page - 1) * params.pageSize;
 
-  const sortCol = AUDIT_SORT_MAP[params.sort ?? 'createdAt'] || 'created_at';
-  const sortDir = params.order === 'desc' ? 'DESC' : 'ASC';
-
-  const rows = db.prepare(
-    `SELECT * FROM inventory_audit_log WHERE sku_id = ? ORDER BY ${sortCol} ${sortDir}, rowid DESC LIMIT ? OFFSET ?`
-  ).all(skuId, params.pageSize, offset) as unknown as AuditLogRow[];
+  const sortField = params.sort === 'adjustment' ? 'adjustment' : 'createdAt';
+  const sortDir = params.order === 'asc' ? 'asc' : 'desc';
+  const rows = await prisma.inventoryAuditLog.findMany({
+    where: { skuId, skuSizeId: null },
+    orderBy: [{ [sortField]: sortDir }, { id: sortDir }],
+    skip: offset,
+    take: params.pageSize,
+  });
 
   return {
-    data: rows.map(rowToAuditLog),
+    data: rows.map((row) => rowToAuditLog(auditRowToLegacyShape(row))),
     pagination: {
       page: params.page,
       pageSize: params.pageSize,
@@ -559,7 +489,7 @@ export type MutationError = {
 
 export type MutationResult = AuditLogEntry & { version: number; idempotentReplay?: boolean };
 
-export function executeMutation(input: InventoryMutationInput): MutationResult | MutationError {
+export async function executeMutation(input: InventoryMutationInput): Promise<MutationResult | MutationError> {
   const traceId = uuidv4();
   const db = getDb();
 
@@ -631,13 +561,13 @@ export function executeMutation(input: InventoryMutationInput): MutationResult |
 
   // Idempotency check
   if (input.idempotencyKey) {
-    const existing = db.prepare(
-      'SELECT * FROM inventory_audit_log WHERE idempotency_key = ?'
-    ).get(input.idempotencyKey) as unknown as AuditLogRow | undefined;
+    const existing = await prisma.inventoryAuditLog.findUnique({
+      where: { idempotencyKey: input.idempotencyKey },
+    });
 
     if (existing) {
       // Same key found — verify payload matches (simplified: check skuId + delta)
-      if (existing.sku_id !== input.skuId || existing.adjustment !== input.quantityDelta) {
+      if (existing.skuId !== input.skuId || existing.adjustment !== input.quantityDelta) {
         return {
           error: {
             code: 'IDEMPOTENCY_KEY_PAYLOAD_MISMATCH',
@@ -648,136 +578,71 @@ export function executeMutation(input: InventoryMutationInput): MutationResult |
         };
       }
       // Replay: return the existing entry with current version
-      const entry = rowToAuditLog(existing);
-      const currentInv = db.prepare('SELECT version FROM inventory WHERE sku_id = ?').get(input.skuId) as { version: number } | undefined;
-      return { ...entry, version: currentInv?.version ?? 1, idempotentReplay: true };
+      const entry = rowToAuditLog(auditRowToLegacyShape(existing));
+      const currentInv = await getOrCreateAggregateInventoryRow(input.skuId);
+      return { ...entry, version: currentInv.version ?? 1, idempotentReplay: true };
     }
   }
 
-  // Get or create inventory row
-  let invRow = db.prepare('SELECT * FROM inventory WHERE sku_id = ?').get(input.skuId) as unknown as InventoryRow | undefined;
-
-  db.exec('BEGIN TRANSACTION');
   try {
-    if (!invRow) {
-      const invId = uuidv4();
-      db.prepare(
-        "INSERT INTO inventory (id, sku_id, quantity_on_hand, quantity_reserved, version) VALUES (?, ?, 0, 0, 1)"
-      ).run(invId, input.skuId);
-      invRow = db.prepare('SELECT * FROM inventory WHERE id = ?').get(invId) as unknown as InventoryRow;
-    }
+    const { inventory, audit } = await prisma.$transaction(async (tx) => {
+      return applyInventoryDelta({
+        skuId: input.skuId,
+        quantityDelta: input.quantityDelta,
+        reason: input.reasonCode,
+        performedBy: input.actorId,
+        sourceDocumentRefType: input.sourceDocumentRef.type,
+        sourceDocumentRefId: input.sourceDocumentRef.id,
+        idempotencyKey: input.idempotencyKey ?? null,
+        expectedVersion: input.expectedVersion,
+      }, tx);
+    });
 
-    // Optimistic concurrency: if expectedVersion is provided, verify it matches
-    if (input.expectedVersion !== undefined && input.expectedVersion !== invRow.version) {
-      db.exec('ROLLBACK');
-      return {
-        error: {
-          code: 'CONFLICT_VERSION_MISMATCH',
-          message: 'Inventory version conflict. Another mutation was applied concurrently.',
-          details: [
-            { field: 'expectedVersion', value: String(input.expectedVersion) },
-            { field: 'currentVersion', value: String(invRow.version) },
-          ],
-          traceId,
-        },
-      };
-    }
-
-    const newBalance = invRow.quantity_on_hand + input.quantityDelta;
-    if (newBalance < 0) {
-      db.exec('ROLLBACK');
+    return {
+      ...rowToAuditLog(auditRowToLegacyShape(audit)),
+      version: inventory.version,
+    };
+  } catch (err) {
+    if (err instanceof Error && err.message === 'INSUFFICIENT_STOCK') {
       return {
         error: {
           code: 'INSUFFICIENT_STOCK',
           message: 'Mutation would bring quantity below zero.',
-          details: [
-            { field: 'quantityDelta', value: String(input.quantityDelta) },
-            { field: 'currentOnHand', value: String(invRow.quantity_on_hand) },
-          ],
+          details: [{ field: 'quantityDelta', value: String(input.quantityDelta) }],
           traceId,
         },
       };
     }
-
-    const newVersion = (invRow.version ?? 1) + 1;
-
-    // Atomic update with version increment; WHERE version = ? ensures no concurrent write sneaked in
-    const updateResult = db.prepare(
-      "UPDATE inventory SET quantity_on_hand = ?, version = ?, updated_at = datetime('now') WHERE sku_id = ? AND version = ?"
-    ).run(newBalance, newVersion, input.skuId, invRow.version);
-
-    if ((updateResult as any).changes === 0) {
-      db.exec('ROLLBACK');
+    if (err instanceof Error && err.message === 'CONFLICT_VERSION_MISMATCH') {
+      const currentVersion = (err as Error & { currentVersion?: number }).currentVersion;
       return {
         error: {
           code: 'CONFLICT_VERSION_MISMATCH',
           message: 'Inventory version conflict. Another mutation was applied concurrently.',
-          details: [
-            { field: 'expectedVersion', value: String(invRow.version) },
-            { field: 'currentVersion', value: 'unknown (row changed)' },
-          ],
+          details: input.expectedVersion == null
+            ? []
+            : [
+                { field: 'expectedVersion', value: String(input.expectedVersion) },
+                ...(typeof currentVersion === 'number'
+                  ? [{ field: 'currentVersion', value: String(currentVersion) }]
+                  : []),
+              ],
           traceId,
         },
       };
     }
-
-    // Create canonical adjustment source records so migration-019 triggers
-    // generate inventory_movement_ledger entries automatically.
-    const SOURCE_TO_ADJ_TYPE: Record<string, string> = {
-      PURCHASE_ORDER_RECEIPT: 'RECEIPT',
-      TRANSFER_ORDER: 'TRANSFER',
-      STOCK_ADJUSTMENT: 'MANUAL_ADJUST',
-      INITIAL_IMPORT: 'MANUAL_ADJUST',
-      SYSTEM_RECONCILIATION: 'MANUAL_ADJUST',
-    };
-    const defaultLocationId = getDefaultLocationId(db);
-    const adjType = SOURCE_TO_ADJ_TYPE[input.sourceDocumentRef.type] ?? 'MANUAL_ADJUST';
-    const adjustmentId = uuidv4();
-    db.prepare(
-      'INSERT INTO inventory_adjustments (id, type, from_location_id, to_location_id, reason, created_by) VALUES (?, ?, ?, ?, ?, ?)'
-    ).run(
-      adjustmentId,
-      adjType,
-      input.quantityDelta < 0 ? defaultLocationId : null,
-      input.quantityDelta >= 0 ? defaultLocationId : null,
-      `[${input.sourceDocumentRef.type}:${input.sourceDocumentRef.id}] ${input.reasonCode}`,
-      input.actorId,
-    );
-
-    db.prepare(
-      'INSERT INTO inventory_adjustment_lines (id, adjustment_id, sku_id, quantity) VALUES (?, ?, ?, ?)'
-    ).run(uuidv4(), adjustmentId, input.skuId, input.quantityDelta);
-
-    const auditId = uuidv4();
-    db.prepare(
-      `INSERT INTO inventory_audit_log
-        (id, sku_id, adjustment, reason, resulting_balance, performed_by,
-         source_document_ref_type, source_document_ref_id, idempotency_key)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(
-      auditId, input.skuId, input.quantityDelta, input.reasonCode, newBalance,
-      input.actorId, input.sourceDocumentRef.type, input.sourceDocumentRef.id,
-      input.idempotencyKey ?? null,
-    );
-
-    db.exec('COMMIT');
-
-    const auditRow = db.prepare('SELECT * FROM inventory_audit_log WHERE id = ?').get(auditId) as unknown as AuditLogRow;
-    return { ...rowToAuditLog(auditRow), version: newVersion };
-  } catch (err) {
-    db.exec('ROLLBACK');
     throw err;
   }
 }
 
 // ── On-Hand Lookup (ZAI-134 spec AC5) ────────────────────────────
 
-export function getOnHandBySku(filters: {
+export async function getOnHandBySku(filters: {
   brandId?: number;
   style?: string;
   colorId?: number;
   sizeId?: number;
-}): OnHandSkuResult | null {
+}): Promise<OnHandSkuResult | null> {
   const db = getDb();
 
   const conditions: string[] = [];
@@ -811,24 +676,21 @@ export function getOnHandBySku(filters: {
       rb.name as brand_name,
       s.style,
       rc.name as color_name,
-      s.department,
-      COALESCE(i.quantity_on_hand, 0) as on_hand_units,
-      COALESCE(i.quantity_on_hand, 0) - COALESCE(i.quantity_reserved, 0) as available_units,
-      COALESCE(i.quantity_reserved, 0) as reserved_units,
-      datetime('now') as as_of
+      s.department
     FROM skus s
     LEFT JOIN ref_brands rb ON rb.id = s.brand_id
     LEFT JOIN ref_colors rc ON rc.id = s.color_id
-    LEFT JOIN inventory i ON i.sku_id = s.id
     WHERE ${whereClause} AND s.active = 1
     LIMIT 1
   `).get(...values) as {
     sku_id: string; sku_code: string; brand_name: string | null; style: string;
-    color_name: string | null; department: string; on_hand_units: number;
-    available_units: number; reserved_units: number; as_of: string;
+    color_name: string | null; department: string;
   } | undefined;
 
   if (!row) return null;
+  const inventory = await getAggregateInventoryRow(row.sku_id);
+  const onHandUnits = inventory?.quantityOnHand ?? 0;
+  const reservedUnits = inventory?.quantityReserved ?? 0;
 
   return {
     skuId: row.sku_id,
@@ -837,10 +699,10 @@ export function getOnHandBySku(filters: {
     style: row.style,
     color: row.color_name,
     department: row.department,
-    onHandUnits: row.on_hand_units,
-    availableUnits: row.available_units,
-    reservedUnits: row.reserved_units,
-    asOf: row.as_of,
+    onHandUnits,
+    availableUnits: onHandUnits - reservedUnits,
+    reservedUnits,
+    asOf: new Date().toISOString(),
   };
 }
 
@@ -848,32 +710,48 @@ export function getOnHandBySku(filters: {
 
 const ALL_DEPARTMENTS = ['FORMAL', 'CASUAL', 'FIESTA', 'SANDALIAS', 'BOOTS', 'COMFORT'];
 
-export function getOnHandByDepartments(): DepartmentOnHand[] {
+export async function getOnHandByDepartments(): Promise<DepartmentOnHand[]> {
   const db = getDb();
 
   const rows = db.prepare(`
     SELECT
+      s.id as sku_id,
       s.department,
-      COUNT(DISTINCT s.id) as total_skus,
-      COALESCE(SUM(i.quantity_on_hand), 0) as total_units_on_hand,
-      COALESCE(SUM(i.quantity_on_hand * s.price), 0) as total_cost_value
+      s.price
     FROM skus s
-    LEFT JOIN inventory i ON i.sku_id = s.id
     WHERE s.active = 1
-    GROUP BY s.department
-  `).all() as { department: string; total_skus: number; total_units_on_hand: number; total_cost_value: number }[];
+  `).all() as { sku_id: string; department: string; price: number | null }[];
+
+  const inventoryRows = rows.length === 0
+    ? []
+    : await prisma.inventory.findMany({
+        where: {
+          skuId: { in: rows.map((row) => row.sku_id) },
+          skuSizeId: null,
+        },
+        select: {
+          skuId: true,
+          quantityOnHand: true,
+        },
+      });
+  const inventoryBySkuId = new Map(inventoryRows.map((row) => [row.skuId, row.quantityOnHand]));
 
   const resultMap = new Map<string, DepartmentOnHand>();
   for (const dept of ALL_DEPARTMENTS) {
     resultMap.set(dept, { department: dept, totalSkus: 0, totalUnitsOnHand: 0, totalCostValue: 0 });
   }
   for (const row of rows) {
-    resultMap.set(row.department, {
+    const current = resultMap.get(row.department) ?? {
       department: row.department,
-      totalSkus: row.total_skus,
-      totalUnitsOnHand: row.total_units_on_hand,
-      totalCostValue: row.total_cost_value,
-    });
+      totalSkus: 0,
+      totalUnitsOnHand: 0,
+      totalCostValue: 0,
+    };
+    const quantityOnHand = inventoryBySkuId.get(row.sku_id) ?? 0;
+    current.totalSkus += 1;
+    current.totalUnitsOnHand += quantityOnHand;
+    current.totalCostValue += quantityOnHand * (row.price ?? 0);
+    resultMap.set(row.department, current);
   }
 
   return ALL_DEPARTMENTS.map(d => resultMap.get(d)!);

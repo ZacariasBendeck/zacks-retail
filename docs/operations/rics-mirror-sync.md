@@ -17,6 +17,8 @@ pnpm --filter @benlow-rics/api verify:rics-mirror  # full end-to-end proof (~5 m
 
 The pipeline lives entirely in [`apps/api/src/services/sync/`](../../apps/api/src/services/sync/) and [`apps/api/scripts/rics/sync/sync-rics.ts`](../../apps/api/scripts/rics/sync/sync-rics.ts) + [`apps/api/scripts/rics/verify/verify-rics-mirror.ts`](../../apps/api/scripts/rics/verify/verify-rics-mirror.ts).
 
+`sync:rics` is the shipped implementation today: extraction from MDBs and load into Postgres happen on the same Windows-capable runner. For Vercel-era cutover planning, the target future shape is to split those phases into `extract:rics-artifact` (Windows) and `load:rics-artifact` (load-only against hosted Postgres).
+
 ## Schema layout
 
 The reload carves Postgres into three schemas with different lifecycles:
@@ -70,6 +72,28 @@ Why this shape:
 - **Node owns the transaction.** The C# extractor never talks to Postgres directly. Node (via raw `pg` client) opens the transaction, invokes the extractor per table, runs COPY, and commits the swap. That keeps atomicity simple.
 
 Measured throughput after the rewrite (2026-04-21, 27 tables, 21.4M rows): **4m 57s end-to-end** — dominated by ACE read speed itself, which is the physical floor.
+
+## Planned cutover artifact mode (for Vercel-hosted frontend deployments)
+
+The migration-day target shape is to keep MDB handling off the production host entirely:
+
+1. On a Windows-capable workstation, extract the frozen MDB backup into one CSV per canonical table plus a manifest.
+2. Upload that artifact pack to the transient cutover location used by the load runner.
+3. Run a load-only command against hosted Postgres that:
+   - creates `rics_mirror_staging`,
+   - recreates the tables with the same type mapping used by `sync:rics`,
+   - `COPY`s each CSV into Postgres,
+   - performs the same atomic `rics_mirror_staging -> rics_mirror` swap,
+   - runs the existing `app.sku` backfill,
+   - leaves verification to `verify:rics-mirror` / `verify:cutover-readiness`.
+
+Why this exists:
+
+- **Vercel is not the MDB host.** The public web deploy can sit on Vercel while the data load happens against hosted Postgres elsewhere.
+- **Windows leaves the critical path.** Extraction still needs ACE.OLEDB.12.0, but only on the workstation producing the artifact pack, not on the cutover runner.
+- **Rehearsals become reproducible.** The same artifact pack can be loaded repeatedly into staging for parity checks and operator drills.
+
+Until the split tooling ships, the operational fallback is still `sync:rics` on a Windows-capable runner pointed at the target `DATABASE_URL`.
 
 ## Canonical MDB allowlist
 
@@ -157,6 +181,7 @@ Known-empty tables (empty in the source MDBs, not a bug): `inv_catalog`, `market
 ## Hard rules
 
 - **`rics_mirror` is throwaway. Never write app data into it.** Any row in `rics_mirror.*` will be dropped by the next `pnpm sync:rics`. App-native data goes in `public` or `app`.
+- **`rics_mirror` is not the long-term request authority.** Once a surface has an app-owned authoritative table, live request handlers must read that table only. For that surface, `rics_mirror` remains ETL/bootstrap input, backfill source, or reconciliation reference — never the live request path.
 - **Never write back to the MDB files from Node.** The RICS read-only rule from [CLAUDE.md](../../CLAUDE.md) stays in force. The C# extractor is read-only by construction (`SELECT` only, no `ExecuteNonQuery`); don't extend it to write.
 - **Do not run two syncs concurrently.** The verify script already guards with a 30-minute `status='running'` window; don't bypass with `SYNC_FORCE=1` unless you've confirmed the prior run is actually dead (no backend in `pg_stat_activity`).
 - **Do not remove the `--env-file-if-exists=.env` flag** from the `sync:rics` / `verify:rics-mirror` scripts in [`apps/api/package.json`](../../apps/api/package.json). The DB URL + RICS MDB directory both come from `.env`.
@@ -182,6 +207,8 @@ Not acceptable:
 
 After the mirror swap commits, the sync invokes a second phase that mirrors every non-deleted row from `rics_mirror.inventory_master` into `app.sku` as ACTIVE (`source='rics'`). This is what unifies the SKU surface: every RICS SKU becomes visible to the lifecycle gate (`findActiveSku`, `gateForSell`, etc.) the same way operator-created SKUs are. Operator rows (`source='app'`) are never touched — the UPSERT's `WHERE app.sku.source = 'rics'` predicate guards them.
 
+This backfill exists specifically so the live SKU request path can move off `rics_mirror.inventory_master`. Once the app-owned table is authoritative for a surface, request handlers should read only that table; the mirror remains an import source for the backfill, not the user-facing read path.
+
 Separate transaction, separate failure mode: a backfill error does NOT roll back the mirror swap. Mirror is committed; the operator re-runs:
 
 ```
@@ -193,6 +220,8 @@ which is idempotent. Typical run: ~6 seconds for 203k rows.
 Full contract + column mapping + edge cases: [docs/operations/sku-lifecycle-backfill.md](sku-lifecycle-backfill.md).
 
 ## Related docs
+
+- [docs/dev/specs/2026-04-24-vercel-cutover-artifact-flow.md](../dev/specs/2026-04-24-vercel-cutover-artifact-flow.md) â€” planned split of extract vs load for Vercel-targeted cutover rehearsals.
 
 - [docs/operations/sku-lifecycle-backfill.md](sku-lifecycle-backfill.md) — the post-swap `app.sku` backfill: design, SQL, column mapping, runbook.
 - [docs/modules/platform.md](../modules/platform.md) — owns `platform.etl_run` + `etl_run_table` as part of the cross-cutting admin spine.

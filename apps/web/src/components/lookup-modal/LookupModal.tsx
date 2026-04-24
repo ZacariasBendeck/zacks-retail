@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Button, Input, Modal, Space, Table, Typography } from 'antd';
+import { Button, Input, Space, Table, Typography } from 'antd';
 import type { InputRef } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
+import { DraggableModal } from '../draggable-modal';
 
 // Generic "pick one row from a searchable list" modal. Owns the shell, so
 // every lookup in the app (SKU, vendor, customer, category, employee, …)
@@ -261,7 +262,7 @@ export function LookupModal<T>({
     : (rowKey as string);
 
   return (
-    <Modal
+    <DraggableModal
       title={title}
       open={open}
       onCancel={onClose}
@@ -330,6 +331,6 @@ export function LookupModal<T>({
           ) : null}
         </Space>
       </div>
-    </Modal>
+    </DraggableModal>
   );
 }

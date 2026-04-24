@@ -156,7 +156,7 @@ _TODO: enumerate as validation and error surfaces solidify._
 
 ## Data sources (current)
 
-- **Primary read:** <from module spec — e.g. `rics_mirror.inventory_master` for Phase A, `products.sku` for Phase C>
+- **Primary read:** <from module spec — if the surface has an app-owned authoritative table, list that table here; use `rics_mirror.*` only when the live request path still has no app-owned authority for this surface>
 - **Primary write:** <from module spec — e.g. `public.ProductContent`, `app.<table>`>
 
 ## Related modules

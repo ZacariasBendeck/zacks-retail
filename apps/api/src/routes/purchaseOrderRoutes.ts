@@ -512,8 +512,8 @@ router.patch('/:poId/cancel', validate(poCancelSchema), (req: Request, res: Resp
  *       409:
  *         description: Invalid transition or line not found
  */
-router.post('/:poId/receive', validate(poReceiveSchema), (req: Request, res: Response): void => {
-  const result = poService.receivePurchaseOrder(req.params.poId as string, req.body);
+router.post('/:poId/receive', validate(poReceiveSchema), async (req: Request, res: Response): Promise<void> => {
+  const result = await poService.receivePurchaseOrder(req.params.poId as string, req.body);
 
   if (result === null) {
     res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Purchase order not found.' } });

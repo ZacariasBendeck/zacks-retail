@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { Avatar, Button, Dropdown, Layout, Menu, Typography } from 'antd'
 import {
   UserOutlined,
@@ -29,6 +29,10 @@ import { useAuth } from '../auth/useAuth'
 
 const { Header, Sider, Content } = Layout
 
+const PRODUCTS_TAXONOMY_MENU_KEY = '/products/taxonomy'
+const PRODUCTS_PIM_MENU_KEY = '/products/pim'
+const PRODUCTS_REFERENCE_MENU_KEY = '/products/reference'
+
 const menuItems = [
   {
     key: '/products',
@@ -42,7 +46,7 @@ const menuItems = [
       { key: '/products/inquiry', icon: <SearchOutlined />, label: 'Inquiry' },
       { type: 'divider' as const },
       {
-        type: 'group' as const,
+        key: PRODUCTS_TAXONOMY_MENU_KEY,
         label: 'Taxonomy',
         children: [
           { key: '/products/taxonomy/categories', icon: <FileTextOutlined />, label: 'Categories' },
@@ -55,7 +59,7 @@ const menuItems = [
       },
       { type: 'divider' as const },
       {
-        type: 'group' as const,
+        key: PRODUCTS_PIM_MENU_KEY,
         label: 'PIM',
         children: [
           { key: '/products/attributes', icon: <AppstoreOutlined />, label: 'Attributes' },
@@ -64,7 +68,7 @@ const menuItems = [
       },
       { type: 'divider' as const },
       {
-        type: 'group' as const,
+        key: PRODUCTS_REFERENCE_MENU_KEY,
         label: 'Reference',
         children: [
           { key: '/products/vendors', icon: <AppstoreOutlined />, label: 'Vendors' },
@@ -215,6 +219,16 @@ export default function AppLayout() {
     },
   ]
 
+  const collectMenuKeys = (items: readonly any[]): string[] => {
+    const out: string[] = []
+    for (const item of items) {
+      if (!item || item.type === 'divider') continue
+      if (typeof item.key === 'string') out.push(item.key)
+      if (Array.isArray(item.children)) out.push(...collectMenuKeys(item.children))
+    }
+    return out
+  }
+
   // Walk nested items (SubMenu children may themselves be Group items with
   // their own children) and collect every leaf key. Dividers and Groups carry
   // no clickable key of their own — only the inner leaves do.
@@ -228,14 +242,40 @@ export default function AppLayout() {
     return out
   }
 
+  const collectOpenKeysForPath = (items: readonly any[], path: string, ancestors: string[] = []): string[] => {
+    for (const item of items) {
+      if (!item || item.type === 'divider') continue
+
+      const itemKey = typeof item.key === 'string' ? item.key : null
+      const nextAncestors = itemKey ? [...ancestors, itemKey] : ancestors
+
+      if (Array.isArray(item.children)) {
+        const childMatch = collectOpenKeysForPath(item.children, path, nextAncestors)
+        if (childMatch.length > 0) return childMatch
+        if (itemKey && (path === itemKey || path.startsWith(`${itemKey}/`))) return nextAncestors
+      } else if (itemKey && (path === itemKey || path.startsWith(`${itemKey}/`))) {
+        return ancestors
+      }
+    }
+    return []
+  }
+
+  const allMenuKeys = menuItems.flatMap((item) =>
+    item.children ? [item.key, ...collectMenuKeys(item.children)] : typeof item.key === 'string' ? [item.key] : [],
+  )
   const allLeafKeys = menuItems.flatMap((item) =>
     item.children ? collectLeafKeys(item.children) : typeof item.key === 'string' ? [item.key] : [],
   )
 
+  const selectedMenuKey =
+    allMenuKeys
+      .filter((key) => typeof key === 'string' && (currentPath === key || currentPath.startsWith(`${key}/`)))
+      .sort((a, b) => b.length - a.length)[0] ?? '/inventory/dashboard'
+
   const selectedLeaf =
     allLeafKeys
       .filter((key) => currentPath === key || currentPath.startsWith(`${key}/`))
-      .sort((a, b) => b.length - a.length)[0] ?? '/inventory/dashboard'
+      .sort((a, b) => b.length - a.length)[0] ?? selectedMenuKey
 
   const activeModule =
     menuItems.find(
@@ -243,9 +283,14 @@ export default function AppLayout() {
         typeof item.key === 'string' &&
         (currentPath === item.key || currentPath.startsWith(`${item.key}/`)),
     ) ??
-    menuItems.find((item) => item.children && collectLeafKeys(item.children).includes(selectedLeaf)) ??
+    menuItems.find((item) => item.children && collectMenuKeys(item.children).includes(selectedMenuKey)) ??
     menuItems[0]
-  const [openKeys, setOpenKeys] = useState<string[]>(() => (activeModule ? [activeModule.key] : []))
+  const desiredOpenKeys = Array.from(new Set(collectOpenKeysForPath(menuItems, currentPath)))
+  const [openKeys, setOpenKeys] = useState<string[]>(() => desiredOpenKeys)
+
+  useEffect(() => {
+    setOpenKeys(desiredOpenKeys)
+  }, [currentPath])
 
   return (
     <Layout style={{ minHeight: '100vh' }}>

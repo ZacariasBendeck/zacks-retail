@@ -1,4 +1,5 @@
-import { AutoComplete, Col, Form, Input, Row, Spin, Typography } from 'antd'
+import { AutoComplete, Button, Col, Form, Input, Row, Spin, Typography } from 'antd'
+import { SearchOutlined } from '@ant-design/icons'
 import { useState } from 'react'
 import { sectionCard, sectionTitle, sectionSubtitle, readonlyInput } from './styles'
 import type { SkuLifecycleRow } from '../../../types/skuLifecycle'
@@ -19,6 +20,8 @@ interface SkuCodeStripProps {
   onSearch: (text: string) => void
   onSelect: (value: string) => void
   onBlur: () => void
+  /** Opens the full SKU Lookup modal (table view + facets). */
+  onOpenSkuLookup?: () => void
 }
 
 
@@ -41,6 +44,7 @@ export function SkuCodeStrip({
   onSearch,
   onSelect,
   onBlur,
+  onOpenSkuLookup,
 }: SkuCodeStripProps) {
   const [text, setText] = useState('')
   return (
@@ -48,9 +52,24 @@ export function SkuCodeStrip({
       {!isRouteEdit ? (
         <Row gutter={16} align="middle">
           <Col xs={24} sm={12} md={10} lg={8}>
-            <Typography.Text style={sectionTitle}>Buscar SKU existente</Typography.Text>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8 }}>
+              <Typography.Text style={sectionTitle}>Buscar SKU existente</Typography.Text>
+              {onOpenSkuLookup && (
+                <Button
+                  type="link"
+                  size="small"
+                  icon={<SearchOutlined />}
+                  onClick={onOpenSkuLookup}
+                  disabled={matched}
+                  style={{ padding: 0, height: 'auto', lineHeight: 1 }}
+                  title="Abrir lookup de SKUs (Code / Description / Vendor / Style-Color)"
+                >
+                  Buscar
+                </Button>
+              )}
+            </div>
             <div style={sectionSubtitle}>
-              Escribe un código para editarlo. Si no, se creará uno nuevo con código provisional auto-generado.
+              Escribe un código para editarlo, o haz clic en <b>Buscar</b> para abrir el lookup por descripción, vendor o style-color. Si no, se creará uno nuevo con código provisional auto-generado.
             </div>
             <Form.Item name="skuCode" style={{ marginBottom: 0 }}>
               <AutoComplete

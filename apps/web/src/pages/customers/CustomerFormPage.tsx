@@ -13,12 +13,13 @@ import {
   Row,
   Col,
   Table,
-  Modal,
   Select,
   DatePicker,
   Tabs,
   Statistic,
   Typography,
+  Alert,
+  Tag,
 } from 'antd'
 import { ArrowLeftOutlined, SaveOutlined, DeleteOutlined, PlusOutlined, EditOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
@@ -32,6 +33,7 @@ import {
   useUpdateFamilyMember,
   useDeleteFamilyMember,
 } from '../../hooks/useCustomers'
+import { DraggableModal } from '../../components/draggable-modal'
 import type { FamilyMember, FamilyMemberCreatePayload } from '../../types/customer'
 
 export default function CustomerFormPage() {
@@ -46,6 +48,7 @@ export default function CustomerFormPage() {
   const createCustomer = useCreateCustomer()
   const updateCustomer = useUpdateCustomer()
   const deleteCustomer = useDeleteCustomer()
+  const isMirrorCustomer = customer?.source === 'mirror'
 
   useEffect(() => {
     if (customer) {
@@ -113,10 +116,11 @@ export default function CustomerFormPage() {
         <Space>
           <Button type="text" icon={<ArrowLeftOutlined />} onClick={() => navigate('/customers')} />
           {isEdit ? customer?.displayName ?? 'Customer' : 'New Customer'}
+          {isMirrorCustomer ? <Tag color="blue">RICS mirror</Tag> : null}
         </Space>
       }
       extra={
-        isEdit ? (
+        isEdit && !isMirrorCustomer ? (
           <Button danger icon={<DeleteOutlined />} onClick={handleDelete} loading={deleteCustomer.isPending}>
             Delete
           </Button>
@@ -124,6 +128,16 @@ export default function CustomerFormPage() {
       }
       loading={isEdit && isLoading}
     >
+      {isMirrorCustomer ? (
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message="Read-only mirror customer"
+          description="This record is coming from the RICS mirror in Postgres. Editing and family-member writes stay disabled until the CRM write path is designed."
+        />
+      ) : null}
+
       {isEdit && balances && (
         <Row gutter={16} style={{ marginBottom: 16 }}>
           <Col span={6}>
@@ -150,7 +164,7 @@ export default function CustomerFormPage() {
             key: 'info',
             label: 'Customer info',
             children: (
-              <Form form={form} layout="vertical" onFinish={handleSubmit}>
+              <Form form={form} layout="vertical" onFinish={handleSubmit} disabled={isMirrorCustomer}>
                 <Row gutter={16}>
                   <Col span={8}>
                     <Form.Item
@@ -263,14 +277,16 @@ export default function CustomerFormPage() {
                 </Form.Item>
 
                 <Space>
-                  <Button
-                    type="primary"
-                    htmlType="submit"
-                    icon={<SaveOutlined />}
-                    loading={createCustomer.isPending || updateCustomer.isPending}
-                  >
-                    {isEdit ? 'Save' : 'Create'}
-                  </Button>
+                  {!isMirrorCustomer ? (
+                    <Button
+                      type="primary"
+                      htmlType="submit"
+                      icon={<SaveOutlined />}
+                      loading={createCustomer.isPending || updateCustomer.isPending}
+                    >
+                      {isEdit ? 'Save' : 'Create'}
+                    </Button>
+                  ) : null}
                   <Button onClick={() => navigate('/customers')}>Cancel</Button>
                 </Space>
               </Form>
@@ -281,7 +297,13 @@ export default function CustomerFormPage() {
                 {
                   key: 'family',
                   label: `Family members${customer?.familyMembers.length ? ` (${customer.familyMembers.length})` : ''}`,
-                  children: <FamilyMemberPanel customerId={customerId!} members={customer?.familyMembers ?? []} />,
+                  children: (
+                    <FamilyMemberPanel
+                      customerId={customerId!}
+                      members={customer?.familyMembers ?? []}
+                      readOnly={isMirrorCustomer}
+                    />
+                  ),
                 },
               ]
             : []),
@@ -291,7 +313,15 @@ export default function CustomerFormPage() {
   )
 }
 
-function FamilyMemberPanel({ customerId, members }: { customerId: string; members: FamilyMember[] }) {
+function FamilyMemberPanel({
+  customerId,
+  members,
+  readOnly = false,
+}: {
+  customerId: string
+  members: FamilyMember[]
+  readOnly?: boolean
+}) {
   const { message, modal } = App.useApp()
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState<FamilyMember | null>(null)
@@ -359,9 +389,11 @@ function FamilyMemberPanel({ customerId, members }: { customerId: string; member
   return (
     <>
       <Space style={{ marginBottom: 16 }}>
-        <Button type="primary" icon={<PlusOutlined />} onClick={openForCreate}>
-          Add family member
-        </Button>
+        {!readOnly ? (
+          <Button type="primary" icon={<PlusOutlined />} onClick={openForCreate}>
+            Add family member
+          </Button>
+        ) : null}
         <Typography.Text type="secondary">RICS p. 118 — 2-char code per family member</Typography.Text>
       </Space>
 
@@ -382,21 +414,26 @@ function FamilyMemberPanel({ customerId, members }: { customerId: string; member
             render: (v: string | null) => v ?? '—',
           },
           { title: 'Birthday', dataIndex: 'birthday', key: 'birthday', width: 120, render: (v: string | null) => v ?? '—' },
-          {
-            title: '',
-            key: 'actions',
-            width: 120,
-            render: (_: unknown, m: FamilyMember) => (
-              <Space>
-                <Button size="small" icon={<EditOutlined />} onClick={() => openForEdit(m)} />
-                <Button size="small" danger icon={<DeleteOutlined />} onClick={() => handleDelete(m)} />
-              </Space>
-            ),
-          },
+          ...(!readOnly
+            ? [
+                {
+                  title: '',
+                  key: 'actions',
+                  width: 120,
+                  render: (_: unknown, m: FamilyMember) => (
+                    <Space>
+                      <Button size="small" icon={<EditOutlined />} onClick={() => openForEdit(m)} />
+                      <Button size="small" danger icon={<DeleteOutlined />} onClick={() => handleDelete(m)} />
+                    </Space>
+                  ),
+                },
+              ]
+            : []),
         ]}
       />
 
-      <Modal
+      {!readOnly ? (
+      <DraggableModal
         title={editing ? `Edit ${editing.code}` : 'Add family member'}
         open={open}
         onCancel={() => setOpen(false)}
@@ -444,7 +481,8 @@ function FamilyMemberPanel({ customerId, members }: { customerId: string; member
             <Input.TextArea rows={2} maxLength={500} />
           </Form.Item>
         </Form>
-      </Modal>
+      </DraggableModal>
+      ) : null}
     </>
   )
 }

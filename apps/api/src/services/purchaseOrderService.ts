@@ -1,5 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/database';
+import { prisma } from '../db/prisma';
 import {
   PurchaseOrder,
   PurchaseOrderRow,
@@ -20,6 +21,7 @@ import {
   PoStatusHistory,
 } from '../models/purchaseOrder';
 import { PaginationEnvelope } from '../models/sku';
+import { applyInventoryDelta } from './postgresInventoryLedger';
 
 type DbValue = null | number | bigint | string;
 
@@ -306,7 +308,7 @@ export function cancelPurchaseOrder(
   return transitionStatus(id, 'CANCELLED', options);
 }
 
-export function receivePurchaseOrder(
+export async function receivePurchaseOrder(
   id: string,
   data: {
     lines: { lineId: string; quantityReceived: number; discrepancyReason?: string | null; auditReference?: string | null }[];
@@ -317,7 +319,7 @@ export function receivePurchaseOrder(
     reason?: string;
   },
   options?: { changedBy?: string }
-): PurchaseOrder | null | { error: string } {
+): Promise<PurchaseOrder | null | { error: string }> {
   const db = getDb();
   const existing = db.prepare('SELECT * FROM purchase_orders WHERE id = ?').get(id) as unknown as PurchaseOrderRow | undefined;
   if (!existing) return null;
@@ -363,6 +365,7 @@ export function receivePurchaseOrder(
 
   db.exec('BEGIN TRANSACTION');
   try {
+    const inventoryMutations: Array<{ skuId: string; quantityDelta: number; reason: string; performedBy: string }> = [];
     const receiptId = uuidv4();
     const receiptCreatedBy = data.receivedBy ?? changedBy;
     db.prepare(`
@@ -397,29 +400,12 @@ export function receivePurchaseOrder(
         "UPDATE purchase_order_lines SET quantity_received = ?, updated_at = datetime('now') WHERE id = ?"
       ).run(newQtyReceived, line.lineId);
 
-      // Update inventory on-hand
-      const invRow = db.prepare('SELECT * FROM inventory WHERE sku_id = ?').get(poLine.sku_id) as unknown as { quantity_on_hand: number } | undefined;
-      if (invRow) {
-        const newBalance = invRow.quantity_on_hand + line.quantityReceived;
-        db.prepare(
-          "UPDATE inventory SET quantity_on_hand = ?, updated_at = datetime('now') WHERE sku_id = ?"
-        ).run(newBalance, poLine.sku_id);
-
-        // Insert audit log
-        db.prepare(
-          'INSERT INTO inventory_audit_log (id, sku_id, adjustment, reason, resulting_balance, performed_by) VALUES (?, ?, ?, ?, ?, ?)'
-        ).run(uuidv4(), poLine.sku_id, line.quantityReceived, `PO receive: ${existing.po_number}`, newBalance, changedBy);
-      } else {
-        // Create inventory record if it doesn't exist
-        const newBalance = line.quantityReceived;
-        db.prepare(
-          'INSERT INTO inventory (id, sku_id, quantity_on_hand) VALUES (?, ?, ?)'
-        ).run(uuidv4(), poLine.sku_id, newBalance);
-
-        db.prepare(
-          'INSERT INTO inventory_audit_log (id, sku_id, adjustment, reason, resulting_balance, performed_by) VALUES (?, ?, ?, ?, ?, ?)'
-        ).run(uuidv4(), poLine.sku_id, line.quantityReceived, `PO receive: ${existing.po_number}`, newBalance, changedBy);
-      }
+      inventoryMutations.push({
+        skuId: poLine.sku_id,
+        quantityDelta: line.quantityReceived,
+        reason: `PO receive: ${existing.po_number}`,
+        performedBy: changedBy,
+      });
 
       db.prepare(`
         INSERT INTO po_receipt_lines (
@@ -454,6 +440,12 @@ export function receivePurchaseOrder(
       .run(newStatus, id);
 
     insertStatusHistory(id, existing.status, newStatus, changedBy, data.reason ?? null);
+
+    await prisma.$transaction(async (tx) => {
+      for (const mutation of inventoryMutations) {
+        await applyInventoryDelta(mutation, tx);
+      }
+    });
 
     db.exec('COMMIT');
   } catch (err) {

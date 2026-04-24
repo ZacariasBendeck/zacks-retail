@@ -152,6 +152,35 @@ const mockInquiry = {
   pictureUrl: '/rics-images/ZN02-NDPT.jpg',
 };
 
+const mockFindBySize = {
+  seedSku: '349101-BKPT',
+  columnLabel: '080',
+  rowLabel: 'M',
+  sizeTypeCode: 3,
+  sizeTypeDesc: 'Women Dress',
+  restrictToSizeType: true,
+  separateByStore: true,
+  sort: 'DESCRIPTION',
+  rows: [
+    {
+      sku: '349101-BKPT',
+      description: 'Pump',
+      brand: 'Nina',
+      vendorCode: 'NINA',
+      category: 560,
+      styleColor: 'BLACK PATENT',
+      sizeTypeCode: 3,
+      sizeTypeDesc: 'Women Dress',
+      totalOnHand: 4,
+      storeCount: 1,
+      storeNumber: 2,
+      storeName: 'UNLIMITED C. 2000',
+    },
+  ],
+  totalMatches: 1,
+  totalOnHand: 4,
+};
+
 describe('GET /api/v1/inventory/inquiry/:sku', () => {
   let app: any;
   let ricsAdapter: any;
@@ -239,11 +268,69 @@ describe('GET /api/v1/inventory/inquiry/:sku', () => {
     expect(typeof res.body.grids).toBe('object');
   });
 
+  it('passes storeId through to the adapter when the route is store-scoped', async () => {
+    const res = await request(app).get(
+      `/api/v1/inventory/inquiry/${MOCK_SKU}?storeId=21`
+    );
+
+    expect(res.status).toBe(200);
+    expect(ricsAdapter.getInventoryInquiry).toHaveBeenCalledWith(MOCK_SKU, 21);
+  });
+
   it('returns 404 when adapter returns null', async () => {
     (ricsAdapter.getInventoryInquiry as jest.Mock).mockResolvedValue(null);
 
     const res = await request(app).get('/api/v1/inventory/inquiry/NONEXIST');
 
     expect(res.status).toBe(404);
+  });
+});
+
+describe('GET /api/v1/inventory/find-by-size', () => {
+  let app: any;
+  let ricsAdapter: any;
+
+  beforeAll(async () => {
+    app = (await import('../../src/app')).default;
+  });
+
+  beforeEach(() => {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    ricsAdapter = require('../../src/services/ricsInventoryAdapter');
+    (ricsAdapter.findBySize as jest.Mock).mockReset();
+    (ricsAdapter.findBySize as jest.Mock).mockResolvedValue(mockFindBySize);
+    process.env.INVENTORY_SOURCE = 'rics';
+  });
+
+  it('passes the widened size-search filters through to the facade', async () => {
+    const res = await request(app).get(
+      '/api/v1/inventory/find-by-size?seedSku=349101-BKPT&sizeTypeCode=3&columnLabel=080&rowLabel=M&restrictToSizeType=true&vendorCode=NINA&category=560&styleColor=BLACK&storeNumbers=1,2&sort=DESCRIPTION&separateByStore=true&limit=750',
+    );
+
+    expect(res.status).toBe(200);
+    expect(ricsAdapter.findBySize).toHaveBeenCalledWith(
+      expect.objectContaining({
+        seedSku: '349101-BKPT',
+        sizeTypeCode: 3,
+        columnLabel: '080',
+        rowLabel: 'M',
+        restrictToSizeType: true,
+        vendorCode: 'NINA',
+        category: 560,
+        styleColor: 'BLACK',
+        storeNumbers: [1, 2],
+        sort: 'DESCRIPTION',
+        separateByStore: true,
+        limit: 750,
+      }),
+    );
+    expect(res.body).toEqual(expect.objectContaining({ totalMatches: 1, totalOnHand: 4 }));
+  });
+
+  it('requires at least one size label', async () => {
+    const res = await request(app).get('/api/v1/inventory/find-by-size?vendorCode=NINA');
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('MISSING_PARAMS');
   });
 });

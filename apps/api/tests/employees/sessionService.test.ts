@@ -1,4 +1,4 @@
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient } from '../../src/prismaClient';
 import {
   createSession,
   findActiveSession,
@@ -64,3 +64,5 @@ describe('sessionService', () => {
     expect(found).toBeNull();
   });
 });
+
+

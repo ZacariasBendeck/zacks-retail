@@ -1,4 +1,4 @@
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient } from '../prismaClient';
 
 declare global {
   // eslint-disable-next-line no-var
@@ -11,3 +11,5 @@ export const prisma: PrismaClient =
 if (process.env.NODE_ENV !== 'production') {
   global.__zacksPrisma = prisma;
 }
+
+

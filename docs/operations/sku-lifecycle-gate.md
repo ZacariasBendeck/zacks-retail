@@ -4,7 +4,7 @@
 
 ## What it is
 
-Four gatekeeper helpers, one per downstream use-case. Each resolves a SKU identifier (code string or UUID) against `app.sku` and applies the state rule for that specific operation. If the identifier matches nothing in `app.sku`, the helper returns `Ok(null)` so the caller can fall through to the legacy RICS lookup path. If it matches but the state is wrong, it returns `Err({ kind: 'ConstraintViolation' | 'NotFound', message })` with a Spanish message suitable for surfacing to the operator.
+Four gatekeeper helpers, one per downstream use-case. Each resolves a SKU identifier (code string or UUID) against `app.sku` and applies the state rule for that specific operation. If the identifier matches nothing in `app.sku`, the helper returns `Ok(null)` as a narrow transitional/bootstrap escape hatch; once the request surface is authoritative in `app.sku`, callers should treat that as "not found here" and must not fall through to `rics_mirror` on the live request path. If it matches but the state is wrong, it returns `Err({ kind: 'ConstraintViolation' | 'NotFound', message })` with a Spanish message suitable for surfacing to the operator.
 
 | Helper | Allowed states | Use for |
 |---|---|---|
@@ -34,9 +34,9 @@ Enforcing these rules only in the UI leaves the API open: a script, a direct `cu
 | `GET /api/v1/pos/skus/:skuCode/price-slots` | same | `findActiveSku` | Same — price-slot lookup can't surface a non-ACTIVE SKU. |
 | `GET /api/public/products/:productId` | [`apps/api/src/routes/publicProductRoutes.ts`](../../apps/api/src/routes/publicProductRoutes.ts) | `findActiveSku` | Storefront product detail returns 404 for DRAFT codes so customers can't hit leaked URLs. |
 
-Every hit matches against `app.sku` first. A non-ACTIVE match short-circuits with a `NotFound` (404) + Spanish message. A miss falls through to the existing RICS adapter so legacy SKUs keep working.
+Every hit matches against `app.sku` first. A non-ACTIVE match short-circuits with a `NotFound` (404) + Spanish message. A miss only reaches the legacy path during the narrow bootstrap window before the authoritative app-owned surface is fully wired; new request handlers must not treat `rics_mirror` fall-through as the normal steady state once `app.sku` is authoritative.
 
-**Post 2026-04-23, the fall-through path is vestigial but kept.** After the first `pnpm sync:rics-skus` run, every legacy RICS SKU also exists in `app.sku` as ACTIVE (`source='rics'`) — see [docs/operations/sku-lifecycle-backfill.md](sku-lifecycle-backfill.md). The gate now answers every code from `app.sku`; the RICS-adapter arm only matters during the brief window between a mirror swap and the post-swap backfill completing. Leave it in place for resilience until Phase C drops `rics_mirror`.
+**Post 2026-04-23, the fall-through path is vestigial and should keep shrinking.** After the first `pnpm sync:rics-skus` run, every legacy RICS SKU also exists in `app.sku` as ACTIVE (`source='rics'`) — see [docs/operations/sku-lifecycle-backfill.md](sku-lifecycle-backfill.md). The gate now answers every code from `app.sku`; the RICS-adapter arm only matters during the brief window between a mirror swap and the post-swap backfill completing. Do not extend that arm to new request surfaces; remove it as each consumer becomes fully app-owned.
 
 **Legacy route deprecation (Phase 5g.1):**
 
@@ -55,7 +55,7 @@ Every response from `/api/v1/skus/*` now carries `Deprecation: true` + `Link: </
 | Transfer order line | `apps/api/src/routes/transferOrderRoutes.ts` | `gateForAllocate` | |
 | Barcode print endpoint | TBD (route doesn't exist yet) | `gateForPrintBarcode` | Phase 5e / future. |
 
-These paths still read exclusively from SQLite or `rics_mirror`, so they can't see `app.sku` rows today and a gate there would be a no-op. The wire-up lands as each service is refactored to read from the union of `rics_mirror.inventory_master + app.sku`.
+These paths still read exclusively from SQLite or `rics_mirror`, so they can't see `app.sku` rows today and a gate there would be a no-op. The wire-up lands as each service is refactored so `app.sku` is the authoritative request-path SKU surface; any temporary mirror fallback is bootstrap-only, not the steady-state live path.
 
 ### Wiring checklist for Phase 5g
 
@@ -90,10 +90,10 @@ if (!gated.ok) {
   return;
 }
 
-// 3. Branch on "found in app.sku" vs "fall through to legacy"
+// 3. Branch on "found in app.sku" vs "bootstrap miss"
 if (gated.value == null) {
-  // Not in app.sku — do the legacy RICS lookup here
-  // (Once Phase 5g completes and all SKUs are in app.sku, this branch goes away.)
+  // Not in app.sku — only transitional/bootstrap paths should consider a mirror lookup here.
+  // Once the surface is authoritative in app.sku, handle this as not found instead.
 } else {
   // ACTIVE SKU from app.sku — proceed with the operation
   const skuId = gated.value.id;
@@ -103,7 +103,7 @@ if (gated.value == null) {
 
 ## How to verify
 
-Integration tests live at [`apps/api/tests/services/products/skuLifecycleGate.test.ts`](../../apps/api/tests/services/products/skuLifecycleGate.test.ts). They cover every helper × every state (DRAFT / ACTIVE / DISCONTINUED / not-in-app.sku), plus the fall-through semantics.
+Integration tests live at [`apps/api/tests/services/products/skuLifecycleGate.test.ts`](../../apps/api/tests/services/products/skuLifecycleGate.test.ts). They cover every helper × every state (DRAFT / ACTIVE / DISCONTINUED / not-in-app.sku), plus the current transitional miss semantics.
 
 ```
 pnpm --filter api test -- skuLifecycleGate

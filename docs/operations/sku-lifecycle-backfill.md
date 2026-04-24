@@ -18,7 +18,7 @@ Also fires automatically after every `pnpm sync:rics` (post-swap, before the `et
 
 Before this phase existed, `app.sku` held only operator-created SKUs (net-new drafts via `POST /api/v1/products/sku-drafts`). Legacy RICS SKUs lived exclusively in `rics_mirror.inventory_master`. Consumers that used `skuLifecycleGate.findActiveSku(...)` returned `Ok(null)` for every RICS code and fell through to the mirror adapter. Two surfaces, two queries, ambiguous semantics.
 
-Backfilling unifies this: post first-run, every SKU (legacy + net-new) is in `app.sku`. The gate short-circuits for everything. Phase B cutover becomes "stop reading `rics_mirror.inventory_master` at the repository layer"; Phase C becomes `DROP SCHEMA rics_mirror`.
+Backfilling unifies this: post first-run, every SKU (legacy + net-new) is in `app.sku`. The gate short-circuits for everything. From that point forward, the SKU live request path should read `app.sku` only; `rics_mirror.inventory_master` is bootstrap/backfill input and reconciliation reference, not the authoritative request surface. Phase B cutover becomes "remove any residual request-path dependency on `rics_mirror.inventory_master`"; Phase C becomes `DROP SCHEMA rics_mirror`.
 
 ## Source ⇄ target mapping
 

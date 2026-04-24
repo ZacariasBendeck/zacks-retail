@@ -479,7 +479,7 @@ export function overrideTicketTax(ticketId: string, newTaxTotal: number, reason:
 // End ticket
 // ---------------------------------------------------------------------------
 
-export function endTicket(ticketId: string, input: EndTicketInput = {}): SalesTicketWithChildren {
+export async function endTicket(ticketId: string, input: EndTicketInput = {}): Promise<SalesTicketWithChildren> {
   const db = getPosDb();
   const ticket = assertDraftTicket(db, ticketId);
 
@@ -549,15 +549,8 @@ export function endTicket(ticketId: string, input: EndTicketInput = {}): SalesTi
       `SELECT sku_id, quantity, unit_price FROM pos_sales_ticket_lines
        WHERE ticket_id = ? AND sku_id IS NOT NULL AND line_kind = 'MERCHANDISE'`
     ).all(ticketId) as Array<{ sku_id: string; quantity: number; unit_price: number }>;
-    warehouseDb.exec('BEGIN');
-    try {
-      for (const l of lines) {
-        applyLedgerDepletion(warehouseDb, l.sku_id, l.quantity, l.unit_price, `TICKET:${ticketId}`, ticket.cashier_user_id);
-      }
-      warehouseDb.exec('COMMIT');
-    } catch (e) {
-      warehouseDb.exec('ROLLBACK');
-      throw e;
+    for (const l of lines) {
+      await applyLedgerDepletion(warehouseDb, l.sku_id, l.quantity, l.unit_price, `TICKET:${ticketId}`, ticket.cashier_user_id);
     }
   }
 
@@ -568,7 +561,7 @@ export function endTicket(ticketId: string, input: EndTicketInput = {}): SalesTi
 // Void (mid-ticket OR post-end) — atomic for continuation chains.
 // ---------------------------------------------------------------------------
 
-export function voidTicket(ticketId: string, input: VoidTicketInput): SalesTicketWithChildren {
+export async function voidTicket(ticketId: string, input: VoidTicketInput): Promise<SalesTicketWithChildren> {
   const db = getPosDb();
   const ticket = db.prepare('SELECT * FROM pos_sales_tickets WHERE id = ?').get(ticketId) as unknown as SalesTicketRow | undefined;
   if (!ticket) throw new Error('TICKET_NOT_FOUND');
@@ -638,15 +631,8 @@ export function voidTicket(ticketId: string, input: VoidTicketInput): SalesTicke
 
   if (reversalLines.length > 0) {
     const warehouseDb = getDb();
-    warehouseDb.exec('BEGIN');
-    try {
-      for (const l of reversalLines) {
-        applyLedgerDepletion(warehouseDb, l.skuId, -l.quantity, l.unitPrice, `VOID:${l.ticketId}`, input.actorUserId);
-      }
-      warehouseDb.exec('COMMIT');
-    } catch (e) {
-      warehouseDb.exec('ROLLBACK');
-      throw e;
+    for (const l of reversalLines) {
+      await applyLedgerDepletion(warehouseDb, l.skuId, -l.quantity, l.unitPrice, `VOID:${l.ticketId}`, input.actorUserId);
     }
   }
 

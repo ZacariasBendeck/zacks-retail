@@ -1,0 +1,1360 @@
+// Zack's Retail — API Prisma schema.
+//
+// Scope: Postgres-backed application tables for storefront, admin,
+// product/catalog, reporting, and operational workflows.
+//
+// PostgreSQL is the system of record for all net-new application data.
+// SQLite remains only as a frozen read-store for legacy admin reference tables
+// such as ref_colors, ref_patterns, and related dimensions while they are
+// migrated piecewise into app.* Postgres dimensions.
+//
+// Legacy RICS v7.7 Access MDB files are read only through the operator-invoked
+// RICS mirror sync pipeline:
+//
+//   RICS MDB → PowerShell/C# ACE.OLEDB export → CSV → Node COPY → Postgres
+//
+// The API must not read directly from or write to RICS MDB files.
+// The API must not create new SQLite writes.
+//
+// RICS SKU codes are treated as opaque external string keys.
+// Module specs in docs/modules/*.md are governed contracts and should stay
+// aligned with this schema.
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["multiSchema"]
+}
+
+generator apiClient {
+  provider        = "prisma-client-js"
+  previewFeatures = ["multiSchema"]
+  output          = "../generated/prisma-client-v4"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  schemas  = ["public", "platform", "rics_mirror", "app"]
+}
+
+/// Web-only overlay keyed by RICS SKU code.
+/// Fields here override or extend what RICS carries (description, imagery, SEO).
+/// A product with no row here still renders — it just uses RICS fields only.
+model ProductContent {
+  ricsSkuCode    String   @id
+  webDescription String?
+  heroImageUrl   String?
+  galleryJson    Json?
+  specsJson      Json?
+  seoSlug        String?  @unique
+  published      Boolean  @default(false)
+  updatedAt      DateTime @updatedAt
+  createdAt      DateTime @default(now())
+
+  @@schema("public")
+}
+
+/// Anonymous cart keyed by a session cookie (UUID). User accounts come later.
+model Cart {
+  id        String     @id @default(uuid())
+  sessionId String     @unique
+  lines     CartLine[]
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  @@schema("public")
+}
+
+model CartLine {
+  id                String   @id @default(uuid())
+  cartId            String
+  cart              Cart     @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  ricsSkuCode       String
+  sizeLabel         String
+  colorId           Int?
+  quantity          Int
+  unitPriceSnapshot Decimal  @db.Decimal(12, 2)
+  createdAt         DateTime @default(now())
+
+  @@index([cartId])
+  @@index([ricsSkuCode])
+  @@schema("public")
+}
+
+model Order {
+  id            String      @id @default(uuid())
+  status        String      @default("PLACED")
+  shippingJson  Json
+  paymentMethod String
+  subtotal      Decimal     @db.Decimal(12, 2)
+  tax           Decimal     @db.Decimal(12, 2)
+  total         Decimal     @db.Decimal(12, 2)
+  lines         OrderLine[]
+  createdAt     DateTime    @default(now())
+
+  @@schema("public")
+}
+
+model OrderLine {
+  id          String  @id @default(uuid())
+  orderId     String
+  order       Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  ricsSkuCode String
+  sizeLabel   String
+  colorId     Int?
+  quantity    Int
+  unitPrice   Decimal @db.Decimal(12, 2)
+
+  @@index([orderId])
+  @@schema("public")
+}
+
+model User {
+  id                   String                       @id @default(uuid())
+  email                String                       @unique
+  passwordHash         String
+  displayName          String
+  active               Boolean                      @default(true)
+  isEmployee           Boolean                      @default(false)
+  ricsUserId           String?
+  salespersonCode      String?
+  otherInformation     String?
+  commissionRate       Decimal?                     @db.Decimal(5, 2)
+  commissionBase       String                       @default("NET_SALES")
+  homeStoreId          String?
+  hireDate             DateTime?
+  terminatedAt         DateTime?
+  timeClockEnabled     Boolean                      @default(true)
+  timeClockPinHash     String?
+  roleId               String
+  role                 Role                         @relation(fields: [roleId], references: [id])
+  sessions             Session[]
+  salesPasswords       EmployeeSalesPassword[]      @relation("EmployeeSalesPasswords")
+  salesPasswordAudits  EmployeeSalesPasswordAudit[] @relation("EmployeeSalesPasswordAuditEmployee")
+  salesOverrideTokens  EmployeeSalesOverrideToken[] @relation("EmployeeSalesOverrideTokens")
+  commissionOverrides  CommissionOverride[]
+  timeClockEntries     TimeClockEntry[]             @relation("EmployeeTimeClockEntries")
+  ownedReportTemplates ReportTemplate[]             @relation("OwnedReportTemplates")
+  reportRuns           ReportRun[]                  @relation("ReportRuns")
+  lastLoginAt          DateTime?
+  createdAt            DateTime                     @default(now())
+  updatedAt            DateTime                     @updatedAt
+
+  @@index([roleId])
+  @@index([isEmployee, active])
+  @@index([salespersonCode])
+  @@schema("public")
+}
+
+model Role {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  permissions String[]
+  users       User[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@schema("public")
+}
+
+model Session {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@schema("public")
+}
+
+model EmployeeSalesPassword {
+  id                           String                       @id @default(uuid())
+  employeeId                   String
+  employee                     User                         @relation("EmployeeSalesPasswords", fields: [employeeId], references: [id], onDelete: Cascade)
+  pinHash                      String
+  scopes                       String[]
+  active                       Boolean                      @default(true)
+  failedAttempts               Int                          @default(0)
+  failedAttemptWindowStartedAt DateTime?
+  dailyFailedCount             Int                          @default(0)
+  dailyFailedWindowStartedAt   DateTime?
+  lockedUntil                  DateTime?
+  revokedAt                    DateTime?
+  issuedByUserId               String
+  updatedByUserId              String?
+  audits                       EmployeeSalesPasswordAudit[]
+  overrideTokens               EmployeeSalesOverrideToken[]
+  createdAt                    DateTime                     @default(now())
+  updatedAt                    DateTime                     @updatedAt
+
+  @@index([employeeId, active])
+  @@index([lockedUntil])
+  @@schema("public")
+}
+
+model EmployeeSalesPasswordAudit {
+  id             String                 @id @default(uuid())
+  employeeId     String
+  employee       User                   @relation("EmployeeSalesPasswordAuditEmployee", fields: [employeeId], references: [id], onDelete: Cascade)
+  passwordId     String?
+  password       EmployeeSalesPassword? @relation(fields: [passwordId], references: [id], onDelete: SetNull)
+  scope          String
+  outcome        String
+  invokingUserId String?
+  ticketId       String?
+  action         String?
+  ipAddress      String?
+  createdAt      DateTime               @default(now())
+
+  @@index([employeeId, createdAt(sort: Desc)])
+  @@index([scope, createdAt(sort: Desc)])
+  @@schema("public")
+}
+
+model EmployeeSalesOverrideToken {
+  id             String                @id @default(uuid())
+  passwordId     String
+  password       EmployeeSalesPassword @relation(fields: [passwordId], references: [id], onDelete: Cascade)
+  employeeId     String
+  employee       User                  @relation("EmployeeSalesOverrideTokens", fields: [employeeId], references: [id], onDelete: Cascade)
+  scope          String
+  tokenHash      String                @unique
+  ticketId       String?
+  action         String?
+  invokingUserId String?
+  expiresAt      DateTime
+  consumedAt     DateTime?
+  createdAt      DateTime              @default(now())
+
+  @@index([employeeId, scope, expiresAt])
+  @@index([consumedAt])
+  @@schema("public")
+}
+
+model TimeClockPolicy {
+  storeId                  Int      @id
+  enabled                  Boolean  @default(false)
+  requireClockInBeforeSale Boolean  @default(false)
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+
+  @@schema("public")
+}
+
+model TimeClockEntry {
+  id                 String                     @id @default(uuid())
+  employeeId         String
+  employee           User                       @relation("EmployeeTimeClockEntries", fields: [employeeId], references: [id], onDelete: Cascade)
+  storeId            Int
+  clockedInAt        DateTime
+  clockedOutAt       DateTime?
+  nonSales           Boolean                    @default(false)
+  clockedInByUserId  String
+  clockedOutByUserId String?
+  autoClosedAtCap    Boolean                    @default(false)
+  note               String?
+  adjustments        TimeClockEntryAdjustment[]
+  createdAt          DateTime                   @default(now())
+  updatedAt          DateTime                   @updatedAt
+
+  @@index([employeeId, clockedOutAt])
+  @@index([storeId, clockedOutAt])
+  @@index([clockedInAt])
+  @@schema("public")
+}
+
+model TimeClockEntryAdjustment {
+  id                      String         @id @default(uuid())
+  timeClockEntryId        String
+  timeClockEntry          TimeClockEntry @relation(fields: [timeClockEntryId], references: [id], onDelete: Cascade)
+  employeeId              String
+  actedByUserId           String
+  reason                  String
+  previousStoreId         Int
+  nextStoreId             Int
+  previousClockedInAt     DateTime
+  nextClockedInAt         DateTime
+  previousClockedOutAt    DateTime?
+  nextClockedOutAt        DateTime?
+  previousNonSales        Boolean
+  nextNonSales            Boolean
+  previousAutoClosedAtCap Boolean
+  nextAutoClosedAtCap     Boolean
+  previousNote            String?
+  nextNote                String?
+  createdAt               DateTime       @default(now())
+
+  @@index([timeClockEntryId, createdAt(sort: Desc)])
+  @@index([employeeId, createdAt(sort: Desc)])
+  @@schema("public")
+}
+
+enum CommissionOverrideScope {
+  SKU
+  CATEGORY
+  DEPARTMENT
+
+  @@schema("public")
+}
+
+model CommissionOverride {
+  id              String                  @id @default(uuid())
+  employeeId      String
+  employee        User                    @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  scope           CommissionOverrideScope
+  skuId           String?
+  categoryId      String?
+  departmentId    String?
+  rate            Decimal                 @db.Decimal(5, 2)
+  effectiveFrom   DateTime                @default(now())
+  effectiveTo     DateTime?
+  createdByUserId String
+  updatedByUserId String?
+  createdAt       DateTime                @default(now())
+  updatedAt       DateTime                @updatedAt
+
+  @@index([employeeId, scope])
+  @@index([effectiveFrom, effectiveTo])
+  @@schema("public")
+}
+
+/// Phase 1 audit log for products-module mutations against the live RICS MDBs.
+/// Every create/update/delete on a taxonomy entity (Department, Category,
+/// Sector, Group, Keyword, PromotionCode, SizeType) or a future products write
+/// path (SKU, Vendor, Price Change, UPC) writes one row here. The audit log is
+/// observability — product correctness depends on the Access write succeeding,
+/// not on this row being present. Writers should treat Postgres failures as
+/// non-blocking and log them.
+///
+/// Retention is unbounded in Phase 1; Phase 2 will add a retention policy.
+model ProductsAuditLog {
+  id          String   @id @default(uuid())
+  actor       String // user id, email, or "system" for scheduled-job writes
+  action      String // e.g. "department.create", "sizeType.update"
+  targetTable String // RICS table, e.g. "RIDEPT.Departments"
+  targetPk    String // primary-key value as a string (numbers stringified)
+  payloadJson Json // before/after snapshot for the mutation
+  occurredAt  DateTime @default(now())
+
+  @@index([occurredAt])
+  @@index([targetTable, targetPk])
+  @@schema("public")
+}
+
+/// Season descriptions — user-defined taxonomy tags assigned to SKUs.
+///
+/// Clarified 2026-04-19: Seasons are a simple user-editable attribute on
+/// SKUs, just like Groups or Categories. The user picks any code + description
+/// that fits their reporting workflow — no fixed code universe, no computed
+/// "current season" based on dates (that concept was a misread of RICS
+/// Company Setup → Season Ending Months, which is only a reporting-date
+/// filter, NOT a constraint on the seasons themselves).
+///
+/// RICS stores these in RISEMF.MDB (p. 218, Season Setup). This customer's
+/// copy of that file does not open with ACE.OLEDB.12.0, so we mirror the
+/// descriptions in Postgres. SKU counts still come from
+/// InventoryMaster.Season via the Access read path.
+model SeasonOverlay {
+  code            String   @id @db.VarChar(2)
+  description     String   @db.VarChar(32)
+  dateLastChanged DateTime @default(now()) @updatedAt
+
+  @@schema("public")
+}
+
+/// One row per RICS reload. Written by the `pnpm sync:rics` CLI.
+model EtlRun {
+  id         String        @id @default(uuid())
+  startedAt  DateTime      @default(now())
+  finishedAt DateTime?
+  status     String // "running" | "ok" | "failed"
+  totalRows  BigInt        @default(0)
+  tableCount Int           @default(0)
+  errorText  String?
+  tables     EtlRunTable[]
+
+  @@index([startedAt])
+  @@map("etl_run")
+  @@schema("platform")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Utilities module — batch-change overlay + audit
+//
+// Module spec: docs/modules/utilities.md
+// Design spec: docs/dev/specs/2026-04-21-utilities-batch-change-design.md
+//
+// Phase A contract: writes land in `app.*` (preserved across sync:rics reloads);
+// reads merge these on top of `rics_mirror.inventory_master` / `rics_mirror.size_types`
+// via the effective-value adapter at apps/api/src/services/utilities/effectiveInventory.ts.
+// No FK to rics_mirror (dropped by every reload). Natural-key (rics_sku_code) only.
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Replace-style overlay for singular SKU attributes. Sparse — only non-null columns override.
+/// Read path: COALESCE(override.field, mirror.field) for each attribute.
+model SkuAttributeOverride {
+  ricsSkuCode String   @id @map("rics_sku_code") @db.VarChar(15)
+  category    Int?
+  vendor      String?  @db.VarChar(10)
+  season      String?  @db.VarChar(2)
+  groupCode   String?  @map("group_code") @db.VarChar(10)
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  updatedBy   String   @map("updated_by")
+
+  @@index([category])
+  @@index([vendor])
+  @@index([season])
+  @@index([groupCode])
+  @@map("sku_attribute_override")
+  @@schema("app")
+}
+
+/// Vendor write-surface overlay. Replaces the MDB write path that was removed
+/// 2026-04-23. Single table with a `source` discriminator:
+///   - 'native'    = vendor born in Postgres (no RICS mirror twin)
+///   - 'override'  = sparse per-column override of a RICS mirror vendor
+///                   (null → fall back to mirror; non-null → override)
+///   - 'tombstone' = hide a RICS mirror vendor from reads
+///
+/// Read path (VendorRepository): rics_mirror.vendor_master FULL OUTER JOIN
+/// this table ON code, filtering source='tombstone', with COALESCE per column.
+///
+/// No FK to rics_mirror (sync:rics drops + recreates rics_mirror). Natural-key
+/// only — the 4-char RICS code.
+model VendorOverlay {
+  code   String @id @db.VarChar(4)
+  /// 'native' | 'override' | 'tombstone' — CHECK constraint on the column.
+  source String @db.VarChar(10)
+
+  // Vendor value columns (nullable — used only when non-null per source semantics)
+  shortName     String?  @map("short_name")
+  mailName      String?  @map("mail_name")
+  addr1         String?
+  addr2         String?
+  city          String?
+  state         String?
+  zip           String?
+  phone         String?
+  fax           String?
+  contact       String?
+  terms         String?
+  shipInst      String?  @map("ship_inst")
+  comment       String?
+  manuCode      String?  @map("manu_code")
+  manuName      String?  @map("manu_name")
+  qualifierId   String?  @map("qualifier_id")
+  qualifierCode String?  @map("qualifier_code")
+  colorCode     Boolean? @map("color_code")
+  longComment   String?  @map("long_comment")
+  eMail         String?  @map("e_mail")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy String   @map("created_by")
+  updatedBy String   @map("updated_by")
+
+  @@index([source])
+  @@map("vendor_overlay")
+  @@schema("app")
+}
+
+/// Add/remove overlay for keywords, layered on the RICS space-separated KeyWords string.
+/// Effective keywords = (split mirror.key_words) ∪ ADD-overrides − REMOVE-overrides.
+model SkuKeywordOverride {
+  ricsSkuCode String   @map("rics_sku_code") @db.VarChar(15)
+  keyword     String   @db.VarChar(10)
+  action      String   @db.VarChar(8) // 'ADD' | 'REMOVE'
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  updatedBy   String   @map("updated_by")
+
+  @@id([ricsSkuCode, keyword])
+  @@index([keyword, action])
+  @@map("sku_keyword_override")
+  @@schema("app")
+}
+
+/// Replace-style overlay for size-type taxonomy (columns/rows arrays).
+/// Mirrors the shape of rics_mirror.size_types but lives in app for edits.
+model SizeTypeOverride {
+  code        Int      @id
+  description String?  @db.VarChar(32)
+  columnsJson Json?    @map("columns_json")
+  rowsJson    Json?    @map("rows_json")
+  maxColumns  Int?     @map("max_columns")
+  maxRows     Int?     @map("max_rows")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  updatedBy   String   @map("updated_by")
+
+  @@map("size_type_override")
+  @@schema("app")
+}
+
+/// Audit header for a batch-utility invocation.
+model ProductsBatchOperation {
+  id            String                       @id @default(uuid())
+  actor         String
+  operationType String                       @map("operation_type")
+  criteriaJson  Json                         @map("criteria_json")
+  changeJson    Json                         @map("change_json")
+  affectedCount Int                          @map("affected_count")
+  startedAt     DateTime                     @default(now()) @map("started_at")
+  completedAt   DateTime?                    @map("completed_at")
+  undoneAt      DateTime?                    @map("undone_at")
+  items         ProductsBatchOperationItem[]
+
+  @@index([startedAt])
+  @@index([operationType, startedAt])
+  @@map("products_batch_operation")
+  @@schema("app")
+}
+
+/// Per-SKU before/after snapshot — the undo payload.
+model ProductsBatchOperationItem {
+  id          String                 @id @default(uuid())
+  batchId     String                 @map("batch_id")
+  batch       ProductsBatchOperation @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  ricsSkuCode String                 @map("rics_sku_code") @db.VarChar(15)
+  beforeJson  Json?                  @map("before_json")
+  afterJson   Json?                  @map("after_json")
+
+  @@index([batchId])
+  @@index([ricsSkuCode])
+  @@map("products_batch_operation_item")
+  @@schema("app")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Product Family — named bundles of attribute dimensions, selected per SKU
+// via the RICS category → family mapping.
+//
+// Spec: docs/dev/plans/http-localhost-3000-inventory-skus-new-i-piped-galaxy.md
+//
+// Phase A contract: families + mapping live in app.*. Category numbers soft-ref
+// rics_mirror.categories.number (no FK; mirror rebuilt on each sync:rics).
+// Unmapped categories surface via app.category_family_orphans (DB view).
+// ─────────────────────────────────────────────────────────────────────────
+
+/// One of the 11 named Product Families (zapatos, tops, vestidos, pantalones,
+/// ropa_otros, jackets_outerwear, suits, carteras, cinturones, accesorios,
+/// general). Seeded from seeds/product_families/families.csv.
+model ProductFamily {
+  code             String                  @id
+  labelEs          String                  @map("label_es")
+  descriptionEs    String?                 @map("description_es")
+  sortOrder        Int                     @map("sort_order") @db.SmallInt
+  createdAt        DateTime                @default(now()) @map("created_at")
+  categoryMappings CategoryProductFamily[]
+  attributeRules   AttributeFamilyRule[]
+  skus             Sku[]
+
+  @@index([sortOrder], map: "product_family_sort_order_idx")
+  @@map("product_family")
+  @@schema("app")
+}
+
+/// One row per RICS category mapping it to exactly one Product Family.
+/// `category_number` soft-refs rics_mirror.categories.number.
+/// Seeded from seeds/product_families/category_mapping.csv.
+model CategoryProductFamily {
+  categoryNumber Int           @id @map("category_number")
+  familyCode     String        @map("family_code")
+  family         ProductFamily @relation(fields: [familyCode], references: [code], onDelete: Restrict, onUpdate: Cascade)
+  updatedAt      DateTime      @updatedAt @map("updated_at")
+  updatedBy      String        @default("seed") @map("updated_by")
+
+  @@index([familyCode], map: "category_product_family_family_code_idx")
+  @@map("category_product_family")
+  @@schema("app")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// SKU lifecycle — net-new SKUs created in Zack's Retail.
+//
+// Spec: docs/dev/plans/http-localhost-3000-inventory-skus-new-i-piped-galaxy.md
+//       §"Phase 5 — SKU lifecycle (DRAFT → ACTIVE → DISCONTINUED)"
+//
+// State machine:
+//   DRAFT        — provisional_code set, final `code` NULL, all fields editable.
+//                  Receipt into WH allowed; allocate/barcode/POS/ecommerce blocked.
+//   ACTIVE       — finalize flipped the row. `code` populated, rename blocked,
+//                  all downstream ops unlocked.
+//   DISCONTINUED — merged-into-another-SKU or retired. Read-only.
+//
+// Legacy RICS SKUs still live in `rics_mirror.inventory_master` during Phase A.
+// The products-module read paths UNION both sources; write path is `app.sku` only.
+// ─────────────────────────────────────────────────────────────────────────
+
+/// A SKU created in Zack's Retail (net-new). Lifecycle-managed.
+/// The `sku_code_matches_state` check constraint enforces:
+///   state=DRAFT  → code IS NULL
+///   state≠DRAFT  → code IS NOT NULL
+/// The service layer owns the transitions (see skuLifecycleService).
+model Sku {
+  id              String  @id @default(uuid()) @db.Uuid
+  provisionalCode String  @map("provisional_code") @db.VarChar(32)
+  code            String? @unique(map: "sku_code_key") @db.VarChar(15)
+  skuState        String  @default("DRAFT") @map("sku_state")
+
+  familyCode     String?        @map("family_code")
+  family         ProductFamily? @relation(fields: [familyCode], references: [code], onDelete: Restrict, onUpdate: Cascade)
+  categoryNumber Int?           @map("category_number")
+  vendorId       String?        @map("vendor_id")
+  vendorSku      String?        @map("vendor_sku")
+  brandId        Int?           @map("brand_id")
+
+  descriptionRics String? @map("description_rics")
+  descriptionWeb  String? @map("description_web")
+  comment         String?
+  keywords        String?
+
+  listPrice        Decimal? @map("list_price") @db.Decimal(12, 2)
+  retailPrice      Decimal? @map("retail_price") @db.Decimal(12, 2)
+  markDownPrice1   Decimal? @map("mark_down_price1") @db.Decimal(12, 2)
+  markDownPrice2   Decimal? @map("mark_down_price2") @db.Decimal(12, 2)
+  currentCost      Decimal? @map("current_cost") @db.Decimal(12, 2)
+  currentPriceSlot String?  @map("current_price_slot")
+
+  sizeType        Int?     @map("size_type") @db.SmallInt
+  style           String?
+  styleColor      String?  @map("style_color")
+  season          String?  @db.VarChar(2)
+  location        String?
+  labelCode       String?  @map("label_code")
+  colorCode       String?  @map("color_code")
+  groupCode       String?  @map("group_code")
+  pictureFileName String?  @map("picture_file_name")
+  manufacturer    String?
+  coupon          Boolean  @default(false)
+  orderMultiple   Int?     @map("order_multiple") @db.SmallInt
+  orderUom        String?  @map("order_uom")
+  perks           Decimal? @db.Decimal(12, 2)
+  discountCode    String?  @map("discount_code")
+
+  activatedAt    DateTime? @map("activated_at")
+  activatedBy    String?   @map("activated_by")
+  discontinuedAt DateTime? @map("discontinued_at")
+  discontinuedBy String?   @map("discontinued_by")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  createdBy      String    @map("created_by")
+  updatedAt      DateTime? @map("updated_at")
+
+  /// Transitional — carries legacy form-attribute IDs (colorId, shoeTypeId, …).
+  /// Phase 4 replaces this with proper dimension assignments.
+  legacyAttrs Json? @map("legacy_attrs")
+
+  /// Provenance: 'app' = operator-created via POST /sku-drafts (sync NEVER
+  /// touches these). 'rics' = mirrored from rics_mirror.inventory_master by
+  /// sync:rics (upsertable on every run). See skuLifecycleBackfill.ts.
+  source           String    @default("app")
+  ricsLastSyncedAt DateTime? @map("rics_last_synced_at")
+  ricsStatus       String?   @map("rics_status") @db.Char(1)
+
+  activity                 SkuActivity[]
+  sizes                    SkuSize[]
+  inventory                Inventory[]
+  auditLog                 InventoryAuditLog[]
+  stockLevels              StockLevel[]
+  stockMovements           StockMovement[]
+  manualReceipts           ManualReceipt[]
+  inventoryAdjustmentLines InventoryAdjustmentLine[]
+
+  @@unique([provisionalCode], map: "sku_provisional_code_key")
+  @@index([skuState, familyCode], map: "sku_state_family_idx")
+  @@index([vendorId], map: "sku_vendor_idx")
+  @@index([categoryNumber], map: "sku_category_idx")
+  @@index([createdAt], map: "sku_created_at_idx")
+  @@index([source, skuState], map: "sku_source_state_idx")
+  @@map("sku")
+  @@schema("app")
+}
+
+/// State-transition audit log. Written by skuLifecycleService — no DB trigger,
+/// because we want the service to own the who/why context (actor, reason).
+model SkuActivity {
+  id          String   @id @default(uuid()) @db.Uuid
+  skuId       String   @map("sku_id") @db.Uuid
+  sku         Sku      @relation(fields: [skuId], references: [id], onDelete: Cascade)
+  event       String // 'created' | 'updated' | 'finalized' | 'discontinued' | 'reactivated'
+  fromState   String?  @map("from_state")
+  toState     String?  @map("to_state")
+  actor       String
+  payloadJson Json?    @map("payload_json")
+  occurredAt  DateTime @default(now()) @map("occurred_at")
+
+  @@index([skuId, occurredAt(sort: Desc)], map: "sku_activity_sku_id_idx")
+  @@index([occurredAt(sort: Desc)], map: "sku_activity_occurred_at_idx")
+  @@map("sku_activity")
+  @@schema("app")
+}
+
+/// Per-SKU size-label rows. Each SKU carries an ordered list of the sizes it
+/// is sold in (e.g. "7", "7.5", "8", ...). `sort_order` controls display on
+/// the size grid; `active` hides a size from new assignments without dropping
+/// inventory rows that reference it. Matches the pre-migration SQLite shape
+/// 1:1 with native Postgres types.
+model SkuSize {
+  id        String              @id @default(uuid()) @db.Uuid
+  skuId     String              @map("sku_id") @db.Uuid
+  sku       Sku                 @relation(fields: [skuId], references: [id], onDelete: Cascade)
+  sizeLabel String              @map("size_label")
+  sortOrder Int                 @default(0) @map("sort_order")
+  active    Boolean             @default(true)
+  inventory Inventory[]
+  auditLog  InventoryAuditLog[]
+
+  @@unique([skuId, sizeLabel])
+  @@index([skuId], map: "sku_size_sku_id_idx")
+  @@map("sku_size")
+  @@schema("app")
+}
+
+/// Per-(SKU × size) on-hand + reserved state. One row per size when the SKU
+/// has a size grid; `sku_size_id = null` for SKUs that don't (accessories,
+/// single-variant items). `(sku_id, sku_size_id)` is unique so the pair is
+/// the natural join key for mutations from adjustmentService / ticketService.
+model Inventory {
+  id               String    @id @default(uuid()) @db.Uuid
+  skuId            String    @map("sku_id") @db.Uuid
+  sku              Sku       @relation(fields: [skuId], references: [id])
+  skuSizeId        String?   @map("sku_size_id") @db.Uuid
+  skuSize          SkuSize?  @relation(fields: [skuSizeId], references: [id])
+  quantityOnHand   Int       @default(0) @map("quantity_on_hand")
+  quantityReserved Int       @default(0) @map("quantity_reserved")
+  lastCountedAt    DateTime? @map("last_counted_at")
+  version          Int       @default(1)
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  @@unique([skuId, skuSizeId], map: "inventory_sku_size_unique")
+  @@index([skuId], map: "inventory_sku_id_idx")
+  @@map("inventory")
+  @@schema("app")
+}
+
+/// Append-only trail of every quantity adjustment. Referenced by
+/// adjustmentService, inventoryService, and admin reports ("who moved
+/// stock when and why"). `resultingBalance` is the on-hand quantity
+/// AFTER the adjustment applied — lets the audit UI render a ledger
+/// without re-running the math.
+model InventoryAuditLog {
+  id                    String   @id @default(uuid()) @db.Uuid
+  skuId                 String   @map("sku_id") @db.Uuid
+  sku                   Sku      @relation(fields: [skuId], references: [id])
+  skuSizeId             String?  @map("sku_size_id") @db.Uuid
+  skuSize               SkuSize? @relation(fields: [skuSizeId], references: [id])
+  adjustment            Int
+  reason                String
+  resultingBalance      Int      @map("resulting_balance")
+  performedBy           String   @default("system") @map("performed_by")
+  sourceDocumentRefType String?  @map("source_document_ref_type")
+  sourceDocumentRefId   String?  @map("source_document_ref_id")
+  idempotencyKey        String?  @unique(map: "inventory_audit_log_idempotency_key") @map("idempotency_key")
+  createdAt             DateTime @default(now()) @map("created_at")
+
+  @@index([skuId], map: "inventory_audit_log_sku_id_idx")
+  @@index([createdAt], map: "inventory_audit_log_created_at_idx")
+  @@index([sourceDocumentRefType, sourceDocumentRefId], map: "inventory_audit_log_source_ref_idx")
+  @@map("inventory_audit_log")
+  @@schema("app")
+}
+
+model InventoryAdjustment {
+  id             String                    @id @default(uuid()) @db.Uuid
+  type           String
+  fromLocationId String?                   @map("from_location_id")
+  toLocationId   String?                   @map("to_location_id")
+  reason         String?
+  createdBy      String                    @map("created_by")
+  createdAt      DateTime                  @default(now()) @map("created_at")
+  lines          InventoryAdjustmentLine[]
+
+  @@index([type, createdAt(sort: Desc)], map: "inventory_adjustment_type_created_idx")
+  @@index([createdAt(sort: Desc)], map: "inventory_adjustment_created_at_idx")
+  @@map("inventory_adjustment")
+  @@schema("app")
+}
+
+model InventoryAdjustmentLine {
+  id           String              @id @default(uuid()) @db.Uuid
+  adjustmentId String              @map("adjustment_id") @db.Uuid
+  adjustment   InventoryAdjustment @relation(fields: [adjustmentId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  skuId        String              @map("sku_id") @db.Uuid
+  sku          Sku                 @relation(fields: [skuId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  quantity     Int
+  createdAt    DateTime            @default(now()) @map("created_at")
+
+  @@index([adjustmentId, createdAt], map: "inventory_adjustment_line_adjustment_created_idx")
+  @@index([skuId], map: "inventory_adjustment_line_sku_id_idx")
+  @@map("inventory_adjustment_line")
+  @@schema("app")
+}
+
+/// Store-aware stock projection keyed per (store × SKU × size-grid cell).
+/// This is the Phase-A additive surface for inventory-module writes that must
+/// not live in SQLite and must not write into rics_mirror.
+model StockLevel {
+  id             String    @id @default(uuid()) @db.Uuid
+  storeId        Int       @map("store_id")
+  skuId          String    @map("sku_id") @db.Uuid
+  sku            Sku       @relation(fields: [skuId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  columnLabel    String    @default("") @map("column_label")
+  rowLabel       String    @default("") @map("row_label")
+  onHand         Int       @default(0) @map("on_hand")
+  reserved       Int       @default(0)
+  lastReceivedAt DateTime? @map("last_received_at")
+  lastMovementAt DateTime? @map("last_movement_at")
+  version        Int       @default(1)
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  @@unique([storeId, skuId, columnLabel, rowLabel], map: "stock_level_store_sku_cell_key")
+  @@index([skuId, storeId], map: "stock_level_sku_store_idx")
+  @@index([storeId, onHand], map: "stock_level_store_on_hand_idx")
+  @@map("stock_level")
+  @@schema("app")
+}
+
+/// Append-only movement ledger for store-aware inventory operations.
+model StockMovement {
+  id                  String             @id @default(uuid()) @db.Uuid
+  storeId             Int                @map("store_id")
+  skuId               String             @map("sku_id") @db.Uuid
+  sku                 Sku                @relation(fields: [skuId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  columnLabel         String             @default("") @map("column_label")
+  rowLabel            String             @default("") @map("row_label")
+  movementType        String             @map("movement_type")
+  quantityDelta       Int                @map("quantity_delta")
+  unitCostSnapshot    Decimal?           @map("unit_cost_snapshot") @db.Decimal(12, 2)
+  retailPriceSnapshot Decimal?           @map("retail_price_snapshot") @db.Decimal(12, 2)
+  sourceDocumentType  String             @map("source_document_type")
+  sourceDocumentId    String             @map("source_document_id")
+  reasonCode          String?            @map("reason_code")
+  comment             String?
+  performedBy         String             @map("performed_by")
+  movementAt          DateTime           @map("movement_at")
+  createdAt           DateTime           @default(now()) @map("created_at")
+  idempotencyKey      String?            @unique(map: "stock_movement_idempotency_key") @map("idempotency_key")
+  manualReceiptLine   ManualReceiptLine? @relation("ManualReceiptLineMovement")
+
+  @@index([skuId, storeId, movementAt(sort: Desc)], map: "stock_movement_sku_store_movement_at_idx")
+  @@index([movementType, movementAt(sort: Desc)], map: "stock_movement_type_movement_at_idx")
+  @@index([storeId, movementAt(sort: Desc)], map: "stock_movement_store_movement_at_idx")
+  @@index([sourceDocumentType, sourceDocumentId], map: "stock_movement_source_document_idx")
+  @@map("stock_movement")
+  @@schema("app")
+}
+
+/// One saved "Enter Manual Receipts" document in the inventory module.
+/// One document represents one SKU receipt into one store, with one or more
+/// size-grid cell lines.
+model ManualReceipt {
+  id                   String              @id @default(uuid()) @db.Uuid
+  storeId              Int                 @map("store_id")
+  skuId                String              @map("sku_id") @db.Uuid
+  sku                  Sku                 @relation(fields: [skuId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  performedBy          String              @map("performed_by")
+  referenceNumber      String?             @map("reference_number")
+  storeLabelsOnReceive Boolean             @default(false) @map("store_labels_on_receive")
+  movementAt           DateTime            @map("movement_at")
+  unitCostOverride     Decimal?            @map("unit_cost_override") @db.Decimal(12, 2)
+  retailPriceOverride  Decimal?            @map("retail_price_override") @db.Decimal(12, 2)
+  casePackId           String?             @map("case_pack_id")
+  casePackMultiplier   Int?                @map("case_pack_multiplier")
+  note                 String?
+  idempotencyKey       String?             @unique(map: "manual_receipt_idempotency_key") @map("idempotency_key")
+  createdAt            DateTime            @default(now()) @map("created_at")
+  lines                ManualReceiptLine[]
+
+  @@index([storeId, movementAt(sort: Desc)], map: "manual_receipt_store_movement_at_idx")
+  @@index([skuId, movementAt(sort: Desc)], map: "manual_receipt_sku_movement_at_idx")
+  @@map("manual_receipt")
+  @@schema("app")
+}
+
+model ManualReceiptLine {
+  id              String        @id @default(uuid()) @db.Uuid
+  manualReceiptId String        @map("manual_receipt_id") @db.Uuid
+  manualReceipt   ManualReceipt @relation(fields: [manualReceiptId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  columnLabel     String        @default("") @map("column_label")
+  rowLabel        String        @default("") @map("row_label")
+  quantity        Int
+  unitCost        Decimal       @map("unit_cost") @db.Decimal(12, 2)
+  retailPrice     Decimal       @map("retail_price") @db.Decimal(12, 2)
+  movementId      String        @unique(map: "manual_receipt_line_movement_id_key") @map("movement_id") @db.Uuid
+  movement        StockMovement @relation("ManualReceiptLineMovement", fields: [movementId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@unique([manualReceiptId, columnLabel, rowLabel], map: "manual_receipt_line_cell_key")
+  @@index([manualReceiptId], map: "manual_receipt_line_receipt_id_idx")
+  @@map("manual_receipt_line")
+  @@schema("app")
+}
+
+/// Per-prefix auto-increment counter used by skuService.generateSkuCode and
+/// purchaseOrderService for PO numbering. The upsert-and-read pattern
+/// (`INSERT ... ON CONFLICT DO UPDATE SET next_val = next_val + 1`) maps to
+/// Prisma's `upsert` cleanly: insert with next_val=1 on create, set
+/// next_val = { increment: 1 } on update, then return the row.
+///
+/// Postgres sequences (`CREATE SEQUENCE`) would be faster but require one
+/// sequence per prefix — which is unbounded. This table keeps all prefixes
+/// in one place and lets the operator inspect / reset them directly.
+model SkuCodeSequence {
+  prefix  String @id
+  nextVal Int    @default(1) @map("next_val")
+
+  @@map("sku_code_seq")
+  @@schema("app")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// SKU extended attributes — dimension catalog + per-SKU assignments.
+//
+// Spec: docs/dev/specs/2026-04-22-sku-extended-attributes-foundation-design.md
+//
+// Phase A contract: reads rics_mirror.inventory_master.key_words, writes to
+// app.*. Soft-ref from sku_attribute_assignment.sku_code to the mirror —
+// no FK (reload drops rics_mirror). Orphans surfaced via the DB view
+// app.sku_attribute_orphans (not modelled here; read via raw SQL).
+// ─────────────────────────────────────────────────────────────────────────
+
+/// One extensible facet (buyer, company, store_chain, discount_type, …).
+/// Multi-value dims allow a SKU to carry more than one value (e.g. a SKU can
+/// run two discount mechanics simultaneously). Single-value dims are enforced
+/// at the service layer, not the DB, so cardinality can flip without migration.
+///
+/// Family scoping is many-to-many via `AttributeFamilyRule`. A dimension with
+/// zero rule rows is **universal** — renders for every family. A dimension with
+/// one or more rules renders only for families whose rule has `enabled=true`.
+/// Required enforcement (`is_required` on the rule) is validated on SKU save.
+model AttributeDimension {
+  id            Int                      @id @default(autoincrement()) @db.SmallInt
+  code          String                   @unique
+  labelEs       String                   @map("label_es")
+  descriptionEs String?                  @map("description_es")
+  sortOrder     Int                      @map("sort_order") @db.SmallInt
+  isMultiValue  Boolean                  @default(false) @map("is_multi_value")
+  createdAt     DateTime                 @default(now()) @map("created_at")
+  values        AttributeValue[]
+  assignments   SkuAttributeAssignment[]
+  familyRules   AttributeFamilyRule[]
+
+  @@map("attribute_dimension")
+  @@schema("app")
+}
+
+/// One (dimension, family) rule row. Presence of ≥1 rule for a dimension flips
+/// it from universal to family-scoped. `enabled=false` hides the dimension for
+/// that family without deleting the row (preserves `is_required` + history).
+model AttributeFamilyRule {
+  dimensionId Int                @map("dimension_id") @db.SmallInt
+  dimension   AttributeDimension @relation(fields: [dimensionId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  familyCode  String             @map("family_code")
+  family      ProductFamily      @relation(fields: [familyCode], references: [code], onDelete: Restrict, onUpdate: Cascade)
+  enabled     Boolean            @default(true)
+  isRequired  Boolean            @default(false) @map("is_required")
+  sortOrder   Int                @default(0) @map("sort_order") @db.SmallInt
+  updatedAt   DateTime           @updatedAt @map("updated_at")
+  updatedBy   String             @default("seed") @map("updated_by")
+
+  @@id([dimensionId, familyCode])
+  @@index([familyCode], map: "attribute_family_rule_family_idx")
+  @@map("attribute_family_rule")
+  @@schema("app")
+}
+
+/// A value available within a dimension (e.g. buyer:zb, discount_type:pct_50).
+/// `is_active=false` hides the value from new-assignment dropdowns but
+/// preserves it for existing assignments and audit history.
+model AttributeValue {
+  id          Int                      @id @default(autoincrement()) @db.SmallInt
+  dimensionId Int                      @map("dimension_id") @db.SmallInt
+  dimension   AttributeDimension       @relation(fields: [dimensionId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  code        String
+  labelEs     String                   @map("label_es")
+  sortOrder   Int                      @map("sort_order") @db.SmallInt
+  isActive    Boolean                  @default(true) @map("is_active")
+  createdAt   DateTime                 @default(now()) @map("created_at")
+  assignments SkuAttributeAssignment[]
+
+  @@unique([dimensionId, code])
+  @@map("attribute_value")
+  @@schema("app")
+}
+
+/// Per-SKU classification. Composite PK makes re-assertion idempotent.
+/// `assigned_by` tags source: `seed:keyword:<rule_hash>`, `seed:excel:<batch>`,
+/// or an operator user id / email. Precedence (enforced in service layer):
+///   operator-edit > seed:excel:* > seed:keyword:* > no row.
+model SkuAttributeAssignment {
+  skuCode     String             @map("sku_code") @db.VarChar(32)
+  dimensionId Int                @map("dimension_id") @db.SmallInt
+  dimension   AttributeDimension @relation(fields: [dimensionId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  valueId     Int                @map("value_id") @db.SmallInt
+  value       AttributeValue     @relation(fields: [valueId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  assignedAt  DateTime           @default(now()) @map("assigned_at")
+  assignedBy  String?            @map("assigned_by")
+
+  @@id([skuCode, dimensionId, valueId])
+  @@index([dimensionId, valueId, skuCode], map: "sku_attribute_assignment_facet_idx")
+  @@index([assignedBy], map: "sku_attribute_assignment_assigned_by_idx")
+  @@map("sku_attribute_assignment")
+  @@schema("app")
+}
+
+/// One row per (run, source MDB table). Records row count + duration + status.
+model EtlRunTable {
+  id          String   @id @default(uuid())
+  runId       String
+  run         EtlRun   @relation(fields: [runId], references: [id], onDelete: Cascade)
+  mdbFile     String
+  sourceTable String
+  targetTable String // schema-qualified: e.g. "rics_mirror.inventory_master"
+  rowCount    BigInt
+  durationMs  Int
+  status      String // "ok" | "failed"
+  errorText   String?
+  startedAt   DateTime @default(now())
+
+  @@index([runId])
+  @@map("etl_run_table")
+  @@schema("platform")
+}
+
+/// Reports module — saved/reusable report query (a.k.a. "template").
+/// Captures (report_type + params) for later replay against fresh data.
+/// Owner has full control; visibility='shared' grants read-only access to any
+/// authenticated user. Runs/snapshots of frozen results live in a separate
+/// table added in Phase 1.1 (docs/dev/plans/2026-04-22-report-templates-and-runs.md).
+model ReportTemplate {
+  id         String    @id @default(uuid())
+  ownerId    String    @map("owner_id")
+  owner      User      @relation("OwnedReportTemplates", fields: [ownerId], references: [id], onDelete: Cascade)
+  reportType String    @map("report_type")
+  title      String
+  paramsJson Json      @map("params_json")
+  visibility String    @default("private") // 'private' | 'shared'
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+  lastUsedAt DateTime? @map("last_used_at")
+
+  runs ReportRun[] @relation("ReportRunsFromTemplate")
+
+  @@unique([ownerId, reportType, title])
+  @@index([visibility, reportType])
+  @@map("report_templates")
+  @@schema("app")
+}
+
+/// A frozen snapshot of a report run. Captured explicitly via "Save snapshot"
+/// after reviewing a result (never auto-saved). Stores the full response
+/// payload so the page can re-render exactly what was on screen at capture.
+/// Envelope columns (rowCount, resultSizeBytes, reportTypeVersion) are
+/// computed server-side so the list view does not deserialize the blob, and
+/// so clients cannot lie about them.
+/// Spec: docs/dev/plans/2026-04-22-report-templates-and-runs.md Phase 1.1.
+model ReportRun {
+  id                String          @id @default(uuid())
+  userId            String          @map("user_id")
+  user              User            @relation("ReportRuns", fields: [userId], references: [id], onDelete: Cascade)
+  reportType        String          @map("report_type")
+  sourceTemplateId  String?         @map("source_template_id")
+  sourceTemplate    ReportTemplate? @relation("ReportRunsFromTemplate", fields: [sourceTemplateId], references: [id], onDelete: SetNull)
+  title             String?
+  paramsJson        Json            @map("params_json")
+  resultJson        Json            @map("result_json")
+  rowCount          Int             @map("row_count")
+  resultSizeBytes   Int             @map("result_size_bytes")
+  reportTypeVersion Int             @default(1) @map("report_type_version")
+  visibility        String          @default("private")
+  createdAt         DateTime        @default(now()) @map("created_at")
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([visibility, reportType, createdAt(sort: Desc)])
+  @@index([sourceTemplateId])
+  @@map("report_runs")
+  @@schema("app")
+}
+
+/// crm module — Customer master. Mirrors the RICS Mailing List entry (Ch. 9 p. 117).
+/// Slim Stage 1 subset per docs/modules/crm.md; loyalty / quotes / mail detail
+/// tables land later. `account_number` is the RICS convention (phone with no
+/// formatting when not supplied — see `normalizePhoneForAccount` in the service).
+/// customer-intelligence module — direct CSV import landing tables.
+/// Contract: docs/modules/customer-intelligence-module/schema.md
+/// Import flow: docs/modules/customer-intelligence-module/import.md
+model CustomerIntelligenceCustomer {
+  id                   String                      @id @default(uuid()) @db.Uuid
+  honduranIdRaw        String?                     @map("honduran_id_raw")
+  honduranIdNormalized String?                     @unique @map("honduran_id_normalized")
+  fullName             String?                     @map("full_name")
+  gender               String?
+  birthDate            DateTime?                   @map("birth_date") @db.Date
+  status               String                      @default("active")
+  source               String                      @default("rics_csv")
+  firstSeenAt          DateTime?                   @map("first_seen_at") @db.Timestamptz(6)
+  lastSeenAt           DateTime?                   @map("last_seen_at") @db.Timestamptz(6)
+  importedFromBatchId  String?                     @map("imported_from_batch_id") @db.Uuid
+  importedFromBatch    CustomerImportBatch?        @relation(fields: [importedFromBatchId], references: [id], onDelete: SetNull)
+  ricsAccount          String?                     @unique @map("rics_account")
+  ricsCode             String?                     @unique @map("rics_code")
+  ricsDateAdded        DateTime?                   @map("rics_date_added") @db.Timestamptz(6)
+  ricsDateLastChanged  DateTime?                   @map("rics_date_last_changed") @db.Timestamptz(6)
+  createdAt            DateTime                    @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime                    @updatedAt @map("updated_at") @db.Timestamptz(6)
+  identities           CustomerIdentity[]
+  contacts             CustomerContact[]
+  addresses            CustomerAddress[]
+  legacyProfile        CustomerLegacyProfile?
+  financialProfile     CustomerFinancialProfile?
+  salesSummaryLegacy   CustomerSalesSummaryLegacy?
+
+  @@index([importedFromBatchId], map: "customer_imported_from_batch_idx")
+  @@map("customer")
+  @@schema("app")
+}
+
+model CustomerIdentity {
+  id              String                       @id @default(uuid()) @db.Uuid
+  customerId      String                       @map("customer_id") @db.Uuid
+  customer        CustomerIntelligenceCustomer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  identityType    String                       @map("identity_type")
+  identityValue   String                       @map("identity_value")
+  normalizedValue String                       @map("normalized_value")
+  source          String                       @default("rics_csv")
+  isPrimary       Boolean                      @default(false) @map("is_primary")
+  createdAt       DateTime                     @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([identityType, normalizedValue], map: "customer_identity_type_normalized_key")
+  @@index([customerId], map: "customer_identity_customer_idx")
+  @@index([normalizedValue], map: "customer_identity_normalized_idx")
+  @@map("customer_identity")
+  @@schema("app")
+}
+
+model CustomerContact {
+  id               String                       @id @default(uuid()) @db.Uuid
+  customerId       String                       @map("customer_id") @db.Uuid
+  customer         CustomerIntelligenceCustomer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  contactType      String                       @map("contact_type")
+  value            String
+  normalizedValue  String?                      @map("normalized_value")
+  isPrimary        Boolean                      @default(false) @map("is_primary")
+  isVerified       Boolean                      @default(false) @map("is_verified")
+  acceptsMarketing Boolean                      @default(false) @map("accepts_marketing")
+  source           String                       @default("rics_csv")
+  createdAt        DateTime                     @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([customerId], map: "customer_contact_customer_idx")
+  @@index([contactType, normalizedValue], map: "customer_contact_lookup_idx")
+  @@map("customer_contact")
+  @@schema("app")
+}
+
+model CustomerAddress {
+  id         String                       @id @default(uuid()) @db.Uuid
+  customerId String                       @map("customer_id") @db.Uuid
+  customer   CustomerIntelligenceCustomer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  addr1      String?
+  addr2      String?
+  city       String?
+  state      String?
+  county     String?
+  zip        String?
+  country    String                       @default("HN")
+  source     String                       @default("rics_csv")
+  createdAt  DateTime                     @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([customerId], map: "customer_address_customer_idx")
+  @@map("customer_address")
+  @@schema("app")
+}
+
+model CustomerLegacyProfile {
+  id              String                       @id @default(uuid()) @db.Uuid
+  customerId      String                       @unique @map("customer_id") @db.Uuid
+  customer        CustomerIntelligenceCustomer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  customerExtra01 String?                      @map("customer_extra_01")
+  customerExtra02 String?                      @map("customer_extra_02")
+  customerExtra03 String?                      @map("customer_extra_03")
+  customerExtra04 String?                      @map("customer_extra_04")
+  customerExtra05 String?                      @map("customer_extra_05")
+  customerExtra06 String?                      @map("customer_extra_06")
+  mailExtra01     String?                      @map("mail_extra_01")
+  mailExtra02     String?                      @map("mail_extra_02")
+  mailExtra03     String?                      @map("mail_extra_03")
+  mailExtra04     String?                      @map("mail_extra_04")
+  mailExtra05     String?                      @map("mail_extra_05")
+  mailExtra06     String?                      @map("mail_extra_06")
+  customerComment String?                      @map("customer_comment")
+  mailComment     String?                      @map("mail_comment")
+  changeTo        String?                      @map("change_to")
+  createdAt       DateTime                     @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@map("customer_legacy_profile")
+  @@schema("app")
+}
+
+model CustomerFinancialProfile {
+  id                String                       @id @default(uuid()) @db.Uuid
+  customerId        String                       @unique @map("customer_id") @db.Uuid
+  customer          CustomerIntelligenceCustomer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  creditLimit       Decimal?                     @map("credit_limit") @db.Decimal(18, 4)
+  currentBalance    Decimal?                     @map("current_balance") @db.Decimal(18, 4)
+  creditSlipBalance Decimal?                     @map("credit_slip_balance") @db.Decimal(18, 4)
+  nonTaxable        Boolean                      @default(false) @map("non_taxable")
+  planNum           Int?                         @map("plan_num") @db.SmallInt
+  planCount         Int?                         @map("plan_count") @db.SmallInt
+  planDollars       Decimal?                     @map("plan_dollars") @db.Decimal(18, 4)
+  planLastCreditAt  DateTime?                    @map("plan_last_credit_at") @db.Timestamptz(6)
+  planCreditBalance Decimal?                     @map("plan_credit_balance") @db.Decimal(18, 4)
+  createdAt         DateTime                     @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@map("customer_financial_profile")
+  @@schema("app")
+}
+
+model CustomerSalesSummaryLegacy {
+  id               String                       @id @default(uuid()) @db.Uuid
+  customerId       String                       @unique @map("customer_id") @db.Uuid
+  customer         CustomerIntelligenceCustomer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  dateLastPurchase DateTime?                    @map("date_last_purchase") @db.Timestamptz(6)
+  qtySales01       Int?                         @map("qty_sales_01")
+  qtySales02       Int?                         @map("qty_sales_02")
+  qtySales03       Int?                         @map("qty_sales_03")
+  qtySales04       Int?                         @map("qty_sales_04")
+  dollarSales01    Decimal?                     @map("dollar_sales_01") @db.Decimal(18, 4)
+  dollarSales02    Decimal?                     @map("dollar_sales_02") @db.Decimal(18, 4)
+  dollarSales03    Decimal?                     @map("dollar_sales_03") @db.Decimal(18, 4)
+  dollarSales04    Decimal?                     @map("dollar_sales_04") @db.Decimal(18, 4)
+  createdAt        DateTime                     @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@map("customer_sales_summary_legacy")
+  @@schema("app")
+}
+
+model CustomerImportBatch {
+  id            String                         @id @default(uuid()) @db.Uuid
+  source        String                         @default("rics_csv")
+  fileName      String                         @map("file_name")
+  startedAt     DateTime                       @default(now()) @map("started_at") @db.Timestamptz(6)
+  finishedAt    DateTime?                      @map("finished_at") @db.Timestamptz(6)
+  totalRows     Int                            @default(0) @map("total_rows")
+  createdCount  Int                            @default(0) @map("created_count")
+  updatedCount  Int                            @default(0) @map("updated_count")
+  skippedCount  Int                            @default(0) @map("skipped_count")
+  rejectedCount Int                            @default(0) @map("rejected_count")
+  customers     CustomerIntelligenceCustomer[]
+  rejects       CustomerImportReject[]
+
+  @@index([startedAt], map: "customer_import_batch_started_at_idx")
+  @@map("customer_import_batch")
+  @@schema("app")
+}
+
+model CustomerImportReject {
+  id                   String              @id @default(uuid()) @db.Uuid
+  batchId              String              @map("batch_id") @db.Uuid
+  batch                CustomerImportBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  sourceFile           String              @map("source_file")
+  rowNumber            Int                 @map("row_number")
+  account              String?
+  code                 String?
+  name                 String?
+  honduranIdRaw        String?             @map("honduran_id_raw")
+  honduranIdNormalized String?             @map("honduran_id_normalized")
+  email                String?
+  rejectReason         String              @map("reject_reason")
+  rawRow               Json                @map("raw_row")
+  createdAt            DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([batchId], map: "customer_import_reject_batch_idx")
+  @@index([rejectReason], map: "customer_import_reject_reason_idx")
+  @@map("customer_import_reject")
+  @@schema("app")
+}
+
+/// crm module â€” Customer master. Mirrors the RICS Mailing List entry (Ch. 9 p. 117).
+/// Slim Stage 1 subset per docs/modules/crm.md; loyalty / quotes / mail detail
+/// tables land later. `account_number` is the RICS convention (phone with no
+/// formatting when not supplied â€” see `normalizePhoneForAccount` in the service).
+model Customer {
+  id                        String    @id @default(uuid())
+  accountNumber             String    @unique @map("account_number")
+  phoneE164                 String?   @map("phone_e164")
+  firstName                 String?   @map("first_name")
+  lastName                  String?   @map("last_name")
+  displayName               String    @map("display_name")
+  email                     String?
+  addressLine1              String?   @map("address_line1")
+  addressLine2              String?   @map("address_line2")
+  city                      String?
+  stateRegion               String?   @map("state_region")
+  postalCode                String?   @map("postal_code")
+  country                   String?
+  /// Dollars (HNL). Null = no credit limit configured.
+  creditLimit               Decimal?  @map("credit_limit") @db.Decimal(12, 2)
+  alertFlag                 Boolean   @default(false) @map("alert_flag")
+  alertMessage              String?   @map("alert_message")
+  comments                  String?
+  /// Period-to-date / year-to-date / two-to-date counters, updated by the
+  /// sales-pos ticket close. Stored as integers: cents for money, units for qty.
+  ptdQty                    Int       @default(0) @map("ptd_qty")
+  ptdSalesCents             Int       @default(0) @map("ptd_sales_cents")
+  ytdQty                    Int       @default(0) @map("ytd_qty")
+  ytdSalesCents             Int       @default(0) @map("ytd_sales_cents")
+  ttdQty                    Int       @default(0) @map("ttd_qty")
+  ttdSalesCents             Int       @default(0) @map("ttd_sales_cents")
+  lastYearSalesCents        Int       @default(0) @map("last_year_sales_cents")
+  dateAdded                 DateTime  @default(now()) @map("date_added")
+  dateOfLastPurchase        DateTime? @map("date_of_last_purchase")
+  /// Cached A/R balance + store-credit projections. Stage 1 placeholders until
+  /// accounts-receivable and customer-transactions wire their live sources.
+  lastKnownArBalanceCents   Int       @default(0) @map("last_known_ar_balance_cents")
+  arBalanceAsOf             DateTime? @map("ar_balance_as_of")
+  lastKnownStoreCreditCents Int       @default(0) @map("last_known_store_credit_cents")
+  storeCreditAsOf           DateTime? @map("store_credit_as_of")
+  /// Free-form operator extensions; shape is caller-defined.
+  extraFieldsJson           Json?     @map("extra_fields_json")
+  marketingOptIn            Boolean   @default(false) @map("marketing_opt_in")
+  active                    Boolean   @default(true)
+  createdAt                 DateTime  @default(now()) @map("created_at")
+  updatedAt                 DateTime  @updatedAt @map("updated_at")
+
+  familyMembers FamilyMember[]
+
+  @@index([phoneE164], map: "customers_phone_idx")
+  @@index([lastName, firstName], map: "customers_last_first_idx")
+  @@index([postalCode], map: "customers_postal_idx")
+  @@map("customers")
+  @@schema("app")
+}
+
+/// crm module — Family Member (RICS p. 118). A household sub-account under a
+/// Customer (spouse, children, etc.). `code` is unique per customer and
+/// typically a short label the operator types at POS ("WIFE", "SON1", …).
+model FamilyMember {
+  id              String   @id @default(uuid())
+  customerId      String   @map("customer_id")
+  customer        Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  code            String
+  firstName       String?  @map("first_name")
+  lastName        String?  @map("last_name")
+  /// M / F / C (child). Narrowed at the service layer; the column is plain text
+  /// so future values don't require a migration.
+  gender          String?
+  /// ISO date string; kept as text for the same partial-date tolerance RICS had.
+  birthday        String?
+  comments        String?
+  alertFlag       Boolean  @default(false) @map("alert_flag")
+  alertMessage    String?  @map("alert_message")
+  extraFieldsJson Json?    @map("extra_fields_json")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  @@unique([customerId, code])
+  @@index([customerId], map: "customer_family_members_customer_idx")
+  @@map("customer_family_members")
+  @@schema("app")
+}

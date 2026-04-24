@@ -2,7 +2,7 @@
  * Read-only inventory endpoints sourced from the legacy RICS MDBs.
  * Hosts the three Phase 1 screens from `docs/modules/inventory.md`:
  *   GET /inquiry/:sku       — full size-grid × store (Ch. 4 p. 75)
- *   GET /find-by-size       — SKU + size → on-hand per store (Ch. 4 p. 70)
+ *   GET /find-by-size       — size search → matching SKUs with on-hand (Ch. 4 p. 72)
  *   GET /detail-report      — per-SKU rollup (Ch. 4 p. 78)
  *
  * Mounted under /api/v1/inventory, so these paths sit alongside the existing
@@ -49,7 +49,8 @@ router.get('/inquiry/:sku', async (req: Request, res: Response, next: NextFuncti
   try {
     const skuRaw = req.params.sku;
     const sku = Array.isArray(skuRaw) ? skuRaw[0] : skuRaw;
-    const inquiry = await getInventoryInquiry(sku);
+    const storeId = parseIntOrUndefined(req.query.storeId);
+    const inquiry = await getInventoryInquiry(sku, storeId);
     if (!inquiry) {
       res.status(404).json({ error: { code: 'SKU_NOT_FOUND', message: `SKU ${sku} not found` } });
       return;
@@ -104,36 +105,96 @@ router.get('/inquiry/:sku/neighbor', async (req: Request, res: Response, next: N
  * /api/v1/inventory/find-by-size:
  *   get:
  *     tags: [Inventory]
- *     summary: Find the stores holding a given (SKU, size). Case-insensitive exact size label match.
+ *     summary: Find SKUs holding a given size, with optional size-type and merchandise filters.
  *     parameters:
  *       - in: query
- *         name: sku
- *         required: true
+ *         name: seedSku
+ *         required: false
  *         schema: { type: string }
  *       - in: query
- *         name: size
- *         required: true
+ *         name: sizeTypeCode
+ *         required: false
+ *         schema: { type: integer }
+ *       - in: query
+ *         name: columnLabel
+ *         required: false
  *         schema: { type: string }
+ *       - in: query
+ *         name: rowLabel
+ *         required: false
+ *         schema: { type: string }
+ *       - in: query
+ *         name: restrictToSizeType
+ *         required: false
+ *         schema: { type: boolean, default: true }
+ *       - in: query
+ *         name: vendorCode
+ *         required: false
+ *         schema: { type: string }
+ *       - in: query
+ *         name: category
+ *         required: false
+ *         schema: { type: integer }
+ *       - in: query
+ *         name: styleColor
+ *         required: false
+ *         schema: { type: string }
+ *       - in: query
+ *         name: storeNumbers
+ *         required: false
+ *         schema: { type: string }
+ *       - in: query
+ *         name: sort
+ *         required: false
+ *         schema: { type: string, enum: [SKU, DESCRIPTION, VENDOR, CATEGORY], default: SKU }
+ *       - in: query
+ *         name: separateByStore
+ *         required: false
+ *         schema: { type: boolean, default: false }
  *     responses:
- *       200: { description: Per-store matches for that size }
- *       400: { description: sku or size missing }
- *       404: { description: SKU not found }
+ *       200: { description: Matching SKU rows for that size search }
+ *       400: { description: At least one of columnLabel or rowLabel is required }
  */
 router.get('/find-by-size', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const sku = (req.query.sku as string | undefined)?.trim();
-    const size = (req.query.size as string | undefined)?.trim();
-    if (!sku || !size) {
+    const sortRaw = (req.query.sort as string | undefined)?.trim().toUpperCase();
+    const sort =
+      sortRaw === 'DESCRIPTION' || sortRaw === 'VENDOR' || sortRaw === 'CATEGORY' || sortRaw === 'SKU'
+        ? sortRaw
+        : undefined;
+    const seedSku = (req.query.seedSku as string | undefined)?.trim()
+      || (req.query.sku as string | undefined)?.trim()
+      || undefined;
+    const columnLabel = (req.query.columnLabel as string | undefined)?.trim()
+      || (req.query.size as string | undefined)?.trim()
+      || undefined;
+    const rowLabel = (req.query.rowLabel as string | undefined)?.trim() || undefined;
+    if (!columnLabel && !rowLabel) {
       res.status(400).json({
-        error: { code: 'MISSING_PARAMS', message: 'sku and size query params are required' },
+        error: {
+          code: 'MISSING_PARAMS',
+          message: 'At least one of columnLabel or rowLabel query params is required.',
+        },
       });
       return;
     }
-    const result = await findBySize(sku, size);
-    if (!result) {
-      res.status(404).json({ error: { code: 'SKU_NOT_FOUND', message: `SKU ${sku} not found` } });
-      return;
-    }
+    const result = await findBySize({
+      seedSku,
+      sizeTypeCode: parseIntOrUndefined(req.query.sizeTypeCode),
+      columnLabel,
+      rowLabel,
+      restrictToSizeType:
+        req.query.restrictToSizeType == null
+          ? true
+          : req.query.restrictToSizeType === 'true' || req.query.restrictToSizeType === '1',
+      vendorCode: (req.query.vendorCode as string | undefined)?.trim() || undefined,
+      category: parseIntOrUndefined(req.query.category),
+      styleColor: (req.query.styleColor as string | undefined)?.trim() || undefined,
+      storeNumbers: parseStoreList(req.query.storeNumbers),
+      sort,
+      separateByStore: req.query.separateByStore === 'true' || req.query.separateByStore === '1',
+      limit: parseIntOrUndefined(req.query.limit),
+    });
     res.json(result);
   } catch (err) {
     next(err);

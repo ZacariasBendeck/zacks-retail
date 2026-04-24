@@ -2,6 +2,16 @@ import request from 'supertest';
 import { v4 as uuidv4 } from 'uuid';
 import app from '../src/app';
 import { getDb, resetDb } from '../src/db/database';
+import { prisma } from '../src/db/prisma';
+import {
+  cleanupMirroredInventoryStateByLegacySkuCodes,
+  cleanupMirroredInventoryState,
+  ensureInventoryAuditLogTablePresent,
+  countInventoryAuditRows,
+  getAggregateInventoryRecord,
+} from './utils/postgresInventoryTestHelpers';
+
+jest.setTimeout(30000);
 
 function getRefId(table: string, offset = 0): number | null {
   const db = getDb();
@@ -17,11 +27,26 @@ function getCategoryId(ricsCode: number): number | null {
 
 let vendorId: string;
 let skuId: string;
+let mirroredSkuIds: string[] = [];
+let mirroredLegacySkuCodes: string[] = [];
+
+function seedLegacyVendor(): string {
+  const db = getDb();
+  const id = uuidv4();
+  db.prepare(
+    "INSERT INTO vendors (id, name, contact_email, payment_terms, lead_time_days, active) VALUES (?, ?, ?, 'NET_30', 14, 1)"
+  ).run(id, 'Mutation Test Vendor', 'mutation@test.com');
+  return id;
+}
 
 beforeEach(async () => {
+  await ensureInventoryAuditLogTablePresent();
+  await cleanupMirroredInventoryStateByLegacySkuCodes(mirroredLegacySkuCodes);
+  await cleanupMirroredInventoryState(mirroredSkuIds);
+  mirroredSkuIds = [];
+  mirroredLegacySkuCodes = [];
   resetDb();
-  const vendor = await request(app).post('/api/v1/vendors').send({ name: 'Mutation Test Vendor', contactEmail: 'mutation@test.com', paymentTerms: 'NET_30', leadTimeDays: 14 });
-  vendorId = vendor.body.id;
+  vendorId = seedLegacyVendor();
   const catId = getCategoryId(560);
   const brandId = getRefId('ref_brands');
   const colorId = getRefId('ref_colors');
@@ -35,9 +60,16 @@ beforeEach(async () => {
     colorId,
   });
   skuId = sku.body.id;
+  mirroredLegacySkuCodes = [sku.body.skuCode];
+  await cleanupMirroredInventoryStateByLegacySkuCodes(mirroredLegacySkuCodes);
+  mirroredSkuIds = [skuId];
 });
 
-afterAll(() => {
+afterAll(async () => {
+  await ensureInventoryAuditLogTablePresent();
+  await cleanupMirroredInventoryStateByLegacySkuCodes(mirroredLegacySkuCodes);
+  await cleanupMirroredInventoryState(mirroredSkuIds);
+  await prisma.$disconnect();
   resetDb();
 });
 
@@ -256,8 +288,6 @@ describe('Transaction rollback (AC2)', () => {
   });
 
   it('deterministic forced-persistence-failure: no stock delta AND no ledger row committed (AC2 hard-failure proof)', async () => {
-    const db = getDb();
-
     // First receive stock so we have a non-zero starting balance
     await request(app).post('/api/v1/inventory/mutations/receive').send({
       skuId,
@@ -269,18 +299,17 @@ describe('Transaction rollback (AC2)', () => {
       idempotencyKey: uuidv4(),
     });
 
-    const beforeInv = db.prepare('SELECT quantity_on_hand FROM inventory WHERE sku_id = ?').get(skuId) as { quantity_on_hand: number };
-    const beforeLedgerCount = (db.prepare('SELECT COUNT(*) as cnt FROM inventory_audit_log WHERE sku_id = ?').get(skuId) as { cnt: number }).cnt;
-    expect(beforeInv.quantity_on_hand).toBe(50);
+    const beforeInv = await getAggregateInventoryRecord(skuId);
+    const beforeLedgerCount = await countInventoryAuditRows(skuId);
+    expect(beforeInv?.quantityOnHand).toBe(50);
 
     // Simulate forced persistence failure by dropping the audit log table mid-transaction.
     // We rename inventory_audit_log so the INSERT inside executeMutation fails after the
     // UPDATE to inventory has been issued but before COMMIT.
-    db.exec('ALTER TABLE inventory_audit_log RENAME TO inventory_audit_log_backup');
-
-    let threw = false;
+    let failed: request.Response | null = null;
+    await prisma.$executeRawUnsafe('ALTER TABLE app.inventory_audit_log RENAME TO inventory_audit_log_backup');
     try {
-      await request(app).post('/api/v1/inventory/mutations/receive').send({
+      failed = await request(app).post('/api/v1/inventory/mutations/receive').send({
         skuId,
         quantityDelta: 10,
         reasonCode: 'Should fail',
@@ -289,19 +318,18 @@ describe('Transaction rollback (AC2)', () => {
         actorId: uuidv4(),
         idempotencyKey: uuidv4(),
       });
-    } catch {
-      threw = true;
+    } finally {
+      await ensureInventoryAuditLogTablePresent();
     }
 
-    // Restore the table
-    db.exec('ALTER TABLE inventory_audit_log_backup RENAME TO inventory_audit_log');
+    expect(failed?.status).toBe(500);
 
     // Verify stock delta was NOT committed (rollback worked)
-    const afterInv = db.prepare('SELECT quantity_on_hand FROM inventory WHERE sku_id = ?').get(skuId) as { quantity_on_hand: number };
-    expect(afterInv.quantity_on_hand).toBe(50); // unchanged
+    const afterInv = await getAggregateInventoryRecord(skuId);
+    expect(afterInv?.quantityOnHand).toBe(50); // unchanged
 
     // Verify no new ledger row was committed
-    const afterLedgerCount = (db.prepare('SELECT COUNT(*) as cnt FROM inventory_audit_log WHERE sku_id = ?').get(skuId) as { cnt: number }).cnt;
+    const afterLedgerCount = await countInventoryAuditRows(skuId);
     expect(afterLedgerCount).toBe(beforeLedgerCount); // unchanged
   });
 });
@@ -503,8 +531,6 @@ describe('Optimistic concurrency — version check (ZAI-296 AC3)', () => {
   });
 
   it('no stock delta committed when version conflict occurs (AC3 + AC2 rollback)', async () => {
-    const db = getDb();
-
     // Setup: receive stock
     await request(app).post('/api/v1/inventory/mutations/receive').send({
       skuId,
@@ -516,8 +542,8 @@ describe('Optimistic concurrency — version check (ZAI-296 AC3)', () => {
       idempotencyKey: uuidv4(),
     });
 
-    const beforeInv = db.prepare('SELECT quantity_on_hand, version FROM inventory WHERE sku_id = ?').get(skuId) as { quantity_on_hand: number; version: number };
-    expect(beforeInv.quantity_on_hand).toBe(30);
+    const beforeInv = await getAggregateInventoryRecord(skuId);
+    expect(beforeInv?.quantityOnHand).toBe(30);
 
     // Attempt with stale version
     const res = await request(app).post('/api/v1/inventory/mutations/adjust').send({
@@ -532,9 +558,9 @@ describe('Optimistic concurrency — version check (ZAI-296 AC3)', () => {
     expect(res.status).toBe(409);
 
     // Verify no stock change
-    const afterInv = db.prepare('SELECT quantity_on_hand, version FROM inventory WHERE sku_id = ?').get(skuId) as { quantity_on_hand: number; version: number };
-    expect(afterInv.quantity_on_hand).toBe(30); // unchanged
-    expect(afterInv.version).toBe(beforeInv.version); // unchanged
+    const afterInv = await getAggregateInventoryRecord(skuId);
+    expect(afterInv?.quantityOnHand).toBe(30); // unchanged
+    expect(afterInv?.version).toBe(beforeInv?.version); // unchanged
   });
 
   it('does not require expectedVersion (optional parameter)', async () => {

@@ -39,6 +39,12 @@ export interface InquiryBodyProps {
    * wrapper re-points the popup at the new SKU.
    */
   onPickSku: (picked: { skuCode: string; skuId: string }) => void;
+  mode: ViewMode;
+  activeTab: InquiryTab | null;
+  scope: NeighborScope;
+  onModeChange: (mode: ViewMode) => void;
+  onActiveTabChange: (tab: InquiryTab | null) => void;
+  onScopeChange: (scope: NeighborScope) => void;
 }
 
 /**
@@ -52,17 +58,24 @@ export interface InquiryBodyProps {
  * View-mode and active-tab state are internal to this body; a mount inside
  * a popup starts fresh, which matches "open a fresh inquiry window per SKU".
  */
-export const InquiryBody: React.FC<InquiryBodyProps> = ({ skuCode, storeId, onPickSku }) => {
-  const [mode, setMode] = React.useState<ViewMode>('ALL_STORES_SUMMARY');
-  const [activeTab, setActiveTab] = React.useState<InquiryTab | null>(null);
+export const InquiryBody: React.FC<InquiryBodyProps> = ({
+  skuCode,
+  storeId,
+  onPickSku,
+  mode,
+  activeTab,
+  scope,
+  onModeChange,
+  onActiveTabChange,
+  onScopeChange,
+}) => {
   const [lookupOpen, setLookupOpen] = React.useState(!skuCode);
-  const [scope, setScope] = React.useState<NeighborScope>('general');
   const [navLoading, setNavLoading] = React.useState(false);
 
   React.useEffect(() => {
     setLookupOpen(!skuCode);
-    setActiveTab(null);
-  }, [skuCode]);
+    if (!skuCode) onActiveTabChange(null);
+  }, [skuCode, onActiveTabChange]);
 
   const { data, isLoading, error } = useInquiryData(skuCode, storeId);
 
@@ -144,7 +157,7 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({ skuCode, storeId, onPi
               SKU Lookup
             </Button>
           </div>
-          <HeaderCard inquiry={data} />
+          <HeaderCard inquiry={data} storeId={storeId} />
         </div>
 
         <div style={{ flex: '0 0 auto', display: 'flex', gap: 12, alignItems: 'flex-start' }}>
@@ -165,7 +178,7 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({ skuCode, storeId, onPi
 
       {/* View-mode selector */}
       <div style={{ marginBottom: 4 }}>
-        <ViewModeSelector value={mode} onChange={setMode} />
+        <ViewModeSelector value={mode} onChange={onModeChange} />
       </div>
 
       {/* Size grid caption + body */}
@@ -182,12 +195,12 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({ skuCode, storeId, onPi
       <div style={{ marginTop: 8 }}>
         <ActionBar
           activeTab={activeTab}
-          onTab={setActiveTab}
+          onTab={onActiveTabChange}
           onPrev={() => navigateNeighbor('prev')}
           onNext={() => navigateNeighbor('next')}
-          onClear={() => setActiveTab(null)}
+          onClear={() => onActiveTabChange(null)}
           scope={scope}
-          onScopeChange={setScope}
+          onScopeChange={onScopeChange}
           navLoading={navLoading}
         />
       </div>
@@ -197,7 +210,9 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({ skuCode, storeId, onPi
         <div style={{ marginTop: 8 }}>
           {activeTab === 'UPCS' && <UpcsTab skuCode={data.sku} />}
           {activeTab === 'INFO' && data.info && <InfoTab info={data.info} />}
-          {activeTab === 'DETAIL' && <DetailTab skuCode={data.sku} description={data.description} />}
+          {activeTab === 'DETAIL' && (
+            <DetailTab skuCode={data.sku} description={data.description} storeId={storeId} />
+          )}
           {activeTab === 'POS' && <PosTab />}
           {activeTab === 'TREND' && <TrendTab />}
         </div>

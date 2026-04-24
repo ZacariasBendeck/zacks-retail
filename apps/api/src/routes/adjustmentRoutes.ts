@@ -43,9 +43,9 @@ const router: IRouter = Router();
  *       200:
  *         description: Paginated list of adjustments
  */
-router.get('/', validateQuery(adjustmentListQuerySchema), (req: Request, res: Response): void => {
+router.get('/', validateQuery(adjustmentListQuerySchema), async (req: Request, res: Response): Promise<void> => {
   const params = (req as any).validatedQuery;
-  res.json(adjustmentService.listAdjustments(params));
+  res.json(await adjustmentService.listAdjustments(params));
 });
 
 /**
@@ -65,8 +65,8 @@ router.get('/', validateQuery(adjustmentListQuerySchema), (req: Request, res: Re
  *       404:
  *         description: Adjustment not found
  */
-router.get('/:id', (req: Request, res: Response): void => {
-  const adjustment = adjustmentService.getAdjustmentById(req.params.id as string);
+router.get('/:id', async (req: Request, res: Response): Promise<void> => {
+  const adjustment = await adjustmentService.getAdjustmentById(req.params.id as string);
   if (!adjustment) {
     res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Adjustment not found.' } });
     return;
@@ -122,8 +122,8 @@ router.get('/:id', (req: Request, res: Response): void => {
  *       409:
  *         description: Insufficient stock
  */
-router.post('/', validate(createAdjustmentSchema), (req: Request, res: Response): void => {
-  const result = adjustmentService.createAdjustment(req.body);
+router.post('/', validate(createAdjustmentSchema), async (req: Request, res: Response): Promise<void> => {
+  const result = await adjustmentService.createAdjustment(req.body);
   if ('error' in result) {
     res.status(result.status).json({ error: { code: result.code, message: result.error } });
     return;

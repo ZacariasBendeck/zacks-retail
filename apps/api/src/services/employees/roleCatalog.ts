@@ -9,6 +9,7 @@ export const ROLE_CATALOG = {
     name: 'ADMIN',
     permissions: [
       P.EMPLOYEES_MANAGE, P.EMPLOYEES_VIEW,
+      P.TIME_CLOCK_MANAGE, P.TIME_CLOCK_SELF,
       P.STORE_OPS_CONFIGURE, P.STORE_OPS_VIEW,
       P.PRODUCTS_WRITE, P.PRODUCTS_VIEW,
       P.INVENTORY_ADJUST, P.INVENTORY_VIEW,
@@ -19,6 +20,7 @@ export const ROLE_CATALOG = {
   FINANCE: {
     name: 'FINANCE',
     permissions: [
+      P.TIME_CLOCK_SELF,
       P.AR_POST_PAYMENT, P.AR_VIEW,
       P.REPORTS_VIEW, P.STORE_OPS_VIEW,
       P.INVENTORY_VIEW, P.PRODUCTS_VIEW,
@@ -27,6 +29,7 @@ export const ROLE_CATALOG = {
   BUYER: {
     name: 'BUYER',
     permissions: [
+      P.TIME_CLOCK_SELF,
       P.PURCHASING_APPROVE, P.PURCHASING_EDIT, P.PURCHASING_VIEW,
       P.OTB_EDIT, P.OTB_VIEW,
       P.PRODUCTS_WRITE, P.PRODUCTS_VIEW,
@@ -36,6 +39,7 @@ export const ROLE_CATALOG = {
   MANAGER: {
     name: 'MANAGER',
     permissions: [
+      P.TIME_CLOCK_MANAGE, P.TIME_CLOCK_SELF,
       P.SALES_REFUND, P.SALES_POS_OPERATE,
       P.INVENTORY_VIEW, P.INVENTORY_ADJUST,
       P.PRODUCTS_VIEW, P.REPORTS_VIEW,
@@ -45,6 +49,7 @@ export const ROLE_CATALOG = {
   SALESPERSON: {
     name: 'SALESPERSON',
     permissions: [
+      P.TIME_CLOCK_SELF,
       P.SALES_POS_OPERATE,
       P.PRODUCTS_VIEW, P.INVENTORY_VIEW,
     ],

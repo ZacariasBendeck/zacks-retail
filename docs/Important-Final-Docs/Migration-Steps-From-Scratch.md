@@ -4,6 +4,8 @@ The ordered sequence to rebuild the Zack's Retail Postgres database from an empt
 
 For the rehearsal / migration-day sequence after the rebuild, use [docs/operations/migration-day-runbook.md](../operations/migration-day-runbook.md).
 
+This document is the full rebuild path that exists today. For the planned Vercel-era cutover flow, do not treat it as the migration-day script: the target cutover shape is to pre-extract CSV artifacts from the frozen MDB backup on a Windows-capable workstation, then run a load-only import into hosted Postgres. See [docs/dev/specs/2026-04-24-vercel-cutover-artifact-flow.md](../dev/specs/2026-04-24-vercel-cutover-artifact-flow.md).
+
 ---
 
 ## Prerequisites
@@ -41,6 +43,11 @@ pnpm --filter @benlow-rics/api sync:rics
 The big one. Reads every MDB in `Rics Databases/` via the OLE DB bridge, streams each canonical table into a staging schema, atomically swaps it into `rics_mirror`. Records the run in `platform.etl_run` + `platform.etl_run_table`. End state: `rics_mirror.inventory_master` (all SKUs), `rics_mirror.categories`, `rics_mirror.departments`, `rics_mirror.vendors`, and the rest of the canonical mirror are populated.
 
 This is the only step that touches Access - after this, Postgres is self-sufficient.
+
+For Vercel-targeted cutover rehearsals, this step is the current fallback only. The target cutover shape is to split it into:
+
+1. extract immutable CSV artifacts from the frozen MDB backup on Windows, then
+2. load those artifacts into hosted Postgres without putting MDBs on the production host.
 
 ## 4. Bootstrap `app.*` data (single command)
 

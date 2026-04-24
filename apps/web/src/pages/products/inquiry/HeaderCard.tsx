@@ -18,7 +18,10 @@ const cellValue: React.CSSProperties = {
   whiteSpace: 'nowrap',
 };
 
-export const HeaderCard: React.FC<{ inquiry: InventoryInquiry }> = ({ inquiry }) => (
+export const HeaderCard: React.FC<{ inquiry: InventoryInquiry; storeId?: number }> = ({
+  inquiry,
+  storeId,
+}) => (
   <table style={{ borderCollapse: 'collapse', fontSize: 12 }}>
     <tbody>
       <tr>
@@ -39,9 +42,9 @@ export const HeaderCard: React.FC<{ inquiry: InventoryInquiry }> = ({ inquiry })
       </tr>
       <tr>
         <th style={cellLabel}>Vendor SKU</th>
-        <td style={cellValue}>{inquiry.vendorSku ?? '—'}</td>
+        <td style={cellValue}>{inquiry.vendorSku ?? '-'}</td>
         <th style={cellLabel}>Style/Color</th>
-        <td style={cellValue}>{inquiry.styleColor ?? '—'}</td>
+        <td style={cellValue}>{inquiry.styleColor ?? '-'}</td>
       </tr>
       <tr>
         <th style={cellLabel}>Size Type</th>
@@ -49,7 +52,13 @@ export const HeaderCard: React.FC<{ inquiry: InventoryInquiry }> = ({ inquiry })
           {inquiry.sizeType?.id} {inquiry.sizeType?.name}
         </td>
         <th style={cellLabel}>Last Received</th>
-        <td style={cellValue}>{inquiry.lastReceivedAt ?? '—'}</td>
+        <td style={cellValue}>{inquiry.lastReceivedAt ?? '-'}</td>
+      </tr>
+      <tr>
+        <th style={cellLabel}>Store</th>
+        <td style={cellValue}>{storeId != null ? `Store ${storeId}` : 'All Stores'}</td>
+        <th style={cellLabel}></th>
+        <td style={cellValue}></td>
       </tr>
     </tbody>
   </table>

@@ -9,6 +9,7 @@ import {
   DatePicker,
   Empty,
   Row,
+  Select,
   Space,
   Tabs,
   Tag,
@@ -26,16 +27,14 @@ import {
 } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { useAdjustments } from '../../hooks/useAdjustments'
+import { useManualReceiptStores, useManualReceipts } from '../../hooks/useManualReceipts'
 import type { Adjustment, AdjustmentType, AdjustmentListParams } from '../../types/adjustment'
+import type { ManualReceiptListItem, ManualReceiptListParams } from '../../types/manualReceipt'
 import ServerDataTable, {
   type ServerQueryChange,
   type ServerTableColumn,
 } from '../../components/ServerDataTable'
 
-// RICS Ch. 4 splits what our single "Adjustments" concept conflates into
-// five distinct screens (p. 66 Manual Receipt / Return / Order; Ch. 10
-// Physical Inventory; p. 67 Change Average Cost). This page mirrors that
-// split with a Tabs UI so the operator sees each RICS screen one-to-one.
 type AdjustmentTab =
   | 'MANUAL_RECEIPT'
   | 'MANUAL_RETURN'
@@ -58,7 +57,7 @@ interface TabConfig {
   icon: React.ReactNode
   ricsRef: string
   description: string
-  filterType?: AdjustmentType // types to filter on
+  filterType?: AdjustmentType
   newButtonLabel?: string
   newButtonHref?: string
 }
@@ -70,10 +69,9 @@ const TABS: TabConfig[] = [
     icon: <InboxOutlined />,
     ricsRef: 'RICS Ch. 4 p. 66',
     description:
-      'Add on-hand quantities to (Store × SKU × Column × Row) outside a PO. Per-size grid, cost + retail override, case-pack auto-fill, UPC scan.',
-    filterType: 'RECEIPT',
+      'Add on-hand quantities to (Store x SKU x Column x Row) outside a PO. Per-size grid, cost + retail override, case-pack auto-fill, UPC scan.',
     newButtonLabel: 'New Manual Receipt',
-    newButtonHref: '/inventory/adjustments/new?type=RECEIPT',
+    newButtonHref: '/inventory/manual-receipts/new',
   },
   {
     key: 'MANUAL_RETURN',
@@ -92,8 +90,8 @@ const TABS: TabConfig[] = [
     icon: <FileAddOutlined />,
     ricsRef: 'RICS Ch. 4 p. 66',
     description:
-      'Increment on-order without a PO header. Per the inventory spec, this now delegates to the purchasing module as a "Quick Order" — the button below routes there.',
-    newButtonLabel: 'New Quick Order →',
+      'Increment on-order without a PO header. Per the inventory spec, this now delegates to the purchasing module as a Quick Order.',
+    newButtonLabel: 'New Quick Order ->',
     newButtonHref: '/purchasing/orders/new',
   },
   {
@@ -102,7 +100,7 @@ const TABS: TabConfig[] = [
     icon: <AuditOutlined />,
     ricsRef: 'RICS Ch. 10',
     description:
-      'Post variance from a physical count worksheet. Owned by the physical-inventory module in the target architecture; the pre-Phase-1 pipe still shows manual / damage / shrinkage adjustments here.',
+      'Post variance from a physical count worksheet. Owned by the physical-inventory module in the target architecture; the current pipe still shows manual adjustments here.',
     filterType: 'MANUAL_ADJUST',
     newButtonLabel: 'New Physical Adjustment',
     newButtonHref: '/inventory/adjustments/new?type=MANUAL_ADJUST',
@@ -113,8 +111,8 @@ const TABS: TabConfig[] = [
     icon: <DollarOutlined />,
     ricsRef: 'RICS Ch. 4 p. 67',
     description:
-      'Manual override of a SKU\'s average cost per store. Owned by the products module in the target architecture — the button below opens the SKU form where cost is editable.',
-    newButtonLabel: 'Open SKU List →',
+      "Manual override of a SKU's average cost per store. Owned by the products module in the target architecture; the button below opens the SKU form where cost is editable.",
+    newButtonLabel: 'Open SKU List ->',
     newButtonHref: '/inventory/skus',
   },
 ]
@@ -135,7 +133,7 @@ export default function AdjustmentListPage() {
             Adjustments
           </Typography.Title>
           <Typography.Text type="secondary">
-            RICS Ch. 4 pp. 66–67 + Ch. 10 — this screen splits into five RICS-faithful tabs.
+            RICS Ch. 4 pp. 66-67 + Ch. 10 - this screen splits into five RICS-faithful tabs.
           </Typography.Text>
         </Card>
 
@@ -155,11 +153,15 @@ export default function AdjustmentListPage() {
                 {t.label}
               </Space>
             ),
-            children: <TabPane key={t.key} tab={t} />,
+            children:
+              t.key === 'MANUAL_RECEIPT' ? (
+                <ManualReceiptTabPane tab={t} />
+              ) : (
+                <GenericAdjustmentTabPane key={t.key} tab={t} />
+              ),
           }))}
         />
 
-        {/* Tab-level pointer for the tabs that delegate elsewhere */}
         {(activeTab === 'MANUAL_ORDER' || activeTab === 'CHANGE_AVG_COST') && (
           <Alert
             type="info"
@@ -173,10 +175,9 @@ export default function AdjustmentListPage() {
   )
 }
 
-function TabPane({ tab }: { tab: TabConfig }) {
+function GenericAdjustmentTabPane({ tab }: { tab: TabConfig }) {
   const navigate = useNavigate()
   const { message } = App.useApp()
-
   const [params, setParams] = useState<AdjustmentListParams>({
     page: 1,
     pageSize: 25,
@@ -294,45 +295,14 @@ function TabPane({ tab }: { tab: TabConfig }) {
     },
   ]
 
-  const delegates = !tab.filterType // MANUAL_ORDER / CHANGE_AVG_COST have no filter and no list
+  const delegates = !tab.filterType
 
   return (
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-      <Card size="small">
-        <Row align="middle" justify="space-between">
-          <Col flex="auto">
-            <Typography.Text strong>{tab.label}</Typography.Text>
-            <Typography.Text type="secondary" style={{ marginLeft: 8 }}>
-              {tab.ricsRef}
-            </Typography.Text>
-            <Typography.Paragraph style={{ marginTop: 8, marginBottom: 0 }}>
-              {tab.description}
-            </Typography.Paragraph>
-          </Col>
-          <Col>
-            <Space>
-              {tab.newButtonHref && (
-                <Button
-                  type="primary"
-                  icon={<PlusOutlined />}
-                  onClick={() => navigate(tab.newButtonHref!)}
-                >
-                  {tab.newButtonLabel ?? 'New'}
-                </Button>
-              )}
-              {!delegates && (
-                <Button
-                  icon={<ReloadOutlined />}
-                  onClick={() => {
-                    refetch()
-                    message.info('Refreshed')
-                  }}
-                />
-              )}
-            </Space>
-          </Col>
-        </Row>
-      </Card>
+      <TabHeader tab={tab} onRefresh={delegates ? undefined : () => {
+        refetch()
+        message.info('Refreshed')
+      }} />
 
       {!delegates && (
         <Card size="small" title="Filters">
@@ -401,5 +371,240 @@ function TabPane({ tab }: { tab: TabConfig }) {
         </Card>
       )}
     </Space>
+  )
+}
+
+function ManualReceiptTabPane({ tab }: { tab: TabConfig }) {
+  const navigate = useNavigate()
+  const { message } = App.useApp()
+  const [params, setParams] = useState<ManualReceiptListParams>({
+    page: 1,
+    pageSize: 25,
+    sort: 'movementAt',
+    order: 'desc',
+  })
+  const { data: stores } = useManualReceiptStores()
+  const { data, isLoading, isFetching, refetch } = useManualReceipts(params)
+
+  const handleTableChange = useCallback((query: ServerQueryChange) => {
+    setParams((prev) => ({
+      ...prev,
+      page: query.page,
+      pageSize: query.pageSize,
+      sort: (query.sort as ManualReceiptListParams['sort']) ?? prev.sort,
+      order: query.order ?? prev.order,
+    }))
+  }, [])
+
+  const columns: ServerTableColumn<ManualReceiptListItem>[] = [
+    {
+      title: 'Date',
+      dataIndex: 'movementAt',
+      key: 'movementAt',
+      width: 160,
+      sorter: true,
+      render: (v: string) => dayjs(v).format('YYYY-MM-DD HH:mm'),
+      exportValue: (record) => dayjs(record.movementAt).format('YYYY-MM-DD HH:mm'),
+    },
+    {
+      title: 'SKU',
+      dataIndex: 'skuCode',
+      key: 'skuCode',
+      width: 160,
+      render: (skuCode: string, record: ManualReceiptListItem) => (
+        <Button
+          type="link"
+          style={{ paddingInline: 0 }}
+          onClick={() => navigate(`/products/inquiry/${encodeURIComponent(skuCode)}?storeId=${record.storeId}`)}
+        >
+          {skuCode}
+        </Button>
+      ),
+      exportValue: (record) => record.skuCode,
+    },
+    {
+      title: 'Description',
+      dataIndex: 'description',
+      key: 'description',
+      width: 260,
+      ellipsis: true,
+      render: (value: string | null) => value ?? '-',
+      exportValue: (record) => record.description ?? '-',
+    },
+    {
+      title: 'Qty',
+      dataIndex: 'totalUnits',
+      key: 'totalUnits',
+      width: 90,
+      align: 'right' as const,
+      render: (value: number) => <Typography.Text type="success">+{value}</Typography.Text>,
+      exportValue: (record) => record.totalUnits,
+    },
+    {
+      title: 'Store',
+      dataIndex: 'storeLabel',
+      key: 'storeLabel',
+      width: 180,
+      render: (value: string) => value,
+      exportValue: (record) => record.storeLabel,
+    },
+    {
+      title: 'Reference',
+      dataIndex: 'referenceNumber',
+      key: 'referenceNumber',
+      width: 180,
+      ellipsis: true,
+      render: (value: string | null) => value ?? '-',
+      exportValue: (record) => record.referenceNumber ?? '-',
+    },
+    {
+      title: 'By',
+      dataIndex: 'performedBy',
+      key: 'performedBy',
+      width: 160,
+      ellipsis: true,
+      exportValue: (record) => record.performedBy,
+    },
+    {
+      title: '',
+      key: 'actions',
+      width: 50,
+      render: (_: unknown, record: ManualReceiptListItem) => (
+        <Button
+          type="text"
+          size="small"
+          icon={<EyeOutlined />}
+          onClick={() => navigate(`/inventory/manual-receipts/${record.id}`)}
+        />
+      ),
+    },
+  ]
+
+  return (
+    <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+      <TabHeader tab={tab} onRefresh={() => {
+        refetch()
+        message.info('Refreshed')
+      }} />
+
+      <Card size="small" title="Filters">
+        <Row gutter={[12, 12]}>
+          <Col xs={24} sm={8} md={6}>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              Store
+            </Typography.Text>
+            <Select
+              allowClear
+              showSearch
+              optionFilterProp="label"
+              style={{ width: '100%' }}
+              placeholder="All stores"
+              value={params.storeId}
+              onChange={(value) =>
+                setParams((prev) => ({
+                  ...prev,
+                  storeId: typeof value === 'number' ? value : undefined,
+                  page: 1,
+                }))
+              }
+              options={(stores ?? []).map((store) => ({
+                value: store.storeId,
+                label: store.storeLabel,
+              }))}
+            />
+          </Col>
+          <Col xs={24} sm={8} md={6}>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              From Date
+            </Typography.Text>
+            <DatePicker
+              style={{ width: '100%' }}
+              value={params.fromDate ? dayjs(params.fromDate) : null}
+              onChange={(d) =>
+                setParams((prev) => ({
+                  ...prev,
+                  fromDate: d ? d.startOf('day').toISOString() : undefined,
+                  page: 1,
+                }))
+              }
+            />
+          </Col>
+          <Col xs={24} sm={8} md={6}>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              To Date
+            </Typography.Text>
+            <DatePicker
+              style={{ width: '100%' }}
+              value={params.toDate ? dayjs(params.toDate) : null}
+              onChange={(d) =>
+                setParams((prev) => ({
+                  ...prev,
+                  toDate: d ? d.endOf('day').toISOString() : undefined,
+                  page: 1,
+                }))
+              }
+            />
+          </Col>
+        </Row>
+      </Card>
+
+      <Card size="small">
+        <ServerDataTable<ManualReceiptListItem>
+          title={<Typography.Text strong>{tab.label} entries</Typography.Text>}
+          data={data?.data}
+          columns={columns}
+          rowKey="id"
+          loading={isLoading}
+          fetching={isFetching}
+          pagination={data?.pagination}
+          onQueryChange={handleTableChange}
+          expectedTotalRows={data?.pagination.totalItems}
+          exportFileName={`manual-receipts-${new Date().toISOString().slice(0, 10)}`}
+          scrollX={1150}
+        />
+      </Card>
+    </Space>
+  )
+}
+
+function TabHeader({
+  tab,
+  onRefresh,
+}: {
+  tab: TabConfig
+  onRefresh?: () => void
+}) {
+  const navigate = useNavigate()
+
+  return (
+    <Card size="small">
+      <Row align="middle" justify="space-between">
+        <Col flex="auto">
+          <Typography.Text strong>{tab.label}</Typography.Text>
+          <Typography.Text type="secondary" style={{ marginLeft: 8 }}>
+            {tab.ricsRef}
+          </Typography.Text>
+          <Typography.Paragraph style={{ marginTop: 8, marginBottom: 0 }}>
+            {tab.description}
+          </Typography.Paragraph>
+        </Col>
+        <Col>
+          <Space>
+            {tab.newButtonHref && (
+              <Button
+                type="primary"
+                icon={<PlusOutlined />}
+                onClick={() => navigate(tab.newButtonHref!)}
+              >
+                {tab.newButtonLabel ?? 'New'}
+              </Button>
+            )}
+            {onRefresh && (
+              <Button icon={<ReloadOutlined />} onClick={onRefresh} />
+            )}
+          </Space>
+        </Col>
+      </Row>
+    </Card>
   )
 }

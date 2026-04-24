@@ -16,7 +16,6 @@ import {
   Input,
   InputNumber,
   List,
-  Modal,
   Row,
   Segmented,
   Select,
@@ -59,6 +58,7 @@ import type {
   SizeType,
 } from '../../types/purchasingSpec'
 import { SkuLink } from '../../components/sku-link'
+import { DraggableModal } from '../../components/draggable-modal'
 
 const { Text, Title, Paragraph } = Typography
 
@@ -713,7 +713,7 @@ export default function PoEntryMockPage() {
         </Space>
       </Card>
 
-      <Modal
+      <DraggableModal
         open={previewOpen}
         onCancel={() => setPreviewOpen(false)}
         onOk={() => setPreviewOpen(false)}
@@ -734,7 +734,7 @@ export default function PoEntryMockPage() {
         >
           {previewPayload ? JSON.stringify(previewPayload, null, 2) : ''}
         </pre>
-      </Modal>
+      </DraggableModal>
     </Space>
   )
 }

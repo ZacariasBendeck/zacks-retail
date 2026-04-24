@@ -9,6 +9,7 @@ import {
   fetchSkuStoreRollup,
   fetchSkuStoreCellRollup,
   type InventoryDetailReportParams,
+  type FindBySizeParams,
   type ChangeDetailParams,
   type TransferSummaryParams,
   type RecommendedTransferParams,
@@ -29,11 +30,11 @@ export function useInventoryInquiry(sku: string | null) {
   })
 }
 
-export function useFindBySize(sku: string | null, size: string | null) {
+export function useFindBySize(params: FindBySizeParams | null) {
   return useQuery({
-    queryKey: ['rics-inv-find-by-size', sku, size],
-    queryFn: () => fetchFindBySize(sku as string, size as string),
-    enabled: !!sku && !!size,
+    queryKey: ['rics-inv-find-by-size', params],
+    queryFn: () => fetchFindBySize(params as FindBySizeParams),
+    enabled: !!(params && (params.columnLabel || params.rowLabel)),
     staleTime: STALE_TIME,
   })
 }

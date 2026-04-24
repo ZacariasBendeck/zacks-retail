@@ -1,4 +1,4 @@
-import { PrismaClient, User } from '@prisma/client';
+import { PrismaClient, User } from '../prismaClient';
 import { NextFunction, Request, Response } from 'express';
 import { findActiveSession } from '../services/employees/sessionService';
 import type { Permission } from '../services/employees/permissions';
@@ -54,3 +54,5 @@ export function requirePermission(permission: Permission) {
     next();
   };
 }
+
+

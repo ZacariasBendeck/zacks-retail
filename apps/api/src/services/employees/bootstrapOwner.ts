@@ -1,4 +1,4 @@
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient } from '../../prismaClient';
 import { ROLE_CATALOG, ROLE_NAMES } from './roleCatalog';
 import { hashPassword } from './passwordHash';
 
@@ -39,3 +39,5 @@ export async function bootstrapOwner(prisma: PrismaClient): Promise<void> {
   });
   console.log(`[bootstrapOwner] Seeded OWNER user ${email}`);
 }
+
+

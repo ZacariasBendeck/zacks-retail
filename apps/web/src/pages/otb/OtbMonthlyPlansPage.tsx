@@ -8,7 +8,6 @@ import {
   Form,
   Input,
   InputNumber,
-  Modal,
   Popconfirm,
   Row,
   Select,
@@ -19,6 +18,7 @@ import {
 import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import ServerDataTable, { type ServerQueryChange, type ServerTableColumn } from '../../components/ServerDataTable'
+import { DraggableModal } from '../../components/draggable-modal'
 import {
   useCreateOtbMonthlyPlan,
   useDeleteOtbMonthlyPlan,
@@ -538,7 +538,7 @@ export default function OtbMonthlyPlansPage() {
         />
       </Card>
 
-      <Modal
+      <DraggableModal
         title={editingRecord ? 'Edit Monthly Plan Line' : 'Create Monthly Plan Line'}
         open={isModalOpen}
         onCancel={closeModal}
@@ -681,7 +681,7 @@ export default function OtbMonthlyPlansPage() {
             <Input.TextArea rows={3} maxLength={1000} placeholder="Optional notes for this plan line" />
           </Form.Item>
         </Form>
-      </Modal>
+      </DraggableModal>
     </Space>
   )
 }

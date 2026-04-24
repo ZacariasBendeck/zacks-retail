@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { Navigate, useNavigate, useSearchParams } from 'react-router-dom'
 import {
   Form,
   Input,
@@ -69,6 +69,10 @@ export default function AdjustmentFormPage() {
   const { data: locations } = useLocations()
   const { data: skuData } = useSkus({ page: 1, pageSize: 50, q: skuSearch || undefined, active: true })
   const validSkus = useMemo(() => (skuData?.data ?? []).filter(isGuardrailSku), [skuData?.data])
+
+  if (initialType === 'RECEIPT') {
+    return <Navigate to="/inventory/manual-receipts/new" replace />
+  }
 
   useEffect(() => {
     if (!initialType) return

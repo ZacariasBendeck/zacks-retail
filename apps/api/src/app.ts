@@ -5,7 +5,7 @@ import cors from 'cors';
 import cookieParser from 'cookie-parser';
 import swaggerJsdoc from 'swagger-jsdoc';
 import swaggerUi from 'swagger-ui-express';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient } from './prismaClient';
 import skuRoutes from './routes/skuRoutes';
 import inventoryRoutes from './routes/inventoryRoutes';
 import vendorRoutes from './routes/vendorRoutes';
@@ -14,6 +14,7 @@ import purchaseOrderRoutes from './routes/purchaseOrderRoutes';
 import otbBudgetRoutes from './routes/otbBudgetRoutes';
 import dashboardRoutes from './routes/dashboardRoutes';
 import adjustmentRoutes from './routes/adjustmentRoutes';
+import manualReceiptRoutes from './routes/manualReceiptRoutes';
 import inventoryMutationRoutes from './routes/inventoryMutationRoutes';
 import ricsInventoryRoutes from './routes/ricsInventoryRoutes';
 import locationRoutes from './routes/locationRoutes';
@@ -49,6 +50,8 @@ import productsCategoryRoutes from './routes/products/categoryRoutes';
 import productsSkuDraftRoutes from './routes/products/skuDraftRoutes';
 import utilitiesBatchRoutes from './routes/utilities/batchRoutes';
 import { createAuthRoutes } from './routes/authRoutes';
+import { createEmployeeRoutes } from './routes/employeeRoutes';
+import { createTimeClockRoutes } from './routes/timeClockRoutes';
 import { createUserRoutes } from './routes/userRoutes';
 import { createReportTemplatesRoutes } from './routes/reports/reportTemplatesRoutes';
 import { createReportRunsRoutes } from './routes/reports/reportRunsRoutes';
@@ -106,6 +109,7 @@ app.use('/api/v1/purchase-orders', purchaseOrderRoutes);
 app.use('/api/v1/otb-budgets', otbBudgetRoutes);
 app.use('/api/v1/dashboard', dashboardRoutes);
 app.use('/api/v1/inventory/adjustments', adjustmentRoutes);
+app.use('/api/v1/inventory/manual-receipts', manualReceiptRoutes);
 app.use('/api/v1/inventory', inventoryMutationRoutes);
 app.use('/api/v1/inventory', ricsInventoryRoutes);
 app.use('/api/v1/locations', locationRoutes);
@@ -154,6 +158,8 @@ app.use('/api/v1/utilities', utilitiesBatchRoutes);
 
 // employees module
 app.use('/api/v1/auth', createAuthRoutes(prisma));
+app.use('/api/v1/employees', createEmployeeRoutes(prisma));
+app.use('/api/v1', createTimeClockRoutes(prisma));
 app.use('/api/v1/users', createUserRoutes(prisma));
 
 // reports module — saved templates (Phase 1) + frozen snapshots (Phase 1.1).
@@ -182,3 +188,5 @@ app.use((err: Error, req: express.Request, res: express.Response, _next: express
 });
 
 export default app;
+
+

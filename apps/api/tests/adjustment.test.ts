@@ -1,6 +1,15 @@
 import request from 'supertest';
+import { v4 as uuidv4 } from 'uuid';
 import app from '../src/app';
 import { getDb, resetDb } from '../src/db/database';
+import { prisma } from '../src/db/prisma';
+import {
+  cleanupMirroredInventoryState,
+  cleanupMirroredInventoryStateByLegacySkuCodes,
+  ensureInventoryAuditLogTablePresent,
+} from './utils/postgresInventoryTestHelpers';
+
+jest.setTimeout(30000);
 
 function getCategoryId(ricsCode: number): number | null {
   const db = getDb();
@@ -23,15 +32,36 @@ function getColorId(code: string): number | null {
 let vendorId: string;
 let skuId1: string;
 let skuId2: string;
+let mirroredSkuIds: string[] = [];
+let mirroredLegacySkuCodes: string[] = [];
+
+function seedLegacyVendor(): string {
+  const db = getDb();
+  const id = uuidv4();
+  db.prepare(
+    "INSERT INTO vendors (id, name, contact_email, payment_terms, lead_time_days, active) VALUES (?, ?, ?, 'NET_30', 14, 1)"
+  ).run(id, 'Test Vendor Adjustments', 'test@adjustments.com');
+  return id;
+}
+
+async function seedOnHandViaMutation(skuId: string, quantityDelta: number, sourceId: string): Promise<void> {
+  const response = await request(app).post('/api/v1/inventory/mutations/receive').send({
+    skuId,
+    quantityDelta,
+    reasonCode: 'Test setup',
+    categoryCode: 560,
+    sourceDocumentRef: { type: 'INITIAL_IMPORT', id: sourceId },
+    actorId: uuidv4(),
+    idempotencyKey: uuidv4(),
+  });
+
+  if (response.status !== 200) {
+    throw new Error(`Failed to seed on-hand for ${skuId}: ${response.status}`);
+  }
+}
 
 async function seedVendorAndSkus() {
-  const vendor = await request(app).post('/api/v1/vendors').send({
-    name: 'Test Vendor Adjustments',
-    contactEmail: 'test@adjustments.com',
-    paymentTerms: 'NET_30',
-    leadTimeDays: 14,
-  });
-  vendorId = vendor.body.id;
+  vendorId = seedLegacyVendor();
 
   const sku1 = await request(app).post('/api/v1/skus').send({
     style: 'Adjustment Test Pump',
@@ -54,19 +84,29 @@ async function seedVendorAndSkus() {
     vendorId,
   });
   skuId2 = sku2.body.id;
+  mirroredLegacySkuCodes = [sku1.body.skuCode, sku2.body.skuCode].filter(Boolean);
+  await cleanupMirroredInventoryStateByLegacySkuCodes(mirroredLegacySkuCodes);
+  mirroredSkuIds = [skuId1, skuId2];
 
-  // Seed initial stock via the SKU-scoped adjustment endpoint
-  const db = getDb();
-  db.prepare("UPDATE inventory SET quantity_on_hand = 50, updated_at = datetime('now') WHERE sku_id = ?").run(skuId1);
-  db.prepare("UPDATE inventory SET quantity_on_hand = 30, updated_at = datetime('now') WHERE sku_id = ?").run(skuId2);
+  await seedOnHandViaMutation(skuId1, 50, `SETUP-${skuId1}`);
+  await seedOnHandViaMutation(skuId2, 30, `SETUP-${skuId2}`);
 }
 
 beforeEach(async () => {
+  await ensureInventoryAuditLogTablePresent();
+  await cleanupMirroredInventoryStateByLegacySkuCodes(mirroredLegacySkuCodes);
+  await cleanupMirroredInventoryState(mirroredSkuIds);
+  mirroredSkuIds = [];
+  mirroredLegacySkuCodes = [];
   resetDb();
   await seedVendorAndSkus();
 });
 
-afterAll(() => {
+afterAll(async () => {
+  await ensureInventoryAuditLogTablePresent();
+  await cleanupMirroredInventoryStateByLegacySkuCodes(mirroredLegacySkuCodes);
+  await cleanupMirroredInventoryState(mirroredSkuIds);
+  await prisma.$disconnect();
   resetDb();
 });
 

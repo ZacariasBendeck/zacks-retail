@@ -81,15 +81,20 @@ router.get('/', validateQuery(inventoryListQuerySchema), (req: Request, res: Res
  *       409:
  *         description: Idempotency key conflict
  */
-router.post('/mutations/receive', validate(inventoryMutationRequireIdempotencySchema), (req: Request, res: Response): void => {
-  const result = inventoryService.executeMutation(req.body);
-  if ('error' in result) {
-    const code = (result as inventoryService.MutationError).error.code;
-    const status = code.startsWith('CONFLICT') || code === 'IDEMPOTENCY_KEY_PAYLOAD_MISMATCH' ? 409 : 400;
-    res.status(status).json(result);
-    return;
+router.post('/mutations/receive', validate(inventoryMutationRequireIdempotencySchema), async (req: Request, res: Response): Promise<void> => {
+  try {
+    const result = await inventoryService.executeMutation(req.body);
+    if ('error' in result) {
+      const code = (result as inventoryService.MutationError).error.code;
+      const status = code.startsWith('CONFLICT') || code === 'IDEMPOTENCY_KEY_PAYLOAD_MISMATCH' ? 409 : 400;
+      res.status(status).json(result);
+      return;
+    }
+    res.json(result);
+  } catch (error) {
+    console.error('Inventory receive mutation failed:', error);
+    res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Inventory mutation failed unexpectedly.' } });
   }
-  res.json(result);
 });
 
 /**
@@ -112,15 +117,20 @@ router.post('/mutations/receive', validate(inventoryMutationRequireIdempotencySc
  *       409:
  *         description: Idempotency key conflict
  */
-router.post('/mutations/adjust', validate(inventoryMutationSchema), (req: Request, res: Response): void => {
-  const result = inventoryService.executeMutation(req.body);
-  if ('error' in result) {
-    const code = (result as inventoryService.MutationError).error.code;
-    const status = code.startsWith('CONFLICT') || code === 'IDEMPOTENCY_KEY_PAYLOAD_MISMATCH' ? 409 : 400;
-    res.status(status).json(result);
-    return;
+router.post('/mutations/adjust', validate(inventoryMutationSchema), async (req: Request, res: Response): Promise<void> => {
+  try {
+    const result = await inventoryService.executeMutation(req.body);
+    if ('error' in result) {
+      const code = (result as inventoryService.MutationError).error.code;
+      const status = code.startsWith('CONFLICT') || code === 'IDEMPOTENCY_KEY_PAYLOAD_MISMATCH' ? 409 : 400;
+      res.status(status).json(result);
+      return;
+    }
+    res.json(result);
+  } catch (error) {
+    console.error('Inventory adjust mutation failed:', error);
+    res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Inventory mutation failed unexpectedly.' } });
   }
-  res.json(result);
 });
 
 /**
@@ -143,15 +153,20 @@ router.post('/mutations/adjust', validate(inventoryMutationSchema), (req: Reques
  *       409:
  *         description: Idempotency key conflict
  */
-router.post('/mutations/transfer', validate(inventoryMutationRequireIdempotencySchema), (req: Request, res: Response): void => {
-  const result = inventoryService.executeMutation(req.body);
-  if ('error' in result) {
-    const code = (result as inventoryService.MutationError).error.code;
-    const status = code.startsWith('CONFLICT') || code === 'IDEMPOTENCY_KEY_PAYLOAD_MISMATCH' ? 409 : 400;
-    res.status(status).json(result);
-    return;
+router.post('/mutations/transfer', validate(inventoryMutationRequireIdempotencySchema), async (req: Request, res: Response): Promise<void> => {
+  try {
+    const result = await inventoryService.executeMutation(req.body);
+    if ('error' in result) {
+      const code = (result as inventoryService.MutationError).error.code;
+      const status = code.startsWith('CONFLICT') || code === 'IDEMPOTENCY_KEY_PAYLOAD_MISMATCH' ? 409 : 400;
+      res.status(status).json(result);
+      return;
+    }
+    res.json(result);
+  } catch (error) {
+    console.error('Inventory transfer mutation failed:', error);
+    res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Inventory mutation failed unexpectedly.' } });
   }
-  res.json(result);
 });
 
 /**
@@ -271,9 +286,9 @@ router.get('/movements/reconciliation', validateQuery(movementReconciliationQuer
  *       404:
  *         description: No matching SKU found
  */
-router.get('/on-hand/sku', validateQuery(onHandSkuQuerySchema), (req: Request, res: Response): void => {
+router.get('/on-hand/sku', validateQuery(onHandSkuQuerySchema), async (req: Request, res: Response): Promise<void> => {
   const filters = (req as any).validatedQuery;
-  const result = inventoryService.getOnHandBySku(filters);
+  const result = await inventoryService.getOnHandBySku(filters);
   if (!result) {
     res.status(404).json({ error: { code: 'NOT_FOUND', message: 'No matching SKU found for the given filters.' } });
     return;
@@ -291,8 +306,8 @@ router.get('/on-hand/sku', validateQuery(onHandSkuQuerySchema), (req: Request, r
  *       200:
  *         description: On-hand totals per department (FORMAL, CASUAL, FIESTA, SANDALIAS, BOOTS, COMFORT)
  */
-router.get('/on-hand/departments', (_req: Request, res: Response): void => {
-  const departments = inventoryService.getOnHandByDepartments();
+router.get('/on-hand/departments', async (_req: Request, res: Response): Promise<void> => {
+  const departments = await inventoryService.getOnHandByDepartments();
   res.json({ departments });
 });
 

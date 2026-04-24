@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
-import { App, Form, Input, InputNumber, Modal, Switch } from 'antd'
+import { App, Form, Input, InputNumber, Switch } from 'antd'
+import { DraggableModal } from '../../../components/draggable-modal'
 import { useCreateDimension, useUpdateDimension } from '../../../hooks/useProductsAttributes'
 import type { AttributeDimension } from '../../../types/productsAttributes'
 
@@ -84,7 +85,7 @@ export default function DimensionFormModal({ open, editing, onClose, onSaved }: 
   }
 
   return (
-    <Modal
+    <DraggableModal
       title={isEdit ? `Editar dimensión · ${editing!.code}` : 'Nueva dimensión'}
       open={open}
       onCancel={onClose}
@@ -127,6 +128,6 @@ export default function DimensionFormModal({ open, editing, onClose, onSaved }: 
           <Switch />
         </Form.Item>
       </Form>
-    </Modal>
+    </DraggableModal>
   )
 }

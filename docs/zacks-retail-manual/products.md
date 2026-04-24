@@ -67,7 +67,7 @@ _TODO._
 
 ## Data sources (Phase A)
 
-- **Primary read:** `rics_mirror.inventory_master`, `rics_mirror.vendor_master`, `rics_mirror.categories`, `rics_mirror.departments`, `rics_mirror.group_codes`, `rics_mirror.keywords`, `rics_mirror.size_types`, `rics_mirror.nrma_codes`, `rics_mirror.marketing_code`, `rics_mirror.return_codes`, `rics_mirror.sectors`.
+- **Primary read:** `app.sku` for live SKU identity / lifecycle / pricing fields; `rics_mirror.vendor_master`, `rics_mirror.categories`, `rics_mirror.departments`, `rics_mirror.group_codes`, `rics_mirror.keywords`, `rics_mirror.size_types`, `rics_mirror.nrma_codes`, `rics_mirror.marketing_code`, `rics_mirror.return_codes`, `rics_mirror.sectors` for reference surfaces that do not yet have an app-owned authoritative table.
 - **Primary write:** `public.ProductContent` (web-facing content overlay), `public.SeasonOverlay`, `public.ProductsAuditLog`.
 - **Future (Phase B+):** `products.*` schema will own SKU master, taxonomy, vendor master, and pricing once RICS retires as the authoring surface.
 

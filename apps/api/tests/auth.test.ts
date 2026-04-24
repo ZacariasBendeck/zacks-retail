@@ -1,9 +1,32 @@
 import request from 'supertest';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient } from '../src/prismaClient';
 import app from '../src/app';
 import { bootstrapOwner } from '../src/services/employees/bootstrapOwner';
+import { hashPassword } from '../src/services/employees/passwordHash';
 
 const prisma = new PrismaClient();
+
+async function ensureOwnerUser(email: string, password: string): Promise<void> {
+  await bootstrapOwner(prisma);
+  const ownerRole = await prisma.role.findUnique({ where: { name: 'OWNER' } });
+  const passwordHash = await hashPassword(password);
+  await prisma.user.upsert({
+    where: { email },
+    update: {
+      passwordHash,
+      roleId: ownerRole!.id,
+      active: true,
+      displayName: 'Owner',
+    },
+    create: {
+      email,
+      passwordHash,
+      roleId: ownerRole!.id,
+      active: true,
+      displayName: 'Owner',
+    },
+  });
+}
 
 describe('auth routes', () => {
   const email = `auth-test-${Date.now()}@example.com`;
@@ -14,7 +37,7 @@ describe('auth routes', () => {
     process.env.AUTH_OWNER_PASSWORD = password;
     await prisma.session.deleteMany({});
     await prisma.user.deleteMany({ where: { email } });
-    await bootstrapOwner(prisma);
+    await ensureOwnerUser(email, password);
   });
 
   afterAll(async () => {
@@ -71,3 +94,5 @@ describe('auth routes', () => {
     expect(res.status).toBe(400);
   });
 });
+
+

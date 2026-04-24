@@ -28,6 +28,8 @@ const InventoryAuditPage = lazy(() => import('./pages/inventory/InventoryAuditPa
 const AdjustmentListPage = lazy(() => import('./pages/inventory/AdjustmentListPage'))
 const AdjustmentFormPage = lazy(() => import('./pages/inventory/AdjustmentFormPage'))
 const AdjustmentDetailPage = lazy(() => import('./pages/inventory/AdjustmentDetailPage'))
+const ManualReceiptFormPage = lazy(() => import('./pages/inventory/ManualReceiptFormPage'))
+const ManualReceiptDetailPage = lazy(() => import('./pages/inventory/ManualReceiptDetailPage'))
 const OnHandReportPage = lazy(() => import('./pages/inventory/OnHandReportPage'))
 const SalesReportPage = lazy(() => import('./pages/inventory/SalesReportPage'))
 const InventoryTurnoverReportPage = lazy(() => import('./pages/inventory/InventoryTurnoverReportPage'))
@@ -114,7 +116,7 @@ const BatchHistoryDetailPage = lazy(() => import('./pages/utilities/BatchHistory
 // products module — Inventory Inquiry (/inventory/inquiry now redirects here)
 const InquiryPage = lazy(() => import('./pages/products/inquiry/InquiryPage').then(m => ({ default: m.InquiryPage })))
 
-const LegacyInquiryRedirect: React.FC = () => {
+export const LegacyInquiryRedirect: React.FC = () => {
   const { skuCode } = useParams<{ skuCode?: string }>()
   const [params] = useSearchParams()
   const qs = params.toString()
@@ -176,6 +178,8 @@ export default function App() {
             <Route path="/inventory/adjustments" element={<AdjustmentListPage />} />
             <Route path="/inventory/adjustments/new" element={<AdjustmentFormPage />} />
             <Route path="/inventory/adjustments/:adjustmentId" element={<AdjustmentDetailPage />} />
+            <Route path="/inventory/manual-receipts/new" element={<ManualReceiptFormPage />} />
+            <Route path="/inventory/manual-receipts/:receiptId" element={<ManualReceiptDetailPage />} />
             <Route path="/inventory/sales-ledger" element={<SalesLedgerPage />} />
             <Route path="/inventory/movements" element={<InventoryMovementPage />} />
             <Route path="/inventory/inquiry" element={<LegacyInquiryRedirect />} />

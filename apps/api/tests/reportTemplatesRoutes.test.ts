@@ -1,5 +1,5 @@
 import request from 'supertest';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient } from '../src/prismaClient';
 import app from '../src/app';
 import { hashPassword } from '../src/services/employees/passwordHash';
 import { PERMISSIONS } from '../src/services/employees/permissions';
@@ -259,3 +259,5 @@ describe('GET/POST/PATCH/DELETE /api/v1/reports/templates', () => {
     expect(after.body.template.lastUsedAt).not.toBeNull();
   });
 });
+
+

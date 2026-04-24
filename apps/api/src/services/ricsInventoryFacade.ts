@@ -10,6 +10,7 @@
 import * as ricsAdapter from './ricsInventoryAdapter';
 import type {
   InventoryInquiry,
+  FindBySizeParams,
   FindBySizeResult,
   InventoryDetailReportRow,
   InventoryDetailReportParams,
@@ -41,14 +42,14 @@ export function sourceIsRics(): boolean {
   return source() === 'rics';
 }
 
-export async function getInventoryInquiry(sku: string): Promise<InventoryInquiry | null> {
+export async function getInventoryInquiry(sku: string, storeId?: number): Promise<InventoryInquiry | null> {
   if (!sourceIsRics()) throw new InventorySourceNotImplementedError(source());
-  return ricsAdapter.getInventoryInquiry(sku);
+  return ricsAdapter.getInventoryInquiry(sku, storeId);
 }
 
-export async function findBySize(sku: string, sizeLabel: string): Promise<FindBySizeResult | null> {
+export async function findBySize(params: FindBySizeParams): Promise<FindBySizeResult> {
   if (!sourceIsRics()) throw new InventorySourceNotImplementedError(source());
-  return ricsAdapter.findBySize(sku, sizeLabel);
+  return ricsAdapter.findBySize(params);
 }
 
 export async function getInventoryDetailReport(

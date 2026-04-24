@@ -15,7 +15,7 @@ const inquiry = {
 
 describe('HeaderCard', () => {
   it('renders every identity field from the RICS inquiry header', () => {
-    render(<HeaderCard inquiry={inquiry} />);
+    render(<HeaderCard inquiry={inquiry} storeId={21} />);
     expect(screen.getByText('ZN02-NDPT')).toBeInTheDocument();
     expect(screen.getByText('SandPtMetChar')).toBeInTheDocument();
     expect(screen.getByText(/567/)).toBeInTheDocument();
@@ -24,5 +24,6 @@ describe('HeaderCard', () => {
     expect(screen.getByText('PT/ND')).toBeInTheDocument();
     expect(screen.getByText(/Zap Dam-Cab/)).toBeInTheDocument();
     expect(screen.getByText('2026-04-19')).toBeInTheDocument();
+    expect(screen.getByText('Store 21')).toBeInTheDocument();
   });
 });

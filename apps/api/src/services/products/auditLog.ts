@@ -9,7 +9,7 @@
  * See [docs/dev/specs/2026-04-18-products-phase1-design.md](../../../../../docs/dev/specs/2026-04-18-products-phase1-design.md).
  */
 
-import type { PrismaClient } from '@prisma/client';
+import type { PrismaClient } from '../../prismaClient';
 import { prisma as defaultPrisma } from '../../db/prisma';
 
 export interface AuditRecordInput {
@@ -52,3 +52,5 @@ export function createAuditLogger(client: PrismaClient = defaultPrisma): AuditLo
 
 /** Shared singleton logger used by product services. */
 export const auditLog: AuditLogger = createAuditLogger();
+
+

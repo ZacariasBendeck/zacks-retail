@@ -6,7 +6,6 @@ import {
   Card,
   Descriptions,
   Input,
-  Modal,
   Popconfirm,
   Space,
   Spin,
@@ -23,6 +22,7 @@ import {
   SendOutlined,
 } from '@ant-design/icons'
 import dayjs from 'dayjs'
+import { DraggableModal } from '../../components/draggable-modal'
 import { SkuLink } from '../../components/sku-link'
 import {
   useCancelPurchaseOrder,
@@ -419,7 +419,7 @@ export default function PurchaseOrderDetailPage() {
         />
       </Card>
 
-      <Modal
+      <DraggableModal
         title="Cancel Purchase Order"
         open={cancelModalOpen}
         onCancel={() => setCancelModalOpen(false)}
@@ -439,7 +439,7 @@ export default function PurchaseOrderDetailPage() {
           maxLength={500}
           placeholder="Cancellation reason"
         />
-      </Modal>
+      </DraggableModal>
     </Space>
   )
 }

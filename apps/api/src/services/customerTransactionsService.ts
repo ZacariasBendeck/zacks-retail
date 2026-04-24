@@ -132,8 +132,8 @@ export function getSpecialOrder(id: string): SpecialOrderWithChildren | null {
   const db = getDb();
   const row = db.prepare('SELECT * FROM special_orders WHERE id = ?').get(id) as SpecialOrderRow | undefined;
   if (!row) return null;
-  const lines = db.prepare('SELECT * FROM special_order_lines WHERE special_order_id = ?').all(id) as SpecialOrderLineRow[];
-  const deposits = db.prepare('SELECT * FROM special_order_deposits WHERE special_order_id = ? ORDER BY taken_at').all(id) as SpecialOrderDepositRow[];
+  const lines = db.prepare('SELECT * FROM special_order_lines WHERE special_order_id = ?').all(id) as unknown as SpecialOrderLineRow[];
+  const deposits = db.prepare('SELECT * FROM special_order_deposits WHERE special_order_id = ? ORDER BY taken_at').all(id) as unknown as SpecialOrderDepositRow[];
   return { ...rowToSpecialOrder(row), lines: lines.map(rowToSpecialOrderLine), deposits: deposits.map(rowToSpecialOrderDeposit) };
 }
 
@@ -141,7 +141,7 @@ export function listSpecialOrdersForCustomer(customerId: string): SpecialOrder[]
   const db = getDb();
   const rows = db.prepare(
     'SELECT * FROM special_orders WHERE customer_id = ? ORDER BY opened_at DESC'
-  ).all(customerId) as SpecialOrderRow[];
+  ).all(customerId) as unknown as SpecialOrderRow[];
   return rows.map(rowToSpecialOrder);
 }
 
@@ -290,14 +290,14 @@ export function getLayaway(id: string): LayawayWithChildren | null {
   const db = getDb();
   const row = db.prepare('SELECT * FROM layaways WHERE id = ?').get(id) as LayawayRow | undefined;
   if (!row) return null;
-  const lines = db.prepare('SELECT * FROM layaway_lines WHERE layaway_id = ?').all(id) as LayawayLineRow[];
-  const payments = db.prepare('SELECT * FROM layaway_payments WHERE layaway_id = ? ORDER BY paid_at').all(id) as LayawayPaymentRow[];
+  const lines = db.prepare('SELECT * FROM layaway_lines WHERE layaway_id = ?').all(id) as unknown as LayawayLineRow[];
+  const payments = db.prepare('SELECT * FROM layaway_payments WHERE layaway_id = ? ORDER BY paid_at').all(id) as unknown as LayawayPaymentRow[];
   return { ...rowToLayaway(row), lines: lines.map(rowToLayawayLine), payments: payments.map(rowToLayawayPayment) };
 }
 
 export function listLayawaysForCustomer(customerId: string): Layaway[] {
   const db = getDb();
-  const rows = db.prepare('SELECT * FROM layaways WHERE customer_id = ? ORDER BY opened_at DESC').all(customerId) as LayawayRow[];
+  const rows = db.prepare('SELECT * FROM layaways WHERE customer_id = ? ORDER BY opened_at DESC').all(customerId) as unknown as LayawayRow[];
   return rows.map(rowToLayaway);
 }
 
@@ -486,7 +486,7 @@ export function listGiftCertificateTransactions(certId: string): GiftCertificate
   const db = getDb();
   const rows = db.prepare(
     'SELECT * FROM gift_certificate_transactions WHERE cert_id = ? ORDER BY occurred_at'
-  ).all(certId) as GiftCertificateTransactionRow[];
+  ).all(certId) as unknown as GiftCertificateTransactionRow[];
   return rows.map(rowToGiftCertificateTransaction);
 }
 
@@ -513,7 +513,7 @@ export async function recordHouseCharge(input: RecordHouseChargeInput): Promise<
       id, customer_id, store_id, ticket_id, kind, amount, tender_type
     ) VALUES (?, ?, ?, ?, ?, ?, ?)`
   ).run(id, input.customerId, input.storeId, input.ticketId, input.kind, input.amount, input.tenderType ?? null);
-  const row = db.prepare('SELECT * FROM house_charge_transactions WHERE id = ?').get(id) as HouseChargeTransactionRow;
+  const row = db.prepare('SELECT * FROM house_charge_transactions WHERE id = ?').get(id) as unknown as HouseChargeTransactionRow;
   return rowToHouseChargeTransaction(row);
 }
 
@@ -532,7 +532,7 @@ export function listHouseChargeTransactions(customerId: string): HouseChargeTran
   const db = getDb();
   const rows = db.prepare(
     'SELECT * FROM house_charge_transactions WHERE customer_id = ? ORDER BY occurred_at DESC'
-  ).all(customerId) as HouseChargeTransactionRow[];
+  ).all(customerId) as unknown as HouseChargeTransactionRow[];
   return rows.map(rowToHouseChargeTransaction);
 }
 

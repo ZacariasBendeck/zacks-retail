@@ -17,7 +17,6 @@ import {
   App,
   Button,
   Card,
-  Modal,
   Form,
   Input,
   Select,
@@ -31,6 +30,7 @@ import {
 } from 'antd'
 import { PlusOutlined, CheckCircleOutlined, DeleteOutlined, ThunderboltOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
+import { DraggableModal } from '../../components/draggable-modal'
 import {
   useSkuDraftsList,
   useCreateSkuDraft,
@@ -232,7 +232,7 @@ function CreateDraftModal({ open, onClose }: { open: boolean; onClose: () => voi
   }
 
   return (
-    <Modal
+    <DraggableModal
       title="Nuevo borrador de SKU"
       open={open}
       onCancel={onClose}
@@ -269,7 +269,7 @@ function CreateDraftModal({ open, onClose }: { open: boolean; onClose: () => voi
           <Input.TextArea rows={2} placeholder="Notas internas (opcional)" />
         </Form.Item>
       </Form>
-    </Modal>
+    </DraggableModal>
   )
 }
 
@@ -336,7 +336,7 @@ function FinalizeDraftModal({
   }
 
   return (
-    <Modal
+    <DraggableModal
       title={<span>Finalizar borrador <Tag color="gold" style={{ fontFamily: 'monospace' }}>{draft.provisionalCode}</Tag></span>}
       open={!!draft}
       onCancel={onClose}
@@ -433,6 +433,6 @@ function FinalizeDraftModal({
           <Tag color={descriptionRics.trim().length > 0 ? 'green' : 'default'}>Descripción {descriptionRics.trim().length > 0 ? '✓' : '—'}</Tag>
         </div>
       </Form>
-    </Modal>
+    </DraggableModal>
   )
 }

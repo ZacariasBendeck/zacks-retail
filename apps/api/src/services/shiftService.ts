@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { getDb } from '../db/database';
+import { prisma } from '../db/prisma';
 import { getPosDb } from '../db/posDatabase';
 import {
   Shift,
@@ -11,6 +12,7 @@ import {
   DrawerTenderCountRow,
   rowToDrawerTenderCount,
 } from '../models/salesPos';
+import { applyInventoryDelta } from './postgresInventoryLedger';
 
 export interface OpenShiftInput {
   storeId: number;
@@ -313,14 +315,12 @@ export function closeShift(shiftId: string, input: CloseShiftInput): Shift {
  * Writes inventory depletions for all PENDING_POST tickets in the shift and
  * flips them to BATCH_POSTED. Only valid after shift close in BATCH mode.
  */
-export function postShiftToInventory(shiftId: string, postedByUserId: string): Shift {
+export async function postShiftToInventory(shiftId: string, postedByUserId: string): Promise<Shift> {
   // Cross-DB write: read pending tickets from the POS DB, write depletions to the
   // warehouse DB (inventory_audit_log + sales_transactions), then flip ticket
   // posting_status in the POS DB. SQLite has no cross-DB 2PC; for Stage 1 the POS
   // DB is sandbox/test-scoped per plan decision #6 — simple sequential write is OK.
   const posDb = getPosDb();
-  const warehouseDb = getDb();
-
   const shift = posDb.prepare('SELECT * FROM pos_shifts WHERE id = ?').get(shiftId) as unknown as ShiftRow | undefined;
   if (!shift) throw new Error('SHIFT_NOT_FOUND');
   if (shift.status !== 'CLOSED') throw new Error('SHIFT_NOT_CLOSED');
@@ -341,15 +341,8 @@ export function postShiftToInventory(shiftId: string, postedByUserId: string): S
     unit_price: number;
   }>;
 
-  warehouseDb.exec('BEGIN');
-  try {
-    for (const l of lines) {
-      applyLedgerDepletion(warehouseDb, l.sku_id, l.quantity, l.unit_price, `TICKET:${l.ticket_id}`, postedByUserId);
-    }
-    warehouseDb.exec('COMMIT');
-  } catch (e) {
-    warehouseDb.exec('ROLLBACK');
-    throw e;
+  for (const l of lines) {
+    await applyLedgerDepletion(getDb(), l.sku_id, l.quantity, l.unit_price, `TICKET:${l.ticket_id}`, postedByUserId);
   }
 
   posDb.exec('BEGIN');
@@ -382,42 +375,25 @@ export function postShiftToInventory(shiftId: string, postedByUserId: string): S
 // Internal: ledger depletion helper (shared with ticketService)
 // ---------------------------------------------------------------------------
 
-export function applyLedgerDepletion(
+export async function applyLedgerDepletion(
   db: ReturnType<typeof getDb>,
   skuId: string,
   quantity: number,
   unitPrice: number,
   reason: string,
   actorUserId: string
-): void {
+): Promise<void> {
   // Negative qty = refund (return stock). Positive qty = sale (deplete).
   const delta = -quantity;
-
-  const inv = db.prepare(
-    'SELECT id, quantity_on_hand, version FROM inventory WHERE sku_id = ?'
-  ).get(skuId) as { id: string; quantity_on_hand: number; version: number } | undefined;
-  if (!inv) {
-    // No inventory row yet — skip ledger write but still record audit for traceability.
-    db.prepare(
-      `INSERT INTO inventory_audit_log (id, sku_id, adjustment, reason, resulting_balance, performed_by)
-       VALUES (?, ?, ?, ?, ?, ?)`
-    ).run(randomUUID(), skuId, delta, reason, 0, actorUserId);
-    return;
-  }
-
-  const newBalance = inv.quantity_on_hand + delta;
-  if (newBalance < 0 && delta < 0) {
-    // Negative-on-hand is allowed in retail (oversold), just flag in audit.
-  }
-
-  db.prepare(
-    "UPDATE inventory SET quantity_on_hand = ?, version = version + 1, updated_at = datetime('now') WHERE sku_id = ?"
-  ).run(newBalance, skuId);
-
-  db.prepare(
-    `INSERT INTO inventory_audit_log (id, sku_id, adjustment, reason, resulting_balance, performed_by)
-     VALUES (?, ?, ?, ?, ?, ?)`
-  ).run(randomUUID(), skuId, delta, reason, newBalance, actorUserId);
+  await prisma.$transaction(async (tx) => {
+    await applyInventoryDelta({
+      skuId,
+      quantityDelta: delta,
+      reason,
+      performedBy: actorUserId,
+      allowNegative: true,
+    }, tx);
+  });
 
   // Keep sales_transactions populated for legacy reporting (only on positive qty sales).
   if (quantity > 0) {

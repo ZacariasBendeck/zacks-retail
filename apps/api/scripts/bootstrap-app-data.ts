@@ -8,6 +8,7 @@
  *   2. import:attributes         — attribute catalog from saved JSON snapshot
  *   3. seed:sku-attributes       — keyword-derived per-SKU assignments
  *   4. sync:rics-skus            — backfill app.sku from rics_mirror.inventory_master
+ *   5. sync:rics-stock-levels    — rebuild app.stock_level from mirror + app ledger
  *
  * Each step logs duration. Any failure halts the chain with a non-zero exit.
  *
@@ -20,6 +21,7 @@
  *   --skip-attributes-import     Skip step 2
  *   --skip-sku-attributes        Skip step 3
  *   --skip-sku-sync              Skip step 4
+ *   --skip-stock-levels          Skip step 5
  *   --dry-run                    Print the plan + resolved snapshot path, exit 0
  */
 import { spawn } from 'node:child_process';
@@ -35,6 +37,7 @@ interface Args {
   skipAttrImport: boolean;
   skipSkuAttrs: boolean;
   skipSkuSync: boolean;
+  skipStockLevels: boolean;
   dryRun: boolean;
 }
 
@@ -45,6 +48,7 @@ function parseArgs(): Args {
     skipAttrImport: false,
     skipSkuAttrs: false,
     skipSkuSync: false,
+    skipStockLevels: false,
     dryRun: false,
   };
   const argv = process.argv.slice(2);
@@ -65,6 +69,9 @@ function parseArgs(): Args {
         break;
       case '--skip-sku-sync':
         out.skipSkuSync = true;
+        break;
+      case '--skip-stock-levels':
+        out.skipStockLevels = true;
         break;
       case '--dry-run':
         out.dryRun = true;
@@ -178,6 +185,9 @@ async function main(): Promise<void> {
   }
   if (!args.skipSkuSync) {
     steps.push({ label: 'sync:rics-skus', script: 'scripts/rics/sync/sync-rics-skus.ts' });
+  }
+  if (!args.skipStockLevels) {
+    steps.push({ label: 'sync:rics-stock-levels', script: 'scripts/rics/sync/sync-rics-stock-levels.ts' });
   }
 
   console.log('=== bootstrap:app-data ===');

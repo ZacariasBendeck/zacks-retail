@@ -1,4 +1,4 @@
-import { Prisma } from '@prisma/client';
+import { Prisma } from '../prismaClient';
 import { prisma } from '../db/prisma';
 import { getDb } from '../db/database';
 import {
@@ -87,10 +87,126 @@ export type UpdateFamilyMemberInput = Partial<CreateFamilyMemberInput>;
 
 type PrismaCustomerRow = Prisma.CustomerGetPayload<Record<string, never>>;
 type PrismaFamilyMemberRow = Prisma.FamilyMemberGetPayload<Record<string, never>>;
+type MirrorNumeric = Prisma.Decimal | number | string | bigint | null;
+
+interface MirrorCustomerRow {
+  account: string | null;
+  name: string | null;
+  addr1: string | null;
+  addr2: string | null;
+  city: string | null;
+  state: string | null;
+  zip: string | null;
+  credit_limit: MirrorNumeric;
+  curr_bal: MirrorNumeric;
+  cred_slip: MirrorNumeric;
+  status: string | null;
+  date_added: Date | string | null;
+  date_lst_purch: Date | string | null;
+  e_mail: string | null;
+  extra_01: string | null;
+  extra_02: string | null;
+  extra_03: string | null;
+  extra_04: string | null;
+  extra_05: string | null;
+  extra_06: string | null;
+  qty_sales_01: number | null;
+  qty_sales_02: number | null;
+  qty_sales_03: number | null;
+  qty_sales_04: number | null;
+  dollar_sales_01: MirrorNumeric;
+  dollar_sales_02: MirrorNumeric;
+  dollar_sales_03: MirrorNumeric;
+  dollar_sales_04: MirrorNumeric;
+  comment: string | null;
+  date_last_changed: Date | string | null;
+}
+
+interface MirrorFamilyMemberRow {
+  account: string | null;
+  code: string | null;
+  name: string | null;
+  gender: string | null;
+  date_added: Date | string | null;
+  birthday: Date | string | null;
+  extra_01: string | null;
+  extra_02: string | null;
+  extra_03: string | null;
+  extra_04: string | null;
+  extra_05: string | null;
+  extra_06: string | null;
+  comment: string | null;
+  date_last_changed: Date | string | null;
+}
+
+const MIRROR_CUSTOMER_SELECT = `
+  SELECT
+    account,
+    name,
+    addr1,
+    addr2,
+    city,
+    state,
+    zip,
+    credit_limit::double precision AS credit_limit,
+    curr_bal::double precision AS curr_bal,
+    cred_slip::double precision AS cred_slip,
+    status,
+    date_added,
+    date_lst_purch,
+    e_mail,
+    extra_01,
+    extra_02,
+    extra_03,
+    extra_04,
+    extra_05,
+    extra_06,
+    qty_sales_01::integer AS qty_sales_01,
+    qty_sales_02::integer AS qty_sales_02,
+    qty_sales_03::integer AS qty_sales_03,
+    qty_sales_04::integer AS qty_sales_04,
+    dollar_sales_01::double precision AS dollar_sales_01,
+    dollar_sales_02::double precision AS dollar_sales_02,
+    dollar_sales_03::double precision AS dollar_sales_03,
+    dollar_sales_04::double precision AS dollar_sales_04,
+    comment,
+    date_last_changed
+  FROM rics_mirror.mail_list_names
+`;
+
+const MIRROR_FAMILY_SELECT = `
+  SELECT
+    account,
+    code,
+    name,
+    gender,
+    date_added,
+    birthday,
+    extra_01,
+    extra_02,
+    extra_03,
+    extra_04,
+    extra_05,
+    extra_06,
+    comment,
+    date_last_changed
+  FROM rics_mirror.mail_list_family
+`;
+
+const MIRROR_SORT_MAP: Record<NonNullable<CustomerListParams['sort']>, string> = {
+  displayName: 'LOWER(COALESCE(name, \'\'))',
+  accountNumber: 'LOWER(COALESCE(account, \'\'))',
+  dateAdded: 'date_added',
+  dateOfLastPurchase: 'date_lst_purch',
+  // RICS stores four sales buckets; field order + the manual's PTD/YTD/TTD/Last Year
+  // terminology map cleanly to 01/02/03/04.
+  ytdSalesCents: 'dollar_sales_02',
+};
 
 function toCustomer(r: PrismaCustomerRow): Customer {
   return {
     id: r.id,
+    source: 'app',
     accountNumber: r.accountNumber,
     phoneE164: r.phoneE164,
     firstName: r.firstName,
@@ -145,6 +261,242 @@ function toFamilyMember(r: PrismaFamilyMemberRow): FamilyMember {
     extraFields: (r.extraFieldsJson as Record<string, unknown> | null) ?? null,
     createdAt: r.createdAt.toISOString(),
     updatedAt: r.updatedAt.toISOString(),
+  };
+}
+
+function normalizeLegacyText(value: string | null | undefined): string | null {
+  if (value == null) return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function toNumberOrNull(value: MirrorNumeric): number | null {
+  if (value == null) return null;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value === 'bigint') return Number(value);
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  if (value instanceof Prisma.Decimal) return value.toNumber();
+  return null;
+}
+
+function toInteger(value: number | null | undefined): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+function toCurrencyCents(value: MirrorNumeric): number {
+  const amount = toNumberOrNull(value);
+  return amount == null ? 0 : Math.round(amount * 100);
+}
+
+function toIsoString(value: Date | string | null | undefined): string | null {
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+function toDateOnly(value: Date | string | null | undefined): string | null {
+  const iso = toIsoString(value);
+  return iso ? iso.slice(0, 10) : null;
+}
+
+function parseMirrorName(
+  name: string | null,
+  accountNumber: string,
+): Pick<Customer, 'firstName' | 'lastName' | 'displayName'> {
+  const normalized = normalizeLegacyText(name);
+  if (!normalized) {
+    return {
+      firstName: null,
+      lastName: null,
+      displayName: accountNumber,
+    };
+  }
+
+  const commaIndex = normalized.indexOf(',');
+  if (commaIndex >= 0) {
+    const lastName = normalizeLegacyText(normalized.slice(0, commaIndex));
+    const firstName = normalizeLegacyText(normalized.slice(commaIndex + 1));
+    return {
+      firstName,
+      lastName,
+      displayName: normalized,
+    };
+  }
+
+  return {
+    firstName: normalized,
+    lastName: null,
+    displayName: normalized,
+  };
+}
+
+function parseMirrorAlert(comment: string | null): {
+  alertFlag: boolean;
+  alertMessage: string | null;
+  comments: string | null;
+} {
+  const normalized = normalizeLegacyText(comment);
+  if (!normalized) {
+    return {
+      alertFlag: false,
+      alertMessage: null,
+      comments: null,
+    };
+  }
+
+  const match = normalized.match(/^\[ALERT\]\s*(.*)$/is);
+  if (!match) {
+    return {
+      alertFlag: false,
+      alertMessage: null,
+      comments: normalized,
+    };
+  }
+
+  const message = normalizeLegacyText(match[1]) ?? normalized;
+  return {
+    alertFlag: true,
+    alertMessage: message,
+    comments: null,
+  };
+}
+
+function buildMirrorExtraFields(row: {
+  extra_01: string | null;
+  extra_02: string | null;
+  extra_03: string | null;
+  extra_04: string | null;
+  extra_05: string | null;
+  extra_06: string | null;
+}): Record<string, unknown> | null {
+  const entries = Object.entries({
+    extra_01: normalizeLegacyText(row.extra_01),
+    extra_02: normalizeLegacyText(row.extra_02),
+    extra_03: normalizeLegacyText(row.extra_03),
+    extra_04: normalizeLegacyText(row.extra_04),
+    extra_05: normalizeLegacyText(row.extra_05),
+    extra_06: normalizeLegacyText(row.extra_06),
+  }).filter(([, value]) => value != null);
+
+  return entries.length > 0 ? Object.fromEntries(entries) : null;
+}
+
+function mirrorCustomerId(row: MirrorCustomerRow): string {
+  const accountNumber = normalizeLegacyText(row.account);
+  if (accountNumber) return accountNumber;
+
+  const parts = [
+    normalizeLegacyText(row.name),
+    normalizeLegacyText(row.city),
+    normalizeLegacyText(row.state),
+    toDateOnly(row.date_added),
+  ].filter(Boolean);
+
+  return `mirror:${parts.join('|') || 'missing-account'}`;
+}
+
+function toMirrorCustomer(row: MirrorCustomerRow): Customer {
+  const accountNumber = normalizeLegacyText(row.account) ?? '';
+  const { firstName, lastName, displayName } = parseMirrorName(row.name, accountNumber);
+  const { alertFlag, alertMessage, comments } = parseMirrorAlert(row.comment);
+  const dateAdded = toIsoString(row.date_added);
+  const dateLastChanged = toIsoString(row.date_last_changed);
+
+  return {
+    id: mirrorCustomerId(row),
+    source: 'mirror',
+    accountNumber,
+    phoneE164: null,
+    firstName,
+    lastName,
+    displayName,
+    email: normalizeLegacyText(row.e_mail),
+    addressLine1: normalizeLegacyText(row.addr1),
+    addressLine2: normalizeLegacyText(row.addr2),
+    city: normalizeLegacyText(row.city),
+    stateRegion: normalizeLegacyText(row.state),
+    postalCode: normalizeLegacyText(row.zip),
+    country: null,
+    creditLimit: toNumberOrNull(row.credit_limit),
+    alertFlag,
+    alertMessage,
+    comments,
+    ptdQty: toInteger(row.qty_sales_01),
+    ptdSalesCents: toCurrencyCents(row.dollar_sales_01),
+    ytdQty: toInteger(row.qty_sales_02),
+    ytdSalesCents: toCurrencyCents(row.dollar_sales_02),
+    ttdQty: toInteger(row.qty_sales_03),
+    ttdSalesCents: toCurrencyCents(row.dollar_sales_03),
+    lastYearSalesCents: toCurrencyCents(row.dollar_sales_04),
+    dateAdded: dateAdded ?? new Date(0).toISOString(),
+    dateOfLastPurchase: toIsoString(row.date_lst_purch),
+    lastKnownArBalanceCents: toCurrencyCents(row.curr_bal),
+    arBalanceAsOf: toIsoString(row.date_last_changed),
+    lastKnownStoreCreditCents: toCurrencyCents(row.cred_slip),
+    storeCreditAsOf: toIsoString(row.date_last_changed),
+    extraFields: buildMirrorExtraFields(row),
+    marketingOptIn: false,
+    active: true,
+    createdAt: dateAdded ?? dateLastChanged ?? new Date(0).toISOString(),
+    updatedAt: dateLastChanged ?? dateAdded ?? new Date(0).toISOString(),
+  };
+}
+
+function toMirrorFamilyMember(row: MirrorFamilyMemberRow): FamilyMember {
+  const accountNumber = normalizeLegacyText(row.account) ?? '';
+  const normalizedCode = normalizeLegacyText(row.code) ?? '';
+  const birthday = toDateOnly(row.birthday);
+  const dateAdded = toIsoString(row.date_added);
+  const dateLastChanged = toIsoString(row.date_last_changed);
+  const { alertFlag, alertMessage, comments } = parseMirrorAlert(row.comment);
+  const parsedName = parseMirrorName(row.name, normalizedCode || accountNumber);
+
+  return {
+    id: `${accountNumber}:${normalizedCode || parsedName.displayName}`,
+    customerId: accountNumber,
+    code: normalizedCode,
+    firstName: parsedName.firstName,
+    lastName: parsedName.lastName,
+    gender: (normalizeLegacyText(row.gender) as FamilyMemberGender | null) ?? null,
+    birthday,
+    comments,
+    alertFlag,
+    alertMessage,
+    extraFields: buildMirrorExtraFields(row),
+    createdAt: dateAdded ?? dateLastChanged ?? new Date(0).toISOString(),
+    updatedAt: dateLastChanged ?? dateAdded ?? new Date(0).toISOString(),
+  };
+}
+
+async function getMirrorCustomerByAccountNumber(accountNumber: string): Promise<Customer | null> {
+  const rows = await prisma.$queryRawUnsafe<MirrorCustomerRow[]>(
+    `${MIRROR_CUSTOMER_SELECT}
+     WHERE account = $1
+     LIMIT 1`,
+    accountNumber,
+  );
+  return rows.length > 0 ? toMirrorCustomer(rows[0]) : null;
+}
+
+async function getMirrorCustomerWithFamily(accountNumber: string): Promise<CustomerWithFamily | null> {
+  const [customer, familyRows] = await Promise.all([
+    getMirrorCustomerByAccountNumber(accountNumber),
+    prisma.$queryRawUnsafe<MirrorFamilyMemberRow[]>(
+      `${MIRROR_FAMILY_SELECT}
+       WHERE account = $1
+       ORDER BY code ASC NULLS LAST, name ASC NULLS LAST`,
+      accountNumber,
+    ),
+  ]);
+
+  if (!customer) return null;
+
+  return {
+    ...customer,
+    familyMembers: familyRows.map(toMirrorFamilyMember),
   };
 }
 
@@ -207,12 +559,14 @@ function jsonFieldForUpdate(
 
 export async function getCustomerById(id: string): Promise<Customer | null> {
   const row = await prisma.customer.findUnique({ where: { id } });
-  return row ? toCustomer(row) : null;
+  if (row) return toCustomer(row);
+  return getMirrorCustomerByAccountNumber(id);
 }
 
 export async function getCustomerByAccountNumber(accountNumber: string): Promise<Customer | null> {
   const row = await prisma.customer.findUnique({ where: { accountNumber } });
-  return row ? toCustomer(row) : null;
+  if (row) return toCustomer(row);
+  return getMirrorCustomerByAccountNumber(accountNumber);
 }
 
 export async function getCustomerWithFamily(id: string): Promise<CustomerWithFamily | null> {
@@ -220,12 +574,15 @@ export async function getCustomerWithFamily(id: string): Promise<CustomerWithFam
     where: { id },
     include: { familyMembers: { orderBy: { code: 'asc' } } },
   });
-  if (!row) return null;
-  const { familyMembers, ...customerRow } = row;
-  return {
-    ...toCustomer(customerRow),
-    familyMembers: familyMembers.map(toFamilyMember),
-  };
+  if (row) {
+    const { familyMembers, ...customerRow } = row;
+    return {
+      ...toCustomer(customerRow),
+      familyMembers: familyMembers.map(toFamilyMember),
+    };
+  }
+
+  return getMirrorCustomerWithFamily(id);
 }
 
 export async function updateCustomer(id: string, input: UpdateCustomerInput): Promise<Customer | null> {
@@ -301,59 +658,68 @@ export async function deleteCustomer(id: string): Promise<{ deleted: boolean; bl
 
 // --- Customer list + search ------------------------------------------------
 
-const SORT_MAP: Record<
-  NonNullable<CustomerListParams['sort']>,
-  keyof Prisma.CustomerOrderByWithRelationInput
-> = {
-  displayName: 'displayName',
-  accountNumber: 'accountNumber',
-  dateAdded: 'dateAdded',
-  dateOfLastPurchase: 'dateOfLastPurchase',
-  ytdSalesCents: 'ytdSalesCents',
-};
-
 export async function listCustomers(
   params: CustomerListParams,
 ): Promise<PaginationEnvelope<Customer>> {
-  const where: Prisma.CustomerWhereInput = {};
-
-  if (params.active !== undefined) where.active = params.active;
-
-  if (params.q) {
-    // Case-insensitive contains — matches SQLite's default LIKE (which is
-    // case-insensitive for ASCII). Six-column OR mirrors the pre-Prisma query.
-    const contains = { contains: params.q, mode: 'insensitive' as const };
-    where.OR = [
-      { accountNumber: contains },
-      { displayName: contains },
-      { firstName: contains },
-      { lastName: contains },
-      { phoneE164: contains },
-      { email: contains },
-    ];
+  if (params.active === false) {
+    return {
+      data: [],
+      pagination: {
+        page: params.page,
+        pageSize: params.pageSize,
+        totalItems: 0,
+        totalPages: 1,
+      },
+    };
   }
 
-  const sortKey = SORT_MAP[params.sort ?? 'displayName'];
-  const sortDir = params.order === 'desc' ? 'desc' : 'asc';
+  const values: unknown[] = [];
+  const where: string[] = [];
+
+  if (params.q && params.q.trim().length > 0) {
+    values.push(`%${params.q.trim()}%`);
+    const i = values.length;
+    where.push(
+      `(COALESCE(account, '') ILIKE $${i} OR ` +
+        `COALESCE(name, '') ILIKE $${i} OR ` +
+        `COALESCE(e_mail, '') ILIKE $${i} OR ` +
+        `COALESCE(city, '') ILIKE $${i} OR ` +
+        `COALESCE(state, '') ILIKE $${i} OR ` +
+        `COALESCE(zip, '') ILIKE $${i})`,
+    );
+  }
+
+  const whereClause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
+  const sortKey = MIRROR_SORT_MAP[params.sort ?? 'displayName'];
+  const sortDir = params.order === 'desc' ? 'DESC' : 'ASC';
   const offset = (params.page - 1) * params.pageSize;
 
   const [totalItems, rows] = await Promise.all([
-    prisma.customer.count({ where }),
-    prisma.customer.findMany({
-      where,
-      orderBy: { [sortKey]: sortDir },
-      take: params.pageSize,
-      skip: offset,
-    }),
+    prisma.$queryRawUnsafe<{ total: bigint }[]>(
+      `SELECT COUNT(*)::bigint AS total
+       FROM rics_mirror.mail_list_names
+       ${whereClause}`,
+      ...values,
+    ),
+    prisma.$queryRawUnsafe<MirrorCustomerRow[]>(
+      `${MIRROR_CUSTOMER_SELECT}
+       ${whereClause}
+       ORDER BY ${sortKey} ${sortDir} NULLS LAST, account ASC NULLS LAST
+       LIMIT $${values.length + 1} OFFSET $${values.length + 2}`,
+      ...values,
+      params.pageSize,
+      offset,
+    ),
   ]);
+  const totalCount = Number(totalItems[0]?.total ?? 0n);
 
   return {
-    data: rows.map(toCustomer),
+    data: rows.map(toMirrorCustomer),
     pagination: {
       page: params.page,
       pageSize: params.pageSize,
-      totalItems,
-      totalPages: Math.max(Math.ceil(totalItems / params.pageSize), 1),
+      totalItems: totalCount,
+      totalPages: Math.max(Math.ceil(totalCount / params.pageSize), 1),
     },
   };
 }
@@ -368,30 +734,68 @@ export async function listCustomers(
 // typeahead-sized N (10–50) this is trivial work.
 export async function searchCustomers(q: string, limit = 10): Promise<Customer[]> {
   const contains = { contains: q, mode: 'insensitive' as const };
-  const rows = await prisma.customer.findMany({
-    where: {
-      active: true,
-      OR: [
-        { accountNumber: contains },
-        { displayName: contains },
-        { firstName: contains },
-        { lastName: contains },
-        { phoneE164: contains },
-        { email: contains },
-      ],
-    },
-    orderBy: { displayName: 'asc' },
-    take: limit * 3,
-  });
+  const [appRows, mirrorRows] = await Promise.all([
+    prisma.customer.findMany({
+      where: {
+        active: true,
+        OR: [
+          { accountNumber: contains },
+          { displayName: contains },
+          { firstName: contains },
+          { lastName: contains },
+          { phoneE164: contains },
+          { email: contains },
+        ],
+      },
+      orderBy: { displayName: 'asc' },
+      take: limit * 3,
+    }),
+    prisma.$queryRawUnsafe<MirrorCustomerRow[]>(
+      `${MIRROR_CUSTOMER_SELECT}
+       WHERE COALESCE(account, '') ILIKE $1
+          OR COALESCE(name, '') ILIKE $1
+          OR COALESCE(e_mail, '') ILIKE $1
+          OR COALESCE(city, '') ILIKE $1
+          OR COALESCE(state, '') ILIKE $1
+       ORDER BY
+         CASE
+           WHEN account = $2 THEN 0
+           WHEN LOWER(COALESCE(name, '')) = LOWER($2) THEN 1
+           ELSE 2
+         END,
+         LOWER(COALESCE(name, '')) ASC,
+         account ASC NULLS LAST
+       LIMIT $3`,
+      `%${q}%`,
+      q,
+      limit * 3,
+    ),
+  ]);
 
-  const ranked = rows
-    .map((r) => ({
-      row: r,
-      rank: r.accountNumber === q ? 0 : r.phoneE164 === q ? 1 : 2,
+  const deduped = new Map<string, Customer>();
+  for (const customer of [...appRows.map(toCustomer), ...mirrorRows.map(toMirrorCustomer)]) {
+    const key = customer.accountNumber || customer.id;
+    if (!deduped.has(key)) deduped.set(key, customer);
+  }
+
+  return [...deduped.values()]
+    .map((customer) => ({
+      customer,
+      rank:
+        customer.accountNumber === q
+          ? 0
+          : customer.phoneE164 === q || customer.email === q
+            ? 1
+            : 2,
     }))
-    .sort((a, b) => a.rank - b.rank || a.row.displayName.localeCompare(b.row.displayName));
-
-  return ranked.slice(0, limit).map(({ row }) => toCustomer(row));
+    .sort(
+      (a, b) =>
+        a.rank - b.rank ||
+        a.customer.displayName.localeCompare(b.customer.displayName) ||
+        a.customer.accountNumber.localeCompare(b.customer.accountNumber),
+    )
+    .slice(0, limit)
+    .map(({ customer }) => customer);
 }
 
 // --- Balance projections ---------------------------------------------------
@@ -417,11 +821,25 @@ export async function getCustomerBalances(id: string): Promise<{
 // --- Family members --------------------------------------------------------
 
 export async function listFamilyMembers(customerId: string): Promise<FamilyMember[]> {
-  const rows = await prisma.familyMember.findMany({
-    where: { customerId },
-    orderBy: { code: 'asc' },
+  const customer = await prisma.customer.findUnique({
+    where: { id: customerId },
+    select: { id: true },
   });
-  return rows.map(toFamilyMember);
+  if (customer) {
+    const rows = await prisma.familyMember.findMany({
+      where: { customerId },
+      orderBy: { code: 'asc' },
+    });
+    return rows.map(toFamilyMember);
+  }
+
+  const rows = await prisma.$queryRawUnsafe<MirrorFamilyMemberRow[]>(
+    `${MIRROR_FAMILY_SELECT}
+     WHERE account = $1
+     ORDER BY code ASC NULLS LAST, name ASC NULLS LAST`,
+    customerId,
+  );
+  return rows.map(toMirrorFamilyMember);
 }
 
 export async function getFamilyMember(id: string): Promise<FamilyMember | null> {
@@ -522,3 +940,4 @@ function cryptoShortId(): string {
   const { randomUUID } = require('node:crypto') as typeof import('node:crypto');
   return randomUUID().slice(0, 15);
 }
+

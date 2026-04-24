@@ -1,9 +1,8 @@
 import { v4 as uuidv4 } from 'uuid';
+import { prisma } from '../db/prisma';
 import { getDb } from '../db/database';
 import {
   Adjustment,
-  AdjustmentRow,
-  AdjustmentLineRow,
   AdjustmentLineItem,
   AdjustmentListParams,
   CreateAdjustmentInput,
@@ -11,8 +10,7 @@ import {
   LocationRow,
 } from '../models/adjustment';
 import { PaginationEnvelope } from '../models/sku';
-
-// ── Locations ───────────────────────────────────────────────────────
+import { applyInventoryDelta, ensureSkuMirroredToPostgres } from './postgresInventoryLedger';
 
 export function listLocations(): Location[] {
   const db = getDb();
@@ -20,116 +18,106 @@ export function listLocations(): Location[] {
   return rows.map((r) => ({ id: r.id, name: r.name }));
 }
 
-// ── Adjustments ─────────────────────────────────────────────────────
-
-function enrichLineItems(adjustmentId: string): AdjustmentLineItem[] {
+function getLocationName(id: string | null | undefined): string | null {
+  if (!id) return null;
   const db = getDb();
-  const rows = db.prepare(`
-    SELECT al.sku_id, al.quantity, s.sku_code, s.style
-    FROM inventory_adjustment_lines al
-    JOIN skus s ON s.id = al.sku_id
-    WHERE al.adjustment_id = ?
-    ORDER BY al.created_at ASC
-  `).all(adjustmentId) as unknown as { sku_id: string; quantity: number; sku_code: string; style: string }[];
-
-  return rows.map((r) => ({
-    skuId: r.sku_id,
-    skuCode: r.sku_code,
-    brand: r.style,
-    quantity: r.quantity,
-  }));
+  const row = db.prepare('SELECT name FROM inventory_locations WHERE id = ?').get(id) as { name: string } | undefined;
+  return row?.name ?? null;
 }
 
-function rowToAdjustment(row: AdjustmentRow, lineItems: AdjustmentLineItem[]): Adjustment {
-  const db = getDb();
-  let fromLocationName: string | null = null;
-  let toLocationName: string | null = null;
-
-  if (row.from_location_id) {
-    const loc = db.prepare('SELECT name FROM inventory_locations WHERE id = ?').get(row.from_location_id) as unknown as { name: string } | undefined;
-    fromLocationName = loc?.name ?? null;
-  }
-  if (row.to_location_id) {
-    const loc = db.prepare('SELECT name FROM inventory_locations WHERE id = ?').get(row.to_location_id) as unknown as { name: string } | undefined;
-    toLocationName = loc?.name ?? null;
-  }
-
+function rowToAdjustment(
+  row: {
+    id: string;
+    type: string;
+    fromLocationId: string | null;
+    toLocationId: string | null;
+    reason: string | null;
+    createdBy: string;
+    createdAt: Date;
+  },
+  lineItems: AdjustmentLineItem[],
+): Adjustment {
   return {
     id: row.id,
-    type: row.type,
-    fromLocationId: row.from_location_id,
-    fromLocationName,
-    toLocationId: row.to_location_id,
-    toLocationName,
+    type: row.type as Adjustment['type'],
+    fromLocationId: row.fromLocationId,
+    fromLocationName: getLocationName(row.fromLocationId),
+    toLocationId: row.toLocationId,
+    toLocationName: getLocationName(row.toLocationId),
     reason: row.reason,
     lineItems,
-    createdBy: row.created_by,
-    createdAt: row.created_at,
+    createdBy: row.createdBy,
+    createdAt: row.createdAt.toISOString(),
   };
 }
 
-const ADJUSTMENT_SORT_MAP: Record<string, string> = {
-  type: 'a.type',
-  createdAt: 'a.created_at',
-};
-
-export function listAdjustments(params: AdjustmentListParams): PaginationEnvelope<Adjustment> {
-  const db = getDb();
-
-  const conditions: string[] = [];
-  const values: (string | number)[] = [];
-
-  if (params.type) {
-    conditions.push('a.type = ?');
-    values.push(params.type);
-  }
-  if (params.fromDate) {
-    conditions.push('a.created_at >= ?');
-    values.push(params.fromDate);
-  }
-  if (params.toDate) {
-    conditions.push('a.created_at <= ?');
-    values.push(params.toDate);
-  }
-
-  const where = conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : '';
-
-  const countRow = db.prepare(`SELECT COUNT(*) as total FROM inventory_adjustments a ${where}`).get(...values) as unknown as { total: number };
-  const totalItems = countRow.total;
-  const totalPages = Math.ceil(totalItems / params.pageSize) || 1;
-  const offset = (params.page - 1) * params.pageSize;
-
-  const sortCol = ADJUSTMENT_SORT_MAP[params.sort ?? 'createdAt'] || 'a.created_at';
-  const sortDir = params.order === 'desc' ? 'DESC' : 'ASC';
-
-  const rows = db.prepare(
-    `SELECT * FROM inventory_adjustments a ${where} ORDER BY ${sortCol} ${sortDir} LIMIT ? OFFSET ?`
-  ).all(...values, params.pageSize, offset) as unknown as AdjustmentRow[];
-
-  const data = rows.map((row) => {
-    const lineItems = enrichLineItems(row.id);
-    return rowToAdjustment(row, lineItems);
+async function enrichLineItems(adjustmentId: string): Promise<AdjustmentLineItem[]> {
+  const rows = await prisma.inventoryAdjustmentLine.findMany({
+    where: { adjustmentId },
+    include: {
+      sku: {
+        select: {
+          id: true,
+          code: true,
+          style: true,
+        },
+      },
+    },
+    orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
   });
 
+  return rows.map((row) => ({
+    skuId: row.skuId,
+    skuCode: row.sku.code ?? undefined,
+    brand: row.sku.style ?? undefined,
+    quantity: row.quantity,
+  }));
+}
+
+export async function listAdjustments(params: AdjustmentListParams): Promise<PaginationEnvelope<Adjustment>> {
+  const where: {
+    type?: string;
+    createdAt?: { gte?: Date; lte?: Date };
+  } = {};
+
+  if (params.type) where.type = params.type;
+  if (params.fromDate || params.toDate) {
+    where.createdAt = {};
+    if (params.fromDate) where.createdAt.gte = new Date(params.fromDate);
+    if (params.toDate) where.createdAt.lte = new Date(params.toDate);
+  }
+
+  const totalItems = await prisma.inventoryAdjustment.count({ where });
+  const totalPages = Math.ceil(totalItems / params.pageSize) || 1;
+  const offset = (params.page - 1) * params.pageSize;
+  const sortField = params.sort === 'type' ? 'type' : 'createdAt';
+  const sortDir = params.order === 'asc' ? 'asc' : 'desc';
+
+  const rows = await prisma.inventoryAdjustment.findMany({
+    where,
+    orderBy: [{ [sortField]: sortDir }, { id: sortDir }],
+    skip: offset,
+    take: params.pageSize,
+  });
+
+  const data = await Promise.all(rows.map(async (row) => rowToAdjustment(row, await enrichLineItems(row.id))));
   return {
     data,
     pagination: { page: params.page, pageSize: params.pageSize, totalItems, totalPages },
   };
 }
 
-export function getAdjustmentById(id: string): Adjustment | null {
-  const db = getDb();
-  const row = db.prepare('SELECT * FROM inventory_adjustments WHERE id = ?').get(id) as unknown as AdjustmentRow | undefined;
+export async function getAdjustmentById(id: string): Promise<Adjustment | null> {
+  const row = await prisma.inventoryAdjustment.findUnique({ where: { id } });
   if (!row) return null;
-
-  const lineItems = enrichLineItems(row.id);
-  return rowToAdjustment(row, lineItems);
+  return rowToAdjustment(row, await enrichLineItems(row.id));
 }
 
-export function createAdjustment(input: CreateAdjustmentInput): Adjustment | { error: string; code: string; status: number } {
+export async function createAdjustment(
+  input: CreateAdjustmentInput,
+): Promise<Adjustment | { error: string; code: string; status: number }> {
   const db = getDb();
 
-  // Validate locations exist
   if (input.fromLocationId) {
     const loc = db.prepare('SELECT id FROM inventory_locations WHERE id = ?').get(input.fromLocationId);
     if (!loc) return { error: 'From location not found', code: 'LOCATION_NOT_FOUND', status: 404 };
@@ -139,20 +127,20 @@ export function createAdjustment(input: CreateAdjustmentInput): Adjustment | { e
     if (!loc) return { error: 'To location not found', code: 'LOCATION_NOT_FOUND', status: 404 };
   }
 
-  // Validate all SKUs exist
   for (const li of input.lineItems) {
-    const sku = db.prepare('SELECT id FROM skus WHERE id = ?').get(li.skuId);
-    if (!sku) return { error: `SKU not found: ${li.skuId}`, code: 'SKU_NOT_FOUND', status: 404 };
+    const mirrored = await ensureSkuMirroredToPostgres(li.skuId);
+    if (!mirrored) return { error: `SKU not found: ${li.skuId}`, code: 'SKU_NOT_FOUND', status: 404 };
   }
 
-  // For negative adjustments (DAMAGE, SHRINKAGE), check stock availability
-  const negativeTxTypes: string[] = ['DAMAGE', 'SHRINKAGE'];
-  if (negativeTxTypes.includes(input.type)) {
+  const negativeTxTypes = new Set(['DAMAGE', 'SHRINKAGE']);
+  if (negativeTxTypes.has(input.type)) {
     for (const li of input.lineItems) {
-      const inv = db.prepare('SELECT quantity_on_hand FROM inventory WHERE sku_id = ?').get(li.skuId) as unknown as { quantity_on_hand: number } | undefined;
-      const onHand = inv?.quantity_on_hand ?? 0;
-      const absQty = Math.abs(li.quantity);
-      if (absQty > onHand) {
+      const inv = await prisma.inventory.findFirst({
+        where: { skuId: li.skuId, skuSizeId: null },
+        select: { quantityOnHand: true },
+      });
+      const onHand = inv?.quantityOnHand ?? 0;
+      if (Math.abs(li.quantity) > onHand) {
         return { error: `Stock would go below zero for SKU ${li.skuId}`, code: 'INSUFFICIENT_STOCK', status: 409 };
       }
     }
@@ -161,36 +149,36 @@ export function createAdjustment(input: CreateAdjustmentInput): Adjustment | { e
   const adjustmentId = uuidv4();
   const createdBy = input.createdBy ?? 'system';
 
-  db.exec('BEGIN TRANSACTION');
-  try {
-    db.prepare(
-      'INSERT INTO inventory_adjustments (id, type, from_location_id, to_location_id, reason, created_by) VALUES (?, ?, ?, ?, ?, ?)'
-    ).run(adjustmentId, input.type, input.fromLocationId ?? null, input.toLocationId ?? null, input.reason ?? null, createdBy);
-
-    const lineStmt = db.prepare(
-      'INSERT INTO inventory_adjustment_lines (id, adjustment_id, sku_id, quantity) VALUES (?, ?, ?, ?)'
-    );
+  await prisma.$transaction(async (tx) => {
+    await tx.inventoryAdjustment.create({
+      data: {
+        id: adjustmentId,
+        type: input.type,
+        fromLocationId: input.fromLocationId ?? null,
+        toLocationId: input.toLocationId ?? null,
+        reason: input.reason ?? null,
+        createdBy,
+      },
+    });
 
     for (const li of input.lineItems) {
-      lineStmt.run(uuidv4(), adjustmentId, li.skuId, li.quantity);
+      await tx.inventoryAdjustmentLine.create({
+        data: {
+          id: uuidv4(),
+          adjustmentId,
+          skuId: li.skuId,
+          quantity: li.quantity,
+        },
+      });
 
-      // Apply the stock change to inventory
-      const inv = db.prepare('SELECT id FROM inventory WHERE sku_id = ?').get(li.skuId) as unknown as { id: string } | undefined;
-      if (inv) {
-        db.prepare("UPDATE inventory SET quantity_on_hand = quantity_on_hand + ?, updated_at = datetime('now') WHERE sku_id = ?").run(li.quantity, li.skuId);
-      }
-
-      // Also write to the existing audit log for traceability
-      db.prepare(
-        'INSERT INTO inventory_audit_log (id, sku_id, adjustment, reason, resulting_balance, performed_by) VALUES (?, ?, ?, ?, (SELECT quantity_on_hand FROM inventory WHERE sku_id = ?), ?)'
-      ).run(uuidv4(), li.skuId, li.quantity, `[${input.type}] ${input.reason ?? ''}`.trim(), li.skuId, createdBy);
+      await applyInventoryDelta({
+        skuId: li.skuId,
+        quantityDelta: li.quantity,
+        reason: `[${input.type}] ${input.reason ?? ''}`.trim(),
+        performedBy: createdBy,
+      }, tx);
     }
+  });
 
-    db.exec('COMMIT');
-  } catch (err) {
-    db.exec('ROLLBACK');
-    throw err;
-  }
-
-  return getAdjustmentById(adjustmentId)!;
+  return (await getAdjustmentById(adjustmentId))!;
 }

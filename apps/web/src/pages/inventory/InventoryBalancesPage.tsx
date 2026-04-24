@@ -214,9 +214,9 @@ export default function InventoryBalancesPage() {
                 </Button>
                 <Button
                   icon={<InboxOutlined />}
-                  onClick={() => navigate('/inventory/adjustments/new?type=RECEIPT')}
+                  onClick={() => navigate('/inventory/manual-receipts/new')}
                 >
-                  Receive Transfer
+                  Enter Manual Receipt
                 </Button>
                 <Button type="link" onClick={() => navigate('/inventory/adjustments')}>
                   Movement Ledger

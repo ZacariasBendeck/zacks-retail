@@ -1,18 +1,18 @@
 import { render, screen, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { MemoryRouter } from 'react-router-dom';
-import { describe, expect, it, vi } from 'vitest';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router-dom';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../../../hooks/useRicsInventory', () => ({
-  useChangeDetail: vi.fn(() => ({
+const { useChangeDetailMock } = vi.hoisted(() => ({
+  useChangeDetailMock: vi.fn(() => ({
     data: {
       rows: [
-        // Store 21 — one PO Receipt split across two sizes + one Transfer In
+        // Store 21 - one PO Receipt split across two sizes + one Transfer In
         { sku: 'ZN02-NDPT', origSku: null, store: 21, changeType: 'POR', date: '2026-04-10T00:00:00', rowLabel: 'S', columnLabel: 'BK', purchaseOrder: 'KS202309001', otherStore: null, quantity: 6, cost: 150, rmaNumber: null },
         { sku: 'ZN02-NDPT', origSku: null, store: 21, changeType: 'POR', date: '2026-04-10T00:00:00', rowLabel: 'M', columnLabel: 'BK', purchaseOrder: 'KS202309001', otherStore: null, quantity: 6, cost: 150, rmaNumber: null },
         { sku: 'ZN02-NDPT', origSku: null, store: 21, changeType: 'TIN', date: '2026-04-15T00:00:00', rowLabel: 'S', columnLabel: 'BK', purchaseOrder: null, otherStore: 99, quantity: 9, cost: 150, rmaNumber: null },
-        // Store 24 — one Transfer Out
+        // Store 24 - one Transfer Out
         { sku: 'ZN02-NDPT', origSku: null, store: 24, changeType: 'TOU', date: '2026-04-11T00:00:00', rowLabel: 'S', columnLabel: 'BK', purchaseOrder: null, otherStore: 99, quantity: -3, cost: 150, rmaNumber: null },
       ],
       total: 4,
@@ -23,8 +23,12 @@ vi.mock('../../../../hooks/useRicsInventory', () => ({
   })),
 }));
 
-import { DetailTab } from './DetailTab';
+vi.mock('../../../../hooks/useRicsInventory', () => ({
+  useChangeDetail: useChangeDetailMock,
+}));
+
 import { __test } from '../../../../components/SkuChangeLedger';
+import { DetailTab } from './DetailTab';
 
 const { buildLedgerRows, collapseBySize, buildComment } = __test;
 
@@ -33,18 +37,22 @@ function renderTab() {
   return render(
     <MemoryRouter>
       <QueryClientProvider client={client}>
-        <DetailTab skuCode="ZN02-NDPT" description="Test Shoe" />
+        <DetailTab skuCode="ZN02-NDPT" description="Test Shoe" storeId={21} />
       </QueryClientProvider>
     </MemoryRouter>,
   );
 }
+
+beforeEach(() => {
+  useChangeDetailMock.mockClear();
+});
 
 describe('DetailTab', () => {
   it('renders header summary with SKU, description, grand total, movement count', () => {
     renderTab();
     expect(screen.getByText('ZN02-NDPT')).toBeInTheDocument();
     expect(screen.getByText('Test Shoe')).toBeInTheDocument();
-    // 6 + 6 + 9 − 3 = 18 (size-detail OFF collapses sizes, but grand total is the same)
+    // 6 + 6 + 9 - 3 = 18 (size-detail OFF collapses sizes, but grand total is the same)
     expect(screen.getByText('Grand Total').parentElement).toHaveTextContent('18');
   });
 
@@ -55,9 +63,9 @@ describe('DetailTab', () => {
     expect(screen.getByText('*** Grand Total ***')).toBeInTheDocument();
   });
 
-  it('collapses per-size rows when Show Size Detail is OFF (default)', () => {
+  it('collapses per-size rows when Show Size Detail is OFF by default', () => {
     renderTab();
-    // Two raw PO receipt rows (S and M sizes) collapse into one — KS202309001 appears once.
+    // Two raw PO receipt rows (S and M sizes) collapse into one, so the PO shows once.
     const poCells = screen.getAllByText(/KS202309001/);
     expect(poCells).toHaveLength(1);
   });
@@ -66,7 +74,6 @@ describe('DetailTab', () => {
     const user = userEvent.setup();
     renderTab();
     await user.click(screen.getByLabelText('Show Size Detail'));
-    // Now the PO# appears twice (one per size row).
     const poCells = screen.getAllByText(/KS202309001/);
     expect(poCells).toHaveLength(2);
   });
@@ -74,7 +81,28 @@ describe('DetailTab', () => {
   it('links to the standalone page', () => {
     renderTab();
     const link = screen.getByRole('link', { name: /open in full page/i });
-    expect(link).toHaveAttribute('href', '/inventory/change-detail/ZN02-NDPT');
+    expect(link).toHaveAttribute('href', '/inventory/change-detail/ZN02-NDPT?storeId=21');
+  });
+
+  it('scopes the embedded ledger to the inquiry store until Show All Stores is enabled', async () => {
+    const user = userEvent.setup();
+    renderTab();
+
+    expect(useChangeDetailMock).toHaveBeenLastCalledWith({
+      sku: 'ZN02-NDPT',
+      limit: 1000,
+      includeSales: false,
+      store: 21,
+    });
+
+    await user.click(screen.getByLabelText('Show All Stores'));
+
+    expect(useChangeDetailMock).toHaveBeenLastCalledWith({
+      sku: 'ZN02-NDPT',
+      limit: 1000,
+      includeSales: false,
+      store: undefined,
+    });
   });
 });
 
@@ -101,11 +129,10 @@ describe('SkuChangeLedger helpers', () => {
 
   it('collapseBySize sums quantities and weight-averages cost per document', () => {
     const collapsed = collapseBySize(rows);
-    // Two same-doc PO rows collapse to one; the TOU stays.
     expect(collapsed).toHaveLength(2);
     const por = collapsed.find((r) => r.changeType === 'POR');
     expect(por?.quantity).toBe(6);
-    // weighted avg cost: (100*4 + 110*2) / 6 ≈ 103.33
+    // Weighted average cost: (100*4 + 110*2) / 6 ~= 103.33
     expect(por?.cost).toBeCloseTo(103.33, 1);
   });
 
@@ -115,7 +142,14 @@ describe('SkuChangeLedger helpers', () => {
     expect(kinds.filter((k) => k === 'subtotal')).toHaveLength(2);
     expect(kinds.filter((k) => k === 'grand')).toHaveLength(1);
     const last = ledger[ledger.length - 1];
-    expect(last?.quantity).toBe(5); // 6 − 1
+    expect(last?.quantity).toBe(5); // 6 - 1
+  });
+
+  it('buildLedgerRows orders data rows by most recent first before summary rows', () => {
+    const ledger = buildLedgerRows(rows, false);
+    const dataRows = ledger.filter((r) => r.kind === 'data');
+    expect(dataRows[0]?.date).toBe('2026-04-02T00:00:00');
+    expect(dataRows[1]?.date).toBe('2026-04-01T00:00:00');
   });
 
   it('buildComment formats To / From / PO / RMA cues RICS-style', () => {
@@ -125,6 +159,5 @@ describe('SkuChangeLedger helpers', () => {
   });
 });
 
-// Keep the type checker happy about the `within` helper not being used elsewhere
-// (kept in imports for future multi-row assertions).
+// Keep the type checker happy about the `within` helper not being used elsewhere.
 void within;

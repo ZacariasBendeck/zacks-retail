@@ -28,6 +28,7 @@ Argument: `$ARGUMENTS` — module slug (required).
   - `app` — reserved for future module-owned additive tables.
   - `platform` — cross-cutting admin (`etl_run`, `etl_run_table`, future platform tables).
   - SQLite — legacy. Do not propose new tables here; migrate existing ones into Postgres over time.
+- **Authority rule:** if the module already has an app-owned authoritative table for a surface, say explicitly that request handlers read that table only. `rics_mirror` can still appear in the schema doc as ETL/bootstrap input, but not as the live request-path authority for that surface.
 - **Postgres types, not Prisma generics:**
   - Money: `NUMERIC(12,2)` — never `FLOAT` / `REAL`.
   - Timestamps: `TIMESTAMPTZ` — never naive `TIMESTAMP`.

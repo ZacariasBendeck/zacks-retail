@@ -143,7 +143,7 @@ export function listOtbPlanRows(params: ListParams): ListResult {
   const offset = (params.page - 1) * params.pageSize;
   const rows = db.prepare(
     `SELECT * FROM otb_plan_rows ${whereClause} ORDER BY store_id ASC, category_id ASC, fiscal_year DESC LIMIT ? OFFSET ?`
-  ).all(...values, params.pageSize, offset) as OtbPlanRowDbRow[];
+  ).all(...values, params.pageSize, offset) as unknown as OtbPlanRowDbRow[];
 
   return { items: rows.map(rowToOtbPlanRow), total, page: params.page, pageSize: params.pageSize };
 }
@@ -319,6 +319,6 @@ export function getOtbPlanRowAudit(otbPlanRowId: string): OtbPlanRowAudit[] {
   const db = getDb();
   const rows = db.prepare(
     'SELECT * FROM otb_plan_row_audit WHERE otb_plan_row_id = ? ORDER BY created_at DESC'
-  ).all(otbPlanRowId) as OtbPlanRowAuditDbRow[];
+  ).all(otbPlanRowId) as unknown as OtbPlanRowAuditDbRow[];
   return rows.map(rowToOtbPlanRowAudit);
 }

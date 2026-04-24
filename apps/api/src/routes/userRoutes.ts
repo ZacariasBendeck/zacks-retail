@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient } from '../prismaClient';
 import { createUser, updateUser, deleteUser } from '../services/employees/userService';
 import { requirePermission } from '../middleware/authMiddleware';
 import { PERMISSIONS } from '../services/employees/permissions';
@@ -122,3 +122,5 @@ export function createUserRoutes(prisma: PrismaClient): Router {
 
   return router;
 }
+
+

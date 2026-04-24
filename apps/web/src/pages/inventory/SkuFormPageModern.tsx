@@ -1,10 +1,10 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import { App, Form, Spin } from 'antd'
+import { useMutation } from '@tanstack/react-query'
 import {
   useAnalyzeImage,
   useReferenceData,
-  useLookupSku,
   useAutocompleteSkus,
   useStyleColors,
 } from '../../hooks/useSkus'
@@ -23,11 +23,13 @@ import {
   useCreateSkuDraft,
   useUpdateSkuDraft,
   useFinalizeSkuDraft,
+  fetchSkuDraftByCode,
 } from '../../hooks/useSkuDrafts'
 import type { SkuLifecycleRow, CreateDraftInput } from '../../types/skuLifecycle'
 import { productsAttributesApi } from '../../services/productsAttributesApi'
 import { useSkuAttributes } from '../../hooks/useProductsAttributes'
 import { VendorLookup } from '../../components/vendor-lookup'
+import { SkuLookup } from '../../components/sku-lookup'
 import { useProductFamilies } from '../../hooks/useProductFamilies'
 import { useAllPostgresCategories, type PostgresCategory } from '../../hooks/useProductCategories'
 import type {
@@ -259,7 +261,17 @@ export default function SkuFormPageModern() {
   const isActive = skuState === 'ACTIVE'
 
   const analyzeMutation = useAnalyzeImage()
-  const lookupMutation = useLookupSku()
+  // Lookup by final code via the lifecycle API (/sku-drafts/by-code/:code).
+  // Covers both app-created SKUs and every RICS-mirrored SKU — the SQLite
+  // `/api/v1/skus/lookup` endpoint used by the legacy form only sees SQLite
+  // rows, which is why SKUs picked from the Postgres-backed lookup modal
+  // wouldn't autofill.
+  const lookupMutation = useMutation({
+    mutationFn: async (code: string): Promise<import('../../types/sku').Sku | null> => {
+      const lifecycle = await fetchSkuDraftByCode(code)
+      return lifecycle ? lifecycleToLegacySku(lifecycle) : null
+    },
+  })
   const [imagePreview, setImagePreview] = useState<string | null>(null)
   const [analysisResult, setAnalysisResult] = useState<EnhancedAnalysisResult | null>(null)
   const [aiFilledFields, setAiFilledFields] = useState<Set<string>>(new Set())
@@ -274,6 +286,7 @@ export default function SkuFormPageModern() {
   const [derivedFamilyCode, setDerivedFamilyCode] = useState<string | null>(null)
   const [derivedDepartmentLabel, setDerivedDepartmentLabel] = useState<string | null>(null)
   const [vendorLookupOpen, setVendorLookupOpen] = useState(false)
+  const [skuLookupOpen, setSkuLookupOpen] = useState(false)
   const [matchedSku, setMatchedSku] = useState<import('../../types/sku').Sku | null>(null)
   const isEdit = isRouteEdit || !!matchedSku
 
@@ -878,6 +891,17 @@ export default function SkuFormPageModern() {
           initialQuery={(form.getFieldValue('vendorId') as string | undefined) ?? ''}
         />
 
+        <SkuLookup
+          open={skuLookupOpen}
+          onClose={() => setSkuLookupOpen(false)}
+          onSelect={(picked) => {
+            form.setFieldsValue({ skuCode: picked.skuCode })
+            setSkuLookupOpen(false)
+            void handleSkuCodeLookup(picked.skuCode)
+          }}
+          initialQuery={(form.getFieldValue('skuCode') as string | undefined) ?? ''}
+        />
+
         <SkuCodeStrip
           isRouteEdit={isRouteEdit}
           isDraft={isDraft}
@@ -899,6 +923,7 @@ export default function SkuFormPageModern() {
             const code = form.getFieldValue('skuCode')
             if (code) handleSkuCodeLookup(code)
           }}
+          onOpenSkuLookup={() => setSkuLookupOpen(true)}
         />
 
         {/* AI analysis alerts live just above the Identity section so they sit

@@ -1,4 +1,4 @@
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient } from '../../prismaClient';
 import { NextFunction, Request, Response, Router } from 'express';
 import { requireAuth } from '../../middleware/authMiddleware';
 import { PERMISSIONS } from '../../services/employees/permissions';
@@ -135,3 +135,5 @@ export function createReportTemplatesRoutes(prisma: PrismaClient): Router {
 
   return router;
 }
+
+

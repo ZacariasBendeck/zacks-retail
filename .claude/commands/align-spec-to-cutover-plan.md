@@ -72,7 +72,8 @@ During Development Against RICS Mirror:
 
 - RICS is the source of truth
 - `rics_mirror` is read-only imported source data
-- Zack's Retail may read from `rics_mirror`
+- Zack's Retail may read from `rics_mirror` only for surfaces that do not yet have an app-owned authoritative table
+- Once a surface has an app-owned authoritative table, request handlers read only from that app-owned table
 - Zack's Retail may write only app-side draft/workflow/configuration data
 - Do not write to `rics_mirror`
 - Do not write back to MDB/RICS

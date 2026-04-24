@@ -82,6 +82,8 @@ Every command lives in [`.claude/commands/`](./.claude/commands/). Each is a mar
 
 **Flipping a module from OLEDB reads to `rics_mirror` reads** (future work — no command for this yet; describe the module to plain Claude, reference [`docs/operations/rics-mirror-sync.md`](./docs/operations/rics-mirror-sync.md)).
 
+**Flipping a surface from `rics_mirror` reads to an app-owned authoritative table** (same workflow surface — describe the module/surface to plain Claude, cite the module spec and [`docs/operations/rics-mirror-sync.md`](./docs/operations/rics-mirror-sync.md)). This is now the required next step once the authoritative app table exists: request handlers read only from the app-owned table; `rics_mirror` remains ETL/bootstrap input only for that surface.
+
 ---
 
 ## Daily reminders
@@ -92,6 +94,7 @@ Every command lives in [`.claude/commands/`](./.claude/commands/). Each is a mar
 - **Watch for verification evidence.** If Claude claims "done" without showing a test run or dev-server output, push back.
 - **Commit to `master` directly.** No branches, no worktrees, no PRs on this project.
 - **Don't touch `rics_mirror` by hand.** It's rebuilt on every `sync:rics`. Operator data goes in `public` / `app`. Full rules: [`docs/operations/rics-mirror-sync.md`](./docs/operations/rics-mirror-sync.md).
+- **Once a surface has an app-owned authoritative table, stop reading it from `rics_mirror` in request handlers.** At that point `rics_mirror` is ETL/bootstrap-only for that surface.
 
 ---
 
