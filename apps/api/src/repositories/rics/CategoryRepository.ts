@@ -1,21 +1,20 @@
 /**
- * Category repository — RICATEG.MDB / `Categories`.
+ * Category repository — read from `rics_mirror.categories`, do not write on the
+ * request path during Development Against RICS Mirror.
  *
- * Schema:
- *   Number SMALLINT | Desc WCHAR | DateLastChanged DATE
+ * RICS p. 145 — categories are 1..999, 16-char description, required on every
+ * SKU. The department is resolved separately via the Departments range lookup
+ * (`BegCateg <= Category.Number <= EndCateg`), NOT via a FK.
  *
- * RICS p. 145 — categories are 1..999, 16-char description, required on
- * every SKU. The department is resolved separately via the Departments
- * range lookup (`BegCateg <= Category.Number <= EndCateg`), NOT via a FK.
+ * The 2026-04 products Phase-A design moved taxonomy reads to `rics_mirror.*`
+ * and postponed writes unless an app-side overlay is built. Category overlay
+ * work has not landed yet, so create/update/delete must fail clearly instead
+ * of trying to open `RICATEG.MDB` on the Render server.
  */
 
-import {
-  executeQuery,
-  executeNonQuery,
-  type AccessParam,
-} from '../../services/accessOleDb';
+import { prisma } from '../../db/prisma';
 import { Err, Ok, type Result, type RepoError } from './repoResult';
-import { openRicsDb, RicsDb, toRepoError, trimString } from './ricsAccess';
+import { trimString } from './ricsAccess';
 
 export interface Category {
   number: number;
@@ -30,48 +29,47 @@ export interface CategoryInput {
 }
 
 interface CategoryRow {
-  Number: number;
-  Desc: string | null;
-  DateLastChanged: string | null;
+  number: number;
+  desc: string | null;
+  date_last_changed: Date | string | null;
 }
 
-function parseAccessDate(value: string | null): Date | null {
+function parseMirrorDate(value: Date | string | null): Date | null {
   if (!value) return null;
-  const m = typeof value === 'string' ? value.match(/\/Date\((-?\d+)\)\//) : null;
-  if (m) return new Date(Number(m[1]));
-  const parsed = new Date(value as unknown as string);
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value;
+  }
+  const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
 function mapRow(row: CategoryRow): Category {
   return {
-    number: Number(row.Number),
-    description: trimString(row.Desc) ?? '',
-    dateLastChanged: parseAccessDate(row.DateLastChanged),
+    number: Number(row.number),
+    description: trimString(row.desc) ?? '',
+    dateLastChanged: parseMirrorDate(row.date_last_changed),
     skuCount: 0,
   };
 }
 
 /**
- * Returns a map of category number → SKU count from InventoryMaster.[Category].
- * Errors collapse to an empty map so a transient Access failure leaves counts
- * at 0 rather than hiding the categories list.
+ * Returns a map of category number -> SKU count from
+ * `rics_mirror.inventory_master.category`. Errors collapse to an empty map so a
+ * transient mirror failure leaves counts at 0 rather than hiding the list.
  */
 async function loadSkuCountsByCategory(): Promise<Map<number, number>> {
   const out = new Map<number, number>();
   try {
-    const { path, password } = openRicsDb(RicsDb.InventoryMaster);
-    const rows = await executeQuery<{ Category: number | null; N: number }>(
-      path,
-      password,
-      `SELECT [Category], COUNT(*) AS N FROM [InventoryMaster]
-         WHERE [Category] IS NOT NULL
-         GROUP BY [Category]`,
+    const rows = await prisma.$queryRawUnsafe<{ category: number | null; n: bigint | number }[]>(
+      `SELECT category, COUNT(*) AS n
+         FROM rics_mirror.inventory_master
+        WHERE category IS NOT NULL
+        GROUP BY category`,
     );
     for (const r of rows) {
-      const cat = Number(r.Category);
+      const cat = Number(r.category);
       if (!Number.isFinite(cat)) continue;
-      out.set(cat, Number(r.N ?? 0));
+      out.set(cat, Number(r.n ?? 0));
     }
   } catch {
     // leave counts at 0
@@ -81,7 +79,10 @@ async function loadSkuCountsByCategory(): Promise<Map<number, number>> {
 
 function validate(input: CategoryInput): RepoError | null {
   if (!Number.isInteger(input.number) || input.number < 1 || input.number > 999) {
-    return { kind: 'ConstraintViolation', message: 'Category number must be between 1 and 999 (RICS p. 145).' };
+    return {
+      kind: 'ConstraintViolation',
+      message: 'Category number must be between 1 and 999 (RICS p. 145).',
+    };
   }
   const desc = input.description?.trim() ?? '';
   if (desc.length === 0) {
@@ -93,30 +94,45 @@ function validate(input: CategoryInput): RepoError | null {
   return null;
 }
 
+function mirrorReadError(err: unknown): RepoError {
+  return {
+    kind: 'AccessConnectionError',
+    message: err instanceof Error ? err.message : 'Failed to read rics_mirror.categories.',
+    cause: err,
+  };
+}
+
+function writeNotSupported(): Result<never> {
+  return Err({
+    kind: 'WriteNotSupported',
+    message:
+      'Category edits are read-only during Development Against RICS Mirror. ' +
+      'Reads come from rics_mirror.categories; create/update/delete needs a Postgres overlay that has not been built yet.',
+  });
+}
+
 export const CategoryRepository = {
   async list(): Promise<Result<Category[]>> {
     try {
-      const { path, password } = openRicsDb(RicsDb.Categories);
-      const rows = await executeQuery<CategoryRow>(
-        path,
-        password,
-        'SELECT [Number], [Desc], [DateLastChanged] FROM [Categories] ORDER BY [Number]',
+      const rows = await prisma.$queryRawUnsafe<CategoryRow[]>(
+        `SELECT number, "desc", date_last_changed
+           FROM rics_mirror.categories
+          ORDER BY number`,
       );
       const counts = await loadSkuCountsByCategory();
-      return Ok(rows.map(mapRow).map((c) => ({ ...c, skuCount: counts.get(c.number) ?? 0 })));
+      return Ok(rows.map(mapRow).map((c: Category) => ({ ...c, skuCount: counts.get(c.number) ?? 0 })));
     } catch (err) {
-      return Err(toRepoError(err));
+      return Err(mirrorReadError(err));
     }
   },
 
   async getByNumber(number: number): Promise<Result<Category>> {
     try {
-      const { path, password } = openRicsDb(RicsDb.Categories);
-      const rows = await executeQuery<CategoryRow>(
-        path,
-        password,
-        'SELECT [Number], [Desc], [DateLastChanged] FROM [Categories] WHERE [Number] = ?',
-        [{ value: number, type: 'integer' }],
+      const rows = await prisma.$queryRawUnsafe<CategoryRow[]>(
+        `SELECT number, "desc", date_last_changed
+           FROM rics_mirror.categories
+          WHERE number = $1`,
+        number,
       );
       if (rows.length === 0) {
         return Err({ kind: 'NotFound', message: `Category ${number} not found.` });
@@ -124,40 +140,14 @@ export const CategoryRepository = {
       const counts = await loadSkuCountsByCategory();
       return Ok({ ...mapRow(rows[0]), skuCount: counts.get(number) ?? 0 });
     } catch (err) {
-      return Err(toRepoError(err));
+      return Err(mirrorReadError(err));
     }
   },
 
   async create(input: CategoryInput): Promise<Result<Category>> {
     const validationErr = validate(input);
     if (validationErr) return Err(validationErr);
-
-    try {
-      const { path, password } = openRicsDb(RicsDb.Categories);
-      const existing = await executeQuery<{ n: number }>(
-        path,
-        password,
-        'SELECT COUNT(*) AS n FROM [Categories] WHERE [Number] = ?',
-        [{ value: input.number, type: 'integer' }],
-      );
-      if ((existing[0]?.n ?? 0) > 0) {
-        return Err({ kind: 'DuplicatePrimaryKey', message: `Category ${input.number} already exists.` });
-      }
-      const params: AccessParam[] = [
-        { value: input.number, type: 'integer' },
-        { value: input.description.trim(), type: 'string' },
-        { value: new Date(), type: 'date' },
-      ];
-      await executeNonQuery(
-        path,
-        password,
-        'INSERT INTO [Categories] ([Number], [Desc], [DateLastChanged]) VALUES (?, ?, ?)',
-        params,
-      );
-      return this.getByNumber(input.number);
-    } catch (err) {
-      return Err(toRepoError(err));
-    }
+    return writeNotSupported();
   },
 
   async update(number: number, patch: Partial<Omit<CategoryInput, 'number'>>): Promise<Result<Category>> {
@@ -170,43 +160,14 @@ export const CategoryRepository = {
     };
     const validationErr = validate(merged);
     if (validationErr) return Err(validationErr);
-
-    try {
-      const { path, password } = openRicsDb(RicsDb.Categories);
-      const params: AccessParam[] = [
-        { value: merged.description.trim(), type: 'string' },
-        { value: new Date(), type: 'date' },
-        { value: number, type: 'integer' },
-      ];
-      await executeNonQuery(
-        path,
-        password,
-        'UPDATE [Categories] SET [Desc] = ?, [DateLastChanged] = ? WHERE [Number] = ?',
-        params,
-      );
-      // Jet's OLE DB driver can return 0 rowsAffected even for successful
-      // UPDATEs; re-read the row so callers observe the final state.
-      return this.getByNumber(number);
-    } catch (err) {
-      return Err(toRepoError(err));
-    }
+    return writeNotSupported();
   },
 
   async delete(number: number): Promise<Result<void>> {
-    try {
-      const { path, password } = openRicsDb(RicsDb.Categories);
-      const rows = await executeNonQuery(
-        path,
-        password,
-        'DELETE FROM [Categories] WHERE [Number] = ?',
-        [{ value: number, type: 'integer' }],
-      );
-      if (rows === 0) {
-        return Err({ kind: 'NotFound', message: `Category ${number} not found.` });
-      }
-      return Ok(undefined);
-    } catch (err) {
-      return Err(toRepoError(err));
+    const existing = await this.getByNumber(number);
+    if (!existing.ok) {
+      return existing as Result<void>;
     }
+    return writeNotSupported();
   },
 };

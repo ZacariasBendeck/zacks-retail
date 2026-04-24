@@ -1,10 +1,8 @@
-import { Button, Card, Popconfirm, Space, Table, Tag, Typography, App } from 'antd'
-import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons'
-import { Link, useNavigate } from 'react-router-dom'
+import { Alert, Button, Card, Space, Table, Tag, Typography } from 'antd'
+import { useNavigate } from 'react-router-dom'
 import { useMemo } from 'react'
 import {
   useCategories,
-  useDeleteCategory,
   useDepartments,
   useSectors,
   useSkuTotal,
@@ -14,12 +12,10 @@ import TaxonomyCoverageFooter from '../../components/products/TaxonomyCoverageFo
 
 export default function CategoryListPage() {
   const navigate = useNavigate()
-  const { message } = App.useApp()
   const { data, isLoading } = useCategories()
   const { data: departments } = useDepartments()
   const { data: sectors } = useSectors()
   const { data: skuTotal } = useSkuTotal()
-  const del = useDeleteCategory()
 
   const assigned = useMemo(
     () => (data ?? []).reduce((sum, r) => sum + (r.skuCount ?? 0), 0),
@@ -96,26 +92,13 @@ export default function CategoryListPage() {
       render: (v: number) => (v ?? 0).toLocaleString('en-US'),
     },
     {
-      title: '',
+      title: 'Actions',
       key: 'actions',
       width: 100,
       render: (_: unknown, record: Category) => (
-        <Space size={0}>
-          <Button type="text" size="small" icon={<EditOutlined />} onClick={() => navigate(`/products/taxonomy/categories/${record.number}`)} />
-          <Popconfirm
-            title="Delete this category?"
-            onConfirm={async () => {
-              try {
-                await del.mutateAsync(record.number)
-                message.success('Deleted')
-              } catch (e) {
-                message.error((e as Error).message)
-              }
-            }}
-          >
-            <Button type="text" size="small" danger icon={<DeleteOutlined />} />
-          </Popconfirm>
-        </Space>
+        <Button type="link" size="small" onClick={() => navigate(`/products/taxonomy/categories/${record.number}`)}>
+          View
+        </Button>
       ),
     },
   ]
@@ -123,12 +106,14 @@ export default function CategoryListPage() {
   return (
     <Card
       title={<Typography.Text strong>Categories</Typography.Text>}
-      extra={
-        <Link to="/products/taxonomy/categories/new">
-          <Button type="primary" icon={<PlusOutlined />}>New category</Button>
-        </Link>
-      }
     >
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 16 }}
+        message="Categories are read-only in Development Against RICS Mirror."
+        description="This screen reads from rics_mirror.categories on Render. Creating, editing, and deleting categories needs a Postgres overlay that has not been built yet."
+      />
       <Table<Category>
         size="small"
         className="products-compact-table"
