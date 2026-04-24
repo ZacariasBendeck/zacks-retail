@@ -2,9 +2,13 @@
 
 Purchase orders (entry / receive / combine / merge / replicate / duplicate), auto POs, order worksheets, ASN cartons, reset future orders, PO reports, open P.O. by month.
 
-**Phase:** TBD
+**Phase:** Development Against RICS Mirror / Cutover Migration target
 **RICS chapters:** Ch. 3
 **Registry:** [`../MODULES.md`](../MODULES.md)
+
+## Architecture rule
+
+RICS remains the live purchasing system until cutover. This module must not create or modify purchase orders in RICS. During development, all purchasing logic, forecasts, and draft POs exist only in Postgres. Any operational PO creation remains in RICS until cutover. Final purchasing ownership transfers during Cutover Migration.
 
 ## Documents in this module
 
