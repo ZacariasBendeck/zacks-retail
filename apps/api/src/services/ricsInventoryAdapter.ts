@@ -23,6 +23,7 @@
 
 import { prisma } from '../db/prisma';
 import { findIndexedMaster, findNeighborSku } from './ricsProductAdapter';
+import { buildRicsImageUrl } from './ricsImageUrl';
 import { getInquirySalesRollup } from './salesReporting/ricsInquiryRollupAdapter';
 
 // ─────────────────────────── public types ─────────────────────────────────
@@ -908,15 +909,11 @@ function buildSummaryGrid(
 }
 
 function buildPictureUrl(master: MasterRow): string | null {
-  const s = master.PictureFileName?.trim();
-  if (!s) return null;
-  return `/rics-images/${encodeURIComponent(s)}`;
+  return buildRicsImageUrl(master.PictureFileName);
 }
 
 function buildPictureUrlFromSku(sku: AppInventorySkuRow): string | null {
-  const s = sku.pictureFileName?.trim();
-  if (!s) return null;
-  return `/rics-images/${encodeURIComponent(s)}`;
+  return buildRicsImageUrl(sku.pictureFileName);
 }
 
 function mergeColumnLabels(storeEntries: InventoryInquiryStore[], preferred: string[]): string[] {

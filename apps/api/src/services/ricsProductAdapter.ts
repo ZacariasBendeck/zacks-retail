@@ -33,6 +33,7 @@ import {
   buildSelectScript,
 } from './accessOleDb';
 import { prisma } from '../db/prisma';
+import { buildRicsImageUrl } from './ricsImageUrl';
 import type {
   ProductCard,
   ProductDetail,
@@ -822,13 +823,7 @@ function buildSpecs(
 }
 
 function pictureUrl(fileName: string | null | undefined): string | null {
-  // RICS stores picture file names only (e.g. "DMTDU1BK.jpg"). The underlying
-  // files live on the RICS host at C:\RICSWIN\ricspics and are served by
-  // Express via the `/rics-images` static mount in app.ts (configurable with
-  // the RICS_IMAGES_DIR env var).
-  const s = fileName?.trim();
-  if (!s) return null;
-  return `/rics-images/${encodeURIComponent(s)}`;
+  return buildRicsImageUrl(fileName);
 }
 
 // ─────────────────────────── sorting / filter translation ─────────────────
@@ -1624,7 +1619,7 @@ export async function searchSkusForLookup(
       category: String(row.Category ?? ''),
       styleColor: row.StyleColor ? String(row.StyleColor) : null,
       currentPrice: resolveCurrentPrice(row) || null,
-      pictureUrl: pictureFile ? `/rics-images/${encodeURIComponent(pictureFile)}` : null,
+      pictureUrl: buildRicsImageUrl(pictureFile),
     };
   });
 

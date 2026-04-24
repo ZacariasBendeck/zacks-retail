@@ -38,6 +38,7 @@ import {
 } from '../../../hooks/useProductsTaxonomy'
 import { useVendors } from '../../../hooks/useProductsVendors'
 import { useAttributeDimensions } from '../../../hooks/useProductsAttributes'
+import { buildRicsImageUrl } from '../../../services/ricsImageUrl'
 import type { SkuListFilters } from '../../../types/productsSku'
 import type { Department, Sector } from '../../../types/productsTaxonomy'
 
@@ -241,7 +242,22 @@ export default function SkuListPage() {
             />
           )
         }
-        const url = `/rics-images/${encodeURIComponent(r.pictureFileName)}`
+        const url = buildRicsImageUrl(r.pictureFileName)
+        if (!url) {
+          return (
+            <span
+              aria-hidden
+              style={{
+                display: 'block',
+                width: 50,
+                height: 50,
+                margin: '0 auto',
+                border: '1px dashed #e0e0e0',
+                borderRadius: 2,
+              }}
+            />
+          )
+        }
         return (
           // Ant's <Image> gives us a click-to-enlarge lightbox (zoom, rotate,
           // fullscreen) for free, while keeping the inline thumbnail the same

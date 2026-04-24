@@ -43,6 +43,7 @@ import {
 } from '../../hooks/useProductsTaxonomy'
 import { useVendors } from '../../hooks/useProductsVendors'
 import { useApplyBatchChange } from '../../hooks/useUtilities'
+import { buildRicsImageUrl } from '../../services/ricsImageUrl'
 import type { SkuListFilters } from '../../types/productsSku'
 import type { Department, Sector } from '../../types/productsTaxonomy'
 import type {
@@ -257,7 +258,22 @@ export default function ChangeSkuAttributesPage() {
             />
           )
         }
-        const url = `/rics-images/${encodeURIComponent(r.pictureFileName)}`
+        const url = buildRicsImageUrl(r.pictureFileName)
+        if (!url) {
+          return (
+            <span
+              aria-hidden
+              style={{
+                display: 'block',
+                width: 50,
+                height: 50,
+                margin: '0 auto',
+                border: '1px dashed #e0e0e0',
+                borderRadius: 2,
+              }}
+            />
+          )
+        }
         return (
           <Image
             src={url}

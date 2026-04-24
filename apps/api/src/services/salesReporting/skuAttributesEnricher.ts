@@ -1,5 +1,6 @@
 import { prisma } from '../../db/prisma';
 import { getOnHandTotals } from '../products/onHandTotalsService';
+import { buildRicsImageUrl } from '../ricsImageUrl';
 import type { SkuAttributeColumns } from './types';
 
 /**
@@ -82,9 +83,7 @@ export async function loadSkuAttributesBySku(
   );
 
   for (const r of tier1) {
-    const picture = r.picture_file_name
-      ? `/rics-images/${r.picture_file_name}`
-      : null;
+    const picture = buildRicsImageUrl(r.picture_file_name);
     result.set(r.sku_code, {
       description: r.description ?? null,
       vendorCode: r.vendor_code ?? null,
