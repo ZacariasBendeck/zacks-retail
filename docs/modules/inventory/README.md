@@ -2,9 +2,13 @@
 
 On-hand, on-order, movements ledger, multi-location, transfers (manual / auto / balancing), models + max + reorder, inventory inquiry, find-by-size, change detail, inventory detail report, recommended transfer report, transfer summary.
 
-**Phase:** TBD
+**Phase:** Development Against RICS Mirror / Cutover Migration target
 **RICS chapters:** Ch. 4 (most of Stock Maintenance)
 **Registry:** [`../MODULES.md`](../MODULES.md)
+
+## Architecture rule
+
+RICS remains the operational inventory system until cutover. This module must not write into RICS MDB files or `rics_mirror`. During development, inventory reads come from `rics_mirror`; simulations, planning, draft adjustments, transfer recommendations, and future workflow state live only in Postgres-owned tables. Actual operational inventory ownership moves to Zack's Retail only during Cutover Migration.
 
 ## Documents in this module
 

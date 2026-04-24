@@ -1,10 +1,30 @@
 # Zack's Retail — Architecture
 
-Living overview of the system's technical shape. Updated in place by `/index-knowledge` and by hand as decisions ship. Dated records of *how we got here* live in [`dev/specs/`](dev/specs/). This doc is the *current state*.
+Living overview of the system's current technical shape. Dated records of how decisions evolved live in [`dev/specs/`](dev/specs/). This file is the current source of truth for architecture-level decisions.
 
-Scope: the technical system — folders, data flow, schemas, adapter layer, ETL, development processes. **Not** module detail (that's [`docs/modules/`](modules/)); **not** company / business facts (that's [`docs/COMPANY.md`](COMPANY.md)); **not** end-user flows (that's [`docs/zacks-retail-manual/`](zacks-retail-manual/)).
+Scope: the technical system — folders, data flow, schemas, adapter layer, ETL, migration/cutover strategy, and development processes. Module detail lives in [`docs/modules/`](modules/). Company facts live in [`docs/COMPANY.md`](COMPANY.md). End-user flows live in [`docs/zacks-retail-manual/`](zacks-retail-manual/).
 
-Target size: 200–400 lines. If a section bloats, it migrates to its own doc and a pointer stays behind.
+## Architecture rule: one-shot cutover
+
+RICS remains the live operational system until cutover day. Zack's Retail is developed, tested, rehearsed, and enriched in Postgres, but it does **not** write back to RICS.
+
+Hard rules:
+
+- No writes from Zack's Retail into RICS MDB files.
+- No Postgres → RICS sync agent.
+- No bidirectional sync.
+- No dual-write runtime architecture.
+- No gradual operational cutover where both RICS and Zack's Retail are live systems of record.
+- `rics_mirror` is trusted imported RICS source data, but it is not app-owned operational data.
+- Final operational tables, primary keys, foreign keys, and module-owned schemas are established during the Cutover Migration.
+
+The intended path is:
+
+```text
+Development Against RICS Mirror  →  Cutover Migration  →  Postgres-Only Operation
+```
+
+---
 
 ## Project shape
 
@@ -16,54 +36,51 @@ Monorepo — pnpm workspaces + Turbo.
 | `apps/api/src/services/sync/` | ETL pipeline: RICS MDBs → Postgres `rics_mirror` |
 | `apps/web/` | React 18 + Vite + Ant Design — storefront + admin UI |
 | `packages/*` | Shared workspace packages |
-| `docs/` | Living project documentation (see "Folder conventions") |
-| `.claude/` | Claude Code configuration — commands, agents (retired), skills |
+| `docs/` | Living project documentation |
+| `.claude/` | Claude Code configuration — commands, retired agents, skills |
 
-Stack: Node 20+, TypeScript, Express, Prisma (`multiSchema` preview feature), PostgreSQL 16, Jest (API), React 18, Vite, Ant Design, TanStack Query, Zustand, Vitest, ECharts.
+Stack: Node 20+, TypeScript, Express, Prisma (`multiSchema` preview feature), PostgreSQL 16, Jest, React 18, Vite, Ant Design, TanStack Query, Zustand, Vitest, ECharts.
+
+---
 
 ## Folder conventions
 
-### `docs/` layout
-
 | Path | Purpose |
 |---|---|
-| [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) | **This file** — technical-general living overview |
-| [`docs/COMPANY.md`](COMPANY.md) | Business-general: who the company is, chains, stores, categories, seasons, goals |
-| [`docs/PROJECT_STATUS.md`](PROJECT_STATUS.md) | Latest milestone tag + current phase + next step. Maintained by `/milestone`. |
-| [`docs/MODULES.md`](MODULES.md) | Module registry + RICS-chapter mapping + "not being ported" list |
-| [`docs/modules/<slug>.md`](modules/) | Per-module developer contracts — what each module does, data sources, phase-gate state |
-| [`docs/zacks-retail-manual/<slug>.md`](zacks-retail-manual/) | **End-user-only** flows per module (cashier / buyer / manager) |
-| [`docs/operations/*.md`](operations/) | Canonical docs for cross-cutting hard rules (SKU warmup, OLEDB async, ETL ops) |
-| [`docs/dev/specs/<date>-<topic>.md`](dev/specs/) | Dated technical decisions — the "why" behind design choices |
-| [`docs/dev/plans/<date>-<topic>.md`](dev/plans/) | Dated implementation plans — "steps to build X" |
-| [`docs/dev/handoffs/<date>-<topic>.md`](dev/handoffs/) | Session bridges between Claude Code sessions |
-| [`docs/dev/milestones/<date>-<label>.md`](dev/milestones/) | Tagged checkpoint snapshots (paired with `milestone-*` git tags) |
-| [`docs/rics-reference/`](rics-reference/) | The RICS v7.7 user manual — ancestor spec, reference only |
+| [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) | Current technical architecture source of truth |
+| [`docs/COMPANY.md`](COMPANY.md) | Business-general context |
+| [`docs/PROJECT_STATUS.md`](PROJECT_STATUS.md) | Latest milestone + current work |
+| [`docs/MODULES.md`](MODULES.md) | Module registry + RICS chapter mapping |
+| [`docs/modules/`](modules/) | Per-module developer contracts |
+| [`docs/zacks-retail-manual/`](zacks-retail-manual/) | End-user-only flows |
+| [`docs/operations/`](operations/) | Cross-cutting hard rules and runbooks |
+| [`docs/dev/specs/`](dev/specs/) | Dated technical decisions |
+| [`docs/dev/plans/`](dev/plans/) | Dated implementation plans |
+| [`docs/dev/handoffs/`](dev/handoffs/) | Session handoffs |
+| [`docs/dev/milestones/`](dev/milestones/) | Tagged checkpoint snapshots |
+| [`docs/rics-reference/`](rics-reference/) | RICS v7.7 user manual reference |
+| [`.claude/commands/`](../.claude/commands/) | Project-specific slash commands |
+| [`.claude/agents/`](../.claude/agents/) | Retired subagent files; never invoked |
+| [`.claude/skills/`](../.claude/skills/) | Project-local skills loaded on demand |
 
-### `.claude/` layout
+---
 
-| Path | Purpose |
-|---|---|
-| [`.claude/commands/*.md`](../.claude/commands/) | Project-specific slash commands (one markdown file per command) |
-| [`.claude/agents/*.md`](../.claude/agents/) | Retired subagent files (kept for history; never invoked) |
-| [`.claude/skills/*/SKILL.md`](../.claude/skills/) | Project-local skills — content libraries loaded on demand |
+## Data flow during development
 
-## Data flow
-
-```
-              operator-invoked (pnpm sync:rics)
+```text
+              operator-invoked only
+              pnpm sync:rics
                      │
                      ▼
 ┌──────────────┐   ETL   ┌─────────────────────────────┐
-│ RICS MDBs    │────────►│  Postgres — rics_mirror.*   │
-│ (read-only,  │         │  (atomic reload; 27 tables) │
-│  Windows/    │         └──────────────┬──────────────┘
-│  ACE.OLEDB)  │                        │
-└──────────────┘                        │ request-side reads
+│ RICS MDBs    │────────►│  Postgres rics_mirror.*     │
+│ live system  │         │  atomic imported mirror     │
+│ of record    │         └──────────────┬──────────────┘
+└──────────────┘                        │ read-only source data
                                         ▼
                  ┌────────────────────────────────────────────┐
-                 │  apps/api adapter layer                    │
-                 │  (ricsProduct, ricsInventory, sales-report)│
+                 │ apps/api adapter layer                     │
+                 │ ricsProduct / ricsInventory / reports      │
                  └──────────────────────┬─────────────────────┘
                                         │
                                         ▼
@@ -77,45 +94,111 @@ Stack: Node 20+, TypeScript, Express, Prisma (`multiSchema` preview feature), Po
                              │ apps/web UI │
                              └─────────────┘
 
-Writes (new app data, cart, orders, content overlay)
+New app data, drafts, overlays, configuration, workflows
 ───────────────────────────────────────────────────────────►
-                          Postgres — public.*, app.*
-                          (preserved across `rics_mirror` reloads)
+                          Postgres public.*, app.*, platform.*
+                          preserved across rics_mirror reloads
 ```
 
-**Phase A invariant:** request handlers never open an MDB at request time. The only process that touches MDBs is the sync ETL.
+**Development invariant:** request handlers never open an MDB at request time. The only process that touches MDBs is the operator-invoked import ETL.
 **Authority invariant:** once a surface has an app-owned authoritative table, request handlers read only from that table. `rics_mirror` is then ETL/bootstrap input only for that surface.
 
-### Net-new SKU creation — write paths
+---
 
-When an operator creates a SKU via `/products/skus/new` (the AI-powered creator):
+## Cutover model
+
+### Development Against RICS Mirror
+
+RICS remains operational. Stores, warehouse, POS, purchasing, receiving, and other live workflows continue in RICS.
+
+Zack's Retail may:
+
+- read imported RICS data from `rics_mirror`,
+- build reports and new UI against Postgres,
+- store drafts, enrichments, overlays, planning data, workflow state, and app-native configuration in Postgres,
+- rehearse migration scripts repeatedly against imported data.
+
+Zack's Retail must not:
+
+- write into RICS MDBs,
+- write into `rics_mirror`,
+- create RICS-operational SKUs, POs, sales, inventory adjustments, or receiving documents,
+- rely on foreign keys that point into `rics_mirror`.
+
+### Cutover Migration
+
+This is the planned switch day.
+
+Cutover steps:
+
+1. Stop RICS usage.
+2. Take final MDB backup.
+3. Run final RICS extraction/import into Postgres.
+4. Promote or merge `rics_mirror` data into module-owned schemas.
+5. Generate and validate primary keys.
+6. Add and validate foreign keys.
+7. Run reconciliation reports and business smoke tests.
+8. Switch operators to Zack's Retail.
+
+### Postgres-Only Operation
+
+After cutover:
+
+- RICS MDB files are archived.
+- RICS extractor tooling is retired.
+- `rics_mirror` is dropped or preserved only as an archived import snapshot, depending on the final runbook.
+- Module-owned schemas are authoritative.
+- Zack's Retail is the system of record.
+
+---
+
+## Net-new SKU creation during development
+
+When an operator creates a SKU in Zack's Retail before cutover, it is an app-side draft/enrichment workflow, not an operational RICS SKU.
 
 | Step | Writes to |
 |---|---|
-| Draft save (first save + every edit) | `app.sku` (DRAFT row), `app.sku_activity` (event=`created`/`updated`) |
-| Apariencia / Diseño dimensional save | `app.sku_attribute_assignment` (scoped to the 11 Apariencia dims), `public.products_audit_log` |
-| Finalize (DRAFT → ACTIVE) | `app.sku` (state flip + `code` set), `app.sku_activity` (event=`finalized`), `UPDATE app.sku_attribute_assignment SET sku_code = <final> WHERE sku_code = <provisional>` |
-| AI image analysis | No DB writes — reads `app.category_product_family` + `rics_mirror.categories` to build the Claude prompt |
+| Draft save | `app.sku`, `app.sku_activity` |
+| Attribute save | `app.sku_attribute_assignment`, audit tables |
+| Finalize inside app | `app.sku` lifecycle fields, attribute re-keying |
+| AI image analysis | no DB writes unless explicitly saved by an app-owned flow |
 
-Never written during this flow: `rics_mirror.*` (read-only), RICS MDB files (forbidden), any SQLite admin table (Postgres-only policy), `app.sku_drafts` (it's a VIEW over `app.sku WHERE sku_state='DRAFT'`).
+Never written during this flow:
+
+- RICS MDB files,
+- `rics_mirror.*`,
+- SQLite admin tables,
+- any RICS operational table.
+
+Operational SKU creation remains in RICS until cutover. App-created SKU records become operational only as part of the Cutover Migration.
 
 ### SKU attribute assignment keying
 
-`app.sku_attribute_assignment.sku_code` is **VARCHAR(32)** (was VARCHAR(15)) so it can hold both a DRAFT provisional code (`DRF-YYMMDD-XXXXXX` = 17 chars) and a final RICS-compatible code (≤15 chars). During DRAFT, assignments are keyed by `provisional_code`; on finalize, `skuLifecycleService.finalize()` runs `UPDATE ... SET sku_code = <final> WHERE sku_code = <provisional>` inside the state-flip transaction to rekey them atomically. The `app.sku_attribute_orphans` view recognizes both `app.sku.code` and `app.sku.provisional_code` as valid targets, so orphan counts stay accurate throughout the lifecycle.
+`app.sku_attribute_assignment.sku_code` is `VARCHAR(32)` so it can hold both a draft provisional code and a final code. During draft, assignments are keyed by `provisional_code`; on finalize, `skuLifecycleService.finalize()` rekeys assignments to the final code inside the same transaction. The `app.sku_attribute_orphans` view recognizes both `app.sku.code` and `app.sku.provisional_code` as valid targets.
+
+---
 
 ## Schemas
 
-Four schemas in the Postgres DB (`zacks_retail`):
+Four schemas currently exist in the Postgres database.
 
 - **`rics_mirror`** — Read-only, atomic reload. 1:1 mirror of every canonical RICS MDB table. Rebuilt by `pnpm sync:rics`. It may serve request-side reads only for surfaces that do not yet have an app-owned authoritative table. Once such a table exists, `rics_mirror` is ETL/bootstrap input only for that surface. Never write at request time — the next reload drops everything not owned by the ETL.
 - **`public`** — Storefront-baseline tables that predate Phase A (`Cart`, `CartLine`, `Order`, `OrderLine`, `User`, `Session`, `Role`, `ProductContent`, `SeasonOverlay`, `ProductsAuditLog`). Preserved across ETL reloads. App writes freely here.
 - **`app`** — Module-owned additive tables — net-new things Zack's Retail invents that RICS never had. Active surface as of 2026-04-23: products (`sku`, `sku_activity`, `sku_attribute_override`, `sku_keyword_override`, `size_type_override`, `products_batch_operation*`), extended attributes (`attribute_dimension`, `attribute_value`, `sku_attribute_assignment` + orphans view, `attribute_family_rule`), product family (`product_family`, `category_product_family`), plus the legacy-ref migration targets seeded 2026-04-23. Phase-A contract: writes go here freely; the `sync:rics` ETL never touches this schema.
+- **`platform`** — Cross-cutting admin spine: ETL runs now; future audit, notification, feature flag, and scheduled task surfaces.
 
-- **`platform`** — Cross-cutting admin spine. Currently `etl_run`, `etl_run_table`. Future: `audit_log`, `notification`, `feature_flag`, `scheduled_task`.
+Foreign key rule:
 
-## Adapter layer (request-side)
+- During development, use validation views/reconciliation queries for relationships to `rics_mirror`.
+- Do not add FKs inside `rics_mirror`.
+- Do not add FKs from app-owned tables into `rics_mirror`.
+- Add the real FK graph during Cutover Migration, after tables are promoted into module-owned schemas.
 
-Request handlers consume adapters that read from the current authoritative request-path surface. Early Phase-A adapters read from `rics_mirror`; after a surface gets an app-owned authoritative table, its request adapter must read only from that app-owned table. Every adapter has an in-process TTL cache (`cachedAsync`, 5–10 min TTL) on top.
+---
+
+## Adapter layer
+
+Request handlers consume adapters that read from the current authoritative request-path surface. Early development adapters read from `rics_mirror`; after a surface gets an app-owned authoritative table, its request adapter must read only from that app-owned table. Every adapter may cache on top, but the source remains Postgres, not MDB files.
 
 | Adapter | File | Serves |
 |---|---|---|
@@ -124,34 +207,21 @@ Request handlers consume adapters that read from the current authoritative reque
 | `salesReporting/ricsSalesReportAdapter` | `apps/api/src/services/salesReporting/ricsSalesReportAdapter.ts` | Sales by Day/Time, Salesperson Summary, Best Sellers, Stock Status, Sales Analysis |
 | `salesReporting/ricsSalesHistoryByMonthAdapter` | `...SalesHistoryByMonthAdapter.ts` | Monthly sales history, inventory-history 12-slot projections |
 | `salesReporting/ricsOnHandAtCostAdapter` | `...OnHandAtCostAdapter.ts` | ROI / Turns feeder for Sales Analysis |
-| `salesReporting/ricsInquiryRollupAdapter` | `...InquiryRollupAdapter.ts` | Per-SKU Week/Month/Season/Year rollup on the Inquiry screen |
+| `salesReporting/ricsInquiryRollupAdapter` | `...InquiryRollupAdapter.ts` | Per-SKU Week/Month/Season/Year rollup on Inquiry |
 
-### Write surfaces (overlay pattern)
+### Overlay pattern
 
-Where a write target isn't directly mutable (e.g., `rics_mirror.*` is rebuilt atomically by `sync:rics`), the pattern is an `app.*_overlay` table with a `source` discriminator. Reads FULL OUTER JOIN the overlay against the mirror and pick effective values with COALESCE; tombstones hide mirror rows.
+Where the app needs draft/enrichment/override behavior before cutover, the write target is an app-owned table, not RICS.
 
-| Overlay | File(s) | Scope |
-|---|---|---|
-| `app.sku_attribute_override` | `apps/api/src/services/utilities/effectiveInventory.ts` | Sparse per-column overrides for vendor/category/season/group_code on mirrored SKUs |
-| `app.sku_keyword_override` | same | ADD/REMOVE deltas layered on the space-separated `KeyWords` string |
-| `app.vendor_overlay` | `apps/api/src/repositories/rics/VendorRepository.ts` | Three modes via `source`: `'native'` (born in Postgres), `'override'` (sparse per-column override of a RICS vendor), `'tombstone'` (hide a RICS vendor from reads). See [`docs/dev/specs/2026-04-24-vendor-overlay-design.md`](dev/specs/2026-04-24-vendor-overlay-design.md). |
+| Overlay | Scope |
+|---|---|
+| `app.sku_attribute_override` | Sparse per-column overrides for mirrored SKUs |
+| `app.sku_keyword_override` | ADD/REMOVE deltas layered on RICS keyword strings |
+| `app.vendor_overlay` | Native/override/tombstone vendor behavior in Postgres |
 
-Overlay rows do not reach RICS. Warehouse/POS systems still see only what `sync:rics` copied; app-owned overlay and native rows become authoritative only when the module spec says they do. From that point on, request handlers read the app-owned authoritative surface, not `rics_mirror`.
+Overlay writes affect Zack's Retail views only. They do **not** flow back to RICS. Warehouse/POS users in RICS see only RICS data until cutover. App-owned overlay and native rows become authoritative only when the module spec says they do; from that point on, request handlers read the app-owned authoritative surface, not `rics_mirror`.
 
-### Repo-result error taxonomy
-
-Repositories return `Result<T, RepoError>` (see `apps/api/src/repositories/rics/repoResult.ts`). The error kind maps to HTTP status:
-
-| `kind` | HTTP | Meaning |
-|---|---|---|
-| `NotFound` | 404 | Row absent |
-| `ConstraintViolation` | 422 | Shape or cross-row rule rejected |
-| `DuplicatePrimaryKey` | 409 | PK collision on insert |
-| `ConcurrentModification` | 409 | Lost-update detection |
-| `WriteNotSupported` | 501 | Endpoint exists as read-only; use the indicated write path instead |
-| `AccessConnectionError` | 503 | Backing store unreachable |
-
-`WriteNotSupported` covers the case where a legacy endpoint has been converted to a read-only projection but the write surface moved elsewhere (e.g., vendor store-account writes are still `WriteNotSupported` pending a separate `vendor_store_account_overlay`).
+---
 
 ## ETL pipeline
 
@@ -159,116 +229,114 @@ At `apps/api/src/services/sync/`:
 
 | File | Role |
 |---|---|
-| `bulk-extract.ps1` | C#-hosted-in-PowerShell reader. `Add-Type` compiles C# at runtime against the Windows-built-in .NET runtime — no SDK required. Streams rows into Postgres COPY TEXT format on stdout. |
-| `bulkExtract.ts` | Node side — spawns the PS host, pipes stdout into `pg-copy-streams`. |
+| `bulk-extract.ps1` | C#-hosted-in-PowerShell reader. Streams rows into Postgres COPY TEXT format. |
+| `bulkExtract.ts` | Node side — spawns the PowerShell host and pipes stdout into `pg-copy-streams`. |
 | `copyFromMdb.ts` | COPY TEXT pipe wrapper. |
-| `ricsRefresh.ts` | Orchestrator. Owns the atomic swap transaction (staging → production rename). |
-| `canonicalRicsTables.ts` | The list of RICS tables mirrored (27 tables). |
+| `ricsRefresh.ts` | Orchestrator. Owns atomic reload / swap behavior. |
+| `canonicalRicsTables.ts` | List of RICS tables mirrored. |
 | `typeMapping.ts` | RICS → Postgres type coercion. |
 
-Invocation: `pnpm --filter @benlow-rics/api sync:rics`.
-Verification: `pnpm --filter @benlow-rics/api verify:rics-mirror` (counts-only or full reload + canary).
-Observability: every run writes to `platform.etl_run` + `platform.etl_run_table`.
+Invocation:
 
-## Rollout phases
+```bash
+pnpm --filter @benlow-rics/api sync:rics
+```
 
-Current phase: **A**. Full narrative in [`CLAUDE.md`](../CLAUDE.md).
+Verification:
 
-- **Phase A** (now): Mirror-backed dev against live RICS. Operators continue using RICS; Zack's Retail reads from `rics_mirror`, writes to `public`/`app`.
-- **Phase B**: Zack's Retail becomes the operator UI; RICS stops changing. One final reload, then `rics_mirror` contents promote into module-owned schemas.
-- **Phase C**: Postgres-only. MDBs, OLEDB helpers, and `rics_mirror` all retire.
+```bash
+pnpm --filter @benlow-rics/api verify:rics-mirror
+```
+
+Observability: ETL runs write to `platform.etl_run` and `platform.etl_run_table`.
+
+---
 
 ## Cross-cutting hard rules
 
-Short summary; each has a canonical longer doc linked.
+- **RICS is read-only from Zack's Retail.** No `INSERT`, `UPDATE`, or `DELETE` against MDB files.
+- **`rics_mirror` is read-only from app code.** It is imported source data, not an app-owned write surface.
+- **No Postgres → RICS sync agent.** Do not build one.
+- **No runtime dual-write.** Cutover is rehearsed, then executed once.
+- **Postgres-only for new development.** No new SQLite columns, no new keys on `app.sku.legacy_attrs`, and no new dependency on old SQLite reference tables.
+- **OLEDB helper stays async.** Use `child_process.spawn`, never `spawnSync`.
+- **SKU Lookup index warmup covers every SKU.** Never cap it.
+- **Currency: HNL plain numbers.** No `$`, `USD`, or `L` symbol inside data cells, charts, CSV, or XLSX.
+- **`legacy/` is retired.** Do not recreate it.
 
-- **RICS is read-only forever.** No `INSERT` / `UPDATE` / `DELETE` against any `.MDB`.
-- **No branches, no worktrees.** Commits go direct to `master`. See [`CLAUDE.md`](../CLAUDE.md).
-- **SKU Lookup index warmup covers every SKU.** Never capped. See [`docs/operations/sku-lookup-index-warmup.md`](operations/sku-lookup-index-warmup.md).
-- **OLEDB helper stays async.** `child_process.spawn` only, never `spawnSync`. See [`docs/operations/access-oledb-async-spawn.md`](operations/access-oledb-async-spawn.md).
-- **Currency: HNL plain numbers.** No `$` / `USD` / `L` symbol inside data cells, charts, CSV, or XLSX. See [`docs/COMPANY.md`](COMPANY.md) for the business context and [`CLAUDE.md`](../CLAUDE.md) for the rendering policy.
-- **`legacy/` is retired.** Do not recreate.
-- **Postgres-only for new development (as of 2026-04-23).** No new SQLite columns, no new keys on `app.sku.legacy_attrs`, no new dependencies on the legacy SQLite ref tables. New attributes use the dimensional framework (`app.attribute_dimension` + `app.attribute_value` + `app.sku_attribute_assignment`); new SKU columns land on `app.sku` via a Prisma migration. See [`docs/dev/specs/2026-04-23-postgres-only-development-policy.md`](dev/specs/2026-04-23-postgres-only-development-policy.md) for the rule text + the migration backlog. Canonical restatement in [`CLAUDE.md`](../CLAUDE.md).
+---
 
 ## Authentication
 
-Session-based auth with Postgres-backed `User` / `Session` / `Role` tables in the `public` schema. Bcrypt-family password hashing. No SSO yet. Admin-side permissions are role-scoped; per-line permission gating for reports (e.g. hide GP% for staff without `reports.view_gp`) is not implemented.
+Session-based auth with Postgres-backed `User`, `Session`, and `Role` tables in `public`. Password hashing uses a bcrypt-family implementation. SSO is not implemented yet. Admin-side permissions are role-scoped; per-line permission gating for reports is not fully implemented.
+
+---
 
 ## Development processes
 
-### Slash commands (project-local, at `.claude/commands/`)
+### Slash commands
 
 | Command | Purpose |
 |---|---|
 | `/milestone <label>` | Record a project milestone — verify, write milestone doc, sandwich-commit, tag, push |
-| `/index-knowledge` | Review the current conversation, route each insight to the right existing doc (this file, `COMPANY.md`, modules, manual, `dev/specs/`, `dev/plans/`) |
-| `/sync-module-docs [slug]` | Audit module docs vs. code reality; propose edits |
-| `/new-manual-chapter <slug>` | Scaffold an end-user manual chapter for a module |
-| `/verify-rics-mirror` | End-to-end mirror verification (sync + canary + row-counts) |
+| `/index-knowledge` | Route insights to the right docs |
+| `/sync-module-docs [slug]` | Audit module docs vs. code reality |
+| `/new-manual-chapter <slug>` | Scaffold an end-user manual chapter |
+| `/verify-rics-mirror` | End-to-end mirror verification |
 
 ### Commit discipline
 
-- Commit direct to `master`. No branches, no worktrees, no PRs.
+- Commit direct to `master` unless the operator explicitly chooses otherwise.
 - Conventional Commits style: `feat(scope)`, `chore(scope)`, `docs(scope)`, `fix(scope)`.
 - Co-authored-by line on commits made via Claude Code.
 
 ### Sandwich-commit pattern
 
-Used by `/milestone` and `/index-knowledge` for reversible multi-file passes:
+Used for reversible multi-file documentation or migration passes:
 
-1. **Before** — if the working tree is dirty, commit it as `chore: snapshot before <ritual>`. Separates pre-existing work from the ritual's writes.
-2. **Write** — the ritual applies its edits.
-3. **After** — commit the ritual's output as one distinct commit. `git revert <sha>` cleanly undoes the whole pass.
+1. If the working tree is dirty, commit it as a snapshot before the pass.
+2. Apply the pass.
+3. Commit the pass as one distinct commit.
 
-### Phase-A cutover method
+### Adapter migration method
 
-Pattern used to flip one adapter path at a time from OLEDB to `rics_mirror`:
+Pattern used to migrate request-side reads from MDB access to `rics_mirror`:
 
-1. Read the OLEDB SQL; map to the equivalent `rics_mirror` table.
-2. Translate SQL (`IIF → COALESCE`, `TOP N → LIMIT N`, `#date# → $N::date`, `DatePart → EXTRACT`, `[Brackets] → snake_case`, `Year()/Month() → EXTRACT(YEAR/MONTH FROM)`, `UCASE → UPPER`, `Voided = False → voided = false`, `IN (…) → ANY($N::type[])`).
-3. Preserve projection shape via aliases (`sku AS "SKU"`, `current_cost::float8 AS "CurrentCost"`). Downstream code doesn't change.
-4. Parameterize every caller-supplied value (`$N`, `ANY($N::type[])`). Never interpolate user input.
-5. Numeric casts: `::float8` for `NUMERIC`; `to_char(x AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS')` for `timestamptz` when caller expected a string.
-6. SKU-padding quirk: `rics_mirror.ticket_detail.sku` is right-padded to 15 chars; `inventory_master.sku` is not. Ticket-table filters use `RPAD($1, 15)`.
-7. Verify live via `curl` against the running dev server before committing. Commit per adapter with cross-source integrity checks.
+1. Read the old OLEDB SQL and map it to the matching `rics_mirror` table.
+2. Translate SQL syntax to Postgres.
+3. Preserve projection shape via aliases so downstream code does not change.
+4. Parameterize all caller-supplied values.
+5. Keep known RICS quirks explicit, such as padded SKU codes in ticket tables.
+6. Verify live before committing.
+
+This method migrates reads only. It is not a RICS write strategy.
 
 ### Prisma migration authoring
 
-Two helper scripts gate the Prisma migration workflow. Conventions + the legacy-hygiene audit live in [`docs/dev/specs/2026-04-24-migration-tooling.md`](dev/specs/2026-04-24-migration-tooling.md).
+Two helper scripts gate the Prisma migration workflow.
 
 | Script | What it does |
 |---|---|
-| `pnpm migrate:new <description>` | Scaffolds `prisma/migrations/<YYYYMMDDHHMMSS>_<description>/migration.sql` with a **seconds-precision** timestamp (prevents duplicate-timestamp collisions) and a header template with TODO markers for schema / rationale / rollback. |
-| `pnpm migrate:lint` | Static check over the migrations folder. Flags duplicate timestamps, missing header comments, unsafe DROP without IF EXISTS, schema-qualified refs to schemas not declared in `datasource db { schemas = [...] }`. Exit 1 on any error. Ready to gate CI. |
+| `pnpm migrate:new <description>` | Scaffolds a migration folder with seconds-precision timestamp and header template. |
+| `pnpm migrate:lint` | Flags duplicate timestamps, weak headers, unsafe DROP, and undeclared schema references. |
 
-The `_prisma_migrations` tracker forbids rewriting applied migrations mid-project, so three pre-existing duplicate-timestamp pairs (ordered correctly today by lexicographic suffix) and three unsafe-DROP warnings in `20260423120000_attribute_family_rules` are deferred until the Phase B cutover's fresh production DB permits a squash.
+Applied migrations are not renamed mid-project because `_prisma_migrations` tracks them by name. Squashing/baselining belongs to the Cutover Migration on a fresh production database.
 
 ### App-data bootstrap
 
-After `prisma:migrate` and `sync:rics`, the four-step app-data seed runs as a single orchestrator:
+After `prisma:migrate` and `sync:rics`, app-owned seed/import work can run as:
 
 ```bash
 pnpm --filter @benlow-rics/api bootstrap:app-data
 ```
 
-Runs `seed:product-families` → `import:attributes` (auto-detects the latest `attribute-catalog-export-*.json` in `docs/Important-Final-Docs/`) → `seed:sku-attributes` → `sync:rics-skus`. Accepts `--dry-run`, `--snapshot <path>`, and per-step `--skip-*` flags. Individual scripts remain available for targeted re-runs. Full rebuild sequence documented in [`docs/Important-Final-Docs/Migration-Steps-From-Scratch.md`](Important-Final-Docs/Migration-Steps-From-Scratch.md).
+This seeds product families, imports attributes, seeds SKU attributes, and syncs mirrored RICS SKUs into app-owned SKU lifecycle state where applicable. This is Postgres-side preparation only; it does not write to RICS.
 
-### Milestone ritual
-
-`/milestone <label>` at natural checkpoints:
-
-1. Preflight — branch = `master`, tag not already taken, no secrets in diff.
-2. Write milestone doc at `docs/dev/milestones/<date>-<label>.md`.
-3. Update `docs/PROJECT_STATUS.md` in place.
-4. Sandwich commit + annotated tag `milestone-<date>-<label>`.
-5. Push both the commit and the tag to `origin/master`.
-
-Same-day milestones OK (label makes them unique).
+---
 
 ## How this document evolves
 
-- **Additive by default.** New decisions about the technical system → updates here.
-- **Annotate, don't overwrite, for staleness.** When an old section is suspect, mark it `> ⚠️ May be stale per <date> — review.` rather than silently rewriting. Operator does the final delete.
-- **Routed by `/index-knowledge`.** Architecture-level insights from conversations land here.
-- **Dated decisions live in `docs/dev/specs/`.** Don't duplicate them. Reference them inline as `see: docs/dev/specs/<date>-<topic>.md` when relevant.
-- **Under 400 lines.** If this doc sprawls past that, split the biggest section out.
+- This file should reflect the current architecture, not historical alternatives.
+- If a dated spec conflicts with this file, this file wins until the spec is revised or archived.
+- Dated decisions remain in `docs/dev/specs/`; reference them instead of duplicating long explanations here.
+- Keep this file concise enough that agents can read it before coding.
