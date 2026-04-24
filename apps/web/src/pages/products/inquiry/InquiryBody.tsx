@@ -71,8 +71,11 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
 }) => {
   const [lookupOpen, setLookupOpen] = React.useState(!skuCode);
   const [navLoading, setNavLoading] = React.useState(false);
+  const prevSkuCodeRef = React.useRef(skuCode);
 
   React.useEffect(() => {
+    if (prevSkuCodeRef.current === skuCode) return;
+    prevSkuCodeRef.current = skuCode;
     setLookupOpen(!skuCode);
     if (!skuCode) onActiveTabChange(null);
   }, [skuCode, onActiveTabChange]);
