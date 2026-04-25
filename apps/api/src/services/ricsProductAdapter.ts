@@ -106,10 +106,8 @@ interface SizeTypeRow {
   rows: string[];    // non-blank cell labels in row order (≤ 27)
 }
 
-// Dimension loaders — all read from `rics_mirror.*` as of the Phase-A cutover.
-// Source tables mirror the RICS MDB layouts 1:1 (snake_case column names); the
-// SQL aliases columns back to the PascalCase shape the downstream consumers
-// expect, so Map/return types are unchanged.
+// Dimension loaders. SKU lookup reads now come from app-owned Postgres tables;
+// older MDB / mirror-backed request paths are being retired in place.
 
 async function loadCategoryMap(): Promise<Map<number, CategoryRow>> {
   return cachedAsync('dim:categories', 300_000, async () => {
@@ -133,37 +131,69 @@ async function loadCategoryMap(): Promise<Map<number, CategoryRow>> {
 
 async function loadDepartmentList(): Promise<DepartmentRow[]> {
   return cachedAsync('dim:departments', 300_000, async () => {
-    const rows = await prisma.$queryRawUnsafe<{
-      Number: number;
-      Desc: string | null;
-      BegCateg: number | null;
-      EndCateg: number | null;
-    }[]>(
-      `SELECT number AS "Number", "desc" AS "Desc",
-              beg_categ AS "BegCateg", end_categ AS "EndCateg"
-         FROM rics_mirror.departments
-        WHERE beg_categ IS NOT NULL AND end_categ IS NOT NULL`,
-    );
-    return rows.map((r) => ({
-      number: r.Number,
-      name: (r.Desc || '').trim(),
-      begCateg: r.BegCateg as number,
-      endCateg: r.EndCateg as number,
-    }));
+    try {
+      const rows = await prisma.$queryRawUnsafe<{
+        Number: number;
+        Desc: string | null;
+        BegCateg: number | null;
+        EndCateg: number | null;
+      }[]>(
+        `SELECT number AS "Number", "desc" AS "Desc",
+                beg_categ AS "BegCateg", end_categ AS "EndCateg"
+           FROM app.taxonomy_department
+          WHERE beg_categ IS NOT NULL AND end_categ IS NOT NULL`,
+      );
+      return rows.map((r) => ({
+        number: r.Number,
+        name: (r.Desc || '').trim(),
+        begCateg: r.BegCateg as number,
+        endCateg: r.EndCateg as number,
+      }));
+    } catch (err: any) {
+      console.warn('[ricsProductAdapter] department lookup metadata unavailable:', err.message);
+      return [];
+    }
   });
 }
 
 async function loadVendorMap(): Promise<Map<string, VendorRow>> {
   return cachedAsync('dim:vendors', 300_000, async () => {
     const map = new Map<string, VendorRow>();
-    const rows = await prisma.$queryRawUnsafe<
-      { Code: string | null; 'Short Name': string | null; 'Manu Name': string | null }[]
-    >(
-      `SELECT code AS "Code",
-              short_name AS "Short Name",
-              manu_name AS "Manu Name"
-         FROM rics_mirror.vendor_master`,
-    );
+    const loadRows = async () => {
+      try {
+        return await prisma.$queryRawUnsafe<
+          { Code: string | null; 'Short Name': string | null; 'Manu Name': string | null }[]
+        >(
+          `SELECT
+              COALESCE(o.code, v.code) AS "Code",
+              COALESCE(o.short_name, v.short_name) AS "Short Name",
+              COALESCE(o.manu_name, v.manu_name) AS "Manu Name"
+             FROM app.vendor v
+             FULL OUTER JOIN app.vendor_overlay o ON o.code = v.code
+            WHERE (o.source IS NULL OR o.source <> 'tombstone')
+              AND (v.code IS NOT NULL OR o.code IS NOT NULL)`,
+        );
+      } catch (err: any) {
+        console.warn('[ricsProductAdapter] vendor overlay join unavailable; falling back to app.vendor:', err.message);
+        try {
+          return await prisma.$queryRawUnsafe<
+            { Code: string | null; 'Short Name': string | null; 'Manu Name': string | null }[]
+          >(
+            `SELECT
+                code AS "Code",
+                short_name AS "Short Name",
+                manu_name AS "Manu Name"
+               FROM app.vendor
+              WHERE code IS NOT NULL`,
+          );
+        } catch (fallbackErr: any) {
+          console.warn('[ricsProductAdapter] vendor lookup metadata unavailable:', fallbackErr.message);
+          return [];
+        }
+      }
+    };
+
+    const rows = await loadRows();
     for (const r of rows) {
       if (!r.Code) continue;
       map.set(r.Code.trim(), {
@@ -1130,69 +1160,74 @@ interface SkuLookupIndex {
   byCode: Map<string, SkuLookupIndexRow>;
 }
 
-// Phase-A cutover: default source is the Postgres `rics_mirror.inventory_master`
-// table, populated by `pnpm sync:rics`. Set SKU_LOOKUP_SOURCE=mdb to fall back
-// to the OLEDB path (kept for rollback while other adapter paths still hit MDBs).
-const SKU_LOOKUP_SOURCE: 'mirror' | 'mdb' =
-  process.env.SKU_LOOKUP_SOURCE?.toLowerCase() === 'mdb' ? 'mdb' : 'mirror';
-
 async function loadSkuLookupIndex(): Promise<SkuLookupIndex> {
-  return cachedAsync('sku:lookup:index', SKU_LOOKUP_INDEX_TTL_MS, () =>
-    SKU_LOOKUP_SOURCE === 'mirror'
-      ? loadSkuLookupIndexFromMirror()
-      : loadSkuLookupIndexFromMdb(),
-  );
+  return cachedAsync('sku:lookup:index', SKU_LOOKUP_INDEX_TTL_MS, () => {
+    const requestedSource = process.env.SKU_LOOKUP_SOURCE?.trim().toLowerCase();
+    if (requestedSource && requestedSource !== 'app') {
+      console.warn(
+        `[ricsProductAdapter] SKU_LOOKUP_SOURCE=${requestedSource} is retired; ` +
+          'using app.sku for lookup warmup.',
+      );
+    }
+    return loadSkuLookupIndexFromApp();
+  });
 }
 
-async function loadSkuLookupIndexFromMirror(): Promise<SkuLookupIndex> {
+async function loadSkuLookupIndexFromApp(): Promise<SkuLookupIndex> {
   const t0 = Date.now();
   try {
-    // Column order and PascalCase aliases match the InventoryMaster projection
-    // used by the MDB path, so downstream consumers see identical shape. `::float8`
-    // casts turn Postgres NUMERIC into JS `number` (matching the old JSON path);
-    // LastPriceChange is emitted as an ISO-like string to match the OLEDB shape.
-    //
-    // LEFT JOIN app.sku_attribute_override merges operator-applied batch changes
-    // (utilities module) so the SKU Lookup modal reflects effective values.
-    // See docs/modules/utilities.md and docs/dev/specs/2026-04-21-utilities-batch-change-design.md.
     const rows = await prisma.$queryRawUnsafe<SkuLookupIndexRow[]>(`
       SELECT
-        im.sku                                       AS "SKU",
-        im."desc"                                    AS "Desc",
-        COALESCE(o.vendor, im.vendor)                AS "Vendor",
-        im.manufacturer                              AS "Manufacturer",
-        COALESCE(o.category, im.category)            AS "Category",
-        im.style_color                               AS "StyleColor",
-        im.vendor_sku                                AS "VendorSKU",
-        im.size_type                                 AS "SizeType",
-        COALESCE(o.season, im.season)                AS "Season",
-        im.label_code                                AS "LabelCode",
-        COALESCE(o.group_code, im.group_code)        AS "GroupCode",
-        im.picture_file_name                         AS "PictureFileName",
-        im.list_price::float8                        AS "ListPrice",
-        im.retail_price::float8                      AS "RetailPrice",
-        im.mark_down_price1::float8                  AS "MarkDownPrice1",
-        im.mark_down_price2::float8                  AS "MarkDownPrice2",
-        im.current_price                             AS "CurrentPrice",
-        im.current_cost::float8                      AS "CurrentCost",
-        to_char(im.last_price_change AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS') AS "LastPriceChange",
-        im.perks::float8                             AS "Perks",
-        im.comment                                   AS "Comment",
-        im.status                                    AS "Status"
-      FROM rics_mirror.inventory_master im
-      LEFT JOIN app.sku_attribute_override o ON im.sku = o.rics_sku_code
-      WHERE im.status IS NULL OR im.status <> 'D'
-      ORDER BY im.sku
+        s.code                                        AS "SKU",
+        s.description_rics                            AS "Desc",
+        s.vendor_id                                   AS "Vendor",
+        s.manufacturer                                AS "Manufacturer",
+        s.category_number                             AS "Category",
+        s.style_color                                 AS "StyleColor",
+        s.vendor_sku                                  AS "VendorSKU",
+        s.size_type                                   AS "SizeType",
+        s.season                                      AS "Season",
+        s.label_code                                  AS "LabelCode",
+        s.group_code                                  AS "GroupCode",
+        s.picture_file_name                           AS "PictureFileName",
+        s.list_price::float8                          AS "ListPrice",
+        s.retail_price::float8                        AS "RetailPrice",
+        s.mark_down_price1::float8                    AS "MarkDownPrice1",
+        s.mark_down_price2::float8                    AS "MarkDownPrice2",
+        CASE UPPER(COALESCE(s.current_price_slot, ''))
+          WHEN '1' THEN 1
+          WHEN 'LIST' THEN 1
+          WHEN '2' THEN 2
+          WHEN 'RETAIL' THEN 2
+          WHEN '3' THEN 3
+          WHEN 'MARKDOWN1' THEN 3
+          WHEN 'MARK_DOWN_1' THEN 3
+          WHEN 'MD1' THEN 3
+          WHEN '4' THEN 4
+          WHEN 'MARKDOWN2' THEN 4
+          WHEN 'MARK_DOWN_2' THEN 4
+          WHEN 'MD2' THEN 4
+          ELSE 2
+        END                                           AS "CurrentPrice",
+        s.current_cost::float8                        AS "CurrentCost",
+        to_char(s.updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS') AS "LastPriceChange",
+        s.perks::float8                               AS "Perks",
+        s.comment                                     AS "Comment",
+        CASE WHEN s.sku_state = 'DISCONTINUED' THEN 'D' ELSE NULL END AS "Status"
+      FROM app.sku s
+      WHERE s.code IS NOT NULL
+        AND COALESCE(s.sku_state, 'ACTIVE') <> 'DISCONTINUED'
+      ORDER BY s.code
     `);
     const byCode = new Map<string, SkuLookupIndexRow>();
     for (const r of rows) {
       const code = r.SKU?.trim().toUpperCase();
       if (code) byCode.set(code, r);
     }
-    console.log(`[ricsProductAdapter] SKU lookup index loaded from rics_mirror: ${rows.length} rows in ${Date.now() - t0}ms`);
+    console.log(`[ricsProductAdapter] SKU lookup index loaded from app.sku: ${rows.length} rows in ${Date.now() - t0}ms`);
     return { rows, byCode };
   } catch (err: any) {
-    console.error('[ricsProductAdapter] SKU lookup index load from rics_mirror failed:', err.message);
+    console.error('[ricsProductAdapter] SKU lookup index load from app.sku failed:', err.message);
     return { rows: [], byCode: new Map() };
   }
 }
@@ -1267,31 +1302,44 @@ export async function invalidateWarmupForSkus(skuCodes: string[]): Promise<void>
     const refreshed = await prisma.$queryRawUnsafe<SkuLookupIndexRow[]>(
       `
       SELECT
-        im.sku                                       AS "SKU",
-        im."desc"                                    AS "Desc",
-        COALESCE(o.vendor, im.vendor)                AS "Vendor",
-        im.manufacturer                              AS "Manufacturer",
-        COALESCE(o.category, im.category)            AS "Category",
-        im.style_color                               AS "StyleColor",
-        im.vendor_sku                                AS "VendorSKU",
-        im.size_type                                 AS "SizeType",
-        COALESCE(o.season, im.season)                AS "Season",
-        im.label_code                                AS "LabelCode",
-        COALESCE(o.group_code, im.group_code)        AS "GroupCode",
-        im.picture_file_name                         AS "PictureFileName",
-        im.list_price::float8                        AS "ListPrice",
-        im.retail_price::float8                      AS "RetailPrice",
-        im.mark_down_price1::float8                  AS "MarkDownPrice1",
-        im.mark_down_price2::float8                  AS "MarkDownPrice2",
-        im.current_price                             AS "CurrentPrice",
-        im.current_cost::float8                      AS "CurrentCost",
-        to_char(im.last_price_change AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS') AS "LastPriceChange",
-        im.perks::float8                             AS "Perks",
-        im.comment                                   AS "Comment",
-        im.status                                    AS "Status"
-      FROM rics_mirror.inventory_master im
-      LEFT JOIN app.sku_attribute_override o ON im.sku = o.rics_sku_code
-      WHERE im.sku = ANY($1::text[])
+        s.code                                        AS "SKU",
+        s.description_rics                            AS "Desc",
+        s.vendor_id                                   AS "Vendor",
+        s.manufacturer                                AS "Manufacturer",
+        s.category_number                             AS "Category",
+        s.style_color                                 AS "StyleColor",
+        s.vendor_sku                                  AS "VendorSKU",
+        s.size_type                                   AS "SizeType",
+        s.season                                      AS "Season",
+        s.label_code                                  AS "LabelCode",
+        s.group_code                                  AS "GroupCode",
+        s.picture_file_name                           AS "PictureFileName",
+        s.list_price::float8                          AS "ListPrice",
+        s.retail_price::float8                        AS "RetailPrice",
+        s.mark_down_price1::float8                    AS "MarkDownPrice1",
+        s.mark_down_price2::float8                    AS "MarkDownPrice2",
+        CASE UPPER(COALESCE(s.current_price_slot, ''))
+          WHEN '1' THEN 1
+          WHEN 'LIST' THEN 1
+          WHEN '2' THEN 2
+          WHEN 'RETAIL' THEN 2
+          WHEN '3' THEN 3
+          WHEN 'MARKDOWN1' THEN 3
+          WHEN 'MARK_DOWN_1' THEN 3
+          WHEN 'MD1' THEN 3
+          WHEN '4' THEN 4
+          WHEN 'MARKDOWN2' THEN 4
+          WHEN 'MARK_DOWN_2' THEN 4
+          WHEN 'MD2' THEN 4
+          ELSE 2
+        END                                           AS "CurrentPrice",
+        s.current_cost::float8                        AS "CurrentCost",
+        to_char(s.updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS') AS "LastPriceChange",
+        s.perks::float8                               AS "Perks",
+        s.comment                                     AS "Comment",
+        CASE WHEN s.sku_state = 'DISCONTINUED' THEN 'D' ELSE NULL END AS "Status"
+      FROM app.sku s
+      WHERE s.code = ANY($1::text[])
       `,
       skuCodes,
     );

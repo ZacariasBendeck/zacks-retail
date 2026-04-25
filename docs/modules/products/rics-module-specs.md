@@ -374,7 +374,7 @@ For the canonical list of view modes, action tabs, and features that v1 stubs (p
 
 ### Runtime dependency — SKU Lookup index warmup
 
-The SKU Lookup modal inside the Product Inquiry page is backed by an in-memory index of the full `InventoryMaster` table that the API loads at startup. It covers every SKU in the catalog (no cap) and must stay that way. See [`docs/operations/sku-lookup-index-warmup.md`](../operations/sku-lookup-index-warmup.md) for details, verification steps, and hard rules against re-capping the index.
+The SKU Lookup modal inside the Product Inquiry page is backed by an in-memory index of the full promoted `app.sku` catalog that the API loads at startup. This is the app-owned Postgres successor to the legacy `InventoryMaster` surface. It covers every SKU in the catalog (no cap) and must stay that way. See [`docs/operations/sku-lookup-index-warmup.md`](../operations/sku-lookup-index-warmup.md) for details, verification steps, and hard rules against re-capping the index.
 
 ## Dependencies
 
