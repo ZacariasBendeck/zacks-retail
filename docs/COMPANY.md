@@ -75,7 +75,11 @@ Fiscal-period close lifecycle (Close Week / Month / Season / Year) is owned by t
 
 ## Store rosters (canonical)
 
+> ⚠️ May be stale per 2026-04-25 /index-knowledge pass: `rics_mirror` schema was dropped on 2026-04-25 (migration `20260425113000_drop_rics_mirror_schema`). Store labels for live reads now come from `app.store_master`. Review and remove the `rics_mirror.store_master` reference if confirmed no longer accurate.
+
 For now, the canonical roster is in `rics_mirror.store_master` (reloaded from RICS each sync). The chain → store mapping is informal — lives only in this doc — until `app.store_group` + `app.store_group_member` land with purchase-planning v2.
+
+A frontend mirror of the chain → store mapping lives at [`apps/web/src/constants/storeChains.ts`](../apps/web/src/constants/storeChains.ts) so the Sales by Day chain shortcut and any other UI that needs to expand a chain into its store list can do so without a round-trip. **Keep that file in lockstep with the rosters in this section** until `app.store_group` lands and replaces both.
 
 Store numbers observed in sales / transfer reports include (non-exhaustive, pulled from real data): 1, 2, 5–8, 9 (The Jeans Company Tg), 10 (Magic Shoes MP.SPS), 12 (UNLIMITED MEGAMALLSP), 13 (UNLIMITED MIRAFLORES), 14 (UNLIMITED METROMALL), 15 (GIANNI SALVATORE), 16 (THE PLACE MIRAFLORES), 17 (La Femme Multiplaza), 18 (Tienda 18), 19, 20 (Magic Shoes), 21 (Magic ShoesMetroMall), 22 (Magic Shoes Galerias), 23 (La Femme Cascadas), 24 (Magic Shoes Cascadas), 25 (Magic Shoes CityMall), 26, 28 (UNLIMITED LASCASCADA), 29 (Unlimited GaleriasSP), 30 (Unlimited CityMall T), 31 (Unlimited City SPS), 32 (Unlimited Premier), 35 (Magic Shoes City Teg), 41, 42 (Traffic Cascasdas), 43 (TRAFFIC City Mall TG), 90 (Mercaderia Dañada), 91 (UNLIMITED PREMIER DÑ), 97, 99 (BODEGA GENERAL).
 

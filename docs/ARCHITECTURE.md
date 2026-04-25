@@ -180,12 +180,25 @@ Operational SKU creation remains in RICS until cutover. App-created SKU records 
 
 ## Schemas
 
+> ⚠️ May be stale per 2026-04-25 /index-knowledge pass: `rics_mirror` schema was dropped by migration `20260425113000_drop_rics_mirror_schema` (and `rics_mirror_staging` along with it). Sales/ticket history moved to app-owned tables — see "Sales history surface" below. Other surfaces (categories, departments, sectors, vendor_master, inventory_master, salespeople, store_master, etc.) are still read by adapters under `apps/api/src/services/` via `rics_mirror.*` SQL strings, so those code paths now error at runtime until each surface gets its app-owned authoritative table or its read path is repointed. Review the schema list, FK rule, and adapter layer sections below; they describe the pre-drop world.
+
 Four schemas currently exist in the Postgres database.
 
 - **`rics_mirror`** — Read-only, atomic reload. 1:1 mirror of every canonical RICS MDB table. Rebuilt by `pnpm sync:rics`. It may serve request-side reads only for surfaces that do not yet have an app-owned authoritative table. Once such a table exists, `rics_mirror` is ETL/bootstrap input only for that surface. Never write at request time — the next reload drops everything not owned by the ETL.
 - **`public`** — Storefront-baseline tables that predate Phase A (`Cart`, `CartLine`, `Order`, `OrderLine`, `User`, `Session`, `Role`, `ProductContent`, `SeasonOverlay`, `ProductsAuditLog`). Preserved across ETL reloads. App writes freely here.
 - **`app`** — Module-owned additive tables — net-new things Zack's Retail invents that RICS never had. Active surface as of 2026-04-23: products (`sku`, `sku_activity`, `sku_attribute_override`, `sku_keyword_override`, `size_type_override`, `products_batch_operation*`), extended attributes (`attribute_dimension`, `attribute_value`, `sku_attribute_assignment` + orphans view, `attribute_family_rule`), product family (`product_family`, `category_product_family`), plus the legacy-ref migration targets seeded 2026-04-23. Phase-A contract: writes go here freely; the `sync:rics` ETL never touches this schema.
 - **`platform`** — Cross-cutting admin spine: ETL runs now; future audit, notification, feature flag, and scheduled task surfaces.
+
+### Sales history surface (post 2026-04-25)
+
+Imported RICS sales/ticket history is app-owned and lives in `app.sales_history_ticket` + `app.sales_history_ticket_line` (created by migration `20260425190000_sales_history_ticket_baseline`, indexed further by `20260425201500_sales_history_source_index`).
+
+- `app.sales_history_ticket` — one row per ticket. Key columns: `external_transaction_id` (e.g. `RITRNSSV:<key>`), `source` (default `'rics_ticket_import'`), `store_id` (smallint), `ticket_number`, `cashier_code`, `purchased_at` (TIMESTAMPTZ), `transaction_kind` (`'purchase'` | `'return'`), `status` (`'completed'` | `'cancelled'` | `'refunded'`), monetary totals as `DECIMAL(14,2)`. Fiscal-close commit (legacy `Posted='Y'`) is represented as `status='completed'`.
+- `app.sales_history_ticket_line` — line items keyed by `ticket_id`. Carries `sku_id` (UUID FK to `app.sku`), `quantity`, `unit_price`/`unit_cost`, `net_amount`, `cost_amount`, `is_return`, `salesperson_code`. **`sku_code` is null for rows imported by the baseline migration** — joins back to `app.sku` to recover the code.
+- Profit at the line level is `net_amount - cost_amount`; at the ticket level it's the corresponding sum.
+- Day bucketing for reports converts `purchased_at AT TIME ZONE 'America/Tegucigalpa'` (HN local) — same convention used by the new sales-pivot adapters.
+
+The Sales by Day adapter ([`ricsSalesReportAdapter.getSalesByDay`](../apps/api/src/services/salesReporting/ricsSalesReportAdapter.ts)) is the first request-path consumer to migrate off `rics_mirror.ticket_*` and onto these tables. Sales by Time, Sales by SKU, Salesperson Summary, and Best Sellers in the same adapter still query the dropped tables — they fail at runtime until each is repointed.
 
 Foreign key rule:
 

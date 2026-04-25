@@ -20,6 +20,40 @@ Each entry follows this shape:
 
 <!-- Decisions go below this line, most recent first. -->
 
+## 2026-04-25 — SKU autofill on the modern form must read via the lifecycle endpoint, not the SQLite alias
+
+**Context:** The modern SKU form ([`SkuFormPageModern.tsx`](../../../apps/web/src/pages/inventory/SkuFormPageModern.tsx)) lets the operator pick a SKU from the lookup modal to switch into edit mode. The on-select handler called `handleSkuCodeLookup` → `useLookupSku` → `GET /api/v1/skus/lookup?code=`, which is a thin wrapper around `SELECT * FROM skus WHERE sku_code = ?` against the SQLite admin DB. The lookup modal's underlying search (`searchSkusForLookup`) reads the in-memory SKU index sourced from `app.sku` (via the lifecycle backfill). That mismatch meant any SKU shown in the modal that didn't also exist in SQLite — i.e. nearly every RICS-mirrored SKU — autofilled nothing: the endpoint 404'd silently and the form stayed empty.
+
+**Decision:** Modern form lookups go through the lifecycle endpoint `GET /api/v1/products/sku-drafts/by-code/:code` ([`fetchSkuDraftByCode`](../../../apps/web/src/hooks/useSkuDrafts.ts)). It returns a `SkuLifecycleRow` covering both app-created drafts and every RICS-mirrored SKU (the [SKU lifecycle backfill](../../operations/sku-lifecycle-backfill.md) marks each one ACTIVE in `app.sku` on every `sync:rics`). The page wraps `fetchSkuDraftByCode` in a local `useMutation` that converts the response via the existing `lifecycleToLegacySku()` so the legacy `populateForm()` keeps working unchanged.
+
+**Consequences:**
+- The modern form is now Postgres-aware end-to-end. The same code path also fixes the AutoComplete typeahead inside `SkuCodeStrip`, which previously had the same silent-404 failure for RICS-only codes.
+- The legacy form ([`SkuFormPage.tsx`](../../../apps/web/src/pages/inventory/SkuFormPage.tsx)) still uses `useLookupSku` against SQLite. That stays as-is — the legacy form is an intentional fallback and its surface is bounded.
+- `useLookupSku` retains a single caller (the legacy form). Any *new* lookup callers should prefer the lifecycle endpoint.
+
+**Alternatives considered:**
+- Keep using `/api/v1/skus/lookup` and backfill SQLite on every `sync:rics` — rejected; doubles the source of truth and contradicts the postgres-only-development policy.
+- Add a `?source=postgres` query param to the SQLite alias — rejected; introduces another flag instead of consolidating on the lifecycle endpoint that already exists.
+
+**Related:** [`apps/web/src/pages/inventory/SkuFormPageModern.tsx`](../../../apps/web/src/pages/inventory/SkuFormPageModern.tsx), [`apps/web/src/hooks/useSkuDrafts.ts`](../../../apps/web/src/hooks/useSkuDrafts.ts) (`fetchSkuDraftByCode`), [`apps/api/src/routes/products/skuDraftRoutes.ts`](../../../apps/api/src/routes/products/skuDraftRoutes.ts) (`/by-code/:code`).
+
+---
+
+## 2026-04-25 — Modern SKU form gains the full SKU Lookup modal, not just the typeahead
+
+**Context:** The modern SKU form's create-mode strip ([`SkuCodeStrip.tsx`](../../../apps/web/src/pages/inventory/sku-form-modern/SkuCodeStrip.tsx)) shipped with only an `AutoComplete` typeahead — fine if the operator already knows the code, but it can't browse by description / vendor / style-color the way the legacy form's "Buscar" link can (which opens [`SkuLookup`](../../../apps/web/src/components/sku-lookup/SkuLookup.tsx) — a paginated modal with Season/Vendor/Department facets and thumbnails).
+
+**Decision:** Add the full SKU Lookup modal to the modern form. `SkuFormPageModern` now hosts a `<SkuLookup>` next to its existing `<VendorLookup>`. `SkuCodeStrip` accepts an optional `onOpenSkuLookup` callback and renders a "Buscar" link button (with `SearchOutlined` icon) next to the section title in create mode. The button is shown only in create mode (`!isRouteEdit`); edit mode keeps the readonly final-code field. Selecting a row from the modal seeds `skuCode` and routes through the same `handleSkuCodeLookup` flow that the typeahead uses, so the autofill logic is unified.
+
+**Consequences:**
+- Operators can browse the catalog from create mode without having to navigate away.
+- Disabled-state behavior matches the typeahead: once a match locks in (`matched`), the Buscar link disables alongside the AutoComplete.
+- No backend change — modal already pointed at the existing lookup index.
+
+**Related:** [`apps/web/src/pages/inventory/SkuFormPageModern.tsx`](../../../apps/web/src/pages/inventory/SkuFormPageModern.tsx), [`apps/web/src/pages/inventory/sku-form-modern/SkuCodeStrip.tsx`](../../../apps/web/src/pages/inventory/sku-form-modern/SkuCodeStrip.tsx).
+
+---
+
 ## 2026-04-23 — `/products/skus/new` is the primary SKU creator; legacy `/products/skus/new-alt` kept as fallback
 
 **Context:** Two SKU creators existed in parallel: the AI-powered lifecycle form at `/inventory/skus/new` (drag/paste a boot image, Claude auto-fills ~14 of ~15 attributes, writes to `app.sku`) and the legacy RICS-tabbed form at `/products/skus/new` (manual entry of every column, no AI). The AI form is the intended long-term surface but lived under the `/inventory/*` URL tree that predates the products module.

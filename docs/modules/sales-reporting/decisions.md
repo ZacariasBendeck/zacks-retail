@@ -20,6 +20,39 @@ Each entry follows this shape:
 
 <!-- Decisions go below this line, most recent first. -->
 
+## 2026-04-25 — Sales by Day: cut over to `app.sales_history_ticket*`, multi-store + profit + chains
+
+**Context:** Two pressures collided on the same week. (1) Migration `20260425113000_drop_rics_mirror_schema` dropped the entire `rics_mirror` schema; the existing `loadTicketLines` helper that backed `getSalesByDay` (and the rest of the report adapter) was querying `rics_mirror.ticket_header` + `rics_mirror.ticket_detail` — every Sales by Day request started failing with "relation does not exist." (2) Operator wanted the report to take multiple stores (default empty), an explicit Combine Stores toggle, a chain shortcut, and a Profit column. The legacy single-store + always-combine shape couldn't carry any of that.
+
+**Decision:** Rewrote Sales by Day end-to-end on the new app-owned baselines.
+
+Backend ([`ricsSalesReportAdapter.ts`](../../../apps/api/src/services/salesReporting/ricsSalesReportAdapter.ts)):
+- New `loadDailySalesByStores({ storeNumbers, startDate, endDate, includeUnposted })` aggregates `SUM(net_amount)` and `SUM(net_amount - cost_amount)` (profit) per (date, store_id) directly in SQL against `app.sales_history_ticket` ⨝ `app.sales_history_ticket_line`. Day buckets resolve in store-local time (`America/Tegucigalpa`) to match the rest of the new sales-pivot adapters. `includeUnposted=false` mirrors the legacy `Posted='Y'` filter via `status='completed'`; `transaction_kind='purchase'` excludes returns the way `trans_type=1` did.
+- `getSalesByDay` now takes `storeNumbers: number[]` + `combineStores: boolean`. Empty store list returns an empty report (no error). The response always carries `storeBreakdowns: { storeNumber, storeLabel, rows, totals }[]`; when `combineStores=true` it also carries a single `combined: { storeLabel, rows, totals }` block summed across the selected stores. Both row shapes carry `profit` and `comparedProfit` alongside `netSales`/`comparedNetSales`.
+- Legacy `/api/v1/reports/rics-sales-by-day-store` alias adapts internally — calls the multi-store API with `[query.store]` and reshapes back to the single-store fields it documented, so existing CSV/XLSX consumers don't break.
+
+Frontend ([`SalesByDayPage.tsx`](../../../apps/web/src/pages/salesReporting/SalesByDayPage.tsx)):
+- Default: no stores selected. Run button disabled until ≥1 store.
+- Multi-select sourced from `useSalesDimensions()` (renders `number — name`).
+- Chain dropdown is a shortcut: picking one populates the multi-select with that chain's roster from [`apps/web/src/constants/storeChains.ts`](../../../apps/web/src/constants/storeChains.ts), but selection remains the source of truth.
+- "Combine stores" Switch (default on). Off → one section per store, each with summary cards + table. On → one combined table.
+- New **Profit** column on every row (with tooltip; computed as `net_amount − cost_amount`). Summary cards include a Profit card.
+- Template hydration migrates legacy `storeNumber: number` → `storeNumbers: [number]` so saved templates from the single-store era keep loading.
+
+**Consequences:**
+- The other reports in [`ricsSalesReportAdapter.ts`](../../../apps/api/src/services/salesReporting/ricsSalesReportAdapter.ts) — Sales by Time, Sales by SKU, Salesperson Summary, Best Sellers — *still* call `loadTicketLines`/`loadTicketHeaders` against the dropped `rics_mirror.ticket_*`. They will throw the same "relation does not exist" until each is migrated to `app.sales_history_ticket*` (or its own purpose-built aggregator). This is now the active backlog for the module.
+- The 2024-era unit tests at `apps/api/tests/ricsSalesReport.test.ts` mock the OLEDB `accessOleDb` layer and were already stale before the rics_mirror cutover — running them does not exercise the live SQL. Out of scope for this change; flag for a separate test rewrite that mocks Prisma.
+- `STORE_CHAINS` lives in the frontend pending the planned `app.store_group` / `app.store_group_member` tables for purchase-planning v2. Until those land, the chain rosters are duplicated between [`docs/COMPANY.md`](../../COMPANY.md) and the frontend constant — keep them in lockstep.
+
+**Alternatives considered:**
+- Keep the JS `loadTicketLines + sumByDate` fold and just point the SQL at the new tables — rejected; shipping per-store + profit + combine through that pattern would still need a second join and a wider in-memory shape, while a direct SQL aggregation (the new helper) is faster and simpler.
+- Define chains as a backend dimension served by `/api/v1/reports/sales/dimensions` — rejected for now; `app.store_group` is the right place for that and is already on the purchase-planning v2 backlog. Duplicating the rosters in the frontend constant is cheaper while we wait.
+- Render a "Store" column inside one combined table when `combineStores=false` instead of one section per store — rejected; per-store totals + summary cards beside each table answer the operator's question more directly.
+
+**Related:** [`apps/api/src/services/salesReporting/ricsSalesReportAdapter.ts`](../../../apps/api/src/services/salesReporting/ricsSalesReportAdapter.ts), [`apps/api/src/services/salesReporting/types.ts`](../../../apps/api/src/services/salesReporting/types.ts), [`apps/api/src/routes/salesReportRoutes.ts`](../../../apps/api/src/routes/salesReportRoutes.ts), [`apps/api/src/routes/reportRoutes.ts`](../../../apps/api/src/routes/reportRoutes.ts) (legacy alias adapter), [`apps/web/src/services/reportApi.ts`](../../../apps/web/src/services/reportApi.ts), [`apps/web/src/pages/salesReporting/SalesByDayPage.tsx`](../../../apps/web/src/pages/salesReporting/SalesByDayPage.tsx), [`apps/web/src/constants/storeChains.ts`](../../../apps/web/src/constants/storeChains.ts), migration [`20260425113000_drop_rics_mirror_schema`](../../../apps/api/prisma/migrations/20260425113000_drop_rics_mirror_schema/migration.sql), migration [`20260425190000_sales_history_ticket_baseline`](../../../apps/api/prisma/migrations/20260425190000_sales_history_ticket_baseline/migration.sql).
+
+---
+
 ## 2026-04-23 — Sales Pivot family: one endpoint + unified leaf row + variant dispatch
 
 **Context:** Operators wanted a family of pivot reports against live sales + on-hand data: a fixed Department-led tree, a Buyer-led tree, a Buyer-Vendor tree, optionally per-store splits, and eventually a free-form three-dimension builder. The fixed trees share measures (On-Hand qty/cost, TY qty/net-sales/profit, LY qty/net-sales/profit over a user-picked date window with a one-year-shifted comparison); only the identity columns change across variants. A naive design would mint one endpoint + one leaf-row type per variant.
