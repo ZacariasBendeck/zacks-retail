@@ -398,6 +398,20 @@ export const manualReceiptListQuerySchema = z.object({
 
 // ── Inventory Adjustment schemas ──────────────────────────────────
 
+const replenishmentTargetCellSchema = z.object({
+  columnLabel: z.string().max(32).optional().default(''),
+  rowLabel: z.string().max(32).optional().default(''),
+  modelQty: z.coerce.number().int().min(0).optional().nullable(),
+  maxQty: z.coerce.number().int().min(0).optional().nullable(),
+  reorderQty: z.coerce.number().int().min(0).optional().nullable(),
+});
+
+export const updateReplenishmentTargetSchema = z.object({
+  cells: z.array(replenishmentTargetCellSchema).min(1, 'At least one cell is required'),
+  additionalStoreIds: z.array(z.coerce.number().int().min(0)).optional(),
+  updatedBy: z.string().max(100).optional().nullable(),
+});
+
 const ADJUSTMENT_TYPES = ['RECEIPT', 'TRANSFER', 'MANUAL_ADJUST', 'RETURN', 'DAMAGE', 'SHRINKAGE'] as const;
 
 export const createAdjustmentSchema = z.object({
@@ -544,6 +558,10 @@ export const customerSearchQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(50).default(10),
 });
 
+export const customerMetricsBulkRecomputeSchema = z.object({
+  batch_size: z.coerce.number().int().min(1).max(5000).default(1000),
+});
+
 export const createFamilyMemberSchema = z.object({
   code: z.string().min(1).max(2),
   firstName: z.string().max(50).optional().nullable(),
@@ -606,3 +624,133 @@ export function validateQuery(schema: z.ZodSchema) {
     next();
   };
 }
+
+export const manualReturnContextQuerySchema = z.object({
+  storeId: z.coerce.number().int().min(0),
+  skuCode: z.string().trim().min(1).optional(),
+  upc: z.string().trim().min(1).optional(),
+}).superRefine((value, ctx) => {
+  if (!value.skuCode && !value.upc) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['skuCode'],
+      message: 'Exactly one of skuCode or upc is required',
+    });
+  }
+  if (value.skuCode && value.upc) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['skuCode'],
+      message: 'Provide either skuCode or upc, not both',
+    });
+  }
+});
+
+const manualReturnLineSchema = z.object({
+  columnLabel: z.string().max(32).optional().default(''),
+  rowLabel: z.string().max(32).optional().default(''),
+  quantity: z.number().int().positive(),
+});
+
+export const createManualReturnSchema = z.object({
+  storeId: z.number().int().min(0),
+  skuId: z.string().uuid(),
+  returnReasonCode: z.string().max(120).optional().nullable(),
+  rmaNumber: z.string().max(120).optional().nullable(),
+  movementAt: z.string().optional().nullable(),
+  performedBy: z.string().max(100).optional().nullable(),
+  unitCostOverride: z.coerce.number().nonnegative().refine(centPrecision, { message: CENT_PRECISION_MSG }).optional().nullable(),
+  casePackId: z.string().max(120).optional().nullable(),
+  casePackMultiplier: z.coerce.number().int().min(1).optional().nullable(),
+  note: z.string().max(1000).optional().nullable(),
+  idempotencyKey: z.string().min(1).max(255).optional().nullable(),
+  lines: z.array(manualReturnLineSchema).min(1, 'At least one line is required'),
+});
+
+export const manualReturnListQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(200).default(25),
+  sort: z.enum(['movementAt', 'createdAt']).default('movementAt'),
+  order: z.enum(['asc', 'desc']).default('desc'),
+  storeId: z.coerce.number().int().min(0).optional(),
+  skuId: z.string().uuid().optional(),
+  fromDate: z.string().optional(),
+  toDate: z.string().optional(),
+});
+
+const transferCriteriaSchema = z.object({
+  vendorCodes: z.array(z.string().trim().min(1)).optional().default([]),
+  categoryMin: z.coerce.number().int().min(0).optional().nullable(),
+  categoryMax: z.coerce.number().int().min(0).optional().nullable(),
+  seasons: z.array(z.string().trim().min(1)).optional().default([]),
+  groupCodes: z.array(z.string().trim().min(1)).optional().default([]),
+  keywords: z.array(z.string().trim().min(1)).optional().default([]),
+  skuCodes: z.array(z.string().trim().min(1)).optional().default([]),
+  limit: z.coerce.number().int().min(1).optional(),
+});
+
+export const createAutoTransferRunSchema = z.object({
+  warehouseStoreId: z.coerce.number().int().min(0),
+  targetStoreIds: z.array(z.coerce.number().int().min(0)).min(1, 'At least one target store is required'),
+  sortOrder: z.enum(['SKU', 'VENDOR', 'CATEGORY', 'LOCATION']).default('SKU'),
+  inTransitPos: z.boolean().optional().default(false),
+  criteria: transferCriteriaSchema.optional().default({}),
+});
+
+export const createBalancingTransferRunSchema = z.object({
+  balancingMethod: z.enum(['OVER_UNDER_MODELS', 'WITHOUT_MODELS', 'WITHOUT_CONSIDERING_MODELS']),
+  performanceMetric: z.enum(['ROI', 'TURNS', 'SELL_THRU']),
+  salesPeriod: z.enum(['MONTH', 'SEASON', 'YEAR']),
+  sortOrder: z.enum(['SKU', 'VENDOR', 'CATEGORY']).optional().default('SKU'),
+  tieBreakKind: z.enum(['ABSOLUTE', 'PERCENT']),
+  tieBreakValue: z.coerce.number().nonnegative(),
+  transferDoublesToLowerPriority: z.boolean().optional().default(false),
+  stripStoresBelowSizeCount: z.coerce.number().int().min(1).optional().nullable(),
+  inTransitPos: z.boolean().optional().default(false),
+  criteria: transferCriteriaSchema.extend({
+    storeIds: z.array(z.coerce.number().int().min(0)).optional().default([]),
+    styleColors: z.array(z.string().trim().min(1)).optional().default([]),
+    includeOriginalRetailOnly: z.boolean().optional().default(false),
+    includeMarkdownOnly: z.boolean().optional().default(false),
+    includePerksOnly: z.boolean().optional().default(false),
+  }).optional().default({}),
+}).superRefine((value, ctx) => {
+  if (value.criteria.includeOriginalRetailOnly && value.criteria.includeMarkdownOnly) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['criteria', 'includeOriginalRetailOnly'],
+      message: 'Select either original retail only or markdown only, not both',
+    });
+  }
+});
+
+export const createBalancingTransferRunV2Schema = z.object({
+  goalPreset: z.enum(['DAILY_RESCUE', 'WEEKLY_BALANCE', 'SEASONAL_CONSOLIDATION']).optional().default('WEEKLY_BALANCE'),
+  balancingMethod: z.enum(['OVER_UNDER_MODELS', 'WITHOUT_MODELS', 'WITHOUT_CONSIDERING_MODELS']),
+  performanceMetric: z.enum(['ROI', 'TURNS', 'SELL_THRU']),
+  salesPeriod: z.enum(['MONTH', 'SEASON', 'YEAR']),
+  sortOrder: z.enum(['SKU', 'VENDOR', 'CATEGORY']).optional().default('SKU'),
+  tieBreakKind: z.enum(['ABSOLUTE', 'PERCENT']),
+  tieBreakValue: z.coerce.number().nonnegative(),
+  transferDoublesToLowerPriority: z.boolean().optional().default(false),
+  stripStoresBelowSizeCount: z.coerce.number().int().min(1).optional().nullable(),
+  inTransitPos: z.boolean().optional().default(false),
+  allowLowConfidenceMoves: z.boolean().optional().default(false),
+  cooldownDays: z.coerce.number().int().min(0).optional().default(14),
+  protectDaysOverride: z.coerce.number().int().min(1).optional().nullable(),
+  criteria: transferCriteriaSchema.extend({
+    storeIds: z.array(z.coerce.number().int().min(0)).optional().default([]),
+    styleColors: z.array(z.string().trim().min(1)).optional().default([]),
+    includeOriginalRetailOnly: z.boolean().optional().default(false),
+    includeMarkdownOnly: z.boolean().optional().default(false),
+    includePerksOnly: z.boolean().optional().default(false),
+  }).optional().default({}),
+}).superRefine((value, ctx) => {
+  if (value.criteria.includeOriginalRetailOnly && value.criteria.includeMarkdownOnly) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['criteria', 'includeOriginalRetailOnly'],
+      message: 'Select either original retail only or markdown only, not both',
+    });
+  }
+});

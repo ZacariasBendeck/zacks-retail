@@ -715,8 +715,8 @@ export async function getSalesHistoryByMonth(
   const invByRow = new Map<string, InvAgg>();
   const today = new Date();
   const todayInfo = { year: today.getFullYear(), month: today.getMonth() + 1 };
-  const currentSlotMap = mapWindowToInvHisSlot(months, todayInfo);
-  const prevSlotMap = mapWindowToPrevMonthInvHisSlot(months, todayInfo);
+  let currentSlotMap = mapWindowToInvHisSlot(months, todayInfo);
+  let prevSlotMap = mapWindowToPrevMonthInvHisSlot(months, todayInfo);
 
   if (needsInventory) {
     // Reuse the SKU master projection that resolveCriteria already loads.
@@ -756,6 +756,21 @@ export async function getSalesHistoryByMonth(
         skuFilter: invSkuFilter,
         nonZeroOnly: true,
       });
+
+      const snapshotValue = invRows.find((row) => row.snapshotAsOf)?.snapshotAsOf;
+      if (snapshotValue) {
+        const snapshotDate = snapshotValue instanceof Date
+          ? snapshotValue
+          : new Date(snapshotValue);
+        if (!Number.isNaN(snapshotDate.getTime())) {
+          const snapshotInfo = {
+            year: snapshotDate.getFullYear(),
+            month: snapshotDate.getMonth() + 1,
+          };
+          currentSlotMap = mapWindowToInvHisSlot(months, snapshotInfo);
+          prevSlotMap = mapWindowToPrevMonthInvHisSlot(months, snapshotInfo);
+        }
+      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       console.warn(`[salesReportFacade] InvHis fetch failed: ${msg}`);

@@ -1140,19 +1140,17 @@ ORDER BY [Desc]
 const SKU_LOOKUP_INDEX_TTL_MS = 10 * 60_000;
 
 // The lookup index doubles as an instant master-lookup cache for the
-// Inventory Inquiry. The projection covers every column the Inquiry screen
-// consumes (pricing slots, size type, season, label/group, perks, comment,
-// status, picture) so `loadMasterBySku()` can resolve without a fresh
-// PowerShell round-trip. A second Map keyed by uppercase SKU gives O(1)
-// point-lookups on top of the sorted array used by `searchSkusForLookup`.
+// Inventory Inquiry's modal / facets / prev-next navigation. Keep only the
+// fields those flows actually consume so the warmed index stays as small as
+// possible. Full Inventory Inquiry master lookup now queries app.sku on
+// demand instead of piggy-backing on this cache.
 export type SkuLookupIndexRow = Pick<
   InventoryMasterRow,
-  | 'SKU' | 'Desc' | 'Vendor' | 'Manufacturer' | 'Category' | 'StyleColor'
-  | 'VendorSKU' | 'SizeType' | 'Season' | 'LabelCode' | 'GroupCode'
+  | 'SKU' | 'Desc' | 'Vendor' | 'Category' | 'StyleColor'
+  | 'Season'
   | 'PictureFileName'
   | 'ListPrice' | 'RetailPrice' | 'MarkDownPrice1' | 'MarkDownPrice2'
-  | 'CurrentPrice' | 'CurrentCost' | 'LastPriceChange'
-  | 'Perks' | 'Comment' | 'Status'
+  | 'CurrentPrice'
 >;
 
 interface SkuLookupIndex {
@@ -1181,14 +1179,9 @@ async function loadSkuLookupIndexFromApp(): Promise<SkuLookupIndex> {
         s.code                                        AS "SKU",
         s.description_rics                            AS "Desc",
         s.vendor_id                                   AS "Vendor",
-        s.manufacturer                                AS "Manufacturer",
         s.category_number                             AS "Category",
         s.style_color                                 AS "StyleColor",
-        s.vendor_sku                                  AS "VendorSKU",
-        s.size_type                                   AS "SizeType",
         s.season                                      AS "Season",
-        s.label_code                                  AS "LabelCode",
-        s.group_code                                  AS "GroupCode",
         s.picture_file_name                           AS "PictureFileName",
         s.list_price::float8                          AS "ListPrice",
         s.retail_price::float8                        AS "RetailPrice",
@@ -1208,12 +1201,7 @@ async function loadSkuLookupIndexFromApp(): Promise<SkuLookupIndex> {
           WHEN 'MARK_DOWN_2' THEN 4
           WHEN 'MD2' THEN 4
           ELSE 2
-        END                                           AS "CurrentPrice",
-        s.current_cost::float8                        AS "CurrentCost",
-        to_char(s.updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS') AS "LastPriceChange",
-        s.perks::float8                               AS "Perks",
-        s.comment                                     AS "Comment",
-        CASE WHEN s.sku_state = 'DISCONTINUED' THEN 'D' ELSE NULL END AS "Status"
+        END                                           AS "CurrentPrice"
       FROM app.sku s
       WHERE s.code IS NOT NULL
         AND COALESCE(s.sku_state, 'ACTIVE') <> 'DISCONTINUED'
@@ -1305,14 +1293,9 @@ export async function invalidateWarmupForSkus(skuCodes: string[]): Promise<void>
         s.code                                        AS "SKU",
         s.description_rics                            AS "Desc",
         s.vendor_id                                   AS "Vendor",
-        s.manufacturer                                AS "Manufacturer",
         s.category_number                             AS "Category",
         s.style_color                                 AS "StyleColor",
-        s.vendor_sku                                  AS "VendorSKU",
-        s.size_type                                   AS "SizeType",
         s.season                                      AS "Season",
-        s.label_code                                  AS "LabelCode",
-        s.group_code                                  AS "GroupCode",
         s.picture_file_name                           AS "PictureFileName",
         s.list_price::float8                          AS "ListPrice",
         s.retail_price::float8                        AS "RetailPrice",
@@ -1332,12 +1315,7 @@ export async function invalidateWarmupForSkus(skuCodes: string[]): Promise<void>
           WHEN 'MARK_DOWN_2' THEN 4
           WHEN 'MD2' THEN 4
           ELSE 2
-        END                                           AS "CurrentPrice",
-        s.current_cost::float8                        AS "CurrentCost",
-        to_char(s.updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS') AS "LastPriceChange",
-        s.perks::float8                               AS "Perks",
-        s.comment                                     AS "Comment",
-        CASE WHEN s.sku_state = 'DISCONTINUED' THEN 'D' ELSE NULL END AS "Status"
+        END                                           AS "CurrentPrice"
       FROM app.sku s
       WHERE s.code = ANY($1::text[])
       `,
@@ -1363,11 +1341,9 @@ export async function invalidateWarmupForSkus(skuCodes: string[]): Promise<void>
 }
 
 /**
- * Fast master lookup from the in-memory SKU index. Returns null if the SKU
- * isn't present (either genuinely unknown, or the index hasn't warmed up yet
- * — callers should fall back to a live query in that case). The returned row
- * is the full projection above, which covers every column the Inventory
- * Inquiry and sibling screens read from InventoryMaster.
+ * Fast exact-match lookup from the in-memory SKU index. Returns null if the
+ * SKU isn't present (either genuinely unknown, or the index hasn't warmed up
+ * yet — callers should fall back to a live query in that case).
  */
 export async function findIndexedMaster(sku: string): Promise<SkuLookupIndexRow | null> {
   const key = (sku ?? '').trim().toUpperCase();

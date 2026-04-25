@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+
 export interface CustomerCsvRow {
   Account: string;
   Code: string;
@@ -167,6 +169,28 @@ export function parseCsvRecords(text: string): CsvRecord[] {
       }
       return record;
     });
+}
+
+export async function* parseCsvFileRecords(filePath: string): AsyncGenerator<CsvRecord> {
+  const stream = fs.createReadStream(filePath, { encoding: 'utf8' });
+  let headerRow: string[] | null = null;
+
+  for await (const row of parseCsvRowsFromStream(stream)) {
+    const cells = row.map((cell) => stripBom(cell));
+    if (headerRow == null) {
+      headerRow = cells.map((cell) => cell.trim());
+      continue;
+    }
+    if (!cells.some((cell) => normalizeImportText(cell) !== null)) continue;
+
+    const record: CsvRecord = {};
+    for (let i = 0; i < headerRow.length; i += 1) {
+      const header = headerRow[i];
+      if (!header) continue;
+      record[header] = cells[i] ?? '';
+    }
+    yield record;
+  }
 }
 
 export function normalizeImportText(value: string | null | undefined): string | null {
@@ -372,6 +396,74 @@ function parseCsvMatrix(text: string): string[][] {
   }
 
   return rows;
+}
+
+async function* parseCsvRowsFromStream(
+  stream: AsyncIterable<string | Buffer>,
+): AsyncGenerator<string[]> {
+  let row: string[] = [];
+  let field = '';
+  let inQuotes = false;
+
+  const pushField = (): void => {
+    row.push(field);
+    field = '';
+  };
+
+  const pushRow = function* (): Generator<string[]> {
+    pushField();
+    const completed = row;
+    row = [];
+    yield completed;
+  };
+
+  for await (const chunk of stream) {
+    const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+    for (let i = 0; i < text.length; i += 1) {
+      const char = text[i];
+
+      if (inQuotes) {
+        if (char === '"') {
+          if (text[i + 1] === '"') {
+            field += '"';
+            i += 1;
+          } else {
+            inQuotes = false;
+          }
+        } else {
+          field += char;
+        }
+        continue;
+      }
+
+      if (char === '"') {
+        inQuotes = true;
+        continue;
+      }
+
+      if (char === ',') {
+        pushField();
+        continue;
+      }
+
+      if (char === '\r') {
+        if (text[i + 1] === '\n') i += 1;
+        yield* pushRow();
+        continue;
+      }
+
+      if (char === '\n') {
+        yield* pushRow();
+        continue;
+      }
+
+      field += char;
+    }
+  }
+
+  if (field.length > 0 || row.length > 0) {
+    yield* pushRow();
+  }
 }
 
 function stripBom(value: string): string {

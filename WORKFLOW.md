@@ -35,8 +35,8 @@ Every command lives in [`.claude/commands/`](./.claude/commands/). Each is a mar
 
 | Command | What it does | When to use |
 |---|---|---|
-| `/verify-rics-mirror` | Full end-to-end proof of the RICS → Postgres sync: plants a canary row in `public."ProductContent"`, runs the full reload, verifies row counts and canary survival, cleans up. ~5 min. PASS / FAIL result. | After changing the sync pipeline; periodic trust check; whenever you're about to flip a module's reads from OLEDB to `rics_mirror`. |
-| `/verify-rics-mirror --counts-only` | Fast sanity check — queries `SELECT COUNT(*)` against every canonical `rics_mirror.*` table and shows the last three `platform.etl_run` rows. No sync triggered. A few seconds. | You just want to see current mirror state. |
+| `/verify-rics-mirror` | Retired on 2026-04-25. Do not use. The project no longer allows rebuilding or verifying a `rics_mirror` schema. | Never. Use direct CSV import verification and owned-table audits instead. |
+| `/verify-rics-mirror --counts-only` | Retired with the same policy. | Never. |
 | `/verify-rics-mirror --force` | Same as the default, but bypasses the "another sync is running" guard. Only safe if you've confirmed the prior run is actually dead. | Previous sync crashed and left a `status='running'` row; a plain invoke refuses. |
 
 ### Plain shell (no slash command yet — run these from the integrated terminal)
@@ -44,8 +44,8 @@ Every command lives in [`.claude/commands/`](./.claude/commands/). Each is a mar
 | Command | What it does |
 |---|---|
 | `pnpm --filter @benlow-rics/api dev` | Start the API server on `localhost:4000`. |
-| `pnpm --filter @benlow-rics/api sync:rics` | One-way RICS MDB → Postgres `rics_mirror` reload. ~5 min. Same pipeline the `/verify-rics-mirror` command invokes. Full runbook: [`docs/operations/rics-mirror-sync.md`](./docs/operations/rics-mirror-sync.md). |
-| `pnpm --filter @benlow-rics/api verify:rics-mirror` | Shell-level equivalent of `/verify-rics-mirror` (no Claude interpretation). Use when you want the raw script output and exit code. |
+| `pnpm --filter @benlow-rics/api sync:rics` | Retired on 2026-04-25. Recreating `rics_mirror` is no longer allowed. |
+| `pnpm --filter @benlow-rics/api verify:rics-mirror` | Retired with the same policy. |
 | `pnpm --filter @benlow-rics/api prisma:migrate` | Apply pending Prisma migrations to the local Postgres. |
 | `pnpm --filter @benlow-rics/api test` | Jest tests. |
 
@@ -75,14 +75,10 @@ Every command lives in [`.claude/commands/`](./.claude/commands/). Each is a mar
 1. `/new-manual-chapter <slug>` → scaffolds the chapter and INDEX entry.
 2. Fill in the chapter prose yourself, or describe screens to plain Claude.
 
-**Reload RICS data into Postgres.**
-1. `pnpm --filter @benlow-rics/api sync:rics` from the integrated terminal.
-2. Wait ~5 min. Watch per-table progress. Final line reads `OK — <N> rows total in <T>`.
-3. Sanity-check with `/verify-rics-mirror --counts-only` if you want counts.
-
-**Flipping a module from OLEDB reads to `rics_mirror` reads** (future work — no command for this yet; describe the module to plain Claude, reference [`docs/operations/rics-mirror-sync.md`](./docs/operations/rics-mirror-sync.md)).
-
-**Flipping a surface from `rics_mirror` reads to an app-owned authoritative table** (same workflow surface — describe the module/surface to plain Claude, cite the module spec and [`docs/operations/rics-mirror-sync.md`](./docs/operations/rics-mirror-sync.md)). This is now the required next step once the authoritative app table exists: request handlers read only from the app-owned table; `rics_mirror` remains ETL/bootstrap input only for that surface.
+**Reload legacy data into Postgres.**
+1. Extract the needed CSV artifacts from the MDB files.
+2. Run the module-specific direct CSV importers into owned Postgres tables.
+3. Audit the resulting `app.*` / module-owned tables directly.
 
 ---
 
@@ -93,8 +89,7 @@ Every command lives in [`.claude/commands/`](./.claude/commands/). Each is a mar
 - **No subagents.** If an old doc or handoff tells you to call a specific sub-agent, ignore it.
 - **Watch for verification evidence.** If Claude claims "done" without showing a test run or dev-server output, push back.
 - **Commit to `master` directly.** No branches, no worktrees, no PRs on this project.
-- **Don't touch `rics_mirror` by hand.** It's rebuilt on every `sync:rics`. Operator data goes in `public` / `app`. Full rules: [`docs/operations/rics-mirror-sync.md`](./docs/operations/rics-mirror-sync.md).
-- **Once a surface has an app-owned authoritative table, stop reading it from `rics_mirror` in request handlers.** At that point `rics_mirror` is ETL/bootstrap-only for that surface.
+- **Do not recreate `rics_mirror`.** The mirror workflow is retired. Use direct CSV imports into owned tables instead.
 
 ---
 
@@ -170,7 +165,7 @@ Everything under the repo root, top-down. Folders not listed here are either sta
 |---|---|
 | [`docs/MODULES.md`](./docs/MODULES.md) | The module registry — canonical list of modules, RICS chapter mapping, "what's not being ported" table. Start here when onboarding a new module. |
 | [`docs/modules/`](./docs/modules/) | Per-module specs. One file per module (products, inventory, sales-pos, etc.). Each is a governed contract — changes need to match what the code actually does. |
-| [`docs/operations/`](./docs/operations/) | Ops runbooks. Currently: `rics-mirror-sync.md` (the ETL pipeline), `access-oledb-async-spawn.md` (async-spawn hard rule), `sku-lookup-index-warmup.md` (startup warmup hard rule). Add one here per new operational concern. |
+| [`docs/operations/`](./docs/operations/) | Ops runbooks. `rics-mirror-sync.md` is retained only as a retirement note; use `rics-csv-promotion-playbook.md` and the other direct-import runbooks for current operations. |
 | [`docs/rics-reference/`](./docs/rics-reference/) | The RICS v7.7 user manual (PDF + any extracted text). Source of lineage; cite page numbers when porting behavior. |
 | [`docs/zacks-retail-manual/`](./docs/zacks-retail-manual/) | Forward-facing end-user manual for Zack's Retail. The eventual replacement for the RICS manual. Written chapter by chapter via `/new-manual-chapter`. |
 | [`docs/dev/specs/`](./docs/dev/specs/) | Dated architecture + design specs. Filename pattern: `YYYY-MM-DD-<topic>-design.md`. |

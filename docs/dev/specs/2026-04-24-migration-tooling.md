@@ -28,7 +28,7 @@ What it does:
 
 - Normalizes the description (lowercases, collapses whitespace + non-alphanum to `_`)
 - Generates `apps/api/prisma/migrations/<YYYYMMDDHHMMSS>_<description>/migration.sql`
-- Writes a header template with `-- TODO` markers for **schema** (which of `rics_mirror` / `app` / `platform` / `public`), **rationale**, and **rollback plan**
+- Writes a header template with `-- TODO` markers for **schema** (which of `app` / `platform` / `public` or a module-owned schema), **rationale**, and **rollback plan**
 - Prints a next-steps reminder: fill in SQL, update `schema.prisma`, run `prisma migrate deploy`, run `pnpm migrate:lint`
 
 What it doesn't do: no `schema.prisma` touch, no `prisma migrate` invocation. Deliberately — those are the author's to do, post-scaffold.
@@ -50,7 +50,7 @@ The schema-reference check uses a negative lookbehind `(?<!\.)` to skip the midd
 
 ### `pnpm bootstrap:app-data`
 
-Single orchestrator for the four-step app-data seed that runs after `prisma:migrate` and `sync:rics`:
+Single orchestrator for the app-data seed that runs after `prisma:migrate` and the direct legacy imports:
 
 1. `seed:product-families`
 2. `import:attributes` (auto-detects the latest `attribute-catalog-export-*.json` in `docs/Important-Final-Docs/`, falls back to repo root / `apps/api/`)
@@ -67,7 +67,7 @@ Output of `pnpm migrate:lint` as of 2026-04-24:
 
 ```
 Scanning 18 migration(s)...
-Declared schemas: public, platform, rics_mirror, app
+Declared schemas: public, platform, app
 
 ✗ ERROR  Duplicate timestamp 20260422140000: app_product_family, report_templates
 ✗ ERROR  Duplicate timestamp 20260423120000: attribute_family_rules, sku_add_perks_discount_code

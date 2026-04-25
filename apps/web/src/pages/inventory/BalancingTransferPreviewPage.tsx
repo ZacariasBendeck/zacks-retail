@@ -1,557 +1,647 @@
 import { useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import {
   Alert,
+  App,
   Button,
   Card,
+  Checkbox,
   Col,
   Empty,
-  Form,
   Input,
   InputNumber,
   Radio,
   Row,
   Select,
   Space,
-  Spin,
   Statistic,
-  Steps,
   Table,
   Tag,
   Typography,
 } from 'antd'
-import { BranchesOutlined, CheckOutlined } from '@ant-design/icons'
-import { useSkuStoreRollup } from '../../hooks/useRicsInventory'
+import {
+  ArrowLeftOutlined,
+  BranchesOutlined,
+  CheckOutlined,
+} from '@ant-design/icons'
+import {
+  useCommitBalancingTransferRun,
+  useCreateBalancingTransferRun,
+  useTransferStores,
+} from '../../hooks/useTransferRuns'
+import { StockMaintenanceHero } from '../../components/stock-maintenance'
 import type {
-  SkuStoreRollupParams,
-  SkuStoreRollupRow,
-} from '../../services/ricsInventoryApi'
-import { getErrorMessage } from '../../utils/errors'
+  BalancingTransferMetricSnapshot,
+  BalancingTransferPreviewLine,
+  BalancingTransferPreviewRecord,
+  CreateBalancingTransferRunPayload,
+} from '../../types/transferRuns'
 
-// RICS Ch. 4 p. 77 — Generate Balancing Transfers. Rebalance stock across
-// stores by performance. Three methods × three performance metrics × month/
-// season/year period. Phase 1 ships the preview against live RIINVQUA;
-// commit is Phase 2.
-type BalancingMethod =
-  | 'OVER_UNDER_MODELS'
-  | 'WITHOUT_MODELS'
-  | 'WITHOUT_CONSIDERING_MODELS'
-
-type PerformanceMetric = 'YTD_SALES' | 'STD_SALES' | 'MTD_SALES'
-
-interface WizardValues {
-  method: BalancingMethod
-  metric: PerformanceMetric
-  storeNumbers: string
-  tieBreakRatio: number
-  includeDoublesToLower: boolean
-  vendorCode?: string
-  categoryMin?: number
-  categoryMax?: number
-  season?: string
-  limit?: number
+function splitCodes(raw: string): string[] {
+  return raw
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean)
 }
 
-interface BalancingLine {
-  sku: string
-  description: string | null
-  brand: string | null
-  category: number | null
-  fromStore: number
-  fromStoreName: string | null
-  toStore: number
-  toStoreName: string | null
-  suggestedQuantity: number
-  reason: string
-  fromOnHand: number
-  fromSales: number
-  toOnHand: number
-  toSales: number
-  fromModel: number
-  toModel: number
+function formatMetric(
+  metric: BalancingTransferMetricSnapshot,
+  kind: 'ROI' | 'TURNS' | 'SELL_THRU',
+): string {
+  if (kind === 'TURNS') {
+    return metric.displayValue.toFixed(2)
+  }
+  return `${metric.displayValue.toFixed(1)}%`
 }
-
-const METHOD_OPTIONS: Array<{ value: BalancingMethod; label: string; hint: string }> = [
-  {
-    value: 'OVER_UNDER_MODELS',
-    label: 'Over/Under Models',
-    hint: 'Only SKUs with a Model participate; surplus moves to shortfalls.',
-  },
-  {
-    value: 'WITHOUT_MODELS',
-    label: 'Without Models',
-    hint: 'Only SKUs without a Model; move singles from donors with ≥2 to receivers at 0.',
-  },
-  {
-    value: 'WITHOUT_CONSIDERING_MODELS',
-    label: 'Ignore Models (default)',
-    hint: 'Balance by performance regardless of Model values.',
-  },
-]
 
 export default function BalancingTransferPreviewPage() {
-  const [form] = Form.useForm<WizardValues>()
-  const [step, setStep] = useState<0 | 1 | 2>(0)
-  const [rollupParams, setRollupParams] = useState<SkuStoreRollupParams | null>(null)
-  const [committedSettings, setCommittedSettings] = useState<WizardValues | null>(null)
+  const navigate = useNavigate()
+  const { message } = App.useApp()
+  const { data: stores = [], isLoading: storesLoading, error: storesError } = useTransferStores()
+  const createRun = useCreateBalancingTransferRun()
+  const commitRun = useCommitBalancingTransferRun()
 
-  const { data, isLoading, isFetching, error } = useSkuStoreRollup(rollupParams)
+  const [storeIds, setStoreIds] = useState<number[]>([])
+  const [balancingMethod, setBalancingMethod] = useState<'OVER_UNDER_MODELS' | 'WITHOUT_MODELS' | 'WITHOUT_CONSIDERING_MODELS'>(
+    'WITHOUT_CONSIDERING_MODELS',
+  )
+  const [performanceMetric, setPerformanceMetric] = useState<'ROI' | 'TURNS' | 'SELL_THRU'>('ROI')
+  const [salesPeriod, setSalesPeriod] = useState<'MONTH' | 'SEASON' | 'YEAR'>('YEAR')
+  const [sortOrder, setSortOrder] = useState<'SKU' | 'VENDOR' | 'CATEGORY'>('SKU')
+  const [tieBreakKind, setTieBreakKind] = useState<'ABSOLUTE' | 'PERCENT'>('PERCENT')
+  const [tieBreakValue, setTieBreakValue] = useState<number>(25)
+  const [transferDoublesToLowerPriority, setTransferDoublesToLowerPriority] = useState(false)
+  const [stripStoresBelowSizeCount, setStripStoresBelowSizeCount] = useState<number | null>(null)
+  const [vendorCodes, setVendorCodes] = useState('')
+  const [seasons, setSeasons] = useState('')
+  const [styleColors, setStyleColors] = useState('')
+  const [groupCodes, setGroupCodes] = useState('')
+  const [keywords, setKeywords] = useState('')
+  const [skuCodes, setSkuCodes] = useState('')
+  const [categoryMin, setCategoryMin] = useState<number | null>(null)
+  const [categoryMax, setCategoryMax] = useState<number | null>(null)
+  const [includeOriginalRetailOnly, setIncludeOriginalRetailOnly] = useState(false)
+  const [includeMarkdownOnly, setIncludeMarkdownOnly] = useState(false)
+  const [includePerksOnly, setIncludePerksOnly] = useState(false)
+  const [preview, setPreview] = useState<BalancingTransferPreviewRecord | null>(null)
 
-  const handleCompute = async () => {
+  const effectiveStoreIds = useMemo(
+    () => (storeIds.length > 0 ? storeIds : stores.map((store) => store.storeId)),
+    [storeIds, stores],
+  )
+
+  const summaryMetrics = preview?.summary ?? {
+    transferCount: 0,
+    skuCount: 0,
+    storePairCount: 0,
+    totalUnits: 0,
+    exceptionCount: 0,
+  }
+  const storeLoadErrorMessage = storesError instanceof Error ? storesError.message : null
+
+  async function handlePreview() {
+    if (effectiveStoreIds.length < 2) {
+      message.error('Select at least two stores')
+      return
+    }
+    if (includeOriginalRetailOnly && includeMarkdownOnly) {
+      message.error('Use either Original Retail Only or Markdown Only, not both')
+      return
+    }
+
+    const payload: CreateBalancingTransferRunPayload = {
+      balancingMethod,
+      performanceMetric,
+      salesPeriod,
+      sortOrder,
+      tieBreakKind,
+      tieBreakValue,
+      transferDoublesToLowerPriority,
+      stripStoresBelowSizeCount,
+      criteria: {
+        storeIds: storeIds.length > 0 ? storeIds : undefined,
+        vendorCodes: splitCodes(vendorCodes),
+        seasons: splitCodes(seasons),
+        styleColors: splitCodes(styleColors),
+        groupCodes: splitCodes(groupCodes),
+        keywords: splitCodes(keywords),
+        skuCodes: splitCodes(skuCodes),
+        categoryMin,
+        categoryMax,
+        includeOriginalRetailOnly,
+        includeMarkdownOnly,
+        includePerksOnly,
+      },
+    }
+
     try {
-      const v = await form.validateFields()
-      setCommittedSettings(v)
-      const storeNumbers = v.storeNumbers
-        ? v.storeNumbers.split(',').map((s) => Number(s.trim())).filter((n) => Number.isFinite(n))
-        : undefined
-      setRollupParams({
-        storeNumbers,
-        vendorCode: v.vendorCode?.trim() || undefined,
-        categoryMin: v.categoryMin,
-        categoryMax: v.categoryMax,
-        season: v.season?.trim() || undefined,
-        limit: v.limit ?? 500,
-      })
-      setStep(2)
-    } catch {
-      // validation failed
+      const result = await createRun.mutateAsync(payload)
+      setPreview(result)
+      message.success(`Balancing preview ready with ${result.summary.transferCount} transfer lines`)
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : 'Failed to compute balancing transfers')
     }
   }
 
-  const previewLines = useMemo<BalancingLine[]>(() => {
-    if (!data || !committedSettings) return []
-    return computeBalancingLines(data.rows, committedSettings)
-  }, [data, committedSettings])
-
-  const summary = useMemo(() => {
-    const skus = new Set(previewLines.map((l) => l.sku))
-    const pairs = new Set(previewLines.map((l) => `${l.fromStore}-${l.toStore}`))
-    const units = previewLines.reduce((a, l) => a + l.suggestedQuantity, 0)
-    return { lines: previewLines.length, skus: skus.size, pairs: pairs.size, units }
-  }, [previewLines])
+  async function handleCommit() {
+    if (!preview) return
+    try {
+      const result = await commitRun.mutateAsync(preview.id)
+      setPreview((current) =>
+        current
+          ? {
+              ...current,
+              status: 'COMMITTED',
+              committedAt: result.committedAt,
+              generatedTransferIds: result.generatedTransferIds,
+            }
+          : current,
+      )
+      message.success(`Committed ${result.totalTransfers} transfer document(s)`)
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : 'Failed to commit balancing transfers')
+    }
+  }
 
   return (
-    <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-      <Card size="small">
-        <Typography.Title level={4} style={{ margin: 0 }}>
-          Balancing Transfer — Preview
-        </Typography.Title>
-        <Typography.Text type="secondary">
-          RICS Ch. 4 p. 77 — rebalance across stores by performance
-        </Typography.Text>
-        <Steps
-          current={step}
-          style={{ marginTop: 16 }}
-          items={[
-            { title: 'Method + metric' },
-            { title: 'Criteria' },
-            { title: 'Preview + commit' },
+    <App>
+      <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+        <StockMaintenanceHero
+          eyebrow="Transfers"
+          title="Balancing Transfers (Legacy)"
+          subtitle="Preserve the current metric-driven balancing flow for operator familiarity and side-by-side comparison with the new v2 strategy. Preview shows the exact cells that move, the store-priority comparison behind each line, and any exceptions that would have been skipped in RICS."
+          ricsReference="RICS Ch. 4 p. 77"
+          metrics={[
+            { label: 'Stores in scope', value: effectiveStoreIds.length },
+            { label: 'Method', value: balancingMethod.split('_').join(' ') },
+            { label: 'Transfer lines', value: summaryMetrics.transferCount },
+            { label: 'Units proposed', value: summaryMetrics.totalUnits },
           ]}
-        />
-      </Card>
-
-      <Alert
-        type="info"
-        showIcon
-        message="Preview only (Phase 1)"
-        description="Reads live RIINVQUA for balancing candidates. Commit is Phase 2."
-      />
-
-      <Card>
-        <Form<WizardValues>
-          form={form}
-          layout="vertical"
-          initialValues={{
-            method: 'WITHOUT_CONSIDERING_MODELS' as BalancingMethod,
-            metric: 'YTD_SALES' as PerformanceMetric,
-            tieBreakRatio: 2,
-            includeDoublesToLower: false,
-            limit: 50000,
-          }}
-          onValuesChange={() => {
-            if (step === 2) {
-              setStep(1)
-              setRollupParams(null)
-            }
-          }}
-        >
-          <Row gutter={16}>
-            <Col xs={24} md={12}>
-              <Form.Item label="Balancing method" name="method">
-                <Radio.Group optionType="button" buttonStyle="solid">
-                  {METHOD_OPTIONS.map((o) => (
-                    <Radio.Button value={o.value} key={o.value}>
-                      {o.label}
-                    </Radio.Button>
-                  ))}
-                </Radio.Group>
-              </Form.Item>
-            </Col>
-            <Col xs={12} md={6}>
-              <Form.Item label="Performance metric" name="metric">
-                <Select
-                  options={[
-                    { value: 'YTD_SALES', label: 'YTD sales' },
-                    { value: 'STD_SALES', label: 'Season-to-date' },
-                    { value: 'MTD_SALES', label: 'Month-to-date' },
-                  ]}
-                />
-              </Form.Item>
-            </Col>
-            <Col xs={12} md={6}>
-              <Form.Item
-                label="Priority ratio (donor ÷ receiver ≥)"
-                name="tieBreakRatio"
-                tooltip="A receiver wins over a donor when its sales are at least this many times the donor's."
-              >
-                <InputNumber min={1.1} step={0.5} style={{ width: '100%' }} />
-              </Form.Item>
-            </Col>
-          </Row>
-          <Row gutter={16}>
-            <Col xs={24} md={8}>
-              <Form.Item label="Store #s (comma-separated)" name="storeNumbers">
-                <Input placeholder="blank = all stores in rollup" />
-              </Form.Item>
-            </Col>
-            <Col xs={12} md={3}>
-              <Form.Item label="Vendor" name="vendorCode">
-                <Input placeholder="All" />
-              </Form.Item>
-            </Col>
-            <Col xs={12} md={3}>
-              <Form.Item label="Cat Min" name="categoryMin">
-                <InputNumber min={0} style={{ width: '100%' }} />
-              </Form.Item>
-            </Col>
-            <Col xs={12} md={3}>
-              <Form.Item label="Cat Max" name="categoryMax">
-                <InputNumber min={0} style={{ width: '100%' }} />
-              </Form.Item>
-            </Col>
-            <Col xs={12} md={3}>
-              <Form.Item label="Season" name="season">
-                <Input maxLength={4} />
-              </Form.Item>
-            </Col>
-            <Col xs={12} md={4}>
-              <Form.Item
-                label="SKU safety cap"
-                name="limit"
-                tooltip="Upper bound, not a scope limit. Filters decide what's scanned."
-              >
-                <InputNumber min={100} max={200000} step={1000} style={{ width: '100%' }} />
-              </Form.Item>
-            </Col>
-          </Row>
-          <Space>
-            <Button type="primary" icon={<BranchesOutlined />} loading={isFetching} onClick={handleCompute}>
-              Compute preview
-            </Button>
-            <Button disabled icon={<CheckOutlined />}>Commit (Phase 2)</Button>
-          </Space>
-        </Form>
-      </Card>
-
-      {error && !data && (
-        <Alert
-          type="error"
-          showIcon
-          message="Preview failed"
-          description={getErrorMessage(error, 'Unable to compute balancing preview.')}
-        />
-      )}
-      {error && data && (
-        <Alert
-          type="warning"
-          showIcon
-          message="Last refresh failed — showing previous scan"
-          description={`${getErrorMessage(error, 'Refresh errored.')} Click Compute preview to retry.`}
-          closable
-        />
-      )}
-
-      {step === 2 && rollupParams && isLoading && (
-        <Card>
-          <div style={{ textAlign: 'center', padding: 48 }}>
-            <Spin />
-            <Typography.Paragraph type="secondary" style={{ marginTop: 12 }}>
-              Scanning every SKU that matches your filters…
-            </Typography.Paragraph>
-          </div>
-        </Card>
-      )}
-
-      {step === 2 && data && rollupParams && data.rows.length >= (rollupParams.limit ?? 50000) && (
-        <Alert
-          type="warning"
-          showIcon
-          message={`Scan hit the safety cap at ${(rollupParams.limit ?? 50000).toLocaleString()} SKU×Store rows`}
-          description="Results may be truncated. Narrow filters or raise the cap."
-        />
-      )}
-
-      {step === 2 && data && (
-        <>
-          <Row gutter={16}>
-            <Col xs={12} md={6}>
-              <Card>
-                <Statistic title="Proposed lines" value={summary.lines} />
-              </Card>
-            </Col>
-            <Col xs={12} md={6}>
-              <Card>
-                <Statistic title="SKUs" value={summary.skus} />
-              </Card>
-            </Col>
-            <Col xs={12} md={6}>
-              <Card>
-                <Statistic title="Store pairs" value={summary.pairs} />
-              </Card>
-            </Col>
-            <Col xs={12} md={6}>
-              <Card>
-                <Statistic title="Units" value={summary.units} />
-              </Card>
-            </Col>
-          </Row>
-
-          {summary.lines === 0 ? (
-            <Card>
-              <Empty description="No balancing opportunities found for this method + scan. Try widening filters or switching method." />
-            </Card>
-          ) : (
-            <Card>
-              <Table<BalancingLine>
-                size="small"
-                rowKey={(r) => `${r.sku}-${r.fromStore}-${r.toStore}`}
-                dataSource={previewLines}
-                pagination={{ pageSize: 50 }}
-                scroll={{ x: 1500 }}
-                columns={[
-                  {
-                    title: 'SKU',
-                    dataIndex: 'sku',
-                    key: 'sku',
-                    width: 140,
-                    fixed: 'left',
-                    sorter: (a, b) => a.sku.localeCompare(b.sku),
-                    defaultSortOrder: 'ascend',
-                  },
-                  {
-                    title: 'Description',
-                    dataIndex: 'description',
-                    key: 'description',
-                    ellipsis: true,
-                    width: 200,
-                    sorter: (a, b) => (a.description ?? '').localeCompare(b.description ?? ''),
-                  },
-                  {
-                    title: 'Brand / Vendor',
-                    dataIndex: 'brand',
-                    key: 'brand',
-                    width: 120,
-                    sorter: (a, b) => (a.brand ?? '').localeCompare(b.brand ?? ''),
-                    render: (v: string | null) => (v ? <Tag>{v}</Tag> : '—'),
-                  },
-                  {
-                    title: 'Category',
-                    dataIndex: 'category',
-                    key: 'category',
-                    width: 90,
-                    align: 'right',
-                    sorter: (a, b) => (a.category ?? 0) - (b.category ?? 0),
-                    render: (v: number | null) => (v != null ? v : '—'),
-                  },
-                  {
-                    title: 'From',
-                    key: 'from',
-                    width: 180,
-                    sorter: (a, b) => a.fromStore - b.fromStore,
-                    render: (_, r) =>
-                      r.fromStoreName ? `${r.fromStore} — ${r.fromStoreName}` : String(r.fromStore),
-                  },
-                  {
-                    title: 'To',
-                    key: 'to',
-                    width: 180,
-                    sorter: (a, b) => a.toStore - b.toStore,
-                    render: (_, r) =>
-                      r.toStoreName ? `${r.toStore} — ${r.toStoreName}` : String(r.toStore),
-                  },
-                  {
-                    title: 'Qty',
-                    dataIndex: 'suggestedQuantity',
-                    key: 'suggestedQuantity',
-                    align: 'right',
-                    width: 70,
-                    sorter: (a, b) => a.suggestedQuantity - b.suggestedQuantity,
-                    render: (v: number) => <strong>{v}</strong>,
-                  },
-                  {
-                    title: 'From OH / Sales',
-                    key: 'from-state',
-                    align: 'right',
-                    width: 140,
-                    sorter: (a, b) => a.fromSales - b.fromSales,
-                    render: (_, r) => `${r.fromOnHand} / ${r.fromSales}`,
-                  },
-                  {
-                    title: 'To OH / Sales',
-                    key: 'to-state',
-                    align: 'right',
-                    width: 140,
-                    sorter: (a, b) => a.toSales - b.toSales,
-                    render: (_, r) => `${r.toOnHand} / ${r.toSales}`,
-                  },
-                  { title: 'Reason', dataIndex: 'reason', key: 'reason', ellipsis: true, width: 320 },
-                ]}
-              />
-            </Card>
-          )}
-        </>
-      )}
-    </Space>
-  )
-}
-
-function computeBalancingLines(
-  rows: SkuStoreRollupRow[],
-  settings: WizardValues,
-): BalancingLine[] {
-  const salesFor = (r: SkuStoreRollupRow) =>
-    settings.metric === 'YTD_SALES' ? r.ytdSales :
-    settings.metric === 'STD_SALES' ? r.stdSales :
-                                       r.mtdSales
-
-  const bySku = new Map<string, SkuStoreRollupRow[]>()
-  for (const r of rows) {
-    const list = bySku.get(r.sku) ?? []
-    list.push(r)
-    bySku.set(r.sku, list)
-  }
-
-  const threshold = Math.max(1.1, settings.tieBreakRatio ?? 2)
-  const out: BalancingLine[] = []
-
-  for (const [sku, list] of bySku) {
-    if (list.length < 2) continue
-    const seed = list[0]
-    if (!seed) continue
-
-    // Filter participation by method.
-    const hasModel = list.some((r) => r.model > 0)
-    let participants = list
-    if (settings.method === 'OVER_UNDER_MODELS' && !hasModel) continue
-    if (settings.method === 'WITHOUT_MODELS' && hasModel) continue
-
-    if (settings.method === 'OVER_UNDER_MODELS') {
-      // Donors above model, receivers below model — tie-break by metric.
-      const donors = participants
-        .filter((r) => r.model > 0 && r.onHand > r.model)
-        .sort((a, b) => salesFor(a) - salesFor(b)) // slowest sellers donate first
-      const receivers = participants
-        .filter((r) => r.model > 0 && r.onHand < r.model)
-        .sort((a, b) => salesFor(b) - salesFor(a)) // fastest sellers receive first
-      for (const receiver of receivers) {
-        const need = receiver.model - receiver.onHand
-        for (const donor of donors) {
-          if (donor.store === receiver.store) continue
-          const surplus = donor.onHand - donor.model
-          if (surplus <= 0) continue
-          // tie-break: receiver must be at least `threshold`× the donor's metric.
-          const donorSales = Math.max(salesFor(donor), 1)
-          if (salesFor(receiver) / donorSales < threshold) continue
-          const move = Math.min(surplus, need)
-          if (move <= 0) continue
-          out.push(mkLine(seed, donor, receiver, move,
-            `Donor over model by ${surplus}; receiver short by ${need}; sales ratio ${(salesFor(receiver) / donorSales).toFixed(2)}`,
-            salesFor(donor), salesFor(receiver),
-          ))
-          donor.onHand -= move
-          break
-        }
-      }
-    } else if (settings.method === 'WITHOUT_MODELS') {
-      const donors = participants.filter((r) => r.onHand >= 2).sort((a, b) => salesFor(a) - salesFor(b))
-      const receivers = participants.filter((r) => r.onHand === 0).sort((a, b) => salesFor(b) - salesFor(a))
-      if (donors.length === 0 || receivers.length === 0) continue
-      for (const receiver of receivers) {
-        for (const donor of donors) {
-          if (donor.store === receiver.store || donor.onHand < 2) continue
-          const donorSales = Math.max(salesFor(donor), 1)
-          if (salesFor(receiver) === 0 && salesFor(donor) === 0) {
-            // no sales signal either way — skip
-            continue
+          actions={
+            <Space direction="vertical" size={12} style={{ width: '100%' }}>
+              <Typography.Text style={{ color: 'rgba(248, 250, 252, 0.82)', fontWeight: 600 }}>
+                Operator actions
+              </Typography.Text>
+              <Space wrap>
+                <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/inventory/adjustments')}>
+                  Back to workspace
+                </Button>
+                <Button icon={<BranchesOutlined />} onClick={handlePreview} loading={createRun.isPending}>
+                  Recompute Preview
+                </Button>
+              </Space>
+            </Space>
           }
-          if (salesFor(receiver) / donorSales < threshold) continue
-          out.push(mkLine(seed, donor, receiver, 1,
-            `Slow seller donates 1; fast/new receiver at 0 (ratio ${salesFor(receiver) === 0 ? '—' : (salesFor(receiver) / donorSales).toFixed(2)})`,
-            salesFor(donor), salesFor(receiver),
-          ))
-          donor.onHand -= 1
-          break
-        }
-      }
-    } else {
-      // WITHOUT_CONSIDERING_MODELS: balance by metric regardless.
-      const sorted = [...participants].sort((a, b) => salesFor(b) - salesFor(a))
-      const fastest = sorted[0]
-      if (!fastest) continue
-      for (const slow of sorted.slice(1)) {
-        if (slow.onHand <= 0) continue
-        const slowSales = Math.max(salesFor(slow), 1)
-        if (salesFor(fastest) / slowSales < threshold) continue
-        const move = settings.includeDoublesToLower
-          ? Math.min(slow.onHand, Math.max(1, Math.floor(slow.onHand / 2)))
-          : slow.onHand >= 2
-            ? 1
-            : 0
-        if (move <= 0) continue
-        out.push(mkLine(seed, slow, fastest, move,
-          `Fastest seller pulls from slower; ratio ${salesFor(fastest) / slowSales === Infinity ? '∞' : (salesFor(fastest) / slowSales).toFixed(2)}`,
-          salesFor(slow), salesFor(fastest),
-        ))
-        slow.onHand -= move
-        fastest.onHand += move
-      }
-    }
+          footer={
+            <Typography.Text style={{ color: 'rgba(248, 250, 252, 0.82)' }}>
+              This legacy page stays app-owned: on hand, models, and the committed transfer documents all live in Postgres. Performance ranking currently uses app-native movement history only.
+            </Typography.Text>
+          }
+        />
 
-    // Side effect: if settings.includeDoublesToLower is set in OVER_UNDER_MODELS
-    // or WITHOUT_MODELS, we could add extra "push doubles to lower-priority"
-    // passes here — deferred to keep this preview lean.
-    void sku
-  }
+        {preview?.status === 'COMMITTED' ? (
+          <Alert
+            type="success"
+            showIcon
+            message="Balancing transfers committed"
+            description={`This run created ${preview.generatedTransferIds.length} transfer document(s).`}
+          />
+        ) : null}
 
-  // Primary: alphabetical by SKU. Column sorters allow operator override.
-  out.sort((a, b) => a.sku.localeCompare(b.sku))
-  return out
-}
+        {storeLoadErrorMessage ? (
+          <Alert
+            type="error"
+            showIcon
+            message="Store list unavailable"
+            description={storeLoadErrorMessage}
+          />
+        ) : !storesLoading && stores.length === 0 ? (
+          <Alert
+            type="warning"
+            showIcon
+            message="No stores available for transfer setup"
+            description="The transfer store list is empty. Verify that Store Master is loaded into app.store_master and refresh the page."
+          />
+        ) : null}
 
-function mkLine(
-  seed: SkuStoreRollupRow,
-  from: SkuStoreRollupRow,
-  to: SkuStoreRollupRow,
-  qty: number,
-  reason: string,
-  fromSales: number,
-  toSales: number,
-): BalancingLine {
-  return {
-    sku: seed.sku,
-    description: seed.description,
-    brand: seed.brand,
-    category: seed.category,
-    fromStore: from.store,
-    fromStoreName: from.storeName,
-    toStore: to.store,
-    toStoreName: to.storeName,
-    suggestedQuantity: qty,
-    reason,
-    fromOnHand: from.onHand,
-    fromSales,
-    toOnHand: to.onHand,
-    toSales,
-    fromModel: from.model,
-    toModel: to.model,
-  }
+        <Row gutter={[16, 16]} align="top">
+          <Col xs={24} xl={8}>
+            <div style={{ position: 'sticky', top: 16 }}>
+              <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+                <Card
+                  bordered={false}
+                  style={{ borderRadius: 20, boxShadow: '0 12px 32px rgba(15, 23, 42, 0.06)' }}
+                  title="Run setup"
+                >
+                  <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+                    <div>
+                      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                        Stores
+                      </Typography.Text>
+                      <Select
+                        mode="multiple"
+                        showSearch
+                        optionFilterProp="label"
+                        loading={storesLoading}
+                        disabled={storesLoading || stores.length === 0}
+                        placeholder="Blank = all transfer-capable stores"
+                        value={storeIds}
+                        onChange={setStoreIds}
+                        style={{ width: '100%', marginTop: 6 }}
+                        options={stores.map((store) => ({
+                          value: store.storeId,
+                          label: store.storeLabel,
+                        }))}
+                      />
+                    </div>
+
+                    <div>
+                      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                        Balancing method
+                      </Typography.Text>
+                      <Radio.Group
+                        value={balancingMethod}
+                        onChange={(event) => setBalancingMethod(event.target.value)}
+                        style={{ width: '100%', marginTop: 6 }}
+                      >
+                        <Space direction="vertical">
+                          <Radio value="OVER_UNDER_MODELS">Over / Under Models</Radio>
+                          <Radio value="WITHOUT_MODELS">Without Models</Radio>
+                          <Radio value="WITHOUT_CONSIDERING_MODELS">Ignore Models</Radio>
+                        </Space>
+                      </Radio.Group>
+                    </div>
+
+                    <Row gutter={12}>
+                      <Col span={8}>
+                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                          Metric
+                        </Typography.Text>
+                        <Select
+                          value={performanceMetric}
+                          onChange={setPerformanceMetric}
+                          style={{ width: '100%', marginTop: 6 }}
+                          options={[
+                            { value: 'ROI', label: 'ROI' },
+                            { value: 'TURNS', label: 'Turns' },
+                            { value: 'SELL_THRU', label: 'Sell-Thru' },
+                          ]}
+                        />
+                      </Col>
+                      <Col span={8}>
+                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                          Period
+                        </Typography.Text>
+                        <Select
+                          value={salesPeriod}
+                          onChange={setSalesPeriod}
+                          style={{ width: '100%', marginTop: 6 }}
+                          options={[
+                            { value: 'MONTH', label: 'Month' },
+                            { value: 'SEASON', label: 'Season' },
+                            { value: 'YEAR', label: 'Year' },
+                          ]}
+                        />
+                      </Col>
+                      <Col span={8}>
+                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                          Sort by
+                        </Typography.Text>
+                        <Select
+                          value={sortOrder}
+                          onChange={setSortOrder}
+                          style={{ width: '100%', marginTop: 6 }}
+                          options={[
+                            { value: 'SKU', label: 'SKU' },
+                            { value: 'VENDOR', label: 'Vendor' },
+                            { value: 'CATEGORY', label: 'Category' },
+                          ]}
+                        />
+                      </Col>
+                    </Row>
+
+                    <Row gutter={12}>
+                      <Col span={12}>
+                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                          Tie-break kind
+                        </Typography.Text>
+                        <Select
+                          value={tieBreakKind}
+                          onChange={setTieBreakKind}
+                          style={{ width: '100%', marginTop: 6 }}
+                          options={[
+                            { value: 'ABSOLUTE', label: 'Absolute' },
+                            { value: 'PERCENT', label: 'Percent' },
+                          ]}
+                        />
+                      </Col>
+                      <Col span={12}>
+                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                          Tie-break value
+                        </Typography.Text>
+                        <InputNumber
+                          min={0}
+                          step={tieBreakKind === 'PERCENT' ? 5 : 0.1}
+                          value={tieBreakValue}
+                          onChange={(value) => setTieBreakValue(value ?? 0)}
+                          style={{ width: '100%', marginTop: 6 }}
+                        />
+                      </Col>
+                    </Row>
+
+                    <Checkbox
+                      checked={transferDoublesToLowerPriority}
+                      onChange={(event) => setTransferDoublesToLowerPriority(event.target.checked)}
+                    >
+                      Transfer doubles to lower-priority stores
+                    </Checkbox>
+
+                    <div>
+                      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                        Strip stores below size count
+                      </Typography.Text>
+                      <InputNumber
+                        min={1}
+                        value={stripStoresBelowSizeCount}
+                        onChange={(value) => setStripStoresBelowSizeCount(value ?? null)}
+                        placeholder="optional"
+                        style={{ width: '100%', marginTop: 6 }}
+                      />
+                    </div>
+
+                    <Row gutter={12}>
+                      <Col span={12}>
+                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                          Category min
+                        </Typography.Text>
+                        <InputNumber
+                          min={0}
+                          value={categoryMin}
+                          onChange={(value) => setCategoryMin(value ?? null)}
+                          style={{ width: '100%', marginTop: 6 }}
+                        />
+                      </Col>
+                      <Col span={12}>
+                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                          Category max
+                        </Typography.Text>
+                        <InputNumber
+                          min={0}
+                          value={categoryMax}
+                          onChange={(value) => setCategoryMax(value ?? null)}
+                          style={{ width: '100%', marginTop: 6 }}
+                        />
+                      </Col>
+                    </Row>
+
+                    <Input
+                      addonBefore="Vendor"
+                      placeholder="comma-separated codes"
+                      value={vendorCodes}
+                      onChange={(event) => setVendorCodes(event.target.value)}
+                    />
+                    <Input
+                      addonBefore="Season"
+                      placeholder="comma-separated"
+                      value={seasons}
+                      onChange={(event) => setSeasons(event.target.value)}
+                    />
+                    <Input
+                      addonBefore="Style"
+                      placeholder="comma-separated"
+                      value={styleColors}
+                      onChange={(event) => setStyleColors(event.target.value)}
+                    />
+                    <Input
+                      addonBefore="Group"
+                      placeholder="comma-separated"
+                      value={groupCodes}
+                      onChange={(event) => setGroupCodes(event.target.value)}
+                    />
+                    <Input
+                      addonBefore="Keyword"
+                      placeholder="comma-separated"
+                      value={keywords}
+                      onChange={(event) => setKeywords(event.target.value)}
+                    />
+                    <Input
+                      addonBefore="SKU"
+                      placeholder="comma-separated codes"
+                      value={skuCodes}
+                      onChange={(event) => setSkuCodes(event.target.value)}
+                    />
+
+                    <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                      <Checkbox
+                        checked={includeOriginalRetailOnly}
+                        onChange={(event) => {
+                          setIncludeOriginalRetailOnly(event.target.checked)
+                          if (event.target.checked) setIncludeMarkdownOnly(false)
+                        }}
+                      >
+                        Original retail only
+                      </Checkbox>
+                      <Checkbox
+                        checked={includeMarkdownOnly}
+                        onChange={(event) => {
+                          setIncludeMarkdownOnly(event.target.checked)
+                          if (event.target.checked) setIncludeOriginalRetailOnly(false)
+                        }}
+                      >
+                        Markdown only
+                      </Checkbox>
+                      <Checkbox
+                        checked={includePerksOnly}
+                        onChange={(event) => setIncludePerksOnly(event.target.checked)}
+                      >
+                        Perks only
+                      </Checkbox>
+                    </Space>
+
+                    <Space wrap>
+                      <Button type="primary" icon={<BranchesOutlined />} onClick={handlePreview} loading={createRun.isPending}>
+                        Preview Transfers
+                      </Button>
+                      <Button
+                        icon={<CheckOutlined />}
+                        onClick={handleCommit}
+                        loading={commitRun.isPending}
+                        disabled={!preview || preview.lines.length === 0 || preview.status === 'COMMITTED'}
+                      >
+                        Commit Transfers
+                      </Button>
+                    </Space>
+                  </Space>
+                </Card>
+
+                <Card
+                  bordered={false}
+                  style={{ borderRadius: 20, boxShadow: '0 12px 32px rgba(15, 23, 42, 0.06)' }}
+                  title="RICS behavior"
+                >
+                  <Space direction="vertical" size={10}>
+                    <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
+                      Balancing Transfers use store performance to move units from lower-priority stores to higher-priority stores, with separate rules for model-driven and no-model scenarios.
+                    </Typography.Paragraph>
+                    <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
+                      Negative on hand is surfaced as an exception. The preview shows the lines that can commit now and the cells that need cleanup first.
+                    </Typography.Paragraph>
+                  </Space>
+                </Card>
+              </Space>
+            </div>
+          </Col>
+
+          <Col xs={24} xl={16}>
+            <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+              <Row gutter={[16, 16]}>
+                <Col xs={12} md={6}>
+                  <Card bordered={false} style={{ borderRadius: 18 }}>
+                    <Statistic title="Transfer lines" value={summaryMetrics.transferCount} />
+                  </Card>
+                </Col>
+                <Col xs={12} md={6}>
+                  <Card bordered={false} style={{ borderRadius: 18 }}>
+                    <Statistic title="SKUs" value={summaryMetrics.skuCount} />
+                  </Card>
+                </Col>
+                <Col xs={12} md={6}>
+                  <Card bordered={false} style={{ borderRadius: 18 }}>
+                    <Statistic title="Store pairs" value={summaryMetrics.storePairCount} />
+                  </Card>
+                </Col>
+                <Col xs={12} md={6}>
+                  <Card bordered={false} style={{ borderRadius: 18 }}>
+                    <Statistic title="Exceptions" value={summaryMetrics.exceptionCount} />
+                  </Card>
+                </Col>
+              </Row>
+
+              {preview?.exceptions.length ? (
+                <Card
+                  bordered={false}
+                  style={{ borderRadius: 20, boxShadow: '0 12px 32px rgba(15, 23, 42, 0.06)' }}
+                  title="Exceptions"
+                >
+                  <Space direction="vertical" size={10} style={{ width: '100%' }}>
+                    {preview.exceptions.map((exception, index) => (
+                      <Alert
+                        key={`${exception.code}-${index}`}
+                        type={exception.severity === 'error' ? 'error' : 'warning'}
+                        showIcon
+                        message={exception.message}
+                      />
+                    ))}
+                  </Space>
+                </Card>
+              ) : null}
+
+              {!preview ? (
+                <Card
+                  bordered={false}
+                  style={{ borderRadius: 20, minHeight: 260, boxShadow: '0 12px 32px rgba(15, 23, 42, 0.06)' }}
+                >
+                  <Empty description="Build a preview to inspect the balancing journal before posting." />
+                </Card>
+              ) : preview.lines.length === 0 ? (
+                <Card bordered={false} style={{ borderRadius: 20, boxShadow: '0 12px 32px rgba(15, 23, 42, 0.06)' }}>
+                  <Empty description="No balancing opportunities matched the selected rules and criteria." />
+                </Card>
+              ) : (
+                <Card
+                  bordered={false}
+                  style={{ borderRadius: 20, boxShadow: '0 12px 32px rgba(15, 23, 42, 0.06)' }}
+                  title="Preview journal"
+                  extra={
+                    <Tag color={preview.status === 'COMMITTED' ? 'green' : 'blue'}>
+                      {preview.status === 'COMMITTED' ? 'Committed' : 'Previewed'}
+                    </Tag>
+                  }
+                >
+                  <Table<BalancingTransferPreviewLine>
+                    size="small"
+                    rowKey={(row) => `${row.skuId}-${row.fromStoreId}-${row.toStoreId}`}
+                    dataSource={preview.lines}
+                    pagination={{ pageSize: 25, showSizeChanger: true }}
+                    scroll={{ x: 1500 }}
+                    columns={[
+                      {
+                        title: 'SKU',
+                        dataIndex: 'skuCode',
+                        width: 140,
+                        fixed: 'left',
+                      },
+                      {
+                        title: 'Description',
+                        dataIndex: 'description',
+                        width: 220,
+                        ellipsis: true,
+                      },
+                      {
+                        title: 'From',
+                        dataIndex: 'fromStoreLabel',
+                        width: 120,
+                      },
+                      {
+                        title: 'To',
+                        dataIndex: 'toStoreLabel',
+                        width: 120,
+                      },
+                      {
+                        title: 'Qty',
+                        dataIndex: 'suggestedQuantity',
+                        width: 80,
+                        align: 'right',
+                        render: (value: number) => <strong>{value}</strong>,
+                      },
+                      {
+                        title: 'From metric',
+                        width: 120,
+                        render: (_, row) => formatMetric(row.fromMetric, preview.performanceMetric),
+                      },
+                      {
+                        title: 'To metric',
+                        width: 120,
+                        render: (_, row) => formatMetric(row.toMetric, preview.performanceMetric),
+                      },
+                      {
+                        title: 'From OH / Model',
+                        width: 130,
+                        render: (_, row) => `${row.fromMetric.endingOnHand} / ${row.fromModelQty}`,
+                      },
+                      {
+                        title: 'To OH / Model',
+                        width: 130,
+                        render: (_, row) => `${row.toMetric.endingOnHand} / ${row.toModelQty}`,
+                      },
+                      {
+                        title: 'Reason',
+                        dataIndex: 'reason',
+                        width: 320,
+                        ellipsis: true,
+                      },
+                      {
+                        title: 'Cells',
+                        key: 'cells',
+                        width: 320,
+                        render: (_, row) => (
+                          <Space wrap>
+                            {row.cells.map((cell) => (
+                              <Tag key={`${cell.rowLabel}-${cell.columnLabel}`}>
+                                {[cell.rowLabel, cell.columnLabel].filter(Boolean).join('-') || '(qty)'}: {cell.suggestedQuantity}
+                              </Tag>
+                            ))}
+                          </Space>
+                        ),
+                      },
+                    ]}
+                  />
+                </Card>
+              )}
+            </Space>
+          </Col>
+        </Row>
+      </Space>
+    </App>
+  )
 }

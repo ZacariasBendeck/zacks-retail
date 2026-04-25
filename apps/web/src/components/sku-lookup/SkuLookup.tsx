@@ -180,6 +180,7 @@ export const SkuLookup: React.FC<SkuLookupProps> = ({
       searchFieldSlot={searchFieldSlot}
       filterSlot={filterSlot}
       footerExtras={footerExtras}
+      compactRows
     />
   );
 };

@@ -37,18 +37,6 @@ interface UpcResolutionRow {
   rowLabel: string | null;
 }
 
-interface MirrorSkuRow {
-  skuCode: string | null;
-  description: string | null;
-  categoryNumber: number | null;
-  vendorCode: string | null;
-  vendorSku: string | null;
-  styleColor: string | null;
-  sizeTypeCode: number | null;
-  currentCost: Prisma.Decimal | number | string | null;
-  retailPrice: Prisma.Decimal | number | string | null;
-}
-
 interface VendorRow {
   vendorName: string | null;
 }
@@ -59,8 +47,12 @@ interface SizeTypeRow {
   rows: string[];
 }
 
-function pad2(n: number): string {
-  return String(n).padStart(2, '0');
+interface CasePackRow {
+  code: string;
+  description: string;
+  columnLabel: string | null;
+  rowLabel: string | null;
+  quantity: number | null;
 }
 
 function toNumber(value: Prisma.Decimal | number | string | null | undefined): number | null {
@@ -89,7 +81,7 @@ function parseMovementAt(raw: string | null | undefined): Date {
 async function loadStore(storeId: number): Promise<StoreRow | null> {
   const rows = await prisma.$queryRawUnsafe<StoreRow[]>(
     `SELECT number AS "storeId", "desc" AS "storeLabel"
-       FROM rics_mirror.store_master
+       FROM app.store_master
       WHERE number = $1
       LIMIT 1`,
     storeId,
@@ -100,7 +92,7 @@ async function loadStore(storeId: number): Promise<StoreRow | null> {
 export async function listManualReceiptStores(): Promise<ManualReceiptStoreOption[]> {
   const rows = await prisma.$queryRawUnsafe<StoreRow[]>(
     `SELECT number AS "storeId", "desc" AS "storeLabel"
-       FROM rics_mirror.store_master
+       FROM app.store_master
       ORDER BY number ASC`,
   );
 
@@ -124,32 +116,13 @@ async function resolveUpc(upc: string): Promise<UpcResolutionRow | null> {
   if (!normalized) return null;
 
   const rows = await prisma.$queryRawUnsafe<UpcResolutionRow[]>(
-    `SELECT sku AS "skuCode",
-            "column" AS "columnLabel",
-            "row" AS "rowLabel"
-       FROM rics_mirror.upc_cross_reference
-      WHERE COALESCE(prefix, '') || COALESCE("number", '') || COALESCE(check_digit, '') = $1
+    `SELECT sku_code AS "skuCode",
+            column_label AS "columnLabel",
+            row_label AS "rowLabel"
+       FROM app.sku_upc
+      WHERE upc = $1
       LIMIT 1`,
     normalized,
-  );
-  return rows[0] ?? null;
-}
-
-async function loadMirrorSku(skuCode: string): Promise<MirrorSkuRow | null> {
-  const rows = await prisma.$queryRawUnsafe<MirrorSkuRow[]>(
-    `SELECT sku AS "skuCode",
-            "desc" AS "description",
-            category AS "categoryNumber",
-            vendor AS "vendorCode",
-            vendor_sku AS "vendorSku",
-            style_color AS "styleColor",
-            size_type AS "sizeTypeCode",
-            current_cost AS "currentCost",
-            retail_price AS "retailPrice"
-       FROM rics_mirror.inventory_master
-      WHERE sku = $1
-      LIMIT 1`,
-    skuCode,
   );
   return rows[0] ?? null;
 }
@@ -157,34 +130,37 @@ async function loadMirrorSku(skuCode: string): Promise<MirrorSkuRow | null> {
 async function loadVendorName(vendorCode: string | null | undefined): Promise<string | null> {
   if (!vendorCode) return null;
   const rows = await prisma.$queryRawUnsafe<VendorRow[]>(
-    `SELECT COALESCE(short_name, manu_name, mail_name, code) AS "vendorName"
-       FROM rics_mirror.vendor_master
-      WHERE code = $1
+    `SELECT COALESCE(
+              o.short_name,
+              v.short_name,
+              o.manu_name,
+              v.manu_name,
+              o.mail_name,
+              v.mail_name,
+              COALESCE(o.code, v.code)
+            ) AS "vendorName"
+       FROM app.vendor v
+       FULL OUTER JOIN app.vendor_overlay o ON o.code = v.code
+      WHERE (o.source IS NULL OR o.source <> 'tombstone')
+        AND UPPER(COALESCE(o.code, v.code)) = $1
       LIMIT 1`,
-    vendorCode,
+    vendorCode.trim().toUpperCase(),
   );
   return rows[0]?.vendorName?.trim() || null;
 }
 
 async function loadSizeType(sizeTypeCode: number | null | undefined): Promise<SizeTypeRow | null> {
   if (sizeTypeCode == null) return null;
-
-  const colSelect = Array.from({ length: 54 }, (_, i) => {
-    const n = pad2(i + 1);
-    return `columns_${n} AS "Columns_${n}"`;
-  }).join(', ');
-  const rowSelect = Array.from({ length: 27 }, (_, i) => {
-    const n = pad2(i + 1);
-    return `rows_${n} AS "Rows_${n}"`;
-  }).join(', ');
-
-  const rows = await prisma.$queryRawUnsafe<Record<string, string | number | null>[]>(
-    `SELECT code AS "Code",
-            max_columns AS "MaxColumns",
-            max_rows AS "MaxRows",
-            ${colSelect},
-            ${rowSelect}
-       FROM rics_mirror.size_types
+  const rows = await prisma.$queryRawUnsafe<Array<{
+    code: number;
+    columns: string[] | null;
+    rows: string[] | null;
+  }>>(
+    `SELECT
+        code,
+        columns,
+        rows
+       FROM app.taxonomy_size_type
       WHERE code = $1
       LIMIT 1`,
     sizeTypeCode,
@@ -193,26 +169,58 @@ async function loadSizeType(sizeTypeCode: number | null | undefined): Promise<Si
   const row = rows[0];
   if (!row) return null;
 
-  const maxCols = Math.min(54, Math.max(0, Number(row.MaxColumns ?? 0)));
-  const maxRows = Math.min(27, Math.max(0, Number(row.MaxRows ?? 0)));
-
-  const columns: string[] = [];
-  for (let i = 1; i <= maxCols; i++) {
-    const value = (row[`Columns_${pad2(i)}`] as string | null)?.toString().trim() || '';
-    if (value) columns.push(value);
-  }
-
-  const labels: string[] = [];
-  for (let i = 1; i <= maxRows; i++) {
-    const value = (row[`Rows_${pad2(i)}`] as string | null)?.toString().trim() || '';
-    if (value) labels.push(value);
-  }
-
   return {
-    code: Number(row.Code),
-    columns,
-    rows: labels,
+    code: Number(row.code),
+    columns: (row.columns ?? []).map((value) => value.trim()).filter(Boolean),
+    rows: (row.rows ?? []).map((value) => value.trim()).filter(Boolean),
   };
+}
+
+async function loadCasePacks(sizeTypeCode: number | null | undefined) {
+  if (sizeTypeCode == null) return [];
+
+  const rows = await prisma.$queryRawUnsafe<CasePackRow[]>(
+    `SELECT
+        cp.code AS code,
+        cp."desc" AS description,
+        cell.column_label AS "columnLabel",
+        cell.row_label AS "rowLabel",
+        cell.quantity AS quantity
+       FROM app.case_pack cp
+       LEFT JOIN app.case_pack_cell cell ON cell.case_pack_code = cp.code
+      WHERE cp.size_type_code = $1
+        AND cp.active = true
+      ORDER BY cp.code ASC, cell.row_label ASC, cell.column_label ASC`,
+    sizeTypeCode,
+  );
+
+  const packs = new Map<string, {
+    id: string;
+    code: string;
+    description: string;
+    multiplierDefault: number;
+    cells: Array<{ columnLabel: string; rowLabel: string; quantityPerPack: number }>;
+  }>();
+
+  for (const row of rows) {
+    const existing = packs.get(row.code) ?? {
+      id: row.code,
+      code: row.code,
+      description: row.description,
+      multiplierDefault: 1,
+      cells: [],
+    };
+    if (row.quantity != null) {
+      existing.cells.push({
+        columnLabel: normalizeManualLineLabel(row.columnLabel),
+        rowLabel: normalizeManualLineLabel(row.rowLabel),
+        quantityPerPack: Number(row.quantity),
+      });
+    }
+    packs.set(row.code, existing);
+  }
+
+  return [...packs.values()];
 }
 
 function receiptWhere(params: ManualReceiptListParams): Prisma.ManualReceiptWhereInput {
@@ -256,8 +264,7 @@ async function toManualReceiptRecord(id: string): Promise<ManualReceiptRecord | 
 
   const store = await loadStore(row.storeId);
   const effectiveSkuCode = row.sku.code ?? row.sku.provisionalCode;
-  const mirror = await loadMirrorSku(effectiveSkuCode);
-  const vendorCode = row.sku.vendorId ?? mirror?.vendorCode ?? null;
+  const vendorCode = row.sku.vendorId ?? null;
   const vendorName = await loadVendorName(vendorCode);
 
   const lines = row.lines.map((line) => ({
@@ -276,17 +283,17 @@ async function toManualReceiptRecord(id: string): Promise<ManualReceiptRecord | 
     storeLabel: store?.storeLabel?.trim() || `Store ${row.storeId}`,
     skuId: row.skuId,
     skuCode: effectiveSkuCode,
-    description: row.sku.descriptionRics ?? mirror?.description ?? null,
-    categoryNumber: row.sku.categoryNumber ?? mirror?.categoryNumber ?? null,
+    description: row.sku.descriptionRics ?? null,
+    categoryNumber: row.sku.categoryNumber ?? null,
     vendorCode,
     vendorName,
-    vendorSku: row.sku.vendorSku ?? mirror?.vendorSku ?? null,
-    styleColor: row.sku.styleColor ?? mirror?.styleColor ?? null,
+    vendorSku: row.sku.vendorSku ?? null,
+    styleColor: row.sku.styleColor ?? null,
     referenceNumber: row.referenceNumber,
     storeLabelsOnReceive: row.storeLabelsOnReceive,
     movementAt: row.movementAt.toISOString(),
-    unitCostApplied: row.unitCostOverride == null ? toNumber(row.sku.currentCost) ?? toNumber(mirror?.currentCost) : Number(row.unitCostOverride),
-    retailPriceApplied: row.retailPriceOverride == null ? toNumber(row.sku.retailPrice) ?? toNumber(mirror?.retailPrice) : Number(row.retailPriceOverride),
+    unitCostApplied: row.unitCostOverride == null ? toNumber(row.sku.currentCost) : Number(row.unitCostOverride),
+    retailPriceApplied: row.retailPriceOverride == null ? toNumber(row.sku.retailPrice) : Number(row.retailPriceOverride),
     casePackId: row.casePackId,
     casePackMultiplier: row.casePackMultiplier,
     note: row.note,
@@ -349,11 +356,13 @@ export async function getManualReceiptContext(query: ManualReceiptContextQuery):
   }
 
   const effectiveSkuCode = sku.code ?? sku.provisionalCode;
-  const mirror = await loadMirrorSku(effectiveSkuCode);
-  const sizeTypeCode = sku.sizeType ?? mirror?.sizeTypeCode ?? null;
+  const sizeTypeCode = sku.sizeType ?? null;
   const sizeType = await loadSizeType(sizeTypeCode);
-  const vendorCode = sku.vendorId ?? mirror?.vendorCode ?? null;
-  const vendorName = await loadVendorName(vendorCode);
+  const vendorCode = sku.vendorId ?? null;
+  const [vendorName, availableCasePacks] = await Promise.all([
+    loadVendorName(vendorCode),
+    loadCasePacks(sizeTypeCode),
+  ]);
 
   const [stockLevels, lastReceipt] = await Promise.all([
     prisma.stockLevel.findMany({
@@ -372,19 +381,19 @@ export async function getManualReceiptContext(query: ManualReceiptContextQuery):
     storeLabel: store.storeLabel?.trim() || `Store ${query.storeId}`,
     skuId: sku.id,
     skuCode: effectiveSkuCode,
-    description: sku.descriptionRics ?? mirror?.description ?? null,
-    categoryNumber: sku.categoryNumber ?? mirror?.categoryNumber ?? null,
+    description: sku.descriptionRics ?? null,
+    categoryNumber: sku.categoryNumber ?? null,
     vendorCode,
     vendorName,
-    vendorSku: sku.vendorSku ?? mirror?.vendorSku ?? null,
-    styleColor: sku.styleColor ?? mirror?.styleColor ?? null,
+    vendorSku: sku.vendorSku ?? null,
+    styleColor: sku.styleColor ?? null,
     sizeTypeCode,
     sizeGrid: {
       columns: sizeType?.columns ?? [],
       rows: sizeType?.rows ?? [],
     },
-    defaultUnitCost: toNumber(sku.currentCost) ?? toNumber(mirror?.currentCost),
-    defaultRetailPrice: toNumber(sku.retailPrice) ?? toNumber(mirror?.retailPrice),
+    defaultUnitCost: toNumber(sku.currentCost),
+    defaultRetailPrice: toNumber(sku.retailPrice),
     lastReceivedAt:
       stockLevels.map((row) => row.lastReceivedAt).filter(Boolean).sort((a, b) => b!.getTime() - a!.getTime())[0]?.toISOString()
       ?? lastReceipt?.movementAt.toISOString()
@@ -394,9 +403,7 @@ export async function getManualReceiptContext(query: ManualReceiptContextQuery):
       rowLabel: row.rowLabel,
       quantityOnHand: row.onHand,
     })),
-    // Store-ops case-pack integration is not wired yet. Keep the contract stable
-    // and return an empty list instead of inferring phantom case packs.
-    availableCasePacks: [],
+    availableCasePacks,
     scannedUpcTarget,
   };
 }
@@ -439,10 +446,8 @@ export async function createManualReceipt(
     throw new ManualReceiptServiceError(404, 'SKU_NOT_FOUND', `SKU ${input.skuId} was not found.`);
   }
 
-  const effectiveSkuCode = sku.code ?? sku.provisionalCode;
-  const mirror = await loadMirrorSku(effectiveSkuCode);
-  const unitCostApplied = input.unitCostOverride ?? toNumber(sku.currentCost) ?? toNumber(mirror?.currentCost);
-  const retailPriceApplied = input.retailPriceOverride ?? toNumber(sku.retailPrice) ?? toNumber(mirror?.retailPrice);
+  const unitCostApplied = input.unitCostOverride ?? toNumber(sku.currentCost);
+  const retailPriceApplied = input.retailPriceOverride ?? toNumber(sku.retailPrice);
 
   if (unitCostApplied == null) {
     throw new ManualReceiptServiceError(

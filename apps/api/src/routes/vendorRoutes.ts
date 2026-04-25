@@ -1,5 +1,6 @@
 /**
- * Legacy vendor routes — now a read-only projection over rics_mirror.vendor_master.
+ * Legacy vendor routes — now a read-only projection over app.vendor +
+ * app.vendor_overlay.
  *
  * Writes (POST/PATCH/DELETE) respond with 501 NOT_IMPLEMENTED pointing at the
  * RICS-backed endpoints under `/api/v1/products/vendors/*`. The read paths
@@ -22,7 +23,7 @@ const WRITE_NOT_SUPPORTED_BODY = {
   error: {
     code: 'WRITE_NOT_SUPPORTED',
     message:
-      'Legacy /api/v1/vendors is read-only (projection over rics_mirror.vendor_master). ' +
+      'Legacy /api/v1/vendors is read-only (projection over app.vendor/app.vendor_overlay). ' +
       'Use /api/v1/products/vendors/* for create/update/delete — those go through the RICS ' +
       'write path with EDI validation and SKU-reference guards.',
   },
@@ -46,7 +47,7 @@ router.post('/', validate(createVendorSchema), (_req: Request, res: Response): v
  * @openapi
  * /api/v1/vendors:
  *   get:
- *     summary: List vendors (read-only projection over rics_mirror.vendor_master)
+ *     summary: List vendors (read-only projection over app.vendor/app.vendor_overlay)
  *     tags: [Vendors]
  *     parameters:
  *       - name: page
@@ -98,14 +99,14 @@ router.get(
  * @openapi
  * /api/v1/vendors/{vendorId}:
  *   get:
- *     summary: Get a vendor by RICS code (back-compat: param is named vendorId)
+ *     summary: "Get a vendor by RICS code (back-compat: param is named vendorId)"
  *     tags: [Vendors]
  *     parameters:
  *       - name: vendorId
  *         in: path
  *         required: true
  *         schema: { type: string }
- *         description: RICS vendor code (string); the legacy UUID shape is gone.
+ *         description: "RICS vendor code (string); the legacy UUID shape is gone."
  *     responses:
  *       200:
  *         description: Vendor found

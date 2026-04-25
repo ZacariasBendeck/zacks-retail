@@ -84,7 +84,7 @@ describe('DELETE /api/v1/vendors/:vendorId', () => {
 // ─────────────────────────── Read: GET by code ───────────────────────────
 
 describe('GET /api/v1/vendors/:vendorId', () => {
-  it('returns the vendor when rics_mirror has the code', async () => {
+  it('returns the vendor when the app-owned baseline has the code', async () => {
     mockQuery.mockResolvedValueOnce([RICS_ROW_1] as never);
 
     const res = await request(app).get('/api/v1/vendors/03EV');
@@ -103,8 +103,11 @@ describe('GET /api/v1/vendors/:vendorId', () => {
 
     // SQL + params check — prove it hit vendor_master with the right filter
     const call = mockQuery.mock.calls[0];
-    expect(call[0]).toMatch(/FROM rics_mirror\.vendor_master/);
-    expect(call[0]).toMatch(/WHERE code = \$1/);
+    expect(call[0]).toMatch(/WITH vendor_effective AS/);
+    expect(call[0]).toMatch(/FROM app\.vendor v/);
+    expect(call[0]).toMatch(/FULL OUTER JOIN app\.vendor_overlay/);
+    expect(call[0]).toMatch(/FROM vendor_effective/);
+    expect(call[0]).toMatch(/WHERE UPPER\(code\) = \$1/);
     expect(call[1]).toBe('03EV');
   });
 

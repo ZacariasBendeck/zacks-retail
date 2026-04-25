@@ -22,7 +22,7 @@
  */
 
 import { prisma } from '../db/prisma';
-import { findIndexedMaster, findNeighborSku } from './ricsProductAdapter';
+import { findNeighborSku } from './ricsProductAdapter';
 import { buildRicsImageUrl } from './ricsImageUrl';
 import { getInquirySalesRollup } from './salesReporting/ricsInquiryRollupAdapter';
 
@@ -367,7 +367,7 @@ interface StoreRow {
 async function loadStoreMap(): Promise<Map<number, StoreRow>> {
   return cachedAsync('dim:stores', 300_000, async () => {
     const rows = await prisma.$queryRawUnsafe<{ Number: number; Desc: string | null }[]>(
-      `SELECT number AS "Number", "desc" AS "Desc" FROM rics_mirror.store_master`,
+      `SELECT number AS "Number", "desc" AS "Desc" FROM app.store_master`,
     );
     const map = new Map<number, StoreRow>();
     for (const r of rows) {
@@ -480,10 +480,14 @@ async function loadVendorMap(): Promise<Map<string, VendorRow>> {
     const rows = await prisma.$queryRawUnsafe<
       { Code: string | null; 'Short Name': string | null; 'Manu Name': string | null }[]
     >(
-      `SELECT code AS "Code",
-              short_name AS "Short Name",
-              manu_name AS "Manu Name"
-         FROM rics_mirror.vendor_master`,
+      `SELECT
+          COALESCE(o.code, v.code) AS "Code",
+          COALESCE(o.short_name, v.short_name) AS "Short Name",
+          COALESCE(o.manu_name, v.manu_name) AS "Manu Name"
+         FROM app.vendor v
+         FULL OUTER JOIN app.vendor_overlay o ON o.code = v.code
+        WHERE (o.source IS NULL OR o.source <> 'tombstone')
+          AND (v.code IS NOT NULL OR o.code IS NOT NULL)`,
     );
     const map = new Map<string, VendorRow>();
     for (const r of rows) {
@@ -594,58 +598,50 @@ interface MasterRow {
 }
 
 async function loadMasterBySku(sku: string): Promise<MasterRow | null> {
-  // Fast path: the SKU index warmed at startup holds every non-discontinued
-  // master row in memory. Avoids a PowerShell round-trip per inquiry, which
-  // is the hot path when operators rapidly click SKU links. The narrow
-  // projection in the index matches MasterRow one-for-one; the only nuance
-  // is VendorSKU (index) vs. VendorSku (MasterRow column name in this file).
-  const indexed = await findIndexedMaster(sku);
-  if (indexed) {
-    return {
-      SKU: indexed.SKU,
-      Desc: indexed.Desc,
-      Vendor: indexed.Vendor,
-      Manufacturer: indexed.Manufacturer,
-      Category: indexed.Category,
-      SizeType: indexed.SizeType,
-      Season: indexed.Season,
-      LabelCode: indexed.LabelCode,
-      GroupCode: indexed.GroupCode,
-      StyleColor: indexed.StyleColor,
-      VendorSku: indexed.VendorSKU,
-      ListPrice: indexed.ListPrice,
-      RetailPrice: indexed.RetailPrice,
-      MarkDownPrice1: indexed.MarkDownPrice1,
-      MarkDownPrice2: indexed.MarkDownPrice2,
-      CurrentPrice: indexed.CurrentPrice,
-      CurrentCost: indexed.CurrentCost,
-      LastPriceChange: indexed.LastPriceChange,
-      PictureFileName: indexed.PictureFileName,
-      Perks: indexed.Perks,
-      Comment: indexed.Comment,
-      Status: indexed.Status,
-    };
-  }
-
-  // Fallback: index not yet warmed, or SKU not in it (discontinued / new).
+  // Full Inventory Inquiry master rows are now loaded on demand from app.sku.
+  // The warmed SKU index is intentionally smaller and only covers the lookup
+  // modal, lookup facets, and prev/next navigation.
   const rows = await prisma.$queryRawUnsafe<MasterRow[]>(
     `
     SELECT
-      sku AS "SKU", "desc" AS "Desc", vendor AS "Vendor",
-      manufacturer AS "Manufacturer", category AS "Category",
-      size_type AS "SizeType", season AS "Season",
-      label_code AS "LabelCode", group_code AS "GroupCode",
-      style_color AS "StyleColor", vendor_sku AS "VendorSku",
-      list_price::float8 AS "ListPrice", retail_price::float8 AS "RetailPrice",
-      mark_down_price1::float8 AS "MarkDownPrice1",
-      mark_down_price2::float8 AS "MarkDownPrice2",
-      current_price AS "CurrentPrice",
-      current_cost::float8 AS "CurrentCost",
-      to_char(last_price_change AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS') AS "LastPriceChange",
-      picture_file_name AS "PictureFileName",
-      perks::float8 AS "Perks", comment AS "Comment", status AS "Status"
-    FROM rics_mirror.inventory_master
-    WHERE sku = $1
+      s.code AS "SKU",
+      s.description_rics AS "Desc",
+      s.vendor_id AS "Vendor",
+      s.manufacturer AS "Manufacturer",
+      s.category_number AS "Category",
+      s.size_type AS "SizeType",
+      s.season AS "Season",
+      s.label_code AS "LabelCode",
+      s.group_code AS "GroupCode",
+      s.style_color AS "StyleColor",
+      s.vendor_sku AS "VendorSku",
+      s.list_price::float8 AS "ListPrice",
+      s.retail_price::float8 AS "RetailPrice",
+      s.mark_down_price1::float8 AS "MarkDownPrice1",
+      s.mark_down_price2::float8 AS "MarkDownPrice2",
+      CASE UPPER(COALESCE(s.current_price_slot, ''))
+        WHEN '1' THEN 1
+        WHEN 'LIST' THEN 1
+        WHEN '2' THEN 2
+        WHEN 'RETAIL' THEN 2
+        WHEN '3' THEN 3
+        WHEN 'MARKDOWN1' THEN 3
+        WHEN 'MARK_DOWN_1' THEN 3
+        WHEN 'MD1' THEN 3
+        WHEN '4' THEN 4
+        WHEN 'MARKDOWN2' THEN 4
+        WHEN 'MARK_DOWN_2' THEN 4
+        WHEN 'MD2' THEN 4
+        ELSE 2
+      END AS "CurrentPrice",
+      s.current_cost::float8 AS "CurrentCost",
+      to_char(s.updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS') AS "LastPriceChange",
+      s.picture_file_name AS "PictureFileName",
+      s.perks::float8 AS "Perks",
+      s.comment AS "Comment",
+      CASE WHEN s.sku_state = 'DISCONTINUED' THEN 'D' ELSE NULL END AS "Status"
+    FROM app.sku s
+    WHERE s.code = $1
     LIMIT 1
     `,
     sku,

@@ -463,6 +463,8 @@ export interface MonthlyInventoryHistoryRow {
   storeNumber: number;
   sku: string;
   averageCost: number;
+  /** Import snapshot timestamp used to map rolling month slots to concrete year-months. */
+  snapshotAsOf?: Date | string;
   /** Current on-hand qty (end of the most recent closed month). */
   onHand: number;
   /** Per-calendar-month snapshots, index 0 = Jan (NN=01), index 11 = Dec (NN=12). */
@@ -480,55 +482,29 @@ export interface QueryMonthlyInventoryHistoryParams {
   nonZeroOnly?: boolean;
 }
 
-interface RawInvHisRow {
+interface RawInventoryHistoryRow {
   SKU: string | null;
   Store: number | null;
   AverageCost: number | null;
+  SnapshotAsOf: Date | string | null;
   OnHand: number | null;
-  LYMonthQtyOH_01: number | null;  LYMonthQtyOH_02: number | null;
-  LYMonthQtyOH_03: number | null;  LYMonthQtyOH_04: number | null;
-  LYMonthQtyOH_05: number | null;  LYMonthQtyOH_06: number | null;
-  LYMonthQtyOH_07: number | null;  LYMonthQtyOH_08: number | null;
-  LYMonthQtyOH_09: number | null;  LYMonthQtyOH_10: number | null;
-  LYMonthQtyOH_11: number | null;  LYMonthQtyOH_12: number | null;
-  LYMonthOnHand_01: number | null; LYMonthOnHand_02: number | null;
-  LYMonthOnHand_03: number | null; LYMonthOnHand_04: number | null;
-  LYMonthOnHand_05: number | null; LYMonthOnHand_06: number | null;
-  LYMonthOnHand_07: number | null; LYMonthOnHand_08: number | null;
-  LYMonthOnHand_09: number | null; LYMonthOnHand_10: number | null;
-  LYMonthOnHand_11: number | null; LYMonthOnHand_12: number | null;
+  SlotNumber: number | null;
+  QtyOnHand: number | null;
+  InventoryValue: number | null;
 }
 
-const INVHIS_SELECT_COLUMNS = [
-  `sku AS "SKU"`,
-  `store AS "Store"`,
-  `average_cost::float8 AS "AverageCost"`,
-  `on_hand AS "OnHand"`,
-  ...Array.from({ length: 12 }, (_, i) => {
-    const n = String(i + 1).padStart(2, '0');
-    return `ly_month_qty_oh_${n} AS "LYMonthQtyOH_${n}"`;
-  }),
-  ...Array.from({ length: 12 }, (_, i) => {
-    const n = String(i + 1).padStart(2, '0');
-    return `ly_month_on_hand_${n}::float8 AS "LYMonthOnHand_${n}"`;
-  }),
-].join(', ');
-
 /**
- * Pull the 12-slot calendar-month inventory-history snapshots from
- * `RIINVHIS.InvHis` for the given stores and (optionally) SKUs.
+ * Pull the 12-slot calendar-month inventory-history snapshots from the owned
+ * Postgres replacement for `RIINVHIS.InvHis`.
  *
- * Phase 1 read-only. No joins — this function returns the raw (store, sku)
- * rows with their LY* column vectors intact; the facade is responsible for
- * mapping calendar-month NN → the 12-month report window and for rolling up
- * to vendor / category / department.
+ * Returns one row per `(store, sku)` with the month-end on-hand vectors already
+ * pivoted back into the legacy Jan..Dec slot arrays so the facade contract
+ * does not change.
  *
  * If `skuFilter` is omitted, the scan returns every SKU that has at least
- * **some** historical activity (non-zero OnHand, LY*, or AverageCost). On a
- * 1.9M-row customer DB this still yields ~225k rows; callers that want
- * subtotal or department rollups should prefer to pre-resolve the SKU set
- * via `loadSkuMasterForCriteria` + criteria push-down so the query stays
- * under Access's IN-clause limits and under a reasonable wall-clock.
+ * **some** historical activity (non-zero OnHand, month-end qty, or
+ * AverageCost). Callers that want subtotal or department rollups should
+ * prefer to pre-resolve the SKU set via `loadSkuMasterForCriteria`.
  */
 export async function queryMonthlyInventoryHistory(
   params: QueryMonthlyInventoryHistoryParams,
@@ -538,64 +514,71 @@ export async function queryMonthlyInventoryHistory(
   }
 
   const sqlParams: unknown[] = [params.storeNumbers.map((n) => Number(n))];
-  const wheres: string[] = [`store = ANY($1::int[])`];
+  const wheres: string[] = [`s.store_id = ANY($1::int[])`];
 
   if (params.skuFilter && params.skuFilter.length > 0) {
-    // inv_his.sku padding is uncertain here (unlike ticket_detail which is
-    // known-padded to 15). Check both the raw and padded forms so we tolerate
-    // either shape.
     const pairs = new Set<string>();
     for (const s of params.skuFilter) {
-      pairs.add(s);
-      pairs.add(s.padEnd(15, ' '));
+      pairs.add(s.trim());
     }
     sqlParams.push([...pairs]);
-    wheres.push(`sku = ANY($${sqlParams.length}::text[])`);
+    wheres.push(`s.sku_code = ANY($${sqlParams.length}::text[])`);
   } else if (params.nonZeroOnly !== false) {
-    // Skip the long tail of all-zero (store, sku) pairs that bloat the scan.
     wheres.push(`(
-      on_hand <> 0 OR average_cost > 0 OR
-      ly_month_qty_oh_01 <> 0 OR ly_month_qty_oh_02 <> 0 OR ly_month_qty_oh_03 <> 0 OR
-      ly_month_qty_oh_04 <> 0 OR ly_month_qty_oh_05 <> 0 OR ly_month_qty_oh_06 <> 0 OR
-      ly_month_qty_oh_07 <> 0 OR ly_month_qty_oh_08 <> 0 OR ly_month_qty_oh_09 <> 0 OR
-      ly_month_qty_oh_10 <> 0 OR ly_month_qty_oh_11 <> 0 OR ly_month_qty_oh_12 <> 0
+      s.on_hand <> 0 OR COALESCE(s.average_cost, 0) > 0 OR
+      EXISTS (
+        SELECT 1
+        FROM app.inventory_history_month m2
+        WHERE m2.snapshot_id = s.id
+          AND m2.qty_on_hand <> 0
+      )
     )`);
   }
 
-  const sql = `SELECT ${INVHIS_SELECT_COLUMNS}
-                 FROM rics_mirror.inv_his
-                WHERE ${wheres.join(' AND ')}`;
+  const sql = `
+    SELECT
+      s.sku_code AS "SKU",
+      s.store_id AS "Store",
+      s.average_cost::float8 AS "AverageCost",
+      s.snapshot_as_of AS "SnapshotAsOf",
+      s.on_hand AS "OnHand",
+      m.slot_number AS "SlotNumber",
+      m.qty_on_hand AS "QtyOnHand",
+      m.inventory_value::float8 AS "InventoryValue"
+    FROM app.inventory_history_snapshot s
+    LEFT JOIN app.inventory_history_month m
+      ON m.snapshot_id = s.id
+    WHERE ${wheres.join(' AND ')}
+    ORDER BY s.store_id, s.sku_code, m.slot_number
+  `;
 
-  const raw = await prisma.$queryRawUnsafe<RawInvHisRow[]>(sql, ...sqlParams);
-  const rows: MonthlyInventoryHistoryRow[] = [];
+  const raw = await prisma.$queryRawUnsafe<RawInventoryHistoryRow[]>(sql, ...sqlParams);
+  const rows = new Map<string, MonthlyInventoryHistoryRow>();
   for (const r of raw) {
     if (r.SKU == null || r.Store == null) continue;
-    const monthQty: number[] = [
-      Number(r.LYMonthQtyOH_01 ?? 0), Number(r.LYMonthQtyOH_02 ?? 0),
-      Number(r.LYMonthQtyOH_03 ?? 0), Number(r.LYMonthQtyOH_04 ?? 0),
-      Number(r.LYMonthQtyOH_05 ?? 0), Number(r.LYMonthQtyOH_06 ?? 0),
-      Number(r.LYMonthQtyOH_07 ?? 0), Number(r.LYMonthQtyOH_08 ?? 0),
-      Number(r.LYMonthQtyOH_09 ?? 0), Number(r.LYMonthQtyOH_10 ?? 0),
-      Number(r.LYMonthQtyOH_11 ?? 0), Number(r.LYMonthQtyOH_12 ?? 0),
-    ];
-    const monthValue: number[] = [
-      Number(r.LYMonthOnHand_01 ?? 0), Number(r.LYMonthOnHand_02 ?? 0),
-      Number(r.LYMonthOnHand_03 ?? 0), Number(r.LYMonthOnHand_04 ?? 0),
-      Number(r.LYMonthOnHand_05 ?? 0), Number(r.LYMonthOnHand_06 ?? 0),
-      Number(r.LYMonthOnHand_07 ?? 0), Number(r.LYMonthOnHand_08 ?? 0),
-      Number(r.LYMonthOnHand_09 ?? 0), Number(r.LYMonthOnHand_10 ?? 0),
-      Number(r.LYMonthOnHand_11 ?? 0), Number(r.LYMonthOnHand_12 ?? 0),
-    ];
-    rows.push({
-      storeNumber: Number(r.Store),
-      sku: String(r.SKU).trim(),
-      averageCost: Number(r.AverageCost ?? 0),
-      onHand: Number(r.OnHand ?? 0),
-      monthQtyOH: monthQty,
-      monthValueOH: monthValue,
-    });
+    const sku = String(r.SKU).trim();
+    const key = `${Number(r.Store)}|${sku}`;
+    let row = rows.get(key);
+    if (!row) {
+      row = {
+        storeNumber: Number(r.Store),
+        sku,
+        averageCost: Number(r.AverageCost ?? 0),
+        snapshotAsOf: r.SnapshotAsOf ?? undefined,
+        onHand: Number(r.OnHand ?? 0),
+        monthQtyOH: new Array<number>(12).fill(0),
+        monthValueOH: new Array<number>(12).fill(0),
+      };
+      rows.set(key, row);
+    }
+
+    const slotIndex = Number(r.SlotNumber ?? 0) - 1;
+    if (slotIndex >= 0 && slotIndex < 12) {
+      row.monthQtyOH[slotIndex] = Number(r.QtyOnHand ?? 0);
+      row.monthValueOH[slotIndex] = Number(r.InventoryValue ?? 0);
+    }
   }
-  return rows;
+  return [...rows.values()];
 }
 
 // ─────────────────────────── internals ────────────────────────────────────

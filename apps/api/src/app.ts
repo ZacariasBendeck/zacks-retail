@@ -15,6 +15,9 @@ import otbBudgetRoutes from './routes/otbBudgetRoutes';
 import dashboardRoutes from './routes/dashboardRoutes';
 import adjustmentRoutes from './routes/adjustmentRoutes';
 import manualReceiptRoutes from './routes/manualReceiptRoutes';
+import manualReturnRoutes from './routes/manualReturnRoutes';
+import replenishmentTargetRoutes from './routes/replenishmentTargetRoutes';
+import transferRunRoutes from './routes/transferRunRoutes';
 import inventoryMutationRoutes from './routes/inventoryMutationRoutes';
 import ricsInventoryRoutes from './routes/ricsInventoryRoutes';
 import locationRoutes from './routes/locationRoutes';
@@ -38,6 +41,7 @@ import posReportRoutes from './routes/posReportRoutes';
 import posSkuRoutes from './routes/posSkuRoutes';
 import customerRoutes from './routes/customerRoutes';
 import customerTransactionsRoutes from './routes/customerTransactionsRoutes';
+import customerSegmentationRoutes from './routes/customerSegmentationRoutes';
 import physicalInventoryRoutes from './routes/physicalInventoryRoutes';
 import productsTaxonomyRoutes from './routes/products/taxonomyRoutes';
 import productsVendorRoutes from './routes/products/vendorRoutes';
@@ -110,7 +114,10 @@ app.use('/api/v1/otb-budgets', otbBudgetRoutes);
 app.use('/api/v1/dashboard', dashboardRoutes);
 app.use('/api/v1/inventory/adjustments', adjustmentRoutes);
 app.use('/api/v1/inventory/manual-receipts', manualReceiptRoutes);
+app.use('/api/v1/inventory/manual-returns', manualReturnRoutes);
+app.use('/api/v1/inventory/replenishment-targets', replenishmentTargetRoutes);
 app.use('/api/v1/inventory', inventoryMutationRoutes);
+app.use('/api/v1/inventory', transferRunRoutes);
 app.use('/api/v1/inventory', ricsInventoryRoutes);
 app.use('/api/v1/locations', locationRoutes);
 app.use('/api/v1/transfer-orders', transferOrderRoutes);
@@ -138,6 +145,9 @@ app.use('/api/v1/customers', customerRoutes);
 
 // customer-transactions module
 app.use('/api/v1/customer-transactions', customerTransactionsRoutes);
+
+// customer-intelligence segmentation module
+app.use('/api/v1', customerSegmentationRoutes);
 
 // physical-inventory module (P1.a Wave 1 — lifecycle + entries; no commit-back)
 app.use('/api/v1/count-sessions', physicalInventoryRoutes);

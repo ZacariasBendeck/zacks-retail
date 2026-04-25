@@ -58,6 +58,7 @@ vi.mock('../hooks/useProductsTaxonomy', () => ({
 import DepartmentListPage from '../pages/products/DepartmentListPage'
 import DepartmentFormPage from '../pages/products/DepartmentFormPage'
 import CategoryListPage from '../pages/products/CategoryListPage'
+import CategoryFormPage from '../pages/products/CategoryFormPage'
 import GroupListPage from '../pages/products/GroupListPage'
 import KeywordListPage from '../pages/products/KeywordListPage'
 import SectorListPage from '../pages/products/SectorListPage'
@@ -148,8 +149,32 @@ describe('Products taxonomy pages', () => {
       data: [{ number: 100, description: 'TEST CAT', dateLastChanged: null, skuCount: 0 }],
       isLoading: false,
     } as never)
+    vi.mocked(hooks.useDepartments).mockReturnValue({
+      data: [{ number: 1, description: 'ROPA', begCateg: 1, endCateg: 199, dateLastChanged: null, skuCount: 0 }],
+      isLoading: false,
+    } as never)
+    vi.mocked(hooks.useSectors).mockReturnValue({
+      data: [{ number: 1, description: 'GENERAL', begDept: 1, endDept: 99, dateLastChanged: null, skuCount: 0 }],
+      isLoading: false,
+    } as never)
     renderPage(<CategoryListPage />)
     expect(screen.getByText('TEST CAT')).toBeTruthy()
+    expect(screen.getByText(/New category/)).toBeTruthy()
+  })
+
+  it('CategoryFormPage in create mode shows empty form and Save button', () => {
+    vi.mocked(hooks.useCategory).mockReturnValue({ data: undefined } as never)
+    vi.mocked(hooks.useCreateCategory).mockReturnValue({
+      mutateAsync: vi.fn(),
+      isPending: false,
+    } as never)
+    vi.mocked(hooks.useUpdateCategory).mockReturnValue({
+      mutateAsync: vi.fn(),
+      isPending: false,
+    } as never)
+    renderPage(<CategoryFormPage />)
+    expect(screen.getByText('New category')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /save/i })).toBeTruthy()
   })
 
   it('GroupListPage renders groups', () => {

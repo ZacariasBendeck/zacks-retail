@@ -23,8 +23,13 @@ import {
   AuditOutlined,
   BookOutlined,
   CameraOutlined,
+  PieChartOutlined,
+  CrownOutlined,
+  AlertOutlined,
+  TagOutlined,
+  ApartmentOutlined,
 } from '@ant-design/icons'
-import { Outlet, useNavigate, useLocation } from 'react-router-dom'
+import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth/useAuth'
 
 const { Header, Sider, Content } = Layout
@@ -93,19 +98,20 @@ const menuItems = [
     icon: <ShopOutlined />,
     label: 'Inventory',
     children: [
-      { key: '/inventory/sales-ledger', icon: <HistoryOutlined />, label: 'Sales Ledger' },
+      { key: '/inventory/adjustments', icon: <SwapOutlined />, label: 'Stock Maintenance' },
       { key: '/inventory/balances', icon: <InboxOutlined />, label: 'Balances' },
-      { key: '/inventory/adjustments', icon: <SwapOutlined />, label: 'Adjustments' },
-      { key: '/inventory/transfers/manual', icon: <SwapOutlined />, label: 'Transfer \u2014 Manual' },
-      { key: '/inventory/transfers/auto-preview', icon: <ExperimentOutlined />, label: 'Transfer \u2014 Auto (preview)' },
-      { key: '/inventory/transfers/balancing-preview', icon: <ExperimentOutlined />, label: 'Transfer \u2014 Balancing (preview)' },
+      { key: '/inventory/find-by-size', icon: <ColumnHeightOutlined />, label: 'Find by Size' },
+      { key: '/inventory/replenishment', icon: <FundOutlined />, label: 'Model Quantities' },
+      { key: '/inventory/transfers/manual', icon: <SwapOutlined />, label: 'Transfer - Manual' },
+      { key: '/inventory/transfers/automatic', icon: <ExperimentOutlined />, label: 'Transfer - Automatic' },
+      { key: '/inventory/transfers/balancing', icon: <ExperimentOutlined />, label: 'Transfer - Balancing (Legacy)' },
+      { key: '/inventory/transfers/balancing-v2', icon: <ExperimentOutlined />, label: 'Transfer - Balancing v2' },
       { key: '/inventory/movements', icon: <SyncOutlined />, label: 'Movements' },
       { key: '/inventory/change-detail', icon: <HistoryOutlined />, label: 'Change Detail' },
+      { key: '/inventory/sales-ledger', icon: <HistoryOutlined />, label: 'Sales Ledger' },
       { key: '/inventory/audit', icon: <AuditOutlined />, label: 'Audit' },
-      // Demoted — not in active use (muted style)
+      // Demoted - not in active use (muted style)
       { key: '/inventory/dashboard', icon: <DashboardOutlined />, label: <DemotedLabel>Dashboard</DemotedLabel> },
-      { key: '/inventory/find-by-size', icon: <ColumnHeightOutlined />, label: <DemotedLabel>Find by Size</DemotedLabel> },
-      { key: '/inventory/replenishment', icon: <FundOutlined />, label: <DemotedLabel>Replenishment</DemotedLabel> },
     ],
   },
   {
@@ -114,9 +120,18 @@ const menuItems = [
     label: 'Plan de Compras',
   },
   {
-    key: '/customers',
+    key: '/customers-group',
     icon: <TeamOutlined />,
-    label: 'Customers',
+    label: 'Customer Intelligence',
+    children: [
+      { key: '/customers/dashboard', icon: <PieChartOutlined />, label: 'Dashboard' },
+      { key: '/customers/intelligence', icon: <TeamOutlined />, label: 'Customers (KPI)' },
+      { key: '/customers', icon: <TeamOutlined />, label: 'Customer Records' },
+      { key: '/customers/segments', icon: <ApartmentOutlined />, label: 'Segments' },
+      { key: '/customers/churn-risk', icon: <AlertOutlined />, label: 'Churn Risk' },
+      { key: '/customers/vip', icon: <CrownOutlined />, label: 'VIP Customers' },
+      { key: '/customers/discount-sensitive', icon: <TagOutlined />, label: 'Discount Sensitivity' },
+    ],
   },
   {
     key: '/reports',
@@ -130,7 +145,7 @@ const menuItems = [
       { key: '/reports/others', icon: <AppstoreOutlined />, label: 'Others' },
       { key: '/reports/templates', icon: <BookOutlined />, label: 'Templates' },
       { key: '/reports/runs', icon: <CameraOutlined />, label: 'Snapshots' },
-      // Demoted — not in active use (muted style)
+      // Demoted - not in active use (muted style)
       { key: '/reports/on-hand', icon: <FileTextOutlined />, label: <DemotedLabel>On-Hand</DemotedLabel> },
       { key: '/reports/turnover', icon: <SyncOutlined />, label: <DemotedLabel>Turnover</DemotedLabel> },
       { key: '/reports/sell-through', icon: <FundOutlined />, label: <DemotedLabel>Sell-Through</DemotedLabel> },
@@ -142,16 +157,15 @@ const menuItems = [
     icon: <ExperimentOutlined />,
     label: 'Utilities',
     children: [
-      { key: '/utilities', icon: <ExperimentOutlined />, label: 'Overview' },
+      { key: '/utilities/overview', icon: <ExperimentOutlined />, label: 'Overview' },
       { key: '/utilities/change-sku-attributes', icon: <FileTextOutlined />, label: 'Change SKU Attributes' },
       { key: '/utilities/change-keywords', icon: <FileTextOutlined />, label: 'Change Keywords' },
       { key: '/utilities/batch-history', icon: <HistoryOutlined />, label: 'Batch History' },
     ],
   },
-  // ──────────────── Demoted: modules not in active use ────────────────
-  // Parents render with a muted/italic style so they read as deprioritised
-  // against the dark sider. Routes stay mounted in App.tsx — direct URLs
-  // still resolve.
+  // Demoted: modules not in active use.
+  // Parents render with a muted style so they read as deprioritised against the dark sider.
+  // Routes stay mounted in App.tsx, so direct URLs still resolve.
   {
     key: '/purchasing',
     icon: <ShoppingOutlined />,
@@ -186,7 +200,7 @@ function DemotedLabel({ children }: { children: ReactNode }) {
   return (
     <span style={{ opacity: 0.55, fontStyle: 'italic' }}>
       {children}{' '}
-      <span style={{ fontSize: 11, opacity: 0.85 }}>— no en uso</span>
+      <span style={{ fontSize: 11, opacity: 0.85 }}>- no en uso</span>
     </span>
   )
 }
@@ -229,9 +243,9 @@ export default function AppLayout() {
     return out
   }
 
-  // Walk nested items (SubMenu children may themselves be Group items with
-  // their own children) and collect every leaf key. Dividers and Groups carry
-  // no clickable key of their own — only the inner leaves do.
+  // Walk nested items (SubMenu children may themselves be Group items with their own children)
+  // and collect every leaf key. Dividers and Groups carry no clickable key of their own - only
+  // the inner leaves do.
   const collectLeafKeys = (items: readonly any[]): string[] => {
     const out: string[] = []
     for (const item of items) {
@@ -270,7 +284,7 @@ export default function AppLayout() {
   const selectedMenuKey =
     allMenuKeys
       .filter((key) => typeof key === 'string' && (currentPath === key || currentPath.startsWith(`${key}/`)))
-      .sort((a, b) => b.length - a.length)[0] ?? '/inventory/dashboard'
+      .sort((a, b) => b.length - a.length)[0] ?? '/inventory/adjustments'
 
   const selectedLeaf =
     allLeafKeys
@@ -285,6 +299,7 @@ export default function AppLayout() {
     ) ??
     menuItems.find((item) => item.children && collectMenuKeys(item.children).includes(selectedMenuKey)) ??
     menuItems[0]
+
   const desiredOpenKeys = Array.from(new Set(collectOpenKeysForPath(menuItems, currentPath)))
   const [openKeys, setOpenKeys] = useState<string[]>(() => desiredOpenKeys)
 
@@ -307,7 +322,7 @@ export default function AppLayout() {
           openKeys={openKeys}
           onOpenChange={(keys) => setOpenKeys(keys as string[])}
           items={menuItems}
-          onClick={({ key }) => navigate(key)}
+          onClick={({ key }) => navigate(key === '/utilities/overview' ? '/utilities' : key)}
         />
       </Sider>
       <Layout>

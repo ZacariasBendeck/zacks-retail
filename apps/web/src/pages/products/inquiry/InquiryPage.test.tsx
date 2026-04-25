@@ -1,4 +1,5 @@
 import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
@@ -16,6 +17,7 @@ function renderPage(initialEntries = ['/products/inquiry/ZN02-NDPT']) {
     <QueryClientProvider client={client}>
       <MemoryRouter initialEntries={initialEntries}>
         <Routes>
+          <Route path="/products/inquiry" element={<InquiryPage />} />
           <Route path="/products/inquiry/:skuCode" element={<InquiryPage />} />
         </Routes>
       </MemoryRouter>
@@ -24,6 +26,14 @@ function renderPage(initialEntries = ['/products/inquiry/ZN02-NDPT']) {
 }
 
 describe('InquiryPage', () => {
+  it('keeps the empty inquiry landing passive until the user clicks Pick a SKU', async () => {
+    (useInquiryData as any).mockReturnValue({ isLoading: false, data: null, error: null });
+    renderPage(['/products/inquiry']);
+    expect(screen.queryByText(/sku lookup/i)).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: /pick a sku/i }));
+    expect(screen.getByText(/sku lookup/i)).toBeInTheDocument();
+  });
+
   it('shows a loading state while data is pending', () => {
     (useInquiryData as any).mockReturnValue({ isLoading: true, data: null, error: null });
     renderPage();

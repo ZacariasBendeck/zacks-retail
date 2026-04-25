@@ -19,8 +19,13 @@ jest.mock('../../../src/db/prisma', () => ({
   },
 }));
 
+jest.mock('../../../src/repositories/rics/taxonomySkuCounts', () => ({
+  loadSkuCountsByVendor: jest.fn(),
+}));
+
 import { prisma } from '../../../src/db/prisma';
 import { VendorRepository } from '../../../src/repositories/rics/VendorRepository';
+import { loadSkuCountsByVendor } from '../../../src/repositories/rics/taxonomySkuCounts';
 
 const mockQuery = prisma.$queryRawUnsafe as jest.MockedFunction<
   typeof prisma.$queryRawUnsafe
@@ -33,6 +38,9 @@ const mockOverlay = prisma.vendorOverlay as any as {
   delete: jest.Mock;
   findUnique: jest.Mock;
 };
+const mockLoadSkuCountsByVendor = loadSkuCountsByVendor as jest.MockedFunction<
+  typeof loadSkuCountsByVendor
+>;
 
 const ROW_1 = {
   code: '03EV',
@@ -80,6 +88,7 @@ beforeEach(() => {
   mockOverlay.update.mockReset();
   mockOverlay.delete.mockReset();
   mockOverlay.findUnique.mockReset();
+  mockLoadSkuCountsByVendor.mockReset();
 });
 
 // ────────────── Reads ──────────────
@@ -97,7 +106,8 @@ describe('VendorRepository.findAll', () => {
     expect(result.value[0].city).toBe('Los Angeles');
 
     const [sql] = mockQuery.mock.calls[0];
-    expect(sql).toMatch(/FROM rics_mirror\.vendor_master/);
+    expect(sql).toMatch(/FROM app\.vendor v/);
+    expect(sql).toMatch(/FULL OUTER JOIN app\.vendor_overlay/);
     expect(sql).toMatch(/ORDER BY code/);
   });
 
@@ -121,7 +131,7 @@ describe('VendorRepository.findAll', () => {
     const [sql, needle, limit] = mockQuery.mock.calls[0];
     // SQL pulls from the overlay FULL OUTER JOIN mirror projection,
     // filters tombstones, and applies a LOWER LIKE across code + name cols.
-    expect(sql).toMatch(/FROM rics_mirror\.vendor_master/);
+    expect(sql).toMatch(/FROM app\.vendor v/);
     expect(sql).toMatch(/FULL OUTER JOIN app\.vendor_overlay/);
     expect(sql).toMatch(/o\.source\s*!=\s*'tombstone'/);
     expect(sql).toMatch(/LIKE \$1/);
@@ -151,10 +161,10 @@ describe('VendorRepository.findByCode', () => {
     expect(result.value.email).toBe('info@03everly.com');
 
     const [sql, code] = mockQuery.mock.calls[0];
-    expect(sql).toMatch(/FROM rics_mirror\.vendor_master/);
+    expect(sql).toMatch(/FROM app\.vendor v/);
     expect(sql).toMatch(/FULL OUTER JOIN app\.vendor_overlay/);
     // Code is matched case-insensitively against the effective (overlay|mirror) code.
-    expect(sql).toMatch(/UPPER\(COALESCE\(o\.code, m\.code\)\)\s*=\s*\$1/);
+    expect(sql).toMatch(/UPPER\(COALESCE\(o\.code, v\.code\)\)\s*=\s*\$1/);
     expect(code).toBe('03EV');
   });
 
@@ -177,7 +187,7 @@ describe('VendorRepository.findByCode', () => {
 });
 
 describe('VendorRepository.findStoreAccounts', () => {
-  it('pulls rows from rics_mirror.vendor_accounts', async () => {
+  it('pulls rows from app.vendor_store_account', async () => {
     mockQuery.mockResolvedValueOnce([
       { code: '138I', store: 1, account: '67', date_last_changed: new Date('2002-09-20Z') },
       { code: '138I', store: 2, account: '67', date_last_changed: new Date('2002-09-20Z') },
@@ -191,33 +201,35 @@ describe('VendorRepository.findStoreAccounts', () => {
     expect(result.value[1].storeId).toBe(2);
 
     const [sql] = mockQuery.mock.calls[0];
-    expect(sql).toMatch(/FROM rics_mirror\.vendor_accounts/);
+    expect(sql).toMatch(/FROM app\.vendor_store_account/);
   });
 });
 
 describe('VendorRepository.countSkusUsingVendor', () => {
   it('counts SKUs with matching vendor (case-insensitive)', async () => {
-    mockQuery.mockResolvedValueOnce([{ n: 42n }] as never);
+    mockLoadSkuCountsByVendor.mockResolvedValueOnce(
+      new Map([
+        ['03EV', 42],
+        ['OTHER', 2],
+      ]),
+    );
 
     const result = await VendorRepository.countSkusUsingVendor('03EV');
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value).toBe(42);
-
-    const [sql, code] = mockQuery.mock.calls[0];
-    expect(sql).toMatch(/FROM rics_mirror\.inventory_master/);
-    expect(sql).toMatch(/UPPER\(vendor\) = \$1/);
-    expect(code).toBe('03EV');
+    expect(mockLoadSkuCountsByVendor).toHaveBeenCalledTimes(1);
   });
 });
 
 describe('VendorRepository.countSkusPerVendor', () => {
   it('returns a per-vendor code→count map with uppercased keys', async () => {
-    mockQuery.mockResolvedValueOnce([
-      { vendor: 'GRAN', n: 7079n },
-      { vendor: 'kyiw', n: 4458n }, // lowercase in source — should be uppercased
-      { vendor: null, n: 999n }, // should be filtered out
-    ] as never);
+    mockLoadSkuCountsByVendor.mockResolvedValueOnce(
+      new Map([
+        ['GRAN', 7079],
+        ['KYIW', 4458],
+      ]),
+    );
 
     const result = await VendorRepository.countSkusPerVendor();
     expect(result.ok).toBe(true);
@@ -226,9 +238,7 @@ describe('VendorRepository.countSkusPerVendor', () => {
       GRAN: 7079,
       KYIW: 4458,
     });
-
-    const [sql] = mockQuery.mock.calls[0];
-    expect(sql).toMatch(/GROUP BY vendor/);
+    expect(mockLoadSkuCountsByVendor).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -294,7 +304,7 @@ describe('VendorRepository.create (overlay native row)', () => {
 describe('VendorRepository.update (override-vs-native)', () => {
   it('sparse-overrides a mirror-only vendor (source=override, only touched fields set)', async () => {
     // Status probe: code exists in mirror, no overlay yet.
-    mockQuery.mockResolvedValueOnce([{ has_mirror: true, overlay_source: null }] as never);
+    mockQuery.mockResolvedValueOnce([{ has_baseline: true, overlay_source: null }] as never);
     mockOverlay.create.mockResolvedValueOnce({} as never);
     // findByCode projection read.
     mockQuery.mockResolvedValueOnce([ROW_1] as never);
@@ -324,7 +334,7 @@ describe('VendorRepository.update (override-vs-native)', () => {
 
   it('updates an existing native row in place (keeps source=native)', async () => {
     mockQuery.mockResolvedValueOnce([
-      { has_mirror: false, overlay_source: 'native' },
+      { has_baseline: false, overlay_source: 'native' },
     ] as never);
     mockOverlay.update.mockResolvedValueOnce({} as never);
     mockQuery.mockResolvedValueOnce([{ ...ROW_1, code: 'ZTST' }] as never);
@@ -344,7 +354,7 @@ describe('VendorRepository.update (override-vs-native)', () => {
 
   it('returns NotFound when neither mirror nor overlay has the code', async () => {
     mockQuery.mockResolvedValueOnce([
-      { has_mirror: false, overlay_source: null },
+      { has_baseline: false, overlay_source: null },
     ] as never);
 
     const result = await VendorRepository.update('NOPE', { name: 'x' }, 'tester');
@@ -357,7 +367,7 @@ describe('VendorRepository.update (override-vs-native)', () => {
 
   it('returns NotFound when the code is tombstoned', async () => {
     mockQuery.mockResolvedValueOnce([
-      { has_mirror: true, overlay_source: 'tombstone' },
+      { has_baseline: true, overlay_source: 'tombstone' },
     ] as never);
 
     const result = await VendorRepository.update('1004', { name: 'x' }, 'tester');
@@ -370,7 +380,7 @@ describe('VendorRepository.update (override-vs-native)', () => {
 describe('VendorRepository.delete (overlay semantics)', () => {
   it('physically removes a native row', async () => {
     mockQuery.mockResolvedValueOnce([
-      { has_mirror: false, overlay_source: 'native' },
+      { has_baseline: false, overlay_source: 'native' },
     ] as never);
     mockOverlay.delete.mockResolvedValueOnce({} as never);
 
@@ -382,7 +392,7 @@ describe('VendorRepository.delete (overlay semantics)', () => {
 
   it('writes a tombstone row for a mirror-only vendor', async () => {
     mockQuery.mockResolvedValueOnce([
-      { has_mirror: true, overlay_source: null },
+      { has_baseline: true, overlay_source: null },
     ] as never);
     mockOverlay.create.mockResolvedValueOnce({} as never);
 
@@ -399,7 +409,7 @@ describe('VendorRepository.delete (overlay semantics)', () => {
 
   it('flips an existing override row to tombstone', async () => {
     mockQuery.mockResolvedValueOnce([
-      { has_mirror: true, overlay_source: 'override' },
+      { has_baseline: true, overlay_source: 'override' },
     ] as never);
     mockOverlay.update.mockResolvedValueOnce({} as never);
 
@@ -411,7 +421,7 @@ describe('VendorRepository.delete (overlay semantics)', () => {
 
   it('returns NotFound for already-tombstoned vendors', async () => {
     mockQuery.mockResolvedValueOnce([
-      { has_mirror: true, overlay_source: 'tombstone' },
+      { has_baseline: true, overlay_source: 'tombstone' },
     ] as never);
 
     const result = await VendorRepository.delete('1004', 'tester');
@@ -422,7 +432,7 @@ describe('VendorRepository.delete (overlay semantics)', () => {
 
   it('returns NotFound when neither mirror nor overlay has the code', async () => {
     mockQuery.mockResolvedValueOnce([
-      { has_mirror: false, overlay_source: null },
+      { has_baseline: false, overlay_source: null },
     ] as never);
 
     const result = await VendorRepository.delete('NOPE', 'tester');

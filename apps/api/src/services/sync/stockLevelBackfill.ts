@@ -14,6 +14,8 @@ export interface StockLevelBackfillResult {
 export interface StockLevelBackfillOptions {
   pgClient: Client;
   runId: string;
+  quantityTable?: string;
+  sizeTypeTable?: string;
 }
 
 interface AppSkuRow {
@@ -75,6 +77,16 @@ function isReceiptMovementType(movementType: string): boolean {
   return normalized === 'MANUAL_RECEIPT' || normalized === 'PO_RECEIPT';
 }
 
+function quoteQualifiedRef(ref: string): string {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$/.test(ref)) {
+    throw new Error(`Invalid table reference: ${ref}`);
+  }
+  return ref
+    .split('.')
+    .map((part) => `"${part}"`)
+    .join('.');
+}
+
 async function loadAppSkuMap(c: Client): Promise<Map<string, AppSkuRow>> {
   const result = await c.query<AppSkuRow>(`
     SELECT
@@ -93,18 +105,19 @@ async function loadAppSkuMap(c: Client): Promise<Map<string, AppSkuRow>> {
   return out;
 }
 
-async function loadSizeTypeMap(c: Client): Promise<Map<number, SizeTypeRow>> {
+async function loadSizeTypeMap(c: Client, sourceTable: string): Promise<Map<number, SizeTypeRow>> {
   const columnSelect = Array.from({ length: 54 }, (_, index) => {
     const n = pad2(index + 1);
     return `columns_${n} AS "Columns_${n}"`;
   }).join(', ');
+  const sourceRef = quoteQualifiedRef(sourceTable);
 
   const result = await c.query<Record<string, string | number | null>>(`
     SELECT
       code AS "Code",
       max_columns AS "MaxColumns",
       ${columnSelect}
-    FROM rics_mirror.size_types
+    FROM ${sourceRef}
   `);
 
   const out = new Map<number, SizeTypeRow>();
@@ -128,11 +141,12 @@ async function loadSizeTypeMap(c: Client): Promise<Map<number, SizeTypeRow>> {
   return out;
 }
 
-async function loadMirrorQuantityRows(c: Client): Promise<MirrorQuantityRow[]> {
+async function loadMirrorQuantityRows(c: Client, sourceTable: string): Promise<MirrorQuantityRow[]> {
   const onHandSelect = Array.from({ length: 18 }, (_, index) => {
     const n = pad2(index + 1);
     return `on_hand_${n} AS "OnHand_${n}"`;
   }).join(', ');
+  const sourceRef = quoteQualifiedRef(sourceTable);
 
   const result = await c.query<MirrorQuantityRow>(`
     SELECT
@@ -141,7 +155,7 @@ async function loadMirrorQuantityRows(c: Client): Promise<MirrorQuantityRow[]> {
       "row" AS "rowLabel",
       segment AS "segment",
       ${onHandSelect}
-    FROM rics_mirror.inventory_quantities
+    FROM ${sourceRef}
     WHERE sku IS NOT NULL
     ORDER BY sku, store, "row", segment
   `);
@@ -160,6 +174,7 @@ async function loadMovementRows(c: Client): Promise<MovementRow[]> {
       movement_type AS "movementType",
       movement_at AS "movementAt"
     FROM app.stock_movement
+    WHERE source_document_type <> 'RICS_INV_CHANGE'
     ORDER BY movement_at ASC, created_at ASC, id ASC
   `);
   return result.rows;
@@ -259,13 +274,15 @@ export async function stockLevelBackfill(
   opts: StockLevelBackfillOptions,
 ): Promise<StockLevelBackfillResult> {
   const { pgClient: c, runId } = opts;
+  const quantityTable = opts.quantityTable ?? 'rics_mirror.inventory_quantities';
+  const sizeTypeTable = opts.sizeTypeTable ?? 'rics_mirror.size_types';
   const startedMs = Date.now();
 
   await c.query('BEGIN');
   try {
     const skuMap = await loadAppSkuMap(c);
-    const sizeTypeMap = await loadSizeTypeMap(c);
-    const quantityRows = await loadMirrorQuantityRows(c);
+    const sizeTypeMap = await loadSizeTypeMap(c, sizeTypeTable);
+    const quantityRows = await loadMirrorQuantityRows(c, quantityTable);
     const movementRows = await loadMovementRows(c);
 
     const projection = new Map<string, ProjectionRow>();

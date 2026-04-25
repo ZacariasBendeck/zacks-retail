@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Navigate, useNavigate, useSearchParams } from 'react-router-dom'
 import { Card, Button, Input, Space, Table, Tag, Typography, Row, Col } from 'antd'
 import { ReloadOutlined, SearchOutlined, WarningFilled } from '@ant-design/icons'
 import dayjs from 'dayjs'
@@ -8,6 +8,7 @@ import type { Customer, CustomerListParams } from '../../types/customer'
 
 export default function CustomerListPage() {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const [params, setParams] = useState<CustomerListParams>({
     page: 1,
     pageSize: 25,
@@ -15,6 +16,26 @@ export default function CustomerListPage() {
     order: 'desc',
   })
   const [searchInput, setSearchInput] = useState('')
+
+  const hasCustomerIntelligenceFilters = [
+    'segment',
+    'churnRisk',
+    'channel',
+    'minLtv',
+    'maxLtv',
+    'minRecency',
+    'maxRecency',
+    'minDiscountRatio',
+    'primaryStoreId',
+    'primaryStoreCity',
+    'primaryStoreChain',
+    'dormant',
+  ].some((key) => searchParams.has(key))
+
+  if (hasCustomerIntelligenceFilters) {
+    const qs = searchParams.toString()
+    return <Navigate to={`/customers/intelligence${qs ? `?${qs}` : ''}`} replace />
+  }
 
   const { data, isLoading, isFetching, refetch } = useCustomers(params)
   const amountFormatter = new Intl.NumberFormat('es-HN', {
@@ -89,13 +110,16 @@ export default function CustomerListPage() {
       title="Customers"
       extra={
         <Space>
-          <Typography.Text type="secondary">Read-only RICS mirror</Typography.Text>
+          <Button type="primary" onClick={() => navigate('/customers/new')}>
+            New Customer
+          </Button>
+          <Typography.Text type="secondary">Read-only imported customer data</Typography.Text>
           <Button icon={<ReloadOutlined />} onClick={() => refetch()} loading={isFetching} />
         </Space>
       }
     >
       <Typography.Paragraph type="secondary" style={{ marginBottom: 16 }}>
-        Listing customer accounts from <code>rics_mirror.mail_list_names</code>. Writes stay disabled in Phase A.
+        Listing customer accounts from imported Postgres customer tables in <code>app.*</code>. Imported records stay read-only until the app-owned customer edit path is extended to this surface.
       </Typography.Paragraph>
 
       <Row gutter={8} style={{ marginBottom: 16 }}>

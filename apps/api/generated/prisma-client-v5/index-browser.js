@@ -609,6 +609,109 @@ exports.Prisma.ManualReceiptLineScalarFieldEnum = {
   movementId: 'movementId'
 };
 
+exports.Prisma.ReplenishmentTargetScalarFieldEnum = {
+  id: 'id',
+  storeId: 'storeId',
+  skuId: 'skuId',
+  columnLabel: 'columnLabel',
+  rowLabel: 'rowLabel',
+  modelQty: 'modelQty',
+  maxQty: 'maxQty',
+  reorderQty: 'reorderQty',
+  updatedBy: 'updatedBy',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+};
+
+exports.Prisma.ManualReturnScalarFieldEnum = {
+  id: 'id',
+  storeId: 'storeId',
+  skuId: 'skuId',
+  performedBy: 'performedBy',
+  returnReasonCode: 'returnReasonCode',
+  rmaNumber: 'rmaNumber',
+  movementAt: 'movementAt',
+  note: 'note',
+  idempotencyKey: 'idempotencyKey',
+  createdAt: 'createdAt'
+};
+
+exports.Prisma.ManualReturnLineScalarFieldEnum = {
+  id: 'id',
+  manualReturnId: 'manualReturnId',
+  columnLabel: 'columnLabel',
+  rowLabel: 'rowLabel',
+  quantity: 'quantity',
+  unitCost: 'unitCost',
+  movementId: 'movementId'
+};
+
+exports.Prisma.TransferScalarFieldEnum = {
+  id: 'id',
+  transferNumber: 'transferNumber',
+  fromStoreId: 'fromStoreId',
+  toStoreId: 'toStoreId',
+  status: 'status',
+  origin: 'origin',
+  originRunId: 'originRunId',
+  reason: 'reason',
+  createdBy: 'createdBy',
+  shippedAt: 'shippedAt',
+  receivedAt: 'receivedAt',
+  cancelledAt: 'cancelledAt',
+  createdAt: 'createdAt'
+};
+
+exports.Prisma.TransferLineScalarFieldEnum = {
+  id: 'id',
+  transferId: 'transferId',
+  skuId: 'skuId',
+  columnLabel: 'columnLabel',
+  rowLabel: 'rowLabel',
+  quantity: 'quantity',
+  unitCostSnapshot: 'unitCostSnapshot',
+  outboundMovementId: 'outboundMovementId',
+  inboundMovementId: 'inboundMovementId'
+};
+
+exports.Prisma.AutoTransferRunScalarFieldEnum = {
+  id: 'id',
+  status: 'status',
+  warehouseStoreId: 'warehouseStoreId',
+  targetStoreIds: 'targetStoreIds',
+  sortOrder: 'sortOrder',
+  criteriaJson: 'criteriaJson',
+  inTransitPos: 'inTransitPos',
+  requestedBy: 'requestedBy',
+  createdAt: 'createdAt',
+  previewedAt: 'previewedAt',
+  committedAt: 'committedAt',
+  generatedTransferIds: 'generatedTransferIds'
+};
+
+exports.Prisma.BalancingTransferRunScalarFieldEnum = {
+  id: 'id',
+  status: 'status',
+  balancingMethod: 'balancingMethod',
+  performanceMetric: 'performanceMetric',
+  salesPeriod: 'salesPeriod',
+  tieBreakKind: 'tieBreakKind',
+  tieBreakValue: 'tieBreakValue',
+  transferDoublesToLowerPriority: 'transferDoublesToLowerPriority',
+  stripStoresBelowSizeCount: 'stripStoresBelowSizeCount',
+  includeOriginalRetailOnly: 'includeOriginalRetailOnly',
+  includeMarkdownOnly: 'includeMarkdownOnly',
+  includePerksOnly: 'includePerksOnly',
+  criteriaJson: 'criteriaJson',
+  inTransitPos: 'inTransitPos',
+  requestedBy: 'requestedBy',
+  createdAt: 'createdAt',
+  previewedAt: 'previewedAt',
+  committedAt: 'committedAt',
+  generatedTransferIds: 'generatedTransferIds',
+  exceptionsJson: 'exceptionsJson'
+};
+
 exports.Prisma.SkuCodeSequenceScalarFieldEnum = {
   prefix: 'prefix',
   nextVal: 'nextVal'
@@ -830,6 +933,309 @@ exports.Prisma.CustomerImportRejectScalarFieldEnum = {
   createdAt: 'createdAt'
 };
 
+exports.Prisma.CustomerTransactionFactScalarFieldEnum = {
+  id: 'id',
+  customerId: 'customerId',
+  externalTransactionId: 'externalTransactionId',
+  source: 'source',
+  transactionKind: 'transactionKind',
+  status: 'status',
+  storeId: 'storeId',
+  channel: 'channel',
+  promotionCode: 'promotionCode',
+  couponCode: 'couponCode',
+  totalAmount: 'totalAmount',
+  netAmount: 'netAmount',
+  costAmount: 'costAmount',
+  discountAmount: 'discountAmount',
+  purchasedAt: 'purchasedAt',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+};
+
+exports.Prisma.CustomerTransactionItemScalarFieldEnum = {
+  id: 'id',
+  transactionId: 'transactionId',
+  skuId: 'skuId',
+  categoryId: 'categoryId',
+  categoryKey: 'categoryKey',
+  brandId: 'brandId',
+  brandKey: 'brandKey',
+  sizeType: 'sizeType',
+  sizeValue: 'sizeValue',
+  quantity: 'quantity',
+  netAmount: 'netAmount',
+  costAmount: 'costAmount',
+  discountAmount: 'discountAmount',
+  isMarkdown: 'isMarkdown',
+  isReturn: 'isReturn',
+  createdAt: 'createdAt'
+};
+
+exports.Prisma.CustomerMetricsScalarFieldEnum = {
+  customerId: 'customerId',
+  lifetimeValue: 'lifetimeValue',
+  totalOrders: 'totalOrders',
+  avgOrderValue: 'avgOrderValue',
+  marginValue: 'marginValue',
+  orders30d: 'orders30d',
+  orders90d: 'orders90d',
+  orders365d: 'orders365d',
+  avgDaysBetweenOrders: 'avgDaysBetweenOrders',
+  lastPurchaseDate: 'lastPurchaseDate',
+  recencyDays: 'recencyDays',
+  isActive: 'isActive',
+  discountRatio: 'discountRatio',
+  primaryStoreId: 'primaryStoreId',
+  storeLoyaltyRatio: 'storeLoyaltyRatio',
+  onlineRatio: 'onlineRatio',
+  churnRisk: 'churnRisk',
+  isDormant: 'isDormant',
+  rScore: 'rScore',
+  fScore: 'fScore',
+  mScore: 'mScore',
+  updatedAt: 'updatedAt'
+};
+
+exports.Prisma.CustomerMetricsDailyScalarFieldEnum = {
+  id: 'id',
+  customerId: 'customerId',
+  snapshotDate: 'snapshotDate',
+  lifetimeValue: 'lifetimeValue',
+  totalOrders: 'totalOrders',
+  recencyDays: 'recencyDays',
+  orders90d: 'orders90d',
+  createdAt: 'createdAt'
+};
+
+exports.Prisma.CustomerFeatureCurrentScalarFieldEnum = {
+  customerId: 'customerId',
+  firstPurchaseAt: 'firstPurchaseAt',
+  lastPurchaseAt: 'lastPurchaseAt',
+  daysSinceFirstPurchase: 'daysSinceFirstPurchase',
+  daysSinceLastPurchase: 'daysSinceLastPurchase',
+  orderCountLifetime: 'orderCountLifetime',
+  orderCount7d: 'orderCount7d',
+  orderCount30d: 'orderCount30d',
+  orderCount90d: 'orderCount90d',
+  orderCount180d: 'orderCount180d',
+  orderCount365d: 'orderCount365d',
+  itemCountLifetime: 'itemCountLifetime',
+  itemCount365d: 'itemCount365d',
+  netRevenueLifetime: 'netRevenueLifetime',
+  netRevenue30d: 'netRevenue30d',
+  netRevenue90d: 'netRevenue90d',
+  netRevenue180d: 'netRevenue180d',
+  netRevenue365d: 'netRevenue365d',
+  grossRevenueLifetime: 'grossRevenueLifetime',
+  grossRevenue365d: 'grossRevenue365d',
+  grossMarginLifetime: 'grossMarginLifetime',
+  grossMargin90d: 'grossMargin90d',
+  grossMargin365d: 'grossMargin365d',
+  avgOrderValueLifetime: 'avgOrderValueLifetime',
+  avgOrderValue365d: 'avgOrderValue365d',
+  avgItemsPerOrder365d: 'avgItemsPerOrder365d',
+  returnCountLifetime: 'returnCountLifetime',
+  returnCount365d: 'returnCount365d',
+  returnedItemCount365d: 'returnedItemCount365d',
+  returnRate365d: 'returnRate365d',
+  markdownRevenueShare365d: 'markdownRevenueShare365d',
+  averageDiscountPercent365d: 'averageDiscountPercent365d',
+  couponRedemptionCount365d: 'couponRedemptionCount365d',
+  couponRedemptionRate365d: 'couponRedemptionRate365d',
+  fullPricePurchaseCount365d: 'fullPricePurchaseCount365d',
+  promoPurchaseCount365d: 'promoPurchaseCount365d',
+  preferredStoreId: 'preferredStoreId',
+  preferredChannel: 'preferredChannel',
+  primaryStorePurchaseCount365d: 'primaryStorePurchaseCount365d',
+  webOrderCount365d: 'webOrderCount365d',
+  storeOrderCount365d: 'storeOrderCount365d',
+  emailOptIn: 'emailOptIn',
+  smsOptIn: 'smsOptIn',
+  pushOptIn: 'pushOptIn',
+  loyaltyTier: 'loyaltyTier',
+  loyaltyPointsBalance: 'loyaltyPointsBalance',
+  employeeFlag: 'employeeFlag',
+  fraudRiskFlag: 'fraudRiskFlag',
+  abuseRiskFlag: 'abuseRiskFlag',
+  updatedAt: 'updatedAt'
+};
+
+exports.Prisma.CustomerCategoryFeatureScalarFieldEnum = {
+  customerId: 'customerId',
+  categoryId: 'categoryId',
+  categoryKey: 'categoryKey',
+  purchaseCountLifetime: 'purchaseCountLifetime',
+  purchaseCount365d: 'purchaseCount365d',
+  netRevenueLifetime: 'netRevenueLifetime',
+  netRevenue365d: 'netRevenue365d',
+  grossMargin365d: 'grossMargin365d',
+  lastPurchaseAt: 'lastPurchaseAt',
+  affinityScore: 'affinityScore',
+  updatedAt: 'updatedAt'
+};
+
+exports.Prisma.CustomerBrandFeatureScalarFieldEnum = {
+  customerId: 'customerId',
+  brandId: 'brandId',
+  brandKey: 'brandKey',
+  purchaseCountLifetime: 'purchaseCountLifetime',
+  purchaseCount365d: 'purchaseCount365d',
+  netRevenueLifetime: 'netRevenueLifetime',
+  netRevenue365d: 'netRevenue365d',
+  grossMargin365d: 'grossMargin365d',
+  lastPurchaseAt: 'lastPurchaseAt',
+  affinityScore: 'affinityScore',
+  updatedAt: 'updatedAt'
+};
+
+exports.Prisma.CustomerSizeProfileScalarFieldEnum = {
+  customerId: 'customerId',
+  sizeType: 'sizeType',
+  sizeValue: 'sizeValue',
+  confidenceScore: 'confidenceScore',
+  purchaseCount: 'purchaseCount',
+  lastSeenAt: 'lastSeenAt',
+  updatedAt: 'updatedAt'
+};
+
+exports.Prisma.SegmentMetricRegistryScalarFieldEnum = {
+  metricKey: 'metricKey',
+  displayName: 'displayName',
+  description: 'description',
+  valueType: 'valueType',
+  sourceType: 'sourceType',
+  sourceTable: 'sourceTable',
+  sourceColumn: 'sourceColumn',
+  allowedOperators: 'allowedOperators',
+  supportsWindow: 'supportsWindow',
+  supportsDimension: 'supportsDimension',
+  dimensionConfig: 'dimensionConfig',
+  sqlTemplate: 'sqlTemplate',
+  isActive: 'isActive',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+};
+
+exports.Prisma.CustomerSegmentScalarFieldEnum = {
+  id: 'id',
+  segmentKey: 'segmentKey',
+  name: 'name',
+  description: 'description',
+  segmentFamily: 'segmentFamily',
+  status: 'status',
+  evaluationMode: 'evaluationMode',
+  priority: 'priority',
+  createdBy: 'createdBy',
+  updatedBy: 'updatedBy',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+};
+
+exports.Prisma.CustomerSegmentVersionScalarFieldEnum = {
+  id: 'id',
+  segmentId: 'segmentId',
+  versionNumber: 'versionNumber',
+  ruleAst: 'ruleAst',
+  scoringConfig: 'scoringConfig',
+  activationPolicy: 'activationPolicy',
+  suppressionPolicy: 'suppressionPolicy',
+  status: 'status',
+  validationStatus: 'validationStatus',
+  validationErrors: 'validationErrors',
+  createdBy: 'createdBy',
+  createdAt: 'createdAt',
+  activatedAt: 'activatedAt',
+  retiredAt: 'retiredAt'
+};
+
+exports.Prisma.SegmentVersionMetricDependencyScalarFieldEnum = {
+  segmentVersionId: 'segmentVersionId',
+  metricKey: 'metricKey'
+};
+
+exports.Prisma.CustomerSegmentCurrentScalarFieldEnum = {
+  customerId: 'customerId',
+  segmentId: 'segmentId',
+  segmentVersionId: 'segmentVersionId',
+  score: 'score',
+  reasonCodes: 'reasonCodes',
+  enteredAt: 'enteredAt',
+  lastMatchedAt: 'lastMatchedAt',
+  expiresAt: 'expiresAt',
+  evaluationRunId: 'evaluationRunId'
+};
+
+exports.Prisma.CustomerSegmentHistoryScalarFieldEnum = {
+  id: 'id',
+  customerId: 'customerId',
+  segmentId: 'segmentId',
+  segmentVersionId: 'segmentVersionId',
+  eventType: 'eventType',
+  previousScore: 'previousScore',
+  score: 'score',
+  reasonCodes: 'reasonCodes',
+  occurredAt: 'occurredAt',
+  evaluationRunId: 'evaluationRunId'
+};
+
+exports.Prisma.CustomerSegmentEvaluationRunScalarFieldEnum = {
+  id: 'id',
+  segmentId: 'segmentId',
+  segmentVersionId: 'segmentVersionId',
+  evaluationMode: 'evaluationMode',
+  status: 'status',
+  startedAt: 'startedAt',
+  finishedAt: 'finishedAt',
+  customersEvaluated: 'customersEvaluated',
+  customersMatched: 'customersMatched',
+  customersEntered: 'customersEntered',
+  customersExited: 'customersExited',
+  customersRefreshed: 'customersRefreshed',
+  customersScoreChanged: 'customersScoreChanged',
+  errorMessage: 'errorMessage',
+  metadata: 'metadata'
+};
+
+exports.Prisma.ActivationAudienceScalarFieldEnum = {
+  id: 'id',
+  audienceKey: 'audienceKey',
+  name: 'name',
+  description: 'description',
+  requestedBy: 'requestedBy',
+  request: 'request',
+  totalCandidates: 'totalCandidates',
+  eligibleCustomers: 'eligibleCustomers',
+  holdoutCustomers: 'holdoutCustomers',
+  activationCustomers: 'activationCustomers',
+  status: 'status',
+  createdAt: 'createdAt',
+  expiresAt: 'expiresAt',
+  errorMessage: 'errorMessage'
+};
+
+exports.Prisma.ActivationAudienceMemberScalarFieldEnum = {
+  audienceId: 'audienceId',
+  customerId: 'customerId',
+  treatmentGroup: 'treatmentGroup',
+  suppressionReasons: 'suppressionReasons',
+  segmentIds: 'segmentIds',
+  segmentVersionIds: 'segmentVersionIds',
+  score: 'score',
+  createdAt: 'createdAt'
+};
+
+exports.Prisma.CustomerSegmentAuditLogScalarFieldEnum = {
+  id: 'id',
+  actorUserId: 'actorUserId',
+  eventType: 'eventType',
+  entityType: 'entityType',
+  entityId: 'entityId',
+  beforeJson: 'beforeJson',
+  afterJson: 'afterJson',
+  occurredAt: 'occurredAt'
+};
+
 exports.Prisma.CustomerScalarFieldEnum = {
   id: 'id',
   accountNumber: 'accountNumber',
@@ -919,6 +1325,57 @@ exports.CommissionOverrideScope = exports.$Enums.CommissionOverrideScope = {
   DEPARTMENT: 'DEPARTMENT'
 };
 
+exports.TransferStatus = exports.$Enums.TransferStatus = {
+  DRAFT: 'DRAFT',
+  IN_TRANSIT: 'IN_TRANSIT',
+  RECEIVED: 'RECEIVED',
+  CANCELLED: 'CANCELLED'
+};
+
+exports.TransferOrigin = exports.$Enums.TransferOrigin = {
+  MANUAL: 'MANUAL',
+  TRANSFER_ALL: 'TRANSFER_ALL',
+  AUTO: 'AUTO',
+  BALANCING: 'BALANCING'
+};
+
+exports.RunStatus = exports.$Enums.RunStatus = {
+  QUEUED: 'QUEUED',
+  PREVIEWED: 'PREVIEWED',
+  COMMITTED: 'COMMITTED',
+  CANCELLED: 'CANCELLED'
+};
+
+exports.TransferSort = exports.$Enums.TransferSort = {
+  SKU: 'SKU',
+  VENDOR: 'VENDOR',
+  CATEGORY: 'CATEGORY',
+  LOCATION: 'LOCATION'
+};
+
+exports.BalancingMethod = exports.$Enums.BalancingMethod = {
+  OVER_UNDER_MODELS: 'OVER_UNDER_MODELS',
+  WITHOUT_MODELS: 'WITHOUT_MODELS',
+  WITHOUT_CONSIDERING_MODELS: 'WITHOUT_CONSIDERING_MODELS'
+};
+
+exports.PerformanceMetric = exports.$Enums.PerformanceMetric = {
+  ROI: 'ROI',
+  TURNS: 'TURNS',
+  SELL_THRU: 'SELL_THRU'
+};
+
+exports.SalesPeriod = exports.$Enums.SalesPeriod = {
+  MONTH: 'MONTH',
+  SEASON: 'SEASON',
+  YEAR: 'YEAR'
+};
+
+exports.TieBreakKind = exports.$Enums.TieBreakKind = {
+  ABSOLUTE: 'ABSOLUTE',
+  PERCENT: 'PERCENT'
+};
+
 exports.Prisma.ModelName = {
   ProductContent: 'ProductContent',
   Cart: 'Cart',
@@ -957,6 +1414,13 @@ exports.Prisma.ModelName = {
   StockMovement: 'StockMovement',
   ManualReceipt: 'ManualReceipt',
   ManualReceiptLine: 'ManualReceiptLine',
+  ReplenishmentTarget: 'ReplenishmentTarget',
+  ManualReturn: 'ManualReturn',
+  ManualReturnLine: 'ManualReturnLine',
+  Transfer: 'Transfer',
+  TransferLine: 'TransferLine',
+  AutoTransferRun: 'AutoTransferRun',
+  BalancingTransferRun: 'BalancingTransferRun',
   SkuCodeSequence: 'SkuCodeSequence',
   AttributeDimension: 'AttributeDimension',
   AttributeFamilyRule: 'AttributeFamilyRule',
@@ -974,6 +1438,24 @@ exports.Prisma.ModelName = {
   CustomerSalesSummaryLegacy: 'CustomerSalesSummaryLegacy',
   CustomerImportBatch: 'CustomerImportBatch',
   CustomerImportReject: 'CustomerImportReject',
+  CustomerTransactionFact: 'CustomerTransactionFact',
+  CustomerTransactionItem: 'CustomerTransactionItem',
+  CustomerMetrics: 'CustomerMetrics',
+  CustomerMetricsDaily: 'CustomerMetricsDaily',
+  CustomerFeatureCurrent: 'CustomerFeatureCurrent',
+  CustomerCategoryFeature: 'CustomerCategoryFeature',
+  CustomerBrandFeature: 'CustomerBrandFeature',
+  CustomerSizeProfile: 'CustomerSizeProfile',
+  SegmentMetricRegistry: 'SegmentMetricRegistry',
+  CustomerSegment: 'CustomerSegment',
+  CustomerSegmentVersion: 'CustomerSegmentVersion',
+  SegmentVersionMetricDependency: 'SegmentVersionMetricDependency',
+  CustomerSegmentCurrent: 'CustomerSegmentCurrent',
+  CustomerSegmentHistory: 'CustomerSegmentHistory',
+  CustomerSegmentEvaluationRun: 'CustomerSegmentEvaluationRun',
+  ActivationAudience: 'ActivationAudience',
+  ActivationAudienceMember: 'ActivationAudienceMember',
+  CustomerSegmentAuditLog: 'CustomerSegmentAuditLog',
   Customer: 'Customer',
   FamilyMember: 'FamilyMember'
 };

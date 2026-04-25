@@ -10,7 +10,7 @@
 
 export interface Customer {
   id: string;
-  source: 'app' | 'mirror';
+  source: 'app' | 'imported' | 'mirror';
   accountNumber: string;
   phoneE164: string | null;
   firstName: string | null;

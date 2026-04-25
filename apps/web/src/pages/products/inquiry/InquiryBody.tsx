@@ -69,14 +69,14 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
   onActiveTabChange,
   onScopeChange,
 }) => {
-  const [lookupOpen, setLookupOpen] = React.useState(!skuCode);
+  const [lookupOpen, setLookupOpen] = React.useState(false);
   const [navLoading, setNavLoading] = React.useState(false);
   const prevSkuCodeRef = React.useRef(skuCode);
 
   React.useEffect(() => {
     if (prevSkuCodeRef.current === skuCode) return;
     prevSkuCodeRef.current = skuCode;
-    setLookupOpen(!skuCode);
+    setLookupOpen(false);
     if (!skuCode) onActiveTabChange(null);
   }, [skuCode, onActiveTabChange]);
 
@@ -120,11 +120,13 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
             Pick a SKU
           </Button>
         </div>
-        <SkuLookup
-          open={lookupOpen}
-          onClose={() => setLookupOpen(false)}
-          onSelect={handleLookupSelect}
-        />
+        {lookupOpen && (
+          <SkuLookup
+            open={lookupOpen}
+            onClose={() => setLookupOpen(false)}
+            onSelect={handleLookupSelect}
+          />
+        )}
       </>
     );
   }
@@ -145,12 +147,14 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
 
   return (
     <div style={{ fontSize: 12 }}>
-      <SkuLookup
-        open={lookupOpen}
-        onClose={() => setLookupOpen(false)}
-        onSelect={handleLookupSelect}
-        initialQuery={skuCode}
-      />
+      {lookupOpen && (
+        <SkuLookup
+          open={lookupOpen}
+          onClose={() => setLookupOpen(false)}
+          onSelect={handleLookupSelect}
+          initialQuery={skuCode}
+        />
+      )}
 
       {/* Top row: Header (left) | Pricing + Rollup + Picture (right) */}
       <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start', marginBottom: 8 }}>

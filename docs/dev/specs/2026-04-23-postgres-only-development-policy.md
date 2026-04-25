@@ -8,8 +8,8 @@
 
 Zack's Retail runs three datastores simultaneously:
 
-- **Postgres** — system of record for net-new application data (`public.*`, `app.*`, `platform.*`, `rics_mirror.*`).
-- **Legacy RICS MDB files** — read-only, touched only by the operator-invoked `pnpm sync:rics` ETL.
+- **Postgres** — system of record for net-new and imported application data (`public.*`, `app.*`, `platform.*`).
+- **Legacy RICS MDB files** — read-only, touched only by offline extraction tooling that produces CSV artifacts.
 - **SQLite** — carries legacy admin reference tables (`ref_colors`, `ref_patterns`, etc.) that powered the pre-Postgres admin UI.
 
 Over the 2026-04 rework, Postgres absorbed most of the writable surface. SQLite kept shrinking but stayed reachable for reads. The dimensional attribute framework (`app.attribute_dimension` / `app.attribute_value` / `app.sku_attribute_assignment`) gave a first-class home for operator-chosen values. The next natural step: move the 11 shoe-specific SQLite ref tables (colors, patterns, finishes, accessories, heel-heights, heel-shapes, toe-shapes, upper-materials, outsole-materials, heel-materials, width-types) into that framework and declare Postgres-only going forward.
@@ -25,7 +25,7 @@ Every feature built on Zack's Retail from 2026-04-23 forward writes **exclusivel
 - No new dependencies on the SQLite ref tables.
 - New attributes land as dimensional assignments — `app.attribute_dimension` + `app.attribute_value` + `app.sku_attribute_assignment`.
 - New SKU columns land on `app.sku` (or a new `app.*` table) via a Prisma migration.
-- New lookup data (families, brands, stores, employees, promotion codes) lives in `app.*` or `rics_mirror.*`.
+- New lookup data (families, brands, stores, employees, promotion codes) lives in `app.*` or module-owned Postgres tables.
 
 If a task seems to require a SQLite write, it should be surfaced to the operator — it is almost certainly a sign the feature should use the dimensional framework or a new `app.*` table.
 
@@ -66,7 +66,7 @@ Each `app.attribute_value.code` is the stringified legacy SQLite id (`"19"`, `"3
 ### 4. Runtime behavior changes
 
 **Permissive `skuExists` guard.** `AttributesRepository.skuExists()` now matches any of:
-- `rics_mirror.inventory_master.sku`
+- imported legacy SKU codes
 - `app.sku.code`
 - `app.sku.provisional_code` (so DRAFTs can carry assignments before finalize)
 

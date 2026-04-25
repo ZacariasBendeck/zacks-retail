@@ -483,6 +483,7 @@ router.get('/', validateQuery(skuListQuerySchema), (req: Request, res: Response)
  *   get:
  *     summary: List UPCs for a SKU by SKU code
  *     tags: [SKUs]
+ *     description: UPC data is not yet wired from the RICS source tables, so this route currently returns an empty array.
  *     parameters:
  *       - name: skuCode
  *         in: path
@@ -492,9 +493,6 @@ router.get('/', validateQuery(skuListQuerySchema), (req: Request, res: Response)
  *       200:
  *         description: Array of UPC records (may be empty)
  *
- * NOTE: The RICS Access adapter does not yet expose UPC data from the
- * InvGMAIC / InvUPC tables. This route returns an empty array until a
- * UPC repository is wired up (Phase 2 — products module, SkuUpc table).
  */
 router.get('/:skuCode/upcs', (req: Request, res: Response): void => {
   // TODO(Phase 2): query SkuUpc by skuCode once adapter exposes UPC data.

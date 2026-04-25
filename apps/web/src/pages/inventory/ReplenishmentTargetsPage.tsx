@@ -1,11 +1,15 @@
-import { useMemo, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   Alert,
+  App,
+  AutoComplete,
+  Button,
   Card,
   Col,
   Empty,
   Input,
+  InputNumber,
   Row,
   Segmented,
   Space,
@@ -15,23 +19,32 @@ import {
   Tag,
   Typography,
 } from 'antd'
-import { SearchOutlined, ShopOutlined } from '@ant-design/icons'
-import { useInventoryInquiry } from '../../hooks/useRicsInventory'
+import {
+  ArrowLeftOutlined,
+  FundOutlined,
+  InboxOutlined,
+  ReloadOutlined,
+  RollbackOutlined,
+  SearchOutlined,
+  ShopOutlined,
+} from '@ant-design/icons'
+import { useAutocompleteSkus } from '../../hooks/useSkus'
+import {
+  useReplenishmentTarget,
+  useUpdateReplenishmentTargetStore,
+} from '../../hooks/useReplenishmentTargets'
 import { SkuLink } from '../../components/sku-link'
+import { SkuLookup } from '../../components/sku-lookup'
+import { StockMaintenanceHero } from '../../components/stock-maintenance'
 import type {
-  InventoryCell,
-  InventoryInquiry,
-  InventoryInquiryStore,
-} from '../../services/ricsInventoryApi'
+  ReplenishmentTargetCell,
+  ReplenishmentTargetRecord,
+  ReplenishmentTargetStore,
+  UpdateReplenishmentTargetPayload,
+} from '../../types/replenishmentTarget'
 import { getErrorMessage } from '../../utils/errors'
 
-// RICS Ch. 4 p. 68 — Replenishment Targets (Model / Max / Reorder).
-// Per (SKU × Store × Row × Column) cell, stores the desired on-hand (Model),
-// the ceiling used to compute shortfall (Max), and the multiple Auto POs
-// should round up to (Reorder). This page reads the existing RIINVQUA cells
-// via the Inventory Inquiry endpoint and projects just those three values.
-// Writes are disabled — phase-2 work lands a dedicated editor backed by Postgres.
-type TargetMetric = 'model' | 'maxQty' | 'reorder'
+type TargetMetric = 'modelQty' | 'maxQty' | 'reorderQty'
 
 interface TabOption {
   value: TargetMetric
@@ -39,23 +52,134 @@ interface TabOption {
   hint: string
 }
 
+interface DraftCell extends ReplenishmentTargetCell {}
+
 const TABS: TabOption[] = [
-  { value: 'model', label: 'Model', hint: 'Desired on-hand per size/store (p. 68)' },
+  { value: 'modelQty', label: 'Model', hint: 'Desired on-hand per size and store (RICS p. 68)' },
   { value: 'maxQty', label: 'Max', hint: 'Ceiling used when computing shortfall' },
-  { value: 'reorder', label: 'Reorder', hint: 'Rounding multiple for Automatic POs' },
+  { value: 'reorderQty', label: 'Reorder', hint: 'Rounding multiple used by automatic ordering' },
 ]
 
+function naturalLabelCompare(a: string, b: string): number {
+  if (!a && !b) return 0
+  if (!a) return -1
+  if (!b) return 1
+  return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })
+}
+
+function cellKey(rowLabel: string, columnLabel: string): string {
+  return `${rowLabel}||${columnLabel}`
+}
+
+function buildDraftCells(
+  store: ReplenishmentTargetStore,
+  rowLabels: string[],
+  columnLabels: string[],
+): Record<string, DraftCell> {
+  const byKey = new Map<string, ReplenishmentTargetCell>()
+  for (const cell of store.cells) {
+    byKey.set(cellKey(cell.rowLabel, cell.columnLabel), cell)
+  }
+
+  const rows = rowLabels.length > 0 ? rowLabels : ['']
+  const cols = columnLabels.length > 0 ? columnLabels : ['']
+  const out: Record<string, DraftCell> = {}
+  for (const rowLabel of rows) {
+    for (const columnLabel of cols) {
+      const existing = byKey.get(cellKey(rowLabel, columnLabel))
+      out[cellKey(rowLabel, columnLabel)] = {
+        rowLabel,
+        columnLabel,
+        onHand: existing?.onHand ?? 0,
+        modelQty: existing?.modelQty ?? 0,
+        maxQty: existing?.maxQty ?? 0,
+        reorderQty: existing?.reorderQty ?? 0,
+      }
+    }
+  }
+  return out
+}
+
+function draftPayloadFromCells(draftCells: Record<string, DraftCell>): UpdateReplenishmentTargetPayload {
+  return {
+    cells: Object.values(draftCells).map((cell) => ({
+      columnLabel: cell.columnLabel,
+      rowLabel: cell.rowLabel,
+      modelQty: cell.modelQty,
+      maxQty: cell.maxQty,
+      reorderQty: cell.reorderQty,
+    })),
+  }
+}
+
 export default function ReplenishmentTargetsPage() {
+  const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const skuFromUrl = searchParams.get('sku')?.trim() || ''
-  const metricFromUrl = (searchParams.get('metric') as TargetMetric) || 'model'
-  const [skuInput, setSkuInput] = useState(skuFromUrl)
-
-  const activeSku = skuFromUrl || null
-  const activeMetric: TargetMetric = TABS.some((t) => t.value === metricFromUrl)
+  const metricFromUrl = (searchParams.get('metric') as TargetMetric) || 'modelQty'
+  const activeMetric: TargetMetric = TABS.some((tab) => tab.value === metricFromUrl)
     ? metricFromUrl
-    : 'model'
-  const { data, isLoading, isFetching, error } = useInventoryInquiry(activeSku)
+    : 'modelQty'
+  const [skuInput, setSkuInput] = useState(skuFromUrl)
+  const [debouncedSkuSearch, setDebouncedSkuSearch] = useState('')
+  const [skuLookupOpen, setSkuLookupOpen] = useState(false)
+  const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const activeSku = skuFromUrl || null
+  const { data, isLoading, isFetching, error } = useReplenishmentTarget(activeSku)
+  const { data: autocompleteResults, isFetching: isSearchingSkus } = useAutocompleteSkus(debouncedSkuSearch)
+
+  useEffect(() => {
+    setSkuInput(skuFromUrl)
+  }, [skuFromUrl])
+
+  useEffect(() => {
+    return () => {
+      if (debounceTimer.current) clearTimeout(debounceTimer.current)
+    }
+  }, [])
+
+  const skuSearchOptions = useMemo(() => {
+    if (!autocompleteResults?.length) return []
+    return autocompleteResults.map((item) => ({
+      value: item.skuCode,
+      label: (
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
+          <span style={{ fontWeight: 600 }}>{item.skuCode}</span>
+          <span
+            style={{
+              color: '#64748b',
+              fontSize: 12,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {item.style}{item.brandName ? ` - ${item.brandName}` : ''}
+          </span>
+        </div>
+      ),
+    }))
+  }, [autocompleteResults])
+
+  const headerMetrics = useMemo(() => {
+    const stores = data?.stores.length ?? 0
+    const totals = data?.stores.reduce(
+      (acc, store) => ({
+        onHand: acc.onHand + store.totals.onHand,
+        modelQty: acc.modelQty + store.totals.modelQty,
+      }),
+      { onHand: 0, modelQty: 0 },
+    ) ?? { onHand: 0, modelQty: 0 }
+
+    return [
+      { label: 'SKU', value: activeSku ?? 'Choose a SKU' },
+      { label: 'Stores in play', value: stores || '--' },
+      { label: 'Current focus', value: TABS.find((tab) => tab.value === activeMetric)?.label ?? 'Model' },
+      { label: 'Sigma on hand', value: totals.onHand || '--' },
+      { label: 'Sigma model', value: totals.modelQty || '--' },
+      { label: 'Request authority', value: 'app.*' },
+    ]
+  }, [activeMetric, activeSku, data])
 
   const handleSearch = (value: string) => {
     const trimmed = value.trim()
@@ -75,66 +199,184 @@ export default function ReplenishmentTargetsPage() {
   }
 
   return (
-    <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-      <Card size="small">
-        <Row align="middle" gutter={16}>
-          <Col flex="auto">
-            <Typography.Title level={4} style={{ margin: 0 }}>
-              Replenishment Targets
-            </Typography.Title>
-            <Typography.Text type="secondary">
-              RICS Ch. 4 p. 68 — Model / Max / Reorder per (SKU × Store × size)
+    <App>
+      <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+        <StockMaintenanceHero
+          eyebrow="Stock Maintenance"
+          title="Model Quantities"
+          subtitle="Maintain Model, Max, and Reorder targets from the app-owned inventory spine. Operators can jump from a SKU into target tuning, then back into receipt, return, or size search without leaving the stock-maintenance workspace."
+          ricsReference="RICS Ch. 4 p. 68"
+          metrics={headerMetrics}
+          actions={
+            <Space direction="vertical" size={12} style={{ width: '100%' }}>
+              <Typography.Text style={{ color: 'rgba(248, 250, 252, 0.82)', fontWeight: 600 }}>
+                Operator actions
+              </Typography.Text>
+              <Space wrap>
+                <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/inventory/adjustments')}>
+                  Back to workspace
+                </Button>
+                <Button
+                  icon={<SearchOutlined />}
+                  disabled={!activeSku}
+                  onClick={() =>
+                    navigate(
+                      activeSku
+                        ? `/inventory/find-by-size?seedSku=${encodeURIComponent(activeSku)}`
+                        : '/inventory/find-by-size',
+                    )
+                  }
+                >
+                  Find by Size
+                </Button>
+                <Button icon={<InboxOutlined />} onClick={() => navigate('/inventory/manual-receipts/new')}>
+                  Manual Receipt
+                </Button>
+                <Button icon={<RollbackOutlined />} onClick={() => navigate('/inventory/manual-returns/new')}>
+                  Manual Return
+                </Button>
+              </Space>
+            </Space>
+          }
+          footer={
+            <Typography.Text style={{ color: 'rgba(248, 250, 252, 0.82)' }}>
+              Save is per store. Live requests read and write Postgres-owned replenishment targets instead of the mirror.
             </Typography.Text>
-          </Col>
-          <Col flex="360px">
-            <Input.Search
-              placeholder="Enter SKU (e.g. 349101-BKPT)"
-              prefix={<SearchOutlined />}
-              allowClear
-              enterButton="Search"
-              value={skuInput}
-              onChange={(e) => setSkuInput(e.target.value)}
-              onSearch={handleSearch}
-              loading={isFetching}
-            />
-          </Col>
-        </Row>
-      </Card>
-
-      <Alert
-        type="info"
-        showIcon
-        message="Read-only view (Phase 1)"
-        description="Model / Max / Reorder are read live from RICS (RIINVQUA). Editing will land in Phase 2 when replenishment targets move to Postgres."
-      />
-
-      {!activeSku && (
-        <Card>
-          <Empty description="Enter a SKU to view its replenishment targets across every store." />
-        </Card>
-      )}
-
-      {activeSku && error && (
-        <Alert
-          type="error"
-          showIcon
-          message="Replenishment lookup failed"
-          description={getErrorMessage(error, 'Unable to load replenishment targets.')}
+          }
         />
-      )}
 
-      {activeSku && isLoading && (
-        <Card>
-          <div style={{ textAlign: 'center', padding: 48 }}>
-            <Spin />
-          </div>
+        <Card
+          bordered={false}
+          style={{
+            borderRadius: 20,
+            background: 'linear-gradient(180deg, #ffffff 0%, #f8fafc 100%)',
+            boxShadow: '0 12px 32px rgba(15, 23, 42, 0.06)',
+          }}
+        >
+          <Row gutter={[16, 16]} align="middle">
+            <Col xs={24} xl={12}>
+              <Space direction="vertical" size={12} style={{ width: '100%' }}>
+                <div>
+                  <Typography.Title level={5} style={{ margin: 0 }}>
+                    Load a SKU
+                  </Typography.Title>
+                  <Typography.Text type="secondary">
+                    Search by SKU code, use autocomplete, or open the full lookup modal.
+                  </Typography.Text>
+                </div>
+                <AutoComplete
+                  value={skuInput}
+                  options={skuSearchOptions}
+                  onSearch={(text) => {
+                    setSkuInput(text)
+                    if (debounceTimer.current) clearTimeout(debounceTimer.current)
+                    debounceTimer.current = setTimeout(() => setDebouncedSkuSearch(text), 300)
+                  }}
+                  onSelect={(value: string) => {
+                    setSkuInput(value)
+                    handleSearch(value)
+                  }}
+                  notFoundContent={isSearchingSkus ? 'Searching...' : undefined}
+                  style={{ width: '100%' }}
+                >
+                  <Input.Search
+                    placeholder="Enter SKU (for example 349101-BKPT)"
+                    prefix={<SearchOutlined />}
+                    allowClear
+                    enterButton="Load"
+                    loading={isFetching}
+                    onSearch={handleSearch}
+                  />
+                </AutoComplete>
+              </Space>
+            </Col>
+
+            <Col xs={24} xl={6}>
+              <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                <Typography.Text strong>Editing mode</Typography.Text>
+                <Segmented<TargetMetric>
+                  block
+                  options={TABS.map((tab) => ({ label: tab.label, value: tab.value }))}
+                  value={activeMetric}
+                  onChange={(value) => handleMetricChange(value as TargetMetric)}
+                />
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  {TABS.find((tab) => tab.value === activeMetric)?.hint}
+                </Typography.Text>
+              </Space>
+            </Col>
+
+            <Col xs={24} xl={6}>
+              <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                <Typography.Text strong>Lookup tools</Typography.Text>
+                <Button icon={<SearchOutlined />} onClick={() => setSkuLookupOpen(true)} block>
+                  Open SKU Lookup
+                </Button>
+                <Button
+                  icon={<FundOutlined />}
+                  disabled={!activeSku}
+                  onClick={() => activeSku && navigate(`/products/inquiry/${encodeURIComponent(activeSku)}`)}
+                  block
+                >
+                  Product Inquiry
+                </Button>
+              </Space>
+            </Col>
+          </Row>
         </Card>
-      )}
 
-      {activeSku && data && (
-        <TargetsContent data={data} metric={activeMetric} onMetricChange={handleMetricChange} />
-      )}
-    </Space>
+        <Alert
+          type="info"
+          showIcon
+          message="App-owned target editing"
+          description="This screen is for setting Model, Max, and Reorder targets in the Zack's Retail inventory spine. It is designed for repetitive store-by-store edits without leaving the stock-maintenance workflow."
+        />
+
+        {!activeSku ? (
+          <Card
+            bordered={false}
+            style={{ borderRadius: 20, boxShadow: '0 12px 32px rgba(15, 23, 42, 0.06)' }}
+          >
+            <Empty description="Choose a SKU to edit replenishment targets across stores." />
+          </Card>
+        ) : null}
+
+        {activeSku && error ? (
+          <Alert
+            type="error"
+            showIcon
+            message="Replenishment lookup failed"
+            description={getErrorMessage(error, 'Unable to load replenishment targets.')}
+          />
+        ) : null}
+
+        {activeSku && isLoading ? (
+          <Card
+            bordered={false}
+            style={{ borderRadius: 20, boxShadow: '0 12px 32px rgba(15, 23, 42, 0.06)' }}
+          >
+            <div style={{ textAlign: 'center', padding: 64 }}>
+              <Spin size="large" />
+            </div>
+          </Card>
+        ) : null}
+
+        {activeSku && data ? (
+          <TargetsContent data={data} metric={activeMetric} onMetricChange={handleMetricChange} />
+        ) : null}
+
+        <SkuLookup
+          open={skuLookupOpen}
+          onClose={() => setSkuLookupOpen(false)}
+          onSelect={(picked) => {
+            setSkuLookupOpen(false)
+            setSkuInput(picked.skuCode)
+            handleSearch(picked.skuCode)
+          }}
+          initialQuery={skuInput}
+        />
+      </Space>
+    </App>
   )
 }
 
@@ -143,71 +385,82 @@ function TargetsContent({
   metric,
   onMetricChange,
 }: {
-  data: InventoryInquiry
+  data: ReplenishmentTargetRecord
   metric: TargetMetric
-  onMetricChange: (m: TargetMetric) => void
+  onMetricChange: (metric: TargetMetric) => void
 }) {
-  const { master, stores } = data
-
   const totals = useMemo(() => {
-    let model = 0
-    let max = 0
-    let reorder = 0
+    let modelQty = 0
+    let maxQty = 0
+    let reorderQty = 0
     let onHand = 0
     let storesWithTargets = 0
-    for (const s of stores) {
+    let shortStores = 0
+
+    for (const store of data.stores) {
       let hasTarget = false
-      for (const c of s.cells) {
-        model += c.model
-        max += c.maxQty
-        reorder += c.reorder
-        onHand += c.onHand
-        if (c.model > 0 || c.maxQty > 0 || c.reorder > 0) hasTarget = true
+      let isShort = false
+      for (const cell of store.cells) {
+        modelQty += cell.modelQty
+        maxQty += cell.maxQty
+        reorderQty += cell.reorderQty
+        onHand += cell.onHand
+        if (cell.modelQty > 0 || cell.maxQty > 0 || cell.reorderQty > 0) hasTarget = true
+        if (cell.modelQty > cell.onHand) isShort = true
       }
       if (hasTarget) storesWithTargets += 1
+      if (isShort) shortStores += 1
     }
-    return { model, max, reorder, onHand, storesWithTargets }
-  }, [stores])
 
-  const activeTab = TABS.find((t) => t.value === metric) ?? TABS[0]!
+    return { modelQty, maxQty, reorderQty, onHand, storesWithTargets, shortStores }
+  }, [data.stores])
+
+  const activeTab = TABS.find((tab) => tab.value === metric) ?? TABS[0]!
 
   return (
-    <>
-      <Card>
+    <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+      <Card
+        bordered={false}
+        style={{ borderRadius: 20, boxShadow: '0 12px 32px rgba(15, 23, 42, 0.06)' }}
+      >
         <Row gutter={[16, 16]}>
-          <Col xs={24} lg={14}>
-            <Typography.Title level={4} style={{ marginTop: 0 }}>
-              <SkuLink skuCode={data.sku} />
+          <Col xs={24} lg={10}>
+            <Typography.Text type="secondary" style={{ fontSize: 12, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+              Current SKU
+            </Typography.Text>
+            <Typography.Title level={3} style={{ marginTop: 8, marginBottom: 6 }}>
+              <SkuLink skuCode={data.skuCode} />
             </Typography.Title>
-            <Typography.Paragraph style={{ marginBottom: 8 }}>
-              {master.description || (
-                <Typography.Text type="secondary">(no description)</Typography.Text>
-              )}
+            <Typography.Paragraph style={{ marginBottom: 10 }}>
+              {data.description ?? <Typography.Text type="secondary">(no description)</Typography.Text>}
             </Typography.Paragraph>
             <Space wrap>
-              {master.brand && <Tag color="blue">{master.brand}</Tag>}
-              {master.vendorCode && <Tag>{master.vendorCode}</Tag>}
-              {master.season && <Tag color="gold">Season {master.season}</Tag>}
-              {master.sizeType.desc && <Tag color="purple">{master.sizeType.desc}</Tag>}
+              {data.brand ? <Tag color="blue">{data.brand}</Tag> : null}
+              {data.vendorCode ? <Tag>{data.vendorCode}</Tag> : null}
+              {data.categoryNumber != null ? <Tag color="geekblue">Category {data.categoryNumber}</Tag> : null}
+              {data.season ? <Tag color="gold">Season {data.season}</Tag> : null}
             </Space>
           </Col>
-          <Col xs={24} lg={10}>
+
+          <Col xs={24} lg={14}>
             <Row gutter={[16, 16]}>
-              <Col xs={12} md={6}>
-                <Statistic title="Σ Model" value={totals.model} />
+              <Col xs={12} md={8}>
+                <Statistic title="Sigma on hand" value={totals.onHand} />
               </Col>
-              <Col xs={12} md={6}>
-                <Statistic title="Σ Max" value={totals.max} />
+              <Col xs={12} md={8}>
+                <Statistic title="Sigma model" value={totals.modelQty} />
               </Col>
-              <Col xs={12} md={6}>
-                <Statistic title="Σ Reorder" value={totals.reorder} />
+              <Col xs={12} md={8}>
+                <Statistic title="Stores w/ targets" value={totals.storesWithTargets} prefix={<ShopOutlined />} />
               </Col>
-              <Col xs={12} md={6}>
-                <Statistic
-                  title="Stores w/ targets"
-                  value={totals.storesWithTargets}
-                  prefix={<ShopOutlined />}
-                />
+              <Col xs={12} md={8}>
+                <Statistic title="Sigma max" value={totals.maxQty} />
+              </Col>
+              <Col xs={12} md={8}>
+                <Statistic title="Sigma reorder" value={totals.reorderQty} />
+              </Col>
+              <Col xs={12} md={8}>
+                <Statistic title="Stores below model" value={totals.shortStores} />
               </Col>
             </Row>
           </Col>
@@ -215,170 +468,225 @@ function TargetsContent({
       </Card>
 
       <Card
-        size="small"
+        bordered={false}
+        style={{ borderRadius: 20, boxShadow: '0 12px 32px rgba(15, 23, 42, 0.06)' }}
         title={
-          <Space>
-            <Typography.Text strong>{activeTab.label}</Typography.Text>
-            <Typography.Text type="secondary" style={{ fontWeight: 'normal' }}>
-              {activeTab.hint}
+          <Space wrap size={10}>
+            <Typography.Text strong style={{ fontSize: 16 }}>
+              {activeTab.label}
             </Typography.Text>
+            <Tag color="cyan">Live editor</Tag>
+            <Typography.Text type="secondary">{activeTab.hint}</Typography.Text>
           </Space>
         }
         extra={
           <Segmented<TargetMetric>
-            options={TABS.map((t) => ({ label: t.label, value: t.value }))}
+            options={TABS.map((tab) => ({ label: tab.label, value: tab.value }))}
             value={metric}
-            onChange={(v) => onMetricChange(v as TargetMetric)}
+            onChange={(value) => onMetricChange(value as TargetMetric)}
           />
         }
       >
-        {stores.length === 0 ? (
-          <Empty description="No replenishment data recorded for this SKU across any store." />
+        {data.stores.length === 0 ? (
+          <Empty description="No replenishment or stock rows are recorded for this SKU." />
         ) : (
-          stores.map((store) => (
-            <StoreTargetGrid
-              key={store.storeNumber}
+          data.stores.map((store) => (
+            <EditableStoreTargetGrid
+              key={store.storeId}
+              skuCode={data.skuCode}
               store={store}
-              columnLabels={master.sizeType.columnLabels}
               metric={metric}
+              rowLabels={data.sizeGrid.rows}
+              columnLabels={data.sizeGrid.columns}
             />
           ))
         )}
       </Card>
-    </>
+    </Space>
   )
 }
 
-function StoreTargetGrid({
+function EditableStoreTargetGrid({
+  skuCode,
   store,
   columnLabels,
+  rowLabels,
   metric,
 }: {
-  store: InventoryInquiryStore
+  skuCode: string
+  store: ReplenishmentTargetStore
   columnLabels: string[]
+  rowLabels: string[]
   metric: TargetMetric
 }) {
-  const cellsByRow = useMemo(() => {
-    const byRow = new Map<string, Map<string, InventoryCell>>()
-    for (const c of store.cells) {
-      const row = byRow.get(c.rowLabel) ?? new Map<string, InventoryCell>()
-      row.set(c.columnLabel, c)
-      byRow.set(c.rowLabel, row)
-    }
-    return byRow
-  }, [store.cells])
+  const { message } = App.useApp()
+  const updateMutation = useUpdateReplenishmentTargetStore()
 
-  const rowLabels = [...cellsByRow.keys()]
-
-  const columnsShown = useMemo(() => {
-    const present = new Set<string>()
-    for (const c of store.cells) present.add(c.columnLabel)
-    const base = columnLabels.length ? columnLabels : [...present]
-    return base.filter((c) => present.has(c))
+  const effectiveColumns = useMemo(() => {
+    const labels = new Set(columnLabels)
+    for (const cell of store.cells) labels.add(cell.columnLabel)
+    const sorted = [...labels].sort(naturalLabelCompare)
+    return sorted.length > 0 ? sorted : ['']
   }, [columnLabels, store.cells])
 
-  const storeLabel = store.storeName
-    ? `${store.storeNumber} — ${store.storeName}`
-    : `Store ${store.storeNumber}`
+  const effectiveRows = useMemo(() => {
+    const labels = new Set(rowLabels)
+    for (const cell of store.cells) labels.add(cell.rowLabel)
+    const sorted = [...labels].sort(naturalLabelCompare)
+    return sorted.length > 0 ? sorted : ['']
+  }, [rowLabels, store.cells])
 
-  const storeTargetSum = useMemo(() => {
-    let sum = 0
-    for (const c of store.cells) sum += c[metric]
-    return sum
-  }, [store.cells, metric])
+  const [draftCells, setDraftCells] = useState<Record<string, DraftCell>>(() =>
+    buildDraftCells(store, effectiveRows, effectiveColumns),
+  )
 
-  if (storeTargetSum === 0) {
-    return (
-      <Card size="small" style={{ marginBottom: 12 }} title={storeLabel}>
-        <Typography.Text type="secondary">
-          No {metric === 'model' ? 'Model' : metric === 'maxQty' ? 'Max' : 'Reorder'} values set
-          for this store.
-        </Typography.Text>
-      </Card>
-    )
+  useEffect(() => {
+    setDraftCells(buildDraftCells(store, effectiveRows, effectiveColumns))
+  }, [store, effectiveRows, effectiveColumns])
+
+  const baselinePayload = useMemo(
+    () => JSON.stringify(draftPayloadFromCells(buildDraftCells(store, effectiveRows, effectiveColumns))),
+    [store, effectiveRows, effectiveColumns],
+  )
+  const draftPayload = useMemo(() => JSON.stringify(draftPayloadFromCells(draftCells)), [draftCells])
+  const dirty = baselinePayload !== draftPayload
+
+  const storeLabel = store.storeLabel ? `${store.storeId} - ${store.storeLabel}` : `Store ${store.storeId}`
+  const shortfall = useMemo(() => {
+    return Object.values(draftCells).reduce((sum, cell) => sum + Math.max(0, cell.modelQty - cell.onHand), 0)
+  }, [draftCells])
+  const metricTotal = useMemo(() => {
+    return Object.values(draftCells).reduce((sum, cell) => sum + (cell[metric] ?? 0), 0)
+  }, [draftCells, metric])
+
+  const handleChange = (rowLabel: string, columnLabel: string, nextValue: number | null) => {
+    const key = cellKey(rowLabel, columnLabel)
+    setDraftCells((prev) => ({
+      ...prev,
+      [key]: {
+        ...(prev[key] ?? {
+          rowLabel,
+          columnLabel,
+          onHand: 0,
+          modelQty: 0,
+          maxQty: 0,
+          reorderQty: 0,
+        }),
+        [metric]: Math.max(0, Math.trunc(nextValue ?? 0)),
+      },
+    }))
   }
 
-  const columns = [
-    {
-      title: 'Row',
-      dataIndex: 'rowLabel',
-      key: 'rowLabel',
-      fixed: 'left' as const,
-      width: 80,
-      render: (v: string) => v || <Typography.Text type="secondary">—</Typography.Text>,
-    },
-    ...columnsShown.map((col) => ({
-      title: col,
-      key: col,
-      align: 'right' as const,
-      render: (_: unknown, rec: { values: Record<string, number>; onHand: Record<string, number> }) => {
-        const v = rec.values[col] ?? 0
-        const oh = rec.onHand[col] ?? 0
-        if (v === 0) return <Typography.Text type="secondary">0</Typography.Text>
-        // For Model: tint red when on-hand is below target, green when at/above.
-        if (metric === 'model' && v > 0) {
-          const short = oh < v
-          return (
-            <Typography.Text
-              style={{ color: short ? '#cf1322' : '#389e0d', fontWeight: short ? 600 : 400 }}
-            >
-              {v}
-              <Typography.Text type="secondary" style={{ fontSize: 11, marginLeft: 4 }}>
-                ({oh})
-              </Typography.Text>
-            </Typography.Text>
-          )
-        }
-        return <strong>{v}</strong>
-      },
-    })),
-    {
-      title: 'Σ',
-      key: '_sum',
-      align: 'right' as const,
-      fixed: 'right' as const,
-      width: 72,
-      render: (_: unknown, rec: { values: Record<string, number> }) => {
-        const sum = Object.values(rec.values).reduce((a, b) => a + b, 0)
-        return <strong>{sum}</strong>
-      },
-    },
-  ]
+  const handleReset = () => {
+    setDraftCells(buildDraftCells(store, effectiveRows, effectiveColumns))
+  }
 
-  const dataSource = rowLabels.map((rowLabel) => {
-    const row = cellsByRow.get(rowLabel) ?? new Map<string, InventoryCell>()
-    const values: Record<string, number> = {}
-    const onHand: Record<string, number> = {}
-    for (const col of columnsShown) {
-      values[col] = row.get(col)?.[metric] ?? 0
-      onHand[col] = row.get(col)?.onHand ?? 0
+  const handleSave = async () => {
+    try {
+      await updateMutation.mutateAsync({
+        skuCode,
+        storeId: store.storeId,
+        payload: draftPayloadFromCells(draftCells),
+      })
+      message.success(`Saved ${storeLabel}`)
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : 'Failed to save replenishment targets.')
     }
-    return { rowLabel, values, onHand, key: rowLabel || '_' }
-  })
+  }
+
+  const dataSource = effectiveRows.map((rowLabel) => ({
+    key: rowLabel || '_',
+    rowLabel,
+  }))
 
   return (
     <Card
       size="small"
-      style={{ marginBottom: 12 }}
-      title={storeLabel}
+      style={{
+        marginBottom: 16,
+        borderRadius: 18,
+        background: 'linear-gradient(180deg, #ffffff 0%, #f8fafc 100%)',
+        boxShadow: '0 10px 28px rgba(15, 23, 42, 0.05)',
+      }}
+      title={
+        <Space wrap size={10}>
+          <Typography.Text strong>{storeLabel}</Typography.Text>
+          {dirty ? <Tag color="gold">Unsaved</Tag> : <Tag color="green">Saved</Tag>}
+          {shortfall > 0 ? <Tag color="volcano">Below model {shortfall}</Tag> : <Tag color="cyan">At or above model</Tag>}
+        </Space>
+      }
       extra={
-        <Typography.Text>
-          Σ {TABS.find((t) => t.value === metric)?.label}: <strong>{storeTargetSum}</strong>
-          {metric === 'model' && (
-            <Typography.Text type="secondary" style={{ marginLeft: 12, fontSize: 12 }}>
-              (green = on-hand meets model, red = short; value in parens = on-hand)
-            </Typography.Text>
-          )}
-        </Typography.Text>
+        <Space size="large" wrap>
+          <Typography.Text type="secondary">On hand {store.totals.onHand}</Typography.Text>
+          <Typography.Text type="secondary">{TABS.find((tab) => tab.value === metric)?.label} total {metricTotal}</Typography.Text>
+          <Button icon={<ReloadOutlined />} onClick={handleReset} disabled={!dirty || updateMutation.isPending}>
+            Reset
+          </Button>
+          <Button
+            type="primary"
+            onClick={handleSave}
+            disabled={!dirty}
+            loading={updateMutation.isPending}
+          >
+            Save
+          </Button>
+        </Space>
       }
     >
-      <Table
+      <Table<{ key: string; rowLabel: string }>
         size="small"
-        columns={columns}
-        dataSource={dataSource}
-        rowKey="key"
         pagination={false}
-        scroll={{ x: 80 + columnsShown.length * 72 + 72 }}
+        rowKey="key"
+        scroll={{ x: true }}
+        dataSource={dataSource}
+        columns={[
+          {
+            title: 'Row',
+            dataIndex: 'rowLabel',
+            key: 'rowLabel',
+            fixed: 'left',
+            width: 80,
+            render: (value: string) => value || <Typography.Text type="secondary">-</Typography.Text>,
+          },
+          ...effectiveColumns.map((columnLabel) => ({
+            title: columnLabel || '-',
+            key: columnLabel || '_blank',
+            align: 'right' as const,
+            render: (_: unknown, record: { rowLabel: string }) => {
+              const cell = draftCells[cellKey(record.rowLabel, columnLabel)]
+              const value = cell?.[metric] ?? 0
+              const onHand = cell?.onHand ?? 0
+              const short = metric === 'modelQty' && value > 0 && onHand < value
+              return (
+                <Space direction="vertical" size={2} style={{ width: '100%' }}>
+                  <InputNumber
+                    min={0}
+                    precision={0}
+                    value={value}
+                    style={{ width: '100%' }}
+                    onChange={(nextValue) => handleChange(record.rowLabel, columnLabel, nextValue)}
+                  />
+                  <Typography.Text type={short ? 'danger' : 'secondary'} style={{ fontSize: 11 }}>
+                    OH {onHand}
+                  </Typography.Text>
+                </Space>
+              )
+            },
+          })),
+          {
+            title: 'Sigma',
+            key: '_sum',
+            align: 'right' as const,
+            fixed: 'right',
+            width: 90,
+            render: (_: unknown, record: { rowLabel: string }) => {
+              const sum = effectiveColumns.reduce((acc, columnLabel) => {
+                return acc + (draftCells[cellKey(record.rowLabel, columnLabel)]?.[metric] ?? 0)
+              }, 0)
+              return <strong>{sum}</strong>
+            },
+          },
+        ]}
       />
     </Card>
   )

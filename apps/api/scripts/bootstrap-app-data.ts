@@ -3,12 +3,16 @@
  *
  *   pnpm --filter @benlow-rics/api bootstrap:app-data
  *
- * Runs four existing scripts in dependency order:
- *   1. seed:product-families     — families + category→family mapping
- *   2. import:attributes         — attribute catalog from saved JSON snapshot
- *   3. seed:sku-attributes       — keyword-derived per-SKU assignments
- *   4. sync:rics-skus            — backfill app.sku from rics_mirror.inventory_master
- *   5. sync:rics-stock-levels    — rebuild app.stock_level from mirror + app ledger
+ * Runs nine existing scripts in dependency order:
+ *   1. seed:taxonomy-from-mirror - promote core taxonomy reference tables into app.*
+ *   2. seed:product-families - families + category->family mapping
+ *   3. import:attributes - attribute catalog from saved JSON snapshot
+ *   4. seed:sku-attributes - keyword-derived per-SKU assignments
+ *   5. sync:rics-skus - backfill app.sku from rics_mirror.inventory_master
+ *   6. sync:rics-reference-baselines - promote vendor/store/UPC/case-pack/future-price and purchasing baselines
+ *   7. sync:rics-stock-levels - rebuild app.stock_level from mirror + app ledger
+ *   8. sync:rics-replenishment-targets - import Model / Max / Reorder into app.replenishment_target
+ *   9. sync:rics-stock-movements - import historical inv_changes into app.stock_movement
  *
  * Each step logs duration. Any failure halts the chain with a non-zero exit.
  *
@@ -17,11 +21,15 @@
  *                                latest `attribute-catalog-export-*.json` in
  *                                docs/Important-Final-Docs/ (falls back to the
  *                                repo root or apps/api/).
- *   --skip-product-families      Skip step 1
- *   --skip-attributes-import     Skip step 2
- *   --skip-sku-attributes        Skip step 3
- *   --skip-sku-sync              Skip step 4
- *   --skip-stock-levels          Skip step 5
+ *   --skip-taxonomy-seed         Skip step 1
+ *   --skip-product-families      Skip step 2
+ *   --skip-attributes-import     Skip step 3
+ *   --skip-sku-attributes        Skip step 4
+ *   --skip-sku-sync              Skip step 5
+ *   --skip-reference-baselines   Skip step 6
+ *   --skip-stock-levels          Skip step 7
+ *   --skip-replenishment-targets Skip step 8
+ *   --skip-stock-movements       Skip step 9
  *   --dry-run                    Print the plan + resolved snapshot path, exit 0
  */
 import { spawn } from 'node:child_process';
@@ -33,22 +41,30 @@ const API_DIR = path.resolve(__dirname, '..');
 
 interface Args {
   snapshot: string | null;
+  skipTaxonomySeed: boolean;
   skipFamilies: boolean;
   skipAttrImport: boolean;
   skipSkuAttrs: boolean;
   skipSkuSync: boolean;
+  skipReferenceBaselines: boolean;
   skipStockLevels: boolean;
+  skipReplenishmentTargets: boolean;
+  skipStockMovements: boolean;
   dryRun: boolean;
 }
 
 function parseArgs(): Args {
   const out: Args = {
     snapshot: null,
+    skipTaxonomySeed: false,
     skipFamilies: false,
     skipAttrImport: false,
     skipSkuAttrs: false,
     skipSkuSync: false,
+    skipReferenceBaselines: false,
     skipStockLevels: false,
+    skipReplenishmentTargets: false,
+    skipStockMovements: false,
     dryRun: false,
   };
   const argv = process.argv.slice(2);
@@ -57,6 +73,9 @@ function parseArgs(): Args {
     switch (a) {
       case '--snapshot':
         out.snapshot = path.resolve(String(argv[++i] ?? ''));
+        break;
+      case '--skip-taxonomy-seed':
+        out.skipTaxonomySeed = true;
         break;
       case '--skip-product-families':
         out.skipFamilies = true;
@@ -70,8 +89,17 @@ function parseArgs(): Args {
       case '--skip-sku-sync':
         out.skipSkuSync = true;
         break;
+      case '--skip-reference-baselines':
+        out.skipReferenceBaselines = true;
+        break;
       case '--skip-stock-levels':
         out.skipStockLevels = true;
+        break;
+      case '--skip-replenishment-targets':
+        out.skipReplenishmentTargets = true;
+        break;
+      case '--skip-stock-movements':
+        out.skipStockMovements = true;
         break;
       case '--dry-run':
         out.dryRun = true;
@@ -117,7 +145,7 @@ function fmtDuration(ms: number): string {
 
 interface Step {
   label: string;
-  script: string; // path relative to apps/api/
+  script: string;
   extraArgs?: string[];
 }
 
@@ -127,7 +155,11 @@ async function runStep(step: Step, stepNum: number, total: number): Promise<void
     throw new Error(`Script not found: ${scriptPath}`);
   }
   console.log(`\n[${stepNum}/${total}] ${step.label}`);
-  console.log(`        ${path.relative(REPO_ROOT, scriptPath).replace(/\\/g, '/')}${step.extraArgs?.length ? ' ' + step.extraArgs.join(' ') : ''}`);
+  console.log(
+    `        ${path.relative(REPO_ROOT, scriptPath).replace(/\\/g, '/')}${
+      step.extraArgs?.length ? ` ${step.extraArgs.join(' ')}` : ''
+    }`,
+  );
   const t0 = Date.now();
 
   const child = spawn(
@@ -150,16 +182,15 @@ async function runStep(step: Step, stepNum: number, total: number): Promise<void
 
   const dur = fmtDuration(Date.now() - t0);
   if (code !== 0) {
-    console.error(`\n✗ Step ${stepNum}/${total} failed (exit ${code}) after ${dur}`);
+    console.error(`\nStep ${stepNum}/${total} failed (exit ${code}) after ${dur}`);
     throw new Error(`${step.label} failed`);
   }
-  console.log(`        ✓ done (${dur})`);
+  console.log(`        done (${dur})`);
 }
 
 async function main(): Promise<void> {
   const args = parseArgs();
 
-  // Resolve the snapshot path once, up front.
   const snapshot = args.snapshot ?? latestSnapshot();
   if (!args.skipAttrImport && snapshot == null) {
     console.error(
@@ -170,8 +201,17 @@ async function main(): Promise<void> {
   }
 
   const steps: Step[] = [];
+  if (!args.skipTaxonomySeed) {
+    steps.push({
+      label: 'seed:taxonomy-from-mirror',
+      script: 'scripts/seeds/seed-taxonomy-from-mirror.ts',
+    });
+  }
   if (!args.skipFamilies) {
-    steps.push({ label: 'seed:product-families', script: 'scripts/seeds/seed-product-families.ts' });
+    steps.push({
+      label: 'seed:product-families',
+      script: 'scripts/seeds/seed-product-families.ts',
+    });
   }
   if (!args.skipAttrImport) {
     steps.push({
@@ -186,12 +226,33 @@ async function main(): Promise<void> {
   if (!args.skipSkuSync) {
     steps.push({ label: 'sync:rics-skus', script: 'scripts/rics/sync/sync-rics-skus.ts' });
   }
+  if (!args.skipReferenceBaselines) {
+    steps.push({
+      label: 'sync:rics-reference-baselines',
+      script: 'scripts/rics/sync/sync-rics-reference-baselines.ts',
+    });
+  }
   if (!args.skipStockLevels) {
-    steps.push({ label: 'sync:rics-stock-levels', script: 'scripts/rics/sync/sync-rics-stock-levels.ts' });
+    steps.push({
+      label: 'sync:rics-stock-levels',
+      script: 'scripts/rics/sync/sync-rics-stock-levels.ts',
+    });
+  }
+  if (!args.skipReplenishmentTargets) {
+    steps.push({
+      label: 'sync:rics-replenishment-targets',
+      script: 'scripts/rics/sync/sync-rics-replenishment-targets.ts',
+    });
+  }
+  if (!args.skipStockMovements) {
+    steps.push({
+      label: 'sync:rics-stock-movements',
+      script: 'scripts/rics/sync/sync-rics-stock-movements.ts',
+    });
   }
 
   console.log('=== bootstrap:app-data ===');
-  console.log(`Snapshot: ${snapshot ?? '(none — attribute import skipped)'}`);
+  console.log(`Snapshot: ${snapshot ?? '(none - attribute import skipped)'}`);
   console.log(`Plan: ${steps.length} step(s)`);
   for (let i = 0; i < steps.length; i++) {
     console.log(`   ${i + 1}. ${steps[i].label}`);

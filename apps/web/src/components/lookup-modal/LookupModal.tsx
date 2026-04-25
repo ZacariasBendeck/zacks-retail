@@ -65,9 +65,17 @@ export interface LookupModalProps<T> {
   helperText?: React.ReactNode;
   /** Label for the confirm button. Default "Save". */
   saveLabel?: string;
+  /** Table body scroll height in pixels. Default 432 (was 360 before the
+   *  2026-04-25 taller-popup tweak). */
+  scrollY?: number;
+  /** Reduces row vertical padding to ~2px so a row is only as tall as its
+   *  tallest cell content. SKU lookup turns this on so the picture column
+   *  drives row height (52px) instead of the antd "small" default. */
+  compactRows?: boolean;
 }
 
 const DEFAULT_PAGE_SIZE = 50;
+const DEFAULT_SCROLL_Y = 432;
 
 function resolveRowKey<T>(row: T, rowKey: LookupModalProps<T>['rowKey']): string {
   if (typeof rowKey === 'function') return rowKey(row);
@@ -85,13 +93,15 @@ export function LookupModal<T>({
   rowKey,
   width = 960,
   pageSize = DEFAULT_PAGE_SIZE,
-  placeholder = 'Prefix match — press ↓ to enter the list, Enter to pick',
+  placeholder = 'Prefix match — press ↓ to enter the list, ←/→ to page, Enter to pick',
   initialQuery = '',
   searchFieldSlot,
   filterSlot,
   footerExtras,
   helperText,
   saveLabel = 'Save',
+  scrollY = DEFAULT_SCROLL_Y,
+  compactRows = false,
 }: LookupModalProps<T>): React.ReactElement {
   const [q, setQ] = useState(initialQuery);
   const [debouncedQ, setDebouncedQ] = useState(initialQuery);
@@ -109,6 +119,11 @@ export function LookupModal<T>({
   // and stash where the highlight should land once the new data arrives.
   const pendingLandingRef = useRef<'top' | 'bottom' | null>(null);
 
+  // ArrowDown pressed before the first fetch lands → queue "highlight first
+  // row when rows arrive" so the operator's keystroke is honored even if
+  // they pressed ↓ in the brief window before initial results returned.
+  const wantsFirstRowOnLoadRef = useRef(false);
+
   // Mirror rows + highlighted into refs so the keydown handler reads the
   // freshest values. userEvent fires keydowns back-to-back without letting
   // React re-render between them, so closure-captured state goes stale fast.
@@ -125,6 +140,7 @@ export function LookupModal<T>({
     setDebouncedQ(initialQuery);
     setPage(1);
     setHighlighted(-1);
+    wantsFirstRowOnLoadRef.current = false;
     setTimeout(() => inputRef.current?.focus(), 50);
   }, [open, initialQuery]);
 
@@ -171,12 +187,19 @@ export function LookupModal<T>({
   // the stale value and trigger another page advance.
   useEffect(() => {
     const pending = pendingLandingRef.current;
-    if (!pending) return;
-    if (rows.length === 0) return;
-    const next = pending === 'top' ? 0 : rows.length - 1;
-    pendingLandingRef.current = null;
-    highlightedRef.current = next;
-    setHighlighted(next);
+    if (pending && rows.length > 0) {
+      const next = pending === 'top' ? 0 : rows.length - 1;
+      pendingLandingRef.current = null;
+      highlightedRef.current = next;
+      setHighlighted(next);
+      return;
+    }
+    // ArrowDown pressed before initial rows arrived — honor it now.
+    if (wantsFirstRowOnLoadRef.current && rows.length > 0) {
+      wantsFirstRowOnLoadRef.current = false;
+      highlightedRef.current = 0;
+      setHighlighted(0);
+    }
   }, [rows]);
 
   // Keep the highlighted row visible as the operator arrow-keys through.
@@ -206,16 +229,31 @@ export function LookupModal<T>({
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     const currentRows = rowsRef.current;
-    if (currentRows.length === 0 && e.key !== 'Enter') return;
 
     // If a page change is already in flight (landing not yet resolved), ignore
     // navigation keys — otherwise holding ↓ rips through several pages before
     // the first fetch lands because rows still points at the old page.
     const pageInFlight = pendingLandingRef.current !== null;
 
+    // ←/→ paginate the modal, but only when the user isn't editing text in
+    // the search input. If the input has any value AND it has focus, we let
+    // the browser handle ←/→ for cursor movement.
+    const target = e.target as HTMLElement | null;
+    const inEditableInput =
+      target?.tagName === 'INPUT' &&
+      (target as HTMLInputElement).type !== 'checkbox' &&
+      (target as HTMLInputElement).type !== 'radio' &&
+      (target as HTMLInputElement).value.length > 0;
+
     if (e.key === 'ArrowDown') {
       e.preventDefault();
       if (pageInFlight) return;
+      // No rows yet (first fetch hasn't returned) — queue the highlight so
+      // the keystroke isn't lost. Once rows arrive, the load-effect honors it.
+      if (currentRows.length === 0) {
+        wantsFirstRowOnLoadRef.current = true;
+        return;
+      }
       const prev = highlightedRef.current;
       if (prev === currentRows.length - 1 && page < totalPages) {
         pendingLandingRef.current = 'top';
@@ -228,6 +266,7 @@ export function LookupModal<T>({
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
       if (pageInFlight) return;
+      if (currentRows.length === 0) return;
       const prev = highlightedRef.current;
       if (prev === 0 && page > 1) {
         pendingLandingRef.current = 'bottom';
@@ -237,17 +276,30 @@ export function LookupModal<T>({
       const next = Math.max(prev - 1, -1);
       highlightedRef.current = next;
       setHighlighted(next);
-    } else if (e.key === 'PageDown' && page < totalPages) {
+    } else if (e.key === 'ArrowRight' || e.key === 'PageDown') {
+      // ArrowRight = next page (skipped if user is editing text in input).
+      if (e.key === 'ArrowRight' && inEditableInput) return;
+      if (page >= totalPages) {
+        e.preventDefault();
+        return;
+      }
       e.preventDefault();
       if (pageInFlight) return;
       pendingLandingRef.current = 'top';
       setPage(page + 1);
-    } else if (e.key === 'PageUp' && page > 1) {
+    } else if (e.key === 'ArrowLeft' || e.key === 'PageUp') {
+      // ArrowLeft = previous page (skipped if user is editing text in input).
+      if (e.key === 'ArrowLeft' && inEditableInput) return;
+      if (page <= 1) {
+        e.preventDefault();
+        return;
+      }
       e.preventDefault();
       if (pageInFlight) return;
       pendingLandingRef.current = 'top';
       setPage(page - 1);
     } else if (e.key === 'Enter') {
+      if (currentRows.length === 0) return;
       const idx = highlightedRef.current;
       const pick = idx >= 0 ? currentRows[idx] : currentRows[0];
       if (pick) {
@@ -298,7 +350,7 @@ export function LookupModal<T>({
 
           {filterSlot}
 
-          <div ref={tableContainerRef}>
+          <div ref={tableContainerRef} className={compactRows ? 'lookup-modal-compact' : undefined}>
             <Table<T>
               rowKey={rowKeyForTable}
               size="small"
@@ -320,8 +372,17 @@ export function LookupModal<T>({
                     ? { backgroundColor: '#e6f4ff', cursor: 'pointer' }
                     : { cursor: 'pointer' },
               })}
-              scroll={{ y: 360 }}
+              scroll={{ y: scrollY }}
             />
+            {compactRows ? (
+              <style>{`
+                .lookup-modal-compact .ant-table-cell {
+                  padding-top: 2px !important;
+                  padding-bottom: 2px !important;
+                  line-height: 1.2 !important;
+                }
+              `}</style>
+            ) : null}
           </div>
 
           {helperText ? (

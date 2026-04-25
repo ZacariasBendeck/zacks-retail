@@ -152,8 +152,10 @@ router.get('/inquiry/:sku/neighbor', async (req: Request, res: Response, next: N
  *         required: false
  *         schema: { type: boolean, default: false }
  *     responses:
- *       200: { description: Matching SKU rows for that size search }
- *       400: { description: At least one of columnLabel or rowLabel is required }
+ *       200:
+ *         description: Matching SKU rows for that size search
+ *       400:
+ *         description: At least one of columnLabel or rowLabel is required
  */
 router.get('/find-by-size', async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -233,7 +235,8 @@ router.get('/find-by-size', async (req: Request, res: Response, next: NextFuncti
  *         required: false
  *         schema: { type: integer, default: 5000, maximum: 20000 }
  *     responses:
- *       200: { description: Array of per-SKU rollup rows }
+ *       200:
+ *         description: Array of per-SKU rollup rows
  */
 router.get('/detail-report', async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -291,8 +294,10 @@ router.get('/detail-report', async (req: Request, res: Response, next: NextFunct
  *         required: false
  *         schema: { type: integer, default: 200, maximum: 1000 }
  *     responses:
- *       200: { description: Rows ordered by date descending }
- *       400: { description: Query scope too broad (no SKU and either no window or > 90 days) }
+ *       200:
+ *         description: Rows ordered by date descending
+ *       400:
+ *         description: Query scope too broad (no SKU and either no window or greater than 90 days)
  */
 router.get('/change-detail', async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -337,8 +342,10 @@ router.get('/change-detail', async (req: Request, res: Response, next: NextFunct
  *         description: Comma-separated list of destination store numbers
  *         schema: { type: string }
  *     responses:
- *       200: { description: Summary payload — months + matrix + stores + grand totals }
- *       400: { description: Missing dates, invalid format, or > 366-day window }
+ *       200:
+ *         description: Summary payload with months, matrix, stores, and grand totals
+ *       400:
+ *         description: Missing dates, invalid format, or greater than 366-day window
  */
 router.get('/transfer-summary', async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -397,7 +404,8 @@ router.get('/transfer-summary', async (req: Request, res: Response, next: NextFu
  *         required: false
  *         schema: { type: integer, default: 2000, maximum: 10000 }
  *     responses:
- *       200: { description: Rows \{ sku, store, onHand, model, max, reorder, currentOnOrder, mtd/std/ytd/ly sales \} }
+ *       200:
+ *         description: Rows with sku, store, onHand, model, max, reorder, currentOnOrder, and sales rollups
  */
 router.get('/sku-store-rollup', async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -423,7 +431,8 @@ router.get('/sku-store-rollup', async (req: Request, res: Response, next: NextFu
  *     tags: [Inventory]
  *     summary: Per (SKU × Store × Row × Column) cell rollup — drives per-size Auto / Balancing / Manual Transfer previews
  *     responses:
- *       200: { description: Rows \{ sku, store, rowLabel, columnLabel, onHand, model, max, reorder, ...sales \} }
+ *       200:
+ *         description: Rows with sku, store, rowLabel, columnLabel, onHand, replenishment targets, and sales rollups
  */
 router.get('/sku-store-cell-rollup', async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -486,8 +495,10 @@ router.get('/sku-store-cell-rollup', async (req: Request, res: Response, next: N
  *         required: false
  *         schema: { type: integer, default: 2000 }
  *     responses:
- *       200: { description: Array of recommended transfer rows }
- *       400: { description: Missing or invalid rule param }
+ *       200:
+ *         description: Array of recommended transfer rows
+ *       400:
+ *         description: Missing or invalid rule param
  */
 router.get('/recommended-transfers', async (req: Request, res: Response, next: NextFunction) => {
   try {

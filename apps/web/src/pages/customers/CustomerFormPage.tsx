@@ -48,7 +48,7 @@ export default function CustomerFormPage() {
   const createCustomer = useCreateCustomer()
   const updateCustomer = useUpdateCustomer()
   const deleteCustomer = useDeleteCustomer()
-  const isMirrorCustomer = customer?.source === 'mirror'
+  const isReadOnlyCustomer = customer?.source === 'mirror' || customer?.source === 'imported'
 
   useEffect(() => {
     if (customer) {
@@ -116,11 +116,12 @@ export default function CustomerFormPage() {
         <Space>
           <Button type="text" icon={<ArrowLeftOutlined />} onClick={() => navigate('/customers')} />
           {isEdit ? customer?.displayName ?? 'Customer' : 'New Customer'}
-          {isMirrorCustomer ? <Tag color="blue">RICS mirror</Tag> : null}
+          {customer?.source === 'imported' ? <Tag color="blue">Imported Postgres</Tag> : null}
+          {customer?.source === 'mirror' ? <Tag color="blue">RICS mirror</Tag> : null}
         </Space>
       }
       extra={
-        isEdit && !isMirrorCustomer ? (
+        isEdit && !isReadOnlyCustomer ? (
           <Button danger icon={<DeleteOutlined />} onClick={handleDelete} loading={deleteCustomer.isPending}>
             Delete
           </Button>
@@ -128,7 +129,16 @@ export default function CustomerFormPage() {
       }
       loading={isEdit && isLoading}
     >
-      {isMirrorCustomer ? (
+      {customer?.source === 'imported' ? (
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message="Read-only imported customer"
+          description="This record is coming from the imported Postgres customer-intelligence tables. Editing and family-member writes stay disabled until the app-owned write path is extended to this surface."
+        />
+      ) : null}
+      {customer?.source === 'mirror' ? (
         <Alert
           type="info"
           showIcon
@@ -164,7 +174,7 @@ export default function CustomerFormPage() {
             key: 'info',
             label: 'Customer info',
             children: (
-              <Form form={form} layout="vertical" onFinish={handleSubmit} disabled={isMirrorCustomer}>
+              <Form form={form} layout="vertical" onFinish={handleSubmit} disabled={isReadOnlyCustomer}>
                 <Row gutter={16}>
                   <Col span={8}>
                     <Form.Item
@@ -277,7 +287,7 @@ export default function CustomerFormPage() {
                 </Form.Item>
 
                 <Space>
-                  {!isMirrorCustomer ? (
+                  {!isReadOnlyCustomer ? (
                     <Button
                       type="primary"
                       htmlType="submit"
@@ -301,7 +311,7 @@ export default function CustomerFormPage() {
                     <FamilyMemberPanel
                       customerId={customerId!}
                       members={customer?.familyMembers ?? []}
-                      readOnly={isMirrorCustomer}
+                      readOnly={isReadOnlyCustomer}
                     />
                   ),
                 },

@@ -28,14 +28,13 @@ vi.mock('../../../components/sku-lookup', () => ({
 import { useInquiryData } from './useInquiryData';
 
 describe('InquiryBody', () => {
-  it('does not reopen the SKU lookup after cancel when the parent re-renders with no SKU', async () => {
+  it('does not auto-open the SKU lookup on the empty landing — only the Pick a SKU button opens it', async () => {
     vi.mocked(useInquiryData).mockReturnValue({
       data: null,
       isLoading: false,
       error: null,
     } as unknown as ReturnType<typeof useInquiryData>);
 
-    const firstOnActiveTabChange = vi.fn();
     const { rerender } = render(
       <InquiryBody
         skuCode=""
@@ -44,11 +43,14 @@ describe('InquiryBody', () => {
         activeTab={null}
         scope="general"
         onModeChange={vi.fn()}
-        onActiveTabChange={firstOnActiveTabChange}
+        onActiveTabChange={vi.fn()}
         onScopeChange={vi.fn()}
       />,
     );
 
+    expect(screen.queryByText('SKU Lookup')).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: /Pick a SKU/i }));
     expect(screen.getByText('SKU Lookup')).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole('button', { name: 'Close SKU Lookup' }));

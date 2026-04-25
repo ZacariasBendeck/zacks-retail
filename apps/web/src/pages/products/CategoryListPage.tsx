@@ -1,8 +1,10 @@
-import { Alert, Button, Card, Space, Table, Tag, Typography } from 'antd'
-import { useNavigate } from 'react-router-dom'
+import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons'
+import { App, Button, Card, Popconfirm, Space, Table, Tag, Typography } from 'antd'
 import { useMemo } from 'react'
+import { Link, useNavigate } from 'react-router-dom'
 import {
   useCategories,
+  useDeleteCategory,
   useDepartments,
   useSectors,
   useSkuTotal,
@@ -12,25 +14,24 @@ import TaxonomyCoverageFooter from '../../components/products/TaxonomyCoverageFo
 
 export default function CategoryListPage() {
   const navigate = useNavigate()
+  const { message } = App.useApp()
   const { data, isLoading } = useCategories()
   const { data: departments } = useDepartments()
   const { data: sectors } = useSectors()
   const { data: skuTotal } = useSkuTotal()
+  const del = useDeleteCategory()
 
   const assigned = useMemo(
-    () => (data ?? []).reduce((sum, r) => sum + (r.skuCount ?? 0), 0),
+    () => (data ?? []).reduce((sum, row) => sum + (row.skuCount ?? 0), 0),
     [data],
   )
 
-  // Client-side range rollups — tables are ≤99 rows each, so one pass per render
-  // is fine and avoids a /resolve call per row.
   const deptFor = useMemo(() => {
     return (categoryNum: number): Department | null => {
       if (!departments) return null
       return (
-        departments.find(
-          (d) => d.begCateg <= categoryNum && d.endCateg >= categoryNum,
-        ) ?? null
+        departments.find((dept) => dept.begCateg <= categoryNum && dept.endCateg >= categoryNum) ??
+        null
       )
     }
   }, [departments])
@@ -39,27 +40,33 @@ export default function CategoryListPage() {
     return (deptNum: number | null): Sector | null => {
       if (deptNum == null || !sectors) return null
       return (
-        sectors.find((s) => s.begDept <= deptNum && s.endDept >= deptNum) ?? null
+        sectors.find((sector) => sector.begDept <= deptNum && sector.endDept >= deptNum) ?? null
       )
     }
   }, [sectors])
 
   const columns = [
-    { title: 'Number', dataIndex: 'number', key: 'number', sorter: (a: Category, b: Category) => a.number - b.number, width: 100 },
+    {
+      title: 'Number',
+      dataIndex: 'number',
+      key: 'number',
+      sorter: (a: Category, b: Category) => a.number - b.number,
+      width: 100,
+    },
     { title: 'Description', dataIndex: 'description', key: 'description' },
     {
       title: 'Department',
       key: 'department',
       width: 200,
-      render: (_: unknown, r: Category) => {
-        const d = deptFor(r.number)
-        return d ? (
+      render: (_: unknown, row: Category) => {
+        const department = deptFor(row.number)
+        return department ? (
           <Space size={4}>
-            <Tag>{d.number}</Tag>
-            <span>{d.description}</span>
+            <Tag>{department.number}</Tag>
+            <span>{department.description}</span>
           </Space>
         ) : (
-          <Typography.Text type="danger">— no dept range</Typography.Text>
+          <Typography.Text type="danger">No department range</Typography.Text>
         )
       },
     },
@@ -67,18 +74,18 @@ export default function CategoryListPage() {
       title: 'Sector',
       key: 'sector',
       width: 180,
-      render: (_: unknown, r: Category) => {
-        const d = deptFor(r.number)
-        const s = sectorFor(d?.number ?? null)
-        return s ? (
+      render: (_: unknown, row: Category) => {
+        const department = deptFor(row.number)
+        const sector = sectorFor(department?.number ?? null)
+        return sector ? (
           <Space size={4}>
-            <Tag color="purple">{s.number}</Tag>
-            <span>{s.description}</span>
+            <Tag color="purple">{sector.number}</Tag>
+            <span>{sector.description}</span>
           </Space>
-        ) : d != null ? (
-          <Typography.Text type="secondary">— no sector range</Typography.Text>
+        ) : department != null ? (
+          <Typography.Text type="secondary">No sector range</Typography.Text>
         ) : (
-          <Typography.Text type="secondary">—</Typography.Text>
+          <Typography.Text type="secondary">-</Typography.Text>
         )
       },
     },
@@ -89,16 +96,34 @@ export default function CategoryListPage() {
       width: 100,
       align: 'right' as const,
       sorter: (a: Category, b: Category) => a.skuCount - b.skuCount,
-      render: (v: number) => (v ?? 0).toLocaleString('en-US'),
+      render: (value: number) => (value ?? 0).toLocaleString('en-US'),
     },
     {
-      title: 'Actions',
+      title: '',
       key: 'actions',
       width: 100,
       render: (_: unknown, record: Category) => (
-        <Button type="link" size="small" onClick={() => navigate(`/products/taxonomy/categories/${record.number}`)}>
-          View
-        </Button>
+        <Space size={0}>
+          <Button
+            type="text"
+            size="small"
+            icon={<EditOutlined />}
+            onClick={() => navigate(`/products/taxonomy/categories/${record.number}`)}
+          />
+          <Popconfirm
+            title="Delete this category?"
+            onConfirm={async () => {
+              try {
+                await del.mutateAsync(record.number)
+                message.success('Deleted')
+              } catch (e) {
+                message.error((e as Error).message)
+              }
+            }}
+          >
+            <Button type="text" size="small" danger icon={<DeleteOutlined />} />
+          </Popconfirm>
+        </Space>
       ),
     },
   ]
@@ -106,14 +131,14 @@ export default function CategoryListPage() {
   return (
     <Card
       title={<Typography.Text strong>Categories</Typography.Text>}
+      extra={
+        <Link to="/products/taxonomy/categories/new">
+          <Button type="primary" icon={<PlusOutlined />}>
+            New category
+          </Button>
+        </Link>
+      }
     >
-      <Alert
-        type="info"
-        showIcon
-        style={{ marginBottom: 16 }}
-        message="Categories are read-only in Development Against RICS Mirror."
-        description="This screen reads from rics_mirror.categories on Render. Creating, editing, and deleting categories needs a Postgres overlay that has not been built yet."
-      />
       <Table<Category>
         size="small"
         className="products-compact-table"

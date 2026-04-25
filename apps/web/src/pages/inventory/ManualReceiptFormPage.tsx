@@ -11,30 +11,33 @@ import {
   Col,
   DatePicker,
   Descriptions,
-  Divider,
   Empty,
   Input,
   InputNumber,
   Row,
   Select,
   Space,
-  Table,
   Typography,
 } from 'antd'
-import { ArrowLeftOutlined, SaveOutlined, SearchOutlined } from '@ant-design/icons'
+import {
+  ArrowLeftOutlined,
+  SaveOutlined,
+  SearchOutlined,
+  FundOutlined,
+  ReloadOutlined,
+} from '@ant-design/icons'
 import { useCreateManualReceipt, useManualReceiptContext, useManualReceiptStores } from '../../hooks/useManualReceipts'
 import { useAutocompleteSkus } from '../../hooks/useSkus'
 import { SkuLookup } from '../../components/sku-lookup'
+import {
+  STOCK_MAINTENANCE_LAST_STORE_KEY,
+  StockMaintenanceCellMatrix,
+  StockMaintenanceHero,
+  persistNumber,
+  readPersistedNumber,
+  stockCellKey,
+} from '../../components/stock-maintenance'
 import type { ManualReceiptContext } from '../../types/manualReceipt'
-
-interface GridRow {
-  key: string
-  rowLabel: string
-}
-
-function cellKey(rowLabel: string, columnLabel: string): string {
-  return `${rowLabel}::${columnLabel}`
-}
 
 function normalizeGrid(context: ManualReceiptContext | null): { columns: string[]; rows: string[] } {
   if (!context) return { columns: [], rows: [] }
@@ -47,7 +50,7 @@ function normalizeGrid(context: ManualReceiptContext | null): { columns: string[
 function onHandMap(context: ManualReceiptContext | null): Map<string, number> {
   const map = new Map<string, number>()
   for (const cell of context?.currentOnHandByCell ?? []) {
-    map.set(cellKey(cell.rowLabel, cell.columnLabel), cell.quantityOnHand)
+    map.set(stockCellKey(cell.rowLabel, cell.columnLabel), cell.quantityOnHand)
   }
   return map
 }
@@ -79,6 +82,23 @@ export default function ManualReceiptFormPage() {
 
   const grid = useMemo(() => normalizeGrid(context), [context])
   const onHand = useMemo(() => onHandMap(context), [context])
+  const totalUnits = useMemo(
+    () => Object.values(cellValues).reduce((sum, quantity) => sum + Math.trunc(quantity || 0), 0),
+    [cellValues],
+  )
+  const affectedCells = useMemo(
+    () => Object.values(cellValues).filter((quantity) => Math.trunc(quantity || 0) > 0).length,
+    [cellValues],
+  )
+  const currentUnits = useMemo(
+    () => (context?.currentOnHandByCell ?? []).reduce((sum, cell) => sum + cell.quantityOnHand, 0),
+    [context],
+  )
+  const projectedUnits = currentUnits + totalUnits
+  const selectedStoreLabel = useMemo(() => {
+    if (storeId == null) return 'Choose a store'
+    return stores?.find((store) => store.storeId === storeId)?.storeLabel ?? `Store ${storeId}`
+  }, [storeId, stores])
   const skuSearchOptions = useMemo(() => {
     if (!autocompleteResults?.length) return []
     return autocompleteResults.map((item) => ({
@@ -88,7 +108,7 @@ export default function ManualReceiptFormPage() {
           <span style={{ fontWeight: 500 }}>{item.skuCode}</span>
           <span
             style={{
-              color: '#888',
+              color: '#64748b',
               fontSize: 12,
               overflow: 'hidden',
               textOverflow: 'ellipsis',
@@ -107,6 +127,18 @@ export default function ManualReceiptFormPage() {
       if (debounceTimer.current) clearTimeout(debounceTimer.current)
     }
   }, [])
+
+  useEffect(() => {
+    if (storeId != null || !stores?.length) return
+    const savedStoreId = readPersistedNumber(STOCK_MAINTENANCE_LAST_STORE_KEY)
+    if (savedStoreId != null && stores.some((store) => store.storeId === savedStoreId)) {
+      setStoreId(savedStoreId)
+    }
+  }, [storeId, stores])
+
+  useEffect(() => {
+    persistNumber(STOCK_MAINTENANCE_LAST_STORE_KEY, storeId)
+  }, [storeId])
 
   function resetReceiptState(keepStore = true) {
     setContext(null)
@@ -161,7 +193,7 @@ export default function ManualReceiptFormPage() {
 
       const seeded: Record<string, number> = {}
       if (result.scannedUpcTarget) {
-        seeded[cellKey(result.scannedUpcTarget.rowLabel, result.scannedUpcTarget.columnLabel)] = 1
+        seeded[stockCellKey(result.scannedUpcTarget.rowLabel, result.scannedUpcTarget.columnLabel)] = 1
       }
       setCellValues(seeded)
     } catch (err) {
@@ -179,7 +211,7 @@ export default function ManualReceiptFormPage() {
   }
 
   function updateCell(rowLabel: string, columnLabel: string, quantity: number | null) {
-    const key = cellKey(rowLabel, columnLabel)
+    const key = stockCellKey(rowLabel, columnLabel)
     setCellValues((prev) => {
       const next = { ...prev }
       const normalized = Math.max(0, Math.trunc(quantity ?? 0))
@@ -200,8 +232,8 @@ export default function ManualReceiptFormPage() {
 
     const lines = Object.entries(cellValues)
       .map(([key, quantity]) => {
-        const [rowLabel, columnLabel] = key.split('::')
-        return { rowLabel, columnLabel, quantity: Math.trunc(quantity) }
+        const [rawRowLabel = '', rawColumnLabel = ''] = key.split('::')
+        return { rowLabel: rawRowLabel, columnLabel: rawColumnLabel, quantity: Math.trunc(quantity) }
       })
       .filter((line) => line.quantity > 0)
 
@@ -241,318 +273,403 @@ export default function ManualReceiptFormPage() {
     }
   }
 
-  const gridColumns = [
-    {
-      title: 'Row',
-      dataIndex: 'rowLabel',
-      key: 'rowLabel',
-      width: 140,
-      fixed: 'left' as const,
-      render: (value: string) => value || 'Qty',
-    },
-    ...grid.columns.map((columnLabel) => ({
-      title: columnLabel || 'Qty',
-      key: `col:${columnLabel}`,
-      width: 130,
-      render: (_: unknown, row: GridRow) => {
-        const key = cellKey(row.rowLabel, columnLabel)
-        const currentOnHand = onHand.get(key) ?? 0
-        return (
-          <Space direction="vertical" size={2}>
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              On hand: {currentOnHand}
-            </Typography.Text>
-            <InputNumber
-              min={0}
-              precision={0}
-              step={1}
-              value={cellValues[key]}
-              onChange={(value) => updateCell(row.rowLabel, columnLabel, typeof value === 'number' ? value : null)}
-              style={{ width: '100%' }}
-            />
-          </Space>
-        )
-      },
-    })),
-  ]
-
-  const gridRows: GridRow[] = grid.rows.map((rowLabel) => ({
-    key: rowLabel || '(blank)',
-    rowLabel,
-  }))
-
   return (
     <App>
       <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-        <Card size="small">
-          <Row align="middle" justify="space-between">
-            <Space>
-              <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/inventory/adjustments?tab=MANUAL_RECEIPT')}>
-                Back
-              </Button>
-              <Typography.Title level={4} style={{ margin: 0 }}>
-                Enter Manual Receipts
-              </Typography.Title>
-            </Space>
-            <Typography.Text type="secondary">RICS Ch. 4 p. 66</Typography.Text>
-          </Row>
-        </Card>
-
-        <Card title="Lookup" size="small">
-          <Row gutter={[16, 16]}>
-            <Col xs={24} md={8}>
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                Store
+        <StockMaintenanceHero
+          eyebrow="Stock Maintenance"
+          title="Manual Receipt"
+          subtitle="Receive stock directly into the app-owned inventory ledger. Store choice stays sticky on this device so repeated receiving runs do not need to re-enter the same location."
+          ricsReference="RICS Ch. 4 p. 66"
+          metrics={[
+            { label: 'Store', value: selectedStoreLabel },
+            { label: 'SKU', value: context?.skuCode ?? 'Load a SKU' },
+            { label: 'Units to receive', value: totalUnits },
+            { label: 'Projected on hand', value: projectedUnits },
+          ]}
+          actions={
+            <Space direction="vertical" size={12} style={{ width: '100%' }}>
+              <Typography.Text style={{ color: 'rgba(248, 250, 252, 0.82)', fontWeight: 600 }}>
+                Operator actions
               </Typography.Text>
-              <Select
-                showSearch
-                optionFilterProp="label"
-                placeholder="Select store"
-                value={storeId}
-                loading={storesLoading}
-                onChange={(value) => {
-                  setStoreId(value)
-                  setContext(null)
-                  setCellValues({})
-                }}
-                style={{ width: '100%' }}
-                options={(stores ?? []).map((store) => ({
-                  value: store.storeId,
-                  label: store.storeLabel,
-                }))}
-              />
-            </Col>
-            <Col xs={24} md={6}>
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                SKU
+              <Space wrap>
+                <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/inventory/adjustments?tab=MANUAL_RECEIPT')}>
+                  Back to workspace
+                </Button>
                 <Button
-                  type="link"
-                  size="small"
+                  icon={<FundOutlined />}
+                  disabled={!context}
+                  onClick={() => navigate(context ? `/inventory/replenishment?sku=${encodeURIComponent(context.skuCode)}` : '/inventory/replenishment')}
+                >
+                  Model Quantities
+                </Button>
+                <Button
                   icon={<SearchOutlined />}
-                  onClick={() => setSkuLookupOpen(true)}
-                  style={{ padding: 0, marginLeft: 8, height: 'auto', lineHeight: 1 }}
+                  disabled={!context}
+                  onClick={() => navigate(context ? `/inventory/find-by-size?seedSku=${encodeURIComponent(context.skuCode)}` : '/inventory/find-by-size')}
                 >
-                  Lookup
+                  Find by Size
                 </Button>
-              </Typography.Text>
-              <AutoComplete
-                value={skuCode}
-                options={skuSearchOptions}
-                onSearch={(text) => {
-                  setSkuCode(text)
-                  setContext(null)
-                  setCellValues({})
-                  if (debounceTimer.current) clearTimeout(debounceTimer.current)
-                  debounceTimer.current = setTimeout(() => setDebouncedSkuSearch(text), 300)
-                }}
-                onSelect={(value: string) => {
-                  void handleSkuPick(value)
-                }}
-                notFoundContent={isSearchingSkus ? 'Searching...' : undefined}
-                style={{ width: '100%' }}
-              >
-                <Input
-                  onPressEnter={() => void handleLookup()}
-                  placeholder="Enter or search SKU code"
-                />
-              </AutoComplete>
-            </Col>
-            <Col xs={24} md={6}>
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                UPC
-              </Typography.Text>
-              <Input
-                value={upc}
-                onChange={(e) => {
-                  setUpc(e.target.value)
-                  setContext(null)
-                  setCellValues({})
-                }}
-                onPressEnter={() => void handleLookup()}
-                placeholder="Scan or enter UPC"
-              />
-            </Col>
-            <Col xs={24} md={4}>
-              <Typography.Text type="secondary" style={{ fontSize: 12, visibility: 'hidden' }}>
-                Load
-              </Typography.Text>
-              <Button
-                type="primary"
-                icon={<SearchOutlined />}
-                loading={contextMutation.isPending}
-                onClick={() => void handleLookup()}
-                block
-              >
-                Load
-              </Button>
-            </Col>
-          </Row>
-
-          <Typography.Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0 }}>
-            Enter one SKU at a time for one store. Use either SKU code or UPC, then save the size-grid quantities for that SKU.
-          </Typography.Paragraph>
-        </Card>
-
-        {context ? (
-          <>
-            <Card title="SKU Summary" size="small">
-              <Descriptions bordered column={{ xs: 1, sm: 2, md: 3 }} size="small">
-                <Descriptions.Item label="Store">{context.storeLabel}</Descriptions.Item>
-                <Descriptions.Item label="SKU">{context.skuCode}</Descriptions.Item>
-                <Descriptions.Item label="Category">{context.categoryNumber ?? '-'}</Descriptions.Item>
-                <Descriptions.Item label="Description">{context.description ?? '-'}</Descriptions.Item>
-                <Descriptions.Item label="Vendor">{context.vendorName ?? context.vendorCode ?? '-'}</Descriptions.Item>
-                <Descriptions.Item label="Vendor SKU">{context.vendorSku ?? '-'}</Descriptions.Item>
-                <Descriptions.Item label="Style / Color">{context.styleColor ?? '-'}</Descriptions.Item>
-                <Descriptions.Item label="Default Cost">{context.defaultUnitCost ?? '-'}</Descriptions.Item>
-                <Descriptions.Item label="Default Retail">{context.defaultRetailPrice ?? '-'}</Descriptions.Item>
-                <Descriptions.Item label="Last Received" span={3}>
-                  {context.lastReceivedAt ? dayjs(context.lastReceivedAt).format('YYYY-MM-DD HH:mm') : 'No receipt history yet'}
-                </Descriptions.Item>
-              </Descriptions>
-            </Card>
-
-            {context.scannedUpcTarget && (
-              <Alert
-                type="info"
-                showIcon
-                message={`UPC resolved to ${context.scannedUpcTarget.columnLabel || '(blank)'} / ${context.scannedUpcTarget.rowLabel || '(blank)'}. Quantity 1 has been prefilled.`}
-              />
-            )}
-
-            <Card title="Receipt Details" size="small">
-              <Row gutter={[16, 16]}>
-                <Col xs={24} md={8}>
-                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    Movement Time
-                  </Typography.Text>
-                  <DatePicker
-                    showTime
-                    style={{ width: '100%' }}
-                    value={movementAt}
-                    onChange={(value) => setMovementAt(value ?? dayjs())}
-                  />
-                </Col>
-                <Col xs={24} md={8}>
-                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    Unit Cost
-                  </Typography.Text>
-                  <InputNumber
-                    min={0}
-                    precision={2}
-                    value={unitCostOverride ?? undefined}
-                    onChange={(value) => setUnitCostOverride(typeof value === 'number' ? value : null)}
-                    style={{ width: '100%' }}
-                  />
-                </Col>
-                <Col xs={24} md={8}>
-                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    Retail Price
-                  </Typography.Text>
-                  <InputNumber
-                    min={0}
-                    precision={2}
-                    value={retailPriceOverride ?? undefined}
-                    onChange={(value) => setRetailPriceOverride(typeof value === 'number' ? value : null)}
-                    style={{ width: '100%' }}
-                  />
-                </Col>
-                <Col xs={24} md={8}>
-                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    Reference Number
-                  </Typography.Text>
-                  <Input
-                    value={referenceNumber}
-                    onChange={(e) => setReferenceNumber(e.target.value)}
-                    placeholder="Optional reference"
-                  />
-                </Col>
-                <Col xs={24} md={8}>
-                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    Case Pack
-                  </Typography.Text>
-                  <Select
-                    allowClear
-                    disabled={context.availableCasePacks.length === 0}
-                    placeholder={
-                      context.availableCasePacks.length === 0 ? 'No case packs available yet' : 'Select case pack'
-                    }
-                    value={casePackId}
-                    onChange={(value) => setCasePackId(value)}
-                    style={{ width: '100%' }}
-                    options={context.availableCasePacks.map((pack) => ({
-                      value: pack.id,
-                      label: `${pack.code} - ${pack.description}`,
-                    }))}
-                  />
-                </Col>
-                <Col xs={24} md={8}>
-                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    Case Pack Multiplier
-                  </Typography.Text>
-                  <InputNumber
-                    min={1}
-                    precision={0}
-                    disabled={!casePackId}
-                    value={casePackMultiplier}
-                    onChange={(value) => setCasePackMultiplier(typeof value === 'number' ? value : 1)}
-                    style={{ width: '100%' }}
-                  />
-                </Col>
-                <Col span={24}>
-                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    Note
-                  </Typography.Text>
-                  <Input.TextArea
-                    rows={2}
-                    value={note}
-                    onChange={(e) => setNote(e.target.value)}
-                    placeholder="Optional operator note"
-                  />
-                </Col>
-                <Col span={24}>
-                  <Checkbox
-                    checked={storeLabelsOnReceive}
-                    onChange={(e) => setStoreLabelsOnReceive(e.target.checked)}
-                  >
-                    Store labels for received items
-                  </Checkbox>
-                </Col>
-              </Row>
-            </Card>
-
-            <Card title="Quantities Received" size="small">
-              {gridRows.length > 0 ? (
-                <Table<GridRow>
-                  dataSource={gridRows}
-                  columns={gridColumns}
-                  rowKey="key"
-                  pagination={false}
-                  size="small"
-                  scroll={{ x: Math.max(720, 140 + grid.columns.length * 130) }}
-                />
-              ) : (
-                <Empty description="No size grid is available for this SKU." />
-              )}
-              <Divider />
-              <Space>
-                <Button
-                  type="primary"
-                  icon={<SaveOutlined />}
-                  loading={createMutation.isPending}
-                  onClick={() => void handleSubmit()}
-                >
-                  Save Receipt
-                </Button>
-                <Button onClick={() => resetReceiptState(true)}>Clear SKU</Button>
               </Space>
-            </Card>
-          </>
-        ) : (
-          <Card>
-            <Empty description="Select a store and load a SKU or UPC to begin entering a manual receipt." />
-          </Card>
-        )}
+            </Space>
+          }
+          footer={
+            <Typography.Text style={{ color: 'rgba(248, 250, 252, 0.82)' }}>
+              One SKU at a time, one store at a time. Save clears the SKU panel but keeps the store in place for the next receipt.
+            </Typography.Text>
+          }
+        />
+
+        <Row gutter={[16, 16]} align="top">
+          <Col xs={24} xl={8}>
+            <div style={{ position: 'sticky', top: 16 }}>
+              <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+                <Card
+                  bordered={false}
+                  style={{ borderRadius: 20, boxShadow: '0 12px 32px rgba(15, 23, 42, 0.06)' }}
+                  title="Lookup"
+                >
+                  <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+                    <div>
+                      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                        Store
+                      </Typography.Text>
+                      <Select
+                        showSearch
+                        optionFilterProp="label"
+                        placeholder="Select store"
+                        value={storeId}
+                        loading={storesLoading}
+                        onChange={(value) => {
+                          setStoreId(value)
+                          setContext(null)
+                          setCellValues({})
+                        }}
+                        style={{ width: '100%', marginTop: 6 }}
+                        options={(stores ?? []).map((store) => ({
+                          value: store.storeId,
+                          label: store.storeLabel,
+                        }))}
+                      />
+                    </div>
+
+                    <div>
+                      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                        SKU
+                        <Button
+                          type="link"
+                          size="small"
+                          icon={<SearchOutlined />}
+                          onClick={() => setSkuLookupOpen(true)}
+                          style={{ padding: 0, marginLeft: 8, height: 'auto', lineHeight: 1 }}
+                        >
+                          Lookup
+                        </Button>
+                      </Typography.Text>
+                      <AutoComplete
+                        value={skuCode}
+                        options={skuSearchOptions}
+                        onSearch={(text) => {
+                          setSkuCode(text)
+                          setContext(null)
+                          setCellValues({})
+                          if (debounceTimer.current) clearTimeout(debounceTimer.current)
+                          debounceTimer.current = setTimeout(() => setDebouncedSkuSearch(text), 300)
+                        }}
+                        onSelect={(value: string) => {
+                          void handleSkuPick(value)
+                        }}
+                        notFoundContent={isSearchingSkus ? 'Searching...' : undefined}
+                        style={{ width: '100%', marginTop: 6 }}
+                      >
+                        <Input onPressEnter={() => void handleLookup()} placeholder="Enter or search SKU code" />
+                      </AutoComplete>
+                    </div>
+
+                    <div>
+                      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                        UPC
+                      </Typography.Text>
+                      <Input
+                        value={upc}
+                        onChange={(e) => {
+                          setUpc(e.target.value)
+                          setContext(null)
+                          setCellValues({})
+                        }}
+                        onPressEnter={() => void handleLookup()}
+                        placeholder="Scan or enter UPC"
+                        style={{ marginTop: 6 }}
+                      />
+                    </div>
+
+                    <Row gutter={12}>
+                      <Col span={12}>
+                        <Button
+                          type="primary"
+                          icon={<SearchOutlined />}
+                          loading={contextMutation.isPending}
+                          onClick={() => void handleLookup()}
+                          block
+                        >
+                          Load
+                        </Button>
+                      </Col>
+                      <Col span={12}>
+                        <Button icon={<ReloadOutlined />} onClick={() => resetReceiptState(false)} block>
+                          Change store
+                        </Button>
+                      </Col>
+                    </Row>
+
+                    <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
+                      Use either a SKU or a UPC. The screen keeps the selected store so repeated receiving is faster.
+                    </Typography.Paragraph>
+                  </Space>
+                </Card>
+
+                {context ? (
+                  <Card
+                    bordered={false}
+                    style={{ borderRadius: 20, boxShadow: '0 12px 32px rgba(15, 23, 42, 0.06)' }}
+                    title="Receipt details"
+                  >
+                    <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+                      <div>
+                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                          Movement time
+                        </Typography.Text>
+                        <DatePicker
+                          showTime
+                          style={{ width: '100%', marginTop: 6 }}
+                          value={movementAt}
+                          onChange={(value) => setMovementAt(value ?? dayjs())}
+                        />
+                      </div>
+
+                      <Row gutter={12}>
+                        <Col span={12}>
+                          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                            Unit cost
+                          </Typography.Text>
+                          <InputNumber
+                            min={0}
+                            precision={2}
+                            value={unitCostOverride ?? undefined}
+                            onChange={(value) => setUnitCostOverride(typeof value === 'number' ? value : null)}
+                            style={{ width: '100%', marginTop: 6 }}
+                          />
+                        </Col>
+                        <Col span={12}>
+                          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                            Retail price
+                          </Typography.Text>
+                          <InputNumber
+                            min={0}
+                            precision={2}
+                            value={retailPriceOverride ?? undefined}
+                            onChange={(value) => setRetailPriceOverride(typeof value === 'number' ? value : null)}
+                            style={{ width: '100%', marginTop: 6 }}
+                          />
+                        </Col>
+                      </Row>
+
+                      <div>
+                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                          Reference number
+                        </Typography.Text>
+                        <Input
+                          value={referenceNumber}
+                          onChange={(e) => setReferenceNumber(e.target.value)}
+                          placeholder="Optional reference"
+                          style={{ marginTop: 6 }}
+                        />
+                      </div>
+
+                      <Row gutter={12}>
+                        <Col span={12}>
+                          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                            Case pack
+                          </Typography.Text>
+                          <Select
+                            allowClear
+                            disabled={context.availableCasePacks.length === 0}
+                            placeholder={context.availableCasePacks.length === 0 ? 'Not wired yet' : 'Select case pack'}
+                            value={casePackId}
+                            onChange={(value) => setCasePackId(value)}
+                            style={{ width: '100%', marginTop: 6 }}
+                            options={context.availableCasePacks.map((pack) => ({
+                              value: pack.id,
+                              label: `${pack.code} - ${pack.description}`,
+                            }))}
+                          />
+                        </Col>
+                        <Col span={12}>
+                          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                            Pack multiplier
+                          </Typography.Text>
+                          <InputNumber
+                            min={1}
+                            precision={0}
+                            disabled={!casePackId}
+                            value={casePackMultiplier}
+                            onChange={(value) => setCasePackMultiplier(typeof value === 'number' ? value : 1)}
+                            style={{ width: '100%', marginTop: 6 }}
+                          />
+                        </Col>
+                      </Row>
+
+                      <div>
+                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                          Note
+                        </Typography.Text>
+                        <Input.TextArea
+                          rows={3}
+                          value={note}
+                          onChange={(e) => setNote(e.target.value)}
+                          placeholder="Optional operator note"
+                          style={{ marginTop: 6 }}
+                        />
+                      </div>
+
+                      <Checkbox
+                        checked={storeLabelsOnReceive}
+                        onChange={(e) => setStoreLabelsOnReceive(e.target.checked)}
+                      >
+                        Queue store labels for received items
+                      </Checkbox>
+                    </Space>
+                  </Card>
+                ) : null}
+              </Space>
+            </div>
+          </Col>
+
+          <Col xs={24} xl={16}>
+            {context ? (
+              <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+                <Card
+                  bordered={false}
+                  style={{ borderRadius: 20, boxShadow: '0 12px 32px rgba(15, 23, 42, 0.06)' }}
+                  title="SKU context"
+                >
+                  <Descriptions bordered column={{ xs: 1, sm: 2, md: 3 }} size="small">
+                    <Descriptions.Item label="Store">{context.storeLabel}</Descriptions.Item>
+                    <Descriptions.Item label="SKU">{context.skuCode}</Descriptions.Item>
+                    <Descriptions.Item label="Category">{context.categoryNumber ?? '-'}</Descriptions.Item>
+                    <Descriptions.Item label="Description">{context.description ?? '-'}</Descriptions.Item>
+                    <Descriptions.Item label="Vendor">{context.vendorName ?? context.vendorCode ?? '-'}</Descriptions.Item>
+                    <Descriptions.Item label="Vendor SKU">{context.vendorSku ?? '-'}</Descriptions.Item>
+                    <Descriptions.Item label="Style / Color">{context.styleColor ?? '-'}</Descriptions.Item>
+                    <Descriptions.Item label="Default cost">{context.defaultUnitCost ?? '-'}</Descriptions.Item>
+                    <Descriptions.Item label="Default retail">{context.defaultRetailPrice ?? '-'}</Descriptions.Item>
+                    <Descriptions.Item label="Last received" span={3}>
+                      {context.lastReceivedAt ? dayjs(context.lastReceivedAt).format('YYYY-MM-DD HH:mm') : 'No receipt history yet'}
+                    </Descriptions.Item>
+                  </Descriptions>
+                </Card>
+
+                {context.scannedUpcTarget ? (
+                  <Alert
+                    type="info"
+                    showIcon
+                    message={`UPC resolved to ${context.scannedUpcTarget.columnLabel || '(blank)'} / ${context.scannedUpcTarget.rowLabel || '(blank)'}. Quantity 1 has been prefilled.`}
+                  />
+                ) : null}
+
+                <Card
+                  bordered={false}
+                  style={{ borderRadius: 20, boxShadow: '0 12px 32px rgba(15, 23, 42, 0.06)' }}
+                  title="Receive quantities"
+                  extra={
+                    <Space size="large">
+                      <div>
+                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                          Affected cells
+                        </Typography.Text>
+                        <div style={{ fontWeight: 700, fontSize: 18 }}>{affectedCells}</div>
+                      </div>
+                      <div>
+                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                          Units to receive
+                        </Typography.Text>
+                        <div style={{ fontWeight: 700, fontSize: 18, color: '#0f766e' }}>{totalUnits}</div>
+                      </div>
+                    </Space>
+                  }
+                >
+                  <StockMaintenanceCellMatrix
+                    mode="receipt"
+                    columns={grid.columns}
+                    rows={grid.rows}
+                    values={cellValues}
+                    onHandByCell={onHand}
+                    onChange={updateCell}
+                  />
+                </Card>
+
+                <Card
+                  bordered={false}
+                  style={{
+                    position: 'sticky',
+                    bottom: 16,
+                    borderRadius: 20,
+                    background: 'linear-gradient(180deg, #ffffff 0%, #f8fafc 100%)',
+                    boxShadow: '0 18px 44px rgba(15, 23, 42, 0.1)',
+                  }}
+                >
+                  <Row align="middle" justify="space-between" gutter={[16, 16]}>
+                    <Col flex="auto">
+                      <Space size={24} wrap>
+                        <div>
+                          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                            Current on hand
+                          </Typography.Text>
+                          <div style={{ fontSize: 22, fontWeight: 700 }}>{currentUnits}</div>
+                        </div>
+                        <div>
+                          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                            Projected on hand
+                          </Typography.Text>
+                          <div style={{ fontSize: 22, fontWeight: 700, color: '#0f766e' }}>{projectedUnits}</div>
+                        </div>
+                        <div>
+                          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                            Unit cost applied
+                          </Typography.Text>
+                          <div style={{ fontSize: 18, fontWeight: 700 }}>{unitCostOverride ?? '-'}</div>
+                        </div>
+                      </Space>
+                    </Col>
+                    <Col>
+                      <Space wrap>
+                        <Button onClick={() => resetReceiptState(true)}>Clear SKU</Button>
+                        <Button icon={<ReloadOutlined />} onClick={() => resetReceiptState(false)}>
+                          Change store
+                        </Button>
+                        <Button
+                          type="primary"
+                          icon={<SaveOutlined />}
+                          loading={createMutation.isPending}
+                          onClick={() => void handleSubmit()}
+                        >
+                          Save receipt
+                        </Button>
+                      </Space>
+                    </Col>
+                  </Row>
+                </Card>
+              </Space>
+            ) : (
+              <Card
+                bordered={false}
+                style={{ borderRadius: 20, boxShadow: '0 12px 32px rgba(15, 23, 42, 0.06)' }}
+              >
+                <Empty description="Select a store and load a SKU or UPC to begin entering a manual receipt." />
+              </Card>
+            )}
+          </Col>
+        </Row>
 
         <SkuLookup
           open={skuLookupOpen}

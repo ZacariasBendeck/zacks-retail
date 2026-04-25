@@ -20,6 +20,7 @@ const TransferSummaryReportPage = lazy(() => import('./pages/inventory/TransferS
 const RecommendedTransferReportPage = lazy(() => import('./pages/inventory/RecommendedTransferReportPage'))
 const AutoTransferPreviewPage = lazy(() => import('./pages/inventory/AutoTransferPreviewPage'))
 const BalancingTransferPreviewPage = lazy(() => import('./pages/inventory/BalancingTransferPreviewPage'))
+const BalancingTransferPreviewPageV2 = lazy(() => import('./pages/inventory/BalancingTransferPreviewPageV2'))
 const ManualTransferEntryPage = lazy(() => import('./pages/inventory/ManualTransferEntryPage'))
 const InventoryDetailReportPage = lazy(() => import('./pages/inventory/InventoryDetailReportPage'))
 const ChangeDetailPage = lazy(() => import('./pages/inventory/ChangeDetailPage'))
@@ -30,6 +31,8 @@ const AdjustmentFormPage = lazy(() => import('./pages/inventory/AdjustmentFormPa
 const AdjustmentDetailPage = lazy(() => import('./pages/inventory/AdjustmentDetailPage'))
 const ManualReceiptFormPage = lazy(() => import('./pages/inventory/ManualReceiptFormPage'))
 const ManualReceiptDetailPage = lazy(() => import('./pages/inventory/ManualReceiptDetailPage'))
+const ManualReturnFormPage = lazy(() => import('./pages/inventory/ManualReturnFormPage'))
+const ManualReturnDetailPage = lazy(() => import('./pages/inventory/ManualReturnDetailPage'))
 const OnHandReportPage = lazy(() => import('./pages/inventory/OnHandReportPage'))
 const SalesReportPage = lazy(() => import('./pages/inventory/SalesReportPage'))
 const InventoryTurnoverReportPage = lazy(() => import('./pages/inventory/InventoryTurnoverReportPage'))
@@ -65,6 +68,13 @@ const RunViewPage = lazy(() => import('./pages/reports/runs/RunViewPage'))
 const ReportViewerPage = lazy(() => import('./pages/reports/ReportViewerPage'))
 const CustomerListPage = lazy(() => import('./pages/customers/CustomerListPage'))
 const CustomerFormPage = lazy(() => import('./pages/customers/CustomerFormPage'))
+const CustomerKpiDashboardPage = lazy(() => import('./pages/customers/CustomerKpiDashboardPage'))
+const CustomerKpiListPage = lazy(() => import('./pages/customers/CustomerKpiListPage'))
+const CustomerKpiDetailPage = lazy(() => import('./pages/customers/CustomerKpiDetailPage'))
+const CustomerSegmentsPage = lazy(() => import('./pages/customers/CustomerSegmentsPage'))
+const CustomerChurnRiskPage = lazy(() => import('./pages/customers/CustomerChurnRiskPage'))
+const CustomerVipPage = lazy(() => import('./pages/customers/CustomerVipPage'))
+const CustomerDiscountSensitivePage = lazy(() => import('./pages/customers/CustomerDiscountSensitivePage'))
 const LoginPage = lazy(() => import('./pages/auth/LoginPage'))
 const MePage = lazy(() => import('./pages/auth/MePage'))
 const ChangePasswordPage = lazy(() => import('./pages/auth/ChangePasswordPage'))
@@ -180,6 +190,8 @@ export default function App() {
             <Route path="/inventory/adjustments/:adjustmentId" element={<AdjustmentDetailPage />} />
             <Route path="/inventory/manual-receipts/new" element={<ManualReceiptFormPage />} />
             <Route path="/inventory/manual-receipts/:receiptId" element={<ManualReceiptDetailPage />} />
+            <Route path="/inventory/manual-returns/new" element={<ManualReturnFormPage />} />
+            <Route path="/inventory/manual-returns/:returnId" element={<ManualReturnDetailPage />} />
             <Route path="/inventory/sales-ledger" element={<SalesLedgerPage />} />
             <Route path="/inventory/movements" element={<InventoryMovementPage />} />
             <Route path="/inventory/inquiry" element={<LegacyInquiryRedirect />} />
@@ -189,8 +201,11 @@ export default function App() {
             <Route path="/inventory/find-by-size" element={<FindBySizePage />} />
             <Route path="/inventory/replenishment" element={<ReplenishmentTargetsPage />} />
             <Route path="/inventory/transfers/manual" element={<ManualTransferEntryPage />} />
-            <Route path="/inventory/transfers/auto-preview" element={<AutoTransferPreviewPage />} />
-            <Route path="/inventory/transfers/balancing-preview" element={<BalancingTransferPreviewPage />} />
+            <Route path="/inventory/transfers/automatic" element={<AutoTransferPreviewPage />} />
+            <Route path="/inventory/transfers/auto-preview" element={<Navigate to="/inventory/transfers/automatic" replace />} />
+            <Route path="/inventory/transfers/balancing" element={<BalancingTransferPreviewPage />} />
+            <Route path="/inventory/transfers/balancing-v2" element={<BalancingTransferPreviewPageV2 />} />
+            <Route path="/inventory/transfers/balancing-preview" element={<Navigate to="/inventory/transfers/balancing" replace />} />
             <Route path="/reports/transfer-summary" element={<TransferSummaryReportPage />} />
             <Route path="/reports/recommended-transfers" element={<RecommendedTransferReportPage />} />
             <Route path="/reports/inventory-detail" element={<InventoryDetailReportPage />} />
@@ -235,8 +250,15 @@ export default function App() {
             <Route path="/reports/aging" element={<InventoryAgingReportPage />} />
             <Route path="/reports/sell-through" element={<SellThroughReportPage />} />
             <Route path="/customers" element={<CustomerListPage />} />
+            <Route path="/customers/dashboard" element={<CustomerKpiDashboardPage />} />
+            <Route path="/customers/intelligence" element={<CustomerKpiListPage />} />
+            <Route path="/customers/segments" element={<CustomerSegmentsPage />} />
+            <Route path="/customers/churn-risk" element={<CustomerChurnRiskPage />} />
+            <Route path="/customers/vip" element={<CustomerVipPage />} />
+            <Route path="/customers/discount-sensitive" element={<CustomerDiscountSensitivePage />} />
             <Route path="/customers/new" element={<CustomerFormPage />} />
             <Route path="/customers/:customerId/edit" element={<CustomerFormPage />} />
+            <Route path="/customers/:customerId" element={<CustomerKpiDetailPage />} />
 
             {/* products module — Phase 1 Step 2 taxonomy pages */}
             <Route path="/products" element={<Navigate to="/products/taxonomy" replace />} />

@@ -8,10 +8,26 @@ import {
   normalizeEmail,
 } from '../../../src/services/customers/customerImportCsv';
 
+const TEST_SOURCE = 'rics_csv_test';
+
 async function cleanupCustomerImportTables(): Promise<void> {
-  await prisma.customerImportReject.deleteMany({});
-  await prisma.customerIntelligenceCustomer.deleteMany({});
-  await prisma.customerImportBatch.deleteMany({});
+  await prisma.customerImportReject.deleteMany({
+    where: {
+      batch: {
+        source: TEST_SOURCE,
+      },
+    },
+  });
+  await prisma.customerIntelligenceCustomer.deleteMany({
+    where: {
+      source: TEST_SOURCE,
+    },
+  });
+  await prisma.customerImportBatch.deleteMany({
+    where: {
+      source: TEST_SOURCE,
+    },
+  });
 }
 
 beforeEach(async () => {
@@ -49,7 +65,7 @@ describe('importCustomerCsv', () => {
       ].join('\n'),
       customerFileName: 'Customer.csv',
       mailListNamesFileName: 'MailListNames.csv',
-      source: 'rics_csv_test',
+      source: TEST_SOURCE,
     });
 
     expect(summary.totalRows).toBe(1);
@@ -59,7 +75,7 @@ describe('importCustomerCsv', () => {
     expect(summary.rejectedCount).toBe(0);
 
     const customer = await prisma.customerIntelligenceCustomer.findFirstOrThrow({
-      where: { source: 'rics_csv_test' },
+      where: { source: TEST_SOURCE },
       include: {
         identities: true,
         contacts: true,
@@ -103,7 +119,7 @@ describe('importCustomerCsv', () => {
         'Account,Name,Addr1,Addr2,City,State,Zip,CreditLimit,CurrBal,CredSlip,Status,DateAdded,DateLstPurch,PlanNum,PlanCount,PlanDollars,PlanLastCred,PlanCredBal,NonTaxable,EMail,Extra_01,Extra_02,Extra_03,Extra_04,Extra_05,Extra_06,QtySales_01,QtySales_02,QtySales_03,QtySales_04,DollarSales_01,DollarSales_02,DollarSales_03,DollarSales_04,County,Comment,ChangeTo,DateLastChanged',
         'ACC-001,"Martinez, Ana",Old Address,,San Pedro Sula,CR,21101,,,,ACTIVE,04/01/2026,,,,,,,,shared@example.com,,,,,,,,,,,,,,,Cortes,, ,04/18/2026',
       ].join('\n'),
-      source: 'rics_csv_test',
+      source: TEST_SOURCE,
     });
 
     expect(first.createdCount).toBe(1);
@@ -115,7 +131,7 @@ describe('importCustomerCsv', () => {
         'Account,Name,Addr1,Addr2,City,State,Zip,CreditLimit,CurrBal,CredSlip,Status,DateAdded,DateLstPurch,PlanNum,PlanCount,PlanDollars,PlanLastCred,PlanCredBal,NonTaxable,EMail,Extra_01,Extra_02,Extra_03,Extra_04,Extra_05,Extra_06,QtySales_01,QtySales_02,QtySales_03,QtySales_04,DollarSales_01,DollarSales_02,DollarSales_03,DollarSales_04,County,Comment,ChangeTo,DateLastChanged',
         ',"Martinez, Ana",New Address,,San Pedro Sula,CR,21101,,,,ACTIVE,04/01/2026,,,,,,,,shared@example.com,,,,,,,,,,,,,,,Cortes,, ,04/20/2026',
       ].join('\n'),
-      source: 'rics_csv_test',
+      source: TEST_SOURCE,
     });
 
     expect(second.createdCount).toBe(0);
@@ -123,7 +139,7 @@ describe('importCustomerCsv', () => {
     expect(second.rejectedCount).toBe(0);
 
     const customers = await prisma.customerIntelligenceCustomer.findMany({
-      where: { source: 'rics_csv_test' },
+      where: { source: TEST_SOURCE },
       include: { addresses: true },
     });
     expect(customers).toHaveLength(1);
@@ -138,13 +154,19 @@ describe('importCustomerCsv', () => {
       ].join('\n'),
       mailListNamesCsvText:
         'Account,Name,Addr1,Addr2,City,State,Zip,CreditLimit,CurrBal,CredSlip,Status,DateAdded,DateLstPurch,PlanNum,PlanCount,PlanDollars,PlanLastCred,PlanCredBal,NonTaxable,EMail,Extra_01,Extra_02,Extra_03,Extra_04,Extra_05,Extra_06,QtySales_01,QtySales_02,QtySales_03,QtySales_04,DollarSales_01,DollarSales_02,DollarSales_03,DollarSales_04,County,Comment,ChangeTo,DateLastChanged',
-      source: 'rics_csv_test',
+      source: TEST_SOURCE,
     });
 
     expect(summary.createdCount).toBe(0);
     expect(summary.rejectedCount).toBe(1);
 
-    const reject = await prisma.customerImportReject.findFirstOrThrow();
+    const reject = await prisma.customerImportReject.findFirstOrThrow({
+      where: {
+        batch: {
+          source: TEST_SOURCE,
+        },
+      },
+    });
     expect(reject.rejectReason).toBe('missing_identifier');
     expect(reject.name).toBe('Name Only');
   });
@@ -159,7 +181,7 @@ describe('importCustomerCsv', () => {
         'Account,Name,Addr1,Addr2,City,State,Zip,CreditLimit,CurrBal,CredSlip,Status,DateAdded,DateLstPurch,PlanNum,PlanCount,PlanDollars,PlanLastCred,PlanCredBal,NonTaxable,EMail,Extra_01,Extra_02,Extra_03,Extra_04,Extra_05,Extra_06,QtySales_01,QtySales_02,QtySales_03,QtySales_04,DollarSales_01,DollarSales_02,DollarSales_03,DollarSales_04,County,Comment,ChangeTo,DateLastChanged',
         '0801-1990-12345,"Rivera, Lucia",Addr,,City,FM,11101,,,,ACTIVE,04/01/2026,,,,,,,,shared@example.com,,,,,,,,,,,,,,,County,, ,04/18/2026',
       ].join('\n'),
-      source: 'rics_csv_test',
+      source: TEST_SOURCE,
     });
 
     const summary = await importCustomerCsv({
@@ -171,13 +193,18 @@ describe('importCustomerCsv', () => {
         'Account,Name,Addr1,Addr2,City,State,Zip,CreditLimit,CurrBal,CredSlip,Status,DateAdded,DateLstPurch,PlanNum,PlanCount,PlanDollars,PlanLastCred,PlanCredBal,NonTaxable,EMail,Extra_01,Extra_02,Extra_03,Extra_04,Extra_05,Extra_06,QtySales_01,QtySales_02,QtySales_03,QtySales_04,DollarSales_01,DollarSales_02,DollarSales_03,DollarSales_04,County,Comment,ChangeTo,DateLastChanged',
         '0801-1990-99999,"Rivera, Lucia",Addr,,City,FM,11101,,,,ACTIVE,04/01/2026,,,,,,,,shared@example.com,,,,,,,,,,,,,,,County,, ,04/18/2026',
       ].join('\n'),
-      source: 'rics_csv_test',
+      source: TEST_SOURCE,
     });
 
     expect(summary.createdCount).toBe(0);
     expect(summary.rejectedCount).toBe(1);
 
     const rejects = await prisma.customerImportReject.findMany({
+      where: {
+        batch: {
+          source: TEST_SOURCE,
+        },
+      },
       orderBy: { createdAt: 'asc' },
     });
     expect(rejects.at(-1)?.rejectReason).toBe('conflicting_honduran_id');

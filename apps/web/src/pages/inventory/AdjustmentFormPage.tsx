@@ -54,11 +54,16 @@ export default function AdjustmentFormPage() {
   const [form] = Form.useForm()
   const createMutation = useCreateAdjustment()
 
-  const initialType = useMemo(() => {
+  const requestedType = useMemo(() => {
     const type = searchParams.get('type')
-    if (!type) return undefined
-    return QUICK_START_TYPES.includes(type as AdjustmentType) ? (type as AdjustmentType) : undefined
+    return type ? (type as AdjustmentType) : undefined
   }, [searchParams])
+
+  const initialType = useMemo(() => {
+    if (!requestedType) return undefined
+    if (requestedType === 'RECEIPT' || requestedType === 'RETURN') return requestedType
+    return QUICK_START_TYPES.includes(requestedType) ? requestedType : undefined
+  }, [requestedType])
 
   const [adjustmentType, setAdjustmentType] = useState<AdjustmentType | undefined>(initialType)
   const [lineItems, setLineItems] = useState<LineItemRow[]>([
@@ -70,8 +75,11 @@ export default function AdjustmentFormPage() {
   const { data: skuData } = useSkus({ page: 1, pageSize: 50, q: skuSearch || undefined, active: true })
   const validSkus = useMemo(() => (skuData?.data ?? []).filter(isGuardrailSku), [skuData?.data])
 
-  if (initialType === 'RECEIPT') {
+  if (requestedType === 'RECEIPT') {
     return <Navigate to="/inventory/manual-receipts/new" replace />
+  }
+  if (requestedType === 'RETURN') {
+    return <Navigate to="/inventory/manual-returns/new" replace />
   }
 
   useEffect(() => {

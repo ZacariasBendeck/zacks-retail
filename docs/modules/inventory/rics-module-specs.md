@@ -10,6 +10,10 @@ Current implementation note: the visible Manual Receipt tab/form under `/invento
 
 Canonical CSV-driven promotion map for Stock Maintenance migration: [docs/dev/specs/2026-04-24-inventory-stock-maintenance-migration-map.md](../../dev/specs/2026-04-24-inventory-stock-maintenance-migration-map.md).
 
+Canonical balancing-transfer workflow and decision policy: [docs/dev/specs/2026-04-25-inventory-balancing-transfer-strategy-design.md](../../dev/specs/2026-04-25-inventory-balancing-transfer-strategy-design.md).
+
+Canonical additive rollout plan for keeping legacy balancing transfers while introducing v2: [docs/dev/specs/2026-04-25-transfer-run-service-v2-refactor-plan.md](../../dev/specs/2026-04-25-transfer-run-service-v2-refactor-plan.md).
+
 ## RICS features covered
 
 **Manual on-hand adjustments** (Ch. 4)

@@ -1,10 +1,11 @@
 /**
- * Legacy vendor service — now a read-only projection over `rics_mirror.vendor_master`.
+ * Legacy vendor service — now a read-only projection over the app-owned vendor
+ * baseline (`app.vendor`) plus `app.vendor_overlay`.
  *
  * Historical: this service used to CRUD the SQLite `vendors` table in
  * `inventory.db`. The SQLite vendor table held only synthetic test rows (5) and
- * the real vendor catalog lives in RICS (2,200+ rows) mirrored into
- * `rics_mirror.vendor_master` by `sync:rics`.
+ * the real vendor catalog now lives in the imported app-owned baseline
+ * `app.vendor` (rebuilt from RICS by `sync:rics-reference-baselines`).
  *
  * Writes now go through the RICS-backed products module at
  * `/api/v1/products/vendors/*` (see [services/products/vendorService.ts]). This
@@ -15,7 +16,7 @@
  * (`apps/web/src/services/skuApi.ts#fetchVendors`, a dropdown feed for the
  * legacy SKU list) continues working against the real RICS vendor catalog.
  *
- * Shape adapter — RICS columns → legacy `Vendor`:
+ * Shape adapter — app vendor baseline columns → legacy `Vendor`:
  *   code              → id            (string; was UUID, now RICS code)
  *   short_name        → name          (falls back to mail_name, then code)
  *   e_mail            → contactEmail
@@ -30,7 +31,7 @@ import { prisma } from '../db/prisma';
 import { Vendor } from '../models/vendor';
 import { PaginationEnvelope } from '../models/sku';
 
-interface RicsVendorRow {
+interface VendorProjectionRow {
   code: string;
   short_name: string | null;
   mail_name: string | null;
@@ -39,7 +40,7 @@ interface RicsVendorRow {
   date_last_changed: Date | null;
 }
 
-function rowToLegacyVendor(row: RicsVendorRow): Vendor {
+function rowToLegacyVendor(row: VendorProjectionRow): Vendor {
   const iso = row.date_last_changed
     ? new Date(row.date_last_changed).toISOString()
     : new Date(0).toISOString();
@@ -62,7 +63,7 @@ export class VendorWriteNotSupportedError extends Error {
   constructor() {
     super(
       'Legacy /api/v1/vendors is now a read-only projection over ' +
-        'rics_mirror.vendor_master. Writes are not supported here — use ' +
+        'app.vendor/app.vendor_overlay. Writes are not supported here — use ' +
         '/api/v1/products/vendors/* which goes through the RICS write path with ' +
         'EDI validation and SKU-reference guards.',
     );
@@ -82,13 +83,34 @@ export function deleteVendor(_id: string): never {
   throw new VendorWriteNotSupportedError();
 }
 
+function buildVendorEffectiveCte(): string {
+  return `
+    WITH vendor_effective AS (
+      SELECT
+        COALESCE(o.code, v.code) AS code,
+        COALESCE(o.short_name, v.short_name) AS short_name,
+        COALESCE(o.mail_name, v.mail_name) AS mail_name,
+        COALESCE(o.e_mail, v.e_mail) AS e_mail,
+        COALESCE(o.phone, v.phone) AS phone,
+        COALESCE(o.updated_at, v.date_last_changed) AS date_last_changed
+      FROM app.vendor v
+      FULL OUTER JOIN app.vendor_overlay o ON o.code = v.code
+      WHERE (o.source IS NULL OR o.source <> 'tombstone')
+        AND (v.code IS NOT NULL OR o.code IS NOT NULL)
+    )
+  `;
+}
+
 export async function getVendorById(code: string): Promise<Vendor | null> {
-  const rows = await prisma.$queryRawUnsafe<RicsVendorRow[]>(
-    `SELECT code, short_name, mail_name, e_mail, phone, date_last_changed
-     FROM rics_mirror.vendor_master
-     WHERE code = $1
-     LIMIT 1`,
-    code,
+  const rows = await prisma.$queryRawUnsafe<VendorProjectionRow[]>(
+    `
+      ${buildVendorEffectiveCte()}
+      SELECT code, short_name, mail_name, e_mail, phone, date_last_changed
+      FROM vendor_effective
+      WHERE UPPER(code) = $1
+      LIMIT 1
+    `,
+    code.trim().toUpperCase(),
   );
   if (rows.length === 0) return null;
   return rowToLegacyVendor(rows[0]);
@@ -128,7 +150,12 @@ export async function listVendors(params: {
   const offset = (params.page - 1) * params.pageSize;
 
   const countRows = await prisma.$queryRawUnsafe<{ total: bigint }[]>(
-    `SELECT COUNT(*)::bigint AS total FROM rics_mirror.vendor_master ${whereClause}`,
+    `
+      ${buildVendorEffectiveCte()}
+      SELECT COUNT(*)::bigint AS total
+      FROM vendor_effective
+      ${whereClause}
+    `,
     ...values,
   );
   const totalItems = Number(countRows[0]?.total ?? 0n);
@@ -136,12 +163,15 @@ export async function listVendors(params: {
 
   const limitIdx = values.length + 1;
   const offsetIdx = values.length + 2;
-  const rows = await prisma.$queryRawUnsafe<RicsVendorRow[]>(
-    `SELECT code, short_name, mail_name, e_mail, phone, date_last_changed
-     FROM rics_mirror.vendor_master
-     ${whereClause}
-     ORDER BY ${sortCol} ${sortDir} NULLS LAST, code ASC
-     LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
+  const rows = await prisma.$queryRawUnsafe<VendorProjectionRow[]>(
+    `
+      ${buildVendorEffectiveCte()}
+      SELECT code, short_name, mail_name, e_mail, phone, date_last_changed
+      FROM vendor_effective
+      ${whereClause}
+      ORDER BY ${sortCol} ${sortDir} NULLS LAST, code ASC
+      LIMIT $${limitIdx} OFFSET $${offsetIdx}
+    `,
     ...values,
     params.pageSize,
     offset,

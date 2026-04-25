@@ -1,11 +1,15 @@
 import { Router, Request, Response, IRouter } from 'express';
 import { Prisma } from '../prismaClient';
 import * as customerService from '../services/customerService';
+import * as customerKpiService from '../services/customer-kpi/computeFullMetrics';
+import { listCustomerMetricFilterOptions } from '../services/customer-kpi/listCustomerMetricFilterOptions';
+import { listCustomerMetrics, type CustomerKpiListParams } from '../services/customer-kpi/listCustomerMetrics';
 import {
   createCustomerSchema,
   updateCustomerSchema,
   customerListQuerySchema,
   customerSearchQuerySchema,
+  customerMetricsBulkRecomputeSchema,
   createFamilyMemberSchema,
   updateFamilyMemberSchema,
   validate,
@@ -81,6 +85,48 @@ router.get('/', validateQuery(customerListQuerySchema), async (req: Request, res
   res.json(result);
 });
 
+router.get('/metrics/summary', async (_req: Request, res: Response): Promise<void> => {
+  const summary = await customerKpiService.getCustomerMetricsSummary();
+  res.json(summary);
+});
+
+router.get('/metrics/options', async (_req: Request, res: Response): Promise<void> => {
+  const options = await listCustomerMetricFilterOptions();
+  res.json(options);
+});
+
+router.get('/metrics/list', async (req: Request, res: Response): Promise<void> => {
+  const q = req.query as Record<string, string | undefined>;
+  const params: CustomerKpiListParams = {
+    page: q.page ? Number(q.page) : undefined,
+    pageSize: q.pageSize ? Number(q.pageSize) : undefined,
+    q: q.q,
+    churnRisk: q.churnRisk as CustomerKpiListParams['churnRisk'],
+    segment: q.segment as CustomerKpiListParams['segment'],
+    channel: q.channel as CustomerKpiListParams['channel'],
+    minLtv: q.minLtv ? Number(q.minLtv) : undefined,
+    maxLtv: q.maxLtv ? Number(q.maxLtv) : undefined,
+    minRecency: q.minRecency ? Number(q.minRecency) : undefined,
+    maxRecency: q.maxRecency ? Number(q.maxRecency) : undefined,
+    minDiscountRatio: q.minDiscountRatio ? Number(q.minDiscountRatio) : undefined,
+    primaryStoreId: q.primaryStoreId,
+    primaryStoreCity: q.primaryStoreCity,
+    primaryStoreChain: q.primaryStoreChain as CustomerKpiListParams['primaryStoreChain'],
+    active: q.active != null ? q.active === 'true' : undefined,
+    dormant: q.dormant != null ? q.dormant === 'true' : undefined,
+    sort: q.sort as CustomerKpiListParams['sort'],
+    order: q.order as CustomerKpiListParams['order'],
+  };
+  const result = await listCustomerMetrics(params);
+  res.json(result);
+});
+
+router.post('/recompute-metrics', validate(customerMetricsBulkRecomputeSchema), async (req: Request, res: Response): Promise<void> => {
+  const body = req.body as { batch_size: number };
+  const result = await customerKpiService.recomputeAllCustomerMetrics({ batchSize: body.batch_size });
+  res.status(202).json(result);
+});
+
 /**
  * @openapi
  * /api/v1/customers/by-account/{accountNumber}:
@@ -95,6 +141,26 @@ router.get('/by-account/:accountNumber', async (req: Request, res: Response): Pr
     return;
   }
   res.json(customer);
+});
+
+router.get('/:customerId/metrics', async (req: Request, res: Response): Promise<void> => {
+  const metrics = await customerKpiService.getCustomerMetrics(req.params.customerId as string);
+  if (!metrics) {
+    res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Customer not found.' } });
+    return;
+  }
+  res.json(metrics);
+});
+
+router.post('/:customerId/recompute-metrics', async (req: Request, res: Response): Promise<void> => {
+  const customerId = await customerKpiService.resolveCustomerMetricsCustomerId(req.params.customerId as string);
+  if (!customerId) {
+    res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Customer not found.' } });
+    return;
+  }
+
+  const metrics = await customerKpiService.computeFullMetrics(customerId);
+  res.json(metrics);
 });
 
 /**

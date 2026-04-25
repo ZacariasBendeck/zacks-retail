@@ -32,6 +32,13 @@ export const PERMISSIONS = {
   REPORTS_ADMIN:          'reports.admin',
   REPORTS_VIEW:           'reports.view',
 
+  // segmentation
+  SEGMENTATION_ACTIVATE:  'segmentation.activate',
+  SEGMENTATION_ADMIN:     'segmentation.admin',
+  SEGMENTATION_EVALUATE:  'segmentation.evaluate',
+  SEGMENTATION_READ:      'segmentation.read',
+  SEGMENTATION_WRITE:     'segmentation.write',
+
   // sales-pos
   SALES_POS_OPERATE:      'sales_pos.operate',
   SALES_REFUND:           'sales_pos.refund',
