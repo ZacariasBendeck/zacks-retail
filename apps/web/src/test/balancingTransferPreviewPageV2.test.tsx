@@ -119,6 +119,7 @@ describe('BalancingTransferPreviewPageV2', () => {
         skuCodes: [],
         categoryMin: null,
         categoryMax: null,
+        limit: 500,
         includeOriginalRetailOnly: false,
         includeMarkdownOnly: false,
         includePerksOnly: false,

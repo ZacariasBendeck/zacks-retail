@@ -53,6 +53,22 @@ export interface LegacyReferenceBackfillResult {
 export interface LegacyReferenceBackfillOptions {
   pgClient: Client;
   runId: string;
+  sourceTables?: Partial<LegacyReferenceSourceTables>;
+}
+
+export interface LegacyReferenceSourceTables {
+  vendorMaster: string;
+  vendorAccounts: string;
+  storeMaster: string;
+  upcCrossReference: string;
+  casePacks: string;
+  casePackQtys: string;
+  futurePriceChanges: string;
+  purchaseMaster: string;
+  purchaseDetail: string;
+  asnCartonHead: string;
+  asnCartonDet: string;
+  inventoryTransfers: string;
 }
 
 interface CountRow {
@@ -61,6 +77,31 @@ interface CountRow {
 
 interface MissingSkuRow {
   skuCode: string;
+}
+
+const DEFAULT_SOURCE_TABLES: LegacyReferenceSourceTables = {
+  vendorMaster: 'rics_mirror.vendor_master',
+  vendorAccounts: 'rics_mirror.vendor_accounts',
+  storeMaster: 'rics_mirror.store_master',
+  upcCrossReference: 'rics_mirror.upc_cross_reference',
+  casePacks: 'rics_mirror.case_packs',
+  casePackQtys: 'rics_mirror.case_pack_qtys',
+  futurePriceChanges: 'rics_mirror.future_price_changes',
+  purchaseMaster: 'rics_mirror.purchase_master',
+  purchaseDetail: 'rics_mirror.purchase_detail',
+  asnCartonHead: 'rics_mirror.asn_carton_head',
+  asnCartonDet: 'rics_mirror.asn_carton_det',
+  inventoryTransfers: 'rics_mirror.inv_transfers',
+};
+
+function quoteQualifiedRef(ref: string): string {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$/.test(ref)) {
+    throw new Error(`Invalid table reference: ${ref}`);
+  }
+  return ref
+    .split('.')
+    .map((part) => `"${part}"`)
+    .join('.');
 }
 
 function loadScalarCount(c: Client, sql: string): Promise<number> {
@@ -114,19 +155,24 @@ async function loadMissingSkuCodes(c: Client, sql: string): Promise<string[]> {
   return result.rows.map((row) => row.skuCode);
 }
 
-async function rebuildVendors(c: Client): Promise<VendorReferenceBackfillSummary> {
+async function rebuildVendors(
+  c: Client,
+  sourceTables: LegacyReferenceSourceTables,
+): Promise<VendorReferenceBackfillSummary> {
+  const vendorMasterRef = quoteQualifiedRef(sourceTables.vendorMaster);
+  const vendorAccountsRef = quoteQualifiedRef(sourceTables.vendorAccounts);
   const vendorRowsRead = await loadScalarCount(
     c,
     `
       SELECT count(*)::text AS count
-      FROM rics_mirror.vendor_master
+      FROM ${vendorMasterRef}
     `,
   );
   const accountRowsRead = await loadScalarCount(
     c,
     `
       SELECT count(*)::text AS count
-      FROM rics_mirror.vendor_accounts
+      FROM ${vendorAccountsRef}
     `,
   );
 
@@ -179,7 +225,7 @@ async function rebuildVendors(c: Client): Promise<VendorReferenceBackfillSummary
         NULLIF(long_comment, '') AS long_comment,
         NULLIF(btrim(e_mail), '') AS e_mail,
         date_last_changed
-      FROM rics_mirror.vendor_master
+      FROM ${vendorMasterRef}
       WHERE code IS NOT NULL
         AND btrim(code) <> ''
     `,
@@ -189,7 +235,7 @@ async function rebuildVendors(c: Client): Promise<VendorReferenceBackfillSummary
     c,
     `
       SELECT count(*)::text AS count
-      FROM rics_mirror.vendor_accounts a
+      FROM ${vendorAccountsRef} a
       LEFT JOIN app.vendor v ON v.code = btrim(a.code)
       WHERE a.code IS NOT NULL
         AND btrim(a.code) <> ''
@@ -210,7 +256,7 @@ async function rebuildVendors(c: Client): Promise<VendorReferenceBackfillSummary
         a.store::smallint AS store_id,
         COALESCE(btrim(a.account), '') AS account,
         a.date_last_changed
-      FROM rics_mirror.vendor_accounts a
+      FROM ${vendorAccountsRef} a
       INNER JOIN app.vendor v ON v.code = btrim(a.code)
       WHERE a.code IS NOT NULL
         AND btrim(a.code) <> ''
@@ -227,12 +273,16 @@ async function rebuildVendors(c: Client): Promise<VendorReferenceBackfillSummary
   };
 }
 
-async function rebuildStores(c: Client): Promise<LegacyReferenceBackfillSummary> {
+async function rebuildStores(
+  c: Client,
+  sourceTables: LegacyReferenceSourceTables,
+): Promise<LegacyReferenceBackfillSummary> {
+  const storeMasterRef = quoteQualifiedRef(sourceTables.storeMaster);
   const mirrorRowsRead = await loadScalarCount(
     c,
     `
       SELECT count(*)::text AS count
-      FROM rics_mirror.store_master
+      FROM ${storeMasterRef}
     `,
   );
 
@@ -285,7 +335,7 @@ async function rebuildStores(c: Client): Promise<LegacyReferenceBackfillSummary>
         region::smallint,
         date_last_changed,
         to_jsonb(store_master.*) AS raw_json
-      FROM rics_mirror.store_master
+      FROM ${storeMasterRef} store_master
       WHERE number IS NOT NULL
     `,
   );
@@ -296,12 +346,16 @@ async function rebuildStores(c: Client): Promise<LegacyReferenceBackfillSummary>
   };
 }
 
-async function rebuildSkuUpcs(c: Client): Promise<LegacyReferenceSkuSummary> {
+async function rebuildSkuUpcs(
+  c: Client,
+  sourceTables: LegacyReferenceSourceTables,
+): Promise<LegacyReferenceSkuSummary> {
+  const upcCrossReferenceRef = quoteQualifiedRef(sourceTables.upcCrossReference);
   const mirrorRowsRead = await loadScalarCount(
     c,
     `
       SELECT count(*)::text AS count
-      FROM rics_mirror.upc_cross_reference
+      FROM ${upcCrossReferenceRef}
     `,
   );
 
@@ -317,7 +371,7 @@ async function rebuildSkuUpcs(c: Client): Promise<LegacyReferenceSkuSummary> {
             PARTITION BY btrim(COALESCE(prefix, '')) || btrim(COALESCE("number", '')) || btrim(COALESCE(check_digit, ''))
             ORDER BY date_last_changed DESC NULLS LAST, btrim(COALESCE(sku, ''))
           ) AS duplicate_ordinal
-        FROM rics_mirror.upc_cross_reference
+        FROM ${upcCrossReferenceRef}
       )
       SELECT count(*)::text AS count
       FROM source_rows
@@ -341,7 +395,7 @@ async function rebuildSkuUpcs(c: Client): Promise<LegacyReferenceSkuSummary> {
             PARTITION BY btrim(COALESCE(prefix, '')) || btrim(COALESCE("number", '')) || btrim(COALESCE(check_digit, ''))
             ORDER BY date_last_changed DESC NULLS LAST, btrim(COALESCE(sku, ''))
           ) AS duplicate_ordinal
-        FROM rics_mirror.upc_cross_reference
+        FROM ${upcCrossReferenceRef}
       )
       SELECT source_rows.sku_code AS "skuCode"
       FROM source_rows
@@ -376,7 +430,7 @@ async function rebuildSkuUpcs(c: Client): Promise<LegacyReferenceSkuSummary> {
             PARTITION BY btrim(COALESCE(prefix, '')) || btrim(COALESCE("number", '')) || btrim(COALESCE(check_digit, ''))
             ORDER BY date_last_changed DESC NULLS LAST, btrim(COALESCE(sku, ''))
           ) AS duplicate_ordinal
-        FROM rics_mirror.upc_cross_reference
+        FROM ${upcCrossReferenceRef}
       )
       INSERT INTO app.sku_upc (
         upc,
@@ -423,19 +477,24 @@ async function rebuildSkuUpcs(c: Client): Promise<LegacyReferenceSkuSummary> {
   };
 }
 
-async function rebuildCasePacks(c: Client): Promise<CasePackBackfillSummary> {
+async function rebuildCasePacks(
+  c: Client,
+  sourceTables: LegacyReferenceSourceTables,
+): Promise<CasePackBackfillSummary> {
+  const casePacksRef = quoteQualifiedRef(sourceTables.casePacks);
+  const casePackQtysRef = quoteQualifiedRef(sourceTables.casePackQtys);
   const headerRowsRead = await loadScalarCount(
     c,
     `
       SELECT count(*)::text AS count
-      FROM rics_mirror.case_packs
+      FROM ${casePacksRef}
     `,
   );
   const qtyRowsRead = await loadScalarCount(
     c,
     `
       SELECT count(*)::text AS count
-      FROM rics_mirror.case_pack_qtys
+      FROM ${casePackQtysRef}
     `,
   );
 
@@ -454,7 +513,7 @@ async function rebuildCasePacks(c: Client): Promise<CasePackBackfillSummary> {
         size_type::smallint AS size_type_code,
         true AS active,
         date_last_changed
-      FROM rics_mirror.case_packs
+      FROM ${casePacksRef}
       WHERE code IS NOT NULL
         AND btrim(code) <> ''
         AND size_type IS NOT NULL
@@ -471,7 +530,7 @@ async function rebuildCasePacks(c: Client): Promise<CasePackBackfillSummary> {
           value_pairs.slot_ordinal,
           COALESCE(value_pairs.quantity, 0)::integer AS quantity,
           st.columns[((COALESCE(q.segment, 1)::integer - 1) * 18) + value_pairs.slot_ordinal] AS mapped_column_label
-        FROM rics_mirror.case_pack_qtys q
+        FROM ${casePackQtysRef} q
         INNER JOIN app.case_pack cp ON cp.code = btrim(q.code)
         LEFT JOIN app.taxonomy_size_type st ON st.code = cp.size_type_code
         CROSS JOIN LATERAL (
@@ -530,12 +589,16 @@ async function rebuildCasePacks(c: Client): Promise<CasePackBackfillSummary> {
   };
 }
 
-async function rebuildFuturePriceChanges(c: Client): Promise<LegacyReferenceSkuSummary> {
+async function rebuildFuturePriceChanges(
+  c: Client,
+  sourceTables: LegacyReferenceSourceTables,
+): Promise<LegacyReferenceSkuSummary> {
+  const futurePriceChangesRef = quoteQualifiedRef(sourceTables.futurePriceChanges);
   const mirrorRowsRead = await loadScalarCount(
     c,
     `
       SELECT count(*)::text AS count
-      FROM rics_mirror.future_price_changes
+      FROM ${futurePriceChangesRef}
     `,
   );
 
@@ -564,7 +627,7 @@ async function rebuildFuturePriceChanges(c: Client): Promise<LegacyReferenceSkuS
               perks
             ORDER BY date_last_changed DESC NULLS LAST, btrim(COALESCE(sku, ''))
           ) AS duplicate_ordinal
-        FROM rics_mirror.future_price_changes
+        FROM ${futurePriceChangesRef}
         WHERE sku IS NOT NULL
           AND btrim(sku) <> ''
           AND store IS NOT NULL
@@ -585,7 +648,7 @@ async function rebuildFuturePriceChanges(c: Client): Promise<LegacyReferenceSkuS
       source_rows AS (
         SELECT
           btrim(COALESCE(sku, '')) AS sku_code
-        FROM rics_mirror.future_price_changes
+        FROM ${futurePriceChangesRef}
         WHERE sku IS NOT NULL
           AND btrim(sku) <> ''
           AND store IS NOT NULL
@@ -636,7 +699,7 @@ async function rebuildFuturePriceChanges(c: Client): Promise<LegacyReferenceSkuS
               perks
             ORDER BY date_last_changed DESC NULLS LAST, btrim(COALESCE(sku, ''))
           ) AS duplicate_ordinal
-        FROM rics_mirror.future_price_changes
+        FROM ${futurePriceChangesRef}
         WHERE sku IS NOT NULL
           AND btrim(sku) <> ''
           AND store IS NOT NULL
@@ -710,33 +773,40 @@ async function rebuildFuturePriceChanges(c: Client): Promise<LegacyReferenceSkuS
   };
 }
 
-async function rebuildPurchaseLegacy(c: Client): Promise<PurchaseLegacyBackfillSummary> {
+async function rebuildPurchaseLegacy(
+  c: Client,
+  sourceTables: LegacyReferenceSourceTables,
+): Promise<PurchaseLegacyBackfillSummary> {
+  const purchaseMasterRef = quoteQualifiedRef(sourceTables.purchaseMaster);
+  const purchaseDetailRef = quoteQualifiedRef(sourceTables.purchaseDetail);
+  const asnCartonHeadRef = quoteQualifiedRef(sourceTables.asnCartonHead);
+  const asnCartonDetRef = quoteQualifiedRef(sourceTables.asnCartonDet);
   const headerRowsRead = await loadScalarCount(
     c,
     `
       SELECT count(*)::text AS count
-      FROM rics_mirror.purchase_master
+      FROM ${purchaseMasterRef}
     `,
   );
   const lineRowsRead = await loadScalarCount(
     c,
     `
       SELECT count(*)::text AS count
-      FROM rics_mirror.purchase_detail
+      FROM ${purchaseDetailRef}
     `,
   );
   const asnHeaderRowsRead = await loadScalarCount(
     c,
     `
       SELECT count(*)::text AS count
-      FROM rics_mirror.asn_carton_head
+      FROM ${asnCartonHeadRef}
     `,
   );
   const asnLineRowsRead = await loadScalarCount(
     c,
     `
       SELECT count(*)::text AS count
-      FROM rics_mirror.asn_carton_det
+      FROM ${asnCartonDetRef}
     `,
   );
 
@@ -775,7 +845,7 @@ async function rebuildPurchaseLegacy(c: Client): Promise<PurchaseLegacyBackfillS
           current,
           NULLIF(btrim(COALESCE(status, '')), '') AS legacy_status,
           date_last_changed
-        FROM rics_mirror.purchase_master
+        FROM ${purchaseMasterRef}
         WHERE po_number IS NOT NULL
           AND btrim(po_number) <> ''
         ORDER BY btrim(po_number), date_last_changed DESC NULLS LAST
@@ -865,7 +935,7 @@ async function rebuildPurchaseLegacy(c: Client): Promise<PurchaseLegacyBackfillS
               COALESCE(segment, 1)
             ORDER BY date_last_changed DESC NULLS LAST
           ) AS duplicate_ordinal
-        FROM rics_mirror.purchase_detail
+        FROM ${purchaseDetailRef}
         WHERE po_number IS NOT NULL
           AND btrim(po_number) <> ''
           AND sku IS NOT NULL
@@ -886,7 +956,7 @@ async function rebuildPurchaseLegacy(c: Client): Promise<PurchaseLegacyBackfillS
       source_rows AS (
         SELECT
           btrim(COALESCE(sku, '')) AS sku_code
-        FROM rics_mirror.purchase_detail
+        FROM ${purchaseDetailRef}
         WHERE sku IS NOT NULL
           AND btrim(sku) <> ''
       )
@@ -924,7 +994,7 @@ async function rebuildPurchaseLegacy(c: Client): Promise<PurchaseLegacyBackfillS
               COALESCE(segment, 1)
             ORDER BY date_last_changed DESC NULLS LAST
           ) AS duplicate_ordinal
-        FROM rics_mirror.purchase_detail
+        FROM ${purchaseDetailRef}
         WHERE po_number IS NOT NULL
           AND btrim(po_number) <> ''
           AND sku IS NOT NULL
@@ -973,7 +1043,7 @@ async function rebuildPurchaseLegacy(c: Client): Promise<PurchaseLegacyBackfillS
           date_received AS received_at,
           NULLIF(btrim(COALESCE(status, '')), '') AS status,
           date_last_changed
-        FROM rics_mirror.asn_carton_head
+        FROM ${asnCartonHeadRef}
         WHERE carton_no IS NOT NULL
           AND btrim(carton_no) <> ''
           AND po_number IS NOT NULL
@@ -1016,7 +1086,7 @@ async function rebuildPurchaseLegacy(c: Client): Promise<PurchaseLegacyBackfillS
               btrim(COALESCE(upc, ''))
             ORDER BY date_last_changed DESC NULLS LAST
           ) AS duplicate_ordinal
-        FROM rics_mirror.asn_carton_det
+        FROM ${asnCartonDetRef}
         WHERE carton_no IS NOT NULL
           AND btrim(carton_no) <> ''
           AND po_number IS NOT NULL
@@ -1059,12 +1129,16 @@ async function rebuildPurchaseLegacy(c: Client): Promise<PurchaseLegacyBackfillS
   };
 }
 
-async function rebuildTransferLegacy(c: Client): Promise<LegacyReferenceBackfillSummary> {
+async function rebuildTransferLegacy(
+  c: Client,
+  sourceTables: LegacyReferenceSourceTables,
+): Promise<LegacyReferenceBackfillSummary> {
+  const inventoryTransfersRef = quoteQualifiedRef(sourceTables.inventoryTransfers);
   const mirrorRowsRead = await loadScalarCount(
     c,
     `
       SELECT count(*)::text AS count
-      FROM rics_mirror.inv_transfers
+      FROM ${inventoryTransfersRef}
     `,
   );
 
@@ -1088,7 +1162,7 @@ async function rebuildTransferLegacy(c: Client): Promise<LegacyReferenceBackfill
               amt
             ORDER BY date_tran DESC NULLS LAST
           ) AS duplicate_ordinal
-        FROM rics_mirror.inv_transfers
+        FROM ${inventoryTransfersRef}
         WHERE from_store IS NOT NULL
           AND to_store IS NOT NULL
           AND date_tran IS NOT NULL
@@ -1156,19 +1230,23 @@ export async function legacyReferenceBackfill(
   opts: LegacyReferenceBackfillOptions,
 ): Promise<LegacyReferenceBackfillResult> {
   const { pgClient: c, runId } = opts;
+  const sourceTables: LegacyReferenceSourceTables = {
+    ...DEFAULT_SOURCE_TABLES,
+    ...(opts.sourceTables ?? {}),
+  };
   const startedMs = Date.now();
 
   await c.query('BEGIN');
   try {
     await truncateImportedTables(c);
 
-    const vendors = await rebuildVendors(c);
-    const stores = await rebuildStores(c);
-    const skuUpcs = await rebuildSkuUpcs(c);
-    const casePacks = await rebuildCasePacks(c);
-    const futurePriceChanges = await rebuildFuturePriceChanges(c);
-    const purchaseLegacy = await rebuildPurchaseLegacy(c);
-    const transferLegacy = await rebuildTransferLegacy(c);
+    const vendors = await rebuildVendors(c, sourceTables);
+    const stores = await rebuildStores(c, sourceTables);
+    const skuUpcs = await rebuildSkuUpcs(c, sourceTables);
+    const casePacks = await rebuildCasePacks(c, sourceTables);
+    const futurePriceChanges = await rebuildFuturePriceChanges(c, sourceTables);
+    const purchaseLegacy = await rebuildPurchaseLegacy(c, sourceTables);
+    const transferLegacy = await rebuildTransferLegacy(c, sourceTables);
 
     await c.query('COMMIT');
 

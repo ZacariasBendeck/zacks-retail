@@ -13,6 +13,9 @@ import {
   Spin,
   Breadcrumb,
   Empty,
+  Radio,
+  Select,
+  Switch,
 } from 'antd'
 import {
   DownloadOutlined,
@@ -23,13 +26,21 @@ import {
 import {
   useAgingByDepartment,
   useAgingDrillDown,
+  useAgingDimensions,
 } from '../../hooks/useReports'
-import { getAgingCsvUrl, getAgingXlsxUrl } from '../../services/reportApi'
+import {
+  getAgingCsvUrl,
+  getAgingXlsxUrl,
+  AGING_BUCKET_SCHEMES,
+  AGING_GROUP_BY_LABELS,
+} from '../../services/reportApi'
 import { validateDomainFilterContract } from '../../services/domainFilterContract'
 import { getErrorMessage } from '../../utils/errors'
 import type {
-  AgingDepartmentSummary,
+  AgingGroupSummary,
   AgingDetail,
+  AgingBucketScheme,
+  AgingGroupBy,
 } from '../../services/reportApi'
 import type { Department } from '../../types/sku'
 
@@ -42,15 +53,19 @@ const DEPARTMENT_COLORS: Record<Department, string> = {
   COMFORT: '#13c2c2',
 }
 
-const BUCKET_COLORS: Record<string, string> = {
-  '0-30': 'green',
-  '31-60': 'blue',
-  '61-90': 'orange',
-  '90+': 'red',
+// Color is keyed off the bucket *position* within the chosen scheme, not the
+// literal label, so the same green/blue/orange/red ramp works for every preset
+// (0-30 vs 0-60 vs 0-90 all paint green for "freshest", etc.).
+const BUCKET_POSITION_COLORS = ['green', 'blue', 'orange', 'red'] as const
+
+function colorForBucket(bucket: string, scheme: AgingBucketScheme): string {
+  const idx = AGING_BUCKET_SCHEMES[scheme].labels.indexOf(bucket)
+  const safe = idx >= 0 ? idx : BUCKET_POSITION_COLORS.length - 1
+  return BUCKET_POSITION_COLORS[safe] ?? BUCKET_POSITION_COLORS[BUCKET_POSITION_COLORS.length - 1]!
 }
 
-function renderAgingBucket(bucket: string) {
-  return <Tag color={BUCKET_COLORS[bucket]}>{bucket} days</Tag>
+function renderAgingBucket(bucket: string, scheme: AgingBucketScheme) {
+  return <Tag color={colorForBucket(bucket, scheme)}>{bucket} days</Tag>
 }
 
 // Currency is Honduran Lempira (HNL) system-wide — labeled once at the top of
@@ -64,25 +79,48 @@ function formatMoney(value: number | null | undefined): string {
 }
 
 export default function InventoryAgingReportPage() {
-  const [selectedDepartment, setSelectedDepartment] = useState<string | null>(null)
+  // `selectedGroupKey` doubles as the drill-down selector for whichever
+  // group dimension is active (department description, sector number,
+  // vendor code, or buyer code). The variable kept its old name in some
+  // places below to minimize diff churn.
+  const [selectedGroupKey, setSelectedGroupKey] = useState<string | null>(null)
   const [selectedCategory, setSelectedCategory] = useState<number | null>(null)
+  const [bucketScheme, setBucketScheme] = useState<AgingBucketScheme>('30_60_90')
+  const [groupBy, setGroupBy] = useState<AgingGroupBy>('department')
+  const [selectedStores, setSelectedStores] = useState<number[]>([])
+  const [showPercentages, setShowPercentages] = useState<boolean>(false)
+  const schemeLabels = AGING_BUCKET_SCHEMES[bucketScheme].labels
+  const flagThreshold = AGING_BUCKET_SCHEMES[bucketScheme].flagThreshold
+  const groupByLabel = AGING_GROUP_BY_LABELS[groupBy]
 
-  const { data: deptData, isLoading: deptLoading, error: deptError } = useAgingByDepartment()
-  const { data: drillData, isLoading: drillLoading, error: drillError } = useAgingDrillDown(
-    selectedDepartment ?? '',
-    selectedCategory ?? undefined,
+  const queryArgs = useMemo(
+    () => ({ groupBy, bucketScheme, stores: selectedStores }),
+    [groupBy, bucketScheme, selectedStores],
   )
+
+  const { data: deptData, isLoading: deptLoading, error: deptError } = useAgingByDepartment(queryArgs)
+  const { data: drillData, isLoading: drillLoading, error: drillError } = useAgingDrillDown(
+    selectedGroupKey ?? '',
+    selectedCategory ?? undefined,
+    queryArgs,
+  )
+  const { data: dimensionsData } = useAgingDimensions()
 
   const filterValidation = useMemo(
     () =>
       validateDomainFilterContract(
-        { department: selectedDepartment, category: selectedCategory },
-        { requireDepartmentForCategory: true },
+        { department: selectedGroupKey, category: selectedCategory },
+        // Category filter is meaningful only when grouping by department —
+        // for sector/vendor/buyer groupings we drop the category gate.
+        {
+          requireDepartmentForCategory: groupBy === 'department',
+          allowAnyDepartment: true,
+        },
       ),
-    [selectedCategory, selectedDepartment],
+    [selectedCategory, selectedGroupKey, groupBy],
   )
 
-  const reportErrorMessage = selectedDepartment
+  const reportErrorMessage = selectedGroupKey
     ? drillError
       ? getErrorMessage(drillError, 'Unable to load aging drill-down report.')
       : null
@@ -90,8 +128,8 @@ export default function InventoryAgingReportPage() {
       ? getErrorMessage(deptError, 'Unable to load aging department summary.')
       : null
 
-  const handleDepartmentClick = useCallback((dept: string) => {
-    setSelectedDepartment(dept)
+  const handleDepartmentClick = useCallback((groupKey: string) => {
+    setSelectedGroupKey(groupKey)
     setSelectedCategory(null)
   }, [])
 
@@ -103,36 +141,54 @@ export default function InventoryAgingReportPage() {
     if (selectedCategory != null) {
       setSelectedCategory(null)
     } else {
-      setSelectedDepartment(null)
+      setSelectedGroupKey(null)
     }
   }, [selectedCategory])
 
+  // Switching the group dimension invalidates any in-progress drill-down —
+  // a department key is meaningless when grouped by vendor.
+  const handleGroupByChange = useCallback((next: AgingGroupBy) => {
+    setGroupBy(next)
+    setSelectedGroupKey(null)
+    setSelectedCategory(null)
+  }, [])
+
   const handleExportCsv = useCallback(() => {
     const url = getAgingCsvUrl(
-      selectedDepartment ?? undefined,
+      selectedGroupKey ?? undefined,
       selectedCategory ?? undefined,
+      queryArgs,
     )
     window.open(url, '_blank')
-  }, [selectedDepartment, selectedCategory])
+  }, [selectedGroupKey, selectedCategory, queryArgs])
 
   const handleExportXlsx = useCallback(() => {
     const url = getAgingXlsxUrl(
-      selectedDepartment ?? undefined,
+      selectedGroupKey ?? undefined,
       selectedCategory ?? undefined,
+      queryArgs,
     )
     window.open(url, '_blank')
-  }, [selectedDepartment, selectedCategory])
+  }, [selectedGroupKey, selectedCategory, queryArgs])
+
+  // The API now ships both `groups` and `departments` (the latter is a
+  // backward-compat alias). Read from `groups` so the variable name matches
+  // the active dimension; fall back to `departments` for the older shape.
+  const groupRows: AgingGroupSummary[] = deptData?.groups ?? deptData?.departments ?? []
 
   const totals = useMemo(() => {
-    const depts = deptData?.departments ?? []
-    const totalUnits = depts.reduce((s, d) => s + d.totalUnits, 0)
-    const totalValue = depts.reduce((s, d) => s + d.totalCostValue, 0)
-    const flaggedUnits = depts.reduce((s, d) => s + d.flaggedUnits, 0)
-    const flaggedValue = depts.reduce((s, d) => s + d.flaggedValue, 0)
+    const totalUnits = groupRows.reduce((s, d) => s + d.totalUnits, 0)
+    const totalValue = groupRows.reduce((s, d) => s + d.totalCostValue, 0)
+    const flaggedUnits = groupRows.reduce((s, d) => s + d.flaggedUnits, 0)
+    const flaggedValue = groupRows.reduce((s, d) => s + d.flaggedValue, 0)
     return { totalUnits, totalValue, flaggedUnits, flaggedValue }
-  }, [deptData])
+  }, [groupRows])
 
+  // Category drill-down between the group and per-SKU layers makes sense only
+  // when grouping by department (categories live inside departments). For the
+  // other dimensions we skip it.
   const categoryBreakdown = useMemo(() => {
+    if (groupBy !== 'department') return null
     if (!drillData?.details || selectedCategory != null) return null
     const catMap = new Map<number, { skus: Set<string>; units: number; value: number; flaggedUnits: number; flaggedValue: number }>()
     for (const d of drillData.details) {
@@ -157,78 +213,86 @@ export default function InventoryAgingReportPage() {
       flaggedUnits: data.flaggedUnits,
       flaggedValue: data.flaggedValue,
     })).sort((a, b) => b.flaggedValue - a.flaggedValue)
-  }, [drillData, selectedCategory])
+  }, [drillData, selectedCategory, groupBy])
 
-  // Helper to pull a bucket's cost value (or 0) off an AgingDepartmentSummary.
+  // Helper to pull a bucket's cost value (or 0) off an AgingGroupSummary.
   // Used as the sort key for the four aging-bucket columns so clicking the
-  // header orders departments by how much $$ sits in that bucket.
-  const bucketValue = (rec: AgingDepartmentSummary, bucket: string): number => {
+  // header orders groups by how much $$ sits in that bucket.
+  const bucketValue = (rec: AgingGroupSummary, bucket: string): number => {
     const b = rec.buckets.find((x) => x.bucket === bucket)
     return b?.totalCostValue ?? 0
   }
+
+  // Render a bucket cell either as plain "X units / Y value" or with the
+  // adjacent percentage (% of row's total cost value). Toggled by `showPercentages`.
+  const renderBucketCell = (record: AgingGroupSummary, bucketLabel: string) => {
+    const b = record.buckets.find((x) => x.bucket === bucketLabel)
+    if (!b || b.totalUnits === 0) return '—'
+    const pct = record.totalCostValue > 0 ? (b.totalCostValue / record.totalCostValue) * 100 : 0
+    const main = `${b.totalUnits} units / ${formatMoney(b.totalCostValue)}`
+    if (!showPercentages) return main
+    return (
+      <span>
+        {main}{' '}
+        <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+          ({pct.toFixed(1)}%)
+        </Typography.Text>
+      </span>
+    )
+  }
+
+  // Color the dimension tag using DEPARTMENT_COLORS only when grouped by
+  // department (those colors are keyed off the legacy 6-macro names). For the
+  // other dimensions just show the label without a tag color.
+  const renderGroupLabel = (label: string) => {
+    if (groupBy === 'department') {
+      return <Tag color={DEPARTMENT_COLORS[label as Department]}>{label}</Tag>
+    }
+    return <Tag>{label}</Tag>
+  }
+
   const departmentColumns = [
     {
-      title: 'Department',
-      dataIndex: 'department',
-      key: 'department',
-      render: (dept: string) => (
-        <Tag color={DEPARTMENT_COLORS[dept as Department]}>{dept}</Tag>
-      ),
-      sorter: (a: AgingDepartmentSummary, b: AgingDepartmentSummary) =>
-        a.department.localeCompare(b.department),
+      title: groupByLabel,
+      dataIndex: 'groupLabel',
+      key: 'groupLabel',
+      render: (label: string) => renderGroupLabel(label),
+      sorter: (a: AgingGroupSummary, b: AgingGroupSummary) =>
+        a.groupLabel.localeCompare(b.groupLabel),
     },
-    {
-      title: '0-30 Days',
-      key: 'bucket_0_30',
+    ...schemeLabels.slice(0, 3).map((label, idx) => ({
+      title: `${label} Days`,
+      key: `bucket_${idx}`,
       align: 'right' as const,
-      render: (_: unknown, record: AgingDepartmentSummary) => {
-        const b = record.buckets.find((x) => x.bucket === '0-30')
-        return b ? `${b.totalUnits} units / ${formatMoney(b.totalCostValue)}` : '—'
-      },
-      sorter: (a: AgingDepartmentSummary, b: AgingDepartmentSummary) =>
-        bucketValue(a, '0-30') - bucketValue(b, '0-30'),
-    },
-    {
-      title: '31-60 Days',
-      key: 'bucket_31_60',
-      align: 'right' as const,
-      render: (_: unknown, record: AgingDepartmentSummary) => {
-        const b = record.buckets.find((x) => x.bucket === '31-60')
-        return b ? `${b.totalUnits} units / ${formatMoney(b.totalCostValue)}` : '—'
-      },
-      sorter: (a: AgingDepartmentSummary, b: AgingDepartmentSummary) =>
-        bucketValue(a, '31-60') - bucketValue(b, '31-60'),
-    },
-    {
-      title: '61-90 Days',
-      key: 'bucket_61_90',
-      align: 'right' as const,
-      render: (_: unknown, record: AgingDepartmentSummary) => {
-        const b = record.buckets.find((x) => x.bucket === '61-90')
-        return b ? `${b.totalUnits} units / ${formatMoney(b.totalCostValue)}` : '—'
-      },
-      sorter: (a: AgingDepartmentSummary, b: AgingDepartmentSummary) =>
-        bucketValue(a, '61-90') - bucketValue(b, '61-90'),
-    },
+      render: (_: unknown, record: AgingGroupSummary) => renderBucketCell(record, label),
+      sorter: (a: AgingGroupSummary, b: AgingGroupSummary) =>
+        bucketValue(a, label) - bucketValue(b, label),
+    })),
     {
       title: (
         <span>
-          90+ Days <WarningOutlined style={{ color: '#cf1322' }} />
+          {schemeLabels[3]} Days <WarningOutlined style={{ color: '#cf1322' }} />
         </span>
       ),
-      key: 'bucket_90_plus',
+      key: 'bucket_flagged',
       align: 'right' as const,
-      render: (_: unknown, record: AgingDepartmentSummary) => {
-        const b = record.buckets.find((x) => x.bucket === '90+')
+      render: (_: unknown, record: AgingGroupSummary) => {
+        const b = record.buckets.find((x) => x.bucket === schemeLabels[3])
         if (!b || b.totalUnits === 0) return '—'
+        const pct = record.totalCostValue > 0 ? (b.totalCostValue / record.totalCostValue) * 100 : 0
         return (
           <Typography.Text type="danger" strong>
             {b.totalUnits} units / {formatMoney(b.totalCostValue)}
+            {showPercentages && (
+              <Typography.Text type="secondary" style={{ fontSize: 11, fontWeight: 'normal' }}>
+                {' '}({pct.toFixed(1)}%)
+              </Typography.Text>
+            )}
           </Typography.Text>
         )
       },
-      sorter: (a: AgingDepartmentSummary, b: AgingDepartmentSummary) =>
-        bucketValue(a, '90+') - bucketValue(b, '90+'),
+      sorter: (a: AgingGroupSummary, b: AgingGroupSummary) =>
+        bucketValue(a, schemeLabels[3]) - bucketValue(b, schemeLabels[3]),
     },
     {
       title: 'Total Value',
@@ -236,14 +300,14 @@ export default function InventoryAgingReportPage() {
       key: 'totalCostValue',
       align: 'right' as const,
       render: (v: number) => formatMoney(v),
-      sorter: (a: AgingDepartmentSummary, b: AgingDepartmentSummary) =>
+      sorter: (a: AgingGroupSummary, b: AgingGroupSummary) =>
         a.totalCostValue - b.totalCostValue,
     },
     {
       title: 'Action',
       key: 'action',
-      render: (_: unknown, record: AgingDepartmentSummary) => (
-        <Button type="link" size="small" onClick={() => handleDepartmentClick(record.department)}>
+      render: (_: unknown, record: AgingGroupSummary) => (
+        <Button type="link" size="small" onClick={() => handleDepartmentClick(record.groupKey)}>
           Drill Down
         </Button>
       ),
@@ -283,7 +347,7 @@ export default function InventoryAgingReportPage() {
     {
       title: (
         <span>
-          Flagged (90+) <WarningOutlined style={{ color: '#cf1322' }} />
+          Flagged ({schemeLabels[3]}) <WarningOutlined style={{ color: '#cf1322' }} />
         </span>
       ),
       key: 'flagged',
@@ -398,7 +462,7 @@ export default function InventoryAgingReportPage() {
       dataIndex: 'agingBucket',
       key: 'agingBucket',
       width: 120,
-      render: renderAgingBucket,
+      render: (bucket: string) => renderAgingBucket(bucket, bucketScheme),
       // Aging buckets are ordinal, not alphabetical — sort by daysOnHand which
       // is already the canonical ordering for "how old is this stock".
       sorter: (a: AgingDetail, b: AgingDetail) => a.daysOnHand - b.daysOnHand,
@@ -418,18 +482,27 @@ export default function InventoryAgingReportPage() {
     },
   ]
 
-  const breadcrumbItems = [{ title: 'All Departments' }]
-  if (selectedDepartment) {
-    breadcrumbItems.push({ title: selectedDepartment })
+  // Resolve the human label for whichever group the operator drilled into.
+  // For department/sector the API uses the description for both key and label;
+  // for vendor the key is the code (e.g. "SISL") and the label is the
+  // short_name from `app.vendor`.
+  const selectedGroupLabel = useMemo(() => {
+    if (!selectedGroupKey) return null
+    return groupRows.find((g) => g.groupKey === selectedGroupKey)?.groupLabel ?? selectedGroupKey
+  }, [groupRows, selectedGroupKey])
+
+  const breadcrumbItems = [{ title: `All ${groupByLabel}s` }]
+  if (selectedGroupKey) {
+    breadcrumbItems.push({ title: selectedGroupLabel ?? selectedGroupKey })
   }
   if (selectedCategory != null) {
     breadcrumbItems.push({ title: `Category ${selectedCategory}` })
   }
 
-  const isLoading = selectedDepartment ? drillLoading : deptLoading
-  const hasData = selectedDepartment
+  const isLoading = selectedGroupKey ? drillLoading : deptLoading
+  const hasData = selectedGroupKey
     ? (drillData?.details?.length ?? 0) > 0
-    : (deptData?.departments?.length ?? 0) > 0
+    : groupRows.length > 0
 
   const filteredDetails = useMemo(() => {
     if (!drillData?.details) return []
@@ -462,7 +535,7 @@ export default function InventoryAgingReportPage() {
         <Row align="middle" justify="space-between">
           <Col>
             <Space>
-              {selectedDepartment && (
+              {selectedGroupKey && (
                 <Button icon={<ArrowLeftOutlined />} size="small" onClick={handleBack} />
               )}
               <Typography.Title level={4} style={{ margin: 0 }}>
@@ -481,14 +554,81 @@ export default function InventoryAgingReportPage() {
             </Space>
           </Col>
         </Row>
+
+        {/* Toolbar row 1: report-type (group dimension) + stores criteria */}
+        <Row align="middle" style={{ marginTop: 12 }} gutter={[12, 8]}>
+          <Col>
+            <Typography.Text strong>Aging by:</Typography.Text>
+          </Col>
+          <Col>
+            <Select<AgingGroupBy>
+              value={groupBy}
+              onChange={handleGroupByChange}
+              style={{ minWidth: 150 }}
+              options={[
+                { value: 'department', label: 'Department' },
+                { value: 'sector', label: 'Sector' },
+                { value: 'vendor', label: 'Vendor' },
+                { value: 'buyer', label: 'Buyer' },
+              ]}
+            />
+          </Col>
+          <Col>
+            <Typography.Text strong>Stores:</Typography.Text>
+          </Col>
+          <Col flex="auto">
+            <Select<number[]>
+              mode="multiple"
+              allowClear
+              value={selectedStores}
+              onChange={(values) => setSelectedStores(values)}
+              placeholder="All stores"
+              style={{ minWidth: 240, width: '100%' }}
+              maxTagCount="responsive"
+              optionFilterProp="label"
+              options={(dimensionsData?.stores ?? []).map((s) => ({
+                value: s.number,
+                label: `${s.number} — ${s.name ?? '(no name)'}`,
+              }))}
+            />
+          </Col>
+        </Row>
+
+        {/* Toolbar row 2: bucket scheme + show-percentages toggle */}
+        <Row align="middle" style={{ marginTop: 12 }} gutter={[12, 8]}>
+          <Col>
+            <Typography.Text strong>Aging buckets:</Typography.Text>
+          </Col>
+          <Col>
+            <Radio.Group
+              value={bucketScheme}
+              onChange={(e) => setBucketScheme(e.target.value as AgingBucketScheme)}
+              optionType="button"
+              buttonStyle="solid"
+            >
+              <Radio.Button value="30_60_90">30 / 60 / 90</Radio.Button>
+              <Radio.Button value="60_120_180">60 / 120 / 180</Radio.Button>
+              <Radio.Button value="90_180_270">90 / 180 / 270</Radio.Button>
+            </Radio.Group>
+          </Col>
+          <Col>
+            <Space>
+              <Typography.Text strong>Show %</Typography.Text>
+              <Switch checked={showPercentages} onChange={setShowPercentages} />
+            </Space>
+          </Col>
+        </Row>
+
         <Breadcrumb style={{ marginTop: 8 }} items={breadcrumbItems} />
         <Typography.Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0, fontSize: 12 }}>
-          Amounts in Lempira (HNL).
+          Amounts in Lempira (HNL). Aging clock = days since the most recent
+          PO receipt for the SKU (resets each time a PO enters the warehouse).
+          SKUs with no PO history fall back to the SKU creation date.
         </Typography.Paragraph>
       </Card>
 
       {/* Summary KPIs (top-level only) */}
-      {!selectedDepartment && (
+      {!selectedGroupKey && (
         <Row gutter={[16, 16]}>
           <Col xs={24} sm={6}>
             <Card>
@@ -513,7 +653,7 @@ export default function InventoryAgingReportPage() {
           <Col xs={24} sm={6}>
             <Card>
               <Statistic
-                title="Flagged Units (90+ Days)"
+                title={`Flagged Units (${flagThreshold}+ Days)`}
                 value={totals.flaggedUnits}
                 prefix={<WarningOutlined />}
                 loading={deptLoading}
@@ -524,7 +664,7 @@ export default function InventoryAgingReportPage() {
           <Col xs={24} sm={6}>
             <Card>
               <Statistic
-                title="Flagged Value (90+ Days)"
+                title={`Flagged Value (${flagThreshold}+ Days)`}
                 value={totals.flaggedValue}
                 precision={2}
                 loading={deptLoading}
@@ -544,12 +684,12 @@ export default function InventoryAgingReportPage() {
         <Card>
           <Empty description="No inventory on hand to report. Ensure there is stock in the system." />
         </Card>
-      ) : !selectedDepartment ? (
-        <Card title="Inventory Aging by Department">
-          <Table<AgingDepartmentSummary>
-            dataSource={deptData?.departments}
+      ) : !selectedGroupKey ? (
+        <Card title={`Inventory Aging by ${groupByLabel}`}>
+          <Table<AgingGroupSummary>
+            dataSource={groupRows}
             columns={departmentColumns}
-            rowKey="department"
+            rowKey="groupKey"
             pagination={false}
             size="middle"
             summary={(data) => {

@@ -1,9 +1,11 @@
 import { prisma } from '../../src/db/prisma';
+import { CUSTOMER_METRIC_SOURCE_CTE_SQL } from '../../src/services/customer-kpi/salesSource';
 
 const METRICS_SQL = `
-WITH completed_tx AS (
+WITH ${CUSTOMER_METRIC_SOURCE_CTE_SQL},
+completed_tx AS (
   SELECT *
-  FROM app.customer_transaction_fact
+  FROM metric_fact
   WHERE status = 'completed'
 ),
 purchase_tx AS (
@@ -257,9 +259,10 @@ ON CONFLICT (customer_id) DO UPDATE SET
 `;
 
 const FEATURES_SQL = `
-WITH completed_tx AS (
+WITH ${CUSTOMER_METRIC_SOURCE_CTE_SQL},
+completed_tx AS (
   SELECT *
-  FROM app.customer_transaction_fact
+  FROM metric_fact
   WHERE status = 'completed'
 ),
 completed_summary AS (
@@ -288,7 +291,7 @@ item_flags AS (
   SELECT
     transaction_id,
     BOOL_OR(is_markdown) AS has_markdown
-  FROM app.customer_transaction_item
+  FROM metric_item
   GROUP BY transaction_id
 ),
 purchase_tx_with_flags AS (
@@ -403,7 +406,7 @@ purchase_item_rows AS (
     i.size_type,
     i.size_value
   FROM purchase_tx pt
-  JOIN app.customer_transaction_item i
+  JOIN metric_item i
     ON i.transaction_id = pt.id
   WHERE COALESCE(i.is_return, FALSE) = FALSE
 ),
@@ -425,7 +428,7 @@ return_item_rows AS (
     rt.purchased_at,
     i.quantity
   FROM return_tx rt
-  JOIN app.customer_transaction_item i
+  JOIN metric_item i
     ON i.transaction_id = rt.id
   WHERE COALESCE(i.is_return, FALSE) = TRUE
      OR i.quantity < 0
@@ -694,33 +697,37 @@ ON CONFLICT (customer_id) DO UPDATE SET
 `;
 
 const DELETE_CATEGORY_FEATURES_SQL = `
+WITH ${CUSTOMER_METRIC_SOURCE_CTE_SQL}
 DELETE FROM app.customer_category_features
 WHERE customer_id IN (
   SELECT DISTINCT customer_id
-  FROM app.customer_transaction_fact
+  FROM metric_fact
 );
 `;
 
 const DELETE_BRAND_FEATURES_SQL = `
+WITH ${CUSTOMER_METRIC_SOURCE_CTE_SQL}
 DELETE FROM app.customer_brand_features
 WHERE customer_id IN (
   SELECT DISTINCT customer_id
-  FROM app.customer_transaction_fact
+  FROM metric_fact
 );
 `;
 
 const DELETE_SIZE_PROFILES_SQL = `
+WITH ${CUSTOMER_METRIC_SOURCE_CTE_SQL}
 DELETE FROM app.customer_size_profiles
 WHERE customer_id IN (
   SELECT DISTINCT customer_id
-  FROM app.customer_transaction_fact
+  FROM metric_fact
 );
 `;
 
 const INSERT_SIZE_PROFILES_SQL = `
-WITH purchase_tx AS (
+WITH ${CUSTOMER_METRIC_SOURCE_CTE_SQL},
+purchase_tx AS (
   SELECT id, customer_id, purchased_at
-  FROM app.customer_transaction_fact
+  FROM metric_fact
   WHERE status = 'completed'
     AND transaction_kind = 'purchase'
 ),
@@ -732,7 +739,7 @@ size_rows AS (
     pt.purchased_at,
     GREATEST(i.quantity, 0) AS quantity
   FROM purchase_tx pt
-  JOIN app.customer_transaction_item i
+  JOIN metric_item i
     ON i.transaction_id = pt.id
   WHERE COALESCE(i.is_return, FALSE) = FALSE
     AND i.size_type IS NOT NULL
@@ -807,32 +814,35 @@ export async function backfillTransactionCustomerMetrics(): Promise<{
   features: number;
   sizeProfiles: number;
 }> {
-  console.info('[customer-kpi] Backfilling metrics/features from transaction facts');
+  console.info('[customer-kpi] Backfilling metrics/features from sales history sources');
 
-  console.info('[customer-kpi] Analyzing transaction fact tables');
+  console.info('[customer-kpi] Analyzing customer sales source tables');
   await prisma.$executeRawUnsafe('ANALYZE app.customer_transaction_fact');
   await prisma.$executeRawUnsafe('ANALYZE app.customer_transaction_item');
+  await prisma.$executeRawUnsafe('ANALYZE app.sales_history_ticket');
+  await prisma.$executeRawUnsafe('ANALYZE app.sales_history_ticket_line');
 
-  console.info('[customer-kpi] Refreshing customer_metrics from transaction facts');
+  console.info('[customer-kpi] Refreshing customer_metrics from sales history sources');
   await prisma.$executeRawUnsafe(METRICS_SQL);
-  console.info('[customer-kpi] Refreshing customer_features_current from transaction facts');
+  console.info('[customer-kpi] Refreshing customer_features_current from sales history sources');
   await prisma.$executeRawUnsafe(FEATURES_SQL);
-  console.info('[customer-kpi] Clearing derived category/brand/size slices for transaction-backed customers');
+  console.info('[customer-kpi] Clearing derived category/brand/size slices for sales-backed customers');
   await prisma.$executeRawUnsafe(DELETE_CATEGORY_FEATURES_SQL);
   await prisma.$executeRawUnsafe(DELETE_BRAND_FEATURES_SQL);
   await prisma.$executeRawUnsafe(DELETE_SIZE_PROFILES_SQL);
-  console.info('[customer-kpi] Rebuilding customer_size_profiles from transaction facts');
+  console.info('[customer-kpi] Rebuilding customer_size_profiles from sales history sources');
   await prisma.$executeRawUnsafe(INSERT_SIZE_PROFILES_SQL);
 
   const [summary] = await prisma.$queryRawUnsafe<BackfillSummaryRow[]>(`
-    WITH transaction_customers AS (
+    WITH ${CUSTOMER_METRIC_SOURCE_CTE_SQL},
+    transaction_customers AS (
       SELECT DISTINCT customer_id
-      FROM app.customer_transaction_fact
+      FROM metric_fact
     )
     SELECT
       (SELECT COUNT(*) FROM transaction_customers) AS transactionCustomers,
-      (SELECT COUNT(*) FROM app.customer_transaction_fact) AS facts,
-      (SELECT COUNT(*) FROM app.customer_transaction_item) AS items,
+      (SELECT COUNT(*) FROM metric_fact) AS facts,
+      (SELECT COUNT(*) FROM metric_item) AS items,
       (SELECT COUNT(*) FROM app.customer_metrics cm JOIN transaction_customers tc ON tc.customer_id = cm.customer_id) AS metrics,
       (SELECT COUNT(*) FROM app.customer_features_current cf JOIN transaction_customers tc ON tc.customer_id = cf.customer_id) AS features,
       (SELECT COUNT(*) FROM app.customer_size_profiles sp JOIN transaction_customers tc ON tc.customer_id = sp.customer_id) AS sizeProfiles

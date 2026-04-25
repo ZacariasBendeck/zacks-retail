@@ -102,7 +102,7 @@ export default function SellThroughReportPage() {
     () =>
       validateDomainFilterContract(
         { department: selectedDepartment, category: selectedCategory },
-        { requireDepartmentForCategory: true },
+        { requireDepartmentForCategory: true, allowAnyDepartment: true },
       ),
     [selectedCategory, selectedDepartment],
   )

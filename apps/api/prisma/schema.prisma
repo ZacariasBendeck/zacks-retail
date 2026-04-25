@@ -1783,6 +1783,7 @@ model CustomerIntelligenceCustomer {
   financialProfile     CustomerFinancialProfile?
   salesSummaryLegacy   CustomerSalesSummaryLegacy?
   transactionFacts     CustomerTransactionFact[]
+  salesHistoryTickets  SalesHistoryTicket[]         @relation("CustomerSalesHistoryTickets")
   metrics              CustomerMetrics?
   metricSnapshots      CustomerMetricsDaily[]
 
@@ -2004,6 +2005,77 @@ model CustomerTransactionItem {
   @@index([brandId], map: "idx_customer_transaction_item_brand")
   @@index([sizeType, sizeValue], map: "idx_customer_transaction_item_size")
   @@map("customer_transaction_item")
+  @@schema("app")
+}
+
+model SalesHistoryTicket {
+  id                    String                       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  externalTransactionId String?                      @unique @map("external_transaction_id")
+  source                String                       @default("rics_ticket_import")
+  matchedCustomerId     String?                      @map("matched_customer_id") @db.Uuid
+  matchedCustomer       CustomerIntelligenceCustomer? @relation("CustomerSalesHistoryTickets", fields: [matchedCustomerId], references: [id], onDelete: SetNull)
+  accountKey            String?                      @map("account_key")
+  transactionType       Int?                         @map("transaction_type") @db.SmallInt
+  transactionKind       String                       @default("purchase") @map("transaction_kind")
+  status                String                       @default("completed")
+  storeId               Int?                         @map("store_id") @db.SmallInt
+  terminal              String?
+  ticketNumber          Int?                         @map("ticket_number")
+  cashierCode           String?                      @map("cashier_code")
+  channel               String
+  promotionCode         String?                      @map("promotion_code")
+  couponCode            String?                      @map("coupon_code")
+  totalAmount           Decimal                      @default(0) @map("total_amount") @db.Decimal(14, 2)
+  netAmount             Decimal                      @default(0) @map("net_amount") @db.Decimal(14, 2)
+  costAmount            Decimal                      @default(0) @map("cost_amount") @db.Decimal(14, 2)
+  discountAmount        Decimal                      @default(0) @map("discount_amount") @db.Decimal(14, 2)
+  purchasedAt           DateTime                     @map("purchased_at") @db.Timestamptz(6)
+  createdAt             DateTime                     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime                     @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  lines                 SalesHistoryTicketLine[]
+
+  @@index([matchedCustomerId, purchasedAt], map: "idx_sales_history_ticket_customer_date")
+  @@index([source, purchasedAt], map: "idx_sales_history_ticket_source_date")
+  @@index([status, purchasedAt], map: "idx_sales_history_ticket_status_date")
+  @@index([channel, purchasedAt], map: "idx_sales_history_ticket_channel_date")
+  @@index([storeId, purchasedAt], map: "idx_sales_history_ticket_store_date")
+  @@index([ticketNumber, storeId, purchasedAt], map: "idx_sales_history_ticket_store_ticket")
+  @@map("sales_history_ticket")
+  @@schema("app")
+}
+
+model SalesHistoryTicketLine {
+  id             String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  ticketId       String             @map("ticket_id") @db.Uuid
+  ticket         SalesHistoryTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  lineNumber     Int                @default(0) @map("line_number")
+  skuId          String?            @map("sku_id") @db.Uuid
+  skuCode        String?            @map("sku_code")
+  categoryId     String?            @map("category_id") @db.Uuid
+  categoryKey    String?            @map("category_key")
+  brandId        String?            @map("brand_id") @db.Uuid
+  brandKey       String?            @map("brand_key")
+  columnLabel    String?            @map("column_label")
+  rowLabel       String?            @map("row_label")
+  sizeType       String?            @map("size_type")
+  sizeValue      String?            @map("size_value")
+  quantity       Int
+  unitPrice      Decimal            @default(0) @map("unit_price") @db.Decimal(14, 2)
+  unitCost       Decimal            @default(0) @map("unit_cost") @db.Decimal(14, 2)
+  netAmount      Decimal            @default(0) @map("net_amount") @db.Decimal(14, 2)
+  costAmount     Decimal            @default(0) @map("cost_amount") @db.Decimal(14, 2)
+  discountAmount Decimal            @default(0) @map("discount_amount") @db.Decimal(14, 2)
+  isMarkdown     Boolean            @default(false) @map("is_markdown")
+  isReturn       Boolean            @default(false) @map("is_return")
+  returnCode     String?            @map("return_code")
+  salespersonCode String?           @map("salesperson_code")
+  createdAt      DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([ticketId], map: "idx_sales_history_ticket_line_ticket")
+  @@index([ticketId, lineNumber], map: "idx_sales_history_ticket_line_ticket_line")
+  @@index([skuId], map: "idx_sales_history_ticket_line_sku")
+  @@index([sizeType, sizeValue], map: "idx_sales_history_ticket_line_size")
+  @@map("sales_history_ticket_line")
   @@schema("app")
 }
 
@@ -2570,5 +2642,248 @@ model TaxonomySizeType {
   dateLastChanged   DateTime @default(now()) @updatedAt @map("date_last_changed")
 
   @@map("taxonomy_size_type")
+  @@schema("app")
+}
+
+/// Cash-register entity under a store. The browser POS binds an open shift to
+/// exactly one register so cashier state can recover across reloads.
+model PosRegister {
+  id        String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId   Int        @map("store_id") @db.SmallInt
+  code      String     @db.VarChar(20)
+  label     String     @db.VarChar(80)
+  active    Boolean    @default(true)
+  createdAt DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime   @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  shifts    PosShift[]
+
+  @@unique([storeId, code], map: "pos_register_store_code_key")
+  @@index([storeId, active], map: "pos_register_store_active_idx")
+  @@map("pos_register")
+  @@schema("app")
+}
+
+/// Store-scoped tender catalog used by Enter Sales and close-batch counts.
+model PosTenderType {
+  id              String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId         Int              @map("store_id") @db.SmallInt
+  code            String           @db.VarChar(10)
+  label           String           @db.VarChar(80)
+  kind            String           @db.VarChar(32)
+  requiresAccount Boolean          @default(false) @map("requires_account")
+  openDrawer      Boolean          @default(false) @map("open_drawer")
+  active          Boolean          @default(true)
+  sortOrder       Int              @default(0) @map("sort_order")
+  createdAt       DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime         @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  tenders         PosTicketTender[]
+
+  @@unique([storeId, code], map: "pos_tender_type_store_code_key")
+  @@index([storeId, active, sortOrder], map: "pos_tender_type_store_active_sort_idx")
+  @@map("pos_tender_type")
+  @@schema("app")
+}
+
+/// Store-scoped payout categories. `sales-pos` owns the runtime until
+/// `store-ops` grows a dedicated admin screen.
+model PosPayoutCategory {
+  id        String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId   Int         @map("store_id") @db.SmallInt
+  code      String      @db.VarChar(20)
+  label     String      @db.VarChar(80)
+  active    Boolean     @default(true)
+  sortOrder Int         @default(0) @map("sort_order")
+  createdAt DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime    @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  payouts   PosPayout[]
+
+  @@unique([storeId, code], map: "pos_payout_category_store_code_key")
+  @@index([storeId, active, sortOrder], map: "pos_payout_category_store_active_sort_idx")
+  @@map("pos_payout_category")
+  @@schema("app")
+}
+
+/// Register shift / "batch of sales" header.
+model PosShift {
+  id                String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId           Int         @map("store_id") @db.SmallInt
+  registerId        String      @map("register_id") @db.Uuid
+  register          PosRegister @relation(fields: [registerId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  registerCode      String      @map("register_code") @db.VarChar(20)
+  businessDate      DateTime    @map("business_date") @db.Date
+  openedByUserId    String      @map("opened_by_user_id") @db.Uuid
+  openedByName      String      @map("opened_by_name") @db.VarChar(120)
+  openingCashFloat  Decimal     @default(0) @map("opening_cash_float") @db.Decimal(12, 2)
+  status            String      @default("OPEN") @db.VarChar(20)
+  lastTicketNumber  Int         @default(0) @map("last_ticket_number")
+  openedAt          DateTime    @default(now()) @map("opened_at") @db.Timestamptz(6)
+  closedAt          DateTime?   @map("closed_at") @db.Timestamptz(6)
+  closedByUserId    String?     @map("closed_by_user_id") @db.Uuid
+  closedByName      String?     @map("closed_by_name") @db.VarChar(120)
+  expectedCashTotal Decimal?    @map("expected_cash_total") @db.Decimal(12, 2)
+  actualCashTotal   Decimal?    @map("actual_cash_total") @db.Decimal(12, 2)
+  overShortAmount   Decimal?    @map("over_short_amount") @db.Decimal(12, 2)
+  countSummaryJson  Json?       @map("count_summary_json")
+  notes             String?
+  postedAt          DateTime?   @map("posted_at") @db.Timestamptz(6)
+  createdAt         DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime    @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  tickets           PosTicket[]
+  payouts           PosPayout[]
+
+  @@index([storeId, businessDate, status], map: "pos_shift_store_business_status_idx")
+  @@index([registerId, status], map: "pos_shift_register_status_idx")
+  @@map("pos_shift")
+  @@schema("app")
+}
+
+/// Ticket header owned by the POS runtime. This is the active draft and the
+/// completed receipt shell that downstream reporting reads from.
+model PosTicket {
+  id                    String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shiftId               String           @map("shift_id") @db.Uuid
+  shift                 PosShift         @relation(fields: [shiftId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  storeId               Int              @map("store_id") @db.SmallInt
+  registerId            String           @map("register_id") @db.Uuid
+  ticketNumber          Int              @map("ticket_number")
+  status                String           @default("DRAFT") @db.VarChar(20)
+  transactionType       String           @default("REGULAR") @map("transaction_type") @db.VarChar(32)
+  cashierUserId         String           @map("cashier_user_id") @db.Uuid
+  cashierName           String           @map("cashier_name") @db.VarChar(120)
+  customerId            String?          @map("customer_id") @db.Uuid
+  customerAccountNumber String?          @map("customer_account_number") @db.VarChar(80)
+  customerName          String?          @map("customer_name") @db.VarChar(160)
+  headerDiscountPct     Decimal?         @map("header_discount_pct") @db.Decimal(5, 2)
+  promotionCode         String?          @map("promotion_code") @db.VarChar(40)
+  shipToState           String?          @map("ship_to_state") @db.VarChar(40)
+  subtotal              Decimal          @default(0) @db.Decimal(12, 2)
+  taxTotal              Decimal          @default(0) @map("tax_total") @db.Decimal(12, 2)
+  secondaryTaxTotal     Decimal          @default(0) @map("secondary_tax_total") @db.Decimal(12, 2)
+  otherCharges          Decimal          @default(0) @map("other_charges") @db.Decimal(12, 2)
+  grandTotal            Decimal          @default(0) @map("grand_total") @db.Decimal(12, 2)
+  totalTendered         Decimal          @default(0) @map("total_tendered") @db.Decimal(12, 2)
+  changeGiven           Decimal          @default(0) @map("change_given") @db.Decimal(12, 2)
+  comment               String?
+  receiptPayloadJson    Json?            @map("receipt_payload_json")
+  voidedAt              DateTime?        @map("voided_at") @db.Timestamptz(6)
+  completedAt           DateTime?        @map("completed_at") @db.Timestamptz(6)
+  reclaimedFromTicketId String?          @map("reclaimed_from_ticket_id") @db.Uuid
+  receiptPrintCount     Int              @default(0) @map("receipt_print_count")
+  createdAt             DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime         @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  lines                 PosTicketLine[]
+  tenders               PosTicketTender[]
+  events                PosTicketEvent[]
+
+  @@unique([shiftId, ticketNumber], map: "pos_ticket_shift_ticket_number_key")
+  @@index([shiftId, status], map: "pos_ticket_shift_status_idx")
+  @@index([storeId, completedAt], map: "pos_ticket_store_completed_idx")
+  @@map("pos_ticket")
+  @@schema("app")
+}
+
+/// Ticket detail lines. One row per SKU / size cell on the active ticket.
+model PosTicketLine {
+  id               String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  ticketId         String     @map("ticket_id") @db.Uuid
+  ticket           PosTicket  @relation(fields: [ticketId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  lineNumber       Int        @map("line_number")
+  skuId            String?    @map("sku_id") @db.Uuid
+  skuCode          String?    @map("sku_code") @db.VarChar(15)
+  description      String     @db.VarChar(160)
+  upc              String?    @db.VarChar(16)
+  sizeTypeCode     Int?       @map("size_type_code") @db.SmallInt
+  columnLabel      String     @default("") @map("column_label") @db.VarChar(40)
+  rowLabel         String     @default("") @map("row_label") @db.VarChar(40)
+  quantity         Int
+  unitPrice        Decimal    @map("unit_price") @db.Decimal(12, 2)
+  priceMode        String     @default("RETAIL") @map("price_mode") @db.VarChar(24)
+  discountPct      Decimal?   @map("discount_pct") @db.Decimal(5, 2)
+  discountAmount   Decimal    @default(0) @map("discount_amount") @db.Decimal(12, 2)
+  taxable          Boolean    @default(true)
+  taxRate          Decimal    @default(0.15) @map("tax_rate") @db.Decimal(5, 4)
+  secondaryTaxRate Decimal    @default(0) @map("secondary_tax_rate") @db.Decimal(5, 4)
+  salespersonUserId String?   @map("salesperson_user_id") @db.Uuid
+  salespersonCode  String?    @map("salesperson_code") @db.VarChar(16)
+  salespersonName  String?    @map("salesperson_name") @db.VarChar(120)
+  familyMemberId   String?    @map("family_member_id") @db.Uuid
+  returnCode       Int?       @map("return_code") @db.SmallInt
+  comment          String?
+  lineSubtotal     Decimal    @default(0) @map("line_subtotal") @db.Decimal(12, 2)
+  lineTax          Decimal    @default(0) @map("line_tax") @db.Decimal(12, 2)
+  lineSecondaryTax Decimal    @default(0) @map("line_secondary_tax") @db.Decimal(12, 2)
+  lineTotal        Decimal    @default(0) @map("line_total") @db.Decimal(12, 2)
+  createdAt        DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime   @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([ticketId, lineNumber], map: "pos_ticket_line_ticket_line_number_key")
+  @@index([ticketId], map: "pos_ticket_line_ticket_idx")
+  @@index([skuId], map: "pos_ticket_line_sku_idx")
+  @@map("pos_ticket_line")
+  @@schema("app")
+}
+
+/// Up to four tenders per ticket plus the semantic continuation row.
+model PosTicketTender {
+  id           String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  ticketId     String        @map("ticket_id") @db.Uuid
+  ticket       PosTicket     @relation(fields: [ticketId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  sequence     Int
+  tenderTypeId String        @map("tender_type_id") @db.Uuid
+  tenderType   PosTenderType @relation(fields: [tenderTypeId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  tenderCode   String        @map("tender_code") @db.VarChar(10)
+  tenderLabel  String        @map("tender_label") @db.VarChar(80)
+  tenderKind   String        @map("tender_kind") @db.VarChar(32)
+  amount       Decimal       @db.Decimal(12, 2)
+  accountNumber String?      @map("account_number") @db.VarChar(80)
+  reference    String?       @db.VarChar(120)
+  createdAt    DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([ticketId, sequence], map: "pos_ticket_tender_ticket_sequence_key")
+  @@index([ticketId], map: "pos_ticket_tender_ticket_idx")
+  @@index([tenderTypeId], map: "pos_ticket_tender_type_idx")
+  @@map("pos_ticket_tender")
+  @@schema("app")
+}
+
+/// Audit trail for lifecycle transitions such as complete, void, reclaim, and
+/// receipt reprint.
+model PosTicketEvent {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  ticketId    String    @map("ticket_id") @db.Uuid
+  ticket      PosTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  shiftId     String    @map("shift_id") @db.Uuid
+  eventType   String    @map("event_type") @db.VarChar(40)
+  actorUserId String    @map("actor_user_id") @db.Uuid
+  actorName   String?   @map("actor_name") @db.VarChar(120)
+  payloadJson Json?     @map("payload_json")
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([ticketId, createdAt], map: "pos_ticket_event_ticket_created_idx")
+  @@index([shiftId, createdAt], map: "pos_ticket_event_shift_created_idx")
+  @@map("pos_ticket_event")
+  @@schema("app")
+}
+
+/// Cash removed from the drawer during an open shift.
+model PosPayout {
+  id              String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shiftId         String            @map("shift_id") @db.Uuid
+  shift           PosShift          @relation(fields: [shiftId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  storeId         Int               @map("store_id") @db.SmallInt
+  registerId      String            @map("register_id") @db.Uuid
+  categoryId      String            @map("category_id") @db.Uuid
+  category        PosPayoutCategory @relation(fields: [categoryId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  categoryCode    String            @map("category_code") @db.VarChar(20)
+  categoryLabel   String            @map("category_label") @db.VarChar(80)
+  cashierUserId   String            @map("cashier_user_id") @db.Uuid
+  cashierName     String            @map("cashier_name") @db.VarChar(120)
+  amount          Decimal           @db.Decimal(12, 2)
+  note            String?
+  createdAt       DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([shiftId, createdAt], map: "pos_payout_shift_created_idx")
+  @@index([storeId, createdAt], map: "pos_payout_store_created_idx")
+  @@map("pos_payout")
   @@schema("app")
 }

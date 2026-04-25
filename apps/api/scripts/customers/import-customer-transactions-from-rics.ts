@@ -20,7 +20,8 @@ type Args = {
 
 type ImportSummaryRow = {
   candidateheaders: bigint | number;
-  matchedheaders: bigint | number;
+  importedheaders: bigint | number;
+  matchedcustomers: bigint | number;
   factrows: bigint | number;
   itemrows: bigint | number;
 };
@@ -238,9 +239,9 @@ WHERE row_num = 1
 const CREATE_HEADER_CLEAN_SQL = `
 CREATE TEMP TABLE stage_rics_ticket_header_clean AS
 SELECT
-  l.customer_id,
-  BTRIM(h.account) AS account_key,
-  COALESCE(BTRIM(h.user_id), '') AS user_id,
+  l.customer_id AS matched_customer_id,
+  NULLIF(BTRIM(h.account), '') AS account_key,
+  COALESCE(NULLIF(BTRIM(h.user_id), ''), '') AS user_id,
   h.batch_date,
   COALESCE(NULLIF(BTRIM(h.terminal), ''), '') AS terminal,
   CAST(NULLIF(BTRIM(h.store), '') AS smallint) AS store_id,
@@ -250,7 +251,8 @@ SELECT
     COALESCE(NULLIF(h.real_date, ''), NULLIF(h.batch_date, ''))::timestamp
     AT TIME ZONE '${LEGACY_POS_TIME_ZONE}'
   ) AS purchased_at,
-  CAST(NULLIF(BTRIM(h.trans_type), '') AS integer) AS trans_type,
+  CAST(NULLIF(BTRIM(h.trans_type), '') AS smallint) AS transaction_type,
+  NULLIF(BTRIM(h.cashier), '') AS cashier_code,
   NULLIF(BTRIM(h.marketing_code), '') AS marketing_code,
   format(
     'RITRNSSV:%s:%s:%s:%s:%s:%s',
@@ -262,25 +264,28 @@ SELECT
     COALESCE(NULLIF(BTRIM(h.trans_type), ''), '')
   ) AS external_transaction_id
 FROM stage_rics_ticket_header_raw h
-JOIN stage_customer_lookup l
+LEFT JOIN stage_customer_lookup l
   ON l.account_key = BTRIM(h.account)
 WHERE UPPER(COALESCE(BTRIM(h.posted), '')) = 'Y'
   AND NOT (LOWER(COALESCE(BTRIM(h.voided), 'f')) IN ('t', 'true', '1', 'y', 'yes'))
   AND BTRIM(COALESCE(h.store, '')) <> ''
   AND BTRIM(COALESCE(h.ticket, '')) <> ''
   AND COALESCE(NULLIF(h.real_date, ''), NULLIF(h.batch_date, '')) IS NOT NULL
-  AND BTRIM(COALESCE(h.trans_type, '')) IN ('1', '4');
+  AND BTRIM(COALESCE(h.trans_type, '')) IN ('1', '2', '3', '4');
 `;
 
 const CREATE_LINE_ENRICHED_SQL = `
 CREATE TEMP TABLE stage_rics_ticket_line_enriched AS
 SELECT
-  h.customer_id,
+  h.matched_customer_id,
+  h.account_key,
   h.external_transaction_id,
   h.store_id,
   h.ticket_number,
+  h.terminal,
   h.purchased_at,
-  h.trans_type,
+  h.transaction_type,
+  h.cashier_code,
   h.marketing_code,
   NULLIF(BTRIM(d.sku), '') AS sku_code,
   s.id AS sku_id,
@@ -294,6 +299,8 @@ SELECT
       THEN NULL
     ELSE BTRIM(d.vendor)
   END AS brand_key,
+  NULLIF(BTRIM(d.column_label), '') AS column_label,
+  NULLIF(BTRIM(d.row_label), '') AS row_label,
   CASE
     WHEN NULLIF(BTRIM(d.column_label), '') IS NOT NULL OR NULLIF(BTRIM(d.row_label), '') IS NOT NULL
       THEN COALESCE(s.size_type::text, 'RICS_CELL')
@@ -310,7 +317,8 @@ SELECT
   COALESCE(CAST(NULLIF(BTRIM(d.disc_amt), '') AS numeric(14, 2)), 0)::numeric(14, 2) AS disc_amt,
   COALESCE(CAST(NULLIF(BTRIM(d.extension), '') AS numeric(14, 2)), 0)::numeric(14, 2) AS extension,
   COALESCE(CAST(NULLIF(BTRIM(d.cost), '') AS numeric(14, 2)), 0)::numeric(14, 2) AS unit_cost,
-  COALESCE(CAST(NULLIF(BTRIM(d.return_code), '') AS numeric(14, 2)), 0)::numeric(14, 2) AS return_code
+  NULLIF(BTRIM(d.return_code), '') AS return_code,
+  NULLIF(BTRIM(d.salesperson), '') AS salesperson_code
 FROM stage_rics_ticket_header_clean h
 JOIN stage_rics_ticket_detail_raw d
   ON COALESCE(BTRIM(d.user_id), '') = h.user_id
@@ -338,7 +346,7 @@ SELECT
     ELSE FALSE
   END AS is_discount_line,
   CASE
-    WHEN (qty < 0 OR return_code > 0) AND NOT (
+    WHEN (qty < 0 OR return_code IS NOT NULL) AND NOT (
       qty < 0 AND (
         sku_code IS NULL
         OR UPPER(sku_code) LIKE 'FB/%'
@@ -349,10 +357,13 @@ SELECT
     ) THEN TRUE
     ELSE FALSE
   END AS is_return_line,
-  CASE
-    WHEN qty > 0 THEN ROUND(GREATEST((qty::numeric * price) - extension, 0)::numeric, 2)
-    ELSE 0::numeric(14, 2)
-  END AS line_discount_amount,
+  ROUND(
+    CASE
+      WHEN qty > 0 THEN GREATEST((qty::numeric * price) - extension, 0)
+      ELSE 0::numeric
+    END,
+    2
+  ) AS line_discount_amount,
   ROUND((unit_cost * qty)::numeric, 2) AS line_cost_amount
 FROM stage_rics_ticket_line_enriched line_base;
 `;
@@ -360,10 +371,15 @@ FROM stage_rics_ticket_line_enriched line_base;
 const CREATE_FACT_SOURCE_SQL = `
 CREATE TEMP TABLE stage_rics_ticket_fact_source AS
 SELECT
-  customer_id,
   external_transaction_id,
+  MIN(matched_customer_id) AS matched_customer_id,
+  MIN(account_key) AS account_key,
   MIN(store_id) AS store_id,
+  MIN(ticket_number) AS ticket_number,
+  MIN(terminal) AS terminal,
   MIN(purchased_at) AS purchased_at,
+  MIN(transaction_type) AS transaction_type,
+  MIN(cashier_code) AS cashier_code,
   CASE
     WHEN COUNT(*) FILTER (
       WHERE NOT is_discount_line
@@ -401,17 +417,22 @@ SELECT
   ) AS negative_merch_line_count,
   MIN(marketing_code) AS promotion_code
 FROM stage_rics_ticket_line_ready
-GROUP BY customer_id, external_transaction_id;
+GROUP BY external_transaction_id;
 `;
 
 const INSERT_FACTS_SQL = `
-INSERT INTO app.customer_transaction_fact (
-  customer_id,
+INSERT INTO app.sales_history_ticket (
   external_transaction_id,
   source,
+  matched_customer_id,
+  account_key,
+  transaction_type,
   transaction_kind,
   status,
   store_id,
+  terminal,
+  ticket_number,
+  cashier_code,
   channel,
   promotion_code,
   coupon_code,
@@ -422,12 +443,17 @@ INSERT INTO app.customer_transaction_fact (
   purchased_at
 )
 SELECT
-  customer_id,
   external_transaction_id,
   $1,
+  matched_customer_id,
+  account_key,
+  transaction_type,
   transaction_kind,
   'completed',
   store_id,
+  terminal,
+  ticket_number,
+  cashier_code,
   'store',
   promotion_code,
   NULL,
@@ -442,44 +468,60 @@ WHERE positive_merch_line_count > 0
 `;
 
 const INSERT_ITEMS_SQL = `
-INSERT INTO app.customer_transaction_item (
-  transaction_id,
+INSERT INTO app.sales_history_ticket_line (
+  ticket_id,
+  line_number,
   sku_id,
+  sku_code,
   category_id,
   category_key,
   brand_id,
   brand_key,
+  column_label,
+  row_label,
   size_type,
   size_value,
   quantity,
+  unit_price,
+  unit_cost,
   net_amount,
   cost_amount,
   discount_amount,
   is_markdown,
-  is_return
+  is_return,
+  return_code,
+  salesperson_code
 )
 SELECT
-  f.id,
+  t.id,
+  l.line_number,
   l.sku_id,
+  l.sku_code,
   NULL,
   l.category_key,
   NULL,
   l.brand_key,
+  l.column_label,
+  l.row_label,
   l.size_type,
   l.size_value,
   l.qty,
+  ROUND(l.price::numeric, 2),
+  ROUND(l.unit_cost::numeric, 2),
   ROUND(l.extension::numeric, 2),
   ROUND(l.line_cost_amount::numeric, 2),
   ROUND(l.line_discount_amount::numeric, 2),
   FALSE,
   CASE
-    WHEN f.transaction_kind = 'return' THEN TRUE
+    WHEN t.transaction_kind = 'return' THEN TRUE
     ELSE l.is_return_line
-  END
+  END,
+  l.return_code,
+  l.salesperson_code
 FROM stage_rics_ticket_line_ready l
-JOIN app.customer_transaction_fact f
-  ON f.external_transaction_id = l.external_transaction_id
- AND f.source = $1
+JOIN app.sales_history_ticket t
+  ON t.external_transaction_id = l.external_transaction_id
+ AND t.source = $1
 WHERE NOT l.is_discount_line
   AND l.sku_code IS NOT NULL
   AND (l.qty <> 0 OR l.extension <> 0)
@@ -492,12 +534,17 @@ SELECT
     FROM stage_rics_ticket_header_raw h
     WHERE UPPER(COALESCE(BTRIM(h.posted), '')) = 'Y'
       AND NOT (LOWER(COALESCE(BTRIM(h.voided), 'f')) IN ('t', 'true', '1', 'y', 'yes'))
-      AND BTRIM(COALESCE(h.trans_type, '')) IN ('1', '4')
+      AND BTRIM(COALESCE(h.trans_type, '')) IN ('1', '2', '3', '4')
   ) AS candidateHeaders,
   (
     SELECT COUNT(*)
     FROM stage_rics_ticket_header_clean
-  ) AS matchedHeaders,
+  ) AS importedHeaders,
+  (
+    SELECT COUNT(*)
+    FROM stage_rics_ticket_header_clean
+    WHERE matched_customer_id IS NOT NULL
+  ) AS matchedCustomers,
   (
     SELECT COUNT(*)
     FROM stage_rics_ticket_fact_source
@@ -506,10 +553,10 @@ SELECT
   ) AS factRows,
   (
     SELECT COUNT(*)
-    FROM app.customer_transaction_item i
-    JOIN app.customer_transaction_fact f
-      ON f.id = i.transaction_id
-    WHERE f.source = $1
+    FROM app.sales_history_ticket_line i
+    JOIN app.sales_history_ticket t
+      ON t.id = i.ticket_id
+    WHERE t.source = $1
   ) AS itemRows
 `;
 
@@ -555,7 +602,7 @@ function parseArgs(argv: string[]): Args {
 
 function printUsage(): void {
   console.info(
-    'Usage: pnpm --filter @benlow-rics/api import:customer-transactions:rics -- [--header path] [--detail path] [--source rics_ticket_import] [--no-replace] [--skip-metrics]',
+    'Usage: pnpm --filter @benlow-rics/api import:sales-history:rics -- [--header path] [--detail path] [--source rics_ticket_import] [--no-replace] [--skip-metrics]',
   );
 }
 
@@ -570,8 +617,8 @@ async function copyCsvFile(client: Client, copySql: string, filePath: string): P
   await pipeline(fs.createReadStream(filePath), copyStream);
 }
 
-async function main(): Promise<void> {
-  const args = parseArgs(process.argv.slice(2));
+export async function importRicsSalesHistory(argv: string[] = process.argv.slice(2)): Promise<void> {
+  const args = parseArgs(argv);
   ensureFileExists(args.headerPath, 'header');
   ensureFileExists(args.detailPath, 'detail');
 
@@ -607,7 +654,7 @@ async function main(): Promise<void> {
     await client.query(CREATE_FACT_SOURCE_SQL);
 
     if (args.replace) {
-      await client.query('DELETE FROM app.customer_transaction_fact WHERE source = $1', [args.source]);
+      await client.query('DELETE FROM app.sales_history_ticket WHERE source = $1', [args.source]);
     }
 
     await client.query(INSERT_FACTS_SQL, [args.source]);
@@ -617,15 +664,17 @@ async function main(): Promise<void> {
     await client.query('COMMIT');
 
     const summary = summaryResult.rows[0];
-    console.info('[customer-kpi] Imported RITRNSSV customer transactions', {
+    console.info('[sales-history] Imported RITRNSSV ticket history', {
       source: args.source,
       headerPath: args.headerPath,
       detailPath: args.detailPath,
       candidateHeaders: Number(summary?.candidateheaders ?? 0),
-      matchedHeaders: Number(summary?.matchedheaders ?? 0),
+      importedHeaders: Number(summary?.importedheaders ?? 0),
+      matchedCustomers: Number(summary?.matchedcustomers ?? 0),
       factRows: Number(summary?.factrows ?? 0),
       itemRows: Number(summary?.itemrows ?? 0),
-      skippedDuplicateSource: 'RIMAILED.MDB exported but not loaded because canonical docs mark it as a duplicate customer-indexed copy of RITRNSSV.',
+      skippedDuplicateSource:
+        'RIMAILED.MDB exported but not loaded because canonical docs mark it as a duplicate customer-indexed copy of RITRNSSV.',
     });
   } catch (error) {
     await client.query('ROLLBACK').catch(() => undefined);
@@ -640,11 +689,17 @@ async function main(): Promise<void> {
   }
 }
 
-main()
-  .catch((error) => {
-    console.error('[customer-kpi] RICS customer transaction import failed', error);
-    process.exitCode = 1;
-  })
-  .finally(async () => {
-    await prisma.$disconnect();
-  });
+async function main(): Promise<void> {
+  await importRicsSalesHistory();
+}
+
+if (require.main === module) {
+  main()
+    .catch((error) => {
+      console.error('[sales-history] RITRNSSV import failed', error);
+      process.exitCode = 1;
+    })
+    .finally(async () => {
+      await prisma.$disconnect();
+    });
+}

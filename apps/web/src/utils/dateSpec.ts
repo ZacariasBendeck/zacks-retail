@@ -84,6 +84,29 @@ export function describeDateSpec(spec: DateSpec, today: Dayjs = dayjs()): string
 }
 
 /**
+ * Compact one-token form of a DateSpec for snapshot titles where the 100-char
+ * backend cap rules out the parenthesised window. `fixed` collapses to the
+ * date pair only; relative specs collapse to a short label.
+ */
+export function briefDateSpec(spec: DateSpec): string {
+  switch (spec.type) {
+    case 'fixed': {
+      const s = dayjs(spec.startDate).format('M/D/YY')
+      const e = dayjs(spec.endDate).format('M/D/YY')
+      return `${s}-${e}`
+    }
+    case 'this_month':
+      return 'this month'
+    case 'this_year':
+      return 'YTD'
+    case 'trailing_days':
+      return `last ${spec.days}d`
+    case 'trailing_months':
+      return `last ${spec.months}mo`
+  }
+}
+
+/**
  * Stable discriminator for use in a Select. A DateSpec maps to one of these
  * keys plus, for the parameterized specs, a numeric count. Callers use this
  * to drive a preset dropdown without forcing a full spec round-trip through

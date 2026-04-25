@@ -6,12 +6,15 @@ jest.setTimeout(30000);
 
 const TEST_SOURCE = 'customer_kpi_test';
 const DAY_MS = 24 * 60 * 60 * 1000;
-const STORE_ID_A = '11111111-1111-1111-1111-111111111111';
-const STORE_ID_B = '22222222-2222-2222-2222-222222222222';
+const STORE_ID_A = 11;
+const STORE_ID_B = 12;
 const CATEGORY_ID = '33333333-3333-3333-3333-333333333333';
 const BRAND_ID = '44444444-4444-4444-4444-444444444444';
 
 async function cleanupFixtures(): Promise<void> {
+  await prisma.salesHistoryTicket.deleteMany({
+    where: { source: TEST_SOURCE },
+  });
   await prisma.customerIntelligenceCustomer.deleteMany({
     where: { source: TEST_SOURCE },
   });
@@ -243,6 +246,86 @@ describe('Customer KPI module', () => {
     expect(sizeProfile).not.toBeNull();
     expect(sizeProfile?.purchaseCount).toBe(3);
     expect(sizeProfile?.confidenceScore.toNumber()).toBe(1);
+  });
+
+  it('computes metrics from imported sales history when customer transaction facts are absent', async () => {
+    const customer = await createCustomer('TEST-KPI-SALES-HISTORY');
+    const purchasedAt = new Date(Date.now() - 15 * DAY_MS);
+
+    await prisma.salesHistoryTicket.create({
+      data: {
+        source: TEST_SOURCE,
+        externalTransactionId: 'RITRNSSV:TEST-KPI-SALES-HISTORY:1001',
+        matchedCustomerId: customer.id,
+        accountKey: 'TEST-KPI-SALES-HISTORY',
+        transactionType: 1,
+        transactionKind: 'purchase',
+        status: 'completed',
+        storeId: 7,
+        terminal: 'A',
+        ticketNumber: 1001,
+        cashierCode: 'CASHIER-1',
+        channel: 'store',
+        promotionCode: 'PROMO7',
+        totalAmount: 140,
+        netAmount: 120,
+        costAmount: 70,
+        discountAmount: 20,
+        purchasedAt,
+        lines: {
+          create: [
+            {
+              lineNumber: 1,
+              categoryId: CATEGORY_ID,
+              categoryKey: 'running-shoes',
+              brandId: BRAND_ID,
+              brandKey: 'fleet-feet',
+              sizeType: 'shoe_us_men',
+              sizeValue: '9',
+              quantity: 1,
+              unitPrice: 120,
+              unitCost: 70,
+              netAmount: 120,
+              costAmount: 70,
+              discountAmount: 20,
+              isMarkdown: true,
+              isReturn: false,
+              salespersonCode: 'SP-7',
+            },
+          ],
+        },
+      },
+    });
+
+    const res = await request(app).get(`/api/v1/customers/${customer.id}/metrics`);
+    expect(res.status).toBe(200);
+    expect(res.body.customerId).toBe(customer.id);
+    expect(res.body.dataSource).toBe('transaction_fact');
+    expect(res.body.lifetimeValue).toBe(120);
+    expect(res.body.totalOrders).toBe(1);
+    expect(res.body.avgOrderValue).toBe(120);
+    expect(res.body.marginValue).toBe(50);
+    expect(res.body.orders30d).toBe(1);
+    expect(res.body.orders365d).toBe(1);
+    expect(res.body.discountRatio).toBeCloseTo(20 / 140, 4);
+    expect(res.body.primaryStoreId).toBe('7');
+    expect(res.body.onlineRatio).toBeCloseTo(0, 4);
+
+    const categoryFeature = await prisma.customerCategoryFeature.findFirst({
+      where: { customerId: customer.id, categoryId: CATEGORY_ID },
+    });
+    expect(categoryFeature?.purchaseCount365d).toBe(1);
+    expect(categoryFeature?.netRevenue365d.toNumber()).toBe(120);
+
+    const brandFeature = await prisma.customerBrandFeature.findFirst({
+      where: { customerId: customer.id, brandId: BRAND_ID },
+    });
+    expect(brandFeature?.purchaseCount365d).toBe(1);
+
+    const sizeProfile = await prisma.customerSizeProfile.findFirst({
+      where: { customerId: customer.id, sizeType: 'shoe_us_men', sizeValue: '9' },
+    });
+    expect(sizeProfile?.purchaseCount).toBe(1);
   });
 
   it('returns zeroed metrics for a customer with no transactions', async () => {

@@ -16,6 +16,10 @@ interface Props {
   // stores this verbatim under result_json; the saved-view page re-renders
   // from exactly this shape.
   getResultJson: () => unknown
+  // Optional one-line summary of dimensions / report type / criteria,
+  // woven into the auto-generated default title so the snapshots list
+  // shows what was actually run without opening each row.
+  getDescriptor?: () => string
   // Populated when the current run was kicked off from a saved template
   // (?templateId=... replay). Lets the runs list link back to the template
   // that produced each snapshot.

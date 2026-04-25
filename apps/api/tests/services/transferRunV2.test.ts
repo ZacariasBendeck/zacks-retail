@@ -7,6 +7,7 @@ function makeCell(overrides: Partial<WorkingCellStateV2>): WorkingCellStateV2 {
     skuCode: 'SKU-1',
     storeId: 1,
     storeLabel: '1 - One',
+    city: 'TEGUCIGALPA',
     region: 1,
     rowLabel: 'A',
     columnLabel: '7',
@@ -46,10 +47,20 @@ function makeCell(overrides: Partial<WorkingCellStateV2>): WorkingCellStateV2 {
 
 function makeFacts(cells: WorkingCellStateV2[], cooldownDays = 14): BalancingFactsV2 {
   const byStore = new Map<number, Map<string, WorkingCellStateV2>>()
+  const storeMetadata = new Map<number, { storeId: number; storeLabel: string; city: string | null; region: number | null; transferCapable: boolean }>()
   for (const cell of cells) {
     const storeCells = byStore.get(cell.storeId) ?? new Map<string, WorkingCellStateV2>()
     storeCells.set(`${cell.rowLabel}::${cell.columnLabel}`, cell)
     byStore.set(cell.storeId, storeCells)
+    if (!storeMetadata.has(cell.storeId)) {
+      storeMetadata.set(cell.storeId, {
+        storeId: cell.storeId,
+        storeLabel: cell.storeLabel,
+        city: cell.city,
+        region: cell.region,
+        transferCapable: true,
+      })
+    }
   }
 
   const workingSku: WorkingSkuStateV2 = {
@@ -105,10 +116,7 @@ function makeFacts(cells: WorkingCellStateV2[], cooldownDays = 14): BalancingFac
         includePerksOnly: false,
       },
     },
-    stores: [
-      { storeId: 1, storeLabel: '1 - One', region: 1, transferCapable: true },
-      { storeId: 2, storeLabel: '2 - Two', region: 1, transferCapable: true },
-    ],
+    stores: [...storeMetadata.values()],
     skus: [workingSku.sku],
     workingBySku: new Map([['sku-1', workingSku]]),
     metricAggregates: new Map(),
@@ -176,5 +184,37 @@ describe('transferRunV2 decision passes', () => {
     const result = buildBalancingPreviewLinesV2(makeFacts([receiver, donor], 14))
 
     expect(result.lines).toHaveLength(0)
+  })
+
+  it('blocks cross-city balancing moves', () => {
+    const receiver = makeCell({
+      storeId: 1,
+      storeLabel: '1 - One',
+      city: 'TEGUCIGALPA',
+      onHand: 0,
+      effectiveAvailableQty: 0,
+      needQty: 2,
+      metric: { metricValue: 3, displayValue: 3, netSoldUnits: 6, beginningOnHand: 1, endingOnHand: 0 },
+    })
+    const donor = makeCell({
+      storeId: 2,
+      storeLabel: '2 - Two',
+      city: 'SAN PEDRO SULA',
+      onHand: 3,
+      effectiveAvailableQty: 3,
+      needQty: 0,
+      spareQty: 2,
+      donorProtectQty: 1,
+      metric: { metricValue: 1, displayValue: 1, netSoldUnits: 2, beginningOnHand: 4, endingOnHand: 3 },
+    })
+
+    const result = buildBalancingPreviewLinesV2(makeFacts([receiver, donor]))
+
+    expect(result.lines).toHaveLength(0)
+    expect(result.exceptions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'BALANCING_CITY_LANE_RESTRICTION' }),
+      ]),
+    )
   })
 })

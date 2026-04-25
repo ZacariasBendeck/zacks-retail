@@ -24,6 +24,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { Client } from 'pg';
+import { loadManifest, requireTable, stageTable } from '../rics/sync/artifactManifest';
 
 const SEEDS_DIR = path.resolve(__dirname, '../../seeds/sku_extended_attributes');
 
@@ -46,6 +47,66 @@ interface KeywordRule {
   rics_keyword_token: string;
   dimension_code: string;
   value_code: string;
+}
+
+interface Args {
+  manifestPath: string | null;
+  sourceTable: string | null;
+}
+
+const DEFAULT_SOURCE_TABLE = 'rics_mirror.inventory_master';
+
+function parseArgs(): Args {
+  const args: Args = {
+    manifestPath: null,
+    sourceTable: null,
+  };
+  const argv = process.argv.slice(2);
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    switch (arg) {
+      case '--':
+        break;
+      case '--manifest':
+        args.manifestPath = String(argv[++i] ?? '').trim() || null;
+        break;
+      case '--source-table':
+        args.sourceTable = String(argv[++i] ?? '').trim() || null;
+        break;
+      case '--help':
+      case '-h':
+        printHelpAndExit(0);
+        break;
+      default:
+        throw new Error(`Unknown flag: ${arg}`);
+    }
+  }
+  if (args.manifestPath && args.sourceTable) {
+    throw new Error('Use either --manifest or --source-table, not both');
+  }
+  return args;
+}
+
+function printHelpAndExit(code: number): never {
+  console.log(
+    [
+      'Usage: seed:sku-attributes [--manifest <path> | --source-table <schema.table>]',
+      '',
+      'Defaults to reading keyword derivation input from rics_mirror.inventory_master.',
+      'Use --manifest to stage inventory_master.csv from a cutover artifact bundle instead.',
+    ].join('\n'),
+  );
+  process.exit(code);
+}
+
+function quoteQualifiedRef(ref: string): string {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$/.test(ref)) {
+    throw new Error(`Invalid table reference: ${ref}`);
+  }
+  return ref
+    .split('.')
+    .map((part) => `"${part}"`)
+    .join('.');
 }
 
 function parseCsv(filePath: string): Record<string, string>[] {
@@ -151,9 +212,11 @@ async function phase1CatalogUpsert(
 
 async function phase3KeywordDerivation(
   client: Client,
-  rules: KeywordRule[]
+  rules: KeywordRule[],
+  sourceTable: string
 ): Promise<{ rulesApplied: number; assignmentsInserted: number; unmapped: { token: string; count: number }[] }> {
   console.log('\n[3/4] Keyword derivation...');
+  const sourceRef = quoteQualifiedRef(sourceTable);
 
   // Look up dim + value ids for every rule; fail loudly if a rule references a missing catalog row.
   const { rows: lookup } = await client.query<{
@@ -197,7 +260,7 @@ async function phase3KeywordDerivation(
   await client.query(`
     INSERT INTO tmp_sku_keyword_tokens (sku, token)
     SELECT sku, upper(btrim(t))
-    FROM rics_mirror.inventory_master,
+    FROM ${sourceRef},
          LATERAL regexp_split_to_table(coalesce(key_words, ''), '\\s+') AS t
     WHERE t IS NOT NULL AND btrim(t) <> ''
   `);
@@ -256,11 +319,12 @@ interface CoverageRow {
   by_source: { keyword: number; excel: number; operator: number };
 }
 
-async function phase4CoverageReport(client: Client): Promise<CoverageRow[]> {
+async function phase4CoverageReport(client: Client, sourceTable: string): Promise<CoverageRow[]> {
   console.log('\n[4/4] Coverage report...');
+  const sourceRef = quoteQualifiedRef(sourceTable);
 
   const { rows: totalRow } = await client.query<{ n: string }>(
-    `SELECT COUNT(*)::text AS n FROM rics_mirror.inventory_master`
+    `SELECT COUNT(*)::text AS n FROM ${sourceRef}`
   );
   const totalSkus = Number(totalRow[0].n);
 
@@ -326,6 +390,7 @@ async function phase4CoverageReport(client: Client): Promise<CoverageRow[]> {
 }
 
 async function main(): Promise<void> {
+  const args = parseArgs();
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) throw new Error('DATABASE_URL env var is required');
 
@@ -358,13 +423,23 @@ async function main(): Promise<void> {
   const start = Date.now();
   let orphansDetected = false;
   try {
+    let sourceTable = args.sourceTable ?? DEFAULT_SOURCE_TABLE;
+    if (args.manifestPath) {
+      const { manifest, manifestDir } = loadManifest(args.manifestPath);
+      const inventoryMasterTable = requireTable(manifest, 'inventory_master');
+      sourceTable = await stageTable(client, manifestDir, inventoryMasterTable);
+      console.log(`source table: ${sourceTable} (staged from manifest)`);
+    } else {
+      console.log(`source table: ${sourceTable}`);
+    }
+
     const { orphanDims, orphanValues } = await phase1CatalogUpsert(client, dimensions, values);
     orphansDetected = orphanDims.length > 0 || orphanValues.length > 0;
 
     console.log('\n[2/4] Excel import — DEFERRED (15-dim phase, not Phase 1).');
 
-    await phase3KeywordDerivation(client, rules);
-    await phase4CoverageReport(client);
+    await phase3KeywordDerivation(client, rules, sourceTable);
+    await phase4CoverageReport(client, sourceTable);
   } finally {
     await client.end();
   }

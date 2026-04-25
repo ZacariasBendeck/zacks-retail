@@ -46,7 +46,7 @@ Every response from `/api/v1/skus/*` now carries `Deprecation: true` + `Link: </
 
 | Consumer | File(s) | Helper | Notes |
 |---|---|---|---|
-| POS add-to-ticket | `apps/api/src/routes/ticketRoutes.ts`, `apps/api/src/services/ticketService.ts` | `gateForSell` | Called during cashier's line-add; needs to intercept before the SKU hits the ticket. |
+| POS add-to-ticket | future `sales-pos` ticket-mutation service | `gateForSell` | Called during cashier line-add; needs to intercept before the SKU hits the ticket. |
 | Cart line add | `apps/api/src/routes/cartRoutes.ts` | `gateForSell` | Storefront add-to-cart. |
 | PO line create/edit | `apps/api/src/services/purchaseOrderService.ts` | `gateForReceive` | PO work is inherently receipt-bound — DRAFT SKUs are valid on a PO line. |
 | PO receipt | same as above, receive handler | `gateForReceive` | |
@@ -55,13 +55,13 @@ Every response from `/api/v1/skus/*` now carries `Deprecation: true` + `Link: </
 | Transfer order line | `apps/api/src/routes/transferOrderRoutes.ts` | `gateForAllocate` | |
 | Barcode print endpoint | TBD (route doesn't exist yet) | `gateForPrintBarcode` | Phase 5e / future. |
 
-These paths still read exclusively from SQLite or `rics_mirror`, so they can't see `app.sku` rows today and a gate there would be a no-op. The wire-up lands as each service is refactored so `app.sku` is the authoritative request-path SKU surface; any temporary mirror fallback is bootstrap-only, not the steady-state live path.
+Several of these paths still read exclusively from SQLite or `rics_mirror`, so they can't see `app.sku` rows today and a gate there would be a no-op. The wire-up lands as each service is refactored so `app.sku` is the authoritative request-path SKU surface; any temporary mirror fallback is bootstrap-only, not the steady-state live path.
 
 ### Wiring checklist for Phase 5g
 
 | Consumer | File(s) | Helper |
 |---|---|---|
-| POS add-to-ticket | `apps/api/src/routes/ticketRoutes.ts`, `apps/api/src/services/ticketService.ts` | `gateForSell` |
+| POS add-to-ticket | future `sales-pos` ticket-mutation service | `gateForSell` |
 | POS SKU lookup (register + inquiry) | `apps/api/src/routes/posSkuRoutes.ts` | `findActiveSku` |
 | Storefront product detail | `apps/api/src/routes/publicProductRoutes.ts` | `findActiveSku` |
 | Cart line add | `apps/api/src/routes/cartRoutes.ts` | `gateForSell` |

@@ -1,5 +1,6 @@
 import { Router, Request, Response, IRouter, NextFunction } from 'express';
 import * as reportService from '../services/reportService';
+import * as inventoryAgingPg from '../services/reports/inventoryAgingPg';
 import * as salesReportFacade from '../services/salesReporting/salesReportFacade';
 import { validateQuery } from '../middleware/validation';
 import { getDb } from '../db/database';
@@ -459,12 +460,33 @@ router.get('/rics-sales-by-day-store', validateQuery(ricsSalesByDayStoreQuerySch
     return;
   }
 
-  const report = await salesReportFacade.getSalesByDay({
-    storeNumber: query.store,
+  const fullReport = await salesReportFacade.getSalesByDay({
+    storeNumbers: [query.store],
     startDate: query.startDate,
     endDate: query.endDate,
     comparisonOffsetDays: query.comparisonOffsetDays,
   });
+
+  // Adapt the multi-store response back to the legacy single-store shape this
+  // alias documented (one block, with `storeLabel`, `rows`, `weeklyTotals`).
+  const block = fullReport.storeBreakdowns[0];
+  const report = {
+    storeNumber: block?.storeNumber ?? query.store,
+    storeName: block?.storeName ?? null,
+    storeLabel: block?.storeLabel ?? String(query.store),
+    startDate: fullReport.startDate,
+    endDate: fullReport.endDate,
+    comparisonOffsetDays: fullReport.comparisonOffsetDays,
+    comparisonStartDate: fullReport.comparisonStartDate,
+    comparisonEndDate: fullReport.comparisonEndDate,
+    rows: block?.rows ?? [],
+    weeklyTotals: block?.totals ?? {
+      netSales: 0, profit: 0, comparedNetSales: 0, comparedProfit: 0, dollarChange: 0, pctChange: null,
+    },
+    storeTotals: block?.totals ?? {
+      netSales: 0, profit: 0, comparedNetSales: 0, comparedProfit: 0, dollarChange: 0, pctChange: null,
+    },
+  };
 
   if (query.format === 'xlsx') {
     // Trailing "Weekly Totals" row mirrors the CSV output — keeps parity so
@@ -735,11 +757,16 @@ router.get('/inventory-turnover', validateQuery(inventoryTurnoverQuerySchema), a
 
 // ── Sell-Through Analysis Report ────────────────────────────────
 
+// Sell-through is data-driven against `app.taxonomy_department` and
+// `app.sku.category_number` — its department/category domains aren't the
+// SQLite-era 6-name enum or the 556–599 RICS code window the other reports
+// still validate against. Accept any string for department and any positive
+// integer for category.
 const sellThroughQuerySchema = z.object({
   startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Must be YYYY-MM-DD').optional(),
   endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Must be YYYY-MM-DD').optional(),
-  department: z.enum(ALLOWED_DEPARTMENTS).optional(),
-  category: categoryCodeQueryField,
+  department: z.string().trim().min(1).max(120).optional(),
+  category: z.coerce.number().int().positive().optional(),
   format: z.enum(['json', 'csv', 'xlsx']).default('json'),
   ...reportPaginationFields,
 });
@@ -804,19 +831,24 @@ router.get('/sell-through', validateQuery(sellThroughQuerySchema), async (req: R
     order?: 'asc' | 'desc';
   };
 
+  // Sell-through reads directly from app.* — `category` is the real
+  // category_number from app.sku, not a SQLite ref_categories.id, so skip the
+  // SQLite lookup translation that the other reports still rely on.
   const filters: reportService.SellThroughFilters = {
     startDate: query.startDate,
     endDate: query.endDate,
     department: query.department,
-    category: undefined,
+    category: query.category,
   };
-  const categoryLookup = getCategoryLookup();
-  const categoryIdFilter = toCategoryFilterId(query.category, categoryLookup.codeToId);
-  filters.category = categoryIdFilter;
+
+  // Pass-through "category id ⇄ code" mapping: the service already returns the
+  // real numeric category code, so translate via an empty map (identity
+  // fallback) to keep the existing `mapCategoryField` shape transformation.
+  const identityCategoryMap: ReadonlyMap<number, number> = new Map();
 
   if (query.format === 'csv' || query.format === 'xlsx') {
-    const detailsResult = reportService.getSellThroughDetails(filters);
-    const details = mapCategoryField(detailsResult.data, categoryLookup.idToCode);
+    const detailsResult = await reportService.getSellThroughDetails(filters);
+    const details = mapCategoryField(detailsResult.data, identityCategoryMap);
 
     if (query.format === 'xlsx') {
       await sendXlsx(res, {
@@ -884,11 +916,11 @@ router.get('/sell-through', validateQuery(sellThroughQuerySchema), async (req: R
 
   if (query.department) {
     const categories = mapCategoryField(
-      reportService.getSellThroughByCategory(query.department, filters),
-      categoryLookup.idToCode,
+      await reportService.getSellThroughByCategory(query.department, filters),
+      identityCategoryMap,
     );
-    const detailsResult = reportService.getSellThroughDetails(filters, stPaginationParams);
-    const details = mapCategoryField(detailsResult.data, categoryLookup.idToCode);
+    const detailsResult = await reportService.getSellThroughDetails(filters, stPaginationParams);
+    const details = mapCategoryField(detailsResult.data, identityCategoryMap);
 
     res.json({
       startDate: query.startDate ?? null,
@@ -902,7 +934,7 @@ router.get('/sell-through', validateQuery(sellThroughQuerySchema), async (req: R
   }
 
   // Top-level: department summary sorted by sell-through (lowest first = underperformers)
-  const departments = reportService.getSellThroughByDepartment(filters);
+  const departments = await reportService.getSellThroughByDepartment(filters);
   res.json({
     startDate: query.startDate ?? null,
     endDate: query.endDate ?? null,
@@ -912,10 +944,40 @@ router.get('/sell-through', validateQuery(sellThroughQuerySchema), async (req: R
 });
 
 // ── Inventory Aging Report ──────────────────────────────────────
+//
+// Backed by Postgres (`app.sku` / `app.stock_level` / RICS taxonomy). The
+// department and category filters accept the full RICS taxonomy, not just
+// the legacy 6-macro/556-599 women's-shoe MVP slice — so this schema is
+// looser than the on-hand / sales reports above.
+
+// `stores` is a comma-separated list of store numbers (e.g. "1,5,12"). The
+// Zod transform strips empties and coerces each token to an int so callers
+// can pass it as a single query string and the service receives a typed array.
+const storesListField = z
+  .string()
+  .optional()
+  .transform((raw) => {
+    if (!raw) return undefined;
+    const parsed = raw
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .map((s) => Number(s))
+      .filter((n) => Number.isInteger(n) && n > 0);
+    return parsed.length > 0 ? parsed : undefined;
+  });
 
 const inventoryAgingQuerySchema = z.object({
-  department: z.enum(ALLOWED_DEPARTMENTS).optional(),
-  category: categoryCodeQueryField,
+  // `groupKey` is the value of whichever group dimension the operator drilled
+  // into (department description, sector number, vendor code, buyer code).
+  // Legacy callers may still send `department=…`; we accept both and prefer
+  // groupKey when set.
+  groupBy: z.enum(['department', 'sector', 'vendor', 'buyer']).default('department'),
+  groupKey: z.string().min(1).optional(),
+  department: z.string().min(1).optional(),
+  category: z.coerce.number().int().min(1).max(999).optional(),
+  stores: storesListField,
+  bucketScheme: z.enum(['30_60_90', '60_120_180', '90_180_270']).default('30_60_90'),
   format: z.enum(['json', 'csv', 'xlsx']).default('json'),
   ...reportPaginationFields,
 });
@@ -929,12 +991,16 @@ const inventoryAgingQuerySchema = z.object({
  *     parameters:
  *       - name: department
  *         in: query
- *         schema: { type: string, enum: [FORMAL, CASUAL, FIESTA, SANDALIAS, BOOTS, COMFORT] }
- *         description: Filter to a specific department
+ *         schema: { type: string }
+ *         description: RICS department description (e.g. "ZAPATO MARCA HOMBRE"). Pass "Unmapped" for stock whose category is outside any department range.
  *       - name: category
  *         in: query
- *         schema: { type: integer, minimum: 556, maximum: 599 }
- *         description: Filter to a specific category (requires department)
+ *         schema: { type: integer, minimum: 1, maximum: 999 }
+ *         description: Filter to a specific RICS category number (requires department)
+ *       - name: bucketScheme
+ *         in: query
+ *         schema: { type: string, enum: [30_60_90, 60_120_180, 90_180_270], default: 30_60_90 }
+ *         description: Aging-bucket boundary preset. Last bucket is the "flagged" threshold (90 / 180 / 270 days).
  *       - name: format
  *         in: query
  *         schema: { type: string, enum: [json, csv], default: json }
@@ -961,23 +1027,27 @@ const inventoryAgingQuerySchema = z.object({
 router.get('/inventory-aging', validateQuery(inventoryAgingQuerySchema), async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
   const query = (req as any).validatedQuery as {
+    groupBy: inventoryAgingPg.GroupBy;
+    groupKey?: string;
     department?: string;
     category?: number;
+    stores?: number[];
+    bucketScheme: inventoryAgingPg.BucketScheme;
     format: 'json' | 'csv' | 'xlsx';
     page: number;
     pageSize: number;
     sort?: string;
     order?: 'asc' | 'desc';
   };
-  const categoryLookup = getCategoryLookup();
-  const categoryIdFilter = toCategoryFilterId(query.category, categoryLookup.codeToId);
+  const effectiveGroupKey = query.groupKey ?? query.department;
 
   if (query.format === 'csv' || query.format === 'xlsx') {
-    const detailsResult = reportService.getAgingDetails({
-      department: query.department,
-      category: categoryIdFilter,
-    });
-    const details = mapCategoryField(detailsResult.data, categoryLookup.idToCode);
+    const detailsResult = await inventoryAgingPg.getAgingDetails({
+      groupKey: effectiveGroupKey,
+      category: query.category,
+      stores: query.stores,
+    }, undefined, query.bucketScheme, query.groupBy);
+    const details = detailsResult.data;
 
     if (query.format === 'xlsx') {
       await sendXlsx(res, {
@@ -1052,25 +1122,54 @@ router.get('/inventory-aging', validateQuery(inventoryAgingQuerySchema), async (
   // JSON response
   const agingPaginationParams = { page: query.page, pageSize: query.pageSize, sort: query.sort, order: query.order };
 
-  if (query.department) {
-    const detailsResult = reportService.getAgingDetails({
-      department: query.department,
-      category: categoryIdFilter,
-    }, agingPaginationParams);
-    const details = mapCategoryField(detailsResult.data, categoryLookup.idToCode);
+  if (effectiveGroupKey) {
+    const detailsResult = await inventoryAgingPg.getAgingDetails({
+      groupKey: effectiveGroupKey,
+      category: query.category,
+      stores: query.stores,
+    }, agingPaginationParams, query.bucketScheme, query.groupBy);
 
     res.json({
-      department: query.department,
-      details,
+      groupBy: query.groupBy,
+      groupKey: effectiveGroupKey,
+      // `department` retained for backward compatibility with older callers.
+      department: query.groupBy === 'department' ? effectiveGroupKey : undefined,
+      bucketScheme: query.bucketScheme,
+      details: detailsResult.data,
       pagination: detailsResult.pagination,
     });
     return;
   }
 
-  // Top-level: department summary with aging buckets
-  const departments = reportService.getAgingByDepartment();
-  res.json({ departments });
+  // Top-level: group summary with aging buckets
+  const groups = await inventoryAgingPg.getAgingByGroup({
+    groupBy: query.groupBy,
+    stores: query.stores,
+    scheme: query.bucketScheme,
+  });
+  res.json({
+    groupBy: query.groupBy,
+    bucketScheme: query.bucketScheme,
+    // `departments` alias kept so older clients that only know about the
+    // department dimension still parse the response.
+    departments: groups.map((g) => ({ ...g, department: g.groupLabel })),
+    groups,
+  });
   } catch (err) { next(err); }
+});
+
+// ── Inventory Aging — dimensions endpoint ───────────────────────────
+//
+// Lightweight metadata for the page header: which stores currently hold
+// stock so the multi-select can populate. Group-by options are static and
+// known to the front end, so they are not fetched.
+router.get('/inventory-aging/dimensions', async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    const stores = await inventoryAgingPg.getStoresWithStock();
+    res.json({ stores });
+  } catch (err) {
+    next(err);
+  }
 });
 
 function escapeCsv(value: string | null): string {
@@ -1145,9 +1244,9 @@ const salesHistoryByMonthQuerySchema = z.object({
       );
       return known.length > 0 ? known : (['netSales'] as const);
     }),
-  // Deferred-metrics list — request names that are Phase 2 (BOH, ROI, Turns).
-  // Route accepts them so the UI can surface "this would compute X if we
-  // had monthly inventory history" messaging, but the facade returns zeros.
+  // Legacy compatibility only. Beginning On-Hand / ROI / Turns are now backed
+  // by owned inventory-history tables, but callers may still send
+  // `deferredMetrics` on the query string and expect it to echo back.
   deferredMetrics: z
     .string()
     .optional()
@@ -1178,9 +1277,8 @@ const salesHistoryByMonthQuerySchema = z.object({
  *     summary: Sales History by Month — 12-month trailing pivot (RICS Ch. 6 p. 95) — v2
  *     description: >
  *       Full-parity Sales History by Month report. Supports the eight-metric "Data to
- *       Print" checklist (only Quantity Sold, Net Sales, % of Store Net Sales, Profit
- *       and Gross Profit % are produced in Phase 1; Beginning On-Hand / ROI% / Turns
- *       defer to Phase 2 with the Monthly Inventory History table), all three detail
+ *       Print" checklist including Beginning On-Hand, ROI%, and Turns via the owned
+ *       inventory-history tables, all three detail
  *       levels, and seven criteria facets following the RICS criteria grammar
  *       (ranges, lists, exclusions, wildcards).
  *     tags: [Reports]
@@ -1209,7 +1307,7 @@ const salesHistoryByMonthQuerySchema = z.object({
  *       - name: deferredMetrics
  *         in: query
  *         schema: { type: string }
- *         description: Metric keys whose data source isn't available yet (beginningOnHand, roiPct, turns). Echoed back in the response for UI display.
+ *         description: Legacy compatibility only. Any recognized metric names are echoed back in the response for UI display.
  *       - name: critStores
  *         in: query
  *         schema: { type: string }

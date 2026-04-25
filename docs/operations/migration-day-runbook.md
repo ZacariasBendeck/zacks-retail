@@ -11,17 +11,16 @@ This is the canonical sequence for a clean migration window:
 3. extract an immutable CSV artifact pack from that frozen backup,
 4. import those CSVs directly into owned Postgres tables,
 5. verify the owned tables and operator workflows,
-6. promote the Vercel production deployment and execute smoke tests,
+6. promote the Render production deployment and execute smoke tests,
 7. make a go / no-go decision.
 
 Hosted Postgres must not carry a `rics_mirror` schema.
 
 ## Assumed production shape
 
-- `apps/web` is deployed on Vercel.
-- The API + Postgres live outside Vercel.
-- MDB files and CSV artifact packs are never uploaded to Vercel.
-- Validation passes before Vercel promotion.
+- The production runtime is hosted on Render.
+- MDB files and CSV artifact packs are never uploaded into the live Render service.
+- Validation passes before Render promotion.
 
 ## Current blockers before true cutover
 
@@ -49,7 +48,7 @@ Do not treat this runbook as proof that final business cutover is ready until th
    - delete transient uploaded copies after the rehearsal.
 5. Run `verify:cutover-readiness` plus module-specific DB audits.
 6. Run real operator workflows against staging.
-7. Rehearse the Vercel promotion/rollback steps.
+7. Rehearse the Render promotion/rollback steps.
 8. Record every mismatch vs RICS, fix it, and repeat the loop.
 
 ### T-1d
@@ -57,7 +56,7 @@ Do not treat this runbook as proof that final business cutover is ready until th
 1. Run a final full rehearsal on staging with the exact T-0 sequence.
 2. Confirm the latest artifact pack and manifests are retained.
 3. Confirm `verify:cutover-readiness` passes.
-4. Confirm the Vercel production deployment and rollback target are known.
+4. Confirm the Render production deployment and rollback target are known.
 5. Prepare the final MDB backup destination.
 6. Prepare the transient artifact-storage location used by the load runner.
 7. Confirm who gives the final go / no-go decision.
@@ -107,10 +106,10 @@ Migration day is blocked if any of these are true:
 - DB audits do not match the expected imported counts
 - operator smoke tests expose a critical mismatch vs RICS
 
-#### 6. Promote the Vercel production deployment
+#### 6. Promote the Render production deployment
 
 - Promote only after the validation gate passes.
-- Point operators at the promoted Vercel production URL.
+- Point operators at the promoted Render production URL.
 - Run migration-day smoke tests immediately after promotion.
 
 #### 7. Go / no-go decision
@@ -120,21 +119,23 @@ Go only when all are true:
 - the final MDB backup exists and is readable
 - the final extract + direct-import sequence completed successfully
 - no blocking mismatches remain
-- the promoted Vercel deployment is healthy
+- the promoted Render deployment is healthy
 - real operators can complete the smoke tests
 
 ## Rollback
 
 If the migration window fails:
 
-1. If failure happens before Vercel promotion, leave production traffic on the prior deployment and keep Postgres as-is for diagnosis.
-2. If failure happens after Vercel promotion, roll Vercel back before resuming RICS operations.
+1. If failure happens before Render promotion, leave production traffic on the prior deployment and keep Postgres as-is for diagnosis.
+2. If failure happens after Render promotion, roll Render back before resuming RICS operations.
 3. Resume operations in RICS from the confirmed legacy state.
 4. Preserve the CSV artifact pack, manifest, and logs with the migration record so the failure can be replayed exactly.
 5. Log the exact failing check, workflow, or reconciliation gap.
 
 ## Related
 
+- [docs/operations/render-conversion-operator-runbook.md](render-conversion-operator-runbook.md)
 - [docs/operations/rics-csv-promotion-playbook.md](rics-csv-promotion-playbook.md)
 - [docs/dev/specs/2026-04-24-vercel-cutover-artifact-flow.md](../dev/specs/2026-04-24-vercel-cutover-artifact-flow.md)
+- [docs/operations/render-conversion-day-matrix.md](render-conversion-day-matrix.md)
 - [docs/operations/rics-mirror-sync.md](rics-mirror-sync.md)

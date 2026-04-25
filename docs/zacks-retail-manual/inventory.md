@@ -129,11 +129,11 @@ _TODO._
 
 _TODO._
 
-## Data sources (Phase A)
+## Data sources
 
-- **Primary read:** `rics_mirror.inventory_quantities` (per SKU × store), `rics_mirror.inv_changes` (movement ledger), `rics_mirror.inv_his` (history snapshots), `rics_mirror.inventory_master` (SKU attributes), `rics_mirror.inv_catalog`.
-- **Primary write (Phase A):** none from the app — inventory changes today still originate in RICS and land in `rics_mirror` on the next reload.
-- **Future (Phase B+):** `inventory.*` schema will own stock_on_hand, movement, transfer, count_session.
+- **Primary read during rehearsals:** owned Postgres tables in `app.*`, including `app.stock_level`, `app.stock_movement`, `app.replenishment_target`, `app.inventory_history_snapshot`, and related child tables.
+- **Raw legacy input during rehearsals:** CSV artifacts extracted from the read-only MDB files. MDBs are not opened on the request path.
+- **Primary write during rehearsals:** app-owned Postgres tables only. Zack's Retail does not write back to MDBs.
 
 ## Related modules
 

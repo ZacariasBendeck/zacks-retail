@@ -73,10 +73,11 @@ export function sourceIsRics(): boolean {
 // ─────────────────────────── Phase 1 ──────────────────────────────────────
 
 export async function getSalesByDay(params: {
-  storeNumber: number;
+  storeNumbers: number[];
   startDate: string;
   endDate: string;
   comparisonOffsetDays?: number;
+  combineStores?: boolean;
 }): Promise<RicsSalesByDayByStoreReport> {
   if (!sourceIsRics()) throw new SalesSourceNotImplementedError(source());
   return ricsAdapter.getSalesByDay(params);

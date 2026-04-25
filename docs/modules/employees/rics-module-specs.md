@@ -15,7 +15,7 @@
 > 2. Legacy `RIPASS.Password` and `RISLSPSN.CashierPassword` are **ignored** for web login. The auth slice writes only to Postgres.
 > 3. MFA / TOTP deferred to Slice 2.
 > 4. The legacy RICS import (reading `RIPASS.Users` + `RISLSPSN.Salespeople` into Postgres `User` rows) is deferred to Slice 2.
-> 5. Legacy sales-password routes at `apps/api/src/routes/salesPasswordRoutes.ts` are **left untouched**. Modernizing them is a later slice.
+> 5. Register override modernization was deferred in Slice 1 and is now owned by the employee sales-password bridge rather than by a separate store-shared password layer.
 
 **Goal**
 
@@ -103,13 +103,13 @@ What this module explicitly **does not** own: the HTTP middleware that reads a s
 - **MFA is optional TOTP, enforced per role.** Any user can add a TOTP authenticator; `OWNER`, `ADMIN`, and `FINANCE` roles **require** it. MFA-required roles cannot skip the second factor on login. Recovery via admin reset (not self-service SMS). Backup codes issued once, hashed + single-use.
 - **Password reset = admin-reset + email-token, not self-service secret questions.** A user who forgets their password requests a reset; an `ADMIN` or `OWNER` triggers a reset, which emails a one-time token (15-min expiry) that lets the user set a new password. Legacy RICS had no self-service flow at all — this is new. Tokens are one-time and invalidated on use or admin revoke.
 - **Session invalidation on role or permission change.** When a user's `roleId` changes or their explicit grants/revokes list changes, all active sessions for that user are marked `revokedAt = now()` and the user is forced to re-authenticate. Prevents privilege drift mid-session. Token-refresh doesn't exist — sessions have hard expiry and are re-issued on login.
-- **Sales Password becomes per-employee, scope-tagged, with rate limit + lockout.** RICS's Change Sales Passwords (p. 52) stores **two shared passwords per store** — Manager + Ticket — rotated at the cashier's convenience. Zack's Retail keeps those as legacy store-level shared passwords for **backward compatibility of existing POS flows** (see the existing `salesPasswordRoutes.ts`), but adds a modern primary model:
+- **Sales Password becomes per-employee, scope-tagged, with rate limit + lockout.** RICS's Change Sales Passwords (p. 52) stores **two shared passwords per store** — Manager + Ticket — rotated at the cashier's convenience. Zack's Retail replaces that shared-password model with a modern primary model:
   - **Per-employee `SalesPassword`** — a short PIN (4–8 digits, argon2id-hashed) attached to `Employee`. Distinct from the User login password.
   - **Scope enum** — `MANAGER_OVERRIDE | VOID | REFUND | PRICE_OVERRIDE | PERKS_EDIT | DISCOUNT | NO_SALE | REPRINT | CLOSE_BATCH | PAY_OUT`. An employee's PIN grants zero-or-more of these scopes; a manager's PIN typically grants all; a cashier's PIN typically grants `NO_SALE` only.
   - **Rate limit**: 5 attempts per (employeeId, scope) per 10 minutes; after 5 failures the PIN is locked for 30 minutes. After 10 failures in 24 hours the PIN is revoked and an admin must re-issue.
   - **Audit**: every verify (pass or fail) writes a `SalesPasswordAudit` row with `employeeId`, `scope`, `ticketId?`, `outcome`, `actorCashierId` (the *cashier* who invoked the challenge, not necessarily the employee whose PIN was typed), `ip`, `createdAt`.
   - **Not a session**: verify returns a short-lived (60 sec) opaque `overrideToken`; `sales-pos` attaches that token to the single ticket action; replaying the token elsewhere fails.
-  The legacy per-store Manager / Ticket shared passwords continue to work as a compatibility layer via `salesPasswordRoutes.ts`; new installations default to per-employee PINs.
+  There is no supported shared per-store password compatibility layer; Enter Sales challenges use the employee-scoped PIN path.
 - **Commission base (sales vs. profit) lives on `Employee`, not on overrides.** Matches RICS p. 111: the rate base is inherited, only the rate number is overridden. Keeps override rows small.
 - **Override precedence: SKU-level > Category-level > Department-level > Employee default.** RICS specifies Department-level overrides only (p. 111). Zack's Retail generalizes to also allow Category and SKU-level overrides — useful for a buyer who wants to push a specific item or category. Precedence resolves deterministically at ticket-line commit time: first hit wins.
 - **Sales perks accrue on ticket-line commit via `employees` subscribing to `sales-pos` events.** RICS auto-posts SKU perks to the salesperson at sale time by direct table write (p. 155 + p. 4223). Zack's Retail has `employees` subscribe to `SaleLineCommittedEvent` (emitted by `sales-pos`), compute the perk amount (SKU's `perksAmount` × line qty for positive qty; negative qty reverses), and write a `CommissionLedgerEntry` + a `PerksLedgerEntry`. Clean contract, no cross-module table writes.
@@ -607,7 +607,7 @@ A **sales password** is *not* a session. It is a challenge-response for a single
 
 **Rate limit** — per `(employeeId, scope)` sliding window: 5 failed attempts per 10 minutes → `lockedUntil = now + 30 min`. 10 failed attempts in 24 hours → `active = false`, requires admin re-issue. Applies to unknown-PIN attempts keyed by `(invokingUserId, scope)`.
 
-**Legacy compatibility** — the existing `salesPasswordRoutes.ts` (per-store Manager / Ticket shared passwords) remains available behind a `USE_LEGACY_SALES_PASSWORDS` feature flag (owned by `platform`). When the flag is off, all new POS flows use the per-employee PIN. When on, the per-store passwords are checked first and the per-employee PINs are a fallback — this is the migration path for existing deployments.
+**Compatibility stance** — supported POS flows use the per-employee PIN and override-token path only. There is no separate store-shared password layer in the supported runtime.
 
 ## Time clock (the hours side)
 
@@ -793,10 +793,7 @@ Seed roles:
 - `POST  /api/v1/employees/sales-passwords/consume-token { overrideToken, scope, ticketId, action }` — internal; called by `sales-pos` when it applies the override
 - `GET   /api/v1/employees/sales-password-audit?employeeId=&scope=&from=&to=`
 
-**Legacy per-store shared passwords** (kept for backward compat; routes already exist in `apps/api/src/routes/salesPasswordRoutes.ts`)
-- `GET  /api/v1/stores/:storeId/sales-passwords/:kind/status`
-- `PUT  /api/v1/stores/:storeId/sales-passwords/:kind`
-- `POST /api/v1/stores/:storeId/sales-passwords/:kind/verify`
+No separate per-store shared-password API is part of the supported runtime.
 
 ### Outbound events
 
@@ -900,4 +897,4 @@ All reads are idempotent; mutations go through HTTP or the contract adapter's au
 
 ---
 
-**Spec author notes:** this spec is ~540 lines and sits at the upper end of the target band — driven by (a) the three-way split of Employee / User / SalesPassword requiring fuller model coverage than most modules, (b) the seed permission catalog which many downstream modules need visibility into, and (c) the auth + sales-password flows which are net-new to Zack's Retail with no RICS analog. Implementation order: `User` + `Role` + `Permission` catalog first (unblocks `platform` auth middleware, which unblocks every other module), then `Employee` + `SalesPassword`, then `TimeClock`, then commission ledger + `EmployeePeriod`. Keep `salesPasswordRoutes.ts` (legacy per-store shared passwords) working throughout — it's a migration path, not dead code.
+**Spec author notes:** this spec is ~540 lines and sits at the upper end of the target band — driven by (a) the three-way split of Employee / User / SalesPassword requiring fuller model coverage than most modules, (b) the seed permission catalog which many downstream modules need visibility into, and (c) the auth + sales-password flows which are net-new to Zack's Retail with no RICS analog. Implementation order: `User` + `Role` + `Permission` catalog first (unblocks `platform` auth middleware, which unblocks every other module), then `Employee` + `SalesPassword`, then `TimeClock`, then commission ledger + `EmployeePeriod`.

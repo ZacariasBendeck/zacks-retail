@@ -8,7 +8,8 @@
  * `-separate-store` variant keeps the per-store split (one row per
  * `(store, sku)` pair). Emits the unified `SalesPivotLeafRow` shape.
  *
- * Reads rics_mirror only (no MDB/OLEDB).
+ * Reads the app-owned imported baselines (`app.sales_history_ticket*`,
+ * `app.stock_level`, `app.sku`, taxonomy/store/vendor tables).
  */
 
 import { prisma } from '../../db/prisma';
@@ -20,6 +21,7 @@ import type {
 } from './types';
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const REPORT_TIME_ZONE = 'America/Tegucigalpa';
 
 function assertDate(v: string, field: string): void {
   if (!DATE_RE.test(v)) throw new Error(`${field} must be YYYY-MM-DD, got ${v}`);
@@ -36,10 +38,6 @@ function exclusiveEnd(iso: string): string {
   d.setUTCDate(d.getUTCDate() + 1);
   return d.toISOString().slice(0, 10);
 }
-
-const ON_HAND_SUM_SQL = Array.from({ length: 18 }, (_, i) =>
-  `COALESCE(on_hand_${String(i + 1).padStart(2, '0')}, 0)`,
-).join(' + ');
 
 interface SalesAggRow {
   store: number | null;
@@ -86,43 +84,42 @@ async function loadSalesAgg(params: {
   storeNumbers?: number[];
 }): Promise<SalesAggRow[]> {
   const storeClause = params.storeNumbers && params.storeNumbers.length > 0
-    ? ` AND h.store = ANY($5::int[])`
+    ? ` AND t.store_id = ANY($5::int[])`
     : '';
   // `store` is grouped only when we keep stores separated; otherwise it's
   // always NULL on the returned row and the aggregator sums across stores.
-  const storeSelect = params.separateStore ? 'h.store' : 'NULL::int';
-  const storeGroupBy = params.separateStore ? 'h.store,' : '';
+  const storeSelect = params.separateStore ? 't.store_id' : 'NULL::int';
+  const storeGroupBy = params.separateStore ? 't.store_id,' : '';
+  const tyStartExpr = `($1::date::timestamp AT TIME ZONE '${REPORT_TIME_ZONE}')`;
+  const tyEndExpr = `($2::date::timestamp AT TIME ZONE '${REPORT_TIME_ZONE}')`;
+  const lyStartExpr = `($3::date::timestamp AT TIME ZONE '${REPORT_TIME_ZONE}')`;
+  const lyEndExpr = `($4::date::timestamp AT TIME ZONE '${REPORT_TIME_ZONE}')`;
   const sql = `
     SELECT
       ${storeSelect} AS store,
-      d.sku AS sku,
+      UPPER(TRIM(s.code)) AS sku,
       CASE
-        WHEN h.real_date >= $1::date AND h.real_date < $2::date THEN 'TY'
-        WHEN h.real_date >= $3::date AND h.real_date < $4::date THEN 'LY'
+        WHEN t.purchased_at >= ${tyStartExpr} AND t.purchased_at < ${tyEndExpr} THEN 'TY'
+        WHEN t.purchased_at >= ${lyStartExpr} AND t.purchased_at < ${lyEndExpr} THEN 'LY'
         ELSE NULL
       END AS year_bucket,
-      SUM(COALESCE(d.qty, 0))::float8 AS qty,
-      SUM(COALESCE(d.extension, 0))::float8 AS net_sales,
-      SUM(COALESCE(d.extension, 0) - COALESCE(d.cost, 0) * COALESCE(d.qty, 0))::float8 AS profit
-    FROM rics_mirror.ticket_header h
-    INNER JOIN rics_mirror.ticket_detail d
-      ON h.user_id    = d.user_id
-     AND h.batch_date = d.batch_date
-     AND h.terminal   = d.terminal
-     AND h.store      = d.store
-     AND h.ticket     = d.ticket
-     AND h.real_date  = d.real_date
+      SUM(COALESCE(l.quantity, 0))::float8 AS qty,
+      SUM(COALESCE(l.net_amount, 0))::float8 AS net_sales,
+      SUM(COALESCE(l.net_amount, 0) - COALESCE(l.cost_amount, 0))::float8 AS profit
+    FROM app.sales_history_ticket t
+    INNER JOIN app.sales_history_ticket_line l ON t.id = l.ticket_id
+    INNER JOIN app.sku s ON s.id = l.sku_id
     WHERE
-      h.trans_type = 1
-      AND h.voided  = false
+      t.status = 'completed'
+      AND COALESCE(BTRIM(s.code), '') <> ''
       AND (
-        (h.real_date >= $1::date AND h.real_date < $2::date) OR
-        (h.real_date >= $3::date AND h.real_date < $4::date)
+        (t.purchased_at >= ${tyStartExpr} AND t.purchased_at < ${tyEndExpr}) OR
+        (t.purchased_at >= ${lyStartExpr} AND t.purchased_at < ${lyEndExpr})
       )${storeClause}
-    GROUP BY ${storeGroupBy} d.sku,
+    GROUP BY ${storeGroupBy} UPPER(TRIM(s.code)),
       CASE
-        WHEN h.real_date >= $1::date AND h.real_date < $2::date THEN 'TY'
-        WHEN h.real_date >= $3::date AND h.real_date < $4::date THEN 'LY'
+        WHEN t.purchased_at >= ${tyStartExpr} AND t.purchased_at < ${tyEndExpr} THEN 'TY'
+        WHEN t.purchased_at >= ${lyStartExpr} AND t.purchased_at < ${lyEndExpr} THEN 'LY'
         ELSE NULL
       END
   `;
@@ -138,21 +135,21 @@ async function loadOnHandAgg(params: {
   storeNumbers?: number[];
 }): Promise<OnHandAggRow[]> {
   const storeClause = params.storeNumbers && params.storeNumbers.length > 0
-    ? ` WHERE iq.store = ANY($1::int[])`
+    ? ` WHERE sl.store_id = ANY($1::int[])`
     : '';
-  const storeSelect = params.separateStore ? 'iq.store' : 'NULL::int';
-  const storeGroupBy = params.separateStore ? 'iq.store,' : '';
+  const storeSelect = params.separateStore ? 'sl.store_id' : 'NULL::int';
+  const storeGroupBy = params.separateStore ? 'sl.store_id,' : '';
   const sql = `
     SELECT
       ${storeSelect} AS store,
-      iq.sku AS sku,
-      SUM(${ON_HAND_SUM_SQL})::float8 AS on_hand_qty,
-      SUM((${ON_HAND_SUM_SQL}) * COALESCE(im.current_cost, 0))::float8 AS on_hand_cost_val
-    FROM rics_mirror.inventory_quantities iq
-    INNER JOIN rics_mirror.inventory_master im ON im.sku = iq.sku
+      UPPER(TRIM(s.code)) AS sku,
+      SUM(COALESCE(sl.on_hand, 0))::float8 AS on_hand_qty,
+      SUM(COALESCE(sl.on_hand, 0) * COALESCE(s.current_cost, 0))::float8 AS on_hand_cost_val
+    FROM app.stock_level sl
+    INNER JOIN app.sku s ON s.id = sl.sku_id
     ${storeClause}
-    GROUP BY ${storeGroupBy} iq.sku
-    HAVING SUM(${ON_HAND_SUM_SQL}) <> 0
+    GROUP BY ${storeGroupBy} UPPER(TRIM(s.code))
+    HAVING SUM(COALESCE(sl.on_hand, 0)) <> 0
   `;
   const args: unknown[] = [];
   if (params.storeNumbers && params.storeNumbers.length > 0) {
@@ -166,11 +163,11 @@ async function loadMasterForSkus(skus: string[]): Promise<MasterRow[]> {
   return prisma.$queryRawUnsafe<MasterRow[]>(
     `
       SELECT
-        im.sku AS sku,
-        im."desc" AS desc,
-        im.category AS category
-      FROM rics_mirror.inventory_master im
-      WHERE UPPER(TRIM(im.sku)) = ANY($1::text[])
+        UPPER(TRIM(s.code)) AS sku,
+        s.description_rics AS desc,
+        s.category_number AS category
+      FROM app.sku s
+      WHERE UPPER(TRIM(s.code)) = ANY($1::text[])
     `,
     skus,
   );
@@ -185,17 +182,17 @@ async function loadTaxonomy(): Promise<TaxonomyRow[]> {
       d."desc" AS dept_desc,
       s.number AS sector,
       s."desc" AS sector_desc
-    FROM rics_mirror.categories c
-    LEFT JOIN rics_mirror.departments d
+    FROM app.taxonomy_category c
+    LEFT JOIN app.taxonomy_department d
       ON c.number BETWEEN d.beg_categ AND d.end_categ
-    LEFT JOIN rics_mirror.sectors s
+    LEFT JOIN app.taxonomy_sector s
       ON d.number BETWEEN s.beg_dept AND s.end_dept
   `);
 }
 
 async function loadStores(): Promise<StoreRow[]> {
   return prisma.$queryRawUnsafe<StoreRow[]>(
-    `SELECT number, "desc" FROM rics_mirror.store_master`,
+    `SELECT number, "desc" FROM app.store_master`,
   );
 }
 

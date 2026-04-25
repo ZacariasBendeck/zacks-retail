@@ -1,4 +1,5 @@
 import { getDb } from '../db/database';
+import { prisma } from '../db/prisma';
 import { PaginationEnvelope } from '../models/sku';
 
 export interface ReportPageParams {
@@ -661,224 +662,352 @@ export interface SellThroughDetail {
   sellThroughPct: number;
 }
 
-function buildSellThroughDateClauses(filters: SellThroughFilters): {
-  salesDateClause: string;
-  salesDateParams: (string | number)[];
-  poDateClause: string;
-  poDateParams: (string | number)[];
+// Sell-through reads from Postgres (`app.*`), not the legacy SQLite `skus`/
+// `sales_transactions`/`purchase_order_lines` tables. Sources:
+//   - Sales:    app.sales_history_ticket + app.sales_history_ticket_line
+//               (status='completed', dated by purchased_at)
+//   - Received: app.purchase_order_legacy_line.received_qtys (int[]) summed
+//               via unnest, paired with app.purchase_order_legacy.last_received_at
+//   - SKUs:     app.sku (joined to legacy PO lines by sku_code, 100% coverage)
+//   - Department label: app.taxonomy_department.desc, joined to
+//               app.sku.category_number via BETWEEN beg_categ AND end_categ.
+// Note on totalStyles: app.sku.style is sparsely populated, so we count
+// distinct sku.id (one row per SKU) for the "Styles" column. The API contract
+// keeps the field name to match the existing frontend.
+function buildSellThroughDateExprs(filters: SellThroughFilters): {
+  args: unknown[];
+  salesDate: string;   // appended to sales WHERE — leading space included or empty
+  recvDate: string;    // appended to recv  WHERE — leading space included or empty
 } {
-  const salesConds: string[] = [];
-  const salesParams: (string | number)[] = [];
-  const poConds: string[] = [];
-  const poParams: (string | number)[] = [];
+  const args: unknown[] = [];
+  const sales: string[] = [];
+  const recv: string[] = [];
 
   if (filters.startDate) {
-    salesConds.push('st.sold_at >= ?');
-    salesParams.push(filters.startDate);
-    poConds.push('po.created_at >= ?');
-    poParams.push(filters.startDate);
+    args.push(filters.startDate);
+    const idx = `$${args.length}::timestamptz`;
+    sales.push(`t.purchased_at >= ${idx}`);
+    recv.push(`po.last_received_at >= ${idx}`);
   }
   if (filters.endDate) {
-    salesConds.push('st.sold_at <= ?');
-    salesParams.push(filters.endDate + 'T23:59:59');
-    poConds.push('po.created_at <= ?');
-    poParams.push(filters.endDate + 'T23:59:59');
+    args.push(filters.endDate + 'T23:59:59');
+    const idx = `$${args.length}::timestamptz`;
+    sales.push(`t.purchased_at <= ${idx}`);
+    recv.push(`po.last_received_at <= ${idx}`);
   }
 
   return {
-    salesDateClause: salesConds.length > 0 ? ' AND ' + salesConds.join(' AND ') : '',
-    salesDateParams: salesParams,
-    poDateClause: poConds.length > 0 ? ' AND ' + poConds.join(' AND ') : '',
-    poDateParams: poParams,
+    args,
+    salesDate: sales.length ? ` AND ${sales.join(' AND ')}` : '',
+    recvDate: recv.length ? ` AND ${recv.join(' AND ')}` : '',
   };
 }
 
-export function getSellThroughByDepartment(filters: SellThroughFilters = {}): SellThroughDepartmentSummary[] {
-  const db = getDb();
-  const { salesDateClause, salesDateParams, poDateClause, poDateParams } = buildSellThroughDateClauses(filters);
+interface PgDeptRow {
+  department: string;
+  total_styles: number;
+  total_units_sold: number;
+  total_units_received: number;
+  sell_through_pct: number;
+}
 
-  const rows = db.prepare(`
-    SELECT
-      s.department,
-      COUNT(DISTINCT s.style) AS total_styles,
-      COALESCE(sales_agg.total_sold, 0) AS total_units_sold,
-      COALESCE(recv_agg.total_received, 0) AS total_units_received,
-      CASE
-        WHEN COALESCE(recv_agg.total_received, 0) = 0 THEN 0
-        ELSE ROUND(CAST(COALESCE(sales_agg.total_sold, 0) AS REAL) / recv_agg.total_received * 100, 1)
-      END AS sell_through_pct
-    FROM skus s
-    LEFT JOIN (
-      SELECT s2.department, SUM(st.quantity) AS total_sold
-      FROM sales_transactions st
-      JOIN skus s2 ON s2.id = st.sku_id
-      WHERE s2.active = 1${salesDateClause}
-      GROUP BY s2.department
-    ) sales_agg ON sales_agg.department = s.department
-    LEFT JOIN (
-      SELECT s3.department, SUM(pol.quantity_received) AS total_received
-      FROM purchase_order_lines pol
-      JOIN skus s3 ON s3.id = pol.sku_id
-      JOIN purchase_orders po ON po.id = pol.po_id
-      WHERE s3.active = 1 AND po.status NOT IN ('DRAFT', 'CANCELLED')${poDateClause}
-      GROUP BY s3.department
-    ) recv_agg ON recv_agg.department = s.department
-    WHERE s.active = 1
-    GROUP BY s.department
-    ORDER BY sell_through_pct ASC
-  `).all(...salesDateParams, ...poDateParams) as unknown as SellThroughDepartmentRow[];
+export async function getSellThroughByDepartment(filters: SellThroughFilters = {}): Promise<SellThroughDepartmentSummary[]> {
+  const { args, salesDate, recvDate } = buildSellThroughDateExprs(filters);
 
+  const sql = `
+    WITH sales AS (
+      SELECT s.id AS sku_id,
+             s.category_number,
+             SUM(COALESCE(l.quantity, 0))::int AS units_sold
+      FROM app.sales_history_ticket t
+      JOIN app.sales_history_ticket_line l ON l.ticket_id = t.id
+      JOIN app.sku s ON s.id = l.sku_id
+      WHERE t.status = 'completed'${salesDate}
+      GROUP BY s.id, s.category_number
+    ),
+    recv AS (
+      SELECT s.id AS sku_id,
+             s.category_number,
+             SUM(line_units)::int AS units_received
+      FROM (
+        SELECT pol.sku_code,
+               (SELECT COALESCE(SUM(q), 0) FROM unnest(pol.received_qtys) AS q) AS line_units,
+               po.last_received_at
+        FROM app.purchase_order_legacy_line pol
+        JOIN app.purchase_order_legacy po ON po.po_number = pol.po_number
+        WHERE 1=1${recvDate}
+      ) sub
+      JOIN app.sku s ON s.code = sub.sku_code
+      WHERE sub.line_units > 0
+      GROUP BY s.id, s.category_number
+    ),
+    combined AS (
+      SELECT COALESCE(sales.sku_id, recv.sku_id) AS sku_id,
+             COALESCE(sales.category_number, recv.category_number) AS category_number,
+             COALESCE(sales.units_sold, 0) AS units_sold,
+             COALESCE(recv.units_received, 0) AS units_received
+      FROM sales
+      FULL OUTER JOIN recv ON recv.sku_id = sales.sku_id
+    )
+    SELECT COALESCE(NULLIF(BTRIM(td."desc"), ''), '(Unmapped)') AS department,
+           COUNT(DISTINCT c.sku_id)::int AS total_styles,
+           COALESCE(SUM(c.units_sold), 0)::int AS total_units_sold,
+           COALESCE(SUM(c.units_received), 0)::int AS total_units_received,
+           CASE WHEN SUM(c.units_received) > 0
+                THEN ROUND(SUM(c.units_sold)::numeric / SUM(c.units_received) * 100, 1)::float8
+                ELSE 0::float8
+           END AS sell_through_pct
+    FROM combined c
+    LEFT JOIN app.taxonomy_department td
+      ON c.category_number BETWEEN td.beg_categ AND td.end_categ
+    GROUP BY 1
+    ORDER BY sell_through_pct ASC, department ASC
+  `;
+
+  const rows = await prisma.$queryRawUnsafe<PgDeptRow[]>(sql, ...args);
   return rows.map((r) => ({
     department: r.department,
-    totalStyles: r.total_styles,
-    totalUnitsSold: r.total_units_sold,
-    totalUnitsReceived: r.total_units_received,
-    sellThroughPct: r.sell_through_pct,
+    totalStyles: Number(r.total_styles),
+    totalUnitsSold: Number(r.total_units_sold),
+    totalUnitsReceived: Number(r.total_units_received),
+    sellThroughPct: Number(r.sell_through_pct),
   }));
 }
 
-export function getSellThroughByCategory(department: string, filters: SellThroughFilters = {}): SellThroughCategorySummary[] {
-  const db = getDb();
-  const { salesDateClause, salesDateParams, poDateClause, poDateParams } = buildSellThroughDateClauses(filters);
+interface PgCategRow {
+  category_id: number | null;
+  department: string;
+  total_styles: number;
+  total_units_sold: number;
+  total_units_received: number;
+  sell_through_pct: number;
+}
 
-  const rows = db.prepare(`
-    SELECT
-      s.category_id,
-      s.department,
-      COUNT(DISTINCT s.style) AS total_styles,
-      COALESCE(sales_agg.total_sold, 0) AS total_units_sold,
-      COALESCE(recv_agg.total_received, 0) AS total_units_received,
-      CASE
-        WHEN COALESCE(recv_agg.total_received, 0) = 0 THEN 0
-        ELSE ROUND(CAST(COALESCE(sales_agg.total_sold, 0) AS REAL) / recv_agg.total_received * 100, 1)
-      END AS sell_through_pct
-    FROM skus s
-    LEFT JOIN (
-      SELECT s2.category_id, SUM(st.quantity) AS total_sold
-      FROM sales_transactions st
-      JOIN skus s2 ON s2.id = st.sku_id
-      WHERE s2.active = 1 AND s2.department = ?${salesDateClause}
-      GROUP BY s2.category_id
-    ) sales_agg ON sales_agg.category_id = s.category_id
-    LEFT JOIN (
-      SELECT s3.category_id, SUM(pol.quantity_received) AS total_received
-      FROM purchase_order_lines pol
-      JOIN skus s3 ON s3.id = pol.sku_id
-      JOIN purchase_orders po ON po.id = pol.po_id
-      WHERE s3.active = 1 AND s3.department = ? AND po.status NOT IN ('DRAFT', 'CANCELLED')${poDateClause}
-      GROUP BY s3.category_id
-    ) recv_agg ON recv_agg.category_id = s.category_id
-    WHERE s.active = 1 AND s.department = ?
-    GROUP BY s.category_id
-    ORDER BY sell_through_pct ASC
-  `).all(department, ...salesDateParams, department, ...poDateParams, department) as unknown as SellThroughCategoryRow[];
+export async function getSellThroughByCategory(
+  department: string,
+  filters: SellThroughFilters = {},
+): Promise<SellThroughCategorySummary[]> {
+  const { args, salesDate, recvDate } = buildSellThroughDateExprs(filters);
+  args.push(department);
+  const deptIdx = `$${args.length}::text`;
 
+  const sql = `
+    WITH sales AS (
+      SELECT s.id AS sku_id,
+             s.category_number,
+             SUM(COALESCE(l.quantity, 0))::int AS units_sold
+      FROM app.sales_history_ticket t
+      JOIN app.sales_history_ticket_line l ON l.ticket_id = t.id
+      JOIN app.sku s ON s.id = l.sku_id
+      WHERE t.status = 'completed'${salesDate}
+      GROUP BY s.id, s.category_number
+    ),
+    recv AS (
+      SELECT s.id AS sku_id,
+             s.category_number,
+             SUM(line_units)::int AS units_received
+      FROM (
+        SELECT pol.sku_code,
+               (SELECT COALESCE(SUM(q), 0) FROM unnest(pol.received_qtys) AS q) AS line_units,
+               po.last_received_at
+        FROM app.purchase_order_legacy_line pol
+        JOIN app.purchase_order_legacy po ON po.po_number = pol.po_number
+        WHERE 1=1${recvDate}
+      ) sub
+      JOIN app.sku s ON s.code = sub.sku_code
+      WHERE sub.line_units > 0
+      GROUP BY s.id, s.category_number
+    ),
+    combined AS (
+      SELECT COALESCE(sales.sku_id, recv.sku_id) AS sku_id,
+             COALESCE(sales.category_number, recv.category_number) AS category_number,
+             COALESCE(sales.units_sold, 0) AS units_sold,
+             COALESCE(recv.units_received, 0) AS units_received
+      FROM sales
+      FULL OUTER JOIN recv ON recv.sku_id = sales.sku_id
+    )
+    SELECT c.category_number AS category_id,
+           COALESCE(NULLIF(BTRIM(td."desc"), ''), '(Unmapped)') AS department,
+           COUNT(DISTINCT c.sku_id)::int AS total_styles,
+           COALESCE(SUM(c.units_sold), 0)::int AS total_units_sold,
+           COALESCE(SUM(c.units_received), 0)::int AS total_units_received,
+           CASE WHEN SUM(c.units_received) > 0
+                THEN ROUND(SUM(c.units_sold)::numeric / SUM(c.units_received) * 100, 1)::float8
+                ELSE 0::float8
+           END AS sell_through_pct
+    FROM combined c
+    LEFT JOIN app.taxonomy_department td
+      ON c.category_number BETWEEN td.beg_categ AND td.end_categ
+    WHERE BTRIM(COALESCE(td."desc", '(Unmapped)')) = BTRIM(${deptIdx})
+    GROUP BY c.category_number, td."desc"
+    ORDER BY sell_through_pct ASC, c.category_number ASC
+  `;
+
+  const rows = await prisma.$queryRawUnsafe<PgCategRow[]>(sql, ...args);
   return rows.map((r) => ({
-    categoryId: r.category_id,
+    categoryId: r.category_id == null ? null : Number(r.category_id),
     department: r.department,
-    totalStyles: r.total_styles,
-    totalUnitsSold: r.total_units_sold,
-    totalUnitsReceived: r.total_units_received,
-    sellThroughPct: r.sell_through_pct,
+    totalStyles: Number(r.total_styles),
+    totalUnitsSold: Number(r.total_units_sold),
+    totalUnitsReceived: Number(r.total_units_received),
+    sellThroughPct: Number(r.sell_through_pct),
   }));
 }
 
+// Allow-list mapping detail-row sort fields onto SQL expressions.
 const SELL_THROUGH_SORT_MAP: Record<string, string> = {
-  skuCode: 's.sku_code',
-  brand: 'rb.name',
+  skuCode: 's.code',
+  brand: 'brand_name',
   style: 's.style',
-  department: 's.department',
-  price: 's.price',
+  department: 'department',
+  price: 's.retail_price',
   unitsSold: 'units_sold',
   unitsReceived: 'units_received',
   sellThroughPct: 'sell_through_pct',
 };
 
-export function getSellThroughDetails(
+interface PgDetailRow {
+  sku_id: string;
+  sku_code: string;
+  brand_name: string | null;
+  style: string | null;
+  color_name: string | null;
+  price: string | number;
+  category_id: number | null;
+  department: string;
+  units_sold: number;
+  units_received: number;
+  sell_through_pct: number;
+}
+
+export async function getSellThroughDetails(
   filters: SellThroughFilters,
   pagination?: ReportPageParams,
-): PaginationEnvelope<SellThroughDetail> {
-  const db = getDb();
-  const { salesDateClause, salesDateParams, poDateClause, poDateParams } = buildSellThroughDateClauses(filters);
+): Promise<PaginationEnvelope<SellThroughDetail>> {
+  const { args, salesDate, recvDate } = buildSellThroughDateExprs(filters);
 
-  const conditions = ['s.active = 1'];
-  const mainParams: (string | number)[] = [];
-
+  const filterConds: string[] = [];
   if (filters.department) {
-    conditions.push('s.department = ?');
-    mainParams.push(filters.department);
+    args.push(filters.department);
+    filterConds.push(`BTRIM(COALESCE(td."desc", '(Unmapped)')) = BTRIM($${args.length}::text)`);
   }
   if (filters.category != null) {
-    conditions.push('s.category_id = ?');
-    mainParams.push(filters.category);
+    args.push(filters.category);
+    filterConds.push(`s.category_number = $${args.length}::int`);
   }
+  const filterClause = filterConds.length ? ` AND ${filterConds.join(' AND ')}` : '';
 
-  const where = conditions.join(' AND ');
+  const sortKey = pagination?.sort ?? 'sellThroughPct';
+  const sortCol = SELL_THROUGH_SORT_MAP[sortKey] ?? 'sell_through_pct';
+  const sortDir = pagination?.order === 'desc' ? 'DESC' : 'ASC';
 
-  const baseFrom = `
-    FROM skus s
-    LEFT JOIN ref_brands rb ON rb.id = s.brand_id
-    LEFT JOIN ref_colors rc ON rc.id = s.color_id
-    LEFT JOIN (
-      SELECT st.sku_id, SUM(st.quantity) AS units_sold
-      FROM sales_transactions st
-      WHERE 1=1${salesDateClause}
-      GROUP BY st.sku_id
-    ) sales_agg ON sales_agg.sku_id = s.id
-    LEFT JOIN (
-      SELECT pol.sku_id, SUM(pol.quantity_received) AS units_received
-      FROM purchase_order_lines pol
-      JOIN purchase_orders po ON po.id = pol.po_id
-      WHERE po.status NOT IN ('DRAFT', 'CANCELLED')${poDateClause}
-      GROUP BY pol.sku_id
-    ) recv_agg ON recv_agg.sku_id = s.id
-    WHERE ${where}`;
+  const baseSelect = `
+    WITH sales_agg AS (
+      SELECT l.sku_id,
+             SUM(COALESCE(l.quantity, 0))::int AS units_sold
+      FROM app.sales_history_ticket t
+      JOIN app.sales_history_ticket_line l ON l.ticket_id = t.id
+      WHERE t.status = 'completed' AND l.sku_id IS NOT NULL${salesDate}
+      GROUP BY l.sku_id
+    ),
+    recv_agg AS (
+      SELECT s.id AS sku_id,
+             SUM(line_units)::int AS units_received
+      FROM (
+        SELECT pol.sku_code,
+               (SELECT COALESCE(SUM(q), 0) FROM unnest(pol.received_qtys) AS q) AS line_units,
+               po.last_received_at
+        FROM app.purchase_order_legacy_line pol
+        JOIN app.purchase_order_legacy po ON po.po_number = pol.po_number
+        WHERE 1=1${recvDate}
+      ) sub
+      JOIN app.sku s ON s.code = sub.sku_code
+      WHERE sub.line_units > 0
+      GROUP BY s.id
+    ),
+    base AS (
+      SELECT s.id,
+             s.code,
+             s.style,
+             s.color_code,
+             s.retail_price,
+             s.category_number,
+             COALESCE(NULLIF(BTRIM(td."desc"), ''), '(Unmapped)') AS department,
+             NULL::text AS brand_name,
+             COALESCE(sales_agg.units_sold, 0)::int AS units_sold,
+             COALESCE(recv_agg.units_received, 0)::int AS units_received,
+             CASE WHEN COALESCE(recv_agg.units_received, 0) > 0
+                  THEN ROUND(COALESCE(sales_agg.units_sold, 0)::numeric / recv_agg.units_received * 100, 1)::float8
+                  ELSE 0::float8
+             END AS sell_through_pct
+      FROM app.sku s
+      LEFT JOIN app.taxonomy_department td
+        ON s.category_number BETWEEN td.beg_categ AND td.end_categ
+      LEFT JOIN sales_agg ON sales_agg.sku_id = s.id
+      LEFT JOIN recv_agg ON recv_agg.sku_id = s.id
+      WHERE (sales_agg.units_sold IS NOT NULL OR recv_agg.units_received IS NOT NULL)${filterClause}
+    )
+  `;
 
-  const countRow = db.prepare(`SELECT COUNT(*) as total ${baseFrom}`).get(...salesDateParams, ...poDateParams, ...mainParams) as unknown as { total: number };
-  const totalItems = countRow.total;
+  const countSql = `${baseSelect} SELECT COUNT(*)::int AS total FROM base`;
+  const countRow = (await prisma.$queryRawUnsafe<{ total: number }[]>(countSql, ...args))[0];
+  const totalItems = Number(countRow?.total ?? 0);
 
   const page = pagination?.page ?? 1;
   const pageSize = pagination?.pageSize ?? (totalItems || 1);
-  const totalPages = Math.ceil(totalItems / pageSize);
+  const totalPages = totalItems > 0 ? Math.ceil(totalItems / pageSize) : 0;
   const offset = (page - 1) * pageSize;
 
-  const sortCol = SELL_THROUGH_SORT_MAP[pagination?.sort ?? 'sellThroughPct'] || 'sell_through_pct';
-  const sortDir = pagination?.order === 'desc' ? 'DESC' : 'ASC';
+  // sortCol may reference `s.code`, `s.style`, etc.; in the outer SELECT we
+  // expose those as the unprefixed column names from the CTE — translate.
+  const outerSortCol = ({
+    's.code': 'code',
+    's.style': 'style',
+    's.retail_price': 'retail_price',
+    'brand_name': 'brand_name',
+    'department': 'department',
+    'units_sold': 'units_sold',
+    'units_received': 'units_received',
+    'sell_through_pct': 'sell_through_pct',
+  } as Record<string, string>)[sortCol] ?? 'sell_through_pct';
 
-  const rows = db.prepare(`
-    SELECT
-      s.id AS sku_id,
-      s.sku_code,
-      rb.name AS brand_name,
-      s.style,
-      rc.name AS color_name,
-      s.price,
-      s.category_id,
-      s.department,
-      COALESCE(sales_agg.units_sold, 0) AS units_sold,
-      COALESCE(recv_agg.units_received, 0) AS units_received,
-      CASE
-        WHEN COALESCE(recv_agg.units_received, 0) = 0 THEN 0
-        ELSE ROUND(CAST(COALESCE(sales_agg.units_sold, 0) AS REAL) / recv_agg.units_received * 100, 1)
-      END AS sell_through_pct
-    ${baseFrom}
-    ORDER BY ${sortCol} ${sortDir}, s.sku_code ASC
-    LIMIT ? OFFSET ?
-  `).all(...salesDateParams, ...poDateParams, ...mainParams, pageSize, offset) as unknown as SellThroughDetailRow[];
+  args.push(pageSize);
+  const limitIdx = `$${args.length}::int`;
+  args.push(offset);
+  const offsetIdx = `$${args.length}::int`;
+
+  const dataSql = `${baseSelect}
+    SELECT id AS sku_id,
+           code AS sku_code,
+           brand_name,
+           style,
+           color_code AS color_name,
+           retail_price AS price,
+           category_number AS category_id,
+           department,
+           units_sold,
+           units_received,
+           sell_through_pct
+    FROM base
+    ORDER BY ${outerSortCol} ${sortDir} NULLS LAST, code ASC
+    LIMIT ${limitIdx} OFFSET ${offsetIdx}
+  `;
+
+  const rows = await prisma.$queryRawUnsafe<PgDetailRow[]>(dataSql, ...args);
 
   return {
     data: rows.map((r) => ({
       skuId: r.sku_id,
       skuCode: r.sku_code,
       brand: r.brand_name,
-      style: r.style,
+      style: r.style ?? '',
       color: r.color_name,
-      price: r.price,
-      categoryId: r.category_id,
+      price: typeof r.price === 'number' ? r.price : Number(r.price),
+      categoryId: r.category_id == null ? null : Number(r.category_id),
       department: r.department,
-      unitsSold: r.units_sold,
-      unitsReceived: r.units_received,
-      sellThroughPct: r.sell_through_pct,
+      unitsSold: Number(r.units_sold),
+      unitsReceived: Number(r.units_received),
+      sellThroughPct: Number(r.sell_through_pct),
     })),
     pagination: { page, pageSize, totalItems, totalPages },
   };

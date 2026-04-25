@@ -16,31 +16,51 @@ export interface RicsSalesByDayRow {
   date: string;                 // 'YYYY-MM-DD'
   dayName: string;              // 'Monday' ... 'Sunday'
   netSales: number;
+  profit: number;               // net_amount - cost_amount, current period
   comparedToDate: string;
   comparedNetSales: number;
-  dollarChange: number;
+  comparedProfit: number;       // profit for the matching prior-period day
+  dollarChange: number;         // netSales - comparedNetSales
   pctChange: number | null;
 }
 
 export interface RicsSalesTotals {
   netSales: number;
+  profit: number;
   comparedNetSales: number;
+  comparedProfit: number;
   dollarChange: number;
   pctChange: number | null;
 }
 
-export interface RicsSalesByDayByStoreReport {
+export interface RicsSalesByDayStoreBreakdown {
   storeNumber: number;
   storeName: string | null;
   storeLabel: string;
+  rows: RicsSalesByDayRow[];
+  totals: RicsSalesTotals;
+}
+
+export interface RicsSalesByDayCombinedBlock {
+  storeLabel: string;           // e.g. "Combined (3 stores)"
+  rows: RicsSalesByDayRow[];
+  totals: RicsSalesTotals;
+}
+
+export interface RicsSalesByDayByStoreReport {
+  /** All stores requested by the caller (in the order they were passed). */
+  storeNumbers: number[];
+  /** True when the caller asked for one cross-store table; false → per-store. */
+  combineStores: boolean;
   startDate: string;
   endDate: string;
   comparisonOffsetDays: number;
   comparisonStartDate: string;
   comparisonEndDate: string;
-  rows: RicsSalesByDayRow[];
-  weeklyTotals: RicsSalesTotals;
-  storeTotals: RicsSalesTotals;
+  /** Per-store rows + totals — always present, useful in either mode. */
+  storeBreakdowns: RicsSalesByDayStoreBreakdown[];
+  /** Single combined block; null when combineStores=false. */
+  combined: RicsSalesByDayCombinedBlock | null;
 }
 
 // ─────────────────────────── Sales by Time (RICS p. 41) ───────────────────

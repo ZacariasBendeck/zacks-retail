@@ -18,7 +18,7 @@ vi.mock('../auth/useAuth', () => ({
       displayName: 'Test User',
       role: { id: 'role-1', name: 'Admin' },
     },
-    permissions: new Set<string>(),
+    permissions: new Set<string>(['sales_pos.operate']),
     loading: false,
     login: vi.fn(),
     logout: vi.fn(async () => {}),
@@ -44,6 +44,9 @@ vi.mock('../pages/inventory/SalesReportPage', () => ({
 }))
 vi.mock('../pages/salesReporting/SalesReportsHubPage', () => ({
   default: () => <div data-testid="page-reports-sales-hub">Sales Reports Hub</div>,
+}))
+vi.mock('../pages/sales/enter/EnterSalesPage', () => ({
+  default: () => <div data-testid="page-sales-enter">Enter Sales</div>,
 }))
 
 describe('App lazy routes', () => {
@@ -75,5 +78,10 @@ describe('App lazy routes', () => {
     const salesReportLabel = await screen.findByText('Sales', { selector: '.ant-menu-title-content' })
     await user.click(salesReportLabel.closest('[role="menuitem"]')!)
     expect(await screen.findByTestId('page-reports-sales-hub')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('menuitem', { name: /Sales POS/i }))
+    const enterSalesLabel = await screen.findByText('Enter Sales', { selector: '.ant-menu-title-content' })
+    await user.click(enterSalesLabel.closest('[role="menuitem"]')!)
+    expect(await screen.findByTestId('page-sales-enter')).toBeInTheDocument()
   })
 })

@@ -111,7 +111,7 @@ interface StoreRow {
 async function loadStoreMap(): Promise<Map<number, StoreRow>> {
   return cachedAsync('sr:dim:stores', 300_000, async () => {
     const rows = await prisma.$queryRawUnsafe<{ Number: number; Desc: string | null }[]>(
-      `SELECT number AS "Number", "desc" AS "Desc" FROM rics_mirror.store_master`,
+      `SELECT number AS "Number", "desc" AS "Desc" FROM app.store_master`,
     );
     const map = new Map<number, StoreRow>();
     for (const r of rows) {
@@ -157,7 +157,7 @@ interface CategoryRow {
 async function loadCategoryList(): Promise<CategoryRow[]> {
   return cachedAsync('sr:dim:categories', 300_000, async () => {
     const rows = await prisma.$queryRawUnsafe<{ Number: number; Desc: string | null }[]>(
-      `SELECT number AS "Number", "desc" AS "Desc" FROM rics_mirror.categories`,
+      `SELECT number AS "Number", "desc" AS "Desc" FROM app.taxonomy_category`,
     );
     return rows
       .filter((r) => r.Number != null)
@@ -177,7 +177,7 @@ interface GroupRow {
 async function loadGroupList(): Promise<GroupRow[]> {
   return cachedAsync('sr:dim:groups', 300_000, async () => {
     const rows = await prisma.$queryRawUnsafe<{ Code: string | null; Desc: string | null }[]>(
-      `SELECT code AS "Code", "desc" AS "Desc" FROM rics_mirror.group_codes`,
+      `SELECT code AS "Code", "desc" AS "Desc" FROM app.taxonomy_group`,
     );
     return rows
       .filter((r): r is { Code: string; Desc: string | null } => !!r.Code)
@@ -210,7 +210,7 @@ export interface SalesDimensionsResponse {
 async function loadSectorList(): Promise<Array<{ number: number; name: string | null }>> {
   return cachedAsync('sr:dim:sectors', 300_000, async () => {
     const rows = await prisma.$queryRawUnsafe<{ number: number | null; desc: string | null }[]>(
-      `SELECT number, "desc" FROM rics_mirror.sectors`,
+      `SELECT number, "desc" FROM app.taxonomy_sector`,
     );
     return rows
       .filter((r): r is { number: number; desc: string | null } => r.number != null)
@@ -222,7 +222,7 @@ async function loadSectorList(): Promise<Array<{ number: number; name: string | 
 async function loadDepartmentList(): Promise<Array<{ number: number; name: string | null }>> {
   return cachedAsync('sr:dim:departments', 300_000, async () => {
     const rows = await prisma.$queryRawUnsafe<{ number: number | null; desc: string | null }[]>(
-      `SELECT number, "desc" FROM rics_mirror.departments`,
+      `SELECT number, "desc" FROM app.taxonomy_department`,
     );
     return rows
       .filter((r): r is { number: number; desc: string | null } => r.number != null)
@@ -234,16 +234,26 @@ async function loadDepartmentList(): Promise<Array<{ number: number; name: strin
 async function loadSeasonList(): Promise<Array<{ code: string; description: string | null }>> {
   return cachedAsync('sr:dim:seasons', 300_000, async () => {
     // Seasons live in public.season_overlay per CLAUDE.md — operator-editable
-    // Postgres list, not RICS MDB. Fall back to an empty list if the table
-    // hasn't been seeded yet so the report still runs.
-    try {
+    // Postgres list, not RICS MDB. If that table does not exist yet, fall
+    // back to distinct season codes already present on app.sku.
+    const [{ present }] = await prisma.$queryRawUnsafe<Array<{ present: boolean }>>(
+      `SELECT to_regclass('public.season_overlay') IS NOT NULL AS present`,
+    );
+    if (present) {
       const rows = await prisma.$queryRawUnsafe<{ code: string; description: string | null }[]>(
         `SELECT code, description FROM public.season_overlay ORDER BY code`,
       );
       return rows.map((r) => ({ code: r.code, description: r.description?.trim() || null }));
-    } catch {
-      return [];
     }
+    const rows = await prisma.$queryRawUnsafe<{ code: string; description: string | null }[]>(
+      `
+        SELECT DISTINCT TRIM(season) AS code, NULL::text AS description
+        FROM app.sku
+        WHERE COALESCE(TRIM(season), '') <> ''
+        ORDER BY TRIM(season)
+      `,
+    );
+    return rows;
   });
 }
 
@@ -570,104 +580,252 @@ WHERE
 
 // ─────────────────────────── Sales by Day (RICS p. 52) ────────────────────
 
+interface DailyStoreSales {
+  netSales: number;
+  profit: number;
+}
+
 /**
- * RICS Sales by Day by Store report. Preserves the exact shape of the legacy
- * `ricsReportService.getRicsSalesByDayByStoreReport` so the existing
- * `/api/v1/reports/rics-sales-by-day-store` contract is unchanged after the
- * refactor.
+ * Aggregate net sales + profit by local-day and store, sourced from the
+ * app-owned imported sales history (`app.sales_history_ticket*`). Replaces a
+ * loadTicketLines + JS sumByDate fold against the dropped `rics_mirror.ticket_*`
+ * pair (schema retired 2026-04-25).
+ *
+ * Day boundaries are bucketed in store-local time (`America/Tegucigalpa`) to
+ * match the rest of the new sales adapters. `includeUnposted=false` mirrors the
+ * legacy `Posted='Y'` filter via `status='completed'`; otherwise we exclude
+ * only `cancelled` rows.
+ *
+ * Returns a nested map: date (YYYY-MM-DD) → store_id → { netSales, profit }.
+ * Empty `storeNumbers` returns no data — callers must always pass an explicit
+ * store list (the page guards against empty selection).
+ */
+async function loadDailySalesByStores(params: {
+  storeNumbers: number[];
+  startDate: string;
+  endDate: string;
+  includeUnposted?: boolean;
+}): Promise<Map<string, Map<number, DailyStoreSales>>> {
+  const out = new Map<string, Map<number, DailyStoreSales>>();
+  if (!params.storeNumbers || params.storeNumbers.length === 0) return out;
+
+  const startDate = normalizeDate(params.startDate);
+  const endDate = normalizeDate(params.endDate);
+  const endExclusive = addDays(endDate, 1);
+  const includeUnposted = params.includeUnposted !== false;
+  const storeKey = [...params.storeNumbers].map((n) => Number(n)).sort((a, b) => a - b).join(',');
+
+  const cacheKey = `sr:dailyNet:v2:${storeKey}:${startDate}:${endDate}:${includeUnposted}`;
+  return cachedAsync(cacheKey, 600_000, async () => {
+    const startBoundary = `($1::date::timestamp AT TIME ZONE 'America/Tegucigalpa')`;
+    const endBoundary = `($2::date::timestamp AT TIME ZONE 'America/Tegucigalpa')`;
+    const statusClause = includeUnposted
+      ? `AND t.status <> 'cancelled'`
+      : `AND t.status = 'completed'`;
+    const sql = `
+      SELECT
+        to_char(t.purchased_at AT TIME ZONE 'America/Tegucigalpa', 'YYYY-MM-DD') AS d,
+        t.store_id::int AS store,
+        SUM(COALESCE(l.net_amount, 0))::float8 AS net_sales,
+        SUM(COALESCE(l.net_amount, 0) - COALESCE(l.cost_amount, 0))::float8 AS profit
+      FROM app.sales_history_ticket t
+      INNER JOIN app.sales_history_ticket_line l ON t.id = l.ticket_id
+      WHERE
+        t.purchased_at >= ${startBoundary}
+        AND t.purchased_at <  ${endBoundary}
+        AND t.store_id = ANY($3::int[])
+        AND t.transaction_kind = 'purchase'
+        ${statusClause}
+      GROUP BY
+        to_char(t.purchased_at AT TIME ZONE 'America/Tegucigalpa', 'YYYY-MM-DD'),
+        t.store_id
+    `;
+    const rows = await prisma.$queryRawUnsafe<
+      { d: string | null; store: number | null; net_sales: number | null; profit: number | null }[]
+    >(
+      sql,
+      startDate,
+      endExclusive,
+      params.storeNumbers.map((n) => Number(n)),
+    );
+    const map = new Map<string, Map<number, DailyStoreSales>>();
+    for (const r of rows) {
+      if (!r.d || r.store == null) continue;
+      let perStore = map.get(r.d);
+      if (!perStore) {
+        perStore = new Map<number, DailyStoreSales>();
+        map.set(r.d, perStore);
+      }
+      perStore.set(Number(r.store), {
+        netSales: Number(r.net_sales ?? 0),
+        profit: Number(r.profit ?? 0),
+      });
+    }
+    return map;
+  });
+}
+
+/**
+ * RICS Sales by Day by Store report. Multi-store-aware: pass an explicit
+ * `storeNumbers` list and `combineStores` flag. Output always carries per-store
+ * breakdowns; when `combineStores=true`, an additional summed `combined` block
+ * is included so the UI can render either layout off one payload.
  *
  * Note: this report keeps the `Posted='Y'` filter (unlike the other reports,
  * which default to Live mode including unposted) because it historically
  * reflected what the fiscal-close process had committed.
  */
 export async function getSalesByDay(params: {
-  storeNumber: number;
+  storeNumbers: number[];
   startDate: string;
   endDate: string;
   comparisonOffsetDays?: number;
+  combineStores?: boolean;
 }): Promise<RicsSalesByDayByStoreReport> {
   const comparisonOffsetDays = params.comparisonOffsetDays ?? 364;
+  const combineStores = params.combineStores === true;
   const startDate = normalizeDate(params.startDate);
   const endDate = normalizeDate(params.endDate);
   if (startDate > endDate) {
     throw new Error('startDate must be <= endDate');
   }
 
+  const storeNumbers = (params.storeNumbers ?? [])
+    .map((n) => Number(n))
+    .filter((n) => Number.isFinite(n) && n > 0);
+
   const comparisonStartDate = addDays(startDate, -comparisonOffsetDays);
   const comparisonEndDate = addDays(endDate, -comparisonOffsetDays);
 
-  const stores = await loadStoreMap();
-  const storeName = stores.get(Number(params.storeNumber))?.name ?? null;
+  const storeMap = await loadStoreMap();
 
-  const [currentLines, comparisonLines] = await Promise.all([
-    loadTicketLines({
+  if (storeNumbers.length === 0) {
+    return {
+      storeNumbers: [],
+      combineStores,
       startDate,
       endDate,
-      storeNumbers: [params.storeNumber],
+      comparisonOffsetDays,
+      comparisonStartDate,
+      comparisonEndDate,
+      storeBreakdowns: [],
+      combined: null,
+    };
+  }
+
+  const [current, compare] = await Promise.all([
+    loadDailySalesByStores({
+      storeNumbers,
+      startDate,
+      endDate,
       includeUnposted: false,       // legacy contract: Posted='Y' only
     }),
-    loadTicketLines({
+    loadDailySalesByStores({
+      storeNumbers,
       startDate: comparisonStartDate,
       endDate: comparisonEndDate,
-      storeNumbers: [params.storeNumber],
       includeUnposted: false,
     }),
   ]);
 
-  const currentByDate = sumByDate(currentLines);
-  const compareByDate = sumByDate(comparisonLines);
-
   const days = listDatesInclusive(startDate, endDate);
-  const rows: RicsSalesByDayRow[] = days.map((date) => {
-    const comparedToDate = addDays(date, -comparisonOffsetDays);
-    const netSales = round2(currentByDate.get(date) ?? 0);
-    const comparedNetSales = round2(compareByDate.get(comparedToDate) ?? 0);
-    const dollarChange = round2(netSales - comparedNetSales);
-    const pctChange = comparedNetSales === 0 ? null : round1((dollarChange / comparedNetSales) * 100);
+
+  const buildRowsForStore = (storeNumber: number): RicsSalesByDayRow[] =>
+    days.map((date) => {
+      const comparedToDate = addDays(date, -comparisonOffsetDays);
+      const cur = current.get(date)?.get(storeNumber);
+      const cmp = compare.get(comparedToDate)?.get(storeNumber);
+      const netSales = round2(cur?.netSales ?? 0);
+      const profit = round2(cur?.profit ?? 0);
+      const comparedNetSales = round2(cmp?.netSales ?? 0);
+      const comparedProfit = round2(cmp?.profit ?? 0);
+      const dollarChange = round2(netSales - comparedNetSales);
+      const pctChange = comparedNetSales === 0 ? null : round1((dollarChange / comparedNetSales) * 100);
+      return {
+        date,
+        dayName: weekdayName(date),
+        netSales,
+        profit,
+        comparedToDate,
+        comparedNetSales,
+        comparedProfit,
+        dollarChange,
+        pctChange,
+      };
+    });
+
+  const storeBreakdowns: RicsSalesByDayByStoreReport['storeBreakdowns'] = storeNumbers.map((storeNumber) => {
+    const storeName = storeMap.get(storeNumber)?.name ?? null;
+    const storeLabel = storeName ? `${storeNumber} - ${storeName}` : `${storeNumber}`;
+    const rows = buildRowsForStore(storeNumber);
     return {
-      date,
-      dayName: weekdayName(date),
-      netSales,
-      comparedToDate,
-      comparedNetSales,
-      dollarChange,
-      pctChange,
+      storeNumber,
+      storeName,
+      storeLabel,
+      rows,
+      totals: buildTotals(rows),
     };
   });
 
-  const weeklyTotals = buildTotals(rows);
-  const storeLabel = storeName ? `${params.storeNumber} - ${storeName}` : `${params.storeNumber}`;
+  let combined: RicsSalesByDayByStoreReport['combined'] = null;
+  if (combineStores) {
+    const combinedRows: RicsSalesByDayRow[] = days.map((date) => {
+      const comparedToDate = addDays(date, -comparisonOffsetDays);
+      let netSales = 0, profit = 0, comparedNetSales = 0, comparedProfit = 0;
+      const curForDate = current.get(date);
+      const cmpForDate = compare.get(comparedToDate);
+      for (const storeNumber of storeNumbers) {
+        const cur = curForDate?.get(storeNumber);
+        const cmp = cmpForDate?.get(storeNumber);
+        if (cur) { netSales += cur.netSales; profit += cur.profit; }
+        if (cmp) { comparedNetSales += cmp.netSales; comparedProfit += cmp.profit; }
+      }
+      netSales = round2(netSales);
+      profit = round2(profit);
+      comparedNetSales = round2(comparedNetSales);
+      comparedProfit = round2(comparedProfit);
+      const dollarChange = round2(netSales - comparedNetSales);
+      const pctChange = comparedNetSales === 0 ? null : round1((dollarChange / comparedNetSales) * 100);
+      return {
+        date,
+        dayName: weekdayName(date),
+        netSales,
+        profit,
+        comparedToDate,
+        comparedNetSales,
+        comparedProfit,
+        dollarChange,
+        pctChange,
+      };
+    });
+    combined = {
+      storeLabel: `Combined (${storeNumbers.length} store${storeNumbers.length === 1 ? '' : 's'})`,
+      rows: combinedRows,
+      totals: buildTotals(combinedRows),
+    };
+  }
 
   return {
-    storeNumber: params.storeNumber,
-    storeName,
-    storeLabel,
+    storeNumbers,
+    combineStores,
     startDate,
     endDate,
     comparisonOffsetDays,
     comparisonStartDate,
     comparisonEndDate,
-    rows,
-    weeklyTotals,
-    storeTotals: weeklyTotals,
+    storeBreakdowns,
+    combined,
   };
-}
-
-function sumByDate(lines: TicketLine[]): Map<string, number> {
-  const out = new Map<string, number>();
-  for (const l of lines) {
-    if (!l.date) continue;
-    out.set(l.date, (out.get(l.date) ?? 0) + l.extension);
-  }
-  return out;
 }
 
 function buildTotals(rows: RicsSalesByDayRow[]): RicsSalesTotals {
   const netSales = round2(rows.reduce((s, r) => s + r.netSales, 0));
+  const profit = round2(rows.reduce((s, r) => s + r.profit, 0));
   const comparedNetSales = round2(rows.reduce((s, r) => s + r.comparedNetSales, 0));
+  const comparedProfit = round2(rows.reduce((s, r) => s + r.comparedProfit, 0));
   const dollarChange = round2(netSales - comparedNetSales);
   const pctChange = comparedNetSales === 0 ? null : round1((dollarChange / comparedNetSales) * 100);
-  return { netSales, comparedNetSales, dollarChange, pctChange };
+  return { netSales, profit, comparedNetSales, comparedProfit, dollarChange, pctChange };
 }
 
 // ─────────────────────────── Sales by Time (RICS p. 41) ───────────────────

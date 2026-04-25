@@ -8,7 +8,7 @@
 
 **Scope clarifications:**
 - **NOT in this slice:** MFA/TOTP, password-reset email, employee domain object, time clock, commission overrides, sales-password (POS PIN override) modernization, RICS user import, row-level store scoping beyond coarse role checks.
-- **Untouched:** existing RICS-style sales passwords at [apps/api/src/routes/salesPasswordRoutes.ts](../../../apps/api/src/routes/salesPasswordRoutes.ts) continue to work exactly as they do today. The new auth system is additive.
+- **Scope note:** register override modernization was deferred in this slice. The governed path now lives in the employee sales-password bridge, not in a separate store-shared password layer.
 - **Legacy passwords** in `RIPASS.Password` and `RISLSPSN.CashierPassword` are **ignored** for web login. We do not write to the MDBs.
 
 ---

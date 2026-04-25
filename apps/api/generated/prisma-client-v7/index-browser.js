@@ -1282,6 +1282,58 @@ exports.Prisma.CustomerTransactionItemScalarFieldEnum = {
   createdAt: 'createdAt'
 };
 
+exports.Prisma.SalesHistoryTicketScalarFieldEnum = {
+  id: 'id',
+  externalTransactionId: 'externalTransactionId',
+  source: 'source',
+  matchedCustomerId: 'matchedCustomerId',
+  accountKey: 'accountKey',
+  transactionType: 'transactionType',
+  transactionKind: 'transactionKind',
+  status: 'status',
+  storeId: 'storeId',
+  terminal: 'terminal',
+  ticketNumber: 'ticketNumber',
+  cashierCode: 'cashierCode',
+  channel: 'channel',
+  promotionCode: 'promotionCode',
+  couponCode: 'couponCode',
+  totalAmount: 'totalAmount',
+  netAmount: 'netAmount',
+  costAmount: 'costAmount',
+  discountAmount: 'discountAmount',
+  purchasedAt: 'purchasedAt',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+};
+
+exports.Prisma.SalesHistoryTicketLineScalarFieldEnum = {
+  id: 'id',
+  ticketId: 'ticketId',
+  lineNumber: 'lineNumber',
+  skuId: 'skuId',
+  skuCode: 'skuCode',
+  categoryId: 'categoryId',
+  categoryKey: 'categoryKey',
+  brandId: 'brandId',
+  brandKey: 'brandKey',
+  columnLabel: 'columnLabel',
+  rowLabel: 'rowLabel',
+  sizeType: 'sizeType',
+  sizeValue: 'sizeValue',
+  quantity: 'quantity',
+  unitPrice: 'unitPrice',
+  unitCost: 'unitCost',
+  netAmount: 'netAmount',
+  costAmount: 'costAmount',
+  discountAmount: 'discountAmount',
+  isMarkdown: 'isMarkdown',
+  isReturn: 'isReturn',
+  returnCode: 'returnCode',
+  salespersonCode: 'salespersonCode',
+  createdAt: 'createdAt'
+};
+
 exports.Prisma.CustomerMetricsScalarFieldEnum = {
   customerId: 'customerId',
   lifetimeValue: 'lifetimeValue',
@@ -1663,6 +1715,172 @@ exports.Prisma.TaxonomySizeTypeScalarFieldEnum = {
   dateLastChanged: 'dateLastChanged'
 };
 
+exports.Prisma.PosRegisterScalarFieldEnum = {
+  id: 'id',
+  storeId: 'storeId',
+  code: 'code',
+  label: 'label',
+  active: 'active',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+};
+
+exports.Prisma.PosTenderTypeScalarFieldEnum = {
+  id: 'id',
+  storeId: 'storeId',
+  code: 'code',
+  label: 'label',
+  kind: 'kind',
+  requiresAccount: 'requiresAccount',
+  openDrawer: 'openDrawer',
+  active: 'active',
+  sortOrder: 'sortOrder',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+};
+
+exports.Prisma.PosPayoutCategoryScalarFieldEnum = {
+  id: 'id',
+  storeId: 'storeId',
+  code: 'code',
+  label: 'label',
+  active: 'active',
+  sortOrder: 'sortOrder',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+};
+
+exports.Prisma.PosShiftScalarFieldEnum = {
+  id: 'id',
+  storeId: 'storeId',
+  registerId: 'registerId',
+  registerCode: 'registerCode',
+  businessDate: 'businessDate',
+  openedByUserId: 'openedByUserId',
+  openedByName: 'openedByName',
+  openingCashFloat: 'openingCashFloat',
+  status: 'status',
+  lastTicketNumber: 'lastTicketNumber',
+  openedAt: 'openedAt',
+  closedAt: 'closedAt',
+  closedByUserId: 'closedByUserId',
+  closedByName: 'closedByName',
+  expectedCashTotal: 'expectedCashTotal',
+  actualCashTotal: 'actualCashTotal',
+  overShortAmount: 'overShortAmount',
+  countSummaryJson: 'countSummaryJson',
+  notes: 'notes',
+  postedAt: 'postedAt',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+};
+
+exports.Prisma.PosTicketScalarFieldEnum = {
+  id: 'id',
+  shiftId: 'shiftId',
+  storeId: 'storeId',
+  registerId: 'registerId',
+  ticketNumber: 'ticketNumber',
+  status: 'status',
+  transactionType: 'transactionType',
+  cashierUserId: 'cashierUserId',
+  cashierName: 'cashierName',
+  customerId: 'customerId',
+  customerAccountNumber: 'customerAccountNumber',
+  customerName: 'customerName',
+  headerDiscountPct: 'headerDiscountPct',
+  promotionCode: 'promotionCode',
+  shipToState: 'shipToState',
+  subtotal: 'subtotal',
+  taxTotal: 'taxTotal',
+  secondaryTaxTotal: 'secondaryTaxTotal',
+  otherCharges: 'otherCharges',
+  grandTotal: 'grandTotal',
+  totalTendered: 'totalTendered',
+  changeGiven: 'changeGiven',
+  comment: 'comment',
+  receiptPayloadJson: 'receiptPayloadJson',
+  voidedAt: 'voidedAt',
+  completedAt: 'completedAt',
+  reclaimedFromTicketId: 'reclaimedFromTicketId',
+  receiptPrintCount: 'receiptPrintCount',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+};
+
+exports.Prisma.PosTicketLineScalarFieldEnum = {
+  id: 'id',
+  ticketId: 'ticketId',
+  lineNumber: 'lineNumber',
+  skuId: 'skuId',
+  skuCode: 'skuCode',
+  description: 'description',
+  upc: 'upc',
+  sizeTypeCode: 'sizeTypeCode',
+  columnLabel: 'columnLabel',
+  rowLabel: 'rowLabel',
+  quantity: 'quantity',
+  unitPrice: 'unitPrice',
+  priceMode: 'priceMode',
+  discountPct: 'discountPct',
+  discountAmount: 'discountAmount',
+  taxable: 'taxable',
+  taxRate: 'taxRate',
+  secondaryTaxRate: 'secondaryTaxRate',
+  salespersonUserId: 'salespersonUserId',
+  salespersonCode: 'salespersonCode',
+  salespersonName: 'salespersonName',
+  familyMemberId: 'familyMemberId',
+  returnCode: 'returnCode',
+  comment: 'comment',
+  lineSubtotal: 'lineSubtotal',
+  lineTax: 'lineTax',
+  lineSecondaryTax: 'lineSecondaryTax',
+  lineTotal: 'lineTotal',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+};
+
+exports.Prisma.PosTicketTenderScalarFieldEnum = {
+  id: 'id',
+  ticketId: 'ticketId',
+  sequence: 'sequence',
+  tenderTypeId: 'tenderTypeId',
+  tenderCode: 'tenderCode',
+  tenderLabel: 'tenderLabel',
+  tenderKind: 'tenderKind',
+  amount: 'amount',
+  accountNumber: 'accountNumber',
+  reference: 'reference',
+  createdAt: 'createdAt'
+};
+
+exports.Prisma.PosTicketEventScalarFieldEnum = {
+  id: 'id',
+  ticketId: 'ticketId',
+  shiftId: 'shiftId',
+  eventType: 'eventType',
+  actorUserId: 'actorUserId',
+  actorName: 'actorName',
+  payloadJson: 'payloadJson',
+  createdAt: 'createdAt'
+};
+
+exports.Prisma.PosPayoutScalarFieldEnum = {
+  id: 'id',
+  shiftId: 'shiftId',
+  storeId: 'storeId',
+  registerId: 'registerId',
+  categoryId: 'categoryId',
+  categoryCode: 'categoryCode',
+  categoryLabel: 'categoryLabel',
+  cashierUserId: 'cashierUserId',
+  cashierName: 'cashierName',
+  amount: 'amount',
+  note: 'note',
+  createdAt: 'createdAt'
+};
+
 exports.Prisma.SortOrder = {
   asc: 'asc',
   desc: 'desc'
@@ -1836,6 +2054,8 @@ exports.Prisma.ModelName = {
   CustomerImportReject: 'CustomerImportReject',
   CustomerTransactionFact: 'CustomerTransactionFact',
   CustomerTransactionItem: 'CustomerTransactionItem',
+  SalesHistoryTicket: 'SalesHistoryTicket',
+  SalesHistoryTicketLine: 'SalesHistoryTicketLine',
   CustomerMetrics: 'CustomerMetrics',
   CustomerMetricsDaily: 'CustomerMetricsDaily',
   CustomerFeatureCurrent: 'CustomerFeatureCurrent',
@@ -1861,7 +2081,16 @@ exports.Prisma.ModelName = {
   TaxonomySector: 'TaxonomySector',
   TaxonomyReturnCode: 'TaxonomyReturnCode',
   TaxonomyPromotionCode: 'TaxonomyPromotionCode',
-  TaxonomySizeType: 'TaxonomySizeType'
+  TaxonomySizeType: 'TaxonomySizeType',
+  PosRegister: 'PosRegister',
+  PosTenderType: 'PosTenderType',
+  PosPayoutCategory: 'PosPayoutCategory',
+  PosShift: 'PosShift',
+  PosTicket: 'PosTicket',
+  PosTicketLine: 'PosTicketLine',
+  PosTicketTender: 'PosTicketTender',
+  PosTicketEvent: 'PosTicketEvent',
+  PosPayout: 'PosPayout'
 };
 
 /**

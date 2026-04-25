@@ -101,32 +101,26 @@ export async function getInquirySalesRollup(sku: string): Promise<InquiryRollup>
   //   $3 = monthStart        $6 = endExclusive
   const sql = `
     SELECT
-      SUM(CASE WHEN h.real_date >= $2::timestamptz THEN COALESCE(d.qty, 0)                                    ELSE 0 END)::float8 AS "WeekQty",
-      SUM(CASE WHEN h.real_date >= $2::timestamptz THEN COALESCE(d.extension, 0)                              ELSE 0 END)::float8 AS "WeekNet",
-      SUM(CASE WHEN h.real_date >= $2::timestamptz THEN COALESCE(d.extension, 0) - COALESCE(d.cost, 0) * COALESCE(d.qty, 0) ELSE 0 END)::float8 AS "WeekProfit",
-      SUM(CASE WHEN h.real_date >= $3::timestamptz THEN COALESCE(d.qty, 0)                                    ELSE 0 END)::float8 AS "MonthQty",
-      SUM(CASE WHEN h.real_date >= $3::timestamptz THEN COALESCE(d.extension, 0)                              ELSE 0 END)::float8 AS "MonthNet",
-      SUM(CASE WHEN h.real_date >= $3::timestamptz THEN COALESCE(d.extension, 0) - COALESCE(d.cost, 0) * COALESCE(d.qty, 0) ELSE 0 END)::float8 AS "MonthProfit",
-      SUM(CASE WHEN h.real_date >= $4::timestamptz THEN COALESCE(d.qty, 0)                                    ELSE 0 END)::float8 AS "SeasonQty",
-      SUM(CASE WHEN h.real_date >= $4::timestamptz THEN COALESCE(d.extension, 0)                              ELSE 0 END)::float8 AS "SeasonNet",
-      SUM(CASE WHEN h.real_date >= $4::timestamptz THEN COALESCE(d.extension, 0) - COALESCE(d.cost, 0) * COALESCE(d.qty, 0) ELSE 0 END)::float8 AS "SeasonProfit",
-      SUM(CASE WHEN h.real_date >= $5::timestamptz THEN COALESCE(d.qty, 0)                                    ELSE 0 END)::float8 AS "YearQty",
-      SUM(CASE WHEN h.real_date >= $5::timestamptz THEN COALESCE(d.extension, 0)                              ELSE 0 END)::float8 AS "YearNet",
-      SUM(CASE WHEN h.real_date >= $5::timestamptz THEN COALESCE(d.extension, 0) - COALESCE(d.cost, 0) * COALESCE(d.qty, 0) ELSE 0 END)::float8 AS "YearProfit"
-    FROM rics_mirror.ticket_header h
-    INNER JOIN rics_mirror.ticket_detail d
-      ON h.user_id    = d.user_id
-     AND h.batch_date = d.batch_date
-     AND h.terminal   = d.terminal
-     AND h.store      = d.store
-     AND h.ticket     = d.ticket
-     AND h.real_date  = d.real_date
+      SUM(CASE WHEN t.purchased_at >= $2::timestamptz THEN COALESCE(l.quantity, 0) ELSE 0 END)::float8 AS "WeekQty",
+      SUM(CASE WHEN t.purchased_at >= $2::timestamptz THEN COALESCE(l.net_amount, 0) ELSE 0 END)::float8 AS "WeekNet",
+      SUM(CASE WHEN t.purchased_at >= $2::timestamptz THEN COALESCE(l.net_amount, 0) - COALESCE(l.cost_amount, 0) ELSE 0 END)::float8 AS "WeekProfit",
+      SUM(CASE WHEN t.purchased_at >= $3::timestamptz THEN COALESCE(l.quantity, 0) ELSE 0 END)::float8 AS "MonthQty",
+      SUM(CASE WHEN t.purchased_at >= $3::timestamptz THEN COALESCE(l.net_amount, 0) ELSE 0 END)::float8 AS "MonthNet",
+      SUM(CASE WHEN t.purchased_at >= $3::timestamptz THEN COALESCE(l.net_amount, 0) - COALESCE(l.cost_amount, 0) ELSE 0 END)::float8 AS "MonthProfit",
+      SUM(CASE WHEN t.purchased_at >= $4::timestamptz THEN COALESCE(l.quantity, 0) ELSE 0 END)::float8 AS "SeasonQty",
+      SUM(CASE WHEN t.purchased_at >= $4::timestamptz THEN COALESCE(l.net_amount, 0) ELSE 0 END)::float8 AS "SeasonNet",
+      SUM(CASE WHEN t.purchased_at >= $4::timestamptz THEN COALESCE(l.net_amount, 0) - COALESCE(l.cost_amount, 0) ELSE 0 END)::float8 AS "SeasonProfit",
+      SUM(CASE WHEN t.purchased_at >= $5::timestamptz THEN COALESCE(l.quantity, 0) ELSE 0 END)::float8 AS "YearQty",
+      SUM(CASE WHEN t.purchased_at >= $5::timestamptz THEN COALESCE(l.net_amount, 0) ELSE 0 END)::float8 AS "YearNet",
+      SUM(CASE WHEN t.purchased_at >= $5::timestamptz THEN COALESCE(l.net_amount, 0) - COALESCE(l.cost_amount, 0) ELSE 0 END)::float8 AS "YearProfit"
+    FROM app.sales_history_ticket t
+    INNER JOIN app.sales_history_ticket_line l ON t.id = l.ticket_id
+    LEFT JOIN app.sku s ON s.id = l.sku_id
     WHERE
-      d.sku            = RPAD($1, 15)  -- ticket_detail.sku is right-padded to 15
-      AND h.trans_type = 1
-      AND h.voided     = false
-      AND h.real_date >= $5::timestamptz
-      AND h.real_date <  $6::timestamptz
+      COALESCE(NULLIF(UPPER(BTRIM(s.code)), ''), NULLIF(UPPER(BTRIM(l.sku_code)), '')) = UPPER(BTRIM($1))
+      AND t.status = 'completed'
+      AND t.purchased_at >= $5::timestamptz
+      AND t.purchased_at <  $6::timestamptz
   `;
 
   try {

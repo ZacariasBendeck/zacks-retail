@@ -52,7 +52,7 @@
 
 ## Modernization decisions
 
-- **No "main vs. POS" computer split. Cloud sync replaces Ch. 13.** RICS assumes two classes of machine (main inventory computer + POS registers) and ~8 pages of sync plumbing to move tickets between them (Copy From POS Diskette, Call POS, Poll via Internet, Copy to POS Diskette, Communicate with Main). Zack's Retail makes the register a web client writing directly to the same Postgres (or the SQLite of the admin DB, pending migration). A ticket is visible everywhere the instant it is saved. This collapses Ch. 13 to a login/logout concern.
+- **No "main vs. POS" computer split. Cloud sync replaces Ch. 13.** RICS assumes two classes of machine (main inventory computer + POS registers) and ~8 pages of sync plumbing to move tickets between them (Copy From POS Diskette, Call POS, Poll via Internet, Copy to POS Diskette, Communicate with Main). Zack's Retail makes the register a web client writing directly to the same Postgres runtime. A ticket is visible everywhere the instant it is saved. This collapses Ch. 13 to a login/logout concern.
 - **"Post Sales to Inventory" becomes a ledger semantic, not a manual batch step** (RICS pp. 45–46). Zack's Retail records every ticket-line into the `inventory` movement ledger at ticket-end time, tagged with a `postingStatus = POSTED | PENDING_POST`. Two modes per store:
   - **Real-time mode (default)**: `postingStatus = POSTED` at ticket end; on-hand updates live. The Sales Journal and Post Sales screen still exist for auditability but are a retroactive report + a state transition, not a deduction event.
   - **Batch mode (opt-in per store in Company Setup)**: `postingStatus = PENDING_POST` at ticket end; an explicit Post Sales to Inventory action flips the batch to `POSTED` and emits the ledger write. This preserves RICS's "post once a day" operating model for shops that still want it.
@@ -73,7 +73,7 @@
 - **Promotion Code is applied from a picker, not remembered.** RICS asks the cashier to know the promo code (pp. 30, 33). Zack's Retail lists currently-active promotions (from `products`) in a picker on the header, and also allows manual code entry for unlisted / one-off codes.
 - **Continued Tickets (tender #99) are modelled as a parent `TicketChain`.** RICS uses a magic tender code `99` to link two tickets (p. 33). In the new model the second ticket references `parentTicketId` and the chain is atomic: voiding one voids all, balances roll up to the last link in the chain at tender time. Tender 99 becomes a UI action ("Continue on next ticket") that materializes the linkage — no magic number exposed to the user.
 - **Currency Options move from RICS.CFG gate to a store feature flag.** RICS hides the entire screen unless an operator edits `RICS.CFG` (p. 25). In Zack's Retail, each store has `secondaryCurrencyEnabled: boolean` + `{ rate, printOnReceipt, decimals, changeCurrencyDefault }` under Company Setup. The Tender screen renders the dual-column tender grid when the flag is on; otherwise it's a single column.
-- **Sales Passwords stay as a register-side affordance, distinct from the `employees` admin UI.** RICS's Change Sales Passwords screen (p. 52) is a quick-change surface at the register for Manager Password (close batch / Manager Options / payout) and Ticket Password (void / return / price change / perks / discount). Zack's Retail keeps this mini-screen for cashiers/managers to rotate the two shared "shift passwords", and treats them as distinct from per-user login passwords owned by `employees`. This is a deliberate preservation of the retail mental model: shift passwords are rotated with the end-of-day; user passwords are rotated with the personnel file.
+- **Register override challenges move to employee-scoped PINs owned by `employees`.** RICS's Change Sales Passwords screen (p. 52) maintained two shared per-store passwords. Zack's Retail replaces that with employee-scoped override PINs and short-lived override tokens issued by `employees`, so every close-batch, payout, void, refund, price-change, perks, and discount challenge is attributable to a real employee instead of to a shared store secret.
 - **Pay Out description — curated list is the only mode.** RICS has a config flag `ValidatePayouts` (p. 35) that flips free-text vs. list. Zack's Retail always requires a list pick + an optional freeform note. Eliminates a stray RICS.CFG entry and forces category hygiene. Payout categories are maintained by `store-ops` (tiny admin screen).
 - **Over/Short becomes a dedicated ledger concept.** RICS tracks it implicitly as the difference between Cash Count (Deposit) and expected cash, adjusted by drawer-difference (p. 26). Zack's Retail surfaces an explicit `OverShortEntry` per closed shift, signed, with an approving manager. Feeds `accounts-receivable` GL Summary directly (replaces the "G/L Summary entries when there is a difference" note on p. 26).
 - **Reprint Posted Sales + Returned Sales + Promotion Code Analysis + Sales Tax Recap + Sales By Day stay in this module** (per the registry) — they are register-generated data slices that a manager needs at shift/day boundaries, not seasonal merchandising analysis. The heavier cross-period / cross-store analytics (Sales Analysis, 8-Week Trending, Best Sellers, Sales History by Month, Stock Status, Size-Type Analysis, Sales Journal as a historical surface) live in `sales-reporting`.
@@ -341,32 +341,32 @@ Notes on the polymorphism:
 ## API surface
 
 **Shift lifecycle (Batch of Sales)**
-- `POST   /api/v1/shifts` — open a shift `{ storeId, registerId, openingCashFloat, lastTicketNumberUsed? }` (p. 25)
-- `GET    /api/v1/shifts/:id` — shift detail + running totals
-- `GET    /api/v1/shifts?storeId=&status=OPEN` — currently-open shifts per store
-- `POST   /api/v1/shifts/:id/cash-totals` — compute Cash Totals recap (sales recap + cash drawer recap + void summary) (p. 23)
-- `POST   /api/v1/shifts/:id/count-money` — submit per-tender-type counts `{ tenderTypeId, countedAmount, detailJson? }[]` (pp. 26–27)
-- `POST   /api/v1/shifts/:id/close` — close the shift; body `{ closingCashCount, closingDepositCount, managerPassword, overShortApprovedBy? }` (p. 26)
-- `POST   /api/v1/shifts/:id/open-drawer` — kick the drawer without a sale (p. 23)
-- `POST   /api/v1/shifts/:id/post` — (batch-mode only) trigger Post Sales to Inventory (p. 45)
-- `GET    /api/v1/shifts/:id/sales-journal` — Sales Journal for this shift (p. 44)
+- `POST   /api/v1/pos/shifts/open` — open a shift `{ storeId, registerId, openingCashFloat, lastTicketNumberUsed? }` (p. 25)
+- `GET    /api/v1/pos/shifts/:id` — shift detail + running totals
+- `GET    /api/v1/pos/shifts?storeId=&status=OPEN` — currently-open shifts per store
+- `GET    /api/v1/pos/shifts/:id/cash-totals` — compute Cash Totals recap (sales recap + cash drawer recap + void summary) (p. 23)
+- `POST   /api/v1/pos/shifts/:id/counts` — submit per-tender-type counts `{ tenderTypeId, countedAmount, detailJson? }[]` (pp. 26–27)
+- `POST   /api/v1/pos/shifts/:id/close` — close the shift; body `{ closingCashCount, closingDepositCount, overrideToken?, overShortApprovedBy? }` (p. 26)
+- `POST   /api/v1/pos/shifts/:id/open-drawer` — kick the drawer without a sale (p. 23)
+- `POST   /api/v1/pos/shifts/:id/post` — (batch-mode only) trigger Post Sales to Inventory (p. 45)
+- `GET    /api/v1/pos/shifts/:id/sales-journal` — Sales Journal for this shift (p. 44)
 
 **Ticket lifecycle (Header → Detail → Tender → End)**
-- `POST   /api/v1/tickets` — create header `{ shiftId, transactionType, cashierUserId, customerAccountId?, headerDiscountPct?, promotionCode? }`
-- `GET    /api/v1/tickets/:id` — full ticket
-- `PATCH  /api/v1/tickets/:id/header` — change header fields (only before End)
-- `POST   /api/v1/tickets/:id/lines` — add line (merchandise / comment / coupon)
-- `PATCH  /api/v1/tickets/:id/lines/:lineId` — modify line
-- `DELETE /api/v1/tickets/:id/lines/:lineId` — remove line (Ticket Review remove, p. 34)
-- `POST   /api/v1/tickets/:id/lines/:lineId/reverse` — `[Reverse Qtys]` (p. 32)
-- `POST   /api/v1/tickets/:id/lines/:lineId/next-price` — `[Next Price]` cycle (p. 32)
-- `POST   /api/v1/tickets/:id/tenders` — add a split tender (up to 4)
-- `POST   /api/v1/tickets/:id/continue` — start a Continued chain (RICS tender #99) — returns new child ticket id (p. 33)
-- `POST   /api/v1/tickets/:id/end` — `[End Sale]` — prints receipt, opens drawer, transitions status (p. 33)
-- `POST   /api/v1/tickets/:id/void` — mid-ticket or post-end void (p. 35, p. 51); body: `{ password?, reason? }`
-- `POST   /api/v1/tickets/:id/reclaim` — reclaim a voided ticket in the current batch (p. 34)
-- `POST   /api/v1/tickets/:id/reprint` — reprint in current batch (p. 34) OR posted (p. 47, see below)
-- `POST   /api/v1/tickets/:id/tax-override` — cashier edits tax at tender time; audit-logged (p. 33)
+- `POST   /api/v1/pos/tickets` — create header `{ shiftId, transactionType, cashierUserId, customerAccountId?, headerDiscountPct?, promotionCode? }`
+- `GET    /api/v1/pos/tickets/:id` — full ticket
+- `PATCH  /api/v1/pos/tickets/:id/header` — change header fields (only before End)
+- `POST   /api/v1/pos/tickets/:id/lines` — add line (merchandise / comment / coupon)
+- `PATCH  /api/v1/pos/tickets/:id/lines/:lineId` — modify line
+- `DELETE /api/v1/pos/tickets/:id/lines/:lineId` — remove line (Ticket Review remove, p. 34)
+- `POST   /api/v1/pos/tickets/:id/lines/:lineId/reverse` — `[Reverse Qtys]` (p. 32)
+- `POST   /api/v1/pos/tickets/:id/lines/:lineId/next-price` — `[Next Price]` cycle (p. 32)
+- `POST   /api/v1/pos/tickets/:id/tenders` — add a split tender (up to 4)
+- `POST   /api/v1/pos/tickets/:id/continue` — start a Continued chain (RICS tender #99) — returns new child ticket id (p. 33)
+- `POST   /api/v1/pos/tickets/:id/complete` — `[End Sale]` — prints receipt, opens drawer, transitions status (p. 33)
+- `POST   /api/v1/pos/tickets/:id/void` — mid-ticket or post-end void (p. 35, p. 51); body: `{ overrideToken?, reason? }`
+- `POST   /api/v1/pos/tickets/:id/reclaim` — reclaim a voided ticket in the current batch (p. 34)
+- `POST   /api/v1/pos/tickets/:id/reprint` — reprint in current batch (p. 34) OR posted (p. 47, see below)
+- `POST   /api/v1/pos/tickets/:id/tax-override` — cashier edits tax at tender time; audit-logged (p. 33)
 
 **Lookup / scan helpers**
 - `GET    /api/v1/pos/resolve-upc/:upc` — forwards to `products.resolveUpc` + current price + on-hand preview
@@ -374,17 +374,16 @@ Notes on the polymorphism:
 - `GET    /api/v1/pos/active-promotions?storeId=` — for the promo picker on header
 
 **Pay Outs**
-- `POST /api/v1/pay-outs` — body `{ shiftId, cashierUserId, categoryId, amount, note? }` (p. 35)
-- `GET  /api/v1/pay-outs?shiftId=` — list for a shift
+- `POST /api/v1/pos/payouts` — body `{ shiftId, cashierUserId, categoryId, amount, note? }` (p. 35)
+- `GET  /api/v1/pos/payouts?shiftId=` — list for a shift
 
-**Sales Passwords (register-side quick change)**
-- `PUT /api/v1/stores/:storeId/sales-passwords/manager` — rotate (p. 52)
-- `PUT /api/v1/stores/:storeId/sales-passwords/ticket` — rotate (p. 52)
-- `POST /api/v1/stores/:storeId/sales-passwords/:kind/verify` — verify for the void / close-batch challenge
+**Sales Passwords (employee override path)**
+- `POST /api/v1/employees/sales-passwords/verify` — verify the override PIN for void / close-batch / refund / payout / price-change challenges
+- `POST /api/v1/employees/sales-passwords/consume-token` — consume the one-time override token on the protected mutation
 
 **Register management**
-- `GET|POST|PATCH /api/v1/registers` — register CRUD
-- `POST /api/v1/registers/:id/drawer-test` — hardware test (kicks drawer, prints test receipt)
+- `GET|POST|PATCH /api/v1/pos/registers` — register CRUD
+- `POST /api/v1/pos/registers/:id/drawer-test` — hardware test (kicks drawer, prints test receipt)
 
 **Receipt templates + Manager Options**
 - `GET|PUT /api/v1/stores/:storeId/receipt-template` — beginning/ending messages, line counts, tax-print mode
@@ -393,12 +392,12 @@ Notes on the polymorphism:
 - `GET|PUT /api/v1/stores/:storeId/currency-options` — enable second currency, rate, decimals, change-currency
 
 **Register reports (the ones the registry assigns here)**
-- `GET /api/v1/reports/sales-tax-recap?storeId=&from=&to=&mode=STORE_STATE|STATE_STORE&source=TOTALS|LINES` (p. 47)
-- `GET /api/v1/reports/sales-by-day?storeId=&from=&to=&compareMode=52W|NDAYS|NWEEKS&compareValue=&weekEndsOn=` (p. 52)
-- `GET /api/v1/reports/returned-sales?from=&to=&sort=SKU|CAT|VEN|CASH|SP|RETCODE&combineStores=&includePrice=&trackableOnly=` (p. 50)
-- `GET /api/v1/reports/promotion-code-analysis?promotionCodes=&stores=&from=&to=&combineStores=` (p. 51)
-- `GET /api/v1/reports/reprint-posted-sales?storeId=&from=&to=&specialOnly=&unmatchedPrice=&withReturns=` (p. 47)
-- `GET /api/v1/reports/reprint-posted-ticket?storeId=&ticketNumber=&date=&giftReceipt=` (p. 49)
+- `GET /api/v1/pos/reports/sales-tax-recap?storeId=&from=&to=&mode=STORE_STATE|STATE_STORE&source=TOTALS|LINES` (p. 47)
+- `GET /api/v1/pos/reports/sales-by-day?storeId=&from=&to=&compareMode=52W|NDAYS|NWEEKS&compareValue=&weekEndsOn=` (p. 52)
+- `GET /api/v1/pos/reports/returned-sales?from=&to=&sort=SKU|CAT|VEN|CASH|SP|RETCODE&combineStores=&includePrice=&trackableOnly=` (p. 50)
+- `GET /api/v1/pos/reports/promotion-code-analysis?promotionCodes=&stores=&from=&to=&combineStores=` (p. 51)
+- `GET /api/v1/pos/reports/reprint-posted-sales?storeId=&from=&to=&specialOnly=&unmatchedPrice=&withReturns=` (p. 47)
+- `GET /api/v1/pos/reports/reprint-posted-ticket?storeId=&ticketNumber=&date=&giftReceipt=` (p. 49)
 - All reports support `?format=csv|pdf` and share the posted/unposted/both filter.
 
 ## Integration points
@@ -458,7 +457,7 @@ Notes on the polymorphism:
 11. **Line-level vs. ticket-level tax as the source of truth for Sales Tax Recap** (p. 47). Spec stores both; the report exposes a selector. Default = ticket totals. Recheck the rounding example on p. 47 once we have the first real tax table to ensure our line-level math matches RICS to the cent.
 12. **Sales Ticket Options: required account numbers — per transaction type, per tender type, or both?** RICS (p. 24) has two separate required-account-number lists (transaction type AND tender type). Model them both but confirm the UI treats them as OR (either condition fires the prompt) vs. AND.
 13. **Family Member lookup surface.** RICS lets a cashier set Family Member per line (p. 32) for mail-detail attribution. Needs a `crm` contract: `Customer.familyMembers(customerId)`. Not in the `crm` spec yet — raise there.
-14. **Quote → ticket materialization.** A cashier should be able to pull an active quote (from `crm`) and drop its lines into a new ticket. Not explicitly in RICS Ch. 2 (quotes are in Ch. 9). Propose: add `POST /api/v1/tickets/from-quote/:quoteId` as a convenience endpoint. Defer if quotes v1 doesn't ship in `crm`.
+14. **Quote → ticket materialization.** A cashier should be able to pull an active quote (from `crm`) and drop its lines into a new ticket. Not explicitly in RICS Ch. 2 (quotes are in Ch. 9). Propose: add `POST /api/v1/pos/tickets/from-quote/:quoteId` as a convenience endpoint. Defer if quotes v1 doesn't ship in `crm`.
 15. **Gift receipt layout.** RICS mentions `Print Gift Receipt` (p. 49) with coded pricing. Need a receipt-template variant that masks prices with a code (e.g., letters for digits). Defer template detail to first real use.
 16. **Return Code requirement when `qty < 0`.** RICS makes Return Code conditional on return-code tracking being on (p. 32). Our model allows `returnCodeId?` as optional; enforce at API when `returnCodeTrackingEnabled` store setting is true. Confirm the setting lives in `store-ops`.
 17. **Reclaim across registers in the same store.** RICS scopes Reclaim to the *current batch* — which means *the register's open batch*. Our Shift is per-register. Confirm that reclaim is register-scoped, not store-scoped; doc'd as register-scoped in the spec.

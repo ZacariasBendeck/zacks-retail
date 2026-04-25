@@ -4,6 +4,8 @@ import {
   materializeTransfersFromPreview,
   type TransferCommitLine,
 } from './transferRunShared';
+import { loadSalesHistoryMetricAggregates } from './transferRunSalesHistory';
+import { selectedCityCount, transferLaneAllowed, type TransferLaneStoreContext } from './transferLanePolicy';
 import type {
   AutoTransferCriteria,
   AutoTransferPreviewLine,
@@ -76,6 +78,10 @@ interface WorkingCellState {
   modelQty: number;
   maxQty: number;
   reorderQty: number | null;
+}
+
+interface LegacyTransferStoreContext extends TransferLaneStoreContext {
+  storeLabel: string;
 }
 
 interface MetricAggregateRow {
@@ -266,6 +272,45 @@ export async function listTransferStores(): Promise<TransferStoreOption[]> {
 
   const storeIds = await listDistinctTransferStoreIds();
   return storeIds.map((storeId) => ({ storeId, storeLabel: storeLabel(storeId) }));
+}
+
+async function loadTransferStoreContexts(storeIds: number[]): Promise<Map<number, LegacyTransferStoreContext>> {
+  if (storeIds.length === 0) return new Map<number, LegacyTransferStoreContext>();
+
+  const rows = await prisma.storeMaster.findMany({
+    where: { number: { in: storeIds } },
+    select: {
+      number: true,
+      description: true,
+      city: true,
+      region: true,
+    },
+  });
+
+  const contextById = new Map<number, LegacyTransferStoreContext>();
+  for (const row of rows) {
+    contextById.set(row.number, {
+      storeId: row.number,
+      storeLabel: formatStoreOptionLabel(row.number, row.description),
+      city: row.city?.trim() || null,
+      region: row.region ?? null,
+      transferCapable: true,
+    });
+  }
+
+  for (const storeId of storeIds) {
+    if (!contextById.has(storeId)) {
+      contextById.set(storeId, {
+        storeId,
+        storeLabel: storeLabel(storeId),
+        city: null,
+        region: null,
+        transferCapable: true,
+      });
+    }
+  }
+
+  return contextById;
 }
 
 function buildSkuWhere(
@@ -631,38 +676,7 @@ async function loadMetricAggregates(
   storeIds: number[],
   startAt: Date,
 ): Promise<Map<string, MetricAggregateRow>> {
-  if (skuIds.length === 0 || storeIds.length === 0) return new Map<string, MetricAggregateRow>();
-
-  const rows = await prisma.$queryRawUnsafe<MetricAggregateRow[]>(
-    `SELECT
-        sku_id AS "skuId",
-        store_id AS "storeId",
-        COALESCE(SUM(quantity_delta), 0)::float8 AS "netMovementQty",
-        COALESCE(SUM(CASE WHEN quantity_delta > 0 THEN quantity_delta ELSE 0 END), 0)::float8 AS "positiveMovementQty",
-        COALESCE(SUM(CASE
-          WHEN movement_type = 'SALE' THEN -quantity_delta
-          WHEN movement_type = 'SALE_RETURN' THEN -quantity_delta
-          ELSE 0
-        END), 0)::float8 AS "netSoldUnits",
-        COALESCE(SUM(CASE
-          WHEN movement_type = 'SALE' THEN (-quantity_delta) * COALESCE(retail_price_snapshot, 0)
-          WHEN movement_type = 'SALE_RETURN' THEN (-quantity_delta) * COALESCE(retail_price_snapshot, 0)
-          ELSE 0
-        END), 0)::float8 AS "netRevenue",
-        COALESCE(SUM(CASE
-          WHEN movement_type = 'SALE' THEN (-quantity_delta) * COALESCE(unit_cost_snapshot, 0)
-          WHEN movement_type = 'SALE_RETURN' THEN (-quantity_delta) * COALESCE(unit_cost_snapshot, 0)
-          ELSE 0
-        END), 0)::float8 AS "netCost"
-      FROM app.stock_movement
-      WHERE sku_id = ANY($1::uuid[])
-        AND store_id = ANY($2::int[])
-        AND movement_at >= $3
-      GROUP BY sku_id, store_id`,
-    skuIds,
-    storeIds,
-    startAt,
-  );
+  const rows = await loadSalesHistoryMetricAggregates(skuIds, storeIds, startAt) as MetricAggregateRow[];
 
   const map = new Map<string, MetricAggregateRow>();
   for (const row of rows) {
@@ -811,7 +825,7 @@ function maybeWarnNoSalesHistory(
     pushException(exceptions, {
       code: 'BALANCING_NO_SALES_HISTORY',
       severity: 'warning',
-      message: `No app-native sales history was found for the selected ${input.salesPeriod.toLowerCase()} window. Priority falls back to equal metrics.`,
+      message: `No imported sales history was found in app.sales_history_ticket for the selected ${input.salesPeriod.toLowerCase()} window. Priority falls back to equal metrics.`,
     });
   }
   if (input.salesPeriod === 'SEASON') {
@@ -860,10 +874,19 @@ function buildBalancingPreview(
   input: CreateBalancingTransferRunInput,
   storeIds: number[],
   metricAggregates: Map<string, MetricAggregateRow>,
+  storeContextById: Map<number, LegacyTransferStoreContext>,
 ): { lines: BalancingTransferPreviewLine[]; exceptions: TransferPreviewException[] } {
   const exceptions: TransferPreviewException[] = [];
   const lineBucket = new Map<string, BalancingTransferPreviewLine>();
   const metricBySkuStore = new Map<string, BalancingTransferMetricSnapshot>();
+
+  if (selectedCityCount(storeContextById.values()) > 1) {
+    pushException(exceptions, {
+      code: 'BALANCING_CITY_LANE_RESTRICTION',
+      severity: 'warning',
+      message: 'Cross-city transfers are currently blocked using app.store_master.city. Only same-city store pairs are eligible in this preview.',
+    });
+  }
 
   for (const sku of skus) {
     const workingStoreCells = cloneWorkingCells(stockBySku, targetBySku, sku.id, storeIds);
@@ -896,6 +919,7 @@ function buildBalancingPreview(
           if (donorCell.onHand <= 0) continue;
           const receiverStoreId = priorityStores.find((candidateStoreId) => {
             if (candidateStoreId === donorStoreId) return false;
+            if (!transferLaneAllowed(storeContextById.get(donorStoreId), storeContextById.get(candidateStoreId))) return false;
             const candidateCells = workingStoreCells.get(candidateStoreId);
             const candidateCell = candidateCells?.get(cellKey(donorCell.rowLabel, donorCell.columnLabel));
             return (candidateCell?.onHand ?? 0) === 0;
@@ -1012,6 +1036,7 @@ function buildBalancingPreview(
           if (remainingNeed <= 0) continue;
           for (const donor of donors) {
             if (donor.storeId === receiver.storeId) continue;
+            if (!transferLaneAllowed(storeContextById.get(donor.storeId), storeContextById.get(receiver.storeId))) continue;
             const donorMetric = metricByStore.get(donor.storeId)?.metricValue ?? 0;
             const receiverMetric = metricByStore.get(receiver.storeId)?.metricValue ?? 0;
             if (!meetsTieBreak(receiverMetric, donorMetric, input.tieBreakKind, input.tieBreakValue)) continue;
@@ -1056,6 +1081,7 @@ function buildBalancingPreview(
           for (const donor of donors) {
             if (donor.storeId === receiver.storeId) continue;
             if (donor.state.onHand < 2) continue;
+            if (!transferLaneAllowed(storeContextById.get(donor.storeId), storeContextById.get(receiver.storeId))) continue;
             const donorMetric = metricByStore.get(donor.storeId)?.metricValue ?? 0;
             const receiverMetric = metricByStore.get(receiver.storeId)?.metricValue ?? 0;
             if (!meetsTieBreak(receiverMetric, donorMetric, input.tieBreakKind, input.tieBreakValue)) continue;
@@ -1101,6 +1127,7 @@ function buildBalancingPreview(
           const donorCell = donorCells.get(key);
           if (!donorCell || donorCell.onHand < 2) continue;
           const receiverStoreId = priorityStores.slice(donorIndex + 1).find((candidateStoreId) => {
+            if (!transferLaneAllowed(storeContextById.get(donorStoreId), storeContextById.get(candidateStoreId))) return false;
             const candidateCell = workingStoreCells.get(candidateStoreId)?.get(key);
             return (candidateCell?.onHand ?? 0) === 0;
           });
@@ -1464,6 +1491,7 @@ export async function createBalancingTransferRun(
     sortOrder: input.sortOrder ?? 'SKU',
     criteria,
   };
+  const storeContextById = await loadTransferStoreContexts(effectiveStoreIds);
 
   const skus = await loadCandidateSkus(criteria);
   const { stockBySku, targetBySku } = await loadStockAndTargets(
@@ -1482,6 +1510,7 @@ export async function createBalancingTransferRun(
     normalizedInput,
     effectiveStoreIds,
     metricAggregates,
+    storeContextById,
   );
 
   if (criteria.limit != null && skus.length >= criteria.limit) {

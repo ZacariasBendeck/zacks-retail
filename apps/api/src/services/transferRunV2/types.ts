@@ -29,6 +29,7 @@ export interface CandidateSkuRowV2 {
 export interface StoreFactV2 {
   storeId: number;
   storeLabel: string;
+  city: string | null;
   region: number | null;
   transferCapable: boolean;
 }
@@ -38,6 +39,7 @@ export interface WorkingCellStateV2 {
   skuCode: string;
   storeId: number;
   storeLabel: string;
+  city: string | null;
   region: number | null;
   rowLabel: string;
   columnLabel: string;

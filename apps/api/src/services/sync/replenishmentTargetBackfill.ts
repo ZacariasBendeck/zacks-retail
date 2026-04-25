@@ -1,6 +1,8 @@
 import type { Client } from 'pg';
 
 const IMPORT_UPDATED_BY = 'migration:sync-rics-replenishment-targets';
+const DEFAULT_SIZE_TYPE_TABLE = 'rics_mirror.size_types';
+const DEFAULT_QUANTITY_TABLE = 'rics_mirror.inventory_quantities';
 
 export interface ReplenishmentTargetBackfillResult {
   runId: string;
@@ -16,6 +18,8 @@ export interface ReplenishmentTargetBackfillResult {
 export interface ReplenishmentTargetBackfillOptions {
   pgClient: Client;
   runId: string;
+  sourceSizeTypeTable?: string;
+  sourceQuantityTable?: string;
 }
 
 interface AppSkuRow {
@@ -61,6 +65,16 @@ function projectionKey(skuId: string, storeId: number, columnLabel: string, rowL
   return `${skuId}|${storeId}|${columnLabel}|${rowLabel}`;
 }
 
+function quoteQualifiedRef(ref: string): string {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$/.test(ref)) {
+    throw new Error(`Invalid table reference: ${ref}`);
+  }
+  return ref
+    .split('.')
+    .map((part) => `"${part}"`)
+    .join('.');
+}
+
 function resolveColumnLabel(sizeType: SizeTypeRow | null, absoluteColumn: number): string {
   if (!sizeType || sizeType.maxColumns === 0) {
     return absoluteColumn === 1 ? '' : String(absoluteColumn);
@@ -86,18 +100,19 @@ async function loadAppSkuMap(c: Client): Promise<Map<string, AppSkuRow>> {
   return out;
 }
 
-async function loadSizeTypeMap(c: Client): Promise<Map<number, SizeTypeRow>> {
+async function loadSizeTypeMap(c: Client, sourceTable: string): Promise<Map<number, SizeTypeRow>> {
   const columnSelect = Array.from({ length: 54 }, (_, index) => {
     const n = pad2(index + 1);
     return `columns_${n} AS "Columns_${n}"`;
   }).join(', ');
+  const sourceRef = quoteQualifiedRef(sourceTable);
 
   const result = await c.query<Record<string, string | number | null>>(`
     SELECT
       code AS "Code",
       max_columns AS "MaxColumns",
       ${columnSelect}
-    FROM rics_mirror.size_types
+    FROM ${sourceRef}
   `);
 
   const out = new Map<number, SizeTypeRow>();
@@ -117,7 +132,7 @@ async function loadSizeTypeMap(c: Client): Promise<Map<number, SizeTypeRow>> {
   return out;
 }
 
-async function loadMirrorQuantityRows(c: Client): Promise<MirrorQuantityRow[]> {
+async function loadMirrorQuantityRows(c: Client, sourceTable: string): Promise<MirrorQuantityRow[]> {
   const metricSelect = ['model_', 'max_qtys_', 'reorder_']
     .flatMap((prefix) =>
       Array.from({ length: 18 }, (_, index) => {
@@ -126,6 +141,7 @@ async function loadMirrorQuantityRows(c: Client): Promise<MirrorQuantityRow[]> {
       }),
     )
     .join(', ');
+  const sourceRef = quoteQualifiedRef(sourceTable);
 
   const result = await c.query<MirrorQuantityRow>(`
     SELECT
@@ -134,7 +150,7 @@ async function loadMirrorQuantityRows(c: Client): Promise<MirrorQuantityRow[]> {
       "row" AS "rowLabel",
       segment AS "segment",
       ${metricSelect}
-    FROM rics_mirror.inventory_quantities
+    FROM ${sourceRef}
     WHERE sku IS NOT NULL
     ORDER BY sku, store, "row", segment
   `);
@@ -224,13 +240,15 @@ export async function replenishmentTargetBackfill(
   opts: ReplenishmentTargetBackfillOptions,
 ): Promise<ReplenishmentTargetBackfillResult> {
   const { pgClient: c, runId } = opts;
+  const sourceSizeTypeTable = opts.sourceSizeTypeTable ?? DEFAULT_SIZE_TYPE_TABLE;
+  const sourceQuantityTable = opts.sourceQuantityTable ?? DEFAULT_QUANTITY_TABLE;
   const startedMs = Date.now();
 
   await c.query('BEGIN');
   try {
     const skuMap = await loadAppSkuMap(c);
-    const sizeTypeMap = await loadSizeTypeMap(c);
-    const quantityRows = await loadMirrorQuantityRows(c);
+    const sizeTypeMap = await loadSizeTypeMap(c, sourceSizeTypeTable);
+    const quantityRows = await loadMirrorQuantityRows(c, sourceQuantityTable);
 
     const projection = new Map<string, ProjectionRow>();
     const missingSkuCodes = new Set<string>();

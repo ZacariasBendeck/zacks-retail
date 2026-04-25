@@ -81,10 +81,12 @@ router.get('/dimensions', async (_req: Request, res: Response, next: NextFunctio
 // ─────────────────────────── /by-day (RICS p. 52) ─────────────────────────
 
 const byDaySchema = z.object({
-  store: z.coerce.number().int().positive(),
+  /** Comma-separated store numbers. Required (no default) — UI defaults to empty. */
+  stores: csvIntList,
   startDate: dateField,
   endDate: dateField,
   comparisonOffsetDays: z.coerce.number().int().positive().max(366 * 2).default(364),
+  combineStores: z.coerce.boolean().default(false),
   format: z.enum(['json', 'csv', 'xlsx']).default('json'),
 });
 
@@ -93,13 +95,14 @@ const byDaySchema = z.object({
  * /api/v1/reports/sales/by-day:
  *   get:
  *     tags: [Sales Reports]
- *     summary: Sales by Day (RICS Ch. 6 p. 52) — net sales by day for a single store with prior-year weekday comparison.
+ *     summary: Sales by Day (RICS Ch. 6 p. 52) — net sales + profit by day for one or more stores, with prior-year weekday comparison.
  *     parameters:
- *       - { in: query, name: store, required: true, schema: { type: integer } }
+ *       - { in: query, name: stores, required: true, schema: { type: string, description: "CSV of store numbers" } }
  *       - { in: query, name: startDate, required: true, schema: { type: string, format: date } }
  *       - { in: query, name: endDate, required: true, schema: { type: string, format: date } }
  *       - { in: query, name: comparisonOffsetDays, schema: { type: integer, default: 364 } }
- *       - { in: query, name: format, schema: { type: string, enum: [json, csv] } }
+ *       - { in: query, name: combineStores, schema: { type: boolean, default: false } }
+ *       - { in: query, name: format, schema: { type: string, enum: [json, csv, xlsx] } }
  */
 router.get('/by-day', validateQuery(byDaySchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -108,47 +111,66 @@ router.get('/by-day', validateQuery(byDaySchema), async (req: Request, res: Resp
       res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'startDate must be <= endDate' } });
       return;
     }
+    const stores = q.stores ?? [];
     const report = await getSalesByDay({
-      storeNumber: q.store,
+      storeNumbers: stores,
       startDate: q.startDate,
       endDate: q.endDate,
       comparisonOffsetDays: q.comparisonOffsetDays,
+      combineStores: q.combineStores,
     });
+
+    // Flat row list for CSV/XLSX. Combined mode emits a single block;
+    // separate mode emits one block per store, each followed by a totals row.
+    const exportBlocks = report.combineStores && report.combined
+      ? [{ label: report.combined.storeLabel, rows: report.combined.rows, totals: report.combined.totals }]
+      : report.storeBreakdowns.map((b) => ({ label: b.storeLabel, rows: b.rows, totals: b.totals }));
+
     if (q.format === 'xlsx') {
-      const xlsxRows = [
-        ...report.rows.map((r) => ({
-          store: report.storeLabel,
-          date: r.date,
-          day: r.dayName,
-          netSales: r.netSales,
-          comparedToDate: r.comparedToDate,
-          comparedNetSales: r.comparedNetSales,
-          dollarChange: r.dollarChange,
-          pctChange: r.pctChange,
-        })),
-        {
-          store: 'Weekly Totals',
+      const xlsxRows: Array<Record<string, unknown>> = [];
+      for (const block of exportBlocks) {
+        for (const r of block.rows) {
+          xlsxRows.push({
+            store: block.label,
+            date: r.date,
+            day: r.dayName,
+            netSales: r.netSales,
+            profit: r.profit,
+            comparedToDate: r.comparedToDate,
+            comparedNetSales: r.comparedNetSales,
+            comparedProfit: r.comparedProfit,
+            dollarChange: r.dollarChange,
+            pctChange: r.pctChange,
+          });
+        }
+        xlsxRows.push({
+          store: `${block.label} — Totals`,
           date: '',
           day: '',
-          netSales: report.weeklyTotals.netSales,
+          netSales: block.totals.netSales,
+          profit: block.totals.profit,
           comparedToDate: '',
-          comparedNetSales: report.weeklyTotals.comparedNetSales,
-          dollarChange: report.weeklyTotals.dollarChange,
-          pctChange: report.weeklyTotals.pctChange,
-        },
-      ];
+          comparedNetSales: block.totals.comparedNetSales,
+          comparedProfit: block.totals.comparedProfit,
+          dollarChange: block.totals.dollarChange,
+          pctChange: block.totals.pctChange,
+        });
+      }
+      const fileStem = stores.length ? stores.join('_') : 'no-stores';
       await sendXlsx(res, {
-        filename: `sales-by-day-store-${q.store}-${q.startDate}-to-${q.endDate}.xlsx`,
+        filename: `sales-by-day-${fileStem}-${q.startDate}-to-${q.endDate}.xlsx`,
         sheets: [
           {
             name: 'Sales by Day',
             columns: [
-              { header: 'Store', key: 'store', width: 22 },
+              { header: 'Store', key: 'store', width: 28 },
               { header: 'Date', key: 'date', width: 12 },
               { header: 'Day', key: 'day', width: 12 },
               { header: 'Net Sales', key: 'netSales', width: 14, numFmt: XLSX_NUMFMT.money },
+              { header: 'Profit', key: 'profit', width: 14, numFmt: XLSX_NUMFMT.money },
               { header: 'Compared To Date', key: 'comparedToDate', width: 16 },
               { header: 'Compared Net Sales', key: 'comparedNetSales', width: 18, numFmt: XLSX_NUMFMT.money },
+              { header: 'Compared Profit', key: 'comparedProfit', width: 16, numFmt: XLSX_NUMFMT.money },
               { header: '$ Change', key: 'dollarChange', width: 12, numFmt: XLSX_NUMFMT.money },
               { header: '% Change', key: 'pctChange', width: 10, numFmt: XLSX_NUMFMT.percent1 },
             ],
@@ -159,25 +181,36 @@ router.get('/by-day', validateQuery(byDaySchema), async (req: Request, res: Resp
       return;
     }
     if (q.format === 'csv') {
-      const header = ['Store', 'Date', 'Day', 'Net Sales', 'Compared To Date', 'Compared Net Sales', '$ Change', '% Change'];
-      const rows = report.rows.map((r) => [
-        report.storeLabel,
-        r.date,
-        r.dayName,
-        r.netSales.toFixed(2),
-        r.comparedToDate,
-        r.comparedNetSales.toFixed(2),
-        r.dollarChange.toFixed(2),
-        r.pctChange == null ? '' : r.pctChange.toFixed(1),
-      ]);
-      rows.push([
-        'Weekly Totals', '', '',
-        report.weeklyTotals.netSales.toFixed(2), '',
-        report.weeklyTotals.comparedNetSales.toFixed(2),
-        report.weeklyTotals.dollarChange.toFixed(2),
-        report.weeklyTotals.pctChange == null ? '' : report.weeklyTotals.pctChange.toFixed(1),
-      ]);
-      sendCsv(res, header, rows, `sales-by-day-store-${q.store}-${q.startDate}-to-${q.endDate}.csv`);
+      const header = ['Store', 'Date', 'Day', 'Net Sales', 'Profit', 'Compared To Date', 'Compared Net Sales', 'Compared Profit', '$ Change', '% Change'];
+      const rows: (string | number | null | undefined)[][] = [];
+      for (const block of exportBlocks) {
+        for (const r of block.rows) {
+          rows.push([
+            block.label,
+            r.date,
+            r.dayName,
+            r.netSales.toFixed(2),
+            r.profit.toFixed(2),
+            r.comparedToDate,
+            r.comparedNetSales.toFixed(2),
+            r.comparedProfit.toFixed(2),
+            r.dollarChange.toFixed(2),
+            r.pctChange == null ? '' : r.pctChange.toFixed(1),
+          ]);
+        }
+        rows.push([
+          `${block.label} — Totals`, '', '',
+          block.totals.netSales.toFixed(2),
+          block.totals.profit.toFixed(2),
+          '',
+          block.totals.comparedNetSales.toFixed(2),
+          block.totals.comparedProfit.toFixed(2),
+          block.totals.dollarChange.toFixed(2),
+          block.totals.pctChange == null ? '' : block.totals.pctChange.toFixed(1),
+        ]);
+      }
+      const fileStem = stores.length ? stores.join('_') : 'no-stores';
+      sendCsv(res, header, rows, `sales-by-day-${fileStem}-${q.startDate}-to-${q.endDate}.csv`);
       return;
     }
     res.json(report);

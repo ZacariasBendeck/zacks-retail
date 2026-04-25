@@ -8,6 +8,7 @@ import {
   fetchTurnoverDrillDown,
   fetchAgingByDepartment,
   fetchAgingDrillDown,
+  fetchAgingDimensions,
   fetchSellThroughByDepartment,
   fetchSellThroughDrillDown,
   fetchSalesByDay,
@@ -35,6 +36,7 @@ import {
   type StockStatusStoreOption,
   type StockStatusItemFilter,
   type SalesHistoryByMonthParams,
+  type AgingQueryArgs,
 } from '../services/reportApi'
 
 export function useOnHandByDepartment() {
@@ -120,20 +122,35 @@ export function useSellThroughDrillDown(
   })
 }
 
-export function useAgingByDepartment() {
+export function useAgingByDepartment(args: AgingQueryArgs = {}) {
   return useQuery({
-    queryKey: ['report-aging-departments'],
-    queryFn: fetchAgingByDepartment,
+    queryKey: ['report-aging-departments', args],
+    queryFn: () => fetchAgingByDepartment(args),
   })
 }
 
-export function useAgingDrillDown(department: string, category?: number) {
+export function useAgingDrillDown(
+  groupKey: string,
+  category?: number,
+  args: AgingQueryArgs = {},
+) {
   return useQuery({
-    queryKey: ['report-aging-drilldown', department, category],
-    queryFn: () => fetchAgingDrillDown(department, category),
-    enabled: !!department,
+    queryKey: ['report-aging-drilldown', groupKey, category, args],
+    queryFn: () => fetchAgingDrillDown(groupKey, category, args),
+    enabled: !!groupKey,
   })
 }
+
+export function useAgingDimensions() {
+  return useQuery({
+    queryKey: ['report-aging-dimensions'],
+    queryFn: fetchAgingDimensions,
+    staleTime: 5 * 60 * 1000,
+  })
+}
+
+// Re-export so callers can keep importing AgingBucketScheme through the hook module.
+export type { AgingBucketScheme } from '../services/reportApi'
 
 // ─────────────────────────── Sales Reporting (RICS-backed) ────────────────
 //
@@ -144,20 +161,22 @@ export function useAgingDrillDown(department: string, category?: number) {
 //       can call `queryClient.cancelQueries({ queryKey })` to abort mid-flight.
 
 export type SalesByDayArgs = {
-  storeNumber: number
+  storeNumbers: number[]
   startDate: string
   endDate: string
   comparisonOffsetDays?: number
+  combineStores?: boolean
 }
 export function useSalesByDay(args: SalesByDayArgs | null) {
   return useQuery({
     queryKey: ['sales-by-day', args] as const,
     queryFn: ({ signal }) =>
       fetchSalesByDay(
-        args!.storeNumber,
+        args!.storeNumbers,
         args!.startDate,
         args!.endDate,
         args!.comparisonOffsetDays ?? 364,
+        args!.combineStores ?? false,
         signal,
       ),
     enabled: !!args,

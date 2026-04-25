@@ -1,4 +1,3 @@
-import { Prisma } from '../../prismaClient';
 import { prisma } from '../../db/prisma';
 import { computeBehaviorMetrics } from './computeBehavior';
 import { computeChurnRisk } from './computeRisk';
@@ -7,15 +6,10 @@ import {
   buildLegacyMetricsFallback,
   hasMeaningfulLegacySalesSummary,
 } from './legacySummaryFallback';
-
-const CUSTOMER_TRANSACTION_WITH_ITEMS =
-  Prisma.validator<Prisma.CustomerTransactionFactDefaultArgs>()({
-    include: { items: true },
-  });
-
-type TransactionWithItems = Prisma.CustomerTransactionFactGetPayload<
-  typeof CUSTOMER_TRANSACTION_WITH_ITEMS
->;
+import {
+  CustomerMetricTransaction,
+  loadCustomerMetricTransactions,
+} from './salesSource';
 
 type ComputeOptions = {
   now?: Date;
@@ -110,11 +104,7 @@ export async function computeFullMetrics(
     throw new Error('CUSTOMER_NOT_FOUND');
   }
 
-  const transactions = await prisma.customerTransactionFact.findMany({
-    where: { customerId },
-    ...CUSTOMER_TRANSACTION_WITH_ITEMS,
-    orderBy: { purchasedAt: 'asc' },
-  });
+  const transactions = await loadCustomerMetricTransactions(customerId);
   const legacySalesSummary = customer.salesSummaryLegacy;
 
   if (
@@ -300,14 +290,26 @@ export async function getCustomerMetrics(idOrAccount: string): Promise<CustomerM
   const customerId = await resolveCustomerMetricsCustomerId(idOrAccount);
   if (!customerId) return null;
 
-  const [existing, customer, transactionCount] = await Promise.all([
+  const [existing, customer, transactionCountRows] = await Promise.all([
     prisma.customerMetrics.findUnique({ where: { customerId } }),
     prisma.customerIntelligenceCustomer.findUnique({
       where: { id: customerId },
       include: { salesSummaryLegacy: true },
     }),
-    prisma.customerTransactionFact.count({ where: { customerId } }),
+    prisma.$queryRaw<Array<{ count: bigint | number }>>`
+      SELECT COUNT(*)::bigint AS count
+      FROM (
+        SELECT id
+        FROM app.customer_transaction_fact
+        WHERE customer_id = ${customerId}
+        UNION ALL
+        SELECT id
+        FROM app.sales_history_ticket
+        WHERE matched_customer_id = ${customerId}
+      ) AS metric_sales
+    `,
   ]);
+  const transactionCount = Number(transactionCountRows[0]?.count ?? 0);
   if (!existing) {
     return computeFullMetrics(customerId);
   }
@@ -494,9 +496,9 @@ function buildCustomerFeaturePayload(input: {
     contacts: Array<{ acceptsMarketing: boolean }>;
   };
   now: Date;
-  purchaseTransactions: TransactionWithItems[];
-  completedTransactions: TransactionWithItems[];
-  returnTransactions: TransactionWithItems[];
+  purchaseTransactions: CustomerMetricTransaction[];
+  completedTransactions: CustomerMetricTransaction[];
+  returnTransactions: CustomerMetricTransaction[];
   behavior: ReturnType<typeof computeBehaviorMetrics>;
 }) {
   const windows = {
@@ -647,7 +649,7 @@ function buildCustomerFeaturePayload(input: {
 
 function buildCategoryFeatureRows(
   customerId: string,
-  purchaseTransactions: TransactionWithItems[],
+  purchaseTransactions: CustomerMetricTransaction[],
   days365: Date,
   now: Date,
 ) {
@@ -725,7 +727,7 @@ function buildCategoryFeatureRows(
 
 function buildBrandFeatureRows(
   customerId: string,
-  purchaseTransactions: TransactionWithItems[],
+  purchaseTransactions: CustomerMetricTransaction[],
   days365: Date,
   now: Date,
 ) {
@@ -803,7 +805,7 @@ function buildBrandFeatureRows(
 
 function buildSizeProfileRows(
   customerId: string,
-  purchaseTransactions: TransactionWithItems[],
+  purchaseTransactions: CustomerMetricTransaction[],
   days180: Date,
 ) {
   const bySizeType = new Map<string, number>();
@@ -859,7 +861,7 @@ function buildSizeProfileRows(
   });
 }
 
-function computeAverageDaysBetweenOrders(transactions: TransactionWithItems[]): number | null {
+function computeAverageDaysBetweenOrders(transactions: CustomerMetricTransaction[]): number | null {
   if (transactions.length < 2) return null;
 
   const differences: number[] = [];
@@ -941,7 +943,7 @@ function toCustomerMetricsDto(row: {
   };
 }
 
-function countWindow(transactions: TransactionWithItems[], cutoff: Date): number {
+function countWindow(transactions: CustomerMetricTransaction[], cutoff: Date): number {
   return transactions.filter((tx) => tx.purchasedAt >= cutoff).length;
 }
 

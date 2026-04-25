@@ -32,13 +32,9 @@ import companySettingsRoutes from './routes/companySettingsRoutes';
 import publicProductRoutes from './routes/publicProductRoutes';
 import cartRoutes from './routes/cartRoutes';
 import orderRoutes from './routes/orderRoutes';
-import shiftRoutes from './routes/shiftRoutes';
-import ticketRoutes from './routes/ticketRoutes';
-import payoutRoutes from './routes/payoutRoutes';
-import registerRoutes from './routes/registerRoutes';
-import salesPasswordRoutes from './routes/salesPasswordRoutes';
-import posReportRoutes from './routes/posReportRoutes';
+import posRoutes from './routes/posRoutes';
 import posSkuRoutes from './routes/posSkuRoutes';
+import storeRoutes from './routes/storeRoutes';
 import customerRoutes from './routes/customerRoutes';
 import customerTransactionsRoutes from './routes/customerTransactionsRoutes';
 import customerSegmentationRoutes from './routes/customerSegmentationRoutes';
@@ -131,14 +127,12 @@ app.use('/api/public/products', publicProductRoutes);
 app.use('/api/public/cart', cartRoutes);
 app.use('/api/public/orders', orderRoutes);
 
+// shared store-master reads
+app.use('/api/v1/stores', storeRoutes);
+
 // sales-pos module
-app.use('/api/v1/shifts', shiftRoutes);
-app.use('/api/v1/tickets', ticketRoutes);
-app.use('/api/v1/pay-outs', payoutRoutes);
-app.use('/api/v1/pos', registerRoutes);
-app.use('/api/v1/pos', salesPasswordRoutes);
+app.use('/api/v1/pos', posRoutes);
 app.use('/api/v1/pos', posSkuRoutes);
-app.use('/api/v1/reports/pos', posReportRoutes);
 
 // crm module
 app.use('/api/v1/customers', customerRoutes);

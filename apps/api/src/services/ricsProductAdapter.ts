@@ -209,42 +209,23 @@ async function loadVendorMap(): Promise<Map<string, VendorRow>> {
 async function loadSizeTypeMap(): Promise<Map<number, SizeTypeRow>> {
   return cachedAsync('dim:sizeTypes', 300_000, async () => {
     const map = new Map<number, SizeTypeRow>();
-    // Build aliased SELECT for the wide columns/rows_NN fields so the shape
-    // matches the former MDB projection (PascalCase keys like "Columns_01").
-    const colSelect = Array.from({ length: 54 }, (_, i) => {
-      const n = String(i + 1).padStart(2, '0');
-      return `columns_${n} AS "Columns_${n}"`;
-    }).join(', ');
-    const rowSelect = Array.from({ length: 27 }, (_, i) => {
-      const n = String(i + 1).padStart(2, '0');
-      return `rows_${n} AS "Rows_${n}"`;
-    }).join(', ');
-    const rows = await prisma.$queryRawUnsafe<Record<string, string | number | null>[]>(
-      `SELECT code AS "Code", "desc" AS "Desc",
-              max_columns AS "MaxColumns", max_rows AS "MaxRows",
-              ${colSelect}, ${rowSelect}
-         FROM rics_mirror.size_types`,
-    );
+    const rows = await prisma.taxonomySizeType.findMany({
+      select: {
+        code: true,
+        description: true,
+        columns: true,
+        rows: true,
+      },
+      orderBy: { code: 'asc' },
+    });
     for (const r of rows) {
-      const code = Number(r.Code);
+      const code = Number(r.code);
       if (!Number.isFinite(code)) continue;
-      const maxCols = Math.min(54, Math.max(0, Number(r.MaxColumns ?? 0)));
-      const maxRows = Math.min(27, Math.max(0, Number(r.MaxRows ?? 0)));
-      const columns: string[] = [];
-      for (let i = 1; i <= maxCols; i++) {
-        const v = (r[`Columns_${String(i).padStart(2, '0')}`] as string | null);
-        const trimmed = (v ?? '').toString().trim();
-        if (trimmed) columns.push(trimmed);
-      }
-      const rowsLbl: string[] = [];
-      for (let i = 1; i <= maxRows; i++) {
-        const v = (r[`Rows_${String(i).padStart(2, '0')}`] as string | null);
-        const trimmed = (v ?? '').toString().trim();
-        if (trimmed) rowsLbl.push(trimmed);
-      }
+      const columns = r.columns.map((label) => label.trim()).filter((label) => label.length > 0);
+      const rowsLbl = r.rows.map((label) => label.trim()).filter((label) => label.length > 0);
       map.set(code, {
         code,
-        desc: (r.Desc as string | null)?.toString().trim() || null,
+        desc: r.description.trim() || null,
         columns,
         rows: rowsLbl,
       });

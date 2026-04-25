@@ -1,4 +1,5 @@
 import { prisma } from '../../src/db/prisma';
+import { CUSTOMER_METRIC_HAS_SALES_PREDICATE_SQL } from '../../src/services/customer-kpi/salesSource';
 
 const METRICS_SQL = `
 WITH legacy_source AS (
@@ -15,11 +16,7 @@ WITH legacy_source AS (
   FROM app.customer c
   JOIN app.customer_sales_summary_legacy cssl
     ON cssl.customer_id = c.id
-  WHERE NOT EXISTS (
-    SELECT 1
-      FROM app.customer_transaction_fact ctf
-     WHERE ctf.customer_id = c.id
-  )
+  WHERE NOT (${CUSTOMER_METRIC_HAS_SALES_PREDICATE_SQL})
 )
 INSERT INTO app.customer_metrics (
   customer_id,
@@ -140,11 +137,7 @@ WITH legacy_source AS (
   FROM app.customer c
   JOIN app.customer_sales_summary_legacy cssl
     ON cssl.customer_id = c.id
-  WHERE NOT EXISTS (
-    SELECT 1
-      FROM app.customer_transaction_fact ctf
-     WHERE ctf.customer_id = c.id
-  )
+  WHERE NOT (${CUSTOMER_METRIC_HAS_SALES_PREDICATE_SQL})
 )
 INSERT INTO app.customer_features_current (
   customer_id,

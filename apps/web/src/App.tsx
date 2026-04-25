@@ -80,6 +80,7 @@ const MePage = lazy(() => import('./pages/auth/MePage'))
 const ChangePasswordPage = lazy(() => import('./pages/auth/ChangePasswordPage'))
 const UsersListPage = lazy(() => import('./pages/users/UsersListPage'))
 const UserFormPage = lazy(() => import('./pages/users/UserFormPage'))
+const EnterSalesPage = lazy(() => import('./pages/sales/enter/EnterSalesPage'))
 
 // products module — Phase 1 Step 2 taxonomy pages
 const TaxonomyHomePage = lazy(() => import('./pages/products/TaxonomyHomePage'))
@@ -226,6 +227,10 @@ export default function App() {
             <Route path="/otb/dashboard" element={<OtbDashboardPage />} />
             <Route path="/otb/plan" element={<OtbPlanEntryPage />} />
             <Route path="/purchase-planning" element={<PurchasePlanningPage />} />
+            <Route
+              path="/sales/enter"
+              element={<RequirePermission permission="sales_pos.operate"><EnterSalesPage /></RequirePermission>}
+            />
             <Route path="/reports" element={<Navigate to="/reports/sales" replace />} />
             <Route path="/reports/templates" element={<TemplatesListPage />} />
             <Route path="/reports/runs" element={<RunsListPage />} />

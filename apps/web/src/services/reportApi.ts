@@ -398,7 +398,7 @@ export async function fetchSellThroughDrillDown(
   query?: ReportDetailQuery,
 ): Promise<SellThroughDrillDownResponse> {
   const params = new URLSearchParams()
-  appendReportDomainFilters(params, { department, category })
+  appendReportDomainFilters(params, { department, category }, { allowAnyDepartment: true })
   if (startDate) params.set('startDate', startDate)
   if (endDate) params.set('endDate', endDate)
   appendServerTableContract(params, query)
@@ -418,7 +418,7 @@ export function getSellThroughCsvUrl(
   const params = new URLSearchParams({ format: 'csv' })
   if (startDate) params.set('startDate', startDate)
   if (endDate) params.set('endDate', endDate)
-  appendReportDomainFilters(params, { department, category })
+  appendReportDomainFilters(params, { department, category }, { allowAnyDepartment: true })
   return `/api/v1/reports/sell-through?${params}`
 }
 
@@ -431,11 +431,46 @@ export function getSellThroughXlsxUrl(
   const params = new URLSearchParams({ format: 'xlsx' })
   if (startDate) params.set('startDate', startDate)
   if (endDate) params.set('endDate', endDate)
-  appendReportDomainFilters(params, { department, category })
+  appendReportDomainFilters(params, { department, category }, { allowAnyDepartment: true })
   return `/api/v1/reports/sell-through?${params}`
 }
 
 // ── Inventory Aging Report ──────────────────────────────────────
+
+/**
+ * Bucket-boundary preset for the aging report. The page-header Radio.Group
+ * picks one of these and threads it through every API call so summary,
+ * drill-down, and exports stay in sync.
+ *
+ * Thresholds (last value is the "flagged" boundary):
+ *   30_60_90    →  0-30 / 31-60 / 61-90 / 90+
+ *   60_120_180  →  0-60 / 61-120 / 121-180 / 180+
+ *   90_180_270  →  0-90 / 91-180 / 181-270 / 270+
+ */
+export type AgingBucketScheme = '30_60_90' | '60_120_180' | '90_180_270'
+
+export const AGING_BUCKET_SCHEMES: Record<
+  AgingBucketScheme,
+  { labels: [string, string, string, string]; flagThreshold: number }
+> = {
+  '30_60_90': { labels: ['0-30', '31-60', '61-90', '90+'], flagThreshold: 90 },
+  '60_120_180': { labels: ['0-60', '61-120', '121-180', '180+'], flagThreshold: 180 },
+  '90_180_270': { labels: ['0-90', '91-180', '181-270', '270+'], flagThreshold: 270 },
+}
+
+/**
+ * Dimension to group the top-level summary by. Each picks a different
+ * grouping column on the back end (department description, sector
+ * description, vendor short_name, or buyer code from the receiving PO).
+ */
+export type AgingGroupBy = 'department' | 'sector' | 'vendor' | 'buyer'
+
+export const AGING_GROUP_BY_LABELS: Record<AgingGroupBy, string> = {
+  department: 'Department',
+  sector: 'Sector',
+  vendor: 'Vendor',
+  buyer: 'Buyer',
+}
 
 export interface AgingBucket {
   bucket: string
@@ -444,7 +479,10 @@ export interface AgingBucket {
   totalCostValue: number
 }
 
-export interface AgingDepartmentSummary {
+export interface AgingGroupSummary {
+  groupKey: string
+  groupLabel: string
+  // Backward-compat alias the API still emits — equal to `groupLabel`.
   department: string
   buckets: AgingBucket[]
   totalSkus: number
@@ -453,6 +491,9 @@ export interface AgingDepartmentSummary {
   flaggedUnits: number
   flaggedValue: number
 }
+
+// Old name kept so existing imports do not break — same shape.
+export type AgingDepartmentSummary = AgingGroupSummary
 
 export interface AgingDetail {
   skuId: string
@@ -473,16 +514,44 @@ export interface AgingDetail {
 }
 
 export interface AgingDepartmentResponse {
-  departments: AgingDepartmentSummary[]
+  groupBy: AgingGroupBy
+  bucketScheme: AgingBucketScheme
+  departments: AgingGroupSummary[]
+  groups: AgingGroupSummary[]
 }
 
 export interface AgingDrillDownResponse {
-  department: string
+  groupBy: AgingGroupBy
+  groupKey: string
+  bucketScheme: AgingBucketScheme
+  department?: string
   details: AgingDetail[]
 }
 
-export async function fetchAgingByDepartment(): Promise<AgingDepartmentResponse> {
-  const res = await fetch('/api/v1/reports/inventory-aging')
+export interface AgingDimensionsResponse {
+  stores: { number: number; name: string | null }[]
+}
+
+export interface AgingQueryArgs {
+  groupBy?: AgingGroupBy
+  bucketScheme?: AgingBucketScheme
+  stores?: number[]
+}
+
+function appendAgingArgs(params: URLSearchParams, args: AgingQueryArgs = {}): void {
+  if (args.groupBy) params.set('groupBy', args.groupBy)
+  params.set('bucketScheme', args.bucketScheme ?? '30_60_90')
+  if (args.stores && args.stores.length > 0) {
+    params.set('stores', args.stores.join(','))
+  }
+}
+
+export async function fetchAgingByDepartment(
+  args: AgingQueryArgs = {},
+): Promise<AgingDepartmentResponse> {
+  const params = new URLSearchParams()
+  appendAgingArgs(params, args)
+  const res = await fetch(`/api/v1/reports/inventory-aging?${params}`)
   if (!res.ok) {
     await throwReportApiError(res, `Failed to fetch aging report: ${res.status}`)
   }
@@ -490,11 +559,13 @@ export async function fetchAgingByDepartment(): Promise<AgingDepartmentResponse>
 }
 
 export async function fetchAgingDrillDown(
-  department: string,
+  groupKey: string,
   category?: number,
+  args: AgingQueryArgs = {},
 ): Promise<AgingDrillDownResponse> {
-  const params = new URLSearchParams()
-  appendReportDomainFilters(params, { department, category })
+  const params = new URLSearchParams({ groupKey })
+  appendAgingArgs(params, args)
+  if (category != null) params.set('category', String(category))
   const res = await fetch(`/api/v1/reports/inventory-aging?${params}`)
   if (!res.ok) {
     await throwReportApiError(res, `Failed to fetch aging drill-down: ${res.status}`)
@@ -502,15 +573,35 @@ export async function fetchAgingDrillDown(
   return res.json()
 }
 
-export function getAgingCsvUrl(department?: string, category?: number): string {
+export async function fetchAgingDimensions(): Promise<AgingDimensionsResponse> {
+  const res = await fetch('/api/v1/reports/inventory-aging/dimensions')
+  if (!res.ok) {
+    await throwReportApiError(res, `Failed to fetch aging dimensions: ${res.status}`)
+  }
+  return res.json()
+}
+
+export function getAgingCsvUrl(
+  groupKey?: string,
+  category?: number,
+  args: AgingQueryArgs = {},
+): string {
   const params = new URLSearchParams({ format: 'csv' })
-  appendReportDomainFilters(params, { department, category })
+  appendAgingArgs(params, args)
+  if (groupKey) params.set('groupKey', groupKey)
+  if (category != null) params.set('category', String(category))
   return `/api/v1/reports/inventory-aging?${params}`
 }
 
-export function getAgingXlsxUrl(department?: string, category?: number): string {
+export function getAgingXlsxUrl(
+  groupKey?: string,
+  category?: number,
+  args: AgingQueryArgs = {},
+): string {
   const params = new URLSearchParams({ format: 'xlsx' })
-  appendReportDomainFilters(params, { department, category })
+  appendAgingArgs(params, args)
+  if (groupKey) params.set('groupKey', groupKey)
+  if (category != null) params.set('category', String(category))
   return `/api/v1/reports/inventory-aging?${params}`
 }
 
@@ -570,80 +661,101 @@ export interface SalesByDayRow {
   date: string
   dayName: string
   netSales: number
+  profit: number
   comparedToDate: string
   comparedNetSales: number
+  comparedProfit: number
   dollarChange: number
   pctChange: number | null
 }
 
 export interface SalesTotals {
   netSales: number
+  profit: number
   comparedNetSales: number
+  comparedProfit: number
   dollarChange: number
   pctChange: number | null
 }
 
-export interface SalesByDayReport {
+export interface SalesByDayStoreBreakdown {
   storeNumber: number
   storeName: string | null
   storeLabel: string
+  rows: SalesByDayRow[]
+  totals: SalesTotals
+}
+
+export interface SalesByDayCombinedBlock {
+  storeLabel: string
+  rows: SalesByDayRow[]
+  totals: SalesTotals
+}
+
+export interface SalesByDayReport {
+  storeNumbers: number[]
+  combineStores: boolean
   startDate: string
   endDate: string
   comparisonOffsetDays: number
   comparisonStartDate: string
   comparisonEndDate: string
-  rows: SalesByDayRow[]
-  weeklyTotals: SalesTotals
-  storeTotals: SalesTotals
+  storeBreakdowns: SalesByDayStoreBreakdown[]
+  combined: SalesByDayCombinedBlock | null
 }
 
-export async function fetchSalesByDay(
-  storeNumber: number,
+function buildSalesByDayParams(
+  storeNumbers: number[],
   startDate: string,
   endDate: string,
-  comparisonOffsetDays = 364,
-  signal?: AbortSignal,
-): Promise<SalesByDayReport> {
+  comparisonOffsetDays: number,
+  combineStores: boolean,
+  format?: 'csv' | 'xlsx',
+): URLSearchParams {
   const params = new URLSearchParams({
-    store: String(storeNumber),
     startDate,
     endDate,
     comparisonOffsetDays: String(comparisonOffsetDays),
+    combineStores: String(combineStores),
   })
+  if (storeNumbers.length) params.set('stores', storeNumbers.join(','))
+  if (format) params.set('format', format)
+  return params
+}
+
+export async function fetchSalesByDay(
+  storeNumbers: number[],
+  startDate: string,
+  endDate: string,
+  comparisonOffsetDays = 364,
+  combineStores = false,
+  signal?: AbortSignal,
+): Promise<SalesByDayReport> {
+  const params = buildSalesByDayParams(storeNumbers, startDate, endDate, comparisonOffsetDays, combineStores)
   const res = await fetch(`/api/v1/reports/sales/by-day?${params}`, { signal })
   if (!res.ok) await throwReportApiError(res, `Failed to fetch sales by day: ${res.status}`)
   return res.json()
 }
 
 export function getSalesByDayCsvUrl(
-  storeNumber: number,
+  storeNumbers: number[],
   startDate: string,
   endDate: string,
   comparisonOffsetDays = 364,
+  combineStores = false,
 ): string {
-  const params = new URLSearchParams({
-    store: String(storeNumber),
-    startDate,
-    endDate,
-    comparisonOffsetDays: String(comparisonOffsetDays),
-    format: 'csv',
-  })
+  const params = buildSalesByDayParams(storeNumbers, startDate, endDate, comparisonOffsetDays, combineStores, 'csv')
   return `/api/v1/reports/sales/by-day?${params}`
 }
 
 export function getSalesByDayXlsxUrl(
-  storeNumber: number,
+  storeNumbers: number[],
   startDate: string,
   endDate: string,
   comparisonOffsetDays = 364,
+  combineStores = false,
 ): string {
-  const params = new URLSearchParams({
-    store: String(storeNumber),
-    startDate,
-    endDate,
-    comparisonOffsetDays: String(comparisonOffsetDays),
-    format: 'xlsx',
-  })
+  const params = buildSalesByDayParams(storeNumbers, startDate, endDate, comparisonOffsetDays, combineStores, 'xlsx')
   return `/api/v1/reports/sales/by-day?${params}`
 }
 

@@ -65,8 +65,10 @@ describe('Report category filters', () => {
       request(app).get(`/api/v1/reports/on-hand?category=${invalidCode}`),
       request(app).get(`/api/v1/reports/sales-performance?startDate=2026-01-01&endDate=2026-01-31&category=${invalidCode}`),
       request(app).get(`/api/v1/reports/inventory-turnover?category=${invalidCode}`),
-      request(app).get(`/api/v1/reports/sell-through?category=${invalidCode}`),
-      request(app).get(`/api/v1/reports/inventory-aging?category=${invalidCode}`),
+      // Inventory aging and sell-through accept the full RICS category range
+      // (1..999) because they now read from app-owned Postgres data, not the
+      // women's-shoe MVP slice in SQLite. The other reports above still gate
+      // on 556..599.
     ];
 
     const responses = await Promise.all(requests);

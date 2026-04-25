@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Alert,
@@ -82,6 +82,42 @@ function confidenceColor(confidence: BalancingTransferPreviewLineV2['decisionCon
   return 'default'
 }
 
+function prettyRouteBucket(value: string | null | undefined): string {
+  if (!value) return 'Unspecified'
+  return value.replace(/-/g, ' ')
+}
+
+function goalDefaults(goalPreset: 'DAILY_RESCUE' | 'WEEKLY_BALANCE' | 'SEASONAL_CONSOLIDATION') {
+  if (goalPreset === 'DAILY_RESCUE') {
+    return {
+      salesPeriod: 'MONTH' as const,
+      cooldownDays: 3,
+      transferDoublesToLowerPriority: false,
+      stripStoresBelowSizeCount: null,
+      allowLowConfidenceMoves: false,
+      limit: 250,
+    }
+  }
+  if (goalPreset === 'SEASONAL_CONSOLIDATION') {
+    return {
+      salesPeriod: 'YEAR' as const,
+      cooldownDays: 30,
+      transferDoublesToLowerPriority: false,
+      stripStoresBelowSizeCount: 2,
+      allowLowConfidenceMoves: true,
+      limit: 500,
+    }
+  }
+  return {
+    salesPeriod: 'YEAR' as const,
+    cooldownDays: 14,
+    transferDoublesToLowerPriority: false,
+    stripStoresBelowSizeCount: null,
+    allowLowConfidenceMoves: false,
+    limit: 500,
+  }
+}
+
 export default function BalancingTransferPreviewPageV2() {
   const navigate = useNavigate()
   const { message } = App.useApp()
@@ -113,6 +149,7 @@ export default function BalancingTransferPreviewPageV2() {
   const [skuCodes, setSkuCodes] = useState('')
   const [categoryMin, setCategoryMin] = useState<number | null>(null)
   const [categoryMax, setCategoryMax] = useState<number | null>(null)
+  const [limit, setLimit] = useState<number | null>(500)
   const [includeOriginalRetailOnly, setIncludeOriginalRetailOnly] = useState(false)
   const [includeMarkdownOnly, setIncludeMarkdownOnly] = useState(false)
   const [includePerksOnly, setIncludePerksOnly] = useState(false)
@@ -133,6 +170,16 @@ export default function BalancingTransferPreviewPageV2() {
   }
   const storeLoadErrorMessage = storesError instanceof Error ? storesError.message : null
   const canCommit = Boolean(preview && preview.lines.length > 0 && preview.status !== 'COMMITTED')
+
+  useEffect(() => {
+    const defaults = goalDefaults(goalPreset)
+    setSalesPeriod(defaults.salesPeriod)
+    setCooldownDays(defaults.cooldownDays)
+    setTransferDoublesToLowerPriority(defaults.transferDoublesToLowerPriority)
+    setStripStoresBelowSizeCount(defaults.stripStoresBelowSizeCount)
+    setAllowLowConfidenceMoves(defaults.allowLowConfidenceMoves)
+    setLimit(defaults.limit)
+  }, [goalPreset])
 
   async function handlePreview() {
     if (effectiveStoreIds.length < 2) {
@@ -168,6 +215,7 @@ export default function BalancingTransferPreviewPageV2() {
         skuCodes: splitCodes(skuCodes),
         categoryMin,
         categoryMax,
+        limit: limit ?? undefined,
         includeOriginalRetailOnly,
         includeMarkdownOnly,
         includePerksOnly,
@@ -279,6 +327,13 @@ export default function BalancingTransferPreviewPageV2() {
               <Space direction="vertical" size="middle" style={{ width: '100%' }}>
                 <Card bordered={false} style={{ borderRadius: 20, boxShadow: '0 12px 32px rgba(15, 23, 42, 0.06)' }} title="Run setup">
                   <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+                    <Alert
+                      type="info"
+                      showIcon
+                      message="Transfer lanes"
+                      description="Balancing currently limits moves to same-city store pairs when Store Master city values are present."
+                    />
+
                     <div>
                       <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                         Stores
@@ -456,6 +511,18 @@ export default function BalancingTransferPreviewPageV2() {
                     </Checkbox>
 
                     <Row gutter={12}>
+                      <Col span={12}>
+                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                          SKU preview limit
+                        </Typography.Text>
+                        <InputNumber
+                          min={1}
+                          value={limit}
+                          onChange={(value) => setLimit(value ?? null)}
+                          placeholder="blank = all"
+                          style={{ width: '100%', marginTop: 6 }}
+                        />
+                      </Col>
                       <Col span={12}>
                         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                           Category min
@@ -656,6 +723,13 @@ export default function BalancingTransferPreviewPageV2() {
                         <Tag color={confidenceColor(line.decisionContext.confidence)}>
                           {line.decisionContext.confidence}
                         </Tag>
+                      ),
+                    },
+                    {
+                      title: 'Route',
+                      width: 120,
+                      render: (_value, line) => (
+                        <Tag>{prettyRouteBucket(line.decisionContext.routeBucket)}</Tag>
                       ),
                     },
                     {

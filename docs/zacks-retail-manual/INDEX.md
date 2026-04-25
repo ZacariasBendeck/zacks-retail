@@ -22,7 +22,7 @@
 | 3 | [Physical Inventory](physical-inventory.md) | [physical-inventory](../modules/physical-inventory.md) | Ch. 10 | Draft |
 | 4 | [Purchasing](purchasing.md) | [purchasing](../modules/purchasing.md) | Ch. 3 | Draft |
 | 5 | [Open-To-Buy Planning](otb-planning.md) | [otb-planning](../modules/otb-planning.md) | Ch. 6, Ch. 11, Ch. 17 | Draft |
-| 6 | [Sales / POS](sales-pos.md) | [sales-pos](../modules/sales-pos.md) | Ch. 2, Ch. 13 | Draft |
+| 6 | [Sales / POS](sales-pos.md) | [sales-pos](../modules/sales-pos/README.md) | Ch. 2, Ch. 13 | Draft |
 | 7 | [Customer Transactions](customer-transactions.md) | [customer-transactions](../modules/customer-transactions.md) | Ch. 2, Ch. 9 | Draft |
 | 8 | [Sales Reporting](sales-reporting.md) | [sales-reporting](../modules/sales-reporting.md) | Ch. 2, Ch. 6 | Draft |
 | 9 | [CRM](crm.md) | [crm](../modules/crm.md) | Ch. 9, Ch. 15, Ch. 17 | Draft |

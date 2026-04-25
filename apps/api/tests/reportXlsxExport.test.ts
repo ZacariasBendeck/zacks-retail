@@ -141,6 +141,9 @@ describe('reportRoutes XLSX export', () => {
     expect(headerCells).toContain('Turnover Ratio');
   });
 
+  // Sell-through reads against the real `app.*` data (sales_history_ticket*,
+  // purchase_order_legacy*) — an unfiltered export scans millions of rows and
+  // genuinely needs a wider window than the Jest 5s default.
   it('GET /sell-through?format=xlsx returns a valid XLSX workbook', async () => {
     const res = await request(app).get('/api/v1/reports/sell-through?format=xlsx').buffer(true).parse(binaryParser);
     expectXlsxHeaders(res, 'sell-through-report.xlsx');
@@ -148,7 +151,7 @@ describe('reportRoutes XLSX export', () => {
     const ws = wb.worksheets[0];
     const headerCells = ws.getRow(1).values as Array<string | undefined>;
     expect(headerCells).toContain('Sell-Through %');
-  });
+  }, 60_000);
 
   it('GET /inventory-aging?format=xlsx returns a valid XLSX workbook', async () => {
     const res = await request(app).get('/api/v1/reports/inventory-aging?format=xlsx').buffer(true).parse(binaryParser);

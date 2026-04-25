@@ -392,43 +392,32 @@ interface SizeTypeRow {
 
 async function loadSizeTypeMap(): Promise<Map<number, SizeTypeRow>> {
   return cachedAsync('dim:sizeTypes', 300_000, async () => {
-    const colSelect = Array.from({ length: 54 }, (_, i) => {
-      const n = pad2(i + 1);
-      return `columns_${n} AS "Columns_${n}"`;
-    }).join(', ');
-    const rowSelect = Array.from({ length: 27 }, (_, i) => {
-      const n = pad2(i + 1);
-      return `rows_${n} AS "Rows_${n}"`;
-    }).join(', ');
-    const rows = await prisma.$queryRawUnsafe<Record<string, string | number | null>[]>(
-      `SELECT code AS "Code", "desc" AS "Desc",
-              max_columns AS "MaxColumns", max_rows AS "MaxRows",
-              ${colSelect}, ${rowSelect}
-         FROM rics_mirror.size_types`,
-    );
+    const rows = await prisma.taxonomySizeType.findMany({
+      select: {
+        code: true,
+        description: true,
+        columns: true,
+        rows: true,
+        maxColumns: true,
+        maxRows: true,
+      },
+      orderBy: { code: 'asc' },
+    });
     const map = new Map<number, SizeTypeRow>();
     for (const r of rows) {
-      const code = Number(r.Code);
+      const code = Number(r.code);
       if (!Number.isFinite(code)) continue;
-      const maxCols = Math.min(54, Math.max(0, Number(r.MaxColumns ?? 0)));
-      const maxRows = Math.min(27, Math.max(0, Number(r.MaxRows ?? 0)));
-      const cols: string[] = [];
-      for (let i = 1; i <= maxCols; i++) {
-        const v = (r[`Columns_${pad2(i)}`] as string | null)?.toString().trim();
-        cols.push(v || '');
-      }
-      const rws: string[] = [];
-      for (let i = 1; i <= maxRows; i++) {
-        const v = (r[`Rows_${pad2(i)}`] as string | null)?.toString().trim();
-        rws.push(v || '');
-      }
+      const maxCols = Math.min(54, Math.max(0, Number(r.maxColumns ?? 0)));
+      const maxRows = Math.min(27, Math.max(0, Number(r.maxRows ?? 0)));
+      const cols = Array.from({ length: maxCols }, (_, i) => (r.columns[i] ?? '').trim());
+      const rws = Array.from({ length: maxRows }, (_, i) => (r.rows[i] ?? '').trim());
       map.set(code, {
         code,
-        desc: (r.Desc as string | null)?.toString().trim() || null,
+        desc: r.description.trim() || null,
         columns: cols,
         rows: rws,
         maxColumns: maxCols,
-        maxRows: maxRows,
+        maxRows,
       });
     }
     return map;

@@ -8,6 +8,11 @@ import type {
   WorkingCellStateV2,
   WorkingSkuStateV2,
 } from './types';
+import {
+  routeBucketForStores,
+  selectedCityCount,
+  transferLaneAllowed,
+} from '../transferLanePolicy';
 
 function coverDays(cell: WorkingCellStateV2): number | null {
   if (cell.forecastDailyQty <= 0) return null;
@@ -15,10 +20,7 @@ function coverDays(cell: WorkingCellStateV2): number | null {
 }
 
 function routeBucket(fromCell: WorkingCellStateV2, toCell: WorkingCellStateV2): string | null {
-  if (fromCell.region != null && toCell.region != null && fromCell.region === toCell.region) {
-    return 'same-region';
-  }
-  return 'cross-region';
+  return routeBucketForStores(fromCell, toCell);
 }
 
 function expectedMarginRecovered(unitCostSnapshot: number, retailPriceSnapshot: number, quantity: number): number | null {
@@ -193,8 +195,16 @@ function metricDesc(left: WorkingCellStateV2, right: WorkingCellStateV2): number
 }
 
 function donorComparator(left: WorkingCellStateV2, right: WorkingCellStateV2, receiver: WorkingCellStateV2): number {
-  const leftRoute = routeBucket(left, receiver) === 'same-region' ? 0 : 1;
-  const rightRoute = routeBucket(right, receiver) === 'same-region' ? 0 : 1;
+  const leftRoute = routeBucket(left, receiver) === 'same-city'
+    ? 0
+    : routeBucket(left, receiver) === 'same-region'
+      ? 1
+      : 2;
+  const rightRoute = routeBucket(right, receiver) === 'same-city'
+    ? 0
+    : routeBucket(right, receiver) === 'same-region'
+      ? 1
+      : 2;
   return leftRoute - rightRoute
     || left.metric.metricValue - right.metric.metricValue
     || right.spareQty - left.spareQty
@@ -262,6 +272,7 @@ function runServiceRescuePass(
     for (const receiver of receivers) {
       const donors = cells
         .filter((cell) => cell.storeId !== receiver.storeId && donorEligible(facts, cell))
+        .filter((cell) => transferLaneAllowed(cell, receiver))
         .sort((left, right) => donorComparator(left, right, receiver));
       const donor = donors[0];
       if (!donor) continue;
@@ -298,6 +309,7 @@ function runCurveRepairPass(
     for (const receiver of receivers) {
       const donors = cells
         .filter((cell) => cell.storeId !== receiver.storeId && donorEligible(facts, cell))
+        .filter((cell) => transferLaneAllowed(cell, receiver))
         .sort((left, right) => donorComparator(left, right, receiver));
       const donor = donors[0];
       if (!donor) continue;
@@ -332,6 +344,7 @@ function runCoverageRebalancePass(
     for (const receiver of receivers) {
       const donors = cells
         .filter((cell) => cell.storeId !== receiver.storeId && donorEligible(facts, cell))
+        .filter((cell) => transferLaneAllowed(cell, receiver))
         .filter((cell) => !modelAware || (cell.modelQty > 0 && receiver.modelQty > 0))
         .filter((cell) => meetsTieBreak(receiver.metric.metricValue, cell.metric.metricValue, facts.input.tieBreakKind, facts.input.tieBreakValue))
         .sort((left, right) => donorComparator(left, right, receiver));
@@ -372,6 +385,7 @@ function runDownwardSharePass(
     for (const donor of donors) {
       const receiver = [...cells]
         .filter((cell) => cell.storeId !== donor.storeId && receiverEligible(facts, cell) && cell.effectiveAvailableQty === 0)
+        .filter((cell) => transferLaneAllowed(donor, cell))
         .filter((cell) => donor.metric.metricValue >= cell.metric.metricValue)
         .sort((left, right) => donorComparator(left, right, donor))[0];
       if (!receiver) continue;
@@ -413,6 +427,7 @@ function runSkeletonConsolidationPass(
         if (candidateStoreId === donorStoreId) return false;
         const candidateCell = candidateCells.get(`${donorCell.rowLabel}::${donorCell.columnLabel}`);
         return Boolean(candidateCell && receiverEligible(facts, candidateCell))
+          && transferLaneAllowed(donorCell, candidateCell ?? null)
           && ((candidateCell?.effectiveAvailableQty ?? 0) > 0 || (candidateCell?.modelQty ?? 0) > 0 || (candidateCell?.storeSoldUnits ?? 0) > 0);
       });
       if (!receiverEntry) {
@@ -453,6 +468,14 @@ export function buildBalancingPreviewLinesV2(facts: BalancingFactsV2): {
   const bucket = new Map<string, BalancingTransferPreviewLineV2>();
   const exceptions: TransferPreviewException[] = [];
 
+  if (selectedCityCount(facts.stores) > 1) {
+    pushException(exceptions, {
+      code: 'BALANCING_CITY_LANE_RESTRICTION',
+      severity: 'warning',
+      message: 'Cross-city transfers are currently blocked using app.store_master.city. Only same-city store pairs are eligible in this preview.',
+    });
+  }
+
   let totalSoldUnits = 0;
   for (const workingSku of facts.workingBySku.values()) {
     if (!skuParticipationAllowed(facts, workingSku)) continue;
@@ -486,7 +509,7 @@ export function buildBalancingPreviewLinesV2(facts: BalancingFactsV2): {
     pushException(exceptions, {
       code: 'BALANCING_NO_SALES_HISTORY',
       severity: 'warning',
-      message: `No app-native sales history was found for the selected ${facts.input.salesPeriod.toLowerCase()} window. V2 fell back to lower-confidence target and presentation logic.`,
+      message: `No imported sales history was found in app.sales_history_ticket for the selected ${facts.input.salesPeriod.toLowerCase()} window. V2 fell back to lower-confidence target and presentation logic.`,
     });
   }
   if (facts.input.salesPeriod === 'SEASON') {

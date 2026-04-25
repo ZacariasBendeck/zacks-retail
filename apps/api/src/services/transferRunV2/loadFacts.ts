@@ -1,6 +1,12 @@
 import { Prisma } from '../../prismaClient';
 import { prisma } from '../../db/prisma';
 import type { CreateBalancingTransferRunV2Input } from '../../models/transferRunsV2';
+import {
+  loadSalesHistoryCategoryCurveSales,
+  loadSalesHistoryChainCellSales,
+  loadSalesHistoryMetricAggregates,
+  loadSalesHistoryStoreCellSales,
+} from '../transferRunSalesHistory';
 import type {
   BalancingFactsV2,
   CandidateSkuRowV2,
@@ -175,6 +181,7 @@ async function loadStores(storeIds: number[] | undefined): Promise<StoreFactV2[]
     select: {
       number: true,
       description: true,
+      city: true,
       region: true,
     },
     orderBy: { number: 'asc' },
@@ -183,6 +190,7 @@ async function loadStores(storeIds: number[] | undefined): Promise<StoreFactV2[]
   return rows.map((row) => ({
     storeId: row.number,
     storeLabel: storeLabel(row),
+    city: row.city?.trim() || null,
     region: row.region ?? null,
     transferCapable: true,
   }));
@@ -303,38 +311,7 @@ async function loadMetricAggregates(
   storeIds: number[],
   startAt: Date,
 ): Promise<Map<string, StoreMetricAggregateRowV2>> {
-  if (skuIds.length === 0 || storeIds.length === 0) return new Map();
-
-  const rows = await prisma.$queryRawUnsafe<StoreMetricAggregateRowV2[]>(
-    `SELECT
-        sku_id AS "skuId",
-        store_id AS "storeId",
-        COALESCE(SUM(quantity_delta), 0)::float8 AS "netMovementQty",
-        COALESCE(SUM(CASE WHEN quantity_delta > 0 THEN quantity_delta ELSE 0 END), 0)::float8 AS "positiveMovementQty",
-        COALESCE(SUM(CASE
-          WHEN movement_type = 'SALE' THEN -quantity_delta
-          WHEN movement_type = 'SALE_RETURN' THEN -quantity_delta
-          ELSE 0
-        END), 0)::float8 AS "netSoldUnits",
-        COALESCE(SUM(CASE
-          WHEN movement_type = 'SALE' THEN (-quantity_delta) * COALESCE(retail_price_snapshot, 0)
-          WHEN movement_type = 'SALE_RETURN' THEN (-quantity_delta) * COALESCE(retail_price_snapshot, 0)
-          ELSE 0
-        END), 0)::float8 AS "netRevenue",
-        COALESCE(SUM(CASE
-          WHEN movement_type = 'SALE' THEN (-quantity_delta) * COALESCE(unit_cost_snapshot, 0)
-          WHEN movement_type = 'SALE_RETURN' THEN (-quantity_delta) * COALESCE(unit_cost_snapshot, 0)
-          ELSE 0
-        END), 0)::float8 AS "netCost"
-      FROM app.stock_movement
-      WHERE sku_id = ANY($1::uuid[])
-        AND store_id = ANY($2::int[])
-        AND movement_at >= $3
-      GROUP BY sku_id, store_id`,
-    skuIds,
-    storeIds,
-    startAt,
-  );
+  const rows = await loadSalesHistoryMetricAggregates(skuIds, storeIds, startAt) as StoreMetricAggregateRowV2[];
 
   const map = new Map<string, StoreMetricAggregateRowV2>();
   for (const row of rows) {
@@ -348,28 +325,7 @@ async function loadStoreCellSales(
   storeIds: number[],
   startAt: Date,
 ): Promise<Map<string, number>> {
-  if (skuIds.length === 0 || storeIds.length === 0) return new Map();
-
-  const rows = await prisma.$queryRawUnsafe<StoreCellSalesAggregateRowV2[]>(
-    `SELECT
-        sku_id AS "skuId",
-        store_id AS "storeId",
-        row_label AS "rowLabel",
-        column_label AS "columnLabel",
-        COALESCE(SUM(CASE
-          WHEN movement_type = 'SALE' THEN -quantity_delta
-          WHEN movement_type = 'SALE_RETURN' THEN -quantity_delta
-          ELSE 0
-        END), 0)::float8 AS "soldUnits"
-      FROM app.stock_movement
-      WHERE sku_id = ANY($1::uuid[])
-        AND store_id = ANY($2::int[])
-        AND movement_at >= $3
-      GROUP BY sku_id, store_id, row_label, column_label`,
-    skuIds,
-    storeIds,
-    startAt,
-  );
+  const rows = await loadSalesHistoryStoreCellSales(skuIds, storeIds, startAt) as StoreCellSalesAggregateRowV2[];
 
   const map = new Map<string, number>();
   for (const row of rows) {
@@ -382,25 +338,7 @@ async function loadChainCellSales(
   skuIds: string[],
   startAt: Date,
 ): Promise<Map<string, number>> {
-  if (skuIds.length === 0) return new Map();
-
-  const rows = await prisma.$queryRawUnsafe<ChainCellSalesAggregateRowV2[]>(
-    `SELECT
-        sku_id AS "skuId",
-        row_label AS "rowLabel",
-        column_label AS "columnLabel",
-        COALESCE(SUM(CASE
-          WHEN movement_type = 'SALE' THEN -quantity_delta
-          WHEN movement_type = 'SALE_RETURN' THEN -quantity_delta
-          ELSE 0
-        END), 0)::float8 AS "soldUnits"
-      FROM app.stock_movement
-      WHERE sku_id = ANY($1::uuid[])
-        AND movement_at >= $2
-      GROUP BY sku_id, row_label, column_label`,
-    skuIds,
-    startAt,
-  );
+  const rows = await loadSalesHistoryChainCellSales(skuIds, startAt) as ChainCellSalesAggregateRowV2[];
 
   const map = new Map<string, number>();
   for (const row of rows) {
@@ -416,29 +354,7 @@ async function loadCategoryCurveSales(
 ): Promise<Map<string, number>> {
   const validCategories = categories.filter((value): value is number => value != null);
   const validSizeTypes = sizeTypes.filter((value): value is number => value != null);
-  if (validCategories.length === 0 || validSizeTypes.length === 0) return new Map();
-
-  const rows = await prisma.$queryRawUnsafe<CategoryCurveAggregateRowV2[]>(
-    `SELECT
-        s.category_number AS "categoryNumber",
-        s.size_type AS "sizeType",
-        m.row_label AS "rowLabel",
-        m.column_label AS "columnLabel",
-        COALESCE(SUM(CASE
-          WHEN m.movement_type = 'SALE' THEN -m.quantity_delta
-          WHEN m.movement_type = 'SALE_RETURN' THEN -m.quantity_delta
-          ELSE 0
-        END), 0)::float8 AS "soldUnits"
-      FROM app.stock_movement m
-      JOIN app.sku s ON s.id = m.sku_id
-      WHERE s.category_number = ANY($1::int[])
-        AND s.size_type = ANY($2::smallint[])
-        AND m.movement_at >= $3
-      GROUP BY s.category_number, s.size_type, m.row_label, m.column_label`,
-    validCategories,
-    validSizeTypes,
-    startAt,
-  );
+  const rows = await loadSalesHistoryCategoryCurveSales(validCategories, validSizeTypes, startAt) as CategoryCurveAggregateRowV2[];
 
   const map = new Map<string, number>();
   for (const row of rows) {
@@ -575,6 +491,7 @@ export async function loadBalancingFactsV2(
           skuCode: skuCodeOf(sku),
           storeId,
           storeLabel: store.storeLabel,
+          city: store.city,
           region: store.region,
           rowLabel: row,
           columnLabel: col,

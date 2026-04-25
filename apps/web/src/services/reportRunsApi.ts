@@ -29,13 +29,29 @@ export const REPORT_TYPE_LABELS: Record<ReportType, string> = {
 
 /**
  * Default title when the operator saves a snapshot without typing one.
- * Format: `{Report name} — YYYY-MM-DD HH:mm` (e.g. "Sales Analysis — 2026-04-23 14:23").
- * Readable in the snapshots list without further metadata, sorts naturally
- * by timestamp, and fits comfortably within the 100-char backend cap.
+ * Without a descriptor: `{Report name} — YYYY-MM-DD HH:mm`.
+ * With a descriptor: `{Report name} — {descriptor} — YYYY-MM-DD HH:mm`,
+ * where the descriptor is a brief summary of the dimensions / report type
+ * and the criteria that were applied. The descriptor is trimmed (with an
+ * ellipsis) to keep the whole string within the backend's 100-char title cap.
  */
-export function defaultSnapshotTitle(reportType: ReportType, now: dayjs.Dayjs = dayjs()): string {
+export function defaultSnapshotTitle(
+  reportType: ReportType,
+  descriptor?: string,
+  now: dayjs.Dayjs = dayjs(),
+): string {
   const label = REPORT_TYPE_LABELS[reportType] ?? reportType
-  return `${label} — ${now.format('YYYY-MM-DD HH:mm')}`
+  const ts = now.format('YYYY-MM-DD HH:mm')
+  const desc = descriptor?.trim() ?? ''
+  if (!desc) return `${label} — ${ts}`
+  // Backend caps title at 100 chars. Reserve label, two " — " separators,
+  // and the timestamp; the descriptor gets whatever's left, ellipsised if
+  // needed so the timestamp tail always survives.
+  const reserved = label.length + 3 + 3 + ts.length
+  const maxDesc = Math.max(0, 100 - reserved)
+  const trimmed =
+    desc.length > maxDesc ? `${desc.slice(0, Math.max(0, maxDesc - 1))}…` : desc
+  return `${label} — ${trimmed} — ${ts}`
 }
 
 // Envelope-only summary — the list endpoint returns 50 of these. The full

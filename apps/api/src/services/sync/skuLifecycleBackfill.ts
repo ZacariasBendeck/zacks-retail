@@ -31,13 +31,27 @@ export interface BackfillOptions {
   runId: string;
   /** Actor recorded on audit rows and created_by. Default 'sync:rics-bulk'. */
   actor?: string;
+  /** Source table to project into `app.sku`. Defaults to `rics_mirror.inventory_master`. */
+  sourceTable?: string;
 }
 
 const DEFAULT_ACTOR = 'sync:rics-bulk';
+const DEFAULT_SOURCE_TABLE = 'rics_mirror.inventory_master';
+
+function quoteQualifiedRef(ref: string): string {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$/.test(ref)) {
+    throw new Error(`Invalid table reference: ${ref}`);
+  }
+  return ref
+    .split('.')
+    .map((part) => `"${part}"`)
+    .join('.');
+}
 
 export async function skuLifecycleBackfill(opts: BackfillOptions): Promise<BackfillResult> {
   const { pgClient: c, runId } = opts;
   const actor = opts.actor ?? DEFAULT_ACTOR;
+  const sourceRef = quoteQualifiedRef(opts.sourceTable ?? DEFAULT_SOURCE_TABLE);
   const startedMs = Date.now();
 
   await c.query('BEGIN');
@@ -96,7 +110,7 @@ export async function skuLifecycleBackfill(opts: BackfillOptions): Promise<Backf
           im.order_multiple,
           NULLIF(im.order_uom, '')                               AS order_uom,
           im.status                                              AS rics_status
-        FROM rics_mirror.inventory_master im
+        FROM ${sourceRef} im
         LEFT JOIN app.category_product_family cpf
           ON cpf.category_number = im.category
         WHERE im.sku IS NOT NULL
@@ -193,7 +207,7 @@ export async function skuLifecycleBackfill(opts: BackfillOptions): Promise<Backf
         WHERE s.source = 'rics'
           AND s.sku_state <> 'DISCONTINUED'
           AND NOT EXISTS (
-            SELECT 1 FROM rics_mirror.inventory_master im
+            SELECT 1 FROM ${sourceRef} im
             WHERE im.sku = s.code
               AND (im.status IS NULL OR im.status <> 'D')
           )
@@ -210,7 +224,7 @@ export async function skuLifecycleBackfill(opts: BackfillOptions): Promise<Backf
     const collisions = await c.query<{ code: string }>(`
       SELECT s.code
       FROM app.sku s
-      JOIN rics_mirror.inventory_master im ON im.sku = s.code
+      JOIN ${sourceRef} im ON im.sku = s.code
       WHERE s.source = 'app'
         AND s.sku_state IN ('ACTIVE', 'DISCONTINUED')
         AND s.code IS NOT NULL

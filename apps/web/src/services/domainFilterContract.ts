@@ -17,10 +17,15 @@ export interface DomainFilterContract {
 
 export interface DomainFilterContractOptions {
   requireDepartmentForCategory?: boolean
+  // Reports that read from app-owned Postgres data (sell-through,
+  // inventory-aging) accept any non-empty string department and any positive
+  // integer category, since the domain is data-driven by app.taxonomy_*
+  // rather than the SQLite-era 6-name enum / 556..599 code window.
+  allowAnyDepartment?: boolean
 }
 
 export interface ValidatedDomainFilterContract {
-  department?: Department
+  department?: Department | string
   category?: number
 }
 
@@ -47,6 +52,12 @@ function normalizeDepartment(value: string | null | undefined): Department | und
   return isValidDepartment(trimmed) ? trimmed : undefined
 }
 
+function normalizeAnyDepartment(value: string | null | undefined): string | undefined {
+  if (value == null) return undefined
+  const trimmed = value.trim()
+  return trimmed || undefined
+}
+
 function normalizeCategory(value: number | null | undefined): number | undefined {
   if (value == null) return undefined
   if (!Number.isInteger(value)) return Number.NaN
@@ -57,16 +68,27 @@ export function validateDomainFilterContract(
   contract: DomainFilterContract,
   options?: DomainFilterContractOptions,
 ): ValidationResult<ValidatedDomainFilterContract> {
-  const department = normalizeDepartment(contract.department)
+  const allowAny = options?.allowAnyDepartment === true
+  const department = allowAny
+    ? normalizeAnyDepartment(contract.department)
+    : normalizeDepartment(contract.department)
   const category = normalizeCategory(contract.category)
   const errors: string[] = []
 
   if (contract.department != null && department == null) {
-    errors.push('Department must be one of FORMAL, CASUAL, FIESTA, SANDALIAS, BOOTS, COMFORT.')
+    errors.push(allowAny
+      ? 'Department must be a non-empty string.'
+      : 'Department must be one of FORMAL, CASUAL, FIESTA, SANDALIAS, BOOTS, COMFORT.')
   }
 
   if (category != null) {
-    if (Number.isNaN(category) || !isValidCategoryCode(category)) {
+    if (Number.isNaN(category)) {
+      errors.push('Category must be an integer.')
+    } else if (allowAny) {
+      if (!Number.isInteger(category) || category < 1) {
+        errors.push('Category must be a positive integer.')
+      }
+    } else if (!isValidCategoryCode(category)) {
       errors.push(`Category must be an integer within ${CATEGORY_MIN}-${CATEGORY_MAX}.`)
     }
     if (options?.requireDepartmentForCategory && !department) {

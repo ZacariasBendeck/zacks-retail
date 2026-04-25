@@ -28,6 +28,7 @@ import {
   AlertOutlined,
   TagOutlined,
   ApartmentOutlined,
+  CreditCardOutlined,
 } from '@ant-design/icons'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth/useAuth'
@@ -118,6 +119,14 @@ const menuItems = [
     key: '/purchase-planning',
     icon: <FundOutlined />,
     label: 'Plan de Compras',
+  },
+  {
+    key: '/sales',
+    icon: <CreditCardOutlined />,
+    label: 'Sales POS',
+    children: [
+      { key: '/sales/enter', icon: <CreditCardOutlined />, label: 'Enter Sales' },
+    ],
   },
   {
     key: '/customers-group',
