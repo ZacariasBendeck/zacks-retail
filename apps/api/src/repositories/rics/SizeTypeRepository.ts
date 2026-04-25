@@ -1,32 +1,21 @@
 /**
- * SizeType repository — RISIZE.MDB / `SizeTypes`.
+ * SizeType repository — `app.taxonomy_size_type` in Postgres.
  *
- * Schema: Code SMALLINT | Desc WCHAR | ColumnDesc WCHAR | RowDesc WCHAR |
- *   Columns_01..54 WCHAR | Rows_01..27 WCHAR | MaxColumns SMALLINT |
- *   MaxRows SMALLINT | TableType WCHAR | DateLastChanged DATE
+ * Schema (per RICS p. 147):
+ *   code SMALLINT (PK) | desc TEXT | column_desc TEXT | row_desc TEXT |
+ *   table_type TEXT? | columns TEXT[] | rows TEXT[] | max_columns SMALLINT |
+ *   max_rows SMALLINT | date_last_changed TIMESTAMP
  *
- * RICS p. 147 — a Size Type is the grid shape for a SKU: up to 54 columns
- * (e.g. size numbers) × 27 rows (e.g. widths). `ColumnDesc` / `RowDesc` are
- * the axis labels (max 5 chars each). Each `Columns_NN` / `Rows_NN` cell
- * holds the label printed on labels and shown in grids (max 3 chars).
- *
- * Storage note: the physical row is wide (single row per SizeType), so the
- * segment codec only needs to unpack/pack a single row — not the multi-segment
- * shape used by `Inventory Quantities`. We still route through
- * utils/segmentCodec.ts so the same trim/null-handling logic lives in one
- * place.
+ * A Size Type is the grid shape for a SKU: up to 54 columns (sizes) × 27 rows
+ * (widths). In RICS these were stored as a single wide row with 54 Columns_NN
+ * + 27 Rows_NN slots — the Postgres port uses native text arrays, which
+ * keeps writes atomic and drops the segment codec entirely.
  */
 
-import { executeQuery, executeNonQuery, type AccessParam } from '../../services/accessOleDb';
+import { prisma } from '../../db/prisma';
 import { Err, Ok, type Result, type RepoError } from './repoResult';
-import { openRicsDb, RicsDb, toRepoError, trimString, coerceNumber } from './ricsAccess';
-import { parseAccessDate } from './parseAccessDate';
-import {
-  SEG,
-  columnList,
-  columnName,
-  unpackRow,
-} from '../../utils/segmentCodec';
+import { isUniqueViolation, duplicatePrimaryKey, isRecordNotFound, notFound } from './prismaErrors';
+import { loadSkuCountsBySizeType } from './taxonomySkuCounts';
 
 export interface SizeType {
   code: number;
@@ -34,9 +23,9 @@ export interface SizeType {
   columnDescription: string;
   rowDescription: string;
   tableType: string | null;
-  /** The non-blank column labels in order (length ≤ `maxColumns`). */
+  /** Non-blank column labels in order (length ≤ `maxColumns`). */
   columns: string[];
-  /** The non-blank row labels in order (length ≤ `maxRows`). */
+  /** Non-blank row labels in order (length ≤ `maxRows`). */
   rows: string[];
   maxColumns: number;
   maxRows: number;
@@ -55,67 +44,32 @@ export interface SizeTypeInput {
 }
 
 interface SizeTypeRow {
-  Code: number;
-  Desc: string | null;
-  ColumnDesc: string | null;
-  RowDesc: string | null;
-  MaxColumns: number | null;
-  MaxRows: number | null;
-  TableType: string | null;
-  DateLastChanged: string | null;
-  [cell: string]: unknown;
+  code: number;
+  description: string;
+  columnDescription: string;
+  rowDescription: string;
+  tableType: string | null;
+  columns: string[];
+  rows: string[];
+  maxColumns: number;
+  maxRows: number;
+  dateLastChanged: Date;
 }
-
-const ALL_COLUMNS = columnList(SEG.SIZETYPE_COLUMNS); // ["[Columns_01]", ..., "[Columns_54]"]
-const ALL_ROWS = columnList(SEG.SIZETYPE_ROWS); // ["[Rows_01]", ..., "[Rows_27]"]
 
 function mapRow(row: SizeTypeRow): SizeType {
-  const maxColumns = Math.min(54, Math.max(0, coerceNumber(row.MaxColumns) ?? 0));
-  const maxRows = Math.min(27, Math.max(0, coerceNumber(row.MaxRows) ?? 0));
-  const columns = unpackRow<string>(row, SEG.SIZETYPE_COLUMNS, maxColumns)
-    .map((v) => (typeof v === 'string' ? v : v == null ? '' : String(v)))
-    .filter((v) => v.length > 0);
-  const rows = unpackRow<string>(row, SEG.SIZETYPE_ROWS, maxRows)
-    .map((v) => (typeof v === 'string' ? v : v == null ? '' : String(v)))
-    .filter((v) => v.length > 0);
   return {
-    code: Number(row.Code),
-    description: trimString(row.Desc) ?? '',
-    columnDescription: trimString(row.ColumnDesc) ?? '',
-    rowDescription: trimString(row.RowDesc) ?? '',
-    tableType: trimString(row.TableType),
-    columns,
-    rows,
-    maxColumns,
-    maxRows,
-    dateLastChanged: parseAccessDate(row.DateLastChanged),
+    code: row.code,
+    description: row.description,
+    columnDescription: row.columnDescription,
+    rowDescription: row.rowDescription,
+    tableType: row.tableType,
+    columns: row.columns,
+    rows: row.rows,
+    maxColumns: row.maxColumns,
+    maxRows: row.maxRows,
+    dateLastChanged: row.dateLastChanged,
     skuCount: 0,
   };
-}
-
-/**
- * Returns a map of SizeType code → SKU count from InventoryMaster.[SizeType].
- */
-async function loadSkuCountsBySizeType(): Promise<Map<number, number>> {
-  const out = new Map<number, number>();
-  try {
-    const { path, password } = openRicsDb(RicsDb.InventoryMaster);
-    const rows = await executeQuery<{ SizeType: number | null; N: number }>(
-      path,
-      password,
-      `SELECT [SizeType], COUNT(*) AS N FROM [InventoryMaster]
-         WHERE [SizeType] IS NOT NULL
-         GROUP BY [SizeType]`,
-    );
-    for (const r of rows) {
-      const code = coerceNumber(r.SizeType);
-      if (code == null) continue;
-      out.set(code, Number(r.N ?? 0));
-    }
-  } catch {
-    // leave counts at 0
-  }
-  return out;
 }
 
 function validate(input: SizeTypeInput): RepoError | null {
@@ -160,109 +114,52 @@ function validate(input: SizeTypeInput): RepoError | null {
   return null;
 }
 
-function buildInsertOrUpdateColumns(input: SizeTypeInput): { columns: string[]; params: AccessParam[] } {
-  const columns: string[] = ['[Code]', '[Desc]', '[ColumnDesc]', '[RowDesc]'];
-  const params: AccessParam[] = [
-    { value: input.code, type: 'integer' },
-    { value: input.description.trim(), type: 'string' },
-    { value: (input.columnDescription ?? '').trim(), type: 'string' },
-    { value: (input.rowDescription ?? '').trim(), type: 'string' },
-  ];
-  for (let i = 1; i <= 54; i++) {
-    columns.push(`[${columnName(SEG.SIZETYPE_COLUMNS, i)}]`);
-    const val = input.columns[i - 1] ?? null;
-    params.push(val != null ? { value: val.trim(), type: 'string' } : { value: null, type: 'null' });
-  }
-  for (let i = 1; i <= 27; i++) {
-    columns.push(`[${columnName(SEG.SIZETYPE_ROWS, i)}]`);
-    const val = input.rows[i - 1] ?? null;
-    params.push(val != null ? { value: val.trim(), type: 'string' } : { value: null, type: 'null' });
-  }
-  columns.push('[MaxColumns]', '[MaxRows]', '[TableType]', '[DateLastChanged]');
-  params.push(
-    { value: input.columns.length, type: 'integer' },
-    { value: input.rows.length, type: 'integer' },
-    input.tableType != null ? { value: input.tableType.trim(), type: 'string' } : { value: null, type: 'null' },
-    { value: new Date(), type: 'date' },
-  );
-  return { columns, params };
+function normalizeLabels(labels: string[]): string[] {
+  return labels.map((l) => l.trim()).filter((l) => l.length > 0);
 }
-
-const LIST_COLUMNS = [
-  '[Code]',
-  '[Desc]',
-  '[ColumnDesc]',
-  '[RowDesc]',
-  '[MaxColumns]',
-  '[MaxRows]',
-  '[TableType]',
-  '[DateLastChanged]',
-  ...ALL_COLUMNS,
-  ...ALL_ROWS,
-].join(', ');
 
 export const SizeTypeRepository = {
   async list(): Promise<Result<SizeType[]>> {
-    try {
-      const { path, password } = openRicsDb(RicsDb.SizeTypes);
-      const rows = await executeQuery<SizeTypeRow>(
-        path,
-        password,
-        `SELECT ${LIST_COLUMNS} FROM [SizeTypes] ORDER BY [Code]`,
-      );
-      const counts = await loadSkuCountsBySizeType();
-      return Ok(rows.map(mapRow).map((s) => ({ ...s, skuCount: counts.get(s.code) ?? 0 })));
-    } catch (err) {
-      return Err(toRepoError(err));
-    }
+    const rows = await prisma.taxonomySizeType.findMany({ orderBy: { code: 'asc' } });
+    const counts = await loadSkuCountsBySizeType();
+    return Ok(rows.map(mapRow).map((s) => ({ ...s, skuCount: counts.get(s.code) ?? 0 })));
   },
 
   async getByCode(code: number): Promise<Result<SizeType>> {
-    try {
-      const { path, password } = openRicsDb(RicsDb.SizeTypes);
-      const rows = await executeQuery<SizeTypeRow>(
-        path,
-        password,
-        `SELECT ${LIST_COLUMNS} FROM [SizeTypes] WHERE [Code] = ?`,
-        [{ value: code, type: 'integer' }],
-      );
-      if (rows.length === 0) {
-        return Err({ kind: 'NotFound', message: `Size type ${code} not found.` });
-      }
-      const counts = await loadSkuCountsBySizeType();
-      return Ok({ ...mapRow(rows[0]), skuCount: counts.get(code) ?? 0 });
-    } catch (err) {
-      return Err(toRepoError(err));
-    }
+    const row = await prisma.taxonomySizeType.findUnique({ where: { code } });
+    if (row == null) return Err(notFound(`Size type ${code} not found.`));
+    const counts = await loadSkuCountsBySizeType();
+    return Ok({ ...mapRow(row), skuCount: counts.get(code) ?? 0 });
   },
 
   async create(input: SizeTypeInput): Promise<Result<SizeType>> {
     const validationErr = validate(input);
     if (validationErr) return Err(validationErr);
 
+    const columns = normalizeLabels(input.columns);
+    const rows = normalizeLabels(input.rows);
+
     try {
-      const { path, password } = openRicsDb(RicsDb.SizeTypes);
-      const existing = await executeQuery<{ n: number }>(
-        path,
-        password,
-        'SELECT COUNT(*) AS n FROM [SizeTypes] WHERE [Code] = ?',
-        [{ value: input.code, type: 'integer' }],
-      );
-      if ((existing[0]?.n ?? 0) > 0) {
-        return Err({ kind: 'DuplicatePrimaryKey', message: `Size type ${input.code} already exists.` });
-      }
-      const { columns, params } = buildInsertOrUpdateColumns(input);
-      const placeholders = columns.map(() => '?').join(', ');
-      await executeNonQuery(
-        path,
-        password,
-        `INSERT INTO [SizeTypes] (${columns.join(', ')}) VALUES (${placeholders})`,
-        params,
-      );
-      return this.getByCode(input.code);
+      await prisma.taxonomySizeType.create({
+        data: {
+          code: input.code,
+          description: input.description.trim(),
+          columnDescription: (input.columnDescription ?? '').trim(),
+          rowDescription: (input.rowDescription ?? '').trim(),
+          tableType: input.tableType != null ? input.tableType.trim() : null,
+          columns,
+          rows,
+          maxColumns: columns.length,
+          maxRows: rows.length,
+        },
+      });
     } catch (err) {
-      return Err(toRepoError(err));
+      if (isUniqueViolation(err)) {
+        return Err(duplicatePrimaryKey(`Size type ${input.code} already exists.`));
+      }
+      throw err;
     }
+    return this.getByCode(input.code);
   },
 
   async update(code: number, patch: Partial<Omit<SizeTypeInput, 'code'>>): Promise<Result<SizeType>> {
@@ -281,40 +178,37 @@ export const SizeTypeRepository = {
     const validationErr = validate(merged);
     if (validationErr) return Err(validationErr);
 
+    const columns = normalizeLabels(merged.columns);
+    const rows = normalizeLabels(merged.rows);
+
     try {
-      const { path, password } = openRicsDb(RicsDb.SizeTypes);
-      const { columns, params: insertParams } = buildInsertOrUpdateColumns(merged);
-      // Drop [Code] from SET; add as WHERE param.
-      const setColumns = columns.slice(1); // skip [Code]
-      const setParams = insertParams.slice(1);
-      const setClause = setColumns.map((c) => `${c} = ?`).join(', ');
-      await executeNonQuery(
-        path,
-        password,
-        `UPDATE [SizeTypes] SET ${setClause} WHERE [Code] = ?`,
-        [...setParams, { value: code, type: 'integer' }],
-      );
-      return this.getByCode(code);
+      await prisma.taxonomySizeType.update({
+        where: { code },
+        data: {
+          description: merged.description.trim(),
+          columnDescription: (merged.columnDescription ?? '').trim(),
+          rowDescription: (merged.rowDescription ?? '').trim(),
+          tableType: merged.tableType != null ? merged.tableType.trim() : null,
+          columns,
+          rows,
+          maxColumns: columns.length,
+          maxRows: rows.length,
+        },
+      });
     } catch (err) {
-      return Err(toRepoError(err));
+      if (isRecordNotFound(err)) return Err(notFound(`Size type ${code} not found.`));
+      throw err;
     }
+    return this.getByCode(code);
   },
 
   async delete(code: number): Promise<Result<void>> {
     try {
-      const { path, password } = openRicsDb(RicsDb.SizeTypes);
-      const rows = await executeNonQuery(
-        path,
-        password,
-        'DELETE FROM [SizeTypes] WHERE [Code] = ?',
-        [{ value: code, type: 'integer' }],
-      );
-      if (rows === 0) {
-        return Err({ kind: 'NotFound', message: `Size type ${code} not found.` });
-      }
-      return Ok(undefined);
+      await prisma.taxonomySizeType.delete({ where: { code } });
     } catch (err) {
-      return Err(toRepoError(err));
+      if (isRecordNotFound(err)) return Err(notFound(`Size type ${code} not found.`));
+      throw err;
     }
+    return Ok(undefined);
   },
 };

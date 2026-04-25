@@ -27,10 +27,10 @@
  * reports "postgres" and explains why in `lastError`.
  */
 
-import { executeQuery } from '../../services/accessOleDb';
 import { Err, Ok, type Result, type RepoError } from './repoResult';
-import { openRicsDb, RicsDb, toRepoError, trimString } from './ricsAccess';
+import { openRicsDb, RicsDb, toRepoError } from './ricsAccess';
 import { prisma } from '../../db/prisma';
+import { loadSkuCountsBySeason } from './taxonomySkuCounts';
 
 export interface Season {
   code: string;
@@ -76,24 +76,7 @@ function validateInput(input: SeasonInput): RepoError | null {
 }
 
 async function loadSkuCountsByCode(): Promise<Map<string, number>> {
-  const out = new Map<string, number>();
-  try {
-    const { path, password } = openRicsDb(RicsDb.InventoryMaster);
-    const rows = await executeQuery<{ Season: string | null; N: number }>(
-      path,
-      password,
-      `SELECT [Season], COUNT(*) AS N FROM [InventoryMaster]
-         WHERE [Season] IS NOT NULL AND [Season] <> ''
-         GROUP BY [Season]`,
-    );
-    for (const r of rows) {
-      const code = (trimString(r.Season) ?? '').trim().toUpperCase();
-      if (code) out.set(code, Number(r.N ?? 0));
-    }
-  } catch {
-    // leave counts at 0
-  }
-  return out;
+  return loadSkuCountsBySeason();
 }
 
 export const SeasonRepository = {

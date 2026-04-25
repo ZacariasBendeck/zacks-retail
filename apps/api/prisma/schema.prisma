@@ -8,10 +8,10 @@
 // such as ref_colors, ref_patterns, and related dimensions while they are
 // migrated piecewise into app.* Postgres dimensions.
 //
-// Legacy RICS v7.7 Access MDB files are read only through the operator-invoked
-// RICS mirror sync pipeline:
+// Legacy RICS v7.7 Access MDB files are read only through offline extract
+// tooling that produces CSV artifact packs for direct Postgres imports:
 //
-//   RICS MDB → PowerShell/C# ACE.OLEDB export → CSV → Node COPY → Postgres
+//   RICS MDB → PowerShell/C# ACE.OLEDB export → CSV artifact pack → app/module imports
 //
 // The API must not read directly from or write to RICS MDB files.
 // The API must not create new SQLite writes.
@@ -28,13 +28,13 @@ generator client {
 generator apiClient {
   provider        = "prisma-client-js"
   previewFeatures = ["multiSchema"]
-  output          = "../generated/prisma-client-v5"
+  output          = "../generated/prisma-client-v7"
 }
 
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
-  schemas  = ["public", "platform", "rics_mirror", "app"]
+  schemas  = ["public", "platform", "app"]
 }
 
 /// Web-only overlay keyed by RICS SKU code.
@@ -386,10 +386,8 @@ model EtlRun {
 // Module spec: docs/modules/utilities.md
 // Design spec: docs/dev/specs/2026-04-21-utilities-batch-change-design.md
 //
-// Phase A contract: writes land in `app.*` (preserved across sync:rics reloads);
-// reads merge these on top of `rics_mirror.inventory_master` / `rics_mirror.size_types`
-// via the effective-value adapter at apps/api/src/services/utilities/effectiveInventory.ts.
-// No FK to rics_mirror (dropped by every reload). Natural-key (rics_sku_code) only.
+// Phase contract: writes land in `app.*`; legacy SKU identity stays a natural-key
+// (`rics_sku_code`) soft reference only. No FK into transient import staging.
 // ─────────────────────────────────────────────────────────────────────────
 
 /// Replace-style overlay for singular SKU attributes. Sparse — only non-null columns override.
@@ -413,16 +411,12 @@ model SkuAttributeOverride {
 
 /// Vendor write-surface overlay. Replaces the MDB write path that was removed
 /// 2026-04-23. Single table with a `source` discriminator:
-///   - 'native'    = vendor born in Postgres (no RICS mirror twin)
-///   - 'override'  = sparse per-column override of a RICS mirror vendor
-///                   (null → fall back to mirror; non-null → override)
-///   - 'tombstone' = hide a RICS mirror vendor from reads
+///   - 'native'    = vendor born in Postgres (no imported legacy twin)
+///   - 'override'  = sparse per-column override of an imported legacy vendor
+///                   (null → fall back to baseline; non-null → override)
+///   - 'tombstone' = hide an imported legacy vendor from reads
 ///
-/// Read path (VendorRepository): rics_mirror.vendor_master FULL OUTER JOIN
-/// this table ON code, filtering source='tombstone', with COALESCE per column.
-///
-/// No FK to rics_mirror (sync:rics drops + recreates rics_mirror). Natural-key
-/// only — the 4-char RICS code.
+/// Natural-key only — the 4-char RICS code.
 model VendorOverlay {
   code          String   @id @db.VarChar(4)
   /// 'native' | 'override' | 'tombstone' — CHECK constraint on the column.
@@ -460,6 +454,280 @@ model VendorOverlay {
   @@schema("app")
 }
 
+/// App-owned imported vendor baseline. Seeded from direct CSV import and read
+/// together with VendorOverlay.
+model Vendor {
+  code            String               @id @db.VarChar(4)
+  shortName       String               @map("short_name")
+  mailName        String               @map("mail_name")
+  addr1           String?
+  addr2           String?
+  city            String?
+  state           String?
+  zip             String?
+  phone           String?
+  fax             String?
+  contact         String?
+  terms           String?
+  shipInst        String?              @map("ship_inst")
+  comment         String?
+  manuCode        String?              @map("manu_code")
+  manuName        String?              @map("manu_name")
+  qualifierId     String?              @map("qualifier_id")
+  qualifierCode   String?              @map("qualifier_code")
+  colorCode       Boolean              @default(false) @map("color_code")
+  longComment     String?              @map("long_comment")
+  eMail           String?              @map("e_mail")
+  dateLastChanged DateTime?            @map("date_last_changed")
+  storeAccounts   VendorStoreAccount[]
+
+  @@map("vendor")
+  @@schema("app")
+}
+
+/// Per-store vendor account numbers imported from the legacy CSV baseline.
+model VendorStoreAccount {
+  vendorCode      String    @map("vendor_code") @db.VarChar(4)
+  vendor          Vendor    @relation(fields: [vendorCode], references: [code], onDelete: Cascade, onUpdate: Cascade)
+  storeId         Int       @map("store_id") @db.SmallInt
+  account         String    @default("")
+  dateLastChanged DateTime? @map("date_last_changed")
+
+  @@id([vendorCode, storeId])
+  @@index([storeId], map: "vendor_store_account_store_id_idx")
+  @@map("vendor_store_account")
+  @@schema("app")
+}
+
+/// App-owned imported baseline for RICS StoreMaster. Core fields stay typed;
+/// the rest of the wide legacy row is preserved under rawJson.
+model StoreMaster {
+  number          Int       @id @db.SmallInt
+  description     String    @map("desc")
+  mailName        String?   @map("mail_name")
+  addr1           String?
+  addr2           String?
+  city            String?
+  state           String?
+  zip             String?
+  eMail           String?   @map("e_mail")
+  phone           String?
+  fax             String?
+  lastTicket      Int?      @map("last_ticket")
+  billMailName    String?   @map("bill_mail_name")
+  billAddr1       String?   @map("bill_addr1")
+  billAddr2       String?   @map("bill_addr2")
+  billCity        String?   @map("bill_city")
+  billState       String?   @map("bill_state")
+  billZip         String?   @map("bill_zip")
+  otherChargeDesc String?   @map("other_charge_desc")
+  region          Int?      @db.SmallInt
+  dateLastChanged DateTime? @map("date_last_changed")
+  rawJson         Json      @map("raw_json")
+
+  @@map("store_master")
+  @@schema("app")
+}
+
+/// App-owned UPC cross-reference. Imported legacy rows use source=RICS_IMPORT;
+/// future manual/generated UPCs can coexist without a raw legacy landing schema.
+model SkuUpc {
+  upc              String    @id @db.VarChar(16)
+  skuCode          String    @map("sku_code") @db.VarChar(15)
+  skuId            String?   @map("sku_id") @db.Uuid
+  sku              Sku?      @relation(fields: [skuId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  columnLabel      String    @default("") @map("column_label")
+  rowLabel         String    @default("") @map("row_label")
+  source           String    @default("RICS_IMPORT")
+  vendorSku        String?   @map("vendor_sku")
+  nrmaCode         String?   @map("nrma_code")
+  status           String?   @db.Char(1)
+  legacyPrefix     String?   @map("legacy_prefix")
+  legacyNumber     String?   @map("legacy_number")
+  legacyCheckDigit String?   @map("legacy_check_digit")
+  dateLastChanged  DateTime? @map("date_last_changed")
+
+  @@index([skuCode], map: "sku_upc_sku_code_idx")
+  @@index([skuId], map: "sku_upc_sku_id_idx")
+  @@index([vendorSku], map: "sku_upc_vendor_sku_idx")
+  @@map("sku_upc")
+  @@schema("app")
+}
+
+/// Case-pack header imported from RICS Case_Packs and used by purchasing /
+/// manual receipt / return size-grid autofill.
+model CasePack {
+  code            String         @id @db.VarChar(6)
+  description     String         @map("desc")
+  sizeTypeCode    Int            @map("size_type_code") @db.SmallInt
+  active          Boolean        @default(true)
+  dateLastChanged DateTime?      @map("date_last_changed")
+  cells           CasePackCell[]
+
+  @@index([sizeTypeCode], map: "case_pack_size_type_code_idx")
+  @@map("case_pack")
+  @@schema("app")
+}
+
+/// One quantity per size-grid cell within a CasePack.
+model CasePackCell {
+  casePackCode String   @map("case_pack_code") @db.VarChar(6)
+  casePack     CasePack @relation(fields: [casePackCode], references: [code], onDelete: Cascade, onUpdate: Cascade)
+  columnLabel  String   @map("column_label")
+  rowLabel     String   @default("") @map("row_label")
+  quantity     Int
+
+  @@id([casePackCode, columnLabel, rowLabel])
+  @@index([casePackCode], map: "case_pack_cell_case_pack_code_idx")
+  @@map("case_pack_cell")
+  @@schema("app")
+}
+
+/// Imported legacy future-dated price change rows from RIFUTURE.MDB.
+/// This is a baseline import surface, not yet the full scheduled-price engine.
+model FuturePriceChange {
+  id              String    @id @default(uuid()) @db.Uuid
+  importKey       String    @unique(map: "future_price_change_import_key") @map("import_key")
+  skuCode         String    @map("sku_code") @db.VarChar(15)
+  skuId           String?   @map("sku_id") @db.Uuid
+  sku             Sku?      @relation(fields: [skuId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  storeId         Int       @map("store_id") @db.SmallInt
+  effectiveAt     DateTime  @map("effective_at")
+  changeMaster    Boolean   @default(false) @map("change_master")
+  revert          Boolean   @default(false)
+  listPrice       Decimal?  @map("list_price") @db.Decimal(12, 2)
+  retailPrice     Decimal?  @map("retail_price") @db.Decimal(12, 2)
+  markDownPrice1  Decimal?  @map("mark_down_price1") @db.Decimal(12, 2)
+  markDownPrice2  Decimal?  @map("mark_down_price2") @db.Decimal(12, 2)
+  currentPriceSlot String?  @map("current_price_slot")
+  overSizeAmount  Decimal?  @map("over_size_amount") @db.Decimal(12, 2)
+  perks           Decimal?  @db.Decimal(12, 2)
+  source          String    @default("RICS_IMPORT")
+  dateLastChanged DateTime? @map("date_last_changed")
+
+  @@index([skuCode, effectiveAt], map: "future_price_change_sku_effective_at_idx")
+  @@index([storeId, effectiveAt], map: "future_price_change_store_effective_at_idx")
+  @@map("future_price_change")
+  @@schema("app")
+}
+
+/// Imported legacy purchase-order headers from RIPOMAS.MDB. Preserves the
+/// source rowset in Postgres until the full purchasing schema is promoted.
+model PurchaseOrderLegacy {
+  poNumber       String                   @id @map("po_number")
+  billStore      Int?                     @map("bill_store") @db.SmallInt
+  shipStore      Int?                     @map("ship_store") @db.SmallInt
+  vendorCode     String?                  @map("vendor_code")
+  confirmation   String?
+  account        String?
+  terms          String?
+  shipVia        String?                  @map("ship_via")
+  backOrder      Boolean                  @default(false) @map("back_order")
+  splitShipment  Boolean                  @default(false) @map("split_shipment")
+  orderDate      DateTime?                @map("order_date")
+  dueDate        DateTime?                @map("due_date")
+  cancelDate     DateTime?                @map("cancel_date")
+  paymentDate    DateTime?                @map("payment_date")
+  lastReceivedAt DateTime?                @map("last_received_at")
+  comment        String?
+  exportFlag     Boolean                  @default(false) @map("export_flag")
+  exportComment  String?                  @map("export_comment")
+  orderType      String?                  @map("order_type")
+  releaseDt      String?                  @map("release_dt")
+  department     String?
+  buyer          String?
+  notBefore      DateTime?                @map("not_before")
+  notAfter       DateTime?                @map("not_after")
+  shipCode       String?                  @map("ship_code")
+  carrier        String?
+  termsPeriod    String?                  @map("terms_period")
+  termsDay       String?                  @map("terms_day")
+  current        Boolean?
+  legacyStatus   String?                  @map("legacy_status")
+  dateLastChanged DateTime?               @map("date_last_changed")
+  lines          PurchaseOrderLegacyLine[]
+
+  @@index([vendorCode], map: "purchase_order_legacy_vendor_code_idx")
+  @@index([shipStore, orderDate], map: "purchase_order_legacy_ship_store_order_date_idx")
+  @@map("purchase_order_legacy")
+  @@schema("app")
+}
+
+/// Imported legacy purchase-order detail rows with the 18-wide ordered /
+/// received quantity segments packed into int[] arrays.
+model PurchaseOrderLegacyLine {
+  poNumber        String              @map("po_number")
+  purchaseOrder   PurchaseOrderLegacy @relation(fields: [poNumber], references: [poNumber], onDelete: Cascade, onUpdate: Cascade)
+  skuCode         String              @map("sku_code") @db.VarChar(15)
+  skuId           String?             @map("sku_id") @db.Uuid
+  sku             Sku?                @relation(fields: [skuId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  rowLabel        String              @default("") @map("row_label")
+  segment         Int                 @db.SmallInt
+  orderedQtys     Int[]               @map("ordered_qtys")
+  receivedQtys    Int[]               @map("received_qtys")
+  cost            Decimal?            @db.Decimal(12, 2)
+  vendorCode      String?             @map("vendor_code")
+  casePackCode    String?             @map("case_pack_code")
+  caseMultiplier  Int?                @map("case_multiplier") @db.SmallInt
+  dateLastChanged DateTime?           @map("date_last_changed")
+
+  @@id([poNumber, skuCode, rowLabel, segment])
+  @@index([skuCode], map: "purchase_order_legacy_line_sku_code_idx")
+  @@index([skuId], map: "purchase_order_legacy_line_sku_id_idx")
+  @@map("purchase_order_legacy_line")
+  @@schema("app")
+}
+
+/// Imported legacy ASN carton headers from RICS ASN tables.
+model AsnCartonLegacy {
+  cartonNumber    String             @map("carton_number")
+  poNumber        String             @map("po_number")
+  receivedAt      DateTime?          @map("received_at")
+  status          String?
+  dateLastChanged DateTime?          @map("date_last_changed")
+  lines           AsnCartonLegacyLine[]
+
+  @@id([cartonNumber, poNumber])
+  @@index([poNumber], map: "asn_carton_legacy_po_number_idx")
+  @@map("asn_carton_legacy")
+  @@schema("app")
+}
+
+/// Imported legacy ASN carton detail rows.
+model AsnCartonLegacyLine {
+  cartonNumber    String          @map("carton_number")
+  poNumber        String          @map("po_number")
+  carton          AsnCartonLegacy @relation(fields: [cartonNumber, poNumber], references: [cartonNumber, poNumber], onDelete: Cascade, onUpdate: Cascade)
+  upc             String
+  quantity        Int             @map("quantity") @db.SmallInt
+  dateLastChanged DateTime?       @map("date_last_changed")
+
+  @@id([cartonNumber, poNumber, upc])
+  @@index([poNumber], map: "asn_carton_legacy_line_po_number_idx")
+  @@map("asn_carton_legacy_line")
+  @@schema("app")
+}
+
+/// Imported summary-only transfer history from RITRANSF.MDB. This preserves
+/// the available legacy transfer totals without forcing them into the live
+/// app.transfer document model, which requires line detail the source table
+/// does not carry.
+model TransferLegacySummary {
+  id            String    @id @default(uuid()) @db.Uuid
+  importKey     String    @unique(map: "transfer_legacy_summary_import_key") @map("import_key")
+  fromStoreId   Int       @map("from_store_id") @db.SmallInt
+  legacyType    String    @map("legacy_type")
+  toStoreId     Int       @map("to_store_id") @db.SmallInt
+  transferredAt DateTime  @map("transferred_at")
+  quantity      Int
+  amount        Decimal?  @db.Decimal(12, 2)
+
+  @@index([fromStoreId, transferredAt], map: "transfer_legacy_summary_from_store_idx")
+  @@index([toStoreId, transferredAt], map: "transfer_legacy_summary_to_store_idx")
+  @@map("transfer_legacy_summary")
+  @@schema("app")
+}
+
 /// Add/remove overlay for keywords, layered on the RICS space-separated KeyWords string.
 /// Effective keywords = (split mirror.key_words) ∪ ADD-overrides − REMOVE-overrides.
 model SkuKeywordOverride {
@@ -476,7 +744,7 @@ model SkuKeywordOverride {
 }
 
 /// Replace-style overlay for size-type taxonomy (columns/rows arrays).
-/// Mirrors the shape of rics_mirror.size_types but lives in app for edits.
+/// Mirrors the legacy SizeTypes shape but lives in app for edits.
 model SizeTypeOverride {
   code        Int      @id
   description String?  @db.VarChar(32)
@@ -531,8 +799,7 @@ model ProductsBatchOperationItem {
 //
 // Spec: docs/dev/plans/http-localhost-3000-inventory-skus-new-i-piped-galaxy.md
 //
-// Phase A contract: families + mapping live in app.*. Category numbers soft-ref
-// rics_mirror.categories.number (no FK; mirror rebuilt on each sync:rics).
+// Category numbers remain soft references to the imported legacy category code.
 // Unmapped categories surface via app.category_family_orphans (DB view).
 // ─────────────────────────────────────────────────────────────────────────
 
@@ -555,7 +822,7 @@ model ProductFamily {
 }
 
 /// One row per RICS category mapping it to exactly one Product Family.
-/// `category_number` soft-refs rics_mirror.categories.number.
+/// `category_number` soft-refs the imported legacy category code.
 /// Seeded from seeds/product_families/category_mapping.csv.
 model CategoryProductFamily {
   categoryNumber Int           @id @map("category_number")
@@ -582,8 +849,8 @@ model CategoryProductFamily {
 //                  all downstream ops unlocked.
 //   DISCONTINUED — merged-into-another-SKU or retired. Read-only.
 //
-// Legacy RICS SKUs still live in `rics_mirror.inventory_master` during Phase A.
-// The products-module read paths UNION both sources; write path is `app.sku` only.
+// Legacy RICS SKUs are imported into `app.sku` as `source='rics'`. The write
+// path is `app.sku` only.
 // ─────────────────────────────────────────────────────────────────────────
 
 /// A SKU created in Zack's Retail (net-new). Lifecycle-managed.
@@ -644,9 +911,8 @@ model Sku {
   /// Phase 4 replaces this with proper dimension assignments.
   legacyAttrs       Json?           @map("legacy_attrs")
 
-  /// Provenance: 'app' = operator-created via POST /sku-drafts (sync NEVER
-  /// touches these). 'rics' = mirrored from rics_mirror.inventory_master by
-  /// sync:rics (upsertable on every run). See skuLifecycleBackfill.ts.
+  /// Provenance: 'app' = operator-created via POST /sku-drafts. 'rics' =
+  /// imported from legacy RICS CSV artifacts into `app.sku`.
   source            String          @default("app")
   ricsLastSyncedAt  DateTime?       @map("rics_last_synced_at")
   ricsStatus        String?         @map("rics_status") @db.Char(1)
@@ -655,12 +921,18 @@ model Sku {
 
   @@unique([provisionalCode], map: "sku_provisional_code_key")
   @@index([skuState, familyCode], map: "sku_state_family_idx")
-  sizes       SkuSize[]
-  inventory   Inventory[]
-  auditLog    InventoryAuditLog[]
-  stockLevels StockLevel[]
-  stockMovements StockMovement[]
-  manualReceipts ManualReceipt[]
+  sizes                    SkuSize[]
+  inventory                Inventory[]
+  auditLog                 InventoryAuditLog[]
+  stockLevels              StockLevel[]
+  stockMovements           StockMovement[]
+  replenishmentTargets     ReplenishmentTarget[]
+  upcs                     SkuUpc[]
+  futurePriceChanges       FuturePriceChange[]
+  purchaseOrderLegacyLines PurchaseOrderLegacyLine[]
+  manualReceipts           ManualReceipt[]
+  manualReturns            ManualReturn[]
+  transferLines            TransferLine[]
   inventoryAdjustmentLines InventoryAdjustmentLine[]
 
   @@index([vendorId], map: "sku_vendor_idx")
@@ -793,8 +1065,8 @@ model InventoryAdjustmentLine {
 }
 
 /// Store-aware stock projection keyed per (store × SKU × size-grid cell).
-/// This is the Phase-A additive surface for inventory-module writes that must
-/// not live in SQLite and must not write into rics_mirror.
+/// This is the additive surface for inventory-module writes that must not live
+/// in SQLite.
 model StockLevel {
   id             String   @id @default(uuid()) @db.Uuid
   storeId        Int      @map("store_id")
@@ -838,6 +1110,9 @@ model StockMovement {
   createdAt          DateTime @default(now()) @map("created_at")
   idempotencyKey     String?  @unique(map: "stock_movement_idempotency_key") @map("idempotency_key")
   manualReceiptLine  ManualReceiptLine? @relation("ManualReceiptLineMovement")
+  manualReturnLine   ManualReturnLine?  @relation("ManualReturnLineMovement")
+  transferLineOutbound TransferLine[]   @relation("TransferLineOutboundMovement")
+  transferLineInbound  TransferLine[]   @relation("TransferLineInboundMovement")
 
   @@index([skuId, storeId, movementAt(sort: Desc)], map: "stock_movement_sku_store_movement_at_idx")
   @@index([movementType, movementAt(sort: Desc)], map: "stock_movement_type_movement_at_idx")
@@ -892,6 +1167,227 @@ model ManualReceiptLine {
   @@schema("app")
 }
 
+/// Per-cell replenishment target values used by Model / Max / Reorder editing
+/// and by transfer / auto-PO recommendation flows.
+model ReplenishmentTarget {
+  id          String   @id @default(uuid()) @db.Uuid
+  storeId     Int      @map("store_id")
+  skuId       String   @map("sku_id") @db.Uuid
+  sku         Sku      @relation(fields: [skuId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  columnLabel String   @default("") @map("column_label")
+  rowLabel    String   @default("") @map("row_label")
+  modelQty    Int?     @map("model_qty")
+  maxQty      Int?     @map("max_qty")
+  reorderQty  Int?     @map("reorder_qty")
+  updatedBy   String   @map("updated_by")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@unique([storeId, skuId, columnLabel, rowLabel], map: "replenishment_target_store_sku_cell_key")
+  @@index([skuId, storeId], map: "replenishment_target_sku_store_idx")
+  @@index([storeId], map: "replenishment_target_store_idx")
+  @@map("replenishment_target")
+  @@schema("app")
+}
+
+/// One saved "Enter Manual Returns" document in the inventory module.
+/// Mirrors Manual Receipt but produces negative stock movements.
+model ManualReturn {
+  id              String   @id @default(uuid()) @db.Uuid
+  storeId         Int      @map("store_id")
+  skuId           String   @map("sku_id") @db.Uuid
+  sku             Sku      @relation(fields: [skuId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  performedBy     String   @map("performed_by")
+  returnReasonCode String? @map("return_reason_code")
+  rmaNumber       String?  @map("rma_number")
+  movementAt      DateTime @map("movement_at")
+  note            String?
+  idempotencyKey  String?  @unique(map: "manual_return_idempotency_key") @map("idempotency_key")
+  createdAt       DateTime @default(now()) @map("created_at")
+  lines           ManualReturnLine[]
+
+  @@index([storeId, movementAt(sort: Desc)], map: "manual_return_store_movement_at_idx")
+  @@index([skuId, movementAt(sort: Desc)], map: "manual_return_sku_movement_at_idx")
+  @@map("manual_return")
+  @@schema("app")
+}
+
+model ManualReturnLine {
+  id             String        @id @default(uuid()) @db.Uuid
+  manualReturnId String        @map("manual_return_id") @db.Uuid
+  manualReturn   ManualReturn  @relation(fields: [manualReturnId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  columnLabel    String        @default("") @map("column_label")
+  rowLabel       String        @default("") @map("row_label")
+  quantity       Int
+  unitCost       Decimal       @map("unit_cost") @db.Decimal(12, 2)
+  movementId     String        @unique(map: "manual_return_line_movement_id_key") @map("movement_id") @db.Uuid
+  movement       StockMovement @relation("ManualReturnLineMovement", fields: [movementId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@unique([manualReturnId, columnLabel, rowLabel], map: "manual_return_line_cell_key")
+  @@index([manualReturnId], map: "manual_return_line_return_id_idx")
+  @@map("manual_return_line")
+  @@schema("app")
+}
+
+model Transfer {
+  id             String         @id @default(uuid()) @db.Uuid
+  transferNumber String         @unique(map: "transfer_transfer_number_key") @map("transfer_number")
+  fromStoreId    Int            @map("from_store_id")
+  toStoreId      Int            @map("to_store_id")
+  status         TransferStatus
+  origin         TransferOrigin
+  originRunId    String?        @map("origin_run_id") @db.Uuid
+  reason         String?
+  createdBy      String         @map("created_by")
+  shippedAt      DateTime?      @map("shipped_at")
+  receivedAt     DateTime?      @map("received_at")
+  cancelledAt    DateTime?      @map("cancelled_at")
+  createdAt      DateTime       @default(now()) @map("created_at")
+  lines          TransferLine[]
+
+  @@index([fromStoreId, status], map: "transfer_from_store_status_idx")
+  @@index([toStoreId, status], map: "transfer_to_store_status_idx")
+  @@index([origin, createdAt(sort: Desc)], map: "transfer_origin_created_at_idx")
+  @@map("transfer")
+  @@schema("app")
+}
+
+model TransferLine {
+  id                 String        @id @default(uuid()) @db.Uuid
+  transferId         String        @map("transfer_id") @db.Uuid
+  transfer           Transfer      @relation(fields: [transferId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  skuId              String        @map("sku_id") @db.Uuid
+  sku                Sku           @relation(fields: [skuId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  columnLabel        String        @default("") @map("column_label")
+  rowLabel           String        @default("") @map("row_label")
+  quantity           Int
+  unitCostSnapshot   Decimal       @map("unit_cost_snapshot") @db.Decimal(12, 2)
+  outboundMovementId String?       @unique(map: "transfer_line_outbound_movement_id_key") @map("outbound_movement_id") @db.Uuid
+  outboundMovement   StockMovement? @relation("TransferLineOutboundMovement", fields: [outboundMovementId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  inboundMovementId  String?       @unique(map: "transfer_line_inbound_movement_id_key") @map("inbound_movement_id") @db.Uuid
+  inboundMovement    StockMovement? @relation("TransferLineInboundMovement", fields: [inboundMovementId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@index([transferId], map: "transfer_line_transfer_id_idx")
+  @@index([skuId], map: "transfer_line_sku_id_idx")
+  @@map("transfer_line")
+  @@schema("app")
+}
+
+model AutoTransferRun {
+  id                   String       @id @default(uuid()) @db.Uuid
+  status               RunStatus
+  warehouseStoreId     Int          @map("warehouse_store_id")
+  targetStoreIds       Int[]        @map("target_store_ids")
+  sortOrder            TransferSort @map("sort_order")
+  criteriaJson         Json         @map("criteria_json")
+  inTransitPos         Boolean      @default(false) @map("in_transit_pos")
+  requestedBy          String       @map("requested_by")
+  createdAt            DateTime     @default(now()) @map("created_at")
+  previewedAt          DateTime?    @map("previewed_at")
+  committedAt          DateTime?    @map("committed_at")
+  generatedTransferIds String[]     @default([]) @map("generated_transfer_ids")
+
+  @@index([status, createdAt(sort: Desc)], map: "auto_transfer_run_status_created_at_idx")
+  @@index([warehouseStoreId], map: "auto_transfer_run_warehouse_store_idx")
+  @@map("auto_transfer_run")
+  @@schema("app")
+}
+
+model BalancingTransferRun {
+  id                            String            @id @default(uuid()) @db.Uuid
+  status                        RunStatus
+  balancingMethod               BalancingMethod   @map("balancing_method")
+  performanceMetric             PerformanceMetric @map("performance_metric")
+  salesPeriod                   SalesPeriod       @map("sales_period")
+  tieBreakKind                  TieBreakKind      @map("tie_break_kind")
+  tieBreakValue                 Decimal           @map("tie_break_value") @db.Decimal(12, 2)
+  transferDoublesToLowerPriority Boolean          @default(false) @map("transfer_doubles_to_lower_priority")
+  stripStoresBelowSizeCount     Int?              @map("strip_stores_below_size_count")
+  includeOriginalRetailOnly     Boolean           @default(false) @map("include_original_retail_only")
+  includeMarkdownOnly           Boolean           @default(false) @map("include_markdown_only")
+  includePerksOnly              Boolean           @default(false) @map("include_perks_only")
+  criteriaJson                  Json              @map("criteria_json")
+  inTransitPos                  Boolean           @default(false) @map("in_transit_pos")
+  requestedBy                   String            @map("requested_by")
+  createdAt                     DateTime          @default(now()) @map("created_at")
+  previewedAt                   DateTime?         @map("previewed_at")
+  committedAt                   DateTime?         @map("committed_at")
+  generatedTransferIds          String[]          @default([]) @map("generated_transfer_ids")
+  exceptionsJson                Json?             @map("exceptions_json")
+
+  @@index([status, createdAt(sort: Desc)], map: "balancing_transfer_run_status_created_at_idx")
+  @@index([balancingMethod], map: "balancing_transfer_run_method_idx")
+  @@map("balancing_transfer_run")
+  @@schema("app")
+}
+
+enum TransferStatus {
+  DRAFT
+  IN_TRANSIT
+  RECEIVED
+  CANCELLED
+
+  @@schema("app")
+}
+
+enum TransferOrigin {
+  MANUAL
+  TRANSFER_ALL
+  AUTO
+  BALANCING
+
+  @@schema("app")
+}
+
+enum TransferSort {
+  SKU
+  VENDOR
+  CATEGORY
+  LOCATION
+
+  @@schema("app")
+}
+
+enum RunStatus {
+  QUEUED
+  PREVIEWED
+  COMMITTED
+  CANCELLED
+
+  @@schema("app")
+}
+
+enum BalancingMethod {
+  OVER_UNDER_MODELS
+  WITHOUT_MODELS
+  WITHOUT_CONSIDERING_MODELS
+
+  @@schema("app")
+}
+
+enum PerformanceMetric {
+  ROI
+  TURNS
+  SELL_THRU
+
+  @@schema("app")
+}
+
+enum SalesPeriod {
+  MONTH
+  SEASON
+  YEAR
+
+  @@schema("app")
+}
+
+enum TieBreakKind {
+  ABSOLUTE
+  PERCENT
+
+  @@schema("app")
+}
+
 /// Per-prefix auto-increment counter used by skuService.generateSkuCode and
 /// purchaseOrderService for PO numbering. The upsert-and-read pattern
 /// (`INSERT ... ON CONFLICT DO UPDATE SET next_val = next_val + 1`) maps to
@@ -914,9 +1410,8 @@ model SkuCodeSequence {
 //
 // Spec: docs/dev/specs/2026-04-22-sku-extended-attributes-foundation-design.md
 //
-// Phase A contract: reads rics_mirror.inventory_master.key_words, writes to
-// app.*. Soft-ref from sku_attribute_assignment.sku_code to the mirror —
-// no FK (reload drops rics_mirror). Orphans surfaced via the DB view
+// Reads imported legacy keyword data, writes to app.*. Soft-ref from
+// sku_attribute_assignment.sku_code to the legacy SKU code only. Orphans surfaced via the DB view
 // app.sku_attribute_orphans (not modelled here; read via raw SQL).
 // ─────────────────────────────────────────────────────────────────────────
 
@@ -1011,7 +1506,7 @@ model EtlRunTable {
   run         EtlRun   @relation(fields: [runId], references: [id], onDelete: Cascade)
   mdbFile     String
   sourceTable String
-  targetTable String // schema-qualified: e.g. "rics_mirror.inventory_master"
+  targetTable String // schema-qualified: e.g. "app.sku"
   rowCount    BigInt
   durationMs  Int
   status      String // "ok" | "failed"
@@ -1110,6 +1605,9 @@ model CustomerIntelligenceCustomer {
   legacyProfile        CustomerLegacyProfile?
   financialProfile     CustomerFinancialProfile?
   salesSummaryLegacy   CustomerSalesSummaryLegacy?
+  transactionFacts     CustomerTransactionFact[]
+  metrics              CustomerMetrics?
+  metricSnapshots      CustomerMetricsDaily[]
 
   @@index([importedFromBatchId], map: "customer_imported_from_batch_idx")
   @@map("customer")
@@ -1276,6 +1774,426 @@ model CustomerImportReject {
   @@schema("app")
 }
 
+model CustomerTransactionFact {
+  id                    String                       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  customerId            String                       @map("customer_id") @db.Uuid
+  customer              CustomerIntelligenceCustomer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  externalTransactionId String?                      @unique @map("external_transaction_id")
+  source                String                       @default("api")
+  transactionKind       String                       @default("purchase") @map("transaction_kind")
+  status                String                       @default("completed")
+  storeId               String?                      @map("store_id") @db.Uuid
+  channel               String
+  promotionCode         String?                      @map("promotion_code")
+  couponCode            String?                      @map("coupon_code")
+  totalAmount           Decimal                      @default(0) @map("total_amount") @db.Decimal(14, 2)
+  netAmount             Decimal                      @default(0) @map("net_amount") @db.Decimal(14, 2)
+  costAmount            Decimal                      @default(0) @map("cost_amount") @db.Decimal(14, 2)
+  discountAmount        Decimal                      @default(0) @map("discount_amount") @db.Decimal(14, 2)
+  purchasedAt           DateTime                     @map("purchased_at") @db.Timestamptz(6)
+  createdAt             DateTime                     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime                     @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  items                 CustomerTransactionItem[]
+
+  @@index([customerId, purchasedAt], map: "idx_customer_transaction_fact_customer_date")
+  @@index([status, purchasedAt], map: "idx_customer_transaction_fact_status_date")
+  @@index([channel, purchasedAt], map: "idx_customer_transaction_fact_channel_date")
+  @@index([storeId, purchasedAt], map: "idx_customer_transaction_fact_store_date")
+  @@map("customer_transaction_fact")
+  @@schema("app")
+}
+
+model CustomerTransactionItem {
+  id             String                  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  transactionId  String                  @map("transaction_id") @db.Uuid
+  transaction    CustomerTransactionFact @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  skuId          String?                 @map("sku_id") @db.Uuid
+  categoryId     String?                 @map("category_id") @db.Uuid
+  categoryKey    String?                 @map("category_key")
+  brandId        String?                 @map("brand_id") @db.Uuid
+  brandKey       String?                 @map("brand_key")
+  sizeType       String?                 @map("size_type")
+  sizeValue      String?                 @map("size_value")
+  quantity       Int
+  netAmount      Decimal                 @default(0) @map("net_amount") @db.Decimal(14, 2)
+  costAmount     Decimal                 @default(0) @map("cost_amount") @db.Decimal(14, 2)
+  discountAmount Decimal                 @default(0) @map("discount_amount") @db.Decimal(14, 2)
+  isMarkdown     Boolean                 @default(false) @map("is_markdown")
+  isReturn       Boolean                 @default(false) @map("is_return")
+  createdAt      DateTime                @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([transactionId], map: "idx_customer_transaction_item_transaction")
+  @@index([categoryId], map: "idx_customer_transaction_item_category")
+  @@index([brandId], map: "idx_customer_transaction_item_brand")
+  @@index([sizeType, sizeValue], map: "idx_customer_transaction_item_size")
+  @@map("customer_transaction_item")
+  @@schema("app")
+}
+
+model CustomerMetrics {
+  customerId           String                       @id @map("customer_id") @db.Uuid
+  customer             CustomerIntelligenceCustomer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  lifetimeValue        Decimal                      @default(0) @map("lifetime_value") @db.Decimal(14, 2)
+  totalOrders          Int                          @default(0) @map("total_orders")
+  avgOrderValue        Decimal                      @default(0) @map("avg_order_value") @db.Decimal(14, 2)
+  marginValue          Decimal                      @default(0) @map("margin_value") @db.Decimal(14, 2)
+  orders30d            Int                          @default(0) @map("orders_30d")
+  orders90d            Int                          @default(0) @map("orders_90d")
+  orders365d           Int                          @default(0) @map("orders_365d")
+  avgDaysBetweenOrders Decimal?                     @map("avg_days_between_orders") @db.Decimal(10, 2)
+  lastPurchaseDate     DateTime?                    @map("last_purchase_date") @db.Timestamptz(6)
+  recencyDays          Int?                         @map("recency_days")
+  isActive             Boolean                      @default(false) @map("is_active")
+  discountRatio        Decimal?                     @map("discount_ratio") @db.Decimal(8, 4)
+  primaryStoreId       String?                      @map("primary_store_id") @db.Uuid
+  storeLoyaltyRatio    Decimal?                     @map("store_loyalty_ratio") @db.Decimal(8, 4)
+  onlineRatio          Decimal?                     @map("online_ratio") @db.Decimal(8, 4)
+  churnRisk            String?                      @map("churn_risk")
+  isDormant            Boolean                      @default(false) @map("is_dormant")
+  rScore               Int?                         @map("r_score")
+  fScore               Int?                         @map("f_score")
+  mScore               Int?                         @map("m_score")
+  updatedAt            DateTime                     @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([isActive], map: "idx_customer_metrics_is_active")
+  @@index([isDormant], map: "idx_customer_metrics_is_dormant")
+  @@index([churnRisk], map: "idx_customer_metrics_churn_risk")
+  @@map("customer_metrics")
+  @@schema("app")
+}
+
+model CustomerMetricsDaily {
+  id            String                       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  customerId    String                       @map("customer_id") @db.Uuid
+  customer      CustomerIntelligenceCustomer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  snapshotDate  DateTime                     @map("snapshot_date") @db.Date
+  lifetimeValue Decimal?                     @map("lifetime_value") @db.Decimal(14, 2)
+  totalOrders   Int?                         @map("total_orders")
+  recencyDays   Int?                         @map("recency_days")
+  orders90d     Int?                         @map("orders_90d")
+  createdAt     DateTime                     @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([customerId, snapshotDate], map: "idx_customer_metrics_daily_customer_date")
+  @@map("customer_metrics_daily")
+  @@schema("app")
+}
+
+model CustomerFeatureCurrent {
+  customerId                    String    @id @map("customer_id") @db.Uuid
+  firstPurchaseAt               DateTime? @map("first_purchase_at") @db.Timestamptz(6)
+  lastPurchaseAt                DateTime? @map("last_purchase_at") @db.Timestamptz(6)
+  daysSinceFirstPurchase        Int?      @map("days_since_first_purchase")
+  daysSinceLastPurchase         Int?      @map("days_since_last_purchase")
+  orderCountLifetime            Int       @default(0) @map("order_count_lifetime")
+  orderCount7d                  Int       @default(0) @map("order_count_7d")
+  orderCount30d                 Int       @default(0) @map("order_count_30d")
+  orderCount90d                 Int       @default(0) @map("order_count_90d")
+  orderCount180d                Int       @default(0) @map("order_count_180d")
+  orderCount365d                Int       @default(0) @map("order_count_365d")
+  itemCountLifetime             Int       @default(0) @map("item_count_lifetime")
+  itemCount365d                 Int       @default(0) @map("item_count_365d")
+  netRevenueLifetime            Decimal   @default(0) @map("net_revenue_lifetime") @db.Decimal(14, 2)
+  netRevenue30d                 Decimal   @default(0) @map("net_revenue_30d") @db.Decimal(14, 2)
+  netRevenue90d                 Decimal   @default(0) @map("net_revenue_90d") @db.Decimal(14, 2)
+  netRevenue180d                Decimal   @default(0) @map("net_revenue_180d") @db.Decimal(14, 2)
+  netRevenue365d                Decimal   @default(0) @map("net_revenue_365d") @db.Decimal(14, 2)
+  grossRevenueLifetime          Decimal   @default(0) @map("gross_revenue_lifetime") @db.Decimal(14, 2)
+  grossRevenue365d              Decimal   @default(0) @map("gross_revenue_365d") @db.Decimal(14, 2)
+  grossMarginLifetime           Decimal   @default(0) @map("gross_margin_lifetime") @db.Decimal(14, 2)
+  grossMargin90d                Decimal   @default(0) @map("gross_margin_90d") @db.Decimal(14, 2)
+  grossMargin365d               Decimal   @default(0) @map("gross_margin_365d") @db.Decimal(14, 2)
+  avgOrderValueLifetime         Decimal?  @map("avg_order_value_lifetime") @db.Decimal(14, 2)
+  avgOrderValue365d             Decimal?  @map("avg_order_value_365d") @db.Decimal(14, 2)
+  avgItemsPerOrder365d          Decimal?  @map("avg_items_per_order_365d") @db.Decimal(10, 2)
+  returnCountLifetime           Int       @default(0) @map("return_count_lifetime")
+  returnCount365d               Int       @default(0) @map("return_count_365d")
+  returnedItemCount365d         Int       @default(0) @map("returned_item_count_365d")
+  returnRate365d                Decimal   @default(0) @map("return_rate_365d") @db.Decimal(8, 4)
+  markdownRevenueShare365d      Decimal   @default(0) @map("markdown_revenue_share_365d") @db.Decimal(8, 4)
+  averageDiscountPercent365d    Decimal   @default(0) @map("average_discount_percent_365d") @db.Decimal(8, 4)
+  couponRedemptionCount365d     Int       @default(0) @map("coupon_redemption_count_365d")
+  couponRedemptionRate365d      Decimal   @default(0) @map("coupon_redemption_rate_365d") @db.Decimal(8, 4)
+  fullPricePurchaseCount365d    Int       @default(0) @map("full_price_purchase_count_365d")
+  promoPurchaseCount365d        Int       @default(0) @map("promo_purchase_count_365d")
+  preferredStoreId              String?   @map("preferred_store_id") @db.Uuid
+  preferredChannel              String?   @map("preferred_channel")
+  primaryStorePurchaseCount365d Int       @default(0) @map("primary_store_purchase_count_365d")
+  webOrderCount365d             Int       @default(0) @map("web_order_count_365d")
+  storeOrderCount365d           Int       @default(0) @map("store_order_count_365d")
+  emailOptIn                    Boolean   @default(false) @map("email_opt_in")
+  smsOptIn                      Boolean   @default(false) @map("sms_opt_in")
+  pushOptIn                     Boolean   @default(false) @map("push_opt_in")
+  loyaltyTier                   String?   @map("loyalty_tier")
+  loyaltyPointsBalance          Int?      @map("loyalty_points_balance")
+  employeeFlag                  Boolean   @default(false) @map("employee_flag")
+  fraudRiskFlag                 Boolean   @default(false) @map("fraud_risk_flag")
+  abuseRiskFlag                 Boolean   @default(false) @map("abuse_risk_flag")
+  updatedAt                     DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([lastPurchaseAt], map: "idx_customer_features_last_purchase")
+  @@index([daysSinceLastPurchase], map: "idx_customer_features_days_since_purchase")
+  @@index([netRevenue365d], map: "idx_customer_features_net_revenue_365d")
+  @@index([grossMargin365d], map: "idx_customer_features_gross_margin_365d")
+  @@index([preferredStoreId], map: "idx_customer_features_preferred_store")
+  @@index([preferredChannel], map: "idx_customer_features_channel")
+  @@map("customer_features_current")
+  @@schema("app")
+}
+
+model CustomerCategoryFeature {
+  customerId            String    @map("customer_id") @db.Uuid
+  categoryId            String    @map("category_id") @db.Uuid
+  categoryKey           String?   @map("category_key")
+  purchaseCountLifetime Int       @default(0) @map("purchase_count_lifetime")
+  purchaseCount365d     Int       @default(0) @map("purchase_count_365d")
+  netRevenueLifetime    Decimal   @default(0) @map("net_revenue_lifetime") @db.Decimal(14, 2)
+  netRevenue365d        Decimal   @default(0) @map("net_revenue_365d") @db.Decimal(14, 2)
+  grossMargin365d       Decimal   @default(0) @map("gross_margin_365d") @db.Decimal(14, 2)
+  lastPurchaseAt        DateTime? @map("last_purchase_at") @db.Timestamptz(6)
+  affinityScore         Decimal   @default(0) @map("affinity_score") @db.Decimal(8, 4)
+  updatedAt             DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@id([customerId, categoryId])
+  @@index([categoryId, affinityScore(sort: Desc)], map: "idx_customer_category_features_category_score")
+  @@index([categoryKey, affinityScore(sort: Desc)], map: "idx_customer_category_features_category_key_score")
+  @@index([customerId], map: "idx_customer_category_features_customer")
+  @@map("customer_category_features")
+  @@schema("app")
+}
+
+model CustomerBrandFeature {
+  customerId            String    @map("customer_id") @db.Uuid
+  brandId               String    @map("brand_id") @db.Uuid
+  brandKey              String?   @map("brand_key")
+  purchaseCountLifetime Int       @default(0) @map("purchase_count_lifetime")
+  purchaseCount365d     Int       @default(0) @map("purchase_count_365d")
+  netRevenueLifetime    Decimal   @default(0) @map("net_revenue_lifetime") @db.Decimal(14, 2)
+  netRevenue365d        Decimal   @default(0) @map("net_revenue_365d") @db.Decimal(14, 2)
+  grossMargin365d       Decimal   @default(0) @map("gross_margin_365d") @db.Decimal(14, 2)
+  lastPurchaseAt        DateTime? @map("last_purchase_at") @db.Timestamptz(6)
+  affinityScore         Decimal   @default(0) @map("affinity_score") @db.Decimal(8, 4)
+  updatedAt             DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@id([customerId, brandId])
+  @@index([brandId, affinityScore(sort: Desc)], map: "idx_customer_brand_features_brand_score")
+  @@index([brandKey, affinityScore(sort: Desc)], map: "idx_customer_brand_features_brand_key_score")
+  @@index([customerId], map: "idx_customer_brand_features_customer")
+  @@map("customer_brand_features")
+  @@schema("app")
+}
+
+model CustomerSizeProfile {
+  customerId      String    @map("customer_id") @db.Uuid
+  sizeType        String    @map("size_type")
+  sizeValue       String    @map("size_value")
+  confidenceScore Decimal   @default(0) @map("confidence_score") @db.Decimal(8, 4)
+  purchaseCount   Int       @default(0) @map("purchase_count")
+  lastSeenAt      DateTime? @map("last_seen_at") @db.Timestamptz(6)
+  updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@id([customerId, sizeType, sizeValue])
+  @@index([sizeType, sizeValue, confidenceScore(sort: Desc)], map: "idx_customer_size_profiles_type_value")
+  @@index([customerId], map: "idx_customer_size_profiles_customer")
+  @@map("customer_size_profiles")
+  @@schema("app")
+}
+
+model SegmentMetricRegistry {
+  metricKey         String   @id @map("metric_key")
+  displayName       String   @map("display_name")
+  description       String?
+  valueType         String   @map("value_type")
+  sourceType        String   @map("source_type")
+  sourceTable       String   @map("source_table")
+  sourceColumn      String?  @map("source_column")
+  allowedOperators  String[] @map("allowed_operators")
+  supportsWindow    Boolean  @default(false) @map("supports_window")
+  supportsDimension Boolean  @default(false) @map("supports_dimension")
+  dimensionConfig   Json?    @map("dimension_config")
+  sqlTemplate       String?  @map("sql_template")
+  isActive          Boolean  @default(true) @map("is_active")
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  dependencies      SegmentVersionMetricDependency[]
+
+  @@map("segment_metric_registry")
+  @@schema("app")
+}
+
+model CustomerSegment {
+  id             String                   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  segmentKey     String                   @unique @map("segment_key")
+  name           String
+  description    String?
+  segmentFamily  String                   @map("segment_family")
+  status         String
+  evaluationMode String                   @map("evaluation_mode")
+  priority       Int                      @default(100)
+  createdBy      String?                  @map("created_by") @db.Uuid
+  updatedBy      String?                  @map("updated_by") @db.Uuid
+  createdAt      DateTime                 @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime                 @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  versions       CustomerSegmentVersion[]
+
+  @@index([status], map: "idx_customer_segments_status")
+  @@index([segmentFamily], map: "idx_customer_segments_family")
+  @@index([priority], map: "idx_customer_segments_priority")
+  @@map("customer_segments")
+  @@schema("app")
+}
+
+model CustomerSegmentVersion {
+  id                 String                          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  segmentId          String                          @map("segment_id") @db.Uuid
+  segment            CustomerSegment                 @relation(fields: [segmentId], references: [id], onDelete: Cascade)
+  versionNumber      Int                             @map("version_number")
+  ruleAst            Json                            @map("rule_ast")
+  scoringConfig      Json?                           @map("scoring_config")
+  activationPolicy   Json?                           @map("activation_policy")
+  suppressionPolicy  Json?                           @map("suppression_policy")
+  status             String
+  validationStatus   String                          @default("pending") @map("validation_status")
+  validationErrors   Json?                           @map("validation_errors")
+  createdBy          String?                         @map("created_by") @db.Uuid
+  createdAt          DateTime                        @default(now()) @map("created_at") @db.Timestamptz(6)
+  activatedAt        DateTime?                       @map("activated_at") @db.Timestamptz(6)
+  retiredAt          DateTime?                       @map("retired_at") @db.Timestamptz(6)
+  metricDependencies SegmentVersionMetricDependency[]
+
+  @@unique([segmentId, versionNumber])
+  @@index([segmentId], map: "idx_customer_segment_versions_segment")
+  @@map("customer_segment_versions")
+  @@schema("app")
+}
+
+model SegmentVersionMetricDependency {
+  segmentVersionId String                 @map("segment_version_id") @db.Uuid
+  metricKey        String                 @map("metric_key")
+  segmentVersion   CustomerSegmentVersion @relation(fields: [segmentVersionId], references: [id], onDelete: Cascade)
+  metric           SegmentMetricRegistry  @relation(fields: [metricKey], references: [metricKey], onDelete: Cascade)
+
+  @@id([segmentVersionId, metricKey])
+  @@index([metricKey], map: "idx_segment_metric_dependencies_metric")
+  @@map("segment_version_metric_dependencies")
+  @@schema("app")
+}
+
+model CustomerSegmentCurrent {
+  customerId       String    @map("customer_id") @db.Uuid
+  segmentId        String    @map("segment_id") @db.Uuid
+  segmentVersionId String    @map("segment_version_id") @db.Uuid
+  score            Decimal?  @db.Decimal(10, 4)
+  reasonCodes      Json?     @map("reason_codes")
+  enteredAt        DateTime  @map("entered_at") @db.Timestamptz(6)
+  lastMatchedAt    DateTime  @map("last_matched_at") @db.Timestamptz(6)
+  expiresAt        DateTime? @map("expires_at") @db.Timestamptz(6)
+  evaluationRunId  String?   @map("evaluation_run_id") @db.Uuid
+
+  @@id([customerId, segmentId])
+  @@index([segmentId, score(sort: Desc)], map: "idx_segment_current_segment_score")
+  @@index([customerId], map: "idx_segment_current_customer")
+  @@index([segmentVersionId], map: "idx_segment_current_version")
+  @@map("customer_segment_current")
+  @@schema("app")
+}
+
+model CustomerSegmentHistory {
+  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  customerId       String    @map("customer_id") @db.Uuid
+  segmentId        String    @map("segment_id") @db.Uuid
+  segmentVersionId String    @map("segment_version_id") @db.Uuid
+  eventType        String    @map("event_type")
+  previousScore    Decimal?  @map("previous_score") @db.Decimal(10, 4)
+  score            Decimal?  @db.Decimal(10, 4)
+  reasonCodes      Json?     @map("reason_codes")
+  occurredAt       DateTime  @default(now()) @map("occurred_at") @db.Timestamptz(6)
+  evaluationRunId  String?   @map("evaluation_run_id") @db.Uuid
+
+  @@index([customerId, occurredAt(sort: Desc)], map: "idx_segment_history_customer_time")
+  @@index([segmentId, occurredAt(sort: Desc)], map: "idx_segment_history_segment_time")
+  @@index([evaluationRunId], map: "idx_segment_history_run")
+  @@map("customer_segment_history")
+  @@schema("app")
+}
+
+model CustomerSegmentEvaluationRun {
+  id                    String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  segmentId             String?   @map("segment_id") @db.Uuid
+  segmentVersionId      String?   @map("segment_version_id") @db.Uuid
+  evaluationMode        String    @map("evaluation_mode")
+  status                String
+  startedAt             DateTime  @default(now()) @map("started_at") @db.Timestamptz(6)
+  finishedAt            DateTime? @map("finished_at") @db.Timestamptz(6)
+  customersEvaluated    Int?      @map("customers_evaluated")
+  customersMatched      Int?      @map("customers_matched")
+  customersEntered      Int?      @map("customers_entered")
+  customersExited       Int?      @map("customers_exited")
+  customersRefreshed    Int?      @map("customers_refreshed")
+  customersScoreChanged Int?      @map("customers_score_changed")
+  errorMessage          String?   @map("error_message")
+  metadata              Json?
+
+  @@index([segmentId, startedAt(sort: Desc)], map: "idx_segment_evaluation_runs_segment_time")
+  @@index([status], map: "idx_segment_evaluation_runs_status")
+  @@map("customer_segment_evaluation_runs")
+  @@schema("app")
+}
+
+model ActivationAudience {
+  id                  String                   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  audienceKey         String?                  @unique @map("audience_key")
+  name                String
+  description         String?
+  requestedBy         String?                  @map("requested_by") @db.Uuid
+  request             Json
+  totalCandidates     Int                      @default(0) @map("total_candidates")
+  eligibleCustomers   Int                      @default(0) @map("eligible_customers")
+  holdoutCustomers    Int                      @default(0) @map("holdout_customers")
+  activationCustomers Int                      @default(0) @map("activation_customers")
+  status              String
+  createdAt           DateTime                 @default(now()) @map("created_at") @db.Timestamptz(6)
+  expiresAt           DateTime?                @map("expires_at") @db.Timestamptz(6)
+  errorMessage        String?                  @map("error_message")
+  members             ActivationAudienceMember[]
+
+  @@map("activation_audiences")
+  @@schema("app")
+}
+
+model ActivationAudienceMember {
+  audienceId         String             @map("audience_id") @db.Uuid
+  customerId         String             @map("customer_id") @db.Uuid
+  audience           ActivationAudience @relation(fields: [audienceId], references: [id], onDelete: Cascade)
+  treatmentGroup     String             @map("treatment_group")
+  suppressionReasons Json?              @map("suppression_reasons")
+  segmentIds         String[]           @map("segment_ids") @db.Uuid
+  segmentVersionIds  String[]           @map("segment_version_ids") @db.Uuid
+  score              Decimal?           @db.Decimal(10, 4)
+  createdAt          DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@id([audienceId, customerId])
+  @@index([customerId], map: "idx_activation_audience_members_customer")
+  @@index([audienceId, treatmentGroup], map: "idx_activation_audience_members_group")
+  @@map("activation_audience_members")
+  @@schema("app")
+}
+
+model CustomerSegmentAuditLog {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  actorUserId String?  @map("actor_user_id") @db.Uuid
+  eventType   String   @map("event_type")
+  entityType  String   @map("entity_type")
+  entityId    String   @map("entity_id")
+  beforeJson  Json?    @map("before_json")
+  afterJson   Json?    @map("after_json")
+  occurredAt  DateTime @default(now()) @map("occurred_at") @db.Timestamptz(6)
+
+  @@index([entityType, entityId, occurredAt(sort: Desc)], map: "idx_customer_segment_audit_entity")
+  @@index([eventType, occurredAt(sort: Desc)], map: "idx_customer_segment_audit_event")
+  @@map("customer_segment_audit_log")
+  @@schema("app")
+}
+
 /// crm module â€” Customer master. Mirrors the RICS Mailing List entry (Ch. 9 p. 117).
 /// Slim Stage 1 subset per docs/modules/crm.md; loyalty / quotes / mail detail
 /// tables land later. `account_number` is the RICS convention (phone with no
@@ -1357,5 +2275,123 @@ model FamilyMember {
   @@unique([customerId, code])
   @@index([customerId], map: "customer_family_members_customer_idx")
   @@map("customer_family_members")
+  @@schema("app")
+}
+
+// ─── Taxonomy (app-owned reference data) ────────────────────────────────────
+//
+// 1:1 port of the eight RICS taxonomy tables that had editable-on-Windows MDB
+// write paths. Reads and writes both live here now. RICS column names are
+// preserved under the @map aliases so a rehearsal comparison against legacy CSV
+// extracts stays byte-for-byte easy. Legacy MDB write paths under
+// apps/api/src/repositories/rics/ are deleted in the same change.
+//
+// Range relationships (Department↔Category, Sector↔Department) remain
+// implicit — encoded as [beg, end] bounds per RICS p. 144-145, not FKs —
+// so every downstream report that walks the range keeps working.
+
+/// RICS Departments (RIDEPT.MDB / Departments). Number is 1..99 (RICS p. 144).
+model TaxonomyDepartment {
+  number          Int      @id @map("number") @db.SmallInt
+  description     String   @map("desc")
+  begCateg        Int      @map("beg_categ") @db.SmallInt
+  endCateg        Int      @map("end_categ") @db.SmallInt
+  dateLastChanged DateTime @default(now()) @updatedAt @map("date_last_changed")
+
+  @@index([begCateg, endCateg], map: "taxonomy_department_categ_range_idx")
+  @@map("taxonomy_department")
+  @@schema("app")
+}
+
+/// RICS Categories (RICATEG.MDB / Categories). Number is 1..999 (RICS p. 145).
+/// No FK to Department — the implicit link is `begCateg <= number <= endCateg`.
+model TaxonomyCategory {
+  number          Int      @id @map("number") @db.SmallInt
+  description     String   @map("desc")
+  dateLastChanged DateTime @default(now()) @updatedAt @map("date_last_changed")
+
+  @@map("taxonomy_category")
+  @@schema("app")
+}
+
+/// RICS Groups (RIGROUP.MDB / GroupCodes). User-editable short code (text pk).
+model TaxonomyGroup {
+  code            String   @id @map("code")
+  description     String   @map("desc")
+  dateLastChanged DateTime @default(now()) @updatedAt @map("date_last_changed")
+
+  @@map("taxonomy_group")
+  @@schema("app")
+}
+
+/// RICS Keywords (RIGROUP.MDB / Keywords). Free-text tag attached to SKUs.
+model TaxonomyKeyword {
+  keyword         String   @id @map("keyword")
+  description     String   @map("desc")
+  dateLastChanged DateTime @default(now()) @updatedAt @map("date_last_changed")
+
+  @@map("taxonomy_keyword")
+  @@schema("app")
+}
+
+/// RICS Sectors (RIDEPT.MDB / Sectors). Range-based grouping of Departments
+/// via [begDept, endDept] (RICS p. 143).
+model TaxonomySector {
+  number          Int      @id @map("number") @db.SmallInt
+  description     String   @map("desc")
+  begDept         Int      @map("beg_dept") @db.SmallInt
+  endDept         Int      @map("end_dept") @db.SmallInt
+  dateLastChanged DateTime @default(now()) @updatedAt @map("date_last_changed")
+
+  @@index([begDept, endDept], map: "taxonomy_sector_dept_range_idx")
+  @@map("taxonomy_sector")
+  @@schema("app")
+}
+
+/// RICS Return Codes (RIRETURN.MDB / ReturnCodes). POS return-reason lookup.
+model TaxonomyReturnCode {
+  code            Int      @id @map("code") @db.SmallInt
+  description     String   @map("desc")
+  trackable       Boolean  @default(false) @map("trackable")
+  dateLastChanged DateTime @default(now()) @updatedAt @map("date_last_changed")
+
+  @@map("taxonomy_return_code")
+  @@schema("app")
+}
+
+/// RICS Promotion Codes (RIGROUP.MDB / MarketingCode). Ad-hoc promo metadata.
+model TaxonomyPromotionCode {
+  code            String    @id @map("code")
+  description     String    @map("description")
+  date            DateTime? @map("date")
+  pieces          Int?      @map("pieces")
+  cost            Decimal?  @map("cost") @db.Decimal(12, 2)
+  dateLastChanged DateTime  @default(now()) @updatedAt @map("date_last_changed")
+
+  @@map("taxonomy_promotion_code")
+  @@schema("app")
+}
+
+/// RICS Size Types (RISIZE.MDB / SizeTypes). Defines the column×row grid shape
+/// used by every SKU for sizing. In RICS these were stored as a single wide
+/// row with 54 Columns_NN + 27 Rows_NN slots; here they are native Postgres
+/// text arrays. Writes are a single row update; no segment packing.
+model TaxonomySizeType {
+  code              Int      @id @map("code") @db.SmallInt
+  description       String   @map("desc")
+  columnDescription String   @default("") @map("column_desc")
+  rowDescription    String   @default("") @map("row_desc")
+  tableType         String?  @map("table_type")
+  /// Non-blank column labels in order. Physical length drives maxColumns.
+  columns           String[] @default([]) @map("columns")
+  /// Non-blank row labels in order. Physical length drives maxRows.
+  rows              String[] @default([]) @map("rows")
+  /// Preserved for UI parity — derived from `columns.length` but persisted so
+  /// an empty-slot intent ("I have 10 column slots, 3 filled") is recoverable.
+  maxColumns        Int      @default(0) @map("max_columns") @db.SmallInt
+  maxRows           Int      @default(0) @map("max_rows") @db.SmallInt
+  dateLastChanged   DateTime @default(now()) @updatedAt @map("date_last_changed")
+
+  @@map("taxonomy_size_type")
   @@schema("app")
 }

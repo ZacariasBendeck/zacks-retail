@@ -1,17 +1,19 @@
 /**
- * Group repository — RIGROUP.MDB / `GroupCodes`.
+ * Group repository — `app.taxonomy_group` in Postgres.
  *
- * Schema:
- *   Code WCHAR | Desc WCHAR | DateLastChanged DATE
+ * Schema (per RICS p. 145):
+ *   code TEXT (PK, 1..3 alphanumeric) | desc TEXT | date_last_changed TIMESTAMP
  *
  * RICS p. 145 — Group is up to 3 alphanumeric chars (e.g., "IBL", "BAS").
  * Optional on SKU. Used for bulk price discounts and cross-category reporting.
+ * SKU counts aggregate the effective app-side SKU values; they stay at 0 until
+ * `app.sku` is backfilled.
  */
 
-import { executeQuery, executeNonQuery, type AccessParam } from '../../services/accessOleDb';
+import { prisma } from '../../db/prisma';
 import { Err, Ok, type Result, type RepoError } from './repoResult';
-import { openRicsDb, RicsDb, toRepoError, trimString } from './ricsAccess';
-import { parseAccessDate } from './parseAccessDate';
+import { isUniqueViolation, duplicatePrimaryKey, isRecordNotFound, notFound } from './prismaErrors';
+import { loadSkuCountsByGroup } from './taxonomySkuCounts';
 
 export interface Group {
   code: string;
@@ -26,45 +28,20 @@ export interface GroupInput {
 }
 
 interface GroupRow {
-  Code: string | null;
-  Desc: string | null;
-  DateLastChanged: string | null;
+  code: string;
+  description: string;
+  dateLastChanged: Date;
 }
 
 const CODE_RE = /^[A-Za-z0-9]{1,3}$/;
 
 function mapRow(row: GroupRow): Group {
   return {
-    code: trimString(row.Code) ?? '',
-    description: trimString(row.Desc) ?? '',
-    dateLastChanged: parseAccessDate(row.DateLastChanged),
+    code: row.code,
+    description: row.description,
+    dateLastChanged: row.dateLastChanged,
     skuCount: 0,
   };
-}
-
-/**
- * Returns a map of group code → SKU count from InventoryMaster.[GroupCode].
- * Codes are uppercased/trimmed to match how the Group master stores them.
- */
-async function loadSkuCountsByGroup(): Promise<Map<string, number>> {
-  const out = new Map<string, number>();
-  try {
-    const { path, password } = openRicsDb(RicsDb.InventoryMaster);
-    const rows = await executeQuery<{ GroupCode: string | null; N: number }>(
-      path,
-      password,
-      `SELECT [GroupCode], COUNT(*) AS N FROM [InventoryMaster]
-         WHERE [GroupCode] IS NOT NULL AND [GroupCode] <> ''
-         GROUP BY [GroupCode]`,
-    );
-    for (const r of rows) {
-      const code = (trimString(r.GroupCode) ?? '').toUpperCase();
-      if (code) out.set(code, Number(r.N ?? 0));
-    }
-  } catch {
-    // leave counts at 0
-  }
-  return out;
 }
 
 function validate(input: GroupInput): RepoError | null {
@@ -84,40 +61,17 @@ function validate(input: GroupInput): RepoError | null {
 
 export const GroupRepository = {
   async list(): Promise<Result<Group[]>> {
-    try {
-      const { path, password } = openRicsDb(RicsDb.Groups);
-      const rows = await executeQuery<GroupRow>(
-        path,
-        password,
-        'SELECT [Code], [Desc], [DateLastChanged] FROM [GroupCodes] ORDER BY [Code]',
-      );
-      const counts = await loadSkuCountsByGroup();
-      return Ok(
-        rows.map(mapRow).map((g) => ({ ...g, skuCount: counts.get(g.code.toUpperCase()) ?? 0 })),
-      );
-    } catch (err) {
-      return Err(toRepoError(err));
-    }
+    const rows = await prisma.taxonomyGroup.findMany({ orderBy: { code: 'asc' } });
+    const counts = await loadSkuCountsByGroup();
+    return Ok(rows.map(mapRow).map((g) => ({ ...g, skuCount: counts.get(g.code.toUpperCase()) ?? 0 })));
   },
 
   async getByCode(code: string): Promise<Result<Group>> {
-    try {
-      const { path, password } = openRicsDb(RicsDb.Groups);
-      const rows = await executeQuery<GroupRow>(
-        path,
-        password,
-        'SELECT [Code], [Desc], [DateLastChanged] FROM [GroupCodes] WHERE [Code] = ?',
-        [{ value: code.trim(), type: 'string' }],
-      );
-      if (rows.length === 0) {
-        return Err({ kind: 'NotFound', message: `Group ${code} not found.` });
-      }
-      const mapped = mapRow(rows[0]);
-      const counts = await loadSkuCountsByGroup();
-      return Ok({ ...mapped, skuCount: counts.get(mapped.code.toUpperCase()) ?? 0 });
-    } catch (err) {
-      return Err(toRepoError(err));
-    }
+    const row = await prisma.taxonomyGroup.findUnique({ where: { code: code.trim() } });
+    if (row == null) return Err(notFound(`Group ${code} not found.`));
+    const counts = await loadSkuCountsByGroup();
+    const mapped = mapRow(row);
+    return Ok({ ...mapped, skuCount: counts.get(mapped.code.toUpperCase()) ?? 0 });
   },
 
   async create(input: GroupInput): Promise<Result<Group>> {
@@ -126,31 +80,16 @@ export const GroupRepository = {
     const code = input.code.trim();
 
     try {
-      const { path, password } = openRicsDb(RicsDb.Groups);
-      const existing = await executeQuery<{ n: number }>(
-        path,
-        password,
-        'SELECT COUNT(*) AS n FROM [GroupCodes] WHERE [Code] = ?',
-        [{ value: code, type: 'string' }],
-      );
-      if ((existing[0]?.n ?? 0) > 0) {
-        return Err({ kind: 'DuplicatePrimaryKey', message: `Group ${code} already exists.` });
-      }
-      const params: AccessParam[] = [
-        { value: code, type: 'string' },
-        { value: input.description.trim(), type: 'string' },
-        { value: new Date(), type: 'date' },
-      ];
-      await executeNonQuery(
-        path,
-        password,
-        'INSERT INTO [GroupCodes] ([Code], [Desc], [DateLastChanged]) VALUES (?, ?, ?)',
-        params,
-      );
-      return this.getByCode(code);
+      await prisma.taxonomyGroup.create({
+        data: { code, description: input.description.trim() },
+      });
     } catch (err) {
-      return Err(toRepoError(err));
+      if (isUniqueViolation(err)) {
+        return Err(duplicatePrimaryKey(`Group ${code} already exists.`));
+      }
+      throw err;
     }
+    return this.getByCode(code);
   },
 
   async update(code: string, patch: Partial<Omit<GroupInput, 'code'>>): Promise<Result<Group>> {
@@ -165,41 +104,24 @@ export const GroupRepository = {
     if (validationErr) return Err(validationErr);
 
     try {
-      const { path, password } = openRicsDb(RicsDb.Groups);
-      const params: AccessParam[] = [
-        { value: merged.description.trim(), type: 'string' },
-        { value: new Date(), type: 'date' },
-        { value: code.trim(), type: 'string' },
-      ];
-      await executeNonQuery(
-        path,
-        password,
-        'UPDATE [GroupCodes] SET [Desc] = ?, [DateLastChanged] = ? WHERE [Code] = ?',
-        params,
-      );
-      // See note in DepartmentRepository.update — Jet OLE DB can under-report
-      // rowsAffected; a re-read is the authoritative post-condition check.
-      return this.getByCode(code);
+      await prisma.taxonomyGroup.update({
+        where: { code: code.trim() },
+        data: { description: merged.description.trim() },
+      });
     } catch (err) {
-      return Err(toRepoError(err));
+      if (isRecordNotFound(err)) return Err(notFound(`Group ${code} not found.`));
+      throw err;
     }
+    return this.getByCode(code);
   },
 
   async delete(code: string): Promise<Result<void>> {
     try {
-      const { path, password } = openRicsDb(RicsDb.Groups);
-      const rows = await executeNonQuery(
-        path,
-        password,
-        'DELETE FROM [GroupCodes] WHERE [Code] = ?',
-        [{ value: code.trim(), type: 'string' }],
-      );
-      if (rows === 0) {
-        return Err({ kind: 'NotFound', message: `Group ${code} not found.` });
-      }
-      return Ok(undefined);
+      await prisma.taxonomyGroup.delete({ where: { code: code.trim() } });
     } catch (err) {
-      return Err(toRepoError(err));
+      if (isRecordNotFound(err)) return Err(notFound(`Group ${code} not found.`));
+      throw err;
     }
+    return Ok(undefined);
   },
 };

@@ -1,19 +1,19 @@
 /**
- * PromotionCode repository — RIGROUP.MDB / `MarketingCode`.
+ * PromotionCode repository — `app.taxonomy_promotion_code` in Postgres.
  *
- * Schema:
- *   Code WCHAR | Description WCHAR | Date DATE | Pieces INTEGER | Cost CURRENCY | DateLastChanged DATE
+ * Schema (per RICS p. 167):
+ *   code TEXT (PK, 1..6 alphanumeric) | description TEXT | date TIMESTAMP |
+ *   pieces INTEGER | cost DECIMAL(12,2) | date_last_changed TIMESTAMP
  *
- * RICS p. 167 — the manual calls these "Promotion Codes": 6-char code,
- * description, pieces distributed, cost. The physical Access table is named
- * `MarketingCode` (the table was empty in this customer's data at
- * discovery time, so the column shape is inferred from the manual + schema).
+ * Originally in RICS as `MarketingCode` (the UI labels the same data as
+ * "Promotion Codes"). The table was empty in this customer's data at
+ * discovery time, so columns match the manual's documentation.
  */
 
-import { executeQuery, executeNonQuery, type AccessParam } from '../../services/accessOleDb';
+import { prisma } from '../../db/prisma';
+import { Prisma } from '../../prismaClient';
 import { Err, Ok, type Result, type RepoError } from './repoResult';
-import { openRicsDb, RicsDb, toRepoError, trimString, coerceNumber } from './ricsAccess';
-import { parseAccessDate } from './parseAccessDate';
+import { isUniqueViolation, duplicatePrimaryKey, isRecordNotFound, notFound } from './prismaErrors';
 
 export interface PromotionCode {
   code: string;
@@ -33,24 +33,24 @@ export interface PromotionCodeInput {
 }
 
 interface PromotionCodeRow {
-  Code: string | null;
-  Description: string | null;
-  Date: string | null;
-  Pieces: number | null;
-  Cost: number | null;
-  DateLastChanged: string | null;
+  code: string;
+  description: string;
+  date: Date | null;
+  pieces: number | null;
+  cost: Prisma.Decimal | null;
+  dateLastChanged: Date;
 }
 
 const CODE_RE = /^[A-Za-z0-9]{1,6}$/;
 
 function mapRow(row: PromotionCodeRow): PromotionCode {
   return {
-    code: trimString(row.Code) ?? '',
-    description: trimString(row.Description) ?? '',
-    date: parseAccessDate(row.Date),
-    pieces: coerceNumber(row.Pieces),
-    cost: coerceNumber(row.Cost),
-    dateLastChanged: parseAccessDate(row.DateLastChanged),
+    code: row.code,
+    description: row.description,
+    date: row.date,
+    pieces: row.pieces,
+    cost: row.cost != null ? Number(row.cost) : null,
+    dateLastChanged: row.dateLastChanged,
   };
 }
 
@@ -77,35 +77,14 @@ function validate(input: PromotionCodeInput): RepoError | null {
 
 export const PromotionCodeRepository = {
   async list(): Promise<Result<PromotionCode[]>> {
-    try {
-      const { path, password } = openRicsDb(RicsDb.PromotionCodes);
-      const rows = await executeQuery<PromotionCodeRow>(
-        path,
-        password,
-        'SELECT [Code], [Description], [Date], [Pieces], [Cost], [DateLastChanged] FROM [MarketingCode] ORDER BY [Code]',
-      );
-      return Ok(rows.map(mapRow));
-    } catch (err) {
-      return Err(toRepoError(err));
-    }
+    const rows = await prisma.taxonomyPromotionCode.findMany({ orderBy: { code: 'asc' } });
+    return Ok(rows.map(mapRow));
   },
 
   async getByCode(code: string): Promise<Result<PromotionCode>> {
-    try {
-      const { path, password } = openRicsDb(RicsDb.PromotionCodes);
-      const rows = await executeQuery<PromotionCodeRow>(
-        path,
-        password,
-        'SELECT [Code], [Description], [Date], [Pieces], [Cost], [DateLastChanged] FROM [MarketingCode] WHERE [Code] = ?',
-        [{ value: code.trim(), type: 'string' }],
-      );
-      if (rows.length === 0) {
-        return Err({ kind: 'NotFound', message: `Promotion code ${code} not found.` });
-      }
-      return Ok(mapRow(rows[0]));
-    } catch (err) {
-      return Err(toRepoError(err));
-    }
+    const row = await prisma.taxonomyPromotionCode.findUnique({ where: { code: code.trim() } });
+    if (row == null) return Err(notFound(`Promotion code ${code} not found.`));
+    return Ok(mapRow(row));
   },
 
   async create(input: PromotionCodeInput): Promise<Result<PromotionCode>> {
@@ -114,34 +93,22 @@ export const PromotionCodeRepository = {
     const code = input.code.trim();
 
     try {
-      const { path, password } = openRicsDb(RicsDb.PromotionCodes);
-      const existing = await executeQuery<{ n: number }>(
-        path,
-        password,
-        'SELECT COUNT(*) AS n FROM [MarketingCode] WHERE [Code] = ?',
-        [{ value: code, type: 'string' }],
-      );
-      if ((existing[0]?.n ?? 0) > 0) {
-        return Err({ kind: 'DuplicatePrimaryKey', message: `Promotion code ${code} already exists.` });
-      }
-      const params: AccessParam[] = [
-        { value: code, type: 'string' },
-        { value: input.description.trim(), type: 'string' },
-        input.date != null ? { value: input.date, type: 'date' } : { value: null, type: 'null' },
-        input.pieces != null ? { value: input.pieces, type: 'long' } : { value: null, type: 'null' },
-        input.cost != null ? { value: input.cost, type: 'decimal' } : { value: null, type: 'null' },
-        { value: new Date(), type: 'date' },
-      ];
-      await executeNonQuery(
-        path,
-        password,
-        'INSERT INTO [MarketingCode] ([Code], [Description], [Date], [Pieces], [Cost], [DateLastChanged]) VALUES (?, ?, ?, ?, ?, ?)',
-        params,
-      );
-      return this.getByCode(code);
+      await prisma.taxonomyPromotionCode.create({
+        data: {
+          code,
+          description: input.description.trim(),
+          date: input.date ?? null,
+          pieces: input.pieces ?? null,
+          cost: input.cost != null ? new Prisma.Decimal(input.cost) : null,
+        },
+      });
     } catch (err) {
-      return Err(toRepoError(err));
+      if (isUniqueViolation(err)) {
+        return Err(duplicatePrimaryKey(`Promotion code ${code} already exists.`));
+      }
+      throw err;
     }
+    return this.getByCode(code);
   },
 
   async update(code: string, patch: Partial<Omit<PromotionCodeInput, 'code'>>): Promise<Result<PromotionCode>> {
@@ -159,42 +126,29 @@ export const PromotionCodeRepository = {
     if (validationErr) return Err(validationErr);
 
     try {
-      const { path, password } = openRicsDb(RicsDb.PromotionCodes);
-      const params: AccessParam[] = [
-        { value: merged.description.trim(), type: 'string' },
-        merged.date != null ? { value: merged.date, type: 'date' } : { value: null, type: 'null' },
-        merged.pieces != null ? { value: merged.pieces, type: 'long' } : { value: null, type: 'null' },
-        merged.cost != null ? { value: merged.cost, type: 'decimal' } : { value: null, type: 'null' },
-        { value: new Date(), type: 'date' },
-        { value: code.trim(), type: 'string' },
-      ];
-      await executeNonQuery(
-        path,
-        password,
-        'UPDATE [MarketingCode] SET [Description] = ?, [Date] = ?, [Pieces] = ?, [Cost] = ?, [DateLastChanged] = ? WHERE [Code] = ?',
-        params,
-      );
-      return this.getByCode(code);
+      await prisma.taxonomyPromotionCode.update({
+        where: { code: code.trim() },
+        data: {
+          description: merged.description.trim(),
+          date: merged.date ?? null,
+          pieces: merged.pieces ?? null,
+          cost: merged.cost != null ? new Prisma.Decimal(merged.cost) : null,
+        },
+      });
     } catch (err) {
-      return Err(toRepoError(err));
+      if (isRecordNotFound(err)) return Err(notFound(`Promotion code ${code} not found.`));
+      throw err;
     }
+    return this.getByCode(code);
   },
 
   async delete(code: string): Promise<Result<void>> {
     try {
-      const { path, password } = openRicsDb(RicsDb.PromotionCodes);
-      const rows = await executeNonQuery(
-        path,
-        password,
-        'DELETE FROM [MarketingCode] WHERE [Code] = ?',
-        [{ value: code.trim(), type: 'string' }],
-      );
-      if (rows === 0) {
-        return Err({ kind: 'NotFound', message: `Promotion code ${code} not found.` });
-      }
-      return Ok(undefined);
+      await prisma.taxonomyPromotionCode.delete({ where: { code: code.trim() } });
     } catch (err) {
-      return Err(toRepoError(err));
+      if (isRecordNotFound(err)) return Err(notFound(`Promotion code ${code} not found.`));
+      throw err;
     }
+    return Ok(undefined);
   },
 };

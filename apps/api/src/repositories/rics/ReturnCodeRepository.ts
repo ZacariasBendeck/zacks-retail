@@ -1,18 +1,18 @@
 /**
- * ReturnCode repository — RIRETURN.MDB / `ReturnCodes`.
+ * ReturnCode repository — `app.taxonomy_return_code` in Postgres.
  *
- * Schema (discovered 2026-04-18, not in rics-db-schema.md yet):
- *   Code SMALLINT | Desc WCHAR | Trackable BOOLEAN | DateLastChanged DATE
+ * Schema (per RICS p. 166):
+ *   code SMALLINT (PK, 1..99) | desc TEXT | trackable BOOLEAN |
+ *   date_last_changed TIMESTAMP
  *
- * RICS p. 166 — return codes are 1..99, with a description and a `Trackable`
- * flag that drives the "returned sales" reports. Example live codes include
- * `Defectuoso/Dañado` (trackable) and `Cambio` (not trackable).
+ * Return codes drive the POS "reason for return" picker and the "returned
+ * sales" trackable subset of reports. Example live codes: `Defectuoso/Dañado`
+ * (trackable), `Cambio` (not trackable).
  */
 
-import { executeQuery, executeNonQuery, type AccessParam } from '../../services/accessOleDb';
+import { prisma } from '../../db/prisma';
 import { Err, Ok, type Result, type RepoError } from './repoResult';
-import { openRicsDb, RicsDb, toRepoError, trimString, coerceBoolean } from './ricsAccess';
-import { parseAccessDate } from './parseAccessDate';
+import { isUniqueViolation, duplicatePrimaryKey, isRecordNotFound, notFound } from './prismaErrors';
 
 export interface ReturnCode {
   code: number;
@@ -28,18 +28,18 @@ export interface ReturnCodeInput {
 }
 
 interface ReturnCodeRow {
-  Code: number;
-  Desc: string | null;
-  Trackable: boolean | number | null;
-  DateLastChanged: string | null;
+  code: number;
+  description: string;
+  trackable: boolean;
+  dateLastChanged: Date;
 }
 
 function mapRow(row: ReturnCodeRow): ReturnCode {
   return {
-    code: Number(row.Code),
-    description: trimString(row.Desc) ?? '',
-    trackable: coerceBoolean(row.Trackable),
-    dateLastChanged: parseAccessDate(row.DateLastChanged),
+    code: row.code,
+    description: row.description,
+    trackable: row.trackable,
+    dateLastChanged: row.dateLastChanged,
   };
 }
 
@@ -59,35 +59,14 @@ function validate(input: ReturnCodeInput): RepoError | null {
 
 export const ReturnCodeRepository = {
   async list(): Promise<Result<ReturnCode[]>> {
-    try {
-      const { path, password } = openRicsDb(RicsDb.ReturnCodes);
-      const rows = await executeQuery<ReturnCodeRow>(
-        path,
-        password,
-        'SELECT [Code], [Desc], [Trackable], [DateLastChanged] FROM [ReturnCodes] ORDER BY [Code]',
-      );
-      return Ok(rows.map(mapRow));
-    } catch (err) {
-      return Err(toRepoError(err));
-    }
+    const rows = await prisma.taxonomyReturnCode.findMany({ orderBy: { code: 'asc' } });
+    return Ok(rows.map(mapRow));
   },
 
   async getByCode(code: number): Promise<Result<ReturnCode>> {
-    try {
-      const { path, password } = openRicsDb(RicsDb.ReturnCodes);
-      const rows = await executeQuery<ReturnCodeRow>(
-        path,
-        password,
-        'SELECT [Code], [Desc], [Trackable], [DateLastChanged] FROM [ReturnCodes] WHERE [Code] = ?',
-        [{ value: code, type: 'integer' }],
-      );
-      if (rows.length === 0) {
-        return Err({ kind: 'NotFound', message: `Return code ${code} not found.` });
-      }
-      return Ok(mapRow(rows[0]));
-    } catch (err) {
-      return Err(toRepoError(err));
-    }
+    const row = await prisma.taxonomyReturnCode.findUnique({ where: { code } });
+    if (row == null) return Err(notFound(`Return code ${code} not found.`));
+    return Ok(mapRow(row));
   },
 
   async create(input: ReturnCodeInput): Promise<Result<ReturnCode>> {
@@ -95,32 +74,20 @@ export const ReturnCodeRepository = {
     if (validationErr) return Err(validationErr);
 
     try {
-      const { path, password } = openRicsDb(RicsDb.ReturnCodes);
-      const existing = await executeQuery<{ n: number }>(
-        path,
-        password,
-        'SELECT COUNT(*) AS n FROM [ReturnCodes] WHERE [Code] = ?',
-        [{ value: input.code, type: 'integer' }],
-      );
-      if ((existing[0]?.n ?? 0) > 0) {
-        return Err({ kind: 'DuplicatePrimaryKey', message: `Return code ${input.code} already exists.` });
-      }
-      const params: AccessParam[] = [
-        { value: input.code, type: 'integer' },
-        { value: input.description.trim(), type: 'string' },
-        { value: input.trackable, type: 'boolean' },
-        { value: new Date(), type: 'date' },
-      ];
-      await executeNonQuery(
-        path,
-        password,
-        'INSERT INTO [ReturnCodes] ([Code], [Desc], [Trackable], [DateLastChanged]) VALUES (?, ?, ?, ?)',
-        params,
-      );
-      return this.getByCode(input.code);
+      await prisma.taxonomyReturnCode.create({
+        data: {
+          code: input.code,
+          description: input.description.trim(),
+          trackable: input.trackable,
+        },
+      });
     } catch (err) {
-      return Err(toRepoError(err));
+      if (isUniqueViolation(err)) {
+        return Err(duplicatePrimaryKey(`Return code ${input.code} already exists.`));
+      }
+      throw err;
     }
+    return this.getByCode(input.code);
   },
 
   async update(code: number, patch: Partial<Omit<ReturnCodeInput, 'code'>>): Promise<Result<ReturnCode>> {
@@ -136,40 +103,27 @@ export const ReturnCodeRepository = {
     if (validationErr) return Err(validationErr);
 
     try {
-      const { path, password } = openRicsDb(RicsDb.ReturnCodes);
-      const params: AccessParam[] = [
-        { value: merged.description.trim(), type: 'string' },
-        { value: merged.trackable, type: 'boolean' },
-        { value: new Date(), type: 'date' },
-        { value: code, type: 'integer' },
-      ];
-      await executeNonQuery(
-        path,
-        password,
-        'UPDATE [ReturnCodes] SET [Desc] = ?, [Trackable] = ?, [DateLastChanged] = ? WHERE [Code] = ?',
-        params,
-      );
-      return this.getByCode(code);
+      await prisma.taxonomyReturnCode.update({
+        where: { code },
+        data: {
+          description: merged.description.trim(),
+          trackable: merged.trackable,
+        },
+      });
     } catch (err) {
-      return Err(toRepoError(err));
+      if (isRecordNotFound(err)) return Err(notFound(`Return code ${code} not found.`));
+      throw err;
     }
+    return this.getByCode(code);
   },
 
   async delete(code: number): Promise<Result<void>> {
     try {
-      const { path, password } = openRicsDb(RicsDb.ReturnCodes);
-      const rows = await executeNonQuery(
-        path,
-        password,
-        'DELETE FROM [ReturnCodes] WHERE [Code] = ?',
-        [{ value: code, type: 'integer' }],
-      );
-      if (rows === 0) {
-        return Err({ kind: 'NotFound', message: `Return code ${code} not found.` });
-      }
-      return Ok(undefined);
+      await prisma.taxonomyReturnCode.delete({ where: { code } });
     } catch (err) {
-      return Err(toRepoError(err));
+      if (isRecordNotFound(err)) return Err(notFound(`Return code ${code} not found.`));
+      throw err;
     }
+    return Ok(undefined);
   },
 };

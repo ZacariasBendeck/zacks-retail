@@ -1,20 +1,23 @@
 /**
- * Sector repository — RIDEPT.MDB / `Sectors`.
+ * Sector repository — `app.taxonomy_sector` in Postgres.
  *
- * Schema:
- *   Number SMALLINT | Desc WCHAR | BegDept SMALLINT | EndDept SMALLINT | DateLastChanged DATE
+ * Schema (per RICS p. 144):
+ *   number SMALLINT (PK, 1..99) | desc TEXT | beg_dept SMALLINT |
+ *   end_dept SMALLINT | date_last_changed TIMESTAMP
  *
- * RICS p. 144 — Sectors are 1..99, group a contiguous [BegDept, EndDept]
- * department range. The original spec called for dropping Sectors in v1 —
- * the 2026-04-18 Phase 1 data review revealed this customer has 9 active
- * sectors in daily use for reporting rollups, so they are KEPT for Phase 1.
- * See "Modernization decisions" in docs/modules/products.md.
+ * Sectors group a contiguous Department range via [begDept, endDept]. The
+ * link to Department is implicit, not a FK — same pattern as Department ↔
+ * Category. The original spec called for dropping Sectors in v1; the
+ * 2026-04-18 Phase 1 data review revealed 9 active sectors in daily use for
+ * reporting rollups, so they are KEPT.
+ *
+ * SKU counts are derived by summing per-Department counts for departments
+ * whose number falls inside the Sector's range.
  */
 
-import { executeQuery, executeNonQuery, type AccessParam } from '../../services/accessOleDb';
+import { prisma } from '../../db/prisma';
 import { Err, Ok, type Result, type RepoError } from './repoResult';
-import { openRicsDb, RicsDb, toRepoError, trimString } from './ricsAccess';
-import { parseAccessDate } from './parseAccessDate';
+import { isUniqueViolation, duplicatePrimaryKey, isRecordNotFound, notFound } from './prismaErrors';
 import { DepartmentRepository, type Department } from './DepartmentRepository';
 
 export interface Sector {
@@ -34,29 +37,24 @@ export interface SectorInput {
 }
 
 interface SectorRow {
-  Number: number;
-  Desc: string | null;
-  BegDept: number | null;
-  EndDept: number | null;
-  DateLastChanged: string | null;
+  number: number;
+  description: string;
+  begDept: number;
+  endDept: number;
+  dateLastChanged: Date;
 }
 
 function mapRow(row: SectorRow): Sector {
   return {
-    number: Number(row.Number),
-    description: trimString(row.Desc) ?? '',
-    begDept: Number(row.BegDept ?? 0),
-    endDept: Number(row.EndDept ?? 0),
-    dateLastChanged: parseAccessDate(row.DateLastChanged),
+    number: row.number,
+    description: row.description,
+    begDept: row.begDept,
+    endDept: row.endDept,
+    dateLastChanged: row.dateLastChanged,
     skuCount: 0,
   };
 }
 
-/**
- * Loads Departments (each carrying its own range-derived skuCount) so Sector
- * counts can be summed over the dept range [BegDept, EndDept]. Errors collapse
- * to an empty list so counts default to 0 instead of hiding the sectors page.
- */
 async function loadDepartmentsForCounts(): Promise<Department[]> {
   try {
     const result = await DepartmentRepository.list();
@@ -99,39 +97,17 @@ function validate(input: SectorInput): RepoError | null {
 
 export const SectorRepository = {
   async list(): Promise<Result<Sector[]>> {
-    try {
-      const { path, password } = openRicsDb(RicsDb.Sectors);
-      const rows = await executeQuery<SectorRow>(
-        path,
-        password,
-        'SELECT [Number], [Desc], [BegDept], [EndDept], [DateLastChanged] FROM [Sectors] ORDER BY [Number]',
-      );
-      const depts = await loadDepartmentsForCounts();
-      const mapped = rows.map(mapRow);
-      return Ok(mapped.map((s) => ({ ...s, skuCount: countForSector(depts, s) })));
-    } catch (err) {
-      return Err(toRepoError(err));
-    }
+    const rows = await prisma.taxonomySector.findMany({ orderBy: { number: 'asc' } });
+    const depts = await loadDepartmentsForCounts();
+    return Ok(rows.map(mapRow).map((s) => ({ ...s, skuCount: countForSector(depts, s) })));
   },
 
   async getByNumber(number: number): Promise<Result<Sector>> {
-    try {
-      const { path, password } = openRicsDb(RicsDb.Sectors);
-      const rows = await executeQuery<SectorRow>(
-        path,
-        password,
-        'SELECT [Number], [Desc], [BegDept], [EndDept], [DateLastChanged] FROM [Sectors] WHERE [Number] = ?',
-        [{ value: number, type: 'integer' }],
-      );
-      if (rows.length === 0) {
-        return Err({ kind: 'NotFound', message: `Sector ${number} not found.` });
-      }
-      const mapped = mapRow(rows[0]);
-      const depts = await loadDepartmentsForCounts();
-      return Ok({ ...mapped, skuCount: countForSector(depts, mapped) });
-    } catch (err) {
-      return Err(toRepoError(err));
-    }
+    const row = await prisma.taxonomySector.findUnique({ where: { number } });
+    if (row == null) return Err(notFound(`Sector ${number} not found.`));
+    const mapped = mapRow(row);
+    const depts = await loadDepartmentsForCounts();
+    return Ok({ ...mapped, skuCount: countForSector(depts, mapped) });
   },
 
   async create(input: SectorInput): Promise<Result<Sector>> {
@@ -139,33 +115,21 @@ export const SectorRepository = {
     if (validationErr) return Err(validationErr);
 
     try {
-      const { path, password } = openRicsDb(RicsDb.Sectors);
-      const existing = await executeQuery<{ n: number }>(
-        path,
-        password,
-        'SELECT COUNT(*) AS n FROM [Sectors] WHERE [Number] = ?',
-        [{ value: input.number, type: 'integer' }],
-      );
-      if ((existing[0]?.n ?? 0) > 0) {
-        return Err({ kind: 'DuplicatePrimaryKey', message: `Sector ${input.number} already exists.` });
-      }
-      const params: AccessParam[] = [
-        { value: input.number, type: 'integer' },
-        { value: input.description.trim(), type: 'string' },
-        { value: input.begDept, type: 'integer' },
-        { value: input.endDept, type: 'integer' },
-        { value: new Date(), type: 'date' },
-      ];
-      await executeNonQuery(
-        path,
-        password,
-        'INSERT INTO [Sectors] ([Number], [Desc], [BegDept], [EndDept], [DateLastChanged]) VALUES (?, ?, ?, ?, ?)',
-        params,
-      );
-      return this.getByNumber(input.number);
+      await prisma.taxonomySector.create({
+        data: {
+          number: input.number,
+          description: input.description.trim(),
+          begDept: input.begDept,
+          endDept: input.endDept,
+        },
+      });
     } catch (err) {
-      return Err(toRepoError(err));
+      if (isUniqueViolation(err)) {
+        return Err(duplicatePrimaryKey(`Sector ${input.number} already exists.`));
+      }
+      throw err;
     }
+    return this.getByNumber(input.number);
   },
 
   async update(number: number, patch: Partial<Omit<SectorInput, 'number'>>): Promise<Result<Sector>> {
@@ -182,73 +146,44 @@ export const SectorRepository = {
     if (validationErr) return Err(validationErr);
 
     try {
-      const { path, password } = openRicsDb(RicsDb.Sectors);
-      const params: AccessParam[] = [
-        { value: merged.description.trim(), type: 'string' },
-        { value: merged.begDept, type: 'integer' },
-        { value: merged.endDept, type: 'integer' },
-        { value: new Date(), type: 'date' },
-        { value: number, type: 'integer' },
-      ];
-      await executeNonQuery(
-        path,
-        password,
-        'UPDATE [Sectors] SET [Desc] = ?, [BegDept] = ?, [EndDept] = ?, [DateLastChanged] = ? WHERE [Number] = ?',
-        params,
-      );
-      return this.getByNumber(number);
+      await prisma.taxonomySector.update({
+        where: { number },
+        data: {
+          description: merged.description.trim(),
+          begDept: merged.begDept,
+          endDept: merged.endDept,
+        },
+      });
     } catch (err) {
-      return Err(toRepoError(err));
+      if (isRecordNotFound(err)) return Err(notFound(`Sector ${number} not found.`));
+      throw err;
     }
+    return this.getByNumber(number);
   },
 
   /**
-   * Find the Sector that owns a given Department number via the range lookup
-   * (BegDept <= dept <= EndDept). RICS p. 144 — each Department belongs to
-   * exactly one Sector. Returns NotFound if no Sector covers the Department.
+   * Find the Sector that owns a given Department number via the range lookup.
+   * RICS p. 144 — each Department belongs to exactly one Sector. Returns
+   * NotFound if no Sector covers the Department.
    */
   async findByDepartment(departmentNumber: number): Promise<Result<Sector>> {
-    try {
-      const { path, password } = openRicsDb(RicsDb.Sectors);
-      const rows = await executeQuery<SectorRow>(
-        path,
-        password,
-        `SELECT [Number], [Desc], [BegDept], [EndDept], [DateLastChanged]
-           FROM [Sectors]
-           WHERE [BegDept] <= ? AND [EndDept] >= ?
-           ORDER BY [Number]`,
-        [
-          { value: departmentNumber, type: 'integer' },
-          { value: departmentNumber, type: 'integer' },
-        ],
-      );
-      if (rows.length === 0) {
-        return Err({
-          kind: 'NotFound',
-          message: `No Sector covers Department ${departmentNumber}.`,
-        });
-      }
-      return Ok(mapRow(rows[0]));
-    } catch (err) {
-      return Err(toRepoError(err));
+    const row = await prisma.taxonomySector.findFirst({
+      where: { begDept: { lte: departmentNumber }, endDept: { gte: departmentNumber } },
+      orderBy: { number: 'asc' },
+    });
+    if (row == null) {
+      return Err(notFound(`No Sector covers Department ${departmentNumber}.`));
     }
+    return Ok(mapRow(row));
   },
 
   async delete(number: number): Promise<Result<void>> {
     try {
-      const { path, password } = openRicsDb(RicsDb.Sectors);
-      const rows = await executeNonQuery(
-        path,
-        password,
-        'DELETE FROM [Sectors] WHERE [Number] = ?',
-        [{ value: number, type: 'integer' }],
-      );
-      if (rows === 0) {
-        return Err({ kind: 'NotFound', message: `Sector ${number} not found.` });
-      }
-      return Ok(undefined);
+      await prisma.taxonomySector.delete({ where: { number } });
     } catch (err) {
-      return Err(toRepoError(err));
+      if (isRecordNotFound(err)) return Err(notFound(`Sector ${number} not found.`));
+      throw err;
     }
+    return Ok(undefined);
   },
 };

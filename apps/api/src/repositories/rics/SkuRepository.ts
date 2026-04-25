@@ -1,61 +1,25 @@
 /**
- * SKU repository — RIINVMAS.MDB / `InventoryMaster` + `InvCatalog`.
+ * SKU repository - app-owned Postgres read surface over `app.sku`.
  *
- * RICS manual p. 154–157 (SKUs — File Setup, SKU Pricing, Perks, Label Type,
- * Oversize Pricing, Picture Configuration).
+ * The old Access/MDB and `rics_mirror.inventory_master` paths are retired.
+ * Product admin reads now come from the imported app-owned SKU table plus the
+ * app-side override tables that already sit on top of it.
  *
- * Schema reference: docs/rics-db-schema.md
- *   InventoryMaster (31 cols):
- *     SKU, VendorSKU, Category, Vendor, SizeType, Desc, StyleColor, Season,
- *     Location, ListPrice, RetailPrice, MarkDownPrice1, MarkDownPrice2,
- *     CurrentPrice (SMALLINT 1=List/2=Retail/3=MD1/4=MD2), CurrentCost,
- *     OverSizeColumn, OverSizeAmount, Perks, Manufacturer, LabelCode,
- *     ColorCode, Comment, GroupCode, KeyWords, PictureFileName, Coupon,
- *     LastPriceChange, Status, DateLastChanged, OrderMultiple, OrderUOM.
- *
- *   InvCatalog (14 cols) — web overlay:
- *     SKU, LongColor, BoldDesc, ParaDesc, CatalogSKU, BulletText_01..05,
- *     PictureName_01, PictureName_02, SizeText, WebFileName.
- *
- * Both tables live in the same MDB, so create/update can use one OLE DB
- * transaction via `executeTransaction`.
- *
- * Rename guard: `InventoryMaster.SKU` cannot be changed once the SKU has been
- * sold / ordered / received (RICS p. 154). This repository enforces at the
- * service level (see SkuService.update). The "activity" check reads 1RITRANS,
- * RIPURCH, and the Inventory Quantities tables. The repository itself rejects
- * PATCH attempts that include a `code` change to keep the service-level
- * guard authoritative.
- *
- * Pictures: `PictureFileName` on InventoryMaster plus `PictureName_01/02` and
- * `WebFileName` on InvCatalog are all string filenames referencing files on
- * disk under `C:\RICSWIN\ricspics` (overridable via RICS_IMAGES_DIR). The
- * repository reads and writes only the filenames — file content is handled
- * by the pictures static route (Step 8).
- *
- * Phase 1 design contract:
- *   docs/dev/specs/2026-04-18-products-phase1-design.md
+ * Write support for the old InventoryMaster + InvCatalog shape is intentionally
+ * disabled here for now. A proper app-owned replacement for those legacy-only
+ * overlay fields has not been finished yet, so this repository restores live
+ * reads without pretending the deleted Access write path still exists.
  */
 
-import {
-  executeQuery,
-  executeNonQuery,
-  executeTransaction,
-  type AccessParam,
-  type AccessWriteOperation,
-} from '../../services/accessOleDb';
 import { prisma } from '../../db/prisma';
-import { Err, Ok, type Result } from './repoResult';
-import { openRicsDb, RicsDb, toRepoError, trimString, coerceNumber, coerceBoolean } from './ricsAccess';
-import { parseAccessDate } from './parseAccessDate';
+import { Prisma } from '../../prismaClient';
 import { createTtlCache } from '../../services/products/ttlCache';
-
-// ────────────── Domain types ──────────────
+import { Err, Ok, type Result } from './repoResult';
+import { notFound } from './prismaErrors';
 
 export type CurrentPriceSlot = 'LIST' | 'RETAIL' | 'MD1' | 'MD2';
 
 export interface Sku {
-  /** 15 chars max, alphanumeric + some RICS-legacy symbols (p. 154). */
   code: string;
   vendorSku: string | null;
   category: number | null;
@@ -65,25 +29,21 @@ export interface Sku {
   styleColor: string | null;
   season: string | null;
   location: string | null;
-  // Pricing (p. 155)
   listPrice: number | null;
   retailPrice: number;
   mdPrice1: number | null;
   mdPrice2: number | null;
   currentPriceSlot: CurrentPriceSlot;
   currentCost: number | null;
-  // Oversize (p. 156)
   oversizeColumn: string | null;
   oversizeAmount: number | null;
-  // Perks (p. 155)
   perks: number | null;
-  // Misc
   manufacturer: string | null;
   labelCode: string | null;
   colorCode: string | null;
   comment: string | null;
   groupCode: string | null;
-  keywords: string[]; // space-separated in the MDB; array in domain
+  keywords: string[];
   pictureFileName: string | null;
   coupon: boolean;
   lastPriceChange: Date | null;
@@ -91,12 +51,11 @@ export interface Sku {
   dateLastChanged: Date | null;
   orderMultiple: number | null;
   orderUom: string | null;
-  // InvCatalog (web overlay) — may be null if no InvCatalog row exists
   longColor: string | null;
   boldDesc: string | null;
   paraDesc: string | null;
   catalogSku: string | null;
-  bulletText: string[]; // max 5; empty strings filtered
+  bulletText: string[];
   pictureName01: string | null;
   pictureName02: string | null;
   sizeText: string | null;
@@ -133,7 +92,6 @@ export interface SkuInput {
   status?: string | null;
   orderMultiple?: number | null;
   orderUom?: string | null;
-  // InvCatalog overlay
   longColor?: string | null;
   boldDesc?: string | null;
   paraDesc?: string | null;
@@ -147,89 +105,22 @@ export interface SkuInput {
 
 export interface FindAllOptions {
   q?: string;
-  /** Single-value filters (legacy, kept for callers that pass one value). */
   vendor?: string;
   category?: number;
   season?: string;
   group?: string;
   keyword?: string;
-  /** Multi-value filters — the admin workbench uses these. */
   vendors?: string[];
   categories?: number[];
   seasons?: string[];
   groups?: string[];
   keywords?: string[];
-  /**
-   * Restrict to SKUs whose code is in this allowlist. Used by the products
-   * routes when an `attr.<dim>=<value>` filter has been resolved upstream via
-   * the extended-attributes service.
-   */
   codes?: string[];
-  /** Style/Color substring match (case-insensitive). */
   styleColor?: string;
-  /**
-   * Description filter, case-insensitive.
-   * - No asterisks → substring match (same as `includes`).
-   * - With asterisks → glob match where `*` is zero-or-more chars, anchored at both ends.
-   *   `BOOT*` = starts-with; `*BOOT` = ends-with; `BOOT*CUERO` = starts BOOT, ends CUERO.
-   */
   description?: string;
   limit?: number;
   offset?: number;
 }
-
-interface InventoryMasterRow {
-  SKU: string | null;
-  VendorSKU: string | null;
-  Category: number | null;
-  Vendor: string | null;
-  SizeType: number | null;
-  Desc: string | null;
-  StyleColor: string | null;
-  Season: string | null;
-  Location: string | null;
-  ListPrice: number | null;
-  RetailPrice: number | null;
-  MarkDownPrice1: number | null;
-  MarkDownPrice2: number | null;
-  CurrentPrice: number | null;
-  CurrentCost: number | null;
-  OverSizeColumn: string | null;
-  OverSizeAmount: number | null;
-  Perks: number | null;
-  Manufacturer: string | null;
-  LabelCode: string | null;
-  ColorCode: string | null;
-  Comment: string | null;
-  GroupCode: string | null;
-  KeyWords: string | null;
-  PictureFileName: string | null;
-  Coupon: boolean | null;
-  LastPriceChange: string | null;
-  Status: string | null;
-  DateLastChanged: string | null;
-  OrderMultiple: number | null;
-  OrderUOM: string | null;
-}
-
-interface InvCatalogRow {
-  SKU: string | null;
-  LongColor: string | null;
-  BoldDesc: string | null;
-  ParaDesc: string | null;
-  CatalogSKU: string | null;
-  BulletText_01: string | null;
-  BulletText_02: string | null;
-  BulletText_03: string | null;
-  BulletText_04: string | null;
-  BulletText_05: string | null;
-  PictureName_01: string | null;
-  PictureName_02: string | null;
-  SizeText: string | null;
-  WebFileName: string | null;
-}
-
-// ────────────── Field limits ──────────────
 
 export const SKU_FIELD_LIMITS = {
   code: 15,
@@ -244,7 +135,7 @@ export const SKU_FIELD_LIMITS = {
   colorCode: 3,
   comment: 30,
   groupCode: 3,
-  keywordsJoined: 60, // p. 165 — 60-char cap on joined KeyWords string
+  keywordsJoined: 60,
   pictureFileName: 50,
   status: 1,
   orderUom: 10,
@@ -258,580 +149,400 @@ export const SKU_FIELD_LIMITS = {
   sizeText: 30,
 } as const;
 
-// ────────────── Helpers ──────────────
-
-const SLOT_TO_NUM: Record<CurrentPriceSlot, number> = {
-  LIST: 1,
-  RETAIL: 2,
-  MD1: 3,
-  MD2: 4,
-};
-
-function slotFromNumber(n: number | null): CurrentPriceSlot {
-  if (n === 1) return 'LIST';
-  if (n === 3) return 'MD1';
-  if (n === 4) return 'MD2';
-  return 'RETAIL'; // default + fallback (matches adapter semantics)
+interface BaseSkuRow {
+  code: string | null;
+  provisionalCode: string;
+  vendorSku: string | null;
+  categoryNumber: number | null;
+  vendorId: string | null;
+  sizeType: number | null;
+  descriptionRics: string | null;
+  descriptionWeb: string | null;
+  styleColor: string | null;
+  season: string | null;
+  location: string | null;
+  listPrice: Prisma.Decimal | null;
+  retailPrice: Prisma.Decimal | null;
+  markDownPrice1: Prisma.Decimal | null;
+  markDownPrice2: Prisma.Decimal | null;
+  currentPriceSlot: string | null;
+  currentCost: Prisma.Decimal | null;
+  perks: Prisma.Decimal | null;
+  manufacturer: string | null;
+  labelCode: string | null;
+  colorCode: string | null;
+  comment: string | null;
+  groupCode: string | null;
+  keywords: string | null;
+  pictureFileName: string | null;
+  coupon: boolean;
+  orderMultiple: number | null;
+  orderUom: string | null;
+  ricsStatus: string | null;
+  skuState: string;
+  createdAt: Date;
+  updatedAt: Date | null;
+  ricsLastSyncedAt: Date | null;
 }
 
-function keywordsToString(keywords: string[] | undefined | null): string | null {
-  if (!keywords || keywords.length === 0) return null;
-  const joined = keywords
-    .filter((k) => typeof k === 'string' && k.trim().length > 0)
-    .map((k) => k.trim().toUpperCase())
-    .join(' ');
-  return joined.length === 0 ? null : joined;
+interface SkuAttributeOverrideRow {
+  ricsSkuCode: string;
+  category: number | null;
+  vendor: string | null;
+  season: string | null;
+  groupCode: string | null;
 }
 
-function keywordsFromString(s: string | null): string[] {
-  if (!s) return [];
-  return s.split(/\s+/).filter((k) => k.length > 0);
+interface SkuKeywordOverrideRow {
+  ricsSkuCode: string;
+  keyword: string;
+  action: string;
 }
 
-function bulletTextArray(row: InvCatalogRow | null): string[] {
-  if (!row) return [];
-  const arr = [
-    row.BulletText_01,
-    row.BulletText_02,
-    row.BulletText_03,
-    row.BulletText_04,
-    row.BulletText_05,
-  ];
-  return arr.map((x) => trimString(x) ?? '').filter((x) => x.length > 0);
-}
+const SKU_LIST_TTL_MS = 10 * 60 * 1000;
+const skuListCache = createTtlCache<Sku[]>(SKU_LIST_TTL_MS);
 
 function normalizeCode(code: string): string {
   return code.trim().toUpperCase();
 }
 
-const INVENTORY_MASTER_COLS = `[SKU], [VendorSKU], [Category], [Vendor], [SizeType], [Desc],
-  [StyleColor], [Season], [Location], [ListPrice], [RetailPrice],
-  [MarkDownPrice1], [MarkDownPrice2], [CurrentPrice], [CurrentCost],
-  [OverSizeColumn], [OverSizeAmount], [Perks], [Manufacturer], [LabelCode],
-  [ColorCode], [Comment], [GroupCode], [KeyWords], [PictureFileName],
-  [Coupon], [LastPriceChange], [Status], [DateLastChanged], [OrderMultiple],
-  [OrderUOM]`;
-
-/**
- * Narrow column set for the list view. Drops long text columns (`Comment`,
- * `Manufacturer`, `Location`) and the rarely-read `OrderMultiple`/`OrderUOM`/
- * `Perks`/`OverSize*`/`LabelCode`/`ColorCode`/`CurrentCost`/`LastPriceChange`/
- * `DateLastChanged`/`Coupon` — the list page renders code, desc, vendor,
- * category, styleColor, season, current-price slot+amount, status, and a
- * small thumbnail derived from `PictureFileName`. `KeyWords` and `GroupCode`
- * are retained even though no list column shows them: filter dropdowns on
- * the list page narrow by keyword and group, so `applyFilters` needs those
- * fields populated.
- */
-const INVENTORY_MASTER_LIST_COLS = `[SKU], [Category], [Vendor], [Desc],
-  [StyleColor], [Season], [ListPrice], [RetailPrice],
-  [MarkDownPrice1], [MarkDownPrice2], [CurrentPrice], [Status],
-  [PictureFileName], [KeyWords], [GroupCode]`;
-
-const INV_CATALOG_COLS = `[SKU], [LongColor], [BoldDesc], [ParaDesc], [CatalogSKU],
-  [BulletText_01], [BulletText_02], [BulletText_03], [BulletText_04], [BulletText_05],
-  [PictureName_01], [PictureName_02], [SizeText], [WebFileName]`;
-
-function mapSku(row: InventoryMasterRow, catalog: InvCatalogRow | null): Sku {
-  return {
-    code: trimString(row.SKU) ?? '',
-    vendorSku: trimString(row.VendorSKU),
-    category: coerceNumber(row.Category),
-    vendor: trimString(row.Vendor),
-    sizeType: coerceNumber(row.SizeType),
-    description: trimString(row.Desc) ?? '',
-    styleColor: trimString(row.StyleColor),
-    season: trimString(row.Season),
-    location: trimString(row.Location),
-    listPrice: coerceNumber(row.ListPrice),
-    retailPrice: coerceNumber(row.RetailPrice) ?? 0,
-    mdPrice1: coerceNumber(row.MarkDownPrice1),
-    mdPrice2: coerceNumber(row.MarkDownPrice2),
-    currentPriceSlot: slotFromNumber(coerceNumber(row.CurrentPrice)),
-    currentCost: coerceNumber(row.CurrentCost),
-    oversizeColumn: trimString(row.OverSizeColumn),
-    oversizeAmount: coerceNumber(row.OverSizeAmount),
-    perks: coerceNumber(row.Perks),
-    manufacturer: trimString(row.Manufacturer),
-    labelCode: trimString(row.LabelCode),
-    colorCode: trimString(row.ColorCode),
-    comment: trimString(row.Comment),
-    groupCode: trimString(row.GroupCode),
-    keywords: keywordsFromString(trimString(row.KeyWords)),
-    pictureFileName: trimString(row.PictureFileName),
-    coupon: coerceBoolean(row.Coupon),
-    lastPriceChange: parseAccessDate(row.LastPriceChange),
-    status: trimString(row.Status),
-    dateLastChanged: parseAccessDate(row.DateLastChanged),
-    orderMultiple: coerceNumber(row.OrderMultiple),
-    orderUom: trimString(row.OrderUOM),
-    longColor: trimString(catalog?.LongColor ?? null),
-    boldDesc: trimString(catalog?.BoldDesc ?? null),
-    paraDesc: trimString(catalog?.ParaDesc ?? null),
-    catalogSku: trimString(catalog?.CatalogSKU ?? null),
-    bulletText: bulletTextArray(catalog ?? null),
-    pictureName01: trimString(catalog?.PictureName_01 ?? null),
-    pictureName02: trimString(catalog?.PictureName_02 ?? null),
-    sizeText: trimString(catalog?.SizeText ?? null),
-    webFileName: trimString(catalog?.WebFileName ?? null),
-  };
+function trimString(value: string | null | undefined): string | null {
+  if (value == null) return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
-// ────────────── Insert / update parameter builders ──────────────
-
-function inventoryMasterParams(input: SkuInput, now: Date): AccessParam[] {
-  return [
-    { value: input.code, type: 'string' }, // SKU
-    { value: input.vendorSku ?? null, type: input.vendorSku == null ? 'null' : 'string' },
-    { value: input.category, type: 'long' },
-    { value: input.vendor, type: 'string' },
-    { value: input.sizeType ?? null, type: input.sizeType == null ? 'null' : 'long' },
-    { value: input.description, type: 'string' },
-    { value: input.styleColor ?? null, type: input.styleColor == null ? 'null' : 'string' },
-    { value: input.season ?? null, type: input.season == null ? 'null' : 'string' },
-    { value: input.location ?? null, type: input.location == null ? 'null' : 'string' },
-    { value: input.listPrice ?? null, type: input.listPrice == null ? 'null' : 'decimal' },
-    { value: input.retailPrice, type: 'decimal' },
-    { value: input.mdPrice1 ?? null, type: input.mdPrice1 == null ? 'null' : 'decimal' },
-    { value: input.mdPrice2 ?? null, type: input.mdPrice2 == null ? 'null' : 'decimal' },
-    { value: SLOT_TO_NUM[input.currentPriceSlot ?? 'RETAIL'], type: 'integer' },
-    { value: input.currentCost ?? null, type: input.currentCost == null ? 'null' : 'decimal' },
-    { value: input.oversizeColumn ?? null, type: input.oversizeColumn == null ? 'null' : 'string' },
-    { value: input.oversizeAmount ?? null, type: input.oversizeAmount == null ? 'null' : 'decimal' },
-    { value: input.perks ?? null, type: input.perks == null ? 'null' : 'decimal' },
-    { value: input.manufacturer ?? null, type: input.manufacturer == null ? 'null' : 'string' },
-    { value: input.labelCode ?? null, type: input.labelCode == null ? 'null' : 'string' },
-    { value: input.colorCode ?? null, type: input.colorCode == null ? 'null' : 'string' },
-    { value: input.comment ?? null, type: input.comment == null ? 'null' : 'string' },
-    { value: input.groupCode ?? null, type: input.groupCode == null ? 'null' : 'string' },
-    { value: keywordsToString(input.keywords), type: keywordsToString(input.keywords) == null ? 'null' : 'string' },
-    { value: input.pictureFileName ?? null, type: input.pictureFileName == null ? 'null' : 'string' },
-    { value: input.coupon ?? false, type: 'boolean' },
-    { value: now, type: 'date' }, // LastPriceChange
-    { value: input.status ?? null, type: input.status == null ? 'null' : 'string' },
-    { value: now, type: 'date' }, // DateLastChanged
-    { value: input.orderMultiple ?? null, type: input.orderMultiple == null ? 'null' : 'long' },
-    { value: input.orderUom ?? null, type: input.orderUom == null ? 'null' : 'string' },
-  ];
+function decimalToNumber(value: Prisma.Decimal | null | undefined): number | null {
+  return value == null ? null : Number(value);
 }
 
-function invCatalogParams(input: SkuInput): AccessParam[] | null {
-  const any =
-    input.longColor ||
-    input.boldDesc ||
-    input.paraDesc ||
-    input.catalogSku ||
-    input.sizeText ||
-    input.webFileName ||
-    input.pictureName01 ||
-    input.pictureName02 ||
-    (input.bulletText && input.bulletText.length > 0);
-  if (!any) return null;
-  const bt = input.bulletText ?? [];
-  const slot = (i: number): AccessParam => {
-    const v = bt[i] ?? null;
-    return { value: v, type: v == null ? 'null' : 'string' };
-  };
-  return [
-    { value: input.code, type: 'string' },
-    { value: input.longColor ?? null, type: input.longColor == null ? 'null' : 'string' },
-    { value: input.boldDesc ?? null, type: input.boldDesc == null ? 'null' : 'string' },
-    { value: input.paraDesc ?? null, type: input.paraDesc == null ? 'null' : 'string' },
-    { value: input.catalogSku ?? null, type: input.catalogSku == null ? 'null' : 'string' },
-    slot(0),
-    slot(1),
-    slot(2),
-    slot(3),
-    slot(4),
-    { value: input.pictureName01 ?? null, type: input.pictureName01 == null ? 'null' : 'string' },
-    { value: input.pictureName02 ?? null, type: input.pictureName02 == null ? 'null' : 'string' },
-    { value: input.sizeText ?? null, type: input.sizeText == null ? 'null' : 'string' },
-    { value: input.webFileName ?? null, type: input.webFileName == null ? 'null' : 'string' },
-  ];
+function normalizeCurrentPriceSlot(slot: string | null | undefined): CurrentPriceSlot {
+  const normalized = (slot ?? '').trim().toUpperCase();
+  if (normalized === 'LIST') return 'LIST';
+  if (normalized === 'MD1' || normalized === 'MARKDOWN1') return 'MD1';
+  if (normalized === 'MD2' || normalized === 'MARKDOWN2') return 'MD2';
+  return 'RETAIL';
 }
 
-// ────────────── Cache ──────────────
-
-// The full SKU snapshot is loaded once and filtered in memory. 60-minute TTL
-// covers the mirror-read path too (sub-second now) as a belt-and-suspenders
-// against any spike; mutations call `skuListCache.invalidate()` so writes
-// surface immediately. The storefront adapter uses a similar long TTL.
-const SKU_LIST_TTL_MS = 60 * 60 * 1000;
-const skuListCache = createTtlCache<Sku[]>(SKU_LIST_TTL_MS);
-
-// Phase A cutover: default source is `rics_mirror.inventory_master` (Postgres,
-// populated by `pnpm sync:rics`). Set PRODUCTS_SKU_SOURCE=mdb to fall back to
-// the legacy OLEDB path for rollback.
-const PRODUCTS_SKU_SOURCE: 'mirror' | 'mdb' =
-  process.env.PRODUCTS_SKU_SOURCE?.toLowerCase() === 'mdb' ? 'mdb' : 'mirror';
-
-async function loadFullSkuList(): Promise<Sku[]> {
-  return PRODUCTS_SKU_SOURCE === 'mirror'
-    ? loadFullSkuListFromMirror()
-    : loadFullSkuListFromMdb();
+function keywordsFromString(value: string | null | undefined): string[] {
+  if (!value) return [];
+  return value
+    .split(/\s+/)
+    .map((keyword) => keyword.trim().toUpperCase())
+    .filter((keyword) => keyword.length > 0);
 }
 
-async function loadFullSkuListFromMdb(): Promise<Sku[]> {
-  const { path, password } = openRicsDb(RicsDb.InventoryMaster);
-  const rows = await executeQuery<InventoryMasterRow>(
-    path,
-    password,
-    `SELECT ${INVENTORY_MASTER_LIST_COLS} FROM [InventoryMaster] ORDER BY [SKU]`,
+function applyKeywordOverrides(
+  baseKeywords: string | null,
+  overrides: SkuKeywordOverrideRow[],
+): string[] {
+  const set = new Set(keywordsFromString(baseKeywords));
+  for (const override of overrides) {
+    const keyword = trimString(override.keyword)?.toUpperCase();
+    if (!keyword) continue;
+    if (override.action.trim().toUpperCase() === 'REMOVE') {
+      set.delete(keyword);
+      continue;
+    }
+    set.add(keyword);
+  }
+  return Array.from(set).sort();
+}
+
+function buildDescriptionMatcher(pattern: string): (description: string) => boolean {
+  const normalized = pattern.toUpperCase();
+  if (!normalized.includes('*')) {
+    return (description) => description.toUpperCase().includes(normalized);
+  }
+  const escaped = normalized
+    .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
+    .replace(/\*/g, '.*');
+  const regex = new RegExp(`^${escaped}$`);
+  return (description) => regex.test(description.toUpperCase());
+}
+
+function setOf(values: string[]): Set<string> {
+  return new Set(
+    values
+      .map((value) => String(value).trim().toUpperCase())
+      .filter((value) => value.length > 0),
   );
-  // mapSku tolerates missing columns — `trimString` / `coerceNumber` both
-  // return null for undefined inputs, so dropped columns surface as null on
-  // the domain object. Detail view (`findByCode`) still pulls the full row.
-  return rows.map((r) => mapSku(r, null));
 }
 
-// Mirror-backed variant of the same snapshot. Column aliases match the MDB
-// projection verbatim so `mapSku` is unchanged. Only the narrow list-column
-// subset is pulled (see INVENTORY_MASTER_LIST_COLS for the rationale); the
-// detail view still calls `findByCode` which pulls the full row.
-async function loadFullSkuListFromMirror(): Promise<Sku[]> {
-  const rows = await prisma.$queryRawUnsafe<InventoryMasterRow[]>(`
-    SELECT
-      sku                        AS "SKU",
-      category                   AS "Category",
-      vendor                     AS "Vendor",
-      "desc"                     AS "Desc",
-      style_color                AS "StyleColor",
-      season                     AS "Season",
-      list_price::float8         AS "ListPrice",
-      retail_price::float8       AS "RetailPrice",
-      mark_down_price1::float8   AS "MarkDownPrice1",
-      mark_down_price2::float8   AS "MarkDownPrice2",
-      current_price              AS "CurrentPrice",
-      status                     AS "Status",
-      picture_file_name          AS "PictureFileName",
-      key_words                  AS "KeyWords",
-      group_code                 AS "GroupCode"
-    FROM rics_mirror.inventory_master
-    ORDER BY sku
-  `);
-  return rows.map((r) => mapSku(r, null));
+function numSet(values: number[]): Set<number> {
+  return new Set(values.filter((value) => Number.isFinite(value)));
+}
+
+function mapBaseSku(
+  row: BaseSkuRow,
+  override: SkuAttributeOverrideRow | undefined,
+  keywordOverrides: SkuKeywordOverrideRow[],
+): Sku {
+  const description =
+    trimString(row.descriptionRics) ??
+    trimString(row.descriptionWeb) ??
+    trimString(row.provisionalCode) ??
+    '';
+
+  return {
+    code: trimString(row.code) ?? '',
+    vendorSku: trimString(row.vendorSku),
+    category: override?.category ?? row.categoryNumber,
+    vendor: trimString(override?.vendor ?? row.vendorId),
+    sizeType: row.sizeType,
+    description,
+    styleColor: trimString(row.styleColor),
+    season: trimString(override?.season ?? row.season),
+    location: trimString(row.location),
+    listPrice: decimalToNumber(row.listPrice),
+    retailPrice: decimalToNumber(row.retailPrice) ?? 0,
+    mdPrice1: decimalToNumber(row.markDownPrice1),
+    mdPrice2: decimalToNumber(row.markDownPrice2),
+    currentPriceSlot: normalizeCurrentPriceSlot(row.currentPriceSlot),
+    currentCost: decimalToNumber(row.currentCost),
+    oversizeColumn: null,
+    oversizeAmount: null,
+    perks: decimalToNumber(row.perks),
+    manufacturer: trimString(row.manufacturer),
+    labelCode: trimString(row.labelCode),
+    colorCode: trimString(row.colorCode),
+    comment: trimString(row.comment),
+    groupCode: trimString(override?.groupCode ?? row.groupCode),
+    keywords: applyKeywordOverrides(row.keywords, keywordOverrides),
+    pictureFileName: trimString(row.pictureFileName),
+    coupon: Boolean(row.coupon),
+    lastPriceChange: null,
+    status:
+      trimString(row.ricsStatus) ??
+      (row.skuState.trim().toUpperCase() === 'DISCONTINUED' ? 'D' : null),
+    dateLastChanged: row.updatedAt ?? row.ricsLastSyncedAt ?? row.createdAt ?? null,
+    orderMultiple: row.orderMultiple,
+    orderUom: trimString(row.orderUom),
+    longColor: null,
+    boldDesc: null,
+    paraDesc: null,
+    catalogSku: null,
+    bulletText: [],
+    pictureName01: null,
+    pictureName02: null,
+    sizeText: null,
+    webFileName: null,
+  };
+}
+
+async function loadFullSkuListFromApp(): Promise<Sku[]> {
+  const [baseRows, attributeOverrides, keywordOverrides] = await Promise.all([
+    prisma.sku.findMany({
+      where: { code: { not: null } },
+      orderBy: { code: 'asc' },
+      select: {
+        code: true,
+        provisionalCode: true,
+        vendorSku: true,
+        categoryNumber: true,
+        vendorId: true,
+        sizeType: true,
+        descriptionRics: true,
+        descriptionWeb: true,
+        styleColor: true,
+        season: true,
+        location: true,
+        listPrice: true,
+        retailPrice: true,
+        markDownPrice1: true,
+        markDownPrice2: true,
+        currentPriceSlot: true,
+        currentCost: true,
+        perks: true,
+        manufacturer: true,
+        labelCode: true,
+        colorCode: true,
+        comment: true,
+        groupCode: true,
+        keywords: true,
+        pictureFileName: true,
+        coupon: true,
+        orderMultiple: true,
+        orderUom: true,
+        ricsStatus: true,
+        skuState: true,
+        createdAt: true,
+        updatedAt: true,
+        ricsLastSyncedAt: true,
+      },
+    }),
+    prisma.skuAttributeOverride.findMany({
+      select: {
+        ricsSkuCode: true,
+        category: true,
+        vendor: true,
+        season: true,
+        groupCode: true,
+      },
+    }),
+    prisma.skuKeywordOverride.findMany({
+      select: {
+        ricsSkuCode: true,
+        keyword: true,
+        action: true,
+      },
+    }),
+  ]);
+
+  const overrideByCode = new Map<string, SkuAttributeOverrideRow>();
+  for (const override of attributeOverrides) {
+    overrideByCode.set(normalizeCode(override.ricsSkuCode), override);
+  }
+
+  const keywordOverridesByCode = new Map<string, SkuKeywordOverrideRow[]>();
+  for (const override of keywordOverrides) {
+    const code = normalizeCode(override.ricsSkuCode);
+    const bucket = keywordOverridesByCode.get(code);
+    if (bucket) {
+      bucket.push(override);
+      continue;
+    }
+    keywordOverridesByCode.set(code, [override]);
+  }
+
+  return baseRows
+    .filter((row) => trimString(row.code) != null)
+    .map((row) =>
+      mapBaseSku(
+        row,
+        overrideByCode.get(normalizeCode(row.code!)),
+        keywordOverridesByCode.get(normalizeCode(row.code!)) ?? [],
+      ),
+    );
 }
 
 function applyFilters(all: Sku[], opts: FindAllOptions): Sku[] {
-  let out = all;
+  let filtered = all;
+
   if (opts.q && opts.q.trim().length > 0) {
-    const q = opts.q.trim().toUpperCase();
-    out = out.filter(
-      (s) =>
-        s.code.toUpperCase().includes(q) ||
-        s.description.toUpperCase().includes(q) ||
-        (s.styleColor ?? '').toUpperCase().includes(q),
+    const needle = opts.q.trim().toUpperCase();
+    filtered = filtered.filter(
+      (sku) =>
+        sku.code.toUpperCase().includes(needle) ||
+        sku.description.toUpperCase().includes(needle) ||
+        (sku.styleColor ?? '').toUpperCase().includes(needle),
     );
   }
+
   if (opts.description && opts.description.trim().length > 0) {
     const matcher = buildDescriptionMatcher(opts.description.trim());
-    out = out.filter((s) => matcher(s.description));
+    filtered = filtered.filter((sku) => matcher(sku.description));
   }
-  // Multi-value filters — unioned within a dimension, intersected across
-  // dimensions. Arrays override their single-value counterparts.
+
   const vendors = setOf(opts.vendors ?? (opts.vendor ? [opts.vendor] : []));
   if (vendors.size > 0) {
-    out = out.filter((s) => s.vendor != null && vendors.has(s.vendor.toUpperCase()));
+    filtered = filtered.filter(
+      (sku) => sku.vendor != null && vendors.has(sku.vendor.toUpperCase()),
+    );
   }
+
   const categories = numSet(opts.categories ?? (opts.category != null ? [opts.category] : []));
   if (categories.size > 0) {
-    out = out.filter((s) => s.category != null && categories.has(s.category));
+    filtered = filtered.filter(
+      (sku) => sku.category != null && categories.has(sku.category),
+    );
   }
+
   const seasons = setOf(opts.seasons ?? (opts.season ? [opts.season] : []));
   if (seasons.size > 0) {
-    out = out.filter((s) => s.season != null && seasons.has(s.season.toUpperCase()));
+    filtered = filtered.filter(
+      (sku) => sku.season != null && seasons.has(sku.season.toUpperCase()),
+    );
   }
+
   const groups = setOf(opts.groups ?? (opts.group ? [opts.group] : []));
   if (groups.size > 0) {
-    out = out.filter((s) => s.groupCode != null && groups.has(s.groupCode.toUpperCase()));
+    filtered = filtered.filter(
+      (sku) => sku.groupCode != null && groups.has(sku.groupCode.toUpperCase()),
+    );
   }
+
   const keywords = setOf(opts.keywords ?? (opts.keyword ? [opts.keyword] : []));
   if (keywords.size > 0) {
-    out = out.filter((s) => s.keywords.some((kw) => keywords.has(kw.toUpperCase())));
+    filtered = filtered.filter((sku) =>
+      sku.keywords.some((keyword) => keywords.has(keyword.toUpperCase())),
+    );
   }
+
   if (opts.styleColor && opts.styleColor.trim().length > 0) {
     const needle = opts.styleColor.trim().toUpperCase();
-    out = out.filter((s) => (s.styleColor ?? '').toUpperCase().includes(needle));
+    filtered = filtered.filter((sku) =>
+      (sku.styleColor ?? '').toUpperCase().includes(needle),
+    );
   }
+
   if (opts.codes && opts.codes.length > 0) {
-    const allow = new Set(opts.codes.map((c) => c.trim().toUpperCase()).filter((c) => c.length > 0));
-    out = out.filter((s) => allow.has(s.code.toUpperCase()));
+    const allowed = new Set(
+      opts.codes
+        .map((code) => normalizeCode(code))
+        .filter((code) => code.length > 0),
+    );
+    filtered = filtered.filter((sku) => allowed.has(sku.code.toUpperCase()));
   }
-  return out;
+
+  return filtered;
 }
 
-function setOf(xs: string[]): Set<string> {
-  return new Set(xs.map((x) => String(x).trim().toUpperCase()).filter((x) => x.length > 0));
-}
-function numSet(xs: number[]): Set<number> {
-  return new Set(xs.filter((x) => Number.isFinite(x)));
-}
-
-/**
- * Build a description matcher with asterisk-wildcard support.
- *   "BOOT"        → substring (case-insensitive)
- *   "BOOT*"       → starts-with BOOT
- *   "*BOOT"       → ends-with BOOT
- *   "*BOOT*"      → contains BOOT (same as substring)
- *   "BOOT*CUERO"  → starts BOOT, ends CUERO (any chars between)
- *   "BO*CU*RO"    → BO then CU then RO, in order
- */
-function buildDescriptionMatcher(pattern: string): (desc: string) => boolean {
-  const p = pattern.toUpperCase();
-  if (!p.includes('*')) {
-    return (desc) => desc.toUpperCase().includes(p);
-  }
-  const escaped = p.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
-  const re = new RegExp('^' + escaped + '$');
-  return (desc) => re.test(desc.toUpperCase());
-}
-
-// ────────────── Repository ──────────────
+const WRITE_NOT_SUPPORTED_MESSAGE =
+  'Legacy SKU writes through /api/v1/products/skus are disabled after retirement of the MDB ' +
+  'path. The read surface is now app-owned in Postgres, but the old InventoryMaster/InvCatalog ' +
+  'write contract has not been fully replaced yet.';
 
 export const SkuRepository = {
   async findAll(opts: FindAllOptions = {}): Promise<Result<Sku[]>> {
-    try {
-      const all = await skuListCache.get(loadFullSkuList);
-      const filtered = applyFilters(all, opts);
-      const offset = opts.offset ?? 0;
-      // Omit `limit` entirely to get every row back. Passing a number
-      // applies a hard cap (used by the storefront and specific callers
-      // that know they want to paginate).
-      if (opts.limit == null) {
-        return Ok(offset > 0 ? filtered.slice(offset) : filtered);
-      }
-      return Ok(filtered.slice(offset, offset + opts.limit));
-    } catch (err) {
-      return Err(toRepoError(err));
+    const all = await skuListCache.get(loadFullSkuListFromApp);
+    const filtered = applyFilters(all, opts);
+    const offset = opts.offset ?? 0;
+    if (opts.limit == null) {
+      return Ok(offset > 0 ? filtered.slice(offset) : filtered);
     }
+    return Ok(filtered.slice(offset, offset + opts.limit));
   },
 
-  /** Preload the full SKU list into cache. Called from startup warmup. */
   async warmup(): Promise<void> {
-    await skuListCache.get(loadFullSkuList);
+    await skuListCache.get(loadFullSkuListFromApp);
   },
 
   async findByCode(code: string): Promise<Result<Sku>> {
-    try {
-      const { path, password } = openRicsDb(RicsDb.InventoryMaster);
-      const normalized = normalizeCode(code);
-      const rows = await executeQuery<InventoryMasterRow>(
-        path,
-        password,
-        `SELECT ${INVENTORY_MASTER_COLS} FROM [InventoryMaster] WHERE [SKU] = ?`,
-        [{ value: normalized, type: 'string' }],
-      );
-      if (rows.length === 0) {
-        return Err({ kind: 'NotFound', message: `SKU '${normalized}' not found.` });
-      }
-      const catalogRows = await executeQuery<InvCatalogRow>(
-        path,
-        password,
-        `SELECT ${INV_CATALOG_COLS} FROM [InvCatalog] WHERE [SKU] = ?`,
-        [{ value: normalized, type: 'string' }],
-      );
-      return Ok(mapSku(rows[0], catalogRows[0] ?? null));
-    } catch (err) {
-      return Err(toRepoError(err));
+    const normalized = normalizeCode(code);
+    const all = await skuListCache.get(loadFullSkuListFromApp);
+    const found = all.find((sku) => sku.code.toUpperCase() === normalized);
+    if (found == null) {
+      return Err(notFound(`SKU '${normalized}' not found.`));
     }
+    return Ok(found);
   },
 
-  async create(input: SkuInput): Promise<Result<Sku>> {
-    try {
-      const { path, password } = openRicsDb(RicsDb.InventoryMaster);
-      const normalized = normalizeCode(input.code);
-      const existing = await executeQuery<{ n: number }>(
-        path,
-        password,
-        'SELECT COUNT(*) AS n FROM [InventoryMaster] WHERE [SKU] = ?',
-        [{ value: normalized, type: 'string' }],
-      );
-      if ((existing[0]?.n ?? 0) > 0) {
-        return Err({
-          kind: 'DuplicatePrimaryKey',
-          message: `SKU '${normalized}' already exists.`,
-        });
-      }
-      const now = new Date();
-      const imParams = inventoryMasterParams({ ...input, code: normalized }, now);
-      const ops: AccessWriteOperation[] = [
-        {
-          sql: `INSERT INTO [InventoryMaster] (${INVENTORY_MASTER_COLS}) VALUES (${Array(imParams.length).fill('?').join(', ')})`,
-          params: imParams,
-        },
-      ];
-      const catParams = invCatalogParams({ ...input, code: normalized });
-      if (catParams) {
-        ops.push({
-          sql: `INSERT INTO [InvCatalog] (${INV_CATALOG_COLS}) VALUES (${Array(catParams.length).fill('?').join(', ')})`,
-          params: catParams,
-        });
-      }
-      await executeTransaction(path, password, ops);
-      skuListCache.invalidate();
-      return this.findByCode(normalized);
-    } catch (err) {
-      return Err(toRepoError(err));
-    }
+  async create(_input: SkuInput): Promise<Result<Sku>> {
+    return Err({ kind: 'WriteNotSupported', message: WRITE_NOT_SUPPORTED_MESSAGE });
   },
 
-  async update(code: string, patch: Partial<Omit<SkuInput, 'code'>>): Promise<Result<Sku>> {
-    const existing = await this.findByCode(code);
-    if (!existing.ok) return existing;
-
-    // Build UPDATE for InventoryMaster with only touched columns.
-    const merged: SkuInput = {
-      code: existing.value.code,
-      vendorSku: patch.vendorSku !== undefined ? patch.vendorSku : existing.value.vendorSku,
-      category: patch.category ?? existing.value.category ?? 0,
-      vendor: patch.vendor ?? existing.value.vendor ?? '',
-      sizeType: patch.sizeType !== undefined ? patch.sizeType : existing.value.sizeType,
-      description: patch.description ?? existing.value.description,
-      styleColor: patch.styleColor !== undefined ? patch.styleColor : existing.value.styleColor,
-      season: patch.season !== undefined ? patch.season : existing.value.season,
-      location: patch.location !== undefined ? patch.location : existing.value.location,
-      listPrice: patch.listPrice !== undefined ? patch.listPrice : existing.value.listPrice,
-      retailPrice: patch.retailPrice ?? existing.value.retailPrice,
-      mdPrice1: patch.mdPrice1 !== undefined ? patch.mdPrice1 : existing.value.mdPrice1,
-      mdPrice2: patch.mdPrice2 !== undefined ? patch.mdPrice2 : existing.value.mdPrice2,
-      currentPriceSlot: patch.currentPriceSlot ?? existing.value.currentPriceSlot,
-      currentCost: patch.currentCost !== undefined ? patch.currentCost : existing.value.currentCost,
-      oversizeColumn: patch.oversizeColumn !== undefined ? patch.oversizeColumn : existing.value.oversizeColumn,
-      oversizeAmount: patch.oversizeAmount !== undefined ? patch.oversizeAmount : existing.value.oversizeAmount,
-      perks: patch.perks !== undefined ? patch.perks : existing.value.perks,
-      manufacturer: patch.manufacturer !== undefined ? patch.manufacturer : existing.value.manufacturer,
-      labelCode: patch.labelCode !== undefined ? patch.labelCode : existing.value.labelCode,
-      colorCode: patch.colorCode !== undefined ? patch.colorCode : existing.value.colorCode,
-      comment: patch.comment !== undefined ? patch.comment : existing.value.comment,
-      groupCode: patch.groupCode !== undefined ? patch.groupCode : existing.value.groupCode,
-      keywords: patch.keywords ?? existing.value.keywords,
-      pictureFileName: patch.pictureFileName !== undefined ? patch.pictureFileName : existing.value.pictureFileName,
-      coupon: patch.coupon !== undefined ? patch.coupon : existing.value.coupon,
-      status: patch.status !== undefined ? patch.status : existing.value.status,
-      orderMultiple: patch.orderMultiple !== undefined ? patch.orderMultiple : existing.value.orderMultiple,
-      orderUom: patch.orderUom !== undefined ? patch.orderUom : existing.value.orderUom,
-      longColor: patch.longColor !== undefined ? patch.longColor : existing.value.longColor,
-      boldDesc: patch.boldDesc !== undefined ? patch.boldDesc : existing.value.boldDesc,
-      paraDesc: patch.paraDesc !== undefined ? patch.paraDesc : existing.value.paraDesc,
-      catalogSku: patch.catalogSku !== undefined ? patch.catalogSku : existing.value.catalogSku,
-      bulletText: patch.bulletText ?? existing.value.bulletText,
-      pictureName01: patch.pictureName01 !== undefined ? patch.pictureName01 : existing.value.pictureName01,
-      pictureName02: patch.pictureName02 !== undefined ? patch.pictureName02 : existing.value.pictureName02,
-      sizeText: patch.sizeText !== undefined ? patch.sizeText : existing.value.sizeText,
-      webFileName: patch.webFileName !== undefined ? patch.webFileName : existing.value.webFileName,
-    };
-
-    try {
-      const { path, password } = openRicsDb(RicsDb.InventoryMaster);
-      const now = new Date();
-      const imParams = inventoryMasterParams(merged, now);
-      // UPDATE — all cols listed, SKU at end in WHERE.
-      const setList = `
-        [VendorSKU] = ?, [Category] = ?, [Vendor] = ?, [SizeType] = ?, [Desc] = ?,
-        [StyleColor] = ?, [Season] = ?, [Location] = ?, [ListPrice] = ?, [RetailPrice] = ?,
-        [MarkDownPrice1] = ?, [MarkDownPrice2] = ?, [CurrentPrice] = ?, [CurrentCost] = ?,
-        [OverSizeColumn] = ?, [OverSizeAmount] = ?, [Perks] = ?, [Manufacturer] = ?,
-        [LabelCode] = ?, [ColorCode] = ?, [Comment] = ?, [GroupCode] = ?, [KeyWords] = ?,
-        [PictureFileName] = ?, [Coupon] = ?, [LastPriceChange] = ?, [Status] = ?,
-        [DateLastChanged] = ?, [OrderMultiple] = ?, [OrderUOM] = ?
-      `.trim();
-      // imParams starts with SKU; drop it and append to WHERE.
-      const [skuParam, ...restParams] = imParams;
-      const updateOps: AccessWriteOperation[] = [
-        {
-          sql: `UPDATE [InventoryMaster] SET ${setList} WHERE [SKU] = ?`,
-          params: [...restParams, skuParam],
-        },
-      ];
-
-      // InvCatalog: upsert if any overlay field provided.
-      const catParams = invCatalogParams(merged);
-      if (catParams) {
-        const catalogExists = await executeQuery<{ n: number }>(
-          path,
-          password,
-          'SELECT COUNT(*) AS n FROM [InvCatalog] WHERE [SKU] = ?',
-          [{ value: merged.code, type: 'string' }],
-        );
-        if ((catalogExists[0]?.n ?? 0) > 0) {
-          const [catSkuParam, ...catRest] = catParams;
-          updateOps.push({
-            sql: `UPDATE [InvCatalog] SET
-              [LongColor] = ?, [BoldDesc] = ?, [ParaDesc] = ?, [CatalogSKU] = ?,
-              [BulletText_01] = ?, [BulletText_02] = ?, [BulletText_03] = ?,
-              [BulletText_04] = ?, [BulletText_05] = ?,
-              [PictureName_01] = ?, [PictureName_02] = ?, [SizeText] = ?, [WebFileName] = ?
-              WHERE [SKU] = ?`,
-            params: [...catRest, catSkuParam],
-          });
-        } else {
-          updateOps.push({
-            sql: `INSERT INTO [InvCatalog] (${INV_CATALOG_COLS}) VALUES (${Array(catParams.length).fill('?').join(', ')})`,
-            params: catParams,
-          });
-        }
-      }
-      await executeTransaction(path, password, updateOps);
-      skuListCache.invalidate();
-      return this.findByCode(merged.code);
-    } catch (err) {
-      return Err(toRepoError(err));
-    }
+  async update(
+    _code: string,
+    _patch: Partial<Omit<SkuInput, 'code'>>,
+  ): Promise<Result<Sku>> {
+    return Err({ kind: 'WriteNotSupported', message: WRITE_NOT_SUPPORTED_MESSAGE });
   },
 
-  async delete(code: string): Promise<Result<void>> {
-    try {
-      const { path, password } = openRicsDb(RicsDb.InventoryMaster);
-      const normalized = normalizeCode(code);
-      const ops: AccessWriteOperation[] = [
-        {
-          sql: `DELETE FROM [InvCatalog] WHERE [SKU] = ?`,
-          params: [{ value: normalized, type: 'string' }],
-        },
-        {
-          sql: `DELETE FROM [InventoryMaster] WHERE [SKU] = ?`,
-          params: [{ value: normalized, type: 'string' }],
-        },
-      ];
-      const affected = await executeTransaction(path, password, ops);
-      // Second op is the master delete — its affected count must be > 0.
-      if ((affected[1] ?? 0) === 0) {
-        return Err({ kind: 'NotFound', message: `SKU '${normalized}' not found.` });
-      }
-      skuListCache.invalidate();
-      return Ok(undefined);
-    } catch (err) {
-      return Err(toRepoError(err));
-    }
+  async delete(_code: string): Promise<Result<void>> {
+    return Err({ kind: 'WriteNotSupported', message: WRITE_NOT_SUPPORTED_MESSAGE });
   },
 
   async countByVendor(vendorCode: string): Promise<Result<number>> {
-    try {
-      const { path, password } = openRicsDb(RicsDb.InventoryMaster);
-      const rows = await executeQuery<{ n: number }>(
-        path,
-        password,
-        'SELECT COUNT(*) AS n FROM [InventoryMaster] WHERE [Vendor] = ?',
-        [{ value: vendorCode.trim().toUpperCase(), type: 'string' }],
-      );
-      return Ok(rows[0]?.n ?? 0);
-    } catch (err) {
-      return Err(toRepoError(err));
-    }
+    const normalized = normalizeCode(vendorCode);
+    const all = await skuListCache.get(loadFullSkuListFromApp);
+    return Ok(
+      all.filter((sku) => (sku.vendor ?? '').trim().toUpperCase() === normalized).length,
+    );
   },
 
   async countByCategory(category: number): Promise<Result<number>> {
-    try {
-      const { path, password } = openRicsDb(RicsDb.InventoryMaster);
-      const rows = await executeQuery<{ n: number }>(
-        path,
-        password,
-        'SELECT COUNT(*) AS n FROM [InventoryMaster] WHERE [Category] = ?',
-        [{ value: category, type: 'long' }],
-      );
-      return Ok(rows[0]?.n ?? 0);
-    } catch (err) {
-      return Err(toRepoError(err));
-    }
+    const all = await skuListCache.get(loadFullSkuListFromApp);
+    return Ok(all.filter((sku) => sku.category === category).length);
   },
 };

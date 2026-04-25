@@ -1,34 +1,37 @@
 /**
- * Vendor repository — Postgres-backed reads + writes using the `app.vendor_overlay`
- * overlay pattern. The MDB read/write path was deleted 2026-04-23.
+ * Vendor repository — Postgres-backed reads + writes using the app-owned
+ * imported baseline (`app.vendor`, `app.vendor_store_account`) plus the
+ * `app.vendor_overlay` write surface. The MDB read/write path was deleted
+ * 2026-04-23.
  *
  * Storage layout
  * ──────────────
- *   `rics_mirror.vendor_master`        mirrored RICS data (read-only; rebuilt by sync:rics)
- *   `rics_mirror.vendor_accounts`      per-store account numbers (read-only)
- *   `rics_mirror.inventory_master`     source for countSkusUsingVendor / countSkusPerVendor
+ *   `app.vendor`                       imported vendor baseline (rebuilt by sync:rics-reference-baselines)
+ *   `app.vendor_store_account`         imported per-store account numbers
+ *   `app.sku` + app-side overrides     source for countSkusUsingVendor / countSkusPerVendor
  *   `app.vendor_overlay`               write surface — three roles via `source`:
  *                                        'native'    — born in Postgres, no RICS twin
- *                                        'override'  — sparse per-column override of a mirror row
- *                                                      (NULL = use mirror, non-NULL = override)
- *                                        'tombstone' — hide a mirror row from reads
+ *                                        'override'  — sparse per-column override of an imported baseline row
+ *                                                      (NULL = use baseline, non-NULL = override)
+ *                                        'tombstone' — hide an imported baseline row from reads
  *
- * Read path: rics_mirror.vendor_master FULL OUTER JOIN app.vendor_overlay ON code,
- * filtering source='tombstone', with COALESCE(overlay.col, mirror.col) per column.
+ * Read path: app.vendor FULL OUTER JOIN app.vendor_overlay ON code, filtering
+ * source='tombstone', with COALESCE(overlay.col, baseline.col) per column.
  *
  * Delete semantics
  * ────────────────
  *   native vendor in overlay              → DELETE row
- *   override of mirror vendor             → flip to tombstone (mirror still exists; tombstone hides it)
- *   mirror vendor with no overlay row     → INSERT tombstone row
+ *   override of imported vendor           → flip to tombstone (baseline still exists; tombstone hides it)
+ *   imported vendor with no overlay row   → INSERT tombstone row
  *   already tombstoned                    → NotFound
  *
  * Until the Postgres→RICS sync agent is implemented, overlay rows don't reach
- * RICS — the warehouse still sees only mirror data.
+ * RICS — the warehouse still sees the imported legacy baseline only.
  */
 
 import { prisma } from '../../db/prisma';
 import { Err, Ok, type Result, type RepoError } from './repoResult';
+import { loadSkuCountsByVendor } from './taxonomySkuCounts';
 
 // ────────────── Domain types ──────────────
 
@@ -208,44 +211,44 @@ function toPgError(err: unknown): RepoError {
 }
 
 /**
- * Effective-vendor projection. Combines the RICS mirror with the overlay:
- *   - mirror only, no overlay           → mirror row as-is
- *   - mirror + overlay source='override' → sparse COALESCE(overlay, mirror)
- *   - mirror + overlay source='tombstone' → filtered out
- *   - overlay source='native', no mirror → overlay row as-is (with last_changed from overlay.updated_at)
+ * Effective-vendor projection. Combines the imported baseline with the overlay:
+ *   - baseline only, no overlay             → baseline row as-is
+ *   - baseline + overlay source='override'  → sparse COALESCE(overlay, baseline)
+ *   - baseline + overlay source='tombstone' → filtered out
+ *   - overlay source='native', no baseline  → overlay row as-is (with last_changed from overlay.updated_at)
  *
- * A WHERE clause can be injected via `whereSql` (uses m./o. aliases + $N params).
+ * A WHERE clause can be injected via `whereSql` (uses v./o. aliases + $N params).
  * `params` is appended to the base SELECT; `$N` placeholders start from `paramOffset+1`.
  */
 function buildEffectiveSelect(whereSql = '', extraSql = ''): string {
   return `
 SELECT
-  COALESCE(o.code, m.code) AS code,
-  COALESCE(o.short_name,    m.short_name)    AS short_name,
-  COALESCE(o.mail_name,     m.mail_name)     AS mail_name,
-  COALESCE(o.addr1,         m.addr1)         AS addr1,
-  COALESCE(o.addr2,         m.addr2)         AS addr2,
-  COALESCE(o.city,          m.city)          AS city,
-  COALESCE(o.state,         m.state)         AS state,
-  COALESCE(o.zip,           m.zip)           AS zip,
-  COALESCE(o.phone,         m.phone)         AS phone,
-  COALESCE(o.fax,           m.fax)           AS fax,
-  COALESCE(o.contact,       m.contact)       AS contact,
-  COALESCE(o.terms,         m.terms)         AS terms,
-  COALESCE(o.ship_inst,     m.ship_inst)     AS ship_inst,
-  COALESCE(o.comment,       m.comment)       AS comment,
-  COALESCE(o.manu_code,     m.manu_code)     AS manu_code,
-  COALESCE(o.manu_name,     m.manu_name)     AS manu_name,
-  COALESCE(o.qualifier_id,  m.qualifier_id)  AS qualifier_id,
-  COALESCE(o.qualifier_code, m.qualifier_code) AS qualifier_code,
-  COALESCE(o.color_code,    m.color_code)    AS color_code,
-  COALESCE(o.long_comment,  m.long_comment)  AS long_comment,
-  COALESCE(o.e_mail,        m.e_mail)        AS e_mail,
-  COALESCE(o.updated_at,    m.date_last_changed) AS date_last_changed
-FROM rics_mirror.vendor_master m
-FULL OUTER JOIN app.vendor_overlay o ON o.code = m.code
+  COALESCE(o.code, v.code) AS code,
+  COALESCE(o.short_name,    v.short_name)    AS short_name,
+  COALESCE(o.mail_name,     v.mail_name)     AS mail_name,
+  COALESCE(o.addr1,         v.addr1)         AS addr1,
+  COALESCE(o.addr2,         v.addr2)         AS addr2,
+  COALESCE(o.city,          v.city)          AS city,
+  COALESCE(o.state,         v.state)         AS state,
+  COALESCE(o.zip,           v.zip)           AS zip,
+  COALESCE(o.phone,         v.phone)         AS phone,
+  COALESCE(o.fax,           v.fax)           AS fax,
+  COALESCE(o.contact,       v.contact)       AS contact,
+  COALESCE(o.terms,         v.terms)         AS terms,
+  COALESCE(o.ship_inst,     v.ship_inst)     AS ship_inst,
+  COALESCE(o.comment,       v.comment)       AS comment,
+  COALESCE(o.manu_code,     v.manu_code)     AS manu_code,
+  COALESCE(o.manu_name,     v.manu_name)     AS manu_name,
+  COALESCE(o.qualifier_id,  v.qualifier_id)  AS qualifier_id,
+  COALESCE(o.qualifier_code, v.qualifier_code) AS qualifier_code,
+  COALESCE(o.color_code,    v.color_code)    AS color_code,
+  COALESCE(o.long_comment,  v.long_comment)  AS long_comment,
+  COALESCE(o.e_mail,        v.e_mail)        AS e_mail,
+  COALESCE(o.updated_at,    v.date_last_changed) AS date_last_changed
+FROM app.vendor v
+FULL OUTER JOIN app.vendor_overlay o ON o.code = v.code
 WHERE (o.source IS NULL OR o.source != 'tombstone')
-  AND (m.code IS NOT NULL OR o.code IS NOT NULL)
+  AND (v.code IS NOT NULL OR o.code IS NOT NULL)
   ${whereSql}
 ${extraSql}
 `;
@@ -261,10 +264,10 @@ export const VendorRepository = {
         const limit = opts.limit ?? 100;
         const sql = buildEffectiveSelect(
           `AND (
-             LOWER(COALESCE(o.code, m.code)) LIKE $1
-             OR LOWER(COALESCE(o.short_name, m.short_name, '')) LIKE $1
-             OR LOWER(COALESCE(o.mail_name, m.mail_name, ''))  LIKE $1
-             OR LOWER(COALESCE(o.manu_name, m.manu_name, ''))  LIKE $1
+             LOWER(COALESCE(o.code, v.code)) LIKE $1
+             OR LOWER(COALESCE(o.short_name, v.short_name, '')) LIKE $1
+             OR LOWER(COALESCE(o.mail_name, v.mail_name, ''))  LIKE $1
+             OR LOWER(COALESCE(o.manu_name, v.manu_name, ''))  LIKE $1
            )`,
           'ORDER BY code LIMIT $2',
         );
@@ -296,7 +299,7 @@ export const VendorRepository = {
     try {
       const normalized = normalizeCode(code);
       const sql = buildEffectiveSelect(
-        'AND UPPER(COALESCE(o.code, m.code)) = $1',
+        'AND UPPER(COALESCE(o.code, v.code)) = $1',
         'LIMIT 1',
       );
       const rows = await prisma.$queryRawUnsafe<VendorEffectiveRow[]>(sql, normalized);
@@ -312,17 +315,18 @@ export const VendorRepository = {
   async create(input: VendorInput, actor = 'system'): Promise<Result<Vendor>> {
     const code = normalizeCode(input.code);
     try {
-      // Duplicate check: either the mirror has this code (can't create — use update
-      // instead) or the overlay already has a live (non-tombstone) row.
+      // Duplicate check: either the imported baseline has this code (can't
+      // create — use update instead) or the overlay already has a live
+      // (non-tombstone) row.
       const collision = await prisma.$queryRawUnsafe<{ source: string | null }[]>(
         `SELECT
            CASE
-             WHEN m.code IS NOT NULL AND (o.source IS NULL OR o.source != 'tombstone') THEN 'mirror'
+             WHEN v.code IS NOT NULL AND (o.source IS NULL OR o.source != 'tombstone') THEN 'baseline'
              WHEN o.code IS NOT NULL AND o.source IN ('native', 'override') THEN 'overlay'
              ELSE NULL
            END AS source
          FROM (SELECT $1::text AS code) c
-         LEFT JOIN rics_mirror.vendor_master m ON m.code = c.code
+         LEFT JOIN app.vendor v ON v.code = c.code
          LEFT JOIN app.vendor_overlay o ON o.code = c.code
          LIMIT 1`,
         code,
@@ -403,32 +407,32 @@ export const VendorRepository = {
   ): Promise<Result<Vendor>> {
     const normalized = normalizeCode(code);
     try {
-      // Figure out whether this is a mirror row (→ override), an existing native
-      // row (→ update in place), or missing (→ NotFound).
+      // Figure out whether this is an imported baseline row (→ override), an
+      // existing native row (→ update in place), or missing (→ NotFound).
       const status = await prisma.$queryRawUnsafe<
-        { has_mirror: boolean; overlay_source: string | null }[]
+        { has_baseline: boolean; overlay_source: string | null }[]
       >(
         `SELECT
-           (m.code IS NOT NULL) AS has_mirror,
+           (v.code IS NOT NULL) AS has_baseline,
            o.source AS overlay_source
          FROM (SELECT $1::text AS code) c
-         LEFT JOIN rics_mirror.vendor_master m ON m.code = c.code
+         LEFT JOIN app.vendor v ON v.code = c.code
          LEFT JOIN app.vendor_overlay o ON o.code = c.code`,
         normalized,
       );
-      const row = status[0] ?? { has_mirror: false, overlay_source: null };
+      const row = status[0] ?? { has_baseline: false, overlay_source: null };
 
-      if (row.overlay_source === 'tombstone' || (!row.has_mirror && row.overlay_source == null)) {
+      if (row.overlay_source === 'tombstone' || (!row.has_baseline && row.overlay_source == null)) {
         return Err({ kind: 'NotFound', message: `Vendor '${normalized}' not found.` });
       }
 
-      // Target source: native stays native; override/(missing over mirror) → override.
+      // Target source: native stays native; override/(missing over baseline) → override.
       const nextSource =
         row.overlay_source === 'native' ? 'native' : 'override';
 
       // Build the overlay payload. Only provided fields are written; unspecified
       // fields keep their existing value if the overlay row already exists, or
-      // remain NULL so the mirror shows through (for 'override' rows).
+      // remain NULL so the imported baseline shows through (for 'override' rows).
       const payload: Record<string, unknown> = { updatedBy: actor };
       if (patch.name !== undefined) payload.shortName = patch.name;
       if (patch.mailName !== undefined) payload.mailName = patch.mailName;
@@ -453,7 +457,7 @@ export const VendorRepository = {
 
       if (row.overlay_source == null) {
         // No overlay row yet — insert a fresh override (or native if the code
-        // was never in the mirror, which the guard above already ruled out).
+        // was never in the baseline, which the guard above already ruled out).
         await prisma.vendorOverlay.create({
           data: {
             code: normalized,
@@ -479,19 +483,19 @@ export const VendorRepository = {
     const normalized = normalizeCode(code);
     try {
       const status = await prisma.$queryRawUnsafe<
-        { has_mirror: boolean; overlay_source: string | null }[]
+        { has_baseline: boolean; overlay_source: string | null }[]
       >(
         `SELECT
-           (m.code IS NOT NULL) AS has_mirror,
+           (v.code IS NOT NULL) AS has_baseline,
            o.source AS overlay_source
          FROM (SELECT $1::text AS code) c
-         LEFT JOIN rics_mirror.vendor_master m ON m.code = c.code
+         LEFT JOIN app.vendor v ON v.code = c.code
          LEFT JOIN app.vendor_overlay o ON o.code = c.code`,
         normalized,
       );
-      const row = status[0] ?? { has_mirror: false, overlay_source: null };
+      const row = status[0] ?? { has_baseline: false, overlay_source: null };
 
-      if (row.overlay_source === 'tombstone' || (!row.has_mirror && row.overlay_source == null)) {
+      if (row.overlay_source === 'tombstone' || (!row.has_baseline && row.overlay_source == null)) {
         return Err({ kind: 'NotFound', message: `Vendor '${normalized}' not found.` });
       }
 
@@ -500,7 +504,7 @@ export const VendorRepository = {
         return Ok(undefined);
       }
 
-      // has_mirror = true here (either overlay=null+mirror, or overlay='override'+mirror)
+      // has_baseline = true here (either overlay=null+baseline, or overlay='override'+baseline)
       if (row.overlay_source == null) {
         await prisma.vendorOverlay.create({
           data: {
@@ -523,16 +527,20 @@ export const VendorRepository = {
   },
 
   // ────────────── Per-store accounts ──────────────
-  // Store-account reads hit rics_mirror.vendor_accounts only. Writes still disabled
+  // Store-account reads hit app.vendor_store_account only. Writes still disabled
   // pending a separate app.vendor_store_account_overlay design.
 
   async findStoreAccounts(code: string): Promise<Result<VendorStoreAccount[]>> {
     try {
       const rows = await prisma.$queryRawUnsafe<VendorAccountDbRow[]>(
-        `SELECT code, store, account, date_last_changed
-         FROM rics_mirror.vendor_accounts
-         WHERE UPPER(code) = $1
-         ORDER BY store`,
+        `SELECT
+           vendor_code AS code,
+           store_id AS store,
+           account,
+           date_last_changed
+         FROM app.vendor_store_account
+         WHERE UPPER(vendor_code) = $1
+         ORDER BY store_id`,
         normalizeCode(code),
       );
       return Ok(rows.map(mapAccount));
@@ -563,17 +571,12 @@ export const VendorRepository = {
     });
   },
 
-  // ────────────── SKU usage (against rics_mirror.inventory_master) ──────────────
+  // ────────────── SKU usage (against app.sku effective values) ──────────────
 
   async countSkusUsingVendor(code: string): Promise<Result<number>> {
     try {
-      const rows = await prisma.$queryRawUnsafe<{ n: bigint }[]>(
-        `SELECT COUNT(*)::bigint AS n
-         FROM rics_mirror.inventory_master
-         WHERE UPPER(vendor) = $1`,
-        normalizeCode(code),
-      );
-      return Ok(Number(rows[0]?.n ?? 0n));
+      const counts = await loadSkuCountsByVendor();
+      return Ok(counts.get(normalizeCode(code)) ?? 0);
     } catch (err) {
       return Err(toPgError(err));
     }
@@ -581,17 +584,10 @@ export const VendorRepository = {
 
   async countSkusPerVendor(): Promise<Result<Record<string, number>>> {
     try {
-      const rows = await prisma.$queryRawUnsafe<{ vendor: string | null; n: bigint }[]>(
-        `SELECT vendor, COUNT(*)::bigint AS n
-         FROM rics_mirror.inventory_master
-         WHERE vendor IS NOT NULL AND vendor <> ''
-         GROUP BY vendor`,
-      );
       const out: Record<string, number> = {};
-      for (const r of rows) {
-        const key = normalizeCode(r.vendor ?? '');
-        if (!key) continue;
-        out[key] = Number(r.n ?? 0n);
+      const counts = await loadSkuCountsByVendor();
+      for (const [key, value] of counts) {
+        out[key] = value;
       }
       return Ok(out);
     } catch (err) {

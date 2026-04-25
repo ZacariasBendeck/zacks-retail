@@ -1,27 +1,24 @@
 /**
- * Department repository — RIDEPT.MDB / `Departments`.
+ * Department repository — `app.taxonomy_department` in Postgres.
  *
- * Schema (from docs/rics-db-schema.md):
- *   Number SMALLINT | Desc WCHAR | BegCateg SMALLINT | EndCateg SMALLINT | DateLastChanged DATE
+ * Schema (per RICS p. 144, preserved through the Postgres migration):
+ *   number SMALLINT (PK, 1..99) | desc TEXT | beg_categ SMALLINT |
+ *   end_categ SMALLINT | date_last_changed TIMESTAMP
  *
- * RICS p. 144 — departments are 1..99, hold a Description (up to 16 chars per
- * manual), and point at a contiguous [BegCateg, EndCateg] category range.
- * They have no foreign-key column on Category/InventoryMaster; instead each
- * Category falls under whichever Department contains its number in
- * [BegCateg, EndCateg]. Range overlap is not enforced by RICS, but breaks
- * reporting — we guard on write here and expose it as a ConstraintViolation.
+ * RICS has no FK from Category to Department — the link is implicit through
+ * the range `beg_categ <= category.number <= end_categ`. We preserve that
+ * shape so every downstream report keeps its existing query working.
  *
- * All reads use `executeQuery`; all writes use `executeNonQuery`, both with
- * parameterized AccessParam — no value is ever inlined into SQL.
+ * Reads and writes go to Postgres; the 2026-04 MDB-read-only rule prohibits
+ * touching RIDEPT.MDB from here. SKU counts are aggregated from the app-owned
+ * effective SKU surface via `taxonomySkuCounts.ts`, which returns 0 until
+ * `app.sku` is backfilled.
  */
 
-import {
-  executeQuery,
-  executeNonQuery,
-  type AccessParam,
-} from '../../services/accessOleDb';
+import { prisma } from '../../db/prisma';
 import { Err, Ok, type Result, type RepoError } from './repoResult';
-import { openRicsDb, RicsDb, toRepoError, trimString, coerceNumber } from './ricsAccess';
+import { isUniqueViolation, duplicatePrimaryKey, isRecordNotFound, notFound } from './prismaErrors';
+import { loadSkuCountsByCategory } from './taxonomySkuCounts';
 
 export interface Department {
   number: number;
@@ -40,60 +37,22 @@ export interface DepartmentInput {
 }
 
 interface DepartmentRow {
-  Number: number;
-  Desc: string | null;
-  BegCateg: number | null;
-  EndCateg: number | null;
-  DateLastChanged: string | null;
-}
-
-function parseAccessDate(value: string | null): Date | null {
-  if (!value) return null;
-  // RICS OLE DB JSON returns `/Date(1574831110000)/` strings.
-  const m = typeof value === 'string' ? value.match(/\/Date\((-?\d+)\)\//) : null;
-  if (m) return new Date(Number(m[1]));
-  const parsed = new Date(value as unknown as string);
-  return Number.isNaN(parsed.getTime()) ? null : parsed;
+  number: number;
+  description: string;
+  begCateg: number;
+  endCateg: number;
+  dateLastChanged: Date;
 }
 
 function mapRow(row: DepartmentRow): Department {
   return {
-    number: Number(row.Number),
-    description: trimString(row.Desc) ?? '',
-    begCateg: coerceNumber(row.BegCateg) ?? 0,
-    endCateg: coerceNumber(row.EndCateg) ?? 0,
-    dateLastChanged: parseAccessDate(row.DateLastChanged),
+    number: row.number,
+    description: row.description,
+    begCateg: row.begCateg,
+    endCateg: row.endCateg,
+    dateLastChanged: row.dateLastChanged,
     skuCount: 0,
   };
-}
-
-/**
- * Returns a map of category → SKU count from the live InventoryMaster.
- * Used to derive per-Department totals by summing counts for every Category
- * whose number falls inside a Department's [BegCateg, EndCateg] range.
- * Errors are swallowed so a transient Access failure collapses counts to 0
- * rather than hiding the whole departments list.
- */
-async function loadSkuCountsByCategory(): Promise<Map<number, number>> {
-  const out = new Map<number, number>();
-  try {
-    const { path, password } = openRicsDb(RicsDb.InventoryMaster);
-    const rows = await executeQuery<{ Category: number | null; N: number }>(
-      path,
-      password,
-      `SELECT [Category], COUNT(*) AS N FROM [InventoryMaster]
-         WHERE [Category] IS NOT NULL
-         GROUP BY [Category]`,
-    );
-    for (const r of rows) {
-      const cat = coerceNumber(r.Category);
-      if (cat == null) continue;
-      out.set(cat, Number(r.N ?? 0));
-    }
-  } catch {
-    // leave counts at 0
-  }
-  return out;
 }
 
 function applySkuCounts(departments: Department[], counts: Map<number, number>): Department[] {
@@ -131,39 +90,16 @@ function validateInput(input: DepartmentInput): RepoError | null {
 
 export const DepartmentRepository = {
   async list(): Promise<Result<Department[]>> {
-    try {
-      const { path, password } = openRicsDb(RicsDb.Departments);
-      const rows = await executeQuery<DepartmentRow>(
-        path,
-        password,
-        'SELECT [Number], [Desc], [BegCateg], [EndCateg], [DateLastChanged] FROM [Departments] ORDER BY [Number]',
-      );
-      const mapped = rows.map(mapRow);
-      const counts = await loadSkuCountsByCategory();
-      return Ok(applySkuCounts(mapped, counts));
-    } catch (err) {
-      return Err(toRepoError(err));
-    }
+    const rows = await prisma.taxonomyDepartment.findMany({ orderBy: { number: 'asc' } });
+    const counts = await loadSkuCountsByCategory();
+    return Ok(applySkuCounts(rows.map(mapRow), counts));
   },
 
   async getByNumber(number: number): Promise<Result<Department>> {
-    try {
-      const { path, password } = openRicsDb(RicsDb.Departments);
-      const params: AccessParam[] = [{ value: number, type: 'integer' }];
-      const rows = await executeQuery<DepartmentRow>(
-        path,
-        password,
-        'SELECT [Number], [Desc], [BegCateg], [EndCateg], [DateLastChanged] FROM [Departments] WHERE [Number] = ?',
-        params,
-      );
-      if (rows.length === 0) {
-        return Err({ kind: 'NotFound', message: `Department ${number} not found.` });
-      }
-      const [enriched] = applySkuCounts([mapRow(rows[0])], await loadSkuCountsByCategory());
-      return Ok(enriched);
-    } catch (err) {
-      return Err(toRepoError(err));
-    }
+    const row = await prisma.taxonomyDepartment.findUnique({ where: { number } });
+    if (row == null) return Err(notFound(`Department ${number} not found.`));
+    const [enriched] = applySkuCounts([mapRow(row)], await loadSkuCountsByCategory());
+    return Ok(enriched);
   },
 
   async create(input: DepartmentInput): Promise<Result<Department>> {
@@ -171,37 +107,21 @@ export const DepartmentRepository = {
     if (validationErr) return Err(validationErr);
 
     try {
-      const { path, password } = openRicsDb(RicsDb.Departments);
-
-      // Explicit uniqueness check — `Number` isn't a declared PK in the MDB,
-      // so we can't rely on a constraint violation to surface a collision.
-      const existing = await executeQuery<{ n: number }>(
-        path,
-        password,
-        'SELECT COUNT(*) AS n FROM [Departments] WHERE [Number] = ?',
-        [{ value: input.number, type: 'integer' }],
-      );
-      if ((existing[0]?.n ?? 0) > 0) {
-        return Err({ kind: 'DuplicatePrimaryKey', message: `Department ${input.number} already exists.` });
-      }
-
-      const params: AccessParam[] = [
-        { value: input.number, type: 'integer' },
-        { value: input.description.trim(), type: 'string' },
-        { value: input.begCateg, type: 'integer' },
-        { value: input.endCateg, type: 'integer' },
-        { value: new Date(), type: 'date' },
-      ];
-      await executeNonQuery(
-        path,
-        password,
-        'INSERT INTO [Departments] ([Number], [Desc], [BegCateg], [EndCateg], [DateLastChanged]) VALUES (?, ?, ?, ?, ?)',
-        params,
-      );
-      return this.getByNumber(input.number);
+      await prisma.taxonomyDepartment.create({
+        data: {
+          number: input.number,
+          description: input.description.trim(),
+          begCateg: input.begCateg,
+          endCateg: input.endCateg,
+        },
+      });
     } catch (err) {
-      return Err(toRepoError(err));
+      if (isUniqueViolation(err)) {
+        return Err(duplicatePrimaryKey(`Department ${input.number} already exists.`));
+      }
+      throw err;
     }
+    return this.getByNumber(input.number);
   },
 
   async update(number: number, patch: Partial<Omit<DepartmentInput, 'number'>>): Promise<Result<Department>> {
@@ -218,79 +138,47 @@ export const DepartmentRepository = {
     if (validationErr) return Err(validationErr);
 
     try {
-      const { path, password } = openRicsDb(RicsDb.Departments);
-      const params: AccessParam[] = [
-        { value: merged.description.trim(), type: 'string' },
-        { value: merged.begCateg, type: 'integer' },
-        { value: merged.endCateg, type: 'integer' },
-        { value: new Date(), type: 'date' },
-        { value: number, type: 'integer' },
-      ];
-      await executeNonQuery(
-        path,
-        password,
-        'UPDATE [Departments] SET [Desc] = ?, [BegCateg] = ?, [EndCateg] = ?, [DateLastChanged] = ? WHERE [Number] = ?',
-        params,
-      );
-      // Jet's OLE DB driver occasionally returns 0 rowsAffected for UPDATEs
-      // that actually mutated a row (flaky under load). Re-read and let the
-      // caller observe the final state — the repo API's contract is "return
-      // the current row", so we don't need to synthesize a count here.
-      return this.getByNumber(number);
+      await prisma.taxonomyDepartment.update({
+        where: { number },
+        data: {
+          description: merged.description.trim(),
+          begCateg: merged.begCateg,
+          endCateg: merged.endCateg,
+        },
+      });
     } catch (err) {
-      return Err(toRepoError(err));
+      if (isRecordNotFound(err)) return Err(notFound(`Department ${number} not found.`));
+      throw err;
     }
+    return this.getByNumber(number);
   },
 
   /**
    * Find the Department that owns a given Category number via the range-based
-   * lookup (BegCateg <= category <= EndCateg). RICS p. 145 — each Category
-   * belongs to exactly one Department (no FK; ranges are non-overlapping by
-   * admin discipline). Returns NotFound if no Department covers the Category
-   * — this is a reporting gap and should be surfaced to the merchandiser.
+   * lookup (begCateg <= category <= endCateg). Returns NotFound if no
+   * Department covers the Category — this is a reporting gap and should be
+   * surfaced to the merchandiser, not silently hidden.
    */
   async findByCategory(category: number): Promise<Result<Department>> {
-    try {
-      const { path, password } = openRicsDb(RicsDb.Departments);
-      const rows = await executeQuery<DepartmentRow>(
-        path,
-        password,
-        `SELECT [Number], [Desc], [BegCateg], [EndCateg], [DateLastChanged]
-           FROM [Departments]
-           WHERE [BegCateg] <= ? AND [EndCateg] >= ?
-           ORDER BY [Number]`,
-        [
-          { value: category, type: 'integer' },
-          { value: category, type: 'integer' },
-        ],
+    const row = await prisma.taxonomyDepartment.findFirst({
+      where: { begCateg: { lte: category }, endCateg: { gte: category } },
+      orderBy: { number: 'asc' },
+    });
+    if (row == null) {
+      return Err(
+        notFound(`No Department covers Category ${category}. Check BegCateg..EndCateg ranges.`),
       );
-      if (rows.length === 0) {
-        return Err({
-          kind: 'NotFound',
-          message: `No Department covers Category ${category}. Check BegCateg..EndCateg ranges.`,
-        });
-      }
-      return Ok(mapRow(rows[0]));
-    } catch (err) {
-      return Err(toRepoError(err));
     }
+    return Ok(mapRow(row));
   },
 
   async delete(number: number): Promise<Result<void>> {
     try {
-      const { path, password } = openRicsDb(RicsDb.Departments);
-      const rows = await executeNonQuery(
-        path,
-        password,
-        'DELETE FROM [Departments] WHERE [Number] = ?',
-        [{ value: number, type: 'integer' }],
-      );
-      if (rows === 0) {
-        return Err({ kind: 'NotFound', message: `Department ${number} not found.` });
-      }
-      return Ok(undefined);
+      await prisma.taxonomyDepartment.delete({ where: { number } });
     } catch (err) {
-      return Err(toRepoError(err));
+      if (isRecordNotFound(err)) return Err(notFound(`Department ${number} not found.`));
+      throw err;
     }
+    return Ok(undefined);
   },
 };

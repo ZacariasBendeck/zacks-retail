@@ -20,8 +20,7 @@ import { SeasonRepository } from '../../repositories/rics/SeasonRepository';
 import { SectorRepository, type Sector } from '../../repositories/rics/SectorRepository';
 import { SizeTypeRepository } from '../../repositories/rics/SizeTypeRepository';
 import { Err, Ok, type Result } from '../../repositories/rics/repoResult';
-import { executeQuery } from '../accessOleDb';
-import { openRicsDb, RicsDb } from '../../repositories/rics/ricsAccess';
+import { totalSkuCount } from '../../repositories/rics/taxonomySkuCounts';
 
 /**
  * Resolved Category→Department→Sector chain for a given Category number.
@@ -55,21 +54,12 @@ async function resolveForCategory(category: number): Promise<Result<TaxonomyReso
 
 /**
  * System-wide SKU total (denominator for the per-taxonomy coverage footer).
- * Matches the counting convention of the per-taxonomy GROUP BY helpers:
- * no status filter, so discontinued SKUs are included. Errors collapse to 0.
+ * Reads from `rics_mirror.inventory_master` via the shared helper so the
+ * count matches the per-taxonomy GROUP BYs and the whole taxonomy UI is MDB-
+ * free. Returns 0 when the mirror has no rows (e.g. Render).
  */
 async function skuTotal(): Promise<{ total: number }> {
-  try {
-    const { path, password } = openRicsDb(RicsDb.InventoryMaster);
-    const rows = await executeQuery<{ N: number }>(
-      path,
-      password,
-      'SELECT COUNT(*) AS N FROM [InventoryMaster]',
-    );
-    return { total: Number(rows[0]?.N ?? 0) };
-  } catch {
-    return { total: 0 };
-  }
+  return { total: await totalSkuCount() };
 }
 
 export const taxonomyService = {

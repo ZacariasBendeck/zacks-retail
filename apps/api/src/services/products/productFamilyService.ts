@@ -1,20 +1,20 @@
 /**
  * Product Family service — catalog + Category → Family resolution.
  *
- * The 11 families live in `app.product_family`. Every row in `rics_mirror.categories`
- * is mapped to exactly one family via `app.category_product_family`. Reads join
- * `category_product_family` to `rics_mirror.categories` + `departments` so callers
- * get real Postgres taxonomy values (not the legacy SQLite mock).
+ * The 11 families live in `app.product_family`. Every category in
+ * `app.taxonomy_category` is mapped to exactly one family via
+ * `app.category_product_family`. Reads join `category_product_family` to
+ * `app.taxonomy_category` + `app.taxonomy_department` so newly-created
+ * categories appear immediately (no `sync:rics` required).
  *
  * Used by:
  *   - /api/v1/products/families (catalog + category lookup)
+ *   - /api/v1/products/categories (SKU form's grouped category dropdown)
  *   - imageAnalysisService (inject real categories per family into the AI prompt)
- *   - future: SkuFormPage category dropdown (Phase 4 — frontend refactor)
  *
- * Raw SQL via pg.Pool to match the other rics_mirror consumers (SkuRepository,
- * sync-rics, etc.) and to avoid requiring `prisma generate` after every schema
- * change — the rics_mirror tables are recreated by sync:rics on their own
- * schedule, not via Prisma migrations.
+ * Raw SQL via pg.Pool because this service predates the Prisma models for
+ * these tables and rewiring to Prisma would be a larger refactor than this
+ * cutover needs. Contract stays identical (CategoryWithDept rows).
  */
 
 import { Pool } from 'pg';
@@ -117,8 +117,8 @@ export async function getCategoriesForFamily(familyCode: string): Promise<Catego
       d."desc"           AS department_desc,
       cpf.family_code
     FROM app.category_product_family cpf
-    JOIN rics_mirror.categories c ON c.number = cpf.category_number
-    LEFT JOIN rics_mirror.departments d ON c.number BETWEEN d.beg_categ AND d.end_categ
+    JOIN app.taxonomy_category c ON c.number = cpf.category_number
+    LEFT JOIN app.taxonomy_department d ON c.number BETWEEN d.beg_categ AND d.end_categ
     WHERE cpf.family_code = $1
     ORDER BY d.number NULLS LAST, cpf.category_number
     `,
@@ -217,8 +217,9 @@ export async function replaceFamilyCategories(
          FROM app.sku_attribute_assignment a
          JOIN app.attribute_family_rule r
            ON r.dimension_id = a.dimension_id AND r.family_code = $1 AND r.enabled = true
-         JOIN rics_mirror.inventory_master im ON im.sku = a.sku_code
-         WHERE im.category = ANY($2::int[])`,
+         JOIN app.sku s ON s.code = a.sku_code
+         LEFT JOIN app.sku_attribute_override o ON o.rics_sku_code = s.code
+         WHERE COALESCE(o.category, s.category_number) = ANY($2::int[])`,
         code,
         removeIds,
       );
@@ -294,8 +295,8 @@ export async function resolveCategory(categoryNumber: number): Promise<Departmen
       d."desc"            AS department_desc,
       cpf.family_code     AS family_code,
       pf.label_es         AS family_label_es
-    FROM rics_mirror.categories c
-    LEFT JOIN rics_mirror.departments d ON c.number BETWEEN d.beg_categ AND d.end_categ
+    FROM app.taxonomy_category c
+    LEFT JOIN app.taxonomy_department d ON c.number BETWEEN d.beg_categ AND d.end_categ
     LEFT JOIN app.category_product_family cpf ON cpf.category_number = c.number
     LEFT JOIN app.product_family pf ON pf.code = cpf.family_code
     WHERE c.number = $1
@@ -339,8 +340,8 @@ export async function listAllCategoriesWithFamily(): Promise<CategoryWithDept[]>
       d.number             AS department_number,
       d."desc"             AS department_desc,
       cpf.family_code
-    FROM rics_mirror.categories c
-    LEFT JOIN rics_mirror.departments d ON c.number BETWEEN d.beg_categ AND d.end_categ
+    FROM app.taxonomy_category c
+    LEFT JOIN app.taxonomy_department d ON c.number BETWEEN d.beg_categ AND d.end_categ
     LEFT JOIN app.category_product_family cpf ON cpf.category_number = c.number
     LEFT JOIN app.product_family pf ON pf.code = cpf.family_code
     ORDER BY pf.sort_order NULLS LAST, d.number NULLS LAST, c.number
