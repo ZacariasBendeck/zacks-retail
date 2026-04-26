@@ -45,6 +45,7 @@ export default function SaveSnapshotButton({
   reportType,
   getParamsJson,
   getResultJson,
+  getDescriptor,
   sourceTemplateId,
   disabled,
 }: Props) {
@@ -58,7 +59,8 @@ export default function SaveSnapshotButton({
   // placeholder AND used as the submit-time fallback when the field is blank.
   const autoTitle = useMemo(() => {
     if (!open) return ''
-    return defaultSnapshotTitle(reportType)
+    const descriptor = getDescriptor?.()
+    return defaultSnapshotTitle(reportType, descriptor)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, reportType])
 
@@ -70,7 +72,15 @@ export default function SaveSnapshotButton({
   }, [open, form])
 
   const handleOk = async () => {
-    const vals = await form.validateFields()
+    // Validation has its own outcome: antd shows inline errors itself, and a
+    // rejection here means the operator hasn't fixed them yet. Keep the modal
+    // open without a toast — the inline messages are already visible feedback.
+    let vals: FormValues
+    try {
+      vals = await form.validateFields()
+    } catch {
+      return
+    }
     try {
       const result = getResultJson()
       if (result === undefined || result === null) {
@@ -92,7 +102,14 @@ export default function SaveSnapshotButton({
       message.success(`Snapshot "${effectiveTitle}" saved`)
       setOpen(false)
     } catch (e) {
-      message.error((e as Error).message)
+      // Always log — operators sometimes miss a brief toast and we want the
+      // stack/payload context in DevTools when they share a screenshot.
+      // eslint-disable-next-line no-console
+      console.error('[SaveSnapshotButton] save failed', e)
+      const detail =
+        (e as Error)?.message ||
+        (typeof e === 'string' ? e : 'see browser console for details')
+      message.error(`Save snapshot failed: ${detail}`)
     }
   }
 

@@ -36,4 +36,15 @@ describe('SizeGrid', () => {
     // Not rendered today — this just confirms the optional field is accepted.
     expect(screen.getByRole('columnheader', { name: '6' })).toBeInTheDocument();
   });
+
+  it('can render null cells as blanks for summary-style grids', () => {
+    render(
+      <SizeGrid
+        grid={{ columns: ['6'], rows: [{ label: 'On Hand', cells: [{ value: null }] }] }}
+        nullDisplay=""
+      />
+    );
+    const row = screen.getByRole('row', { name: /On Hand/ });
+    expect(within(row).getByRole('cell')).toHaveTextContent('');
+  });
 });

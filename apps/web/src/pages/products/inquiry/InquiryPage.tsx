@@ -38,8 +38,10 @@ export const InquiryPage: React.FC = () => {
   const [params, setParams] = useSearchParams();
   const navigate = useNavigate();
   const storeIdRaw = params.get('storeId');
+  const rowRaw = params.get('row');
   const parsedStoreId = storeIdRaw ? Number(storeIdRaw) : undefined;
   const storeId = parsedStoreId != null && Number.isFinite(parsedStoreId) ? parsedStoreId : undefined;
+  const selectedRow = rowRaw?.trim() || null;
   const modeRaw = (params.get('mode') ?? 'ALL_STORES_SUMMARY').toUpperCase() as ViewMode;
   const mode = VIEW_MODES.has(modeRaw) ? modeRaw : 'ALL_STORES_SUMMARY';
   const tabRaw = (params.get('tab') ?? '').toUpperCase() as InquiryTab;
@@ -66,6 +68,7 @@ export const InquiryPage: React.FC = () => {
     <InquiryBody
       skuCode={skuCode}
       storeId={storeId}
+      selectedRow={selectedRow}
       mode={mode}
       activeTab={activeTab}
       scope={scope}
@@ -82,6 +85,11 @@ export const InquiryPage: React.FC = () => {
       onScopeChange={(nextScope) =>
         updateParams((next) => {
           next.set('scope', nextScope);
+        })}
+      onSelectedRowChange={(nextRow) =>
+        updateParams((next) => {
+          if (nextRow && nextRow.trim()) next.set('row', nextRow.trim());
+          else next.delete('row');
         })}
     />
   );

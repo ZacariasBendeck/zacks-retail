@@ -147,6 +147,7 @@ const menuItems = [
     icon: <FileTextOutlined />,
     label: 'Reports',
     children: [
+      { key: '/reports/aging', icon: <ClockCircleOutlined />, label: 'Aging' },
       { key: '/reports/inventory-detail', icon: <InboxOutlined />, label: 'Inventory Detail' },
       { key: '/reports/transfer-summary', icon: <SwapOutlined />, label: 'Transfer Summary' },
       { key: '/reports/recommended-transfers', icon: <FundOutlined />, label: 'Recommended Transfers' },
@@ -158,7 +159,6 @@ const menuItems = [
       { key: '/reports/on-hand', icon: <FileTextOutlined />, label: <DemotedLabel>On-Hand</DemotedLabel> },
       { key: '/reports/turnover', icon: <SyncOutlined />, label: <DemotedLabel>Turnover</DemotedLabel> },
       { key: '/reports/sell-through', icon: <FundOutlined />, label: <DemotedLabel>Sell-Through</DemotedLabel> },
-      { key: '/reports/aging', icon: <ClockCircleOutlined />, label: <DemotedLabel>Aging</DemotedLabel> },
     ],
   },
   {

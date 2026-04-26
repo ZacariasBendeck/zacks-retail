@@ -4,9 +4,10 @@
  * Reads on-hand stock from `app.stock_level`, joins it to `app.sku` for
  * catalog metadata, and pulls the most recent receiving date from
  * `app.purchase_order_legacy` (per-SKU MAX of `last_received_at` across all
- * receiving lines). The report can be sliced by four dimensions — department,
- * sector, vendor, buyer — and filtered to a subset of stores. Bucket
- * boundaries come from one of three operator-selectable presets.
+ * receiving lines). The report can be sliced by five dimensions — department,
+ * sector, vendor, buyer, store — with multi-select criteria filters on
+ * stores, sectors, departments, and buyers. Bucket boundaries come from one
+ * of three operator-selectable presets.
  *
  * SKUs that have no recorded receiving event fall back to `app.sku.created_at`
  * for the aging clock, matching the legacy semantics so a freshly imported
@@ -23,11 +24,12 @@ export interface AgingBucketSummary {
 }
 
 /**
- * One row per group key (department / sector / vendor / buyer label) in the
- * top-level summary. The `groupKey` is what the front end passes back as
- * the drill-down filter; `groupLabel` is what it shows in the UI. For the
- * department dimension the two are equal; for vendor they differ
- * (`groupKey` = `vendor.code`, `groupLabel` = `vendor.short_name`).
+ * One row per group key (department / sector / vendor / buyer label / store
+ * number) in the top-level summary. The `groupKey` is what the front end
+ * passes back as the drill-down filter; `groupLabel` is what it shows in the
+ * UI. For department/sector the two are equal; for vendor and store they
+ * differ (`groupKey` = `vendor.code` / `store_id`, `groupLabel` = the
+ * human-readable description).
  */
 export interface AgingGroupSummary {
   groupKey: string;
@@ -56,6 +58,8 @@ export interface AgingDetail {
   agingBucket: string;
   flagged: boolean;
   lastReceivedAt: string | null;
+  pictureFileName: string | null;
+  discountCode: string | null;
 }
 
 interface AgingDetailRow {
@@ -71,6 +75,8 @@ interface AgingDetailRow {
   cost_value: string | null;
   days_on_hand: string | number;
   last_received_at: Date | string | null;
+  picture_file_name: string | null;
+  discount_code: string | null;
 }
 
 interface GroupBucketRow {
@@ -93,12 +99,9 @@ interface GroupTotalsRow {
 }
 
 /**
- * The three bucket schemes the operator can pick from the page header. Every
- * label in `labels` is what shows in the column header AND what the API emits
- * on `agingBucket` for that row, so the front end can render with no extra
- * mapping. Threshold semantics: `[t1, t2, t3]` means buckets `0..t1`,
- * `t1+1..t2`, `t2+1..t3`, `t3+1+`. The "flagged" boundary is always the start
- * of the last bucket, i.e. `days > t3`.
+ * The three bucket schemes the operator can pick from the page header.
+ * Threshold semantics: `[t1, t2, t3]` means buckets `0..t1`, `t1+1..t2`,
+ * `t2+1..t3`, `t3+1+`. The "flagged" boundary is always the last bucket.
  */
 export const BUCKET_SCHEMES = {
   '30_60_90': {
@@ -119,7 +122,7 @@ export type BucketScheme = keyof typeof BUCKET_SCHEMES;
 
 export const DEFAULT_BUCKET_SCHEME: BucketScheme = '30_60_90';
 
-export type GroupBy = 'department' | 'sector' | 'vendor' | 'buyer';
+export type GroupBy = 'department' | 'sector' | 'vendor' | 'buyer' | 'store';
 
 export const DEFAULT_GROUP_BY: GroupBy = 'department';
 
@@ -143,11 +146,6 @@ function assignBucket(days: number, scheme?: BucketScheme): string {
   return labels[3];
 }
 
-/**
- * Build the SQL CASE expression that emits the same bucket label for the
- * chosen scheme that `assignBucket()` returns in TS. Inlined into the CTE so
- * one query produces the bucket and we never have to rebucket on the Node side.
- */
 function buildBucketCaseSql(scheme: BucketScheme): string {
   const { thresholds, labels } = BUCKET_SCHEMES[scheme];
   return `
@@ -161,13 +159,17 @@ function buildBucketCaseSql(scheme: BucketScheme): string {
 }
 
 /**
- * Returns the SQL expressions for grouping by the chosen dimension. Each
- * returns `(groupKey, groupLabel)` — `groupKey` is the join/filter value
+ * SQL expressions for grouping by the chosen dimension. Each returns
+ * `(groupKey, groupLabel)` — `groupKey` is the join/filter value
  * round-tripped through the API; `groupLabel` is what renders in the UI.
  *
  * Buyer is taken off the most-recently-receiving PO; that column is currently
- * always NULL in the imported data so buyer groupings will render a single
+ * always NULL in the imported data so buyer groupings render a single
  * `Unmapped` bucket until the legacy backfill populates it.
+ *
+ * Store relies on `oh.store_id` being present in the rows CTE — i.e. the
+ * `on_hand` aggregate must keep `store_id` rather than rolling it up. See
+ * `buildBaseCtes` for that branch.
  */
 function buildGroupExpr(groupBy: GroupBy): { keyExpr: string; labelExpr: string } {
   switch (groupBy) {
@@ -186,6 +188,11 @@ function buildGroupExpr(groupBy: GroupBy): { keyExpr: string; labelExpr: string 
         keyExpr: `COALESCE(NULLIF(buyer_pol.buyer, ''), '${UNMAPPED_LABEL}')`,
         labelExpr: `COALESCE(NULLIF(buyer_pol.buyer, ''), '${UNMAPPED_LABEL}')`,
       };
+    case 'store':
+      return {
+        keyExpr: `oh.store_id::text`,
+        labelExpr: `COALESCE(sm."desc", oh.store_id::text)`,
+      };
     case 'department':
     default:
       return {
@@ -196,9 +203,7 @@ function buildGroupExpr(groupBy: GroupBy): { keyExpr: string; labelExpr: string 
 }
 
 /**
- * Build the JOIN clauses needed for a given groupBy dimension. department
- * needs `td`, sector needs `td` + `sec`, vendor needs `v`, buyer needs the
- * most-recent-buyer subquery `buyer_pol`. department always present so the
+ * Joins required for a given dimension. department always joined so the
  * detail rows can show the dept column even when grouped by something else.
  */
 function buildExtraJoins(groupBy: GroupBy): string {
@@ -218,19 +223,44 @@ function buildExtraJoins(groupBy: GroupBy): string {
   if (groupBy === 'buyer') {
     joins.push(`LEFT JOIN buyer_pol ON buyer_pol.sku_id = s.id`);
   }
+  if (groupBy === 'store') {
+    joins.push(`LEFT JOIN app.store_master sm ON sm.number = oh.store_id`);
+  }
   return joins.join('\n');
 }
 
 /**
- * Build the `on_hand`, `last_recv`, and (optionally) `buyer_pol` CTEs. Stock
- * filters live in `on_hand` so the aggregate is store-aware before any joins.
+ * Build the `on_hand`, `last_recv`, and (optionally) `buyer_pol` CTEs. When
+ * grouping by store we keep `store_id` on the `on_hand` aggregate so each
+ * store contributes a separate group; for every other dimension on_hand is
+ * rolled up across stores (the row carries the SKU's total on-hand units).
  */
-function buildBaseCtes(stores: number[] | undefined, includeBuyerCte: boolean, storesParamIdx: number | null): string {
+function buildBaseCtes(
+  stores: number[] | undefined,
+  groupBy: GroupBy,
+  storesParamIdx: number | null,
+): string {
   const onHandWhere = stores && stores.length > 0
     ? `WHERE on_hand > 0 AND store_id = ANY($${storesParamIdx}::int[])`
     : `WHERE on_hand > 0`;
 
-  const buyerCte = includeBuyerCte
+  const onHandCte = groupBy === 'store'
+    ? `
+      on_hand AS (
+        SELECT sku_id, store_id, SUM(on_hand)::bigint AS qty
+        FROM app.stock_level
+        ${onHandWhere}
+        GROUP BY sku_id, store_id
+      )`
+    : `
+      on_hand AS (
+        SELECT sku_id, SUM(on_hand)::bigint AS qty
+        FROM app.stock_level
+        ${onHandWhere}
+        GROUP BY sku_id
+      )`;
+
+  const buyerCte = groupBy === 'buyer'
     ? `,
     buyer_pol AS (
       SELECT DISTINCT ON (pol.sku_id)
@@ -244,12 +274,7 @@ function buildBaseCtes(stores: number[] | undefined, includeBuyerCte: boolean, s
     : '';
 
   return `
-    WITH on_hand AS (
-      SELECT sku_id, SUM(on_hand)::bigint AS qty
-      FROM app.stock_level
-      ${onHandWhere}
-      GROUP BY sku_id
-    ),
+    WITH ${onHandCte},
     last_recv AS (
       SELECT pol.sku_id, MAX(po.last_received_at) AS last_received_at
       FROM app.purchase_order_legacy_line pol
@@ -260,17 +285,76 @@ function buildBaseCtes(stores: number[] | undefined, includeBuyerCte: boolean, s
   `;
 }
 
+/**
+ * Apply the criteria multi-select filters. Each adds a SQL clause and binds
+ * the array as a single positional parameter. `td` and `sec` joins must be
+ * present (they are by default — see `buildExtraJoins`).
+ */
+interface CriteriaFilters {
+  buyers?: string[];
+  sectors?: number[];
+  departments?: number[];
+}
+
+function applyCriteriaFilters(
+  conditions: string[],
+  params: unknown[],
+  filters: CriteriaFilters,
+  groupBy: GroupBy,
+): void {
+  if (filters.departments && filters.departments.length > 0) {
+    params.push(filters.departments);
+    conditions.push(`td.number = ANY($${params.length}::int[])`);
+  }
+  if (filters.sectors && filters.sectors.length > 0) {
+    params.push(filters.sectors);
+    // Sector filter only meaningful when sector join is present. Force it on
+    // for non-sector groupings so the criteria still applies.
+    if (groupBy !== 'sector') {
+      conditions.push(`
+        td.number IN (
+          SELECT td2.number FROM app.taxonomy_department td2
+          JOIN app.taxonomy_sector sec2
+            ON td2.number BETWEEN sec2.beg_dept AND sec2.end_dept
+          WHERE sec2.number = ANY($${params.length}::int[])
+        )
+      `);
+    } else {
+      conditions.push(`sec.number = ANY($${params.length}::int[])`);
+    }
+  }
+  if (filters.buyers && filters.buyers.length > 0) {
+    params.push(filters.buyers);
+    // Buyer filter requires the buyer_pol CTE join. We force it on whenever
+    // the filter is provided.
+    if (groupBy !== 'buyer') {
+      conditions.push(`
+        s.id IN (
+          SELECT pol2.sku_id FROM app.purchase_order_legacy_line pol2
+          JOIN app.purchase_order_legacy po2 ON po2.po_number = pol2.po_number
+          WHERE pol2.sku_id IS NOT NULL
+            AND po2.buyer = ANY($${params.length}::text[])
+        )
+      `);
+    } else {
+      conditions.push(`buyer_pol.buyer = ANY($${params.length}::text[])`);
+    }
+  }
+}
+
 export interface AgingGroupOptions {
   groupBy?: GroupBy;
   stores?: number[];
+  buyers?: string[];
+  sectors?: number[];
+  departments?: number[];
   scheme?: BucketScheme;
 }
 
 /**
- * Top-level summary: one row per group key (department / sector / vendor /
- * buyer label) with the aging-bucket breakdown plus the flagged rollup. Two
- * round-trips to Postgres — one for the bucket grid, one for the per-group
- * totals — joined back together by group key in Node.
+ * Top-level summary: one row per group key. Two round-trips to Postgres —
+ * one for the bucket grid, one for the per-group totals — joined back
+ * together by group key in Node.
  */
 export async function getAgingByGroup(
   options: AgingGroupOptions = {},
@@ -291,8 +375,15 @@ export async function getAgingByGroup(
     storesParamIdx = params.length;
   }
 
-  const cte = buildBaseCtes(stores, groupBy === 'buyer', storesParamIdx);
+  const cte = buildBaseCtes(stores, groupBy, storesParamIdx);
 
+  const conditions = [`s.sku_state = 'ACTIVE'`];
+  applyCriteriaFilters(conditions, params, options, groupBy);
+  const where = conditions.join(' AND ');
+
+  // For the store grouping `rows` carries (sku, store) pairs; `qty` is the
+  // store-local on-hand. For every other grouping `rows` carries one entry
+  // per SKU with the rolled-up on-hand.
   const rowsCte = `
     ${cte},
     rows AS (
@@ -310,7 +401,7 @@ export async function getAgingByGroup(
       JOIN app.sku s ON s.id = oh.sku_id
       LEFT JOIN last_recv lr ON lr.sku_id = s.id
       ${extraJoins}
-      WHERE s.sku_state = 'ACTIVE'
+      WHERE ${where}
     )
   `;
 
@@ -390,7 +481,12 @@ export async function getAgingByGroup(
     });
   }
 
-  return groups.sort((a, b) => a.groupLabel.localeCompare(b.groupLabel));
+  // Default sort: total cost value descending, biggest first. Names tie-break
+  // alphabetically so two groups with the same value land in stable order.
+  return groups.sort((a, b) => {
+    if (b.totalCostValue !== a.totalCostValue) return b.totalCostValue - a.totalCostValue;
+    return a.groupLabel.localeCompare(b.groupLabel);
+  });
 }
 
 const DETAIL_SORT_MAP: Record<string, string> = {
@@ -402,9 +498,10 @@ const DETAIL_SORT_MAP: Record<string, string> = {
   quantityOnHand: 'quantity_on_hand',
   costValue: 'cost_value',
   daysOnHand: 'days_on_hand',
+  discountCode: 's.discount_code',
 };
 
-export interface AgingDetailFilters {
+export interface AgingDetailFilters extends CriteriaFilters {
   /** Group-key value the user drilled into. Interpreted by `groupBy`. */
   groupKey?: string;
   /** Department drill-down only — narrow further by category number. */
@@ -421,11 +518,8 @@ export interface AgingDetailPagination {
 }
 
 /**
- * Per-SKU aging detail rows, paginated. One row per active SKU with on-hand
- * stock anywhere in the chain. The query computes `days_on_hand` and the
- * bucket label server-side so the same Postgres expression that drives the
- * group summary also drives the drill-down — the two views stay consistent
- * without a second pass through Node.
+ * Per-SKU aging detail rows, paginated. Default sort is cost value
+ * descending so the most expensive aged stock surfaces at page one.
  */
 export async function getAgingDetails(
   filters: AgingDetailFilters = {},
@@ -435,7 +529,9 @@ export async function getAgingDetails(
 ): Promise<PaginationEnvelope<AgingDetail>> {
   const { thresholds } = BUCKET_SCHEMES[scheme];
   const flagThreshold = thresholds[2];
-  const sortCol = DETAIL_SORT_MAP[pagination.sort ?? 'daysOnHand'] ?? 'days_on_hand';
+  // Default to costValue desc — operators want the most expensive aged
+  // stock at the top of the list across every screen.
+  const sortCol = DETAIL_SORT_MAP[pagination.sort ?? 'costValue'] ?? 'cost_value';
   const sortDir = pagination.order === 'asc' ? 'ASC' : 'DESC';
 
   const params: unknown[] = [];
@@ -461,8 +557,10 @@ export async function getAgingDetails(
     conditions.push(`s.category_number = $${params.length}`);
   }
 
+  applyCriteriaFilters(conditions, params, filters, groupBy);
+
   const where = conditions.join(' AND ');
-  const cte = buildBaseCtes(filters.stores, groupBy === 'buyer', storesParamIdx);
+  const cte = buildBaseCtes(filters.stores, groupBy, storesParamIdx);
   const extraJoins = buildExtraJoins(groupBy);
 
   const fromAndWhere = `
@@ -507,7 +605,9 @@ export async function getAgingDetails(
         0
       ) AS days_on_hand,
       COALESCE(lr.last_received_at, s.created_at) AS last_received_at,
-      s.retail_price::float AS price_num
+      s.retail_price::float AS price_num,
+      s.picture_file_name,
+      s.discount_code
     ${fromAndWhere}
     ORDER BY ${sortCol} ${sortDir} NULLS LAST, s.code ASC
     LIMIT $${limitParamIdx} OFFSET $${offsetParamIdx}
@@ -539,6 +639,8 @@ export async function getAgingDetails(
       agingBucket: assignBucket(days, scheme),
       flagged: days > flagThreshold,
       lastReceivedAt: lastReceivedIso,
+      pictureFileName: r.picture_file_name,
+      discountCode: r.discount_code,
     };
   });
 
@@ -548,18 +650,54 @@ export async function getAgingDetails(
   };
 }
 
+export interface AgingDimensionsResult {
+  stores: { number: number; name: string | null }[];
+  chains: { code: string; label: string }[];
+  buyers: { code: string; label: string }[];
+  sectors: { number: number; name: string }[];
+  departments: { number: number; name: string }[];
+}
+
 /**
- * Stores currently holding any on-hand stock, joined to `app.store_master` for
- * the human-friendly description. Powers the "limit to stores" multi-select on
- * the report page.
+ * Populates the page-header criteria multi-selects: stores, chain codes
+ * (derived from the leading word of each store's description), buyers (from
+ * po_legacy.buyer — currently empty until the legacy backfill runs), sectors,
+ * and departments.
  */
-export async function getStoresWithStock(): Promise<{ number: number; name: string | null }[]> {
-  const rows = await prisma.$queryRawUnsafe<{ number: number; name: string | null }[]>(`
-    SELECT DISTINCT sm.number AS number, sm."desc" AS name
-    FROM app.stock_level sl
-    JOIN app.store_master sm ON sm.number = sl.store_id
-    WHERE sl.on_hand > 0
-    ORDER BY sm.number
-  `);
-  return rows;
+export async function getAgingDimensions(): Promise<AgingDimensionsResult> {
+  const [stores, chains, buyers, sectors, departments] = await Promise.all([
+    prisma.$queryRawUnsafe<{ number: number; name: string | null }[]>(`
+      SELECT DISTINCT sm.number AS number, sm."desc" AS name
+      FROM app.stock_level sl
+      JOIN app.store_master sm ON sm.number = sl.store_id
+      WHERE sl.on_hand > 0
+      ORDER BY sm.number
+    `),
+    prisma.$queryRawUnsafe<{ code: string; label: string }[]>(`
+      SELECT DISTINCT
+        SPLIT_PART(sm."desc", ' ', 1) AS code,
+        SPLIT_PART(sm."desc", ' ', 1) AS label
+      FROM app.store_master sm
+      WHERE sm."desc" IS NOT NULL AND sm."desc" <> ''
+      ORDER BY label
+    `),
+    prisma.$queryRawUnsafe<{ code: string; label: string }[]>(`
+      SELECT DISTINCT po.buyer AS code, po.buyer AS label
+      FROM app.purchase_order_legacy po
+      WHERE po.buyer IS NOT NULL AND po.buyer <> ''
+      ORDER BY label
+    `),
+    prisma.$queryRawUnsafe<{ number: number; name: string }[]>(`
+      SELECT number, "desc" AS name
+      FROM app.taxonomy_sector
+      ORDER BY number
+    `),
+    prisma.$queryRawUnsafe<{ number: number; name: string }[]>(`
+      SELECT number, "desc" AS name
+      FROM app.taxonomy_department
+      ORDER BY number
+    `),
+  ]);
+
+  return { stores, chains, buyers, sectors, departments };
 }

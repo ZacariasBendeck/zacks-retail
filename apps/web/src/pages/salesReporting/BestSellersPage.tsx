@@ -204,6 +204,23 @@ export default function BestSellersPage() {
                 combineStores,
               })}
               getResultJson={() => data}
+              getDescriptor={() => {
+                const parts: string[] = [
+                  `Top ${topN} ${DIMENSION_LABELS[dimension]}`,
+                  `by ${METRIC_LABELS[metric]}`,
+                  period,
+                ]
+                const stores = parseStores(storesText)
+                if (stores && stores.length) {
+                  parts.push(
+                    stores.length <= 3
+                      ? `stores ${stores.join(',')}`
+                      : `${stores.length} stores`,
+                  )
+                }
+                if (combineStores) parts.push('combined')
+                return parts.join(' · ')
+              }}
             />
           </>
         }

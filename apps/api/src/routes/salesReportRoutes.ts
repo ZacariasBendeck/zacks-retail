@@ -140,6 +140,7 @@ router.get('/by-day', validateQuery(byDaySchema), async (req: Request, res: Resp
             comparedNetSales: r.comparedNetSales,
             comparedProfit: r.comparedProfit,
             dollarChange: r.dollarChange,
+            profitChange: r.profitChange,
             pctChange: r.pctChange,
           });
         }
@@ -153,6 +154,7 @@ router.get('/by-day', validateQuery(byDaySchema), async (req: Request, res: Resp
           comparedNetSales: block.totals.comparedNetSales,
           comparedProfit: block.totals.comparedProfit,
           dollarChange: block.totals.dollarChange,
+          profitChange: block.totals.profitChange,
           pctChange: block.totals.pctChange,
         });
       }
@@ -172,6 +174,7 @@ router.get('/by-day', validateQuery(byDaySchema), async (req: Request, res: Resp
               { header: 'Compared Net Sales', key: 'comparedNetSales', width: 18, numFmt: XLSX_NUMFMT.money },
               { header: 'Compared Profit', key: 'comparedProfit', width: 16, numFmt: XLSX_NUMFMT.money },
               { header: '$ Change', key: 'dollarChange', width: 12, numFmt: XLSX_NUMFMT.money },
+              { header: 'Profit Change', key: 'profitChange', width: 14, numFmt: XLSX_NUMFMT.money },
               { header: '% Change', key: 'pctChange', width: 10, numFmt: XLSX_NUMFMT.percent1 },
             ],
             rows: xlsxRows,
@@ -181,7 +184,7 @@ router.get('/by-day', validateQuery(byDaySchema), async (req: Request, res: Resp
       return;
     }
     if (q.format === 'csv') {
-      const header = ['Store', 'Date', 'Day', 'Net Sales', 'Profit', 'Compared To Date', 'Compared Net Sales', 'Compared Profit', '$ Change', '% Change'];
+      const header = ['Store', 'Date', 'Day', 'Net Sales', 'Profit', 'Compared To Date', 'Compared Net Sales', 'Compared Profit', '$ Change', 'Profit Change', '% Change'];
       const rows: (string | number | null | undefined)[][] = [];
       for (const block of exportBlocks) {
         for (const r of block.rows) {
@@ -195,6 +198,7 @@ router.get('/by-day', validateQuery(byDaySchema), async (req: Request, res: Resp
             r.comparedNetSales.toFixed(2),
             r.comparedProfit.toFixed(2),
             r.dollarChange.toFixed(2),
+            r.profitChange.toFixed(2),
             r.pctChange == null ? '' : r.pctChange.toFixed(1),
           ]);
         }
@@ -206,6 +210,7 @@ router.get('/by-day', validateQuery(byDaySchema), async (req: Request, res: Resp
           block.totals.comparedNetSales.toFixed(2),
           block.totals.comparedProfit.toFixed(2),
           block.totals.dollarChange.toFixed(2),
+          block.totals.profitChange.toFixed(2),
           block.totals.pctChange == null ? '' : block.totals.pctChange.toFixed(1),
         ]);
       }

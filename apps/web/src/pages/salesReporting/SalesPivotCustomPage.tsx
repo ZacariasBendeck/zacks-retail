@@ -9,7 +9,7 @@ import type { PivotDimension, SalesPivotLeafRow } from '../../services/reportApi
 import { getErrorMessage } from '../../utils/errors'
 import RunReportControls from './RunReportControls'
 import DateRangeControl from '../../components/reports/DateRangeControl'
-import { resolveDateSpec, type DateSpec } from '../../utils/dateSpec'
+import { briefDateSpec, resolveDateSpec, type DateSpec } from '../../utils/dateSpec'
 import ReportHeader from '../../components/reports/ReportHeader'
 import FilterChips from '../../components/reports/FilterChips'
 import ReportEmptyState from '../../components/reports/ReportEmptyState'
@@ -469,6 +469,21 @@ export default function SalesPivotCustomPage() {
               level1, level2, level3,
             })}
             getResultJson={() => data}
+            getDescriptor={() => {
+              const lvls = query?.levels ?? [level1, level2, level3]
+              const parts: string[] = [
+                `Custom: ${lvls.map(dimLabel).join(' → ')}`,
+              ]
+              const counts: string[] = []
+              if (query?.stores?.length) counts.push(`stores ${query.stores.length}`)
+              if (query?.sectors?.length) counts.push(`sectors ${query.sectors.length}`)
+              if (query?.departments?.length) counts.push(`depts ${query.departments.length}`)
+              if (query?.seasons?.length) counts.push(`seasons ${query.seasons.length}`)
+              if (query?.buyers?.length) counts.push(`buyers ${query.buyers.length}`)
+              if (counts.length) parts.push(counts.join(', '))
+              parts.push(briefDateSpec(dateSpec))
+              return parts.join(' · ')
+            }}
           />
         }
       />

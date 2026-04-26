@@ -1,5 +1,5 @@
 import React from 'react';
-import { Alert, Button, message, Spin } from 'antd';
+import { Alert, Button, Select, Space, Typography, message, Spin } from 'antd';
 import { SearchOutlined } from '@ant-design/icons';
 import { HeaderCard } from './HeaderCard';
 import { PicturePanel } from './PicturePanel';
@@ -19,13 +19,21 @@ import { TrendTab } from './tabs/TrendTab';
 import AttributeBadgeStrip from '../../../components/products/AttributeBadgeStrip';
 
 const GRID_KEY_BY_MODE: Partial<Record<ViewMode, keyof InquiryGrids>> = {
-  ON_HAND:            'onHand',
-  MODEL:              'model',
-  SHORT:              'short',
-  MAX:                'max',
-  REORDER:            'reorder',
-  ALL_STORES_ON_HAND: 'allStoresOnHand',
-  ALL_STORES_SUMMARY: 'allStoresSummary',
+  ON_HAND:             'onHand',
+  ON_ORDER_CURRENT:    'onOrderCurrent',
+  ON_ORDER_FUTURE:     'onOrderFuture',
+  MODEL:               'model',
+  SHORT:               'short',
+  MTD_SALES:           'mtdSales',
+  STD_SALES:           'stdSales',
+  YTD_SALES:           'ytdSales',
+  LY_SALES:            'lySales',
+  SINGLE_COLUMN:       'singleColumn',
+  ALL_STORES_ON_HAND:  'allStoresOnHand',
+  ALL_STORES_ONE_ROW:  'allStoresOneRow',
+  ALL_STORES_SUMMARY:  'allStoresSummary',
+  MAX:                 'max',
+  REORDER:             'reorder',
 };
 
 export interface InquiryBodyProps {
@@ -33,6 +41,7 @@ export interface InquiryBodyProps {
   skuCode: string;
   /** Optional per-store scoping (query param on the full-page route). */
   storeId?: number;
+  selectedRow?: string | null;
   /**
    * Called when the user picks a different SKU from the lookup inside this
    * body. The page-level wrapper navigates via React Router; the popup
@@ -45,6 +54,7 @@ export interface InquiryBodyProps {
   onModeChange: (mode: ViewMode) => void;
   onActiveTabChange: (tab: InquiryTab | null) => void;
   onScopeChange: (scope: NeighborScope) => void;
+  onSelectedRowChange: (row: string | null) => void;
 }
 
 /**
@@ -61,6 +71,7 @@ export interface InquiryBodyProps {
 export const InquiryBody: React.FC<InquiryBodyProps> = ({
   skuCode,
   storeId,
+  selectedRow,
   onPickSku,
   mode,
   activeTab,
@@ -68,6 +79,7 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
   onModeChange,
   onActiveTabChange,
   onScopeChange,
+  onSelectedRowChange,
 }) => {
   const [lookupOpen, setLookupOpen] = React.useState(false);
   const [navLoading, setNavLoading] = React.useState(false);
@@ -80,7 +92,7 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
     if (!skuCode) onActiveTabChange(null);
   }, [skuCode, onActiveTabChange]);
 
-  const { data, isLoading, error } = useInquiryData(skuCode, storeId);
+  const { data, isLoading, error } = useInquiryData(skuCode, storeId, selectedRow);
 
   const handleLookupSelect = (picked: { skuCode: string; skuId: string }) => {
     setLookupOpen(false);
@@ -111,6 +123,19 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
     },
     [skuCode, scope, onPickSku],
   );
+
+  const rowOptions = (data?.sizeType?.rows ?? []).filter((label) => label.trim().length > 0);
+  const needsRowSelection = isRowSensitiveMode(mode) && rowOptions.length > 0;
+  const effectiveSelectedRow =
+    needsRowSelection && selectedRow && rowOptions.includes(selectedRow)
+      ? selectedRow
+      : (needsRowSelection ? rowOptions[0] ?? null : null);
+
+  React.useEffect(() => {
+    if (!data || !needsRowSelection || !effectiveSelectedRow) return;
+    if (selectedRow === effectiveSelectedRow) return;
+    onSelectedRowChange(effectiveSelectedRow);
+  }, [data, effectiveSelectedRow, needsRowSelection, onSelectedRowChange, selectedRow]);
 
   if (!skuCode) {
     return (
@@ -144,6 +169,11 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
 
   const gridKey = GRID_KEY_BY_MODE[mode];
   const grid = gridKey ? data.grids[gridKey] : undefined;
+  const gridNullDisplay =
+    mode === 'ALL_STORES_SUMMARY' || mode === 'ALL_STORES_ONE_ROW' || mode === 'SINGLE_COLUMN'
+      ? ''
+      : '—';
+  const hasVisibleInventoryActivity = hasAnyGridValue(data.grids);
 
   return (
     <div style={{ fontSize: 12 }}>
@@ -193,8 +223,30 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
         <div style={{ background: '#e6f0ff', padding: '2px 8px', fontWeight: 600, borderBottom: '1px solid #ccd8ea' }}>
           {gridCaptionFor(mode)}
         </div>
+        {!hasVisibleInventoryActivity && (
+          <Alert
+            type="info"
+            showIcon
+            style={{ margin: 8 }}
+            message="No current inventory activity for this SKU"
+            description={`SKU ${data.sku} exists, but the imported data currently shows no on-hand, on-order, model, or sales values.`}
+          />
+        )}
+        {needsRowSelection && effectiveSelectedRow && rowOptions.length > 1 && (
+          <Space size="small" style={{ padding: '6px 8px', borderBottom: '1px solid #eef2f7' }}>
+            <Typography.Text type="secondary">Row</Typography.Text>
+            <Select
+              size="small"
+              value={effectiveSelectedRow}
+              options={rowOptions.map((row) => ({ value: row, label: row }))}
+              onChange={(nextRow) => onSelectedRowChange(nextRow)}
+              popupMatchSelectWidth={false}
+              style={{ minWidth: 96 }}
+            />
+          </Space>
+        )}
         {grid
-          ? <SizeGridComponent grid={grid} />
+          ? <SizeGridComponent grid={grid} nullDisplay={gridNullDisplay} />
           : <em style={{ color: '#999', padding: 8, display: 'block' }}>No data for this view mode.</em>}
       </div>
 
@@ -216,17 +268,31 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
       {activeTab && (
         <div style={{ marginTop: 8 }}>
           {activeTab === 'UPCS' && <UpcsTab skuCode={data.sku} />}
-          {activeTab === 'INFO' && data.info && <InfoTab info={data.info} />}
+          {activeTab === 'INFO' && (
+            <InfoTab skuCode={data.sku} storeId={storeId} onClose={() => onActiveTabChange(null)} />
+          )}
           {activeTab === 'DETAIL' && (
             <DetailTab skuCode={data.sku} description={data.description} storeId={storeId} />
           )}
-          {activeTab === 'POS' && <PosTab />}
-          {activeTab === 'TREND' && <TrendTab />}
+          {activeTab === 'POS' && <PosTab skuCode={data.sku} storeId={storeId} />}
+          {activeTab === 'TREND' && (
+            <TrendTab skuCode={data.sku} storeId={storeId} onClose={() => onActiveTabChange(null)} />
+          )}
         </div>
       )}
     </div>
   );
 };
+
+function isRowSensitiveMode(mode: ViewMode): boolean {
+  return mode === 'SINGLE_COLUMN' || mode === 'ALL_STORES_ON_HAND' || mode === 'ALL_STORES_ONE_ROW';
+}
+
+function hasAnyGridValue(grids: InquiryGrids): boolean {
+  return Object.values(grids).some((grid) =>
+    grid?.rows.some((row) => row.cells.some((cell) => cell.value != null && cell.value !== 0))
+  );
+}
 
 function scopeLabel(scope: NeighborScope): string {
   if (scope === 'vendor')   return 'the same vendor';

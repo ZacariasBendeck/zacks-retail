@@ -19,20 +19,20 @@ interface Mode {
 
 export const VIEW_MODES: Mode[] = [
   { value: 'ON_HAND',             label: 'On Hand',                shortcut: 'F2',       live: true },
-  { value: 'ON_ORDER_CURRENT',    label: 'On Order (At-Once)',     shortcut: 'F3',       live: false, waitingOn: 'purchasing.getOnOrder' },
-  { value: 'ON_ORDER_FUTURE',     label: 'On Order (Future)',      shortcut: 'F4',       live: false, waitingOn: 'purchasing.getOnOrder' },
+  { value: 'ON_ORDER_CURRENT',    label: 'On Order (At-Once)',     shortcut: 'F3',       live: true },
+  { value: 'ON_ORDER_FUTURE',     label: 'On Order (Future)',      shortcut: 'F4',       live: true },
   { value: 'MODEL',               label: 'Model Quantities',       shortcut: 'F5',       live: true },
   { value: 'SHORT',               label: 'Short Quantities',       shortcut: 'F6',       live: true },
-  { value: 'MTD_SALES',           label: 'Month-to-Date Sales',    shortcut: 'F7',       live: false, waitingOn: 'sales-reporting.getSizeGridSales' },
-  { value: 'STD_SALES',           label: 'Season-to-Date Sales',   shortcut: 'F8',       live: false, waitingOn: 'sales-reporting.getSizeGridSales' },
-  { value: 'YTD_SALES',           label: 'Year-To-Date Sales',     shortcut: 'F9',       live: false, waitingOn: 'sales-reporting.getSizeGridSales' },
-  { value: 'SINGLE_COLUMN',       label: 'Column Only',            shortcut: 'F11',      live: false, waitingOn: 'Phase 2 UX' },
+  { value: 'MTD_SALES',           label: 'Month-to-Date Sales',    shortcut: 'F7',       live: true },
+  { value: 'STD_SALES',           label: 'Season-to-Date Sales',   shortcut: 'F8',       live: true },
+  { value: 'YTD_SALES',           label: 'Year-To-Date Sales',     shortcut: 'F9',       live: true },
+  { value: 'SINGLE_COLUMN',       label: 'Column Only',            shortcut: 'F11',      live: true },
   { value: 'ALL_STORES_ON_HAND',  label: 'All Stores - On Hand',   shortcut: 'Shift+F1', live: true },
-  { value: 'ALL_STORES_ONE_ROW',  label: 'All Stores - 1 Row',     shortcut: 'Shift+F2', live: false, waitingOn: 'Phase 2 UX' },
+  { value: 'ALL_STORES_ONE_ROW',  label: 'All Stores - 1 Row',     shortcut: 'Shift+F2', live: true },
   { value: 'ALL_STORES_SUMMARY',  label: 'All Stores Summary',     shortcut: 'Shift+F3', live: true },
   { value: 'MAX',                 label: 'Max Quantities',         shortcut: 'Shift+F4', live: true },
   { value: 'REORDER',             label: 'Reorder Quantities',     shortcut: 'Shift+F5', live: true },
-  { value: 'LY_SALES',            label: 'Last Year Sales',        shortcut: 'Shift+F6', live: false, waitingOn: 'sales-reporting.getSizeGridSales' },
+  { value: 'LY_SALES',            label: 'Last Year Sales',        shortcut: 'Shift+F6', live: true },
 ];
 
 export const ViewModeSelector: React.FC<{

@@ -23,8 +23,8 @@ interface Props {
 
 const TABS: Array<{ key: InquiryTab; label: string; live: boolean; waitingOn?: string }> = [
   { key: 'UPCS',   label: 'UPCs',   live: true },
-  { key: 'POS',    label: 'POs',    live: false, waitingOn: 'purchasing.getOpenPoLines' },
-  { key: 'TREND',  label: 'Trend',  live: false, waitingOn: 'sales-reporting.getEightWeekTrend' },
+  { key: 'POS',    label: 'POs',    live: true },
+  { key: 'TREND',  label: 'Trend',  live: true },
   { key: 'INFO',   label: 'Info',   live: true },
   { key: 'DETAIL', label: 'Detail', live: true },
 ];

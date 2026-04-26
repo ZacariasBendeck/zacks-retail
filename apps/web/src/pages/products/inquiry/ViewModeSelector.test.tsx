@@ -10,10 +10,12 @@ describe('ViewModeSelector', () => {
     VIEW_MODES.forEach((m) => expect(screen.getByText(m.label)).toBeInTheDocument());
   });
 
-  it('disables modes that are not v1-live', () => {
+  it('keeps the newly wired inventory modes enabled', () => {
     render(<ViewModeSelector value="ALL_STORES_SUMMARY" onChange={() => {}} />);
     const poButton = screen.getByRole('button', { name: /On Order \(At-Once\)/ });
-    expect(poButton).toBeDisabled();
+    const mtdButton = screen.getByRole('button', { name: /Month-to-Date Sales/ });
+    expect(poButton).toBeEnabled();
+    expect(mtdButton).toBeEnabled();
   });
 
   it('calls onChange when a live mode is clicked', async () => {

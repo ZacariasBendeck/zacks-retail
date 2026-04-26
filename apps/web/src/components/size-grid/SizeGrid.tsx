@@ -7,8 +7,8 @@ import type { SizeGrid as SizeGridData } from './types';
 // scroll. AntD's `<Table size="small">` defaults to ~8px side padding which
 // wastes width; we use a plain `<table>` with 2-3px padding instead.
 
-function formatCell(value: number | null): string {
-  if (value === null || value === undefined) return '—';
+function formatCell(value: number | null, nullDisplay: string): string {
+  if (value === null || value === undefined) return nullDisplay;
   return new Intl.NumberFormat('es-HN', {
     minimumFractionDigits: 0,
     maximumFractionDigits: 2,
@@ -57,9 +57,10 @@ const tdCell: React.CSSProperties = {
 
 export interface SizeGridProps {
   grid: SizeGridData;
+  nullDisplay?: string;
 }
 
-export const SizeGrid: React.FC<SizeGridProps> = ({ grid }) => {
+export const SizeGrid: React.FC<SizeGridProps> = ({ grid, nullDisplay = '—' }) => {
   if (grid.rows.length === 0 || grid.columns.length === 0) {
     return <Empty description="No data" />;
   }
@@ -67,28 +68,30 @@ export const SizeGrid: React.FC<SizeGridProps> = ({ grid }) => {
   return (
     <>
       {grid.caption && <div style={{ marginBottom: 4, fontSize: 12 }}>{grid.caption}</div>}
-      <table style={{ borderCollapse: 'collapse', fontSize: 12, width: 'auto' }}>
-        <thead>
-          <tr style={headRow}>
-            <th scope="col" style={thLabel}></th>
-            {grid.columns.map((col, idx) => (
-              <th key={`col-${idx}`} scope="col" style={thCol}>{col}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {grid.rows.map((row, rIdx) => (
-            <tr key={`row-${rIdx}`}>
-              <th scope="row" style={tdLabel}>{row.label}</th>
-              {grid.columns.map((_, cIdx) => (
-                <td key={`cell-${rIdx}-${cIdx}`} style={tdCell}>
-                  {formatCell(row.cells[cIdx]?.value ?? null)}
-                </td>
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ borderCollapse: 'collapse', fontSize: 12, width: 'max-content', minWidth: '100%' }}>
+          <thead>
+            <tr style={headRow}>
+              <th scope="col" style={thLabel}></th>
+              {grid.columns.map((col, idx) => (
+                <th key={`col-${idx}`} scope="col" style={thCol}>{col}</th>
               ))}
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {grid.rows.map((row, rIdx) => (
+              <tr key={`row-${rIdx}`}>
+                <th scope="row" style={tdLabel}>{row.label}</th>
+                {grid.columns.map((_, cIdx) => (
+                  <td key={`cell-${rIdx}-${cIdx}`} style={tdCell}>
+                    {formatCell(row.cells[cIdx]?.value ?? null, nullDisplay)}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </>
   );
 };

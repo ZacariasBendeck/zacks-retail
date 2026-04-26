@@ -12,6 +12,9 @@
 import { Router, Request, Response, NextFunction, IRouter } from 'express';
 import {
   getInventoryInquiry,
+  getInquiryInfo,
+  getInquiryTrend,
+  getInquiryOpenPoRows,
   findBySize,
   getInventoryDetailReport,
   getChangeDetail,
@@ -50,12 +53,57 @@ router.get('/inquiry/:sku', async (req: Request, res: Response, next: NextFuncti
     const skuRaw = req.params.sku;
     const sku = Array.isArray(skuRaw) ? skuRaw[0] : skuRaw;
     const storeId = parseIntOrUndefined(req.query.storeId);
-    const inquiry = await getInventoryInquiry(sku, storeId);
+    const row = typeof req.query.row === 'string' ? req.query.row.trim() : undefined;
+    const inquiry = await getInventoryInquiry(sku, storeId, row);
     if (!inquiry) {
       res.status(404).json({ error: { code: 'SKU_NOT_FOUND', message: `SKU ${sku} not found` } });
       return;
     }
     res.json(inquiry);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/inquiry/:sku/trend', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const skuRaw = req.params.sku;
+    const sku = Array.isArray(skuRaw) ? skuRaw[0] : skuRaw;
+    const storeId = parseIntOrUndefined(req.query.storeId);
+    const trend = await getInquiryTrend(sku, storeId);
+    if (!trend) {
+      res.status(404).json({ error: { code: 'SKU_NOT_FOUND', message: `SKU ${sku} not found` } });
+      return;
+    }
+    res.json(trend);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/inquiry/:sku/info', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const skuRaw = req.params.sku;
+    const sku = Array.isArray(skuRaw) ? skuRaw[0] : skuRaw;
+    const storeId = parseIntOrUndefined(req.query.storeId);
+    const info = await getInquiryInfo(sku, storeId);
+    if (!info) {
+      res.status(404).json({ error: { code: 'SKU_NOT_FOUND', message: `SKU ${sku} not found` } });
+      return;
+    }
+    res.json(info);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/inquiry/:sku/open-pos', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const skuRaw = req.params.sku;
+    const sku = Array.isArray(skuRaw) ? skuRaw[0] : skuRaw;
+    const storeId = parseIntOrUndefined(req.query.storeId);
+    const rows = await getInquiryOpenPoRows(sku, storeId);
+    res.json({ rows, total: rows.length });
   } catch (err) {
     next(err);
   }

@@ -21,10 +21,10 @@ describe('ActionBar', () => {
     );
   });
 
-  it('disables stubbed buttons (POs / Trend / Print)', () => {
+  it('keeps Print disabled while live buttons remain clickable', () => {
     render(<ActionBar {...baseProps} />);
-    expect(screen.getByRole('button', { name: 'POs' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Trend' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'POs' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Trend' })).toBeEnabled();
     expect(screen.getByRole('button', { name: 'Print' })).toBeDisabled();
   });
 

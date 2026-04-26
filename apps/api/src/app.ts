@@ -60,7 +60,13 @@ import { attachUser } from './middleware/authMiddleware';
 const app: Express = express();
 
 app.use(cors());
-app.use(express.json());
+// Bumped from the 100KB default so Save-snapshot can POST a full report
+// payload. The reportRuns route enforces its own 20 MB resultJson cap via
+// zod (see routes/reports/schemas.ts MAX_RESULT_BYTES); 25 MB here gives
+// that cap a little envelope/overhead headroom without itself becoming the
+// hard ceiling. Without this, a few-thousand-row Sales Pivot snapshot is
+// rejected with 413 PayloadTooLarge before the route handler even runs.
+app.use(express.json({ limit: '25mb' }));
 app.use(cookieParser());
 const prisma = new PrismaClient();
 app.use(attachUser(prisma));

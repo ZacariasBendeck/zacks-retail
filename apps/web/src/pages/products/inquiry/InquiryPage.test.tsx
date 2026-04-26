@@ -40,6 +40,64 @@ describe('InquiryPage', () => {
     expect(screen.getByRole('status')).toBeInTheDocument();
   });
 
+  it('survives the loading-to-loaded transition when a SKU is selected', () => {
+    (useInquiryData as any)
+      .mockReturnValueOnce({ isLoading: true, data: null, error: null })
+      .mockReturnValueOnce({
+        isLoading: false,
+        error: null,
+        data: {
+          sku: 'ZN02-NDPT',
+          description: '…',
+          category: { id: 0, name: '' },
+          vendor: { code: '', name: '' },
+          vendorSku: null,
+          styleColor: null,
+          sizeType: { id: 0, name: '', columns: [], rows: [] },
+          lastReceivedAt: null,
+          pricing: { retail: 0, markdown1: 0, markdown2: 0, avgCost: 0, currentCost: 0, listPrice: 0, currentSlot: 'RETAIL' },
+          rollup: { week: {qty:0,net:0,markdown:0,profit:0}, month:{qty:0,net:0,markdown:0,profit:0}, season:{qty:0,net:0,markdown:0,profit:0}, year:{qty:0,net:0,markdown:0,profit:0} },
+          grids: {
+            onHand: {
+              columns: ['6'],
+              rows: [{ label: 'Store 7', cells: [{ value: 2 }] }],
+            },
+            allStoresSummary: {
+              columns: ['TOT'],
+              rows: [{ label: 'On Hand', cells: [{ value: 2 }] }],
+            },
+          },
+          pictureUrl: null,
+          info: { seasonCode: null, labelCode: null, groupCode: null, firstReceivedAt: null, lastMarkdownAt: null, perks: null, comment: null },
+        },
+      });
+
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const view = render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter initialEntries={['/products/inquiry/ZN02-NDPT']}>
+          <Routes>
+            <Route path="/products/inquiry/:skuCode" element={<InquiryPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>
+    );
+
+    expect(screen.getByRole('status')).toBeInTheDocument();
+
+    view.rerender(
+      <QueryClientProvider client={client}>
+        <MemoryRouter initialEntries={['/products/inquiry/ZN02-NDPT']}>
+          <Routes>
+            <Route path="/products/inquiry/:skuCode" element={<InquiryPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>
+    );
+
+    expect(screen.getByRole('rowheader', { name: /On Hand/ })).toBeInTheDocument();
+  });
+
   it('shows an error alert when the fetch fails', () => {
     (useInquiryData as any).mockReturnValue({ isLoading: false, data: null, error: new Error('boom') });
     renderPage();
@@ -131,5 +189,64 @@ describe('InquiryPage', () => {
     renderPage();
     expect(screen.getByText('ZN02-NDPT')).toBeInTheDocument();
     expect(screen.getByText('SandPtMetChar')).toBeInTheDocument();
+  });
+
+  it('shows an explicit message for SKUs with no current inventory activity', () => {
+    (useInquiryData as any).mockReturnValue({
+      isLoading: false,
+      error: null,
+      data: {
+        sku: '0002HCF',
+        description: 'FajaHeLonaYAMAM H',
+        category: { id: 72, name: '' },
+        vendor: { code: 'KYOP', name: 'KYOP' },
+        vendorSku: null,
+        styleColor: null,
+        sizeType: { id: 117, name: 'XXS-4XL', columns: ['XXS'], rows: [] },
+        lastReceivedAt: '2018-12-14',
+        pricing: { retail: 230.43, markdown1: 115.22, markdown2: 0, avgCost: 0, currentCost: 32.3, listPrice: 265, currentSlot: 'RETAIL' },
+        rollup: { week: {qty:0,net:0,markdown:0,profit:0}, month:{qty:0,net:0,markdown:0,profit:0}, season:{qty:0,net:0,markdown:0,profit:0}, year:{qty:0,net:0,markdown:0,profit:0} },
+        grids: {
+          onHand: { columns: ['XXS'], rows: [] },
+          allStoresSummary: { columns: ['TOT'], rows: [{ label: 'On Hand', cells: [{ value: null }] }] },
+        },
+        pictureUrl: null,
+        info: { seasonCode: '0', labelCode: 'H', groupCode: 'IBL', firstReceivedAt: null, lastMarkdownAt: null, perks: null, comment: null },
+      },
+    });
+    renderPage(['/products/inquiry/0002HCF']);
+    expect(screen.getByText(/No current inventory activity for this SKU/i)).toBeInTheDocument();
+  });
+
+  it('renders a row selector for row-sensitive modes when the SKU has multiple rows', () => {
+    (useInquiryData as any).mockReturnValue({
+      isLoading: false,
+      error: null,
+      data: {
+        sku: 'ZN02-NDPT',
+        description: '…',
+        category: { id: 0, name: '' }, vendor: { code: '', name: '' },
+        vendorSku: null, styleColor: null,
+        sizeType: { id: 1, name: 'Mens/Womens', columns: ['6'], rows: ['M', 'W'] },
+        lastReceivedAt: null,
+        pricing: { retail: 0, markdown1: 0, markdown2: 0, avgCost: 0, currentCost: 0, listPrice: 0, currentSlot: 'RETAIL' },
+        rollup: { week: {qty:0,net:0,markdown:0,profit:0}, month:{qty:0,net:0,markdown:0,profit:0}, season:{qty:0,net:0,markdown:0,profit:0}, year:{qty:0,net:0,markdown:0,profit:0} },
+        grids: {
+          allStoresOnHand: {
+            columns: ['6'],
+            rows: [{ label: 'Store 7', cells: [{ value: 2 }] }],
+          },
+          allStoresSummary: {
+            columns: ['TOT'],
+            rows: [{ label: 'On Hand', cells: [{ value: 2 }] }],
+          },
+        },
+        pictureUrl: null,
+        info: { seasonCode: null, labelCode: null, groupCode: null, firstReceivedAt: null, lastMarkdownAt: null, perks: null, comment: null },
+      },
+    });
+    renderPage(['/products/inquiry/ZN02-NDPT?mode=ALL_STORES_ON_HAND']);
+    expect(screen.getByText('Row')).toBeInTheDocument();
+    expect(screen.getByText('M')).toBeInTheDocument();
   });
 });

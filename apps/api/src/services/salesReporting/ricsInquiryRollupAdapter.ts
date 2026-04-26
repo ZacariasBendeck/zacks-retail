@@ -84,7 +84,7 @@ function emptyRollup(): InquiryRollup {
   return { week: zeroCell(), month: zeroCell(), season: zeroCell(), year: zeroCell() };
 }
 
-export async function getInquirySalesRollup(sku: string): Promise<InquiryRollup> {
+export async function getInquirySalesRollup(sku: string, storeId?: number): Promise<InquiryRollup> {
   const code = (sku ?? '').trim();
   if (!code) return emptyRollup();
 
@@ -99,6 +99,7 @@ export async function getInquirySalesRollup(sku: string): Promise<InquiryRollup>
   //   $1 = sku               $4 = seasonStart
   //   $2 = weekStart         $5 = yearStart  (also lower bound of scan)
   //   $3 = monthStart        $6 = endExclusive
+  const storeFilter = storeId != null ? `AND t.store_id = $7::int` : '';
   const sql = `
     SELECT
       SUM(CASE WHEN t.purchased_at >= $2::timestamptz THEN COALESCE(l.quantity, 0) ELSE 0 END)::float8 AS "WeekQty",
@@ -121,17 +122,22 @@ export async function getInquirySalesRollup(sku: string): Promise<InquiryRollup>
       AND t.status = 'completed'
       AND t.purchased_at >= $5::timestamptz
       AND t.purchased_at <  $6::timestamptz
+      ${storeFilter}
   `;
 
   try {
-    const rows = await prisma.$queryRawUnsafe<RollupAggregateRow[]>(
-      sql,
+    const params: unknown[] = [
       code,
       w.weekStart,
       w.monthStart,
       w.seasonStart,
       w.yearStart,
       w.endExclusive,
+    ];
+    if (storeId != null) params.push(storeId);
+    const rows = await prisma.$queryRawUnsafe<RollupAggregateRow[]>(
+      sql,
+      ...params,
     );
     const row = rows[0];
     if (!row) return emptyRollup();

@@ -23,6 +23,9 @@ import type {
   SkuStoreCellRow,
   RecommendedTransferParams,
   RecommendedTransferRow,
+  InquiryTrend,
+  InquiryOpenPoRow,
+  InquiryInfoDetail,
 } from './ricsInventoryAdapter';
 
 export { ChangeDetailQueryTooBroadError, TransferSummaryInputError } from './ricsInventoryAdapter';
@@ -42,9 +45,28 @@ export function sourceIsRics(): boolean {
   return source() === 'rics';
 }
 
-export async function getInventoryInquiry(sku: string, storeId?: number): Promise<InventoryInquiry | null> {
+export async function getInventoryInquiry(
+  sku: string,
+  storeId?: number,
+  selectedRow?: string | null,
+): Promise<InventoryInquiry | null> {
   if (!sourceIsRics()) throw new InventorySourceNotImplementedError(source());
-  return ricsAdapter.getInventoryInquiry(sku, storeId);
+  return ricsAdapter.getInventoryInquiry(sku, storeId, selectedRow);
+}
+
+export async function getInquiryTrend(sku: string, storeId?: number): Promise<InquiryTrend | null> {
+  if (!sourceIsRics()) throw new InventorySourceNotImplementedError(source());
+  return ricsAdapter.getInquiryTrend(sku, storeId);
+}
+
+export async function getInquiryInfo(sku: string, storeId?: number): Promise<InquiryInfoDetail | null> {
+  if (!sourceIsRics()) throw new InventorySourceNotImplementedError(source());
+  return ricsAdapter.getInquiryInfo(sku, storeId);
+}
+
+export async function getInquiryOpenPoRows(sku: string, storeId?: number): Promise<InquiryOpenPoRow[]> {
+  if (!sourceIsRics()) throw new InventorySourceNotImplementedError(source());
+  return ricsAdapter.getInquiryOpenPoRows(sku, storeId);
 }
 
 export async function findBySize(params: FindBySizeParams): Promise<FindBySizeResult> {

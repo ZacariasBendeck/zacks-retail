@@ -606,6 +606,29 @@ export default function SalesHistoryByMonthPage() {
                 keywordsRaw,
               })}
               getResultJson={() => data}
+              getDescriptor={() => {
+                const detailLabel =
+                  detailLevel === 'sku' ? 'SKU detail'
+                  : detailLevel === 'department' ? 'Department detail'
+                  : 'Subtotals'
+                const parts: string[] = [
+                  `by ${sortBy === 'vendor' ? 'Vendor' : 'Category'}`,
+                  detailLabel,
+                  `metrics ${dataToPrint.length}`,
+                  `end ${endMonth.format('MMM YYYY')}`,
+                ]
+                const counts: string[] = []
+                if (selectedStores.length) counts.push(`stores ${selectedStores.length}`)
+                if (selectedCategories.length) counts.push(`cats ${selectedCategories.length}`)
+                if (selectedGroups.length) counts.push(`groups ${selectedGroups.length}`)
+                if (vendorsRaw.trim()) counts.push('vendors')
+                if (seasonsRaw.trim()) counts.push('seasons')
+                if (styleColorsRaw.trim()) counts.push('style/color')
+                if (keywordsRaw.trim()) counts.push('keywords')
+                if (counts.length) parts.push(counts.join(', '))
+                if (combineStores) parts.push('combined')
+                return parts.join(' · ')
+              }}
             />
           </>
         }

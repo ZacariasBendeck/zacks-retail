@@ -21,7 +21,7 @@ import {
 } from '../../components/reports/SummaryRow'
 import { fmtMoney, fmtInt, fmtPct1 } from '../../utils/reportFormatters'
 import { useReportTemplate, useTouchReportTemplate } from '../../hooks/useReportTemplates'
-import { readDateSpecFromParams, resolveDateSpec, type DateSpec } from '../../utils/dateSpec'
+import { briefDateSpec, readDateSpecFromParams, resolveDateSpec, type DateSpec } from '../../utils/dateSpec'
 
 const { Text } = Typography
 
@@ -162,6 +162,21 @@ export default function SalesByTimePage() {
                 pctOfTotal,
               })}
               getResultJson={() => data}
+              getDescriptor={() => {
+                const parts: string[] = []
+                const stores = parseStores(storesText)
+                if (stores && stores.length) {
+                  parts.push(
+                    stores.length <= 3
+                      ? `stores ${stores.join(',')}`
+                      : `${stores.length} stores`,
+                  )
+                }
+                parts.push(briefDateSpec(dateSpec))
+                parts.push(`metric: ${chartMetric}`)
+                if (pctOfTotal) parts.push('% of total')
+                return parts.join(' · ')
+              }}
             />
           </>
         }

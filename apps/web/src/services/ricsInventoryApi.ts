@@ -38,12 +38,84 @@ export interface InquirySizeGrid {
 
 export interface InquiryGrids {
   onHand?: InquirySizeGrid;
+  onOrderCurrent?: InquirySizeGrid;
+  onOrderFuture?: InquirySizeGrid;
   model?: InquirySizeGrid;
   max?: InquirySizeGrid;
   reorder?: InquirySizeGrid;
   short?: InquirySizeGrid;
+  mtdSales?: InquirySizeGrid;
+  stdSales?: InquirySizeGrid;
+  ytdSales?: InquirySizeGrid;
+  lySales?: InquirySizeGrid;
+  singleColumn?: InquirySizeGrid;
   allStoresOnHand?: InquirySizeGrid;
+  allStoresOneRow?: InquirySizeGrid;
   allStoresSummary?: InquirySizeGrid;
+}
+
+export interface InquiryTrendColumn {
+  label: string;
+  availWeek: number | null;
+  availPeriod: number | null;
+  recTranAdj: number | null;
+  sales: number | null;
+  stWeekly: number | null;
+  stPeriod: number | null;
+  periodReset: boolean;
+}
+
+export interface InquiryTrend {
+  scopeLabel: string;
+  columns: InquiryTrendColumn[];
+}
+
+export interface InquiryOpenPoRow {
+  poNumber: string;
+  storeId: number;
+  orderClass: 'AT_ONCE' | 'FUTURE';
+  dueDate: string | null;
+  rowLabel: string;
+  columnLabel: string;
+  orderedQty: number;
+  receivedQty: number;
+  openQty: number;
+}
+
+export interface InquiryInfoMonth {
+  label: string;
+  qty: number;
+  sales: number;
+}
+
+export interface InquiryInfoMetricCell {
+  gpPct: number | null;
+  roi: number | null;
+  turns: number | null;
+}
+
+export interface InquiryInfoDetail {
+  scopeLabel: string;
+  seasonCode: string | null;
+  seasonDescription: string | null;
+  labelCode: string | null;
+  groupCode: string | null;
+  groupDescription: string | null;
+  firstReceivedAt: string | null;
+  lastMarkdownAt: string | null;
+  perks: number | null;
+  keywords: string | null;
+  comment: string | null;
+  prior12Months: InquiryInfoMonth[];
+  totals: {
+    qty: number;
+    sales: number;
+  };
+  metrics: {
+    mtd: InquiryInfoMetricCell;
+    std: InquiryInfoMetricCell;
+    ytd: InquiryInfoMetricCell;
+  };
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -371,6 +443,29 @@ async function fetchJson<T>(url: string): Promise<T> {
 
 export function fetchInventoryInquiry(sku: string): Promise<InventoryInquiry> {
   return fetchJson<InventoryInquiry>(`/api/v1/inventory/inquiry/${encodeURIComponent(sku)}`)
+}
+
+export function fetchInquiryTrend(sku: string, storeId?: number): Promise<InquiryTrend> {
+  const qs = new URLSearchParams()
+  if (storeId != null) qs.set('storeId', String(storeId))
+  return fetchJson<InquiryTrend>(`/api/v1/inventory/inquiry/${encodeURIComponent(sku)}/trend?${qs}`)
+}
+
+export function fetchInquiryInfo(sku: string, storeId?: number): Promise<InquiryInfoDetail> {
+  const qs = new URLSearchParams()
+  if (storeId != null) qs.set('storeId', String(storeId))
+  return fetchJson<InquiryInfoDetail>(`/api/v1/inventory/inquiry/${encodeURIComponent(sku)}/info?${qs}`)
+}
+
+export function fetchInquiryOpenPos(
+  sku: string,
+  storeId?: number,
+): Promise<{ rows: InquiryOpenPoRow[]; total: number }> {
+  const qs = new URLSearchParams()
+  if (storeId != null) qs.set('storeId', String(storeId))
+  return fetchJson<{ rows: InquiryOpenPoRow[]; total: number }>(
+    `/api/v1/inventory/inquiry/${encodeURIComponent(sku)}/open-pos?${qs}`
+  )
 }
 
 export function fetchFindBySize(params: FindBySizeParams): Promise<FindBySizeResult> {

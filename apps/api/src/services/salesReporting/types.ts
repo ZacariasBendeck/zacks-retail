@@ -21,6 +21,7 @@ export interface RicsSalesByDayRow {
   comparedNetSales: number;
   comparedProfit: number;       // profit for the matching prior-period day
   dollarChange: number;         // netSales - comparedNetSales
+  profitChange: number;         // profit - comparedProfit
   pctChange: number | null;
 }
 
@@ -30,6 +31,7 @@ export interface RicsSalesTotals {
   comparedNetSales: number;
   comparedProfit: number;
   dollarChange: number;
+  profitChange: number;
   pctChange: number | null;
 }
 

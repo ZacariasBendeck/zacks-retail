@@ -79,12 +79,15 @@ function flatten(raw: BackendInquiry): InventoryInquiry {
   };
 }
 
-export function useInquiryData(skuCode: string, storeId?: number) {
+export function useInquiryData(skuCode: string, storeId?: number, selectedRow?: string | null) {
   return useQuery<InventoryInquiry>({
-    queryKey: ['product-inquiry', skuCode, storeId],
+    queryKey: ['product-inquiry', skuCode, storeId, selectedRow ?? null],
     queryFn: async () => {
-      const qs = storeId !== undefined ? `?storeId=${storeId}` : '';
-      const response = await fetch(`/api/v1/inventory/inquiry/${encodeURIComponent(skuCode)}${qs}`);
+      const qs = new URLSearchParams();
+      if (storeId !== undefined) qs.set('storeId', String(storeId));
+      if (selectedRow && selectedRow.trim()) qs.set('row', selectedRow.trim());
+      const suffix = qs.size > 0 ? `?${qs.toString()}` : '';
+      const response = await fetch(`/api/v1/inventory/inquiry/${encodeURIComponent(skuCode)}${suffix}`);
       if (response.status === 404) throw new Error(`SKU ${skuCode} not found`);
       if (!response.ok) throw new Error(`Inquiry failed: ${response.status}`);
       const raw = (await response.json()) as BackendInquiry;

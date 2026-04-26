@@ -34,12 +34,14 @@ export const InquiryPopupProvider: React.FC<{ children: React.ReactNode }> = ({ 
   const [mode, setMode] = React.useState<ViewMode>('ALL_STORES_SUMMARY');
   const [activeTab, setActiveTab] = React.useState<InquiryTab | null>(null);
   const [scope, setScope] = React.useState<NeighborScope>('general');
+  const [selectedRow, setSelectedRow] = React.useState<string | null>(null);
 
   const openInquiry = React.useCallback((args: OpenArgs) => {
     setState({ open: true, skuCode: args.skuCode, storeId: args.storeId });
     setMode('ALL_STORES_SUMMARY');
     setActiveTab(null);
     setScope('general');
+    setSelectedRow(null);
   }, []);
 
   const closeInquiry = React.useCallback(() => {
@@ -57,6 +59,7 @@ export const InquiryPopupProvider: React.FC<{ children: React.ReactNode }> = ({ 
   const handlePickSku = React.useCallback(
     (picked: { skuCode: string; skuId: string }) => {
       setState((s) => ({ ...s, skuCode: picked.skuCode }));
+      setSelectedRow(null);
     },
     [],
   );
@@ -79,6 +82,7 @@ export const InquiryPopupProvider: React.FC<{ children: React.ReactNode }> = ({ 
           <InquiryBody
             skuCode={state.skuCode}
             storeId={state.storeId}
+            selectedRow={selectedRow}
             onPickSku={handlePickSku}
             mode={mode}
             activeTab={activeTab}
@@ -86,6 +90,7 @@ export const InquiryPopupProvider: React.FC<{ children: React.ReactNode }> = ({ 
             onModeChange={setMode}
             onActiveTabChange={setActiveTab}
             onScopeChange={setScope}
+            onSelectedRowChange={setSelectedRow}
           />
         )}
       </Drawer>

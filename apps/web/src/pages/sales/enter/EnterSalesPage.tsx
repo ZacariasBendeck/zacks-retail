@@ -28,6 +28,7 @@ import type { InputRef } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import dayjs from 'dayjs'
+import { SkuLookup } from '../../../components/sku-lookup'
 import { salesPosApi, type PosHeaderPatchInput, type PosLineInput } from '../../../services/salesPosApi'
 import type {
   CustomerSearchResult,
@@ -57,6 +58,7 @@ const transactionOptions = [
 ] as const
 
 type OverrideScope = 'VOID' | 'REFUND' | 'REPRINT' | 'CLOSE_BATCH' | 'PAY_OUT'
+type SalesEntryScreen = 'HEADER' | 'DETAIL'
 
 interface PendingLineForm {
   code: string
@@ -272,7 +274,9 @@ export default function EnterSalesPage() {
 
   const [openingCashFloat, setOpeningCashFloat] = useState(0)
   const [paymentDrawerOpen, setPaymentDrawerOpen] = useState(false)
-  const [headerDrawerOpen, setHeaderDrawerOpen] = useState(false)
+  const [screenMode, setScreenMode] = useState<SalesEntryScreen>('HEADER')
+  const [skuLookupOpen, setSkuLookupOpen] = useState(false)
+  const [skuLookupInitialQuery, setSkuLookupInitialQuery] = useState('')
   const [reviewOpen, setReviewOpen] = useState(false)
   const [payoutOpen, setPayoutOpen] = useState(false)
   const [closeOpen, setCloseOpen] = useState(false)
@@ -353,6 +357,14 @@ export default function EnterSalesPage() {
   }, [activeTicket?.id])
 
   useEffect(() => {
+    if (!activeTicket?.id) return
+    setScreenMode('HEADER')
+    setPaymentDrawerOpen(false)
+    setReviewOpen(false)
+    setSkuLookupOpen(false)
+  }, [activeTicket?.id])
+
+  useEffect(() => {
     if (!closePreviewQuery.data) return
     const nextCounts = Object.fromEntries(
       closePreviewQuery.data.tenderTotals.map((row) => [row.tenderTypeId, row.amount]),
@@ -384,12 +396,12 @@ export default function EnterSalesPage() {
   }, [deferredCustomerQuery])
 
   useEffect(() => {
-    if (!activeTicket) return
+    if (!activeTicket || screenMode !== 'DETAIL') return
     const timer = window.setTimeout(() => {
       codeInputRef.current?.focus()
     }, 80)
     return () => window.clearTimeout(timer)
-  }, [activeTicket?.id])
+  }, [activeTicket?.id, screenMode])
 
   const linesColumns: ColumnsType<PosTicketLine> = useMemo(
     () => [
@@ -447,26 +459,56 @@ export default function EnterSalesPage() {
     }
   }
 
-  async function handleLookupProduct() {
-    if (!pendingLine.code.trim()) {
+  function hydratePendingLineFromLookup(lookup: PosProductLookup) {
+    setLookupResult(lookup)
+    setPendingLine((current) => ({
+      ...current,
+      code: lookup.code || current.code.trim().toUpperCase(),
+      quantity: current.quantity || lookup.defaultQuantity,
+      columnLabel: current.columnLabel || lookup.defaultColumnLabel || '',
+      rowLabel: current.rowLabel || lookup.defaultRowLabel || '',
+      unitPrice: current.unitPrice > 0 ? current.unitPrice : lookup.defaultUnitPrice,
+      priceMode: lookup.defaultPriceMode,
+      taxable: lookup.taxable,
+    }))
+  }
+
+  async function applyLookupProduct(code: string) {
+    const normalized = code.trim()
+    if (!normalized) {
       message.warning('Enter a SKU or UPC first.')
       return
     }
 
+    const lookup = await runBusyAction('lookup', () => salesPosApi.lookupProduct(normalized))
+    hydratePendingLineFromLookup(lookup)
+    message.success(`Loaded ${lookup.description}`)
+  }
+
+  async function handleLookupProduct() {
+    const rawCode = pendingLine.code.trim()
+    if (!rawCode) {
+      setSkuLookupInitialQuery('')
+      setSkuLookupOpen(true)
+      return
+    }
+
     try {
-      const lookup = await runBusyAction('lookup', () => salesPosApi.lookupProduct(pendingLine.code.trim()))
-      setLookupResult(lookup)
-      setPendingLine((current) => ({
-        ...current,
-        code: lookup.code || current.code.trim().toUpperCase(),
-        quantity: current.quantity || lookup.defaultQuantity,
-        columnLabel: current.columnLabel || lookup.defaultColumnLabel || '',
-        rowLabel: current.rowLabel || lookup.defaultRowLabel || '',
-        unitPrice: current.unitPrice > 0 ? current.unitPrice : lookup.defaultUnitPrice,
-        priceMode: lookup.defaultPriceMode,
-        taxable: lookup.taxable,
-      }))
-      message.success(`Loaded ${lookup.description}`)
+      const resolved = await runBusyAction('lookup-seed', () => salesPosApi.lookupProduct(rawCode))
+      const seededQuery = resolved.code || rawCode.toUpperCase()
+      setPendingLine((current) => ({ ...current, code: seededQuery }))
+      setSkuLookupInitialQuery(seededQuery)
+    } catch {
+      setSkuLookupInitialQuery(rawCode.toUpperCase())
+    }
+
+    setSkuLookupOpen(true)
+  }
+
+  async function handleSkuLookupSelect(picked: { skuCode: string; skuId: string }) {
+    setSkuLookupOpen(false)
+    try {
+      await applyLookupProduct(picked.skuCode)
     } catch (error) {
       message.error((error as Error).message)
     }
@@ -538,7 +580,8 @@ export default function EnterSalesPage() {
     })
     setReviewOpen(false)
     setPaymentDrawerOpen(false)
-    setHeaderDrawerOpen(false)
+    setScreenMode('DETAIL')
+    setSkuLookupOpen(false)
   }
 
   async function handleRemoveLine(lineId: string) {
@@ -585,6 +628,7 @@ export default function EnterSalesPage() {
   function clearPendingLine() {
     setEditingLineId(null)
     setLookupResult(null)
+    setSkuLookupOpen(false)
     setPendingLine(makeDefaultPendingLine(bootstrap))
   }
 
@@ -615,7 +659,8 @@ export default function EnterSalesPage() {
         await salesPosApi.patchHeader(activeTicket.id, patch)
         await refreshBootstrap()
       })
-      setHeaderDrawerOpen(false)
+      setScreenMode('DETAIL')
+      window.setTimeout(() => codeInputRef.current?.focus(), 40)
       message.success('Ticket header saved.')
     } catch (error) {
       message.error((error as Error).message)
@@ -892,13 +937,141 @@ export default function EnterSalesPage() {
     )
   }
 
+  const headerEditor = (
+    <Space direction="vertical" style={{ width: '100%' }} size="large">
+      <Form layout="vertical">
+        <Row gutter={[12, 12]}>
+          <Col xs={24} md={12}>
+            <Form.Item label="Cashier">
+              <Select
+                showSearch
+                optionFilterProp="label"
+                value={headerDraft.cashierUserId}
+                options={bootstrap.employees.map((employee) => ({
+                  value: employee.id,
+                  label: `${employee.displayName}${employee.salespersonCode ? ` (${employee.salespersonCode})` : ''}`,
+                }))}
+                onChange={(value, option) => setHeaderDraft((current) => ({
+                  ...current,
+                  cashierUserId: value,
+                  cashierName: String((option as { label?: string }).label ?? current.cashierName ?? ''),
+                }))}
+              />
+            </Form.Item>
+          </Col>
+          <Col xs={24} md={12}>
+            <Form.Item label="Transaction">
+              <Select
+                value={headerDraft.transactionType}
+                options={transactionOptions.map((option) => ({ value: option.value, label: option.label }))}
+                onChange={(value) => setHeaderDraft((current) => ({ ...current, transactionType: value }))}
+              />
+            </Form.Item>
+          </Col>
+          <Col span={24}>
+            <Form.Item label="Customer">
+              <AutoComplete
+                value={customerQuery}
+                options={customerOptions.map((customer) => ({
+                  value: customer.id,
+                  label: `${customer.accountNumber} - ${customer.displayName}`,
+                }))}
+                onSearch={(value) => setCustomerQuery(value)}
+                onSelect={handleCustomerSelect}
+                onChange={(value) => setCustomerQuery(value)}
+                placeholder="Search by account, name, phone, or email"
+              />
+            </Form.Item>
+          </Col>
+          <Col xs={24} md={8}>
+            <Form.Item label="Discount %">
+              <InputNumber
+                style={{ width: '100%' }}
+                value={headerDraft.headerDiscountPct ?? undefined}
+                onChange={(value) => setHeaderDraft((current) => ({ ...current, headerDiscountPct: value == null ? null : Number(value) }))}
+              />
+            </Form.Item>
+          </Col>
+          <Col xs={24} md={8}>
+            <Form.Item label="Ship-To State">
+              <Input
+                value={headerDraft.shipToState ?? ''}
+                onChange={(event) => setHeaderDraft((current) => ({ ...current, shipToState: event.target.value }))}
+              />
+            </Form.Item>
+          </Col>
+          <Col xs={24} md={8}>
+            <Form.Item label="Promo Code">
+              <Select
+                showSearch
+                allowClear
+                optionFilterProp="label"
+                value={headerDraft.promotionCode || undefined}
+                options={bootstrap.promotions.map((promotion) => ({
+                  value: promotion.code,
+                  label: `${promotion.code} - ${promotion.description}`,
+                }))}
+                onChange={(value) => setHeaderDraft((current) => ({ ...current, promotionCode: value ?? null }))}
+              />
+            </Form.Item>
+          </Col>
+        </Row>
+      </Form>
+
+      <Space wrap>
+        <Button type="primary" onClick={() => void saveHeader()}>
+          Save / SKU Detail
+        </Button>
+        <Button onClick={() => message.info('Mail Detail will use the selected customer for receipt delivery.')}>
+          Mail Detail
+        </Button>
+        <Button onClick={showManagerOptionsSummary}>Manager Options</Button>
+        <Button
+          onClick={() => {
+            setScreenMode('DETAIL')
+            setTimeout(() => codeInputRef.current?.focus(), 40)
+          }}
+        >
+          UPC Price Scan
+        </Button>
+        <Button onClick={() => setPayoutOpen(true)} disabled={!shift}>
+          Payouts
+        </Button>
+        <Button onClick={() => setCloseOpen(true)} disabled={!shift}>
+          Close Batch
+        </Button>
+        <Button onClick={() => setReclaimOpen(true)} disabled={!shift}>
+          Reclaim Ticket
+        </Button>
+        <Button onClick={() => setReprintOpen(true)} disabled={!shift}>
+          Reprint Ticket
+        </Button>
+        <Button onClick={() => message.info('Mail List integration will follow the CRM mail-detail expansion.')}>
+          Mail List
+        </Button>
+        <Button onClick={() => setScreenMode('DETAIL')}>Exit</Button>
+      </Space>
+    </Space>
+  )
+
+  const skuLookupModal = (
+    <SkuLookup
+      open={skuLookupOpen}
+      onClose={() => setSkuLookupOpen(false)}
+      onSelect={(picked) => {
+        void handleSkuLookupSelect(picked)
+      }}
+      initialQuery={skuLookupInitialQuery}
+    />
+  )
+
   return (
     <Space direction="vertical" size="large" style={{ width: '100%' }}>
       <Alert
         type="info"
         showIcon
         message="Amounts in Lempira (HNL)"
-        description="This browser workspace preserves the RICS Enter Sales flow: shift open, ticket detail, payment, reclaim, payout, reprint, and close batch."
+        description="This browser workspace preserves the RICS Enter Sales flow: shift open, ticket header, ticket detail, payment, reclaim, payout, reprint, and close batch."
       />
 
       {!shift ? (
@@ -987,208 +1160,216 @@ export default function EnterSalesPage() {
             </Space>
           </Card>
 
-          <Row gutter={[16, 16]}>
-            <Col xs={24} xl={16}>
-              <Card title={editingLineId ? 'Modify Ticket Line' : 'Ticket Detail'} styles={{ body: { paddingTop: 16 } }}>
-                <Row gutter={[12, 12]}>
-                  <Col xs={24} md={10}>
-                    <Typography.Text strong>UPC / SKU</Typography.Text>
-                    <Input
-                      ref={codeInputRef}
-                      value={pendingLine.code}
-                      onChange={(event) => setPendingLine((current) => ({ ...current, code: event.target.value }))}
-                      onPressEnter={() => {
-                        void handleLookupProduct()
-                      }}
-                      placeholder="Scan barcode or type SKU"
-                    />
-                  </Col>
-                  <Col xs={24} md={6}>
-                    <Typography.Text strong>Column</Typography.Text>
-                    <Select
-                      allowClear
-                      value={pendingLine.columnLabel || undefined}
-                      style={{ width: '100%' }}
-                      options={(lookupResult?.columns ?? []).map((column) => ({ value: column, label: column }))}
-                      onChange={(value) => setPendingLine((current) => ({ ...current, columnLabel: value ?? '' }))}
-                    />
-                  </Col>
-                  <Col xs={24} md={6}>
-                    <Typography.Text strong>Row</Typography.Text>
-                    <Select
-                      allowClear
-                      value={pendingLine.rowLabel || undefined}
-                      style={{ width: '100%' }}
-                      options={(lookupResult?.rows ?? []).map((row) => ({ value: row, label: row }))}
-                      onChange={(value) => setPendingLine((current) => ({ ...current, rowLabel: value ?? '' }))}
-                    />
-                  </Col>
-                  <Col xs={24} md={2}>
-                    <Button style={{ marginTop: 24, width: '100%' }} onClick={() => void handleLookupProduct()}>
-                      Load
-                    </Button>
-                  </Col>
+          {screenMode === 'HEADER' ? (
+            <Card title="Ticket Header" styles={{ body: { paddingTop: 16 } }}>
+              {headerEditor}
+            </Card>
+          ) : (
+            <>
+              <Row gutter={[16, 16]}>
+                <Col xs={24} xl={16}>
+                  <Card title={editingLineId ? 'Modify Ticket Line' : 'Ticket Detail'} styles={{ body: { paddingTop: 16 } }}>
+                    <Row gutter={[12, 12]}>
+                      <Col xs={24} md={10}>
+                        <Typography.Text strong>UPC / SKU</Typography.Text>
+                        <Input
+                          ref={codeInputRef}
+                          value={pendingLine.code}
+                          onChange={(event) => setPendingLine((current) => ({ ...current, code: event.target.value }))}
+                          onPressEnter={() => {
+                            void handleLookupProduct()
+                          }}
+                          placeholder="Scan barcode or type SKU"
+                        />
+                      </Col>
+                      <Col xs={24} md={6}>
+                        <Typography.Text strong>Column</Typography.Text>
+                        <Select
+                          allowClear
+                          value={pendingLine.columnLabel || undefined}
+                          style={{ width: '100%' }}
+                          options={(lookupResult?.columns ?? []).map((column) => ({ value: column, label: column }))}
+                          onChange={(value) => setPendingLine((current) => ({ ...current, columnLabel: value ?? '' }))}
+                        />
+                      </Col>
+                      <Col xs={24} md={6}>
+                        <Typography.Text strong>Row</Typography.Text>
+                        <Select
+                          allowClear
+                          value={pendingLine.rowLabel || undefined}
+                          style={{ width: '100%' }}
+                          options={(lookupResult?.rows ?? []).map((row) => ({ value: row, label: row }))}
+                          onChange={(value) => setPendingLine((current) => ({ ...current, rowLabel: value ?? '' }))}
+                        />
+                      </Col>
+                      <Col xs={24} md={2}>
+                        <Button style={{ marginTop: 24, width: '100%' }} onClick={() => void handleLookupProduct()}>
+                          Lookup
+                        </Button>
+                      </Col>
 
-                  <Col xs={24} md={6}>
-                    <Typography.Text strong>Qty</Typography.Text>
-                    <InputNumber
-                      style={{ width: '100%' }}
-                      value={pendingLine.quantity}
-                      onChange={(value) => setPendingLine((current) => ({ ...current, quantity: Number(value ?? 1) }))}
-                    />
-                  </Col>
-                  <Col xs={24} md={6}>
-                    <Typography.Text strong>Price</Typography.Text>
-                    <InputNumber
-                      style={{ width: '100%' }}
-                      value={pendingLine.unitPrice}
-                      onChange={(value) => setPendingLine((current) => ({ ...current, unitPrice: Number(value ?? 0), priceMode: 'MANUAL' }))}
-                    />
-                  </Col>
-                  <Col xs={24} md={6}>
-                    <Typography.Text strong>Discount %</Typography.Text>
-                    <InputNumber
-                      style={{ width: '100%' }}
-                      value={pendingLine.discountPct ?? undefined}
-                      onChange={(value) => setPendingLine((current) => ({ ...current, discountPct: value == null ? null : Number(value) }))}
-                    />
-                  </Col>
-                  <Col xs={24} md={6}>
-                    <Typography.Text strong>Discount Amt</Typography.Text>
-                    <InputNumber
-                      style={{ width: '100%' }}
-                      value={pendingLine.discountAmount ?? undefined}
-                      onChange={(value) => setPendingLine((current) => ({ ...current, discountAmount: value == null ? null : Number(value) }))}
-                    />
-                  </Col>
+                      <Col xs={24} md={6}>
+                        <Typography.Text strong>Qty</Typography.Text>
+                        <InputNumber
+                          style={{ width: '100%' }}
+                          value={pendingLine.quantity}
+                          onChange={(value) => setPendingLine((current) => ({ ...current, quantity: Number(value ?? 1) }))}
+                        />
+                      </Col>
+                      <Col xs={24} md={6}>
+                        <Typography.Text strong>Price</Typography.Text>
+                        <InputNumber
+                          style={{ width: '100%' }}
+                          value={pendingLine.unitPrice}
+                          onChange={(value) => setPendingLine((current) => ({ ...current, unitPrice: Number(value ?? 0), priceMode: 'MANUAL' }))}
+                        />
+                      </Col>
+                      <Col xs={24} md={6}>
+                        <Typography.Text strong>Discount %</Typography.Text>
+                        <InputNumber
+                          style={{ width: '100%' }}
+                          value={pendingLine.discountPct ?? undefined}
+                          onChange={(value) => setPendingLine((current) => ({ ...current, discountPct: value == null ? null : Number(value) }))}
+                        />
+                      </Col>
+                      <Col xs={24} md={6}>
+                        <Typography.Text strong>Discount Amt</Typography.Text>
+                        <InputNumber
+                          style={{ width: '100%' }}
+                          value={pendingLine.discountAmount ?? undefined}
+                          onChange={(value) => setPendingLine((current) => ({ ...current, discountAmount: value == null ? null : Number(value) }))}
+                        />
+                      </Col>
 
-                  <Col xs={24} md={8}>
-                    <Typography.Text strong>Salesperson</Typography.Text>
-                    <Select
-                      showSearch
-                      optionFilterProp="label"
-                      style={{ width: '100%' }}
-                      value={pendingLine.salespersonUserId ?? undefined}
-                      options={bootstrap.employees.map((employee) => ({
-                        value: employee.id,
-                        label: `${employee.displayName}${employee.salespersonCode ? ` (${employee.salespersonCode})` : ''}`,
-                        employee,
-                      }))}
-                      onChange={(value, option) =>
-                        setPendingLine((current) => ({
-                          ...current,
-                          salespersonUserId: value,
-                          salespersonCode: (option as { employee?: { salespersonCode?: string | null } }).employee?.salespersonCode ?? null,
-                          salespersonName: String((option as { label?: string }).label ?? current.salespersonName ?? ''),
-                        }))
-                      }
-                    />
-                  </Col>
-                  <Col xs={24} md={8}>
-                    <Typography.Text strong>Return Code</Typography.Text>
-                    <Select
-                      allowClear
-                      showSearch
-                      optionFilterProp="label"
-                      style={{ width: '100%' }}
-                      value={pendingLine.returnCode ?? undefined}
-                      options={bootstrap.returnCodes.map((code) => ({
-                        value: code.code,
-                        label: `${code.code} - ${code.description}`,
-                      }))}
-                      onChange={(value) => setPendingLine((current) => ({ ...current, returnCode: value ?? null }))}
-                    />
-                  </Col>
-                  <Col xs={24} md={8}>
-                    <Typography.Text strong>Price Mode</Typography.Text>
-                    <Select
-                      style={{ width: '100%' }}
-                      value={pendingLine.priceMode}
-                      options={[
-                        ...(lookupResult?.priceSlots ?? []).map((slot) => ({
-                          value: slot.code,
-                          label: `${slot.label} (${formatMoney(slot.amount)})`,
-                        })),
-                        { value: 'MANUAL', label: 'Manual' },
-                      ]}
-                      onChange={(value) => {
-                        if (lookupResult && value !== 'MANUAL') {
-                          const slot = lookupResult.priceSlots.find((candidate) => candidate.code === value)
-                          setPendingLine((current) => ({
-                            ...current,
-                            priceMode: value,
-                            unitPrice: slot?.amount ?? current.unitPrice,
-                          }))
-                          return
-                        }
-                        setPendingLine((current) => ({ ...current, priceMode: value }))
-                      }}
-                    />
-                  </Col>
+                      <Col xs={24} md={8}>
+                        <Typography.Text strong>Salesperson</Typography.Text>
+                        <Select
+                          showSearch
+                          optionFilterProp="label"
+                          style={{ width: '100%' }}
+                          value={pendingLine.salespersonUserId ?? undefined}
+                          options={bootstrap.employees.map((employee) => ({
+                            value: employee.id,
+                            label: `${employee.displayName}${employee.salespersonCode ? ` (${employee.salespersonCode})` : ''}`,
+                            employee,
+                          }))}
+                          onChange={(value, option) =>
+                            setPendingLine((current) => ({
+                              ...current,
+                              salespersonUserId: value,
+                              salespersonCode: (option as { employee?: { salespersonCode?: string | null } }).employee?.salespersonCode ?? null,
+                              salespersonName: String((option as { label?: string }).label ?? current.salespersonName ?? ''),
+                            }))
+                          }
+                        />
+                      </Col>
+                      <Col xs={24} md={8}>
+                        <Typography.Text strong>Return Code</Typography.Text>
+                        <Select
+                          allowClear
+                          showSearch
+                          optionFilterProp="label"
+                          style={{ width: '100%' }}
+                          value={pendingLine.returnCode ?? undefined}
+                          options={bootstrap.returnCodes.map((code) => ({
+                            value: code.code,
+                            label: `${code.code} - ${code.description}`,
+                          }))}
+                          onChange={(value) => setPendingLine((current) => ({ ...current, returnCode: value ?? null }))}
+                        />
+                      </Col>
+                      <Col xs={24} md={8}>
+                        <Typography.Text strong>Price Mode</Typography.Text>
+                        <Select
+                          style={{ width: '100%' }}
+                          value={pendingLine.priceMode}
+                          options={[
+                            ...(lookupResult?.priceSlots ?? []).map((slot) => ({
+                              value: slot.code,
+                              label: `${slot.label} (${formatMoney(slot.amount)})`,
+                            })),
+                            { value: 'MANUAL', label: 'Manual' },
+                          ]}
+                          onChange={(value) => {
+                            if (lookupResult && value !== 'MANUAL') {
+                              const slot = lookupResult.priceSlots.find((candidate) => candidate.code === value)
+                              setPendingLine((current) => ({
+                                ...current,
+                                priceMode: value,
+                                unitPrice: slot?.amount ?? current.unitPrice,
+                              }))
+                              return
+                            }
+                            setPendingLine((current) => ({ ...current, priceMode: value }))
+                          }}
+                        />
+                      </Col>
 
-                  <Col span={24}>
-                    <Typography.Text strong>SKU Comment</Typography.Text>
-                    <Input.TextArea
-                      rows={3}
-                      value={pendingLine.comment ?? ''}
-                      onChange={(event) => setPendingLine((current) => ({ ...current, comment: event.target.value }))}
-                    />
-                  </Col>
-                </Row>
+                      <Col span={24}>
+                        <Typography.Text strong>SKU Comment</Typography.Text>
+                        <Input.TextArea
+                          rows={3}
+                          value={pendingLine.comment ?? ''}
+                          onChange={(event) => setPendingLine((current) => ({ ...current, comment: event.target.value }))}
+                        />
+                      </Col>
+                    </Row>
 
-                <Divider />
+                    <Divider />
 
-                <Space wrap>
-                  <Button type="primary" onClick={() => void saveLine(false)} loading={busyAction === 'add-line' || busyAction === 'update-line'} disabled={!canOperate}>
-                    {editingLineId ? 'Save Changes' : 'Save / Next SKU'}
-                  </Button>
-                  <Button onClick={() => void saveLine(true)} disabled={!canOperate}>
-                    Save / Tender
-                  </Button>
-                  <Button danger onClick={() => void handleVoidTicket()} disabled={!canOperate}>
-                    Void
-                  </Button>
-                  <Button onClick={clearPendingLine}>Clear</Button>
-                  <Button onClick={handleNextPrice}>Next Price</Button>
-                  <Button onClick={() => setHeaderDrawerOpen(true)}>Change Header</Button>
-                  <Button onClick={() => setReviewOpen(true)}>Review</Button>
-                  <Button onClick={reversePendingQuantity}>Reverse Qty</Button>
-                </Space>
+                    <Space wrap>
+                      <Button type="primary" onClick={() => void saveLine(false)} loading={busyAction === 'add-line' || busyAction === 'update-line'} disabled={!canOperate}>
+                        {editingLineId ? 'Save Changes' : 'Save / Next SKU'}
+                      </Button>
+                      <Button onClick={() => void saveLine(true)} disabled={!canOperate}>
+                        Save / Tender
+                      </Button>
+                      <Button danger onClick={() => void handleVoidTicket()} disabled={!canOperate}>
+                        Void
+                      </Button>
+                      <Button onClick={clearPendingLine}>Clear</Button>
+                      <Button onClick={handleNextPrice}>Next Price</Button>
+                      <Button onClick={() => setScreenMode('HEADER')}>Change Header</Button>
+                      <Button onClick={() => setReviewOpen(true)}>Review</Button>
+                      <Button onClick={reversePendingQuantity}>Reverse Qty</Button>
+                    </Space>
+                  </Card>
+                </Col>
+
+                <Col xs={24} xl={8}>
+                  <Card title="Totals Rail" styles={{ body: { paddingTop: 12 } }}>
+                    <Space direction="vertical" style={{ width: '100%' }} size="middle">
+                      <Statistic title="Qty" value={totalQuantity} />
+                      <Statistic title="Subtotal" value={formatMoney(activeTicket?.subtotal)} />
+                      <Statistic title="15% ISV" value={formatMoney(activeTicket?.taxTotal)} />
+                      <Statistic title="ISV.Ad" value={formatMoney(activeTicket?.secondaryTaxTotal)} />
+                      <Statistic title={bootstrap.otherChargeLabel} value={formatMoney(activeTicket?.otherCharges)} />
+                      <Statistic title="Total" value={formatMoney(activeTicket?.grandTotal)} valueStyle={{ color: '#0b5c44', fontWeight: 700 }} />
+                      {lookupResult ? (
+                        <Descriptions size="small" column={1} bordered>
+                          <Descriptions.Item label="Loaded SKU">{lookupResult.code}</Descriptions.Item>
+                          <Descriptions.Item label="Description">{lookupResult.description}</Descriptions.Item>
+                          <Descriptions.Item label="Size Grid">{lookupResult.sizeTypeDescription || '-'}</Descriptions.Item>
+                        </Descriptions>
+                      ) : null}
+                    </Space>
+                  </Card>
+                </Col>
+              </Row>
+
+              <Card title="SKUs already entered on ticket">
+                <Table
+                  size="small"
+                  rowKey="id"
+                  pagination={false}
+                  columns={linesColumns}
+                  dataSource={activeTicket?.lines ?? []}
+                  locale={{ emptyText: 'No items on the current ticket.' }}
+                  scroll={{ x: 980 }}
+                />
               </Card>
-            </Col>
-
-            <Col xs={24} xl={8}>
-              <Card title="Totals Rail" styles={{ body: { paddingTop: 12 } }}>
-                <Space direction="vertical" style={{ width: '100%' }} size="middle">
-                  <Statistic title="Qty" value={totalQuantity} />
-                  <Statistic title="Subtotal" value={formatMoney(activeTicket?.subtotal)} />
-                  <Statistic title="15% ISV" value={formatMoney(activeTicket?.taxTotal)} />
-                  <Statistic title="ISV.Ad" value={formatMoney(activeTicket?.secondaryTaxTotal)} />
-                  <Statistic title={bootstrap.otherChargeLabel} value={formatMoney(activeTicket?.otherCharges)} />
-                  <Statistic title="Total" value={formatMoney(activeTicket?.grandTotal)} valueStyle={{ color: '#0b5c44', fontWeight: 700 }} />
-                  {lookupResult ? (
-                    <Descriptions size="small" column={1} bordered>
-                      <Descriptions.Item label="Loaded SKU">{lookupResult.code}</Descriptions.Item>
-                      <Descriptions.Item label="Description">{lookupResult.description}</Descriptions.Item>
-                      <Descriptions.Item label="Size Grid">{lookupResult.sizeTypeDescription || '-'}</Descriptions.Item>
-                    </Descriptions>
-                  ) : null}
-                </Space>
-              </Card>
-            </Col>
-          </Row>
-
-          <Card title="SKUs already entered on ticket">
-            <Table
-              size="small"
-              rowKey="id"
-              pagination={false}
-              columns={linesColumns}
-              dataSource={activeTicket?.lines ?? []}
-              locale={{ emptyText: 'No items on the current ticket.' }}
-              scroll={{ x: 980 }}
-            />
-          </Card>
+            </>
+          )}
         </>
       )}
 
@@ -1371,127 +1552,7 @@ export default function EnterSalesPage() {
         </Space>
       </Drawer>
 
-      <Drawer
-        title="Change Ticket Header"
-        width={680}
-        open={headerDrawerOpen}
-        onClose={() => setHeaderDrawerOpen(false)}
-      >
-        <Space direction="vertical" style={{ width: '100%' }} size="large">
-          <Form layout="vertical">
-            <Row gutter={[12, 12]}>
-              <Col xs={24} md={12}>
-                <Form.Item label="Cashier">
-                  <Select
-                    showSearch
-                    optionFilterProp="label"
-                    value={headerDraft.cashierUserId}
-                    options={bootstrap.employees.map((employee) => ({
-                      value: employee.id,
-                      label: `${employee.displayName}${employee.salespersonCode ? ` (${employee.salespersonCode})` : ''}`,
-                    }))}
-                    onChange={(value, option) => setHeaderDraft((current) => ({
-                      ...current,
-                      cashierUserId: value,
-                      cashierName: String((option as { label?: string }).label ?? current.cashierName ?? ''),
-                    }))}
-                  />
-                </Form.Item>
-              </Col>
-              <Col xs={24} md={12}>
-                <Form.Item label="Transaction">
-                  <Select
-                    value={headerDraft.transactionType}
-                    options={transactionOptions.map((option) => ({ value: option.value, label: option.label }))}
-                    onChange={(value) => setHeaderDraft((current) => ({ ...current, transactionType: value }))}
-                  />
-                </Form.Item>
-              </Col>
-              <Col span={24}>
-                <Form.Item label="Customer">
-                  <AutoComplete
-                    value={customerQuery}
-                    options={customerOptions.map((customer) => ({
-                      value: customer.id,
-                      label: `${customer.accountNumber} - ${customer.displayName}`,
-                    }))}
-                    onSearch={(value) => setCustomerQuery(value)}
-                    onSelect={handleCustomerSelect}
-                    onChange={(value) => setCustomerQuery(value)}
-                    placeholder="Search by account, name, phone, or email"
-                  />
-                </Form.Item>
-              </Col>
-              <Col xs={24} md={8}>
-                <Form.Item label="Discount %">
-                  <InputNumber
-                    style={{ width: '100%' }}
-                    value={headerDraft.headerDiscountPct ?? undefined}
-                    onChange={(value) => setHeaderDraft((current) => ({ ...current, headerDiscountPct: value == null ? null : Number(value) }))}
-                  />
-                </Form.Item>
-              </Col>
-              <Col xs={24} md={8}>
-                <Form.Item label="Ship-To State">
-                  <Input
-                    value={headerDraft.shipToState ?? ''}
-                    onChange={(event) => setHeaderDraft((current) => ({ ...current, shipToState: event.target.value }))}
-                  />
-                </Form.Item>
-              </Col>
-              <Col xs={24} md={8}>
-                <Form.Item label="Promo Code">
-                  <Select
-                    showSearch
-                    allowClear
-                    optionFilterProp="label"
-                    value={headerDraft.promotionCode || undefined}
-                    options={bootstrap.promotions.map((promotion) => ({
-                      value: promotion.code,
-                      label: `${promotion.code} - ${promotion.description}`,
-                    }))}
-                    onChange={(value) => setHeaderDraft((current) => ({ ...current, promotionCode: value ?? null }))}
-                  />
-                </Form.Item>
-              </Col>
-            </Row>
-          </Form>
-
-          <Space wrap>
-            <Button type="primary" onClick={() => void saveHeader()}>
-              Save / SKU Detail
-            </Button>
-            <Button onClick={() => message.info('Mail Detail will use the selected customer for receipt delivery.')}>
-              Mail Detail
-            </Button>
-            <Button onClick={showManagerOptionsSummary}>Manager Options</Button>
-            <Button
-              onClick={() => {
-                setHeaderDrawerOpen(false)
-                setTimeout(() => codeInputRef.current?.focus(), 40)
-              }}
-            >
-              UPC Price Scan
-            </Button>
-            <Button onClick={() => setPayoutOpen(true)} disabled={!shift}>
-              Payouts
-            </Button>
-            <Button onClick={() => setCloseOpen(true)} disabled={!shift}>
-              Close Batch
-            </Button>
-            <Button onClick={() => setReclaimOpen(true)} disabled={!shift}>
-              Reclaim Ticket
-            </Button>
-            <Button onClick={() => setReprintOpen(true)} disabled={!shift}>
-              Reprint Ticket
-            </Button>
-            <Button onClick={() => message.info('Mail List integration will follow the CRM mail-detail expansion.')}>
-              Mail List
-            </Button>
-            <Button onClick={() => setHeaderDrawerOpen(false)}>Exit</Button>
-          </Space>
-        </Space>
-      </Drawer>
+      {skuLookupModal}
 
       <Modal
         open={reviewOpen}

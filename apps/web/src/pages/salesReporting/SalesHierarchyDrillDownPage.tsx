@@ -16,7 +16,7 @@ import CriteriaInput from './CriteriaInput'
 import SaveAsTemplateButton from '../../components/reports/SaveAsTemplateButton'
 import SaveSnapshotButton from '../../components/reports/SaveSnapshotButton'
 import DateRangeControl from '../../components/reports/DateRangeControl'
-import { readDateSpecFromParams, resolveDateSpec, type DateSpec } from '../../utils/dateSpec'
+import { briefDateSpec, readDateSpecFromParams, resolveDateSpec, type DateSpec } from '../../utils/dateSpec'
 import ReportHeader from '../../components/reports/ReportHeader'
 import FilterChips, { type FilterChip } from '../../components/reports/FilterChips'
 import ReportEmptyState from '../../components/reports/ReportEmptyState'
@@ -331,6 +331,22 @@ export default function SalesHierarchyDrillDownPage() {
                 priorYear,
               })}
               getResultJson={() => data}
+              getDescriptor={() => {
+                const parts: string[] = [STORE_OPTION_LABELS[storeOption]]
+                const counts: string[] = []
+                if (selectedStores.length) counts.push(`stores ${selectedStores.length}`)
+                if (selectedCategories.length) counts.push(`cats ${selectedCategories.length}`)
+                if (selectedGroups.length) counts.push(`groups ${selectedGroups.length}`)
+                if (vendorsRaw.trim()) counts.push('vendors')
+                if (seasonsRaw.trim()) counts.push('seasons')
+                if (styleColorRaw.trim()) counts.push('style/color')
+                if (skusRaw.trim()) counts.push('skus')
+                if (keywordsRaw.trim()) counts.push('keywords')
+                if (counts.length) parts.push(counts.join(', '))
+                parts.push(briefDateSpec(dateSpec))
+                if (priorYear) parts.push('vs PY')
+                return parts.join(' · ')
+              }}
             />
           </>
         }

@@ -12,7 +12,7 @@ import type {
 import { getErrorMessage } from '../../utils/errors'
 import RunReportControls from './RunReportControls'
 import DateRangeControl from '../../components/reports/DateRangeControl'
-import { resolveDateSpec, type DateSpec } from '../../utils/dateSpec'
+import { briefDateSpec, resolveDateSpec, type DateSpec } from '../../utils/dateSpec'
 import ReportHeader from '../../components/reports/ReportHeader'
 import FilterChips from '../../components/reports/FilterChips'
 import ReportEmptyState from '../../components/reports/ReportEmptyState'
@@ -56,6 +56,19 @@ function effectiveVariant(choice: ReportChoice, separateStore: boolean): SalesPi
     return separateStore ? 'buyer-vendor-separate-store' : 'buyer-vendor'
   }
   return separateStore ? 'department-separate-store' : 'department'
+}
+
+/** Compact label for the variant — used as the dimensions portion of the
+ *  default snapshot title. */
+function variantDescriptor(variant: SalesPivotVariant): string {
+  switch (variant) {
+    case 'department': return 'Department'
+    case 'department-separate-store': return 'Department × Store'
+    case 'buyer': return 'Buyer'
+    case 'buyer-vendor': return 'Buyer × Vendor'
+    case 'buyer-vendor-separate-store': return 'Buyer × Vendor × Store'
+    case 'custom': return 'Custom'
+  }
 }
 
 /** Which choices honor the Separate Store checkbox. */
@@ -603,6 +616,20 @@ export default function SalesPivotPage() {
               separateStore,
             })}
             getResultJson={() => data}
+            getDescriptor={() => {
+              const v = query?.variant ?? effectiveVariant(choice, separateStore)
+              const parts: string[] = [variantDescriptor(v)]
+              const storesArr = query?.stores
+              if (storesArr && storesArr.length > 0) {
+                parts.push(
+                  storesArr.length <= 3
+                    ? `stores ${storesArr.join(',')}`
+                    : `${storesArr.length} stores`,
+                )
+              }
+              parts.push(briefDateSpec(dateSpec))
+              return parts.join(' · ')
+            }}
           />
         }
       />

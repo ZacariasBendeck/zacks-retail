@@ -481,10 +481,10 @@ router.get('/rics-sales-by-day-store', validateQuery(ricsSalesByDayStoreQuerySch
     comparisonEndDate: fullReport.comparisonEndDate,
     rows: block?.rows ?? [],
     weeklyTotals: block?.totals ?? {
-      netSales: 0, profit: 0, comparedNetSales: 0, comparedProfit: 0, dollarChange: 0, pctChange: null,
+      netSales: 0, profit: 0, comparedNetSales: 0, comparedProfit: 0, dollarChange: 0, profitChange: 0, pctChange: null,
     },
     storeTotals: block?.totals ?? {
-      netSales: 0, profit: 0, comparedNetSales: 0, comparedProfit: 0, dollarChange: 0, pctChange: null,
+      netSales: 0, profit: 0, comparedNetSales: 0, comparedProfit: 0, dollarChange: 0, profitChange: 0, pctChange: null,
     },
   };
 
@@ -950,33 +950,52 @@ router.get('/sell-through', validateQuery(sellThroughQuerySchema), async (req: R
 // the legacy 6-macro/556-599 women's-shoe MVP slice — so this schema is
 // looser than the on-hand / sales reports above.
 
-// `stores` is a comma-separated list of store numbers (e.g. "1,5,12"). The
-// Zod transform strips empties and coerces each token to an int so callers
-// can pass it as a single query string and the service receives a typed array.
-const storesListField = z
-  .string()
-  .optional()
-  .transform((raw) => {
-    if (!raw) return undefined;
-    const parsed = raw
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean)
-      .map((s) => Number(s))
-      .filter((n) => Number.isInteger(n) && n > 0);
-    return parsed.length > 0 ? parsed : undefined;
-  });
+// CSV-list helpers: the page sends `stores=1,5`, `sectors=4,5`, etc. The
+// Zod transforms strip empties and coerce each token to the right type so
+// the service receives typed arrays.
+function csvIntList() {
+  return z
+    .string()
+    .optional()
+    .transform((raw) => {
+      if (!raw) return undefined;
+      const parsed = raw
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .map((s) => Number(s))
+        .filter((n) => Number.isInteger(n) && n > 0);
+      return parsed.length > 0 ? parsed : undefined;
+    });
+}
+function csvStringList() {
+  return z
+    .string()
+    .optional()
+    .transform((raw) => {
+      if (!raw) return undefined;
+      const parsed = raw
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+      return parsed.length > 0 ? parsed : undefined;
+    });
+}
 
 const inventoryAgingQuerySchema = z.object({
   // `groupKey` is the value of whichever group dimension the operator drilled
-  // into (department description, sector number, vendor code, buyer code).
-  // Legacy callers may still send `department=…`; we accept both and prefer
-  // groupKey when set.
-  groupBy: z.enum(['department', 'sector', 'vendor', 'buyer']).default('department'),
+  // into (department description, sector number, vendor code, buyer code,
+  // store number). Legacy callers may still send `department=…`; we accept
+  // both and prefer groupKey when set.
+  groupBy: z.enum(['department', 'sector', 'vendor', 'buyer', 'store']).default('department'),
   groupKey: z.string().min(1).optional(),
   department: z.string().min(1).optional(),
   category: z.coerce.number().int().min(1).max(999).optional(),
-  stores: storesListField,
+  stores: csvIntList(),
+  // Criteria multi-selects.
+  buyers: csvStringList(),
+  sectors: csvIntList(),
+  departments: csvIntList(),
   bucketScheme: z.enum(['30_60_90', '60_120_180', '90_180_270']).default('30_60_90'),
   format: z.enum(['json', 'csv', 'xlsx']).default('json'),
   ...reportPaginationFields,
@@ -1032,6 +1051,9 @@ router.get('/inventory-aging', validateQuery(inventoryAgingQuerySchema), async (
     department?: string;
     category?: number;
     stores?: number[];
+    buyers?: string[];
+    sectors?: number[];
+    departments?: number[];
     bucketScheme: inventoryAgingPg.BucketScheme;
     format: 'json' | 'csv' | 'xlsx';
     page: number;
@@ -1040,13 +1062,22 @@ router.get('/inventory-aging', validateQuery(inventoryAgingQuerySchema), async (
     order?: 'asc' | 'desc';
   };
   const effectiveGroupKey = query.groupKey ?? query.department;
+  const detailFilters = {
+    groupKey: effectiveGroupKey,
+    category: query.category,
+    stores: query.stores,
+    buyers: query.buyers,
+    sectors: query.sectors,
+    departments: query.departments,
+  };
 
   if (query.format === 'csv' || query.format === 'xlsx') {
-    const detailsResult = await inventoryAgingPg.getAgingDetails({
-      groupKey: effectiveGroupKey,
-      category: query.category,
-      stores: query.stores,
-    }, undefined, query.bucketScheme, query.groupBy);
+    const detailsResult = await inventoryAgingPg.getAgingDetails(
+      detailFilters,
+      undefined,
+      query.bucketScheme,
+      query.groupBy,
+    );
     const details = detailsResult.data;
 
     if (query.format === 'xlsx') {
@@ -1123,16 +1154,16 @@ router.get('/inventory-aging', validateQuery(inventoryAgingQuerySchema), async (
   const agingPaginationParams = { page: query.page, pageSize: query.pageSize, sort: query.sort, order: query.order };
 
   if (effectiveGroupKey) {
-    const detailsResult = await inventoryAgingPg.getAgingDetails({
-      groupKey: effectiveGroupKey,
-      category: query.category,
-      stores: query.stores,
-    }, agingPaginationParams, query.bucketScheme, query.groupBy);
+    const detailsResult = await inventoryAgingPg.getAgingDetails(
+      detailFilters,
+      agingPaginationParams,
+      query.bucketScheme,
+      query.groupBy,
+    );
 
     res.json({
       groupBy: query.groupBy,
       groupKey: effectiveGroupKey,
-      // `department` retained for backward compatibility with older callers.
       department: query.groupBy === 'department' ? effectiveGroupKey : undefined,
       bucketScheme: query.bucketScheme,
       details: detailsResult.data,
@@ -1145,13 +1176,14 @@ router.get('/inventory-aging', validateQuery(inventoryAgingQuerySchema), async (
   const groups = await inventoryAgingPg.getAgingByGroup({
     groupBy: query.groupBy,
     stores: query.stores,
+    buyers: query.buyers,
+    sectors: query.sectors,
+    departments: query.departments,
     scheme: query.bucketScheme,
   });
   res.json({
     groupBy: query.groupBy,
     bucketScheme: query.bucketScheme,
-    // `departments` alias kept so older clients that only know about the
-    // department dimension still parse the response.
     departments: groups.map((g) => ({ ...g, department: g.groupLabel })),
     groups,
   });
@@ -1159,14 +1191,10 @@ router.get('/inventory-aging', validateQuery(inventoryAgingQuerySchema), async (
 });
 
 // ── Inventory Aging — dimensions endpoint ───────────────────────────
-//
-// Lightweight metadata for the page header: which stores currently hold
-// stock so the multi-select can populate. Group-by options are static and
-// known to the front end, so they are not fetched.
 router.get('/inventory-aging/dimensions', async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
-    const stores = await inventoryAgingPg.getStoresWithStock();
-    res.json({ stores });
+    const dims = await inventoryAgingPg.getAgingDimensions();
+    res.json(dims);
   } catch (err) {
     next(err);
   }

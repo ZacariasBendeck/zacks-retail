@@ -24,7 +24,6 @@
 import { prisma } from '../db/prisma';
 import { findNeighborSku } from './ricsProductAdapter';
 import { buildRicsImageUrl } from './ricsImageUrl';
-import { getInquirySalesRollup } from './salesReporting/ricsInquiryRollupAdapter';
 
 // ─────────────────────────── public types ─────────────────────────────────
 
@@ -92,11 +91,19 @@ export interface InquirySizeGrid {
 
 export interface InquiryGrids {
   onHand?: InquirySizeGrid;
+  onOrderCurrent?: InquirySizeGrid;
+  onOrderFuture?: InquirySizeGrid;
   model?: InquirySizeGrid;
   max?: InquirySizeGrid;
   reorder?: InquirySizeGrid;
   short?: InquirySizeGrid;
+  mtdSales?: InquirySizeGrid;
+  stdSales?: InquirySizeGrid;
+  ytdSales?: InquirySizeGrid;
+  lySales?: InquirySizeGrid;
+  singleColumn?: InquirySizeGrid;
   allStoresOnHand?: InquirySizeGrid;
+  allStoresOneRow?: InquirySizeGrid;
   allStoresSummary?: InquirySizeGrid;
 }
 
@@ -110,6 +117,70 @@ export interface InquiryInfo {
   lastMarkdownAt: string | null;
   perks: number | null;
   comment: string | null;
+}
+
+export interface InquiryInfoMonth {
+  label: string;
+  qty: number;
+  sales: number;
+}
+
+export interface InquiryInfoMetricCell {
+  gpPct: number | null;
+  roi: number | null;
+  turns: number | null;
+}
+
+export interface InquiryInfoDetail {
+  scopeLabel: string;
+  seasonCode: string | null;
+  seasonDescription: string | null;
+  labelCode: string | null;
+  groupCode: string | null;
+  groupDescription: string | null;
+  firstReceivedAt: string | null;
+  lastMarkdownAt: string | null;
+  perks: number | null;
+  keywords: string | null;
+  comment: string | null;
+  prior12Months: InquiryInfoMonth[];
+  totals: {
+    qty: number;
+    sales: number;
+  };
+  metrics: {
+    mtd: InquiryInfoMetricCell;
+    std: InquiryInfoMetricCell;
+    ytd: InquiryInfoMetricCell;
+  };
+}
+
+export interface InquiryTrendColumn {
+  label: string;
+  availWeek: number | null;
+  availPeriod: number | null;
+  recTranAdj: number | null;
+  sales: number | null;
+  stWeekly: number | null;
+  stPeriod: number | null;
+  periodReset: boolean;
+}
+
+export interface InquiryTrend {
+  scopeLabel: string;
+  columns: InquiryTrendColumn[];
+}
+
+export interface InquiryOpenPoRow {
+  poNumber: string;
+  storeId: number;
+  orderClass: 'AT_ONCE' | 'FUTURE';
+  dueDate: string | null;
+  rowLabel: string;
+  columnLabel: string;
+  orderedQty: number;
+  receivedQty: number;
+  openQty: number;
 }
 
 export interface InventoryInquiry {
@@ -453,6 +524,7 @@ interface AppInventorySkuRow {
   pictureFileName: string | null;
   perks: number | null;
   comment: string | null;
+  keywords: string | null;
 }
 
 interface StockLevelCellRow {
@@ -462,6 +534,80 @@ interface StockLevelCellRow {
   onHand: number;
   lastReceivedAt: Date | null;
   lastMovementAt: Date | null;
+}
+
+interface ReplenishmentTargetCellRow {
+  storeId: number;
+  rowLabel: string;
+  columnLabel: string;
+  modelQty: number;
+  maxQty: number;
+  reorderQty: number;
+}
+
+interface InventoryHistorySnapshotRow {
+  snapshotAsOf: Date | null;
+  storeId: number;
+  dateLastReceived: Date | null;
+  dateFirstReceived: Date | null;
+  lastPriceChangeAt: Date | null;
+  averageCost: number;
+  onHand: number;
+  currentOnOrder: number;
+  futureOnOrder: number;
+  modelQty: number;
+  weekQtySales: number;
+  weekDolSales: number;
+  weekProfit: number;
+  weekMarkdown: number;
+  monthQtySales: number;
+  monthDolSales: number;
+  monthProfit: number;
+  monthMarkdown: number;
+  seasonQtySales: number;
+  seasonDolSales: number;
+  seasonProfit: number;
+  seasonMarkdown: number;
+  yearQtySales: number;
+  yearDolSales: number;
+  yearProfit: number;
+  yearMarkdown: number;
+  lyYearQtySales: number;
+  lastMonthOnHand: number;
+  lastSeasonOnHand: number;
+  lastYearOnHand: number;
+  lastMonthInvValue: number;
+  trendWeek8BegOnHand: number;
+}
+
+interface InventoryHistoryTrendWeekRow {
+  storeId: number;
+  slotNumber: number;
+  beginOnHand: number;
+  onHandConstant: number;
+  sales: number;
+}
+
+interface PurchaseOrderOpenCellRow {
+  poNumber: string;
+  storeId: number;
+  orderClass: 'AT_ONCE' | 'FUTURE';
+  dueDate: Date | null;
+  rowLabel: string;
+  columnLabel: string;
+  orderedQty: number;
+  receivedQty: number;
+  openQty: number;
+}
+
+interface SalesHistorySizeRow {
+  storeId: number;
+  rowLabel: string;
+  columnLabel: string;
+  mtdSales: number;
+  stdSales: number;
+  ytdSales: number;
+  lySales: number;
 }
 
 async function loadVendorMap(): Promise<Map<string, VendorRow>> {
@@ -520,6 +666,7 @@ async function loadAppInventorySkuByCode(skuCode: string): Promise<AppInventoryS
       pictureFileName: true,
       perks: true,
       comment: true,
+      keywords: true,
     },
   });
   if (!row) {
@@ -557,6 +704,283 @@ async function loadStockLevelRowsForSkuId(skuId: string): Promise<StockLevelCell
     lastReceivedAt: row.lastReceivedAt,
     lastMovementAt: row.lastMovementAt,
   }));
+}
+
+async function loadReplenishmentTargetRowsForSkuId(skuId: string): Promise<ReplenishmentTargetCellRow[]> {
+  const rows = await prisma.replenishmentTarget.findMany({
+    where: { skuId },
+    select: {
+      storeId: true,
+      rowLabel: true,
+      columnLabel: true,
+      modelQty: true,
+      maxQty: true,
+      reorderQty: true,
+    },
+  });
+
+  return rows.map((row) => ({
+    storeId: row.storeId,
+    rowLabel: row.rowLabel.trim(),
+    columnLabel: row.columnLabel.trim(),
+    modelQty: Number(row.modelQty ?? 0),
+    maxQty: Number(row.maxQty ?? 0),
+    reorderQty: Number(row.reorderQty ?? 0),
+  }));
+}
+
+async function loadInventoryHistorySnapshotsForSkuCode(
+  skuCode: string,
+): Promise<InventoryHistorySnapshotRow[]> {
+  const rows = await prisma.inventoryHistorySnapshot.findMany({
+    where: { skuCode },
+    select: {
+      snapshotAsOf: true,
+      storeId: true,
+      dateLastReceived: true,
+      dateFirstReceived: true,
+      lastPriceChangeAt: true,
+      averageCost: true,
+      onHand: true,
+      currentOnOrder: true,
+      futureOnOrder: true,
+      modelQty: true,
+      weekQtySales: true,
+      weekDolSales: true,
+      weekProfit: true,
+      weekMarkdown: true,
+      monthQtySales: true,
+      monthDolSales: true,
+      monthProfit: true,
+      monthMarkdown: true,
+      seasonQtySales: true,
+      seasonDolSales: true,
+      seasonProfit: true,
+      seasonMarkdown: true,
+      yearQtySales: true,
+      yearDolSales: true,
+      yearProfit: true,
+      yearMarkdown: true,
+      lyYearQtySales: true,
+      lastMonthOnHand: true,
+      lastSeasonOnHand: true,
+      lastYearOnHand: true,
+      lastMonthInvValue: true,
+      trendWeek8BegOnHand: true,
+    },
+  });
+
+  return rows.map((row) => ({
+    snapshotAsOf: row.snapshotAsOf,
+    storeId: row.storeId,
+    dateLastReceived: row.dateLastReceived,
+    dateFirstReceived: row.dateFirstReceived,
+    lastPriceChangeAt: row.lastPriceChangeAt,
+    averageCost: Number(row.averageCost ?? 0),
+    onHand: row.onHand,
+    currentOnOrder: row.currentOnOrder,
+    futureOnOrder: row.futureOnOrder,
+    modelQty: row.modelQty,
+    weekQtySales: row.weekQtySales,
+    weekDolSales: Number(row.weekDolSales ?? 0),
+    weekProfit: Number(row.weekProfit ?? 0),
+    weekMarkdown: Number(row.weekMarkdown ?? 0),
+    monthQtySales: row.monthQtySales,
+    monthDolSales: Number(row.monthDolSales ?? 0),
+    monthProfit: Number(row.monthProfit ?? 0),
+    monthMarkdown: Number(row.monthMarkdown ?? 0),
+    seasonQtySales: row.seasonQtySales,
+    seasonDolSales: Number(row.seasonDolSales ?? 0),
+    seasonProfit: Number(row.seasonProfit ?? 0),
+    seasonMarkdown: Number(row.seasonMarkdown ?? 0),
+    yearQtySales: row.yearQtySales,
+    yearDolSales: Number(row.yearDolSales ?? 0),
+    yearProfit: Number(row.yearProfit ?? 0),
+    yearMarkdown: Number(row.yearMarkdown ?? 0),
+    lyYearQtySales: row.lyYearQtySales,
+    lastMonthOnHand: row.lastMonthOnHand,
+    lastSeasonOnHand: row.lastSeasonOnHand,
+    lastYearOnHand: row.lastYearOnHand,
+    lastMonthInvValue: Number(row.lastMonthInvValue ?? 0),
+    trendWeek8BegOnHand: row.trendWeek8BegOnHand,
+  }));
+}
+
+async function loadInventoryHistoryTrendWeeksForSkuCode(
+  skuCode: string,
+): Promise<InventoryHistoryTrendWeekRow[]> {
+  const rows = await prisma.inventoryHistoryTrendWeek.findMany({
+    where: {
+      snapshot: { skuCode },
+    },
+    select: {
+      slotNumber: true,
+      beginOnHand: true,
+      onHandConstant: true,
+      sales: true,
+      snapshot: {
+        select: {
+          storeId: true,
+        },
+      },
+    },
+    orderBy: [{ snapshot: { storeId: 'asc' } }, { slotNumber: 'asc' }],
+  });
+
+  return rows.map((row) => ({
+    storeId: row.snapshot.storeId,
+    slotNumber: row.slotNumber,
+    beginOnHand: row.beginOnHand,
+    onHandConstant: row.onHandConstant,
+    sales: row.sales,
+  }));
+}
+
+function startOfDay(d: Date): Date {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+}
+
+function addCalendarDays(d: Date, days: number): Date {
+  const copy = new Date(d);
+  copy.setDate(copy.getDate() + days);
+  return copy;
+}
+
+function resolveSeasonStart(today: Date): Date {
+  const t = startOfDay(today);
+  const month = t.getMonth() + 1;
+  if (month >= 2 && month <= 7) return new Date(t.getFullYear(), 1, 1);
+  if (month >= 8) return new Date(t.getFullYear(), 7, 1);
+  return new Date(t.getFullYear() - 1, 7, 1);
+}
+
+async function loadSalesHistorySizeRowsForSku(
+  skuId: string,
+  skuCode: string,
+): Promise<SalesHistorySizeRow[]> {
+  const today = startOfDay(new Date());
+  const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
+  const seasonStart = resolveSeasonStart(today);
+  const yearStart = new Date(today.getFullYear(), 0, 1);
+  const lastYearStart = new Date(today.getFullYear() - 1, 0, 1);
+  const currentYearStart = yearStart;
+  const endExclusive = addCalendarDays(today, 1);
+
+  const lines = await prisma.salesHistoryTicketLine.findMany({
+    where: {
+      OR: [
+        { skuId },
+        { skuCode },
+      ],
+      ticket: {
+        status: 'completed',
+        purchasedAt: {
+          gte: lastYearStart,
+          lt: endExclusive,
+        },
+      },
+    },
+    select: {
+      quantity: true,
+      isReturn: true,
+      columnLabel: true,
+      rowLabel: true,
+      sizeValue: true,
+      ticket: {
+        select: {
+          storeId: true,
+          purchasedAt: true,
+        },
+      },
+    },
+  });
+
+  const bucket = new Map<string, SalesHistorySizeRow>();
+  for (const line of lines) {
+    const storeId = Number(line.ticket.storeId ?? 0);
+    if (!Number.isFinite(storeId) || storeId <= 0) continue;
+    const rowLabel = (line.rowLabel ?? '').trim();
+    const columnLabel = (line.columnLabel ?? line.sizeValue ?? '').trim();
+    const key = `${storeId}|${rowLabel}|${columnLabel}`;
+    const qty = Number(line.quantity ?? 0);
+    const signedQty = line.isReturn ? -Math.abs(qty) : qty;
+    const entry = bucket.get(key) ?? {
+      storeId,
+      rowLabel,
+      columnLabel,
+      mtdSales: 0,
+      stdSales: 0,
+      ytdSales: 0,
+      lySales: 0,
+    };
+    const purchasedAt = line.ticket.purchasedAt;
+    if (purchasedAt >= monthStart) entry.mtdSales += signedQty;
+    if (purchasedAt >= seasonStart) entry.stdSales += signedQty;
+    if (purchasedAt >= yearStart) entry.ytdSales += signedQty;
+    if (purchasedAt >= lastYearStart && purchasedAt < currentYearStart) entry.lySales += signedQty;
+    bucket.set(key, entry);
+  }
+
+  return [...bucket.values()];
+}
+
+async function loadOpenPurchaseOrderCellRowsForSku(
+  skuId: string,
+  skuCode: string,
+  sizeType: SizeTypeRow | null,
+): Promise<PurchaseOrderOpenCellRow[]> {
+  const rows = await prisma.purchaseOrderLegacyLine.findMany({
+    where: {
+      OR: [{ skuId }, { skuCode }],
+      purchaseOrder: {
+        shipStore: { not: null },
+      },
+    },
+    select: {
+      poNumber: true,
+      rowLabel: true,
+      segment: true,
+      orderedQtys: true,
+      receivedQtys: true,
+      purchaseOrder: {
+        select: {
+          shipStore: true,
+          current: true,
+          dueDate: true,
+        },
+      },
+    },
+    orderBy: [{ poNumber: 'asc' }, { rowLabel: 'asc' }, { segment: 'asc' }],
+  });
+
+  const out: PurchaseOrderOpenCellRow[] = [];
+  for (const row of rows) {
+    const storeId = Number(row.purchaseOrder.shipStore ?? 0);
+    if (!Number.isFinite(storeId) || storeId <= 0) continue;
+    const firstCol = (Number(row.segment ?? 1) - 1) * 18;
+    for (let idx = 0; idx < row.orderedQtys.length; idx += 1) {
+      const orderedQty = Number(row.orderedQtys[idx] ?? 0);
+      const receivedQty = Number(row.receivedQtys[idx] ?? 0);
+      const openQty = orderedQty - receivedQty;
+      if (openQty <= 0) continue;
+      const absoluteIdx = firstCol + idx;
+      const columnLabel = sizeType?.columns[absoluteIdx]?.trim() || '';
+      if (!columnLabel && sizeType && absoluteIdx >= sizeType.maxColumns) continue;
+      out.push({
+        poNumber: row.poNumber,
+        storeId,
+        orderClass: row.purchaseOrder.current === false ? 'FUTURE' : 'AT_ONCE',
+        dueDate: row.purchaseOrder.dueDate,
+        rowLabel: row.rowLabel.trim(),
+        columnLabel,
+        orderedQty,
+        receivedQty,
+        openQty,
+      });
+    }
+  }
+
+  return out;
 }
 
 // ─────────────────────────── master lookup ────────────────────────────────
@@ -782,57 +1206,6 @@ function buildPricing(master: MasterRow): InquiryPricing {
   };
 }
 
-/**
- * Reshape the per-store InventoryCell array into summary grids.
- *
- * v1 live modes: onHand, model, max, reorder.
- * (short / allStoresOnHand / allStoresSummary require cross-store aggregation
- * that is non-trivial; left absent for now — the test only checks keys.length>0.)
- *
- * Grid shape: { columns: string[], rows: [{ label: string, cells: [{value}] }] }
- * Each row is one store; each cell is one column label.
- */
-function buildGrids(
-  storeEntries: InventoryInquiryStore[],
-  columnLabels: string[],
-  scopedStoreId?: number,
-): InquiryGrids {
-  if (!storeEntries.length) return {};
-
-  // Determine ordered columns: use the sizeType labels if available, else
-  // collect from cells in order.
-  const cols: string[] = columnLabels.length > 0
-    ? columnLabels
-    : (() => {
-        const seen = new Set<string>();
-        const out: string[] = [];
-        for (const s of storeEntries) {
-          for (const c of s.cells) {
-            if (c.columnLabel && !seen.has(c.columnLabel)) {
-              seen.add(c.columnLabel);
-              out.push(c.columnLabel);
-            }
-          }
-        }
-        return out;
-      })();
-
-  if (!cols.length) return {};
-
-  const scopedEntries =
-    scopedStoreId != null ? storeEntries.filter((store) => store.storeNumber === scopedStoreId) : storeEntries;
-
-  return {
-    onHand: buildStoreMetricGrid(scopedEntries, cols, (cell) => cell.onHand),
-    model: buildStoreMetricGrid(scopedEntries, cols, (cell) => cell.model),
-    max: buildStoreMetricGrid(scopedEntries, cols, (cell) => cell.maxQty),
-    reorder: buildStoreMetricGrid(scopedEntries, cols, (cell) => cell.reorder),
-    short: buildStoreMetricGrid(scopedEntries, cols, (cell) => Math.max((cell.model ?? 0) - (cell.onHand ?? 0), 0)),
-    allStoresOnHand: buildStoreMetricGrid(storeEntries, cols, (cell) => cell.onHand),
-    allStoresSummary: buildSummaryGrid(storeEntries, cols, 'On Hand', (cell) => cell.onHand),
-  };
-}
-
 function resolveCurrentSlotFromSku(currentPriceSlot: string | null | undefined): PriceSlot {
   const slot = (currentPriceSlot ?? '').trim().toUpperCase();
   if (slot === 'LIST') return 'LIST';
@@ -853,18 +1226,92 @@ function buildPricingFromSku(sku: AppInventorySkuRow): InquiryPricing {
   };
 }
 
+function naturalLabelCompare(a: string, b: string): number {
+  if (!a && !b) return 0;
+  if (!a) return -1;
+  if (!b) return 1;
+  return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+}
+
+function displayColumnLabel(label: string): string {
+  return label.trim() || 'Qty';
+}
+
+function displayRowLabel(label: string, fallback = 'Qty'): string {
+  return label.trim() || fallback;
+}
+
+function resolveRowLabels(storeEntries: InventoryInquiryStore[], sizeType: SizeTypeRow | null): string[] {
+  const present = new Set<string>();
+  for (const store of storeEntries) {
+    for (const cell of store.cells) {
+      present.add((cell.rowLabel ?? '').trim());
+    }
+  }
+
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const label of sizeType?.rows ?? []) {
+    const trimmed = label.trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    out.push(trimmed);
+  }
+  for (const label of [...present].sort(naturalLabelCompare)) {
+    if (seen.has(label)) continue;
+    seen.add(label);
+    out.push(label);
+  }
+
+  return out.length > 0 ? out : [''];
+}
+
+function resolveSelectedRow(selectedRow: string | null | undefined, rowLabels: string[]): string {
+  const trimmed = (selectedRow ?? '').trim();
+  if (trimmed && rowLabels.includes(trimmed)) return trimmed;
+  return rowLabels[0] ?? '';
+}
+
+function buildSingleStoreMetricGrid(
+  storeEntries: InventoryInquiryStore[],
+  storeId: number,
+  columns: string[],
+  rowLabels: string[],
+  getValue: (cell: InventoryCell) => number,
+): InquirySizeGrid {
+  const store = storeEntries.find((entry) => entry.storeNumber === storeId);
+  const rows = rowLabels.length > 0 ? rowLabels : [''];
+  return {
+    columns,
+    rows: rows.map((rowLabel) => {
+      const byCol = new Map<string, number>();
+      for (const cell of store?.cells ?? []) {
+        if ((cell.rowLabel ?? '').trim() !== rowLabel) continue;
+        const display = displayColumnLabel(cell.columnLabel);
+        byCol.set(display, (byCol.get(display) ?? 0) + getValue(cell));
+      }
+      return {
+        label: displayRowLabel(rowLabel),
+        cells: columns.map((column) => ({ value: byCol.get(column) ?? null })),
+      };
+    }),
+  };
+}
+
 function buildStoreMetricGrid(
   storeEntries: InventoryInquiryStore[],
   columns: string[],
   getValue: (cell: InventoryCell) => number,
+  rowFilter?: string | null,
 ): InquirySizeGrid {
   return {
     columns,
     rows: storeEntries.map((store) => {
       const byCol = new Map<string, number>();
       for (const cell of store.cells) {
-        if (!cell.columnLabel) continue;
-        byCol.set(cell.columnLabel, (byCol.get(cell.columnLabel) ?? 0) + getValue(cell));
+        if (rowFilter != null && (cell.rowLabel ?? '').trim() !== rowFilter.trim()) continue;
+        const display = displayColumnLabel(cell.columnLabel);
+        byCol.set(display, (byCol.get(display) ?? 0) + getValue(cell));
       }
       return {
         label: store.storeName ?? `Store ${store.storeNumber}`,
@@ -874,22 +1321,201 @@ function buildStoreMetricGrid(
   };
 }
 
-function buildSummaryGrid(
+function buildMetricRowByColumnGrid(
   storeEntries: InventoryInquiryStore[],
   columns: string[],
+  rowFilter: string,
   label: string,
   getValue: (cell: InventoryCell) => number,
-): InquirySizeGrid {
+): { label: string; cells: Array<{ value: number | null }> } {
   const totalsByCol = new Map<string, number>();
   for (const store of storeEntries) {
     for (const cell of store.cells) {
-      if (!cell.columnLabel) continue;
-      totalsByCol.set(cell.columnLabel, (totalsByCol.get(cell.columnLabel) ?? 0) + getValue(cell));
+      if ((cell.rowLabel ?? '').trim() !== rowFilter.trim()) continue;
+      const display = displayColumnLabel(cell.columnLabel);
+      totalsByCol.set(display, (totalsByCol.get(display) ?? 0) + getValue(cell));
     }
   }
   return {
+    label,
+    cells: columns.map((column) => ({ value: totalsByCol.get(column) ?? null })),
+  };
+}
+
+interface SummaryStoreMetrics {
+  onHand: number;
+  currentOnOrder: number;
+  futureOnOrder: number;
+  mtdSales: number;
+  stdSales: number;
+  ytdSales: number;
+  lySales: number;
+}
+
+function zeroSummaryStoreMetrics(): SummaryStoreMetrics {
+  return {
+    onHand: 0,
+    currentOnOrder: 0,
+    futureOnOrder: 0,
+    mtdSales: 0,
+    stdSales: 0,
+    ytdSales: 0,
+    lySales: 0,
+  };
+}
+
+function summarizeStoreMetrics(cells: InventoryCell[]): SummaryStoreMetrics {
+  return cells.reduce<SummaryStoreMetrics>(
+    (totals, cell) => ({
+      onHand: totals.onHand + cell.onHand,
+      currentOnOrder: totals.currentOnOrder + cell.currentOnOrder,
+      futureOnOrder: totals.futureOnOrder + cell.futureOnOrder,
+      mtdSales: totals.mtdSales + cell.mtdSales,
+      stdSales: totals.stdSales + cell.stdSales,
+      ytdSales: totals.ytdSales + cell.ytdSales,
+      lySales: totals.lySales + cell.lySales,
+    }),
+    zeroSummaryStoreMetrics(),
+  );
+}
+
+function buildSummaryMetricsByStore(
+  storeEntries: InventoryInquiryStore[],
+): Map<number, SummaryStoreMetrics> {
+  return new Map(
+    storeEntries.map((store) => [store.storeNumber, summarizeStoreMetrics(store.cells)]),
+  );
+}
+
+function buildStoreSummaryMetricsGrid(
+  metricsByStore: Map<number, SummaryStoreMetrics>,
+): InquirySizeGrid {
+  const storeIds = [...metricsByStore.entries()]
+    .filter(([, metrics]) =>
+      metrics.onHand !== 0
+      || metrics.currentOnOrder !== 0
+      || metrics.futureOnOrder !== 0
+      || metrics.mtdSales !== 0
+      || metrics.stdSales !== 0
+      || metrics.ytdSales !== 0
+      || metrics.lySales !== 0)
+    .map(([storeId]) => storeId)
+    .sort((a, b) => a - b);
+  const columns = [...storeIds.map((storeId) => String(storeId)), 'TOT'];
+  const metricRows: Array<{ label: string; getValue: (metrics: SummaryStoreMetrics) => number }> = [
+    { label: 'On Hand', getValue: (metrics) => metrics.onHand },
+    { label: 'On Ord (A/O)', getValue: (metrics) => metrics.currentOnOrder },
+    { label: 'On Ord (Fut)', getValue: (metrics) => metrics.futureOnOrder },
+    { label: 'MTD Sales', getValue: (metrics) => metrics.mtdSales },
+    { label: 'STD Sales', getValue: (metrics) => metrics.stdSales },
+    { label: 'YTD Sales', getValue: (metrics) => metrics.ytdSales },
+    { label: 'L/Y Sales', getValue: (metrics) => metrics.lySales },
+  ];
+
+  return {
     columns,
-    rows: [{ label, cells: columns.map((column) => ({ value: totalsByCol.get(column) ?? null })) }],
+    rows: metricRows.map((metricRow) => {
+      let total = 0;
+      const cells = storeIds.map((storeId) => {
+        const value = metricRow.getValue(metricsByStore.get(storeId)!);
+        total += value;
+        return { value: value === 0 ? null : value };
+      });
+      cells.push({ value: total === 0 ? null : total });
+      return {
+        label: metricRow.label,
+        cells,
+      };
+    }),
+  };
+}
+
+function buildAllStoresOneRowGrid(
+  storeEntries: InventoryInquiryStore[],
+  rowLabel: string,
+): InquirySizeGrid {
+  const activeStores = [...storeEntries]
+    .filter((store) => store.cells.some((cell) => (cell.rowLabel ?? '').trim() === rowLabel.trim()))
+    .sort((a, b) => a.storeNumber - b.storeNumber);
+  const columns = [...activeStores.map((store) => String(store.storeNumber)), 'TOT'];
+  const metricRows: Array<{ label: string; getValue: (cell: InventoryCell) => number }> = [
+    { label: 'On Hand', getValue: (cell) => cell.onHand },
+    { label: 'On Ord (A/O)', getValue: (cell) => cell.currentOnOrder },
+    { label: 'On Ord (Fut)', getValue: (cell) => cell.futureOnOrder },
+    { label: 'MTD Sales', getValue: (cell) => cell.mtdSales },
+    { label: 'STD Sales', getValue: (cell) => cell.stdSales },
+    { label: 'YTD Sales', getValue: (cell) => cell.ytdSales },
+    { label: 'L/Y Sales', getValue: (cell) => cell.lySales },
+  ];
+
+  return {
+    columns,
+    rows: metricRows.map((metricRow) => {
+      let total = 0;
+      const cells = activeStores.map((store) => {
+        const value = store.cells
+          .filter((cell) => (cell.rowLabel ?? '').trim() === rowLabel.trim())
+          .reduce((sum, cell) => sum + metricRow.getValue(cell), 0);
+        total += value;
+        return { value: value === 0 ? null : value };
+      });
+      cells.push({ value: total === 0 ? null : total });
+      return {
+        label: metricRow.label,
+        cells,
+      };
+    }),
+  };
+}
+
+function buildGrids(
+  storeEntries: InventoryInquiryStore[],
+  sizeType: SizeTypeRow | null,
+  summaryByStore: Map<number, SummaryStoreMetrics>,
+  scopedStoreId?: number,
+  selectedRow?: string | null,
+): InquiryGrids {
+  if (!storeEntries.length && summaryByStore.size === 0) return {};
+
+  const columns = mergeColumnLabels(storeEntries, sizeType?.columns ?? []);
+  const rowLabels = resolveRowLabels(storeEntries, sizeType);
+  const effectiveRow = resolveSelectedRow(selectedRow, rowLabels);
+  const scopedMetricGrid = (getValue: (cell: InventoryCell) => number): InquirySizeGrid =>
+    scopedStoreId != null
+      ? buildSingleStoreMetricGrid(storeEntries, scopedStoreId, columns, rowLabels, getValue)
+      : buildStoreMetricGrid(storeEntries, columns, getValue);
+
+  return {
+    onHand: scopedMetricGrid((cell) => cell.onHand),
+    onOrderCurrent: scopedMetricGrid((cell) => cell.currentOnOrder),
+    onOrderFuture: scopedMetricGrid((cell) => cell.futureOnOrder),
+    model: scopedMetricGrid((cell) => cell.model),
+    max: scopedMetricGrid((cell) => cell.maxQty),
+    reorder: scopedMetricGrid((cell) => cell.reorder),
+    short: scopedMetricGrid((cell) => cell.model - cell.onHand),
+    mtdSales: scopedMetricGrid((cell) => cell.mtdSales),
+    stdSales: scopedMetricGrid((cell) => cell.stdSales),
+    ytdSales: scopedMetricGrid((cell) => cell.ytdSales),
+    lySales: scopedMetricGrid((cell) => cell.lySales),
+    singleColumn: {
+      columns,
+      rows: [
+        buildMetricRowByColumnGrid(storeEntries, columns, effectiveRow, 'On Hand', (cell) => cell.onHand),
+        buildMetricRowByColumnGrid(storeEntries, columns, effectiveRow, 'On Ord (A/O)', (cell) => cell.currentOnOrder),
+        buildMetricRowByColumnGrid(storeEntries, columns, effectiveRow, 'On Ord (Fut)', (cell) => cell.futureOnOrder),
+        buildMetricRowByColumnGrid(storeEntries, columns, effectiveRow, 'Model', (cell) => cell.model),
+        buildMetricRowByColumnGrid(storeEntries, columns, effectiveRow, 'Short', (cell) => cell.model - cell.onHand),
+        buildMetricRowByColumnGrid(storeEntries, columns, effectiveRow, 'MTD Sales', (cell) => cell.mtdSales),
+        buildMetricRowByColumnGrid(storeEntries, columns, effectiveRow, 'STD Sales', (cell) => cell.stdSales),
+        buildMetricRowByColumnGrid(storeEntries, columns, effectiveRow, 'YTD Sales', (cell) => cell.ytdSales),
+      ],
+    },
+    allStoresOnHand: buildStoreMetricGrid(storeEntries, columns, (cell) => cell.onHand, effectiveRow),
+    allStoresOneRow:
+      rowLabels.length <= 1
+        ? buildStoreSummaryMetricsGrid(summaryByStore)
+        : buildAllStoresOneRowGrid(storeEntries, effectiveRow),
+    allStoresSummary: buildStoreSummaryMetricsGrid(summaryByStore),
   };
 }
 
@@ -906,50 +1532,76 @@ function mergeColumnLabels(storeEntries: InventoryInquiryStore[], preferred: str
   const seen = new Set<string>();
 
   for (const label of preferred) {
-    const trimmed = label.trim();
-    if (!trimmed || seen.has(trimmed)) continue;
-    seen.add(trimmed);
-    out.push(trimmed);
+    const display = displayColumnLabel(label);
+    if (seen.has(display)) continue;
+    seen.add(display);
+    out.push(display);
   }
 
   for (const store of storeEntries) {
     for (const cell of store.cells) {
-      const trimmed = cell.columnLabel.trim();
-      if (!trimmed || seen.has(trimmed)) continue;
-      seen.add(trimmed);
-      out.push(trimmed);
+      const display = displayColumnLabel(cell.columnLabel);
+      if (seen.has(display)) continue;
+      seen.add(display);
+      out.push(display);
     }
   }
 
-  return out;
+  return out.length > 0 ? out : ['Qty'];
 }
 
 // ─────────────────────────── public: Inventory Inquiry ────────────────────
 
-export async function getInventoryInquiry(sku: string, storeId?: number): Promise<InventoryInquiry | null> {
+export async function getInventoryInquiry(
+  sku: string,
+  storeId?: number,
+  selectedRow?: string | null,
+): Promise<InventoryInquiry | null> {
   const trimmed = (sku ?? '').trim();
   if (!trimmed) return null;
 
   const skuRow = await loadAppInventorySkuByCode(trimmed);
   if (!skuRow) return null;
 
-  const [sizeTypes, stockRows, salesRollup] = await Promise.all([
-    loadSizeTypeMap(),
+  const [stores, sizeTypes] = await Promise.all([loadStoreMap(), loadSizeTypeMap()]);
+  const sizeType = skuRow.sizeType != null ? sizeTypes.get(Number(skuRow.sizeType)) ?? null : null;
+  const effectiveStoreId =
+    storeId != null && Number.isFinite(Number(storeId)) ? Math.trunc(Number(storeId)) : undefined;
+  const skuCode = skuRow.code ?? skuRow.provisionalCode;
+
+  const [
+    stockRows,
+    targetRows,
+    historyRows,
+    historyMonthsByStore,
+    openPoRows,
+    salesCellRows,
+  ] = await Promise.all([
     loadStockLevelRowsForSkuId(skuRow.id),
-    getInquirySalesRollup(trimmed),
+    loadReplenishmentTargetRowsForSkuId(skuRow.id),
+    loadInventoryHistorySnapshotsForSkuCode(skuCode),
+    loadInquiryMonthlySalesByStore(skuCode),
+    loadOpenPurchaseOrderCellRowsForSku(skuRow.id, skuCode, sizeType),
+    loadSalesHistorySizeRowsForSku(skuRow.id, skuCode),
   ]);
 
-  const sizeType = skuRow.sizeType != null ? sizeTypes.get(Number(skuRow.sizeType)) ?? null : null;
-
-  const byStore = new Map<number, InventoryCell[]>();
-  let latestReceivedAt: Date | null = null;
-  for (const row of stockRows) {
-    const rowStore = Number(row.storeId ?? 0);
-    const cells: InventoryCell[] = [{
-      storeNumber: rowStore,
-      rowLabel: row.rowLabel,
-      columnLabel: row.columnLabel,
-      onHand: row.onHand,
+  const cellsByStore = new Map<number, Map<string, InventoryCell>>();
+  const ensureCell = (storeNumber: number, rowLabel: string, columnLabel: string): InventoryCell => {
+    const normalizedRow = (rowLabel ?? '').trim();
+    const normalizedColumn = (columnLabel ?? '').trim();
+    const cellKey = `${normalizedRow}|${normalizedColumn}`;
+    let byCell = cellsByStore.get(storeNumber);
+    if (!byCell) {
+      byCell = new Map<string, InventoryCell>();
+      cellsByStore.set(storeNumber, byCell);
+    }
+    const existing = byCell.get(cellKey);
+    if (existing) return existing;
+    const created: InventoryCell = {
+      storeNumber,
+      rowLabel: normalizedRow,
+      columnLabel: normalizedColumn,
+      onHand: 0,
       currentOnOrder: 0,
       futureOnOrder: 0,
       model: 0,
@@ -959,36 +1611,99 @@ export async function getInventoryInquiry(sku: string, storeId?: number): Promis
       stdSales: 0,
       ytdSales: 0,
       lySales: 0,
-    }];
-    const list = byStore.get(rowStore) ?? [];
-    list.push(...cells);
-    byStore.set(rowStore, list);
+    };
+    byCell.set(cellKey, created);
+    return created;
+  };
 
+  let latestReceivedAt: Date | null = null;
+  for (const row of stockRows) {
+    const cell = ensureCell(row.storeId, row.rowLabel, row.columnLabel);
+    cell.onHand = row.onHand;
     if (row.lastReceivedAt && (!latestReceivedAt || row.lastReceivedAt > latestReceivedAt)) {
       latestReceivedAt = row.lastReceivedAt;
     }
   }
 
-  const storeEntries: InventoryInquiryStore[] = [...byStore.entries()]
+  for (const row of targetRows) {
+    const cell = ensureCell(row.storeId, row.rowLabel, row.columnLabel);
+    cell.model = row.modelQty;
+    cell.maxQty = row.maxQty;
+    cell.reorder = row.reorderQty;
+  }
+
+  for (const row of openPoRows) {
+    const cell = ensureCell(row.storeId, row.rowLabel, row.columnLabel);
+    if (row.orderClass === 'AT_ONCE') cell.currentOnOrder += row.openQty;
+    else cell.futureOnOrder += row.openQty;
+  }
+
+  for (const row of salesCellRows) {
+    const cell = ensureCell(row.storeId, row.rowLabel, row.columnLabel);
+    cell.mtdSales += row.mtdSales;
+    cell.stdSales += row.stdSales;
+    cell.ytdSales += row.ytdSales;
+    cell.lySales += row.lySales;
+  }
+
+  for (const row of historyRows) {
+    if (row.dateLastReceived && (!latestReceivedAt || row.dateLastReceived > latestReceivedAt)) {
+      latestReceivedAt = row.dateLastReceived;
+    }
+  }
+
+  const storeEntries: InventoryInquiryStore[] = [...cellsByStore.entries()]
     .sort((a, b) => a[0] - b[0])
-    .map(([storeNumber, cells]) => ({
-      storeNumber,
-      storeName: `Store ${storeNumber}`,
-      cells,
-      totals: sumCellTotals(cells),
-    }));
+    .map(([storeNumber, byCell]) => {
+      const cells = [...byCell.values()].sort((a, b) => {
+        const rowCmp = naturalLabelCompare(a.rowLabel, b.rowLabel);
+        return rowCmp !== 0 ? rowCmp : naturalLabelCompare(a.columnLabel, b.columnLabel);
+      });
+      return {
+        storeNumber,
+        storeName: stores.get(storeNumber)?.name ?? `Store ${storeNumber}`,
+        cells,
+        totals: sumCellTotals(cells),
+      };
+    });
+  const scopedHistoryRows =
+    effectiveStoreId != null
+      ? historyRows.filter((row) => row.storeId === effectiveStoreId)
+      : historyRows;
+  const summaryByStore = buildSummaryMetricsByStoreFromHistory(
+    storeEntries,
+    historyRows,
+    historyMonthsByStore,
+  );
+  const summaryTotals = [...summaryByStore.values()].reduce(
+    (totals, metrics) => ({
+      ytdSales: totals.ytdSales + metrics.ytdSales,
+      lySales: totals.lySales + metrics.lySales,
+    }),
+    { ytdSales: 0, lySales: 0 },
+  );
+  const inventoryTotals = storeEntries.reduce<InventoryInquiryStore['totals']>(
+    (totals, store) => ({
+      onHand: totals.onHand + store.totals.onHand,
+      currentOnOrder: totals.currentOnOrder + store.totals.currentOnOrder,
+      futureOnOrder: totals.futureOnOrder + store.totals.futureOnOrder,
+      ytdSales: 0,
+      lySales: 0,
+    }),
+    { onHand: 0, currentOnOrder: 0, futureOnOrder: 0, ytdSales: 0, lySales: 0 },
+  );
 
   const brand = skuRow.manufacturer?.trim() || skuRow.vendorId?.trim() || null;
 
   const rowLabelsPresent = new Set<string>();
   for (const entry of storeEntries) {
-    for (const c of entry.cells) {
-      if (c.rowLabel) rowLabelsPresent.add(c.rowLabel);
+    for (const cell of entry.cells) {
+      if (cell.rowLabel) rowLabelsPresent.add(cell.rowLabel);
     }
   }
 
   return {
-    sku: skuRow.code ?? skuRow.provisionalCode,
+    sku: skuCode,
     master: {
       description: skuRow.descriptionRics?.trim() || null,
       brand,
@@ -1001,40 +1716,495 @@ export async function getInventoryInquiry(sku: string, storeId?: number): Promis
         code: sizeType?.code ?? skuRow.sizeType ?? null,
         desc: sizeType?.desc ?? null,
         rowLabels: sizeType
-          ? sizeType.rows.filter((lbl) => lbl && (rowLabelsPresent.size === 0 || rowLabelsPresent.has(lbl)))
+          ? sizeType.rows.filter((label) => label && (rowLabelsPresent.size === 0 || rowLabelsPresent.has(label)))
           : [...rowLabelsPresent],
-        columnLabels: sizeType ? sizeType.columns.filter((lbl) => !!lbl) : [],
+        columnLabels: sizeType ? sizeType.columns.filter((label) => !!label) : [],
       },
     },
     stores: storeEntries,
-    totals: storeEntries.reduce<InventoryInquiryStore['totals']>(
-      (acc, s) => ({
-        onHand: acc.onHand + s.totals.onHand,
-        currentOnOrder: acc.currentOnOrder + s.totals.currentOnOrder,
-        futureOnOrder: acc.futureOnOrder + s.totals.futureOnOrder,
-        ytdSales: acc.ytdSales + s.totals.ytdSales,
-        lySales: acc.lySales + s.totals.lySales,
-      }),
-      { onHand: 0, currentOnOrder: 0, futureOnOrder: 0, ytdSales: 0, lySales: 0 },
-    ),
+    totals: {
+      onHand: inventoryTotals.onHand,
+      currentOnOrder: inventoryTotals.currentOnOrder,
+      futureOnOrder: inventoryTotals.futureOnOrder,
+      ytdSales: summaryTotals.ytdSales,
+      lySales: summaryTotals.lySales,
+    },
     lastReceivedAt: latestReceivedAt?.toISOString() ?? null,
-    pricing:    buildPricingFromSku(skuRow),
-    rollup:     salesRollup,
-    grids:      buildGrids(
-      storeEntries,
-      sizeType ? sizeType.columns.filter((lbl) => !!lbl) : [],
-      storeId != null && Number.isFinite(Number(storeId)) ? Math.trunc(Number(storeId)) : undefined,
-    ),
+    pricing: buildPricingFromSku(skuRow),
+    rollup: buildInquiryRollupFromHistory(scopedHistoryRows),
+    grids: buildGrids(storeEntries, sizeType, summaryByStore, effectiveStoreId, selectedRow),
     pictureUrl: buildPictureUrlFromSku(skuRow),
     info: {
-      seasonCode:     skuRow.season?.trim()        || null,
-      labelCode:      skuRow.labelCode?.trim()     || null,
-      groupCode:      skuRow.groupCode?.trim()     || null,
-      firstReceivedAt: null, // Phase 2: not stored on InventoryMaster
+      seasonCode: skuRow.season?.trim() || null,
+      labelCode: skuRow.labelCode?.trim() || null,
+      groupCode: skuRow.groupCode?.trim() || null,
+      firstReceivedAt: null,
       lastMarkdownAt: null,
-      perks:          skuRow.perks ?? null,
-      comment:        skuRow.comment?.trim()        || null,
+      perks: skuRow.perks ?? null,
+      comment: skuRow.comment?.trim() || null,
     },
+  };
+}
+
+interface InquiryInventoryHistoryMonthAggregateRow {
+  YearMonth: string | null;
+  QtySales: number | null;
+  NetSales: number | null;
+}
+
+interface InquiryInventoryHistoryMonthStoreAggregateRow {
+  StoreId: number | null;
+  YearMonth: string | null;
+  QtySales: number | null;
+  NetSales: number | null;
+}
+
+interface InquiryHistoryMonthAggregate {
+  yearMonth: string;
+  qty: number;
+  sales: number;
+}
+
+interface InquiryMonthlySalesResult {
+  months: InquiryInfoMonth[];
+  history: InquiryHistoryMonthAggregate[];
+}
+
+interface InquirySnapshotMetricAccumulator {
+  snapshotAsOf: Date | null;
+  currentInventoryValue: number;
+  monthBeginValue: number;
+  seasonBeginValue: number;
+  yearBeginValue: number;
+  monthQtySales: number;
+  monthSales: number;
+  monthProfit: number;
+  seasonQtySales: number;
+  seasonSales: number;
+  seasonProfit: number;
+  yearQtySales: number;
+  yearSales: number;
+  yearProfit: number;
+}
+
+const inquiryMonthFormatter = new Intl.DateTimeFormat('en-US', { month: 'long' });
+
+function parseYearMonth(value: string): Date | null {
+  const match = /^(\d{4})-(\d{2})$/.exec(value.trim());
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  if (!Number.isFinite(year) || !Number.isFinite(month) || month < 1 || month > 12) return null;
+  return new Date(year, month - 1, 1);
+}
+
+async function loadInquiryMonthlySales(
+  skuCode: string,
+  storeId: number | undefined,
+): Promise<InquiryMonthlySalesResult> {
+  const storeFilter = storeId != null ? 'AND s.store_id = $2::int' : '';
+  const sql = `
+    SELECT
+      m.year_month AS "YearMonth",
+      SUM(COALESCE(m.qty_sales, 0))::float8 AS "QtySales",
+      SUM(COALESCE(m.net_sales, 0))::float8 AS "NetSales"
+    FROM app.inventory_history_month m
+    INNER JOIN app.inventory_history_snapshot s ON s.id = m.snapshot_id
+    WHERE
+      UPPER(BTRIM(s.sku_code)) = UPPER(BTRIM($1))
+      ${storeFilter}
+    GROUP BY 1
+    ORDER BY 1
+  `;
+
+  const params: unknown[] = [skuCode];
+  if (storeId != null) params.push(storeId);
+  const rows = await prisma.$queryRawUnsafe<InquiryInventoryHistoryMonthAggregateRow[]>(sql, ...params);
+
+  const history: InquiryHistoryMonthAggregate[] = [];
+  for (const row of rows) {
+    if (!row.YearMonth) continue;
+    history.push({
+      yearMonth: row.YearMonth,
+      qty: Number(row.QtySales ?? 0),
+      sales: Number(row.NetSales ?? 0),
+    });
+  }
+  return {
+    history,
+    months: history.map((row) => {
+      const slotDate = parseYearMonth(row.yearMonth);
+      return {
+        label: slotDate ? inquiryMonthFormatter.format(slotDate) : row.yearMonth,
+        qty: row.qty,
+        sales: row.sales,
+      };
+    }),
+  };
+}
+
+async function loadInquiryMonthlySalesByStore(
+  skuCode: string,
+): Promise<Map<number, InquiryHistoryMonthAggregate[]>> {
+  const rows = await prisma.$queryRawUnsafe<InquiryInventoryHistoryMonthStoreAggregateRow[]>(
+    `
+      SELECT
+        s.store_id AS "StoreId",
+        m.year_month AS "YearMonth",
+        SUM(COALESCE(m.qty_sales, 0))::float8 AS "QtySales",
+        SUM(COALESCE(m.net_sales, 0))::float8 AS "NetSales"
+      FROM app.inventory_history_month m
+      INNER JOIN app.inventory_history_snapshot s ON s.id = m.snapshot_id
+      WHERE UPPER(BTRIM(s.sku_code)) = UPPER(BTRIM($1))
+      GROUP BY 1, 2
+      ORDER BY 1, 2
+    `,
+    skuCode,
+  );
+
+  const out = new Map<number, InquiryHistoryMonthAggregate[]>();
+  for (const row of rows) {
+    const storeId = Number(row.StoreId ?? 0);
+    if (!Number.isFinite(storeId) || storeId <= 0 || !row.YearMonth) continue;
+    const history = out.get(storeId) ?? [];
+    history.push({
+      yearMonth: row.YearMonth,
+      qty: Number(row.QtySales ?? 0),
+      sales: Number(row.NetSales ?? 0),
+    });
+    out.set(storeId, history);
+  }
+
+  return out;
+}
+
+function buildLegacyLastYearSalesByStore(
+  historyRows: InventoryHistorySnapshotRow[],
+  monthlyHistoryByStore: Map<number, InquiryHistoryMonthAggregate[]>,
+): Map<number, number> {
+  const latestSnapshotAsOf = maxDate(historyRows.map((row) => row.snapshotAsOf));
+  if (!latestSnapshotAsOf) return new Map();
+
+  const lastCalendarYear = latestSnapshotAsOf.getFullYear() - 1;
+  const snapshotMonth = latestSnapshotAsOf.getMonth() + 1;
+  const lastYearPrefix = `${lastCalendarYear}-`;
+
+  const out = new Map<number, number>();
+  for (const row of historyRows) {
+    const visibleLastYearQty = (monthlyHistoryByStore.get(row.storeId) ?? []).reduce(
+      (sum, month) => (
+        month.yearMonth.startsWith(lastYearPrefix)
+          ? sum + month.qty
+          : sum
+      ),
+      0,
+    );
+
+    // The rolling 12-month table only carries the trailing closed months.
+    // Once the snapshot advances past January, the early months of the prior
+    // calendar year live in the LY year carry field.
+    const lyCarryQty = snapshotMonth > 1 ? row.lyYearQtySales : 0;
+    out.set(row.storeId, visibleLastYearQty + lyCarryQty);
+  }
+
+  return out;
+}
+
+function buildSummaryMetricsByStoreFromHistory(
+  storeEntries: InventoryInquiryStore[],
+  historyRows: InventoryHistorySnapshotRow[],
+  monthlyHistoryByStore: Map<number, InquiryHistoryMonthAggregate[]>,
+): Map<number, SummaryStoreMetrics> {
+  const metricsByStore = new Map<number, SummaryStoreMetrics>(
+    storeEntries.map((store) => {
+      const totals = summarizeStoreMetrics(store.cells);
+      return [store.storeNumber, {
+        onHand: totals.onHand,
+        currentOnOrder: totals.currentOnOrder,
+        futureOnOrder: totals.futureOnOrder,
+        mtdSales: 0,
+        stdSales: 0,
+        ytdSales: 0,
+        lySales: 0,
+      }];
+    }),
+  );
+  const legacyLastYearByStore = buildLegacyLastYearSalesByStore(historyRows, monthlyHistoryByStore);
+
+  for (const row of historyRows) {
+    const current = metricsByStore.get(row.storeId) ?? zeroSummaryStoreMetrics();
+    metricsByStore.set(row.storeId, {
+      ...current,
+      mtdSales: current.mtdSales + row.monthQtySales,
+      stdSales: current.stdSales + row.seasonQtySales,
+      ytdSales: current.ytdSales + row.yearQtySales,
+      lySales: legacyLastYearByStore.get(row.storeId) ?? current.lySales,
+    });
+  }
+
+  for (const [storeId, lySales] of legacyLastYearByStore.entries()) {
+    if (metricsByStore.has(storeId)) continue;
+    metricsByStore.set(storeId, { ...zeroSummaryStoreMetrics(), lySales });
+  }
+
+  return metricsByStore;
+}
+
+function zeroRollupCell(): InquiryRollupCell {
+  return { qty: 0, net: 0, markdown: 0, profit: 0 };
+}
+
+function buildInquiryRollupFromHistory(historyRows: InventoryHistorySnapshotRow[]): InquiryRollup {
+  return historyRows.reduce<InquiryRollup>(
+    (rollup, row) => ({
+      week: {
+        qty: rollup.week.qty + row.weekQtySales,
+        net: rollup.week.net + row.weekDolSales,
+        markdown: rollup.week.markdown + row.weekMarkdown,
+        profit: rollup.week.profit + row.weekProfit,
+      },
+      month: {
+        qty: rollup.month.qty + row.monthQtySales,
+        net: rollup.month.net + row.monthDolSales,
+        markdown: rollup.month.markdown + row.monthMarkdown,
+        profit: rollup.month.profit + row.monthProfit,
+      },
+      season: {
+        qty: rollup.season.qty + row.seasonQtySales,
+        net: rollup.season.net + row.seasonDolSales,
+        markdown: rollup.season.markdown + row.seasonMarkdown,
+        profit: rollup.season.profit + row.seasonProfit,
+      },
+      year: {
+        qty: rollup.year.qty + row.yearQtySales,
+        net: rollup.year.net + row.yearDolSales,
+        markdown: rollup.year.markdown + row.yearMarkdown,
+        profit: rollup.year.profit + row.yearProfit,
+      },
+    }),
+    {
+      week: zeroRollupCell(),
+      month: zeroRollupCell(),
+      season: zeroRollupCell(),
+      year: zeroRollupCell(),
+    },
+  );
+}
+
+function buildInquiryMetricCell(
+  netSales: number,
+  grossProfit: number,
+  beginInventoryValue: number,
+  currentInventoryValue: number,
+  annualizer: number,
+): InquiryInfoMetricCell {
+  const gpPct =
+    netSales === 0 ? null : round1((grossProfit / netSales) * 100);
+  const averageInventoryValue = (beginInventoryValue + currentInventoryValue) / 2;
+  if (averageInventoryValue <= 0 || annualizer <= 0) {
+    return { gpPct, roi: null, turns: null };
+  }
+  const cogs = netSales - grossProfit;
+  return {
+    gpPct,
+    roi: ((grossProfit * annualizer) / averageInventoryValue) * 100,
+    turns: (cogs * annualizer) / averageInventoryValue,
+  };
+}
+
+function summarizeInquirySnapshotMetrics(
+  scopedHistory: InventoryHistorySnapshotRow[],
+): InquirySnapshotMetricAccumulator {
+  return scopedHistory.reduce<InquirySnapshotMetricAccumulator>(
+    (totals, row) => ({
+      snapshotAsOf:
+        !totals.snapshotAsOf || (row.snapshotAsOf && row.snapshotAsOf > totals.snapshotAsOf)
+          ? (row.snapshotAsOf ?? totals.snapshotAsOf)
+          : totals.snapshotAsOf,
+      currentInventoryValue: totals.currentInventoryValue + (row.onHand * row.averageCost),
+      monthBeginValue: totals.monthBeginValue + row.lastMonthInvValue,
+      seasonBeginValue: totals.seasonBeginValue + (row.lastSeasonOnHand * row.averageCost),
+      yearBeginValue: totals.yearBeginValue + (row.lastYearOnHand * row.averageCost),
+      monthQtySales: totals.monthQtySales + row.monthQtySales,
+      monthSales: totals.monthSales + row.monthDolSales,
+      monthProfit: totals.monthProfit + row.monthProfit,
+      seasonQtySales: totals.seasonQtySales + row.seasonQtySales,
+      seasonSales: totals.seasonSales + row.seasonDolSales,
+      seasonProfit: totals.seasonProfit + row.seasonProfit,
+      yearQtySales: totals.yearQtySales + row.yearQtySales,
+      yearSales: totals.yearSales + row.yearDolSales,
+      yearProfit: totals.yearProfit + row.yearProfit,
+    }),
+    {
+      snapshotAsOf: null,
+      currentInventoryValue: 0,
+      monthBeginValue: 0,
+      seasonBeginValue: 0,
+      yearBeginValue: 0,
+      monthQtySales: 0,
+      monthSales: 0,
+      monthProfit: 0,
+      seasonQtySales: 0,
+      seasonSales: 0,
+      seasonProfit: 0,
+      yearQtySales: 0,
+      yearSales: 0,
+      yearProfit: 0,
+    },
+  );
+}
+
+function inferSeasonClosedMonthCount(
+  history: InquiryHistoryMonthAggregate[],
+  monthQtySales: number,
+  monthSales: number,
+  seasonQtySales: number,
+  seasonSales: number,
+): number {
+  const targetQty = seasonQtySales - monthQtySales;
+  const targetSales = seasonSales - monthSales;
+  if (Math.abs(targetQty) < 0.0001 && Math.abs(targetSales) < 0.01) return 0;
+
+  let runningQty = 0;
+  let runningSales = 0;
+  let count = 0;
+  for (const row of [...history].reverse()) {
+    runningQty += row.qty;
+    runningSales += row.sales;
+    count += 1;
+    if (Math.abs(runningQty - targetQty) < 0.0001 && Math.abs(runningSales - targetSales) < 0.01) {
+      return count;
+    }
+  }
+  return 1;
+}
+
+function resolveYearAnnualizer(snapshotAsOf: Date | null): number {
+  if (!snapshotAsOf) return 12;
+  const closedMonths = snapshotAsOf.getMonth();
+  return 12 / Math.max(1, closedMonths);
+}
+
+function loadInquiryMetrics(
+  scopedHistory: InventoryHistorySnapshotRow[],
+  history: InquiryHistoryMonthAggregate[],
+): InquiryInfoDetail['metrics'] {
+  const totals = summarizeInquirySnapshotMetrics(scopedHistory);
+  const seasonClosedMonths = inferSeasonClosedMonthCount(
+    history,
+    totals.monthQtySales,
+    totals.monthSales,
+    totals.seasonQtySales,
+    totals.seasonSales,
+  );
+
+  return {
+    mtd: buildInquiryMetricCell(
+      totals.monthSales,
+      totals.monthProfit,
+      totals.monthBeginValue,
+      totals.currentInventoryValue,
+      12,
+    ),
+    std: buildInquiryMetricCell(
+      totals.seasonSales,
+      totals.seasonProfit,
+      totals.seasonBeginValue,
+      totals.currentInventoryValue,
+      12 / Math.max(1, seasonClosedMonths),
+    ),
+    ytd: buildInquiryMetricCell(
+      totals.yearSales,
+      totals.yearProfit,
+      totals.yearBeginValue,
+      totals.currentInventoryValue,
+      resolveYearAnnualizer(totals.snapshotAsOf),
+    ),
+  };
+}
+
+function minDate(values: Array<Date | null | undefined>): Date | null {
+  let out: Date | null = null;
+  for (const value of values) {
+    if (!value) continue;
+    if (!out || value < out) out = value;
+  }
+  return out;
+}
+
+function maxDate(values: Array<Date | null | undefined>): Date | null {
+  let out: Date | null = null;
+  for (const value of values) {
+    if (!value) continue;
+    if (!out || value > out) out = value;
+  }
+  return out;
+}
+
+export async function getInquiryInfo(
+  sku: string,
+  storeId?: number,
+): Promise<InquiryInfoDetail | null> {
+  const trimmed = (sku ?? '').trim();
+  if (!trimmed) return null;
+
+  const skuRow = await loadAppInventorySkuByCode(trimmed);
+  if (!skuRow) return null;
+
+  const skuCode = skuRow.code ?? skuRow.provisionalCode;
+  const effectiveStoreId =
+    storeId != null && Number.isFinite(Number(storeId)) ? Math.trunc(Number(storeId)) : undefined;
+
+  const [stores, historyRows, seasonRow, groupRow] = await Promise.all([
+    loadStoreMap(),
+    loadInventoryHistorySnapshotsForSkuCode(skuCode),
+    skuRow.season
+      ? prisma.seasonOverlay.findUnique({
+          where: { code: skuRow.season.trim().toUpperCase() },
+          select: { description: true },
+        })
+      : Promise.resolve(null),
+    skuRow.groupCode
+      ? prisma.taxonomyGroup.findUnique({
+          where: { code: skuRow.groupCode.trim().toUpperCase() },
+          select: { description: true },
+        })
+      : Promise.resolve(null),
+  ]);
+
+  const scopedHistory = effectiveStoreId != null
+    ? historyRows.filter((row) => row.storeId === effectiveStoreId)
+    : historyRows;
+  const storeLabel = effectiveStoreId == null
+    ? 'ALL stores'
+    : (stores.get(effectiveStoreId)?.name
+      ? `Store ${effectiveStoreId} - ${stores.get(effectiveStoreId)?.name}`
+      : `Store ${effectiveStoreId}`);
+
+  const { months: prior12Months, history } = await loadInquiryMonthlySales(skuCode, effectiveStoreId);
+  const metrics = loadInquiryMetrics(scopedHistory, history);
+
+  return {
+    scopeLabel: storeLabel,
+    seasonCode: skuRow.season?.trim() || null,
+    seasonDescription: seasonRow?.description?.trim() || null,
+    labelCode: skuRow.labelCode?.trim() || null,
+    groupCode: skuRow.groupCode?.trim() || null,
+    groupDescription: groupRow?.description?.trim() || null,
+    firstReceivedAt: minDate(scopedHistory.map((row) => row.dateFirstReceived))?.toISOString() ?? null,
+    lastMarkdownAt: maxDate(scopedHistory.map((row) => row.lastPriceChangeAt))?.toISOString() ?? null,
+    perks: skuRow.perks ?? null,
+    keywords: skuRow.keywords?.trim() || null,
+    comment: skuRow.comment?.trim() || null,
+    prior12Months,
+    totals: prior12Months.reduce(
+      (acc, row) => ({
+        qty: acc.qty + row.qty,
+        sales: acc.sales + row.sales,
+      }),
+      { qty: 0, sales: 0 },
+    ),
+    metrics,
   };
 }
 
@@ -1049,6 +2219,142 @@ function sumCellTotals(cells: InventoryCell[]): InventoryInquiryStore['totals'] 
     }),
     { onHand: 0, currentOnOrder: 0, futureOnOrder: 0, ytdSales: 0, lySales: 0 },
   );
+}
+
+function round1(n: number): number {
+  return Math.round((n + Number.EPSILON) * 10) / 10;
+}
+
+export async function getInquiryTrend(sku: string, storeId?: number): Promise<InquiryTrend | null> {
+  const trimmed = (sku ?? '').trim();
+  if (!trimmed) return null;
+
+  const skuRow = await loadAppInventorySkuByCode(trimmed);
+  if (!skuRow) return null;
+
+  const [stores, historyRows, trendRows] = await Promise.all([
+    loadStoreMap(),
+    loadInventoryHistorySnapshotsForSkuCode(skuRow.code ?? skuRow.provisionalCode),
+    loadInventoryHistoryTrendWeeksForSkuCode(skuRow.code ?? skuRow.provisionalCode),
+  ]);
+
+  const effectiveStoreId =
+    storeId != null && Number.isFinite(Number(storeId)) ? Math.trunc(Number(storeId)) : undefined;
+  const scopedHistory = effectiveStoreId != null
+    ? historyRows.filter((row) => row.storeId === effectiveStoreId)
+    : historyRows;
+  if (scopedHistory.length === 0) return null;
+
+  const scopedStoreIds = new Set(scopedHistory.map((row) => row.storeId));
+  const trendByStore = new Map<number, InventoryHistoryTrendWeekRow[]>();
+  for (const row of trendRows) {
+    if (!scopedStoreIds.has(row.storeId)) continue;
+    const list = trendByStore.get(row.storeId) ?? [];
+    list.push(row);
+    trendByStore.set(row.storeId, list);
+  }
+  for (const list of trendByStore.values()) {
+    list.sort((a, b) => a.slotNumber - b.slotNumber);
+  }
+
+  const aggregates = Array.from({ length: 8 }, (_, index) => ({
+    label: index < 7 ? String(7 - index) : 'Current',
+    availWeek: 0,
+    sales: 0,
+    recTranAdj: 0,
+  }));
+
+  for (const snapshot of scopedHistory) {
+    const weeks = trendByStore.get(snapshot.storeId) ?? [];
+    for (let index = 0; index < 7; index += 1) {
+      const week = weeks[index];
+      if (!week) continue;
+      const availWeek = week.onHandConstant !== 0 ? week.onHandConstant : week.beginOnHand;
+      aggregates[index].availWeek += availWeek;
+      aggregates[index].sales += week.sales;
+      aggregates[index].recTranAdj += availWeek - week.beginOnHand;
+    }
+
+    const lastWeek = weeks[weeks.length - 1];
+    const currentBegin = lastWeek
+      ? ((lastWeek.onHandConstant !== 0 ? lastWeek.onHandConstant : lastWeek.beginOnHand) - lastWeek.sales)
+      : snapshot.trendWeek8BegOnHand;
+    const currentAvailWeek = snapshot.onHand + snapshot.weekQtySales;
+    aggregates[7].availWeek += currentAvailWeek;
+    aggregates[7].sales += snapshot.weekQtySales;
+    aggregates[7].recTranAdj += currentAvailWeek - currentBegin;
+  }
+
+  let runningPeriod: number | null = null;
+  const columns: InquiryTrendColumn[] = aggregates.map((aggregate, index) => {
+    if (runningPeriod == null || aggregate.recTranAdj !== 0) {
+      runningPeriod = aggregate.availWeek === 0 ? null : aggregate.availWeek;
+    }
+    const availWeek = aggregate.availWeek === 0 ? null : aggregate.availWeek;
+    const availPeriod = runningPeriod == null || runningPeriod === 0 ? null : runningPeriod;
+    const sales = aggregate.sales === 0 ? null : aggregate.sales;
+    return {
+      label: aggregate.label,
+      availWeek,
+      availPeriod,
+      recTranAdj: aggregate.recTranAdj === 0 ? null : aggregate.recTranAdj,
+      sales,
+      stWeekly: availWeek && sales != null ? round1((sales / availWeek) * 100) : null,
+      stPeriod: availPeriod && sales != null ? round1((sales / availPeriod) * 100) : null,
+      periodReset: index > 0 && aggregate.recTranAdj !== 0,
+    };
+  });
+
+  return {
+    scopeLabel: effectiveStoreId != null
+      ? (stores.get(effectiveStoreId)?.name ?? `Store ${effectiveStoreId}`)
+      : 'ALL stores',
+    columns,
+  };
+}
+
+export async function getInquiryOpenPoRows(sku: string, storeId?: number): Promise<InquiryOpenPoRow[]> {
+  const trimmed = (sku ?? '').trim();
+  if (!trimmed) return [];
+
+  const skuRow = await loadAppInventorySkuByCode(trimmed);
+  if (!skuRow) return [];
+
+  const sizeTypes = await loadSizeTypeMap();
+  const sizeType = skuRow.sizeType != null ? sizeTypes.get(Number(skuRow.sizeType)) ?? null : null;
+  const rows = await loadOpenPurchaseOrderCellRowsForSku(
+    skuRow.id,
+    skuRow.code ?? skuRow.provisionalCode,
+    sizeType,
+  );
+  const effectiveStoreId =
+    storeId != null && Number.isFinite(Number(storeId)) ? Math.trunc(Number(storeId)) : undefined;
+
+  return rows
+    .filter((row) => effectiveStoreId == null || row.storeId === effectiveStoreId)
+    .sort((a, b) => {
+      const dueA = a.dueDate?.getTime() ?? Number.MAX_SAFE_INTEGER;
+      const dueB = b.dueDate?.getTime() ?? Number.MAX_SAFE_INTEGER;
+      if (dueA !== dueB) return dueA - dueB;
+      const poCmp = a.poNumber.localeCompare(b.poNumber);
+      if (poCmp !== 0) return poCmp;
+      const storeCmp = a.storeId - b.storeId;
+      if (storeCmp !== 0) return storeCmp;
+      const rowCmp = naturalLabelCompare(a.rowLabel, b.rowLabel);
+      if (rowCmp !== 0) return rowCmp;
+      return naturalLabelCompare(a.columnLabel, b.columnLabel);
+    })
+    .map((row) => ({
+      poNumber: row.poNumber,
+      storeId: row.storeId,
+      orderClass: row.orderClass,
+      dueDate: row.dueDate?.toISOString() ?? null,
+      rowLabel: row.rowLabel,
+      columnLabel: displayColumnLabel(row.columnLabel),
+      orderedQty: row.orderedQty,
+      receivedQty: row.receivedQty,
+      openQty: row.openQty,
+    }));
 }
 
 // ─────────────────────────── public: Find by Size ─────────────────────────
@@ -1340,13 +2646,69 @@ LIMIT ${limit}`;
 // ─────────────────────────── public: Change Detail ───────────────────────
 
 /**
- * Browse the RIINVCHG "InvChanges" movement ledger. RICS Ch. 2 p. 55 and
- * Ch. 4 p. 72.
+ * Browse the inventory movement ledger ("InvChanges" in RICS terms; RICS
+ * Ch. 2 p. 55 and Ch. 4 p. 72) plus, optionally, sales lines.
  *
- * The ledger carries ~11 M rows across ~6 years, so an unscoped SELECT would
- * be a performance cliff: require at least one of { sku, 90-day date range }.
- * The route layer maps `ChangeDetailQueryTooBroadError` to HTTP 400.
+ * Reads from the app-owned `app.stock_movement` table (which the
+ * `sync-rics-stock-movements` backfill populates from the legacy RIINVCHG
+ * data, alongside any app-native movements written by manual receipts /
+ * returns / transfers) and, for the SAL branch, `app.sales_history_ticket*`.
+ * The legacy `rics_mirror.inv_changes` / `rics_mirror.ticket_*` tables were
+ * dropped 2026-04-25 by migration `20260425113000_drop_rics_mirror_schema`.
+ *
+ * The ledger can be large, so an unscoped SELECT is a performance cliff:
+ * require at least one of { sku, 90-day date range }. The route layer maps
+ * `ChangeDetailQueryTooBroadError` to HTTP 400.
  */
+// Maps the legacy RICS chg_type code (POR / RET / PHY / TOU / TIN / REC) to
+// the corresponding `app.stock_movement.movement_type` enum value. Used both
+// to filter by the requested type and to translate the new enum back into the
+// legacy code the page renders (tag color + tooltip lookups in the UI key off
+// the 3-letter RICS codes).
+const RICS_TO_MOVEMENT_TYPE: Record<string, string> = {
+  POR: 'PO_RECEIPT',
+  RET: 'MANUAL_RETURN',
+  PHY: 'PHYSICAL_COUNT',
+  TOU: 'TRANSFER_OUT',
+  TIN: 'TRANSFER_IN',
+  REC: 'MANUAL_RECEIPT',
+};
+const MOVEMENT_TYPE_TO_RICS: Record<string, string> = Object.fromEntries(
+  Object.entries(RICS_TO_MOVEMENT_TYPE).map(([rics, mv]) => [mv, rics]),
+);
+
+// Comment column on RICS-imported stock_movement rows is written as
+// `po=12345 | rma=ABC | otherStore=21 | origSku=XYZ-001` (any subset, in any
+// order, separated by ` | `). See `stockMovementBackfill.ts` for the writer.
+function parseStockMovementComment(comment: string | null): {
+  purchaseOrder: string | null;
+  rmaNumber: string | null;
+  otherStore: number | null;
+  origSku: string | null;
+} {
+  const out = {
+    purchaseOrder: null as string | null,
+    rmaNumber: null as string | null,
+    otherStore: null as number | null,
+    origSku: null as string | null,
+  };
+  if (!comment) return out;
+  for (const chunk of comment.split(' | ')) {
+    const eq = chunk.indexOf('=');
+    if (eq < 0) continue;
+    const key = chunk.slice(0, eq).trim();
+    const value = chunk.slice(eq + 1).trim();
+    if (!value) continue;
+    if (key === 'po') out.purchaseOrder = value;
+    else if (key === 'rma') out.rmaNumber = value;
+    else if (key === 'otherStore') {
+      const n = Number(value);
+      if (Number.isFinite(n) && n !== 0) out.otherStore = n;
+    } else if (key === 'origSku') out.origSku = value;
+  }
+  return out;
+}
+
 export async function getChangeDetail(params: ChangeDetailParams): Promise<ChangeDetailRow[]> {
   const limit = clamp(params.limit ?? 200, 1, 1000);
   const requestedType = params.changeType?.trim().toUpperCase() || undefined;
@@ -1383,10 +2745,14 @@ export async function getChangeDetail(params: ChangeDetailParams): Promise<Chang
     sqlParams.push(Number(params.store));
     storeIdx = sqlParams.length;
   }
-  let typeIdx: number | null = null;
-  if (requestedType) {
-    sqlParams.push(requestedType);
-    typeIdx = sqlParams.length;
+  // For the InvChanges branch we filter on `movement_type`; for legacy
+  // compatibility the page sends the 3-letter RICS code, which we translate
+  // here. Unknown codes (anything not in the map) match nothing.
+  let movementTypeIdx: number | null = null;
+  if (requestedType && requestedType !== 'SAL') {
+    const mapped = RICS_TO_MOVEMENT_TYPE[requestedType] ?? '__unmatched__';
+    sqlParams.push(mapped);
+    movementTypeIdx = sqlParams.length;
   }
   let fromIdx: number | null = null;
   if (from) {
@@ -1403,49 +2769,50 @@ export async function getChangeDetail(params: ChangeDetailParams): Promise<Chang
 
   if (wantInvChanges) {
     const wheres: string[] = [];
-    if (skuIdx != null) wheres.push(`sku = $${skuIdx}`);
-    if (storeIdx != null) wheres.push(`store = $${storeIdx}`);
-    if (typeIdx != null) wheres.push(`UPPER(chg_type) = $${typeIdx}`);
-    if (fromIdx != null) wheres.push(`date >= $${fromIdx}::date`);
-    if (toIdx != null) wheres.push(`date <  $${toIdx}::date`);
+    if (skuIdx != null) wheres.push(`s.code = $${skuIdx}`);
+    if (storeIdx != null) wheres.push(`m.store_id = $${storeIdx}`);
+    if (movementTypeIdx != null) wheres.push(`m.movement_type = $${movementTypeIdx}`);
+    if (fromIdx != null) wheres.push(`m.movement_at >= $${fromIdx}::date`);
+    if (toIdx != null) wheres.push(`m.movement_at <  $${toIdx}::date`);
     const whereClause = wheres.length ? ` WHERE ${wheres.join(' AND ')}` : '';
     branches.push(`SELECT
-  sku AS "SKU", orig_sku AS "OrigSKU", store AS "Store",
-  chg_type AS "ChgType",
-  to_char(date AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS') AS "Date",
-  col AS "Col", "row" AS "Row",
-  po AS "PO", oth_store AS "OthStore",
-  qty AS "Qty", cost::float8 AS "Cost", rma_number AS "RMANumber"
-FROM rics_mirror.inv_changes${whereClause}`);
+  s.code AS "SKU",
+  m.store_id AS "Store",
+  m.movement_type AS "MovementType",
+  m.reason_code AS "ReasonCode",
+  to_char(m.movement_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS') AS "Date",
+  m.column_label AS "Col",
+  m.row_label AS "Row",
+  m.quantity_delta AS "Qty",
+  m.unit_cost_snapshot::float8 AS "Cost",
+  m.comment AS "Comment"
+FROM app.stock_movement m
+INNER JOIN app.sku s ON s.id = m.sku_id${whereClause}`);
   }
 
   if (wantSales) {
-    // ticket_detail.sku is right-padded to 15 chars — wrap the filter with RPAD.
     const wheres: string[] = [
-      `h.trans_type = 1`,
-      `h.voided     = false`,
+      `t.transaction_kind = 'purchase'`,
+      `t.status = 'completed'`,
+      `t.store_id IS NOT NULL`,
     ];
-    if (skuIdx != null) wheres.push(`d.sku = RPAD($${skuIdx}, 15)`);
-    if (storeIdx != null) wheres.push(`h.store = $${storeIdx}`);
-    if (fromIdx != null) wheres.push(`h.real_date >= $${fromIdx}::date`);
-    if (toIdx != null) wheres.push(`h.real_date <  $${toIdx}::date`);
+    if (skuIdx != null) wheres.push(`l.sku_code = $${skuIdx}`);
+    if (storeIdx != null) wheres.push(`t.store_id = $${storeIdx}`);
+    if (fromIdx != null) wheres.push(`t.purchased_at >= $${fromIdx}::date`);
+    if (toIdx != null) wheres.push(`t.purchased_at <  $${toIdx}::date`);
     branches.push(`SELECT
-  d.sku AS "SKU", NULL::text AS "OrigSKU", h.store AS "Store",
-  'SAL'::text AS "ChgType",
-  to_char(h.real_date AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS') AS "Date",
-  NULL::text AS "Col", NULL::text AS "Row",
-  NULL::text AS "PO", NULL::int AS "OthStore",
-  (-COALESCE(d.qty, 0))::int AS "Qty",
-  COALESCE(d.cost, 0)::float8 AS "Cost",
-  NULL::text AS "RMANumber"
-FROM rics_mirror.ticket_header h
-INNER JOIN rics_mirror.ticket_detail d
-  ON h.user_id = d.user_id
- AND h.batch_date = d.batch_date
- AND h.terminal = d.terminal
- AND h.store = d.store
- AND h.ticket = d.ticket
- AND h.real_date = d.real_date
+  l.sku_code AS "SKU",
+  t.store_id::int AS "Store",
+  'SALE'::text AS "MovementType",
+  'SAL'::text AS "ReasonCode",
+  to_char(t.purchased_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS') AS "Date",
+  l.column_label AS "Col",
+  l.row_label AS "Row",
+  (-COALESCE(l.quantity, 0))::int AS "Qty",
+  COALESCE(l.unit_cost, 0)::float8 AS "Cost",
+  NULL::text AS "Comment"
+FROM app.sales_history_ticket t
+INNER JOIN app.sales_history_ticket_line l ON l.ticket_id = t.id
 WHERE ${wheres.join(' AND ')}`);
   }
 
@@ -1460,34 +2827,45 @@ LIMIT ${limit}`;
 
   interface RawRow {
     SKU: string | null;
-    OrigSKU: string | null;
     Store: number | null;
-    ChgType: string | null;
+    MovementType: string | null;
+    ReasonCode: string | null;
     Date: string | null;
     Col: string | null;
     Row: string | null;
-    PO: string | null;
-    OthStore: number | null;
     Qty: number | null;
     Cost: number | null;
-    RMANumber: string | null;
+    Comment: string | null;
   }
   const rows = await prisma.$queryRawUnsafe<RawRow[]>(sql, ...sqlParams);
 
-  return rows.map((r) => ({
-    sku: (r.SKU ?? '').trim(),
-    origSku: r.OrigSKU?.trim() || null,
-    store: Number(r.Store ?? 0),
-    changeType: (r.ChgType ?? '').trim(),
-    date: parseAccessDate(r.Date),
-    rowLabel: (r.Row ?? '').trim(),
-    columnLabel: (r.Col ?? '').trim(),
-    purchaseOrder: r.PO?.trim() || null,
-    otherStore: r.OthStore != null && Number(r.OthStore) !== 0 ? Number(r.OthStore) : null,
-    quantity: Number(r.Qty ?? 0),
-    cost: Number(r.Cost ?? 0),
-    rmaNumber: r.RMANumber?.trim() || null,
-  }));
+  return rows.map((r) => {
+    const parsed = parseStockMovementComment(r.Comment);
+    // Prefer the original RICS code (carried in `reason_code` for backfilled
+    // rows) so the UI's tag colors and tooltips keep working; fall back to
+    // mapping the new movement_type enum, then to the raw movement_type for
+    // anything we don't recognize.
+    const reason = (r.ReasonCode ?? '').trim().toUpperCase();
+    const movementType = (r.MovementType ?? '').trim();
+    const changeType =
+      reason && (RICS_TO_MOVEMENT_TYPE[reason] || reason === 'SAL')
+        ? reason
+        : MOVEMENT_TYPE_TO_RICS[movementType] ?? movementType;
+    return {
+      sku: (r.SKU ?? '').trim(),
+      origSku: parsed.origSku,
+      store: Number(r.Store ?? 0),
+      changeType,
+      date: parseAccessDate(r.Date),
+      rowLabel: (r.Row ?? '').trim(),
+      columnLabel: (r.Col ?? '').trim(),
+      purchaseOrder: parsed.purchaseOrder,
+      otherStore: parsed.otherStore,
+      quantity: Number(r.Qty ?? 0),
+      cost: Number(r.Cost ?? 0),
+      rmaNumber: parsed.rmaNumber,
+    };
+  });
 }
 
 // ─────────────────────────── per-(SKU × Store) rollup ────────────────────
@@ -2348,5 +3726,9 @@ function daysBetween(a: Date, b: Date): number {
 export const __test = {
   buildGrids,
   buildStoreMetricGrid,
-  buildSummaryGrid,
+  summarizeStoreMetrics,
+  buildSummaryMetricsByStore,
+  buildSummaryMetricsByStoreFromHistory,
+  buildLegacyLastYearSalesByStore,
+  buildInquiryRollupFromHistory,
 };

@@ -740,6 +740,7 @@ export async function getSalesByDay(params: {
       const comparedNetSales = round2(cmp?.netSales ?? 0);
       const comparedProfit = round2(cmp?.profit ?? 0);
       const dollarChange = round2(netSales - comparedNetSales);
+      const profitChange = round2(profit - comparedProfit);
       const pctChange = comparedNetSales === 0 ? null : round1((dollarChange / comparedNetSales) * 100);
       return {
         date,
@@ -750,6 +751,7 @@ export async function getSalesByDay(params: {
         comparedNetSales,
         comparedProfit,
         dollarChange,
+        profitChange,
         pctChange,
       };
     });
@@ -785,6 +787,7 @@ export async function getSalesByDay(params: {
       comparedNetSales = round2(comparedNetSales);
       comparedProfit = round2(comparedProfit);
       const dollarChange = round2(netSales - comparedNetSales);
+      const profitChange = round2(profit - comparedProfit);
       const pctChange = comparedNetSales === 0 ? null : round1((dollarChange / comparedNetSales) * 100);
       return {
         date,
@@ -795,6 +798,7 @@ export async function getSalesByDay(params: {
         comparedNetSales,
         comparedProfit,
         dollarChange,
+        profitChange,
         pctChange,
       };
     });
@@ -824,8 +828,9 @@ function buildTotals(rows: RicsSalesByDayRow[]): RicsSalesTotals {
   const comparedNetSales = round2(rows.reduce((s, r) => s + r.comparedNetSales, 0));
   const comparedProfit = round2(rows.reduce((s, r) => s + r.comparedProfit, 0));
   const dollarChange = round2(netSales - comparedNetSales);
+  const profitChange = round2(profit - comparedProfit);
   const pctChange = comparedNetSales === 0 ? null : round1((dollarChange / comparedNetSales) * 100);
-  return { netSales, profit, comparedNetSales, comparedProfit, dollarChange, pctChange };
+  return { netSales, profit, comparedNetSales, comparedProfit, dollarChange, profitChange, pctChange };
 }
 
 // ─────────────────────────── Sales by Time (RICS p. 41) ───────────────────

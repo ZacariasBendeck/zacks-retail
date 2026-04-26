@@ -208,6 +208,24 @@ export default function StockStatusPage() {
                 skusText,
               })}
               getResultJson={() => data}
+              getDescriptor={() => {
+                const parts: string[] = [
+                  `by ${sortBy === 'VENDOR' ? 'Vendor' : 'Category'}`,
+                  storeOption === 'COMBINE' ? 'combined' : 'separate stores',
+                  ITEM_FILTER_LABELS[itemFilter],
+                ]
+                const counts: string[] = []
+                const v = parseStrs(vendorsText)
+                const c = parseInts(categoriesText)
+                const s = parseStrs(seasonsText)
+                const sk = parseStrs(skusText)
+                if (v?.length) counts.push(`vendors ${v.length}`)
+                if (c?.length) counts.push(`cats ${c.length}`)
+                if (s?.length) counts.push(`seasons ${s.length}`)
+                if (sk?.length) counts.push(`skus ${sk.length}`)
+                if (counts.length) parts.push(counts.join(', '))
+                return parts.join(' · ')
+              }}
             />
           </>
         }

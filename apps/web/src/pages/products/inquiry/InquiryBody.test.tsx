@@ -38,6 +38,7 @@ describe('InquiryBody', () => {
     const { rerender } = render(
       <InquiryBody
         skuCode=""
+        selectedRow={null}
         onPickSku={vi.fn()}
         mode="ALL_STORES_SUMMARY"
         activeTab={null}
@@ -45,6 +46,7 @@ describe('InquiryBody', () => {
         onModeChange={vi.fn()}
         onActiveTabChange={vi.fn()}
         onScopeChange={vi.fn()}
+        onSelectedRowChange={vi.fn()}
       />,
     );
 
@@ -59,6 +61,7 @@ describe('InquiryBody', () => {
     rerender(
       <InquiryBody
         skuCode=""
+        selectedRow={null}
         onPickSku={vi.fn()}
         mode="ALL_STORES_SUMMARY"
         activeTab={null}
@@ -66,6 +69,7 @@ describe('InquiryBody', () => {
         onModeChange={vi.fn()}
         onActiveTabChange={vi.fn()}
         onScopeChange={vi.fn()}
+        onSelectedRowChange={vi.fn()}
       />,
     );
 

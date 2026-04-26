@@ -22,7 +22,7 @@ import CollapsibleFilterCard from '../../components/reports/CollapsibleFilterCar
 import ShareBar from '../../components/reports/ShareBar'
 import { fmtMoney, fmtInt } from '../../utils/reportFormatters'
 import { useReportTemplate, useTouchReportTemplate } from '../../hooks/useReportTemplates'
-import { readDateSpecFromParams, resolveDateSpec, type DateSpec } from '../../utils/dateSpec'
+import { briefDateSpec, readDateSpecFromParams, resolveDateSpec, type DateSpec } from '../../utils/dateSpec'
 
 function parseStores(s: string): number[] | undefined {
   const arr = s.split(',').map((x) => Number(x.trim())).filter((n) => Number.isFinite(n) && n > 0)
@@ -202,6 +202,25 @@ export default function SalespersonSummaryPage() {
                 cashierSummary,
               })}
               getResultJson={() => data}
+              getDescriptor={() => {
+                const parts: string[] = [
+                  cashierSummary ? 'Cashier summary' : 'Salesperson summary',
+                ]
+                if (subtotalBy) {
+                  parts.push(`subtotal: ${subtotalBy === 'DEPARTMENT' ? 'Department' : 'Vendor'}`)
+                }
+                const stores = parseStores(storesText)
+                if (stores && stores.length) {
+                  parts.push(
+                    stores.length <= 3
+                      ? `stores ${stores.join(',')}`
+                      : `${stores.length} stores`,
+                  )
+                }
+                if (combineStores) parts.push('combined')
+                parts.push(briefDateSpec(dateSpec))
+                return parts.join(' · ')
+              }}
             />
           </>
         }

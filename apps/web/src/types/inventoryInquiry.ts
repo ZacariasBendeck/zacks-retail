@@ -31,11 +31,19 @@ export interface InquirySizeGrid {
 
 export interface InquiryGrids {
   onHand?: InquirySizeGrid;
+  onOrderCurrent?: InquirySizeGrid;
+  onOrderFuture?: InquirySizeGrid;
   model?: InquirySizeGrid;
   max?: InquirySizeGrid;
   reorder?: InquirySizeGrid;
   short?: InquirySizeGrid;
+  mtdSales?: InquirySizeGrid;
+  stdSales?: InquirySizeGrid;
+  ytdSales?: InquirySizeGrid;
+  lySales?: InquirySizeGrid;
+  singleColumn?: InquirySizeGrid;
   allStoresOnHand?: InquirySizeGrid;
+  allStoresOneRow?: InquirySizeGrid;
   allStoresSummary?: InquirySizeGrid;
 }
 

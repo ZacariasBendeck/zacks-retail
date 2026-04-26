@@ -252,14 +252,16 @@ describe('sales-by-day XLSX export', () => {
 
   it('GET /sales/by-day?format=xlsx returns a valid XLSX workbook', async () => {
     const res = await request(app)
-      .get('/api/v1/reports/sales/by-day?store=2&startDate=2024-11-04&endDate=2024-11-10&format=xlsx')
+      .get('/api/v1/reports/sales/by-day?stores=2&startDate=2024-11-04&endDate=2024-11-10&format=xlsx')
       .buffer(true)
       .parse(binaryParser);
-    expectXlsxHeaders(res, 'sales-by-day-store-2-2024-11-04-to-2024-11-10.xlsx');
+    expectXlsxHeaders(res, 'sales-by-day-2-2024-11-04-to-2024-11-10.xlsx');
     const wb = await assertValidXlsxBuffer(res.body);
     const ws = wb.worksheets[0];
     const headerCells = ws.getRow(1).values as Array<string | undefined>;
     expect(headerCells).toContain('Net Sales');
+    expect(headerCells).toContain('Compared Profit');
+    expect(headerCells).toContain('Profit Change');
   });
 });
 

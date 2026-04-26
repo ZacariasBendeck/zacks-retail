@@ -461,15 +461,17 @@ export const AGING_BUCKET_SCHEMES: Record<
 /**
  * Dimension to group the top-level summary by. Each picks a different
  * grouping column on the back end (department description, sector
- * description, vendor short_name, or buyer code from the receiving PO).
+ * description, vendor short_name, buyer code from the receiving PO, or
+ * store description).
  */
-export type AgingGroupBy = 'department' | 'sector' | 'vendor' | 'buyer'
+export type AgingGroupBy = 'department' | 'sector' | 'vendor' | 'buyer' | 'store'
 
 export const AGING_GROUP_BY_LABELS: Record<AgingGroupBy, string> = {
   department: 'Department',
   sector: 'Sector',
   vendor: 'Vendor',
   buyer: 'Buyer',
+  store: 'Store',
 }
 
 export interface AgingBucket {
@@ -511,6 +513,8 @@ export interface AgingDetail {
   agingBucket: string
   flagged: boolean
   lastReceivedAt: string | null
+  pictureFileName: string | null
+  discountCode: string | null
 }
 
 export interface AgingDepartmentResponse {
@@ -530,12 +534,21 @@ export interface AgingDrillDownResponse {
 
 export interface AgingDimensionsResponse {
   stores: { number: number; name: string | null }[]
+  chains: { code: string; label: string }[]
+  buyers: { code: string; label: string }[]
+  sectors: { number: number; name: string }[]
+  departments: { number: number; name: string }[]
 }
 
 export interface AgingQueryArgs {
   groupBy?: AgingGroupBy
   bucketScheme?: AgingBucketScheme
+  /** Stores selected directly OR derived from a chain selection on the page. */
   stores?: number[]
+  /** Criteria multi-select filters. */
+  buyers?: string[]
+  sectors?: number[]
+  departments?: number[]
 }
 
 function appendAgingArgs(params: URLSearchParams, args: AgingQueryArgs = {}): void {
@@ -543,6 +556,15 @@ function appendAgingArgs(params: URLSearchParams, args: AgingQueryArgs = {}): vo
   params.set('bucketScheme', args.bucketScheme ?? '30_60_90')
   if (args.stores && args.stores.length > 0) {
     params.set('stores', args.stores.join(','))
+  }
+  if (args.buyers && args.buyers.length > 0) {
+    params.set('buyers', args.buyers.join(','))
+  }
+  if (args.sectors && args.sectors.length > 0) {
+    params.set('sectors', args.sectors.join(','))
+  }
+  if (args.departments && args.departments.length > 0) {
+    params.set('departments', args.departments.join(','))
   }
 }
 
@@ -666,6 +688,7 @@ export interface SalesByDayRow {
   comparedNetSales: number
   comparedProfit: number
   dollarChange: number
+  profitChange: number
   pctChange: number | null
 }
 
@@ -675,6 +698,7 @@ export interface SalesTotals {
   comparedNetSales: number
   comparedProfit: number
   dollarChange: number
+  profitChange: number
   pctChange: number | null
 }
 

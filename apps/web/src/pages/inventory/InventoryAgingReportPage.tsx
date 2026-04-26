@@ -16,7 +16,9 @@ import {
   Radio,
   Select,
   Switch,
+  Image,
 } from 'antd'
+import { buildRicsImageUrl } from '../../services/ricsImageUrl'
 import {
   DownloadOutlined,
   ArrowLeftOutlined,
@@ -88,14 +90,43 @@ export default function InventoryAgingReportPage() {
   const [bucketScheme, setBucketScheme] = useState<AgingBucketScheme>('30_60_90')
   const [groupBy, setGroupBy] = useState<AgingGroupBy>('department')
   const [selectedStores, setSelectedStores] = useState<number[]>([])
+  const [selectedChains, setSelectedChains] = useState<string[]>([])
+  const [selectedBuyers, setSelectedBuyers] = useState<string[]>([])
+  const [selectedSectors, setSelectedSectors] = useState<number[]>([])
+  const [selectedDepartments, setSelectedDepartments] = useState<number[]>([])
   const [showPercentages, setShowPercentages] = useState<boolean>(false)
   const schemeLabels = AGING_BUCKET_SCHEMES[bucketScheme].labels
   const flagThreshold = AGING_BUCKET_SCHEMES[bucketScheme].flagThreshold
   const groupByLabel = AGING_GROUP_BY_LABELS[groupBy]
 
+  const { data: dimensionsData } = useAgingDimensions()
+
+  // "Chain" is a frontend-only convenience: selecting one or more chains
+  // expands to the union of stores whose description starts with that chain
+  // word. The expanded list combines (union) with explicitly selected stores
+  // before being sent to the API as `stores=…`.
+  const effectiveStores = useMemo(() => {
+    if (selectedChains.length === 0) return selectedStores
+    const chainStores = (dimensionsData?.stores ?? [])
+      .filter((s) => {
+        const first = (s.name ?? '').split(' ')[0] ?? ''
+        return selectedChains.includes(first)
+      })
+      .map((s) => s.number)
+    const union = new Set<number>([...selectedStores, ...chainStores])
+    return Array.from(union)
+  }, [selectedStores, selectedChains, dimensionsData])
+
   const queryArgs = useMemo(
-    () => ({ groupBy, bucketScheme, stores: selectedStores }),
-    [groupBy, bucketScheme, selectedStores],
+    () => ({
+      groupBy,
+      bucketScheme,
+      stores: effectiveStores,
+      buyers: selectedBuyers,
+      sectors: selectedSectors,
+      departments: selectedDepartments,
+    }),
+    [groupBy, bucketScheme, effectiveStores, selectedBuyers, selectedSectors, selectedDepartments],
   )
 
   const { data: deptData, isLoading: deptLoading, error: deptError } = useAgingByDepartment(queryArgs)
@@ -104,7 +135,6 @@ export default function InventoryAgingReportPage() {
     selectedCategory ?? undefined,
     queryArgs,
   )
-  const { data: dimensionsData } = useAgingDimensions()
 
   const filterValidation = useMemo(
     () =>
@@ -212,7 +242,7 @@ export default function InventoryAgingReportPage() {
       totalCostValue: data.value,
       flaggedUnits: data.flaggedUnits,
       flaggedValue: data.flaggedValue,
-    })).sort((a, b) => b.flaggedValue - a.flaggedValue)
+    })).sort((a, b) => b.totalCostValue - a.totalCostValue)
   }, [drillData, selectedCategory, groupBy])
 
   // Helper to pull a bucket's cost value (or 0) off an AgingGroupSummary.
@@ -302,6 +332,8 @@ export default function InventoryAgingReportPage() {
       render: (v: number) => formatMoney(v),
       sorter: (a: AgingGroupSummary, b: AgingGroupSummary) =>
         a.totalCostValue - b.totalCostValue,
+      // Default sort across all screens — biggest total value first.
+      defaultSortOrder: 'descend' as const,
     },
     {
       title: 'Action',
@@ -343,6 +375,7 @@ export default function InventoryAgingReportPage() {
       render: (v: number) => formatMoney(v),
       sorter: (a: { totalCostValue: number }, b: { totalCostValue: number }) =>
         a.totalCostValue - b.totalCostValue,
+      defaultSortOrder: 'descend' as const,
     },
     {
       title: (
@@ -362,7 +395,6 @@ export default function InventoryAgingReportPage() {
       },
       sorter: (a: { flaggedValue: number }, b: { flaggedValue: number }) =>
         a.flaggedValue - b.flaggedValue,
-      defaultSortOrder: 'descend' as const,
     },
     {
       title: 'Action',
@@ -377,10 +409,53 @@ export default function InventoryAgingReportPage() {
 
   const detailColumns = [
     {
+      title: 'Picture',
+      key: 'picture',
+      width: 70,
+      align: 'center' as const,
+      render: (_: unknown, record: AgingDetail) => {
+        const url = buildRicsImageUrl(record.pictureFileName)
+        if (!url) {
+          return (
+            <span
+              aria-hidden
+              style={{
+                display: 'block',
+                width: 50,
+                height: 50,
+                margin: '0 auto',
+                border: '1px dashed #e0e0e0',
+                borderRadius: 2,
+              }}
+            />
+          )
+        }
+        return (
+          <Image
+            src={url}
+            alt=""
+            loading="lazy"
+            style={{
+              height: 50,
+              width: 'auto',
+              maxWidth: 80,
+              objectFit: 'contain',
+              display: 'block',
+              cursor: 'zoom-in',
+            }}
+            preview={{ mask: false }}
+            onError={(e) => {
+              ;(e.currentTarget as HTMLImageElement).style.visibility = 'hidden'
+            }}
+          />
+        )
+      },
+    },
+    {
       title: 'SKU Code',
       dataIndex: 'skuCode',
       key: 'skuCode',
-      width: 200,
+      width: 180,
       ellipsis: true,
       sorter: (a: AgingDetail, b: AgingDetail) => a.skuCode.localeCompare(b.skuCode),
     },
@@ -393,13 +468,6 @@ export default function InventoryAgingReportPage() {
         (a.brand ?? '').localeCompare(b.brand ?? ''),
     },
     {
-      title: 'Style',
-      dataIndex: 'style',
-      key: 'style',
-      width: 100,
-      sorter: (a: AgingDetail, b: AgingDetail) => a.style.localeCompare(b.style),
-    },
-    {
       title: 'Color',
       dataIndex: 'color',
       key: 'color',
@@ -408,12 +476,15 @@ export default function InventoryAgingReportPage() {
         (a.color ?? '').localeCompare(b.color ?? ''),
     },
     {
-      title: 'Size',
-      dataIndex: 'size',
-      key: 'size',
-      width: 70,
+      title: 'Discount',
+      dataIndex: 'discountCode',
+      key: 'discountCode',
+      width: 110,
+      // The legacy import does not currently populate `discount_code`, so most
+      // cells render as "—" until the backfill lands.
+      render: (code: string | null) => (code ? <Tag>{code}</Tag> : '—'),
       sorter: (a: AgingDetail, b: AgingDetail) =>
-        (a.size ?? '').localeCompare(b.size ?? ''),
+        (a.discountCode ?? '').localeCompare(b.discountCode ?? ''),
     },
     {
       title: 'Category',
@@ -447,6 +518,10 @@ export default function InventoryAgingReportPage() {
       align: 'right' as const,
       render: (v: number) => formatMoney(v),
       sorter: (a: AgingDetail, b: AgingDetail) => a.costValue - b.costValue,
+      // Per-screen default: highest-value items at the top. Server already
+      // returns rows sorted by cost_value DESC, but this prevents Ant's
+      // table from showing the column unsorted on first paint.
+      defaultSortOrder: 'descend' as const,
     },
     {
       title: 'Days On Hand',
@@ -455,7 +530,6 @@ export default function InventoryAgingReportPage() {
       width: 110,
       align: 'right' as const,
       sorter: (a: AgingDetail, b: AgingDetail) => a.daysOnHand - b.daysOnHand,
-      defaultSortOrder: 'descend' as const,
     },
     {
       title: 'Aging Bucket',
@@ -522,6 +596,17 @@ export default function InventoryAgingReportPage() {
           description={filterValidation.errors.join(' ')}
         />
       )}
+      {groupBy === 'buyer' && (dimensionsData?.buyers?.length ?? 0) === 0 && (
+        // The legacy importer did not populate `purchase_order_legacy.buyer`,
+        // so the report has nothing to group by. Surface this directly so
+        // operators don't think the page is broken.
+        <Alert
+          type="warning"
+          showIcon
+          message="Buyer field is not populated in the legacy data"
+          description="Aging by Buyer will roll up everything into a single &quot;Unmapped&quot; bucket until the buyer column on `purchase_order_legacy` is backfilled. Pick a different dimension above (Department / Sector / Vendor / Store) to see meaningful groupings."
+        />
+      )}
       {reportErrorMessage && (
         <Alert
           type="error"
@@ -570,6 +655,7 @@ export default function InventoryAgingReportPage() {
                 { value: 'sector', label: 'Sector' },
                 { value: 'vendor', label: 'Vendor' },
                 { value: 'buyer', label: 'Buyer' },
+                { value: 'store', label: 'Store' },
               ]}
             />
           </Col>
@@ -594,7 +680,79 @@ export default function InventoryAgingReportPage() {
           </Col>
         </Row>
 
-        {/* Toolbar row 2: bucket scheme + show-percentages toggle */}
+        {/* Toolbar row 2: criteria multi-selects (chain / buyer / sector / department) */}
+        <Row align="middle" style={{ marginTop: 12 }} gutter={[12, 8]}>
+          <Col>
+            <Typography.Text strong>Criteria:</Typography.Text>
+          </Col>
+          <Col flex="1 1 200px">
+            <Select<string[]>
+              mode="multiple"
+              allowClear
+              value={selectedChains}
+              onChange={setSelectedChains}
+              placeholder="Chain (store name prefix)"
+              style={{ width: '100%' }}
+              maxTagCount="responsive"
+              optionFilterProp="label"
+              options={(dimensionsData?.chains ?? []).map((c) => ({
+                value: c.code,
+                label: c.label,
+              }))}
+            />
+          </Col>
+          <Col flex="1 1 200px">
+            <Select<string[]>
+              mode="multiple"
+              allowClear
+              value={selectedBuyers}
+              onChange={setSelectedBuyers}
+              placeholder="Buyer"
+              style={{ width: '100%' }}
+              maxTagCount="responsive"
+              optionFilterProp="label"
+              notFoundContent="No buyers (legacy field is unpopulated)"
+              options={(dimensionsData?.buyers ?? []).map((b) => ({
+                value: b.code,
+                label: b.label,
+              }))}
+            />
+          </Col>
+          <Col flex="1 1 200px">
+            <Select<number[]>
+              mode="multiple"
+              allowClear
+              value={selectedSectors}
+              onChange={setSelectedSectors}
+              placeholder="Sector"
+              style={{ width: '100%' }}
+              maxTagCount="responsive"
+              optionFilterProp="label"
+              options={(dimensionsData?.sectors ?? []).map((s) => ({
+                value: s.number,
+                label: `${s.number} — ${s.name}`,
+              }))}
+            />
+          </Col>
+          <Col flex="1 1 200px">
+            <Select<number[]>
+              mode="multiple"
+              allowClear
+              value={selectedDepartments}
+              onChange={setSelectedDepartments}
+              placeholder="Department"
+              style={{ width: '100%' }}
+              maxTagCount="responsive"
+              optionFilterProp="label"
+              options={(dimensionsData?.departments ?? []).map((d) => ({
+                value: d.number,
+                label: `${d.number} — ${d.name}`,
+              }))}
+            />
+          </Col>
+        </Row>
+
+        {/* Toolbar row 3: bucket scheme + show-percentages toggle */}
         <Row align="middle" style={{ marginTop: 12 }} gutter={[12, 8]}>
           <Col>
             <Typography.Text strong>Aging buckets:</Typography.Text>
@@ -723,7 +881,7 @@ export default function InventoryAgingReportPage() {
       ) : (
         <>
           {selectedCategory == null && categoryBreakdown && (
-            <Card title={`Categories in ${selectedDepartment}`}>
+            <Card title={`Categories in ${selectedGroupLabel ?? selectedGroupKey}`}>
               <Table
                 dataSource={categoryBreakdown}
                 columns={categoryColumns}
@@ -737,8 +895,8 @@ export default function InventoryAgingReportPage() {
           <Card
             title={
               selectedCategory != null
-                ? `Detail: ${selectedDepartment} / Category ${selectedCategory}`
-                : `All Items in ${selectedDepartment}`
+                ? `Detail: ${selectedGroupLabel ?? selectedGroupKey} / Category ${selectedCategory}`
+                : `All Items in ${selectedGroupLabel ?? selectedGroupKey}`
             }
           >
             <Table<AgingDetail>
