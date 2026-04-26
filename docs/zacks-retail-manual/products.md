@@ -3,7 +3,7 @@
 > **Status:** Draft
 > **Module spec:** [../modules/products.md](../modules/products.md)
 > **RICS ancestry:** Ch. 4 (Price Changes, Discontinue SKUs, Change Average Cost), Ch. 5 (Labels + UPC), Ch. 11 (File Setup — SKUs, Vendors, Categories, Departments, Groups, Size Types, Keywords, Return Codes, Promotion Codes)
-> **Last updated:** 2026-04-21
+> **Last updated:** 2026-04-26
 
 ## What this module does
 
@@ -27,6 +27,7 @@ Products is the catalog. It holds every item Zack's Retail can sell, buy, or cou
 _TODO: enumerate as UI ships. Intended screens per module spec:_
 - _SKU list + search + filter_
 - _SKU detail (edit mode)_
+- _Inventory Inquiry / Product Inquiry (read-only SKU view with prices, sales strip, all-stores totals, UPCs, POs, Trend, Info, Detail)_
 - _SKU Lookup modal (cross-module; used by POS + Inquiry)_
 - _Taxonomy admin — departments, categories, groups, keywords, seasons, size types_
 - _Vendors list + detail_
@@ -41,6 +42,7 @@ _TODO: enumerate as UI ships. Intended screens per module spec:_
 
 _TODO: fill in as UI ships. Expected flows:_
 - _Add a new SKU_
+- _Open Inventory Inquiry for one SKU and compare stores, sizes, and sales totals_
 - _Reprice a single SKU_
 - _Run a category-wide markdown_
 - _Schedule a future price change with auto-revert_
@@ -64,6 +66,13 @@ _TODO._
 ## Common errors
 
 _TODO._
+
+## Inventory Inquiry
+
+- Open the inquiry from SKU Lookup, from a product link, or from the POS lookup flow.
+- The top sales strip (`Week`, `Month`, `Season`, `Year`) and the `All Stores Summary` totals are intended to match the legacy RICS inquiry for the same SKU and store scope.
+- The `[Info]` popup uses the same inquiry-history totals as the sales strip, including the prior-12-month sales block and the `M-T-D`, `S-T-D`, and `Y-T-D` GP / ROI / Turns panel.
+- During an open month, inquiry totals can differ from ticket-detail or ad hoc sales reports. When checking parity, compare Zack's Retail inquiry to the RICS inquiry screen first.
 
 ## Data sources (Phase A)
 

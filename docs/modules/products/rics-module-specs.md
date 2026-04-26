@@ -348,10 +348,19 @@ model DiscontinuedSkuMerge {        // audit log for p. 69
 - `inventory.getLastReceivedAt(skuId, storeId)` → header Last Received *(`inventory`)*
 - `purchasing.getOnOrder(skuId, storeId, col, row, classification)` → On-Order Current / On-Order Future grids *(`purchasing`)*
 - `purchasing.getOpenPoLines(skuId)` → `[POs]` tab *(`purchasing`)*
+> ⚠️ May be stale per 2026-04-26 `/index-knowledge` pass: the three sales-reporting bullets below were the original v1 contract split. Live RICS parity checks on April 25-26, 2026 showed the implemented inquiry does **not** use one authority for every sales surface. The sales roll-up strip, All Stores Summary, single-row all-stores totals for single-row size types, and the `[Info]` popup are currently sourced from the imported inquiry-history tables in `app.inventory_history_snapshot` and `app.inventory_history_month`; only the per-size sales cells still replay completed tickets. See [`docs/dev/specs/2026-04-26-inventory-inquiry-sales-authority.md`](../../dev/specs/2026-04-26-inventory-inquiry-sales-authority.md).
 - `sales-reporting.getSkuSalesRollups(skuId, storeId)` → sales roll-up strip (Week / Month / Season / Year × Qty / Net / Markdown / Profit) *(`sales-reporting`)*
 - `sales-reporting.getSizeGridSales(skuId, storeId, period)` → MTD / STD / YTD size grid modes *(`sales-reporting`)*
 - `sales-reporting.getEightWeekTrend(skuId, storeId)` → `[Trend]` tab *(`sales-reporting`)*
 - `sales-reporting.getSkuPerformance(skuId, storeId)` → `[Info]` tab (GP%, ROI, Turns at MTD/STD/YTD + last-12-months qty + $) *(`sales-reporting`)*
+
+### Current development-stage request-path authority for inquiry sales (2026-04-26)
+
+- The live request path is `GET /api/v1/inventory/inquiry/:sku` plus the inquiry side routes under `apps/api/src/routes/ricsInventoryRoutes.ts`, not a pure module-contract fan-out yet.
+- Header identity and pricing come from `app.sku`; on-hand comes from `app.stock_level`; model / max / reorder come from `app.replenishment_target`.
+- The sales roll-up strip (Week / Month / Season / Year), All Stores Summary, All Stores - 1 Row totals for single-row size types, and the `[Info]` popup's prior-12-month sales plus MTD / STD / YTD GP% · ROI · Turns come from the imported inquiry-history surfaces `app.inventory_history_snapshot`, `app.inventory_history_month`, and `app.inventory_history_trend_week`.
+- The per-size MTD / STD / YTD / L/Y cells in the sales view modes are still rebuilt from completed tickets in `app.sales_history_ticket` and `app.sales_history_ticket_line`. That keeps the size grid populated, but it remains a known parity risk until a cell-level legacy sales authority is promoted into owned Postgres tables.
+- `L/Y Sales` in the all-stores totals is not a straight ticket replay. The current adapter reconstructs it from the visible prior-calendar-year months in `app.inventory_history_month` plus the `ly_year_qty_sales` carry field on `app.inventory_history_snapshot`, matching how the legacy inquiry fills months that have rolled out of the 12-slot history window.
 
 ### What this module owns vs. what it just composes
 

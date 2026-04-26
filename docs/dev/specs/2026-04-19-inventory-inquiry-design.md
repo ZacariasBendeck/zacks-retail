@@ -34,6 +34,8 @@ The RICS v7.7 source is **Ch. 4 p. 70 Inventory Inquiry** and **Ch. 2 p. 53** (s
 - `apps/api/src/routes/skuRoutes.ts` — `GET /api/v1/skus/autocomplete` and `/skus/lookup` exist but are used ad-hoc; no shared picker component wraps them.
 - No shared `SizeGrid` component. No `SkuLookup` modal. No `SkuLink`.
 
+> ⚠️ May be stale per 2026-04-26 `/index-knowledge` pass: this 2026-04-19 design assumed the inquiry sales roll-up strip would stay a `sales-reporting` contract and that sales-heavy modes were largely deferred. Live RICS parity checks on April 25-26, 2026 established a different authority split in the implemented page: the roll-up strip, All Stores Summary, single-row all-stores totals for single-row size types, and the `[Info]` popup now read the imported inquiry-history tables `app.inventory_history_snapshot` and `app.inventory_history_month`; only the per-size MTD / STD / YTD / L/Y cells still replay completed tickets. See [`2026-04-26-inventory-inquiry-sales-authority.md`](./2026-04-26-inventory-inquiry-sales-authority.md).
+
 ## Architecture
 
 ```
