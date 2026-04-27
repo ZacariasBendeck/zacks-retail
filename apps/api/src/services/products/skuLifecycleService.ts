@@ -339,7 +339,6 @@ function findMissingRequiredFields(row: SkuRow): string[] {
   const missing: string[] = [];
   if (!row.familyCode) missing.push('familia');
   if (row.categoryNumber == null) missing.push('categoría');
-  if (row.brandId == null) missing.push('marca');
   if (!row.descriptionRics || row.descriptionRics.trim().length === 0) {
     missing.push('descripción RICS');
   }
