@@ -20,6 +20,60 @@ Each entry follows this shape:
 
 <!-- Decisions go below this line, most recent first. -->
 
+## 2026-04-26 — Sell-Through Analysis cuts over to `app.sales_history_ticket*` + `app.purchase_order_legacy*`
+
+**Context:** The Sell-Through Analysis page rendered through SQLite-backed service functions on `getDb()` against placeholder tables (`skus`, `sales_transactions`, `purchase_order_lines`) — empty in the live system, so the page showed no real numbers. The mandate was to keep the visible UI identical and feed it from real `app.*` Postgres data.
+
+**Decision:** Rewrote `getSellThroughByDepartment` / `getSellThroughByCategory` / `getSellThroughDetails` in `reportService.ts` to read sales from `app.sales_history_ticket` + `app.sales_history_ticket_line` (status='completed', dated by `purchased_at`) and receiving from `app.purchase_order_legacy_line.received_qtys` (INT[] summed via `unnest`) joined to `app.purchase_order_legacy.last_received_at`. Department label comes from `app.taxonomy_department.desc` via the same `BETWEEN beg_categ AND end_categ` join the sales-pivot adapters use. Three functions are now `async`; the route awaits them. The SQLite-era `ref_categories` `id ⇄ rics_code` translation is bypassed for sell-through — the real `category_number` flows straight through.
+
+**Consequences:**
+- Real data renders: 87 unfiltered departments, 77 for a single year; a `ZAPATO MARCA HOMBRE` drill-down returns 10 categories and 471 detail items.
+- An unfiltered XLSX export scans 3.2M sales lines + 18M received-quantity entries → ~18 s. The smoke test in `tests/reportXlsxExport.test.ts` had to bump its timeout to 60 s. Filtered exports (the realistic operator path) return in ~1.2 s.
+- The `totalStyles` field still ships on the API contract, but its semantic shifted: `app.sku.style` is sparsely populated in real data, so the Postgres query counts distinct `sku.id` instead of distinct `s.style`. Field name preserved to keep the frontend untouched.
+- "Infinite sell-through" edge case preserved from the SQLite version: when `units_received = 0` and `units_sold > 0` (no receipts in window, but sales > 0), the formula returns 0%, sorting those SKUs to the top of the underperformer list. Future improvement: distinguish "no receipts in period" from "actual underperformer".
+- Sell-through joins to `app.sku.brand_id` are no-ops — the integer column has no FK and no `app.brand` table exists; brand renders blank for now.
+
+**Alternatives considered:**
+- *Map Postgres departments into the 6-name SQLite enum.* Rejected — the real taxonomy has no clean 6-bucket grouping; any heuristic would be invented rather than native.
+- *Group by `taxonomy_sector` instead of `taxonomy_department`.* Deferred — closer to the original 6-bucket UX but conflicts with the convention in `ricsSalesPivotAdapter`.
+
+**Related:** [`docs/dev/specs/2026-04-26-sell-through-postgres-cutover.md`](../../dev/specs/2026-04-26-sell-through-postgres-cutover.md). Touches `apps/api/src/services/reportService.ts`, `apps/api/src/routes/reportRoutes.ts`, frontend `domainFilterContract.ts` + `reportApi.ts`.
+
+---
+
+## 2026-04-26 — Inventory Aging: rewire to Postgres app data with five-dimension grouping
+
+**Context:** The Inventory Aging report at [`/api/v1/reports/inventory-aging`](../../../apps/api/src/routes/reportRoutes.ts) was the last report still backed by the SQLite `skus` / `inventory` legacy tables and gated to the women's-shoe MVP slice (six-macro `ALLOWED_DEPARTMENTS` enum, category window `556..599`). With Postgres now authoritative for product, stock, and taxonomy surfaces, the legacy gates blocked the report from reading any data outside the MVP scope. The operator also asked for buyer / sector / vendor / store grouping plus criteria filters, percentage breakdowns, and a thumbnail column — features the SQLite-era query could not express cleanly.
+
+**Decision:** Stand up a dedicated Postgres-backed service at [`apps/api/src/services/reports/inventoryAgingPg.ts`](../../../apps/api/src/services/reports/inventoryAgingPg.ts) and switch the route entirely to it. The route loosens validation to accept any non-empty department string and category numbers in the full `1..999` RICS range — sibling reports (`on-hand`, `sales-performance`, `inventory-turnover`, `sell-through`) keep their old gates because they still read from SQLite. Service contract:
+
+- **`groupBy`** ∈ `'department' | 'sector' | 'vendor' | 'buyer' | 'store'`. Department / sector resolve through the RICS implicit range (`category_number BETWEEN beg_categ AND end_categ`; `td.number BETWEEN sec.beg_dept AND sec.end_dept`). Vendor reads `app.sku.vendor_id` joined to `app.vendor.short_name`. Store keeps `store_id` on the `on_hand` CTE; every other dimension rolls up across stores. Buyer reads `app.purchase_order_legacy.buyer` via `DISTINCT ON (sku_id)` of the most-recently-receiving PO.
+- **`bucketScheme`** ∈ `'30_60_90' | '60_120_180' | '90_180_270'`. Last threshold is the "flagged" boundary (`days > t3`). Bucket label is computed in SQL via inline `CASE`; the matching TS helper in the service rebucket-checks server output for the per-row detail rendering.
+- **Aging clock:** `MAX(purchase_order_legacy.last_received_at)` per SKU across every receiving line, falling back to `app.sku.created_at` when no PO history exists. Picked over scanning `app.stock_movement` because the PO-header path runs in ~300 ms (171 K SKUs covered) versus ~12 s for a full `stock_movement` aggregate (75 K SKUs covered) — see Alternatives.
+- **Criteria filters:** `stores`, `buyers`, `sectors`, `departments` are all CSV multi-selects on the route. Sector and buyer filters force the corresponding join on even when grouping by something else, so a sector-criteria pick narrows a department grouping correctly. "Chain" is handled entirely on the front end: it expands to the union of stores whose `store_master.desc` starts with the chosen prefix and joins the result into the `stores` parameter.
+- **Default sort:** group summary returns rows ordered by `totalCostValue` descending (alphabetical tie-break); detail rows default to `cost_value DESC` server-side and the table column carries `defaultSortOrder: 'descend'`. The historical `daysOnHand DESC` default is dropped — operators wanted the largest aged inventory at the top of every screen.
+- **Detail columns:** `pictureFileName` and `discountCode` are added to the row payload. `Style` and `Size` are removed from the page columns (size never had data for SKU-level rollups anyway). The page uses `buildRicsImageUrl` to render Ant `<Image>` thumbnails identical to the SKU list page.
+- **Dimensions endpoint:** `GET /api/v1/reports/inventory-aging/dimensions` returns `{ stores, chains, buyers, sectors, departments }`. Stores filtered to those currently holding stock. Chains derived as `SPLIT_PART(store_master.desc, ' ', 1)` — there is no first-class chain column in the source data, see [`../../COMPANY.md`](../../COMPANY.md).
+
+**Consequences:**
+
+- The aging endpoint now serves the full RICS catalog (~203 K active SKUs with ~414 K positive `stock_level` rows) with sub-second responses. The 2026-04-25 dropped-`rics_mirror` cleanup didn't touch it because it was on SQLite, not the mirror — this work effectively retires SQLite as a read source for any aging path.
+- Validator pattern: the front-end `validateDomainFilterContract` already had an `allowAnyDepartment: true` toggle for app-native reports. The aging page now uses it; sibling pages still pass the legacy strict mode. New "app-native" reports should default to `allowAnyDepartment: true` — written up at [`../../dev/specs/2026-04-26-app-native-report-validator-pattern.md`](../../dev/specs/2026-04-26-app-native-report-validator-pattern.md).
+- **Buyer dimension is empty in current data.** `app.purchase_order_legacy.buyer` is NULL on all 8,231 PO rows (verified `count(NULLIF(buyer, '')) = 0`). Aging by Buyer rolls up everything into a single `Unmapped` bucket. The report page shows an explicit `Alert` warning when `groupBy='buyer'` and the dimensions endpoint returns zero buyers. Future work: switch buyer to read from `app.sku_attribute_assignment` (the same source Sales Pivot uses for its buyer dimension) so the field actually carries data.
+- **Discount column is empty in current data.** `app.sku.discount_code` is NULL on all 203,750 SKUs. The detail-table column renders `—` for every row until the legacy backfill populates it. Column wiring is correct; backfill is the gating step.
+- Sidebar: Aging is now the first child under Reports and is no longer wrapped in `DemotedLabel` (the muted "- no en uso" suffix). On-Hand / Turnover / Sell-Through stay demoted since they still read from SQLite.
+
+**Alternatives considered:**
+
+- *Keep using `app.stock_movement` for `last_received_at`:* rejected. A full aggregate over the 12 M-row movement ledger took ~12 s on local Postgres and only resolved 75 K SKUs (because many imported SKUs have no movement history yet); the PO-header join took 300 ms and resolved 171 K SKUs. Movement source remains the more accurate signal long-term — once the receiving and transfer-in writes catch up — but the PO-header source is dramatically faster today and matches what RICS itself displayed.
+- *Render thumbnails by joining a separate image-URL service:* rejected. The existing `buildRicsImageUrl(pictureFileName)` helper already serves every SKU report; reusing it keeps the column behavior identical to the SKU list / inquiry pages.
+- *Store the chain as a first-class column in `app.store_master`:* deferred. The legacy `store_master` table imports `region = 0` for all 37 stores and there is no chain field in the upstream data. Prefix-based derivation is a stopgap; a proper `store_master.chain` column should be added when the operator confirms the chain taxonomy.
+- *Use a single shared route validator across all reports:* rejected. Tightening other report routes to the loosened aging schema would skip validation that still protects the SQLite-backed reports from invalid category codes; loosening per-report keeps the blast radius small.
+
+**Related:** [`../../dev/specs/2026-04-26-app-native-report-validator-pattern.md`](../../dev/specs/2026-04-26-app-native-report-validator-pattern.md) (cross-cutting validator pattern), [`apps/api/src/services/reports/inventoryAgingPg.ts`](../../../apps/api/src/services/reports/inventoryAgingPg.ts), [`apps/web/src/pages/inventory/InventoryAgingReportPage.tsx`](../../../apps/web/src/pages/inventory/InventoryAgingReportPage.tsx), [`apps/web/src/components/AppLayout.tsx`](../../../apps/web/src/components/AppLayout.tsx).
+
+---
+
 ## 2026-04-26 — Backlog consolidation: every report still on `rics_mirror.*` after the schema drop
 
 **Context:** A `/index-knowledge` review on 2026-04-26 grepped the live `apps/api/src/services/salesReporting/` tree for `rics_mirror.` references. Migration `20260425113000_drop_rics_mirror_schema` already removed the schema; only Sales by Day was migrated to `app.sales_history_ticket*` in the same week. Empirical reproduction: `SELECT 1 FROM rics_mirror.ticket_header LIMIT 1` returns Postgres `42P01: relation does not exist`. The 2026-04-25 Sales by Day decision listed the four sibling reports inside `ricsSalesReportAdapter.ts` as the residual backlog but did not enumerate the *other* adapters that share the same fate.
