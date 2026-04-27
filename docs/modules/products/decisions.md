@@ -20,6 +20,31 @@ Each entry follows this shape:
 
 <!-- Decisions go below this line, most recent first. -->
 
+## 2026-04-26 — `app.sku.style` / `brand_id` / `color_code` are sparsely populated; reports treat them as nullable
+
+**Context:** The Sell-Through report rewrite probed real `app.sku` data and surfaced how thinly the structured-attribute columns are filled in the imported RICS catalog. Three fields the report needs — Brand, Style, Color — are mostly null on the ~1.5M-row table. This affects every consumer that joins or sorts by them.
+
+**Decision:** Treat `app.sku.style`, `app.sku.brand_id`, and `app.sku.color_code` as nullable in service-layer queries and report contracts; do not crash, blank-string, or default-bucket on null. Specifically:
+
+- **`brand_id` is an orphaned integer.** No FK, no `app.brand` table exists today. Carries the legacy RICS numeric brand code; until a brand reference table lands, joins return null and reports render Brand as blank. New consumers should not assume brand resolution.
+- **`style` is null for the vast majority of imported SKUs.** Aggregations that historically counted "distinct styles" (Sell-Through, OnHand, Turnover) should switch to `COUNT(DISTINCT s.id)` (one per SKU) when style is the documented unit, and keep the contract field name (`totalStyles`) for backwards compatibility with the frontend. Document the semantic shift in the call-site, not the API name.
+- **`color_code` is a free-form text code, also commonly null.** No `app.ref_color` resolution at the SKU layer; if a report needs a color *name*, the resolution must be done at that report's layer (or deferred until a color reference is added to `app.*`).
+- The SKU Lookup index ([`docs/operations/sku-lookup-index-warmup.md`](../../operations/sku-lookup-index-warmup.md)) already serves the modal correctly — this decision is about new consumers (reports / analytics) inheriting the column nullability, not about the lookup path.
+
+**Consequences:**
+- Report tables show empty Brand/Style/Color cells for many rows. Operators may interpret this as "data missing"; that's accurate — it's a catalog-enrichment backlog, not a query bug.
+- "Distinct styles" counts in reports are now distinct-SKUs-with-movement; if multi-color/multi-size SKUs map 1:N to a real "style" entity later, those counts will inflate relative to the eventual style entity.
+- Adding a real `app.brand` table is the next natural step. The integer `brand_id` already in `app.sku` would become the FK target; no schema change to the SKU side.
+- The legacy `legacy_attrs` JSON keys (frozen since 2026-04-23 — `shoeTypeId`, `closureTypeId`, `seasonId`, etc.) are not on this list because they were never broadly populated; they migrate piecewise into dimensions when touched.
+
+**Alternatives considered:**
+- *Backfill `style` / `brand_id` / `color_code` from `rics_mirror.InventoryMaster` in a one-shot migration.* Deferred — the underlying RICS data also has these fields sparsely; a backfill would not change the population rate.
+- *Hide blank Brand/Style/Color cells in reports.* Rejected — operators need to see the missing data to drive enrichment; hiding masks the catalog-quality problem.
+
+**Related:** [`docs/dev/specs/2026-04-26-sell-through-postgres-cutover.md`](../../dev/specs/2026-04-26-sell-through-postgres-cutover.md) — first report to encounter this. `app.sku` Prisma schema line 861.
+
+---
+
 ## 2026-04-25 — SKU autofill on the modern form must read via the lifecycle endpoint, not the SQLite alias
 
 **Context:** The modern SKU form ([`SkuFormPageModern.tsx`](../../../apps/web/src/pages/inventory/SkuFormPageModern.tsx)) lets the operator pick a SKU from the lookup modal to switch into edit mode. The on-select handler called `handleSkuCodeLookup` → `useLookupSku` → `GET /api/v1/skus/lookup?code=`, which is a thin wrapper around `SELECT * FROM skus WHERE sku_code = ?` against the SQLite admin DB. The lookup modal's underlying search (`searchSkusForLookup`) reads the in-memory SKU index sourced from `app.sku` (via the lifecycle backfill). That mismatch meant any SKU shown in the modal that didn't also exist in SQLite — i.e. nearly every RICS-mirrored SKU — autofilled nothing: the endpoint 404'd silently and the form stayed empty.
