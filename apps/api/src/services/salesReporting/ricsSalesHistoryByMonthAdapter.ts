@@ -1,28 +1,26 @@
 /**
- * Sales History by Month (RICS v7.7 Ch. 6 p. 95) — live read-only adapter.
+ * Sales History by Month (RICS v7.7 Ch. 6 p. 95) - InvHis-backed adapter.
  *
  * v2: returns long-format rows with **all** numeric measures the facade may
  * need — quantity sold, net sales (extension) and COGS (cost) — in a single
- * OLEDB round-trip. The facade pivots once and derives % of Store, Profit,
+ * Postgres query. The facade pivots once and derives % of Store, Profit,
  * and GP% in memory. The v1 "net-sales-only" path is preserved as a thin
  * projection for callers that only need the Net Sales metric.
  *
- * Ticket filter: TransType=1, Voided=False (regular sales + returns) — same
- * predicate used by every other sales-reporting adapter for consistency, so
- * numbers reconcile across reports.
+ * Source: app.inventory_history_month for closed months plus the current
+ * app.inventory_history_snapshot.month_* counters for the in-progress month.
  *
  * Criteria pre-filter: the adapter accepts a `criteria` object with
- * vendor/category/sku filters that it pushes into the TicketDetail SQL as
+ * vendor/category/sku filters that it pushes into the InvHis SQL as
  * `IN (…)` clauses when they're expressible. Free-form criteria (seasons,
  * style/color, groups, keywords, wildcards, ranges, exclusions) are resolved
- * by pre-querying InventoryMaster for the matching SKU set; that SKU set is
- * either joined via `IN` on TicketDetail.SKU (when the set is small) or, for
- * large sets, is returned to the facade which post-filters. In practice the
+ * by pre-querying app.sku for the matching SKU set; that SKU set is pushed
+ * into the monthly history query. In practice the
  * facade always passes a resolved `skus` list when a non-simple facet is set.
  *
  * Detail granularity:
  *   - `sku`         — groups by (store, year, month, sku); uses Category/Vendor
- *                     already on TicketDetail for later rollup choices.
+ *                     resolved from app.sku for later rollup choices.
  *   - `subtotals`   — groups by (store, year, month, dim) where dim is vendor
  *                     or category (v1 behavior).
  *   - `department`  — groups the same way as `subtotals` but with Category as
@@ -49,7 +47,7 @@ export interface MonthlyMeasuresRow {
   categoryKey: string | null;
   /** For `detailLevel='sku'` only — the parent vendor code (if known). */
   vendorKey: string | null;
-  /** Units sold (net of returns — returns are negative Qty on TicketDetail). */
+  /** Units sold from InvHis monthly counters. */
   quantity: number;
   /** Net Sales = SUM(Extension). */
   netSales: number;
@@ -99,20 +97,6 @@ function assertYearMonth(ym: string, fieldName: string): void {
   }
 }
 
-function firstDayOfMonth(yearMonth: string): string {
-  assertYearMonth(yearMonth, 'yearMonth');
-  return `${yearMonth}-01`;
-}
-
-function firstDayAfterMonth(yearMonth: string): string {
-  assertYearMonth(yearMonth, 'yearMonth');
-  const year = Number(yearMonth.slice(0, 4));
-  const month = Number(yearMonth.slice(5, 7));
-  const nextMonth = month === 12 ? 1 : month + 1;
-  const nextYear = month === 12 ? year + 1 : year;
-  return `${String(nextYear).padStart(4, '0')}-${String(nextMonth).padStart(2, '0')}-01`;
-}
-
 // ─────────────────────────── category label cache ─────────────────────────
 
 interface CategoryRowRaw {
@@ -128,7 +112,7 @@ async function loadCategoryLabels(): Promise<Map<number, string>> {
   if (categoryLabelCache && categoryLabelCacheExpiry > now) return categoryLabelCache;
   try {
     const rows = await prisma.$queryRawUnsafe<CategoryRowRaw[]>(
-      `SELECT number AS "Number", "desc" AS "Desc" FROM rics_mirror.categories`,
+      `SELECT number AS "Number", "desc" AS "Desc" FROM app.taxonomy_category`,
     );
     const map = new Map<number, string>();
     for (const r of rows) {
@@ -189,11 +173,18 @@ export async function loadSkuMasterForCriteria(): Promise<SkuMasterRow[]> {
       GroupCode: string | null;
       KeyWords: string | null;
     }[]>(
-      `SELECT sku AS "SKU", vendor AS "Vendor", category AS "Category",
-              season AS "Season", style_color AS "StyleColor",
-              group_code AS "GroupCode", key_words AS "KeyWords"
-         FROM rics_mirror.inventory_master
-        WHERE status IS NULL OR status <> 'D'`,
+      `SELECT code AS "SKU",
+              vendor_id AS "Vendor",
+              category_number AS "Category",
+              season AS "Season",
+              style_color AS "StyleColor",
+              group_code AS "GroupCode",
+              keywords AS "KeyWords"
+         FROM app.sku
+        WHERE code IS NOT NULL
+          AND BTRIM(code) <> ''
+          AND COALESCE(sku_state, 'ACTIVE') <> 'DRAFT'
+          AND COALESCE(rics_status, '') <> 'D'`,
     );
     const parsed: SkuMasterRow[] = rows
       .filter((r) => !!r.SKU)
@@ -211,7 +202,7 @@ export async function loadSkuMasterForCriteria(): Promise<SkuMasterRow[]> {
     return parsed;
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.warn(`[ricsSalesHistoryByMonthAdapter] InventoryMaster projection failed: ${msg}`);
+    console.warn(`[ricsSalesHistoryByMonthAdapter] SKU master projection failed: ${msg}`);
     skuMasterLookupCache = [];
     skuMasterLookupExpiry = now + 60_000;
     return skuMasterLookupCache;
@@ -235,7 +226,8 @@ interface RawMonthlyRow {
 // ─────────────────────────── main entry point ─────────────────────────────
 
 /**
- * Fetch all numeric measures for the 12-month window in one OLEDB round-trip.
+ * Fetch all numeric measures for the 12-month window from InvHis-derived
+ * Postgres tables.
  *
  * Group key is (StoreNumber, Year, Month, dim) where `dim` depends on
  * `detailLevel`:
@@ -260,23 +252,25 @@ export async function queryMonthlyMeasures(
   if (params.sortBy !== 'vendor' && params.sortBy !== 'category') {
     throw new Error(`sortBy must be 'vendor' or 'category', got: ${params.sortBy}`);
   }
+  if (params.skuFilter && params.skuFilter.length === 0) {
+    return [];
+  }
 
-  const startIso = firstDayOfMonth(params.fromYearMonth);
-  const endExclusiveIso = firstDayAfterMonth(params.toYearMonth);
+  const startIso = params.fromYearMonth;
+  const endExclusiveIso = params.toYearMonth;
 
-  // Pick the grouping dim. For 'sku' we group by SKU; otherwise by vendor or
-  // category. Ticket-detail vendor/sku fields are text and may be NULL; return
-  // '(none)' / 0 as the null sentinel so the facade doesn't have to fan out.
+  // Pick the grouping dim. The CTE normalizes SKU/vendor/category once so
+  // grouping and filter expressions stay compact.
   let dimExpr: string;
   if (params.detailLevel === 'sku') {
-    dimExpr = `COALESCE(d.sku, '(none)')`;
+    dimExpr = `src.sku`;
   } else if (params.detailLevel === 'department') {
-    dimExpr = `COALESCE(d.category, 0)`;
+    dimExpr = `src.category`;
   } else {
     dimExpr =
       params.sortBy === 'vendor'
-        ? `COALESCE(d.vendor, '(none)')`
-        : `COALESCE(d.category, 0)`;
+        ? `src.vendor`
+        : `src.category`;
   }
 
   // Parameterize values; keep identifiers as literals.
@@ -286,52 +280,72 @@ export async function queryMonthlyMeasures(
     params.storeNumbers.map((n) => Number(n)),
   ];
   const wheres: string[] = [
-    `h.real_date >= $1::date`,
-    `h.real_date <  $2::date`,
-    `h.trans_type = 1`,
-    `h.voided     = false`,
-    `h.store      = ANY($3::int[])`,
+    `src.year_month >= $1::text`,
+    `src.year_month <= $2::text`,
+    `src.store_id = ANY($3::int[])`,
   ];
   if (params.skuFilter && params.skuFilter.length > 0) {
-    // ticket_detail.sku is right-padded to 15 chars in the mirror — pad each
-    // caller SKU before comparing. `ANY($N::text[])` keeps the index usable.
-    const padded = params.skuFilter.map((s) => s.padEnd(15, ' '));
-    sqlParams.push(padded);
-    wheres.push(`d.sku = ANY($${sqlParams.length}::text[])`);
+    sqlParams.push(params.skuFilter.map((s) => s.trim().toUpperCase()).filter(Boolean));
+    wheres.push(`UPPER(src.sku) = ANY($${sqlParams.length}::text[])`);
   }
   if (params.vendorFilter && params.vendorFilter.length > 0) {
-    sqlParams.push(params.vendorFilter);
-    wheres.push(`d.vendor = ANY($${sqlParams.length}::text[])`);
+    sqlParams.push(params.vendorFilter.map((s) => s.trim().toUpperCase()).filter(Boolean));
+    wheres.push(`UPPER(src.vendor) = ANY($${sqlParams.length}::text[])`);
   }
   if (params.categoryFilter && params.categoryFilter.length > 0) {
     sqlParams.push(params.categoryFilter.map((c) => Number(c)));
-    wheres.push(`d.category = ANY($${sqlParams.length}::int[])`);
+    wheres.push(`src.category = ANY($${sqlParams.length}::int[])`);
   }
 
-  const sql = `SELECT
-  h.store AS "StoreNumber",
-  EXTRACT(YEAR  FROM h.real_date)::int AS "Y",
-  EXTRACT(MONTH FROM h.real_date)::int AS "M",
+  const sql = `
+WITH src AS (
+  SELECT
+    s.store_id,
+    UPPER(BTRIM(s.sku_code)) AS sku,
+    COALESCE(NULLIF(BTRIM(k.vendor_id), ''), '(none)') AS vendor,
+    COALESCE(k.category_number, 0) AS category,
+    m.year_month,
+    COALESCE(m.qty_sales, 0)::float8 AS qty_sales,
+    COALESCE(m.net_sales, 0)::float8 AS net_sales,
+    COALESCE(m.profit, 0)::float8 AS profit
+  FROM app.inventory_history_snapshot s
+  INNER JOIN app.inventory_history_month m
+    ON m.snapshot_id = s.id
+  LEFT JOIN app.sku k
+    ON k.id = s.sku_id
+
+  UNION ALL
+
+  SELECT
+    s.store_id,
+    UPPER(BTRIM(s.sku_code)) AS sku,
+    COALESCE(NULLIF(BTRIM(k.vendor_id), ''), '(none)') AS vendor,
+    COALESCE(k.category_number, 0) AS category,
+    to_char(s.snapshot_as_of, 'YYYY-MM') AS year_month,
+    COALESCE(s.month_qty_sales, 0)::float8 AS qty_sales,
+    COALESCE(s.month_dol_sales, 0)::float8 AS net_sales,
+    COALESCE(s.month_profit, 0)::float8 AS profit
+  FROM app.inventory_history_snapshot s
+  LEFT JOIN app.sku k
+    ON k.id = s.sku_id
+  WHERE COALESCE(s.month_qty_sales, 0) <> 0
+     OR COALESCE(s.month_dol_sales, 0) <> 0
+     OR COALESCE(s.month_profit, 0) <> 0
+)
+SELECT
+  src.store_id AS "StoreNumber",
+  substring(src.year_month from 1 for 4)::int AS "Y",
+  substring(src.year_month from 6 for 2)::int AS "M",
   ${dimExpr} AS "DimKey",
-  COALESCE(d.vendor, '(none)')    AS "Vendor",
-  COALESCE(d.category, 0)         AS "Category",
-  SUM(COALESCE(d.qty, 0))::int    AS "Qty",
-  SUM(d.extension)::float8        AS "NetSales",
-  SUM(COALESCE(d.cost, 0) * COALESCE(d.qty, 0))::float8 AS "CostTotal"
-FROM rics_mirror.ticket_header h
-INNER JOIN rics_mirror.ticket_detail d
-  ON h.user_id    = d.user_id
- AND h.batch_date = d.batch_date
- AND h.terminal   = d.terminal
- AND h.store      = d.store
- AND h.ticket     = d.ticket
- AND h.real_date  = d.real_date
+  src.vendor AS "Vendor",
+  src.category AS "Category",
+  SUM(src.qty_sales)::int AS "Qty",
+  SUM(src.net_sales)::float8 AS "NetSales",
+  SUM(src.net_sales - src.profit)::float8 AS "CostTotal"
+FROM src
 WHERE
   ${wheres.join(' AND ')}
-GROUP BY h.store, EXTRACT(YEAR FROM h.real_date), EXTRACT(MONTH FROM h.real_date),
-  ${dimExpr},
-  COALESCE(d.vendor, '(none)'),
-  COALESCE(d.category, 0)`;
+GROUP BY 1, 2, 3, 4, 5, 6`;
 
   const raw = await prisma.$queryRawUnsafe<RawMonthlyRow[]>(sql, ...sqlParams);
 
@@ -582,10 +596,4 @@ export async function queryMonthlyInventoryHistory(
 }
 
 // ─────────────────────────── internals ────────────────────────────────────
-
-function chunkArray<T>(arr: T[], size: number): T[][] {
-  const out: T[][] = [];
-  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
-  return out;
-}
 

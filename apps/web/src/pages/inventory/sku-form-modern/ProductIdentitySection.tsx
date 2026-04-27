@@ -162,7 +162,7 @@ export function ProductIdentitySection({
               disabled={!canFillWithAi}
               style={{ width: '100%', fontWeight: 600 }}
             >
-              Llenar con IA
+              Analizar y llenar con IA
             </Button>
 
             {!selectedFamily && (

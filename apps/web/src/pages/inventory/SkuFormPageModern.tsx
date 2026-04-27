@@ -37,7 +37,6 @@ import { useAllPostgresCategories, type PostgresCategory } from '../../hooks/use
 import type {
   Department,
   SkuCreatePayload,
-  ReferenceItem,
   ImageAnalysisResult,
   EnhancedAnalysisResult,
   AiFillSummary,
@@ -309,6 +308,7 @@ export default function SkuFormPageModern() {
 
   const watchedDepartment = Form.useWatch('department', form) as Department | undefined
   const watchedColorId = Form.useWatch('colorId', form) as number | undefined
+  const watchedSkuCode = Form.useWatch('skuCode', form) as string | undefined
 
   const styleColorFilters = useMemo(
     () => ({
@@ -463,13 +463,8 @@ export default function SkuFormPageModern() {
     if (!styleColorId) return
     const styleColor = styleColorMap.get(styleColorId)
     if (!styleColor) return
-    const brandName =
-      (refData?.['brands'] as ReferenceItem[] | undefined)?.find(
-        (b) => b.id === styleColor.brandId,
-      )?.name ?? ''
     const nextValues: Partial<SkuFormValues> = {
       style: styleColor.style,
-      brandId: brandName as unknown as number,
       colorId: styleColor.colorId,
       categoryId: styleColor.categoryId,
       department: styleColor.department,
@@ -479,7 +474,7 @@ export default function SkuFormPageModern() {
     }
     form.setFieldsValue(nextValues)
     message.success('Plantilla style-color aplicada al formulario')
-  }, [form, message, styleColorMap, refData])
+  }, [form, message, styleColorMap])
 
   const applyAiFill = useCallback((
     result: EnhancedAnalysisResult,
@@ -557,12 +552,6 @@ export default function SkuFormPageModern() {
 
   const populateForm = useCallback((s: import('../../types/sku').Sku) => {
     const legacyGenderId = (s as import('../../types/sku').Sku & { genderId?: number | null }).genderId
-    const brandName =
-      s.brandId != null
-        ? (refData?.['brands'] as ReferenceItem[] | undefined)?.find(
-            (b) => b.id === s.brandId,
-          )?.name ?? ''
-        : ''
     form.setFieldsValue({
       skuCode: s.skuCode,
       style: s.style,
@@ -579,7 +568,6 @@ export default function SkuFormPageModern() {
       keywords: s.keywords,
       season: s.season,
       manufacturer: s.manufacturer,
-      brandId: brandName as unknown as number,
       colorId: s.colorId,
       heelMaterialId: s.heelMaterialId,
       heelTypeCode: s.heelTypeCode ?? null,
@@ -601,7 +589,7 @@ export default function SkuFormPageModern() {
       labelTypeId: s.labelTypeId,
       styleColorId: s.styleColor?.styleColorId ?? null,
     })
-  }, [form, refData])
+  }, [form])
 
   useEffect(() => {
     if (sku) populateForm(sku)
@@ -716,13 +704,6 @@ export default function SkuFormPageModern() {
         if (familyCodeForAnalysis && familyCodeForAnalysis !== selectedFamily) {
           setSelectedFamily(familyCodeForAnalysis)
         }
-        if (found.pictureFileName && familyCodeForAnalysis) {
-          void analyzeExistingSkuPicture({
-            skuCode: found.skuCode,
-            pictureFileName: found.pictureFileName,
-            familyCode: familyCodeForAnalysis,
-          })
-        }
         message.info(`SKU existente encontrado: ${found.skuCode} — modo edición`)
       } else {
         setMatchedSku(null)
@@ -742,7 +723,7 @@ export default function SkuFormPageModern() {
       setAnalysisWarning(null)
       setLastUploadedFile(null)
     }
-  }, [lookupMutation, populateForm, message, validCategoriesById, selectedFamily, analyzeExistingSkuPicture])
+  }, [lookupMutation, populateForm, message, validCategoriesById, selectedFamily])
 
   const handleResetToCreate = useCallback(() => {
     const currentCode = form.getFieldValue('skuCode')
@@ -779,6 +760,7 @@ export default function SkuFormPageModern() {
 
   const finalizeAfterSaveRef = useRef(false)
   const createAnotherAfterSaveRef = useRef(false)
+  const nextAfterSaveRef = useRef(false)
 
   const handleFinishFailed = useCallback(
     (e: { errorFields: { name: (string | number)[]; errors: string[] }[] }) => {
@@ -789,11 +771,14 @@ export default function SkuFormPageModern() {
       message.error(`${fieldName}: ${errMsg}`)
       finalizeAfterSaveRef.current = false
       createAnotherAfterSaveRef.current = false
+      nextAfterSaveRef.current = false
     },
     [message],
   )
 
   const handleSaveClick = useCallback(() => {
+    createAnotherAfterSaveRef.current = false
+    nextAfterSaveRef.current = false
     // If operator typed a final SKU code, treat Save as save+finalize in one shot.
     const codeValue = form.getFieldValue('skuCode')
     const code = typeof codeValue === 'string' ? codeValue.trim() : ''
@@ -805,6 +790,18 @@ export default function SkuFormPageModern() {
 
   const handleSaveAndNewClick = useCallback(() => {
     createAnotherAfterSaveRef.current = true
+    nextAfterSaveRef.current = false
+    const codeValue = form.getFieldValue('skuCode')
+    const code = typeof codeValue === 'string' ? codeValue.trim() : ''
+    if (code && !matchedSku) {
+      finalizeAfterSaveRef.current = true
+    }
+    form.submit()
+  }, [form, matchedSku])
+
+  const handleSaveAndNextClick = useCallback(() => {
+    createAnotherAfterSaveRef.current = false
+    nextAfterSaveRef.current = true
     const codeValue = form.getFieldValue('skuCode')
     const code = typeof codeValue === 'string' ? codeValue.trim() : ''
     if (code && !matchedSku) {
@@ -818,29 +815,10 @@ export default function SkuFormPageModern() {
     finalizeAfterSaveRef.current = false
     const createAnother = createAnotherAfterSaveRef.current
     createAnotherAfterSaveRef.current = false
+    const goToNext = nextAfterSaveRef.current
+    nextAfterSaveRef.current = false
     try {
-      const rawBrand = values.brandId as unknown
-      const brandText = typeof rawBrand === 'string' ? rawBrand.trim() : null
-      let resolvedBrandId: number | null = typeof rawBrand === 'number' ? rawBrand : null
-      let unresolvedBrandText: string | null = null
-      if (brandText) {
-        const lower = brandText.toLowerCase()
-        const match = (refData?.['brands'] as ReferenceItem[] | undefined)?.find(
-          (b) => b.name.toLowerCase() === lower,
-        )
-        if (match) {
-          resolvedBrandId = match.id
-        } else {
-          resolvedBrandId = null
-          unresolvedBrandText = brandText
-        }
-      } else if (brandText === '') {
-        resolvedBrandId = null
-      }
-      const normalized: Record<string, unknown> = { ...values, brandId: resolvedBrandId }
-      if (unresolvedBrandText) {
-        normalized.brandText = unresolvedBrandText
-      }
+      const normalized: Record<string, unknown> = { ...values }
       const lifecyclePayload = splitFormValuesForLifecycle(normalized, derivedFamilyCode)
       const editId = skuId ?? matchedSku?.id
 
@@ -865,6 +843,18 @@ export default function SkuFormPageModern() {
 
       const finalCodeRaw = (values as { skuCode?: unknown }).skuCode
       const finalCode = typeof finalCodeRaw === 'string' ? finalCodeRaw.trim() : ''
+      const openNextSku = async (currentCode: string, fallbackId?: string) => {
+        const nextSku = await fetchNextSkuDraftByCode(currentCode)
+        if (nextSku) {
+          navigate(`${skuRootPath}/${nextSku.id}/edit`)
+          return true
+        }
+        message.info(`No hay un SKU posterior a ${currentCode}.`)
+        if (fallbackId) {
+          navigate(`${skuRootPath}/${fallbackId}/edit`)
+        }
+        return false
+      }
 
       if (editId) {
         const updated = await updateMutation.mutateAsync({ id: editId, patch: lifecyclePayload })
@@ -885,6 +875,15 @@ export default function SkuFormPageModern() {
           if (!isRouteEdit) navigate(`${skuRootPath}/new-modern`)
           return
         }
+        if (goToNext) {
+          const currentCode = (finalizeAfter && finalCode) || updated.code || matchedSku?.skuCode || lifecycleSku?.code
+          if (!currentCode) {
+            message.info('Este SKU todavia no tiene codigo final para buscar el siguiente.')
+            return
+          }
+          await openNextSku(currentCode, updated.id)
+          return
+        }
       } else {
         const created = await createMutation.mutateAsync(lifecyclePayload)
         await writeDims(created.code ?? created.provisionalCode)
@@ -898,6 +897,10 @@ export default function SkuFormPageModern() {
             resetPostSave()
             return
           }
+          if (goToNext) {
+            await openNextSku(finalCode, created.id)
+            return
+          }
           navigate(`${skuRootPath}/${created.id}/edit`)
           return
         }
@@ -905,6 +908,9 @@ export default function SkuFormPageModern() {
         if (createAnother) {
           resetPostSave()
           return
+        }
+        if (goToNext) {
+          message.info('Save & Next requiere un codigo SKU final para ubicar el siguiente.')
         }
         navigate(`${skuRootPath}/${created.id}/edit`)
         return
@@ -934,25 +940,6 @@ export default function SkuFormPageModern() {
     setAnalysisResult(null)
     setAnalysisWarning(null)
     setLastUploadedFile(file)
-
-    if (!selectedFamily) {
-      setAnalysisError('Selecciona una Familia de Producto antes de analizar la imagen.')
-      return
-    }
-
-    try {
-      const result = await analyzeMutation.mutateAsync({ file, family: selectedFamily })
-      setAnalysisResult(result)
-      if (result.warning) {
-        setAnalysisWarning(result.warning)
-        message.warning({ content: result.warning, duration: 8 })
-      } else {
-        message.success('Imagen analizada. Haz clic en "Llenar con IA" para auto-completar.')
-      }
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : 'Fallo el análisis de imagen'
-      setAnalysisError(errMsg)
-    }
   }
 
   // Clipboard-paste support — Ctrl+V routes through handleImageUpload.
@@ -980,19 +967,66 @@ export default function SkuFormPageModern() {
     return () => window.removeEventListener('paste', onPaste)
   }, [])
 
-  const handleRetryAnalysis = () => {
-    if (lastUploadedFile) handleImageUpload(lastUploadedFile)
-  }
+  const handleFillWithAi = useCallback(async () => {
+    const familyCode = selectedFamily ?? derivedFamilyCode
+    if (!familyCode) {
+      setAnalysisError('Selecciona una Familia de Producto antes de analizar la imagen.')
+      return
+    }
+    try {
+      if (lastUploadedFile) {
+        await runAiFill({
+          file: lastUploadedFile,
+          familyCode,
+          preserveCategory: preserveCategoryOnAiFill,
+        })
+        return
+      }
 
-  const handleFillWithAi = () => {
-    if (!analysisResult) return
-    const summary = applyAiFill(analysisResult, {
-      preserveCategory: preserveCategoryOnAiFill,
-    })
-    message.success(`AI lleno ${summary.filled.length} de ${summary.total} campos.`)
-  }
+      const existingPicture = matchedSku?.pictureFileName ?? lifecycleSku?.pictureFileName ?? null
+      const existingSkuCode = matchedSku?.skuCode ?? lifecycleSku?.code ?? null
+      if (existingPicture && existingSkuCode) {
+        await analyzeExistingSkuPicture({
+          skuCode: existingSkuCode,
+          pictureFileName: existingPicture,
+          familyCode,
+        })
+        return
+      }
+
+      setAnalysisError('Carga una imagen o selecciona un SKU existente con foto primero.')
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : 'Fallo el análisis de imagen'
+      setAnalysisError(errMsg)
+    }
+  }, [
+    selectedFamily,
+    derivedFamilyCode,
+    lastUploadedFile,
+    runAiFill,
+    preserveCategoryOnAiFill,
+    matchedSku?.pictureFileName,
+    matchedSku?.skuCode,
+    lifecycleSku?.pictureFileName,
+    lifecycleSku?.code,
+    analyzeExistingSkuPicture,
+  ])
+
+  const handleRetryAnalysis = useCallback(() => {
+    void handleFillWithAi()
+  }, [handleFillWithAi])
 
   const isSaving = createMutation.isPending || updateMutation.isPending || finalizeMutation.isPending
+  const canSaveAndNext = !!(
+    matchedSku?.skuCode ||
+    lifecycleSku?.code ||
+    (typeof watchedSkuCode === 'string' ? watchedSkuCode.trim() : '')
+  )
+  const canRunAiFill = !!selectedFamily && !analyzeMutation.isPending && !!(
+    lastUploadedFile ||
+    matchedSku?.pictureFileName ||
+    lifecycleSku?.pictureFileName
+  )
 
   if (isRouteEdit && skuLoading) {
     return (
@@ -1021,8 +1055,10 @@ export default function SkuFormPageModern() {
         isFinalizing={finalizeMutation.isPending}
         onCancel={() => navigate(skuRootPath)}
         onSave={handleSaveClick}
+        onSaveAndNext={handleSaveAndNextClick}
         onSaveAndNew={handleSaveAndNewClick}
         onResetToCreate={handleResetToCreate}
+        canSaveAndNext={canSaveAndNext}
       />
 
       <Form
@@ -1099,7 +1135,7 @@ export default function SkuFormPageModern() {
           analysisWarning={analysisWarning}
           onImageFile={handleImageUpload}
           onFillWithAi={handleFillWithAi}
-          canFillWithAi={!!analysisResult && !analyzeMutation.isPending}
+          canFillWithAi={canRunAiFill}
           selectedFamily={selectedFamily}
           onFamilyChange={setSelectedFamily}
           productFamilies={productFamilies}

@@ -1372,6 +1372,9 @@ const METRIC_LABEL: Record<string, string> = {
   pctOfStoreNetSales: '% of Store Net Sales',
   profit: 'Profit',
   grossProfit: 'Gross Profit %',
+  beginningOnHand: 'Beginning On-Hand Qty',
+  roiPct: 'ROI %',
+  turns: 'Turns',
 };
 // Excel number format per metric. Quantity = integer; dollar amounts = money;
 // percent-like metrics already expressed as 0-100 → percent1.
@@ -1381,10 +1384,15 @@ const METRIC_NUMFMT: Record<string, string> = {
   pctOfStoreNetSales: XLSX_NUMFMT.percent1,
   profit: XLSX_NUMFMT.money,
   grossProfit: XLSX_NUMFMT.percent1,
+  beginningOnHand: XLSX_NUMFMT.integer,
+  roiPct: XLSX_NUMFMT.percent1,
+  turns: XLSX_NUMFMT.decimal2,
 };
 function formatMetricCell(key: string, v: number): string {
   if (key === 'quantitySold') return String(Math.round(v));
-  if (key === 'grossProfit' || key === 'pctOfStoreNetSales') return v.toFixed(1);
+  if (key === 'beginningOnHand') return String(Math.round(v));
+  if (key === 'grossProfit' || key === 'pctOfStoreNetSales' || key === 'roiPct') return v.toFixed(1);
+  if (key === 'turns') return v.toFixed(2);
   return v.toFixed(2);
 }
 

@@ -21,7 +21,7 @@ import {
   Switch,
   AutoComplete,
 } from 'antd'
-import { ArrowLeftOutlined, SaveOutlined, CameraOutlined, LoadingOutlined, SearchOutlined, ThunderboltOutlined, CheckCircleOutlined, ExclamationCircleOutlined, ReloadOutlined, EyeInvisibleOutlined } from '@ant-design/icons'
+import { ArrowLeftOutlined, SaveOutlined, CameraOutlined, LoadingOutlined, SearchOutlined, ThunderboltOutlined, CheckCircleOutlined, ExclamationCircleOutlined, ReloadOutlined, EyeInvisibleOutlined, StepForwardOutlined } from '@ant-design/icons'
 import {
   useAnalyzeImage,
   useReferenceData,
@@ -45,6 +45,7 @@ import {
   useUpdateSkuDraft,
   useFinalizeSkuDraft,
   fetchSkuDraftByCode,
+  fetchNextSkuDraftByCode,
 } from '../../hooks/useSkuDrafts'
 import type { SkuLifecycleRow, CreateDraftInput } from '../../types/skuLifecycle'
 import { productsAttributesApi } from '../../services/productsAttributesApi'
@@ -605,6 +606,7 @@ export default function SkuFormPage() {
     return undefined
   })()
   const watchedColorId = Form.useWatch('colorId', form) as number | undefined
+  const watchedSkuCode = Form.useWatch('skuCode', form) as string | undefined
 
   const styleColorFilters = useMemo(
     () => ({
@@ -1018,6 +1020,7 @@ export default function SkuFormPage() {
       setAiFillSummary(null)
       setAnalysisResult(null)
       setAnalysisError(null)
+      setLastUploadedFile(null)
       return
     }
     try {
@@ -1027,6 +1030,7 @@ export default function SkuFormPage() {
         setAiFillSummary(null)
         setAnalysisResult(null)
         setAnalysisError(null)
+        setLastUploadedFile(null)
         return
       }
       const legacy = lifecycleToLegacySku(row)
@@ -1035,22 +1039,13 @@ export default function SkuFormPage() {
       setAiFilledFields(new Set())
       setAnalysisError(null)
       setAnalysisResult(null)
+      setLastUploadedFile(null)
       setMatchedSku(legacy)
       populateForm(legacy)
       // Unlock the Category selector + family-scoped attribute block when the
       // matched SKU already has a family.
       if (row.familyCode && row.familyCode !== selectedFamily) {
         setSelectedFamily(row.familyCode)
-      }
-      const familyCodeForAnalysis =
-        row.familyCode ??
-        (row.categoryNumber != null ? validCategoriesById.get(row.categoryNumber)?.familyCode ?? null : null)
-      if (row.pictureFileName && familyCodeForAnalysis) {
-        void analyzeExistingSkuPicture({
-          skuCode: legacy.skuCode,
-          pictureFileName: row.pictureFileName,
-          familyCode: familyCodeForAnalysis,
-        })
       }
       message.info(`SKU existente encontrado: ${legacy.skuCode} — modo edición`)
     } catch (err) {
@@ -1060,8 +1055,9 @@ export default function SkuFormPage() {
       setAiFillSummary(null)
       setAnalysisResult(null)
       setAnalysisError(null)
+      setLastUploadedFile(null)
     }
-  }, [populateForm, selectedFamily, message, analyzeExistingSkuPicture, validCategoriesById])
+  }, [populateForm, selectedFamily, message])
 
   /** Reset form back to create mode */
   const handleResetToCreate = useCallback(() => {
@@ -1082,6 +1078,7 @@ export default function SkuFormPage() {
   // operator can skip the DRAFT stage and land directly on an ACTIVE SKU.
   // Reset on every save attempt so the flag can't leak into a subsequent save.
   const finalizeAfterSaveRef = useRef(false)
+  const nextAfterSaveRef = useRef(false)
 
   /**
    * Antd Form onFinishFailed — fires when validateFields rejects. The default
@@ -1100,6 +1097,7 @@ export default function SkuFormPage() {
       // Clear the finalize-intent flag so a failed first click doesn't leave
       // it armed for a later Crear borrador click.
       finalizeAfterSaveRef.current = false
+      nextAfterSaveRef.current = false
     },
     [message],
   )
@@ -1110,6 +1108,7 @@ export default function SkuFormPage() {
    * handleSubmit reads to branch into create-then-finalize.
    */
   const handleCreateFinalClick = useCallback(() => {
+    nextAfterSaveRef.current = false
     const codeValue = form.getFieldValue('skuCode')
     const code = typeof codeValue === 'string' ? codeValue.trim() : ''
     if (!code) {
@@ -1126,11 +1125,23 @@ export default function SkuFormPage() {
     form.submit()
   }, [form, message])
 
+  const handleSaveAndNextClick = useCallback(() => {
+    nextAfterSaveRef.current = true
+    const codeValue = form.getFieldValue('skuCode')
+    const code = typeof codeValue === 'string' ? codeValue.trim() : ''
+    if (code && !matchedSku) {
+      finalizeAfterSaveRef.current = true
+    }
+    form.submit()
+  }, [form, matchedSku])
+
   const handleSubmit = async (values: SkuFormValues) => {
     // Capture + reset the finalize-intent flag at the very top so a thrown
     // error inside the try block doesn't leave it armed for a later save.
     const finalizeAfter = finalizeAfterSaveRef.current
     finalizeAfterSaveRef.current = false
+    const goToNext = nextAfterSaveRef.current
+    nextAfterSaveRef.current = false
     try {
       // Marca is now free-text. Resolve the typed name against refData; if it
       // matches an existing brand (case-insensitive), link the numeric id;
@@ -1197,6 +1208,18 @@ export default function SkuFormPage() {
       // accepted). Pull it from the form value stashed on the skuCode field.
       const finalCodeRaw = (values as { skuCode?: unknown }).skuCode
       const finalCode = typeof finalCodeRaw === 'string' ? finalCodeRaw.trim() : ''
+      const openNextSku = async (currentCode: string, fallbackId?: string) => {
+        const nextSku = await fetchNextSkuDraftByCode(currentCode)
+        if (nextSku) {
+          navigate(`${skuRootPath}/${nextSku.id}/edit`)
+          return true
+        }
+        message.info(`No hay un SKU posterior a ${currentCode}.`)
+        if (fallbackId) {
+          navigate(`${skuRootPath}/${fallbackId}/edit`)
+        }
+        return false
+      }
 
       if (editId) {
         const updated = await updateMutation.mutateAsync({ id: editId, patch: lifecyclePayload })
@@ -1211,6 +1234,15 @@ export default function SkuFormPage() {
           message.success(`SKU finalizado: ${finalCode}`)
         } else {
           message.success('Borrador guardado')
+        }
+        if (goToNext) {
+          const currentCode = (finalizeAfter && finalCode) || updated.code || matchedSku?.skuCode || lifecycleSku?.code
+          if (!currentCode) {
+            message.info('Este SKU todavía no tiene código final para buscar el siguiente.')
+            return
+          }
+          await openNextSku(currentCode, updated.id)
+          return
         }
       } else {
         const created = await createMutation.mutateAsync(lifecyclePayload)
@@ -1227,10 +1259,17 @@ export default function SkuFormPage() {
             input: { code: finalCode },
           })
           message.success(`SKU creado y finalizado: ${finalCode}`)
+          if (goToNext) {
+            await openNextSku(finalCode, created.id)
+            return
+          }
           navigate(`${skuRootPath}/${created.id}/edit`)
           return
         }
         message.success(`Borrador creado: ${created.provisionalCode}`)
+        if (goToNext) {
+          message.info('Save & Next requiere un código SKU final para ubicar el siguiente.')
+        }
         // Redirect to the edit page for the new draft so the user can keep
         // editing the same record (per Phase 5f spec: after first save, user
         // edits the actual draft, not a stateless new form).
@@ -1302,27 +1341,6 @@ export default function SkuFormPage() {
     setAnalysisError(null)
     setAnalysisResult(null)
     setLastUploadedFile(file)
-
-    if (!selectedFamily) {
-      setAnalysisError('Selecciona una Familia de Producto antes de analizar la imagen.')
-      return
-    }
-
-    try {
-      const result = await analyzeMutation.mutateAsync({ file, family: selectedFamily })
-      setAnalysisResult(result)
-      if (result.warning) {
-        // Backend rejected the AI's category (usually: out-of-family hallucination).
-        // Show a longer-duration warning so the operator notices the empty category
-        // field isn't a bug — it's a deliberate refusal.
-        message.warning({ content: result.warning, duration: 8 })
-      } else {
-        message.success('Imagen analizada. Haz clic en "Llenar con IA" para auto-completar campos.')
-      }
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : 'Fallo el analisis de imagen'
-      setAnalysisError(errMsg)
-    }
   }
 
   // Clipboard-paste support — pastes an image from anywhere on the page (Ctrl+V)
@@ -1352,21 +1370,76 @@ export default function SkuFormPage() {
     return () => window.removeEventListener('paste', onPaste)
   }, [])
 
-  const handleRetryAnalysis = () => {
-    if (lastUploadedFile) {
-      handleImageUpload(lastUploadedFile)
+  const handleFillWithAi = useCallback(async () => {
+    const familyCode = selectedFamily ?? derivedFamilyCode
+    if (!familyCode) {
+      setAnalysisError('Selecciona una Familia de Producto antes de analizar la imagen.')
+      return
     }
-  }
+    try {
+      if (lastUploadedFile) {
+        setAiFillSummary(null)
+        setAiFilledFields(new Set())
+        setAnalysisError(null)
+        setAnalysisResult(null)
+        const result = await analyzeMutation.mutateAsync({ file: lastUploadedFile, family: familyCode })
+        setAnalysisResult(result)
+        const summary = applyAiFill(result, {
+          preserveCategory: preserveCategoryOnAiFill,
+        })
+        if (result.warning) {
+          message.warning({ content: result.warning, duration: 8 })
+        }
+        message.success(`IA llenó ${summary.filled.length} de ${summary.total} campos.`)
+        return
+      }
 
-  const handleFillWithAi = () => {
-    if (!analysisResult) return
-    const summary = applyAiFill(analysisResult, {
-      preserveCategory: preserveCategoryOnAiFill,
-    })
-    message.success(`IA llenó ${summary.filled.length} de ${summary.total} campos.`)
-  }
+      const existingPicture = matchedSku?.pictureFileName ?? lifecycleSku?.pictureFileName ?? null
+      const existingSkuCode = matchedSku?.skuCode ?? lifecycleSku?.code ?? null
+      if (existingPicture && existingSkuCode) {
+        await analyzeExistingSkuPicture({
+          skuCode: existingSkuCode,
+          pictureFileName: existingPicture,
+          familyCode,
+        })
+        return
+      }
+
+      setAnalysisError('Carga una imagen o selecciona un SKU existente con foto primero.')
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : 'Fallo el analisis de imagen'
+      setAnalysisError(errMsg)
+    }
+  }, [
+    selectedFamily,
+    derivedFamilyCode,
+    lastUploadedFile,
+    analyzeMutation,
+    applyAiFill,
+    preserveCategoryOnAiFill,
+    matchedSku?.pictureFileName,
+    matchedSku?.skuCode,
+    lifecycleSku?.pictureFileName,
+    lifecycleSku?.code,
+    analyzeExistingSkuPicture,
+    message,
+  ])
+
+  const handleRetryAnalysis = useCallback(() => {
+    void handleFillWithAi()
+  }, [handleFillWithAi])
 
   const isSaving = createMutation.isPending || updateMutation.isPending
+  const canSaveAndNext = !!(
+    matchedSku?.skuCode ||
+    lifecycleSku?.code ||
+    (typeof watchedSkuCode === 'string' ? watchedSkuCode.trim() : '')
+  )
+  const canRunAiFill = !!selectedFamily && !analyzeMutation.isPending && !!(
+    lastUploadedFile ||
+    matchedSku?.pictureFileName ||
+    lifecycleSku?.pictureFileName
+  )
 
   // Build category options with search by name or RICS code
   // NOTE: must be above early returns to satisfy Rules of Hooks
@@ -2110,15 +2183,15 @@ export default function SkuFormPage() {
                         </Typography.Text>
                       </Col>
                       <Col>
-                        <Tooltip title={!analysisResult && !analyzeMutation.isPending ? (analysisError ? 'Analisis fallido — ver error abajo' : 'Sube una imagen primero') : undefined}>
+                        <Tooltip title={!canRunAiFill && !analyzeMutation.isPending ? (analysisError ? 'Analisis fallido — ver error abajo' : 'Carga una imagen y selecciona una familia primero') : undefined}>
                           <Button
                             type="primary"
                             icon={<ThunderboltOutlined />}
                             onClick={handleFillWithAi}
-                            disabled={!analysisResult || analyzeMutation.isPending}
+                            disabled={!canRunAiFill}
                             style={{ fontWeight: 600 }}
                           >
-                            Llenar con IA
+                            Analizar y llenar con IA
                           </Button>
                         </Tooltip>
                       </Col>
@@ -2363,6 +2436,14 @@ export default function SkuFormPage() {
                   disabled={isDiscontinued}
                 >
                   {isDraft ? 'Guardar borrador' : isEdit ? 'Guardar cambios' : 'Crear borrador'}
+                </Button>
+                <Button
+                  icon={<StepForwardOutlined />}
+                  onClick={handleSaveAndNextClick}
+                  loading={isSaving && !finalizeMutation.isPending}
+                  disabled={isDiscontinued || !canSaveAndNext}
+                >
+                  Save & Next SKU
                 </Button>
                 {/*
                   Skip-the-draft path — create (or update) + finalize in one

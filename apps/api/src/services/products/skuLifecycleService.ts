@@ -938,6 +938,7 @@ export const skuLifecycle = {
   create,
   getById,
   getByCode,
+  getNextByCode,
   update,
   finalize,
   discontinue,

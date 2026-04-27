@@ -5,6 +5,14 @@
 **Phase:** 1 — live read-only from RICS Access MDB via existing PowerShell + OLEDB adapter
 **Author:** design session 2026-04-18
 
+> 2026-04-26 correction: the implemented request path is now InvHis-backed,
+> not ticket-backed. Sales History by Month reads closed-month quantity, sales,
+> profit, on-hand, and inventory value from `app.inventory_history_month`, and
+> reads the current in-progress month from
+> `app.inventory_history_snapshot.month_*`. This matches the RICS close-month
+> retention model: old ticket detail can be cleared while the monthly history
+> report remains runnable.
+
 ## Scope (v1)
 
 - **Data source:** `RITRNSSV.TicketDetail` live read via existing adapter.
