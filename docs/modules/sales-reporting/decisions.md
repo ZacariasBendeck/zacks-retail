@@ -20,6 +20,42 @@ Each entry follows this shape:
 
 <!-- Decisions go below this line, most recent first. -->
 
+## 2026-04-26 — Backlog consolidation: every report still on `rics_mirror.*` after the schema drop
+
+**Context:** A `/index-knowledge` review on 2026-04-26 grepped the live `apps/api/src/services/salesReporting/` tree for `rics_mirror.` references. Migration `20260425113000_drop_rics_mirror_schema` already removed the schema; only Sales by Day was migrated to `app.sales_history_ticket*` in the same week. Empirical reproduction: `SELECT 1 FROM rics_mirror.ticket_header LIMIT 1` returns Postgres `42P01: relation does not exist`. The 2026-04-25 Sales by Day decision listed the four sibling reports inside `ricsSalesReportAdapter.ts` as the residual backlog but did not enumerate the *other* adapters that share the same fate.
+
+**Decision:** This entry is the canonical, consolidated list of sales-reporting adapters that are still hard-broken against the dropped `rics_mirror.*` surface. Every adapter below returns `42P01` on the first request and must be migrated before its associated report becomes operable again. Do not treat the existing 2026-04-23 entries that document these adapters' SQL as current — they describe the design intent at a time when `rics_mirror` was authoritative.
+
+Broken adapters (confirmed 2026-04-26):
+
+| Adapter | Reports affected | Replacement source (target) |
+|---|---|---|
+| [`ricsSalesReportAdapter.ts`](../../../apps/api/src/services/salesReporting/ricsSalesReportAdapter.ts) | Sales by Time, Sales by SKU, Salesperson Summary, Best Sellers, Sales Analysis, Hierarchy Drill-Down, Stock Status, the `dimensions` lookup | `app.sales_history_ticket*` + the inventory side of `app.inventory*` (taxonomy will need either a one-off backfill or an `app.*` taxonomy mirror). |
+| [`ricsSalesPivotAdapter.ts`](../../../apps/api/src/services/salesReporting/ricsSalesPivotAdapter.ts) | Sales Pivot — `department`, `department-separate-store` | Same as above, plus a sector/department/category taxonomy source to replace `rics_mirror.departments` / `rics_mirror.sectors`. |
+| [`ricsSalesPivotByBuyerAdapter.ts`](../../../apps/api/src/services/salesReporting/ricsSalesPivotByBuyerAdapter.ts) | Sales Pivot — `buyer`, `buyer-vendor`, `buyer-vendor-separate-store` | Same as above, plus a vendor labels source to replace `rics_mirror.vendor_master`. Buyer codes already come from `app.sku_attribute_assignment` and stay portable. |
+| [`ricsSalesPivotCustomAdapter.ts`](../../../apps/api/src/services/salesReporting/ricsSalesPivotCustomAdapter.ts) | Sales Pivot — `custom` (3-dimension free-form) | Same as above, plus the `rics_mirror.inventory_master.season` source for the Season-criteria filter. |
+| [`ricsSalesHistoryByMonthAdapter.ts`](../../../apps/api/src/services/salesReporting/ricsSalesHistoryByMonthAdapter.ts) | Sales History by Month | `app.sales_history_ticket*` (the month grain is straight aggregation; the BoH / ROI / Turns measures need an inventory-snapshot source equivalent to `rics_mirror.RIINVHIS`). |
+| [`ricsOnHandAtCostAdapter.ts`](../../../apps/api/src/services/salesReporting/ricsOnHandAtCostAdapter.ts) | On-Hand at Cost | `app.inventory*` (cost stays in `app.sku` / inventory tables; no sales-history dependency). |
+| [`ricsInquiryRollupAdapter.ts`](../../../apps/api/src/services/salesReporting/ricsInquiryRollupAdapter.ts) | Inventory Inquiry sales rollup | Already partially superseded by [`docs/dev/specs/2026-04-26-inventory-inquiry-sales-authority.md`](../../../docs/dev/specs/2026-04-26-inventory-inquiry-sales-authority.md); finish wiring inquiry to `app.sales_history_ticket*` and retire this adapter. |
+| [`skuAttributesEnricher.ts`](../../../apps/api/src/services/salesReporting/skuAttributesEnricher.ts) | Per-SKU attribute join used by sales-analysis when `includeAttributes=true` | `app.sku` / `app.sku_attribute_assignment` (no rics_mirror dependency once the join is rewritten). |
+
+`apps/api/src/services/salesReporting/types.ts` references `rics_mirror.*` in comments only; no SQL.
+
+**Consequences:**
+- The frontend wiring for every page above is intact; the failure mode is a 500 on the first network call, not a missing route. Any "report not generated" / "blank page after Run" reports from operators on these screens trace back to this single root cause until each adapter is migrated.
+- A 503 + structured error layer in `salesReportRoutes.ts` would be a cheap interim — it would let the UI render a clear "source not yet migrated" banner instead of a generic 500. Not done as part of the indexing pass; flagged for the next backlog grooming.
+- The 2024-era unit tests that mock the OLEDB / `accessOleDb` layer (e.g. `apps/api/tests/ricsSalesReport.test.ts`) cannot validate any of this; they were already stale before the schema drop. A test rewrite that mocks Prisma is a prerequisite for migrating any adapter with confidence.
+- `app.sales_history_ticket` and `app.sales_history_ticket_line` exist (confirmed via `information_schema.tables`); the historical CSV import that populates them is the load-bearing dependency for restoring every broken report. Verify population state before each adapter migration.
+
+**Alternatives considered:**
+- Reinstate `rics_mirror` as a temporary unblock — rejected; the 2026-04-25 retirement is policy (see [`.claude/commands/verify-rics-mirror.md`](../../../.claude/commands/verify-rics-mirror.md)). Resurrecting the schema invites accidental new dependencies.
+- Migrate everything in one big PR — rejected; the eight adapters have meaningfully different shapes (per-row vs aggregate, taxonomy-joined vs not, with/without inventory snapshot). Per-adapter cutovers preserve the per-report rollback story Sales by Day already established.
+- Add a runtime feature flag that shadows the `rics_mirror.*` SQL with a "not migrated yet" stub — rejected as gold-plating; the 503 + structured error path above achieves the same operator-facing outcome with less code.
+
+**Related:** [`apps/api/src/services/salesReporting/`](../../../apps/api/src/services/salesReporting/), migration [`20260425113000_drop_rics_mirror_schema`](../../../apps/api/prisma/migrations/20260425113000_drop_rics_mirror_schema/migration.sql), migration [`20260425190000_sales_history_ticket_baseline`](../../../apps/api/prisma/migrations/20260425190000_sales_history_ticket_baseline/migration.sql), [`docs/dev/specs/2026-04-26-inventory-inquiry-sales-authority.md`](../../../docs/dev/specs/2026-04-26-inventory-inquiry-sales-authority.md), [`.claude/commands/verify-rics-mirror.md`](../../../.claude/commands/verify-rics-mirror.md).
+
+---
+
 ## 2026-04-25 — Sales by Day: cut over to `app.sales_history_ticket*`, multi-store + profit + chains
 
 **Context:** Two pressures collided on the same week. (1) Migration `20260425113000_drop_rics_mirror_schema` dropped the entire `rics_mirror` schema; the existing `loadTicketLines` helper that backed `getSalesByDay` (and the rest of the report adapter) was querying `rics_mirror.ticket_header` + `rics_mirror.ticket_detail` — every Sales by Day request started failing with "relation does not exist." (2) Operator wanted the report to take multiple stores (default empty), an explicit Combine Stores toggle, a chain shortcut, and a Profit column. The legacy single-store + always-combine shape couldn't carry any of that.
@@ -54,6 +90,8 @@ Frontend ([`SalesByDayPage.tsx`](../../../apps/web/src/pages/salesReporting/Sale
 ---
 
 ## 2026-04-23 — Sales Pivot family: one endpoint + unified leaf row + variant dispatch
+
+> ⚠️ May be stale per 2026-04-26 /index-knowledge pass: the three pivot adapters cited below (`ricsSalesPivotAdapter`, `ricsSalesPivotByBuyerAdapter`, `ricsSalesPivotCustomAdapter`) still issue SQL against `rics_mirror.departments` / `rics_mirror.sectors` / `rics_mirror.vendor_master` / `rics_mirror.inventory_master`, which were dropped by migration `20260425113000_drop_rics_mirror_schema`. The dispatch / leaf-row / variant design is intact; the SQL underneath is not. See the 2026-04-26 backlog entry below for the consolidated remediation list.
 
 **Context:** Operators wanted a family of pivot reports against live sales + on-hand data: a fixed Department-led tree, a Buyer-led tree, a Buyer-Vendor tree, optionally per-store splits, and eventually a free-form three-dimension builder. The fixed trees share measures (On-Hand qty/cost, TY qty/net-sales/profit, LY qty/net-sales/profit over a user-picked date window with a one-year-shifted comparison); only the identity columns change across variants. A naive design would mint one endpoint + one leaf-row type per variant.
 

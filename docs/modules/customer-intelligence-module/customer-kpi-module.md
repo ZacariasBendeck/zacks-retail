@@ -303,6 +303,23 @@ Returns aggregated statistics:
 - Dormant customers
 - Average lifetime value
 - Churn distribution
+- *(extended 2026-04-25)* High-churn-risk count, channel distribution (`storeOnly` / `onlineOnly` / `omnichannel` / `unknown`), LTV distribution by band (`0–500`, `501–1,500`, `1,501–3,000`, `3,001–7,500`, `7,500+`), and an RFM segment distribution (`VIP` / `Loyal` / `New` / `At Risk` / `Lost` / `Other`)
+
+### 6.5 KPI-aware customer list *(added 2026-04-25)*
+
+`GET /customers/metrics/list`
+
+Server-side join of `app.customer_metrics` × `app.customer_intelligence_customer` with KPI-driven filters: `churnRisk`, `segment` (RFM-derived), `channel`, `minLtv`/`maxLtv`, `minRecency`/`maxRecency`, `minDiscountRatio`, `primaryStoreId`, `primaryStoreCity`, `primaryStoreChain`, `active`, `dormant`, `q` (matches `fullName` / `ricsAccount` / `ricsCode`), plus sortable columns and pagination. Each row is enriched with primary-store metadata (name, city, chain label) via the per-store-context registry. The envelope carries a `summary` block (counts, totals, averages) computed from the same `where` predicate so the page can render aggregate cards over the filtered set without a second round-trip. Implementation lives in [`apps/api/src/services/customer-kpi/listCustomerMetrics.ts`](../../../apps/api/src/services/customer-kpi/listCustomerMetrics.ts).
+
+### 6.6 KPI list filter options *(added 2026-04-25)*
+
+`GET /customers/metrics/options`
+
+Returns the chain / city / store axes for populating the filter dropdowns on the KPI list page: per chain (`unlimited` / `magic_shoes` / `la_femme` / `online` / `other`), per city, and per store, each annotated with `customerCount`. Cached server-side; the frontend treats it as long-lived.
+
+### 6.7 Data-source signaling on the customer detail metrics *(added 2026-04-25)*
+
+`GET /customers/:id/metrics` now carries a `dataSource` field with values `transaction_fact` / `legacy_sales_summary` / `none`. When `customer_transaction_fact` is empty for a customer but `customer_sales_summary_legacy` carries non-trivial values, [`computeFullMetrics.ts`](../../../apps/api/src/services/customer-kpi/computeFullMetrics.ts) takes a fallback path through `legacySummaryFallback.ts` that derives `lifetimeValue` / `totalOrders` / `recencyDays` / `lastPurchaseDate` from the imported legacy summary, leaves transaction-detail-derived fields (`marginValue`, `discountRatio`, `storeLoyaltyRatio`, `onlineRatio`, RFM scores, behavioural feature rows) at their zero/null defaults, and stamps the response `dataSource = 'legacy_sales_summary'`. The frontend detail page renders an info banner in that mode and shows `—` (with explanatory hint copy) for the transaction-detail fields rather than zeroing them silently.
 
 ---
 
