@@ -87,6 +87,7 @@ export interface InquiryRollup {
 export interface InquirySizeGrid {
   columns: string[];
   rows: Array<{ label: string; cells: Array<{ value: number | null }> }>;
+  total?: number;
 }
 
 export interface InquiryGrids {
@@ -729,6 +730,31 @@ async function loadReplenishmentTargetRowsForSkuId(skuId: string): Promise<Reple
   }));
 }
 
+async function loadInventorySalesCellRowsForSkuId(skuId: string): Promise<SalesHistorySizeRow[]> {
+  const rows = await prisma.inventorySalesCell.findMany({
+    where: { skuId },
+    select: {
+      storeId: true,
+      rowLabel: true,
+      columnLabel: true,
+      mtdSales: true,
+      stdSales: true,
+      ytdSales: true,
+      lySales: true,
+    },
+  });
+
+  return rows.map((row) => ({
+    storeId: row.storeId,
+    rowLabel: row.rowLabel.trim(),
+    columnLabel: row.columnLabel.trim(),
+    mtdSales: row.mtdSales,
+    stdSales: row.stdSales,
+    ytdSales: row.ytdSales,
+    lySales: row.lySales,
+  }));
+}
+
 async function loadInventoryHistorySnapshotsForSkuCode(
   skuCode: string,
 ): Promise<InventoryHistorySnapshotRow[]> {
@@ -1272,6 +1298,41 @@ function resolveSelectedRow(selectedRow: string | null | undefined, rowLabels: s
   return rowLabels[0] ?? '';
 }
 
+type InquiryGridRow = { label: string; cells: Array<{ value: number | null }> };
+
+function computeGridTotal(rows: InquiryGridRow[]): number {
+  return rows
+    .filter((row) => row.label.trim().toLowerCase() !== 'total')
+    .reduce(
+      (sum, row) => sum + row.cells.reduce((rowSum, cell) => rowSum + Number(cell.value ?? 0), 0),
+      0,
+    );
+}
+
+function withGridTotal(grid: InquirySizeGrid): InquirySizeGrid {
+  return {
+    ...grid,
+    total: computeGridTotal(grid.rows),
+  };
+}
+
+function buildTotalRowFromGrid(columns: string[], rows: InquiryGridRow[], label = 'Total'): InquiryGridRow {
+  return {
+    label,
+    cells: columns.map((_, columnIndex) => ({
+      value: rows.reduce((sum, row) => sum + Number(row.cells[columnIndex]?.value ?? 0), 0),
+    })),
+  };
+}
+
+function appendTotalRow(grid: InquirySizeGrid, label = 'Total'): InquirySizeGrid {
+  if (grid.columns.length === 0 || grid.rows.length === 0) return grid;
+  return {
+    ...grid,
+    rows: [...grid.rows, buildTotalRowFromGrid(grid.columns, grid.rows, label)],
+  };
+}
+
 function buildSingleStoreMetricGrid(
   storeEntries: InventoryInquiryStore[],
   storeId: number,
@@ -1327,6 +1388,11 @@ function buildMetricRowByColumnGrid(
   rowFilter: string,
   label: string,
   getValue: (cell: InventoryCell) => number,
+  options?: {
+    includeTotal?: boolean;
+    totalOverride?: number;
+    blankDetail?: boolean;
+  },
 ): { label: string; cells: Array<{ value: number | null }> } {
   const totalsByCol = new Map<string, number>();
   for (const store of storeEntries) {
@@ -1336,9 +1402,17 @@ function buildMetricRowByColumnGrid(
       totalsByCol.set(display, (totalsByCol.get(display) ?? 0) + getValue(cell));
     }
   }
+  const cells = columns.map((column) => ({
+    value: options?.blankDetail ? null : (totalsByCol.get(column) ?? null),
+  }));
+  if (options?.includeTotal) {
+    const computedTotal = [...totalsByCol.values()].reduce((sum, value) => sum + value, 0);
+    const totalValue = options.totalOverride ?? computedTotal;
+    cells.push({ value: totalValue === 0 ? null : totalValue });
+  }
   return {
     label,
-    cells: columns.map((column) => ({ value: totalsByCol.get(column) ?? null })),
+    cells,
   };
 }
 
@@ -1486,17 +1560,17 @@ function buildGrids(
       : buildStoreMetricGrid(storeEntries, columns, getValue);
 
   return {
-    onHand: scopedMetricGrid((cell) => cell.onHand),
+    onHand: withGridTotal(scopedMetricGrid((cell) => cell.onHand)),
     onOrderCurrent: scopedMetricGrid((cell) => cell.currentOnOrder),
     onOrderFuture: scopedMetricGrid((cell) => cell.futureOnOrder),
     model: scopedMetricGrid((cell) => cell.model),
     max: scopedMetricGrid((cell) => cell.maxQty),
     reorder: scopedMetricGrid((cell) => cell.reorder),
-    short: scopedMetricGrid((cell) => cell.model - cell.onHand),
-    mtdSales: scopedMetricGrid((cell) => cell.mtdSales),
-    stdSales: scopedMetricGrid((cell) => cell.stdSales),
-    ytdSales: scopedMetricGrid((cell) => cell.ytdSales),
-    lySales: scopedMetricGrid((cell) => cell.lySales),
+    short: withGridTotal(scopedMetricGrid((cell) => cell.model - cell.onHand)),
+    mtdSales: withGridTotal(appendTotalRow(scopedMetricGrid((cell) => cell.mtdSales))),
+    stdSales: withGridTotal(appendTotalRow(scopedMetricGrid((cell) => cell.stdSales))),
+    ytdSales: withGridTotal(appendTotalRow(scopedMetricGrid((cell) => cell.ytdSales))),
+    lySales: withGridTotal(appendTotalRow(scopedMetricGrid((cell) => cell.lySales))),
     singleColumn: {
       columns,
       rows: [
@@ -1508,6 +1582,7 @@ function buildGrids(
         buildMetricRowByColumnGrid(storeEntries, columns, effectiveRow, 'MTD Sales', (cell) => cell.mtdSales),
         buildMetricRowByColumnGrid(storeEntries, columns, effectiveRow, 'STD Sales', (cell) => cell.stdSales),
         buildMetricRowByColumnGrid(storeEntries, columns, effectiveRow, 'YTD Sales', (cell) => cell.ytdSales),
+        buildMetricRowByColumnGrid(storeEntries, columns, effectiveRow, 'L/Y Sales', (cell) => cell.lySales),
       ],
     },
     allStoresOnHand: buildStoreMetricGrid(storeEntries, columns, (cell) => cell.onHand, effectiveRow),
@@ -1582,7 +1657,7 @@ export async function getInventoryInquiry(
     loadInventoryHistorySnapshotsForSkuCode(skuCode),
     loadInquiryMonthlySalesByStore(skuCode),
     loadOpenPurchaseOrderCellRowsForSku(skuRow.id, skuCode, sizeType),
-    loadSalesHistorySizeRowsForSku(skuRow.id, skuCode),
+    loadInventorySalesCellRowsForSkuId(skuRow.id),
   ]);
 
   const cellsByStore = new Map<number, Map<string, InventoryCell>>();

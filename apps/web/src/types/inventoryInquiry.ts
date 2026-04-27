@@ -27,6 +27,7 @@ export interface InquiryRollup {
 export interface InquirySizeGrid {
   columns: string[];
   rows: Array<{ label: string; cells: Array<{ value: number | null }> }>;
+  total?: number;
 }
 
 export interface InquiryGrids {
@@ -62,6 +63,60 @@ export interface InquiryInfo {
   lastMarkdownAt: string | null;
   perks: number | null;
   comment: string | null;
+}
+
+export type InquiryRecommendationDecision =
+  | 'NO_ACTION'
+  | 'REBALANCE'
+  | 'BUY'
+  | 'MARKDOWN_REVIEW'
+  | 'HOLD'
+  | 'INVESTIGATE';
+
+export type InquiryRecommendationUrgency = 'LOW' | 'MEDIUM' | 'HIGH';
+export type InquiryRecommendationConfidence = 'LOW' | 'MEDIUM' | 'HIGH';
+export type InquiryRecommendationStyleTag = 'WINNER' | 'OK' | 'DUD';
+
+export interface InquiryRecommendationBaselineRisk {
+  daysUntilModelRisk: number | null;
+  estimatedModelRiskDate: string | null;
+  basis: string;
+}
+
+export interface InquiryRecommendationBuyPlan {
+  shouldBuy: boolean;
+  quantity: number | null;
+  orderByDate: string | null;
+  estimatedArrivalDate: string | null;
+  leadTimeDays: number;
+  basis: string;
+}
+
+export interface InquiryRecommendationAction {
+  type: 'TRANSFER' | 'BUY' | 'MODEL_INCREASE' | 'MARKDOWN_REVIEW' | 'HOLD' | 'INVESTIGATE';
+  priority: number;
+  title: string;
+  details: string;
+  sourceStoreNumber?: number | null;
+  sourceStoreName?: string | null;
+  targetStoreNumber?: number | null;
+  targetStoreName?: string | null;
+  size?: string | null;
+  quantity?: number | null;
+}
+
+export interface InquiryRecommendation {
+  summary: string;
+  styleTag: InquiryRecommendationStyleTag;
+  decision: InquiryRecommendationDecision;
+  urgency: InquiryRecommendationUrgency;
+  confidence: InquiryRecommendationConfidence;
+  baselineRisk: InquiryRecommendationBaselineRisk;
+  buyPlan: InquiryRecommendationBuyPlan;
+  actions: InquiryRecommendationAction[];
+  reasons: string[];
+  watchouts: string[];
+  questions: string[];
 }
 
 export interface InventoryInquiry {

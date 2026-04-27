@@ -1,7 +1,7 @@
 import { Table, Typography } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useNavigate } from 'react-router-dom'
-import type { CustomerKpiListRow } from '../../types/customerKpi'
+import type { CustomerKpiListParams, CustomerKpiListRow } from '../../types/customerKpi'
 import { CustomerRiskBadge } from './CustomerRiskBadge'
 import { CustomerSegmentBadge } from './CustomerSegmentBadge'
 import { RfmScoreBadge } from './RfmScoreBadge'
@@ -38,6 +38,9 @@ interface Props {
   columnKeys?: CustomerKpiColumnKey[]
   recommendation?: (row: CustomerKpiListRow) => string
   size?: 'small' | 'middle' | 'large'
+  sort?: CustomerKpiListParams['sort']
+  order?: CustomerKpiListParams['order']
+  onSortChange?: (sort: CustomerKpiListParams['sort'], order: CustomerKpiListParams['order']) => void
 }
 
 const DEFAULT_COLUMN_KEYS: CustomerKpiColumnKey[] = [
@@ -63,14 +66,20 @@ export function CustomerKpiTable({
   columnKeys = DEFAULT_COLUMN_KEYS,
   recommendation,
   size = 'small',
+  sort,
+  order,
+  onSortChange,
 }: Props) {
   const navigate = useNavigate()
+  const sortOrder = toAntdSortOrder(order)
 
   const allColumns: Record<CustomerKpiColumnKey, ColumnsType<CustomerKpiListRow>[number]> = {
     name: {
       title: 'Customer',
       dataIndex: 'displayName',
       key: 'name',
+      sorter: true,
+      sortOrder: sort === 'displayName' ? sortOrder : null,
       render: (value: string, row) => (
         <div>
           <a
@@ -127,6 +136,8 @@ export function CustomerKpiTable({
       key: 'ltv',
       align: 'right',
       width: 120,
+      sorter: true,
+      sortOrder: sort === 'lifetimeValue' ? sortOrder : null,
       render: (value: number) => fmtMoney(value),
     },
     orders: {
@@ -135,6 +146,8 @@ export function CustomerKpiTable({
       key: 'orders',
       align: 'right',
       width: 80,
+      sorter: true,
+      sortOrder: sort === 'totalOrders' ? sortOrder : null,
     },
     aov: {
       title: 'AOV',
@@ -142,6 +155,8 @@ export function CustomerKpiTable({
       key: 'aov',
       align: 'right',
       width: 100,
+      sorter: true,
+      sortOrder: sort === 'avgOrderValue' ? sortOrder : null,
       render: (value: number) => fmtMoney(value),
     },
     margin: {
@@ -157,6 +172,8 @@ export function CustomerKpiTable({
       dataIndex: 'lastPurchaseDate',
       key: 'lastPurchase',
       width: 130,
+      sorter: true,
+      sortOrder: sort === 'lastPurchaseDate' ? sortOrder : null,
       render: (value: string | null) => fmtDate(value),
     },
     recency: {
@@ -165,6 +182,8 @@ export function CustomerKpiTable({
       key: 'recency',
       align: 'right',
       width: 100,
+      sorter: true,
+      sortOrder: sort === 'recencyDays' ? sortOrder : null,
       render: (value: number | null) => fmtRecency(value),
     },
     risk: {
@@ -187,6 +206,8 @@ export function CustomerKpiTable({
       key: 'discountRatio',
       align: 'right',
       width: 110,
+      sorter: true,
+      sortOrder: sort === 'discountRatio' ? sortOrder : null,
       render: (value: number | null) => fmtPercentRatio(value, 0),
     },
     channel: {
@@ -247,10 +268,52 @@ export function CustomerKpiTable({
       locale={{
         emptyText: error ?? 'No customers match these filters yet.',
       }}
+      onChange={(_pagination, _filters, sorter, extra) => {
+        if (!onSortChange || extra.action !== 'sort') return
+        const nextSorter = Array.isArray(sorter) ? sorter[0] : sorter
+        const nextSort = tableColumnKeyToSort(nextSorter?.columnKey)
+        const nextOrder = fromAntdSortOrder(nextSorter?.order)
+        onSortChange(nextSort, nextOrder)
+      }}
       scroll={{ x: 'max-content' }}
       columns={columns}
     />
   )
+}
+
+function tableColumnKeyToSort(
+  columnKey: string | number | undefined,
+): CustomerKpiListParams['sort'] {
+  switch (columnKey) {
+    case 'name':
+      return 'displayName'
+    case 'ltv':
+      return 'lifetimeValue'
+    case 'orders':
+      return 'totalOrders'
+    case 'aov':
+      return 'avgOrderValue'
+    case 'lastPurchase':
+      return 'lastPurchaseDate'
+    case 'recency':
+      return 'recencyDays'
+    case 'discountRatio':
+      return 'discountRatio'
+    default:
+      return undefined
+  }
+}
+
+function toAntdSortOrder(order: CustomerKpiListParams['order']) {
+  if (order === 'asc') return 'ascend'
+  if (order === 'desc') return 'descend'
+  return null
+}
+
+function fromAntdSortOrder(order: 'ascend' | 'descend' | null | undefined): CustomerKpiListParams['order'] {
+  if (order === 'ascend') return 'asc'
+  if (order === 'descend') return 'desc'
+  return undefined
 }
 
 export default CustomerKpiTable

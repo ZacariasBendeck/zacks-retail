@@ -13,7 +13,10 @@ describe('SizeGrid', () => {
 
   it('renders column headers', () => {
     render(<SizeGrid grid={grid} />);
-    expect(screen.getByRole('columnheader', { name: '6' })).toBeInTheDocument();
+    const col6 = screen.getByRole('columnheader', { name: '6' });
+    expect(col6).toBeInTheDocument();
+    expect(col6).toHaveStyle({ background: '#bfdbfe' });
+    expect(col6).toHaveStyle({ borderBottom: '2px solid #2563eb' });
     expect(screen.getByRole('columnheader', { name: 'TOT' })).toBeInTheDocument();
   });
 
@@ -46,5 +49,29 @@ describe('SizeGrid', () => {
     );
     const row = screen.getByRole('row', { name: /On Hand/ });
     expect(within(row).getByRole('cell')).toHaveTextContent('');
+  });
+
+  it('uses zebra striping and highlights the total row', () => {
+    render(
+      <SizeGrid
+        grid={{
+          columns: ['6'],
+          rows: [
+            { label: 'On Hand', cells: [{ value: 8 }] },
+            { label: 'Short', cells: [{ value: 3 }] },
+            { label: 'Total', cells: [{ value: 11 }] },
+          ],
+        }}
+      />
+    );
+
+    const onHandRow = screen.getByRole('row', { name: /On Hand/ });
+    const shortRow = screen.getByRole('row', { name: /Short/ });
+    const totalRow = screen.getByRole('row', { name: /Total/ });
+
+    expect(onHandRow).toHaveStyle({ background: '#ffffff' });
+    expect(shortRow).toHaveStyle({ background: '#dbeafe' });
+    expect(totalRow).toHaveStyle({ background: '#bfdbfe' });
+    expect(within(totalRow).getByRole('rowheader')).toHaveStyle({ fontWeight: '600' });
   });
 });

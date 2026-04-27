@@ -807,6 +807,22 @@ exports.Prisma.ReplenishmentTargetScalarFieldEnum = {
   updatedAt: 'updatedAt'
 };
 
+exports.Prisma.InventorySalesCellScalarFieldEnum = {
+  id: 'id',
+  storeId: 'storeId',
+  skuId: 'skuId',
+  columnLabel: 'columnLabel',
+  rowLabel: 'rowLabel',
+  mtdSales: 'mtdSales',
+  stdSales: 'stdSales',
+  ytdSales: 'ytdSales',
+  lySales: 'lySales',
+  source: 'source',
+  sourceRunId: 'sourceRunId',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+};
+
 exports.Prisma.InventoryHistorySnapshotScalarFieldEnum = {
   id: 'id',
   skuId: 'skuId',
@@ -2024,6 +2040,7 @@ exports.Prisma.ModelName = {
   ManualReceipt: 'ManualReceipt',
   ManualReceiptLine: 'ManualReceiptLine',
   ReplenishmentTarget: 'ReplenishmentTarget',
+  InventorySalesCell: 'InventorySalesCell',
   InventoryHistorySnapshot: 'InventoryHistorySnapshot',
   InventoryHistoryMonth: 'InventoryHistoryMonth',
   InventoryHistoryTrendWeek: 'InventoryHistoryTrendWeek',

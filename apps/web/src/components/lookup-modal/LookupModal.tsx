@@ -39,6 +39,8 @@ export interface LookupModalProps<T> {
   open: boolean;
   onClose: () => void;
   onSelect: (row: T) => void;
+  /** Optional fallback for "no rows, but accept the typed query anyway". */
+  onSubmitQuery?: (query: string) => void;
   title: string;
   /** Must be stable. Memoize via useCallback — when it changes, the modal
    *  resets to page 1 and refetches (treated as "filters changed"). */
@@ -87,6 +89,7 @@ export function LookupModal<T>({
   open,
   onClose,
   onSelect,
+  onSubmitQuery,
   title,
   searchFn,
   columns,
@@ -299,7 +302,14 @@ export function LookupModal<T>({
       pendingLandingRef.current = 'top';
       setPage(page - 1);
     } else if (e.key === 'Enter') {
-      if (currentRows.length === 0) return;
+      if (currentRows.length === 0) {
+        const typed = q.trim();
+        if (typed && onSubmitQuery) {
+          e.preventDefault();
+          onSubmitQuery(typed);
+        }
+        return;
+      }
       const idx = highlightedRef.current;
       const pick = idx >= 0 ? currentRows[idx] : currentRows[0];
       if (pick) {

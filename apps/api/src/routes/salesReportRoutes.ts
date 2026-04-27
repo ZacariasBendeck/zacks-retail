@@ -97,7 +97,7 @@ const byDaySchema = z.object({
  *     tags: [Sales Reports]
  *     summary: Sales by Day (RICS Ch. 6 p. 52) — net sales + profit by day for one or more stores, with prior-year weekday comparison.
  *     parameters:
- *       - { in: query, name: stores, required: true, schema: { type: string, description: "CSV of store numbers" } }
+ *       - { in: query, name: stores, required: false, schema: { type: string, description: "CSV of store numbers; omit for all stores" } }
  *       - { in: query, name: startDate, required: true, schema: { type: string, format: date } }
  *       - { in: query, name: endDate, required: true, schema: { type: string, format: date } }
  *       - { in: query, name: comparisonOffsetDays, schema: { type: integer, default: 364 } }
@@ -158,7 +158,7 @@ router.get('/by-day', validateQuery(byDaySchema), async (req: Request, res: Resp
           pctChange: block.totals.pctChange,
         });
       }
-      const fileStem = stores.length ? stores.join('_') : 'no-stores';
+      const fileStem = stores.length ? stores.join('_') : 'all-stores';
       await sendXlsx(res, {
         filename: `sales-by-day-${fileStem}-${q.startDate}-to-${q.endDate}.xlsx`,
         sheets: [
@@ -214,7 +214,7 @@ router.get('/by-day', validateQuery(byDaySchema), async (req: Request, res: Resp
           block.totals.pctChange == null ? '' : block.totals.pctChange.toFixed(1),
         ]);
       }
-      const fileStem = stores.length ? stores.join('_') : 'no-stores';
+      const fileStem = stores.length ? stores.join('_') : 'all-stores';
       sendCsv(res, header, rows, `sales-by-day-${fileStem}-${q.startDate}-to-${q.endDate}.csv`);
       return;
     }

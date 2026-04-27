@@ -1,5 +1,5 @@
 import { Button, Space, Tag, Typography } from 'antd'
-import { ArrowLeftOutlined, SaveOutlined, PlusOutlined, ThunderboltOutlined } from '@ant-design/icons'
+import { ArrowLeftOutlined, SaveOutlined, PlusOutlined, ThunderboltOutlined, StepForwardOutlined } from '@ant-design/icons'
 import { tokens } from './styles'
 import type { SkuLifecycleRow } from '../../../types/skuLifecycle'
 import type { Sku } from '../../../types/sku'
@@ -13,8 +13,10 @@ interface PageHeaderProps {
   isFinalizing: boolean
   onCancel: () => void
   onSave: () => void
+  onSaveAndNext: () => void
   onSaveAndNew: () => void
   onResetToCreate: () => void
+  canSaveAndNext: boolean
 }
 
 export function PageHeader({
@@ -26,8 +28,10 @@ export function PageHeader({
   isFinalizing,
   onCancel,
   onSave,
+  onSaveAndNext,
   onSaveAndNew,
   onResetToCreate,
+  canSaveAndNext,
 }: PageHeaderProps) {
   const isDraft = skuState === 'DRAFT'
   const isActive = skuState === 'ACTIVE'
@@ -74,6 +78,14 @@ export function PageHeader({
 
       <Space size={8} wrap>
         <Button onClick={onCancel}>Cancelar</Button>
+        <Button
+          icon={<StepForwardOutlined />}
+          onClick={onSaveAndNext}
+          loading={isSaving && !isFinalizing}
+          disabled={isDiscontinued || !canSaveAndNext}
+        >
+          Save &amp; Next SKU
+        </Button>
         <Button
           icon={<PlusOutlined />}
           onClick={onSaveAndNew}

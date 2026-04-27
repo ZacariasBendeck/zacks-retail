@@ -1421,7 +1421,12 @@ export async function searchPosSkus(q: string, limit = 20): Promise<PosSku[]> {
     loadVendorMap(),
   ]);
   const needle = q.trim().toLowerCase();
-  if (!needle) return [];
+  if (!needle) {
+    return snapshot
+      .map((r) => invRowToPosSku(r, categories, vendors))
+      .filter((s): s is PosSku => s !== null)
+      .slice(0, limit);
+  }
   const matches: InventoryMasterRow[] = [];
   for (const r of snapshot) {
     const hay =

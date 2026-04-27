@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SkuLookup } from './SkuLookup';
+import type { SkuLookupProps } from './SkuLookup';
 
 vi.mock('../../services/skuApi', () => ({
   searchSkusForLookup: vi.fn(),
@@ -14,13 +15,21 @@ vi.mock('../../services/skuApi', () => ({
 
 import * as skuApi from '../../services/skuApi';
 
-function renderLookup(onSelect = vi.fn()) {
+function renderLookup(
+  onSelect = vi.fn(),
+  extraProps: Partial<SkuLookupProps> = {},
+) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={client}>
       <MemoryRouter>
         <ConfigProvider>
-          <SkuLookup open={true} onClose={() => {}} onSelect={onSelect} />
+          <SkuLookup
+            open={true}
+            onClose={() => {}}
+            onSelect={onSelect}
+            {...extraProps}
+          />
         </ConfigProvider>
       </MemoryRouter>
     </QueryClientProvider>
@@ -94,5 +103,16 @@ describe('SkuLookup', () => {
     input.focus();
     await userEvent.keyboard('{ArrowDown}{ArrowDown}{Enter}');
     expect(onSelect).toHaveBeenCalledWith({ skuCode: 'A2', skuId: 'A2' });
+  });
+
+  it('submits the typed SKU when Enter is pressed with no results', async () => {
+    vi.mocked(skuApi.searchSkusForLookup).mockResolvedValueOnce({ rows: [], total: 0 });
+    const onSubmitQuery = vi.fn();
+    renderLookup(vi.fn(), { initialQuery: 'NEW-SKU-123', onSubmitQuery });
+    await waitFor(() => expect(skuApi.searchSkusForLookup).toHaveBeenCalled());
+    const input = screen.getByPlaceholderText(/Prefix match/i);
+    input.focus();
+    await userEvent.keyboard('{Enter}');
+    expect(onSubmitQuery).toHaveBeenCalledWith('NEW-SKU-123');
   });
 });

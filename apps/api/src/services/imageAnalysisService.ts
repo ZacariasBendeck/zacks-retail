@@ -142,7 +142,7 @@ export async function analyzeShoeImage(
   const mediaType = mimeType as 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
 
   const response = await client.messages.create({
-    model: 'claude-opus-4-7',
+    model: 'claude-sonnet-4-6',
     max_tokens: 2048,
     messages: [
       {

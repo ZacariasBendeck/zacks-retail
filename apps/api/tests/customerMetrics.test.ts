@@ -427,4 +427,73 @@ describe('Customer KPI module', () => {
     expect(summary.body.dormantCustomers).toBeGreaterThanOrEqual(baseline.body.dormantCustomers + 1);
     expect(summary.body.churnDistribution.high).toBeGreaterThanOrEqual(baseline.body.churnDistribution.high);
   });
+
+  it('returns filtered totals and honors server-side sorting for the customer intelligence list', async () => {
+    const lowerOrderCustomer = await createCustomer('TEST-KPI-LIST-LOW');
+    const higherOrderCustomer = await createCustomer('TEST-KPI-LIST-HIGH');
+    const now = Date.now();
+
+    await prisma.customerTransactionFact.create({
+      data: {
+        customerId: lowerOrderCustomer.id,
+        source: TEST_SOURCE,
+        transactionKind: 'purchase',
+        status: 'completed',
+        storeId: STORE_ID_A,
+        channel: 'store',
+        totalAmount: 100,
+        netAmount: 100,
+        costAmount: 50,
+        discountAmount: 0,
+        purchasedAt: new Date(now - 21 * DAY_MS),
+      },
+    });
+
+    await prisma.customerTransactionFact.createMany({
+      data: [
+        {
+          customerId: higherOrderCustomer.id,
+          source: TEST_SOURCE,
+          transactionKind: 'purchase',
+          status: 'completed',
+          storeId: STORE_ID_B,
+          channel: 'online',
+          totalAmount: 90,
+          netAmount: 90,
+          costAmount: 40,
+          discountAmount: 0,
+          purchasedAt: new Date(now - 14 * DAY_MS),
+        },
+        {
+          customerId: higherOrderCustomer.id,
+          source: TEST_SOURCE,
+          transactionKind: 'purchase',
+          status: 'completed',
+          storeId: STORE_ID_B,
+          channel: 'online',
+          totalAmount: 60,
+          netAmount: 60,
+          costAmount: 30,
+          discountAmount: 0,
+          purchasedAt: new Date(now - 7 * DAY_MS),
+        },
+      ],
+    });
+
+    await request(app).post(`/api/v1/customers/${lowerOrderCustomer.id}/recompute-metrics`).expect(200);
+    await request(app).post(`/api/v1/customers/${higherOrderCustomer.id}/recompute-metrics`).expect(200);
+
+    const res = await request(app).get('/api/v1/customers/metrics/list?q=TEST-KPI-LIST&sort=totalOrders&order=desc&pageSize=10');
+    expect(res.status).toBe(200);
+    expect(res.body.summary.customerCount).toBe(2);
+    expect(res.body.summary.totalLifetimeValue).toBe(250);
+    expect(res.body.summary.totalOrders).toBe(3);
+    expect(res.body.summary.avgOrderValue).toBeCloseTo(87.5, 4);
+    expect(res.body.summary.avgRecencyDays).not.toBeNull();
+    expect(res.body.data).toHaveLength(2);
+    expect(res.body.data[0].customerId).toBe(higherOrderCustomer.id);
+    expect(res.body.data[0].totalOrders).toBe(2);
+    expect(res.body.data[1].customerId).toBe(lowerOrderCustomer.id);
+    expect(res.body.data[1].totalOrders).toBe(1);
+  });
 });

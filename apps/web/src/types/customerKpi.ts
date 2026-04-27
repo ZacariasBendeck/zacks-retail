@@ -122,6 +122,14 @@ export interface CustomerKpiListParams {
 
 export interface CustomerKpiListEnvelope {
   data: CustomerKpiListRow[]
+  summary: {
+    customerCount: number
+    totalLifetimeValue: number
+    totalOrders: number
+    avgLifetimeValue: number
+    avgOrderValue: number
+    avgRecencyDays: number | null
+  }
   pagination: {
     page: number
     pageSize: number

@@ -114,7 +114,7 @@ export function ProductIdentitySection({
                   onImageFile(file)
                   return false
                 }}
-                disabled={analyzing || !selectedFamily}
+                disabled={analyzing}
                 style={{
                   width: '100%',
                   height: '100%',
@@ -138,6 +138,7 @@ export function ProductIdentitySection({
                       height: '100%',
                       objectFit: 'contain',
                       borderRadius: tokens.image.borderRadius,
+                      pointerEvents: 'none',
                     }}
                   />
                 ) : (
@@ -266,17 +267,7 @@ export function ProductIdentitySection({
           </Row>
 
           <Row gutter={tokens.rowGutter}>
-            <Col xs={24} sm={12}>
-              <Form.Item
-                label="Marca"
-                name="brandId"
-                rules={[{ required: true, message: 'Marca requerida' }]}
-                style={{ marginBottom: 12 }}
-              >
-                <Input placeholder="Escriba la marca" allowClear size="large" />
-              </Form.Item>
-            </Col>
-            <Col xs={24} sm={8}>
+            <Col xs={24} sm={16}>
               <Form.Item
                 label="Estilo"
                 name="style"
@@ -289,7 +280,7 @@ export function ProductIdentitySection({
                 <Input placeholder="Estilo" maxLength={17} size="large" />
               </Form.Item>
             </Col>
-            <Col xs={24} sm={4}>
+            <Col xs={24} sm={8}>
               <Form.Item label="Group" name="groupCode" style={{ marginBottom: 12 }}>
                 <Select
                   placeholder="Group"

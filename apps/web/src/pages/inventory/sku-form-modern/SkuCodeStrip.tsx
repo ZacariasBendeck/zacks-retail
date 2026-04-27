@@ -1,7 +1,7 @@
 import { AutoComplete, Button, Col, Form, Input, Row, Spin, Typography } from 'antd'
 import { SearchOutlined } from '@ant-design/icons'
 import { useState } from 'react'
-import { sectionCard, sectionTitle, sectionSubtitle, readonlyInput } from './styles'
+import { sectionCard, sectionTitle, sectionSubtitle, readonlyInput, tokens } from './styles'
 import type { SkuLifecycleRow } from '../../../types/skuLifecycle'
 
 interface SkuCodeStripProps {
@@ -13,6 +13,7 @@ interface SkuCodeStripProps {
   lifecycleSku: SkuLifecycleRow | undefined
 
   /** Create-mode lookup options + state. */
+  existingSkuImageUrl?: string | null
   skuSearchOptions: { value: string; label: React.ReactNode }[]
   matched: boolean
   searchPending: boolean
@@ -37,6 +38,7 @@ export function SkuCodeStrip({
   isDraft,
   isActive,
   lifecycleSku,
+  existingSkuImageUrl,
   skuSearchOptions,
   matched,
   searchPending,
@@ -47,11 +49,12 @@ export function SkuCodeStrip({
   onOpenSkuLookup,
 }: SkuCodeStripProps) {
   const [text, setText] = useState('')
+  const showExistingPreview = matched
   return (
     <div style={sectionCard}>
       {!isRouteEdit ? (
         <Row gutter={16} align="middle">
-          <Col xs={24} sm={12} md={10} lg={8}>
+          <Col xs={24} sm={showExistingPreview ? 16 : 12} md={showExistingPreview ? 15 : 10} lg={showExistingPreview ? 14 : 8}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8 }}>
               <Typography.Text style={sectionTitle}>Buscar SKU existente</Typography.Text>
               {onOpenSkuLookup && (
@@ -94,6 +97,45 @@ export function SkuCodeStrip({
               />
             </Form.Item>
           </Col>
+          {showExistingPreview && (
+            <Col xs={24} sm={8} md={9} lg={6}>
+              <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                <div style={{ width: tokens.image.dropzoneSize, maxWidth: '100%' }}>
+                  <Typography.Text style={sectionTitle}>Foto existente</Typography.Text>
+                  <div
+                    style={{
+                      marginTop: 8,
+                      height: 110,
+                      border: '1px solid #d9d9d9',
+                      borderRadius: tokens.image.borderRadius,
+                      background: tokens.colors.mutedBg,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      overflow: 'hidden',
+                    }}
+                  >
+                    {existingSkuImageUrl ? (
+                      <img
+                        src={existingSkuImageUrl}
+                        alt="SKU existente"
+                        style={{
+                          width: '100%',
+                          height: '100%',
+                          objectFit: 'contain',
+                          pointerEvents: 'none',
+                        }}
+                      />
+                    ) : (
+                      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                        Sin foto RICS
+                      </Typography.Text>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </Col>
+          )}
         </Row>
       ) : (
         <Row gutter={16}>

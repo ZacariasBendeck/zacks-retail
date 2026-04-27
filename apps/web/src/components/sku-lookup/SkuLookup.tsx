@@ -17,6 +17,12 @@ export interface SkuLookupProps {
   onSelect: (picked: { skuCode: string; skuId: string }) => void;
   initialQuery?: string;
   allowCreate?: boolean;
+  onSubmitQuery?: (skuCode: string) => void;
+  searchFnOverride?: (args: { query: string; page: number; pageSize: number }) => Promise<{ rows: SkuLookupRow[]; total: number }>;
+  hideSearchFieldSelector?: boolean;
+  hideFilters?: boolean;
+  helperTextOverride?: React.ReactNode;
+  placeholderOverride?: string;
 }
 
 type SearchField = SkuLookupSort; // 'SKU' | 'DESCRIPTION' | 'VENDOR' | 'STYLE_COLOR'
@@ -29,7 +35,8 @@ const SEARCH_FIELD_OPTIONS: Array<{ value: SearchField; label: string }> = [
 ];
 
 export const SkuLookup: React.FC<SkuLookupProps> = ({
-  open, onClose, onSelect, initialQuery = '', allowCreate = false,
+  open, onClose, onSelect, initialQuery = '', allowCreate = false, onSubmitQuery,
+  searchFnOverride, hideSearchFieldSelector = false, hideFilters = false, helperTextOverride, placeholderOverride,
 }) => {
   const [searchField, setSearchField] = useState<SearchField>('SKU');
   const [season, setSeason] = useState<string | undefined>(undefined);
@@ -40,7 +47,7 @@ export const SkuLookup: React.FC<SkuLookupProps> = ({
   const { data: facets } = useQuery({
     queryKey: ['sku-lookup-facets'],
     queryFn: fetchSkuLookupFacets,
-    enabled: open,
+    enabled: open && !hideFilters,
     staleTime: 10 * 60_000,
     gcTime: 30 * 60_000,
   });
@@ -49,16 +56,18 @@ export const SkuLookup: React.FC<SkuLookupProps> = ({
   // identity change is the modal's "filters changed, reset page" signal.
   const searchFn = useCallback(
     ({ query, page, pageSize }: { query: string; page: number; pageSize: number }) =>
-      searchSkusForLookup({
-        q: query,
-        searchField,
-        season,
-        vendor,
-        department,
-        limit: pageSize,
-        offset: (page - 1) * pageSize,
-      }).then((r) => ({ rows: r.rows, total: r.total })),
-    [searchField, season, vendor, department],
+      searchFnOverride
+        ? searchFnOverride({ query, page, pageSize })
+        : searchSkusForLookup({
+          q: query,
+          searchField,
+          season,
+          vendor,
+          department,
+          limit: pageSize,
+          offset: (page - 1) * pageSize,
+        }).then((r) => ({ rows: r.rows, total: r.total })),
+    [searchField, season, vendor, department, searchFnOverride],
   );
 
   const columns: ColumnsType<SkuLookupRow> = useMemo(() => [
@@ -177,9 +186,12 @@ export const SkuLookup: React.FC<SkuLookupProps> = ({
       width={960}
       pageSize={50}
       initialQuery={initialQuery}
-      searchFieldSlot={searchFieldSlot}
-      filterSlot={filterSlot}
+      placeholder={placeholderOverride}
+      searchFieldSlot={hideSearchFieldSelector ? null : searchFieldSlot}
+      filterSlot={hideFilters ? null : filterSlot}
       footerExtras={footerExtras}
+      helperText={helperTextOverride}
+      onSubmitQuery={searchField === 'SKU' ? onSubmitQuery : undefined}
       compactRows
     />
   );

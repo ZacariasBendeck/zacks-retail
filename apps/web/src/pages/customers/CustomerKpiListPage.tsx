@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Alert, Button, Card, Input, Select, Space, Typography } from 'antd'
+import { Alert, Button, Card, Col, Input, Row, Select, Space, Typography } from 'antd'
 import { ReloadOutlined } from '@ant-design/icons'
 import { useCustomerKpiFilterOptions, useCustomerKpiList } from '../../hooks/useCustomerKpi'
+import { CustomerKpiCard } from '../../components/customerKpi/CustomerKpiCard'
 import { CustomerKpiTable } from '../../components/customerKpi/CustomerKpiTable'
 import { SEGMENT_LABELS } from '../../components/customerKpi/CustomerSegmentBadge'
+import { fmtMoney, fmtMoneyInt } from '../../components/customerKpi/formatters'
 import type { CustomerKpiListParams, CustomerKpiSegment, CustomerStoreChainKey } from '../../types/customerKpi'
 
 const { Search } = Input
@@ -257,6 +259,7 @@ export default function CustomerKpiListPage() {
 
   const list = useCustomerKpiList(params)
   const filterOptions = useCustomerKpiFilterOptions()
+  const filteredSummary = list.data?.summary
 
   const chainRows = filterOptions.data?.chains ?? []
   const cityRows = filterOptions.data?.cities ?? []
@@ -381,6 +384,10 @@ export default function CustomerKpiListPage() {
   const clearFilters = () => {
     setSearchInput('')
     setSearchParams(buildSearchParams({}, 1, pageSize))
+  }
+
+  const handleSortChange = (sort: CustomerKpiListParams['sort'], order: CustomerKpiListParams['order']) => {
+    setSearchParams(buildSearchParams({ ...filters, sort, order }, 1, pageSize))
   }
 
   return (
@@ -612,6 +619,57 @@ export default function CustomerKpiListPage() {
           />
         ) : null}
 
+        <Row gutter={[12, 12]} style={{ marginBottom: 16 }}>
+          <Col xs={24} sm={12} lg={8} xl={4}>
+            <CustomerKpiCard
+              label="Matching Customers"
+              value={list.isLoading ? '-' : fmtMoneyInt(filteredSummary?.customerCount ?? 0)}
+              hint="Customers in the current filter set"
+              loading={list.isLoading}
+            />
+          </Col>
+          <Col xs={24} sm={12} lg={8} xl={4}>
+            <CustomerKpiCard
+              label="Total LTV"
+              value={list.isLoading ? '-' : fmtMoney(filteredSummary?.totalLifetimeValue ?? 0)}
+              hint="Combined lifetime value"
+              loading={list.isLoading}
+            />
+          </Col>
+          <Col xs={24} sm={12} lg={8} xl={4}>
+            <CustomerKpiCard
+              label="Total Orders"
+              value={list.isLoading ? '-' : fmtMoneyInt(filteredSummary?.totalOrders ?? 0)}
+              hint="Completed purchase orders"
+              loading={list.isLoading}
+            />
+          </Col>
+          <Col xs={24} sm={12} lg={8} xl={4}>
+            <CustomerKpiCard
+              label="Avg LTV"
+              value={list.isLoading ? '-' : fmtMoney(filteredSummary?.avgLifetimeValue ?? 0)}
+              hint="Average customer lifetime value"
+              loading={list.isLoading}
+            />
+          </Col>
+          <Col xs={24} sm={12} lg={8} xl={4}>
+            <CustomerKpiCard
+              label="Avg Order Value"
+              value={list.isLoading ? '-' : fmtMoney(filteredSummary?.avgOrderValue ?? 0)}
+              hint="Average order across matches"
+              loading={list.isLoading}
+            />
+          </Col>
+          <Col xs={24} sm={12} lg={8} xl={4}>
+            <CustomerKpiCard
+              label="Avg Recency"
+              value={list.isLoading ? '-' : formatAverageRecency(filteredSummary?.avgRecencyDays)}
+              hint="Average days since last purchase"
+              loading={list.isLoading}
+            />
+          </Col>
+        </Row>
+
         <CustomerKpiTable
           rows={list.data?.data ?? []}
           loading={list.isLoading}
@@ -638,8 +696,16 @@ export default function CustomerKpiListPage() {
             'discountRatio',
             'channel',
           ]}
+          sort={params.sort}
+          order={params.order}
+          onSortChange={handleSortChange}
         />
       </Card>
     </div>
   )
+}
+
+function formatAverageRecency(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) return '-'
+  return `${Math.round(value)} days`
 }

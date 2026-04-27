@@ -49,12 +49,8 @@ router.get('/skus', async (req: Request, res: Response): Promise<void> => {
   const q = (req.query.q as string | undefined)?.trim();
   const limitRaw = Number(req.query.limit ?? 20);
   const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(100, limitRaw)) : 20;
-  if (!q) {
-    res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'q is required' } });
-    return;
-  }
   try {
-    const data = await searchPosSkus(q, limit);
+    const data = await searchPosSkus(q ?? '', limit);
     res.json({ data });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'SKU search failed';

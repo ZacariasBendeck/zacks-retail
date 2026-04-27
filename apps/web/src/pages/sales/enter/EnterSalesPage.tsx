@@ -1,4 +1,4 @@
-import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Alert,
   App as AntApp,
@@ -28,7 +28,9 @@ import type { InputRef } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import dayjs from 'dayjs'
+import './EnterSalesPage.css'
 import { SkuLookup } from '../../../components/sku-lookup'
+import type { SkuLookupRow } from '../../../services/skuApi'
 import { salesPosApi, type PosHeaderPatchInput, type PosLineInput } from '../../../services/salesPosApi'
 import type {
   CustomerSearchResult,
@@ -114,17 +116,6 @@ interface OverrideRequest {
 
 function formatMoney(value: number | null | undefined) {
   return numberFormatter.format(value ?? 0)
-}
-
-function formatTicketStatus(status: string) {
-  switch (status) {
-    case 'COMPLETED':
-      return 'green'
-    case 'VOIDED':
-      return 'red'
-    default:
-      return 'blue'
-  }
 }
 
 function makeDefaultPendingLine(data: PosBootstrap | undefined): PendingLineForm {
@@ -259,6 +250,7 @@ export default function EnterSalesPage() {
   const { message, modal } = AntApp.useApp()
   const queryClient = useQueryClient()
   const codeInputRef = useRef<InputRef | null>(null)
+  const shellRef = useRef<HTMLDivElement | null>(null)
 
   const [selectedStoreId, setSelectedStoreId] = useState<number | undefined>()
   const [selectedRegisterCode, setSelectedRegisterCode] = useState<string | undefined>()
@@ -296,6 +288,7 @@ export default function EnterSalesPage() {
 
   const [overrideRequest, setOverrideRequest] = useState<OverrideRequest | null>(null)
   const [overridePin, setOverridePin] = useState('')
+  const [isFullscreen, setIsFullscreen] = useState(false)
 
   const deferredCustomerQuery = useDeferredValue(customerQuery)
 
@@ -403,6 +396,18 @@ export default function EnterSalesPage() {
     return () => window.clearTimeout(timer)
   }, [activeTicket?.id, screenMode])
 
+  useEffect(() => {
+    const syncFullscreenState = () => {
+      setIsFullscreen(document.fullscreenElement === shellRef.current)
+    }
+
+    syncFullscreenState()
+    document.addEventListener('fullscreenchange', syncFullscreenState)
+    return () => {
+      document.removeEventListener('fullscreenchange', syncFullscreenState)
+    }
+  }, [])
+
   const linesColumns: ColumnsType<PosTicketLine> = useMemo(
     () => [
       { title: 'SKU', dataIndex: 'skuCode', key: 'skuCode', width: 120 },
@@ -438,12 +443,49 @@ export default function EnterSalesPage() {
     [activeTicket?.id],
   )
 
+  const posSkuLookupSearch = useCallback(
+    async ({ query, pageSize }: { query: string; page: number; pageSize: number }) => {
+      const matches = await salesPosApi.searchCatalog(query, pageSize)
+      const rows: SkuLookupRow[] = matches.map((row) => ({
+        skuId: row.skuCode,
+        skuCode: row.skuCode,
+        description: row.description ?? '',
+        vendor: row.vendorName || row.vendorCode || '',
+        category: row.categoryName || String(row.categoryNumber ?? ''),
+        styleColor: row.styleColor,
+        currentPrice: row.currentPrice ?? null,
+        pictureUrl: row.pictureFileName ? `/rics-images/${encodeURIComponent(row.pictureFileName)}` : null,
+      }))
+
+      return { rows, total: rows.length }
+    },
+    [],
+  )
+
   const totalQuantity = activeTicket?.lines.reduce((sum, line) => sum + line.quantity, 0) ?? 0
   const canOperate = !!activeTicket && !!shift
   const hasRefundLine = activeTicket?.lines.some((line) => line.quantity < 0) ?? false
   const hasManagerRefundPermission = bootstrap?.currentUser.permissions.includes('sales_pos.refund') ?? false
   const closePreview = closePreviewQuery.data ?? null
   const computedOverShort = closePreview ? actualCashTotal - closePreview.expectedCashTotal : 0
+
+  async function handleToggleFullscreen() {
+    try {
+      if (document.fullscreenElement === shellRef.current) {
+        await document.exitFullscreen()
+        return
+      }
+
+      if (!shellRef.current?.requestFullscreen) {
+        message.warning('Fullscreen is not available in this browser.')
+        return
+      }
+
+      await shellRef.current.requestFullscreen()
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : 'Unable to change fullscreen mode.')
+    }
+  }
 
   async function refreshBootstrap() {
     await bootstrapQuery.refetch()
@@ -904,6 +946,7 @@ export default function EnterSalesPage() {
       title="Receipt Preview"
       width={920}
       onCancel={() => setReceiptOpen(false)}
+      rootClassName="sales-pos-overlay"
       footer={[
         <Button key="close" onClick={() => setReceiptOpen(false)}>
           Close
@@ -938,7 +981,7 @@ export default function EnterSalesPage() {
   }
 
   const headerEditor = (
-    <Space direction="vertical" style={{ width: '100%' }} size="large">
+    <Space direction="vertical" style={{ width: '100%' }} size="middle" className="sales-pos-header-editor">
       <Form layout="vertical">
         <Row gutter={[12, 12]}>
           <Col xs={24} md={12}>
@@ -1018,7 +1061,7 @@ export default function EnterSalesPage() {
         </Row>
       </Form>
 
-      <Space wrap>
+      <Space wrap size={[8, 8]} className="sales-pos-action-bar">
         <Button type="primary" onClick={() => void saveHeader()}>
           Save / SKU Detail
         </Button>
@@ -1062,76 +1105,133 @@ export default function EnterSalesPage() {
         void handleSkuLookupSelect(picked)
       }}
       initialQuery={skuLookupInitialQuery}
+      searchFnOverride={posSkuLookupSearch}
+      hideSearchFieldSelector
+      hideFilters
+      placeholderOverride="Type SKU, UPC seed, description, vendor, or style/color"
+      helperTextOverride="POS lookup searches the live register catalog and returns the closest matches for the current sale."
+      onSubmitQuery={(typed) => {
+        setSkuLookupOpen(false)
+        void applyLookupProduct(typed)
+      }}
     />
   )
 
+  const windowNote = (
+    <div className="sales-pos-note">
+      <span className="sales-pos-note-label">Amounts in Lempira (HNL)</span>
+      <span>This minimalist workspace preserves the RICS Enter Sales flow: shift open, ticket header, ticket detail, payment, reclaim, payout, reprint, and close batch.</span>
+    </div>
+  )
+
   return (
-    <Space direction="vertical" size="large" style={{ width: '100%' }}>
-      <Alert
-        type="info"
-        showIcon
-        message="Amounts in Lempira (HNL)"
-        description="This browser workspace preserves the RICS Enter Sales flow: shift open, ticket header, ticket detail, payment, reclaim, payout, reprint, and close batch."
-      />
+    <div
+      ref={shellRef}
+      className={`sales-pos-popup-shell${isFullscreen ? ' sales-pos-popup-shell--fullscreen' : ''}`}
+    >
 
       {!shift ? (
-        <Card
-          title="Start New Batch Of Sales"
-          extra={<Tag color="gold">No open shift</Tag>}
-          styles={{ body: { paddingTop: 20 } }}
-        >
-          <Row gutter={[16, 16]}>
-            <Col xs={24} md={8}>
-              <Typography.Text strong>Store</Typography.Text>
-              <Select
-                style={{ width: '100%', marginTop: 8 }}
-                value={selectedStoreId}
-                options={bootstrap.stores.map((store) => ({
-                  value: store.id,
-                  label: `${store.code} - ${store.name}`,
-                }))}
-                onChange={(value) => setSelectedStoreId(value)}
-              />
-            </Col>
-            <Col xs={24} md={8}>
-              <Typography.Text strong>Register</Typography.Text>
-              <Select
-                style={{ width: '100%', marginTop: 8 }}
-                value={selectedRegisterCode}
-                options={bootstrap.registers.map((register) => ({
-                  value: register.code,
-                  label: `${register.code} - ${register.label}`,
-                }))}
-                onChange={(value) => setSelectedRegisterCode(value)}
-              />
-            </Col>
-            <Col xs={24} md={8}>
-              <Typography.Text strong>Opening Cash Float</Typography.Text>
-              <InputNumber
-                style={{ width: '100%', marginTop: 8 }}
-                min={0}
-                value={openingCashFloat}
-                onChange={(value) => setOpeningCashFloat(value ?? 0)}
-              />
-            </Col>
-          </Row>
+        <section className="sales-pos-window sales-pos-window--setup">
+          <div className="sales-pos-window-bar">
+            <div className="sales-pos-window-heading">
+              <div className="sales-pos-window-kicker">Sales POS</div>
+              <Typography.Title level={3} className="sales-pos-window-title">
+                Start New Batch Of Sales
+              </Typography.Title>
+              <Typography.Text className="sales-pos-window-subtitle">
+                Open the register in a minimal operator workspace before ticket entry begins.
+              </Typography.Text>
+            </div>
+            <div className="sales-pos-window-actions">
+              <Tag className="sales-pos-status-tag">No open shift</Tag>
+              <Button type="primary" onClick={() => void handleToggleFullscreen()}>
+                {isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
+              </Button>
+            </div>
+          </div>
 
-          <Divider />
+          {windowNote}
 
-          <Space>
-            <Button type="primary" loading={busyAction === 'open-shift'} onClick={openShiftForStore}>
-              Save / Enter Sales
-            </Button>
-            <Button onClick={showManagerOptionsSummary}>Manager Options</Button>
-          </Space>
-        </Card>
+          <Card
+            size="small"
+            className="sales-pos-panel sales-pos-setup-card"
+            styles={{ body: { paddingTop: 16 } }}
+          >
+            <Row gutter={[12, 12]}>
+              <Col xs={24} md={8}>
+                <Typography.Text strong>Store</Typography.Text>
+                <Select
+                  style={{ width: '100%', marginTop: 8 }}
+                  value={selectedStoreId}
+                  options={bootstrap.stores.map((store) => ({
+                    value: store.id,
+                    label: `${store.code} - ${store.name}`,
+                  }))}
+                  onChange={(value) => setSelectedStoreId(value)}
+                />
+              </Col>
+              <Col xs={24} md={8}>
+                <Typography.Text strong>Register</Typography.Text>
+                <Select
+                  style={{ width: '100%', marginTop: 8 }}
+                  value={selectedRegisterCode}
+                  options={bootstrap.registers.map((register) => ({
+                    value: register.code,
+                    label: `${register.code} - ${register.label}`,
+                  }))}
+                  onChange={(value) => setSelectedRegisterCode(value)}
+                />
+              </Col>
+              <Col xs={24} md={8}>
+                <Typography.Text strong>Opening Cash Float</Typography.Text>
+                <InputNumber
+                  style={{ width: '100%', marginTop: 8 }}
+                  min={0}
+                  value={openingCashFloat}
+                  onChange={(value) => setOpeningCashFloat(value ?? 0)}
+                />
+              </Col>
+            </Row>
+
+            <Divider />
+
+            <Space wrap size={[8, 8]} className="sales-pos-action-bar">
+              <Button type="primary" loading={busyAction === 'open-shift'} onClick={openShiftForStore}>
+                Save / Enter Sales
+              </Button>
+              <Button onClick={showManagerOptionsSummary}>Manager Options</Button>
+            </Space>
+          </Card>
+        </section>
       ) : (
-        <>
-          <Card>
+        <section className="sales-pos-window">
+          <div className="sales-pos-window-bar">
+            <div className="sales-pos-window-heading">
+              <div className="sales-pos-window-kicker-row">
+                <span>Sales POS</span>
+                <span>Ticket {activeTicket?.ticketNumber ?? '-'}</span>
+              </div>
+              <Typography.Title level={3} className="sales-pos-window-title">
+                {screenMode === 'HEADER' ? 'Ticket Header' : 'Ticket Detail'}
+              </Typography.Title>
+              <Typography.Text className="sales-pos-window-subtitle">
+                Store {bootstrap.selectedStoreId} / Register {shift.registerCode} / Business date {dayjs(shift.businessDate).format('YYYY-MM-DD')}
+              </Typography.Text>
+            </div>
+            <div className="sales-pos-window-actions">
+              <Tag className="sales-pos-status-tag sales-pos-status-tag--solid">Batch Open</Tag>
+              <Button type="primary" onClick={() => void handleToggleFullscreen()}>
+                {isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
+              </Button>
+            </div>
+          </div>
+
+          {windowNote}
+
+          <Card size="small" className="sales-pos-panel sales-pos-shift-summary-card">
             <Row gutter={[16, 16]} align="middle">
               <Col xs={24} md={14}>
                 <Space size="middle" wrap>
-                  <Tag color="blue">Batch Open</Tag>
                   <Typography.Text strong>
                     Store {bootstrap.selectedStoreId} • Register {shift.registerCode}
                   </Typography.Text>
@@ -1149,9 +1249,9 @@ export default function EnterSalesPage() {
             </Row>
           </Card>
 
-          <Card>
+          <Card size="small" className="sales-pos-panel sales-pos-ticket-chip-card">
             <Space wrap size="middle">
-              <Tag color={formatTicketStatus(activeTicket?.status ?? 'DRAFT')}>{activeTicket?.status ?? 'DRAFT'}</Tag>
+              <Tag className="sales-pos-status-tag">{activeTicket?.status ?? 'DRAFT'}</Tag>
               <Typography.Text strong>Cashier {activeTicket?.cashierName}</Typography.Text>
               <Typography.Text>Transaction {activeTicket?.transactionType}</Typography.Text>
               <Typography.Text>Customer {activeTicket?.customerName || '-'}</Typography.Text>
@@ -1161,15 +1261,25 @@ export default function EnterSalesPage() {
           </Card>
 
           {screenMode === 'HEADER' ? (
-            <Card title="Ticket Header" styles={{ body: { paddingTop: 16 } }}>
+            <Card
+              size="small"
+              className="sales-pos-panel sales-pos-header-card"
+              title="Ticket Header"
+              styles={{ body: { paddingTop: 12 } }}
+            >
               {headerEditor}
             </Card>
           ) : (
             <>
-              <Row gutter={[16, 16]}>
+              <Row gutter={[12, 12]} className="sales-pos-detail-row">
                 <Col xs={24} xl={16}>
-                  <Card title={editingLineId ? 'Modify Ticket Line' : 'Ticket Detail'} styles={{ body: { paddingTop: 16 } }}>
-                    <Row gutter={[12, 12]}>
+                  <Card
+                    size="small"
+                    className="sales-pos-panel sales-pos-entry-card"
+                    title={editingLineId ? 'Modify Ticket Line' : 'Ticket Detail'}
+                    styles={{ body: { paddingTop: 12 } }}
+                  >
+                    <Row gutter={[10, 10]}>
                       <Col xs={24} md={10}>
                         <Typography.Text strong>UPC / SKU</Typography.Text>
                         <Input
@@ -1203,7 +1313,7 @@ export default function EnterSalesPage() {
                         />
                       </Col>
                       <Col xs={24} md={2}>
-                        <Button style={{ marginTop: 24, width: '100%' }} onClick={() => void handleLookupProduct()}>
+                        <Button className="sales-pos-lookup-button" style={{ marginTop: 24, width: '100%' }} onClick={() => void handleLookupProduct()}>
                           Lookup
                         </Button>
                       </Col>
@@ -1308,16 +1418,16 @@ export default function EnterSalesPage() {
                       <Col span={24}>
                         <Typography.Text strong>SKU Comment</Typography.Text>
                         <Input.TextArea
-                          rows={3}
+                          rows={2}
                           value={pendingLine.comment ?? ''}
                           onChange={(event) => setPendingLine((current) => ({ ...current, comment: event.target.value }))}
                         />
                       </Col>
                     </Row>
 
-                    <Divider />
+                    <Divider className="sales-pos-divider" />
 
-                    <Space wrap>
+                    <Space wrap size={[8, 8]} className="sales-pos-action-bar">
                       <Button type="primary" onClick={() => void saveLine(false)} loading={busyAction === 'add-line' || busyAction === 'update-line'} disabled={!canOperate}>
                         {editingLineId ? 'Save Changes' : 'Save / Next SKU'}
                       </Button>
@@ -1337,14 +1447,19 @@ export default function EnterSalesPage() {
                 </Col>
 
                 <Col xs={24} xl={8}>
-                  <Card title="Totals Rail" styles={{ body: { paddingTop: 12 } }}>
+                  <Card
+                    size="small"
+                    className="sales-pos-panel sales-pos-totals-card"
+                    title="Totals Rail"
+                    styles={{ body: { paddingTop: 12 } }}
+                  >
                     <Space direction="vertical" style={{ width: '100%' }} size="middle">
                       <Statistic title="Qty" value={totalQuantity} />
                       <Statistic title="Subtotal" value={formatMoney(activeTicket?.subtotal)} />
                       <Statistic title="15% ISV" value={formatMoney(activeTicket?.taxTotal)} />
                       <Statistic title="ISV.Ad" value={formatMoney(activeTicket?.secondaryTaxTotal)} />
                       <Statistic title={bootstrap.otherChargeLabel} value={formatMoney(activeTicket?.otherCharges)} />
-                      <Statistic title="Total" value={formatMoney(activeTicket?.grandTotal)} valueStyle={{ color: '#0b5c44', fontWeight: 700 }} />
+                      <Statistic title="Total" value={formatMoney(activeTicket?.grandTotal)} valueStyle={{ fontWeight: 700 }} />
                       {lookupResult ? (
                         <Descriptions size="small" column={1} bordered>
                           <Descriptions.Item label="Loaded SKU">{lookupResult.code}</Descriptions.Item>
@@ -1357,7 +1472,7 @@ export default function EnterSalesPage() {
                 </Col>
               </Row>
 
-              <Card title="SKUs already entered on ticket">
+              <Card size="small" className="sales-pos-panel sales-pos-lines-card" title="SKUs already entered on ticket">
                 <Table
                   size="small"
                   rowKey="id"
@@ -1365,12 +1480,12 @@ export default function EnterSalesPage() {
                   columns={linesColumns}
                   dataSource={activeTicket?.lines ?? []}
                   locale={{ emptyText: 'No items on the current ticket.' }}
-                  scroll={{ x: 980 }}
+                  scroll={{ x: 980, y: 260 }}
                 />
               </Card>
             </>
           )}
-        </>
+        </section>
       )}
 
       <Drawer
@@ -1378,6 +1493,7 @@ export default function EnterSalesPage() {
         width={720}
         open={paymentDrawerOpen}
         onClose={() => setPaymentDrawerOpen(false)}
+        rootClassName="sales-pos-overlay"
       >
         <Space direction="vertical" style={{ width: '100%' }} size="large">
           <Descriptions size="small" column={1} bordered>
@@ -1559,6 +1675,7 @@ export default function EnterSalesPage() {
         title="Ticket Review"
         width={980}
         onCancel={() => setReviewOpen(false)}
+        rootClassName="sales-pos-overlay"
         footer={[
           <Button key="close" onClick={() => setReviewOpen(false)}>
             Close
@@ -1579,6 +1696,7 @@ export default function EnterSalesPage() {
         title="Payouts"
         onCancel={() => setPayoutOpen(false)}
         onOk={handleCreatePayout}
+        rootClassName="sales-pos-overlay"
         okButtonProps={{ disabled: !payoutCategoryId || payoutAmount <= 0 }}
       >
         <Form layout="vertical">
@@ -1607,6 +1725,7 @@ export default function EnterSalesPage() {
         width={960}
         onCancel={() => setCloseOpen(false)}
         onOk={handleCloseBatch}
+        rootClassName="sales-pos-overlay"
         okText="Close Batch"
         confirmLoading={busyAction === 'close-shift'}
       >
@@ -1676,6 +1795,7 @@ export default function EnterSalesPage() {
         title="Reclaim Ticket"
         width={820}
         onCancel={() => setReclaimOpen(false)}
+        rootClassName="sales-pos-overlay"
         footer={[
           <Button key="close" onClick={() => setReclaimOpen(false)}>
             Close
@@ -1712,6 +1832,7 @@ export default function EnterSalesPage() {
         title="Reprint Ticket"
         width={820}
         onCancel={() => setReprintOpen(false)}
+        rootClassName="sales-pos-overlay"
         footer={[
           <Button key="close" onClick={() => setReprintOpen(false)}>
             Close
@@ -1748,6 +1869,7 @@ export default function EnterSalesPage() {
         open={!!overrideRequest}
         title={overrideRequest?.title ?? 'Manager Approval'}
         onCancel={() => setOverrideRequest(null)}
+        rootClassName="sales-pos-overlay"
         onOk={() => {
           if (!overrideRequest) return
           void performOverride(overrideRequest, overridePin)
@@ -1772,6 +1894,6 @@ export default function EnterSalesPage() {
       </Modal>
 
       {receiptModal}
-    </Space>
+    </div>
   )
 }

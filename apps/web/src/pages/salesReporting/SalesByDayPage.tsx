@@ -183,6 +183,13 @@ function getSalesByDayTableWidth(layout: SalesByDayColumnLayout[]): number {
   return visibleColumns.reduce((total, column) => total + column.width, 0)
 }
 
+function describeSalesByDayStoreScope(storeNumbers: number[]): string {
+  if (storeNumbers.length === 0) return 'all stores'
+  if (storeNumbers.length === 1) return `store ${storeNumbers[0]}`
+  if (storeNumbers.length <= 3) return `stores ${storeNumbers.join(',')}`
+  return `${storeNumbers.length} stores`
+}
+
 function getSalesByDayColumnTone(key: SalesByDayColumnKey): 'current' | 'compare' | 'change' {
   switch (key) {
     case 'date':
@@ -440,26 +447,23 @@ export default function SalesByDayPage() {
         ? [params.storeNumber]
         : []
 
-    if (stores.length) setStoreNumbers(stores)
+    setStoreNumbers(stores)
     if (params.columnLayout) setColumnLayout(normalizeSalesByDayColumnLayout(params.columnLayout))
     setDateSpec(spec)
     if (typeof params.comparisonOffsetDays === 'number') setOffset(params.comparisonOffsetDays)
     if (typeof params.combineStores === 'boolean') setCombineStores(params.combineStores)
-    if (stores.length) {
-      setQuery({
-        storeNumbers: stores,
-        startDate,
-        endDate,
-        comparisonOffsetDays: params.comparisonOffsetDays ?? 364,
-        combineStores: params.combineStores ?? true,
-      })
-    }
+    setQuery({
+      storeNumbers: stores,
+      startDate,
+      endDate,
+      comparisonOffsetDays: params.comparisonOffsetDays ?? 364,
+      combineStores: params.combineStores ?? true,
+    })
     touchTemplate.mutate(templateId)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [templateData, templateId])
 
   function onRun(): void {
-    if (storeNumbers.length === 0) return
     const { startDate, endDate } = resolveDateSpec(dateSpec)
     setQuery({
       storeNumbers,
@@ -538,7 +542,7 @@ export default function SalesByDayPage() {
         onOpenChange={setFilterOpen}
         running={running}
         onRun={onRun}
-        canRun={storeNumbers.length > 0}
+        canRun={true}
         actions={
           <RunReportControls running={running} hasRun={query != null} onRun={onRun} onStop={onStop} />
         }
@@ -549,7 +553,7 @@ export default function SalesByDayPage() {
             </Button>
             <SaveAsTemplateButton
               reportType="sales-by-day"
-              disabled={query == null || storeNumbers.length === 0}
+              disabled={query == null}
               getParamsJson={() => ({
                 storeNumbers,
                 dateSpec,
@@ -572,9 +576,7 @@ export default function SalesByDayPage() {
               getResultJson={() => data}
               getDescriptor={() => {
                 const parts: string[] = []
-                if (storeNumbers.length === 1) parts.push(`store ${storeNumbers[0]}`)
-                else if (storeNumbers.length <= 3) parts.push(`stores ${storeNumbers.join(',')}`)
-                else if (storeNumbers.length) parts.push(`${storeNumbers.length} stores`)
+                parts.push(describeSalesByDayStoreScope(storeNumbers))
                 if (combineStores) parts.push('combined')
                 parts.push(briefDateSpec(dateSpec))
                 parts.push(`vs ${offset}d ago`)
@@ -588,7 +590,7 @@ export default function SalesByDayPage() {
           <Select
             mode="multiple"
             allowClear
-            placeholder={dimsLoading ? 'Loading stores...' : 'Select store(s)'}
+            placeholder={dimsLoading ? 'Loading stores...' : 'Select store(s) or leave blank for all'}
             value={storeNumbers}
             onChange={(values) => setStoreNumbers(values as number[])}
             options={storeOptions}
@@ -626,34 +628,30 @@ export default function SalesByDayPage() {
             addonBefore="Offset"
             style={{ width: 180 }}
           />
-          {storeNumbers.length > 0 && (
-            <>
-              <Button
-                icon={<DownloadOutlined />}
-                href={getSalesByDayCsvUrl(
-                  storeNumbers,
-                  resolvedDates.startDate,
-                  resolvedDates.endDate,
-                  offset,
-                  combineStores,
-                )}
-              >
-                CSV
-              </Button>
-              <Button
-                icon={<DownloadOutlined />}
-                href={getSalesByDayXlsxUrl(
-                  storeNumbers,
-                  resolvedDates.startDate,
-                  resolvedDates.endDate,
-                  offset,
-                  combineStores,
-                )}
-              >
-                XLSX
-              </Button>
-            </>
-          )}
+          <Button
+            icon={<DownloadOutlined />}
+            href={getSalesByDayCsvUrl(
+              storeNumbers,
+              resolvedDates.startDate,
+              resolvedDates.endDate,
+              offset,
+              combineStores,
+            )}
+          >
+            CSV
+          </Button>
+          <Button
+            icon={<DownloadOutlined />}
+            href={getSalesByDayXlsxUrl(
+              storeNumbers,
+              resolvedDates.startDate,
+              resolvedDates.endDate,
+              offset,
+              combineStores,
+            )}
+          >
+            XLSX
+          </Button>
         </Space>
       </CollapsibleFilterCard>
 
@@ -677,7 +675,10 @@ export default function SalesByDayPage() {
       )}
 
       {!query ? (
-        <ReportEmptyState reason="idle" message="Pick at least one store, then click Run Report." />
+        <ReportEmptyState
+          reason="idle"
+          message="Select stores or leave the field blank for all stores, then click Run Report."
+        />
       ) : running ? (
         <div style={{ textAlign: 'center', padding: 40 }}>
           <Spin size="large" tip="Querying sales history..." />
@@ -743,7 +744,7 @@ function SalesByDayResults({
     <>
       <FilterChips
         chips={[
-          { label: 'Stores', value: `${storeBreakdowns.length} selected` },
+          { label: 'Stores', value: query.storeNumbers.length > 0 ? `${storeBreakdowns.length} selected` : 'All stores' },
           { label: 'Period', value: `${query.startDate} -> ${query.endDate}` },
           { label: 'Compare offset', value: `${query.comparisonOffsetDays ?? 364} days` },
         ]}

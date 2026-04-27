@@ -86,6 +86,12 @@ Some CSVs are direct sources, some are reference-only, some are validation-only,
 | `inventory_quantities.csv` | `RIINVQUA.MDB` / `Inventory Quantities` | `app.replenishment_target` | direct | Source for per-cell `modelQty`, `maxQty`, and `reorderQty`. |
 | `inventory_master.csv` | `RIINVMAS.MDB` / `InventoryMaster` | enrichment only | reference | Supplies SKU identity and size-type linkage. |
 
+### D2. Inquiry size-grid sales
+
+| staging CSV | MDB / RICS table | target app table(s) | role | migration rule |
+|---|---|---|---|---|
+| `inventory_quantities.csv` | `RIINVQUA.MDB` / `Inventory Quantities` | `app.inventory_sales_cell` | direct parity projection | Source for per-cell `mtdSales`, `stdSales`, `ytdSales`, and `lySales` used by Inventory Inquiry size-grid sales modes. |
+
 ### E. Transfers and receiving-adjacent records
 
 | staging CSV | MDB / RICS table | target app table(s) | role | migration rule |
@@ -121,6 +127,6 @@ This is the working contract for Stock Maintenance:
 
 - use CSV artifacts as the only raw legacy input,
 - promote by domain stream, not by recreating raw RICS tables in Postgres,
-- treat `inventory_quantities.csv` as the baseline stock + replenishment source,
+- treat `inventory_quantities.csv` as the baseline stock + replenishment + inquiry-cell-sales source,
 - treat `inv_changes.csv` as the primary movement-history source,
 - treat `inv_his.csv` as an owned parity import now, then replace it with an owned projector once reconciliation is proven.

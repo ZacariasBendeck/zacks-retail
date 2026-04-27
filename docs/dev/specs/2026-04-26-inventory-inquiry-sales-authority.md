@@ -24,10 +24,14 @@ During Development Against Direct CSV Imports, the inquiry page uses two differe
    - `All Stores - 1 Row` totals for single-row size types
    - the `[Info]` popup's prior-12-month sales block
    - the `[Info]` popup's `M-T-D`, `S-T-D`, and `Y-T-D` GP / ROI / Turns metrics
-2. `app.sales_history_ticket` plus `app.sales_history_ticket_line` remain the temporary authority for:
+2. `app.inventory_sales_cell` is the authority for:
    - the per-size MTD / STD / YTD / L/Y sales cells shown in the size-grid sales modes
+   - the backend-computed `Total` row appended to the MTD / STD / YTD sales tabs
+   - the grid-level totals shown beside the `On Hand`, `Short Quantities`, `Month-to-Date Sales`, `Season-to-Date Sales`, `Year-to-Date Sales`, and `Last Year Sales` captions
+   - the `Column Only` sales rows, including `L/Y Sales`
+   - single-row size types, which still render as size grids rather than store-total fallbacks
 
-This split is deliberate until a cell-level legacy inquiry-history source is promoted into owned Postgres tables.
+`app.inventory_sales_cell` is the owned Postgres promotion of the legacy `inventory_quantities.csv` / `RIINVQUA.MDB` per-cell sales counters.
 
 ## Current Request-Path Authority By Surface
 
@@ -40,10 +44,11 @@ This split is deliberate until a cell-level legacy inquiry-history source is pro
 | Sales roll-up strip | `app.inventory_history_snapshot` | `week_*`, `month_*`, `season_*`, `year_*` counters |
 | All Stores Summary | `app.inventory_history_snapshot` + `app.inventory_history_month` | store totals must match RICS inquiry |
 | All Stores - 1 Row (single-row size types) | `app.inventory_history_snapshot` + `app.inventory_history_month` | same totals as summary when the size type has one row |
+| Per-size MTD / STD / YTD / L/Y cells | `app.inventory_sales_cell` | owned cell projection imported from `inventory_quantities.csv` |
+| `Column Only` sales rows | `app.inventory_sales_cell` | same cell projection, collapsed by column for the selected row, including `L/Y Sales` |
 | `[Info]` prior 12 months | `app.inventory_history_month` | calendar-month slots from imported inquiry history |
 | `[Info]` GP / ROI / Turns | `app.inventory_history_snapshot` + `app.inventory_history_month` | same inquiry-history family as RICS |
 | `[Trend]` | `app.inventory_history_trend_week` | imported 8-week trend slots |
-| Per-size MTD / STD / YTD / L/Y cells | `app.sales_history_ticket*` | known parity gap; still ticket-derived |
 
 ## How Last-Year Sales Is Reconstructed
 
@@ -88,7 +93,7 @@ Verification on April 26, 2026 used live imported data for SKU `6017-130-BKPU`.
 ## Consequences
 
 - The inquiry page can now match RICS on the roll-up strip, All Stores Summary, single-row all-stores totals, and `[Info]` popup.
-- Differences between the per-size sales grids and the summary totals are currently expected for some SKUs because the grids still use ticket replay.
+- Differences between size-detailed sales grids and the summary totals are no longer expected from a source split. Any remaining mismatch should be investigated as a promotion or mapping bug between `inventory_quantities.csv`, `app.inventory_sales_cell`, and the summary/history surfaces.
 - Any future cutover or parity checklist for Inventory Inquiry must validate the size-grid sales modes separately from the snapshot-backed totals.
 
 ## Related

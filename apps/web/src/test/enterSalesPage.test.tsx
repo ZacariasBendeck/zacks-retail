@@ -136,7 +136,7 @@ describe('EnterSalesPage', () => {
     vi.clearAllMocks()
     vi.mocked(salesPosApi.getBootstrap).mockResolvedValue(bootstrapFixture)
     vi.mocked(salesPosApi.searchCustomers).mockResolvedValue([])
-    vi.mocked(salesPosApi.patchHeader).mockResolvedValue({ ticket: bootstrapFixture.activeTicket })
+    vi.mocked(salesPosApi.patchHeader).mockResolvedValue({ ticket: bootstrapFixture.activeTicket! })
     vi.mocked(salesPosApi.lookupProduct).mockResolvedValue({
       code: 'SKU-100',
       skuId: 'sku-100',

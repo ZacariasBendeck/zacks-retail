@@ -16,25 +16,29 @@ function formatCell(value: number | null, nullDisplay: string): string {
 }
 
 const headRow: React.CSSProperties = {
-  background: '#fafafa',
-  borderBottom: '1px solid #d9d9d9',
+  background: '#bfdbfe',
+  borderBottom: '2px solid #2563eb',
 };
 
 const thLabel: React.CSSProperties = {
   textAlign: 'left',
   padding: '2px 6px',
-  fontWeight: 600,
+  fontWeight: 700,
   fontSize: 11,
-  color: '#555',
+  color: '#0f172a',
+  background: '#bfdbfe',
+  borderBottom: '2px solid #2563eb',
   whiteSpace: 'nowrap',
 };
 
 const thCol: React.CSSProperties = {
   textAlign: 'right',
   padding: '2px 4px',
-  fontWeight: 600,
+  fontWeight: 700,
   fontSize: 11,
-  color: '#555',
+  color: '#0f172a',
+  background: '#bfdbfe',
+  borderBottom: '2px solid #2563eb',
   minWidth: 28,
 };
 
@@ -54,6 +58,15 @@ const tdCell: React.CSSProperties = {
   borderBottom: '1px solid #f0f0f0',
   minWidth: 28,
 };
+
+function isTotalRow(label: string): boolean {
+  return label.trim().toLowerCase() === 'total';
+}
+
+function rowBackground(label: string, rowIndex: number): string {
+  if (isTotalRow(label)) return '#bfdbfe';
+  return rowIndex % 2 === 0 ? '#ffffff' : '#dbeafe';
+}
 
 export interface SizeGridProps {
   grid: SizeGridData;
@@ -79,16 +92,38 @@ export const SizeGrid: React.FC<SizeGridProps> = ({ grid, nullDisplay = '—' })
             </tr>
           </thead>
           <tbody>
-            {grid.rows.map((row, rIdx) => (
-              <tr key={`row-${rIdx}`}>
-                <th scope="row" style={tdLabel}>{row.label}</th>
-                {grid.columns.map((_, cIdx) => (
-                  <td key={`cell-${rIdx}-${cIdx}`} style={tdCell}>
-                    {formatCell(row.cells[cIdx]?.value ?? null, nullDisplay)}
-                  </td>
-                ))}
-              </tr>
-            ))}
+            {grid.rows.map((row, rIdx) => {
+              const fill = rowBackground(row.label, rIdx);
+              const totalRow = isTotalRow(row.label);
+              return (
+                <tr key={`row-${rIdx}`} style={{ background: fill }}>
+                  <th
+                    scope="row"
+                    style={{
+                      ...tdLabel,
+                      background: fill,
+                      fontWeight: totalRow ? 600 : 500,
+                      borderTop: totalRow ? '1px solid #60a5fa' : tdLabel.borderBottom,
+                    }}
+                  >
+                    {row.label}
+                  </th>
+                  {grid.columns.map((_, cIdx) => (
+                    <td
+                      key={`cell-${rIdx}-${cIdx}`}
+                      style={{
+                        ...tdCell,
+                        background: fill,
+                        fontWeight: totalRow ? 600 : 400,
+                        borderTop: totalRow ? '1px solid #60a5fa' : tdCell.borderBottom,
+                      }}
+                    >
+                      {formatCell(row.cells[cIdx]?.value ?? null, nullDisplay)}
+                    </td>
+                  ))}
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>

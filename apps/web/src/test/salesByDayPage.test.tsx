@@ -104,6 +104,20 @@ function buildReport(): SalesByDayReport {
   }
 }
 
+function buildAllStoresReport(): SalesByDayReport {
+  const report = buildReport()
+  return {
+    ...report,
+    storeNumbers: [],
+    combined: report.combined
+      ? {
+          ...report.combined,
+          storeLabel: 'All Stores',
+        }
+      : null,
+  }
+}
+
 function renderPage() {
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -138,9 +152,31 @@ describe('SalesByDayPage', () => {
     vi.mocked(useTouchReportTemplate).mockReturnValue({ mutate: vi.fn() } as never)
     vi.mocked(useSalesByDay).mockImplementation((query) => (
       query
-        ? { data: buildReport(), isFetching: false, error: null }
+        ? {
+            data: query.storeNumbers.length === 0 ? buildAllStoresReport() : buildReport(),
+            isFetching: false,
+            error: null,
+          }
         : { data: undefined, isFetching: false, error: null }
     ) as never)
+  })
+
+  it('runs as all stores when the store filter is left blank', async () => {
+    const user = userEvent.setup()
+    renderPage()
+
+    const runButton = screen.getByRole('button', { name: /Run Report/i })
+    expect(runButton).toBeEnabled()
+
+    await user.click(runButton)
+
+    await waitFor(() => {
+      expect(vi.mocked(useSalesByDay)).toHaveBeenLastCalledWith(
+        expect.objectContaining({ storeNumbers: [] }),
+      )
+    })
+
+    expect((await screen.findAllByText(/All Stores/i)).length).toBeGreaterThan(0)
   })
 
   it('renders prior-period profit columns after running the report', async () => {

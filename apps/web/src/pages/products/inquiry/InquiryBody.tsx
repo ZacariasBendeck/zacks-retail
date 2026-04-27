@@ -1,6 +1,6 @@
 import React from 'react';
 import { Alert, Button, Select, Space, Typography, message, Spin } from 'antd';
-import { SearchOutlined } from '@ant-design/icons';
+import { RobotOutlined, SearchOutlined } from '@ant-design/icons';
 import { HeaderCard } from './HeaderCard';
 import { PicturePanel } from './PicturePanel';
 import { PricingPanel } from './PricingPanel';
@@ -17,6 +17,9 @@ import { DetailTab } from './tabs/DetailTab';
 import { PosTab } from './tabs/PosTab';
 import { TrendTab } from './tabs/TrendTab';
 import AttributeBadgeStrip from '../../../components/products/AttributeBadgeStrip';
+import { SkuAiRecommendationModal } from './SkuAiRecommendationModal';
+
+const GRID_TOTAL_MODES = new Set<ViewMode>(['ON_HAND', 'SHORT', 'MTD_SALES', 'STD_SALES', 'YTD_SALES', 'LY_SALES']);
 
 const GRID_KEY_BY_MODE: Partial<Record<ViewMode, keyof InquiryGrids>> = {
   ON_HAND:             'onHand',
@@ -82,6 +85,7 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
   onSelectedRowChange,
 }) => {
   const [lookupOpen, setLookupOpen] = React.useState(false);
+  const [aiModalOpen, setAiModalOpen] = React.useState(false);
   const [navLoading, setNavLoading] = React.useState(false);
   const prevSkuCodeRef = React.useRef(skuCode);
 
@@ -89,6 +93,7 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
     if (prevSkuCodeRef.current === skuCode) return;
     prevSkuCodeRef.current = skuCode;
     setLookupOpen(false);
+    setAiModalOpen(false);
     if (!skuCode) onActiveTabChange(null);
   }, [skuCode, onActiveTabChange]);
 
@@ -169,6 +174,7 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
 
   const gridKey = GRID_KEY_BY_MODE[mode];
   const grid = gridKey ? data.grids[gridKey] : undefined;
+  const headerTotal = GRID_TOTAL_MODES.has(mode) ? grid?.total : undefined;
   const gridNullDisplay =
     mode === 'ALL_STORES_SUMMARY' || mode === 'ALL_STORES_ONE_ROW' || mode === 'SINGLE_COLUMN'
       ? ''
@@ -186,13 +192,26 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
         />
       )}
 
+      {aiModalOpen && (
+        <SkuAiRecommendationModal
+          open={aiModalOpen}
+          skuCode={skuCode}
+          onClose={() => setAiModalOpen(false)}
+        />
+      )}
+
       {/* Top row: Header (left) | Pricing + Rollup + Picture (right) */}
       <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start', marginBottom: 8 }}>
         <div style={{ flex: '1 1 0', minWidth: 0 }}>
           <div style={{ marginBottom: 4 }}>
-            <Button size="small" icon={<SearchOutlined />} onClick={() => setLookupOpen(true)}>
-              SKU Lookup
-            </Button>
+            <Space size="small">
+              <Button size="small" icon={<SearchOutlined />} onClick={() => setLookupOpen(true)}>
+                SKU Lookup
+              </Button>
+              <Button size="small" icon={<RobotOutlined />} onClick={() => setAiModalOpen(true)}>
+                Ask AI
+              </Button>
+            </Space>
           </div>
           <HeaderCard inquiry={data} storeId={storeId} />
         </div>
@@ -220,8 +239,14 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
 
       {/* Size grid caption + body */}
       <div style={{ margin: '4px 0' }}>
-        <div style={{ background: '#e6f0ff', padding: '2px 8px', fontWeight: 600, borderBottom: '1px solid #ccd8ea' }}>
-          {gridCaptionFor(mode)}
+        <div
+          data-testid="inquiry-grid-caption"
+          style={{ background: '#e6f0ff', padding: '2px 8px', fontWeight: 600, borderBottom: '1px solid #ccd8ea' }}
+        >
+          <span>{gridCaptionFor(mode)}</span>
+          {headerTotal != null && (
+            <span style={{ marginLeft: 12, fontWeight: 500 }}>{formatGridTotal(headerTotal)}</span>
+          )}
         </div>
         {!hasVisibleInventoryActivity && (
           <Alert
@@ -290,7 +315,8 @@ function isRowSensitiveMode(mode: ViewMode): boolean {
 
 function hasAnyGridValue(grids: InquiryGrids): boolean {
   return Object.values(grids).some((grid) =>
-    grid?.rows.some((row) => row.cells.some((cell) => cell.value != null && cell.value !== 0))
+    grid?.rows.some((row: { cells: Array<{ value: number | null }> }) =>
+      row.cells.some((cell: { value: number | null }) => cell.value != null && cell.value !== 0))
   );
 }
 
@@ -319,4 +345,11 @@ function gridCaptionFor(mode: ViewMode): string {
     case 'REORDER':            return 'Reorder Quantities';
     default:                   return '';
   }
+}
+
+function formatGridTotal(total: number): string {
+  return new Intl.NumberFormat('es-HN', {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+  }).format(total);
 }

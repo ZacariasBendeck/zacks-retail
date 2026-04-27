@@ -1,4 +1,5 @@
 import type {
+  PosCatalogSearchRow,
   CustomerSearchResult,
   PosBootstrap,
   PosClosePreview,
@@ -99,6 +100,13 @@ export const salesPosApi = {
 
   lookupProduct: (code: string) =>
     request<PosProductLookup>(`${POS_API_BASE}/catalog/lookup?code=${encodeURIComponent(code)}`),
+
+  searchCatalog: async (q: string, limit = 50): Promise<PosCatalogSearchRow[]> => {
+    const body = await request<{ data: PosCatalogSearchRow[] }>(
+      `${POS_API_BASE}/skus?q=${encodeURIComponent(q.trim())}&limit=${limit}`,
+    )
+    return body.data
+  },
 
   openShift: (input: { storeId: number; registerCode?: string; openingCashFloat?: number }) =>
     request<PosBootstrap>(`${POS_API_BASE}/shifts/open`, {

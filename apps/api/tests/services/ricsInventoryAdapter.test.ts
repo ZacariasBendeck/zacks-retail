@@ -117,6 +117,12 @@ describe('ricsInventoryAdapter inquiry grids', () => {
     expect(grids.onHand?.rows).toEqual([
       { label: 'M', cells: [{ value: 2 }, { value: 1 }] },
     ]);
+    expect(grids.onHand?.total).toBe(3);
+    expect(grids.mtdSales?.rows).toEqual([
+      { label: 'M', cells: [{ value: 1 }, { value: 0 }] },
+      { label: 'Total', cells: [{ value: 1 }, { value: 0 }] },
+    ]);
+    expect(grids.mtdSales?.total).toBe(1);
     expect(grids.allStoresOnHand?.rows).toEqual([
       { label: 'Store 21', cells: [{ value: 2 }, { value: 1 }] },
       { label: 'Store 24', cells: [{ value: 4 }, { value: 0 }] },
@@ -135,6 +141,7 @@ describe('ricsInventoryAdapter inquiry grids', () => {
     expect(grids.short?.rows).toEqual([
       { label: 'M', cells: [{ value: 3 }, { value: 1 }] },
     ]);
+    expect(grids.short?.total).toBe(4);
   });
 
   it('builds all-stores summary sales rows from inquiry cell totals', () => {
@@ -157,7 +164,7 @@ describe('ricsInventoryAdapter inquiry grids', () => {
     });
   });
 
-  it('uses the summary metrics for all-stores one-row when the size type only has one row', () => {
+  it('keeps sales modes as size grids even when all-stores one-row uses summary totals', () => {
     const summaryByStore = new Map([
       [21, { onHand: 3, currentOnOrder: 1, futureOnOrder: 2, mtdSales: 9, stdSales: 10, ytdSales: 11, lySales: 12 }],
       [24, { onHand: 4, currentOnOrder: 3, futureOnOrder: 0, mtdSales: 8, stdSales: 9, ytdSales: 10, lySales: 11 }],
@@ -178,6 +185,52 @@ describe('ricsInventoryAdapter inquiry grids', () => {
         { label: 'STD Sales', cells: [{ value: 10 }, { value: 9 }, { value: 19 }] },
         { label: 'YTD Sales', cells: [{ value: 11 }, { value: 10 }, { value: 21 }] },
         { label: 'L/Y Sales', cells: [{ value: 12 }, { value: 11 }, { value: 23 }] },
+      ]),
+    });
+    expect(grids.mtdSales).toEqual({
+      columns: ['7', '8'],
+      rows: [
+        { label: 'Store 21', cells: [{ value: 1 }, { value: 0 }] },
+        { label: 'Store 24', cells: [{ value: 2 }, { value: 1 }] },
+        { label: 'Total', cells: [{ value: 3 }, { value: 1 }] },
+      ],
+      total: 4,
+    });
+    expect(grids.stdSales).toEqual({
+      columns: ['7', '8'],
+      rows: [
+        { label: 'Store 21', cells: [{ value: 2 }, { value: 1 }] },
+        { label: 'Store 24', cells: [{ value: 3 }, { value: 1 }] },
+        { label: 'Total', cells: [{ value: 5 }, { value: 2 }] },
+      ],
+      total: 7,
+    });
+    expect(grids.ytdSales).toEqual({
+      columns: ['7', '8'],
+      rows: [
+        { label: 'Store 21', cells: [{ value: 3 }, { value: 1 }] },
+        { label: 'Store 24', cells: [{ value: 5 }, { value: 2 }] },
+        { label: 'Total', cells: [{ value: 8 }, { value: 3 }] },
+      ],
+      total: 11,
+    });
+    expect(grids.lySales).toEqual({
+      columns: ['7', '8'],
+      rows: [
+        { label: 'Store 21', cells: [{ value: 4 }, { value: 2 }] },
+        { label: 'Store 24', cells: [{ value: 6 }, { value: 1 }] },
+        { label: 'Total', cells: [{ value: 10 }, { value: 3 }] },
+      ],
+      total: 13,
+    });
+    expect(grids.singleColumn).toEqual({
+      columns: ['7', '8'],
+      rows: expect.arrayContaining([
+        { label: 'On Hand', cells: [{ value: 6 }, { value: 1 }] },
+        { label: 'MTD Sales', cells: [{ value: 3 }, { value: 1 }] },
+        { label: 'STD Sales', cells: [{ value: 5 }, { value: 2 }] },
+        { label: 'YTD Sales', cells: [{ value: 8 }, { value: 3 }] },
+        { label: 'L/Y Sales', cells: [{ value: 10 }, { value: 3 }] },
       ]),
     });
   });

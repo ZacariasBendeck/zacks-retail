@@ -58,6 +58,10 @@ router.post('/', async (req: Request, res: Response) => {
 // RICS SKU is mirrored into app.sku as ACTIVE on sync:rics, so this covers
 // both app-created and legacy-imported SKUs. Returns the same SkuRow shape
 // as GET /:id.
+router.get('/by-code/:code/next', async (req: Request, res: Response) => {
+  send(res, await skuLifecycle.getNextByCode(String(req.params.code)));
+});
+
 router.get('/by-code/:code', async (req: Request, res: Response) => {
   send(res, await skuLifecycle.getByCode(String(req.params.code)));
 });

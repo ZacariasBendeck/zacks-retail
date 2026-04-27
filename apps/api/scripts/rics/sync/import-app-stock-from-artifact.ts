@@ -3,6 +3,8 @@ import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { Client } from 'pg';
 import { from as copyFrom } from 'pg-copy-streams';
+import { randomUUID } from 'node:crypto';
+import { inventorySalesCellBackfill } from '../../../src/services/sync/inventorySalesCellBackfill';
 import { quoteIdent } from '../../../src/services/sync/typeMapping';
 
 interface ArtifactColumn {
@@ -61,6 +63,7 @@ function printHelpAndExit(code: number): never {
       'into session temp tables, then rebuilds:',
       '  - app.stock_movement',
       '  - app.stock_level',
+      '  - app.inventory_sales_cell',
       '',
       'No persistent writes land in rics_mirror.',
     ].join('\n'),
@@ -619,7 +622,7 @@ async function main(): Promise<void> {
     await client.query(`ANALYZE ${quoteIdent(sizeTypeTable)}`);
     await client.query(`ANALYZE ${quoteIdent(inventoryQuantitiesTable)}`);
 
-    console.log('[4/4] rebuilding app.stock_level...');
+    console.log('[4/4] rebuilding app.stock_level + app.inventory_sales_cell...');
     console.log('      dropping stock_level secondary indexes...');
     await dropIndexes(client, 'app', [
       'stock_level_sku_store_idx',
@@ -637,12 +640,24 @@ async function main(): Promise<void> {
       `      wrote ${fmtNum(stockLevelResult.projectionRowsWritten)} projection rows ` +
         `(${fmtDuration(stockLevelResult.durationMs)})`,
     );
+    const salesCellRunId = randomUUID();
+    const salesCellResult = await inventorySalesCellBackfill({
+      pgClient: client,
+      runId: salesCellRunId,
+      sourceQuantityTable: inventoryQuantitiesTable,
+      sourceSizeTypeTable: sizeTypeTable,
+    });
+    console.log(
+      `      wrote ${fmtNum(salesCellResult.importedRows)} inquiry sales cell rows ` +
+        `(${fmtDuration(salesCellResult.durationMs)})`,
+    );
     await client.query(`DROP TABLE IF EXISTS ${quoteIdent(inventoryQuantitiesTable)}`);
     await client.query(`DROP TABLE IF EXISTS ${quoteIdent(sizeTypeTable)}`);
 
     console.log('----------------------------------------');
     console.log(`stock movement rows : ${fmtNum(movementResult.importedRows)}`);
     console.log(`stock level rows    : ${fmtNum(stockLevelResult.projectionRowsWritten)}`);
+    console.log(`sales cell rows     : ${fmtNum(salesCellResult.importedRows)}`);
     console.log('========================================');
   } finally {
     await client.end();

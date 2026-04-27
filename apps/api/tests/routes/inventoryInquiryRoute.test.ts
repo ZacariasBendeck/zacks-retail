@@ -26,6 +26,10 @@ jest.mock('../../src/services/ricsInventoryAdapter', () => ({
   },
 }));
 
+jest.mock('../../src/services/skuInquiryRecommendationService', () => ({
+  analyzeSkuInquiryRecommendation: jest.fn(),
+}));
+
 import request from 'supertest';
 
 const MOCK_SKU = 'ZN02-NDPT';
@@ -274,7 +278,7 @@ describe('GET /api/v1/inventory/inquiry/:sku', () => {
     );
 
     expect(res.status).toBe(200);
-    expect(ricsAdapter.getInventoryInquiry).toHaveBeenCalledWith(MOCK_SKU, 21);
+    expect(ricsAdapter.getInventoryInquiry).toHaveBeenCalledWith(MOCK_SKU, 21, undefined);
   });
 
   it('returns 404 when adapter returns null', async () => {
@@ -283,6 +287,100 @@ describe('GET /api/v1/inventory/inquiry/:sku', () => {
     const res = await request(app).get('/api/v1/inventory/inquiry/NONEXIST');
 
     expect(res.status).toBe(404);
+  });
+});
+
+describe('POST /api/v1/inventory/inquiry/:sku/ai-recommendation', () => {
+  let app: any;
+  let recommendationService: any;
+
+  beforeAll(async () => {
+    app = (await import('../../src/app')).default;
+  });
+
+  beforeEach(() => {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    recommendationService = require('../../src/services/skuInquiryRecommendationService');
+    (recommendationService.analyzeSkuInquiryRecommendation as jest.Mock).mockReset();
+    (recommendationService.analyzeSkuInquiryRecommendation as jest.Mock).mockResolvedValue({
+      summary: 'Increase the model and buy ahead of lead time.',
+      styleTag: 'WINNER',
+      decision: 'BUY',
+      urgency: 'MEDIUM',
+      confidence: 'HIGH',
+      baselineRisk: {
+        daysUntilModelRisk: 45,
+        estimatedModelRiskDate: '2026-06-10',
+        basis: 'Month pace would consume excess above model in 45 days.',
+      },
+      buyPlan: {
+        shouldBuy: true,
+        quantity: 24,
+        orderByDate: '2026-03-12',
+        estimatedArrivalDate: '2026-06-10',
+        leadTimeDays: 90,
+        basis: 'Buying 24 units preserves baseline coverage through the lead-time window.',
+      },
+      actions: [
+        {
+          type: 'MODEL_INCREASE',
+          priority: 1,
+          title: 'Raise the size 070 model at store 29',
+          details: 'Increase the size 070 model at store 29 by 1.',
+          targetStoreNumber: 29,
+          targetStoreName: 'Unlimited GaleriasSP',
+          size: '070',
+          quantity: 1,
+        },
+      ],
+      reasons: ['Chain stock is heavy overall and the shortage is distributional.'],
+      watchouts: ['Do not replenish stores called out as closed in operator notes.'],
+      questions: [],
+    });
+  });
+
+  it('returns a structured AI recommendation and forwards operator notes', async () => {
+    const res = await request(app)
+      .post(`/api/v1/inventory/inquiry/${MOCK_SKU}/ai-recommendation`)
+      .send({ notes: 'Store 32 is closed for renovations.' });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(
+      expect.objectContaining({
+        summary: expect.any(String),
+        styleTag: 'WINNER',
+        decision: 'BUY',
+        actions: expect.any(Array),
+      }),
+    );
+    expect(recommendationService.analyzeSkuInquiryRecommendation).toHaveBeenCalledWith(
+      MOCK_SKU,
+      { notes: 'Store 32 is closed for renovations.' },
+    );
+  });
+
+  it('returns 404 when the AI service reports the SKU is missing', async () => {
+    (recommendationService.analyzeSkuInquiryRecommendation as jest.Mock).mockResolvedValue(null);
+
+    const res = await request(app)
+      .post('/api/v1/inventory/inquiry/NONEXIST/ai-recommendation')
+      .send({});
+
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe('SKU_NOT_FOUND');
+  });
+
+  it('returns ANALYSIS_FAILED when the AI service throws a general error', async () => {
+    (recommendationService.analyzeSkuInquiryRecommendation as jest.Mock).mockRejectedValue(
+      new Error('AI recommendation response could not be parsed'),
+    );
+
+    const res = await request(app)
+      .post(`/api/v1/inventory/inquiry/${MOCK_SKU}/ai-recommendation`)
+      .send({});
+
+    expect(res.status).toBe(500);
+    expect(res.body.error.code).toBe('ANALYSIS_FAILED');
   });
 });
 

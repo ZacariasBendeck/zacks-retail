@@ -28,6 +28,7 @@ import {
 } from '../services/ricsInventoryFacade';
 import type { RecommendedTransferRule } from '../services/ricsInventoryAdapter';
 import { findNeighborSku } from '../services/ricsProductAdapter';
+import { analyzeSkuInquiryRecommendation } from '../services/skuInquiryRecommendationService';
 
 const router: IRouter = Router();
 
@@ -62,6 +63,37 @@ router.get('/inquiry/:sku', async (req: Request, res: Response, next: NextFuncti
     res.json(inquiry);
   } catch (err) {
     next(err);
+  }
+});
+
+router.post('/inquiry/:sku/ai-recommendation', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const skuRaw = req.params.sku;
+    const sku = Array.isArray(skuRaw) ? skuRaw[0] : skuRaw;
+    const notes = typeof req.body?.notes === 'string' ? req.body.notes : undefined;
+    const recommendation = await analyzeSkuInquiryRecommendation(sku, { notes });
+    if (!recommendation) {
+      res.status(404).json({ error: { code: 'SKU_NOT_FOUND', message: `SKU ${sku} not found` } });
+      return;
+    }
+    res.json(recommendation);
+  } catch (err: any) {
+    if (err?.message?.includes('ANTHROPIC_API_KEY')) {
+      res.status(500).json({
+        error: {
+          code: 'CONFIG_ERROR',
+          message: 'AI service is not configured. Set the ANTHROPIC_API_KEY environment variable.',
+        },
+      });
+      return;
+    }
+    console.error(`SKU inquiry AI recommendation error for ${req.params.sku}:`, err);
+    res.status(500).json({
+      error: {
+        code: 'ANALYSIS_FAILED',
+        message: 'Failed to analyze SKU. Please try again.',
+      },
+    });
   }
 });
 

@@ -1,0 +1,489 @@
+.sales-pos-popup-shell {
+  min-height: calc(100vh - 112px);
+  padding: 18px 14px 24px;
+  display: flex;
+  justify-content: center;
+  align-items: stretch;
+  background: #fff;
+  color: #000;
+}
+
+.sales-pos-popup-shell--fullscreen {
+  min-height: 100vh;
+  padding: 14px;
+}
+
+.sales-pos-window {
+  width: min(1560px, 100%);
+  min-height: calc(100vh - 156px);
+  max-height: calc(100vh - 156px);
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow: auto;
+  background: #fff;
+  border: 12px solid #000;
+  box-shadow: none;
+}
+
+.sales-pos-popup-shell--fullscreen .sales-pos-window {
+  min-height: calc(100vh - 28px);
+  max-height: calc(100vh - 28px);
+}
+
+.sales-pos-window--setup {
+  width: min(1080px, 100%);
+  min-height: 0;
+  max-height: none;
+}
+
+.sales-pos-window-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  padding-bottom: 12px;
+  border-bottom: 2px solid #000;
+}
+
+.sales-pos-window-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sales-pos-window-kicker,
+.sales-pos-window-kicker-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  color: #000;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.sales-pos-window-title.ant-typography {
+  margin: 0 !important;
+  color: #000;
+}
+
+.sales-pos-window-subtitle.ant-typography {
+  color: #000;
+  opacity: 0.75;
+}
+
+.sales-pos-window-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  align-items: center;
+}
+
+.sales-pos-status-tag.ant-tag {
+  margin: 0;
+  padding: 6px 10px;
+  border-radius: 0;
+  border: 1px solid #000;
+  background: #fff;
+  color: #000;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.sales-pos-status-tag--solid.ant-tag {
+  background: #000;
+  color: #fff;
+}
+
+.sales-pos-note {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid #000;
+  background: #fff;
+  color: #000;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.sales-pos-note-label {
+  font-weight: 700;
+}
+
+.sales-pos-window .sales-pos-panel.ant-card {
+  border-radius: 0;
+  border: 1px solid #000;
+  box-shadow: none;
+  background: #fff;
+}
+
+.sales-pos-window .sales-pos-panel .ant-card-head {
+  min-height: 42px;
+  padding: 0 14px;
+  border-bottom: 1px solid #000;
+}
+
+.sales-pos-window .sales-pos-panel .ant-card-head-title {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.sales-pos-window .sales-pos-panel .ant-card-body {
+  padding: 14px;
+}
+
+.sales-pos-shift-summary-card .ant-card-body {
+  padding: 12px 14px;
+}
+
+.sales-pos-ticket-chip-card .ant-card-body {
+  padding: 10px 14px;
+}
+
+.sales-pos-ticket-chip-card .ant-space {
+  width: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px !important;
+}
+
+.sales-pos-ticket-chip-card .ant-typography {
+  margin: 0;
+  padding: 6px 10px;
+  border: 1px solid #000;
+  background: #fff;
+  font-size: 12px;
+}
+
+.sales-pos-detail-row {
+  row-gap: 12px !important;
+}
+
+.sales-pos-detail-row > .ant-col {
+  display: flex;
+}
+
+.sales-pos-entry-card,
+.sales-pos-totals-card,
+.sales-pos-header-card {
+  width: 100%;
+}
+
+.sales-pos-entry-card .ant-card-body,
+.sales-pos-totals-card .ant-card-body,
+.sales-pos-header-card .ant-card-body {
+  display: flex;
+  flex-direction: column;
+}
+
+.sales-pos-lines-card .ant-card-body {
+  display: flex;
+  flex-direction: column;
+  min-height: 320px;
+}
+
+.sales-pos-lines-card .ant-table-wrapper {
+  flex: 1;
+  min-height: 0;
+}
+
+.sales-pos-header-editor .ant-row,
+.sales-pos-entry-card .ant-row {
+  row-gap: 10px !important;
+}
+
+.sales-pos-divider {
+  margin: 14px 0;
+  border-color: #000;
+}
+
+.sales-pos-action-bar {
+  width: 100%;
+  gap: 8px;
+}
+
+.sales-pos-action-bar .ant-space-item {
+  margin-inline-end: 0 !important;
+}
+
+.sales-pos-popup-shell .ant-form-item {
+  margin-bottom: 10px;
+}
+
+.sales-pos-popup-shell .ant-typography {
+  margin-bottom: 0;
+  color: #000;
+}
+
+.sales-pos-popup-shell .ant-input,
+.sales-pos-popup-shell .ant-input-affix-wrapper,
+.sales-pos-popup-shell .ant-input-number,
+.sales-pos-popup-shell .ant-select-single .ant-select-selector,
+.sales-pos-overlay .ant-input,
+.sales-pos-overlay .ant-input-affix-wrapper,
+.sales-pos-overlay .ant-input-number,
+.sales-pos-overlay .ant-select-single .ant-select-selector {
+  min-height: 34px;
+  border-radius: 0 !important;
+  border-color: #000 !important;
+  box-shadow: none !important;
+  background: #fff !important;
+  color: #000 !important;
+}
+
+.sales-pos-popup-shell .ant-select-single .ant-select-selector,
+.sales-pos-overlay .ant-select-single .ant-select-selector {
+  padding: 0 11px !important;
+  display: flex;
+  align-items: center;
+}
+
+.sales-pos-popup-shell .ant-input-number-input-wrap,
+.sales-pos-popup-shell .ant-input-number-input,
+.sales-pos-overlay .ant-input-number-input-wrap,
+.sales-pos-overlay .ant-input-number-input {
+  height: 100%;
+}
+
+.sales-pos-popup-shell .ant-input:hover,
+.sales-pos-popup-shell .ant-input:focus,
+.sales-pos-popup-shell .ant-input-affix-wrapper:hover,
+.sales-pos-popup-shell .ant-input-affix-wrapper-focused,
+.sales-pos-popup-shell .ant-input-number:hover,
+.sales-pos-popup-shell .ant-input-number-focused,
+.sales-pos-popup-shell .ant-select-focused .ant-select-selector,
+.sales-pos-overlay .ant-input:hover,
+.sales-pos-overlay .ant-input:focus,
+.sales-pos-overlay .ant-input-affix-wrapper:hover,
+.sales-pos-overlay .ant-input-affix-wrapper-focused,
+.sales-pos-overlay .ant-input-number:hover,
+.sales-pos-overlay .ant-input-number-focused,
+.sales-pos-overlay .ant-select-focused .ant-select-selector {
+  border-color: #000 !important;
+  box-shadow: none !important;
+}
+
+.sales-pos-popup-shell .ant-btn,
+.sales-pos-overlay .ant-btn {
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 0;
+  border-color: #000;
+  background: #000;
+  color: #fff;
+  box-shadow: none;
+  font-weight: 700;
+}
+
+.sales-pos-popup-shell .ant-btn-sm,
+.sales-pos-overlay .ant-btn-sm {
+  height: 26px;
+}
+
+.sales-pos-popup-shell .ant-btn:not(:disabled):hover,
+.sales-pos-popup-shell .ant-btn:not(:disabled):focus,
+.sales-pos-overlay .ant-btn:not(:disabled):hover,
+.sales-pos-overlay .ant-btn:not(:disabled):focus {
+  border-color: #000 !important;
+  background: #1a1a1a !important;
+  color: #fff !important;
+}
+
+.sales-pos-popup-shell .ant-btn:disabled,
+.sales-pos-overlay .ant-btn:disabled {
+  border-color: #b5b5b5 !important;
+  background: #fff !important;
+  color: #8a8a8a !important;
+}
+
+.sales-pos-popup-shell .ant-btn-dangerous,
+.sales-pos-overlay .ant-btn-dangerous {
+  color: #fff !important;
+}
+
+.sales-pos-popup-shell .ant-statistic {
+  padding: 10px 12px;
+  border: 1px solid #000;
+  background: #fff;
+}
+
+.sales-pos-popup-shell .ant-statistic-title {
+  color: #000;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.sales-pos-popup-shell .ant-statistic-content {
+  color: #000;
+  font-size: 22px;
+}
+
+.sales-pos-popup-shell .ant-table,
+.sales-pos-overlay .ant-table {
+  font-size: 12px;
+  color: #000;
+}
+
+.sales-pos-popup-shell .ant-table-container,
+.sales-pos-overlay .ant-table-container {
+  border-radius: 0 !important;
+  border-inline-start: 1px solid #000;
+  border-top: 1px solid #000;
+}
+
+.sales-pos-popup-shell .ant-table-thead > tr > th,
+.sales-pos-overlay .ant-table-thead > tr > th {
+  background: #fff;
+  color: #000;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.sales-pos-popup-shell .ant-table-thead > tr > th,
+.sales-pos-popup-shell .ant-table-tbody > tr > td,
+.sales-pos-overlay .ant-table-thead > tr > th,
+.sales-pos-overlay .ant-table-tbody > tr > td {
+  padding-top: 8px;
+  padding-bottom: 8px;
+  border-color: #000 !important;
+}
+
+.sales-pos-popup-shell .ant-descriptions-bordered .ant-descriptions-view,
+.sales-pos-overlay .ant-descriptions-bordered .ant-descriptions-view {
+  border-color: #000;
+}
+
+.sales-pos-popup-shell .ant-descriptions-bordered .ant-descriptions-item-label,
+.sales-pos-popup-shell .ant-descriptions-bordered .ant-descriptions-item-content,
+.sales-pos-overlay .ant-descriptions-bordered .ant-descriptions-item-label,
+.sales-pos-overlay .ant-descriptions-bordered .ant-descriptions-item-content {
+  border-color: #000;
+  background: #fff;
+  color: #000;
+}
+
+.sales-pos-popup-shell .ant-alert,
+.sales-pos-overlay .ant-alert {
+  border-radius: 0;
+  border: 1px solid #000;
+  background: #fff;
+  color: #000;
+}
+
+.sales-pos-popup-shell .ant-divider,
+.sales-pos-overlay .ant-divider {
+  border-color: #000;
+}
+
+.sales-pos-loaded-placeholder {
+  padding: 12px;
+  border: 1px dashed #000;
+  background: #fff;
+  color: #000;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.sales-pos-overlay .ant-modal-mask,
+.sales-pos-overlay .ant-drawer-mask {
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.sales-pos-overlay .ant-modal-content,
+.sales-pos-overlay .ant-drawer-content {
+  border-radius: 0;
+  border: 3px solid #000;
+  box-shadow: none;
+  background: #fff;
+  color: #000;
+}
+
+.sales-pos-overlay .ant-modal-header,
+.sales-pos-overlay .ant-drawer-header {
+  border-bottom: 1px solid #000;
+  border-radius: 0;
+  background: #fff;
+}
+
+.sales-pos-overlay .ant-modal-title,
+.sales-pos-overlay .ant-drawer-title {
+  color: #000;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.sales-pos-overlay .ant-modal-footer {
+  border-top: 1px solid #000;
+}
+
+.sales-pos-overlay .ant-card {
+  border-radius: 0;
+  border-color: #000;
+  box-shadow: none;
+}
+
+@media (max-width: 1200px) {
+  .sales-pos-window {
+    min-height: 0;
+    max-height: none;
+  }
+
+  .sales-pos-window-bar {
+    flex-direction: column;
+  }
+
+  .sales-pos-window-actions {
+    justify-content: flex-start;
+  }
+
+  .sales-pos-detail-row > .ant-col {
+    display: block;
+  }
+
+  .sales-pos-lines-card .ant-card-body {
+    min-height: 240px;
+  }
+}
+
+@media (max-width: 768px) {
+  .sales-pos-popup-shell,
+  .sales-pos-popup-shell--fullscreen {
+    min-height: auto;
+    padding: 8px 4px 12px;
+  }
+
+  .sales-pos-window {
+    min-height: 0;
+    max-height: none;
+    padding: 10px;
+    border-width: 6px;
+  }
+
+  .sales-pos-window .sales-pos-panel .ant-card-head,
+  .sales-pos-window .sales-pos-panel .ant-card-body {
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+
+  .sales-pos-ticket-chip-card .ant-typography,
+  .sales-pos-window-actions,
+  .sales-pos-action-bar {
+    width: 100%;
+  }
+}

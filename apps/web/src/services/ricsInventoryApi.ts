@@ -34,6 +34,7 @@ export interface InquiryRollup {
 export interface InquirySizeGrid {
   columns: string[];
   rows: Array<{ label: string; cells: Array<{ value: number | null }> }>;
+  total?: number;
 }
 
 export interface InquiryGrids {

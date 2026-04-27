@@ -80,6 +80,14 @@ export type CustomerKpiListRow = {
 
 export type CustomerKpiListEnvelope = {
   data: CustomerKpiListRow[];
+  summary: {
+    customerCount: number;
+    totalLifetimeValue: number;
+    totalOrders: number;
+    avgLifetimeValue: number;
+    avgOrderValue: number;
+    avgRecencyDays: number | null;
+  };
   pagination: {
     page: number;
     pageSize: number;
@@ -109,6 +117,7 @@ export async function listCustomerMetrics(
   if (matchedStoreIds != null && matchedStoreIds.length === 0) {
     return {
       data: [],
+      summary: emptySummary(),
       pagination: {
         page,
         pageSize,
@@ -148,8 +157,20 @@ export async function listCustomerMetrics(
 
   const orderBy = buildOrderBy(params.sort, params.order);
 
-  const [totalItems, rows] = await Promise.all([
-    prisma.customerMetrics.count({ where }),
+  const [aggregate, rows] = await Promise.all([
+    prisma.customerMetrics.aggregate({
+      where,
+      _count: { _all: true },
+      _sum: {
+        lifetimeValue: true,
+        totalOrders: true,
+      },
+      _avg: {
+        lifetimeValue: true,
+        avgOrderValue: true,
+        recencyDays: true,
+      },
+    }),
     prisma.customerMetrics.findMany({
       where,
       orderBy,
@@ -233,8 +254,20 @@ export async function listCustomerMetrics(
     };
   });
 
+  const totalItems = aggregate._count._all ?? 0;
+  const summary = {
+    customerCount: totalItems,
+    totalLifetimeValue: toNumber(aggregate._sum.lifetimeValue),
+    totalOrders: aggregate._sum.totalOrders ?? 0,
+    avgLifetimeValue: toNumber(aggregate._avg.lifetimeValue),
+    avgOrderValue: toNumber(aggregate._avg.avgOrderValue),
+    avgRecencyDays:
+      aggregate._avg.recencyDays == null ? null : roundNumber(toNumber(aggregate._avg.recencyDays), 1),
+  };
+
   return {
     data,
+    summary,
     pagination: {
       page,
       pageSize,
@@ -323,8 +356,25 @@ function classifySegment(input: {
   return 'other';
 }
 
-function toNumber(value: number | { toNumber(): number }): number {
+function emptySummary(): CustomerKpiListEnvelope['summary'] {
+  return {
+    customerCount: 0,
+    totalLifetimeValue: 0,
+    totalOrders: 0,
+    avgLifetimeValue: 0,
+    avgOrderValue: 0,
+    avgRecencyDays: null,
+  };
+}
+
+function toNumber(value: number | { toNumber(): number } | null | undefined): number {
+  if (value == null) return 0;
   return typeof value === 'number' ? value : value.toNumber();
+}
+
+function roundNumber(value: number, digits: number): number {
+  const factor = 10 ** digits;
+  return Math.round(value * factor) / factor;
 }
 
 function parseStoreId(value: string | undefined): number | undefined {

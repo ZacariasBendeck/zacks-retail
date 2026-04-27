@@ -180,6 +180,29 @@ export interface PosProductLookup {
   perks: number
 }
 
+export interface PosCatalogSearchRow {
+  skuCode: string
+  description: string | null
+  styleColor: string | null
+  vendorCode: string | null
+  vendorName: string | null
+  categoryNumber: number | null
+  categoryName: string | null
+  currentPriceSlot: number
+  currentPrice: number
+  listPrice: number | null
+  retailPrice: number | null
+  markDown1: number | null
+  markDown2: number | null
+  currentCost: number | null
+  perks: number | null
+  coupon: boolean
+  overSizeColumn: string | null
+  overSizeAmount: number | null
+  pictureFileName: string | null
+  status: string | null
+}
+
 export interface PosTicketListItem {
   id: string
   ticketNumber: number

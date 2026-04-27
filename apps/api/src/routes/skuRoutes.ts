@@ -197,6 +197,16 @@ router.post('/analyze-image', upload.single('image'), async (req: Request, res: 
     const { raw, resolution, warning } = await analyzeShoeImage(req.file.buffer, req.file.mimetype, family);
     const config = getAiFillConfig();
     const mapped = mapAiResultsToReferenceIds(raw as unknown as Record<string, string | null>);
+    // 2026-04-26 — the web form renamed this field to `genderId`, but the
+    // legacy AI-fill config still emits `targetAudienceId`. Return both keys
+    // during the transition so existing DRAFT payloads and the modern UI agree.
+    const targetAudienceId = (mapped as Record<string, unknown>).targetAudienceId;
+    if (
+      (typeof targetAudienceId === 'number' || targetAudienceId === null) &&
+      (mapped as Record<string, unknown>).genderId === undefined
+    ) {
+      (mapped as Record<string, unknown>).genderId = targetAudienceId;
+    }
     // Overlay the resolved Postgres values on top of `mapped`. These take
     // precedence over the legacy SQLite-backed categoryId fuzzy match — the
     // frontend should prefer `mapped.categoryCode` / `mapped.departmentCode`

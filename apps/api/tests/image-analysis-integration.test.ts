@@ -349,6 +349,7 @@ describe('POST /api/v1/skus/analyze-image (mocked AI)', () => {
     expect(typeof res.body.mapped.shoeTypeId).toBe('number');
     expect(typeof res.body.mapped.heelShapeId).toBe('number');
     expect(typeof res.body.mapped.colorId).toBe('number');
+    expect(res.body.mapped.genderId).toBe(res.body.mapped.targetAudienceId);
 
     // Text/enum preserved
     expect(res.body.mapped.color).toBe('Black');

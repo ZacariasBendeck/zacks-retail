@@ -61,6 +61,18 @@ export async function fetchSkuDraftByCode(code: string): Promise<SkuLifecycleRow
   return res.json() as Promise<SkuLifecycleRow>
 }
 
+export async function fetchNextSkuDraftByCode(code: string): Promise<SkuLifecycleRow | null> {
+  const res = await fetch(`${BASE}/by-code/${encodeURIComponent(code)}/next`)
+  if (res.status === 404) return null
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    const message =
+      (body as { error?: { message?: string } })?.error?.message ?? `Request failed: ${res.status}`
+    throw new Error(message)
+  }
+  return res.json() as Promise<SkuLifecycleRow>
+}
+
 function invalidateAll(qc: ReturnType<typeof useQueryClient>) {
   qc.invalidateQueries({ queryKey: ['sku-drafts'] })
 }

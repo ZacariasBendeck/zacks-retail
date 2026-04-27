@@ -12,6 +12,6 @@ export interface SizeGrid {
   rows: SizeGridRow[];
   /** Optional subtitle rendered above the grid (e.g. "All stores - Summary"). */
   caption?: string;
-  /** Grid-level total pre-computed by the backend (may differ from the sum of cells). Not rendered yet — exposed for future callers. */
+  /** Grid-level total pre-computed by the backend. Parent views may render it beside the grid title. */
   total?: number;
 }

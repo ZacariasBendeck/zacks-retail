@@ -290,26 +290,22 @@ export async function getCustomerMetrics(idOrAccount: string): Promise<CustomerM
   const customerId = await resolveCustomerMetricsCustomerId(idOrAccount);
   if (!customerId) return null;
 
-  const [existing, customer, transactionCountRows] = await Promise.all([
+  const [existing, customer, transactionCounts] = await Promise.all([
     prisma.customerMetrics.findUnique({ where: { customerId } }),
     prisma.customerIntelligenceCustomer.findUnique({
       where: { id: customerId },
       include: { salesSummaryLegacy: true },
     }),
-    prisma.$queryRaw<Array<{ count: bigint | number }>>`
-      SELECT COUNT(*)::bigint AS count
-      FROM (
-        SELECT id
-        FROM app.customer_transaction_fact
-        WHERE customer_id = ${customerId}
-        UNION ALL
-        SELECT id
-        FROM app.sales_history_ticket
-        WHERE matched_customer_id = ${customerId}
-      ) AS metric_sales
-    `,
+    Promise.all([
+      prisma.customerTransactionFact.count({
+        where: { customerId },
+      }),
+      prisma.salesHistoryTicket.count({
+        where: { matchedCustomerId: customerId },
+      }),
+    ]),
   ]);
-  const transactionCount = Number(transactionCountRows[0]?.count ?? 0);
+  const transactionCount = transactionCounts[0] + transactionCounts[1];
   if (!existing) {
     return computeFullMetrics(customerId);
   }
@@ -386,6 +382,179 @@ export async function recomputeAllCustomerMetrics(input?: {
 }
 
 export async function getCustomerMetricsSummary(): Promise<CustomerMetricsSummary> {
+  {
+    const [totalCustomers, summaryRows] = await Promise.all([
+      prisma.customerIntelligenceCustomer.count(),
+      prisma.$queryRaw<Array<{
+        activeCustomers: bigint | number | string | null;
+        dormantCustomers: bigint | number | string | null;
+        avgLifetimeValue: number | string | bigint | { toNumber(): number } | null;
+        churnLow: bigint | number | string | null;
+        churnMedium: bigint | number | string | null;
+        churnHigh: bigint | number | string | null;
+        churnUnknown: bigint | number | string | null;
+        channelStoreOnly: bigint | number | string | null;
+        channelOnlineOnly: bigint | number | string | null;
+        channelOmnichannel: bigint | number | string | null;
+        channelUnknown: bigint | number | string | null;
+        ltvBand0To500: bigint | number | string | null;
+        ltvBand501To1500: bigint | number | string | null;
+        ltvBand1501To3000: bigint | number | string | null;
+        ltvBand3001To7500: bigint | number | string | null;
+        ltvBand7500Plus: bigint | number | string | null;
+        rfmVip: bigint | number | string | null;
+        rfmLoyal: bigint | number | string | null;
+        rfmNew: bigint | number | string | null;
+        rfmAtRisk: bigint | number | string | null;
+        rfmLost: bigint | number | string | null;
+        rfmOther: bigint | number | string | null;
+      }>>`
+        WITH metrics AS (
+          SELECT
+            lifetime_value,
+            is_active,
+            is_dormant,
+            churn_risk,
+            online_ratio,
+            CASE
+              WHEN COALESCE(r_score, 0) >= 5
+                AND COALESCE(f_score, 0) >= 5
+                AND COALESCE(m_score, 0) >= 5
+                THEN 'VIP'
+              WHEN COALESCE(f_score, 0) >= 4
+                AND COALESCE(m_score, 0) >= 3
+                THEN 'Loyal'
+              WHEN COALESCE(r_score, 0) >= 4
+                AND COALESCE(f_score, 0) <= 2
+                THEN 'New'
+              WHEN COALESCE(r_score, 0) <= 2
+                AND COALESCE(m_score, 0) >= 3
+                THEN 'At Risk'
+              WHEN COALESCE(r_score, 0) <= 2
+                AND COALESCE(f_score, 0) <= 2
+                THEN 'Lost'
+              ELSE 'Other'
+            END AS rfm_segment
+          FROM app.customer_metrics
+        )
+        SELECT
+          COUNT(*) FILTER (WHERE is_active)::bigint AS "activeCustomers",
+          COUNT(*) FILTER (WHERE is_dormant)::bigint AS "dormantCustomers",
+          COALESCE(AVG(lifetime_value), 0) AS "avgLifetimeValue",
+          COUNT(*) FILTER (WHERE churn_risk = 'LOW')::bigint AS "churnLow",
+          COUNT(*) FILTER (WHERE churn_risk = 'MEDIUM')::bigint AS "churnMedium",
+          COUNT(*) FILTER (WHERE churn_risk = 'HIGH')::bigint AS "churnHigh",
+          COUNT(*) FILTER (
+            WHERE churn_risk IS NULL
+              OR churn_risk NOT IN ('LOW', 'MEDIUM', 'HIGH')
+          )::bigint AS "churnUnknown",
+          COUNT(*) FILTER (WHERE online_ratio = 0)::bigint AS "channelStoreOnly",
+          COUNT(*) FILTER (WHERE online_ratio >= 1)::bigint AS "channelOnlineOnly",
+          COUNT(*) FILTER (
+            WHERE online_ratio > 0
+              AND online_ratio < 1
+          )::bigint AS "channelOmnichannel",
+          COUNT(*) FILTER (WHERE online_ratio IS NULL)::bigint AS "channelUnknown",
+          COUNT(*) FILTER (
+            WHERE lifetime_value = 0
+              OR (lifetime_value > 0 AND lifetime_value <= 500)
+          )::bigint AS "ltvBand0To500",
+          COUNT(*) FILTER (
+            WHERE lifetime_value > 500
+              AND lifetime_value <= 1500
+          )::bigint AS "ltvBand501To1500",
+          COUNT(*) FILTER (
+            WHERE lifetime_value > 1500
+              AND lifetime_value <= 3000
+          )::bigint AS "ltvBand1501To3000",
+          COUNT(*) FILTER (
+            WHERE lifetime_value > 3000
+              AND lifetime_value <= 7500
+          )::bigint AS "ltvBand3001To7500",
+          COUNT(*) FILTER (WHERE lifetime_value > 7500)::bigint AS "ltvBand7500Plus",
+          COUNT(*) FILTER (WHERE rfm_segment = 'VIP')::bigint AS "rfmVip",
+          COUNT(*) FILTER (WHERE rfm_segment = 'Loyal')::bigint AS "rfmLoyal",
+          COUNT(*) FILTER (WHERE rfm_segment = 'New')::bigint AS "rfmNew",
+          COUNT(*) FILTER (WHERE rfm_segment = 'At Risk')::bigint AS "rfmAtRisk",
+          COUNT(*) FILTER (WHERE rfm_segment = 'Lost')::bigint AS "rfmLost",
+          COUNT(*) FILTER (WHERE rfm_segment = 'Other')::bigint AS "rfmOther"
+        FROM metrics
+      `,
+    ]);
+
+    const summaryRow = summaryRows[0] ?? {
+      activeCustomers: 0,
+      dormantCustomers: 0,
+      avgLifetimeValue: 0,
+      churnLow: 0,
+      churnMedium: 0,
+      churnHigh: 0,
+      churnUnknown: 0,
+      channelStoreOnly: 0,
+      channelOnlineOnly: 0,
+      channelOmnichannel: 0,
+      channelUnknown: 0,
+      ltvBand0To500: 0,
+      ltvBand501To1500: 0,
+      ltvBand1501To3000: 0,
+      ltvBand3001To7500: 0,
+      ltvBand7500Plus: 0,
+      rfmVip: 0,
+      rfmLoyal: 0,
+      rfmNew: 0,
+      rfmAtRisk: 0,
+      rfmLost: 0,
+      rfmOther: 0,
+    };
+
+    const activeCustomers = toCount(summaryRow.activeCustomers);
+    const dormantCustomers = toCount(summaryRow.dormantCustomers);
+    const avgLifetimeValue = roundCurrency(toNumber(summaryRow.avgLifetimeValue ?? 0));
+
+    const churnDistribution = {
+      low: toCount(summaryRow.churnLow),
+      medium: toCount(summaryRow.churnMedium),
+      high: toCount(summaryRow.churnHigh),
+      unknown: toCount(summaryRow.churnUnknown),
+    };
+
+    const channelDistribution = {
+      storeOnly: toCount(summaryRow.channelStoreOnly),
+      onlineOnly: toCount(summaryRow.channelOnlineOnly),
+      omnichannel: toCount(summaryRow.channelOmnichannel),
+      unknown: toCount(summaryRow.channelUnknown),
+    };
+
+    const ltvDistribution = [
+      { band: '0–500', count: toCount(summaryRow.ltvBand0To500) },
+      { band: '501–1,500', count: toCount(summaryRow.ltvBand501To1500) },
+      { band: '1,501–3,000', count: toCount(summaryRow.ltvBand1501To3000) },
+      { band: '3,001–7,500', count: toCount(summaryRow.ltvBand3001To7500) },
+      { band: '7,500+', count: toCount(summaryRow.ltvBand7500Plus) },
+    ];
+
+    const rfmDistribution = [
+      { segment: 'VIP', count: toCount(summaryRow.rfmVip) },
+      { segment: 'Loyal', count: toCount(summaryRow.rfmLoyal) },
+      { segment: 'New', count: toCount(summaryRow.rfmNew) },
+      { segment: 'At Risk', count: toCount(summaryRow.rfmAtRisk) },
+      { segment: 'Lost', count: toCount(summaryRow.rfmLost) },
+      { segment: 'Other', count: toCount(summaryRow.rfmOther) },
+    ];
+
+    return {
+      totalCustomers,
+      activeCustomers,
+      dormantCustomers,
+      avgLifetimeValue,
+      highChurnRisk: churnDistribution.high,
+      churnDistribution,
+      channelDistribution,
+      ltvDistribution,
+      rfmDistribution,
+    };
+  }
+
   const [totalCustomers, metricRows] = await Promise.all([
     prisma.customerIntelligenceCustomer.count(),
     prisma.customerMetrics.findMany({
@@ -951,8 +1120,16 @@ function sumBy<T>(values: T[], mapper: (value: T) => number): number {
   return values.reduce((total, value) => total + mapper(value), 0);
 }
 
-function toNumber(value: number | { toNumber(): number }): number {
-  return typeof value === 'number' ? value : value.toNumber();
+function toNumber(value: number | string | bigint | { toNumber(): number }): number {
+  if (typeof value === 'number') return value;
+  if (typeof value === 'string') return Number(value);
+  if (typeof value === 'bigint') return Number(value);
+  return value.toNumber();
+}
+
+function toCount(value: number | string | bigint | null | undefined): number {
+  if (value == null) return 0;
+  return Math.trunc(toNumber(value));
 }
 
 function daysAgo(now: Date, days: number): Date {

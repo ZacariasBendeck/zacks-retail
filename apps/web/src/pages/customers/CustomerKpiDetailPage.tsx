@@ -57,6 +57,22 @@ export default function CustomerKpiDetailPage() {
     )
   }
 
+  if (metrics.isError) {
+    return (
+      <Alert
+        type="error"
+        showIcon
+        message="Unable to load customer KPI metrics"
+        description={metrics.error instanceof Error ? metrics.error.message : undefined}
+        action={
+          <Button size="small" onClick={() => metrics.refetch()}>
+            Retry
+          </Button>
+        }
+      />
+    )
+  }
+
   const customerData = customer.data
   const metricsData = metrics.data
   const noTransactions = metricsData != null && metricsData.totalOrders === 0

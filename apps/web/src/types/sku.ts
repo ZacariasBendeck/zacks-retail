@@ -53,6 +53,7 @@ export interface Sku {
   season: string | null
   manufacturer: string | null
   pictureUrl: string | null
+  pictureFileName?: string | null
   brandId: number | null
   colorId: number | null
   colorFamilyId: number | null

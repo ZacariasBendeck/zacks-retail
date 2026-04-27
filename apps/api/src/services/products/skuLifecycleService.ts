@@ -472,6 +472,28 @@ export async function getByCode(code: string): Promise<Result<SkuRow>> {
   }
 }
 
+export async function getNextByCode(code: string): Promise<Result<SkuRow>> {
+  try {
+    const row = await prisma.sku.findFirst({
+      where: {
+        code: { gt: code },
+        skuState: { not: 'DISCONTINUED' },
+      },
+      orderBy: { code: 'asc' },
+    });
+    if (!row) {
+      return Err({ kind: 'NotFound', message: `No next SKU found after '${code}'.` });
+    }
+    const [legacyMap, extraMap] = await Promise.all([
+      fetchLegacyAttrsMap([row.id]),
+      fetchExtraColsMap([row.id]),
+    ]);
+    return Ok(mapRow(row as SkuPrismaRow, legacyMap.get(row.id) ?? null, extraMap.get(row.id) ?? { perks: null, discountCode: null }));
+  } catch (err) {
+    return Err(toError(err));
+  }
+}
+
 // ────────────── Update ──────────────
 export async function update(
   id: string,

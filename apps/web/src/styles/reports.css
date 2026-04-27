@@ -43,19 +43,21 @@
 }
 
 .sales-by-day-layout-table {
-  --sales-by-day-current-header: #dbeafe;
-  --sales-by-day-current-cell: #f3f8ff;
-  --sales-by-day-current-zebra: #e2efff;
-  --sales-by-day-current-hover: #d4e7ff;
-  --sales-by-day-compare-header: #dcfce7;
-  --sales-by-day-compare-cell: #f2fff6;
-  --sales-by-day-compare-zebra: #e4faeb;
-  --sales-by-day-compare-hover: #d5f5df;
-  --sales-by-day-change-header: #ffedd5;
-  --sales-by-day-change-cell: #fff7ed;
-  --sales-by-day-change-zebra: #ffead1;
-  --sales-by-day-change-hover: #ffe0ba;
-  --sales-by-day-boundary: rgba(15, 23, 42, 0.16);
+  --sales-by-day-header-text: #111827;
+  --sales-by-day-current-header: #d9e7f7;
+  --sales-by-day-current-cell: #f4f8fd;
+  --sales-by-day-current-zebra: #e6eef8;
+  --sales-by-day-current-hover: #d8e4f2;
+  --sales-by-day-compare-header: #e5ebf3;
+  --sales-by-day-compare-cell: #f6f8fb;
+  --sales-by-day-compare-zebra: #e9eef4;
+  --sales-by-day-compare-hover: #dde4ec;
+  --sales-by-day-change-header: #f0f3f6;
+  --sales-by-day-change-cell: #fafbfd;
+  --sales-by-day-change-zebra: #eceff3;
+  --sales-by-day-change-hover: #e1e6ec;
+  --sales-by-day-boundary: rgba(17, 24, 39, 0.22);
+  --sales-by-day-header-border: rgba(17, 24, 39, 0.12);
 }
 
 .sales-by-day-layout-table .ant-table-thead > tr > th.sales-by-day-col-current {
@@ -68,6 +70,13 @@
 
 .sales-by-day-layout-table .ant-table-thead > tr > th.sales-by-day-col-change {
   background: var(--sales-by-day-change-header) !important;
+}
+
+.sales-by-day-layout-table .ant-table-thead > tr > th.sales-by-day-col-current,
+.sales-by-day-layout-table .ant-table-thead > tr > th.sales-by-day-col-compare,
+.sales-by-day-layout-table .ant-table-thead > tr > th.sales-by-day-col-change {
+  color: var(--sales-by-day-header-text);
+  border-bottom-color: var(--sales-by-day-header-border);
 }
 
 .sales-by-day-layout-table .ant-table-tbody > tr > td.sales-by-day-col-current {

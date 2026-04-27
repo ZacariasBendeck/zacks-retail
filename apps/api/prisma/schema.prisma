@@ -927,6 +927,7 @@ model Sku {
   stockLevels              StockLevel[]
   stockMovements           StockMovement[]
   replenishmentTargets     ReplenishmentTarget[]
+  inventorySalesCells      InventorySalesCell[]
   upcs                     SkuUpc[]
   futurePriceChanges       FuturePriceChange[]
   purchaseOrderLegacyLines PurchaseOrderLegacyLine[]
@@ -1188,6 +1189,32 @@ model ReplenishmentTarget {
   @@index([skuId, storeId], map: "replenishment_target_sku_store_idx")
   @@index([storeId], map: "replenishment_target_store_idx")
   @@map("replenishment_target")
+  @@schema("app")
+}
+
+/// Per-cell inquiry sales counters imported from `inventory_quantities.csv`.
+/// These mirror the legacy MTD / STD / YTD / LY size-grid cells without
+/// dragging `rics_mirror.inventory_quantities` back onto the request path.
+model InventorySalesCell {
+  id          String   @id @default(uuid()) @db.Uuid
+  storeId     Int      @map("store_id")
+  skuId       String   @map("sku_id") @db.Uuid
+  sku         Sku      @relation(fields: [skuId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  columnLabel String   @default("") @map("column_label")
+  rowLabel    String   @default("") @map("row_label")
+  mtdSales    Int      @default(0) @map("mtd_sales")
+  stdSales    Int      @default(0) @map("std_sales")
+  ytdSales    Int      @default(0) @map("ytd_sales")
+  lySales     Int      @default(0) @map("ly_sales")
+  source      String   @default("RICS_IMPORT")
+  sourceRunId String?  @map("source_run_id") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@unique([storeId, skuId, columnLabel, rowLabel], map: "inventory_sales_cell_store_sku_cell_key")
+  @@index([skuId, storeId], map: "inventory_sales_cell_sku_store_idx")
+  @@index([storeId], map: "inventory_sales_cell_store_idx")
+  @@map("inventory_sales_cell")
   @@schema("app")
 }
 
