@@ -29,6 +29,7 @@ import type {
 
 interface Props {
   dimensions: AttributeDimension[]
+  onCreateMacroCategory?: () => void
 }
 
 interface Pair {
@@ -37,9 +38,12 @@ interface Pair {
 }
 
 interface PairFormValues {
-  sourceDimensionCode: string
-  targetDimensionCode: string
+  mappingKey: string
 }
+
+const SUPPORTED_MACRO_MAPPINGS: Pair[] = [
+  { sourceDimensionCode: 'color', targetDimensionCode: 'color_family' },
+]
 
 function pairKey(pair: Pair): string {
   return `${pair.sourceDimensionCode}->${pair.targetDimensionCode}`
@@ -52,7 +56,7 @@ function formatDate(value: string | null): string {
   return d.toLocaleString()
 }
 
-export default function MacroCategoriesTab({ dimensions }: Props) {
+export default function MacroCategoriesTab({ dimensions, onCreateMacroCategory }: Props) {
   const { message } = App.useApp()
   const summaries = useAttributeMacroRules()
   const replace = useReplaceAttributeMacroRules()
@@ -68,6 +72,27 @@ export default function MacroCategoriesTab({ dimensions }: Props) {
       : null
   }, [dimensions])
 
+  const supportedPairs = useMemo(
+    () =>
+      SUPPORTED_MACRO_MAPPINGS.filter(
+        (mapping) =>
+          dimensions.some((d) => d.code === mapping.sourceDimensionCode) &&
+          dimensions.some((d) => d.code === mapping.targetDimensionCode),
+      ),
+    [dimensions],
+  )
+
+  const mappingOptions = supportedPairs.map((mapping) => {
+    const source = dimensions.find((d) => d.code === mapping.sourceDimensionCode)
+    const target = dimensions.find((d) => d.code === mapping.targetDimensionCode)
+    return {
+      value: pairKey(mapping),
+      label: `${source?.labelEs ?? mapping.sourceDimensionCode} -> ${
+        target?.labelEs ?? mapping.targetDimensionCode
+      }`,
+    }
+  })
+
   useEffect(() => {
     if (pair) return
     const first = summaries.data?.[0]
@@ -82,7 +107,7 @@ export default function MacroCategoriesTab({ dimensions }: Props) {
   }, [defaultColorPair, pair, summaries.data])
 
   useEffect(() => {
-    if (defaultColorPair) form.setFieldsValue(defaultColorPair)
+    if (defaultColorPair) form.setFieldsValue({ mappingKey: pairKey(defaultColorPair) })
   }, [defaultColorPair, form])
 
   const ruleSet = useAttributeMacroRuleSet(pair?.sourceDimensionCode ?? null, pair?.targetDimensionCode ?? null)
@@ -102,12 +127,6 @@ export default function MacroCategoriesTab({ dimensions }: Props) {
   const selectedSource = dimensions.find((d) => d.code === pair?.sourceDimensionCode) ?? null
   const selectedTarget = dimensions.find((d) => d.code === pair?.targetDimensionCode) ?? null
 
-  const dimensionOptions = dimensions.map((dim) => ({
-    value: dim.code,
-    label: `${dim.labelEs} (${dim.code})`,
-    disabled: dim.isMultiValue,
-  }))
-
   const targetValueOptions = (selectedTarget?.values ?? []).map((value) => ({
     value: value.code,
     label: (
@@ -124,11 +143,22 @@ export default function MacroCategoriesTab({ dimensions }: Props) {
     ruleSet.data.rules.some((rule) => (draft[rule.sourceValueCode] ?? null) !== (rule.targetValueCode ?? null))
 
   const openPair = (values: PairFormValues) => {
-    if (values.sourceDimensionCode === values.targetDimensionCode) {
-      message.error('Source and macro target must be different attributes.')
+    const selectedPair = supportedPairs.find((mapping) => pairKey(mapping) === values.mappingKey)
+    if (!selectedPair) {
+      message.error('Choose a supported macro mapping.')
       return
     }
-    setPair(values)
+    setPair(selectedPair)
+  }
+
+  const createOrEditDefaultMapping = () => {
+    const selectedPair = defaultColorPair ?? supportedPairs[0]
+    if (!selectedPair) {
+      message.warning('Create the source attribute and macro category first.')
+      return
+    }
+    form.setFieldsValue({ mappingKey: pairKey(selectedPair) })
+    setPair(selectedPair)
   }
 
   const save = async () => {
@@ -253,11 +283,14 @@ export default function MacroCategoriesTab({ dimensions }: Props) {
                     : ''
                 }
                 onRow={(row) => ({
-                  onClick: () =>
-                    setPair({
+                  onClick: () => {
+                    const nextPair = {
                       sourceDimensionCode: row.sourceDimensionCode,
                       targetDimensionCode: row.targetDimensionCode,
-                    }),
+                    }
+                    setPair(nextPair)
+                    form.setFieldsValue({ mappingKey: pairKey(nextPair) })
+                  },
                   style: { cursor: 'pointer' },
                 })}
               />
@@ -268,44 +301,53 @@ export default function MacroCategoriesTab({ dimensions }: Props) {
         </Col>
 
         <Col xs={24} lg={13}>
-          <Card size="small" title="Create or open a macro mapping">
+          <Card
+            size="small"
+            title="Macro category setup"
+            extra={
+              <Space wrap>
+                <Button onClick={onCreateMacroCategory} icon={<PlusOutlined />}>
+                  New Macro Category
+                </Button>
+                <Button type="primary" onClick={createOrEditDefaultMapping} icon={<PlusOutlined />}>
+                  New Macro Mapping
+                </Button>
+              </Space>
+            }
+          >
             <Form<PairFormValues>
               form={form}
               layout="vertical"
               onFinish={openPair}
-              initialValues={defaultColorPair ?? undefined}
+              initialValues={defaultColorPair ? { mappingKey: pairKey(defaultColorPair) } : undefined}
             >
               <Row gutter={12}>
-                <Col xs={24} md={10}>
+                <Col xs={24} md={18}>
                   <Form.Item
-                    label="Source attribute"
-                    name="sourceDimensionCode"
-                    rules={[{ required: true, message: 'Choose a source attribute' }]}
+                    label="Macro mapping"
+                    name="mappingKey"
+                    rules={[{ required: true, message: 'Choose a macro mapping' }]}
                   >
-                    <Select showSearch optionFilterProp="label" options={dimensionOptions} />
+                    <Select
+                      showSearch
+                      optionFilterProp="label"
+                      options={mappingOptions}
+                      placeholder="Choose a macro mapping"
+                    />
                   </Form.Item>
                 </Col>
-                <Col xs={24} md={10}>
-                  <Form.Item
-                    label="Macro attribute"
-                    name="targetDimensionCode"
-                    rules={[{ required: true, message: 'Choose a macro attribute' }]}
-                  >
-                    <Select showSearch optionFilterProp="label" options={dimensionOptions} />
-                  </Form.Item>
-                </Col>
-                <Col xs={24} md={4}>
+                <Col xs={24} md={6}>
                   <Form.Item label=" ">
                     <Button type="primary" htmlType="submit" icon={<PlusOutlined />} block>
-                      Open
+                      Open Selected Mapping
                     </Button>
                   </Form.Item>
                 </Col>
               </Row>
             </Form>
             <Typography.Text type="secondary">
-              Create the source and macro dimensions, plus their values, in the Dimensions tab first.
-              Multi-value dimensions are disabled because a macro rollup must resolve to one value.
+              Derived macro categories are rollup targets. Today the only supported macro category is
+              Color Family, derived from Color.
             </Typography.Text>
           </Card>
         </Col>

@@ -54,6 +54,7 @@ import { PricingSection } from './sku-form-modern/PricingSection'
 import { AppearanceSection } from './sku-form-modern/AppearanceSection'
 import { AdvancedSection } from './sku-form-modern/AdvancedSection'
 import { AiAnalysisPanel } from './sku-form-modern/AiAnalysisPanel'
+import MatchingSetsCard from '../../components/products/MatchingSetsCard'
 
 const DEPARTMENTS: Department[] = ALLOWED_DEPARTMENTS
 const SKU_ROOT_PATH = '/products/skus'
@@ -1185,6 +1186,8 @@ export default function SkuFormPageModern() {
         />
 
         <AdvancedSection refData={refData} seasonsCatalog={seasonsCatalog} />
+
+        <MatchingSetsCard skuRef={skuLookupKey} />
       </Form>
     </div>
   )

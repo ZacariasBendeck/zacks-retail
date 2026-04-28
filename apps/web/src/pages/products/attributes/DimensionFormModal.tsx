@@ -7,6 +7,7 @@ import type { AttributeDimension } from '../../../types/productsAttributes'
 interface Props {
   open: boolean
   editing: AttributeDimension | null
+  defaults?: Partial<FormValues>
   onClose: () => void
   onSaved?: (code: string) => void
 }
@@ -19,7 +20,7 @@ interface FormValues {
   isMultiValue: boolean
 }
 
-export default function DimensionFormModal({ open, editing, onClose, onSaved }: Props) {
+export default function DimensionFormModal({ open, editing, defaults, onClose, onSaved }: Props) {
   const [form] = Form.useForm<FormValues>()
   const { message } = App.useApp()
   const create = useCreateDimension()
@@ -44,9 +45,10 @@ export default function DimensionFormModal({ open, editing, onClose, onSaved }: 
         descriptionEs: '',
         sortOrder: 0,
         isMultiValue: false,
+        ...defaults,
       })
     }
-  }, [open, editing, form])
+  }, [open, editing, defaults, form])
 
   const handleOk = async () => {
     const vals = await form.validateFields()

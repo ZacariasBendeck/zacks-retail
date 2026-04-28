@@ -160,6 +160,10 @@ function bundleCustomerPath(config: MigrationActionConfig, fileName: string): st
   return path.join(requireBundleDir(config), 'crm', fileName);
 }
 
+function bundleLegacyPath(config: MigrationActionConfig, fileName: string): string {
+  return path.join(requireBundleDir(config), 'legacy', fileName);
+}
+
 function optionalPathArgs(pairs: Array<[string, string | undefined]>): string[] {
   const out: string[] = [];
   for (const [flag, value] of pairs) {
@@ -404,19 +408,26 @@ const actions: ActionRegistration[] = [
     id: 'import-customer-transactions',
     label: 'Import ticket history',
     group: 'individual',
-    description: 'Loads ticket_header.csv and ticket_detail.csv into sales history and KPI tables.',
+    description: 'Loads ticket header/detail CSVs into normalized sales history, and ticket_tender.csv into raw legacy preservation when present.',
     requiresBundle: true,
     requiresTicketFiles: true,
     runner: {
       type: 'command',
-      build: (config) => nodeScript('scripts/customers/import-customer-transactions-from-rics.ts', [
-        '--header',
-        bundleCustomerPath(config, 'ticket_header.csv'),
-        '--detail',
-        bundleCustomerPath(config, 'ticket_detail.csv'),
-        '--source',
-        'render_cutover_bundle',
-      ]),
+      build: (config) => {
+        const tenderPath = bundleLegacyPath(config, 'ticket_tender.csv');
+        const args = [
+          '--header',
+          bundleCustomerPath(config, 'ticket_header.csv'),
+          '--detail',
+          bundleCustomerPath(config, 'ticket_detail.csv'),
+          '--source',
+          'render_cutover_bundle',
+        ];
+        if (fs.existsSync(tenderPath)) {
+          args.push('--tender', tenderPath, '--tender-no-csv-header');
+        }
+        return nodeScript('scripts/customers/import-customer-transactions-from-rics.ts', args);
+      },
     },
   },
 ];
@@ -882,6 +893,9 @@ async function runPreflightCheck(config: MigrationActionConfig, job: MigrationJo
       ['app.replenishment_target', 'replenishmentTarget'],
       ['app.customer', 'customer'],
       ['app.sales_history_ticket', 'salesHistoryTicket'],
+      ['app.sales_history_ticket_legacy_raw', 'salesHistoryTicketLegacyRaw'],
+      ['app.sales_history_ticket_line_legacy_raw', 'salesHistoryTicketLineLegacyRaw'],
+      ['app.sales_history_ticket_tender_legacy_raw', 'salesHistoryTicketTenderLegacyRaw'],
     ]);
     checks.push({ name: 'Postgres connection', status: 'pass', detail: 'connected and count queries completed' });
     job.append('stdout', `Current data counts: ${JSON.stringify(counts)}`);
@@ -928,6 +942,7 @@ async function runBundleCheck(config: MigrationActionConfig, job: MigrationJob):
     mail: fs.existsSync(path.join(bundleDir, 'crm', 'MailListNames.csv')),
     ticketHeader: fs.existsSync(path.join(bundleDir, 'crm', 'ticket_header.csv')),
     ticketDetail: fs.existsSync(path.join(bundleDir, 'crm', 'ticket_detail.csv')),
+    ticketTender: fs.existsSync(path.join(bundleDir, 'legacy', 'ticket_tender.csv')),
   };
   job.append('stdout', `Bundle tables=${tables.length} optional=${JSON.stringify(optional)}`);
   return { bundleDir, tableCount: tables.length, optional };
@@ -951,6 +966,9 @@ async function runPostLoadChecks(_config: MigrationActionConfig, job: MigrationJ
     ['app.customer', 'customer'],
     ['app.sales_history_ticket', 'salesHistoryTicket'],
     ['app.sales_history_ticket_line', 'salesHistoryTicketLine'],
+    ['app.sales_history_ticket_legacy_raw', 'salesHistoryTicketLegacyRaw'],
+    ['app.sales_history_ticket_line_legacy_raw', 'salesHistoryTicketLineLegacyRaw'],
+    ['app.sales_history_ticket_tender_legacy_raw', 'salesHistoryTicketTenderLegacyRaw'],
   ]);
 
   const required = [

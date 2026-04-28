@@ -115,6 +115,7 @@ const AttributesCatalogPage = lazy(() => import('./pages/products/attributes/Cat
 
 // products module — Product Family admin (category mapping + attribute rules)
 const ProductFamiliesPage = lazy(() => import('./pages/products/families/FamiliesPage'))
+const MatchingSetsPage = lazy(() => import('./pages/products/matchingSets/MatchingSetsPage'))
 
 // utilities module — RICS Ch. 15 batch-change ports (spec: docs/modules/utilities.md)
 const UtilitiesHubPage = lazy(() => import('./pages/utilities/UtilitiesHubPage'))
@@ -313,6 +314,7 @@ export default function App() {
             <Route path="/products/attributes" element={<AttributesCatalogPage />} />
             <Route path="/products/attributes/macros" element={<AttributesCatalogPage />} />
             <Route path="/products/families" element={<ProductFamiliesPage />} />
+            <Route path="/products/matching-sets" element={<MatchingSetsPage />} />
 
             {/* utilities module — RICS Ch. 15 batch-change ports */}
             <Route path="/utilities" element={<UtilitiesHubPage />} />

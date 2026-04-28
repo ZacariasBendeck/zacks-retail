@@ -51,6 +51,16 @@ export default function CatalogPage() {
   const [selected, setSelected] = useState<string | null>(null)
   const [formOpen, setFormOpen] = useState(false)
   const [formEditing, setFormEditing] = useState<AttributeDimension | null>(null)
+  const [formDefaults, setFormDefaults] = useState<
+    | {
+        code?: string
+        labelEs?: string
+        descriptionEs?: string | null
+        sortOrder?: number
+        isMultiValue?: boolean
+      }
+    | undefined
+  >(undefined)
 
   useEffect(() => {
     if (!dimensions || dimensions.length === 0) {
@@ -108,6 +118,7 @@ export default function CatalogPage() {
               icon={<EditOutlined />}
               onClick={() => {
                 setFormEditing(d)
+                setFormDefaults(undefined)
                 setFormOpen(true)
               }}
             />
@@ -162,6 +173,7 @@ export default function CatalogPage() {
                 icon={<PlusOutlined />}
                 onClick={() => {
                   setFormEditing(null)
+                  setFormDefaults(undefined)
                   setFormOpen(true)
                 }}
               >
@@ -231,13 +243,29 @@ export default function CatalogPage() {
           {
             key: 'macros',
             label: 'Macro Categories',
-            children: <MacroCategoriesTab dimensions={dimensions ?? []} />,
+            children: (
+              <MacroCategoriesTab
+                dimensions={dimensions ?? []}
+                onCreateMacroCategory={() => {
+                  setFormEditing(null)
+                  setFormDefaults({
+                    code: '',
+                    labelEs: '',
+                    descriptionEs: 'Categoría macro derivada de otro atributo',
+                    sortOrder: 620,
+                    isMultiValue: false,
+                  })
+                  setFormOpen(true)
+                }}
+              />
+            ),
           },
         ]}
       />
       <DimensionFormModal
         open={formOpen}
         editing={formEditing}
+        defaults={formDefaults}
         onClose={() => setFormOpen(false)}
         onSaved={(code) => setSelected(code)}
       />

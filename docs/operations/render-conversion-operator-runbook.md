@@ -289,13 +289,18 @@ Expected:
 select count(*) as customer_count from app.customer;
 select count(*) as sales_history_ticket_count from app.sales_history_ticket;
 select count(*) as sales_history_ticket_line_count from app.sales_history_ticket_line;
+select count(*) as sales_history_ticket_legacy_raw_count from app.sales_history_ticket_legacy_raw;
+select count(*) as sales_history_ticket_line_legacy_raw_count from app.sales_history_ticket_line_legacy_raw;
+select count(*) as sales_history_ticket_tender_legacy_raw_count from app.sales_history_ticket_tender_legacy_raw;
 ```
 
 Expected:
 
 - `app.customer` should be non-zero if customer CSVs were included
 - `app.sales_history_ticket` and `app.sales_history_ticket_line` should be non-zero if ticket CSVs were included
-- This confirms the normalized sales-history load only. It does not prove that every raw RICS ticket field was preserved. Use [`sales-ticket-mdb-to-app-coverage.md`](./sales-ticket-mdb-to-app-coverage.md) for the field-level sales ticket coverage list.
+- `app.sales_history_ticket_legacy_raw` and `app.sales_history_ticket_line_legacy_raw` should be non-zero when ticket header/detail files were included
+- `app.sales_history_ticket_tender_legacy_raw` should be non-zero when `legacy/ticket_tender.csv` was included in the canonical artifact pack
+- Use [`sales-ticket-mdb-to-app-coverage.md`](./sales-ticket-mdb-to-app-coverage.md) for the field-level sales ticket coverage list.
 
 ## Operator Spot Checks In The App
 

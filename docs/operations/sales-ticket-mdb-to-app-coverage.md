@@ -6,7 +6,7 @@ Last reviewed: 2026-04-27
 
 This is the field-level coverage list for legacy sales ticket data coming from the RICS sales MDB into the Zack's Retail app database.
 
-Current conclusion: the conversion upload does not preserve every raw sales ticket field from the MDB as its own app DB column. It uploads a normalized sales history baseline into `app.sales_history_ticket` and `app.sales_history_ticket_line`, then derives customer KPI tables from that baseline. Several RICS ticket header/detail fields are used only as filters or joins, and several are not preserved at all yet.
+Current branch conclusion: the conversion upload preserves every sales ticket header, detail, and tender source field in app-owned raw tables, while continuing to build the normalized sales history baseline in `app.sales_history_ticket` and `app.sales_history_ticket_line`. Several RICS fields are still not first-class normalized reporting columns, but they are no longer lost during upload.
 
 This document should be used when testing whether cutover has enough sales-ticket detail for reporting, customer history, refunds, tax review, gift certificates, direct-ship review, and operator audit workflows.
 
@@ -33,7 +33,7 @@ The header/detail field names below use the current importer CSV/staging names. 
 
 The current importer is `apps/api/scripts/customers/import-customer-transactions-from-rics.ts`.
 
-It imports only headers where:
+The normalized sales-history baseline imports only headers where:
 
 | Rule | Meaning |
 |---|---|
@@ -42,7 +42,7 @@ It imports only headers where:
 | `trans_type in (1,2,3,4)` | Regular sale, user-defined, special-order pickup, layaway sale are included. Transaction types 5-8 are not imported by this path. |
 | `store`, `ticket`, and a usable date are present | Rows missing required ticket identity/date fields are excluded. |
 
-It imports only detail lines where:
+The normalized sales-history line baseline imports only detail lines where:
 
 | Rule | Meaning |
 |---|---|
@@ -52,13 +52,15 @@ It imports only detail lines where:
 
 ## Summary
 
-| Source table | Source fields | Used by current importer | Retained as app columns | Pending full-field coverage |
-|---|---:|---:|---:|---:|
-| `TicketHeader` | 31 | 12 | 7 direct fields plus derived totals/status/date/id | 19 |
-| `TicketDetail` | 47 | 18 | 12 direct fields plus derived amounts/flags | 29 |
-| `TicketTender` | 15 | 0 | 0 | 15 |
+Raw preservation imports all staged header/detail/tender rows into `app.sales_history_*_legacy_raw`. These raw tables are not filtered to only normalized sales facts.
 
-Counts above mean field coverage, not row coverage. "Retained as app columns" means the specific source value is preserved in an app-owned destination column. A field can be "used" without being preserved raw, for example `posted` is used as an inclusion filter but not stored in the app DB.
+| Source table | Source fields | Raw fields preserved in app DB | Used by normalized importer | Pending raw-field coverage |
+|---|---:|---:|---:|---:|
+| `TicketHeader` | 31 | 31 | 12 | 0 |
+| `TicketDetail` | 47 | 47 | 18 | 0 |
+| `TicketTender` | 15 | 15 | 0 | 0 |
+
+Counts above mean field coverage, not row coverage. "Raw fields preserved in app DB" means the specific source value is stored in an app-owned raw destination column. "Used by normalized importer" means the field drives `app.sales_history_ticket` / `app.sales_history_ticket_line` facts.
 
 ## App DB Tables Assigned
 
@@ -68,6 +70,9 @@ These are the current app-owned destinations for the uploaded sales ticket data:
 |---|---|---|
 | `app.sales_history_ticket` | Imported completed historical ticket headers/facts. | Built from `ticket_header.csv` plus line rollups from `ticket_detail.csv`. |
 | `app.sales_history_ticket_line` | Imported historical merchandise line rows. | Built from `ticket_detail.csv`, joined to `app.sales_history_ticket` by generated external transaction id. |
+| `app.sales_history_ticket_legacy_raw` | Complete raw `TicketHeader` preservation. | One row per staged header with all 31 header fields plus source/run linkage. |
+| `app.sales_history_ticket_line_legacy_raw` | Complete raw `TicketDetail` preservation. | One row per staged detail line with all 47 detail fields plus source/run linkage. |
+| `app.sales_history_ticket_tender_legacy_raw` | Complete raw `TicketTender` preservation. | One row per staged tender with all 15 tender fields plus source/run linkage. |
 | `app.customer_metrics` | Derived customer metrics. | Refreshed after ticket import unless `--skip-metrics` is used. |
 | `app.customer_features_current` | Derived current customer feature row. | Refreshed after ticket import unless `--skip-metrics` is used. |
 | `app.customer_category_features` | Derived customer/category affinity rows. | Refreshed from imported sales history. |
@@ -239,31 +244,31 @@ Some tender fields duplicate the same ticket identity already stored from `Ticke
 | `return_code` | `TicketDetail.return_code`. |
 | `salesperson_code` | `TicketDetail.salesperson`. |
 
-## Gaps That Must Be Added For Full Sales Ticket Upload
+## Remaining Normalization Gaps
 
-The following data is not fully uploaded to the app DB today:
+The following data is uploaded to raw app-owned tables on this branch, but is not yet normalized into first-class operational/reporting tables:
 
 | Area | Missing data |
 |---|---|
-| Tenders | `TicketTender` is not loaded into app-owned historical tender tables. Split tenders, house charge tender, gift certificate tender, check/card tender detail, and change attribution are not preserved from the historical MDB upload. |
-| Header tax/charges | Header `tax_01`, `tax_02`, `tax_03`, `tax_change`, `oth_chg`, `prev_paid`, `change_amount`, `alt_change`, `exch_rate`, `discount`, apply-to fields, and shipping/tax location fields are not stored. |
-| Header comments/audit flags | Header `comment`, `printed`, raw `posted`, and raw `voided` are not retained. `posted`/`voided` are only filters. |
-| Line tax | Line `tax_01`, `tax_02`, `tax_03`, `taxamt_01`, `taxamt_02`, `taxamt_03` are not stored. |
-| Line discounts/price snapshots | `disc_pct`, raw `disc_amt`, `prices_01` through `prices_04`, `real_price`, `ovs_amt`, and `this_ovs_amt` are not preserved. |
-| CRM/family/perks | `perks`, `fam_member`, and `fb_gen` are not stored. |
-| Direct ship | `ds_ship_code`, `ds_ship_desc`, `ds_dest_code`, `ds_dye_code`, `ds_ship_chg` are not stored. |
-| Gift certificate line data | `gift_cert`, `gift_seq`, and `gift_acct` are not stored. |
-| Original ticket references | `orig_ticket` and header `apply_to` are not stored, limiting historical refund/layaway/special-order tracing. |
-| Comments | Line and header comments are not stored. |
-| Excluded transaction types | Header `trans_type` 5, 6, 7, and 8 are excluded from this import path, even though `customer-transactions` needs those flows for full RICS parity. |
+| Tenders | Split tenders, house charge tender, gift certificate tender, check/card tender detail, and change attribution land in `app.sales_history_ticket_tender_legacy_raw`; no normalized tender-history table exists yet. |
+| Header tax/charges | Header `tax_01`, `tax_02`, `tax_03`, `tax_change`, `oth_chg`, `prev_paid`, `change_amount`, `alt_change`, `exch_rate`, `discount`, apply-to fields, and shipping/tax location fields are raw-only. |
+| Header comments/audit flags | Header `comment`, `printed`, raw `posted`, and raw `voided` are raw-only. `posted`/`voided` still control normalized fact inclusion. |
+| Line tax | Line `tax_01`, `tax_02`, `tax_03`, `taxamt_01`, `taxamt_02`, `taxamt_03` are raw-only. |
+| Line discounts/price snapshots | `disc_pct`, raw `disc_amt`, `prices_01` through `prices_04`, `real_price`, `ovs_amt`, and `this_ovs_amt` are raw-only except for current normalized discount derivation. |
+| CRM/family/perks | `perks`, `fam_member`, and `fb_gen` are raw-only. |
+| Direct ship | `ds_ship_code`, `ds_ship_desc`, `ds_dest_code`, `ds_dye_code`, `ds_ship_chg` are raw-only. |
+| Gift certificate line data | `gift_cert`, `gift_seq`, and `gift_acct` are raw-only in detail rows; tender gift cert fields are raw-only in tender rows. |
+| Original ticket references | `orig_ticket` and header `apply_to` are raw-only, so historical refund/layaway/special-order tracing still needs a normalized model. |
+| Comments | Line and header comments are raw-only. |
+| Excluded transaction types | Header `trans_type` 5, 6, 7, and 8 are raw-preserved, but still excluded from normalized `app.sales_history_ticket` facts. |
 
 ## Recommendation
 
-To make the sales ticket upload complete, add an app-owned raw preservation layer next to the normalized sales history tables.
+The upload is now complete at the raw-field preservation layer. The next step is to normalize the raw-only fields that the application must query directly.
 
 Minimum recommended target:
 
-| New table | Purpose |
+| Raw table | Purpose |
 |---|---|
 | `app.sales_history_ticket_legacy_raw` | One row per imported `TicketHeader`, preserving every source header field plus source file/run metadata. |
 | `app.sales_history_ticket_line_legacy_raw` | One row per imported `TicketDetail`, preserving every source detail field plus source file/run metadata. |

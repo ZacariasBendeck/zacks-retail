@@ -189,8 +189,11 @@ async function main(): Promise<void> {
   );
   const customerCsvPath = path.join(bundleDir, 'crm', 'Customer.csv');
   const mailListNamesCsvPath = path.join(bundleDir, 'crm', 'MailListNames.csv');
-  const ticketHeaderCsvPath = path.join(bundleDir, 'crm', 'ticket_header.csv');
-  const ticketDetailCsvPath = path.join(bundleDir, 'crm', 'ticket_detail.csv');
+  const crmTicketHeaderCsvPath = path.join(bundleDir, 'crm', 'ticket_header.csv');
+  const crmTicketDetailCsvPath = path.join(bundleDir, 'crm', 'ticket_detail.csv');
+  const legacyTicketHeaderCsvPath = path.join(bundleDir, 'legacy', 'ticket_header.csv');
+  const legacyTicketDetailCsvPath = path.join(bundleDir, 'legacy', 'ticket_detail.csv');
+  const legacyTicketTenderCsvPath = path.join(bundleDir, 'legacy', 'ticket_tender.csv');
 
   console.log('========================================');
   console.log('  cutover:render-load');
@@ -300,21 +303,37 @@ async function main(): Promise<void> {
   }
 
   if (!args.skipCustomerTransactions) {
-    if (fileExists(ticketHeaderCsvPath) && fileExists(ticketDetailCsvPath)) {
+    const hasCrmTicketCsvs = fileExists(crmTicketHeaderCsvPath) && fileExists(crmTicketDetailCsvPath);
+    const hasLegacyTicketCsvs = fileExists(legacyTicketHeaderCsvPath) && fileExists(legacyTicketDetailCsvPath);
+
+    if (hasCrmTicketCsvs || hasLegacyTicketCsvs) {
+      const ticketHeaderCsvPath = hasCrmTicketCsvs ? crmTicketHeaderCsvPath : legacyTicketHeaderCsvPath;
+      const ticketDetailCsvPath = hasCrmTicketCsvs ? crmTicketDetailCsvPath : legacyTicketDetailCsvPath;
+      const ticketArgs = [
+        '--header',
+        ticketHeaderCsvPath,
+        '--detail',
+        ticketDetailCsvPath,
+        '--source',
+        'render_cutover_bundle',
+      ];
+      if (!hasCrmTicketCsvs) {
+        ticketArgs.push('--no-csv-header');
+      }
+      if (fileExists(legacyTicketTenderCsvPath)) {
+        ticketArgs.push('--tender', legacyTicketTenderCsvPath, '--tender-no-csv-header');
+      } else {
+        warnings.push('legacy/ticket_tender.csv not present in bundle; raw historical tender import skipped.');
+      }
       await runNodeTsScript(
         'import:customer-transactions:rics',
         path.join(API_DIR, 'scripts', 'customers', 'import-customer-transactions-from-rics.ts'),
-        [
-          '--header',
-          ticketHeaderCsvPath,
-          '--detail',
-          ticketDetailCsvPath,
-          '--source',
-          'render_cutover_bundle',
-        ],
+        ticketArgs,
       );
     } else {
-      warnings.push('ticket_header.csv and/or ticket_detail.csv not present in bundle; customer transaction import skipped.');
+      warnings.push(
+        'ticket_header.csv and/or ticket_detail.csv not present in crm or legacy bundle; customer transaction import skipped.',
+      );
     }
   }
 

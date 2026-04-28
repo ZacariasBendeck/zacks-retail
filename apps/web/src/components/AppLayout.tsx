@@ -56,6 +56,7 @@ const menuItems = [
           { key: '/products/attributes', icon: <AppstoreOutlined />, label: 'Attributes' },
           { key: '/products/attributes/macros', icon: <TagOutlined />, label: 'Macro Categories' },
           { key: '/products/families', icon: <AppstoreOutlined />, label: 'Product Families' },
+          { key: '/products/matching-sets', icon: <ApartmentOutlined />, label: 'Matching Sets' },
         ],
       },
     ],

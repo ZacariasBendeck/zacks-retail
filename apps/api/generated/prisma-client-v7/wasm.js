@@ -196,6 +196,26 @@ exports.Prisma.UserScalarFieldEnum = {
   updatedAt: 'updatedAt'
 };
 
+exports.Prisma.EmployeeScalarFieldEnum = {
+  id: 'id',
+  salespersonCode: 'salespersonCode',
+  displayName: 'displayName',
+  active: 'active',
+  otherInformation: 'otherInformation',
+  commissionRate: 'commissionRate',
+  commissionBase: 'commissionBase',
+  ricsCommissionMethod: 'ricsCommissionMethod',
+  timeClockEnabled: 'timeClockEnabled',
+  timeClockPinHash: 'timeClockPinHash',
+  timeClockAdmin: 'timeClockAdmin',
+  timeClockFullUser: 'timeClockFullUser',
+  legacyCashierPinHash: 'legacyCashierPinHash',
+  ricsSalespersonChangedAt: 'ricsSalespersonChangedAt',
+  ricsSalespersonImportedAt: 'ricsSalespersonImportedAt',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+};
+
 exports.Prisma.RoleScalarFieldEnum = {
   id: 'id',
   name: 'name',
@@ -682,6 +702,57 @@ exports.Prisma.SkuScalarFieldEnum = {
   ricsStatus: 'ricsStatus'
 };
 
+exports.Prisma.MatchingSetTypeScalarFieldEnum = {
+  code: 'code',
+  labelEs: 'labelEs',
+  descriptionEs: 'descriptionEs',
+  sortOrder: 'sortOrder',
+  active: 'active',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+};
+
+exports.Prisma.MatchingSetRoleScalarFieldEnum = {
+  setTypeCode: 'setTypeCode',
+  code: 'code',
+  labelEs: 'labelEs',
+  sortOrder: 'sortOrder',
+  requiredDefault: 'requiredDefault',
+  active: 'active',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+};
+
+exports.Prisma.MatchingSetScalarFieldEnum = {
+  id: 'id',
+  code: 'code',
+  setTypeCode: 'setTypeCode',
+  descriptionEs: 'descriptionEs',
+  vendorId: 'vendorId',
+  vendorStyle: 'vendorStyle',
+  sharedColorCode: 'sharedColorCode',
+  sharedColorLabel: 'sharedColorLabel',
+  season: 'season',
+  notes: 'notes',
+  active: 'active',
+  createdAt: 'createdAt',
+  createdBy: 'createdBy',
+  updatedAt: 'updatedAt',
+  updatedBy: 'updatedBy'
+};
+
+exports.Prisma.MatchingSetMemberScalarFieldEnum = {
+  setId: 'setId',
+  skuId: 'skuId',
+  roleCode: 'roleCode',
+  isPrimary: 'isPrimary',
+  quantityRatio: 'quantityRatio',
+  addedAt: 'addedAt',
+  addedBy: 'addedBy',
+  updatedAt: 'updatedAt',
+  updatedBy: 'updatedBy'
+};
+
 exports.Prisma.SkuActivityScalarFieldEnum = {
   id: 'id',
   skuId: 'skuId',
@@ -1096,6 +1167,15 @@ exports.Prisma.SkuAttributeAssignmentScalarFieldEnum = {
   assignedBy: 'assignedBy'
 };
 
+exports.Prisma.AttributeDerivationRuleScalarFieldEnum = {
+  sourceDimensionCode: 'sourceDimensionCode',
+  sourceValueCode: 'sourceValueCode',
+  targetDimensionCode: 'targetDimensionCode',
+  targetValueCode: 'targetValueCode',
+  updatedAt: 'updatedAt',
+  updatedBy: 'updatedBy'
+};
+
 exports.Prisma.EtlRunTableScalarFieldEnum = {
   id: 'id',
   runId: 'runId',
@@ -1363,6 +1443,128 @@ exports.Prisma.SalesHistoryTicketLineScalarFieldEnum = {
   returnCode: 'returnCode',
   salespersonCode: 'salespersonCode',
   createdAt: 'createdAt'
+};
+
+exports.Prisma.SalesHistoryTicketLegacyRawScalarFieldEnum = {
+  id: 'id',
+  source: 'source',
+  externalTransactionId: 'externalTransactionId',
+  ticketIdentityKey: 'ticketIdentityKey',
+  ticketId: 'ticketId',
+  userId: 'userId',
+  batchDate: 'batchDate',
+  useDate: 'useDate',
+  terminal: 'terminal',
+  store: 'store',
+  ticket: 'ticket',
+  realDate: 'realDate',
+  cashier: 'cashier',
+  transType: 'transType',
+  account: 'account',
+  tax01: 'tax01',
+  tax02: 'tax02',
+  tax03: 'tax03',
+  taxChange: 'taxChange',
+  othChg: 'othChg',
+  prevPaid: 'prevPaid',
+  comment: 'comment',
+  changeAmount: 'changeAmount',
+  altChange: 'altChange',
+  exchRate: 'exchRate',
+  discount: 'discount',
+  applyTo: 'applyTo',
+  applyTender: 'applyTender',
+  applyAmount: 'applyAmount',
+  shipState: 'shipState',
+  shipCounty: 'shipCounty',
+  shipCity: 'shipCity',
+  marketingCode: 'marketingCode',
+  voided: 'voided',
+  printed: 'printed',
+  posted: 'posted',
+  importedAt: 'importedAt'
+};
+
+exports.Prisma.SalesHistoryTicketLineLegacyRawScalarFieldEnum = {
+  id: 'id',
+  source: 'source',
+  sourceRowNumber: 'sourceRowNumber',
+  externalTransactionId: 'externalTransactionId',
+  ticketIdentityKey: 'ticketIdentityKey',
+  ticketId: 'ticketId',
+  userId: 'userId',
+  batchDate: 'batchDate',
+  useDate: 'useDate',
+  terminal: 'terminal',
+  store: 'store',
+  ticket: 'ticket',
+  realDate: 'realDate',
+  lineNo: 'lineNo',
+  sku: 'sku',
+  columnLabel: 'columnLabel',
+  rowLabel: 'rowLabel',
+  qty: 'qty',
+  price: 'price',
+  discPct: 'discPct',
+  discAmt: 'discAmt',
+  perks: 'perks',
+  salesperson: 'salesperson',
+  famMember: 'famMember',
+  prices01: 'prices01',
+  prices02: 'prices02',
+  prices03: 'prices03',
+  prices04: 'prices04',
+  ovsAmt: 'ovsAmt',
+  thisOvsAmt: 'thisOvsAmt',
+  category: 'category',
+  vendor: 'vendor',
+  realPrice: 'realPrice',
+  extension: 'extension',
+  origTicket: 'origTicket',
+  tax01: 'tax01',
+  tax02: 'tax02',
+  tax03: 'tax03',
+  taxamt01: 'taxamt01',
+  taxamt02: 'taxamt02',
+  taxamt03: 'taxamt03',
+  fbGen: 'fbGen',
+  dsShipCode: 'dsShipCode',
+  dsShipDesc: 'dsShipDesc',
+  dsDestCode: 'dsDestCode',
+  dsDyeCode: 'dsDyeCode',
+  dsShipChg: 'dsShipChg',
+  returnCode: 'returnCode',
+  giftCert: 'giftCert',
+  giftSeq: 'giftSeq',
+  giftAcct: 'giftAcct',
+  cost: 'cost',
+  comment: 'comment',
+  importedAt: 'importedAt'
+};
+
+exports.Prisma.SalesHistoryTicketTenderLegacyRawScalarFieldEnum = {
+  id: 'id',
+  source: 'source',
+  sourceRowNumber: 'sourceRowNumber',
+  externalTransactionId: 'externalTransactionId',
+  ticketIdentityKey: 'ticketIdentityKey',
+  ticketId: 'ticketId',
+  userId: 'userId',
+  batchDate: 'batchDate',
+  useDate: 'useDate',
+  terminal: 'terminal',
+  store: 'store',
+  ticket: 'ticket',
+  realDate: 'realDate',
+  tender: 'tender',
+  amount: 'amount',
+  altAmount: 'altAmount',
+  altCurrency: 'altCurrency',
+  exchRate: 'exchRate',
+  giftCert: 'giftCert',
+  giftSeq: 'giftSeq',
+  giftNew: 'giftNew',
+  importedAt: 'importedAt'
 };
 
 exports.Prisma.CustomerMetricsScalarFieldEnum = {
@@ -2011,6 +2213,7 @@ exports.Prisma.ModelName = {
   Order: 'Order',
   OrderLine: 'OrderLine',
   User: 'User',
+  Employee: 'Employee',
   Role: 'Role',
   Session: 'Session',
   EmployeeSalesPassword: 'EmployeeSalesPassword',
@@ -2046,6 +2249,10 @@ exports.Prisma.ModelName = {
   ProductFamily: 'ProductFamily',
   CategoryProductFamily: 'CategoryProductFamily',
   Sku: 'Sku',
+  MatchingSetType: 'MatchingSetType',
+  MatchingSetRole: 'MatchingSetRole',
+  MatchingSet: 'MatchingSet',
+  MatchingSetMember: 'MatchingSetMember',
   SkuActivity: 'SkuActivity',
   SkuSize: 'SkuSize',
   Inventory: 'Inventory',
@@ -2074,6 +2281,7 @@ exports.Prisma.ModelName = {
   AttributeFamilyRule: 'AttributeFamilyRule',
   AttributeValue: 'AttributeValue',
   SkuAttributeAssignment: 'SkuAttributeAssignment',
+  AttributeDerivationRule: 'AttributeDerivationRule',
   EtlRunTable: 'EtlRunTable',
   ReportTemplate: 'ReportTemplate',
   ReportRun: 'ReportRun',
@@ -2090,6 +2298,9 @@ exports.Prisma.ModelName = {
   CustomerTransactionItem: 'CustomerTransactionItem',
   SalesHistoryTicket: 'SalesHistoryTicket',
   SalesHistoryTicketLine: 'SalesHistoryTicketLine',
+  SalesHistoryTicketLegacyRaw: 'SalesHistoryTicketLegacyRaw',
+  SalesHistoryTicketLineLegacyRaw: 'SalesHistoryTicketLineLegacyRaw',
+  SalesHistoryTicketTenderLegacyRaw: 'SalesHistoryTicketTenderLegacyRaw',
   CustomerMetrics: 'CustomerMetrics',
   CustomerMetricsDaily: 'CustomerMetricsDaily',
   CustomerFeatureCurrent: 'CustomerFeatureCurrent',

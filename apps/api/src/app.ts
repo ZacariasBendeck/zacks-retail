@@ -49,6 +49,7 @@ import productsAttributesRoutes from './routes/products/attributesRoutes';
 import productsFamilyRoutes from './routes/products/familyRoutes';
 import productsCategoryRoutes from './routes/products/categoryRoutes';
 import productsSkuDraftRoutes from './routes/products/skuDraftRoutes';
+import productsMatchingSetRoutes from './routes/products/matchingSetRoutes';
 import utilitiesBatchRoutes from './routes/utilities/batchRoutes';
 import migrationDayRoutes from './routes/operations/migrationDayRoutes';
 import { createAuthRoutes } from './routes/authRoutes';
@@ -160,6 +161,7 @@ app.use('/api/v1/taxonomy', productsTaxonomyRoutes);
 app.use('/api/v1/products/vendors', productsVendorRoutes);
 app.use('/api/v1/products/families', productsFamilyRoutes);
 app.use('/api/v1/products/categories', productsCategoryRoutes); // all RICS categories joined with family
+app.use('/api/v1/products/matching-sets', productsMatchingSetRoutes);
 app.use('/api/v1/products/sku-drafts', productsSkuDraftRoutes); // lifecycle routes — must mount BEFORE /products/skus
 app.use('/api/v1/products/skus/lookup', productsSkuLookupRoutes); // criteria lookup — must mount BEFORE /products/skus
 app.use('/api/v1/products/skus/on-hand-totals', productsOnHandTotalsRoutes);

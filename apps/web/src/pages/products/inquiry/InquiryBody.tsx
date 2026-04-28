@@ -18,6 +18,7 @@ import { PosTab } from './tabs/PosTab';
 import { TrendTab } from './tabs/TrendTab';
 import AttributeBadgeStrip from '../../../components/products/AttributeBadgeStrip';
 import { SkuAiRecommendationModal } from './SkuAiRecommendationModal';
+import MatchingSetsCard from '../../../components/products/MatchingSetsCard';
 
 const GRID_TOTAL_MODES = new Set<ViewMode>(['ON_HAND', 'SHORT', 'MTD_SALES', 'STD_SALES', 'YTD_SALES', 'LY_SALES']);
 
@@ -223,6 +224,7 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
           </div>
           <HeaderCard inquiry={data} storeId={storeId} />
           <AttributeBadgeStrip skuCode={data.sku} mode="assigned" />
+          <MatchingSetsCard skuRef={data.sku} compact />
         </div>
 
         <div style={{ flex: '0 0 auto', display: 'flex', gap: 12, alignItems: 'flex-start' }}>
