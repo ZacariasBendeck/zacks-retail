@@ -1,97 +1,62 @@
 import { prisma } from '../../db/prisma';
 
-export type CustomerStoreChainKey =
-  | 'unlimited'
-  | 'magic_shoes'
-  | 'la_femme'
-  | 'online'
-  | 'other';
-
 export type CustomerStoreContext = {
   storeId: number;
   storeName: string;
   cityKey: string | null;
   cityLabel: string | null;
-  chainKey: CustomerStoreChainKey;
-  chainLabel: string;
-};
-
-const CHAIN_LABELS: Record<CustomerStoreChainKey, string> = {
-  unlimited: 'Unlimited',
-  magic_shoes: 'Magic Shoes',
-  la_femme: 'La Femme',
-  online: 'Online',
-  other: 'Other / Independent',
+  chainKey: string | null;
+  chainLabel: string | null;
 };
 
 export async function listCustomerStoreContexts(): Promise<CustomerStoreContext[]> {
-  const rows = await prisma.storeMaster.findMany({
-    select: {
-      number: true,
-      description: true,
-      city: true,
-    },
-    orderBy: { number: 'asc' },
-  });
+  const rows = await prisma.$queryRaw<Array<{
+    storeId: number;
+    storeName: string;
+    city: string | null;
+    chainKey: string | null;
+    chainLabel: string | null;
+  }>>`
+    SELECT
+      sm.number AS "storeId",
+      sm."desc" AS "storeName",
+      sm.city AS city,
+      sgm.group_code AS "chainKey",
+      sg.label AS "chainLabel"
+    FROM app.store_master sm
+    LEFT JOIN app.store_group_member sgm
+      ON sgm.store_number = sm.number
+    LEFT JOIN app.store_group sg
+      ON sg.code = sgm.group_code
+    ORDER BY sm.number ASC
+  `;
 
   return rows.map((row) => {
-    const storeName = row.description?.trim() || `Store ${row.number}`;
-    const chainKey = classifyRetailChain(storeName);
-    const cityLabel = normalizeStoreCity(row.city, chainKey);
+    const storeName = row.storeName?.trim() || `Store ${row.storeId}`;
+    const chainKey = cleanText(row.chainKey);
+    const chainLabel = cleanText(row.chainLabel);
+    const cityLabel = normalizeStoreCity(row.city);
 
     return {
-      storeId: row.number,
+      storeId: row.storeId,
       storeName,
       cityKey: cityLabel ? slugify(cityLabel) : null,
       cityLabel,
       chainKey,
-      chainLabel: CHAIN_LABELS[chainKey],
+      chainLabel,
     };
   });
 }
 
-export function parseRetailChainKey(value: string | undefined | null): CustomerStoreChainKey | undefined {
-  if (!value) return undefined;
-
-  const normalized = slugify(value);
-  switch (normalized) {
-    case 'unlimited':
-      return 'unlimited';
-    case 'magic-shoes':
-      return 'magic_shoes';
-    case 'la-femme':
-      return 'la_femme';
-    case 'online':
-      return 'online';
-    case 'other':
-    case 'other-independent':
-      return 'other';
-    default:
-      return undefined;
-  }
+export function parseRetailChainKey(value: string | undefined | null): string | undefined {
+  const normalized = cleanText(value);
+  return normalized ?? undefined;
 }
 
 export function matchesStoreCityFilter(context: CustomerStoreContext, value: string): boolean {
   if (!context.cityLabel || !context.cityKey) return false;
   const normalized = slugify(value);
   return normalized === context.cityKey || normalized === slugify(context.cityLabel);
-}
-
-export function classifyRetailChain(storeName: string): CustomerStoreChainKey {
-  const normalized = normalizeTokenString(storeName);
-  if (normalized.includes('VENTA EN LINEA') || normalized.includes('VENTAS EN LINEA')) {
-    return 'online';
-  }
-  if (normalized.includes('UNLIMITED')) {
-    return 'unlimited';
-  }
-  if (normalized.includes('MAGIC SHOES')) {
-    return 'magic_shoes';
-  }
-  if (normalized.includes('LA FEMME')) {
-    return 'la_femme';
-  }
-  return 'other';
 }
 
 export function slugify(value: string): string {
@@ -101,8 +66,7 @@ export function slugify(value: string): string {
     .replace(/^-+|-+$/g, '');
 }
 
-function normalizeStoreCity(value: string | null, chainKey: CustomerStoreChainKey): string | null {
-  if (chainKey === 'online') return 'Online';
+function normalizeStoreCity(value: string | null): string | null {
   if (!value || value.trim() === '') return null;
 
   const normalized = normalizeTokenString(value);
@@ -121,4 +85,9 @@ function normalizeTokenString(value: string): string {
     .toUpperCase()
     .replace(/[^A-Z0-9]+/g, ' ')
     .trim();
+}
+
+function cleanText(value: string | null | undefined): string | null {
+  const trimmed = value?.trim() ?? '';
+  return trimmed.length > 0 ? trimmed : null;
 }

@@ -269,15 +269,12 @@ export function ProductIdentitySection({
           <Row gutter={tokens.rowGutter}>
             <Col xs={24} sm={16}>
               <Form.Item
-                label="Estilo"
-                name="style"
-                rules={[
-                  { required: true, message: 'Estilo requerido' },
-                  { max: 17, message: 'Máximo 17 chars' },
-                ]}
+                label="Style/Color"
+                name="styleColor"
+                rules={[{ max: 30, message: 'Máximo 30 caracteres' }]}
                 style={{ marginBottom: 12 }}
               >
-                <Input placeholder="Estilo" maxLength={17} size="large" />
+                <Input placeholder="ej. SPAN/NEGR" maxLength={30} size="large" />
               </Form.Item>
             </Col>
             <Col xs={24} sm={8}>

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { useLocation, useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
 import { App, Form, Spin } from 'antd'
 import { useMutation } from '@tanstack/react-query'
 import {
@@ -56,6 +56,8 @@ import { AdvancedSection } from './sku-form-modern/AdvancedSection'
 import { AiAnalysisPanel } from './sku-form-modern/AiAnalysisPanel'
 
 const DEPARTMENTS: Department[] = ALLOWED_DEPARTMENTS
+const SKU_ROOT_PATH = '/products/skus'
+const NEW_SKU_PATH = `${SKU_ROOT_PATH}/new`
 
 type SkuFormValues = SkuCreatePayload & {
   styleColorId?: string | null
@@ -102,7 +104,7 @@ const DIMENSIONAL_FORM_FIELDS = new Set(DIMENSIONAL_ATTR_MAP.map((m) => m.formFi
 
 /** Column fields known to app.sku. Everything else on the form goes into legacy_attrs. */
 const APP_SKU_COLUMN_KEYS = new Set<string>([
-  'vendorId', 'vendorSku', 'style', 'season', 'styleColorId',
+  'vendorId', 'vendorSku', 'styleColor', 'season', 'styleColorId',
   'listPrice', 'markDownPrice1', 'markDownPrice2', 'perks', 'discountCode',
   'sizeType', 'location', 'groupCode', 'pictureFileName', 'coupon',
   'currentPriceSlot', 'manufacturer', 'orderMultiple', 'orderUom',
@@ -121,7 +123,8 @@ function lifecycleToLegacySku(r: SkuLifecycleRow): import('../../types/sku').Sku
   return {
     skuCode: r.code ?? r.provisionalCode,
     id: r.id,
-    style: r.style ?? '',
+    style: '',
+    styleColor: r.styleColor ?? null,
     price: r.retailPrice ?? 0,
     cost: r.currentCost ?? null,
     listPrice: r.listPrice ?? null,
@@ -165,7 +168,7 @@ function lifecycleToLegacySku(r: SkuLifecycleRow): import('../../types/sku').Sku
     accessoryId: asNum('accessoryId'),
     seasonId: asNum('seasonId'),
     labelTypeId: asNum('labelTypeId'),
-    styleColor: null,
+    styleColorLink: null,
   } as unknown as import('../../types/sku').Sku
 }
 
@@ -205,7 +208,7 @@ function splitFormValuesForLifecycle(
   return {
     vendorId: (values.vendorId as string | null | undefined) ?? null,
     vendorSku: strOrNull(values.vendorSku),
-    style: strOrNull(values.style),
+    styleColor: strOrNull(values.styleColor),
     season: strOrNull(values.season),
     descriptionRics: strOrNull(values.ricsDescription),
     descriptionWeb: strOrNull(values.webDescription),
@@ -240,11 +243,8 @@ function inferImageMimeType(fileName: string): string {
 export default function SkuFormPageModern() {
   const { skuId } = useParams<{ skuId: string }>()
   const navigate = useNavigate()
-  const location = useLocation()
   const { message } = App.useApp()
   const [form] = Form.useForm()
-
-  const skuRootPath = location.pathname.startsWith('/products/') ? '/products/skus' : '/inventory/skus'
 
   const isRouteEdit = !!skuId
   const { data: lifecycleSku, isLoading: skuLoading } = useSkuDraft(skuId)
@@ -295,6 +295,8 @@ export default function SkuFormPageModern() {
   const [derivedDepartmentLabel, setDerivedDepartmentLabel] = useState<string | null>(null)
   const [vendorLookupOpen, setVendorLookupOpen] = useState(false)
   const [skuLookupOpen, setSkuLookupOpen] = useState(false)
+  const watchedVendorId = Form.useWatch('vendorId', form)
+  const watchedSkuCode = Form.useWatch('skuCode', form) as string | undefined
   const [matchedSku, setMatchedSku] = useState<import('../../types/sku').Sku | null>(null)
   const isEdit = isRouteEdit || !!matchedSku
   const preserveCategoryOnAiFill = !!matchedSku || (!!lifecycleSku && lifecycleSku.code != null)
@@ -308,7 +310,6 @@ export default function SkuFormPageModern() {
 
   const watchedDepartment = Form.useWatch('department', form) as Department | undefined
   const watchedColorId = Form.useWatch('colorId', form) as number | undefined
-  const watchedSkuCode = Form.useWatch('skuCode', form) as string | undefined
 
   const styleColorFilters = useMemo(
     () => ({
@@ -464,7 +465,6 @@ export default function SkuFormPageModern() {
     const styleColor = styleColorMap.get(styleColorId)
     if (!styleColor) return
     const nextValues: Partial<SkuFormValues> = {
-      style: styleColor.style,
       colorId: styleColor.colorId,
       categoryId: styleColor.categoryId,
       department: styleColor.department,
@@ -554,9 +554,19 @@ export default function SkuFormPageModern() {
     const legacyGenderId = (s as import('../../types/sku').Sku & { genderId?: number | null }).genderId
     form.setFieldsValue({
       skuCode: s.skuCode,
-      style: s.style,
+      styleColor: s.styleColor ?? null,
       price: s.price,
       cost: s.cost,
+      listPrice: s.listPrice,
+      markDownPrice1: s.markDownPrice1,
+      markDownPrice2: s.markDownPrice2,
+      perks: s.perks,
+      discountCode: s.discountCode,
+      sizeType: s.sizeType,
+      groupCode: s.groupCode,
+      location: s.location,
+      pictureFileName: s.pictureFileName,
+      coupon: s.coupon,
       categoryId: s.categoryId,
       department: s.department,
       vendorId: s.vendorId,
@@ -587,7 +597,7 @@ export default function SkuFormPageModern() {
       accessoryId: s.accessoryId,
       seasonId: s.seasonId,
       labelTypeId: s.labelTypeId,
-      styleColorId: s.styleColor?.styleColorId ?? null,
+      styleColorId: s.styleColorLink?.styleColorId ?? null,
     })
   }, [form])
 
@@ -846,12 +856,12 @@ export default function SkuFormPageModern() {
       const openNextSku = async (currentCode: string, fallbackId?: string) => {
         const nextSku = await fetchNextSkuDraftByCode(currentCode)
         if (nextSku) {
-          navigate(`${skuRootPath}/${nextSku.id}/edit`)
+          navigate(`${SKU_ROOT_PATH}/${nextSku.id}/edit`)
           return true
         }
         message.info(`No hay un SKU posterior a ${currentCode}.`)
         if (fallbackId) {
-          navigate(`${skuRootPath}/${fallbackId}/edit`)
+          navigate(`${SKU_ROOT_PATH}/${fallbackId}/edit`)
         }
         return false
       }
@@ -867,12 +877,12 @@ export default function SkuFormPageModern() {
           })
           message.success(`SKU finalizado: ${finalCode}`)
         } else {
-          message.success('Borrador guardado')
+          message.success(`SKU actualizado: ${skuKey ?? editId}`)
         }
         if (createAnother) {
           resetPostSave()
           // If we came from the "existing SKU lookup" branch, navigate back to create.
-          if (!isRouteEdit) navigate(`${skuRootPath}/new-modern`)
+          if (!isRouteEdit) navigate(NEW_SKU_PATH)
           return
         }
         if (goToNext) {
@@ -901,7 +911,7 @@ export default function SkuFormPageModern() {
             await openNextSku(finalCode, created.id)
             return
           }
-          navigate(`${skuRootPath}/${created.id}/edit`)
+          navigate(`${SKU_ROOT_PATH}/${created.id}/edit`)
           return
         }
         message.success(`Borrador creado: ${created.provisionalCode}`)
@@ -912,7 +922,7 @@ export default function SkuFormPageModern() {
         if (goToNext) {
           message.info('Save & Next requiere un codigo SKU final para ubicar el siguiente.')
         }
-        navigate(`${skuRootPath}/${created.id}/edit`)
+        navigate(`${SKU_ROOT_PATH}/${created.id}/edit`)
         return
       }
     } catch (err) {
@@ -1053,7 +1063,7 @@ export default function SkuFormPageModern() {
         matchedSku={matchedSku}
         isSaving={isSaving}
         isFinalizing={finalizeMutation.isPending}
-        onCancel={() => navigate(skuRootPath)}
+        onCancel={() => navigate(NEW_SKU_PATH)}
         onSave={handleSaveClick}
         onSaveAndNext={handleSaveAndNextClick}
         onSaveAndNew={handleSaveAndNewClick}
@@ -1075,7 +1085,7 @@ export default function SkuFormPageModern() {
           onSelect={(picked) => {
             form.setFieldsValue({ vendorId: picked.code })
           }}
-          initialQuery={(form.getFieldValue('vendorId') as string | undefined) ?? ''}
+          initialQuery={watchedVendorId ?? ''}
         />
 
         <SkuLookup
@@ -1091,7 +1101,7 @@ export default function SkuFormPageModern() {
             setSkuLookupOpen(false)
             void handleSkuCodeLookup(typedSkuCode)
           }}
-          initialQuery={(form.getFieldValue('skuCode') as string | undefined) ?? ''}
+          initialQuery={watchedSkuCode ?? ''}
         />
 
         <SkuCodeStrip

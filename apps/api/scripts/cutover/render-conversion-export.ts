@@ -1,16 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import {
-  extractRicsArtifact,
-  formatArtifactScopeSummary,
-} from '../../src/services/sync/ricsArtifact';
 
 const API_DIR = path.resolve(__dirname, '../..');
 const DEFAULT_OUT_DIR = path.resolve(API_DIR, '.tmp', 'render-conversion-bundle');
 
 interface Args {
   outDir: string;
+  mdbDir: string | null;
   scope: string | null;
   includeTables: string[];
   withSeedAssignments: boolean;
@@ -40,6 +37,7 @@ interface BundleManifest {
 function parseArgs(): Args {
   const args: Args = {
     outDir: DEFAULT_OUT_DIR,
+    mdbDir: null,
     scope: 'all-canonical',
     includeTables: [],
     withSeedAssignments: false,
@@ -57,6 +55,9 @@ function parseArgs(): Args {
         break;
       case '--out':
         args.outDir = path.resolve(String(argv[++i] ?? ''));
+        break;
+      case '--mdb-dir':
+        args.mdbDir = path.resolve(String(argv[++i] ?? ''));
         break;
       case '--scope':
         args.scope = String(argv[++i] ?? '').trim() || null;
@@ -106,6 +107,7 @@ function printHelpAndExit(code: number): never {
       '',
       'Options:',
       `  --out <dir>                 Bundle output directory (default ${DEFAULT_OUT_DIR})`,
+      '  --mdb-dir <dir>             RICS MDB source folder (sets RICS_DB_DIR for this export)',
       '  --scope <name>              Artifact scope (default all-canonical)',
       '  --include <a,b,c>           Extra canonical target tables to include',
       '  --with-seed-assignments     Include seed:* attribute assignments in snapshot',
@@ -183,6 +185,14 @@ function copyIfPresent(
 
 async function main(): Promise<void> {
   const args = parseArgs();
+  if (args.mdbDir) {
+    process.env.RICS_DB_DIR = args.mdbDir;
+  }
+  const {
+    extractRicsArtifact,
+    formatArtifactScopeSummary,
+  } = await import('../../src/services/sync/ricsArtifact');
+
   const started = Date.now();
   const bundleDir = path.resolve(args.outDir);
   const legacyDir = path.join(bundleDir, 'legacy');
@@ -196,6 +206,7 @@ async function main(): Promise<void> {
   console.log('========================================');
   console.log('  cutover:render-export');
   console.log('========================================');
+  console.log(`mdb dir : ${process.env.RICS_DB_DIR ?? '<default>'}`);
   console.log(`bundle  : ${bundleDir}`);
   console.log(`scope   : ${formatArtifactScopeSummary(args.scope)}`);
   if (args.includeTables.length > 0) {

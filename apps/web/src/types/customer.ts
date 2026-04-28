@@ -109,3 +109,23 @@ export interface CustomerBalances {
   storeCreditCents: number
   storeCreditAsOf: string | null
 }
+
+export interface CustomerTicketHistoryEntry {
+  id: string
+  externalTransactionId: string | null
+  ticketNumber: number | null
+  purchasedAt: string
+  storeId: number | null
+  storeName: string | null
+  channel: string
+  status: string
+  transactionKind: string
+  lineCount: number
+  quantity: number
+  vendorSummary: string | null
+  categorySummary: string | null
+  totalAmountCents: number
+  netAmountCents: number
+  discountAmountCents: number
+  grossProfitPct: number | null
+}

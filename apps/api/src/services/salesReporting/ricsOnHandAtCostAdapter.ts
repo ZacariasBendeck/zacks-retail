@@ -1,15 +1,16 @@
 /**
  * On-hand-at-cost aggregator for Sales Analysis ROI/Turns columns.
  *
- * Joins RIINVQUA (OnHand per SKU×Store, wide-column OnHand_01..18 summed
- * into TotalOnHand) with RIINVMAS (Category, Vendor, CurrentCost) and groups
- * the resulting (OnHand × CurrentCost) by whatever dimension the sales
- * summary is grouping at. Result is a Map keyed by the dimensionKey (or
+ * Joins the app-owned inventory snapshot (on-hand units per SKU x Store) with
+ * app.sku (Category, Vendor, CurrentCost) and groups the resulting
+ * (OnHand x CurrentCost) by whatever dimension the sales summary is grouping
+ * at. Result is a Map keyed by the dimensionKey (or
  * `${dimensionKey}|${storeNumber}` when per-store).
  *
- * Phase 1: live read from the RICS MDBs. RIINVMAS-join-only dimensions
- * (GROUP / SEASON / STYLE_COLOR / SECTOR summary) return an empty map; the
- * sales facade renders null for ROI/Turns on those reports until Phase 2.5.
+ * RIINVMAS-join-only dimensions
+ * not yet implemented here return an empty map; the
+ * sales facade renders null for ROI/Turns on those reports until implemented
+ * against owned Postgres dimensions.
  */
 
 import { prisma } from '../../db/prisma';
@@ -24,16 +25,9 @@ import type {
   SalesAnalysisStoreOption,
 } from './types';
 
-/** 18-column ON-HAND sum, Postgres syntax against rics_mirror.inventory_quantities. */
-const ON_HAND_SUM_SQL = Array.from({ length: 18 }, (_, i) =>
-  `COALESCE(on_hand_${String(i + 1).padStart(2, '0')}, 0)`,
-).join(' + ');
-
-// The RIINVQUA GROUP BY aggregation and the RIINVMAS lite pull are both
-// expensive over OLEDB (tens of thousands of rows × wide-column sums).
-// Cache them independently of the report-specific criteria — callers apply
-// criteria in-memory after the raw data lands. Five-minute TTL is tight
-// enough that stock movements show up within one coffee break.
+// Cache the app-owned snapshot independently of the report-specific criteria;
+// callers apply criteria in-memory after the raw data lands. Five-minute TTL is
+// tight enough that stock movements show up within one coffee break.
 const CACHE_TTL_MS = 5 * 60 * 1000;
 interface CacheEntry<T> {
   value: T;
@@ -52,50 +46,35 @@ export function clearOnHandCache(): void {
   cache.clear();
 }
 
-const MASTER_JOIN_ONLY = new Set<SalesAnalysisReportType>([
-  'GROUP_SUMMARY',
-  'SEASON_SUMMARY',
-  'STYLE_COLOR_SUMMARY',
-  'SECTOR_SUMMARY',
-]);
-
-interface QuaRow {
+interface OnHandSnapshotRow {
   SKU: string | null;
   Store: number | null;
   TotalOnHand: number | null;
-}
-
-interface MasterRow {
-  SKU: string | null;
   Category: number | null;
   Vendor: string | null;
   Season: string | null;
+  GroupCode: string | null;
+  StyleColor: string | null;
   CurrentCost: number | null;
 }
 
-async function loadQuaAggregate(): Promise<QuaRow[]> {
-  return cached('onhand:qua', () =>
-    prisma.$queryRawUnsafe<QuaRow[]>(`
-      SELECT sku AS "SKU",
-             store AS "Store",
-             SUM(${ON_HAND_SUM_SQL})::int AS "TotalOnHand"
-        FROM rics_mirror.inventory_quantities
-       GROUP BY sku, store
-      HAVING SUM(${ON_HAND_SUM_SQL}) > 0
-    `),
-  );
-}
-
-async function loadMasterSnapshot(): Promise<MasterRow[]> {
-  return cached('onhand:master', () =>
-    prisma.$queryRawUnsafe<MasterRow[]>(`
-      SELECT sku AS "SKU",
-             category AS "Category",
-             vendor AS "Vendor",
-             season AS "Season",
-             current_cost::float8 AS "CurrentCost"
-        FROM rics_mirror.inventory_master
-       WHERE status IS NULL OR status <> 'D'
+async function loadOnHandSnapshot(): Promise<OnHandSnapshotRow[]> {
+  return cached('onhand:app-snapshot', () =>
+    prisma.$queryRawUnsafe<OnHandSnapshotRow[]>(`
+      SELECT h.sku_code AS "SKU",
+             h.store_id AS "Store",
+             h.on_hand::int AS "TotalOnHand",
+             s.category_number AS "Category",
+             s.vendor_id AS "Vendor",
+             s.season AS "Season",
+             s.group_code AS "GroupCode",
+             s.style_color AS "StyleColor",
+             COALESCE(s.current_cost, h.average_cost)::float8 AS "CurrentCost"
+        FROM app.inventory_history_snapshot h
+        LEFT JOIN app.sku s
+          ON s.id = h.sku_id
+       WHERE h.on_hand > 0
+         AND COALESCE(s.rics_status, '') <> 'D'
     `),
   );
 }
@@ -143,44 +122,32 @@ export async function getOnHandAtCostByDimension(params: {
   storeOption: SalesAnalysisStoreOption;
   criteria: SalesAnalysisCriteria;
 }): Promise<Map<string, number>> {
-  if (MASTER_JOIN_ONLY.has(params.reportType)) {
-    return new Map();
-  }
-
-  const qua = await loadQuaAggregate();
-  const masters = await loadMasterSnapshot();
+  const rows = await loadOnHandSnapshot();
 
   const categoryExpr = parseCriteria(params.criteria.categoriesRaw);
   const vendorExpr = parseCriteria(params.criteria.vendorsRaw);
   const skuExpr = parseCriteria(params.criteria.skusRaw);
   const storeExpr = parseCriteria(params.criteria.storesRaw);
 
-  const masterBySku = new Map<string, MasterRow>();
-  for (const m of masters) {
-    if (!m.SKU) continue;
-    if (!facetKeeps(params.criteria.categories, categoryExpr, m.Category ?? null)) continue;
-    if (!facetKeeps(params.criteria.vendors, vendorExpr, m.Vendor?.trim() ?? null)) continue;
-    if (!facetKeeps(params.criteria.skus, skuExpr, m.SKU.trim())) continue;
-    masterBySku.set(m.SKU.trim(), m);
-  }
-
   const combine = params.storeOption === 'COMBINE';
   const out = new Map<string, number>();
 
-  for (const q of qua) {
-    const sku = q.SKU?.trim();
+  for (const row of rows) {
+    const sku = row.SKU?.trim();
     if (!sku) continue;
-    const m = masterBySku.get(sku);
-    if (!m) continue;
-    const store = Number(q.Store ?? 0);
+    if (!facetKeeps(params.criteria.categories, categoryExpr, row.Category ?? null)) continue;
+    if (!facetKeeps(params.criteria.vendors, vendorExpr, row.Vendor?.trim() ?? null)) continue;
+    if (!facetKeeps(params.criteria.skus, skuExpr, sku)) continue;
+
+    const store = Number(row.Store ?? 0);
     if (!facetKeeps(params.criteria.stores, storeExpr, store)) continue;
 
-    const onHand = Number(q.TotalOnHand ?? 0);
-    const cost = Number(m.CurrentCost ?? 0);
+    const onHand = Number(row.TotalOnHand ?? 0);
+    const cost = Number(row.CurrentCost ?? 0);
     if (onHand <= 0 || cost <= 0) continue;
     const value = onHand * cost;
 
-    const dimKey = dimensionKeyFor(params.reportType, sku, m);
+    const dimKey = dimensionKeyFor(params.reportType, sku, row);
     if (!dimKey) continue;
     const key = combine ? dimKey : `${dimKey}|${store}`;
     out.set(key, (out.get(key) ?? 0) + value);
@@ -191,7 +158,7 @@ export async function getOnHandAtCostByDimension(params: {
 
 // ─────────────────────────── units-by-SKU export (purchase-planning) ──────
 //
-// Returns a pre-joined flat list of per-(SKU × Store) on-hand units together
+// Returns a pre-joined flat list of per-(SKU x Store) on-hand units together
 // with the master fields needed to bucket the rows at a caller-defined
 // dimension (department / category / vendor / etc).
 //
@@ -205,7 +172,7 @@ export async function getOnHandAtCostByDimension(params: {
 // Each row:
 //   - `sku`, `store`, `onHand` (units, already summed across the 18 size
 //     segments; zero-on-hand rows are dropped by the underlying query)
-//   - `category`, `vendor`, `currentCost` (from InventoryMaster; only rows
+//   - `category`, `vendor`, `currentCost` (from app.sku; only rows
 //     with non-deleted Status are included)
 //
 // Rows with no master match (orphan QUA rows) are excluded.
@@ -222,36 +189,27 @@ export interface OnHandUnitsRow {
 export async function getOnHandSkuRows(params: {
   storeNumbers?: number[];
 } = {}): Promise<OnHandUnitsRow[]> {
-  const qua = await loadQuaAggregate();
-  const masters = await loadMasterSnapshot();
-
-  const masterBySku = new Map<string, MasterRow>();
-  for (const m of masters) {
-    if (!m.SKU) continue;
-    masterBySku.set(m.SKU.trim(), m);
-  }
+  const rows = await loadOnHandSnapshot();
 
   const storeFilter = params.storeNumbers && params.storeNumbers.length > 0
     ? new Set(params.storeNumbers.map((n) => Number(n)))
     : null;
 
   const out: OnHandUnitsRow[] = [];
-  for (const q of qua) {
-    const sku = q.SKU?.trim();
+  for (const row of rows) {
+    const sku = row.SKU?.trim();
     if (!sku) continue;
-    const store = Number(q.Store ?? 0);
+    const store = Number(row.Store ?? 0);
     if (storeFilter && !storeFilter.has(store)) continue;
-    const m = masterBySku.get(sku);
-    if (!m) continue;
-    const onHand = Number(q.TotalOnHand ?? 0);
+    const onHand = Number(row.TotalOnHand ?? 0);
     if (onHand <= 0) continue;
     out.push({
       sku,
       store,
       onHand,
-      category: m.Category != null ? Number(m.Category) : null,
-      vendor: m.Vendor?.trim() || null,
-      currentCost: Number(m.CurrentCost ?? 0),
+      category: row.Category != null ? Number(row.Category) : null,
+      vendor: row.Vendor?.trim() || null,
+      currentCost: Number(row.CurrentCost ?? 0),
     });
   }
   return out;
@@ -260,20 +218,31 @@ export async function getOnHandSkuRows(params: {
 function dimensionKeyFor(
   reportType: SalesAnalysisReportType,
   sku: string,
-  m: MasterRow,
+  row: OnHandSnapshotRow,
 ): string | null {
   switch (reportType) {
     case 'SKU_DETAIL':
       return sku;
     case 'CATEGORY_SUMMARY':
-      return m.Category != null ? String(m.Category) : null;
+      return row.Category != null ? String(row.Category) : null;
     case 'VENDOR_SUMMARY':
-      return m.Vendor?.trim() || null;
+      return row.Vendor?.trim() || null;
     case 'DEPT_SUMMARY':
       // Department requires the RIDEPT map; resolution is deferred to the
       // facade. Key by `CAT:<cat>` so the caller re-buckets via its existing
       // deptNumberForCategory helper.
-      return m.Category != null ? `CAT:${m.Category}` : null;
+      return row.Category != null ? `CAT:${row.Category}` : null;
+    case 'SECTOR_SUMMARY':
+      // Sector also resolves through category -> department -> sector in the
+      // facade. Return category keys so that code can re-bucket once it has
+      // the taxonomy maps.
+      return row.Category != null ? `CAT:${row.Category}` : null;
+    case 'SEASON_SUMMARY':
+      return row.Season?.trim() || null;
+    case 'GROUP_SUMMARY':
+      return row.GroupCode?.trim() || null;
+    case 'STYLE_COLOR_SUMMARY':
+      return row.StyleColor?.trim() || null;
     case 'PRICE_POINT_SUMMARY':
       // Price-point bucketing requires RetailPrice + the sales-side bucket list.
       // Key by `PP:<sku>` so the facade can re-aggregate. (When the facade

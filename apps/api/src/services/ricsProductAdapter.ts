@@ -1493,9 +1493,69 @@ export interface SkuLookupParams {
 }
 
 export interface SkuLookupFacets {
-  seasons: string[];
+  seasons: Array<{ code: string; name: string | null; label: string }>;
   vendors: Array<{ code: string; label: string }>;
   departments: Array<{ number: number; name: string }>;
+}
+
+export interface SkuLookupFacetParams {
+  season?: string;
+  vendor?: string;
+  department?: number;
+}
+
+type SkuLookupFacetKey = keyof SkuLookupFacetParams;
+
+async function loadSeasonDescriptionMap(): Promise<Map<string, string>> {
+  return cachedAsync('season-description-map', 5 * 60_000, async () => {
+    try {
+      const rows = await prisma.seasonOverlay.findMany({
+        select: { code: true, description: true },
+      });
+      const map = new Map<string, string>();
+      for (const row of rows) {
+        const code = row.code?.trim().toUpperCase();
+        const description = row.description?.trim();
+        if (code && description) map.set(code, description);
+      }
+      return map;
+    } catch {
+      return new Map<string, string>();
+    }
+  });
+}
+
+function findDepartmentForCategory(
+  category: number | null | undefined,
+  departments: DepartmentRow[],
+): DepartmentRow | null {
+  const cat = Number(category ?? 0);
+  if (!Number.isFinite(cat) || cat <= 0) return null;
+  return departments.find((d) => cat >= d.begCateg && cat <= d.endCateg) ?? null;
+}
+
+function skuLookupRowMatchesFacetFilters(
+  row: SkuLookupIndexRow,
+  filters: SkuLookupFacetParams,
+  departments: DepartmentRow[],
+  except?: SkuLookupFacetKey,
+): boolean {
+  const seasonFilter = filters.season?.trim().toUpperCase();
+  if (except !== 'season' && seasonFilter && String(row.Season ?? '').trim().toUpperCase() !== seasonFilter) {
+    return false;
+  }
+
+  const vendorFilter = filters.vendor?.trim().toUpperCase();
+  if (except !== 'vendor' && vendorFilter && String(row.Vendor ?? '').trim().toUpperCase() !== vendorFilter) {
+    return false;
+  }
+
+  if (except !== 'department' && filters.department != null) {
+    const dept = findDepartmentForCategory(row.Category, departments);
+    if (!dept || dept.number !== filters.department) return false;
+  }
+
+  return true;
 }
 
 /**
@@ -1503,24 +1563,28 @@ export interface SkuLookupFacets {
  * drives the three filter dropdowns on the SKU Lookup modal. Built from the
  * same warmed index `searchSkusForLookup` uses, so it stays consistent.
  */
-export async function getSkuLookupFacets(): Promise<SkuLookupFacets> {
-  const [{ rows: index }, vendorMap, departments] = await Promise.all([
+export async function getSkuLookupFacets(filters: SkuLookupFacetParams = {}): Promise<SkuLookupFacets> {
+  const [{ rows: index }, vendorMap, departments, seasonDescriptionMap] = await Promise.all([
     loadSkuLookupIndex(),
     loadVendorMap(),
     loadDepartmentList(),
+    loadSeasonDescriptionMap(),
   ]);
 
   const seasons = new Set<string>();
   const vendorCodes = new Set<string>();
   const departmentNumbers = new Set<number>();
   for (const r of index) {
-    const s = r.Season?.trim();
-    if (s) seasons.add(s);
-    const v = r.Vendor?.trim();
-    if (v) vendorCodes.add(v);
-    const cat = Number(r.Category ?? 0);
-    if (cat > 0) {
-      const dept = departments.find((d) => cat >= d.begCateg && cat <= d.endCateg);
+    if (skuLookupRowMatchesFacetFilters(r, filters, departments, 'season')) {
+      const s = r.Season?.trim();
+      if (s) seasons.add(s);
+    }
+    if (skuLookupRowMatchesFacetFilters(r, filters, departments, 'vendor')) {
+      const v = r.Vendor?.trim();
+      if (v) vendorCodes.add(v);
+    }
+    if (skuLookupRowMatchesFacetFilters(r, filters, departments, 'department')) {
+      const dept = findDepartmentForCategory(r.Category, departments);
       if (dept) departmentNumbers.add(dept.number);
     }
   }
@@ -1539,7 +1603,12 @@ export async function getSkuLookupFacets(): Promise<SkuLookupFacets> {
     .map((d) => ({ number: d.number, name: d.name || `Dept ${d.number}` }));
 
   return {
-    seasons: Array.from(seasons).sort(),
+    seasons: Array.from(seasons)
+      .sort()
+      .map((code) => {
+        const name = seasonDescriptionMap.get(code.toUpperCase()) ?? null;
+        return { code, name, label: name ? `${code} - ${name}` : code };
+      }),
     vendors,
     departments: departmentsOut,
   };

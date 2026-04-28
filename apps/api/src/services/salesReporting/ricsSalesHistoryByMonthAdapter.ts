@@ -47,6 +47,8 @@ export interface MonthlyMeasuresRow {
   categoryKey: string | null;
   /** For `detailLevel='sku'` only — the parent vendor code (if known). */
   vendorKey: string | null;
+  /** For `detailLevel='sku'` only — the SKU image filename from app.sku. */
+  pictureFileName?: string | null;
   /** Units sold from InvHis monthly counters. */
   quantity: number;
   /** Net Sales = SUM(Extension). */
@@ -63,6 +65,7 @@ export interface QueryMonthlyMeasuresParams {
   toYearMonth: string;
   sortBy: MonthlyNetSalesSortBy;
   detailLevel: MonthlyDetailLevel;
+  combineStores?: boolean;
   /** Optional narrow SKU list — pushed into SQL as `d.SKU IN (…)`. */
   skuFilter?: string[];
   /** Optional narrow vendor list — pushed into SQL as `d.Vendor IN (…)`. */
@@ -218,6 +221,7 @@ interface RawMonthlyRow {
   DimKey: string | null;
   Vendor: string | null;
   Category: number | null;
+  PictureFileName: string | null;
   Qty: number | null;
   NetSales: number | null;
   CostTotal: number | null;
@@ -258,6 +262,7 @@ export async function queryMonthlyMeasures(
 
   const startIso = params.fromYearMonth;
   const endExclusiveIso = params.toYearMonth;
+  const storeExpr = params.combineStores ? `0` : `src.store_id`;
 
   // Pick the grouping dim. The CTE normalizes SKU/vendor/category once so
   // grouping and filter expressions stay compact.
@@ -283,6 +288,7 @@ export async function queryMonthlyMeasures(
     `src.year_month >= $1::text`,
     `src.year_month <= $2::text`,
     `src.store_id = ANY($3::int[])`,
+    `(src.qty_sales <> 0 OR src.net_sales <> 0 OR src.profit <> 0)`,
   ];
   if (params.skuFilter && params.skuFilter.length > 0) {
     sqlParams.push(params.skuFilter.map((s) => s.trim().toUpperCase()).filter(Boolean));
@@ -304,6 +310,7 @@ WITH src AS (
     UPPER(BTRIM(s.sku_code)) AS sku,
     COALESCE(NULLIF(BTRIM(k.vendor_id), ''), '(none)') AS vendor,
     COALESCE(k.category_number, 0) AS category,
+    NULLIF(BTRIM(k.picture_file_name), '') AS picture_file_name,
     m.year_month,
     COALESCE(m.qty_sales, 0)::float8 AS qty_sales,
     COALESCE(m.net_sales, 0)::float8 AS net_sales,
@@ -313,6 +320,14 @@ WITH src AS (
     ON m.snapshot_id = s.id
   LEFT JOIN app.sku k
     ON k.id = s.sku_id
+  WHERE m.year_month >= $1::text
+    AND m.year_month <= $2::text
+    AND s.store_id = ANY($3::int[])
+    AND (
+      m.qty_sales <> 0 OR
+      COALESCE(m.net_sales, 0) <> 0 OR
+      COALESCE(m.profit, 0) <> 0
+    )
 
   UNION ALL
 
@@ -321,6 +336,7 @@ WITH src AS (
     UPPER(BTRIM(s.sku_code)) AS sku,
     COALESCE(NULLIF(BTRIM(k.vendor_id), ''), '(none)') AS vendor,
     COALESCE(k.category_number, 0) AS category,
+    NULLIF(BTRIM(k.picture_file_name), '') AS picture_file_name,
     to_char(s.snapshot_as_of, 'YYYY-MM') AS year_month,
     COALESCE(s.month_qty_sales, 0)::float8 AS qty_sales,
     COALESCE(s.month_dol_sales, 0)::float8 AS net_sales,
@@ -328,26 +344,35 @@ WITH src AS (
   FROM app.inventory_history_snapshot s
   LEFT JOIN app.sku k
     ON k.id = s.sku_id
-  WHERE COALESCE(s.month_qty_sales, 0) <> 0
-     OR COALESCE(s.month_dol_sales, 0) <> 0
-     OR COALESCE(s.month_profit, 0) <> 0
+  WHERE (
+      COALESCE(s.month_qty_sales, 0) <> 0 OR
+      COALESCE(s.month_dol_sales, 0) <> 0 OR
+      COALESCE(s.month_profit, 0) <> 0
+    )
+    AND to_char(s.snapshot_as_of, 'YYYY-MM') >= $1::text
+    AND to_char(s.snapshot_as_of, 'YYYY-MM') <= $2::text
+    AND s.store_id = ANY($3::int[])
 )
 SELECT
-  src.store_id AS "StoreNumber",
+  ${storeExpr} AS "StoreNumber",
   substring(src.year_month from 1 for 4)::int AS "Y",
   substring(src.year_month from 6 for 2)::int AS "M",
   ${dimExpr} AS "DimKey",
-  src.vendor AS "Vendor",
-  src.category AS "Category",
+  MIN(src.vendor) AS "Vendor",
+  MIN(src.category) AS "Category",
+  MIN(src.picture_file_name) AS "PictureFileName",
   SUM(src.qty_sales)::int AS "Qty",
   SUM(src.net_sales)::float8 AS "NetSales",
   SUM(src.net_sales - src.profit)::float8 AS "CostTotal"
 FROM src
 WHERE
   ${wheres.join(' AND ')}
-GROUP BY 1, 2, 3, 4, 5, 6`;
+GROUP BY 1, 2, 3, 4`;
 
-  const raw = await prisma.$queryRawUnsafe<RawMonthlyRow[]>(sql, ...sqlParams);
+  const [, raw] = await prisma.$transaction([
+    prisma.$executeRawUnsafe(`SET LOCAL max_parallel_workers_per_gather = 0`),
+    prisma.$queryRawUnsafe<RawMonthlyRow[]>(sql, ...sqlParams),
+  ]);
 
   const categoryLabels =
     params.sortBy === 'category' || params.detailLevel === 'department'
@@ -386,6 +411,7 @@ GROUP BY 1, 2, 3, 4, 5, 6`;
       dimLabel,
       categoryKey: r.Category == null ? null : String(Number(r.Category)),
       vendorKey: r.Vendor == null ? null : String(r.Vendor).trim() || null,
+      pictureFileName: r.PictureFileName?.trim() || null,
       quantity: Number(r.Qty ?? 0),
       netSales: Number(r.NetSales ?? 0),
       cogs: Number(r.CostTotal ?? 0),
@@ -496,6 +522,22 @@ export interface QueryMonthlyInventoryHistoryParams {
   nonZeroOnly?: boolean;
 }
 
+export interface MonthlyInventoryHistoryRollupRow {
+  storeNumber: number;
+  dimKey: string;
+  snapshotAsOf?: Date | string;
+  monthQtyOH: number[];
+  monthValueOH: number[];
+}
+
+export interface QueryMonthlyInventoryHistoryRollupParams extends QueryMonthlyInventoryHistoryParams {
+  sortBy: MonthlyNetSalesSortBy;
+  detailLevel: MonthlyDetailLevel;
+  combineStores?: boolean;
+  vendorFilter?: string[];
+  categoryFilter?: number[];
+}
+
 interface RawInventoryHistoryRow {
   SKU: string | null;
   Store: number | null;
@@ -526,6 +568,9 @@ export async function queryMonthlyInventoryHistory(
   if (!params.storeNumbers || params.storeNumbers.length === 0) {
     throw new Error('storeNumbers must have at least one entry');
   }
+  if (params.skuFilter && params.skuFilter.length === 0) {
+    return [];
+  }
 
   const sqlParams: unknown[] = [params.storeNumbers.map((n) => Number(n))];
   const wheres: string[] = [`s.store_id = ANY($1::int[])`];
@@ -539,12 +584,11 @@ export async function queryMonthlyInventoryHistory(
     wheres.push(`s.sku_code = ANY($${sqlParams.length}::text[])`);
   } else if (params.nonZeroOnly !== false) {
     wheres.push(`(
-      s.on_hand <> 0 OR COALESCE(s.average_cost, 0) > 0 OR
       EXISTS (
         SELECT 1
         FROM app.inventory_history_month m2
         WHERE m2.snapshot_id = s.id
-          AND m2.qty_on_hand <> 0
+          AND (m2.qty_on_hand <> 0 OR COALESCE(m2.inventory_value, 0) <> 0)
       )
     )`);
   }
@@ -563,7 +607,6 @@ export async function queryMonthlyInventoryHistory(
     LEFT JOIN app.inventory_history_month m
       ON m.snapshot_id = s.id
     WHERE ${wheres.join(' AND ')}
-    ORDER BY s.store_id, s.sku_code, m.slot_number
   `;
 
   const raw = await prisma.$queryRawUnsafe<RawInventoryHistoryRow[]>(sql, ...sqlParams);
@@ -580,6 +623,118 @@ export async function queryMonthlyInventoryHistory(
         averageCost: Number(r.AverageCost ?? 0),
         snapshotAsOf: r.SnapshotAsOf ?? undefined,
         onHand: Number(r.OnHand ?? 0),
+        monthQtyOH: new Array<number>(12).fill(0),
+        monthValueOH: new Array<number>(12).fill(0),
+      };
+      rows.set(key, row);
+    }
+
+    const slotIndex = Number(r.SlotNumber ?? 0) - 1;
+    if (slotIndex >= 0 && slotIndex < 12) {
+      row.monthQtyOH[slotIndex] = Number(r.QtyOnHand ?? 0);
+      row.monthValueOH[slotIndex] = Number(r.InventoryValue ?? 0);
+    }
+  }
+  return [...rows.values()];
+}
+
+interface RawInventoryHistoryRollupRow {
+  Store: number | null;
+  DimKey: string | null;
+  SnapshotAsOf: Date | string | null;
+  SlotNumber: number | null;
+  QtyOnHand: number | null;
+  InventoryValue: number | null;
+}
+
+/**
+ * Aggregated inventory-history fetch for subtotal / summary reports.
+ *
+ * The old subtotal path loaded one row per `(store, sku)` into Node, then
+ * rolled it up by vendor/category in memory. That is too slow for all-store
+ * category/vendor summaries. This query lets Postgres aggregate the 12 slot
+ * vectors by the report dimension first, so the facade only processes the
+ * small final report shape.
+ */
+export async function queryMonthlyInventoryHistoryRollups(
+  params: QueryMonthlyInventoryHistoryRollupParams,
+): Promise<MonthlyInventoryHistoryRollupRow[]> {
+  if (!params.storeNumbers || params.storeNumbers.length === 0) {
+    throw new Error('storeNumbers must have at least one entry');
+  }
+  if (params.skuFilter && params.skuFilter.length === 0) {
+    return [];
+  }
+  if (params.sortBy !== 'vendor' && params.sortBy !== 'category') {
+    throw new Error(`sortBy must be 'vendor' or 'category', got: ${params.sortBy}`);
+  }
+
+  const dimExpr =
+    params.detailLevel === 'department'
+      ? `src.category::text`
+      : params.sortBy === 'vendor'
+        ? `src.vendor`
+        : `src.category::text`;
+
+  const sqlParams: unknown[] = [params.storeNumbers.map((n) => Number(n))];
+  const wheres: string[] = [`s.store_id = ANY($1::int[])`];
+
+  if (params.skuFilter && params.skuFilter.length > 0) {
+    sqlParams.push(params.skuFilter.map((s) => s.trim()).filter(Boolean));
+    wheres.push(`s.sku_code = ANY($${sqlParams.length}::text[])`);
+  }
+  if (params.vendorFilter && params.vendorFilter.length > 0) {
+    sqlParams.push(params.vendorFilter.map((s) => s.trim().toUpperCase()).filter(Boolean));
+    wheres.push(`UPPER(COALESCE(NULLIF(BTRIM(k.vendor_id), ''), '(none)')) = ANY($${sqlParams.length}::text[])`);
+  }
+  if (params.categoryFilter && params.categoryFilter.length > 0) {
+    sqlParams.push(params.categoryFilter.map((c) => Number(c)));
+    wheres.push(`COALESCE(k.category_number, 0) = ANY($${sqlParams.length}::int[])`);
+  }
+  if (params.nonZeroOnly !== false) {
+    wheres.push(`(m.qty_on_hand <> 0 OR COALESCE(m.inventory_value, 0) <> 0)`);
+  }
+
+  const sql = `
+WITH src AS (
+  SELECT
+    s.store_id,
+    COALESCE(NULLIF(BTRIM(k.vendor_id), ''), '(none)') AS vendor,
+    COALESCE(k.category_number, 0) AS category,
+    s.snapshot_as_of,
+    m.slot_number,
+    m.qty_on_hand,
+    m.inventory_value
+  FROM app.inventory_history_snapshot s
+  INNER JOIN app.inventory_history_month m
+    ON m.snapshot_id = s.id
+  LEFT JOIN app.sku k
+    ON k.id = s.sku_id
+  WHERE ${wheres.join(' AND ')}
+)
+SELECT
+  src.store_id AS "Store",
+  ${dimExpr} AS "DimKey",
+  MAX(src.snapshot_as_of) AS "SnapshotAsOf",
+  src.slot_number AS "SlotNumber",
+  SUM(src.qty_on_hand)::float8 AS "QtyOnHand",
+  SUM(src.inventory_value)::float8 AS "InventoryValue"
+FROM src
+GROUP BY 1, 2, 4
+  `;
+
+  const raw = await prisma.$queryRawUnsafe<RawInventoryHistoryRollupRow[]>(sql, ...sqlParams);
+  const rows = new Map<string, MonthlyInventoryHistoryRollupRow>();
+  for (const r of raw) {
+    if (r.Store == null) continue;
+    const dimKey = r.DimKey == null ? '(none)' : String(r.DimKey).trim() || '(none)';
+    const key = `${Number(r.Store)}|${dimKey}`;
+    let row = rows.get(key);
+    if (!row) {
+      row = {
+        storeNumber: Number(r.Store),
+        dimKey,
+        snapshotAsOf: r.SnapshotAsOf ?? undefined,
         monthQtyOH: new Array<number>(12).fill(0),
         monthValueOH: new Array<number>(12).fill(0),
       };

@@ -328,6 +328,63 @@ describe('Customer KPI module', () => {
     expect(sizeProfile?.purchaseCount).toBe(1);
   });
 
+  it('matches sales history tickets by customer account key when matchedCustomerId is missing', async () => {
+    const customer = await createCustomer('TEST-KPI-ACCOUNTKEY');
+    const purchasedAt = new Date(Date.now() - 8 * DAY_MS);
+
+    await prisma.salesHistoryTicket.create({
+      data: {
+        source: TEST_SOURCE,
+        externalTransactionId: 'RITRNSSV:TEST-KPI-ACCOUNTKEY:2001',
+        matchedCustomerId: null,
+        accountKey: 'TEST-KPI-ACCOUNTKEY',
+        transactionType: 1,
+        transactionKind: 'purchase',
+        status: 'completed',
+        storeId: 9,
+        terminal: 'B',
+        ticketNumber: 2001,
+        cashierCode: 'CASHIER-2',
+        channel: 'store',
+        totalAmount: 92,
+        netAmount: 80,
+        costAmount: 45,
+        discountAmount: 12,
+        purchasedAt,
+        lines: {
+          create: [
+            {
+              lineNumber: 1,
+              categoryId: CATEGORY_ID,
+              categoryKey: 'running-shoes',
+              brandId: BRAND_ID,
+              brandKey: 'fleet-feet',
+              sizeType: 'shoe_us_men',
+              sizeValue: '11',
+              quantity: 1,
+              unitPrice: 80,
+              unitCost: 45,
+              netAmount: 80,
+              costAmount: 45,
+              discountAmount: 12,
+              isMarkdown: true,
+              isReturn: false,
+              salespersonCode: 'SP-8',
+            },
+          ],
+        },
+      },
+    });
+
+    const res = await request(app).get(`/api/v1/customers/${customer.id}/metrics`);
+    expect(res.status).toBe(200);
+    expect(res.body.customerId).toBe(customer.id);
+    expect(res.body.dataSource).toBe('transaction_fact');
+    expect(res.body.lifetimeValue).toBe(80);
+    expect(res.body.totalOrders).toBe(1);
+    expect(res.body.lastPurchaseDate).toBe(purchasedAt.toISOString());
+  });
+
   it('returns zeroed metrics for a customer with no transactions', async () => {
     const customer = await createCustomer('TEST-KPI-EMPTY');
 

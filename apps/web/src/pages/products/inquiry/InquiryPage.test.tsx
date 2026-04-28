@@ -198,6 +198,39 @@ describe('InquiryPage', () => {
     expect(screen.queryByRole('row', { name: /Summary Row/ })).not.toBeInTheDocument();
   });
 
+  it('falls back to all-stores summary when an old one-row mode URL is opened', () => {
+    (useInquiryData as any).mockReturnValue({
+      isLoading: false, error: null,
+      data: {
+        sku: 'ZN02-NDPT',
+        description: '…',
+        category: { id: 0, name: '' }, vendor: { code: '', name: '' },
+        vendorSku: null, styleColor: null,
+        sizeType: { id: 0, name: '', columns: [], rows: [] },
+        lastReceivedAt: null,
+        pricing: { retail: 0, markdown1: 0, markdown2: 0, avgCost: 0, currentCost: 0, listPrice: 0, currentSlot: 'RETAIL' },
+        rollup: { week: {qty:0,net:0,markdown:0,profit:0}, month:{qty:0,net:0,markdown:0,profit:0}, season:{qty:0,net:0,markdown:0,profit:0}, year:{qty:0,net:0,markdown:0,profit:0} },
+        grids: {
+          allStoresOneRow: {
+            columns: ['TOT'],
+            rows: [{ label: 'Removed One Row', cells: [{ value: 2 }] }],
+          },
+          allStoresSummary: {
+            columns: ['TOT'],
+            rows: [{ label: 'Summary Row', cells: [{ value: 8 }] }],
+          },
+        },
+        pictureUrl: null,
+        info: { seasonCode: null, labelCode: null, groupCode: null, firstReceivedAt: null, lastMarkdownAt: null, perks: null, comment: null },
+      },
+    });
+
+    renderPage(['/products/inquiry/ZN02-NDPT?mode=ALL_STORES_ONE_ROW']);
+    expect(screen.getByTestId('inquiry-grid-caption')).toHaveTextContent('All stores - Summary');
+    expect(screen.getByRole('row', { name: /Summary Row/ })).toBeInTheDocument();
+    expect(screen.queryByRole('row', { name: /Removed One Row/ })).not.toBeInTheDocument();
+  });
+
   it('renders the SKU code from the URL in the header on success', () => {
     (useInquiryData as any).mockReturnValue({
       isLoading: false,

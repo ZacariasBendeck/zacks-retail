@@ -47,7 +47,10 @@ describe('SkuLookup', () => {
       total: 2,
     });
     vi.mocked(skuApi.fetchSkuLookupFacets).mockResolvedValue({
-      seasons: ['24S1', '24F1'],
+      seasons: [
+        { code: '24S1', name: 'Spring 2024', label: '24S1 - Spring 2024' },
+        { code: '24F1', name: 'Fall 2024', label: '24F1 - Fall 2024' },
+      ],
       vendors: [{ code: 'ACME', label: 'ACME — Acme Co' }],
       departments: [{ number: 1, name: 'FORMAL' }],
     });
@@ -68,6 +71,51 @@ describe('SkuLookup', () => {
     expect(screen.getByText('Restrict to:')).toBeInTheDocument();
     // One combobox for the search input + three for the Select filters.
     expect(screen.getAllByRole('combobox')).toHaveLength(3);
+  });
+
+  it('reloads dependent facets when a Season is selected', async () => {
+    vi.mocked(skuApi.fetchSkuLookupFacets).mockImplementation(async (query = {}) => {
+      if (query.season === '24S1') {
+        return {
+          seasons: [
+            { code: '24S1', name: 'Spring 2024', label: '24S1 - Spring 2024' },
+            { code: '24F1', name: 'Fall 2024', label: '24F1 - Fall 2024' },
+          ],
+          vendors: [{ code: 'ACME', label: 'ACME â€” Acme Co' }],
+          departments: [{ number: 1, name: 'FORMAL' }],
+        };
+      }
+      return {
+        seasons: [
+          { code: '24S1', name: 'Spring 2024', label: '24S1 - Spring 2024' },
+          { code: '24F1', name: 'Fall 2024', label: '24F1 - Fall 2024' },
+        ],
+        vendors: [
+          { code: 'ACME', label: 'ACME â€” Acme Co' },
+          { code: 'BETA', label: 'BETA â€” Beta Co' },
+        ],
+        departments: [
+          { number: 1, name: 'FORMAL' },
+          { number: 2, name: 'CASUAL' },
+        ],
+      };
+    });
+
+    renderLookup();
+    await screen.findByText('A1');
+    const [seasonSelect] = screen.getAllByRole('combobox');
+    expect(seasonSelect).toBeDefined();
+    await userEvent.click(seasonSelect!);
+    const seasonOptions = await screen.findAllByText('24S1 - Spring 2024');
+    const selectedSeasonOption = seasonOptions[seasonOptions.length - 1];
+    expect(selectedSeasonOption).toBeDefined();
+    await userEvent.click(selectedSeasonOption!);
+
+    await waitFor(() =>
+      expect(skuApi.fetchSkuLookupFacets).toHaveBeenCalledWith(
+        expect.objectContaining({ season: '24S1' }),
+      ),
+    );
   });
 
   it('calls onSelect when user double-clicks a row', async () => {

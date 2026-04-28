@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Alert, App, Button, Col, Popconfirm, Row, Select, Space, Spin, Tag, Typography } from 'antd'
 import {
   useAttributeDimensions,
+  useAttributeMacroRules,
   useSetSkuAttributes,
   useSkuAttributes,
 } from '../../../hooks/useProductsAttributes'
@@ -49,6 +50,7 @@ interface Props {
 export default function SkuAttributesTab({ skuCode }: Props) {
   const { message } = App.useApp()
   const { data: dimensions, isLoading: dimsLoading } = useAttributeDimensions()
+  const { data: macroRules, isLoading: macrosLoading } = useAttributeMacroRules()
   const { data: skuAttrs, isLoading: attrsLoading, error } = useSkuAttributes(skuCode)
   const setMutation = useSetSkuAttributes()
 
@@ -82,7 +84,12 @@ export default function SkuAttributesTab({ skuCode }: Props) {
     return out
   }, [skuAttrs])
 
-  if (dimsLoading || attrsLoading) {
+  const derivedDimensionCodes = useMemo(
+    () => new Set(['color_family', ...(macroRules ?? []).map((rule) => rule.targetDimensionCode)]),
+    [macroRules],
+  )
+
+  if (dimsLoading || attrsLoading || macrosLoading) {
     return <Spin />
   }
   if (error) {
@@ -92,6 +99,9 @@ export default function SkuAttributesTab({ skuCode }: Props) {
     return <Alert type="info" message="No hay dimensiones configuradas." />
   }
 
+  const editableDimensions = dimensions.filter((dim) => !derivedDimensionCodes.has(dim.code))
+  const editableDimensionCodes = new Set(editableDimensions.map((dim) => dim.code))
+
   const handleChange = (dimCode: string, next: string[], isMulti: boolean) => {
     setSelections((prev) => ({ ...prev, [dimCode]: isMulti ? next : next.slice(0, 1) }))
     setDirty(true)
@@ -100,6 +110,7 @@ export default function SkuAttributesTab({ skuCode }: Props) {
   const handleSave = async () => {
     const assignments: { dimension_code: string; value_code: string }[] = []
     for (const [dim, codes] of Object.entries(selections)) {
+      if (!editableDimensionCodes.has(dim)) continue
       for (const c of codes) {
         assignments.push({ dimension_code: dim, value_code: c })
       }
@@ -136,10 +147,11 @@ export default function SkuAttributesTab({ skuCode }: Props) {
       <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
         Clasificaciones más allá de vendor/categoría/temporada. Guardar sobrescribe
         la clasificación manual; los valores derivados de keywords se restauran
-        al pulsar <strong>Restaurar</strong>.
+        al pulsar <strong>Restaurar</strong>. Familia de Color se deriva automáticamente
+        del valor de Color y no se edita manualmente aquí.
       </Typography.Paragraph>
 
-      {dimensions.map((dim) => {
+      {editableDimensions.map((dim) => {
         const selected = selections[dim.code] ?? []
         const options =
           dim.code === 'discount_type'

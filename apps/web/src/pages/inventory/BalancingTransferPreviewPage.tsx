@@ -394,42 +394,54 @@ export default function BalancingTransferPreviewPage() {
                       </Col>
                     </Row>
 
-                    <Input
-                      addonBefore="Vendor"
-                      placeholder="comma-separated codes"
-                      value={vendorCodes}
-                      onChange={(event) => setVendorCodes(event.target.value)}
-                    />
-                    <Input
-                      addonBefore="Season"
-                      placeholder="comma-separated"
-                      value={seasons}
-                      onChange={(event) => setSeasons(event.target.value)}
-                    />
-                    <Input
-                      addonBefore="Style"
-                      placeholder="comma-separated"
-                      value={styleColors}
-                      onChange={(event) => setStyleColors(event.target.value)}
-                    />
-                    <Input
-                      addonBefore="Group"
-                      placeholder="comma-separated"
-                      value={groupCodes}
-                      onChange={(event) => setGroupCodes(event.target.value)}
-                    />
-                    <Input
-                      addonBefore="Keyword"
-                      placeholder="comma-separated"
-                      value={keywords}
-                      onChange={(event) => setKeywords(event.target.value)}
-                    />
-                    <Input
-                      addonBefore="SKU"
-                      placeholder="comma-separated codes"
-                      value={skuCodes}
-                      onChange={(event) => setSkuCodes(event.target.value)}
-                    />
+                    <Space.Compact style={{ width: '100%' }}>
+                      <Button disabled>Vendor</Button>
+                      <Input
+                        placeholder="comma-separated codes"
+                        value={vendorCodes}
+                        onChange={(event) => setVendorCodes(event.target.value)}
+                      />
+                    </Space.Compact>
+                    <Space.Compact style={{ width: '100%' }}>
+                      <Button disabled>Season</Button>
+                      <Input
+                        placeholder="comma-separated"
+                        value={seasons}
+                        onChange={(event) => setSeasons(event.target.value)}
+                      />
+                    </Space.Compact>
+                    <Space.Compact style={{ width: '100%' }}>
+                      <Button disabled>Style</Button>
+                      <Input
+                        placeholder="comma-separated"
+                        value={styleColors}
+                        onChange={(event) => setStyleColors(event.target.value)}
+                      />
+                    </Space.Compact>
+                    <Space.Compact style={{ width: '100%' }}>
+                      <Button disabled>Group</Button>
+                      <Input
+                        placeholder="comma-separated"
+                        value={groupCodes}
+                        onChange={(event) => setGroupCodes(event.target.value)}
+                      />
+                    </Space.Compact>
+                    <Space.Compact style={{ width: '100%' }}>
+                      <Button disabled>Keyword</Button>
+                      <Input
+                        placeholder="comma-separated"
+                        value={keywords}
+                        onChange={(event) => setKeywords(event.target.value)}
+                      />
+                    </Space.Compact>
+                    <Space.Compact style={{ width: '100%' }}>
+                      <Button disabled>SKU</Button>
+                      <Input
+                        placeholder="comma-separated codes"
+                        value={skuCodes}
+                        onChange={(event) => setSkuCodes(event.target.value)}
+                      />
+                    </Space.Compact>
 
                     <Space direction="vertical" size={6} style={{ width: '100%' }}>
                       <Checkbox

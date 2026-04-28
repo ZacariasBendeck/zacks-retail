@@ -82,3 +82,30 @@ export interface AttributeCoverageRow {
   coveragePct: number
   bySource: { keyword: number; excel: number; operator: number }
 }
+
+export interface AttributeMacroRuleSummary {
+  sourceDimensionCode: string
+  sourceDimensionLabelEs: string
+  targetDimensionCode: string
+  targetDimensionLabelEs: string
+  mappedCount: number
+  sourceValueCount: number
+  updatedAt: string | null
+}
+
+export interface AttributeMacroRuleRow {
+  sourceValueCode: string
+  sourceLabelEs: string
+  targetValueCode: string | null
+  targetLabelEs: string | null
+  updatedAt: string | null
+  updatedBy: string | null
+}
+
+export interface AttributeMacroRuleSet {
+  sourceDimensionCode: string
+  sourceDimensionLabelEs: string
+  targetDimensionCode: string
+  targetDimensionLabelEs: string
+  rules: AttributeMacroRuleRow[]
+}

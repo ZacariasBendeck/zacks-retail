@@ -282,7 +282,7 @@ export function CustomerKpiTable({
 }
 
 function tableColumnKeyToSort(
-  columnKey: string | number | undefined,
+  columnKey: string | number | bigint | undefined,
 ): CustomerKpiListParams['sort'] {
   switch (columnKey) {
     case 'name':

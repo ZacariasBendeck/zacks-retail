@@ -38,9 +38,27 @@ export interface SkuSize {
 export interface Sku {
   id: string
   skuCode: string
+  /** Legacy SQLite-only column. Removed from `app.sku` on 2026-04-27 — only
+   *  populated by SQLite-backed lookups now. Empty string for lifecycle loads. */
   style: string
+  /** Combined STYLE/COLOR identifier (e.g. "SPAN/NEGR"). Maps to
+   *  `app.sku.style_color`. Set when an SKU was loaded via the lifecycle API. */
+  styleColor?: string | null
+  /** Linked style-color template object — set by legacy SQLite lookups when an
+   *  SKU was previously associated with a template row. Independent of the
+   *  `styleColor` string above. */
+  styleColorLink?: StyleColorLink | null
   price: number
   cost: number | null
+  listPrice?: number | null
+  markDownPrice1?: number | null
+  markDownPrice2?: number | null
+  perks?: number | null
+  discountCode?: string | null
+  sizeType?: number | null
+  location?: string | null
+  groupCode?: string | null
+  coupon?: boolean
   categoryId: number | null
   department: Department
   vendorId: string
@@ -78,7 +96,6 @@ export interface Sku {
   heelTypeCode?: string | null
   material: string | null
   heelMaterialTypeCode?: string | null
-  styleColor?: StyleColorLink | null
   active: boolean
   currentStock?: number
   sizes?: SkuSize[]
@@ -115,7 +132,6 @@ export interface SkuListParams {
 }
 
 export interface SkuCreatePayload {
-  style: string
   price: number
   department: Department
   vendorId: string
@@ -129,6 +145,7 @@ export interface SkuCreatePayload {
   comment?: string | null
   keywords?: string | null
   season?: string | null
+  styleColor?: string | null
   manufacturer?: string | null
   pictureUrl?: string | null
   brandId?: number | null

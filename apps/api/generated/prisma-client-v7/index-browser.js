@@ -438,6 +438,22 @@ exports.Prisma.StoreMasterScalarFieldEnum = {
   rawJson: 'rawJson'
 };
 
+exports.Prisma.StoreGroupScalarFieldEnum = {
+  code: 'code',
+  label: 'label',
+  active: 'active',
+  sortOrder: 'sortOrder',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+};
+
+exports.Prisma.StoreGroupMemberScalarFieldEnum = {
+  storeNumber: 'storeNumber',
+  groupCode: 'groupCode',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+};
+
 exports.Prisma.SkuUpcScalarFieldEnum = {
   upc: 'upc',
   skuCode: 'skuCode',
@@ -640,7 +656,6 @@ exports.Prisma.SkuScalarFieldEnum = {
   currentCost: 'currentCost',
   currentPriceSlot: 'currentPriceSlot',
   sizeType: 'sizeType',
-  style: 'style',
   styleColor: 'styleColor',
   season: 'season',
   location: 'location',
@@ -2013,6 +2028,8 @@ exports.Prisma.ModelName = {
   Vendor: 'Vendor',
   VendorStoreAccount: 'VendorStoreAccount',
   StoreMaster: 'StoreMaster',
+  StoreGroup: 'StoreGroup',
+  StoreGroupMember: 'StoreGroupMember',
   SkuUpc: 'SkuUpc',
   CasePack: 'CasePack',
   CasePackCell: 'CasePackCell',

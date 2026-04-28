@@ -45,12 +45,21 @@ export const SkuLookup: React.FC<SkuLookupProps> = ({
   const navigate = useNavigate();
 
   const { data: facets } = useQuery({
-    queryKey: ['sku-lookup-facets'],
-    queryFn: fetchSkuLookupFacets,
+    queryKey: ['sku-lookup-facets', { season, vendor, department }],
+    queryFn: () => fetchSkuLookupFacets({ season, vendor, department }),
     enabled: open && !hideFilters,
     staleTime: 10 * 60_000,
     gcTime: 30 * 60_000,
   });
+
+  React.useEffect(() => {
+    if (!facets) return;
+    if (season && !facets.seasons.some((item) => item.code === season)) setSeason(undefined);
+    if (vendor && !facets.vendors.some((item) => item.code === vendor)) setVendor(undefined);
+    if (department != null && !facets.departments.some((item) => item.number === department)) {
+      setDepartment(undefined);
+    }
+  }, [department, facets, season, vendor]);
 
   // Memoised so LookupModal only refetches when a filter actually changes —
   // identity change is the modal's "filters changed, reset page" signal.
@@ -137,7 +146,7 @@ export const SkuLookup: React.FC<SkuLookupProps> = ({
         allowClear
         value={season}
         onChange={setSeason}
-        options={(facets?.seasons ?? []).map((s) => ({ value: s, label: s }))}
+        options={(facets?.seasons ?? []).map((s) => ({ value: s.code, label: s.label }))}
         style={{ width: 180 }}
         showSearch
         optionFilterProp="label"

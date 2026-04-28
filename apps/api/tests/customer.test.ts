@@ -9,6 +9,9 @@ const TEST_APP_ACCOUNT_PREFIX = 'TAC';
 const TEST_APP_PHONE_PREFIX = '+555000';
 const TEST_APP_EMAIL_DOMAIN = '@customer-route-test.local';
 const TEST_IMPORTED_SOURCE = 'customer_route_test_imported';
+const TEST_TICKET_VENDOR_CODE = 'ZV99';
+const TEST_TICKET_DEPARTMENT_NUMBER = 0;
+const TEST_TICKET_SKU_CODE = 'CTHISTSKU01';
 
 function makeTestAccountNumber(suffix: string): string {
   const normalized = suffix.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
@@ -32,6 +35,15 @@ function makeValidCustomer(suffix = 'DEFAULT') {
 }
 
 async function cleanupAppFixtures(): Promise<void> {
+  await prisma.customerIntelligenceCustomer.deleteMany({
+    where: {
+      source: 'app_manual',
+      OR: [
+        { ricsCode: { startsWith: TEST_APP_ACCOUNT_PREFIX } },
+        { contacts: { some: { value: { endsWith: TEST_APP_EMAIL_DOMAIN } } } },
+      ],
+    },
+  });
   await prisma.customer.deleteMany({
     where: {
       OR: [
@@ -44,6 +56,18 @@ async function cleanupAppFixtures(): Promise<void> {
 }
 
 async function cleanupImportedFixtures(): Promise<void> {
+  await prisma.salesHistoryTicket.deleteMany({
+    where: { source: TEST_IMPORTED_SOURCE },
+  });
+  await prisma.sku.deleteMany({
+    where: { createdBy: TEST_IMPORTED_SOURCE },
+  });
+  await prisma.vendor.deleteMany({
+    where: { code: TEST_TICKET_VENDOR_CODE },
+  });
+  await prisma.taxonomyDepartment.deleteMany({
+    where: { number: TEST_TICKET_DEPARTMENT_NUMBER },
+  });
   await prisma.customerIntelligenceCustomer.deleteMany({
     where: { source: TEST_IMPORTED_SOURCE },
   });
@@ -108,6 +132,115 @@ async function insertImportedCustomerFixture(input: {
           dollarSales02: input.ytdSales ?? 0,
         },
       },
+    },
+    select: { id: true },
+  });
+}
+
+async function insertImportedSalesTicketFixture(input: {
+  account: string;
+  matchedCustomerId?: string | null;
+  ticketNumber?: number;
+  purchasedAt: Date;
+  totalAmount: number;
+  netAmount?: number;
+  costAmount?: number;
+  discountAmount?: number;
+  quantity?: number;
+  status?: 'completed' | 'cancelled' | 'refunded';
+  transactionKind?: 'purchase' | 'return';
+  categoryKey?: string | null;
+  skuId?: string | null;
+  skuCode?: string | null;
+}): Promise<void> {
+  await prisma.salesHistoryTicket.create({
+    data: {
+      source: TEST_IMPORTED_SOURCE,
+      externalTransactionId: `${input.account}:${input.ticketNumber ?? input.purchasedAt.getTime()}`,
+      matchedCustomerId: input.matchedCustomerId ?? null,
+      accountKey: input.account,
+      transactionType: 1,
+      transactionKind: input.transactionKind ?? 'purchase',
+      status: input.status ?? 'completed',
+      storeId: 7,
+      terminal: 'T1',
+      ticketNumber: input.ticketNumber ?? 1,
+      cashierCode: 'TEST',
+      channel: 'store',
+      totalAmount: input.totalAmount,
+      netAmount: input.netAmount ?? input.totalAmount,
+      costAmount: input.costAmount ?? 0,
+      discountAmount: input.discountAmount ?? 0,
+      purchasedAt: input.purchasedAt,
+      lines: {
+        create: [
+          {
+            lineNumber: 1,
+            skuId: input.skuId ?? null,
+            skuCode: input.skuCode ?? null,
+            categoryKey: input.categoryKey ?? null,
+            quantity: input.quantity ?? 1,
+            unitPrice: input.netAmount ?? input.totalAmount,
+            unitCost: input.costAmount ?? 0,
+            netAmount: input.netAmount ?? input.totalAmount,
+            costAmount: input.costAmount ?? 0,
+            discountAmount: input.discountAmount ?? 0,
+            isMarkdown: false,
+            isReturn: false,
+          },
+        ],
+      },
+    },
+  });
+}
+
+async function createTicketHistorySkuFixture(): Promise<{ id: string }> {
+  await prisma.taxonomyDepartment.upsert({
+    where: { number: TEST_TICKET_DEPARTMENT_NUMBER },
+    update: {
+      description: 'Test Dresses',
+      begCateg: 1,
+      endCateg: 199,
+    },
+    create: {
+      number: TEST_TICKET_DEPARTMENT_NUMBER,
+      description: 'Test Dresses',
+      begCateg: 1,
+      endCateg: 199,
+    },
+  });
+
+  await prisma.vendor.upsert({
+    where: { code: TEST_TICKET_VENDOR_CODE },
+    update: {
+      shortName: 'Test Vendor',
+      mailName: 'Test Vendor',
+    },
+    create: {
+      code: TEST_TICKET_VENDOR_CODE,
+      shortName: 'Test Vendor',
+      mailName: 'Test Vendor',
+    },
+  });
+
+  return prisma.sku.create({
+    data: {
+      provisionalCode: `${TEST_TICKET_SKU_CODE}-PROV`,
+      code: TEST_TICKET_SKU_CODE,
+      skuState: 'ACTIVE',
+      categoryNumber: 101,
+      vendorId: TEST_TICKET_VENDOR_CODE,
+      descriptionRics: 'Customer Ticket History SKU',
+      retailPrice: 100,
+      markDownPrice1: 90,
+      markDownPrice2: 80,
+      listPrice: 110,
+      currentCost: 35,
+      currentPriceSlot: 'RETAIL',
+      createdBy: TEST_IMPORTED_SOURCE,
+      activatedAt: new Date('2026-04-01T00:00:00.000Z'),
+      activatedBy: TEST_IMPORTED_SOURCE,
+      source: 'app',
     },
     select: { id: true },
   });
@@ -236,6 +369,30 @@ describe('GET /api/v1/customers', () => {
     expect(res.body.data).toHaveLength(1);
     expect(res.body.data[0].lastName).toBe('FILTERJOHNSON');
   });
+
+  it('loads customer sales columns from sales tickets instead of legacy customer summary fields', async () => {
+    await insertImportedCustomerFixture({
+      account: 'TEST-IMPORTED-TICKET-SALES-1',
+      name: 'TICKETSALES, Maria',
+      dateLastPurchase: new Date('2025-01-15T00:00:00.000Z'),
+      ytdSales: 12.5,
+    });
+    await insertImportedSalesTicketFixture({
+      account: 'TEST-IMPORTED-TICKET-SALES-1',
+      purchasedAt: new Date('2026-04-20T12:00:00.000Z'),
+      totalAmount: 115,
+      netAmount: 100,
+      quantity: 2,
+      ticketNumber: 501,
+    });
+
+    const res = await request(app).get('/api/v1/customers?q=TICKETSALES');
+    expect(res.status).toBe(200);
+    expect(res.body.data).toHaveLength(1);
+    expect(res.body.data[0].accountNumber).toBe('TEST-IMPORTED-TICKET-SALES-1');
+    expect(res.body.data[0].ytdSalesCents).toBe(11500);
+    expect(res.body.data[0].dateOfLastPurchase).toBe('2026-04-20T12:00:00.000Z');
+  });
 });
 
 describe('GET /api/v1/customers/search', () => {
@@ -295,6 +452,105 @@ describe('GET /api/v1/customers/:id', () => {
     expect(res.body.source).toBe('imported');
     expect(res.body.accountNumber).toBe('TEST-IMPORTED-DETAIL-1');
     expect(res.body.familyMembers).toEqual([]);
+  });
+
+  it('returns imported customer detail sales from sales tickets', async () => {
+    const imported = await insertImportedCustomerFixture({
+      account: 'TEST-IMPORTED-DETAIL-TICKET-1',
+      name: 'DETAILTICKET, Maria',
+      ytdSales: 9,
+      dateLastPurchase: new Date('2025-02-01T00:00:00.000Z'),
+    });
+    await insertImportedSalesTicketFixture({
+      account: 'TEST-IMPORTED-DETAIL-TICKET-1',
+      matchedCustomerId: imported.id,
+      purchasedAt: new Date('2026-04-22T10:30:00.000Z'),
+      totalAmount: 230,
+      netAmount: 200,
+      quantity: 3,
+      ticketNumber: 777,
+    });
+
+    const res = await request(app).get(`/api/v1/customers/${imported.id}`);
+    expect(res.status).toBe(200);
+    expect(res.body.source).toBe('imported');
+    expect(res.body.ytdSalesCents).toBe(23000);
+    expect(res.body.dateOfLastPurchase).toBe('2026-04-22T10:30:00.000Z');
+  });
+});
+
+describe('GET /api/v1/customers/:id/tickets', () => {
+  it('lists purchase tickets newest first for the customer', async () => {
+    const imported = await insertImportedCustomerFixture({
+      account: 'TEST-IMPORTED-TICKET-HISTORY-1',
+      name: 'TICKETHISTORY, Maria',
+    });
+    const sku = await createTicketHistorySkuFixture();
+
+    await insertImportedSalesTicketFixture({
+      account: 'TEST-IMPORTED-TICKET-HISTORY-1',
+      purchasedAt: new Date('2026-04-10T09:00:00.000Z'),
+      totalAmount: 115,
+      netAmount: 100,
+      costAmount: 40,
+      quantity: 2,
+      ticketNumber: 101,
+      skuId: sku.id,
+      skuCode: TEST_TICKET_SKU_CODE,
+      categoryKey: '929',
+    });
+    await insertImportedSalesTicketFixture({
+      account: 'TEST-IMPORTED-TICKET-HISTORY-1',
+      matchedCustomerId: imported.id,
+      purchasedAt: new Date('2026-04-21T14:30:00.000Z'),
+      totalAmount: 230,
+      netAmount: 200,
+      costAmount: 70,
+      quantity: 3,
+      ticketNumber: 305,
+      skuId: sku.id,
+      skuCode: TEST_TICKET_SKU_CODE,
+      categoryKey: '101',
+    });
+    await insertImportedSalesTicketFixture({
+      account: 'TEST-IMPORTED-TICKET-HISTORY-1',
+      purchasedAt: new Date('2026-04-22T10:00:00.000Z'),
+      totalAmount: -57.5,
+      netAmount: -50,
+      quantity: -1,
+      ticketNumber: 401,
+      transactionKind: 'return',
+    });
+    await insertImportedSalesTicketFixture({
+      account: 'TEST-IMPORTED-TICKET-HISTORY-1',
+      purchasedAt: new Date('2026-04-23T10:00:00.000Z'),
+      totalAmount: 57.5,
+      netAmount: 50,
+      quantity: 1,
+      ticketNumber: 402,
+      status: 'cancelled',
+    });
+
+    const res = await request(app).get(`/api/v1/customers/${imported.id}/tickets`);
+    expect(res.status).toBe(200);
+    expect(res.body.data).toHaveLength(2);
+    expect(res.body.data[0].ticketNumber).toBe(305);
+    expect(res.body.data[0].purchasedAt).toBe('2026-04-21T14:30:00.000Z');
+    expect(res.body.data[0].vendorSummary).toBe('Test Vendor');
+    expect(res.body.data[0].categorySummary).toBe('Test Dresses');
+    expect(res.body.data[0].totalAmountCents).toBe(23000);
+    expect(res.body.data[0].grossProfitPct).toBe(65);
+    expect(res.body.data[0].quantity).toBe(3);
+    expect(res.body.data[1].ticketNumber).toBe(101);
+    expect(res.body.data[1].purchasedAt).toBe('2026-04-10T09:00:00.000Z');
+    expect(res.body.data[1].vendorSummary).toBe('Test Vendor');
+    expect(res.body.data[1].categorySummary).toBeNull();
+  });
+
+  it('returns 404 when the customer does not exist', async () => {
+    const res = await request(app).get('/api/v1/customers/does-not-exist/tickets');
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe('NOT_FOUND');
   });
 });
 

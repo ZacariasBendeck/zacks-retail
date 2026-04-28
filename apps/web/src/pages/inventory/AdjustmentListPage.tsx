@@ -46,6 +46,7 @@ import {
   persistString,
   readPersistedString,
 } from '../../components/stock-maintenance'
+import { SkuLink } from '../../components/sku-link'
 
 type AdjustmentTab =
   | 'MANUAL_RECEIPT'
@@ -576,13 +577,9 @@ function ManualReceiptTabPane({ tab }: { tab: TabConfig }) {
       key: 'skuCode',
       width: 160,
       render: (skuCode: string, record: ManualReceiptListItem) => (
-        <Button
-          type="link"
-          style={{ paddingInline: 0 }}
-          onClick={() => navigate(`/products/inquiry/${encodeURIComponent(skuCode)}?storeId=${record.storeId}`)}
-        >
+        <SkuLink skuCode={skuCode} storeId={record.storeId}>
           {skuCode}
-        </Button>
+        </SkuLink>
       ),
       exportValue: (record) => record.skuCode,
     },
@@ -769,13 +766,9 @@ function ManualReturnTabPane({ tab }: { tab: TabConfig }) {
       key: 'skuCode',
       width: 160,
       render: (skuCode: string, record: ManualReturnListItem) => (
-        <Button
-          type="link"
-          style={{ paddingInline: 0 }}
-          onClick={() => navigate(`/products/inquiry/${encodeURIComponent(skuCode)}?storeId=${record.storeId}`)}
-        >
+        <SkuLink skuCode={skuCode} storeId={record.storeId}>
           {skuCode}
-        </Button>
+        </SkuLink>
       ),
       exportValue: (record) => record.skuCode,
     },

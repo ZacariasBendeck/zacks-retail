@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useMemo } from 'react'
 import {
-  Alert, Checkbox, Input, InputNumber, Select, Space, Table, Spin, Tag,
+  Alert, Button, Checkbox, Input, InputNumber, Select, Space, Table, Spin, Tag,
 } from 'antd'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
@@ -258,14 +258,16 @@ export default function BestSellersPage() {
               { value: 'YTD', label: 'YTD' },
             ]}
           />
-          <InputNumber
-            min={1}
-            max={1000}
-            value={topN}
-            onChange={(v) => setTopN(v ?? 25)}
-            addonBefore="Top"
-            style={{ width: 160 }}
-          />
+          <Space.Compact>
+            <Button disabled>Top</Button>
+            <InputNumber
+              min={1}
+              max={1000}
+              value={topN}
+              onChange={(v) => setTopN(v ?? 25)}
+              style={{ width: 160 }}
+            />
+          </Space.Compact>
           <Input
             placeholder="Stores (csv, blank=all)"
             value={storesText}

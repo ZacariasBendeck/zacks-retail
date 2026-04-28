@@ -78,6 +78,26 @@ export interface CreateFamilyMemberInput {
 
 export type UpdateFamilyMemberInput = Partial<CreateFamilyMemberInput>;
 
+export interface CustomerTicketHistoryEntry {
+  id: string;
+  externalTransactionId: string | null;
+  ticketNumber: number | null;
+  purchasedAt: string;
+  storeId: number | null;
+  storeName: string | null;
+  channel: string;
+  status: string;
+  transactionKind: string;
+  lineCount: number;
+  quantity: number;
+  vendorSummary: string | null;
+  categorySummary: string | null;
+  totalAmountCents: number;
+  netAmountCents: number;
+  discountAmountCents: number;
+  grossProfitPct: number | null;
+}
+
 // --- Row → DTO mappers -----------------------------------------------------
 //
 // Prisma returns native types (Decimal, Date, Boolean) — route responses want
@@ -109,6 +129,17 @@ const IMPORTED_CUSTOMER_ARGS = Prisma.validator<Prisma.CustomerIntelligenceCusto
 
 type ImportedCustomerRow = Prisma.CustomerIntelligenceCustomerGetPayload<typeof IMPORTED_CUSTOMER_ARGS>;
 
+interface ImportedCustomerLiveSalesSnapshot {
+  ptdQty: number;
+  ptdSalesCents: number;
+  ytdQty: number;
+  ytdSalesCents: number;
+  ttdQty: number;
+  ttdSalesCents: number;
+  lastYearSalesCents: number;
+  dateOfLastPurchase: string | null;
+}
+
 function importedCustomerOrderBy(
   params: CustomerListParams,
 ): Prisma.CustomerIntelligenceCustomerOrderByWithRelationInput[] {
@@ -120,7 +151,11 @@ function importedCustomerOrderBy(
     case 'dateAdded':
       return [{ ricsDateAdded: direction }, { firstSeenAt: direction }, { createdAt: direction }];
     case 'dateOfLastPurchase':
-      return [{ salesSummaryLegacy: { dateLastPurchase: direction } }, { fullName: 'asc' }];
+      return [
+        { metrics: { lastPurchaseDate: direction } },
+        { salesSummaryLegacy: { dateLastPurchase: direction } },
+        { fullName: 'asc' },
+      ];
     case 'ytdSalesCents':
       return [{ salesSummaryLegacy: { dollarSales02: direction } }, { fullName: 'asc' }];
     case 'displayName':
@@ -261,6 +296,33 @@ function toIsoString(value: Date | string | null | undefined): string | null {
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
+function roundToSingleDecimal(value: number): number {
+  return Math.round(value * 10) / 10;
+}
+
+function parseCategoryNumber(value: string | null | undefined): number | null {
+  const normalized = normalizeLegacyText(value);
+  if (!normalized || !/^\d+$/.test(normalized)) {
+    return null;
+  }
+  const parsed = Number(normalized);
+  return Number.isInteger(parsed) ? parsed : null;
+}
+
+function summarizeDistinctLabels(labels: Array<string | null | undefined>): string | null {
+  const normalized = [
+    ...new Set(
+      labels
+        .map((value) => normalizeLegacyText(value))
+        .filter((value): value is string => value != null),
+    ),
+  ];
+
+  if (normalized.length === 0) return null;
+  if (normalized.length <= 2) return normalized.join(', ');
+  return `${normalized.slice(0, 2).join(', ')} +${normalized.length - 2}`;
+}
+
 function parseLegacyName(
   name: string | null,
   accountNumber: string,
@@ -348,15 +410,129 @@ function buildImportedExtraFields(row: ImportedCustomerRow): Record<string, unkn
 }
 
 function importedCustomerAccountNumber(row: ImportedCustomerRow): string {
-  return (
-    normalizeLegacyText(row.ricsAccount) ??
-    normalizeLegacyText(row.ricsCode) ??
-    normalizeLegacyText(row.honduranIdNormalized) ??
-    row.id
-  );
+  return importedCustomerAccountKeys(row)[0] ?? row.id;
 }
 
-function toImportedCustomer(row: ImportedCustomerRow): Customer {
+function importedCustomerAccountKeys(row: ImportedCustomerRow): string[] {
+  const keys = [
+    normalizeLegacyText(row.ricsAccount),
+    normalizeLegacyText(row.ricsCode),
+    normalizeLegacyText(row.honduranIdNormalized),
+  ].filter((value): value is string => value != null);
+
+  return [...new Set(keys)];
+}
+
+function currentMonthStart(now: Date): Date {
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+}
+
+function currentYearStart(now: Date): Date {
+  return new Date(Date.UTC(now.getUTCFullYear(), 0, 1));
+}
+
+function previousYearStart(now: Date): Date {
+  return new Date(Date.UTC(now.getUTCFullYear() - 1, 0, 1));
+}
+
+async function loadImportedCustomerLiveSalesSnapshots(
+  rows: ImportedCustomerRow[],
+): Promise<Map<string, ImportedCustomerLiveSalesSnapshot>> {
+  if (rows.length === 0) return new Map();
+
+  const customerIdSet = new Set<string>();
+  const accountToCustomerId = new Map<string, string>();
+
+  for (const row of rows) {
+    customerIdSet.add(row.id);
+    for (const accountKey of importedCustomerAccountKeys(row)) {
+      accountToCustomerId.set(accountKey, row.id);
+    }
+  }
+
+  const customerIds = [...customerIdSet];
+  const accountNumbers = [...accountToCustomerId.keys()];
+  const tickets = await prisma.salesHistoryTicket.findMany({
+    where: {
+      status: 'completed',
+      OR: [
+        { matchedCustomerId: { in: customerIds } },
+        ...(accountNumbers.length > 0
+          ? [
+              {
+                matchedCustomerId: null,
+                accountKey: { in: accountNumbers },
+              },
+            ]
+          : []),
+      ],
+    },
+    include: {
+      lines: {
+        select: {
+          quantity: true,
+        },
+      },
+    },
+    orderBy: { purchasedAt: 'desc' },
+  });
+
+  const now = new Date();
+  const monthStart = currentMonthStart(now);
+  const yearStart = currentYearStart(now);
+  const previousYear = previousYearStart(now);
+
+  const snapshots = new Map<string, ImportedCustomerLiveSalesSnapshot>();
+  for (const ticket of tickets) {
+    const customerId =
+      (ticket.matchedCustomerId && customerIdSet.has(ticket.matchedCustomerId) ? ticket.matchedCustomerId : null) ??
+      (ticket.accountKey ? accountToCustomerId.get(ticket.accountKey) ?? null : null);
+    if (!customerId) continue;
+
+    const purchasedAt = ticket.purchasedAt;
+    const totalCents = toCurrencyCents(ticket.totalAmount);
+    const quantity = ticket.lines.reduce((sum, line) => sum + line.quantity, 0);
+
+    const snapshot = snapshots.get(customerId) ?? {
+      ptdQty: 0,
+      ptdSalesCents: 0,
+      ytdQty: 0,
+      ytdSalesCents: 0,
+      ttdQty: 0,
+      ttdSalesCents: 0,
+      lastYearSalesCents: 0,
+      dateOfLastPurchase: null,
+    };
+
+    snapshot.ttdQty += quantity;
+    snapshot.ttdSalesCents += totalCents;
+
+    if (snapshot.dateOfLastPurchase == null || purchasedAt.toISOString() > snapshot.dateOfLastPurchase) {
+      snapshot.dateOfLastPurchase = purchasedAt.toISOString();
+    }
+
+    if (purchasedAt >= monthStart) {
+      snapshot.ptdQty += quantity;
+      snapshot.ptdSalesCents += totalCents;
+    }
+
+    if (purchasedAt >= yearStart) {
+      snapshot.ytdQty += quantity;
+      snapshot.ytdSalesCents += totalCents;
+    } else if (purchasedAt >= previousYear && purchasedAt < yearStart) {
+      snapshot.lastYearSalesCents += totalCents;
+    }
+
+    snapshots.set(customerId, snapshot);
+  }
+
+  return snapshots;
+}
+
+function toImportedCustomer(
+  row: ImportedCustomerRow,
+  liveSalesSnapshot?: ImportedCustomerLiveSalesSnapshot | null,
+): Customer {
   const accountNumber = importedCustomerAccountNumber(row);
   const primaryEmail = row.contacts[0] ?? null;
   const primaryAddress = row.addresses[0] ?? null;
@@ -391,15 +567,16 @@ function toImportedCustomer(row: ImportedCustomerRow): Customer {
     alertFlag,
     alertMessage,
     comments,
-    ptdQty: toInteger(row.salesSummaryLegacy?.qtySales01),
-    ptdSalesCents: toCurrencyCents(row.salesSummaryLegacy?.dollarSales01 ?? null),
-    ytdQty: toInteger(row.salesSummaryLegacy?.qtySales02),
-    ytdSalesCents: toCurrencyCents(row.salesSummaryLegacy?.dollarSales02 ?? null),
-    ttdQty: toInteger(row.salesSummaryLegacy?.qtySales03),
-    ttdSalesCents: toCurrencyCents(row.salesSummaryLegacy?.dollarSales03 ?? null),
-    lastYearSalesCents: toCurrencyCents(row.salesSummaryLegacy?.dollarSales04 ?? null),
+    ptdQty: liveSalesSnapshot?.ptdQty ?? toInteger(row.salesSummaryLegacy?.qtySales01),
+    ptdSalesCents: liveSalesSnapshot?.ptdSalesCents ?? toCurrencyCents(row.salesSummaryLegacy?.dollarSales01 ?? null),
+    ytdQty: liveSalesSnapshot?.ytdQty ?? toInteger(row.salesSummaryLegacy?.qtySales02),
+    ytdSalesCents: liveSalesSnapshot?.ytdSalesCents ?? toCurrencyCents(row.salesSummaryLegacy?.dollarSales02 ?? null),
+    ttdQty: liveSalesSnapshot?.ttdQty ?? toInteger(row.salesSummaryLegacy?.qtySales03),
+    ttdSalesCents: liveSalesSnapshot?.ttdSalesCents ?? toCurrencyCents(row.salesSummaryLegacy?.dollarSales03 ?? null),
+    lastYearSalesCents:
+      liveSalesSnapshot?.lastYearSalesCents ?? toCurrencyCents(row.salesSummaryLegacy?.dollarSales04 ?? null),
     dateAdded,
-    dateOfLastPurchase: toIsoString(row.salesSummaryLegacy?.dateLastPurchase ?? null),
+    dateOfLastPurchase: liveSalesSnapshot?.dateOfLastPurchase ?? toIsoString(row.salesSummaryLegacy?.dateLastPurchase ?? null),
     lastKnownArBalanceCents: toCurrencyCents(row.financialProfile?.currentBalance ?? null),
     arBalanceAsOf: lastChanged,
     lastKnownStoreCreditCents: toCurrencyCents(row.financialProfile?.creditSlipBalance ?? null),
@@ -731,12 +908,16 @@ async function getImportedCustomerRowByAccountNumber(
 
 async function getImportedCustomerById(id: string): Promise<Customer | null> {
   const row = await getImportedCustomerRowById(id);
-  return row ? toImportedCustomer(row) : null;
+  if (!row) return null;
+  const liveSales = await loadImportedCustomerLiveSalesSnapshots([row]);
+  return toImportedCustomer(row, liveSales.get(row.id));
 }
 
 async function getImportedCustomerByAccountNumber(accountNumber: string): Promise<Customer | null> {
   const row = await getImportedCustomerRowByAccountNumber(accountNumber);
-  return row ? toImportedCustomer(row) : null;
+  if (!row) return null;
+  const liveSales = await loadImportedCustomerLiveSalesSnapshots([row]);
+  return toImportedCustomer(row, liveSales.get(row.id));
 }
 
 async function getImportedCustomerWithFamily(idOrAccountNumber: string): Promise<CustomerWithFamily | null> {
@@ -744,9 +925,10 @@ async function getImportedCustomerWithFamily(idOrAccountNumber: string): Promise
     (await getImportedCustomerRowById(idOrAccountNumber)) ??
     (await getImportedCustomerRowByAccountNumber(idOrAccountNumber));
   if (!row) return null;
+  const liveSales = await loadImportedCustomerLiveSalesSnapshots([row]);
 
   return {
-    ...toImportedCustomer(row),
+    ...toImportedCustomer(row, liveSales.get(row.id)),
     familyMembers: [],
   };
 }
@@ -848,6 +1030,242 @@ export async function getCustomerWithFamily(id: string): Promise<CustomerWithFam
   return getImportedCustomerWithFamily(id);
 }
 
+async function resolveCustomerTicketHistoryIdentity(
+  idOrAccountNumber: string,
+): Promise<{ customerIds: string[]; accountKeys: string[] } | null> {
+  const [appById, importedById] = await Promise.all([
+    UUID_RE.test(idOrAccountNumber)
+      ? prisma.customer.findUnique({
+          where: { id: idOrAccountNumber },
+          select: { id: true, accountNumber: true },
+        })
+      : Promise.resolve(null),
+    getImportedCustomerRowById(idOrAccountNumber),
+  ]);
+
+  const appCustomer =
+    appById ??
+    (await prisma.customer.findUnique({
+      where: { accountNumber: idOrAccountNumber },
+      select: { id: true, accountNumber: true },
+    }));
+  const importedCustomer = importedById ?? (await getImportedCustomerRowByAccountNumber(idOrAccountNumber));
+
+  if (!appCustomer && !importedCustomer) {
+    return null;
+  }
+
+  const customerIds = new Set<string>();
+  const accountKeys = new Set<string>();
+
+  if (appCustomer) {
+    customerIds.add(appCustomer.id);
+    const accountNumber = normalizeLegacyText(appCustomer.accountNumber);
+    if (accountNumber) {
+      accountKeys.add(accountNumber);
+    }
+  }
+
+  if (importedCustomer) {
+    customerIds.add(importedCustomer.id);
+    for (const accountKey of importedCustomerAccountKeys(importedCustomer)) {
+      accountKeys.add(accountKey);
+    }
+  }
+
+  return {
+    customerIds: [...customerIds],
+    accountKeys: [...accountKeys],
+  };
+}
+
+export async function listCustomerTicketHistory(
+  idOrAccountNumber: string,
+): Promise<CustomerTicketHistoryEntry[] | null> {
+  const identity = await resolveCustomerTicketHistoryIdentity(idOrAccountNumber);
+  if (!identity) {
+    return null;
+  }
+
+  const tickets = await prisma.salesHistoryTicket.findMany({
+    where: {
+      status: 'completed',
+      transactionKind: 'purchase',
+      OR: [
+        ...(identity.customerIds.length > 0
+          ? [{ matchedCustomerId: { in: identity.customerIds } }]
+          : []),
+        ...(identity.accountKeys.length > 0
+          ? [{ accountKey: { in: identity.accountKeys } }]
+          : []),
+      ],
+    },
+    select: {
+      id: true,
+      externalTransactionId: true,
+      ticketNumber: true,
+      purchasedAt: true,
+      storeId: true,
+      channel: true,
+      status: true,
+      transactionKind: true,
+      totalAmount: true,
+      netAmount: true,
+      costAmount: true,
+      discountAmount: true,
+      lines: {
+        select: {
+          skuId: true,
+          skuCode: true,
+          categoryKey: true,
+          quantity: true,
+        },
+      },
+    },
+    orderBy: [{ purchasedAt: 'desc' }, { ticketNumber: 'desc' }, { createdAt: 'desc' }],
+  });
+
+  const skuIds = [
+    ...new Set(
+      tickets.flatMap((ticket) =>
+        ticket.lines
+          .map((line) => (line.skuId && UUID_RE.test(line.skuId) ? line.skuId : null))
+          .filter((value): value is string => value != null),
+      ),
+    ),
+  ];
+  const skuCodes = [
+    ...new Set(
+      tickets.flatMap((ticket) =>
+        ticket.lines
+          .map((line) => normalizeLegacyText(line.skuCode))
+          .filter((value): value is string => value != null),
+      ),
+    ),
+  ];
+  const skus =
+    skuIds.length > 0 || skuCodes.length > 0
+      ? await prisma.sku.findMany({
+          where: {
+            OR: [
+              ...(skuIds.length > 0 ? [{ id: { in: skuIds } }] : []),
+              ...(skuCodes.length > 0 ? [{ code: { in: skuCodes } }] : []),
+            ],
+          },
+          select: {
+            id: true,
+            code: true,
+            vendorId: true,
+            categoryNumber: true,
+          },
+        })
+      : [];
+  const skuById = new Map(skus.map((sku) => [sku.id, sku]));
+  const skuByCode = new Map(
+    skus
+      .filter((sku): sku is typeof sku & { code: string } => sku.code != null)
+      .map((sku) => [sku.code, sku]),
+  );
+  const vendorCodes = [
+    ...new Set(
+      skus
+        .map((sku) => normalizeLegacyText(sku.vendorId))
+        .filter((value): value is string => value != null),
+    ),
+  ];
+  const vendors =
+    vendorCodes.length > 0
+      ? await prisma.vendor.findMany({
+          where: { code: { in: vendorCodes } },
+          select: {
+            code: true,
+            shortName: true,
+            mailName: true,
+          },
+        })
+      : [];
+  const vendorNames = new Map(
+    vendors.map((vendor) => [
+      vendor.code,
+      normalizeLegacyText(vendor.shortName) ??
+        normalizeLegacyText(vendor.mailName) ??
+        vendor.code,
+    ]),
+  );
+  const departments = await prisma.taxonomyDepartment.findMany({
+    select: {
+      number: true,
+      description: true,
+      begCateg: true,
+      endCateg: true,
+    },
+    orderBy: { number: 'asc' },
+  });
+  const departmentRanges = departments.filter(
+    (row): row is typeof row & { begCateg: number; endCateg: number } =>
+      row.begCateg != null && row.endCateg != null,
+  );
+
+  const storeIds = [...new Set(tickets.map((ticket) => ticket.storeId).filter((value): value is number => value != null))];
+  const stores =
+    storeIds.length > 0
+      ? await prisma.storeMaster.findMany({
+          where: { number: { in: storeIds } },
+          select: { number: true, description: true },
+        })
+      : [];
+  const storeNames = new Map(stores.map((store) => [store.number, normalizeLegacyText(store.description)]));
+
+  return tickets.map((ticket) => {
+    const lineContext = ticket.lines.map((line) => {
+      const normalizedSkuCode = normalizeLegacyText(line.skuCode);
+      const lineSku =
+        (line.skuId ? skuById.get(line.skuId) : null) ??
+        (normalizedSkuCode ? skuByCode.get(normalizedSkuCode) : null) ??
+        null;
+      const categoryNumber = parseCategoryNumber(line.categoryKey) ?? lineSku?.categoryNumber ?? null;
+      const department =
+        categoryNumber != null && categoryNumber <= 900
+          ? departmentRanges.find((row) => categoryNumber >= row.begCateg && categoryNumber <= row.endCateg) ?? null
+          : null;
+      const vendorCode = normalizeLegacyText(lineSku?.vendorId);
+
+      return {
+        departmentName: normalizeLegacyText(department?.description),
+        vendorName: vendorCode ? vendorNames.get(vendorCode) ?? vendorCode : null,
+      };
+    });
+
+    return {
+      id: ticket.id,
+      externalTransactionId: ticket.externalTransactionId ?? null,
+      ticketNumber: ticket.ticketNumber ?? null,
+      purchasedAt: ticket.purchasedAt.toISOString(),
+      storeId: ticket.storeId ?? null,
+      storeName: ticket.storeId != null ? storeNames.get(ticket.storeId) ?? null : null,
+      channel: ticket.channel,
+      status: ticket.status,
+      transactionKind: ticket.transactionKind,
+      lineCount: ticket.lines.length,
+      quantity: ticket.lines.reduce((sum, line) => sum + line.quantity, 0),
+      vendorSummary: summarizeDistinctLabels(lineContext.map((line) => line.vendorName)),
+      categorySummary: summarizeDistinctLabels(lineContext.map((line) => line.departmentName)),
+      totalAmountCents: toCurrencyCents(ticket.totalAmount),
+      netAmountCents: toCurrencyCents(ticket.netAmount),
+      discountAmountCents: toCurrencyCents(ticket.discountAmount),
+      grossProfitPct:
+        (() => {
+          const netAmount = toNumberOrNull(ticket.netAmount);
+          const costAmount = toNumberOrNull(ticket.costAmount);
+          if (netAmount == null || costAmount == null || netAmount <= 0) {
+            return null;
+          }
+          return roundToSingleDecimal(((netAmount - costAmount) / netAmount) * 100);
+        })(),
+    };
+  });
+}
+
 export async function updateCustomer(id: string, input: UpdateCustomerInput): Promise<Customer | null> {
   const existing = await prisma.customer.findUnique({ where: { id } });
   if (!existing) return null;
@@ -946,9 +1364,10 @@ export async function listCustomers(
       skip: offset,
     }),
   ]);
+  const liveSales = await loadImportedCustomerLiveSalesSnapshots(rows);
 
   return {
-    data: rows.map(toImportedCustomer),
+    data: rows.map((row) => toImportedCustomer(row, liveSales.get(row.id))),
     pagination: {
       page: params.page,
       pageSize: params.pageSize,
@@ -998,9 +1417,13 @@ export async function searchCustomers(q: string, limit = 10): Promise<Customer[]
       take: limit * 3,
     }),
   ]);
+  const importedLiveSales = await loadImportedCustomerLiveSalesSnapshots(importedRows);
 
   const deduped = new Map<string, Customer>();
-  for (const customer of [...appRows.map(toCustomer), ...importedRows.map(toImportedCustomer)]) {
+  for (const customer of [
+    ...appRows.map(toCustomer),
+    ...importedRows.map((row) => toImportedCustomer(row, importedLiveSales.get(row.id))),
+  ]) {
     const key = customer.accountNumber || customer.id;
     if (!deduped.has(key)) deduped.set(key, customer);
   }

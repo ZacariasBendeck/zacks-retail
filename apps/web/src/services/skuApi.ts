@@ -198,13 +198,24 @@ export async function searchSkusForLookup(query: SkuLookupQuery): Promise<SkuLoo
 }
 
 export interface SkuLookupFacets {
-  seasons: string[]
+  seasons: Array<{ code: string; name: string | null; label: string }>
   vendors: Array<{ code: string; label: string }>
   departments: Array<{ number: number; name: string }>
 }
 
-export async function fetchSkuLookupFacets(): Promise<SkuLookupFacets> {
-  const response = await fetch('/api/v1/skus/lookup-facets')
+export interface SkuLookupFacetQuery {
+  season?: string
+  vendor?: string
+  department?: number
+}
+
+export async function fetchSkuLookupFacets(query: SkuLookupFacetQuery = {}): Promise<SkuLookupFacets> {
+  const params = new URLSearchParams()
+  if (query.season) params.set('season', query.season)
+  if (query.vendor) params.set('vendor', query.vendor)
+  if (query.department != null) params.set('department', String(query.department))
+  const suffix = params.size > 0 ? `?${params.toString()}` : ''
+  const response = await fetch(`/api/v1/skus/lookup-facets${suffix}`)
   if (!response.ok) throw new SkuApiError(`Facet fetch failed: ${response.status}`, response.status)
   return response.json()
 }

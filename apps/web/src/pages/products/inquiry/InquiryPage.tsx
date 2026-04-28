@@ -16,7 +16,6 @@ const VIEW_MODES = new Set<ViewMode>([
   'LY_SALES',
   'SINGLE_COLUMN',
   'ALL_STORES_ON_HAND',
-  'ALL_STORES_ONE_ROW',
   'ALL_STORES_SUMMARY',
   'MAX',
   'REORDER',
@@ -42,8 +41,8 @@ export const InquiryPage: React.FC = () => {
   const parsedStoreId = storeIdRaw ? Number(storeIdRaw) : undefined;
   const storeId = parsedStoreId != null && Number.isFinite(parsedStoreId) ? parsedStoreId : undefined;
   const selectedRow = rowRaw?.trim() || null;
-  const modeRaw = (params.get('mode') ?? 'ALL_STORES_SUMMARY').toUpperCase() as ViewMode;
-  const mode = VIEW_MODES.has(modeRaw) ? modeRaw : 'ALL_STORES_SUMMARY';
+  const modeRaw = (params.get('mode') ?? 'ALL_STORES_SUMMARY').toUpperCase();
+  const mode = VIEW_MODES.has(modeRaw as ViewMode) ? (modeRaw as ViewMode) : 'ALL_STORES_SUMMARY';
   const tabRaw = (params.get('tab') ?? '').toUpperCase() as InquiryTab;
   const activeTab = INQUIRY_TABS.has(tabRaw) ? tabRaw : null;
   const scopeRaw = (params.get('scope') ?? 'general').toLowerCase() as NeighborScope;
@@ -64,6 +63,10 @@ export const InquiryPage: React.FC = () => {
     navigate(`/products/inquiry/${encodeURIComponent(picked.skuCode)}${qs ? `?${qs}` : ''}`);
   };
 
+  const onEditSku = (code: string) => {
+    navigate(`/products/skus/${encodeURIComponent(code)}/edit`);
+  };
+
   return (
     <InquiryBody
       skuCode={skuCode}
@@ -73,6 +76,7 @@ export const InquiryPage: React.FC = () => {
       activeTab={activeTab}
       scope={scope}
       onPickSku={onPickSku}
+      onEditSku={onEditSku}
       onModeChange={(nextMode) =>
         updateParams((next) => {
           next.set('mode', nextMode);

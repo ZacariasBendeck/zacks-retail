@@ -33,7 +33,7 @@ export function RecommendedActionCard({ action }: Props) {
         border: `1px solid ${TONE_BORDER[action.tone]}`,
         borderRadius: 12,
       }}
-      bodyStyle={{ padding: 16 }}
+      styles={{ body: { padding: 16 } }}
     >
       <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
         <div style={{ marginTop: 2 }}>{TONE_ICON[action.tone]}</div>

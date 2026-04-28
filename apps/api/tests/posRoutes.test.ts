@@ -12,8 +12,10 @@ const PASSWORD = 'pos-routes-owner-123';
 const STORE_NUMBER = 32000 + (RUN_ID % 100);
 const SKU_CODE = `POS${String(RUN_ID).slice(-10)}`;
 const UPC = `95${String(RUN_ID).slice(-12)}`;
+const CUSTOMER_ACCOUNT = `POSCUST${String(RUN_ID).slice(-8)}`;
 
 let skuId = '';
+let importedCustomerId = '';
 
 async function ensureOwnerUser(email: string, password: string): Promise<void> {
   await bootstrapOwner(prisma);
@@ -67,6 +69,17 @@ describe('pos routes', () => {
       },
     });
 
+    const importedCustomer = await prisma.customerIntelligenceCustomer.create({
+      data: {
+        source: 'pos_routes_test',
+        status: 'active',
+        ricsAccount: CUSTOMER_ACCOUNT,
+        fullName: 'POS ROUTE CUSTOMER, TEST',
+      },
+      select: { id: true },
+    });
+    importedCustomerId = importedCustomer.id;
+
     const sku = await prisma.sku.create({
       data: {
         provisionalCode: `${SKU_CODE}-PROV`,
@@ -105,6 +118,15 @@ describe('pos routes', () => {
 
   afterAll(async () => {
     await prisma.salesHistoryTicket.deleteMany({ where: { storeId: STORE_NUMBER } });
+    if (importedCustomerId) {
+      await prisma.customerMetrics.deleteMany({ where: { customerId: importedCustomerId } });
+      await prisma.customerFeatureCurrent.deleteMany({ where: { customerId: importedCustomerId } });
+      await prisma.customerMetricsDaily.deleteMany({ where: { customerId: importedCustomerId } });
+      await prisma.customerCategoryFeature.deleteMany({ where: { customerId: importedCustomerId } });
+      await prisma.customerBrandFeature.deleteMany({ where: { customerId: importedCustomerId } });
+      await prisma.customerSizeProfile.deleteMany({ where: { customerId: importedCustomerId } });
+    }
+    await prisma.customerIntelligenceCustomer.deleteMany({ where: { id: importedCustomerId } });
     await prisma.stockMovement.deleteMany({ where: { storeId: STORE_NUMBER, skuId } });
     await prisma.stockLevel.deleteMany({ where: { storeId: STORE_NUMBER, skuId } });
     await prisma.posShift.deleteMany({ where: { storeId: STORE_NUMBER } });
@@ -173,6 +195,19 @@ describe('pos routes', () => {
     expect(addLine.body.ticket.taxTotal).toBe(15);
     expect(addLine.body.ticket.grandTotal).toBe(115);
 
+    const patchHeader = await request(app)
+      .patch(`/api/v1/pos/tickets/${ticketId}/header`)
+      .set('Cookie', cookie)
+      .send({
+        customerId: importedCustomerId,
+        customerAccountNumber: CUSTOMER_ACCOUNT,
+        customerName: 'POS ROUTE CUSTOMER, TEST',
+      });
+
+    expect(patchHeader.status).toBe(200);
+    expect(patchHeader.body.ticket.customerId).toBe(importedCustomerId);
+    expect(patchHeader.body.ticket.customerAccountNumber).toBe(CUSTOMER_ACCOUNT);
+
     const complete = await request(app)
       .post(`/api/v1/pos/tickets/${ticketId}/complete`)
       .set('Cookie', cookie)
@@ -223,6 +258,8 @@ describe('pos routes', () => {
     expect(salesHistory?.storeId).toBe(STORE_NUMBER);
     expect(salesHistory?.source).toBe('pos_live');
     expect(salesHistory?.status).toBe('completed');
+    expect(salesHistory?.matchedCustomerId).toBe(importedCustomerId);
+    expect(salesHistory?.accountKey).toBe(CUSTOMER_ACCOUNT);
     expect(salesHistory?.lines).toHaveLength(1);
     expect(salesHistory?.lines[0].skuId).toBe(skuId);
     expect(Number(salesHistory?.lines[0].unitPrice ?? 0)).toBe(100);

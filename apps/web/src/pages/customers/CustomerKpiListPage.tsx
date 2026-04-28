@@ -7,7 +7,7 @@ import { CustomerKpiCard } from '../../components/customerKpi/CustomerKpiCard'
 import { CustomerKpiTable } from '../../components/customerKpi/CustomerKpiTable'
 import { SEGMENT_LABELS } from '../../components/customerKpi/CustomerSegmentBadge'
 import { fmtMoney, fmtMoneyInt } from '../../components/customerKpi/formatters'
-import type { CustomerKpiListParams, CustomerKpiSegment, CustomerStoreChainKey } from '../../types/customerKpi'
+import type { CustomerKpiListParams, CustomerKpiSegment } from '../../types/customerKpi'
 
 const { Search } = Input
 const { Title, Text } = Typography
@@ -53,14 +53,6 @@ const SORT_KEYS: NonNullable<CustomerKpiListParams['sort']>[] = [
   'discountRatio',
   'lastPurchaseDate',
   'displayName',
-]
-
-const STORE_CHAIN_KEYS: CustomerStoreChainKey[] = [
-  'unlimited',
-  'magic_shoes',
-  'la_femme',
-  'online',
-  'other',
 ]
 
 const LOCATION_VIEW_OPTIONS: Array<{ value: LocationViewMode; label: string }> = [
@@ -136,9 +128,8 @@ function parseOrder(value: string | null): CustomerKpiListParams['order'] {
 }
 
 function parseStoreChain(value: string | null): CustomerKpiListParams['primaryStoreChain'] {
-  return STORE_CHAIN_KEYS.includes(value as CustomerStoreChainKey)
-    ? (value as CustomerStoreChainKey)
-    : undefined
+  const normalized = value?.trim()
+  return normalized ? normalized : undefined
 }
 
 function readFilters(searchParams: URLSearchParams): CustomerKpiListParams {
@@ -369,7 +360,7 @@ export default function CustomerKpiListPage() {
     }
 
     if (locationViewMode === 'chain') {
-      applyLocationView({ primaryStoreChain: value as CustomerStoreChainKey })
+      applyLocationView({ primaryStoreChain: value })
       return
     }
 
@@ -530,7 +521,7 @@ export default function CustomerKpiListPage() {
                   { value: 'omnichannel', label: 'Omnichannel' },
                 ]}
               />
-              <Select<CustomerStoreChainKey | undefined>
+              <Select<string | undefined>
                 size="small"
                 placeholder="Chain"
                 style={{ minWidth: 160 }}

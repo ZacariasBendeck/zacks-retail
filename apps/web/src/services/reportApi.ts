@@ -534,7 +534,7 @@ export interface AgingDrillDownResponse {
 
 export interface AgingDimensionsResponse {
   stores: { number: number; name: string | null }[]
-  chains: { code: string; label: string }[]
+  chains: { code: string; label: string; storeNumbers: number[] }[]
   buyers: { code: string; label: string }[]
   sectors: { number: number; name: string }[]
   departments: { number: number; name: string }[]
@@ -1451,6 +1451,13 @@ export interface SalesHistoryByMonthCriteria {
 export interface SalesHistoryByMonthRow {
   key: string
   label: string
+  /** Parent grouping for SKU-detail rows, currently vendor/category. */
+  groupKey?: string
+  groupLabel?: string
+  /** Product image filename for SKU-detail rows. */
+  pictureFileName?: string | null
+  /** Child SKU rows for grouped SKU-detail reports. */
+  children?: SalesHistoryByMonthRow[]
   /** Per-metric 12-month grid. Undefined for metrics not in dataToPrint. */
   metrics: Partial<Record<SalesHistoryByMonthMetricKey, number[]>>
   totals: Partial<Record<SalesHistoryByMonthMetricKey, number>>

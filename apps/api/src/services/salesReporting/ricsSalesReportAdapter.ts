@@ -39,6 +39,7 @@ import { loadSkuAttributesBySku } from './skuAttributesEnricher';
 import {
   parseCriteria,
   matchesCriteria,
+  matchesKeywords,
   type CriteriaExpression,
   sqlNumericBounds,
 } from '../../utils/criteriaGrammar';
@@ -133,7 +134,8 @@ interface SalespersonInfo {
 async function loadSalespersonMap(): Promise<Map<string, SalespersonInfo>> {
   return cachedAsync('sr:dim:salespeople', 300_000, async () => {
     const rows = await prisma.$queryRawUnsafe<{ Code: string | null; Name: string | null }[]>(
-      `SELECT code AS "Code", name AS "Name" FROM rics_mirror.salespeople`,
+      `SELECT salesperson_code AS "Code", display_name AS "Name"
+       FROM app.employee`,
     );
     const map = new Map<string, SalespersonInfo>();
     for (const r of rows) {
@@ -166,6 +168,31 @@ async function loadCategoryList(): Promise<CategoryRow[]> {
         desc: r.Desc?.trim() || null,
       }))
       .sort((a, b) => a.number - b.number);
+  });
+}
+
+async function loadCategoryMap(): Promise<Map<number, string>> {
+  const categories = await loadCategoryList();
+  const map = new Map<number, string>();
+  for (const category of categories) {
+    map.set(category.number, category.desc ?? String(category.number));
+  }
+  return map;
+}
+
+async function loadVendorMap(): Promise<Map<string, string>> {
+  return cachedAsync('sr:dim:vendors', 300_000, async () => {
+    const rows = await prisma.$queryRawUnsafe<{ Code: string | null; Name: string | null }[]>(
+      `SELECT code AS "Code", COALESCE(NULLIF(BTRIM(short_name), ''), NULLIF(BTRIM(mail_name), ''), code) AS "Name"
+       FROM app.vendor`,
+    );
+    const map = new Map<string, string>();
+    for (const row of rows) {
+      const code = row.Code?.trim();
+      if (!code) continue;
+      map.set(code, row.Name?.trim() || code);
+    }
+    return map;
   });
 }
 
@@ -331,10 +358,22 @@ interface TicketLine {
   posted: boolean;
 }
 
+interface SkuMasterFields {
+  sku: string;
+  season: string | null;
+  groupCode: string | null;
+  styleColor: string | null;
+  keywords: string | null;
+  category: number | null;
+  vendor: string | null;
+}
+
+interface AnalysisLine extends TicketLine {
+  master?: SkuMasterFields | null;
+}
+
 interface RawTicketHeaderFlag {
-  UserID: string | null;
-  BatchDate: string | null;
-  Terminal: string | null;
+  TicketId: string | null;
   Store: number | null;
   Ticket: number | null;
   RealDate: string | null;
@@ -448,44 +487,52 @@ async function loadTicketLines(params: {
     const extraWheres: string[] = [];
     if (params.storeNumbers && params.storeNumbers.length > 0) {
       sqlParams.push(params.storeNumbers.map((n) => Number(n)));
-      extraWheres.push(`h.store = ANY($${sqlParams.length}::int[])`);
+      extraWheres.push(`h.store_id = ANY($${sqlParams.length}::int[])`);
     }
-    if (!includeUnposted) {
-      extraWheres.push(`h.posted = 'Y'`);
-    }
+    // includeUnposted: the MDB-era "posted='Y'" flag (posted to inventory) has no
+    // direct equivalent in the app-owned surface. status='completed' is the closest
+    // analog and is already enforced unconditionally below; the param is preserved
+    // for caller compatibility but is currently a no-op.
+    void includeUnposted;
     const extraClause = extraWheres.length ? ' AND ' + extraWheres.join(' AND ') : '';
 
+    // Migrated 2026-04-25 from rics_mirror.ticket_header/ticket_detail (retired) to
+    // the app-owned sales-history surface. Field semantics:
+    //   - extension     ← sales_history_ticket_line.net_amount  (line dollars, post-discount)
+    //   - perks         → 0 (the legacy RICS perks column was not carried over)
+    //   - posted        ← (status = 'completed') — the "trans_type=1 AND voided=false"
+    //                     filter from the MDBs is approximated by status='completed'
+    //   - category      ← category_key parsed as int (RICS used 3-digit numeric codes)
+    //   - vendor        ← brand_key (the new app-owned vendor surface)
+    //   - returnCode    ← return_code parsed as int with default 0
     const sql = `SELECT
-  h.store       AS "H_Store",
-  h.ticket      AS "H_Ticket",
-  to_char(h.real_date AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS') AS "H_RealDate",
-  h.cashier     AS "H_Cashier",
-  h.posted      AS "H_Posted",
-  d.sku         AS "D_SKU",
-  d."column"    AS "D_Column",
-  d."row"       AS "D_Row",
-  d.qty         AS "D_Qty",
-  d.extension::float8   AS "D_Extension",
-  d.perks::float8       AS "D_Perks",
-  d.sales_person        AS "D_SalesPerson",
-  d.category            AS "D_Category",
-  d.vendor              AS "D_Vendor",
-  d.cost::float8        AS "D_Cost",
-  d.return_code         AS "D_ReturnCode",
-  d.real_price::float8  AS "D_RealPrice"
-FROM rics_mirror.ticket_header h
-INNER JOIN rics_mirror.ticket_detail d
-  ON h.user_id    = d.user_id
- AND h.batch_date = d.batch_date
- AND h.terminal   = d.terminal
- AND h.store      = d.store
- AND h.ticket     = d.ticket
- AND h.real_date  = d.real_date
+  h.store_id     AS "H_Store",
+  h.ticket_number AS "H_Ticket",
+  to_char(h.purchased_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS') AS "H_RealDate",
+  h.cashier_code AS "H_Cashier",
+  CASE WHEN h.status = 'completed' THEN 'Y' ELSE 'N' END AS "H_Posted",
+  COALESCE(NULLIF(BTRIM(d.sku_code), ''), s.code, s.provisional_code) AS "D_SKU",
+  d.column_label  AS "D_Column",
+  d.row_label     AS "D_Row",
+  d.quantity      AS "D_Qty",
+  d.net_amount::float8 AS "D_Extension",
+  0::float8       AS "D_Perks",
+  d.salesperson_code   AS "D_SalesPerson",
+  COALESCE(
+    CASE WHEN d.category_key ~ '^[0-9]+$' THEN d.category_key::int ELSE NULL END,
+    s.category_number
+  ) AS "D_Category",
+  COALESCE(NULLIF(BTRIM(d.brand_key), ''), s.vendor_id) AS "D_Vendor",
+  COALESCE(d.unit_cost, s.current_cost)::float8 AS "D_Cost",
+  CASE WHEN d.return_code ~ '^[0-9]+$' THEN d.return_code::int ELSE 0 END AS "D_ReturnCode",
+  d.unit_price::float8 AS "D_RealPrice"
+FROM app.sales_history_ticket h
+INNER JOIN app.sales_history_ticket_line d ON d.ticket_id = h.id
+LEFT JOIN app.sku s ON s.id = d.sku_id
 WHERE
-  h.real_date  >= $1::date
-  AND h.real_date <  $2::date
-  AND h.trans_type = 1
-  AND h.voided     = false${extraClause}
+  h.purchased_at >= $1::date
+  AND h.purchased_at <  $2::date
+  AND h.status = 'completed'${extraClause}
 LIMIT ${MAX_TICKET_ROWS}`;
 
     interface Raw {
@@ -540,28 +587,26 @@ async function loadTicketHeaders(params: {
     const extraWheres: string[] = [];
     if (params.storeNumbers && params.storeNumbers.length > 0) {
       sqlParams.push(params.storeNumbers.map((n) => Number(n)));
-      extraWheres.push(`h.store = ANY($${sqlParams.length}::int[])`);
+      extraWheres.push(`h.store_id = ANY($${sqlParams.length}::int[])`);
     }
-    if (!includeUnposted) {
-      extraWheres.push(`h.posted = 'Y'`);
-    }
+    void includeUnposted; // see loadTicketLines — no longer applicable post-migration.
     const extraClause = extraWheres.length ? ' AND ' + extraWheres.join(' AND ') : '';
 
+    // Migrated 2026-04-25 from rics_mirror.ticket_header to app.sales_history_ticket.
+    // The 6-column composite identity (user_id|batch_date|terminal|store|ticket|real_date)
+    // collapses to the app surface's UUID primary key.
     const sql = `SELECT
-  h.user_id AS "UserID",
-  to_char(h.batch_date AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS') AS "BatchDate",
-  h.terminal AS "Terminal",
-  h.store AS "Store",
-  h.ticket AS "Ticket",
-  to_char(h.real_date AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS') AS "RealDate",
-  h.cashier AS "Cashier",
-  h.posted AS "Posted"
-FROM rics_mirror.ticket_header h
+  h.id        AS "TicketId",
+  h.store_id  AS "Store",
+  h.ticket_number AS "Ticket",
+  to_char(h.purchased_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS') AS "RealDate",
+  h.cashier_code AS "Cashier",
+  CASE WHEN h.status = 'completed' THEN 'Y' ELSE 'N' END AS "Posted"
+FROM app.sales_history_ticket h
 WHERE
-  h.real_date  >= $1::date
-  AND h.real_date <  $2::date
-  AND h.trans_type = 1
-  AND h.voided     = false${extraClause}`;
+  h.purchased_at >= $1::date
+  AND h.purchased_at <  $2::date
+  AND h.status = 'completed'${extraClause}`;
     const raw = await prisma.$queryRawUnsafe<RawTicketHeaderFlag[]>(sql, ...sqlParams);
     return raw.map<TicketHeaderFlag>((r) => ({
       store: Number(r.Store ?? 0),
@@ -569,7 +614,7 @@ WHERE
       date: parseMsDateToIso(r.RealDate),
       cashier: (r.Cashier ?? '').trim(),
       posted: (r.Posted ?? '').trim().toUpperCase() === 'Y',
-      key: `${r.UserID}|${r.BatchDate}|${r.Terminal}|${r.Store}|${r.Ticket}|${r.RealDate}`,
+      key: r.TicketId ?? `${r.Store}|${r.Ticket}|${r.RealDate}`,
     }));
   });
 }
@@ -1062,7 +1107,7 @@ export async function getSalespersonSummary(params: {
   const subtotalBy = params.subtotalBy ?? null;
   const wantCashiers = params.cashierSummary === true;
 
-  const [lines, headers, salespeople] = await Promise.all([
+  const [lines, headers, salespeople, categoryMap, vendorMap] = await Promise.all([
     loadTicketLines({
       startDate,
       endDate,
@@ -1076,6 +1121,8 @@ export async function getSalespersonSummary(params: {
         })
       : Promise.resolve([] as TicketHeaderFlag[]),
     loadSalespersonMap(),
+    subtotalBy === 'DEPARTMENT' ? loadCategoryMap() : Promise.resolve(new Map<number, string>()),
+    subtotalBy === 'VENDOR' ? loadVendorMap() : Promise.resolve(new Map<string, string>()),
   ]);
 
   // Group lines by (salesperson, store).
@@ -1112,11 +1159,16 @@ export async function getSalespersonSummary(params: {
       const subKey = subtotalBy === 'VENDOR'
         ? (l.vendor ?? '(none)')
         : String(l.category ?? 0);
+      const subLabel = subtotalBy === 'VENDOR'
+        ? (l.vendor ? `${l.vendor} - ${vendorMap.get(l.vendor) ?? l.vendor}` : '(none)')
+        : l.category != null
+          ? `${l.category} - ${categoryMap.get(l.category) ?? l.category}`
+          : '(none)';
       let sub = b.subtotals.get(subKey);
       if (!sub) {
         sub = {
           key: subKey,
-          label: subKey,
+          label: subLabel,
           qty: 0,
           dollars: 0,
           perks: 0,
@@ -1346,16 +1398,15 @@ export async function getSalesAnalysis(params: {
 }): Promise<SalesAnalysisReport> {
   const { startDate, endDate } = resolveAnalysisWindow(params);
 
-  // Guard: reportTypes that require RIINVMAS master joins aren't wired yet.
-  if (REQUIRES_MASTER_JOIN.has(params.reportType)) {
-    throw new ReportTypeNotImplementedError(params.reportType);
-  }
-
   const parsed: ParsedAnalysisCriteria = {
     stores: parseCriteria(params.criteria.storesRaw),
     categories: parseCriteria(params.criteria.categoriesRaw),
     vendors: parseCriteria(params.criteria.vendorsRaw),
     skus: parseCriteria(params.criteria.skusRaw),
+    seasons: parseCriteria(params.criteria.seasonsRaw),
+    groups: parseCriteria(params.criteria.groupsRaw),
+    styleColor: parseCriteria(params.criteria.styleColorRaw || params.criteria.styleColor),
+    keywords: parseCriteria(params.criteria.keywordsRaw),
   };
 
   // Widen the ticket-line pre-filter for Stores: if `storesRaw` expresses a
@@ -1384,23 +1435,31 @@ export async function getSalesAnalysis(params: {
     endDate,
     storeNumbers: filteredStores,
   });
+  const masterBySku = needsSkuMaster(params)
+    ? await loadSkuMasterFields(lines.map((l) => l.sku))
+    : new Map<string, SkuMasterFields>();
+  const analysisLines: AnalysisLine[] = lines.map((line) => {
+    const master = line.sku ? masterBySku.get(line.sku.trim().toUpperCase()) ?? null : null;
+    return { ...line, master };
+  });
 
   // Apply criteria filters.
-  const filtered = lines.filter((l) => applyAnalysisCriteria(l, params.criteria, parsed));
+  const filtered = analysisLines.filter((l) => applyAnalysisCriteria(l, params.criteria, parsed));
 
   // Row grain is driven by `reportType`:
   //   SKU_DETAIL           → one row per SKU
   //   CATEGORY_SUMMARY     → one row per category (denorm on TicketDetail)
-  //   DEPT_SUMMARY         → one row per department (category → dept via RIDEPT)
+  //   DEPT_SUMMARY         → one row per department (category → dept)
   //   VENDOR_SUMMARY       → one row per vendor (denorm on TicketDetail)
   //   PRICE_POINT_SUMMARY  → one row per $25 price bucket
-  //   SEASON/GROUP/        → requires RIINVMAS join (guarded above)
-  //   STYLE_COLOR/SECTOR_SUMMARY
+  //   SEASON/GROUP/STYLE   → one row per app.sku master field
+  //   SECTOR_SUMMARY       → one row per sector (category → dept → sector)
   //
   // `dimension` (analyze-by) is retained for future hierarchical grouping; it
   // does not change row grain today.
   const combine = params.storeOption === 'COMBINE';
-  const deptMap = params.reportType === 'DEPT_SUMMARY' ? await loadDepartmentMap() : null;
+  const deptMap = needsDepartmentMap(params.reportType) ? await loadDepartmentMap() : null;
+  const sectorMap = params.reportType === 'SECTOR_SUMMARY' ? await loadSectorMap() : null;
 
   type Bucket = {
     dimensionKey: string;
@@ -1412,7 +1471,7 @@ export async function getSalesAnalysis(params: {
   };
   const buckets = new Map<string, Bucket>();
   for (const l of filtered) {
-    const dimKey = rowGrainKey(l, params.reportType, deptMap);
+    const dimKey = rowGrainKey(l, params.reportType, deptMap, sectorMap);
     if (!dimKey) continue;
     const storeKey = combine ? null : l.store;
     const mapKey = `${dimKey}|${storeKey ?? '*'}`;
@@ -1420,7 +1479,7 @@ export async function getSalesAnalysis(params: {
     if (!b) {
       b = {
         dimensionKey: dimKey,
-        dimensionLabel: dimLabelFor(dimKey, params.reportType, deptMap),
+        dimensionLabel: dimLabelFor(dimKey, params.reportType, deptMap, sectorMap),
         storeNumber: storeKey,
         qty: 0,
         netSales: 0,
@@ -1443,14 +1502,21 @@ export async function getSalesAnalysis(params: {
       endDate: pyEnd,
       storeNumbers: filteredStores,
     });
+    const pyMasterBySku = needsSkuMaster(params)
+      ? await loadSkuMasterFields(pyLines.map((l) => l.sku))
+      : new Map<string, SkuMasterFields>();
     priorYearByDimStore = new Map();
     for (const l of pyLines) {
-      if (!applyAnalysisCriteria(l, params.criteria, parsed)) continue;
-      const dimKey = rowGrainKey(l, params.reportType, deptMap);
+      const pyLine: AnalysisLine = {
+        ...l,
+        master: l.sku ? pyMasterBySku.get(l.sku.trim().toUpperCase()) ?? null : null,
+      };
+      if (!applyAnalysisCriteria(pyLine, params.criteria, parsed)) continue;
+      const dimKey = rowGrainKey(pyLine, params.reportType, deptMap, sectorMap);
       if (!dimKey) continue;
-      const storeKey = combine ? null : l.store;
+      const storeKey = combine ? null : pyLine.store;
       const mapKey = `${dimKey}|${storeKey ?? '*'}`;
-      priorYearByDimStore.set(mapKey, (priorYearByDimStore.get(mapKey) ?? 0) + l.extension);
+      priorYearByDimStore.set(mapKey, (priorYearByDimStore.get(mapKey) ?? 0) + pyLine.extension);
     }
   }
 
@@ -1475,6 +1541,19 @@ export async function getSalesAnalysis(params: {
       const dept = deptNumberForCategory(catNum, deptMap);
       if (dept == null) continue;
       const newKey = `${dept}${tail}`;
+      onHandLookup.set(newKey, (onHandLookup.get(newKey) ?? 0) + v);
+    }
+  } else if (params.reportType === 'SECTOR_SUMMARY' && deptMap && sectorMap) {
+    onHandLookup = new Map<string, number>();
+    for (const [k, v] of rawOnHandMap) {
+      const pipeIdx = k.indexOf('|');
+      const head = pipeIdx === -1 ? k : k.slice(0, pipeIdx);
+      const tail = pipeIdx === -1 ? '' : k.slice(pipeIdx);
+      const catNum = Number(head.replace(/^CAT:/, ''));
+      const dept = deptNumberForCategory(catNum, deptMap);
+      const sector = sectorNumberForDepartment(dept, sectorMap);
+      if (sector == null) continue;
+      const newKey = `${sector}${tail}`;
       onHandLookup.set(newKey, (onHandLookup.get(newKey) ?? 0) + v);
     }
   } else if (params.reportType === 'PRICE_POINT_SUMMARY') {
@@ -1612,6 +1691,10 @@ export async function getSalesHierarchy(params: {
     categories: parseCriteria(params.criteria.categoriesRaw),
     vendors: parseCriteria(params.criteria.vendorsRaw),
     skus: parseCriteria(params.criteria.skusRaw),
+    seasons: parseCriteria(params.criteria.seasonsRaw),
+    groups: parseCriteria(params.criteria.groupsRaw),
+    styleColor: parseCriteria(params.criteria.styleColorRaw || params.criteria.styleColor),
+    keywords: parseCriteria(params.criteria.keywordsRaw),
   };
 
   const structuredStoresList = params.criteria.stores ?? [];
@@ -2026,10 +2109,14 @@ interface ParsedAnalysisCriteria {
   categories: CriteriaExpression;
   vendors: CriteriaExpression;
   skus: CriteriaExpression;
+  seasons: CriteriaExpression;
+  groups: CriteriaExpression;
+  styleColor: CriteriaExpression;
+  keywords: CriteriaExpression;
 }
 
 function applyAnalysisCriteria(
-  l: TicketLine,
+  l: AnalysisLine,
   c: SalesAnalysisCriteria,
   parsed: ParsedAnalysisCriteria,
 ): boolean {
@@ -2037,17 +2124,14 @@ function applyAnalysisCriteria(
   if (!facetKeeps(c.categories, parsed.categories, l.category ?? null)) return false;
   if (!facetKeeps(c.vendors, parsed.vendors, l.vendor ?? null)) return false;
   if (!facetKeeps(c.skus, parsed.skus, l.sku)) return false;
+  if (!facetKeeps(c.seasons, parsed.seasons, l.master?.season ?? null)) return false;
+  if (!facetKeeps(c.groups, parsed.groups, l.master?.groupCode ?? null)) return false;
+  if (!matchesCriteria(parsed.styleColor, l.master?.styleColor ?? null)) return false;
+  if (!matchesKeywords(parsed.keywords, l.master?.keywords ?? null)) return false;
   return true;
 }
 
 // Row-grain helpers ─────────────────────────────────────────────────────────
-
-const REQUIRES_MASTER_JOIN = new Set<SalesAnalysisReportType>([
-  'SEASON_SUMMARY',
-  'GROUP_SUMMARY',
-  'STYLE_COLOR_SUMMARY',
-  'SECTOR_SUMMARY',
-]);
 
 export class ReportTypeNotImplementedError extends Error {
   constructor(public readonly reportType: SalesAnalysisReportType) {
@@ -2065,6 +2149,13 @@ interface DeptRow {
   endCateg: number;
 }
 
+interface SectorRow {
+  number: number;
+  desc: string | null;
+  begDept: number;
+  endDept: number;
+}
+
 async function loadDepartmentMap(): Promise<DeptRow[]> {
   return cachedAsync('sr:dim:departments', 300_000, async () => {
     const rows = await prisma.$queryRawUnsafe<
@@ -2072,7 +2163,7 @@ async function loadDepartmentMap(): Promise<DeptRow[]> {
     >(
       `SELECT number AS "Number", "desc" AS "Desc",
               beg_categ AS "BegCateg", end_categ AS "EndCateg"
-         FROM rics_mirror.departments
+         FROM app.taxonomy_department
         WHERE beg_categ IS NOT NULL AND end_categ IS NOT NULL`,
     );
     return rows
@@ -2086,12 +2177,113 @@ async function loadDepartmentMap(): Promise<DeptRow[]> {
   });
 }
 
+async function loadSectorMap(): Promise<SectorRow[]> {
+  return cachedAsync('sr:dim:sectors', 300_000, async () => {
+    const rows = await prisma.$queryRawUnsafe<
+      { Number: number; Desc: string | null; BegDept: number; EndDept: number }[]
+    >(
+      `SELECT number AS "Number", "desc" AS "Desc",
+              beg_dept AS "BegDept", end_dept AS "EndDept"
+         FROM app.taxonomy_sector
+        WHERE beg_dept IS NOT NULL AND end_dept IS NOT NULL`,
+    );
+    return rows
+      .filter((r) => r.Number != null)
+      .map<SectorRow>((r) => ({
+        number: Number(r.Number),
+        desc: r.Desc?.trim() || null,
+        begDept: Number(r.BegDept ?? 0),
+        endDept: Number(r.EndDept ?? 0),
+      }));
+  });
+}
+
 function deptNumberForCategory(category: number | null, depts: DeptRow[] | null): number | null {
   if (category == null || !depts) return null;
   for (const d of depts) {
     if (category >= d.begCateg && category <= d.endCateg) return d.number;
   }
   return null;
+}
+
+function sectorNumberForDepartment(department: number | null, sectors: SectorRow[] | null): number | null {
+  if (department == null || !sectors) return null;
+  for (const s of sectors) {
+    if (department >= s.begDept && department <= s.endDept) return s.number;
+  }
+  return null;
+}
+
+function needsDepartmentMap(reportType: SalesAnalysisReportType): boolean {
+  return reportType === 'DEPT_SUMMARY' || reportType === 'SECTOR_SUMMARY';
+}
+
+function needsSkuMaster(params: {
+  reportType: SalesAnalysisReportType;
+  criteria: SalesAnalysisCriteria;
+  includeAttributes?: boolean;
+}): boolean {
+  return (
+    params.reportType === 'SEASON_SUMMARY' ||
+    params.reportType === 'GROUP_SUMMARY' ||
+    params.reportType === 'STYLE_COLOR_SUMMARY' ||
+    !!params.criteria.seasons?.length ||
+    !!params.criteria.groups?.length ||
+    !!params.criteria.styleColor ||
+    !!params.criteria.keywords?.length ||
+    !!params.criteria.seasonsRaw ||
+    !!params.criteria.groupsRaw ||
+    !!params.criteria.styleColorRaw ||
+    !!params.criteria.keywordsRaw
+  );
+}
+
+async function loadSkuMasterFields(skuCodes: string[]): Promise<Map<string, SkuMasterFields>> {
+  const unique = Array.from(new Set(
+    skuCodes
+      .map((sku) => sku?.trim().toUpperCase())
+      .filter((sku): sku is string => !!sku),
+  ));
+  if (unique.length === 0) return new Map();
+  return cachedAsync(`sr:skuMaster:${unique.sort().join('|')}`, 300_000, async () => {
+    const rows = await prisma.$queryRawUnsafe<Array<{
+      SKU: string | null;
+      Season: string | null;
+      GroupCode: string | null;
+      StyleColor: string | null;
+      Keywords: string | null;
+      Category: number | null;
+      Vendor: string | null;
+    }>>(
+      `SELECT UPPER(BTRIM(code)) AS "SKU",
+              season AS "Season",
+              group_code AS "GroupCode",
+              style_color AS "StyleColor",
+              keywords AS "Keywords",
+              category_number AS "Category",
+              vendor_id AS "Vendor"
+         FROM app.sku
+        WHERE code IS NOT NULL
+          AND UPPER(BTRIM(code)) = ANY($1::text[])
+          AND COALESCE(rics_status, '') <> 'D'`,
+      unique,
+    );
+    const out = new Map<string, SkuMasterFields>();
+    for (const row of rows) {
+      const sku = row.SKU?.trim().toUpperCase();
+      if (!sku) continue;
+      out.set(sku, {
+        sku,
+        season: row.Season?.trim() || null,
+        groupCode: row.GroupCode?.trim() || null,
+        styleColor: row.StyleColor?.trim() || null,
+        keywords: row.Keywords?.trim() || null,
+        category: row.Category != null ? Number(row.Category) : null,
+        vendor: row.Vendor?.trim() || null,
+      });
+    }
+    return out;
+  });
 }
 
 /** $25 price buckets. Example: $37.50 → "25-50". */
@@ -2103,9 +2295,10 @@ function priceBucketFor(extension: number, qty: number): string {
 }
 
 function rowGrainKey(
-  l: TicketLine,
+  l: AnalysisLine,
   rt: SalesAnalysisReportType,
   depts: DeptRow[] | null,
+  sectors: SectorRow[] | null,
 ): string | null {
   switch (rt) {
     case 'SKU_DETAIL':
@@ -2120,6 +2313,17 @@ function rowGrainKey(
       return l.vendor ?? '(none)';
     case 'PRICE_POINT_SUMMARY':
       return priceBucketFor(l.extension, l.qty);
+    case 'SEASON_SUMMARY':
+      return l.master?.season || '(none)';
+    case 'GROUP_SUMMARY':
+      return l.master?.groupCode || '(none)';
+    case 'STYLE_COLOR_SUMMARY':
+      return l.master?.styleColor || '(none)';
+    case 'SECTOR_SUMMARY': {
+      const d = deptNumberForCategory(l.category, depts);
+      const s = sectorNumberForDepartment(d, sectors);
+      return s != null ? String(s) : '(none)';
+    }
     default:
       return null;
   }
@@ -2129,9 +2333,14 @@ function dimLabelFor(
   key: string,
   rt: SalesAnalysisReportType,
   depts: DeptRow[] | null,
+  sectors: SectorRow[] | null,
 ): string | null {
   if (rt === 'DEPT_SUMMARY' && depts) {
     const found = depts.find((d) => String(d.number) === key);
+    return found?.desc ?? null;
+  }
+  if (rt === 'SECTOR_SUMMARY' && sectors) {
+    const found = sectors.find((s) => String(s.number) === key);
     return found?.desc ?? null;
   }
   return null;

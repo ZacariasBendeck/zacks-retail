@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import {
   Alert,
+  Button,
   Card,
   Checkbox,
   Empty,
@@ -137,24 +138,24 @@ export default function InventoryAuditPage() {
         <Form layout="vertical" style={{ marginTop: 16 }}>
           <Space wrap align="end">
             <Form.Item label="SKU" style={{ marginBottom: 0 }}>
-              <Input
-                placeholder="e.g. B1592-BKNU"
-                value={skuCode}
-                onChange={(e) => {
-                  setSkuCode(e.target.value.trim());
-                  setStoreId(null);
-                }}
-                onPressEnter={(e) => setSkuCode((e.target as HTMLInputElement).value.trim())}
-                allowClear
-                style={{ width: 220 }}
-                addonAfter={
-                  <SearchOutlined
-                    style={{ cursor: 'pointer' }}
-                    onClick={() => setLookupOpen(true)}
-                    title="Look up SKU"
-                  />
-                }
-              />
+              <Space.Compact>
+                <Input
+                  placeholder="e.g. B1592-BKNU"
+                  value={skuCode}
+                  onChange={(e) => {
+                    setSkuCode(e.target.value.trim());
+                    setStoreId(null);
+                  }}
+                  onPressEnter={(e) => setSkuCode((e.target as HTMLInputElement).value.trim())}
+                  allowClear
+                  style={{ width: 220 }}
+                />
+                <Button
+                  icon={<SearchOutlined />}
+                  onClick={() => setLookupOpen(true)}
+                  title="Look up SKU"
+                />
+              </Space.Compact>
             </Form.Item>
             <Form.Item label="Store" style={{ marginBottom: 0 }}>
               <Select

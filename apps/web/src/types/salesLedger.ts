@@ -1,4 +1,3 @@
-import type { Department } from './sku'
 import type { PaginationEnvelope } from './sku'
 
 export type SalesChannel = 'STORE' | 'ONLINE' | 'WHOLESALE'
@@ -6,10 +5,13 @@ export type SalesChannel = 'STORE' | 'ONLINE' | 'WHOLESALE'
 export interface SalesLedgerRow {
   id: string
   saleDate: string
+  storeId: number | null
+  storeName: string | null
+  storeLabel: string
   skuCode: string
   style: string
-  department: Department
-  category: number
+  department: string
+  category: number | null
   channel: SalesChannel
   unitsSold: number
   netRevenue: number
@@ -18,7 +20,8 @@ export interface SalesLedgerRow {
 export interface SalesLedgerParams {
   page?: number
   pageSize?: number
-  department?: Department
+  storeId?: number
+  department?: string
   category?: number
   channel?: SalesChannel
   skuCode?: string

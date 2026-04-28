@@ -26,7 +26,7 @@ export function CustomerKpiCard({ label, value, hint, loading, tooltip, tone = '
         borderRadius: 12,
         height: '100%',
       }}
-      bodyStyle={{ padding: 16 }}
+      styles={{ body: { padding: 16 } }}
     >
       <Typography.Text type="secondary" style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.4 }}>
         {label}

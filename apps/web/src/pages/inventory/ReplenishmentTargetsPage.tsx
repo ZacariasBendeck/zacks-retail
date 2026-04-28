@@ -34,6 +34,7 @@ import {
   useUpdateReplenishmentTargetStore,
 } from '../../hooks/useReplenishmentTargets'
 import { SkuLink } from '../../components/sku-link'
+import { useInquiryPopup } from '../../components/inquiry-popup'
 import { SkuLookup } from '../../components/sku-lookup'
 import { StockMaintenanceHero } from '../../components/stock-maintenance'
 import type {
@@ -114,6 +115,7 @@ function draftPayloadFromCells(draftCells: Record<string, DraftCell>): UpdateRep
 
 export default function ReplenishmentTargetsPage() {
   const navigate = useNavigate()
+  const { openInquiry } = useInquiryPopup()
   const [searchParams, setSearchParams] = useSearchParams()
   const skuFromUrl = searchParams.get('sku')?.trim() || ''
   const metricFromUrl = (searchParams.get('metric') as TargetMetric) || 'modelQty'
@@ -315,7 +317,7 @@ export default function ReplenishmentTargetsPage() {
                 <Button
                   icon={<FundOutlined />}
                   disabled={!activeSku}
-                  onClick={() => activeSku && navigate(`/products/inquiry/${encodeURIComponent(activeSku)}`)}
+                  onClick={() => activeSku && openInquiry({ skuCode: activeSku })}
                   block
                 >
                   Product Inquiry

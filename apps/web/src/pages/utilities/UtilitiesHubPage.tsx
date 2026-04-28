@@ -19,6 +19,20 @@ interface UtilityCard {
 
 const CARDS: UtilityCard[] = [
   {
+    title: 'Stores',
+    description: 'Browse the store roster, inspect full store setup, and assign each store to a chain.',
+    to: '/utilities/stores',
+    status: 'active',
+    ricsPage: 'p. 141-142',
+  },
+  {
+    title: 'Store Chains',
+    description: 'Manage chain definitions and review which stores belong to each chain.',
+    to: '/utilities/store-chains',
+    status: 'active',
+    ricsPage: '(new)',
+  },
+  {
     title: 'Change SKU Attributes',
     description:
       'Search and select SKUs, then reassign their Category, Vendor, Season, or Group in one batch. The action picker lives next to the Apply button.',

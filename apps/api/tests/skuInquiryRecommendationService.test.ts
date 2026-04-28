@@ -18,6 +18,7 @@ jest.mock('../src/services/ricsInventoryFacade', () => ({
 
 import {
   analyzeSkuInquiryRecommendation,
+  clearSkuInquiryRecommendationCache,
   clearSkuInquiryRecommendationPromptCache,
 } from '../src/services/skuInquiryRecommendationService';
 import {
@@ -90,8 +91,13 @@ describe('skuInquiryRecommendationService', () => {
 
   beforeEach(() => {
     process.env.ANTHROPIC_API_KEY = 'test-key';
+    clearSkuInquiryRecommendationCache();
     clearSkuInquiryRecommendationPromptCache();
     mockCreate.mockReset();
+    (getInventoryInquiry as jest.Mock).mockReset();
+    (getInquiryInfo as jest.Mock).mockReset();
+    (getInquiryTrend as jest.Mock).mockReset();
+    (getInquiryOpenPoRows as jest.Mock).mockReset();
     (getInventoryInquiry as jest.Mock).mockResolvedValue(mockInquiry);
     (getInquiryInfo as jest.Mock).mockResolvedValue(null);
     (getInquiryTrend as jest.Mock).mockResolvedValue(null);
@@ -173,13 +179,144 @@ describe('skuInquiryRecommendationService', () => {
     );
     expect(mockCreate).toHaveBeenCalledWith(
       expect.objectContaining({
-        max_tokens: 2200,
+        max_tokens: 1200,
         messages: [
           expect.objectContaining({
             role: 'user',
+            content: expect.not.stringContaining('\n  "sku"'),
           }),
         ],
       }),
+      expect.objectContaining({
+        signal: expect.any(AbortSignal),
+      }),
     );
+  });
+
+  it('caches duplicate SKU and notes recommendations inside the API process', async () => {
+    mockCreate.mockResolvedValue({
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            summary: 'Hold inventory as-is.',
+            styleTag: 'OK',
+            decision: 'HOLD',
+            urgency: 'LOW',
+            confidence: 'HIGH',
+            baselineRisk: {
+              daysUntilModelRisk: null,
+              estimatedModelRiskDate: null,
+              basis: 'Chain inventory remains above model.',
+            },
+            buyPlan: {
+              shouldBuy: false,
+              quantity: null,
+              orderByDate: null,
+              estimatedArrivalDate: null,
+              leadTimeDays: 90,
+              basis: 'No buy is needed.',
+            },
+            actions: [],
+            reasons: ['No size is below model.'],
+            watchouts: [],
+            questions: [],
+          }),
+        },
+      ],
+    });
+
+    const first = await analyzeSkuInquiryRecommendation('HG202508-BKPU', {
+      notes: 'No special context.',
+    });
+    const second = await analyzeSkuInquiryRecommendation('hg202508-bkpu', {
+      notes: 'No special context.',
+    });
+
+    expect(first).toEqual(second);
+    expect(mockCreate).toHaveBeenCalledTimes(1);
+    expect(getInventoryInquiry).toHaveBeenCalledTimes(1);
+  });
+
+  it('deduplicates concurrent identical recommendations', async () => {
+    let resolveResponse: (value: unknown) => void = () => {};
+    mockCreate.mockReturnValue(
+      new Promise((resolve) => {
+        resolveResponse = resolve;
+      }),
+    );
+
+    const first = analyzeSkuInquiryRecommendation('HG202508-BKPU', {
+      notes: 'Same notes.',
+    });
+    const second = analyzeSkuInquiryRecommendation('HG202508-BKPU', {
+      notes: 'Same notes.',
+    });
+
+    resolveResponse({
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            summary: 'Investigate the demand signal.',
+            styleTag: 'OK',
+            decision: 'INVESTIGATE',
+            urgency: 'MEDIUM',
+            confidence: 'LOW',
+            baselineRisk: {
+              daysUntilModelRisk: null,
+              estimatedModelRiskDate: null,
+              basis: 'AI needs cleaner demand data.',
+            },
+            buyPlan: {
+              shouldBuy: false,
+              quantity: null,
+              orderByDate: null,
+              estimatedArrivalDate: null,
+              leadTimeDays: 90,
+              basis: 'Do not buy until the demand signal is verified.',
+            },
+            actions: [],
+            reasons: [],
+            watchouts: ['Demand signal is unclear.'],
+            questions: ['Confirm whether a promotion affected sales.'],
+          }),
+        },
+      ],
+    });
+
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+
+    expect(firstResult).toEqual(secondResult);
+    expect(mockCreate).toHaveBeenCalledTimes(1);
+    expect(getInventoryInquiry).toHaveBeenCalledTimes(1);
+  });
+
+  it('times out stalled AI requests', async () => {
+    jest.useFakeTimers();
+    try {
+      mockCreate.mockImplementation(
+        (_params, options?: { signal?: AbortSignal }) =>
+          new Promise((_resolve, reject) => {
+            options?.signal?.addEventListener('abort', () => {
+              reject(new Error('aborted'));
+            });
+          }),
+      );
+
+      const request = analyzeSkuInquiryRecommendation('HG202508-BKPU', {
+        notes: 'No special context.',
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(mockCreate).toHaveBeenCalledTimes(1);
+      const assertion = expect(request).rejects.toThrow(
+        'AI recommendation timed out after 45000ms',
+      );
+      await jest.advanceTimersByTimeAsync(45_000);
+      await assertion;
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });

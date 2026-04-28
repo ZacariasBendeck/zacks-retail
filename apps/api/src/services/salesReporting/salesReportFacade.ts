@@ -18,6 +18,7 @@ import {
   matchesKeywords,
   type CriteriaExpression,
 } from '../../utils/criteriaGrammar';
+import { prisma } from '../../db/prisma';
 export { ReportTypeNotImplementedError } from './ricsSalesReportAdapter';
 export type { SalesDimensionsResponse } from './ricsSalesReportAdapter';
 export type {
@@ -282,6 +283,13 @@ export interface SalesHistoryByMonthCriteria {
 export interface SalesHistoryByMonthBlockRow {
   key: string;                            // dim key (vendor / category / dept / sku)
   label: string;                          // human label
+  /** Parent grouping for SKU-detail rows, currently vendor/category. */
+  groupKey?: string;
+  groupLabel?: string;
+  /** Product image filename for SKU-detail rows. */
+  pictureFileName?: string | null;
+  /** Child SKU rows for grouped SKU-detail reports. */
+  children?: SalesHistoryByMonthBlockRow[];
   /** Per-metric 12-month values keyed by MonthlyMetricKey. */
   metrics: Partial<Record<MonthlyMetricKey, number[]>>;
   /** Per-metric row total over 12 months (for pct-of-store the value
@@ -413,24 +421,35 @@ function mapWindowToPrevMonthInvHisSlot(
 // ─────────────────────────── department lookup ────────────────────────────
 
 /** Returns a function mapping a RICS category code → department label. Uses
- * the seed table `ref_categories` (migrated in db 011) when available, and
- * falls back to "UNMAPPED-<code>" for categories not present in the lookup. */
-function buildDepartmentMapper(): (code: number) => { key: string; label: string } {
+ * RICS departments own category ranges: beg_categ <= category <= end_categ. */
+async function buildDepartmentMapper(): Promise<(code: number) => { key: string; label: string }> {
   try {
-    // Lazy import to avoid a hard dep on the DB from facade tests that mock
-    // the adapter layer.
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { getDb } = require('../../db/database');
-    const db = getDb();
-    const rows = db
-      .prepare('SELECT rics_code, dept_macro FROM ref_categories')
-      .all() as { rics_code: number; dept_macro: string }[];
-    const map = new Map<number, string>();
-    for (const r of rows) map.set(Number(r.rics_code), r.dept_macro);
+    const rows = await prisma.$queryRawUnsafe<{
+      Number: number | null;
+      Desc: string | null;
+      BegCateg: number | null;
+      EndCateg: number | null;
+    }[]>(
+      `SELECT number AS "Number",
+              "desc" AS "Desc",
+              beg_categ AS "BegCateg",
+              end_categ AS "EndCateg"
+         FROM app.taxonomy_department
+        ORDER BY number`,
+    );
+    const ranges = rows
+      .filter((r) => r.Number != null && r.BegCateg != null && r.EndCateg != null)
+      .map((r) => ({
+        number: Number(r.Number),
+        label: r.Desc?.trim() ? `${Number(r.Number)} - ${r.Desc.trim()}` : String(Number(r.Number)),
+        begCateg: Number(r.BegCateg),
+        endCateg: Number(r.EndCateg),
+      }));
     return (code: number) => {
-      const dept = map.get(Number(code));
+      const n = Number(code);
+      const dept = ranges.find((r) => n >= r.begCateg && n <= r.endCateg);
       return dept
-        ? { key: dept, label: dept }
+        ? { key: String(dept.number), label: dept.label }
         : { key: `UNMAPPED-${code}`, label: `Unmapped (cat ${code})` };
     };
   } catch {
@@ -625,6 +644,7 @@ export async function getSalesHistoryByMonth(
     toYearMonth,
     sortBy: params.sortBy,
     detailLevel,
+    combineStores: params.combineStores,
     skuFilter: resolved.skuFilter,
     vendorFilter: resolved.vendorFilter,
     categoryFilter: resolved.categoryFilter,
@@ -645,17 +665,21 @@ export async function getSalesHistoryByMonth(
 
   // ─── Pivot ────────────────────────────────────────────────────────────
   // For department level, roll category → department here.
-  const deptMap = detailLevel === 'department' ? buildDepartmentMapper() : null;
+  const deptMap = detailLevel === 'department' ? await buildDepartmentMapper() : null;
 
   type PivotRow = {
     storeBucket: number | 'ALL';
     dimKey: string;
     dimLabel: string;
+    groupKey?: string;
+    groupLabel?: string;
+    pictureFileName?: string | null;
     quantity: number[];
     netSales: number[];
     cogs: number[];
   };
   const pivotMap = new Map<string, PivotRow>();
+  const groupPivotMap = new Map<string, PivotRow>();
 
   // Per-store NetSales totals (for % of Store).
   type StoreTotals = { netSales: number[]; total: number };
@@ -683,6 +707,11 @@ export async function getSalesHistoryByMonth(
       dimKey = d.key;
       dimLabel = d.label;
     }
+    const groupKey = detailLevel === 'sku' && params.sortBy === 'vendor'
+      ? (r.vendorKey?.trim() || '(none)')
+      : undefined;
+    const groupLabel = groupKey;
+
     const mapKey = `${storeBucket}|${dimKey}`;
     let row = pivotMap.get(mapKey);
     if (!row) {
@@ -690,6 +719,9 @@ export async function getSalesHistoryByMonth(
         storeBucket,
         dimKey,
         dimLabel,
+        groupKey,
+        groupLabel,
+        pictureFileName: detailLevel === 'sku' ? r.pictureFileName ?? null : null,
         quantity: new Array<number>(12).fill(0),
         netSales: new Array<number>(12).fill(0),
         cogs: new Array<number>(12).fill(0),
@@ -699,6 +731,24 @@ export async function getSalesHistoryByMonth(
     row.quantity[mIdx] += r.quantity;
     row.netSales[mIdx] += r.netSales;
     row.cogs[mIdx] += r.cogs;
+    if (groupKey) {
+      const groupMapKey = `${storeBucket}|${groupKey}`;
+      let groupRow = groupPivotMap.get(groupMapKey);
+      if (!groupRow) {
+        groupRow = {
+          storeBucket,
+          dimKey: groupKey,
+          dimLabel: groupLabel ?? groupKey,
+          quantity: new Array<number>(12).fill(0),
+          netSales: new Array<number>(12).fill(0),
+          cogs: new Array<number>(12).fill(0),
+        };
+        groupPivotMap.set(groupMapKey, groupRow);
+      }
+      groupRow.quantity[mIdx] += r.quantity;
+      groupRow.netSales[mIdx] += r.netSales;
+      groupRow.cogs[mIdx] += r.cogs;
+    }
     bumpStoreTotals(storeBucket, mIdx, r.netSales);
   }
 
@@ -719,7 +769,7 @@ export async function getSalesHistoryByMonth(
   let currentSlotMap = mapWindowToInvHisSlot(months, todayInfo);
   let prevSlotMap = mapWindowToPrevMonthInvHisSlot(months, todayInfo);
 
-  if (needsInventory) {
+  if (needsInventory && detailLevel === 'sku') {
     // Reuse the SKU master projection that resolveCriteria already loads.
     const skuMaster = await monthlyAdapter.loadSkuMasterForCriteria();
     const skuDimMap = new Map<string, { vendor: string; category: number | null }>();
@@ -813,9 +863,78 @@ export async function getSalesHistoryByMonth(
         acc.monthQtyOH[i] += inv.monthQtyOH[i];
         acc.monthValueOH[i] += inv.monthValueOH[i];
       }
+      if (params.sortBy === 'vendor') {
+        const groupKey = dim.vendor || '(none)';
+        const groupMapKey = `${storeBucket}|${groupKey}`;
+        let groupAcc = invByRow.get(groupMapKey);
+        if (!groupAcc) {
+          groupAcc = {
+            monthQtyOH: new Array<number>(12).fill(0),
+            monthValueOH: new Array<number>(12).fill(0),
+          };
+          invByRow.set(groupMapKey, groupAcc);
+        }
+        for (let i = 0; i < 12; i++) {
+          groupAcc.monthQtyOH[i] += inv.monthQtyOH[i];
+          groupAcc.monthValueOH[i] += inv.monthValueOH[i];
+        }
+      }
       // dimLabel is intentionally unused in the aggregation (pivotMap owns labels),
       // but the block key must match pivotMap's key so lookups join correctly.
       void dimLabel;
+    }
+  } else if (needsInventory) {
+    try {
+      const invRows = await monthlyAdapter.queryMonthlyInventoryHistoryRollups({
+        storeNumbers: effectiveStores,
+        sortBy: params.sortBy,
+        detailLevel,
+        skuFilter: resolved.skuFilter,
+        vendorFilter: resolved.vendorFilter,
+        categoryFilter: resolved.categoryFilter,
+        nonZeroOnly: true,
+      });
+
+      const snapshotValue = invRows.find((row) => row.snapshotAsOf)?.snapshotAsOf;
+      if (snapshotValue) {
+        const snapshotDate = snapshotValue instanceof Date
+          ? snapshotValue
+          : new Date(snapshotValue);
+        if (!Number.isNaN(snapshotDate.getTime())) {
+          const snapshotInfo = {
+            year: snapshotDate.getFullYear(),
+            month: snapshotDate.getMonth() + 1,
+          };
+          currentSlotMap = mapWindowToInvHisSlot(months, snapshotInfo);
+          prevSlotMap = mapWindowToPrevMonthInvHisSlot(months, snapshotInfo);
+        }
+      }
+
+      for (const inv of invRows) {
+        let dimKey = inv.dimKey;
+        if (detailLevel === 'department' && deptMap) {
+          const d = deptMap(Number(inv.dimKey));
+          dimKey = d.key;
+        }
+
+        const storeBucket: number | 'ALL' = params.combineStores ? 'ALL' : inv.storeNumber;
+        const mapKey = `${storeBucket}|${dimKey}`;
+        let acc = invByRow.get(mapKey);
+        if (!acc) {
+          acc = {
+            monthQtyOH: new Array<number>(12).fill(0),
+            monthValueOH: new Array<number>(12).fill(0),
+          };
+          invByRow.set(mapKey, acc);
+        }
+        for (let i = 0; i < 12; i++) {
+          acc.monthQtyOH[i] += inv.monthQtyOH[i];
+          acc.monthValueOH[i] += inv.monthValueOH[i];
+        }
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[salesReportFacade] InvHis rollup fetch failed: ${msg}`);
     }
   }
 
@@ -834,10 +953,11 @@ export async function getSalesHistoryByMonth(
     storeNumber: number | 'ALL';
     storeLabel: string;
     rows: PivotRow[];
+    groupRows: PivotRow[];
   };
   const buckets: BucketAccumulator[] = params.combineStores
-    ? [{ storeNumber: 'ALL', storeLabel: 'All Stores', rows: [] }]
-    : stores.map((s) => ({ storeNumber: s.number, storeLabel: s.label, rows: [] }));
+    ? [{ storeNumber: 'ALL', storeLabel: 'All Stores', rows: [], groupRows: [] }]
+    : stores.map((s) => ({ storeNumber: s.number, storeLabel: s.label, rows: [], groupRows: [] }));
 
   const bucketIndex = new Map<number | 'ALL', BucketAccumulator>();
   for (const b of buckets) bucketIndex.set(b.storeNumber, b);
@@ -847,14 +967,32 @@ export async function getSalesHistoryByMonth(
     if (!b) continue;
     b.rows.push(row);
   }
+  for (const row of groupPivotMap.values()) {
+    const b = bucketIndex.get(row.storeBucket);
+    if (!b) continue;
+    b.groupRows.push(row);
+  }
 
   // Sort rows within each block.
   const sortRows = (rows: PivotRow[]): PivotRow[] => {
     const copy = [...rows];
     if (detailLevel === 'department') {
-      copy.sort((a, b) => a.dimLabel.localeCompare(b.dimLabel, undefined, { sensitivity: 'base' }));
+      copy.sort((a, b) => {
+        const an = Number(a.dimKey);
+        const bn = Number(b.dimKey);
+        if (Number.isFinite(an) && Number.isFinite(bn)) return an - bn;
+        return a.dimLabel.localeCompare(b.dimLabel, undefined, { sensitivity: 'base' });
+      });
     } else if (detailLevel === 'sku') {
-      copy.sort((a, b) => a.dimKey.localeCompare(b.dimKey));
+      copy.sort((a, b) => {
+        const groupCompare = (a.groupLabel ?? '').localeCompare(
+          b.groupLabel ?? '',
+          undefined,
+          { sensitivity: 'base' },
+        );
+        if (groupCompare !== 0) return groupCompare;
+        return a.dimKey.localeCompare(b.dimKey);
+      });
     } else if (params.sortBy === 'vendor') {
       copy.sort((a, b) => a.dimLabel.localeCompare(b.dimLabel, undefined, { sensitivity: 'base' }));
     } else {
@@ -886,7 +1024,10 @@ export async function getSalesHistoryByMonth(
     // aggregate avg inventory value (avoids Simpson's paradox at rollup).
     const colMonthValueBySlot = new Array<number>(12).fill(0);
 
-    const resultRows: SalesHistoryByMonthBlockRow[] = sortedRows.map((r) => {
+    const toBlockRow = (
+      r: PivotRow,
+      accumulateBlockTotals: boolean,
+    ): SalesHistoryByMonthBlockRow => {
       const metrics: Partial<Record<MonthlyMetricKey, number[]>> = {};
       const totals: Partial<Record<MonthlyMetricKey, number>> = {};
 
@@ -903,17 +1044,23 @@ export async function getSalesHistoryByMonth(
       if (dataToPrint.includes('quantitySold')) {
         metrics.quantitySold = qty;
         totals.quantitySold = qty.reduce((s, v) => s + v, 0);
-        for (let i = 0; i < 12; i++) colTotals.quantitySold[i] += qty[i];
+        if (accumulateBlockTotals) {
+          for (let i = 0; i < 12; i++) colTotals.quantitySold[i] += qty[i];
+        }
       }
       if (dataToPrint.includes('netSales')) {
         metrics.netSales = netSales;
         totals.netSales = round2(netSales.reduce((s, v) => s + v, 0));
-        for (let i = 0; i < 12; i++) colTotals.netSales[i] += netSales[i];
+        if (accumulateBlockTotals) {
+          for (let i = 0; i < 12; i++) colTotals.netSales[i] += netSales[i];
+        }
       }
       if (dataToPrint.includes('profit')) {
         metrics.profit = profit;
         totals.profit = round2(profit.reduce((s, v) => s + v, 0));
-        for (let i = 0; i < 12; i++) colTotals.profit[i] += profit[i];
+        if (accumulateBlockTotals) {
+          for (let i = 0; i < 12; i++) colTotals.profit[i] += profit[i];
+        }
       }
       if (dataToPrint.includes('grossProfit')) {
         metrics.grossProfit = gpPct;
@@ -945,7 +1092,9 @@ export async function getSalesHistoryByMonth(
 
         // Accumulate per-slot inv value into the block-level vector (used
         // later for column totals).
-        for (let s = 0; s < 12; s++) colMonthValueBySlot[s] += inv.monthValueOH[s];
+        if (accumulateBlockTotals) {
+          for (let s = 0; s < 12; s++) colMonthValueBySlot[s] += inv.monthValueOH[s];
+        }
 
         // Row-level avg inventory value: mean of mapped window months only.
         let rowAvgInvValue = 0;
@@ -968,7 +1117,9 @@ export async function getSalesHistoryByMonth(
           // Row total = average BoH across the window (BoH is a stock, not a
           // flow — summing 12 snapshots isn't meaningful, averaging is).
           totals.beginningOnHand = Math.round(boh.reduce((s, v) => s + v, 0) / 12);
-          for (let i = 0; i < 12; i++) colTotals.beginningOnHand[i] += boh[i];
+          if (accumulateBlockTotals) {
+            for (let i = 0; i < 12; i++) colTotals.beginningOnHand[i] += boh[i];
+          }
         }
 
         if (dataToPrint.includes('roiPct')) {
@@ -996,8 +1147,36 @@ export async function getSalesHistoryByMonth(
         }
       }
 
-      return { key: r.dimKey, label: r.dimLabel, metrics, totals };
-    });
+      return {
+        key: r.dimKey,
+        label: r.dimLabel,
+        groupKey: r.groupKey,
+        groupLabel: r.groupLabel,
+        pictureFileName: r.pictureFileName ?? null,
+        metrics,
+        totals,
+      };
+    };
+
+    let resultRows: SalesHistoryByMonthBlockRow[];
+    if (detailLevel === 'sku' && params.sortBy === 'vendor' && b.groupRows.length > 0) {
+      const skuRowsByGroup = new Map<string, PivotRow[]>();
+      for (const row of sortedRows) {
+        const groupKey = row.groupKey ?? '(none)';
+        const list = skuRowsByGroup.get(groupKey) ?? [];
+        list.push(row);
+        skuRowsByGroup.set(groupKey, list);
+      }
+      const sortedGroupRows = sortRows(b.groupRows);
+      resultRows = sortedGroupRows.map((groupRow) => ({
+        ...toBlockRow(groupRow, true),
+        children: (skuRowsByGroup.get(groupRow.dimKey) ?? []).map((skuRow) =>
+          toBlockRow(skuRow, false),
+        ),
+      }));
+    } else {
+      resultRows = sortedRows.map((r) => toBlockRow(r, true));
+    }
 
     const columnTotals: Partial<Record<MonthlyMetricKey, number[]>> = {};
     const grandTotals: Partial<Record<MonthlyMetricKey, number>> = {};

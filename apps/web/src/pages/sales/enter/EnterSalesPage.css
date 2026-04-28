@@ -23,13 +23,14 @@
   gap: 14px;
   overflow: auto;
   background: #fff;
-  border: 12px solid #000;
-  box-shadow: none;
+  border-radius: 0;
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.05);
 }
 
 .sales-pos-popup-shell--fullscreen .sales-pos-window {
   min-height: calc(100vh - 28px);
   max-height: calc(100vh - 28px);
+  box-shadow: none;
 }
 
 .sales-pos-window--setup {
@@ -43,8 +44,8 @@
   justify-content: space-between;
   align-items: flex-start;
   gap: 16px;
-  padding-bottom: 12px;
-  border-bottom: 2px solid #000;
+  padding-bottom: 14px;
+  border-bottom: 1px solid #ededed;
 }
 
 .sales-pos-window-heading {
@@ -73,7 +74,7 @@
 
 .sales-pos-window-subtitle.ant-typography {
   color: #000;
-  opacity: 0.75;
+  opacity: 0.6;
 }
 
 .sales-pos-window-actions {
@@ -88,8 +89,8 @@
   margin: 0;
   padding: 6px 10px;
   border-radius: 0;
-  border: 1px solid #000;
-  background: #fff;
+  border: none;
+  background: #f4f4f4;
   color: #000;
   font-size: 11px;
   font-weight: 700;
@@ -107,8 +108,7 @@
   flex-wrap: wrap;
   gap: 10px;
   padding: 10px 12px;
-  border: 1px solid #000;
-  background: #fff;
+  background: #f7f7f7;
   color: #000;
   font-size: 12px;
   line-height: 1.45;
@@ -120,7 +120,7 @@
 
 .sales-pos-window .sales-pos-panel.ant-card {
   border-radius: 0;
-  border: 1px solid #000;
+  border: none;
   box-shadow: none;
   background: #fff;
 }
@@ -128,7 +128,7 @@
 .sales-pos-window .sales-pos-panel .ant-card-head {
   min-height: 42px;
   padding: 0 14px;
-  border-bottom: 1px solid #000;
+  border-bottom: 1px solid #efefef;
 }
 
 .sales-pos-window .sales-pos-panel .ant-card-head-title {
@@ -140,6 +140,12 @@
 
 .sales-pos-window .sales-pos-panel .ant-card-body {
   padding: 14px;
+}
+
+.sales-pos-shift-summary-card,
+.sales-pos-ticket-chip-card,
+.sales-pos-totals-card {
+  background: #fafafa;
 }
 
 .sales-pos-shift-summary-card .ant-card-body {
@@ -160,7 +166,6 @@
 .sales-pos-ticket-chip-card .ant-typography {
   margin: 0;
   padding: 6px 10px;
-  border: 1px solid #000;
   background: #fff;
   font-size: 12px;
 }
@@ -204,7 +209,7 @@
 
 .sales-pos-divider {
   margin: 14px 0;
-  border-color: #000;
+  border-color: #efefef;
 }
 
 .sales-pos-action-bar {
@@ -235,7 +240,7 @@
 .sales-pos-overlay .ant-select-single .ant-select-selector {
   min-height: 34px;
   border-radius: 0 !important;
-  border-color: #000 !important;
+  border-color: #d9d9d9 !important;
   box-shadow: none !important;
   background: #fff !important;
   color: #000 !important;
@@ -278,7 +283,7 @@
   height: 32px;
   padding: 0 12px;
   border-radius: 0;
-  border-color: #000;
+  border: none;
   background: #000;
   color: #fff;
   box-shadow: none;
@@ -294,15 +299,13 @@
 .sales-pos-popup-shell .ant-btn:not(:disabled):focus,
 .sales-pos-overlay .ant-btn:not(:disabled):hover,
 .sales-pos-overlay .ant-btn:not(:disabled):focus {
-  border-color: #000 !important;
   background: #1a1a1a !important;
   color: #fff !important;
 }
 
 .sales-pos-popup-shell .ant-btn:disabled,
 .sales-pos-overlay .ant-btn:disabled {
-  border-color: #b5b5b5 !important;
-  background: #fff !important;
+  background: #ebebeb !important;
   color: #8a8a8a !important;
 }
 
@@ -313,8 +316,7 @@
 
 .sales-pos-popup-shell .ant-statistic {
   padding: 10px 12px;
-  border: 1px solid #000;
-  background: #fff;
+  background: #f7f7f7;
 }
 
 .sales-pos-popup-shell .ant-statistic-title {
@@ -339,8 +341,7 @@
 .sales-pos-popup-shell .ant-table-container,
 .sales-pos-overlay .ant-table-container {
   border-radius: 0 !important;
-  border-inline-start: 1px solid #000;
-  border-top: 1px solid #000;
+  border: none;
 }
 
 .sales-pos-popup-shell .ant-table-thead > tr > th,
@@ -351,6 +352,7 @@
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+  border-bottom: 1px solid #e9e9e9 !important;
 }
 
 .sales-pos-popup-shell .ant-table-thead > tr > th,
@@ -359,19 +361,19 @@
 .sales-pos-overlay .ant-table-tbody > tr > td {
   padding-top: 8px;
   padding-bottom: 8px;
-  border-color: #000 !important;
+  border-color: #efefef !important;
 }
 
 .sales-pos-popup-shell .ant-descriptions-bordered .ant-descriptions-view,
 .sales-pos-overlay .ant-descriptions-bordered .ant-descriptions-view {
-  border-color: #000;
+  border-color: #ededed;
 }
 
 .sales-pos-popup-shell .ant-descriptions-bordered .ant-descriptions-item-label,
 .sales-pos-popup-shell .ant-descriptions-bordered .ant-descriptions-item-content,
 .sales-pos-overlay .ant-descriptions-bordered .ant-descriptions-item-label,
 .sales-pos-overlay .ant-descriptions-bordered .ant-descriptions-item-content {
-  border-color: #000;
+  border-color: #ededed;
   background: #fff;
   color: #000;
 }
@@ -379,20 +381,19 @@
 .sales-pos-popup-shell .ant-alert,
 .sales-pos-overlay .ant-alert {
   border-radius: 0;
-  border: 1px solid #000;
-  background: #fff;
+  border: none;
+  background: #f7f7f7;
   color: #000;
 }
 
 .sales-pos-popup-shell .ant-divider,
 .sales-pos-overlay .ant-divider {
-  border-color: #000;
+  border-color: #ededed;
 }
 
 .sales-pos-loaded-placeholder {
   padding: 12px;
-  border: 1px dashed #000;
-  background: #fff;
+  background: #f8f8f8;
   color: #000;
   font-size: 12px;
   line-height: 1.45;
@@ -400,21 +401,21 @@
 
 .sales-pos-overlay .ant-modal-mask,
 .sales-pos-overlay .ant-drawer-mask {
-  background: rgba(0, 0, 0, 0.35);
+  background: rgba(0, 0, 0, 0.24);
 }
 
 .sales-pos-overlay .ant-modal-content,
 .sales-pos-overlay .ant-drawer-content {
   border-radius: 0;
-  border: 3px solid #000;
-  box-shadow: none;
+  border: none;
+  box-shadow: 0 20px 44px rgba(0, 0, 0, 0.08);
   background: #fff;
   color: #000;
 }
 
 .sales-pos-overlay .ant-modal-header,
 .sales-pos-overlay .ant-drawer-header {
-  border-bottom: 1px solid #000;
+  border-bottom: 1px solid #ededed;
   border-radius: 0;
   background: #fff;
 }
@@ -429,12 +430,12 @@
 }
 
 .sales-pos-overlay .ant-modal-footer {
-  border-top: 1px solid #000;
+  border-top: 1px solid #ededed;
 }
 
 .sales-pos-overlay .ant-card {
   border-radius: 0;
-  border-color: #000;
+  border: none;
   box-shadow: none;
 }
 
@@ -472,7 +473,7 @@
     min-height: 0;
     max-height: none;
     padding: 10px;
-    border-width: 6px;
+    box-shadow: none;
   }
 
   .sales-pos-window .sales-pos-panel .ant-card-head,

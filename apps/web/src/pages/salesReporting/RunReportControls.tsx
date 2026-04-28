@@ -7,6 +7,7 @@ interface Props {
   onRun: () => void
   onStop: () => void
   runLabel?: string
+  disabled?: boolean
 }
 
 /**
@@ -26,6 +27,7 @@ export default function RunReportControls({
   onRun,
   onStop,
   runLabel = 'Run Report',
+  disabled = false,
 }: Props) {
   return (
     <Space>
@@ -33,6 +35,7 @@ export default function RunReportControls({
         type="primary"
         icon={<PlayCircleOutlined />}
         loading={running}
+        disabled={disabled}
         onClick={onRun}
         size="large"
       >

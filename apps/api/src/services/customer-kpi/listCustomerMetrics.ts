@@ -4,7 +4,6 @@ import {
   listCustomerStoreContexts,
   matchesStoreCityFilter,
   parseRetailChainKey,
-  type CustomerStoreChainKey,
   type CustomerStoreContext,
 } from './storeMetadata';
 
@@ -32,7 +31,7 @@ export type CustomerKpiListParams = {
   minDiscountRatio?: number;
   primaryStoreId?: string;
   primaryStoreCity?: string;
-  primaryStoreChain?: CustomerStoreChainKey;
+  primaryStoreChain?: string;
   active?: boolean;
   dormant?: boolean;
   sort?:

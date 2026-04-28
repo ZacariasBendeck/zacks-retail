@@ -163,6 +163,15 @@ router.post('/:customerId/recompute-metrics', async (req: Request, res: Response
   res.json(metrics);
 });
 
+router.get('/:customerId/tickets', async (req: Request, res: Response): Promise<void> => {
+  const tickets = await customerService.listCustomerTicketHistory(req.params.customerId as string);
+  if (!tickets) {
+    res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Customer not found.' } });
+    return;
+  }
+  res.json({ data: tickets });
+});
+
 /**
  * @openapi
  * /api/v1/customers/{customerId}:

@@ -9,6 +9,7 @@ const inquiry = {
   vendor: { code: 'KNIN', name: 'NINETY NINE' },
   vendorSku: 'ZN02 ND PT',
   styleColor: 'PT/ND',
+  status: 'ACTIVE',
   sizeType: { id: 309, name: 'Zap Dam-Cab', columns: [], rows: [] },
   lastReceivedAt: '2026-04-19',
 } as any;
@@ -22,6 +23,7 @@ describe('HeaderCard', () => {
     expect(screen.getByText(/KNIN/)).toBeInTheDocument();
     expect(screen.getByText('ZN02 ND PT')).toBeInTheDocument();
     expect(screen.getByText('PT/ND')).toBeInTheDocument();
+    expect(screen.getByText('ACTIVE')).toBeInTheDocument();
     expect(screen.getByText(/Zap Dam-Cab/)).toBeInTheDocument();
     expect(screen.getByText('2026-04-19')).toBeInTheDocument();
     expect(screen.getByText('Store 21')).toBeInTheDocument();

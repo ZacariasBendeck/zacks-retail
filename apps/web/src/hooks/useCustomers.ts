@@ -3,6 +3,7 @@ import {
   fetchCustomers,
   fetchCustomer,
   fetchCustomerBalances,
+  fetchCustomerTicketHistory,
   searchCustomers,
   createCustomer,
   updateCustomer,
@@ -41,6 +42,14 @@ export function useCustomerBalances(customerId: string | undefined) {
     queryKey: ['customer-balances', customerId],
     queryFn: () => fetchCustomerBalances(customerId!),
     enabled: !!customerId,
+  })
+}
+
+export function useCustomerTicketHistory(customerId: string | undefined, enabled = true) {
+  return useQuery({
+    queryKey: ['customer-ticket-history', customerId],
+    queryFn: () => fetchCustomerTicketHistory(customerId!),
+    enabled: enabled && !!customerId,
   })
 }
 

@@ -7,6 +7,9 @@
  *   GET  /attributes/dimensions[?withCounts=true]
  *   GET  /attributes/coverage
  *   GET  /attributes/dimensions/:code/family-rules
+ *   GET  /attributes/macros
+ *   GET  /attributes/macros/:sourceDimensionCode/:targetDimensionCode
+ *   PUT  /attributes/macros/:sourceDimensionCode/:targetDimensionCode
  *   GET  /skus/:code/attributes
  *
  * DIMENSION ADMIN
@@ -81,6 +84,77 @@ router.get('/attributes/dimensions', async (req: Request, res: Response) => {
 
 router.get('/attributes/coverage', async (_req: Request, res: Response) => {
   send(res, await attributesService.getCoverage());
+});
+
+router.get('/attributes/macros', async (_req: Request, res: Response) => {
+  send(res, await attributesService.listMacroRuleSummaries());
+});
+
+router.get('/attributes/macros/:sourceDimensionCode/:targetDimensionCode', async (req: Request, res: Response) => {
+  send(
+    res,
+    await attributesService.getMacroRuleSet(
+      paramString(req.params.sourceDimensionCode),
+      paramString(req.params.targetDimensionCode),
+    ),
+  );
+});
+
+router.put('/attributes/macros/:sourceDimensionCode/:targetDimensionCode', async (req: Request, res: Response) => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  if (!Array.isArray(body.rules)) {
+    return res.status(422).json({
+      error: { code: 'CONSTRAINT_VIOLATION', message: 'rules[] is required.' },
+    });
+  }
+
+  const rules: { sourceValueCode: string; targetValueCode: string | null }[] = [];
+  for (const rawRule of body.rules) {
+    if (!rawRule || typeof rawRule !== 'object') {
+      return res.status(422).json({
+        error: { code: 'CONSTRAINT_VIOLATION', message: 'Each rule must be an object.' },
+      });
+    }
+    const rule = rawRule as Record<string, unknown>;
+    const sourceValueCode =
+      typeof rule.sourceValueCode === 'string'
+        ? rule.sourceValueCode
+        : typeof rule.source_value_code === 'string'
+          ? rule.source_value_code
+          : '';
+    const targetValueCode =
+      typeof rule.targetValueCode === 'string'
+        ? rule.targetValueCode
+        : typeof rule.target_value_code === 'string'
+          ? rule.target_value_code
+          : rule.targetValueCode === null || rule.target_value_code === null
+            ? null
+            : '';
+    if (!sourceValueCode) {
+      return res.status(422).json({
+        error: { code: 'CONSTRAINT_VIOLATION', message: 'Each rule requires sourceValueCode.' },
+      });
+    }
+    if (targetValueCode === '') {
+      return res.status(422).json({
+        error: {
+          code: 'CONSTRAINT_VIOLATION',
+          message: 'Each rule requires targetValueCode or null.',
+        },
+      });
+    }
+    rules.push({ sourceValueCode, targetValueCode });
+  }
+
+  const perRequest = createAttributesService({ actor: resolveActor(req) });
+  send(
+    res,
+    await perRequest.replaceMacroRules(
+      paramString(req.params.sourceDimensionCode),
+      paramString(req.params.targetDimensionCode),
+      rules,
+    ),
+  );
 });
 
 router.get('/attributes/dimensions/:code/family-rules', async (req: Request, res: Response) => {

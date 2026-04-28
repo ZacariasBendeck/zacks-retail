@@ -6,9 +6,9 @@ import {
   Checkbox,
   Col,
   DatePicker,
+  Pagination,
   Radio,
   Row,
-  Segmented,
   Skeleton,
   Space,
   Switch,
@@ -18,7 +18,7 @@ import {
   Typography,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
-import { DownloadOutlined, FileExcelOutlined } from '@ant-design/icons'
+import { DownloadOutlined, FileExcelOutlined, FullscreenExitOutlined, FullscreenOutlined } from '@ant-design/icons'
 import dayjs, { type Dayjs } from 'dayjs'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
@@ -53,16 +53,19 @@ import ReportHeader from '../../components/reports/ReportHeader'
 import FilterChips, { type FilterChip } from '../../components/reports/FilterChips'
 import ReportEmptyState from '../../components/reports/ReportEmptyState'
 import CollapsibleFilterCard from '../../components/reports/CollapsibleFilterCard'
-import { SummaryLabelCell, SummaryNumericCell } from '../../components/reports/SummaryRow'
 import {
   fmtMoney,
   fmtMoneyInt,
   fmtInt,
   fmtPct1,
+  fmtPctBare1,
   DASH,
 } from '../../utils/reportFormatters'
 import { useReportTemplate, useTouchReportTemplate } from '../../hooks/useReportTemplates'
 import CriteriaInput from './CriteriaInput'
+import ReportThumbnail from '../../components/reports/ReportThumbnail'
+import { SkuLink } from '../../components/sku-link/SkuLink'
+import { buildRicsImageUrl } from '../../services/ricsImageUrl'
 
 echarts.use([LineChart, GridComponent, TooltipComponent, LegendComponent, TitleComponent, CanvasRenderer])
 
@@ -81,11 +84,11 @@ interface MetricDef {
 const METRIC_DEFS: readonly MetricDef[] = [
   { key: 'quantitySold',        label: 'Quantity Sold',        short: 'Qty',         format: 'integer',  description: 'Net units sold (returns subtract).' },
   { key: 'netSales',            label: 'Net Sales',            short: 'Net Sales',   format: 'money',    description: 'Retail sales less markdowns and returns (RICS p. 87).' },
+  { key: 'beginningOnHand',     label: 'Beg. of Month On Hand Qty.', short: 'Beg. OH', format: 'integer', description: 'Units on hand at the start of the month (RIINVHIS snapshot). First month of a trailing window may show 0 when the prior slot is outside the rolling history.' },
   { key: 'pctOfStoreNetSales',  label: '% of Store Net Sales', short: '% of Store',  format: 'percent1', description: 'Row net sales as a share of the block total for that month.' },
   { key: 'profit',              label: 'Profit',               short: 'Profit',      format: 'money',    description: 'Net Sales minus COGS (RICS p. 87).' },
   { key: 'grossProfit',         label: 'Gross Profit %',       short: 'GP %',        format: 'percent1', description: 'Profit divided by Net Sales (RICS p. 87 GP-%).' },
-  { key: 'beginningOnHand',     label: 'Beginning On-Hand Qty', short: 'BoH',        format: 'integer',  description: 'Units on hand at the start of the month (RIINVHIS snapshot). First month of a trailing window may show 0 when the prior slot is outside the rolling history.' },
-  { key: 'roiPct',              label: 'ROI %',                short: 'ROI %',       format: 'percent1', description: 'Annualized GMROI — Profit ÷ Average Inventory Value. Per-month cells annualize that month\'s profit flow (RICS p. 87).' },
+  { key: 'roiPct',              label: 'ROI',                  short: 'ROI',         format: 'percent1', description: 'Annualized GMROI — Profit ÷ Average Inventory Value. Per-month cells annualize that month\'s profit flow (RICS p. 87).' },
   { key: 'turns',               label: 'Turns',                short: 'Turns',       format: 'decimal2', description: 'Annualized inventory turnover — COGS ÷ Average Inventory Value (RICS p. 87).' },
 ] as const
 
@@ -111,6 +114,7 @@ function formatMetricValue(def: MetricDef | undefined, value: number | undefined
   if (!def || def.format === 'money') return fmtMoneyInt(value)
   if (def.format === 'integer') return fmtInt(value)
   if (def.format === 'decimal2') return fmtMoney(value)
+  if (def.key === 'grossProfit' || def.key === 'roiPct') return fmtPctBare1(value)
   return fmtPct1(value)
 }
 
@@ -119,6 +123,7 @@ function formatMetricValuePrecise(def: MetricDef | undefined, value: number | un
   if (!def || def.format === 'money') return fmtMoney(value)
   if (def.format === 'integer') return fmtInt(value)
   if (def.format === 'decimal2') return fmtMoney(value)
+  if (def.key === 'grossProfit' || def.key === 'roiPct') return fmtPctBare1(value)
   return fmtPct1(value)
 }
 
@@ -184,45 +189,195 @@ function SalesHistoryChart({ months, series, height = 280 }: HistoryChartProps) 
 
 // ─────────────────────────── Pivot table ────────────────────────────────
 
+type HistoryDisplayRow =
+  | {
+      key: string
+      kind: 'metric' | 'group'
+      sourceIndex: number
+      dimLabel: string
+      groupKey?: string
+      hasChildren?: boolean
+      isChild?: boolean
+      skuCode?: string
+      storeId?: number
+      pictureFileName?: string | null
+      metric: MetricDef
+      values: number[]
+      total: number
+    }
+  | {
+      key: string
+      kind: 'total'
+      sourceIndex: number
+      dimLabel: string
+      groupKey?: string
+      hasChildren?: boolean
+      isChild?: boolean
+      skuCode?: string
+      storeId?: number
+      pictureFileName?: string | null
+      metric: MetricDef
+      values: number[]
+      total: number
+    }
+
+function selectedMetricDefs(keys: readonly SalesHistoryByMonthMetricKey[]): MetricDef[] {
+  const selected = new Set(keys)
+  return METRIC_DEFS.filter((m) => selected.has(m.key))
+}
+
+function buildDisplayRows(
+  block: SalesHistoryByMonthBlock,
+  metrics: readonly MetricDef[],
+  monthCount: number,
+  expandedGroups: ReadonlySet<string>,
+  storeId?: number,
+): HistoryDisplayRow[] {
+  const rows: HistoryDisplayRow[] = []
+  const appendMetricRows = (
+    row: SalesHistoryByMonthRow,
+    rowIndex: number,
+    kind: 'metric' | 'group',
+    options: { isChild?: boolean; hasChildren?: boolean } = {},
+  ) => {
+    const isSkuRow = kind === 'metric' && !options.hasChildren
+    metrics.forEach((metric, metricIndex) => {
+      rows.push({
+        key: `${kind}|${row.groupKey ?? ''}|${row.key}|${metric.key}`,
+        kind,
+        sourceIndex: rowIndex,
+        dimLabel: metricIndex === 0 ? row.label : '',
+        groupKey: row.key,
+        hasChildren: options.hasChildren,
+        isChild: options.isChild,
+        skuCode: isSkuRow ? row.key : undefined,
+        storeId,
+        pictureFileName: isSkuRow ? row.pictureFileName ?? null : null,
+        metric,
+        values: row.metrics[metric.key] ?? new Array(monthCount).fill(0),
+        total: row.totals[metric.key] ?? 0,
+      })
+    })
+  }
+
+  block.rows.forEach((row, rowIndex) => {
+    const hasChildren = (row.children?.length ?? 0) > 0
+    appendMetricRows(row, rowIndex, hasChildren ? 'group' : 'metric', { hasChildren })
+    if (hasChildren && expandedGroups.has(row.key)) {
+      row.children!.forEach((child, childIndex) => {
+        appendMetricRows(child, rowIndex + childIndex / 1000, 'metric', { isChild: true })
+      })
+    }
+  })
+  metrics.forEach((metric, metricIndex) => {
+    rows.push({
+      key: `total|${metric.key}`,
+      kind: 'total',
+      sourceIndex: block.rows.length,
+      dimLabel: metricIndex === 0 ? 'Total' : '',
+      metric,
+      values: block.columnTotals[metric.key] ?? new Array(monthCount).fill(0),
+      total: block.grandTotals[metric.key] ?? 0,
+    })
+  })
+  return rows
+}
+
 function buildColumns(
   months: string[],
   dimLabel: string,
-  metric: MetricDef,
-): ColumnsType<SalesHistoryByMonthRow> {
-  const monthCols: ColumnsType<SalesHistoryByMonthRow> = months.map((m, idx) => ({
+  expandedGroups: ReadonlySet<string>,
+  onToggleGroup: (key: string) => void,
+): ColumnsType<HistoryDisplayRow> {
+  const monthCols: ColumnsType<HistoryDisplayRow> = months.map((m, idx) => ({
     title: formatMonthLabel(m),
     key: `m-${m}`,
     align: 'right',
     width: 78,
-    sorter: (a, b) => {
-      const av = a.metrics[metric.key]?.[idx] ?? 0
-      const bv = b.metrics[metric.key]?.[idx] ?? 0
-      return av - bv
-    },
     render: (_: unknown, row) =>
-      formatMetricValue(metric, row.metrics[metric.key]?.[idx]),
+      formatMetricValue(row.metric, row.values[idx]),
   }))
   return [
     {
       title: dimLabel,
-      dataIndex: 'label',
-      key: 'label',
+      dataIndex: 'dimLabel',
+      key: 'dimLabel',
       fixed: 'left',
       width: 150,
-      sorter: (a, b) => a.label.localeCompare(b.label),
+      render: (value: string, row) => {
+        if (row.kind === 'total' && value) return <Text strong>{value}</Text>
+        if (row.kind === 'group' && value && row.hasChildren) {
+          const expanded = row.groupKey ? expandedGroups.has(row.groupKey) : false
+          return (
+            <Button
+              type="link"
+              size="small"
+              onClick={() => row.groupKey && onToggleGroup(row.groupKey)}
+              style={{ padding: 0, fontWeight: 600 }}
+            >
+              {expanded ? '- ' : '+ '}
+              {value}
+            </Button>
+          )
+        }
+        if (row.isChild && value) {
+          return (
+            <Space size={8} style={{ paddingLeft: 20 }}>
+              <ReportThumbnail
+                url={buildRicsImageUrl(row.pictureFileName)}
+                alt={row.skuCode ?? value}
+                height={28}
+                maxWidth={48}
+              />
+              {row.skuCode ? (
+                <SkuLink skuCode={row.skuCode} storeId={row.storeId}>
+                  {value}
+                </SkuLink>
+              ) : (
+                value
+              )}
+            </Space>
+          )
+        }
+        if (row.skuCode && value) {
+          return (
+            <Space size={8}>
+              <ReportThumbnail
+                url={buildRicsImageUrl(row.pictureFileName)}
+                alt={row.skuCode}
+                height={28}
+                maxWidth={48}
+              />
+              <SkuLink skuCode={row.skuCode} storeId={row.storeId}>
+                {value}
+              </SkuLink>
+            </Space>
+          )
+        }
+        return value
+      },
+    },
+    {
+      title: 'Data',
+      key: 'metric',
+      fixed: 'left',
+      width: 190,
+      render: (_: unknown, row) => (
+        row.kind === 'total' || row.kind === 'group'
+          ? <Text strong>{row.metric.label}</Text>
+          : <span data-testid={`metric-row-${row.metric.key}`}>{row.metric.label}</span>
+      ),
     },
     ...monthCols,
     {
-      title: 'Total',
+      title: '12 Month Total',
       dataIndex: 'total',
       key: 'total',
       align: 'right',
       width: 100,
       fixed: 'right',
-      sorter: (a, b) => (a.totals[metric.key] ?? 0) - (b.totals[metric.key] ?? 0),
-      defaultSortOrder: 'descend',
       render: (_: unknown, row) => (
-        <Text strong>{formatMetricValuePrecise(metric, row.totals[metric.key])}</Text>
+        <Text strong={row.kind === 'total'}>{formatMetricValuePrecise(row.metric, row.total)}</Text>
       ),
     },
   ]
@@ -232,45 +387,91 @@ interface HistoryTableProps {
   block: SalesHistoryByMonthBlock
   months: string[]
   dimLabel: string
-  metric: MetricDef
+  metrics: readonly MetricDef[]
   detailLevel: SalesHistoryByMonthDetailLevel
+  stickyHeaders: boolean
 }
 
-function HistoryTable({ block, months, dimLabel, metric, detailLevel }: HistoryTableProps) {
-  const columns = useMemo(() => buildColumns(months, dimLabel, metric), [months, dimLabel, metric])
+function HistoryTable({ block, months, dimLabel, metrics, detailLevel, stickyHeaders }: HistoryTableProps) {
+  const isSkuDetail = detailLevel === 'sku'
+  const hasGroupedSkuRows = isSkuDetail && block.rows.some((row) => (row.children?.length ?? 0) > 0)
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(100)
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set())
 
-  const colTotals = block.columnTotals[metric.key] ?? new Array(months.length).fill(0)
-  const grandTotal = block.grandTotals[metric.key] ?? 0
+  const toggleGroup = (key: string) => {
+    setExpandedGroups((current) => {
+      const next = new Set(current)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
+
+  const columns = useMemo(
+    () => buildColumns(months, dimLabel, expandedGroups, toggleGroup),
+    [months, dimLabel, expandedGroups, toggleGroup],
+  )
+
+  useEffect(() => {
+    setPage(1)
+    setExpandedGroups(new Set())
+  }, [block, metrics, isSkuDetail])
+
+  const visibleBlock = useMemo(() => {
+    if (!isSkuDetail) return block
+    const start = (page - 1) * pageSize
+    return {
+      ...block,
+      rows: block.rows.slice(start, start + pageSize),
+    }
+  }, [block, isSkuDetail, page, pageSize])
+  const storeId = typeof block.storeNumber === 'number' ? block.storeNumber : undefined
+
+  const rows = useMemo(
+    () => buildDisplayRows(visibleBlock, metrics, months.length, expandedGroups, storeId),
+    [visibleBlock, metrics, months.length, expandedGroups, storeId],
+  )
+  const paginationLabel = hasGroupedSkuRows ? 'vendors' : 'SKUs'
 
   return (
-    <Table<SalesHistoryByMonthRow>
-      dataSource={block.rows}
-      columns={columns}
-      rowKey="key"
-      size="small"
-      pagination={detailLevel === 'sku' ? { pageSize: 100, showSizeChanger: true } : false}
-      scroll={{ x: 'max-content' }}
-      // Sticky header stays pinned to the viewport as the user scrolls down
-      // through a long pivot table. Fixed first + last columns stay pinned
-      // during horizontal scroll via `fixed: 'left' | 'right'` on those cols.
-      sticky
-      // Zebra striping only at the data-row level; the sticky first + last
-      // columns ride along with the row, so the whole row reads as one.
-      rowClassName={(_r, i) => (i % 2 === 1 ? 'report-zebra-row' : '')}
-      summary={() => (
-        <Table.Summary.Row>
-          <SummaryLabelCell index={0} variant="grand">Total</SummaryLabelCell>
-          {colTotals.map((total, idx) => (
-            <SummaryNumericCell index={idx + 1} key={`ct-${idx}`} variant="grand">
-              {formatMetricValue(metric, total)}
-            </SummaryNumericCell>
-          ))}
-          <SummaryNumericCell index={months.length + 1} variant="grand">
-            {formatMetricValuePrecise(metric, grandTotal)}
-          </SummaryNumericCell>
-        </Table.Summary.Row>
-      )}
-    />
+    <>
+      <Table<HistoryDisplayRow>
+        dataSource={rows}
+        columns={columns}
+        rowKey="key"
+        size="small"
+        pagination={false}
+        scroll={{ x: 'max-content' }}
+        sticky={stickyHeaders}
+        // Zebra striping only at the data-row level; the sticky first + last
+        // columns ride along with the row, so the whole row reads as one.
+        rowClassName={(row) =>
+          row.kind === 'total'
+            ? 'report-summary-row'
+            : row.kind === 'group'
+              ? 'report-summary-row'
+            : row.sourceIndex % 2 === 1
+              ? 'report-zebra-row'
+              : ''
+        }
+      />
+      {isSkuDetail && block.rows.length > pageSize ? (
+        <Pagination
+          current={page}
+          pageSize={pageSize}
+          total={block.rows.length}
+          showSizeChanger
+          pageSizeOptions={[50, 100, 250, 500]}
+          showTotal={(total, range) => `${range[0]}-${range[1]} of ${total} ${paginationLabel}`}
+          onChange={(nextPage, nextPageSize) => {
+            setPage(nextPage)
+            setPageSize(nextPageSize)
+          }}
+          style={{ marginTop: 12, textAlign: 'right' }}
+        />
+      ) : null}
+    </>
   )
 }
 
@@ -278,11 +479,10 @@ function HistoryTable({ block, months, dimLabel, metric, detailLevel }: HistoryT
 
 interface ResultsProps {
   report: SalesHistoryByMonthReport
-  activeMetric: SalesHistoryByMonthMetricKey
-  onMetricChange: (key: SalesHistoryByMonthMetricKey) => void
+  stickyHeaders: boolean
 }
 
-function Results({ report, activeMetric, onMetricChange }: ResultsProps) {
+function Results({ report, stickyHeaders }: ResultsProps) {
   const dimLabel =
     report.detailLevel === 'sku'
       ? 'SKU'
@@ -292,8 +492,7 @@ function Results({ report, activeMetric, onMetricChange }: ResultsProps) {
           ? 'Vendor'
           : 'Category'
 
-  const metricKey = (report.dataToPrint.includes(activeMetric) ? activeMetric : report.dataToPrint[0]) ?? 'netSales'
-  const metric = METRIC_DEFS_BY_KEY.get(metricKey)!
+  const metrics = selectedMetricDefs(report.dataToPrint)
 
   return (
     <>
@@ -303,27 +502,6 @@ function Results({ report, activeMetric, onMetricChange }: ResultsProps) {
           Chart tracks <b>Net Sales</b> regardless of the metric shown in the table.
         </Paragraph>
       </Card>
-
-      {report.dataToPrint.length > 1 ? (
-        <Card
-          size="small"
-          style={{ marginBottom: 16 }}
-          styles={{ body: { padding: 12 } }}
-          data-testid="metric-tab-strip"
-        >
-          <Segmented<string>
-            value={metricKey}
-            onChange={(v) => onMetricChange(v as SalesHistoryByMonthMetricKey)}
-            options={report.dataToPrint.map((k) => ({
-              value: k,
-              label: METRIC_DEFS_BY_KEY.get(k)?.short ?? k,
-            }))}
-          />
-          <Text type="secondary" style={{ marginLeft: 12, fontSize: 12 }}>
-            {metric.description}
-          </Text>
-        </Card>
-      ) : null}
 
       {report.blocks.map((block) => (
         <Card
@@ -340,8 +518,9 @@ function Results({ report, activeMetric, onMetricChange }: ResultsProps) {
             block={block}
             months={report.months}
             dimLabel={dimLabel}
-            metric={metric}
+            metrics={metrics}
             detailLevel={report.detailLevel}
+            stickyHeaders={stickyHeaders}
           />
         </Card>
       ))}
@@ -376,12 +555,12 @@ export default function SalesHistoryByMonthPage() {
   const [groupsRaw, setGroupsRaw] = useState('')
   const [keywordsRaw, setKeywordsRaw] = useState('')
 
-  const [activeMetric, setActiveMetric] = useState<SalesHistoryByMonthMetricKey>('netSales')
-
   // Committed params — null until Run Report is clicked. Mirrors the pattern
   // used by SalesAnalysisPage so the query only fires on user intent.
   const [query, setQuery] = useState<SalesHistoryByMonthParams | null>(null)
   const [filterOpen, setFilterOpen] = useState(true)
+  const [stickyHeaders, setStickyHeaders] = useState(true)
+  const [isFullscreen, setIsFullscreen] = useState(false)
 
   const { data: dims, isLoading: dimsLoading } = useSalesDimensions()
   const { data, isFetching, error } = useSalesHistoryByMonth(query)
@@ -395,12 +574,22 @@ export default function SalesHistoryByMonthPage() {
   }, [query, data, isFetching])
 
   const resultRef = useRef<HTMLDivElement>(null)
+  const reportShellRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     // jsdom lacks scrollIntoView — guard so tests don't blow up on the effect.
     if (query && resultRef.current?.scrollIntoView) {
       resultRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' })
     }
   }, [query])
+
+  useEffect(() => {
+    const syncFullscreenState = () => {
+      setIsFullscreen(document.fullscreenElement === reportShellRef.current)
+    }
+    syncFullscreenState()
+    document.addEventListener('fullscreenchange', syncFullscreenState)
+    return () => document.removeEventListener('fullscreenchange', syncFullscreenState)
+  }, [])
 
   // ?templateId=... replay.
   const { data: templateData } = useReportTemplate(templateId)
@@ -449,7 +638,12 @@ export default function SalesHistoryByMonthPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [templateId, templateData])
 
-  const hasStores = selectedStores.length > 0
+  const allStoreNumbers = useMemo(
+    () => (dims?.stores ?? []).map((s) => s.number),
+    [dims?.stores],
+  )
+  const queryStores = selectedStores.length > 0 ? selectedStores : allStoreNumbers
+  const hasStores = queryStores.length > 0
   const hasAnyMetric = dataToPrint.length > 0
   const canRun = hasStores && hasAnyMetric
 
@@ -477,7 +671,7 @@ export default function SalesHistoryByMonthPage() {
   function onRun(): void {
     if (!canRun) return
     setQuery({
-      stores: selectedStores,
+      stores: queryStores,
       endMonth: endMonth.format('YYYY-MM'),
       sortBy,
       combineStores,
@@ -489,6 +683,18 @@ export default function SalesHistoryByMonthPage() {
   }
   function onStop(): void {
     qc.cancelQueries({ queryKey: ['sales-history-by-month', query] })
+  }
+
+  async function toggleFullscreen(): Promise<void> {
+    const shell = reportShellRef.current
+    if (!shell) return
+    if (document.fullscreenElement === shell) {
+      await document.exitFullscreen()
+      return
+    }
+    if (shell.requestFullscreen) {
+      await shell.requestFullscreen()
+    }
   }
 
   const csvUrl = query ? getSalesHistoryByMonthCsvUrl(query) : undefined
@@ -506,7 +712,16 @@ export default function SalesHistoryByMonthPage() {
   }
 
   return (
-    <div>
+    <div
+      ref={reportShellRef}
+      data-testid="sales-history-report-shell"
+      style={{
+        background: '#f5f7fb',
+        minHeight: isFullscreen ? '100vh' : undefined,
+        padding: isFullscreen ? 16 : undefined,
+        overflow: isFullscreen ? 'auto' : undefined,
+      }}
+    >
       <ReportHeader
         title="Sales History by Month"
         description="12-month trailing sales by vendor, category, department, or SKU."
@@ -517,6 +732,12 @@ export default function SalesHistoryByMonthPage() {
         ]}
         actions={
           <Space>
+            <Button
+              icon={isFullscreen ? <FullscreenExitOutlined /> : <FullscreenOutlined />}
+              onClick={() => void toggleFullscreen()}
+            >
+              {isFullscreen ? 'Exit Full Screen' : 'Full Screen'}
+            </Button>
             <Button
               icon={<DownloadOutlined />}
               disabled={!csvUrl}
@@ -544,10 +765,16 @@ export default function SalesHistoryByMonthPage() {
         canRun={canRun}
         actions={
           <Space align="center">
-            <RunReportControls running={running} hasRun={query != null} onRun={onRun} onStop={onStop} />
+            <RunReportControls
+              running={running}
+              hasRun={query != null}
+              onRun={onRun}
+              onStop={onStop}
+              disabled={!canRun}
+            />
             {!hasStores && (
               <Text type="secondary" style={{ fontSize: 12 }}>
-                Select at least one store under Criteria to enable Run Report.
+                Store list is still loading; Run Report will include all stores when ready.
               </Text>
             )}
             {hasStores && !hasAnyMetric && (
@@ -555,6 +782,12 @@ export default function SalesHistoryByMonthPage() {
                 Select at least one metric under Data to Print.
               </Text>
             )}
+            <Switch
+              aria-label="Keep headers visible"
+              checked={stickyHeaders}
+              onChange={setStickyHeaders}
+            />
+            <Text style={{ fontSize: 12 }}>Keep headers visible</Text>
           </Space>
         }
         persistentActions={
@@ -563,7 +796,7 @@ export default function SalesHistoryByMonthPage() {
               reportType="sales-history-by-month"
               disabled={query == null}
               getParamsJson={() => ({
-                stores: selectedStores,
+                stores: query?.stores ?? queryStores,
                 endMonth: endMonth.format('YYYY-MM'),
                 sortBy,
                 combineStores,
@@ -587,7 +820,7 @@ export default function SalesHistoryByMonthPage() {
               disabled={query == null || !data}
               sourceTemplateId={templateId}
               getParamsJson={() => ({
-                stores: selectedStores,
+                stores: query?.stores ?? queryStores,
                 endMonth: endMonth.format('YYYY-MM'),
                 sortBy,
                 combineStores,
@@ -661,8 +894,7 @@ export default function SalesHistoryByMonthPage() {
           <Col xs={24} md={10}>
             <Card size="small" title={<Text strong>Data to Print</Text>}>
               <Paragraph type="secondary" style={{ marginTop: 0, marginBottom: 8, fontSize: 12 }}>
-                Select one or more metrics. When multiple are selected, the table shows one at a time via
-                a tab strip above the grid.
+                Select one or more metrics. Multiple metrics print together under each row in the RICS order.
               </Paragraph>
               <Space wrap>
                 {METRIC_DEFS.map((m) => (
@@ -868,7 +1100,7 @@ export default function SalesHistoryByMonthPage() {
                 chipFromRaw('Keywords', query.criteria?.keywords),
               ]}
             />
-            <Results report={data} activeMetric={activeMetric} onMetricChange={setActiveMetric} />
+            <Results report={data} stickyHeaders={stickyHeaders} />
           </>
         ) : null}
       </div>

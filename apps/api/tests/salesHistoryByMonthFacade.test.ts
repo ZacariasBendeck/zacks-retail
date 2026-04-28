@@ -17,6 +17,7 @@ jest.mock('../src/services/salesReporting/ricsSalesHistoryByMonthAdapter', () =>
   queryMonthlyMeasures: jest.fn(),
   queryMonthlyNetSales: jest.fn(),
   queryMonthlyInventoryHistory: jest.fn().mockResolvedValue([]),
+  queryMonthlyInventoryHistoryRollups: jest.fn().mockResolvedValue([]),
   loadSkuMasterForCriteria: jest.fn().mockResolvedValue([]),
   clearCache: jest.fn(),
 }));
@@ -36,10 +37,18 @@ jest.mock('../src/services/salesReporting/ricsSalesReportAdapter', () => ({
   },
 }));
 
+jest.mock('../src/db/prisma', () => ({
+  prisma: {
+    $queryRawUnsafe: jest.fn().mockResolvedValue([]),
+  },
+}));
+
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const monthlyAdapter = require('../src/services/salesReporting/ricsSalesHistoryByMonthAdapter');
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const facade = require('../src/services/salesReporting/salesReportFacade');
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { prisma } = require('../src/db/prisma');
 
 type MonthlyMeasuresRow = {
   storeNumber: number;
@@ -48,6 +57,7 @@ type MonthlyMeasuresRow = {
   dimLabel: string;
   categoryKey: string | null;
   vendorKey: string | null;
+  pictureFileName?: string | null;
   quantity: number;
   netSales: number;
   cogs: number;
@@ -61,6 +71,7 @@ function rowOf(partial: Partial<MonthlyMeasuresRow>): MonthlyMeasuresRow {
     dimLabel: 'NIKE',
     categoryKey: null,
     vendorKey: 'NIKE',
+    pictureFileName: null,
     quantity: 0,
     netSales: 0,
     cogs: 0,
@@ -327,6 +338,42 @@ describe('getSalesHistoryByMonth — multi-metric (v2)', () => {
     expect(nike.metrics.pctOfStoreNetSales[11]).toBeCloseTo(75, 1);
     expect(adidas.metrics.pctOfStoreNetSales[11]).toBeCloseTo(25, 1);
   });
+
+  it('uses the Postgres inventory rollup path for subtotal inventory-backed metrics', async () => {
+    setAdapterRows([
+      rowOf({ yearMonth: '2026-04', dimKey: 'NIKE', dimLabel: 'NIKE', netSales: 300, cogs: 180 }),
+    ]);
+    (monthlyAdapter.queryMonthlyInventoryHistory as jest.Mock).mockClear();
+    (monthlyAdapter.queryMonthlyInventoryHistoryRollups as jest.Mock).mockClear();
+    (monthlyAdapter.queryMonthlyInventoryHistoryRollups as jest.Mock).mockResolvedValueOnce([
+      {
+        storeNumber: 2,
+        dimKey: 'NIKE',
+        snapshotAsOf: '2026-04-15T00:00:00.000Z',
+        monthQtyOH: new Array(12).fill(10),
+        monthValueOH: new Array(12).fill(1000),
+      },
+    ]);
+
+    await facade.getSalesHistoryByMonth({
+      storeNumbers: [2],
+      endYearMonth: '2026-04',
+      sortBy: 'vendor',
+      combineStores: true,
+      detailLevel: 'subtotals',
+      dataToPrint: ['beginningOnHand', 'roiPct', 'turns'],
+    });
+
+    expect(monthlyAdapter.queryMonthlyInventoryHistory).not.toHaveBeenCalled();
+    expect(monthlyAdapter.queryMonthlyInventoryHistoryRollups).toHaveBeenCalledWith(
+      expect.objectContaining({
+        storeNumbers: [2],
+        sortBy: 'vendor',
+        detailLevel: 'subtotals',
+        nonZeroOnly: true,
+      }),
+    );
+  });
 });
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -341,9 +388,9 @@ describe('getSalesHistoryByMonth — detail levels', () => {
     else process.env.SALES_SOURCE = ORIGINAL_SOURCE;
   });
 
-  it('detailLevel=sku preserves per-SKU rows from the adapter', async () => {
+  it('detailLevel=sku with vendor sort groups SKUs under their vendor', async () => {
     setAdapterRows([
-      rowOf({ yearMonth: '2026-04', dimKey: 'SKU-A', dimLabel: 'SKU-A', quantity: 3, netSales: 90 }),
+      rowOf({ yearMonth: '2026-04', dimKey: 'SKU-A', dimLabel: 'SKU-A', quantity: 3, netSales: 90, pictureFileName: 'SKU-A.JPG' }),
       rowOf({ yearMonth: '2026-04', dimKey: 'SKU-B', dimLabel: 'SKU-B', quantity: 2, netSales: 60 }),
     ]);
     const report = await facade.getSalesHistoryByMonth({
@@ -355,17 +402,20 @@ describe('getSalesHistoryByMonth — detail levels', () => {
       dataToPrint: ['netSales'],
     });
     expect(report.detailLevel).toBe('sku');
-    expect(report.blocks[0].rows.map((r: any) => r.key)).toEqual(['SKU-A', 'SKU-B']);
+    expect(report.blocks[0].rows.map((r: any) => r.key)).toEqual(['NIKE']);
+    expect(report.blocks[0].rows[0].totals.netSales).toBe(150);
+    expect(report.blocks[0].rows[0].children.map((r: any) => r.key)).toEqual(['SKU-A', 'SKU-B']);
+    expect(report.blocks[0].rows[0].children[0].pictureFileName).toBe('SKU-A.JPG');
     expect(monthlyAdapter.queryMonthlyMeasures).toHaveBeenCalledWith(
       expect.objectContaining({ detailLevel: 'sku' }),
     );
   });
 
-  it('detailLevel=department aggregates categories into departments via ref_categories', async () => {
-    // 556 (Pump Formal → FORMAL) and 570 (Oxford → FORMAL) both fall into
-    // the FORMAL department per the ref_categories seed table — so they
-    // collapse to a single row. 574 (Sandalia Fiesta → FIESTA) stays
-    // separate. Asserting row labels verifies the lookup actually fired.
+  it('detailLevel=department aggregates categories into RICS departments by category range', async () => {
+    (prisma.$queryRawUnsafe as jest.Mock).mockResolvedValueOnce([
+      { Number: 55, Desc: 'Zapato Deportivo Mujer', BegCateg: 550, EndCateg: 559 },
+      { Number: 57, Desc: 'Sandalia Mujer', BegCateg: 570, EndCateg: 579 },
+    ]);
     setAdapterRows([
       rowOf({ yearMonth: '2026-04', dimKey: '556', dimLabel: '556 - Pump Formal', netSales: 100 }),
       rowOf({ yearMonth: '2026-04', dimKey: '570', dimLabel: '570 - Oxford',      netSales: 50  }),
@@ -380,15 +430,14 @@ describe('getSalesHistoryByMonth — detail levels', () => {
       dataToPrint: ['netSales'],
     });
     expect(report.detailLevel).toBe('department');
-    const labels = new Set(report.blocks[0].rows.map((r: any) => r.label));
-    // Accept either the real ref_categories mapping (FORMAL + FIESTA = 2 rows)
-    // or the DB-unavailable fallback ("Cat 556" etc. = 3 rows). Either way
-    // we hit both the mapper-happy and mapper-unavailable paths without
-    // coupling the test to the DB layer.
-    expect(report.blocks[0].rows.length).toBeGreaterThanOrEqual(1);
-    expect(labels.size).toBe(report.blocks[0].rows.length);
-    const totalNet = report.blocks[0].grandTotals.netSales;
-    expect(totalNet).toBe(225);                             // 100+50+75
+    expect(report.blocks[0].rows.map((r: any) => r.key)).toEqual(['55', '57']);
+    expect(report.blocks[0].rows.map((r: any) => r.label)).toEqual([
+      '55 - Zapato Deportivo Mujer',
+      '57 - Sandalia Mujer',
+    ]);
+    expect(report.blocks[0].rows[0].totals.netSales).toBe(100);
+    expect(report.blocks[0].rows[1].totals.netSales).toBe(125);
+    expect(report.blocks[0].grandTotals.netSales).toBe(225);
   });
 });
 
@@ -548,6 +597,8 @@ describe('getSalesHistoryByMonth — inventory-backed metrics', () => {
   beforeEach(() => {
     setAdapterRows([]);
     (monthlyAdapter.queryMonthlyInventoryHistory as jest.Mock).mockReset();
+    (monthlyAdapter.queryMonthlyInventoryHistoryRollups as jest.Mock).mockReset();
+    (monthlyAdapter.queryMonthlyInventoryHistoryRollups as jest.Mock).mockResolvedValue([]);
     (monthlyAdapter.loadSkuMasterForCriteria as jest.Mock).mockReset();
     (monthlyAdapter.loadSkuMasterForCriteria as jest.Mock).mockResolvedValue([]);
   });
@@ -561,6 +612,14 @@ describe('getSalesHistoryByMonth — inventory-backed metrics', () => {
     monthValueOH: number[];
   }>): void {
     (monthlyAdapter.queryMonthlyInventoryHistory as jest.Mock).mockResolvedValue(rows);
+    (monthlyAdapter.queryMonthlyInventoryHistoryRollups as jest.Mock).mockResolvedValue(
+      rows.map((r) => ({
+        storeNumber: r.storeNumber,
+        dimKey: 'NIKE',
+        monthQtyOH: r.monthQtyOH,
+        monthValueOH: r.monthValueOH,
+      })),
+    );
   }
 
   it('does NOT call queryMonthlyInventoryHistory when no inventory-backed metric is requested', async () => {

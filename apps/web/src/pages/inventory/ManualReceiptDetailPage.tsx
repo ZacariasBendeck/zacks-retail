@@ -12,6 +12,7 @@ import {
 import { ArrowLeftOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { useManualReceipt } from '../../hooks/useManualReceipts'
+import { SkuLink } from '../../components/sku-link'
 import type { ManualReceiptLineRecord } from '../../types/manualReceipt'
 
 export default function ManualReceiptDetailPage() {
@@ -93,15 +94,9 @@ export default function ManualReceiptDetailPage() {
           <Descriptions bordered column={{ xs: 1, sm: 2, md: 3 }} size="small">
             <Descriptions.Item label="Store">{receipt.storeLabel}</Descriptions.Item>
             <Descriptions.Item label="SKU">
-              <Button
-                type="link"
-                style={{ paddingInline: 0 }}
-                onClick={() =>
-                  navigate(`/products/inquiry/${encodeURIComponent(receipt.skuCode)}?storeId=${receipt.storeId}`)
-                }
-              >
+              <SkuLink skuCode={receipt.skuCode} storeId={receipt.storeId}>
                 {receipt.skuCode}
-              </Button>
+              </SkuLink>
             </Descriptions.Item>
             <Descriptions.Item label="Description">{receipt.description ?? '-'}</Descriptions.Item>
             <Descriptions.Item label="Vendor">{receipt.vendorName ?? receipt.vendorCode ?? '-'}</Descriptions.Item>

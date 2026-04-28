@@ -4,6 +4,7 @@ import {
   type DimensionInput,
   type DimensionPatch,
   type FamilyRulesReplaceInput,
+  type MacroRulesReplaceInput,
   type ValueInput,
   type ValuePatch,
 } from '../services/productsAttributesApi'
@@ -61,6 +62,42 @@ export function useAttributeCoverage() {
 }
 
 // ──────────────── Dimension admin ────────────────
+
+export function useAttributeMacroRules() {
+  return useQuery({
+    queryKey: ['products-attributes', 'macros'],
+    queryFn: () => productsAttributesApi.listMacroRules(),
+    staleTime: CATALOG_STALE_MS,
+  })
+}
+
+export function useAttributeMacroRuleSet(
+  sourceDimensionCode: string | null,
+  targetDimensionCode: string | null,
+) {
+  return useQuery({
+    queryKey: ['products-attributes', 'macros', sourceDimensionCode, targetDimensionCode],
+    queryFn: () => productsAttributesApi.getMacroRuleSet(sourceDimensionCode!, targetDimensionCode!),
+    enabled: !!sourceDimensionCode && !!targetDimensionCode,
+    staleTime: CATALOG_STALE_MS,
+  })
+}
+
+export function useReplaceAttributeMacroRules() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({
+      sourceDimensionCode,
+      targetDimensionCode,
+      input,
+    }: {
+      sourceDimensionCode: string
+      targetDimensionCode: string
+      input: MacroRulesReplaceInput
+    }) => productsAttributesApi.replaceMacroRules(sourceDimensionCode, targetDimensionCode, input),
+    onSuccess: () => invalidateAllAttributes(qc),
+  })
+}
 
 export function useCreateDimension() {
   const qc = useQueryClient()

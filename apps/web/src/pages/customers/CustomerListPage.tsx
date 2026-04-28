@@ -4,6 +4,7 @@ import { Card, Button, Input, Space, Table, Tag, Typography, Row, Col } from 'an
 import { ReloadOutlined, SearchOutlined, WarningFilled } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { useCustomers } from '../../hooks/useCustomers'
+import { CustomerTicketHistoryButton } from '../../components/customers/CustomerTicketHistoryButton'
 import type { Customer, CustomerListParams } from '../../types/customer'
 
 export default function CustomerListPage() {
@@ -102,6 +103,18 @@ export default function CustomerListPage() {
       key: 'active',
       width: 100,
       render: (v: boolean) => <Tag color={v ? 'green' : 'default'}>{v ? 'Active' : 'Inactive'}</Tag>,
+    },
+    {
+      title: 'Actions',
+      key: 'actions',
+      width: 110,
+      render: (_: unknown, r: Customer) => (
+        <CustomerTicketHistoryButton
+          customerId={r.id}
+          customerName={r.displayName}
+          buttonProps={{ size: 'small' }}
+        />
+      ),
     },
   ]
 

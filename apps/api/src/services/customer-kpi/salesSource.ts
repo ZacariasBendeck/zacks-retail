@@ -146,6 +146,20 @@ OR EXISTS (
 export async function loadCustomerMetricTransactions(
   customerId: string,
 ): Promise<CustomerMetricTransaction[]> {
+  const customer = await prisma.customerIntelligenceCustomer.findUnique({
+    where: { id: customerId },
+    select: {
+      ricsAccount: true,
+      ricsCode: true,
+      honduranIdNormalized: true,
+    },
+  });
+  const accountKeys = [
+    customer?.ricsAccount ?? null,
+    customer?.ricsCode ?? null,
+    customer?.honduranIdNormalized ?? null,
+  ].filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
+
   const [customerTransactions, salesHistoryTickets] = await Promise.all([
     prisma.customerTransactionFact.findMany({
       where: { customerId },
@@ -153,7 +167,19 @@ export async function loadCustomerMetricTransactions(
       orderBy: { purchasedAt: 'asc' },
     }),
     prismaClient.salesHistoryTicket.findMany({
-      where: { matchedCustomerId: customerId },
+      where: {
+        OR: [
+          { matchedCustomerId: customerId },
+          ...(accountKeys.length > 0
+            ? [
+                {
+                  matchedCustomerId: null,
+                  accountKey: { in: accountKeys },
+                },
+              ]
+            : []),
+        ],
+      },
       ...SALES_HISTORY_WITH_LINES,
       orderBy: { purchasedAt: 'asc' },
     }),
@@ -161,7 +187,7 @@ export async function loadCustomerMetricTransactions(
 
   return [
     ...customerTransactions.map(normalizeCustomerTransaction),
-    ...salesHistoryTickets.map(normalizeSalesHistoryTicket),
+    ...salesHistoryTickets.map((ticket) => normalizeSalesHistoryTicket(ticket, customerId)),
   ].sort((left, right) => {
     const purchasedAtDelta = left.purchasedAt.getTime() - right.purchasedAt.getTime();
     if (purchasedAtDelta !== 0) {
@@ -206,10 +232,13 @@ function normalizeCustomerTransaction(
   };
 }
 
-function normalizeSalesHistoryTicket(ticket: SalesHistoryTicketWithLines): CustomerMetricTransaction {
+function normalizeSalesHistoryTicket(
+  ticket: SalesHistoryTicketWithLines,
+  customerId: string,
+): CustomerMetricTransaction {
   return {
     id: ticket.id,
-    customerId: ticket.matchedCustomerId ?? '',
+    customerId,
     source: ticket.source,
     transactionKind: ticket.transactionKind,
     status: ticket.status,

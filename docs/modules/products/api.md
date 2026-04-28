@@ -215,6 +215,24 @@ The attribute catalog + family rules are administered in-app at `/products/attri
 | `POST   /products/attributes/values/:id/merge-into/:targetId` | Reassign all `sku_attribute_assignment` rows from `:id` to `:targetId` (skipping SKUs that already carry the target), delete source. Both must share dimension. |
 | `POST   /products/attributes/dimensions/:code/values/reorder` | Bulk `sortOrder` update. |
 
+### Macro attribute derivation rules
+
+Macro attributes are derived rollups from another single-value attribute. The first production use is `color -> color_family`: operators edit the mapping table, while SKU-level `color_family` assignments are rebuilt automatically and cannot be edited directly on the SKU.
+
+| Method + path | Purpose |
+|---|---|
+| `GET /products/attributes/macros` | List existing macro mappings, including mapped count vs source-value count. |
+| `GET /products/attributes/macros/:sourceDimensionCode/:targetDimensionCode` | Return every source value with its mapped target macro value, if any. |
+| `PUT /products/attributes/macros/:sourceDimensionCode/:targetDimensionCode` | Replace the mapping set. Body: `{ rules: [{ sourceValueCode, targetValueCode }] }`; `targetValueCode: null` clears a source value mapping. Rebuilds derived SKU assignments for that source/target pair. |
+
+Validation:
+
+- Source and target dimensions must exist and must be different.
+- Source and target dimensions must be single-value dimensions.
+- Each `sourceValueCode` must belong to the source dimension.
+- Each non-null `targetValueCode` must belong to the target macro dimension.
+- Any target dimension that appears in `app.attribute_derivation_rule` is blocked from manual SKU assignment and utility bulk assignment.
+
 ### Family admin
 
 | Method + path | Purpose |
@@ -233,13 +251,47 @@ The attribute catalog + family rules are administered in-app at `/products/attri
 3. **Family gating** — if the dim has ≥1 rule row, the SKU's family must have an enabled rule. Universal dims (zero rule rows) always pass. Errors: `409 "Dimensión X no aplica a la familia Y"`.
 4. **Required-attribute enforcement** — for every dim with `is_required=true` for the SKU's family, the post-replace state must have ≥1 assignment (keyword-derived assignments that stay through the replace also satisfy the requirement). Errors: `409` with the list of missing dim codes.
 
+## Planned Matching Set / Conjunto endpoints
+
+Matching sets belong to the Products module, not Inventory. The current implementation plan is [`../../dev/plans/2026-04-28-products-matching-sets.md`](../../dev/plans/2026-04-28-products-matching-sets.md).
+
+Correct backend base path:
+
+```text
+/api/v1/products/matching-sets
+```
+
+Correct frontend route:
+
+```text
+/products/matching-sets
+```
+
+Do **not** add `/api/v1/inventory/matching-sets` or `/inventory/matching-sets`.
+
+Planned backend files:
+
+- `apps/api/src/routes/products/matchingSetRoutes.ts`
+- `apps/api/src/services/products/matchingSetService.ts`
+
+Planned mount point in `apps/api/src/app.ts`:
+
+```ts
+app.use('/api/v1/products/matching-sets', productsMatchingSetRoutes);
+app.use('/api/v1/products/sku-drafts', productsSkuDraftRoutes);
+app.use('/api/v1/products/skus/lookup', productsSkuLookupRoutes);
+app.use('/api/v1/products/skus', productsSkuRoutes);
+```
+
+The matching-set tables must reference `app.sku(id)` and `app.vendor(code)`. They must not soft-reference `rics_mirror.inventory_master`.
+
 ## Out of scope (Phase 1)
 
 - **Public storefront facet endpoints.** Storefront has its own router with anonymous auth + edge caching requirements. The shape of `/attributes/dimensions?withCounts=true` is the data the storefront facet endpoint will consume internally; the storefront-side endpoint is a separate brainstorm.
 - **Per-source filtering** ("give me only operator-overridden assignments"). The `assigned_by` field is in the read response; clients filter if needed.
 - **Bulk SKU-attribute fetch** (`POST /attributes/by-sku-codes`). Not building speculatively; add when a use case lands.
 - **Create / delete of `ProductFamily` rows** — the 11 families are fixed; admin UI surfaces the actions disabled.
-- **Matching Set / Conjuntos admin** — separate module, separate plan.
+- **Matching Set / Conjuntos admin** — out of scope for the attribute Phase 1 endpoints only. It is a Products-module feature planned under `/api/v1/products/matching-sets`; see the current-state plan linked above.
 
 ## Related
 

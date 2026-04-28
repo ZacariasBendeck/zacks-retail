@@ -11,6 +11,7 @@
 
 import { prisma } from '../../db/prisma';
 import { Err, Ok, type Result, type RepoError } from '../rics/repoResult';
+import type { Prisma } from '../../prismaClient';
 
 export interface DimensionRow {
   code: string;
@@ -74,9 +75,57 @@ export interface CoverageRow {
   bySource: { keyword: number; excel: number; operator: number };
 }
 
+export interface AttributeMacroRuleSummary {
+  sourceDimensionCode: string;
+  sourceDimensionLabelEs: string;
+  targetDimensionCode: string;
+  targetDimensionLabelEs: string;
+  mappedCount: number;
+  sourceValueCount: number;
+  updatedAt: string | null;
+}
+
+export interface AttributeMacroRuleRow {
+  sourceValueCode: string;
+  sourceLabelEs: string;
+  targetValueCode: string | null;
+  targetLabelEs: string | null;
+  updatedAt: string | null;
+  updatedBy: string | null;
+}
+
+export interface AttributeMacroRuleSet {
+  sourceDimensionCode: string;
+  sourceDimensionLabelEs: string;
+  targetDimensionCode: string;
+  targetDimensionLabelEs: string;
+  rules: AttributeMacroRuleRow[];
+}
+
+const COLOR_DIMENSION_CODE = 'color';
+const COLOR_FAMILY_DIMENSION_CODE = 'color_family';
+const COLOR_FAMILY_DERIVED_BY = 'seed:derived:color_family';
+
+function derivedActorFor(sourceDimensionCode: string, targetDimensionCode: string): string {
+  if (
+    sourceDimensionCode === COLOR_DIMENSION_CODE &&
+    targetDimensionCode === COLOR_FAMILY_DIMENSION_CODE
+  ) {
+    return COLOR_FAMILY_DERIVED_BY;
+  }
+  return `seed:derived:${sourceDimensionCode}->${targetDimensionCode}`;
+}
+
 function toRepoError(err: unknown, fallback = 'Database error'): RepoError {
   const message = err instanceof Error ? err.message : String(err ?? fallback);
   return { kind: 'AccessConnectionError', message, cause: err };
+}
+
+function toIsoString(value: Date | string | null | undefined): string | null {
+  if (value == null) return null;
+  if (value instanceof Date) return value.toISOString();
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? value : parsed.toISOString();
 }
 
 /**
@@ -96,9 +145,6 @@ async function skuExists(skuCode: string): Promise<boolean> {
        SELECT 1 FROM app.sku
          WHERE (code = $1 OR provisional_code = $1)
            AND sku_state <> 'DISCONTINUED'
-       UNION ALL
-       SELECT 1 FROM rics_mirror.inventory_master
-         WHERE sku = $1 AND (status IS NULL OR status <> 'D')
      ) AS exists`,
     skuCode
   );
@@ -112,13 +158,175 @@ async function skuExists(skuCode: string): Promise<boolean> {
 async function resolveSkuFamily(skuCode: string): Promise<string | null> {
   const rows = await prisma.$queryRawUnsafe<{ family_code: string | null }[]>(
     `SELECT cpf.family_code
-     FROM rics_mirror.inventory_master im
-     LEFT JOIN app.category_product_family cpf ON cpf.category_number = im.category
-     WHERE im.sku = $1
+     FROM app.sku s
+     LEFT JOIN app.category_product_family cpf ON cpf.category_number = s.category_number
+     WHERE (s.code = $1 OR s.provisional_code = $1)
      LIMIT 1`,
     skuCode,
   );
   return rows[0]?.family_code ?? null;
+}
+
+async function listDerivedTargetDimensionCodes(): Promise<Set<string>> {
+  const rows = await prisma.$queryRawUnsafe<{ target_dimension_code: string }[]>(
+    `SELECT DISTINCT target_dimension_code
+     FROM app.attribute_derivation_rule`,
+  );
+  return new Set(rows.map((r) => r.target_dimension_code));
+}
+
+async function listMacroSourceDimensionCodes(): Promise<string[]> {
+  const rows = await prisma.$queryRawUnsafe<{ source_dimension_code: string }[]>(
+    `SELECT DISTINCT source_dimension_code
+     FROM app.attribute_derivation_rule`,
+  );
+  return rows.map((r) => r.source_dimension_code);
+}
+
+async function deriveAttributeMacroPairForSkus(
+  tx: Prisma.TransactionClient,
+  sourceDimensionCode: string,
+  targetDimensionCode: string,
+  skuCodes?: string[],
+): Promise<void> {
+  const uniqueSkuCodes = skuCodes
+    ? Array.from(new Set(skuCodes.map((sku) => sku.trim()).filter(Boolean)))
+    : null;
+  if (skuCodes && uniqueSkuCodes?.length === 0) return;
+
+  const derivedBy = derivedActorFor(sourceDimensionCode, targetDimensionCode);
+
+  if (uniqueSkuCodes) {
+    await tx.$executeRawUnsafe(
+      `WITH target_dim AS (
+         SELECT id FROM app.attribute_dimension WHERE code = $1
+       )
+       DELETE FROM app.sku_attribute_assignment a
+       USING target_dim td
+       WHERE a.dimension_id = td.id
+         AND a.assigned_by = $2
+         AND a.sku_code = ANY($3::varchar[])`,
+      targetDimensionCode,
+      derivedBy,
+      uniqueSkuCodes,
+    );
+  } else {
+    await tx.$executeRawUnsafe(
+      `WITH target_dim AS (
+         SELECT id FROM app.attribute_dimension WHERE code = $1
+       )
+       DELETE FROM app.sku_attribute_assignment a
+       USING target_dim td
+       WHERE a.dimension_id = td.id
+         AND a.assigned_by = $2`,
+      targetDimensionCode,
+      derivedBy,
+    );
+  }
+
+  if (uniqueSkuCodes) {
+    await tx.$executeRawUnsafe(
+      `WITH source_dim AS (
+         SELECT id FROM app.attribute_dimension WHERE code = $1
+       ),
+       target_dim AS (
+         SELECT id FROM app.attribute_dimension WHERE code = $2
+       ),
+       current_source AS (
+         SELECT DISTINCT ON (a.sku_code)
+                a.sku_code,
+                sv.code AS source_value_code
+         FROM app.sku_attribute_assignment a
+         JOIN app.attribute_value sv ON sv.id = a.value_id
+         JOIN source_dim sd ON sd.id = a.dimension_id
+         WHERE a.sku_code = ANY($4::varchar[])
+         ORDER BY a.sku_code, a.assigned_at DESC
+       )
+       INSERT INTO app.sku_attribute_assignment (sku_code, dimension_id, value_id, assigned_by)
+       SELECT cs.sku_code,
+              td.id,
+              tv.id,
+              $3
+       FROM current_source cs
+       JOIN app.attribute_derivation_rule rule
+         ON rule.source_dimension_code = $1
+        AND rule.source_value_code = cs.source_value_code
+        AND rule.target_dimension_code = $2
+       JOIN target_dim td ON true
+       JOIN app.attribute_value tv ON tv.dimension_id = td.id AND tv.code = rule.target_value_code
+       ON CONFLICT (sku_code, dimension_id, value_id) DO UPDATE SET
+         assigned_by = EXCLUDED.assigned_by,
+         assigned_at = now()`,
+      sourceDimensionCode,
+      targetDimensionCode,
+      derivedBy,
+      uniqueSkuCodes,
+    );
+  } else {
+    await tx.$executeRawUnsafe(
+      `WITH source_dim AS (
+         SELECT id FROM app.attribute_dimension WHERE code = $1
+       ),
+       target_dim AS (
+         SELECT id FROM app.attribute_dimension WHERE code = $2
+       ),
+       current_source AS (
+         SELECT DISTINCT ON (a.sku_code)
+                a.sku_code,
+                sv.code AS source_value_code
+         FROM app.sku_attribute_assignment a
+         JOIN app.attribute_value sv ON sv.id = a.value_id
+         JOIN source_dim sd ON sd.id = a.dimension_id
+         ORDER BY a.sku_code, a.assigned_at DESC
+       )
+       INSERT INTO app.sku_attribute_assignment (sku_code, dimension_id, value_id, assigned_by)
+       SELECT cs.sku_code,
+              td.id,
+              tv.id,
+              $3
+       FROM current_source cs
+       JOIN app.attribute_derivation_rule rule
+         ON rule.source_dimension_code = $1
+        AND rule.source_value_code = cs.source_value_code
+        AND rule.target_dimension_code = $2
+       JOIN target_dim td ON true
+       JOIN app.attribute_value tv ON tv.dimension_id = td.id AND tv.code = rule.target_value_code
+       ON CONFLICT (sku_code, dimension_id, value_id) DO UPDATE SET
+         assigned_by = EXCLUDED.assigned_by,
+         assigned_at = now()`,
+      sourceDimensionCode,
+      targetDimensionCode,
+      derivedBy,
+    );
+  }
+}
+
+async function deriveAttributeMacrosForSkus(
+  tx: Prisma.TransactionClient,
+  sourceDimensionCodes: string[],
+  skuCodes?: string[],
+): Promise<void> {
+  const uniqueSourceCodes = Array.from(new Set(sourceDimensionCodes.map((code) => code.trim()).filter(Boolean)));
+  if (uniqueSourceCodes.length === 0) return;
+
+  const pairs = await tx.$queryRawUnsafe<{
+    source_dimension_code: string;
+    target_dimension_code: string;
+  }[]>(
+    `SELECT DISTINCT source_dimension_code, target_dimension_code
+     FROM app.attribute_derivation_rule
+     WHERE source_dimension_code = ANY($1::text[])`,
+    uniqueSourceCodes,
+  );
+
+  for (const pair of pairs) {
+    await deriveAttributeMacroPairForSkus(
+      tx,
+      pair.source_dimension_code,
+      pair.target_dimension_code,
+      skuCodes,
+    );
+  }
 }
 
 export const AttributesRepository = {
@@ -184,6 +392,231 @@ export const AttributesRepository = {
    * so the client can render uniformly. Returns NotFound if the SKU doesn't
    * exist in the mirror.
    */
+  async listAttributeMacroRuleSummaries(): Promise<Result<AttributeMacroRuleSummary[]>> {
+    try {
+      const rows = await prisma.$queryRawUnsafe<{
+        source_dimension_code: string;
+        source_dimension_label_es: string;
+        target_dimension_code: string;
+        target_dimension_label_es: string;
+        mapped_count: string | number;
+        source_value_count: string | number;
+        updated_at: Date | string | null;
+      }[]>(
+        `WITH source_counts AS (
+           SELECT d.code, COUNT(v.id)::text AS source_value_count
+           FROM app.attribute_dimension d
+           LEFT JOIN app.attribute_value v ON v.dimension_id = d.id
+           GROUP BY d.code
+         )
+         SELECT
+           r.source_dimension_code,
+           sd.label_es AS source_dimension_label_es,
+           r.target_dimension_code,
+           td.label_es AS target_dimension_label_es,
+           COUNT(*)::text AS mapped_count,
+           COALESCE(sc.source_value_count, '0') AS source_value_count,
+           MAX(r.updated_at) AS updated_at
+         FROM app.attribute_derivation_rule r
+         JOIN app.attribute_dimension sd ON sd.code = r.source_dimension_code
+         JOIN app.attribute_dimension td ON td.code = r.target_dimension_code
+         LEFT JOIN source_counts sc ON sc.code = r.source_dimension_code
+         GROUP BY
+           r.source_dimension_code,
+           sd.label_es,
+           sd.sort_order,
+           r.target_dimension_code,
+           td.label_es,
+           td.sort_order,
+           sc.source_value_count
+         ORDER BY sd.sort_order, td.sort_order`,
+      );
+
+      return Ok(
+        rows.map((r) => ({
+          sourceDimensionCode: r.source_dimension_code,
+          sourceDimensionLabelEs: r.source_dimension_label_es,
+          targetDimensionCode: r.target_dimension_code,
+          targetDimensionLabelEs: r.target_dimension_label_es,
+          mappedCount: Number(r.mapped_count),
+          sourceValueCount: Number(r.source_value_count),
+          updatedAt: toIsoString(r.updated_at),
+        })),
+      );
+    } catch (err) {
+      return Err(toRepoError(err));
+    }
+  },
+
+  async getAttributeMacroRuleSet(
+    sourceDimensionCode: string,
+    targetDimensionCode: string,
+  ): Promise<Result<AttributeMacroRuleSet>> {
+    try {
+      const [sourceDim, targetDim] = await Promise.all([
+        prisma.attributeDimension.findUnique({
+          where: { code: sourceDimensionCode },
+          include: { values: { orderBy: { sortOrder: 'asc' } } },
+        }),
+        prisma.attributeDimension.findUnique({
+          where: { code: targetDimensionCode },
+          include: { values: { orderBy: { sortOrder: 'asc' } } },
+        }),
+      ]);
+      if (!sourceDim) {
+        return Err({ kind: 'NotFound', message: `Dimension '${sourceDimensionCode}' not found.` });
+      }
+      if (!targetDim) {
+        return Err({ kind: 'NotFound', message: `Dimension '${targetDimensionCode}' not found.` });
+      }
+
+      const ruleRows = await prisma.$queryRawUnsafe<{
+        source_value_code: string;
+        target_value_code: string;
+        target_label_es: string | null;
+        updated_at: Date | string | null;
+        updated_by: string | null;
+      }[]>(
+        `SELECT
+           r.source_value_code,
+           r.target_value_code,
+           tv.label_es AS target_label_es,
+           r.updated_at,
+           r.updated_by
+         FROM app.attribute_derivation_rule r
+         LEFT JOIN app.attribute_value tv
+           ON tv.code = r.target_value_code
+          AND tv.dimension_id = $3
+         WHERE r.source_dimension_code = $1
+           AND r.target_dimension_code = $2`,
+        sourceDimensionCode,
+        targetDimensionCode,
+        targetDim.id,
+      );
+      const bySource = new Map(ruleRows.map((r) => [r.source_value_code, r]));
+
+      return Ok({
+        sourceDimensionCode: sourceDim.code,
+        sourceDimensionLabelEs: sourceDim.labelEs,
+        targetDimensionCode: targetDim.code,
+        targetDimensionLabelEs: targetDim.labelEs,
+        rules: sourceDim.values.map((sourceValue) => {
+          const rule = bySource.get(sourceValue.code);
+          return {
+            sourceValueCode: sourceValue.code,
+            sourceLabelEs: sourceValue.labelEs,
+            targetValueCode: rule?.target_value_code ?? null,
+            targetLabelEs: rule?.target_label_es ?? null,
+            updatedAt: toIsoString(rule?.updated_at),
+            updatedBy: rule?.updated_by ?? null,
+          };
+        }),
+      });
+    } catch (err) {
+      return Err(toRepoError(err));
+    }
+  },
+
+  async replaceAttributeMacroRules(
+    sourceDimensionCode: string,
+    targetDimensionCode: string,
+    rules: { sourceValueCode: string; targetValueCode: string | null }[],
+    actor: string,
+  ): Promise<Result<AttributeMacroRuleSet>> {
+    try {
+      if (sourceDimensionCode === targetDimensionCode) {
+        return Err({
+          kind: 'ConstraintViolation',
+          message: 'Source and macro target dimensions must be different.',
+        });
+      }
+
+      const [sourceDim, targetDim] = await Promise.all([
+        prisma.attributeDimension.findUnique({
+          where: { code: sourceDimensionCode },
+          include: { values: true },
+        }),
+        prisma.attributeDimension.findUnique({
+          where: { code: targetDimensionCode },
+          include: { values: true },
+        }),
+      ]);
+      if (!sourceDim) {
+        return Err({ kind: 'NotFound', message: `Dimension '${sourceDimensionCode}' not found.` });
+      }
+      if (!targetDim) {
+        return Err({ kind: 'NotFound', message: `Dimension '${targetDimensionCode}' not found.` });
+      }
+      if (sourceDim.isMultiValue) {
+        return Err({
+          kind: 'ConstraintViolation',
+          message: `Source dimension '${sourceDimensionCode}' must be single-value to derive a macro category.`,
+        });
+      }
+      if (targetDim.isMultiValue) {
+        return Err({
+          kind: 'ConstraintViolation',
+          message: `Target macro dimension '${targetDimensionCode}' must be single-value.`,
+        });
+      }
+
+      const sourceValueCodes = new Set(sourceDim.values.map((v) => v.code));
+      const targetValueCodes = new Set(targetDim.values.map((v) => v.code));
+      const deduped = new Map<string, string | null>();
+      for (const rule of rules) {
+        if (!sourceValueCodes.has(rule.sourceValueCode)) {
+          return Err({
+            kind: 'ConstraintViolation',
+            message: `Value '${rule.sourceValueCode}' does not belong to dimension '${sourceDimensionCode}'.`,
+          });
+        }
+        if (rule.targetValueCode && !targetValueCodes.has(rule.targetValueCode)) {
+          return Err({
+            kind: 'ConstraintViolation',
+            message: `Value '${rule.targetValueCode}' does not belong to dimension '${targetDimensionCode}'.`,
+          });
+        }
+        deduped.set(rule.sourceValueCode, rule.targetValueCode || null);
+      }
+
+      await prisma.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe(
+          `DELETE FROM app.attribute_derivation_rule
+           WHERE source_dimension_code = $1
+             AND target_dimension_code = $2`,
+          sourceDimensionCode,
+          targetDimensionCode,
+        );
+
+        for (const [sourceValueCode, targetValueCode] of deduped.entries()) {
+          if (!targetValueCode) continue;
+          await tx.$executeRawUnsafe(
+            `INSERT INTO app.attribute_derivation_rule (
+               source_dimension_code,
+               source_value_code,
+               target_dimension_code,
+               target_value_code,
+               updated_at,
+               updated_by
+             )
+             VALUES ($1, $2, $3, $4, now(), $5)`,
+            sourceDimensionCode,
+            sourceValueCode,
+            targetDimensionCode,
+            targetValueCode,
+            actor,
+          );
+        }
+
+        await deriveAttributeMacroPairForSkus(tx, sourceDimensionCode, targetDimensionCode);
+      });
+
+      return AttributesRepository.getAttributeMacroRuleSet(sourceDimensionCode, targetDimensionCode);
+    } catch (err) {
+      return Err(toRepoError(err));
+    }
+  },
+
   async getSkuAttributes(skuCode: string): Promise<Result<SkuAttributesResponse>> {
     try {
       if (!(await skuExists(skuCode))) {
@@ -256,6 +689,7 @@ export const AttributesRepository = {
         include: { values: true, familyRules: true },
       });
       const dimByCode = new Map(dims.map((d) => [d.code, d] as const));
+      const derivedTargetDimensionCodes = await listDerivedTargetDimensionCodes();
       const skuFamily = await resolveSkuFamily(skuCode);
 
       // Scope set — when provided, every incoming assignment must belong to one
@@ -268,6 +702,13 @@ export const AttributesRepository = {
       const resolved: { dimensionId: number; valueId: number; dimCode: string; valCode: string; valLabel: string }[] = [];
       const byDimCount = new Map<string, number>();
       for (const a of assignments) {
+        if (derivedTargetDimensionCodes.has(a.dimensionCode)) {
+          return Err({
+            kind: 'ConstraintViolation',
+            message:
+              `Dimension '${a.dimensionCode}' is derived from another attribute and cannot be assigned manually.`,
+          });
+        }
         const dim = dimByCode.get(a.dimensionCode);
         if (!dim) {
           return Err({
@@ -386,6 +827,10 @@ export const AttributesRepository = {
       const scopedDimIds = scopeSet
         ? dims.filter((d) => scopeSet.has(d.code)).map((d) => d.id)
         : null;
+      const macroSourceDimensionCodes = await listMacroSourceDimensionCodes();
+      const sourceDimensionCodesToDerive = scopeSet
+        ? macroSourceDimensionCodes.filter((code) => scopeSet.has(code))
+        : macroSourceDimensionCodes;
       await prisma.$transaction(async (tx) => {
         if (scopedDimIds) {
           await tx.$executeRawUnsafe(
@@ -414,6 +859,9 @@ export const AttributesRepository = {
             })),
             skipDuplicates: true,
           });
+        }
+        if (sourceDimensionCodesToDerive.length > 0) {
+          await deriveAttributeMacrosForSkus(tx, sourceDimensionCodesToDerive, [skuCode]);
         }
       });
 
@@ -485,7 +933,9 @@ export const AttributesRepository = {
   async getCoverage(): Promise<Result<CoverageRow[]>> {
     try {
       const totalRow = await prisma.$queryRawUnsafe<{ n: string }[]>(
-        `SELECT COUNT(*)::text AS n FROM rics_mirror.inventory_master`
+        `SELECT COUNT(*)::text AS n
+         FROM app.sku
+         WHERE sku_state <> 'DISCONTINUED'`
       );
       const totalSkus = Number(totalRow[0]?.n ?? 0);
 
@@ -1065,6 +1515,13 @@ export const AttributesRepository = {
     try {
       const { skuCodes, dimensionCode, valueCodes, actor } = input;
       if (skuCodes.length === 0) return Ok(0);
+      const derivedTargetDimensionCodes = await listDerivedTargetDimensionCodes();
+      if (derivedTargetDimensionCodes.has(dimensionCode)) {
+        return Err({
+          kind: 'ConstraintViolation',
+          message: `Dimension '${dimensionCode}' is derived from another attribute and cannot be bulk-assigned manually.`,
+        });
+      }
 
       const dim = await prisma.attributeDimension.findUnique({
         where: { code: dimensionCode },
@@ -1128,6 +1585,7 @@ export const AttributesRepository = {
         } else {
           affected = Number(deleted);
         }
+        await deriveAttributeMacrosForSkus(tx, [dimensionCode], skuCodes);
       });
 
       return Ok(affected);

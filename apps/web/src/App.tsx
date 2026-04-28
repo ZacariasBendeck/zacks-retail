@@ -7,7 +7,6 @@ import { RequireAuth } from './auth/RequireAuth'
 import { RequirePermission } from './auth/RequirePermission'
 
 const SkuListPage = lazy(() => import('./pages/inventory/SkuListPage'))
-const SkuFormPage = lazy(() => import('./pages/inventory/SkuFormPage'))
 const SkuFormPageModern = lazy(() => import('./pages/inventory/SkuFormPageModern'))
 const SkuDraftsListPage = lazy(() => import('./pages/inventory/SkuDraftsListPage'))
 const DashboardPage = lazy(() => import('./pages/inventory/DashboardPage'))
@@ -81,6 +80,7 @@ const ChangePasswordPage = lazy(() => import('./pages/auth/ChangePasswordPage'))
 const UsersListPage = lazy(() => import('./pages/users/UsersListPage'))
 const UserFormPage = lazy(() => import('./pages/users/UserFormPage'))
 const EnterSalesPage = lazy(() => import('./pages/sales/enter/EnterSalesPage'))
+const CasePacksPage = lazy(() => import('./pages/fileSetup/CasePacksPage'))
 
 // products module — Phase 1 Step 2 taxonomy pages
 const TaxonomyHomePage = lazy(() => import('./pages/products/TaxonomyHomePage'))
@@ -107,8 +107,7 @@ const SizeTypeGridEditorPage = lazy(() => import('./pages/products/SizeTypeGridE
 const VendorListPage = lazy(() => import('./pages/products/vendors/VendorListPage'))
 const VendorFormPage = lazy(() => import('./pages/products/vendors/VendorFormPage'))
 
-// products module — Phase 1 Step 4 SKU pages (distinct from legacy inventory SkuListPage)
-const ProductsSkuListPage = lazy(() => import('./pages/products/skus/SkuListPage'))
+// products module — legacy RICS-tabs SKU detail form
 const ProductsSkuFormPage = lazy(() => import('./pages/products/skus/SkuFormPage'))
 
 // products module — extended-attributes catalog (spec: 2026-04-22)
@@ -119,10 +118,13 @@ const ProductFamiliesPage = lazy(() => import('./pages/products/families/Familie
 
 // utilities module — RICS Ch. 15 batch-change ports (spec: docs/modules/utilities.md)
 const UtilitiesHubPage = lazy(() => import('./pages/utilities/UtilitiesHubPage'))
+const StoresPage = lazy(() => import('./pages/utilities/StoresPage'))
+const StoreChainsPage = lazy(() => import('./pages/utilities/StoreChainsPage'))
 const ChangeKeywordsPage = lazy(() => import('./pages/utilities/ChangeKeywordsPage'))
 const ChangeSkuAttributesPage = lazy(() => import('./pages/utilities/ChangeSkuAttributesPage'))
 const BatchHistoryPage = lazy(() => import('./pages/utilities/BatchHistoryPage'))
 const BatchHistoryDetailPage = lazy(() => import('./pages/utilities/BatchHistoryDetailPage'))
+const MigrationDayConsolePage = lazy(() => import('./pages/operations/MigrationDayConsolePage'))
 
 // products module — Inventory Inquiry (/inventory/inquiry now redirects here)
 const InquiryPage = lazy(() => import('./pages/products/inquiry/InquiryPage').then(m => ({ default: m.InquiryPage })))
@@ -181,10 +183,10 @@ export default function App() {
             <Route path="/inventory/dashboard" element={<DashboardPage />} />
             <Route path="/inventory/balances" element={<InventoryBalancesPage />} />
             <Route path="/inventory/skus" element={<SkuListPage />} />
-            {/* Primary SKU creator moved to /products/skus/new (2026-04-22 request).
+            {/* Primary SKU creator lives at /products/skus/new.
                 Legacy URL kept as a redirect so in-app links / bookmarks still work. */}
             <Route path="/inventory/skus/new" element={<Navigate to="/products/skus/new" replace />} />
-            <Route path="/inventory/skus/:skuId/edit" element={<SkuFormPage />} />
+            <Route path="/inventory/skus/:skuId/edit" element={<SkuFormPageModern />} />
             <Route path="/inventory/sku-drafts" element={<SkuDraftsListPage />} />
             <Route path="/inventory/adjustments" element={<AdjustmentListPage />} />
             <Route path="/inventory/adjustments/new" element={<AdjustmentFormPage />} />
@@ -266,7 +268,9 @@ export default function App() {
             <Route path="/customers/:customerId" element={<CustomerKpiDetailPage />} />
 
             {/* products module — Phase 1 Step 2 taxonomy pages */}
-            <Route path="/products" element={<Navigate to="/products/taxonomy" replace />} />
+            <Route path="/products" element={<Navigate to="/inventory/skus" replace />} />
+            <Route path="/file-setup" element={<Navigate to="/products/vendors" replace />} />
+            <Route path="/file-setup/case-packs" element={<CasePacksPage />} />
             <Route path="/products/taxonomy" element={<TaxonomyHomePage />} />
             <Route path="/products/taxonomy/departments" element={<DepartmentListPage />} />
             <Route path="/products/taxonomy/departments/new" element={<DepartmentFormPage />} />
@@ -298,19 +302,23 @@ export default function App() {
             <Route path="/products/vendors" element={<VendorListPage />} />
             <Route path="/products/vendors/new" element={<VendorFormPage />} />
             <Route path="/products/vendors/:code" element={<VendorFormPage />} />
-            <Route path="/products/skus" element={<ProductsSkuListPage />} />
-            {/* Primary SKU creator (AI-powered, moved from /inventory/skus/new). */}
-            <Route path="/products/skus/new" element={<SkuFormPage />} />
-            {/* Modern rework — clone of the primary creator for iteration. */}
-            <Route path="/products/skus/new-modern" element={<SkuFormPageModern />} />
+            <Route path="/products/skus" element={<SkuListPage />} />
+            {/* Primary SKU creator. The modern form is now the only New SKU flow. */}
+            <Route path="/products/skus/new" element={<SkuFormPageModern />} />
+            <Route path="/products/skus/new-modern" element={<Navigate to="/products/skus/new" replace />} />
+            <Route path="/products/skus/:skuId/edit" element={<SkuFormPageModern />} />
             {/* Legacy RICS-tabs creator, kept as an alternate entry. */}
             <Route path="/products/skus/new-alt" element={<ProductsSkuFormPage />} />
             <Route path="/products/skus/:code" element={<ProductsSkuFormPage />} />
             <Route path="/products/attributes" element={<AttributesCatalogPage />} />
+            <Route path="/products/attributes/macros" element={<AttributesCatalogPage />} />
             <Route path="/products/families" element={<ProductFamiliesPage />} />
 
             {/* utilities module — RICS Ch. 15 batch-change ports */}
             <Route path="/utilities" element={<UtilitiesHubPage />} />
+            <Route path="/utilities/overview" element={<Navigate to="/utilities" replace />} />
+            <Route path="/utilities/stores" element={<StoresPage />} />
+            <Route path="/utilities/store-chains" element={<StoreChainsPage />} />
             <Route path="/utilities/change-keywords" element={<ChangeKeywordsPage />} />
             <Route path="/utilities/change-sku-attributes" element={<ChangeSkuAttributesPage />} />
             {/* Backward-compat redirects from the four pre-consolidation routes. */}
@@ -320,6 +328,11 @@ export default function App() {
             <Route path="/utilities/change-group-codes" element={<Navigate to="/utilities/change-sku-attributes" replace />} />
             <Route path="/utilities/batch-history" element={<BatchHistoryPage />} />
             <Route path="/utilities/batch-history/:id" element={<BatchHistoryDetailPage />} />
+            <Route path="/operations" element={<Navigate to="/operations/migration-day" replace />} />
+            <Route
+              path="/operations/migration-day"
+              element={<RequirePermission permission="employees.manage"><MigrationDayConsolePage /></RequirePermission>}
+            />
 
             <Route path="/me" element={<MePage />} />
             <Route path="/change-password" element={<ChangePasswordPage />} />

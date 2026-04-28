@@ -1,4 +1,5 @@
 import { Prisma, PrismaClient } from '../../prismaClient';
+import { computeIncremental } from '../customer-kpi/computeIncremental';
 
 const MONEY_SCALE = 100;
 const BASE_TAX_RATE = 0.15;
@@ -1160,9 +1161,10 @@ async function upsertSalesHistoryFromTicket(
     storeId: number;
     cashierCode: string | null;
   },
-): Promise<void> {
+): Promise<string | null> {
   const purchasedAt = args.ticket.completedAt ?? new Date();
   const totalAmount = requiredMoney(args.ticket.grandTotal);
+  const matchedCustomerId = await resolveSalesHistoryCustomerId(tx, args.ticket);
   const register = await tx.posRegister.findUnique({
     where: { id: args.ticket.registerId },
     select: { code: true },
@@ -1185,6 +1187,7 @@ async function upsertSalesHistoryFromTicket(
         where: { externalTransactionId: args.ticket.id },
         data: {
           source: 'pos_live',
+          matchedCustomerId,
           accountKey: args.ticket.customerAccountNumber ?? null,
           transactionType: TRANSACTION_TYPE_NUMBER[args.ticket.transactionType] ?? 1,
           transactionKind: totalAmount < 0 ? 'return' : 'purchase',
@@ -1206,6 +1209,7 @@ async function upsertSalesHistoryFromTicket(
         data: {
           externalTransactionId: args.ticket.id,
           source: 'pos_live',
+          matchedCustomerId,
           accountKey: args.ticket.customerAccountNumber ?? null,
           transactionType: TRANSACTION_TYPE_NUMBER[args.ticket.transactionType] ?? 1,
           transactionKind: totalAmount < 0 ? 'return' : 'purchase',
@@ -1249,8 +1253,43 @@ async function upsertSalesHistoryFromTicket(
       isReturn: line.quantity < 0,
       returnCode: line.returnCode ? String(line.returnCode) : null,
       salespersonCode: line.salespersonCode ?? null,
-    })),
+      })),
   });
+
+  return matchedCustomerId;
+}
+
+async function resolveSalesHistoryCustomerId(
+  tx: PosTx,
+  ticket: PosTicketGraph,
+): Promise<string | null> {
+  if (ticket.customerId) {
+    const directMatch = await tx.customerIntelligenceCustomer.findUnique({
+      where: { id: ticket.customerId },
+      select: { id: true },
+    });
+    if (directMatch) {
+      return directMatch.id;
+    }
+  }
+
+  const accountNumber = normalizeString(ticket.customerAccountNumber);
+  if (!accountNumber) {
+    return null;
+  }
+
+  const matchedByAccount = await tx.customerIntelligenceCustomer.findFirst({
+    where: {
+      OR: [
+        { ricsAccount: accountNumber },
+        { ricsCode: accountNumber },
+        { honduranIdNormalized: accountNumber },
+      ],
+    },
+    select: { id: true },
+  });
+
+  return matchedByAccount?.id ?? null;
 }
 
 async function buildReceipt(prisma: PrismaClient | PosTx, ticket: PosTicketGraph): Promise<PosReceiptDto> {
@@ -2213,7 +2252,7 @@ export async function completeTicket(
       });
     }
 
-    await upsertSalesHistoryFromTicket(tx, {
+    const matchedCustomerId = await upsertSalesHistoryFromTicket(tx, {
       ticket: finalTicket,
       storeId: finalTicket.storeId,
       cashierCode: args.actorSalespersonCode ?? null,
@@ -2249,8 +2288,20 @@ export async function completeTicket(
       ticket: finalTicket,
       receipt,
       nextTicket,
+      matchedCustomerId,
     };
   });
+
+  const metricsCustomerId = completed.matchedCustomerId ?? null;
+  if (metricsCustomerId) {
+    void computeIncremental(metricsCustomerId).catch((error) => {
+      console.error('[sales-pos] Failed to refresh customer metrics after POS completion', {
+        ticketId: completed.ticket.id,
+        customerId: metricsCustomerId,
+        error,
+      });
+    });
+  }
 
   return {
     ticket: mapTicket(completed.ticket),

@@ -126,6 +126,7 @@ export interface InventoryInquiry {
   vendor: { code: string; name: string } | null;
   vendorSku: string | null;
   styleColor: string | null;
+  status: string | null;
   sizeType: InquirySizeType | null;
   lastReceivedAt: string | null;
   pricing: InquiryPricing;

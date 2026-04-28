@@ -17,6 +17,7 @@ interface BackendMaster {
   brand?: string | null;
   vendorCode?: string | null;
   category?: number | null;
+  categoryName?: string | null;
   season?: string | null;
   retailPrice?: number | null;
   currentCost?: number | null;
@@ -28,6 +29,7 @@ interface BackendMaster {
   };
   vendorSku?: string | null;
   styleColor?: string | null;
+  status?: string | null;
 }
 
 interface BackendInquiry {
@@ -41,19 +43,20 @@ interface BackendInquiry {
   info?: InquiryInfo;
 }
 
-function flatten(raw: BackendInquiry): InventoryInquiry {
+export function flattenInquiryPayload(raw: BackendInquiry): InventoryInquiry {
   const master = raw.master ?? {};
   return {
     sku: raw.sku,
     description: master.description ?? '',
     category: master.category != null
-      ? { id: master.category, name: '' }
+      ? { id: master.category, name: master.categoryName ?? '' }
       : null,
     vendor: master.vendorCode != null
       ? { code: master.vendorCode, name: master.brand ?? '' }
       : null,
     vendorSku: master.vendorSku ?? null,
     styleColor: master.styleColor ?? null,
+    status: master.status ?? null,
     sizeType: master.sizeType
       ? {
           id: master.sizeType.code ?? 0,
@@ -91,7 +94,7 @@ export function useInquiryData(skuCode: string, storeId?: number, selectedRow?: 
       if (response.status === 404) throw new Error(`SKU ${skuCode} not found`);
       if (!response.ok) throw new Error(`Inquiry failed: ${response.status}`);
       const raw = (await response.json()) as BackendInquiry;
-      return flatten(raw);
+      return flattenInquiryPayload(raw);
     },
     enabled: !!skuCode,
     staleTime: 30_000,

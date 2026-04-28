@@ -164,7 +164,7 @@ export default function CustomerKpiDashboardPage() {
                   <Col xs={12} sm={8} key={seg.segment}>
                     <Card
                       size="small"
-                      bodyStyle={{ padding: 12 }}
+                      styles={{ body: { padding: 12 } }}
                       style={{ background: '#fafafa', borderRadius: 8 }}
                     >
                       <Tag color={segmentColor(seg.segment)}>{seg.segment}</Tag>

@@ -52,7 +52,6 @@ export interface SkuRow {
   discountCode: string | null;
   // ── Classification / identity fields mirrored from rics_mirror.inventory_master.
   season: string | null;
-  style: string | null;
   styleColor: string | null;
   sizeType: number | null;
   location: string | null;
@@ -95,7 +94,6 @@ export interface CreateSkuInput {
   perks?: number | null;
   discountCode?: string | null;
   season?: string | null;
-  style?: string | null;
   styleColor?: string | null;
   sizeType?: number | null;
   location?: string | null;
@@ -227,7 +225,6 @@ type SkuPrismaRow = {
   currentCost: unknown;
   currentPriceSlot: string | null;
   season: string | null;
-  style: string | null;
   styleColor: string | null;
   sizeType: number | null;
   location: string | null;
@@ -276,7 +273,6 @@ function mapRow(
     perks: extra.perks,
     discountCode: extra.discountCode,
     season: r.season,
-    style: r.style,
     styleColor: r.styleColor,
     sizeType: r.sizeType,
     location: r.location,
@@ -374,7 +370,6 @@ export async function create(
             currentCost: input.currentCost ?? null,
             currentPriceSlot: input.currentPriceSlot ?? null,
             season: input.season ?? null,
-            style: input.style ?? null,
             styleColor: input.styleColor ?? null,
             sizeType: input.sizeType ?? null,
             location: input.location ?? null,
@@ -543,7 +538,6 @@ export async function update(
           ...(patch.currentCost !== undefined ? { currentCost: patch.currentCost } : {}),
           ...(patch.currentPriceSlot !== undefined ? { currentPriceSlot: patch.currentPriceSlot } : {}),
           ...(patch.season !== undefined ? { season: patch.season } : {}),
-          ...(patch.style !== undefined ? { style: patch.style } : {}),
           ...(patch.styleColor !== undefined ? { styleColor: patch.styleColor } : {}),
           ...(patch.sizeType !== undefined ? { sizeType: patch.sizeType } : {}),
           ...(patch.location !== undefined ? { location: patch.location } : {}),
@@ -677,7 +671,6 @@ export async function finalize(
             ...(patch.currentCost !== undefined ? { currentCost: patch.currentCost } : {}),
             ...(patch.currentPriceSlot !== undefined ? { currentPriceSlot: patch.currentPriceSlot } : {}),
             ...(patch.season !== undefined ? { season: patch.season } : {}),
-            ...(patch.style !== undefined ? { style: patch.style } : {}),
             ...(patch.styleColor !== undefined ? { styleColor: patch.styleColor } : {}),
             ...(patch.sizeType !== undefined ? { sizeType: patch.sizeType } : {}),
             ...(patch.location !== undefined ? { location: patch.location } : {}),

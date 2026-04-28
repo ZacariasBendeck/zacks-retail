@@ -209,7 +209,7 @@ function lifecycleToLegacySku(r: SkuLifecycleRow): import('../../types/sku').Sku
     // code isn't set — show the provisional so the user has context.
     skuCode: r.code ?? r.provisionalCode,
     id: r.id,
-    style: r.style ?? '',
+    style: '',
     price: r.retailPrice ?? 0,
     cost: r.currentCost ?? null,
     listPrice: r.listPrice ?? null,
@@ -350,7 +350,6 @@ function splitFormValuesForLifecycle(
     vendorId: (values.vendorId as string | null | undefined) ?? null,
     vendorSku: strOrNull(values.vendorSku),
     brandId: (values.brandId as number | null | undefined) ?? null,
-    style: strOrNull(values.style),
     season: strOrNull(values.season),
     descriptionRics: strOrNull(values.ricsDescription),
     descriptionWeb: strOrNull(values.webDescription),
@@ -570,6 +569,8 @@ export default function SkuFormPage() {
   // know the code; the modal is for browsing by name or exploring the list.
   const [vendorLookupOpen, setVendorLookupOpen] = useState(false)
   const [skuLookupOpen, setSkuLookupOpen] = useState(false)
+  const watchedVendorId = Form.useWatch('vendorId', form)
+  const watchedSkuCode = Form.useWatch('skuCode', form) as string | undefined
 
   // Inline lookup state: tracks when a user-entered SKU code matches an
   // existing SKU in Postgres `app.sku`. Both app-created and RICS-imported
@@ -606,7 +607,6 @@ export default function SkuFormPage() {
     return undefined
   })()
   const watchedColorId = Form.useWatch('colorId', form) as number | undefined
-  const watchedSkuCode = Form.useWatch('skuCode', form) as string | undefined
 
   const styleColorFilters = useMemo(
     () => ({
@@ -773,7 +773,6 @@ export default function SkuFormPage() {
       )?.name ?? ''
 
     const nextValues: Partial<SkuFormValues> = {
-      style: styleColor.style,
       brandId: brandName as unknown as number,
       colorId: styleColor.colorId,
       categoryId: styleColor.categoryId,
@@ -929,7 +928,7 @@ export default function SkuFormPage() {
       accessoryId: s.accessoryId,
       seasonId: s.seasonId,
       labelTypeId: s.labelTypeId,
-      styleColorId: s.styleColor?.styleColorId ?? null,
+      styleColorId: s.styleColorLink?.styleColorId ?? null,
     })
   }, [form, refData])
 
@@ -1233,7 +1232,7 @@ export default function SkuFormPage() {
           })
           message.success(`SKU finalizado: ${finalCode}`)
         } else {
-          message.success('Borrador guardado')
+          message.success(`SKU actualizado: ${skuKey ?? editId}`)
         }
         if (goToNext) {
           const currentCode = (finalizeAfter && finalCode) || updated.code || matchedSku?.skuCode || lifecycleSku?.code
@@ -1485,7 +1484,10 @@ export default function SkuFormPage() {
   if (refLoading) {
     return (
       <div style={{ textAlign: 'center', padding: 80 }}>
-        <Spin size="large" tip="Cargando datos de referencia..." />
+        <Spin size="large" />
+        <Typography.Text type="secondary" style={{ display: 'block', marginTop: 12 }}>
+          Cargando datos de referencia...
+        </Typography.Text>
       </div>
     )
   }
@@ -1496,7 +1498,7 @@ export default function SkuFormPage() {
     <>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8, width: '100%' }}>
         {/* Header with Lookup inline */}
-        <Card size="small" bodyStyle={{ padding: '8px 16px' }}>
+        <Card size="small" styles={{ body: { padding: '8px 16px' } }}>
           <Row align="middle" justify="space-between" gutter={16}>
             <Col>
               <Space>
@@ -1547,7 +1549,7 @@ export default function SkuFormPage() {
         </Card>
 
         {/* Main Form — compact layout */}
-        <Card size="small" bodyStyle={{ padding: '12px 16px' }}>
+        <Card size="small" styles={{ body: { padding: '12px 16px' } }}>
           <Form
             form={form}
             layout="vertical"
@@ -1574,7 +1576,7 @@ export default function SkuFormPage() {
               onSelect={(picked) => {
                 form.setFieldsValue({ vendorId: picked.code })
               }}
-              initialQuery={(form.getFieldValue('vendorId') as string | undefined) ?? ''}
+              initialQuery={watchedVendorId ?? ''}
             />
             {/* SKU lookup modal — on select, seeds the skuCode field and
                 triggers the existing handleSkuCodeLookup which in turn calls
@@ -1593,7 +1595,7 @@ export default function SkuFormPage() {
                 setSkuLookupOpen(false)
                 void handleSkuCodeLookup(typedSkuCode)
               }}
-              initialQuery={(form.getFieldValue('skuCode') as string | undefined) ?? ''}
+              initialQuery={watchedSkuCode ?? ''}
             />
             {/* ─────────────────────────────────────────────────────────────
                 Detalles del Producto (left) + Default Prices (right)

@@ -189,7 +189,7 @@ export default function SkuDraftsListPage() {
         </Button>
       </div>
 
-      <Card bodyStyle={{ padding: 0 }}>
+      <Card styles={{ body: { padding: 0 } }}>
         <Table<SkuLifecycleRow>
           rowKey="id"
           columns={columns}
@@ -240,7 +240,7 @@ function CreateDraftModal({ open, onClose }: { open: boolean; onClose: () => voi
       okText="Crear borrador"
       cancelText="Cancelar"
       confirmLoading={createMutation.isPending}
-      destroyOnClose
+      destroyOnHidden
     >
       <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
         El código interno se genera automáticamente (ej. <code>DRF-260422-XXXX</code>).
@@ -344,7 +344,7 @@ function FinalizeDraftModal({
       okText={<span><ThunderboltOutlined /> Finalizar SKU</span>}
       cancelText="Cancelar"
       okButtonProps={{ disabled: !canFinalize, loading: finalizeMutation.isPending || updateMutation.isPending }}
-      destroyOnClose
+      destroyOnHidden
       width={560}
     >
       <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>

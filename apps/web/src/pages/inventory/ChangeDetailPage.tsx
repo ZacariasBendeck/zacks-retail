@@ -62,6 +62,7 @@ interface FormValues {
 
 export default function ChangeDetailPage() {
   const [form] = Form.useForm<FormValues>()
+  const watchedSku = Form.useWatch('sku', form)
   const [activeParams, setActiveParams] = useState<ChangeDetailParams | null>(null)
   const [lookupOpen, setLookupOpen] = useState(false)
 
@@ -149,17 +150,17 @@ export default function ChangeDetailPage() {
           <Row gutter={16}>
             <Col xs={24} sm={8} md={6}>
               <Form.Item label="SKU" name="sku">
-                <Input
-                  placeholder="e.g. 349101-BKPT"
-                  allowClear
-                  addonAfter={
-                    <SearchOutlined
-                      style={{ cursor: 'pointer' }}
-                      onClick={() => setLookupOpen(true)}
-                      title="Look up SKU"
-                    />
-                  }
-                />
+                <Space.Compact style={{ width: '100%' }}>
+                  <Input
+                    placeholder="e.g. 349101-BKPT"
+                    allowClear
+                  />
+                  <Button
+                    icon={<SearchOutlined />}
+                    onClick={() => setLookupOpen(true)}
+                    title="Look up SKU"
+                  />
+                </Space.Compact>
               </Form.Item>
             </Col>
             <Col xs={12} sm={4} md={3}>
@@ -217,7 +218,7 @@ export default function ChangeDetailPage() {
           form.setFieldValue('sku', picked.skuCode)
           setLookupOpen(false)
         }}
-        initialQuery={form.getFieldValue('sku') ?? ''}
+        initialQuery={watchedSku ?? ''}
       />
 
       {error && (

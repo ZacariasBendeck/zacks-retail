@@ -13,13 +13,15 @@ jest.mock('../../src/services/ricsProductAdapter', () => {
   return {
     ...actual,
     searchSkusForLookup: jest.fn(),
+    getSkuLookupFacets: jest.fn(),
   };
 });
 
 import request from 'supertest';
-import { searchSkusForLookup } from '../../src/services/ricsProductAdapter';
+import { getSkuLookupFacets, searchSkusForLookup } from '../../src/services/ricsProductAdapter';
 
 const mockSearch = searchSkusForLookup as jest.MockedFunction<typeof searchSkusForLookup>;
+const mockFacets = getSkuLookupFacets as jest.MockedFunction<typeof getSkuLookupFacets>;
 
 const FIXTURE_ROWS: SkuLookupRow[] = [
   {
@@ -51,6 +53,7 @@ describe('GET /api/v1/skus/search', () => {
 
   beforeEach(() => {
     mockSearch.mockReset();
+    mockFacets.mockReset();
   });
 
   it('returns 400 when q is missing and no descContains', async () => {
@@ -98,5 +101,22 @@ describe('GET /api/v1/skus/search', () => {
     const descriptions = res.body.rows.map((r: { description: string }) => r.description);
     const sorted = [...descriptions].sort((a: string, b: string) => a.localeCompare(b));
     expect(descriptions).toEqual(sorted);
+  });
+
+  it('passes selected Season, Vendor, and Department to lookup facets', async () => {
+    mockFacets.mockResolvedValue({
+      seasons: [{ code: 'A', name: 'NAV 25', label: 'A - NAV 25' }],
+      vendors: [{ code: 'MAXF', label: 'MAXF' }],
+      departments: [{ number: 9, name: 'Dept 9' }],
+    });
+
+    const res = await request(app).get('/api/v1/skus/lookup-facets?season=A&vendor=MAXF&department=9');
+
+    expect(res.status).toBe(200);
+    expect(mockFacets).toHaveBeenCalledWith({
+      season: 'A',
+      vendor: 'MAXF',
+      department: 9,
+    });
   });
 });

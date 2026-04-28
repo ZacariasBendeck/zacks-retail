@@ -6,7 +6,7 @@ export type ViewMode =
   | 'MODEL' | 'SHORT'
   | 'MTD_SALES' | 'STD_SALES' | 'YTD_SALES' | 'LY_SALES'
   | 'SINGLE_COLUMN'
-  | 'ALL_STORES_ON_HAND' | 'ALL_STORES_ONE_ROW' | 'ALL_STORES_SUMMARY'
+  | 'ALL_STORES_ON_HAND' | 'ALL_STORES_SUMMARY'
   | 'MAX' | 'REORDER';
 
 interface Mode {
@@ -28,11 +28,10 @@ export const VIEW_MODES: Mode[] = [
   { value: 'YTD_SALES',           label: 'Year-To-Date Sales',     shortcut: 'F9',       live: true },
   { value: 'SINGLE_COLUMN',       label: 'Column Only',            shortcut: 'F11',      live: true },
   { value: 'ALL_STORES_ON_HAND',  label: 'All Stores - On Hand',   shortcut: 'Shift+F1', live: true },
-  { value: 'ALL_STORES_ONE_ROW',  label: 'All Stores - 1 Row',     shortcut: 'Shift+F2', live: true },
-  { value: 'ALL_STORES_SUMMARY',  label: 'All Stores Summary',     shortcut: 'Shift+F3', live: true },
-  { value: 'MAX',                 label: 'Max Quantities',         shortcut: 'Shift+F4', live: true },
-  { value: 'REORDER',             label: 'Reorder Quantities',     shortcut: 'Shift+F5', live: true },
-  { value: 'LY_SALES',            label: 'Last Year Sales',        shortcut: 'Shift+F6', live: true },
+  { value: 'ALL_STORES_SUMMARY',  label: 'All Stores Summary',     shortcut: 'Shift+F2', live: true },
+  { value: 'MAX',                 label: 'Max Quantities',         shortcut: 'Shift+F3', live: true },
+  { value: 'REORDER',             label: 'Reorder Quantities',     shortcut: 'Shift+F4', live: true },
+  { value: 'LY_SALES',            label: 'Last Year Sales',        shortcut: 'Shift+F5', live: true },
 ];
 
 export const ViewModeSelector: React.FC<{

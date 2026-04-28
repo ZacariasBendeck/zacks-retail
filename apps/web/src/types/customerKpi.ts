@@ -1,5 +1,5 @@
 export type ChurnRisk = 'LOW' | 'MEDIUM' | 'HIGH'
-export type CustomerStoreChainKey = 'unlimited' | 'magic_shoes' | 'la_femme' | 'online' | 'other'
+export type CustomerStoreChainKey = string
 
 export type CustomerKpiSegment =
   | 'vip'
@@ -162,8 +162,8 @@ export interface CustomerKpiStoreFilterOption {
   storeId: string
   storeName: string
   city: string | null
-  chainKey: CustomerStoreChainKey
-  chainLabel: string
+  chainKey: CustomerStoreChainKey | null
+  chainLabel: string | null
   customerCount: number
 }
 

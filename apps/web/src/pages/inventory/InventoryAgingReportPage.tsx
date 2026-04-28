@@ -30,6 +30,7 @@ import {
   useAgingDrillDown,
   useAgingDimensions,
 } from '../../hooks/useReports'
+import { useStoreChains } from '../../hooks/useStores'
 import {
   getAgingCsvUrl,
   getAgingXlsxUrl,
@@ -100,22 +101,19 @@ export default function InventoryAgingReportPage() {
   const groupByLabel = AGING_GROUP_BY_LABELS[groupBy]
 
   const { data: dimensionsData } = useAgingDimensions()
+  const { data: storeChains = [] } = useStoreChains()
 
-  // "Chain" is a frontend-only convenience: selecting one or more chains
-  // expands to the union of stores whose description starts with that chain
-  // word. The expanded list combines (union) with explicitly selected stores
-  // before being sent to the API as `stores=…`.
+  // Selecting one or more configured Store Chains expands to the union of
+  // stores assigned to those chains. The expanded list combines with
+  // explicitly selected stores before being sent to the API as `stores=...`.
   const effectiveStores = useMemo(() => {
     if (selectedChains.length === 0) return selectedStores
-    const chainStores = (dimensionsData?.stores ?? [])
-      .filter((s) => {
-        const first = (s.name ?? '').split(' ')[0] ?? ''
-        return selectedChains.includes(first)
-      })
-      .map((s) => s.number)
+    const chainStores = storeChains
+      .filter((chain) => selectedChains.includes(chain.id))
+      .flatMap((chain) => chain.storeNumbers ?? [])
     const union = new Set<number>([...selectedStores, ...chainStores])
     return Array.from(union)
-  }, [selectedStores, selectedChains, dimensionsData])
+  }, [selectedStores, selectedChains, storeChains])
 
   const queryArgs = useMemo(
     () => ({
@@ -691,13 +689,14 @@ export default function InventoryAgingReportPage() {
               allowClear
               value={selectedChains}
               onChange={setSelectedChains}
-              placeholder="Chain (store name prefix)"
+              placeholder="Store Chain"
               style={{ width: '100%' }}
               maxTagCount="responsive"
               optionFilterProp="label"
-              options={(dimensionsData?.chains ?? []).map((c) => ({
-                value: c.code,
-                label: c.label,
+              notFoundContent="No store chains configured"
+              options={storeChains.map((c) => ({
+                value: c.id,
+                label: `${c.label} (${c.storeCount} stores)`,
               }))}
             />
           </Col>

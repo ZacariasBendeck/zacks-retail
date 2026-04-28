@@ -38,6 +38,7 @@
     "import:attributes": "node --env-file-if-exists=.env -r tsx/cjs scripts/catalog/import-attribute-catalog.ts",
     "import:customers": "node --env-file-if-exists=.env -r tsx/cjs scripts/customers/import-customers.ts",
     "import:customers:bulk": "node --env-file-if-exists=.env -r tsx/cjs scripts/customers/import-customers-bulk.ts",
+    "import:employees-from-rics": "node --env-file-if-exists=.env -r tsx/cjs scripts/employees/import-rics-salespeople.ts",
     "import:sales-history:rics": "node --env-file-if-exists=.env -r tsx/cjs scripts/sales/import-rics-sales-history.ts",
     "import:customer-transactions:rics": "node --env-file-if-exists=.env -r tsx/cjs scripts/customers/import-customer-transactions-from-rics.ts",
     "customer-metrics:recompute": "node --env-file-if-exists=.env -r tsx/cjs scripts/customers/recompute-customer-metrics.ts",
@@ -50,6 +51,7 @@
     "seed:sku-attributes": "node --env-file-if-exists=.env -r tsx/cjs scripts/seeds/seed-sku-attributes.ts",
     "seed:product-families": "node --env-file-if-exists=.env -r tsx/cjs scripts/seeds/seed-product-families.ts",
     "seed:legacy-ref-dimensions": "node --env-file-if-exists=.env -r tsx/cjs scripts/seeds/seed-legacy-ref-dimensions.ts",
+    "seed:color-attributes": "node --env-file-if-exists=.env -r tsx/cjs scripts/seeds/seed-color-attribute-taxonomy.ts",
     "seed:taxonomy-from-mirror": "node --env-file-if-exists=.env -r tsx/cjs scripts/seeds/seed-taxonomy-from-mirror.ts"
   },
   "dependencies": {

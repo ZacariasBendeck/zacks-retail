@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import SalesHistoryByMonthPage from '../pages/salesReporting/SalesHistoryByMonthPage'
 import { useSalesDimensions, useSalesHistoryByMonth } from '../hooks/useReports'
+import { InquiryPopupProvider } from '../components/inquiry-popup'
 import type {
   SalesDimensionsResponse,
   SalesHistoryByMonthReport,
@@ -97,9 +98,12 @@ function buildCombinedReport(
 function buildMultiMetricReport(): SalesHistoryByMonthReport {
   const netMonthly = [100, 110, 120, 130, 140, 150, 160, 170, 180, 190, 200, 210]
   const qtyMonthly = [5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10]
+  const grossProfitMonthly = [56.43, 56.99, 52.71, 54.91, 54.92, 53.39, 51.5, 49.25, 54.87, 49.52, 49.09, 52.91]
+  const roiMonthly = [70, 70, 63, 55, 56, 51, 31, 31, 167, 44, 37, 33]
+  const zeroMonthly = new Array(12).fill(0)
   return {
     ...buildCombinedReport(),
-    dataToPrint: ['netSales', 'quantitySold'],
+    dataToPrint: ['turns', 'netSales', 'quantitySold', 'profit', 'beginningOnHand', 'grossProfit', 'pctOfStoreNetSales', 'roiPct'],
     blocks: [
       {
         storeNumber: 'ALL',
@@ -108,15 +112,135 @@ function buildMultiMetricReport(): SalesHistoryByMonthReport {
           {
             key: 'NIKE',
             label: 'NIKE',
-            metrics: { netSales: netMonthly, quantitySold: qtyMonthly },
-            totals: { netSales: 1860, quantitySold: 90 },
+            metrics: {
+              quantitySold: qtyMonthly,
+              netSales: netMonthly,
+              beginningOnHand: zeroMonthly,
+              pctOfStoreNetSales: zeroMonthly,
+              profit: zeroMonthly,
+              grossProfit: grossProfitMonthly,
+              roiPct: roiMonthly,
+              turns: zeroMonthly,
+            },
+            totals: {
+              quantitySold: 90,
+              netSales: 1860,
+              beginningOnHand: 0,
+              pctOfStoreNetSales: 0,
+              profit: 0,
+              grossProfit: 53.21,
+              roiPct: 54,
+              turns: 0,
+            },
           },
         ],
-        columnTotals: { netSales: netMonthly, quantitySold: qtyMonthly },
-        grandTotals: { netSales: 1860, quantitySold: 90 },
+        columnTotals: {
+          quantitySold: qtyMonthly,
+          netSales: netMonthly,
+          beginningOnHand: zeroMonthly,
+          pctOfStoreNetSales: zeroMonthly,
+          profit: zeroMonthly,
+          grossProfit: grossProfitMonthly,
+          roiPct: roiMonthly,
+          turns: zeroMonthly,
+        },
+        grandTotals: {
+          quantitySold: 90,
+          netSales: 1860,
+          beginningOnHand: 0,
+          pctOfStoreNetSales: 0,
+          profit: 0,
+          grossProfit: 53.21,
+          roiPct: 54,
+          turns: 0,
+        },
       },
     ],
   }
+}
+
+function buildLargeSkuDetailReport(): SalesHistoryByMonthReport {
+  const monthly = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 10]
+  const rows = Array.from({ length: 150 }, (_, index) => {
+    const sku = `SKU-${String(index + 1).padStart(3, '0')}`
+    return {
+      key: sku,
+      label: sku,
+      metrics: {
+        netSales: monthly,
+        quantitySold: monthly,
+      },
+      totals: {
+        netSales: 10,
+        quantitySold: 10,
+      },
+    }
+  })
+  return buildCombinedReport({
+    detailLevel: 'sku',
+    dataToPrint: ['netSales', 'quantitySold'],
+    blocks: [
+      {
+        storeNumber: 'ALL',
+        storeLabel: 'All Stores',
+        rows,
+        columnTotals: {
+          netSales: monthly,
+          quantitySold: monthly,
+        },
+        grandTotals: {
+          netSales: 1500,
+          quantitySold: 1500,
+        },
+      },
+    ],
+  })
+}
+
+function buildGroupedVendorSkuDetailReport(): SalesHistoryByMonthReport {
+  const nikeMonthly = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 150]
+  const skuAMonthly = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 90]
+  const skuBMonthly = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 60]
+  return buildCombinedReport({
+    detailLevel: 'sku',
+    sortBy: 'vendor',
+    dataToPrint: ['netSales'],
+    blocks: [
+      {
+        storeNumber: 'ALL',
+        storeLabel: 'All Stores',
+        rows: [
+          {
+            key: 'NIKE',
+            label: 'NIKE',
+            metrics: { netSales: nikeMonthly },
+            totals: { netSales: 150 },
+            children: [
+              {
+                key: 'SKU-A',
+                label: 'SKU-A',
+                groupKey: 'NIKE',
+                groupLabel: 'NIKE',
+                pictureFileName: 'SKU-A.JPG',
+                metrics: { netSales: skuAMonthly },
+                totals: { netSales: 90 },
+              },
+              {
+                key: 'SKU-B',
+                label: 'SKU-B',
+                groupKey: 'NIKE',
+                groupLabel: 'NIKE',
+                metrics: { netSales: skuBMonthly },
+                totals: { netSales: 60 },
+              },
+            ],
+          },
+        ],
+        columnTotals: { netSales: nikeMonthly },
+        grandTotals: { netSales: 150 },
+      },
+    ],
+  })
 }
 
 function buildSeparateReport(): SalesHistoryByMonthReport {
@@ -179,7 +303,9 @@ function renderPage() {
     <QueryClientProvider client={qc}>
       <ConfigProvider>
         <MemoryRouter>
-          <SalesHistoryByMonthPage />
+          <InquiryPopupProvider>
+            <SalesHistoryByMonthPage />
+          </InquiryPopupProvider>
         </MemoryRouter>
       </ConfigProvider>
     </QueryClientProvider>,
@@ -233,6 +359,38 @@ describe('SalesHistoryByMonthPage', () => {
     }
   })
 
+  it('exposes full screen and sticky-header controls', async () => {
+    const user = userEvent.setup()
+    vi.mocked(useSalesHistoryByMonth).mockReturnValue({
+      data: undefined,
+      isFetching: false,
+      error: null,
+    } as never)
+
+    renderPage()
+
+    expect(screen.getByRole('button', { name: /Full Screen/i })).toBeInTheDocument()
+    const sticky = screen.getByRole('switch', { name: /Keep headers visible/i })
+    expect(sticky).toBeChecked()
+    await user.click(sticky)
+    expect(sticky).not.toBeChecked()
+  })
+
+  it('blank Stores means all loaded stores when Run Report is clicked', async () => {
+    const user = userEvent.setup()
+    const hook = vi.mocked(useSalesHistoryByMonth)
+    hook.mockReturnValue({ data: undefined, isFetching: false, error: null } as never)
+
+    renderPage()
+    await clickRunReport(user)
+
+    await waitFor(() => {
+      const calls = hook.mock.calls
+      const lastCall = calls[calls.length - 1]
+      expect(lastCall?.[0]?.stores).toEqual([1, 2])
+    })
+  })
+
   it('renders chart + single pivot table after Run Report is clicked (combineStores=true fixture)', async () => {
     const user = userEvent.setup()
     vi.mocked(useSalesHistoryByMonth).mockReturnValue({
@@ -283,7 +441,7 @@ describe('SalesHistoryByMonthPage', () => {
     expect(headers[1]).toHaveTextContent('2 — Downtown')
   })
 
-  it('shows the metric tab strip when multiple metrics are enabled', async () => {
+  it('stacks selected metrics together in the RICS picture order', async () => {
     const user = userEvent.setup()
     vi.mocked(useSalesHistoryByMonth).mockReturnValue({
       data: buildMultiMetricReport(),
@@ -296,12 +454,86 @@ describe('SalesHistoryByMonthPage', () => {
     await clickRunReport(user)
 
     await waitFor(() => {
-      expect(screen.getByTestId('metric-tab-strip')).toBeInTheDocument()
+      expect(screen.getAllByTestId('metric-row-quantitySold').length).toBeGreaterThan(0)
     })
-    // Tab strip contains both metric short-labels.
-    const strip = screen.getByTestId('metric-tab-strip')
-    expect(within(strip).getByText(/Net Sales/)).toBeInTheDocument()
-    expect(within(strip).getByText(/Qty/)).toBeInTheDocument()
+    expect(screen.queryByTestId('metric-tab-strip')).not.toBeInTheDocument()
+
+    const orderedMetricKeys = [
+      'quantitySold',
+      'netSales',
+      'beginningOnHand',
+      'pctOfStoreNetSales',
+      'profit',
+      'grossProfit',
+      'roiPct',
+      'turns',
+    ]
+    const metricNodes = orderedMetricKeys.map((key) => {
+      const node = screen.getAllByTestId(`metric-row-${key}`)[0]
+      if (!node) throw new Error(`Missing metric row for ${key}`)
+      return node
+    })
+    for (let i = 1; i < metricNodes.length; i += 1) {
+      const previous = metricNodes[i - 1]
+      const current = metricNodes[i]
+      if (!previous || !current) throw new Error('Missing metric node while checking order')
+      expect(
+        previous.compareDocumentPosition(current) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy()
+    }
+
+    const grossProfitRow = metricNodes[5]?.closest('tr')
+    const roiRow = metricNodes[6]?.closest('tr')
+    if (!grossProfitRow || !roiRow) throw new Error('Missing GP or ROI row')
+    expect(within(grossProfitRow).getAllByText('56.4').length).toBeGreaterThan(0)
+    expect(within(grossProfitRow).queryAllByText('56.4%')).toHaveLength(0)
+    expect(within(roiRow).getAllByText('70.0').length).toBeGreaterThan(0)
+    expect(within(roiRow).queryAllByText('70.0%')).toHaveLength(0)
+  })
+
+  it('paginates SKU detail before expanding selected metrics', async () => {
+    const user = userEvent.setup()
+    vi.mocked(useSalesHistoryByMonth).mockReturnValue({
+      data: buildLargeSkuDetailReport(),
+      isFetching: false,
+      error: null,
+    } as never)
+
+    renderPage()
+    await clickRunReport(user)
+
+    await waitFor(() => {
+      expect(screen.getByText('SKU-001')).toBeInTheDocument()
+    })
+    expect(screen.getByText('1-100 of 150 SKUs')).toBeInTheDocument()
+    expect(screen.queryByText('SKU-101')).not.toBeInTheDocument()
+    expect(screen.getAllByTestId('metric-row-netSales')).toHaveLength(100)
+    expect(screen.getAllByTestId('metric-row-quantitySold')).toHaveLength(100)
+  })
+
+  it('shows vendor rows first for vendor-sorted SKU detail and expands to SKUs', async () => {
+    const user = userEvent.setup()
+    vi.mocked(useSalesHistoryByMonth).mockReturnValue({
+      data: buildGroupedVendorSkuDetailReport(),
+      isFetching: false,
+      error: null,
+    } as never)
+
+    renderPage()
+    await clickRunReport(user)
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /\+ NIKE/ })).toBeInTheDocument()
+    })
+    expect(screen.queryByText('SKU-A')).not.toBeInTheDocument()
+    expect(screen.getAllByText(/^150(\.00)?$/).length).toBeGreaterThan(0)
+
+    await user.click(screen.getByRole('button', { name: /\+ NIKE/ }))
+    const skuLink = screen.getByRole('link', { name: 'SKU-A' })
+    expect(skuLink).toHaveAttribute('href', '/products/inquiry/SKU-A')
+    expect(screen.getByAltText('SKU-A')).toHaveAttribute('src', '/rics-images/SKU-A.JPG')
+    expect(screen.getByText('SKU-B')).toBeInTheDocument()
+    expect(screen.getAllByTestId('metric-row-netSales')).toHaveLength(2)
   })
 
   it('Export CSV + XLSX links are enabled once Run Report commits and encode the full params', async () => {

@@ -60,24 +60,26 @@ export async function loadSkuAttributesBySku(
   const tier1 = await prisma.$queryRawUnsafe<Tier1Row[]>(
     `
     SELECT
-      UPPER(TRIM(im.sku))                          AS sku_code,
-      im."desc"                                    AS description,
-      COALESCE(o.vendor, im.vendor)                AS vendor_code,
-      im.manufacturer                              AS manufacturer,
-      COALESCE(o.category, im.category)            AS category_number,
+      UPPER(TRIM(s.code))                          AS sku_code,
+      COALESCE(s.description_web, s.description_rics) AS description,
+      COALESCE(o.vendor, s.vendor_id)              AS vendor_code,
+      s.manufacturer                               AS manufacturer,
+      COALESCE(o.category, s.category_number)      AS category_number,
       c."desc"                                     AS category_desc,
       d.number                                     AS department_number,
       d."desc"                                     AS department_desc,
-      im.style_color                               AS style_color,
-      im.current_price::float8                     AS current_price,
-      im.current_cost::float8                      AS current_cost,
-      im.picture_file_name                         AS picture_file_name
-    FROM rics_mirror.inventory_master im
-    LEFT JOIN app.sku_attribute_override o ON im.sku = o.rics_sku_code
-    LEFT JOIN rics_mirror.categories c ON c.number = COALESCE(o.category, im.category)
-    LEFT JOIN rics_mirror.departments d
-      ON COALESCE(o.category, im.category) BETWEEN d.beg_categ AND d.end_categ
-    WHERE UPPER(TRIM(im.sku)) = ANY($1::text[])
+      s.style_color                                AS style_color,
+      s.retail_price::float8                       AS current_price,
+      s.current_cost::float8                       AS current_cost,
+      s.picture_file_name                          AS picture_file_name
+    FROM app.sku s
+    LEFT JOIN app.sku_attribute_override o ON s.code = o.rics_sku_code
+    LEFT JOIN app.taxonomy_category c ON c.number = COALESCE(o.category, s.category_number)
+    LEFT JOIN app.taxonomy_department d
+      ON COALESCE(o.category, s.category_number) BETWEEN d.beg_categ AND d.end_categ
+    WHERE s.code IS NOT NULL
+      AND UPPER(TRIM(s.code)) = ANY($1::text[])
+      AND COALESCE(s.rics_status, '') <> 'D'
     `,
     unique,
   );

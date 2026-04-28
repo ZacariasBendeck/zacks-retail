@@ -292,13 +292,15 @@ export default function PurchasePlanningPage() {
                 {forecastMethod === 'yoyGrowth' && (
                   <Space>
                     <Text>Crecimiento vs. año anterior:</Text>
-                    <InputNumber
-                      min={-99}
-                      max={500}
-                      value={growthPct}
-                      onChange={(v) => setGrowthPct(Number(v) || 0)}
-                      addonAfter="%"
-                    />
+                    <Space.Compact>
+                      <InputNumber
+                        min={-99}
+                        max={500}
+                        value={growthPct}
+                        onChange={(v) => setGrowthPct(Number(v) || 0)}
+                      />
+                      <Button disabled>%</Button>
+                    </Space.Compact>
                   </Space>
                 )}
                 {forecastMethod === 'blendedMultiYear' && (

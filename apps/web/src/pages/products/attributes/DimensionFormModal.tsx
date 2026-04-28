@@ -93,7 +93,7 @@ export default function DimensionFormModal({ open, editing, onClose, onSaved }: 
       confirmLoading={create.isPending || update.isPending}
       okText="Guardar"
       cancelText="Cancelar"
-      destroyOnClose
+      destroyOnHidden
     >
       <Form form={form} layout="vertical">
         <Form.Item

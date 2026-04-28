@@ -1,6 +1,6 @@
 # Module: employees
 
-> **Status — Slice 1 shipped (2026-04-18).** The first slice of this module is live on branch `feature/employees-auth-slice`: **Users + Roles + Permissions + Sessions + argon2id password login + user CRUD + a seeded OWNER**. Everything below about `Employee`, `TimeClockEntry`, `CommissionOverride`, `SalesPassword` (modernized), `EmployeePeriod`, MFA/TOTP, and the legacy RICS import is still spec-only — planned for slices 2+. See [`docs/dev/plans/2026-04-18-employees-auth-slice.md`](../dev/plans/2026-04-18-employees-auth-slice.md) for what actually landed.
+> **Status — Slice 1 shipped (2026-04-18), Slice 2 partial import shipped (2026-04-28).** The first slice of this module shipped **Users + Roles + Permissions + Sessions + argon2id password login + user CRUD + a seeded OWNER**. A partial Slice 2 import now loads `RISLSPSN.MDB / Salespeople` into `app.employee` via `import:employees-from-rics`, preserving salesperson code, name, other info, commission fields, time-clock flags, and hashed legacy PIN fields for reporting and later activation. Everything below about `RIPASS.Users`, user-to-employee linking, full commission-period ledgers, richer MFA/TOTP, and remaining legacy employee imports is still planned for later slices. See [`docs/dev/plans/2026-04-18-employees-auth-slice.md`](../dev/plans/2026-04-18-employees-auth-slice.md) for the original auth slice.
 >
 > **Shipped surface:**
 > - `POST /api/v1/auth/login`, `POST /api/v1/auth/logout`, `GET /api/v1/auth/me`, `POST /api/v1/auth/change-password`
@@ -12,9 +12,9 @@
 >
 > **Key decisions made during Slice 1 (confirmed with user):**
 > 1. Employee + User are unified into one entity (commitment — Slice 2 `Employee` fields will hang off `User`, not a separate table with an FK).
-> 2. Legacy `RIPASS.Password` and `RISLSPSN.CashierPassword` are **ignored** for web login. The auth slice writes only to Postgres.
+> 2. Legacy `RIPASS.Password` and `RISLSPSN.CashierPassword` are **ignored** for web login. Imported salesperson records are not login accounts; legacy time-clock / cashier PIN values are preserved only as hashes in Postgres-owned employee fields.
 > 3. MFA / TOTP deferred to Slice 2.
-> 4. The legacy RICS import (reading `RIPASS.Users` + `RISLSPSN.Salespeople` into Postgres `User` rows) is deferred to Slice 2.
+> 4. The `RISLSPSN.Salespeople` import is implemented as a partial Slice 2 bridge. `RIPASS.Users`, user activation policy, and any permission reconciliation remain deferred.
 > 5. Register override modernization was deferred in Slice 1 and is now owned by the employee sales-password bridge rather than by a separate store-shared password layer.
 
 **Goal**

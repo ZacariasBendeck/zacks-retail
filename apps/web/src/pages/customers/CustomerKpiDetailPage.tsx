@@ -4,6 +4,7 @@ import dayjs from 'dayjs'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useCustomer } from '../../hooks/useCustomers'
 import { useCustomerMetrics, useRecomputeCustomerMetrics } from '../../hooks/useCustomerKpi'
+import { CustomerTicketHistoryButton } from '../../components/customers/CustomerTicketHistoryButton'
 import { CustomerKpiCard } from '../../components/customerKpi/CustomerKpiCard'
 import { CustomerRiskBadge } from '../../components/customerKpi/CustomerRiskBadge'
 import { CustomerSegmentBadge } from '../../components/customerKpi/CustomerSegmentBadge'
@@ -112,6 +113,12 @@ export default function CustomerKpiDetailPage() {
           </Col>
           <Col>
             <Space>
+              {customerId ? (
+                <CustomerTicketHistoryButton
+                  customerId={customerId}
+                  customerName={customerData?.displayName}
+                />
+              ) : null}
               <Button onClick={() => navigate(`/customers/${customerId}/edit`)}>Edit Customer</Button>
               <Button
                 icon={<ReloadOutlined />}
@@ -242,7 +249,7 @@ export default function CustomerKpiDetailPage() {
           />
         </Col>
         <Col xs={24} sm={12} lg={12}>
-          <Card size="small" bodyStyle={{ padding: 16 }} style={{ borderRadius: 12 }}>
+          <Card size="small" styles={{ body: { padding: 16 } }} style={{ borderRadius: 12 }}>
             <Text type="secondary" style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.4 }}>
               RFM Scores
             </Text>

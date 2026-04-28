@@ -119,6 +119,29 @@
 }
 
 .sales-by-day-layout-table .ant-table-thead > tr > th.sales-by-day-col-boundary,
-.sales-by-day-layout-table .ant-table-tbody > tr > td.sales-by-day-col-boundary {
+.sales-by-day-layout-table .ant-table-tbody > tr > td.sales-by-day-col-boundary,
+.sales-by-day-layout-table .ant-table-summary > tr > td.sales-by-day-col-boundary {
   box-shadow: inset 3px 0 0 var(--sales-by-day-boundary);
+}
+
+.sales-by-day-layout-table .ant-table-summary > tr > td.sales-by-day-col-current {
+  background: #d3e2f3;
+}
+
+.sales-by-day-layout-table .ant-table-summary > tr > td.sales-by-day-col-compare {
+  background: #dee6ef;
+}
+
+.sales-by-day-layout-table .ant-table-summary > tr > td.sales-by-day-col-change {
+  background: #e9edf2;
+}
+
+.sales-by-day-layout-table .ant-table-summary > tr.sales-by-day-summary-row > td {
+  border-top: 2px solid rgba(17, 24, 39, 0.26);
+  font-weight: 700;
+}
+
+.sales-by-day-layout-table .ant-table-summary > tr > td.sales-by-day-summary-label {
+  color: #111827;
+  letter-spacing: 0.01em;
 }

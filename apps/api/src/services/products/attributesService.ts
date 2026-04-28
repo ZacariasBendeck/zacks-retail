@@ -20,14 +20,17 @@ import {
   type FamilyRuleRow,
   type SkuAttributesResponse,
   type CoverageRow,
+  type AttributeMacroRuleSet,
+  type AttributeMacroRuleSummary,
 } from '../../repositories/products/AttributesRepository';
-import { Err, Ok, type Result } from '../../repositories/rics/repoResult';
+import { type Result } from '../../repositories/rics/repoResult';
 import { auditLog, type AuditLogger } from './auditLog';
 
 const TABLE = 'app.sku_attribute_assignment';
 const TABLE_DIM = 'app.attribute_dimension';
 const TABLE_VAL = 'app.attribute_value';
 const TABLE_RULE = 'app.attribute_family_rule';
+const TABLE_DERIVATION = 'app.attribute_derivation_rule';
 
 export interface AttributesServiceOptions {
   actor?: string;
@@ -57,6 +60,39 @@ export function createAttributesService(opts: AttributesServiceOptions = {}) {
 
     getCoverage(): Promise<Result<CoverageRow[]>> {
       return repo.getCoverage();
+    },
+
+    listMacroRuleSummaries(): Promise<Result<AttributeMacroRuleSummary[]>> {
+      return repo.listAttributeMacroRuleSummaries();
+    },
+
+    getMacroRuleSet(
+      sourceDimensionCode: string,
+      targetDimensionCode: string,
+    ): Promise<Result<AttributeMacroRuleSet>> {
+      return repo.getAttributeMacroRuleSet(sourceDimensionCode, targetDimensionCode);
+    },
+
+    async replaceMacroRules(
+      sourceDimensionCode: string,
+      targetDimensionCode: string,
+      rules: { sourceValueCode: string; targetValueCode: string | null }[],
+    ): Promise<Result<AttributeMacroRuleSet>> {
+      const result = await repo.replaceAttributeMacroRules(
+        sourceDimensionCode,
+        targetDimensionCode,
+        rules,
+        actor,
+      );
+      if (!result.ok) return result;
+      await audit.record({
+        actor,
+        action: 'attribute_derivation_rules_replace',
+        targetTable: TABLE_DERIVATION,
+        targetPk: `${sourceDimensionCode}->${targetDimensionCode}`,
+        payload: { rules },
+      });
+      return result;
     },
 
     /**

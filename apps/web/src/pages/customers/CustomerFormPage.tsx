@@ -34,6 +34,7 @@ import {
   useDeleteFamilyMember,
 } from '../../hooks/useCustomers'
 import { DraggableModal } from '../../components/draggable-modal'
+import { CustomerTicketHistoryButton } from '../../components/customers/CustomerTicketHistoryButton'
 import type { FamilyMember, FamilyMemberCreatePayload } from '../../types/customer'
 
 export default function CustomerFormPage() {
@@ -121,10 +122,18 @@ export default function CustomerFormPage() {
         </Space>
       }
       extra={
-        isEdit && !isReadOnlyCustomer ? (
-          <Button danger icon={<DeleteOutlined />} onClick={handleDelete} loading={deleteCustomer.isPending}>
-            Delete
-          </Button>
+        isEdit && customer ? (
+          <Space>
+            <CustomerTicketHistoryButton
+              customerId={customer.id}
+              customerName={customer.displayName}
+            />
+            {!isReadOnlyCustomer ? (
+              <Button danger icon={<DeleteOutlined />} onClick={handleDelete} loading={deleteCustomer.isPending}>
+                Delete
+              </Button>
+            ) : null}
+          </Space>
         ) : null
       }
       loading={isEdit && isLoading}

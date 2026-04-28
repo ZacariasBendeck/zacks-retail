@@ -51,7 +51,7 @@ export default function ValueMergeDialog({ open, dimension, source, onClose }: P
       okButtonProps={{ disabled: targetId == null, danger: true }}
       okText="Combinar y eliminar origen"
       cancelText="Cancelar"
-      destroyOnClose
+      destroyOnHidden
     >
       <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
         Todas las asignaciones del valor <code>{source?.code}</code> se moverán al valor destino

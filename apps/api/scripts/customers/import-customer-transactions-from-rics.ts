@@ -372,7 +372,7 @@ const CREATE_FACT_SOURCE_SQL = `
 CREATE TEMP TABLE stage_rics_ticket_fact_source AS
 SELECT
   external_transaction_id,
-  MIN(matched_customer_id) AS matched_customer_id,
+  MIN(matched_customer_id::text)::uuid AS matched_customer_id,
   MIN(account_key) AS account_key,
   MIN(store_id) AS store_id,
   MIN(ticket_number) AS ticket_number,

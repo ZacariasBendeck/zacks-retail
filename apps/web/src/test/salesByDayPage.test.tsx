@@ -6,12 +6,17 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import SalesByDayPage from '../pages/salesReporting/SalesByDayPage'
 import { useSalesByDay, useSalesDimensions } from '../hooks/useReports'
+import { useStoreChains } from '../hooks/useStores'
 import { useReportTemplate, useTouchReportTemplate } from '../hooks/useReportTemplates'
 import type { SalesByDayReport, SalesDimensionsResponse } from '../services/reportApi'
 
 vi.mock('../hooks/useReports', () => ({
   useSalesByDay: vi.fn(),
   useSalesDimensions: vi.fn(),
+}))
+
+vi.mock('../hooks/useStores', () => ({
+  useStoreChains: vi.fn(),
 }))
 
 vi.mock('../hooks/useReportTemplates', async () => {
@@ -148,6 +153,19 @@ describe('SalesByDayPage', () => {
       data: buildDims(),
       isLoading: false,
     } as never)
+    vi.mocked(useStoreChains).mockReturnValue({
+      data: [
+        {
+          id: 'unlimited',
+          label: 'Unlimited',
+          active: true,
+          sortOrder: 10,
+          storeNumbers: [1],
+          storeCount: 1,
+        },
+      ],
+      isLoading: false,
+    } as never)
     vi.mocked(useReportTemplate).mockReturnValue({ data: undefined } as never)
     vi.mocked(useTouchReportTemplate).mockReturnValue({ mutate: vi.fn() } as never)
     vi.mocked(useSalesByDay).mockImplementation((query) => (
@@ -200,6 +218,8 @@ describe('SalesByDayPage', () => {
     expect(screen.getAllByText(/Compared Profit/i).length).toBeGreaterThan(0)
     expect(screen.getAllByText('142,700.12').length).toBeGreaterThan(0)
     expect(screen.getAllByText(/13,251\.15/).length).toBeGreaterThan(0)
+    expect(screen.getByText(/^Totals$/i)).toBeInTheDocument()
+    expect(screen.getAllByText('266,881.97').length).toBeGreaterThan(1)
   })
 
   it('updates the live table when a column is hidden in the layout editor', async () => {

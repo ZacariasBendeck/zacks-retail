@@ -1,6 +1,6 @@
 import React from 'react';
 import { Alert, Button, Select, Space, Typography, message, Spin } from 'antd';
-import { RobotOutlined, SearchOutlined } from '@ant-design/icons';
+import { EditOutlined, RobotOutlined, SearchOutlined } from '@ant-design/icons';
 import { HeaderCard } from './HeaderCard';
 import { PicturePanel } from './PicturePanel';
 import { PricingPanel } from './PricingPanel';
@@ -10,7 +10,7 @@ import { ActionBar, type InquiryTab, type NeighborScope } from './ActionBar';
 import { useInquiryData } from './useInquiryData';
 import { SizeGrid as SizeGridComponent } from '../../../components/size-grid';
 import { SkuLookup } from '../../../components/sku-lookup';
-import type { InquiryGrids } from '../../../types/inventoryInquiry';
+import type { InquiryGrids, InquirySizeGrid } from '../../../types/inventoryInquiry';
 import { UpcsTab } from './tabs/UpcsTab';
 import { InfoTab } from './tabs/InfoTab';
 import { DetailTab } from './tabs/DetailTab';
@@ -33,7 +33,6 @@ const GRID_KEY_BY_MODE: Partial<Record<ViewMode, keyof InquiryGrids>> = {
   LY_SALES:            'lySales',
   SINGLE_COLUMN:       'singleColumn',
   ALL_STORES_ON_HAND:  'allStoresOnHand',
-  ALL_STORES_ONE_ROW:  'allStoresOneRow',
   ALL_STORES_SUMMARY:  'allStoresSummary',
   MAX:                 'max',
   REORDER:             'reorder',
@@ -51,6 +50,7 @@ export interface InquiryBodyProps {
    * wrapper re-points the popup at the new SKU.
    */
   onPickSku: (picked: { skuCode: string; skuId: string }) => void;
+  onEditSku?: (skuCode: string) => void;
   mode: ViewMode;
   activeTab: InquiryTab | null;
   scope: NeighborScope;
@@ -76,6 +76,7 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
   storeId,
   selectedRow,
   onPickSku,
+  onEditSku,
   mode,
   activeTab,
   scope,
@@ -174,9 +175,9 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
 
   const gridKey = GRID_KEY_BY_MODE[mode];
   const grid = gridKey ? data.grids[gridKey] : undefined;
-  const headerTotal = GRID_TOTAL_MODES.has(mode) ? grid?.total : undefined;
+  const headerTotal = GRID_TOTAL_MODES.has(mode) ? resolveGridTotal(grid) : undefined;
   const gridNullDisplay =
-    mode === 'ALL_STORES_SUMMARY' || mode === 'ALL_STORES_ONE_ROW' || mode === 'SINGLE_COLUMN'
+    mode === 'ALL_STORES_SUMMARY' || mode === 'SINGLE_COLUMN'
       ? ''
       : '—';
   const hasVisibleInventoryActivity = hasAnyGridValue(data.grids);
@@ -209,11 +210,19 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
                 SKU Lookup
               </Button>
               <Button size="small" icon={<RobotOutlined />} onClick={() => setAiModalOpen(true)}>
-                Ask AI
+                Recommended reorder
+              </Button>
+              <Button
+                size="small"
+                icon={<EditOutlined />}
+                onClick={() => onEditSku?.(data.sku)}
+              >
+                Edit SKU
               </Button>
             </Space>
           </div>
           <HeaderCard inquiry={data} storeId={storeId} />
+          <AttributeBadgeStrip skuCode={data.sku} mode="assigned" />
         </div>
 
         <div style={{ flex: '0 0 auto', display: 'flex', gap: 12, alignItems: 'flex-start' }}>
@@ -229,7 +238,7 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
         </div>
       </div>
 
-      {/* Extended-attribute badge strip — one pill per dim (buyer, company, cadena, descuento). */}
+      {/* Unassigned attributes only; assigned values live in the header info box above. */}
       <AttributeBadgeStrip skuCode={data.sku} />
 
       {/* View-mode selector */}
@@ -245,7 +254,9 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
         >
           <span>{gridCaptionFor(mode)}</span>
           {headerTotal != null && (
-            <span style={{ marginLeft: 12, fontWeight: 500 }}>{formatGridTotal(headerTotal)}</span>
+            <span style={{ marginLeft: 12, fontWeight: 500 }}>
+              {formatHeaderTotal(mode, headerTotal, data.grids)}
+            </span>
           )}
         </div>
         {!hasVisibleInventoryActivity && (
@@ -310,7 +321,7 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
 };
 
 function isRowSensitiveMode(mode: ViewMode): boolean {
-  return mode === 'SINGLE_COLUMN' || mode === 'ALL_STORES_ON_HAND' || mode === 'ALL_STORES_ONE_ROW';
+  return mode === 'SINGLE_COLUMN' || mode === 'ALL_STORES_ON_HAND';
 }
 
 function hasAnyGridValue(grids: InquiryGrids): boolean {
@@ -339,7 +350,6 @@ function gridCaptionFor(mode: ViewMode): string {
     case 'LY_SALES':           return 'Last Year Sales';
     case 'SINGLE_COLUMN':      return 'Column Only';
     case 'ALL_STORES_ON_HAND': return 'All Stores - On Hand';
-    case 'ALL_STORES_ONE_ROW': return 'All Stores - 1 Row';
     case 'ALL_STORES_SUMMARY': return 'All stores - Summary';
     case 'MAX':                return 'Max Quantities';
     case 'REORDER':            return 'Reorder Quantities';
@@ -352,4 +362,34 @@ function formatGridTotal(total: number): string {
     minimumFractionDigits: 0,
     maximumFractionDigits: 2,
   }).format(total);
+}
+
+function formatHeaderTotal(mode: ViewMode, total: number, grids: InquiryGrids): string {
+  if (mode !== 'SHORT') return formatGridTotal(total);
+
+  const modelTotal = resolveGridTotal(grids.model);
+  if (modelTotal == null) return formatGridTotal(total);
+
+  const shortPct = modelTotal === 0 ? null : (total / modelTotal) * 100;
+  const prefix = `${formatGridTotal(total)} / ${formatGridTotal(modelTotal)}`;
+  if (shortPct == null) return prefix;
+  return `${prefix} (${formatPercent(shortPct)})`;
+}
+
+function resolveGridTotal(grid: InquirySizeGrid | undefined): number | undefined {
+  if (!grid) return undefined;
+  if (grid.total != null) return grid.total;
+  return grid.rows
+    .filter((row) => row.label.trim().toLowerCase() !== 'total')
+    .reduce(
+      (sum, row) => sum + row.cells.reduce((rowSum, cell) => rowSum + Number(cell.value ?? 0), 0),
+      0,
+    );
+}
+
+function formatPercent(value: number): string {
+  return `${new Intl.NumberFormat('es-HN', {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+  }).format(value)}%`;
 }

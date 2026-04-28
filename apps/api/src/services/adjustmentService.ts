@@ -59,7 +59,6 @@ async function enrichLineItems(adjustmentId: string): Promise<AdjustmentLineItem
         select: {
           id: true,
           code: true,
-          style: true,
         },
       },
     },
@@ -69,7 +68,6 @@ async function enrichLineItems(adjustmentId: string): Promise<AdjustmentLineItem
   return rows.map((row) => ({
     skuId: row.skuId,
     skuCode: row.sku.code ?? undefined,
-    brand: row.sku.style ?? undefined,
     quantity: row.quantity,
   }));
 }

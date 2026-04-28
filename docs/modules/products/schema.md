@@ -2,11 +2,13 @@
 
 > **Scope of this file.** Documents the **extended-attributes layer** in the `app` schema (the foundation introduced 2026-04-22). The broader products schema (Sku, SkuPrice, Vendor, taxonomy, scheduled changes, etc.) is sketched in [`rics-module-specs.md`](rics-module-specs.md) §Data model sketch and migrates into this file as Phase A → B work lands.
 
+> **Current-state note (2026-04-28).** New Product relationships must use the owned Postgres tables that exist today, especially `app.sku`, `app.vendor`, `app.product_family`, and `app.category_product_family`. Do not use the older `rics_mirror` soft-reference pattern for new tables. The matching-set/conjunto plan uses `app.sku(id)` and `app.vendor(code)`; see [`../../dev/plans/2026-04-28-products-matching-sets.md`](../../dev/plans/2026-04-28-products-matching-sets.md).
+
 ## Schema home
 
 | Schema | Role | Tables documented here |
 |---|---|---|
-| `app` | Module-owned additive tables (preserved across `pnpm sync:rics` reloads) | `attribute_dimension`, `attribute_value`, `sku_attribute_assignment`, `sku_attribute_orphans` (view) |
+| `app` | Module-owned additive tables (preserved across `pnpm sync:rics` reloads) | `attribute_dimension`, `attribute_value`, `sku_attribute_assignment`, `attribute_derivation_rule`, `sku_attribute_orphans` (view) |
 | `rics_mirror` | Read-only RICS mirror — rebuilt atomically on every sync | `inventory_master.sku`, `inventory_master.key_words` (consumed by the seed pipeline) |
 
 Per [`CLAUDE.md`](../../../CLAUDE.md), `app.*` is reserved for module-owned additive tables; this is the first occupant.
@@ -127,6 +129,38 @@ CREATE INDEX ix_sku_attr_facet
 
 - **Composite PK** `(sku_code, dimension_id, value_id)` — covers per-SKU reads (all attributes for one SKU) without an extra index.
 - **`ix_sku_attr_facet` `(dimension_id, value_id, sku_code)`** — covers facet/filter reads ("which SKUs have `buyer = zb`") with a single index range scan plus index-only on `sku_code`.
+
+### `app.attribute_derivation_rule`
+
+Macro-category mapping rules. A row maps one value from a source dimension into one value on a target macro dimension. The first governed mapping is `color -> color_family`.
+
+```sql
+CREATE TABLE app.attribute_derivation_rule (
+  source_dimension_code TEXT NOT NULL,
+  source_value_code     TEXT NOT NULL,
+  target_dimension_code TEXT NOT NULL,
+  target_value_code     TEXT NOT NULL,
+  updated_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_by            TEXT NOT NULL DEFAULT 'seed',
+  PRIMARY KEY (source_dimension_code, source_value_code, target_dimension_code)
+);
+
+CREATE INDEX attribute_derivation_rule_source_idx
+  ON app.attribute_derivation_rule(source_dimension_code, target_dimension_code);
+
+CREATE INDEX attribute_derivation_rule_target_idx
+  ON app.attribute_derivation_rule(target_dimension_code, target_value_code);
+```
+
+| Column | Type | Notes |
+|---|---|---|
+| `source_dimension_code` | `text` | Source attribute dimension, such as `color`. Must reference an existing single-value dimension; enforced by service validation. |
+| `source_value_code` | `text` | Value code within the source dimension. |
+| `target_dimension_code` | `text` | Derived macro dimension, such as `color_family`. Any target dimension in this table is blocked from manual SKU assignment. |
+| `target_value_code` | `text` | Value code within the target macro dimension. |
+| `updated_at` / `updated_by` | timestamp / text | Operator or seed provenance for the mapping. |
+
+Codes are stored instead of value IDs so rules remain readable and stable across catalog reorder operations. The service validates dimension/value membership before writes. On mapping changes, derived rows in `app.sku_attribute_assignment` are rebuilt with `assigned_by='seed:derived:<source>-><target>'`, except the original color-family derivation keeps `seed:derived:color_family` for compatibility.
 
 ### `app.sku_attribute_orphans` (view)
 

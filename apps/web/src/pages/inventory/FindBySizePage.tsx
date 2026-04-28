@@ -58,6 +58,7 @@ export default function FindBySizePage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const [lookupOpen, setLookupOpen] = useState(false)
   const [form] = Form.useForm<FormValues>()
+  const watchedSeedSku = Form.useWatch('seedSku', form)
 
   const activeParams = useMemo<FindBySizeParams | null>(() => {
     const columnLabel = (searchParams.get('columnLabel') || searchParams.get('size') || '').trim()
@@ -160,17 +161,17 @@ export default function FindBySizePage() {
           <Row gutter={16}>
             <Col xs={24} md={6}>
               <Form.Item label="Seed SKU" name="seedSku">
-                <Input
-                  placeholder="Optional SKU to borrow size type"
-                  allowClear
-                  addonAfter={
-                    <SearchOutlined
-                      style={{ cursor: 'pointer' }}
-                      onClick={() => setLookupOpen(true)}
-                      title="Look up SKU"
-                    />
-                  }
-                />
+                <Space.Compact style={{ width: '100%' }}>
+                  <Input
+                    placeholder="Optional SKU to borrow size type"
+                    allowClear
+                  />
+                  <Button
+                    icon={<SearchOutlined />}
+                    onClick={() => setLookupOpen(true)}
+                    title="Look up SKU"
+                  />
+                </Space.Compact>
               </Form.Item>
             </Col>
             <Col xs={12} md={4}>
@@ -255,7 +256,7 @@ export default function FindBySizePage() {
           form.setFieldValue('seedSku', picked.skuCode)
           setLookupOpen(false)
         }}
-        initialQuery={form.getFieldValue('seedSku') ?? ''}
+        initialQuery={watchedSeedSku ?? ''}
       />
 
       {!activeParams && (

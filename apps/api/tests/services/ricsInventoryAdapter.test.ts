@@ -114,8 +114,9 @@ describe('ricsInventoryAdapter inquiry grids', () => {
       'M',
     );
 
+    expect(grids.onHand?.columns).toEqual(['7', '8', 'TOT']);
     expect(grids.onHand?.rows).toEqual([
-      { label: 'M', cells: [{ value: 2 }, { value: 1 }] },
+      { label: 'M', cells: [{ value: 2 }, { value: 1 }, { value: 3 }] },
     ]);
     expect(grids.onHand?.total).toBe(3);
     expect(grids.mtdSales?.rows).toEqual([
@@ -129,6 +130,48 @@ describe('ricsInventoryAdapter inquiry grids', () => {
     ]);
   });
 
+  it('removes null-only size columns across quantity tabs while preserving real zero columns', () => {
+    const sizeTypeWithUnusedColumn = {
+      rows: ['M'],
+      columns: ['7', '8', '9'],
+    } as any;
+    const grids = buildGrids(
+      stores,
+      sizeTypeWithUnusedColumn,
+      buildSummaryMetricsByStore(stores),
+      undefined,
+      'M',
+    );
+
+    expect(grids.onHand?.columns).toEqual(['7', '8', 'TOT']);
+    expect(grids.onHand?.rows).toEqual([
+      { label: 'Store 21', cells: [{ value: 2 }, { value: 1 }, { value: 3 }] },
+      { label: 'Store 24', cells: [{ value: 4 }, { value: 0 }, { value: 4 }] },
+    ]);
+    expect(grids.onHand?.total).toBe(7);
+    expect(grids.onOrderCurrent?.columns).toEqual(['7', '8']);
+    expect(grids.onOrderCurrent?.rows).toEqual([
+      { label: 'Store 21', cells: [{ value: 1 }, { value: 0 }] },
+      { label: 'Store 24', cells: [{ value: 0 }, { value: 3 }] },
+    ]);
+    expect(grids.model?.columns).toEqual(['7', '8', 'TOT']);
+    expect(grids.model?.rows).toEqual([
+      { label: 'Store 21', cells: [{ value: 5 }, { value: 2 }, { value: 7 }] },
+      { label: 'Store 24', cells: [{ value: 4 }, { value: 3 }, { value: 7 }] },
+      { label: 'Total', cells: [{ value: 9 }, { value: 5 }, { value: 14 }] },
+    ]);
+    expect(grids.model?.total).toBe(14);
+    expect(grids.max?.columns).toEqual(['7', '8']);
+    expect(grids.reorder?.columns).toEqual(['7', '8']);
+    expect(grids.short?.columns).toEqual(['7', '8']);
+    expect(grids.mtdSales?.columns).toEqual(['7', '8']);
+    expect(grids.stdSales?.columns).toEqual(['7', '8']);
+    expect(grids.ytdSales?.columns).toEqual(['7', '8']);
+    expect(grids.lySales?.columns).toEqual(['7', '8']);
+    expect(grids.singleColumn?.columns).toEqual(['7', '8', 'TOT']);
+    expect(grids.allStoresOnHand?.columns).toEqual(['7', '8']);
+  });
+
   it('derives short quantities as model minus on-hand', () => {
     const grids = buildGrids(
       stores,
@@ -140,8 +183,33 @@ describe('ricsInventoryAdapter inquiry grids', () => {
 
     expect(grids.short?.rows).toEqual([
       { label: 'M', cells: [{ value: 3 }, { value: 1 }] },
+      { label: 'Total', cells: [{ value: 3 }, { value: 1 }] },
     ]);
     expect(grids.short?.total).toBe(4);
+    expect(grids.model?.columns).toEqual(['7', '8', 'TOT']);
+    expect(grids.model?.rows).toEqual([
+      { label: 'M', cells: [{ value: 5 }, { value: 2 }, { value: 7 }] },
+      { label: 'Total', cells: [{ value: 5 }, { value: 2 }, { value: 7 }] },
+    ]);
+    expect(grids.model?.total).toBe(7);
+  });
+
+  it('adds a per-size total row to all-store short quantities', () => {
+    const grids = buildGrids(
+      stores,
+      sizeType,
+      buildSummaryMetricsByStore(stores),
+      undefined,
+      'M',
+    );
+
+    expect(grids.short?.rows).toEqual([
+      { label: 'Store 21', cells: [{ value: 3 }, { value: 1 }] },
+      { label: 'Store 24', cells: [{ value: 0 }, { value: 3 }] },
+      { label: 'Total', cells: [{ value: 3 }, { value: 4 }] },
+    ]);
+    expect(grids.short?.total).toBe(7);
+    expect(grids.model?.total).toBe(14);
   });
 
   it('builds all-stores summary sales rows from inquiry cell totals', () => {
@@ -224,13 +292,13 @@ describe('ricsInventoryAdapter inquiry grids', () => {
       total: 13,
     });
     expect(grids.singleColumn).toEqual({
-      columns: ['7', '8'],
+      columns: ['7', '8', 'TOT'],
       rows: expect.arrayContaining([
-        { label: 'On Hand', cells: [{ value: 6 }, { value: 1 }] },
-        { label: 'MTD Sales', cells: [{ value: 3 }, { value: 1 }] },
-        { label: 'STD Sales', cells: [{ value: 5 }, { value: 2 }] },
-        { label: 'YTD Sales', cells: [{ value: 8 }, { value: 3 }] },
-        { label: 'L/Y Sales', cells: [{ value: 10 }, { value: 3 }] },
+        { label: 'On Hand', cells: [{ value: 6 }, { value: 1 }, { value: 7 }] },
+        { label: 'MTD Sales', cells: [{ value: 3 }, { value: 1 }, { value: 4 }] },
+        { label: 'STD Sales', cells: [{ value: 5 }, { value: 2 }, { value: 7 }] },
+        { label: 'YTD Sales', cells: [{ value: 8 }, { value: 3 }, { value: 11 }] },
+        { label: 'L/Y Sales', cells: [{ value: 10 }, { value: 3 }, { value: 13 }] },
       ]),
     });
   });

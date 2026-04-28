@@ -338,9 +338,22 @@ router.get('/search', async (req: Request, res: Response, next): Promise<void> =
  * Distinct Season / Vendor / Department values over the live SKU index —
  * powers the dropdown filters on the SKU Lookup modal.
  */
-router.get('/lookup-facets', async (_req: Request, res: Response, next): Promise<void> => {
+router.get('/lookup-facets', async (req: Request, res: Response, next): Promise<void> => {
   try {
-    const facets = await getSkuLookupFacets();
+    const season = typeof req.query.season === 'string' && req.query.season.trim()
+      ? req.query.season.trim()
+      : undefined;
+    const vendor = typeof req.query.vendor === 'string' && req.query.vendor.trim()
+      ? req.query.vendor.trim()
+      : undefined;
+    const department = req.query.department != null && req.query.department !== ''
+      ? Number(req.query.department)
+      : undefined;
+    const facets = await getSkuLookupFacets({
+      season,
+      vendor,
+      department: department != null && Number.isFinite(department) ? department : undefined,
+    });
     res.json(facets);
   } catch (err) {
     next(err);

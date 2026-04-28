@@ -12,6 +12,7 @@ import {
 import { ArrowLeftOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { useManualReturn } from '../../hooks/useManualReturns'
+import { SkuLink } from '../../components/sku-link'
 import type { ManualReturnLineRecord } from '../../types/manualReturn'
 
 export default function ManualReturnDetailPage() {
@@ -87,15 +88,9 @@ export default function ManualReturnDetailPage() {
           <Descriptions bordered column={{ xs: 1, sm: 2, md: 3 }} size="small">
             <Descriptions.Item label="Store">{manualReturn.storeLabel}</Descriptions.Item>
             <Descriptions.Item label="SKU">
-              <Button
-                type="link"
-                style={{ paddingInline: 0 }}
-                onClick={() =>
-                  navigate(`/products/inquiry/${encodeURIComponent(manualReturn.skuCode)}?storeId=${manualReturn.storeId}`)
-                }
-              >
+              <SkuLink skuCode={manualReturn.skuCode} storeId={manualReturn.storeId}>
                 {manualReturn.skuCode}
-              </Button>
+              </SkuLink>
             </Descriptions.Item>
             <Descriptions.Item label="Description">{manualReturn.description ?? '-'}</Descriptions.Item>
             <Descriptions.Item label="Vendor">{manualReturn.vendorName ?? manualReturn.vendorCode ?? '-'}</Descriptions.Item>

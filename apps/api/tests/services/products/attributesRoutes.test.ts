@@ -13,6 +13,7 @@ import { Err, Ok } from '../../../src/repositories/rics/repoResult';
 const replaceMock = jest.fn();
 const bulkAssignMock = jest.fn();
 const findCodesMock = jest.fn();
+const replaceMacroRulesMock = jest.fn();
 
 jest.mock('../../../src/repositories/products/AttributesRepository', () => {
   const DIMS_WITH_COUNTS = [
@@ -65,6 +66,33 @@ jest.mock('../../../src/repositories/products/AttributesRepository', () => {
       bySource: { keyword: 182916, excel: 0, operator: 0 },
     },
   ];
+  const MACRO_SUMMARIES = [
+    {
+      sourceDimensionCode: 'color',
+      sourceDimensionLabelEs: 'Color',
+      targetDimensionCode: 'color_family',
+      targetDimensionLabelEs: 'Familia de Color',
+      mappedCount: 30,
+      sourceValueCount: 30,
+      updatedAt: '2026-04-28T00:00:00.000Z',
+    },
+  ];
+  const MACRO_RULE_SET = {
+    sourceDimensionCode: 'color',
+    sourceDimensionLabelEs: 'Color',
+    targetDimensionCode: 'color_family',
+    targetDimensionLabelEs: 'Familia de Color',
+    rules: [
+      {
+        sourceValueCode: '1',
+        sourceLabelEs: 'Negro',
+        targetValueCode: 'black',
+        targetLabelEs: 'black',
+        updatedAt: '2026-04-28T00:00:00.000Z',
+        updatedBy: 'seed',
+      },
+    ],
+  };
   return {
     AttributesRepository: {
       listDimensionsWithValues: jest.fn(async (opts: { withCounts?: boolean }) =>
@@ -78,6 +106,9 @@ jest.mock('../../../src/repositories/products/AttributesRepository', () => {
       replaceSkuAttributes: (...args: unknown[]) => replaceMock(...args),
       findSkuCodesByAttributeFilters: (...args: unknown[]) => findCodesMock(...args),
       getCoverage: jest.fn(async () => Ok(COVERAGE)),
+      listAttributeMacroRuleSummaries: jest.fn(async () => Ok(MACRO_SUMMARIES)),
+      getAttributeMacroRuleSet: jest.fn(async () => Ok(MACRO_RULE_SET)),
+      replaceAttributeMacroRules: (...args: unknown[]) => replaceMacroRulesMock(...args),
       bulkAssign: (...args: unknown[]) => bulkAssignMock(...args),
     },
   };
@@ -108,6 +139,7 @@ beforeEach(() => {
   replaceMock.mockReset();
   bulkAssignMock.mockReset();
   findCodesMock.mockReset();
+  replaceMacroRulesMock.mockReset();
 });
 
 describe('GET /api/v1/products/attributes/dimensions', () => {
@@ -132,6 +164,45 @@ describe('GET /api/v1/products/attributes/coverage', () => {
     expect(res.status).toBe(200);
     expect(res.body[0].dimensionCode).toBe('buyer');
     expect(res.body[0].coveragePct).toBe(91.5);
+  });
+});
+
+describe('GET/PUT /api/v1/products/attributes/macros', () => {
+  it('lists macro category mappings', async () => {
+    const res = await request(app).get('/api/v1/products/attributes/macros');
+    expect(res.status).toBe(200);
+    expect(res.body[0].sourceDimensionCode).toBe('color');
+    expect(res.body[0].targetDimensionCode).toBe('color_family');
+  });
+
+  it('returns the editable rule set for a source-target pair', async () => {
+    const res = await request(app).get('/api/v1/products/attributes/macros/color/color_family');
+    expect(res.status).toBe(200);
+    expect(res.body.rules[0].sourceValueCode).toBe('1');
+    expect(res.body.rules[0].targetValueCode).toBe('black');
+  });
+
+  it('replaces macro rules', async () => {
+    replaceMacroRulesMock.mockResolvedValue(
+      Ok({
+        sourceDimensionCode: 'color',
+        sourceDimensionLabelEs: 'Color',
+        targetDimensionCode: 'color_family',
+        targetDimensionLabelEs: 'Familia de Color',
+        rules: [],
+      }),
+    );
+    const res = await request(app)
+      .put('/api/v1/products/attributes/macros/color/color_family')
+      .send({ rules: [{ sourceValueCode: '1', targetValueCode: 'black' }] });
+
+    expect(res.status).toBe(200);
+    expect(replaceMacroRulesMock).toHaveBeenCalledWith(
+      'color',
+      'color_family',
+      [{ sourceValueCode: '1', targetValueCode: 'black' }],
+      expect.any(String),
+    );
   });
 });
 
@@ -160,7 +231,8 @@ describe('PUT /api/v1/products/skus/:code/attributes', () => {
     expect(replaceMock).toHaveBeenCalledWith(
       'ZB12345',
       [{ dimensionCode: 'buyer', valueCode: 'zb' }],
-      expect.any(String)
+      expect.any(String),
+      undefined
     );
   });
 

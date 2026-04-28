@@ -157,6 +157,7 @@ export interface InventoryInquiry {
     brand: string | null
     vendorCode: string | null
     category: number | null
+    categoryName: string | null
     season: string | null
     retailPrice: number | null
     currentCost: number | null
@@ -166,6 +167,9 @@ export interface InventoryInquiry {
       rowLabels: string[]
       columnLabels: string[]
     }
+    vendorSku?: string | null
+    styleColor?: string | null
+    status?: string | null
   }
   stores: InventoryInquiryStore[]
   totals: InventoryInquiryStore['totals']

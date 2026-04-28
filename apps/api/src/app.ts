@@ -35,6 +35,7 @@ import orderRoutes from './routes/orderRoutes';
 import posRoutes from './routes/posRoutes';
 import posSkuRoutes from './routes/posSkuRoutes';
 import storeRoutes from './routes/storeRoutes';
+import casePackRoutes from './routes/casePackRoutes';
 import customerRoutes from './routes/customerRoutes';
 import customerTransactionsRoutes from './routes/customerTransactionsRoutes';
 import customerSegmentationRoutes from './routes/customerSegmentationRoutes';
@@ -49,6 +50,7 @@ import productsFamilyRoutes from './routes/products/familyRoutes';
 import productsCategoryRoutes from './routes/products/categoryRoutes';
 import productsSkuDraftRoutes from './routes/products/skuDraftRoutes';
 import utilitiesBatchRoutes from './routes/utilities/batchRoutes';
+import migrationDayRoutes from './routes/operations/migrationDayRoutes';
 import { createAuthRoutes } from './routes/authRoutes';
 import { createEmployeeRoutes } from './routes/employeeRoutes';
 import { createTimeClockRoutes } from './routes/timeClockRoutes';
@@ -135,6 +137,7 @@ app.use('/api/public/orders', orderRoutes);
 
 // shared store-master reads
 app.use('/api/v1/stores', storeRoutes);
+app.use('/api/v1/case-packs', casePackRoutes);
 
 // sales-pos module
 app.use('/api/v1/pos', posRoutes);
@@ -165,6 +168,7 @@ app.use('/api/v1/products/skus', productsSkuRoutes);
 
 // utilities module — batch-change primitives (spec: docs/modules/utilities.md)
 app.use('/api/v1/utilities', utilitiesBatchRoutes);
+app.use('/api/v1/operations/migration-day', migrationDayRoutes);
 
 // employees module
 app.use('/api/v1/auth', createAuthRoutes(prisma));

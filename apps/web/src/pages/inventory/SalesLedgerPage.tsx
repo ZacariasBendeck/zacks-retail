@@ -3,19 +3,21 @@ import { Card, Col, DatePicker, Input, InputNumber, Row, Select, Space, Typograp
 import dayjs from 'dayjs'
 import ServerDataTable, { type ServerQueryChange, type ServerTableColumn } from '../../components/ServerDataTable'
 import { useSalesLedger } from '../../hooks/useSalesLedger'
-import { ALLOWED_DEPARTMENTS, CATEGORY_MAX, CATEGORY_MIN } from '../../constants/domain'
-import type { Department } from '../../types/sku'
+import { useStores } from '../../hooks/useStores'
 import type { SalesChannel, SalesLedgerParams, SalesLedgerRow } from '../../types/salesLedger'
 
 // Currency is Honduran Lempira (HNL) system-wide — labeled once at the top of
 // the page, not repeated in every cell (see CLAUDE.md "Currency" policy).
 function formatMoney(value: number | null | undefined): string {
   if (value == null || Number.isNaN(value)) return '-'
-  return value.toLocaleString('en-US', {
+  return value.toLocaleString('es-HN', {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })
 }
+
+const CATEGORY_MIN = 1
+const CATEGORY_MAX = 999
 
 const CHANNEL_OPTIONS: { label: string; value: SalesChannel }[] = [
   { label: 'Store', value: 'STORE' },
@@ -32,14 +34,27 @@ export default function SalesLedgerPage() {
   })
 
   const { data, isLoading, isFetching } = useSalesLedger(params)
+  const { data: stores = [], isLoading: storesLoading } = useStores()
+
+  const storeOptions = useMemo(
+    () =>
+      stores.map((store) => ({
+        label: `${store.id} - ${store.name}`,
+        value: store.id,
+      })),
+    [stores],
+  )
 
   const handleQueryChange = useCallback((query: ServerQueryChange) => {
     const hasDepartmentFilter =
       query.filters != null && Object.prototype.hasOwnProperty.call(query.filters, 'department')
     const hasChannelFilter =
       query.filters != null && Object.prototype.hasOwnProperty.call(query.filters, 'channel')
+    const hasStoreFilter =
+      query.filters != null && Object.prototype.hasOwnProperty.call(query.filters, 'storeId')
     const departmentFilter = hasDepartmentFilter ? query.filters?.department ?? [] : null
     const channelFilter = hasChannelFilter ? query.filters?.channel ?? [] : null
+    const storeFilter = hasStoreFilter ? query.filters?.storeId ?? [] : null
 
     setParams((prev) => ({
       ...prev,
@@ -51,13 +66,19 @@ export default function SalesLedgerPage() {
         departmentFilter == null
           ? prev.department
           : departmentFilter.length > 0
-            ? (departmentFilter[0] as Department)
+            ? String(departmentFilter[0])
             : undefined,
       channel:
         channelFilter == null
           ? prev.channel
           : channelFilter.length > 0
             ? (channelFilter[0] as SalesChannel)
+            : undefined,
+      storeId:
+        storeFilter == null
+          ? prev.storeId
+          : storeFilter.length > 0
+            ? Number(storeFilter[0])
             : undefined,
     }))
   }, [])
@@ -78,6 +99,17 @@ export default function SalesLedgerPage() {
       exportValue: (record) => dayjs(record.saleDate).format('YYYY-MM-DD'),
     },
     {
+      title: 'Store',
+      dataIndex: 'storeId',
+      key: 'storeId',
+      sorter: true,
+      width: 180,
+      filters: storeOptions.map((store) => ({ text: store.label, value: store.value })),
+      filteredValue: params.storeId != null ? [params.storeId] : null,
+      render: (_value: number | null, record) => record.storeLabel,
+      exportValue: (record) => record.storeLabel,
+    },
+    {
       title: 'SKU',
       dataIndex: 'skuCode',
       key: 'skuCode',
@@ -86,7 +118,7 @@ export default function SalesLedgerPage() {
       ellipsis: true,
     },
     {
-      title: 'Style',
+      title: 'Style / Color',
       dataIndex: 'style',
       key: 'style',
       sorter: true,
@@ -97,8 +129,6 @@ export default function SalesLedgerPage() {
       dataIndex: 'department',
       key: 'department',
       width: 120,
-      filters: ALLOWED_DEPARTMENTS.map((department) => ({ text: department, value: department })),
-      filteredValue: params.department ? [params.department] : null,
       exportValue: (record) => record.department,
     },
     {
@@ -107,8 +137,7 @@ export default function SalesLedgerPage() {
       key: 'category',
       width: 100,
       align: 'right',
-      render: (value: number) =>
-        value >= CATEGORY_MIN && value <= CATEGORY_MAX ? value : `${value} (out of range)`,
+      render: (value: number | null) => (value == null ? '-' : value),
     },
     {
       title: 'Channel',
@@ -145,7 +174,7 @@ export default function SalesLedgerPage() {
           Sales Ledger
         </Typography.Title>
         <Typography.Text type="secondary">
-          Server-driven sales transactions with category guardrails ({CATEGORY_MIN}-{CATEGORY_MAX}).
+          Completed sales lines by date, store, SKU, and category.
         </Typography.Text>
         <Typography.Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0, fontSize: 12 }}>
           Amounts in Lempira (HNL).
@@ -156,24 +185,24 @@ export default function SalesLedgerPage() {
         <Row gutter={[12, 12]}>
           <Col xs={24} sm={8} md={6}>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              Department
+              Store
             </Typography.Text>
             <Select
-              placeholder="All departments"
+              placeholder="All stores"
               allowClear
+              showSearch
+              loading={storesLoading}
+              optionFilterProp="label"
               style={{ width: '100%' }}
-              value={params.department}
+              value={params.storeId}
               onChange={(value) =>
                 setParams((prev) => ({
                   ...prev,
-                  department: value as Department | undefined,
+                  storeId: value == null ? undefined : Number(value),
                   page: 1,
                 }))
               }
-              options={ALLOWED_DEPARTMENTS.map((department) => ({
-                label: department,
-                value: department,
-              }))}
+              options={storeOptions}
             />
           </Col>
           <Col xs={24} sm={8} md={6}>
@@ -187,6 +216,23 @@ export default function SalesLedgerPage() {
               value={params.channel}
               onChange={(value) => setParams((prev) => ({ ...prev, channel: value, page: 1 }))}
               options={CHANNEL_OPTIONS}
+            />
+          </Col>
+          <Col xs={24} sm={8} md={6}>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              Department Contains
+            </Typography.Text>
+            <Input
+              allowClear
+              placeholder="e.g. ZAP. TACON"
+              value={params.department}
+              onChange={(event) =>
+                setParams((prev) => ({
+                  ...prev,
+                  department: event.target.value || undefined,
+                  page: 1,
+                }))
+              }
             />
           </Col>
           <Col xs={24} sm={8} md={6}>
@@ -227,7 +273,7 @@ export default function SalesLedgerPage() {
           </Col>
           <Col xs={24} sm={12} md={6}>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              Style Contains
+              Style / Color Contains
             </Typography.Text>
             <Input
               allowClear
@@ -296,7 +342,7 @@ export default function SalesLedgerPage() {
           onQueryChange={handleQueryChange}
           expectedTotalRows={data?.pagination.totalItems}
           exportFileName={`sales-ledger-${new Date().toISOString().slice(0, 10)}`}
-          scrollX={1180}
+          scrollX={1320}
         />
       </Card>
     </Space>

@@ -72,7 +72,7 @@ export default function SaveAsTemplateButton({ reportType, getParamsJson, disabl
         confirmLoading={create.isPending}
         okText="Save"
         cancelText="Cancel"
-        destroyOnClose
+        destroyOnHidden
       >
         <Form form={form} layout="vertical">
           <Form.Item

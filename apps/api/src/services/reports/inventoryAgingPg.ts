@@ -492,7 +492,7 @@ export async function getAgingByGroup(
 const DETAIL_SORT_MAP: Record<string, string> = {
   skuCode: 's.code',
   brand: 's.vendor_id',
-  style: 's.style',
+  style: 's.style_color',
   department: 'department',
   price: 'price_num',
   quantityOnHand: 'quantity_on_hand',
@@ -593,7 +593,7 @@ export async function getAgingDetails(
       s.id::text AS sku_id,
       s.code AS sku_code,
       s.vendor_id AS brand,
-      s.style,
+      s.style_color AS style,
       COALESCE(s.color_code, s.style_color) AS color,
       s.retail_price::text AS price,
       s.category_number AS category,
@@ -652,17 +652,15 @@ export async function getAgingDetails(
 
 export interface AgingDimensionsResult {
   stores: { number: number; name: string | null }[];
-  chains: { code: string; label: string }[];
+  chains: { code: string; label: string; storeNumbers: number[] }[];
   buyers: { code: string; label: string }[];
   sectors: { number: number; name: string }[];
   departments: { number: number; name: string }[];
 }
 
 /**
- * Populates the page-header criteria multi-selects: stores, chain codes
- * (derived from the leading word of each store's description), buyers (from
- * po_legacy.buyer — currently empty until the legacy backfill runs), sectors,
- * and departments.
+ * Populates the page-header criteria multi-selects: stores, configured store
+ * chains, buyers, sectors, and departments.
  */
 export async function getAgingDimensions(): Promise<AgingDimensionsResult> {
   const [stores, chains, buyers, sectors, departments] = await Promise.all([
@@ -673,13 +671,21 @@ export async function getAgingDimensions(): Promise<AgingDimensionsResult> {
       WHERE sl.on_hand > 0
       ORDER BY sm.number
     `),
-    prisma.$queryRawUnsafe<{ code: string; label: string }[]>(`
-      SELECT DISTINCT
-        SPLIT_PART(sm."desc", ' ', 1) AS code,
-        SPLIT_PART(sm."desc", ' ', 1) AS label
-      FROM app.store_master sm
-      WHERE sm."desc" IS NOT NULL AND sm."desc" <> ''
-      ORDER BY label
+    prisma.$queryRawUnsafe<{ code: string; label: string; storeNumbers: number[] }[]>(`
+      SELECT
+        sg.code,
+        sg.label,
+        COALESCE(
+          ARRAY_AGG(sgm.store_number ORDER BY sgm.store_number)
+            FILTER (WHERE sgm.store_number IS NOT NULL),
+          ARRAY[]::int[]
+        ) AS "storeNumbers"
+      FROM app.store_group sg
+      LEFT JOIN app.store_group_member sgm
+        ON sgm.group_code = sg.code
+      WHERE sg.active = true
+      GROUP BY sg.code, sg.label, sg.sort_order
+      ORDER BY sg.sort_order ASC, sg.label ASC
     `),
     prisma.$queryRawUnsafe<{ code: string; label: string }[]>(`
       SELECT DISTINCT po.buyer AS code, po.buyer AS label

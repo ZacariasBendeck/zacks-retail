@@ -3,6 +3,8 @@ import type {
   AttributeDimension,
   AttributeDimensionValue,
   AttributeFamilyRule,
+  AttributeMacroRuleSet,
+  AttributeMacroRuleSummary,
   SetSkuAttributesInput,
   SkuAttributes,
 } from '../types/productsAttributes'
@@ -40,6 +42,10 @@ export type FamilyRulesReplaceInput =
       universal: false
       rules: { familyCode: string; enabled: boolean; isRequired: boolean; sortOrder?: number }[]
     }
+
+export interface MacroRulesReplaceInput {
+  rules: { sourceValueCode: string; targetValueCode: string | null }[]
+}
 
 export class AttributesApiError extends Error {
   status: number
@@ -91,6 +97,27 @@ export const productsAttributesApi = {
   },
   coverage(): Promise<AttributeCoverageRow[]> {
     return request<AttributeCoverageRow[]>(`${BASE}/attributes/coverage`)
+  },
+  listMacroRules(): Promise<AttributeMacroRuleSummary[]> {
+    return request<AttributeMacroRuleSummary[]>(`${BASE}/attributes/macros`)
+  },
+  getMacroRuleSet(
+    sourceDimensionCode: string,
+    targetDimensionCode: string,
+  ): Promise<AttributeMacroRuleSet> {
+    return request<AttributeMacroRuleSet>(
+      `${BASE}/attributes/macros/${encodeURIComponent(sourceDimensionCode)}/${encodeURIComponent(targetDimensionCode)}`,
+    )
+  },
+  replaceMacroRules(
+    sourceDimensionCode: string,
+    targetDimensionCode: string,
+    input: MacroRulesReplaceInput,
+  ): Promise<AttributeMacroRuleSet> {
+    return request<AttributeMacroRuleSet>(
+      `${BASE}/attributes/macros/${encodeURIComponent(sourceDimensionCode)}/${encodeURIComponent(targetDimensionCode)}`,
+      { method: 'PUT', body: JSON.stringify(input) },
+    )
   },
 
   // ──────────────── Dimension CRUD ────────────────

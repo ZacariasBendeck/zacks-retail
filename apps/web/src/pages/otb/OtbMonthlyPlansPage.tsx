@@ -544,7 +544,7 @@ export default function OtbMonthlyPlansPage() {
         onCancel={closeModal}
         onOk={() => void handleSubmitModal()}
         confirmLoading={createMutation.isPending || updateMutation.isPending}
-        destroyOnClose
+        destroyOnHidden
       >
         <Form<PlanFormValues>
           form={form}

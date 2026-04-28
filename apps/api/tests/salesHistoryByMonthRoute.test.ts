@@ -12,6 +12,8 @@
 jest.mock('../src/services/salesReporting/ricsSalesHistoryByMonthAdapter', () => ({
   queryMonthlyMeasures: jest.fn(),
   queryMonthlyNetSales: jest.fn(),
+  queryMonthlyInventoryHistory: jest.fn().mockResolvedValue([]),
+  queryMonthlyInventoryHistoryRollups: jest.fn().mockResolvedValue([]),
   loadSkuMasterForCriteria: jest.fn().mockResolvedValue([]),
   clearCache: jest.fn(),
 }));
@@ -43,6 +45,7 @@ type MonthlyMeasuresRow = {
   dimLabel: string;
   categoryKey: string | null;
   vendorKey: string | null;
+  pictureFileName?: string | null;
   quantity: number;
   netSales: number;
   cogs: number;
@@ -56,6 +59,7 @@ function measureRow(partial: Partial<MonthlyMeasuresRow>): MonthlyMeasuresRow {
     dimLabel: 'NIKE',
     categoryKey: null,
     vendorKey: 'NIKE',
+    pictureFileName: null,
     quantity: 0,
     netSales: 0,
     cogs: 0,

@@ -83,6 +83,7 @@ function printHelpAndExit(code: number): never {
       '  - import:app-replenishment-targets-from-artifact',
       '  - import:app-stock-from-artifact',
       '  - import:app-inventory-history-from-artifact',
+      '  - import:employees-from-rics',
       '  - import:customers (when Customer.csv + MailListNames.csv are bundled)',
       '  - import:customer-transactions:rics (when ticket CSVs are bundled)',
       '  - seed:segmentation-defaults',
@@ -115,7 +116,7 @@ function fileExists(filePath: string): boolean {
 
 function knownFullResetBlockers(): string[] {
   return [
-    'No bundle export/import exists yet for ProductContent, SeasonOverlay edits, vendor overlays, SKU override tables, size-type overrides, custom segment definitions, or non-owner users.',
+    'No bundle export/import exists yet for ProductContent, SeasonOverlay edits, vendor overlays, SKU override tables, size-type overrides, or custom segment definitions.',
     'verify:cutover-readiness is still mirror-era and should not be used as the Render cutover gate yet.',
   ];
 }
@@ -274,6 +275,16 @@ async function main(): Promise<void> {
     warnings.push(
       'app.sku is empty after the SKU artifact import, so stock and inventory-history imports were skipped.',
     );
+  }
+
+  if (await manifestContainsTable(legacyManifestPath, 'salespeople')) {
+    await runNodeTsScript(
+      'import:employees-from-rics',
+      path.join(API_DIR, 'scripts', 'employees', 'import-rics-salespeople.ts'),
+      ['--manifest', legacyManifestPath],
+    );
+  } else {
+    warnings.push('legacy manifest does not contain salespeople; employee salesperson import skipped.');
   }
 
   if (!args.skipCustomers) {

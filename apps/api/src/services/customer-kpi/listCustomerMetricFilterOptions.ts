@@ -1,9 +1,9 @@
 import { prisma } from '../../db/prisma';
-import { listCustomerStoreContexts, type CustomerStoreChainKey } from './storeMetadata';
+import { listCustomerStoreContexts } from './storeMetadata';
 
 export type CustomerKpiFilterOptions = {
   chains: Array<{
-    key: CustomerStoreChainKey;
+    key: string;
     label: string;
     customerCount: number;
   }>;
@@ -16,8 +16,8 @@ export type CustomerKpiFilterOptions = {
     storeId: string;
     storeName: string;
     city: string | null;
-    chainKey: CustomerStoreChainKey;
-    chainLabel: string;
+    chainKey: string | null;
+    chainLabel: string | null;
     customerCount: number;
   }>;
 };
@@ -56,25 +56,24 @@ export async function listCustomerMetricFilterOptions(): Promise<CustomerKpiFilt
       );
     });
 
-  const chainMap = new Map<
-    CustomerStoreChainKey,
-    { key: CustomerStoreChainKey; label: string; customerCount: number }
-  >();
+  const chainMap = new Map<string, { key: string; label: string; customerCount: number }>();
   const cityMap = new Map<string, { key: string; label: string; customerCount: number }>();
 
   for (const context of storeContexts) {
     const customerCount = countByStoreId.get(context.storeId) ?? 0;
     if (customerCount <= 0) continue;
 
-    const existingChain = chainMap.get(context.chainKey);
-    if (existingChain) {
-      existingChain.customerCount += customerCount;
-    } else {
-      chainMap.set(context.chainKey, {
-        key: context.chainKey,
-        label: context.chainLabel,
-        customerCount,
-      });
+    if (context.chainKey && context.chainLabel) {
+      const existingChain = chainMap.get(context.chainKey);
+      if (existingChain) {
+        existingChain.customerCount += customerCount;
+      } else {
+        chainMap.set(context.chainKey, {
+          key: context.chainKey,
+          label: context.chainLabel,
+          customerCount,
+        });
+      }
     }
 
     if (context.cityKey && context.cityLabel) {

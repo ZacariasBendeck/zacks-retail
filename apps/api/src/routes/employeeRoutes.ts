@@ -36,6 +36,7 @@ import {
   listEmployeeCommissionOverrides,
   updateCommissionOverride,
 } from '../services/employees/commissionOverrideService';
+import { clearCache as clearSalesReportCache } from '../services/salesReporting/ricsSalesReportAdapter';
 
 function sanitizeEmployee(user: any) {
   const { passwordHash, timeClockPinHash, ...rest } = user;
@@ -133,6 +134,78 @@ const patchCommissionOverrideBody = z.object({
   effectiveTo: z.coerce.date().optional().nullable(),
 });
 
+const patchRicsSalespersonBody = z.object({
+  displayName: z.string().trim().min(1).max(200).optional(),
+  active: z.boolean().optional(),
+  otherInformation: z.string().max(2000).optional().nullable(),
+  commissionRate: z.coerce.number().min(0).max(100).optional().nullable(),
+  commissionBase: commissionBaseSchema.optional(),
+  timeClockEnabled: z.boolean().optional(),
+  timeClockAdmin: z.boolean().optional(),
+  timeClockFullUser: z.boolean().optional(),
+});
+
+type RicsSalespersonRow = {
+  id: string;
+  salespersonCode: string;
+  displayName: string;
+  active: boolean;
+  otherInformation: string | null;
+  commissionRate: string | null;
+  commissionBase: string;
+  ricsCommissionMethod: string | null;
+  timeClockEnabled: boolean;
+  timeClockAdmin: boolean;
+  timeClockFullUser: boolean;
+  hasTimeClockPin: boolean;
+  hasLegacyCashierPin: boolean;
+  ricsSalespersonChangedAt: Date | null;
+  ricsSalespersonImportedAt: Date | null;
+};
+
+function normalizeSalespersonCodeParam(value: string): string {
+  return value.trim().toUpperCase();
+}
+
+function serializeRicsSalesperson(row: RicsSalespersonRow) {
+  return {
+    ...row,
+    commissionRate: row.commissionRate == null ? null : Number(row.commissionRate),
+    ricsSalespersonChangedAt: row.ricsSalespersonChangedAt?.toISOString?.() ?? null,
+    ricsSalespersonImportedAt: row.ricsSalespersonImportedAt?.toISOString?.() ?? null,
+  };
+}
+
+async function findRicsSalespersonByCode(
+  prisma: PrismaClient,
+  salespersonCode: string,
+): Promise<RicsSalespersonRow | null> {
+  const rows = await prisma.$queryRawUnsafe<RicsSalespersonRow[]>(
+    `
+    SELECT
+      id::text AS "id",
+      salesperson_code AS "salespersonCode",
+      display_name AS "displayName",
+      active,
+      other_information AS "otherInformation",
+      commission_rate::text AS "commissionRate",
+      commission_base AS "commissionBase",
+      rics_commission_method AS "ricsCommissionMethod",
+      time_clock_enabled AS "timeClockEnabled",
+      time_clock_admin AS "timeClockAdmin",
+      time_clock_full_user AS "timeClockFullUser",
+      time_clock_pin_hash IS NOT NULL AS "hasTimeClockPin",
+      legacy_cashier_pin_hash IS NOT NULL AS "hasLegacyCashierPin",
+      rics_salesperson_changed_at AS "ricsSalespersonChangedAt",
+      rics_salesperson_imported_at AS "ricsSalespersonImportedAt"
+    FROM app.employee
+    WHERE salesperson_code = $1
+    `,
+    salespersonCode,
+  );
+  return rows[0] ?? null;
+}
+
 function handleEmployeeError(res: any, err: unknown): boolean {
   if (err instanceof EmployeeNotFoundError) {
     res.status(404).json({ error: { code: err.code, message: err.message } });
@@ -209,6 +282,74 @@ export function createEmployeeRoutes(prisma: PrismaClient): Router {
     try {
       const employees = await listEmployees(prisma);
       res.json({ employees: employees.map(sanitizeEmployee) });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.get('/salespeople/:code', requirePermission(PERMISSIONS.EMPLOYEES_VIEW), async (req, res, next) => {
+    try {
+      const salespersonCode = normalizeSalespersonCodeParam(String(req.params.code));
+      const salesperson = await findRicsSalespersonByCode(prisma, salespersonCode);
+      if (!salesperson) {
+        return res.status(404).json({
+          error: { code: 'SALESPERSON_NOT_FOUND', message: 'Salesperson not found' },
+        });
+      }
+      res.json({ salesperson: serializeRicsSalesperson(salesperson) });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.patch('/salespeople/:code', requirePermission(PERMISSIONS.EMPLOYEES_MANAGE), async (req, res, next) => {
+    try {
+      const parsed = patchRicsSalespersonBody.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({
+          error: { code: 'INVALID_BODY', message: parsed.error.message },
+        });
+      }
+
+      const salespersonCode = normalizeSalespersonCodeParam(String(req.params.code));
+      const existing = await findRicsSalespersonByCode(prisma, salespersonCode);
+      if (!existing) {
+        return res.status(404).json({
+          error: { code: 'SALESPERSON_NOT_FOUND', message: 'Salesperson not found' },
+        });
+      }
+
+      await prisma.$executeRawUnsafe(
+        `
+        UPDATE app.employee
+        SET
+          display_name = COALESCE($2, display_name),
+          active = COALESCE($3, active),
+          other_information = CASE WHEN $4::boolean THEN $5 ELSE other_information END,
+          commission_rate = CASE WHEN $6::boolean THEN $7::numeric ELSE commission_rate END,
+          commission_base = COALESCE($8, commission_base),
+          time_clock_enabled = COALESCE($9, time_clock_enabled),
+          time_clock_admin = COALESCE($10, time_clock_admin),
+          time_clock_full_user = COALESCE($11, time_clock_full_user),
+          updated_at = CURRENT_TIMESTAMP
+        WHERE salesperson_code = $1
+        `,
+        salespersonCode,
+        parsed.data.displayName ?? null,
+        parsed.data.active ?? null,
+        Object.prototype.hasOwnProperty.call(parsed.data, 'otherInformation'),
+        parsed.data.otherInformation ?? null,
+        Object.prototype.hasOwnProperty.call(parsed.data, 'commissionRate'),
+        parsed.data.commissionRate ?? null,
+        parsed.data.commissionBase ?? null,
+        parsed.data.timeClockEnabled ?? null,
+        parsed.data.timeClockAdmin ?? null,
+        parsed.data.timeClockFullUser ?? null,
+      );
+
+      clearSalesReportCache();
+      const salesperson = await findRicsSalespersonByCode(prisma, salespersonCode);
+      res.json({ salesperson: serializeRicsSalesperson(salesperson!) });
     } catch (err) {
       next(err);
     }

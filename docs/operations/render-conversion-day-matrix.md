@@ -16,7 +16,7 @@ Use this as the current rehearsal command sequence.
 1. Source-side bundle export:
 
 ```bash
-pnpm --filter @benlow-rics/api cutover:render-export -- --out <bundle-dir> [--customer <Customer.csv> --mail <MailListNames.csv> --ticket-header <ticket_header.csv> --ticket-detail <ticket_detail.csv>]
+pnpm --filter @benlow-rics/api cutover:render-export -- --mdb-dir <mdb-dir> --out <bundle-dir> [--customer <Customer.csv> --mail <MailListNames.csv> --ticket-header <ticket_header.csv> --ticket-detail <ticket_detail.csv>]
 ```
 
 2. Upload `<bundle-dir>` to the transient Render-side storage location used by the load runner.
@@ -65,7 +65,7 @@ What each file group means:
   - These are raw legacy exports from the MDBs. They are not yet app-owned schema rows until the import scripts transform them.
 - `app/attribute-catalog-export.json`
   - Snapshot of the app-owned attribute framework.
-  - Carries dimensions, values, family rules, and SKU attribute assignments.
+  - Carries dimensions, values, family rules, macro derivation rules, and SKU attribute assignments.
 - `crm/*.csv`
   - Optional sidecar files. These are not part of the canonical MDB artifact pack.
   - `Customer.csv` and `MailListNames.csv` drive customer import.
@@ -87,7 +87,7 @@ What is not in the bundle yet:
 ### 1. `cutover:render-export`
 
 ```bash
-pnpm --filter @benlow-rics/api cutover:render-export -- --out <bundle-dir> [--customer <Customer.csv> --mail <MailListNames.csv> --ticket-header <ticket_header.csv> --ticket-detail <ticket_detail.csv>]
+pnpm --filter @benlow-rics/api cutover:render-export -- --mdb-dir <mdb-dir> --out <bundle-dir> [--customer <Customer.csv> --mail <MailListNames.csv> --ticket-header <ticket_header.csv> --ticket-detail <ticket_detail.csv>]
 ```
 
 What it does:
@@ -150,9 +150,12 @@ What it does, in order:
    - Stages `inv_changes.csv`, `inventory_quantities.csv`, and `size_types.csv`, then rebuilds `app.stock_movement` and `app.stock_level`.
 11. `import:app-inventory-history-from-artifact`
    - Stages `inv_his.csv`, then rebuilds the inventory-history aggregate tables.
-12. `import:customers`
+12. `import:employees-from-rics`
+   - Loads `RISLSPSN.MDB / Salespeople` from the canonical legacy artifact pack into `app.employee`.
+   - Preserves salesperson code, name, other info, commission fields, time-clock flags, and hashed legacy PIN fields.
+13. `import:customers`
    - Only runs if `crm/Customer.csv` and `crm/MailListNames.csv` are present.
-13. `import:customer-transactions:rics`
+14. `import:customer-transactions:rics`
    - Only runs if `crm/ticket_header.csv` and `crm/ticket_detail.csv` are present.
 
 Useful flags on the load command:
@@ -176,7 +179,7 @@ This is the practical "from what file/table to what table" map for the current c
 
 | Bundle input / source | Staging / transform step | Data moved into |
 |---|---|---|
-| `app/attribute-catalog-export.json` | `import:attributes` upserts the JSON snapshot | `app.attribute_dimension`, `app.attribute_value`, `app.attribute_family_rule`, `app.sku_attribute_assignment` |
+| `app/attribute-catalog-export.json` | `import:attributes` upserts the JSON snapshot | `app.attribute_dimension`, `app.attribute_value`, `app.attribute_family_rule`, `app.attribute_derivation_rule`, `app.sku_attribute_assignment` |
 | `legacy/departments.csv` | `seed:taxonomy-from-mirror --manifest` stages `departments` | `app.taxonomy_department` |
 | `legacy/categories.csv` | `seed:taxonomy-from-mirror --manifest` stages `categories` | `app.taxonomy_category` |
 | `legacy/group_codes.csv` | `seed:taxonomy-from-mirror --manifest` stages `group_codes` | `app.taxonomy_group` |
@@ -205,7 +208,8 @@ This is the practical "from what file/table to what table" map for the current c
 | `legacy/inventory_quantities.csv` + `legacy/size_types.csv` + `app.sku` | `import:app-stock-from-artifact` normalizes the inventory grid into current per-store/per-SKU/per-cell stock rows and inquiry sales cells | `app.stock_level`, `app.inventory_sales_cell` |
 | `legacy/inv_his.csv` + `app.sku` | `import:app-inventory-history-from-artifact` stages `inv_his` and rebuilds the history aggregates | `app.inventory_history_snapshot`, `app.inventory_history_month`, `app.inventory_history_trend_week`, `app.inventory_history_movement_bucket` |
 | `crm/Customer.csv` + `crm/MailListNames.csv` | `import:customers` parses both files, matches by legacy account/code, and creates or updates customer identities, contacts, addresses, legacy profile, financial profile, and legacy sales summary | `app.customer`, `app.customer_identity`, `app.customer_contact`, `app.customer_address`, `app.customer_legacy_profile`, `app.customer_financial_profile`, `app.customer_sales_summary_legacy`, plus `app.customer_import_batch` / `app.customer_import_reject` audit rows |
-| `crm/ticket_header.csv` + `crm/ticket_detail.csv` | `import:customer-transactions:rics` stages both ticket CSVs, builds ticket facts/lines, links to `app.customer` and `app.sku` when possible, then refreshes customer KPI tables unless `--skip-metrics` is used | `app.sales_history_ticket`, `app.sales_history_ticket_line`, then derived refreshes of `app.customer_metrics`, `app.customer_features_current`, `app.customer_category_features`, `app.customer_brand_features`, `app.customer_size_profiles` |
+| `legacy/salespeople.csv` | `import:employees-from-rics` loads RICS salesperson records keyed by salesperson code | `app.employee`, including hashed legacy time-clock and cashier PIN fields |
+| `crm/ticket_header.csv` + `crm/ticket_detail.csv` | `import:customer-transactions:rics` stages both ticket CSVs, builds normalized sales-history facts/lines, links to `app.customer` and `app.sku` when possible, preserves header cashier codes and detail salesperson codes, then refreshes customer KPI tables unless `--skip-metrics` is used. This is not full raw ticket-field preservation; see `docs/operations/sales-ticket-mdb-to-app-coverage.md`. | `app.sales_history_ticket`, `app.sales_history_ticket_line`, then derived refreshes of `app.customer_metrics`, `app.customer_features_current`, `app.customer_category_features`, `app.customer_brand_features`, `app.customer_size_profiles` |
 
 ## Status Legend
 
@@ -218,14 +222,15 @@ This is the practical "from what file/table to what table" map for the current c
 | Artifact | Source | Type | When | Script / command | Target table(s) | Render DB delete safe? | Status | Owner | Blocked by / notes |
 |---|---|---|---|---|---|---|---|---|---|
 | Canonical RICS artifact pack (`legacy/*.csv` + `legacy/manifest.json`) | Canonical MDB allowlist in `apps/api/src/services/sync/canonicalRicsTables.ts` | RICS export | T-0 upload | `cutover:render-export` -> `extract:rics-artifact -- --scope all-canonical` | Upload bundle only | Yes | GREEN | Platform / ETL | This is the full canonical extract list. It does not mean every table already has a Render-safe loader. |
-| Attribute catalog snapshot (`app/attribute-catalog-export.json`) | Current Postgres app data | App-native preload or T-0 upload | Preload or T-0 upload | `cutover:render-export` -> `export:attributes` | `app.attribute_dimension`, `app.attribute_value`, `app.attribute_family_rule`, `app.sku_attribute_assignment` | Yes | GREEN | Products | This is the only clearly portable app-native artifact in the repo today. |
+| Attribute catalog snapshot (`app/attribute-catalog-export.json`) | Current Postgres app data | App-native preload or T-0 upload | Preload or T-0 upload | `cutover:render-export` -> `export:attributes` | `app.attribute_dimension`, `app.attribute_value`, `app.attribute_family_rule`, `app.attribute_derivation_rule`, `app.sku_attribute_assignment` | Yes | GREEN | Products | Carries macro mappings such as `color -> color_family`, so operator-edited macro categories survive a clean Render reload. |
 | Customer master CSVs (`crm/Customer.csv`, `crm/MailListNames.csv`) | Legacy CSV export path, separate from canonical MDB artifact pack | RICS export | T-0 upload | Optional inputs to `cutover:render-export`; loaded by `import:customers` | `app.customer`, `app.customer_identity`, `app.customer_contact`, `app.customer_address`, `app.customer_legacy_profile`, `app.customer_financial_profile`, `app.customer_sales_summary_legacy`, import audit rows | Yes | GREEN | CRM / Customer Intelligence | These files are not part of `extract:rics-artifact`; they must be exported separately and supplied to the bundle. |
-| Customer transaction CSVs (`crm/ticket_header.csv`, `crm/ticket_detail.csv`) | Legacy CSV export path, separate from canonical MDB artifact pack | RICS export | T-0 upload | Optional inputs to `cutover:render-export`; loaded by `import:customer-transactions:rics` | `app.sales_history_ticket`, `app.sales_history_ticket_line`, downstream customer KPI refresh tables | Yes | GREEN | CRM / Customer Intelligence | These files are also outside the canonical artifact pack and must be exported separately if customer-history cutover is in scope. |
+| Customer transaction CSVs (`crm/ticket_header.csv`, `crm/ticket_detail.csv`) | Legacy CSV export path, separate from canonical MDB artifact pack | RICS export | T-0 upload | Optional inputs to `cutover:render-export`; loaded by `import:customer-transactions:rics` | `app.sales_history_ticket`, `app.sales_history_ticket_line`, downstream customer KPI refresh tables | Yes | YELLOW | CRM / Customer Intelligence | GREEN for repeatable normalized sales-history load. YELLOW for full MDB field coverage because tender rows and many raw header/detail fields are not preserved. See `docs/operations/sales-ticket-mdb-to-app-coverage.md`. |
+| Sales ticket tender rows (`legacy/ticket_tender.csv`) | `RITRNSSV.MDB / TicketTender` in the canonical MDB artifact pack | RICS export | T-0 upload | No current app import script | None yet | No | RED | Sales POS / Customer Transactions | Required for full sales ticket preservation. Current upload does not move historical tender rows, tender amounts, alternate currency amounts, exchange rates, or gift certificate tender references into `app.*`. |
 | Schema deploy | Repo migrations | Preload | Before load | `cutover:render-load` -> `pnpm exec prisma migrate deploy` | `public`, `app`, `platform` schemas | Yes | GREEN | Platform | Required before any bundle load. |
-| Attribute import | Attribute snapshot JSON | App-native preload or T-0 upload | After migrate | `cutover:render-load` -> `import:attributes` | `app.attribute_*`, `app.sku_attribute_assignment` | Yes | GREEN | Products | Repeatable and Render-safe now. |
+| Attribute import | Attribute snapshot JSON | App-native preload or T-0 upload | After migrate | `cutover:render-load` -> `import:attributes` | `app.attribute_*`, `app.attribute_derivation_rule`, `app.sku_attribute_assignment` | Yes | GREEN | Products | Repeatable and Render-safe now, including macro-category derivation rules. |
 | Default customer segments | Repo seed | App-native preload | After migrate | `cutover:render-load` -> `seed:segmentation-defaults` | `app.customer_segment*` defaults | Yes | GREEN | CRM / Customer Intelligence | Seeds defaults only. User-authored segment definitions still have no bundle export/import path. |
 | Customer master import | `Customer.csv` + `MailListNames.csv` | RICS export | T-0 upload | `cutover:render-load` -> `import:customers` | `app.customer`, `app.customer_identity`, `app.customer_contact`, `app.customer_address`, `app.customer_legacy_profile`, `app.customer_financial_profile`, `app.customer_sales_summary_legacy`, import audit rows | Yes | GREEN | CRM / Customer Intelligence | Runs only when both CSVs are present in the bundle. |
-| Customer transaction import | `ticket_header.csv` + `ticket_detail.csv` | RICS export | T-0 upload | `cutover:render-load` -> `import:customer-transactions:rics` | `app.sales_history_ticket`, `app.sales_history_ticket_line`, downstream customer KPI refresh tables | Yes | GREEN | CRM / Customer Intelligence | Runs only when both ticket CSVs are present in the bundle. |
+| Customer transaction import | `ticket_header.csv` + `ticket_detail.csv` | RICS export | T-0 upload | `cutover:render-load` -> `import:customer-transactions:rics` | `app.sales_history_ticket`, `app.sales_history_ticket_line`, downstream customer KPI refresh tables | Yes | YELLOW | CRM / Customer Intelligence | Runs only when both ticket CSVs are present in the bundle. Repeatable normalized facts/lines are loaded, but full raw sales ticket preservation is incomplete. |
 | Stock + stock-movement import from artifact | `inv_changes.csv`, `inventory_quantities.csv`, `size_types.csv` in legacy bundle | RICS upload | T-0 upload | `cutover:render-load` -> `import:app-stock-from-artifact` | `app.stock_level`, `app.inventory_sales_cell`, `app.stock_movement` | Yes | GREEN | Inventory | Depends on the preceding SKU artifact import in the same wrapper, which now runs on clean Render resets. |
 | Inventory history import from artifact | `inv_his.csv` in legacy bundle | RICS upload | T-0 upload | `cutover:render-load` -> `import:app-inventory-history-from-artifact` | `app.inventory_history_snapshot`, `app.inventory_history_month`, `app.inventory_history_trend_week`, `app.inventory_history_movement_bucket` | Yes | GREEN | Inventory / Sales Reporting | Now runs after the SKU artifact import in the same wrapper. |
 | SKU baseline load | `inventory_master.csv` | RICS upload | T-0 upload | `cutover:render-load` -> `import:app-skus-from-artifact` | `app.sku` | Yes | GREEN | Products | New artifact-native loader stages `inventory_master.csv` into a temp table and reuses the existing SKU backfill logic with no `rics_mirror` dependency. |

@@ -329,7 +329,7 @@ export function LookupModal<T>({
       open={open}
       onCancel={onClose}
       width={width}
-      destroyOnClose
+      destroyOnHidden
       footer={[
         <Button
           key="save"

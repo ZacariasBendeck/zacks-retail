@@ -42,6 +42,15 @@ function renderModuleShell(initialEntry = '/inventory/dashboard') {
             <Route path="/inventory/movements" element={<div data-testid="inventory-movements">Movements</div>} />
             <Route path="/purchase-planning" element={<div data-testid="purchase-planning">Purchase Planning</div>} />
             <Route path="/customers" element={<div data-testid="customers">Customers</div>} />
+            <Route path="/products/vendors" element={<div data-testid="file-setup-vendors">Vendors</div>} />
+            <Route path="/products/taxonomy/categories" element={<div data-testid="file-setup-categories">Categories</div>} />
+            <Route path="/products/taxonomy/return-codes" element={<div data-testid="file-setup-return-codes">Return Codes</div>} />
+            <Route path="/products/taxonomy/promotion-codes" element={<div data-testid="file-setup-promotion-codes">Promotion Codes</div>} />
+            <Route path="/file-setup/case-packs" element={<div data-testid="file-setup-case-packs">Case Packs</div>} />
+            <Route path="/admin/users" element={<div data-testid="file-setup-users">Users</div>} />
+            <Route path="/utilities" element={<Navigate to="/utilities/stores" replace />} />
+            <Route path="/utilities/stores" element={<div data-testid="utilities-stores">Stores</div>} />
+            <Route path="/utilities/store-chains" element={<div data-testid="utilities-store-chains">Store Chains</div>} />
             <Route path="/purchasing" element={<Navigate to="/purchasing/orders" replace />} />
             <Route path="/purchasing/orders" element={<div data-testid="purchasing-orders">Purchasing Orders</div>} />
             <Route path="/purchasing/receive" element={<div data-testid="purchasing-receive">Receive POs</div>} />
@@ -66,7 +75,10 @@ describe('Module Shell Navigation', () => {
     renderModuleShell()
 
     expect(screen.getByRole('menuitem', { name: /Inventory/i })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: /Products/i })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: /File Setup/i })).toBeInTheDocument()
     expect(screen.getByRole('menuitem', { name: /Plan de Compras/i })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: /Sales POS/i })).toBeInTheDocument()
     expect(screen.getByRole('menuitem', { name: /Customer Intelligence/i })).toBeInTheDocument()
     expect(screen.getByRole('menuitem', { name: /Utilities/i })).toBeInTheDocument()
     expect(screen.getByRole('menuitem', { name: /Purchasing/i })).toBeInTheDocument()
@@ -91,7 +103,7 @@ describe('Module Shell Navigation', () => {
       openModuleLabel?: string
     }> = [
       { label: 'Balances', pageId: 'inventory-balances', moduleTitle: 'Inventory' },
-      { label: 'SKU List', pageId: 'inventory-skus', moduleTitle: 'Inventory', openModuleLabel: 'Products' },
+      { label: 'SKU', pageId: 'inventory-skus', moduleTitle: 'Products', openModuleLabel: 'Products' },
       { label: 'Stock Maintenance', pageId: 'inventory-adjustments', moduleTitle: 'Inventory' },
       { label: 'Find by Size', pageId: 'inventory-find-by-size', moduleTitle: 'Inventory' },
       { label: 'Model Quantities', pageId: 'inventory-replenishment', moduleTitle: 'Inventory' },
@@ -101,6 +113,14 @@ describe('Module Shell Navigation', () => {
       { label: 'Movements', pageId: 'inventory-movements', moduleTitle: 'Inventory' },
       { label: 'Plan de Compras', pageId: 'purchase-planning', moduleTitle: 'Plan de Compras' },
       { label: 'Customer Records', pageId: 'customers', moduleTitle: 'Customer Intelligence', openModuleLabel: 'Customer Intelligence' },
+      { label: 'Vendors', pageId: 'file-setup-vendors', moduleTitle: 'File Setup', openModuleLabel: 'File Setup' },
+      { label: 'Categories', pageId: 'file-setup-categories', moduleTitle: 'File Setup', openModuleLabel: 'File Setup' },
+      { label: 'Case Packs', pageId: 'file-setup-case-packs', moduleTitle: 'File Setup', openModuleLabel: 'File Setup' },
+      { label: 'Return Codes', pageId: 'file-setup-return-codes', moduleTitle: 'File Setup', openModuleLabel: 'File Setup' },
+      { label: 'Promotion Codes', pageId: 'file-setup-promotion-codes', moduleTitle: 'File Setup', openModuleLabel: 'File Setup' },
+      { label: 'Stores', pageId: 'utilities-stores', moduleTitle: 'File Setup', openModuleLabel: 'File Setup' },
+      { label: 'Store Chains', pageId: 'utilities-store-chains', moduleTitle: 'File Setup', openModuleLabel: 'File Setup' },
+      { label: 'Users', pageId: 'file-setup-users', moduleTitle: 'File Setup', openModuleLabel: 'File Setup' },
       { label: 'Control Tower', pageId: 'purchasing-orders', moduleTitle: 'Purchasing - no en uso', openModuleLabel: 'Purchasing' },
       { label: 'Receive POs', pageId: 'purchasing-receive', moduleTitle: 'Purchasing - no en uso', openModuleLabel: 'Purchasing' },
       { label: 'Monthly Plans', pageId: 'otb-monthly-plans', moduleTitle: 'OTB - no en uso', openModuleLabel: 'OTB' },

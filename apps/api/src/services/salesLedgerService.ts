@@ -1,9 +1,12 @@
-import { getDb } from '../db/database';
+import { prisma } from '../db/prisma';
 import { PaginationEnvelope } from '../models/sku';
 
 export interface SalesLedgerRow {
   id: string;
   saleDate: string;
+  storeId: number | null;
+  storeName: string | null;
+  storeLabel: string;
   channel: 'STORE' | 'ONLINE' | 'WHOLESALE';
   skuCode: string;
   style: string;
@@ -18,6 +21,7 @@ export interface SalesLedgerParams {
   pageSize: number;
   sort?: string;
   order?: 'asc' | 'desc';
+  storeId?: number;
   startDate?: string;
   endDate?: string;
   department?: string;
@@ -27,105 +31,179 @@ export interface SalesLedgerParams {
   style?: string;
 }
 
-type DbValue = null | number | bigint | string;
+type DbValue = number | string | number[];
+
+const REPORT_TIME_ZONE = 'America/Tegucigalpa';
 
 const SORT_MAP: Record<string, string> = {
-  saleDate: 'st.sold_at',
-  channel: "'STORE'",
-  skuCode: 's.sku_code',
-  style: 's.style',
-  department: 's.department',
-  category: 'rc.rics_code',
-  unitsSold: 'st.quantity',
-  netRevenue: '(st.quantity * st.unit_price)',
+  saleDate: 't.purchased_at',
+  storeId: 't.store_id',
+  channel: 'UPPER(COALESCE(NULLIF(BTRIM(t.channel), \'\'), \'store\'))',
+  skuCode: 'COALESCE(NULLIF(BTRIM(l.sku_code), \'\'), NULLIF(BTRIM(s.code), \'\'), \'\')',
+  style: 'COALESCE(NULLIF(BTRIM(s.style_color), \'\'), NULLIF(BTRIM(s.description_rics), \'\'), \'\')',
+  department: 'COALESCE(NULLIF(BTRIM(td."desc"), \'\'), \'\')',
+  category: 'cat.category_number',
+  unitsSold: 'l.quantity',
+  netRevenue: 'l.net_amount',
 };
 
-export function listSalesLedger(params: SalesLedgerParams): PaginationEnvelope<SalesLedgerRow> {
-  const db = getDb();
-  const conditions: string[] = [];
+function toNumber(value: unknown): number {
+  if (typeof value === 'number') return value;
+  if (typeof value === 'bigint') return Number(value);
+  if (typeof value === 'string') return Number(value);
+  if (
+    value &&
+    typeof value === 'object' &&
+    'toNumber' in value &&
+    typeof (value as { toNumber?: unknown }).toNumber === 'function'
+  ) {
+    return (value as { toNumber: () => number }).toNumber();
+  }
+  return 0;
+}
+
+function normalizeChannel(value: string | null): SalesLedgerRow['channel'] {
+  const normalized = (value ?? 'STORE').trim().toUpperCase();
+  if (normalized === 'ONLINE' || normalized === 'WHOLESALE') return normalized;
+  return 'STORE';
+}
+
+function buildStoreLabel(storeId: number | null, storeName: string | null): string {
+  if (storeId == null) return 'Unassigned';
+  const trimmedName = storeName?.trim();
+  return trimmedName ? `${storeId} - ${trimmedName}` : String(storeId);
+}
+
+function nextParam(values: DbValue[], value: DbValue): string {
+  values.push(value);
+  return `$${values.length}`;
+}
+
+export async function listSalesLedger(
+  params: SalesLedgerParams,
+): Promise<PaginationEnvelope<SalesLedgerRow>> {
+  const conditions: string[] = [`t.status = 'completed'`];
   const values: DbValue[] = [];
 
+  if (params.storeId != null) {
+    const idx = nextParam(values, params.storeId);
+    conditions.push(`t.store_id = ${idx}::int`);
+  }
   if (params.startDate) {
-    conditions.push('st.sold_at >= ?');
-    values.push(params.startDate);
+    const idx = nextParam(values, params.startDate);
+    conditions.push(
+      `t.purchased_at >= (${idx}::date::timestamp AT TIME ZONE '${REPORT_TIME_ZONE}')`,
+    );
   }
   if (params.endDate) {
-    // endDate is inclusive — add one day for < comparison
-    const endExclusive = new Date(params.endDate);
-    endExclusive.setDate(endExclusive.getDate() + 1);
-    conditions.push('st.sold_at < ?');
-    values.push(endExclusive.toISOString().split('T')[0]);
+    const idx = nextParam(values, params.endDate);
+    conditions.push(
+      `t.purchased_at < (((${idx}::date + INTERVAL '1 day')::timestamp) AT TIME ZONE '${REPORT_TIME_ZONE}')`,
+    );
   }
   if (params.department) {
-    conditions.push('s.department = ?');
-    values.push(params.department);
+    const idx = nextParam(values, `%${params.department}%`);
+    conditions.push(`COALESCE(td."desc", '') ILIKE ${idx}`);
   }
   if (params.category != null) {
-    conditions.push('rc.rics_code = ?');
-    values.push(params.category);
+    const idx = nextParam(values, params.category);
+    conditions.push(`cat.category_number = ${idx}::int`);
+  }
+  if (params.channel) {
+    const idx = nextParam(values, params.channel);
+    conditions.push(`UPPER(COALESCE(NULLIF(BTRIM(t.channel), ''), 'store')) = ${idx}`);
   }
   if (params.skuCode) {
-    conditions.push('s.sku_code LIKE ?');
-    values.push(`%${params.skuCode}%`);
+    const idx = nextParam(values, `%${params.skuCode}%`);
+    conditions.push(`COALESCE(l.sku_code, s.code, '') ILIKE ${idx}`);
   }
   if (params.style) {
-    conditions.push('LOWER(s.style) LIKE ?');
-    values.push(`%${params.style.toLowerCase()}%`);
+    const idx = nextParam(values, `%${params.style}%`);
+    conditions.push(`COALESCE(s.style_color, s.description_rics, '') ILIKE ${idx}`);
   }
 
   const fromClause = `
-    FROM sales_transactions st
-    JOIN skus s ON s.id = st.sku_id
-    LEFT JOIN ref_categories rc ON rc.id = s.category_id
+    FROM app.sales_history_ticket t
+    INNER JOIN app.sales_history_ticket_line l ON l.ticket_id = t.id
+    LEFT JOIN app.sku s ON s.id = l.sku_id
+    LEFT JOIN app.store_master sm ON sm.number = t.store_id
+    LEFT JOIN LATERAL (
+      SELECT COALESCE(
+        CASE WHEN l.category_key ~ '^[0-9]+$' THEN l.category_key::int END,
+        s.category_number
+      ) AS category_number
+    ) cat ON true
+    LEFT JOIN app.taxonomy_department td
+      ON cat.category_number BETWEEN td.beg_categ AND td.end_categ
   `;
   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
-  const countRow = db.prepare(
-    `SELECT COUNT(*) as cnt ${fromClause} ${whereClause}`
-  ).get(...values) as unknown as { cnt: number };
-  const totalItems = countRow.cnt;
+  const countRows = await prisma.$queryRawUnsafe<Array<{ cnt: number | bigint | string }>>(
+    `SELECT COUNT(*) AS cnt ${fromClause} ${whereClause}`,
+    ...values,
+  );
+  const totalItems = toNumber(countRows[0]?.cnt);
 
-  const sortCol = SORT_MAP[params.sort ?? 'saleDate'] || 'st.sold_at';
+  const sortCol = SORT_MAP[params.sort ?? 'saleDate'] || SORT_MAP.saleDate;
   const sortDir = params.order === 'asc' ? 'ASC' : 'DESC';
   const offset = (params.page - 1) * params.pageSize;
+  const limitIdx = nextParam(values, params.pageSize);
+  const offsetIdx = nextParam(values, offset);
 
-  const rows = db.prepare(`
+  const rows = await prisma.$queryRawUnsafe<Array<{
+    id: string;
+    sold_at: string | Date | null;
+    store_id: number | null;
+    store_name: string | null;
+    channel: string | null;
+    sku_code: string | null;
+    style: string | null;
+    department: string | null;
+    category: number | null;
+    units_sold: number | string | null;
+    net_revenue: number | string | null;
+  }>>(
+    `
     SELECT
-      st.id,
-      st.sold_at AS sold_at,
-      s.sku_code AS sku_code,
-      s.style,
-      s.department,
-      rc.rics_code AS category,
-      st.quantity AS units_sold,
-      (st.quantity * st.unit_price) AS net_revenue
+      l.id::text AS id,
+      t.purchased_at AS sold_at,
+      t.store_id::int AS store_id,
+      sm."desc" AS store_name,
+      UPPER(COALESCE(NULLIF(BTRIM(t.channel), ''), 'store')) AS channel,
+      COALESCE(NULLIF(BTRIM(l.sku_code), ''), NULLIF(BTRIM(s.code), ''), '') AS sku_code,
+      COALESCE(NULLIF(BTRIM(s.style_color), ''), NULLIF(BTRIM(s.description_rics), ''), '') AS style,
+      COALESCE(NULLIF(BTRIM(td."desc"), ''), '') AS department,
+      cat.category_number AS category,
+      l.quantity::int AS units_sold,
+      l.net_amount::float8 AS net_revenue
     ${fromClause}
     ${whereClause}
-    ORDER BY ${sortCol} ${sortDir}
-    LIMIT ? OFFSET ?
-  `).all(...values, params.pageSize, offset) as unknown as Array<{
-    id: string;
-    sold_at: string;
-    sku_code: string;
-    style: string;
-    department: string;
-    category: number | null;
-    units_sold: number;
-    net_revenue: number;
-  }>;
+    ORDER BY ${sortCol} ${sortDir}, l.id ASC
+    LIMIT ${limitIdx}::int
+    OFFSET ${offsetIdx}::int
+    `,
+    ...values,
+  );
 
   return {
-    data: rows.map((r) => ({
-      id: r.id,
-      saleDate: r.sold_at,
-      channel: 'STORE' as const,
-      skuCode: r.sku_code,
-      style: r.style,
-      department: r.department,
-      category: r.category,
-      unitsSold: r.units_sold,
-      netRevenue: Math.round(r.net_revenue * 100) / 100,
-    })),
+    data: rows.map((r) => {
+      const storeId = r.store_id == null ? null : Number(r.store_id);
+      const storeName = r.store_name?.trim() || null;
+      return {
+        id: r.id,
+        saleDate: r.sold_at instanceof Date ? r.sold_at.toISOString() : String(r.sold_at ?? ''),
+        storeId,
+        storeName,
+        storeLabel: buildStoreLabel(storeId, storeName),
+        channel: normalizeChannel(r.channel),
+        skuCode: r.sku_code?.trim() ?? '',
+        style: r.style?.trim() ?? '',
+        department: r.department?.trim() ?? '',
+        category: r.category == null ? null : Number(r.category),
+        unitsSold: toNumber(r.units_sold),
+        netRevenue: Math.round(toNumber(r.net_revenue) * 100) / 100,
+      };
+    }),
     pagination: {
       page: params.page,
       pageSize: params.pageSize,

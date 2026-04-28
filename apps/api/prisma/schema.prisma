@@ -146,6 +146,33 @@ model User {
   @@schema("public")
 }
 
+/// App-owned employee / salesperson master. RICS Salespeople records are
+/// imported here rather than into auth users; active login accounts may still
+/// reference the same salesperson code from public.User.
+model Employee {
+  id                         String    @id @default(uuid()) @db.Uuid
+  salespersonCode            String    @unique @map("salesperson_code") @db.VarChar(16)
+  displayName                String    @map("display_name")
+  active                     Boolean   @default(false)
+  otherInformation           String?   @map("other_information")
+  commissionRate             Decimal?  @map("commission_rate") @db.Decimal(5, 2)
+  commissionBase             String    @default("NET_SALES") @map("commission_base")
+  ricsCommissionMethod       String?   @map("rics_commission_method") @db.VarChar(8)
+  timeClockEnabled           Boolean   @default(true) @map("time_clock_enabled")
+  timeClockPinHash           String?   @map("time_clock_pin_hash")
+  timeClockAdmin             Boolean   @default(false) @map("time_clock_admin")
+  timeClockFullUser          Boolean   @default(false) @map("time_clock_full_user")
+  legacyCashierPinHash       String?   @map("legacy_cashier_pin_hash")
+  ricsSalespersonChangedAt   DateTime? @map("rics_salesperson_changed_at") @db.Timestamp(3)
+  ricsSalespersonImportedAt  DateTime? @map("rics_salesperson_imported_at") @db.Timestamp(3)
+  createdAt                  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                  DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([active], map: "employee_active_idx")
+  @@map("employee")
+  @@schema("app")
+}
+
 model Role {
   id          String   @id @default(uuid())
   name        String   @unique
@@ -524,8 +551,38 @@ model StoreMaster {
   region          Int?      @db.SmallInt
   dateLastChanged DateTime? @map("date_last_changed")
   rawJson         Json      @map("raw_json")
+  groupMember     StoreGroupMember?
 
   @@map("store_master")
+  @@schema("app")
+}
+
+/// App-owned chain / banner definitions for store grouping.
+/// Stores belong to at most one chain through StoreGroupMember.
+model StoreGroup {
+  code      String             @id @db.VarChar(64)
+  label     String             @db.VarChar(120)
+  active    Boolean            @default(true)
+  sortOrder Int                @default(0) @map("sort_order")
+  createdAt DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime           @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  members   StoreGroupMember[]
+
+  @@map("store_group")
+  @@schema("app")
+}
+
+/// Single-chain assignment for a store. One row per store when assigned.
+model StoreGroupMember {
+  storeNumber Int        @id @map("store_number") @db.SmallInt
+  groupCode   String     @map("group_code") @db.VarChar(64)
+  group       StoreGroup @relation(fields: [groupCode], references: [code], onDelete: Cascade, onUpdate: Cascade)
+  store       StoreMaster @relation(fields: [storeNumber], references: [number], onDelete: Cascade, onUpdate: Cascade)
+  createdAt   DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime   @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([groupCode], map: "store_group_member_group_code_idx")
+  @@map("store_group_member")
   @@schema("app")
 }
 
@@ -884,7 +941,6 @@ model Sku {
   currentPriceSlot  String?         @map("current_price_slot")
 
   sizeType          Int?            @map("size_type") @db.SmallInt
-  style             String?
   styleColor        String?         @map("style_color")
   season            String?         @db.VarChar(2)
   location          String?
@@ -1700,6 +1756,24 @@ model SkuAttributeAssignment {
   @@index([dimensionId, valueId, skuCode], map: "sku_attribute_assignment_facet_idx")
   @@index([assignedBy], map: "sku_attribute_assignment_assigned_by_idx")
   @@map("sku_attribute_assignment")
+  @@schema("app")
+}
+
+/// Source-value -> target-value macro derivation rule. Used for derived
+/// metadata such as `color_family`, where operators edit the mapping table,
+/// not the target SKU assignment directly.
+model AttributeDerivationRule {
+  sourceDimensionCode String   @map("source_dimension_code")
+  sourceValueCode     String   @map("source_value_code")
+  targetDimensionCode String   @map("target_dimension_code")
+  targetValueCode     String   @map("target_value_code")
+  updatedAt           DateTime @default(now()) @map("updated_at")
+  updatedBy           String   @default("seed") @map("updated_by")
+
+  @@id([sourceDimensionCode, sourceValueCode, targetDimensionCode])
+  @@index([sourceDimensionCode, targetDimensionCode], map: "attribute_derivation_rule_source_idx")
+  @@index([targetDimensionCode, targetValueCode], map: "attribute_derivation_rule_target_idx")
+  @@map("attribute_derivation_rule")
   @@schema("app")
 }
 

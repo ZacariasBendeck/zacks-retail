@@ -13,8 +13,9 @@
  *   3. Upsert `app.attribute_family_rule` rows by (dimension_id, family_code).
  *      Rules pointing at a family_code that doesn't exist in target are
  *      skipped with a warning.
- *   4. Upsert `app.sku_attribute_assignment` rows. SKU codes are soft-ref —
- *      no FK — so any referenced code inserts cleanly. Orphans surface later
+ *   4. Upsert `app.attribute_derivation_rule` rows for macro-category rollups.
+ *   5. Upsert `app.sku_attribute_assignment` rows. SKU codes are soft-ref.
+ *      No FK is used, so any referenced code inserts cleanly. Orphans surface later
  *      via `app.sku_attribute_orphans`.
  *
  * Never deletes. If target has dimensions/values/rules/assignments not present
@@ -70,6 +71,15 @@ interface AssignmentIn {
   assignedAt: string;
 }
 
+interface MacroRuleIn {
+  sourceDimensionCode: string;
+  sourceValueCode: string;
+  targetDimensionCode: string;
+  targetValueCode: string;
+  updatedBy: string;
+  updatedAt: string;
+}
+
 interface ExportFile {
   version: string;
   exportedAt: string;
@@ -77,6 +87,7 @@ interface ExportFile {
   counts: Record<string, unknown>;
   dimensions: DimensionIn[];
   familyRules: FamilyRuleIn[];
+  macroRules?: MacroRuleIn[];
   assignments: AssignmentIn[];
 }
 
@@ -133,6 +144,10 @@ function loadExport(inPath: string): ExportFile {
   if (!Array.isArray(parsed.assignments)) {
     throw new Error('Export is missing "assignments" array.');
   }
+  if (parsed.macroRules != null && !Array.isArray(parsed.macroRules)) {
+    throw new Error('Export "macroRules" must be an array when present.');
+  }
+  parsed.macroRules ??= [];
   return parsed;
 }
 
@@ -144,6 +159,9 @@ interface ImportCounts {
   rulesInserted: number;
   rulesUpdated: number;
   rulesSkippedMissingFamily: number;
+  macroRulesInserted: number;
+  macroRulesUpdated: number;
+  macroRulesSkippedMissingValue: number;
   assignmentsInserted: number;
   assignmentsUpdated: number;
 }
@@ -240,6 +258,64 @@ async function upsertFamilyRules(
   }
 }
 
+async function upsertMacroRules(
+  client: Client,
+  rules: MacroRuleIn[],
+  counts: ImportCounts,
+): Promise<void> {
+  for (const rule of rules) {
+    const sourceValue = await client.query<{ code: string }>(
+      `SELECT v.code
+       FROM app.attribute_value v
+       JOIN app.attribute_dimension d ON d.id = v.dimension_id
+       WHERE d.code = $1 AND v.code = $2`,
+      [rule.sourceDimensionCode, rule.sourceValueCode],
+    );
+    const targetValue = await client.query<{ code: string }>(
+      `SELECT v.code
+       FROM app.attribute_value v
+       JOIN app.attribute_dimension d ON d.id = v.dimension_id
+       WHERE d.code = $1 AND v.code = $2`,
+      [rule.targetDimensionCode, rule.targetValueCode],
+    );
+    if (sourceValue.rowCount === 0 || targetValue.rowCount === 0) {
+      counts.macroRulesSkippedMissingValue += 1;
+      console.warn(
+        `  skipped macro rule: ${rule.sourceDimensionCode}.${rule.sourceValueCode} -> ${rule.targetDimensionCode}.${rule.targetValueCode} (source or target value missing)`,
+      );
+      continue;
+    }
+
+    const r = await client.query<{ inserted: boolean }>(
+      `INSERT INTO app.attribute_derivation_rule (
+         source_dimension_code,
+         source_value_code,
+         target_dimension_code,
+         target_value_code,
+         updated_by,
+         updated_at
+       )
+       VALUES ($1, $2, $3, $4, $5, $6::timestamptz)
+       ON CONFLICT (source_dimension_code, source_value_code, target_dimension_code)
+       DO UPDATE SET
+         target_value_code = EXCLUDED.target_value_code,
+         updated_by = EXCLUDED.updated_by,
+         updated_at = EXCLUDED.updated_at
+       RETURNING (xmax = 0) AS inserted`,
+      [
+        rule.sourceDimensionCode,
+        rule.sourceValueCode,
+        rule.targetDimensionCode,
+        rule.targetValueCode,
+        rule.updatedBy,
+        rule.updatedAt,
+      ],
+    );
+    if (r.rows[0]?.inserted) counts.macroRulesInserted += 1;
+    else counts.macroRulesUpdated += 1;
+  }
+}
+
 async function upsertAssignments(
   client: Client,
   assignments: AssignmentIn[],
@@ -302,6 +378,7 @@ async function main(): Promise<void> {
   console.log(`    dimensions         : ${ex.dimensions.length}`);
   console.log(`    values             : ${ex.dimensions.reduce((s, d) => s + d.values.length, 0)}`);
   console.log(`    family rules       : ${ex.familyRules.length}`);
+  console.log(`    macro rules        : ${ex.macroRules?.length ?? 0}`);
   console.log(`    assignments        : ${ex.assignments.length}`);
 
   if (args.dryRun) {
@@ -320,6 +397,9 @@ async function main(): Promise<void> {
     rulesInserted: 0,
     rulesUpdated: 0,
     rulesSkippedMissingFamily: 0,
+    macroRulesInserted: 0,
+    macroRulesUpdated: 0,
+    macroRulesSkippedMissingValue: 0,
     assignmentsInserted: 0,
     assignmentsUpdated: 0,
   };
@@ -327,19 +407,22 @@ async function main(): Promise<void> {
   try {
     await client.query('BEGIN');
 
-    console.log('\n[1/4] Upserting dimensions...');
+    console.log('\n[1/5] Upserting dimensions...');
     await upsertDimensions(client, ex.dimensions, counts);
 
-    console.log('[2/4] Upserting values...');
+    console.log('[2/5] Upserting values...');
     await upsertValues(client, ex.dimensions, counts);
 
-    console.log('[3/4] Upserting family rules...');
+    console.log('[3/5] Upserting family rules...');
     await upsertFamilyRules(client, ex.familyRules, counts);
 
+    console.log(`[4/5] Upserting ${ex.macroRules?.length ?? 0} macro rules...`);
+    await upsertMacroRules(client, ex.macroRules ?? [], counts);
+
     if (args.skipAssignments) {
-      console.log('[4/4] Skipping assignments (--skip-assignments).');
+      console.log('[5/5] Skipping assignments (--skip-assignments).');
     } else {
-      console.log(`[4/4] Upserting ${ex.assignments.length} assignments...`);
+      console.log(`[5/5] Upserting ${ex.assignments.length} assignments...`);
       await upsertAssignments(client, ex.assignments, counts);
     }
 
@@ -352,6 +435,7 @@ async function main(): Promise<void> {
     console.log(`  dimensions    : ${counts.dimsInserted} inserted, ${counts.dimsUpdated} updated`);
     console.log(`  values        : ${counts.valuesInserted} inserted, ${counts.valuesUpdated} updated`);
     console.log(`  family rules  : ${counts.rulesInserted} inserted, ${counts.rulesUpdated} updated, ${counts.rulesSkippedMissingFamily} skipped (missing family)`);
+    console.log(`  macro rules   : ${counts.macroRulesInserted} inserted, ${counts.macroRulesUpdated} updated, ${counts.macroRulesSkippedMissingValue} skipped (missing value)`);
     if (!args.skipAssignments) {
       console.log(`  assignments   : ${counts.assignmentsInserted} inserted, ${counts.assignmentsUpdated} updated`);
     }

@@ -1,5 +1,6 @@
 import React from 'react';
-import { Drawer } from 'antd';
+import { useNavigate } from 'react-router-dom';
+import { DraggableModal } from '../draggable-modal';
 import { InquiryBody } from '../../pages/products/inquiry/InquiryBody';
 import type { InquiryTab, NeighborScope } from '../../pages/products/inquiry/ActionBar';
 import type { ViewMode } from '../../pages/products/inquiry/ViewModeSelector';
@@ -27,6 +28,7 @@ const InquiryPopupContext = React.createContext<InquiryPopupContextValue | null>
  * overlaid on top of the current view instead of replacing it.
  */
 export const InquiryPopupProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const navigate = useNavigate();
   const [state, setState] = React.useState<{ open: boolean; skuCode: string; storeId?: number }>({
     open: false,
     skuCode: '',
@@ -64,19 +66,25 @@ export const InquiryPopupProvider: React.FC<{ children: React.ReactNode }> = ({ 
     [],
   );
 
+  const handleEditSku = React.useCallback(
+    (skuCode: string) => {
+      setState((s) => ({ ...s, open: false }));
+      navigate(`/products/skus/${encodeURIComponent(skuCode)}/edit`);
+    },
+    [navigate],
+  );
+
   return (
     <InquiryPopupContext.Provider value={ctx}>
       {children}
-      <Drawer
-        title={state.skuCode ? `Inventory Inquiry — ${state.skuCode}` : 'Inventory Inquiry'}
-        placement="right"
-        width="90%"
+      <DraggableModal
+        title={state.skuCode ? `Inventory Inquiry - ${state.skuCode}` : 'Inventory Inquiry'}
+        width="92vw"
         open={state.open}
-        onClose={closeInquiry}
-        destroyOnClose
-        // Drawer body padding is generous by default; trim it so the dense
-        // inquiry layout (12px base font) has room to breathe horizontally.
-        styles={{ body: { padding: 12 } }}
+        onCancel={closeInquiry}
+        footer={null}
+        destroyOnHidden
+        styles={{ body: { padding: 12, maxHeight: 'calc(100vh - 140px)', overflow: 'auto' } }}
       >
         {state.open && (
           <InquiryBody
@@ -84,6 +92,7 @@ export const InquiryPopupProvider: React.FC<{ children: React.ReactNode }> = ({ 
             storeId={state.storeId}
             selectedRow={selectedRow}
             onPickSku={handlePickSku}
+            onEditSku={handleEditSku}
             mode={mode}
             activeTab={activeTab}
             scope={scope}
@@ -93,7 +102,7 @@ export const InquiryPopupProvider: React.FC<{ children: React.ReactNode }> = ({ 
             onSelectedRowChange={setSelectedRow}
           />
         )}
-      </Drawer>
+      </DraggableModal>
     </InquiryPopupContext.Provider>
   );
 };

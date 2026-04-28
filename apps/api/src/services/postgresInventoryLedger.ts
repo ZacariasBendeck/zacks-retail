@@ -106,7 +106,6 @@ export async function ensureSkuMirroredToPostgres(
       retailPrice: row.price == null ? undefined : new Prisma.Decimal(row.price),
       currentCost: row.cost == null ? undefined : new Prisma.Decimal(row.cost),
       sizeType: row.size_type_id ?? undefined,
-      style: row.style ?? undefined,
       season: trimNullableString(row.season, 2),
       manufacturer: row.manufacturer ?? undefined,
       pictureFileName: row.picture_url ?? undefined,

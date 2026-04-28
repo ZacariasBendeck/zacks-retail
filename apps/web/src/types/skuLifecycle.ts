@@ -41,7 +41,6 @@ export interface SkuLifecycleRow {
   discountCode: string | null
   // Classification / identity
   season: string | null
-  style: string | null
   styleColor: string | null
   sizeType: number | null
   location: string | null
@@ -85,7 +84,6 @@ export interface CreateDraftInput {
   perks?: number | null
   discountCode?: string | null
   season?: string | null
-  style?: string | null
   styleColor?: string | null
   sizeType?: number | null
   location?: string | null

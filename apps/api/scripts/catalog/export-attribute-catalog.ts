@@ -10,6 +10,7 @@
  *   - Every row of `app.attribute_dimension`
  *   - Every row of `app.attribute_value` (nested under its parent dimension)
  *   - Every row of `app.attribute_family_rule` (family-scoping + required flags)
+ *   - Every row of `app.attribute_derivation_rule` (macro-category rollups)
  *   - Operator-authored rows of `app.sku_attribute_assignment` — i.e. any row
  *     whose `assigned_by` does NOT start with `seed:`. Those are the ones
  *     representing human work; `seed:keyword:*` and `seed:excel:*` rows are
@@ -88,6 +89,15 @@ interface AssignmentOut {
   assignedAt: string;
 }
 
+interface MacroRuleOut {
+  sourceDimensionCode: string;
+  sourceValueCode: string;
+  targetDimensionCode: string;
+  targetValueCode: string;
+  updatedBy: string;
+  updatedAt: string;
+}
+
 interface ExportFile {
   version: '1';
   exportedAt: string;
@@ -96,11 +106,13 @@ interface ExportFile {
     dimensions: number;
     values: number;
     familyRules: number;
+    macroRules: number;
     assignments: number;
     assignmentsMode: 'operator-only' | 'all';
   };
   dimensions: DimensionOut[];
   familyRules: FamilyRuleOut[];
+  macroRules: MacroRuleOut[];
   assignments: AssignmentOut[];
 }
 
@@ -199,7 +211,36 @@ async function main(): Promise<void> {
       updatedAt: r.updated_at,
     }));
 
+    // ──────────── Macro derivation rules ────────────
+    const macroRuleRows = await client.query<{
+      source_dimension_code: string;
+      source_value_code: string;
+      target_dimension_code: string;
+      target_value_code: string;
+      updated_by: string;
+      updated_at: string;
+    }>(`
+      SELECT source_dimension_code,
+             source_value_code,
+             target_dimension_code,
+             target_value_code,
+             updated_by,
+             updated_at::text AS updated_at
+      FROM app.attribute_derivation_rule
+      ORDER BY source_dimension_code, target_dimension_code, source_value_code
+    `);
+
+    const macroRules: MacroRuleOut[] = macroRuleRows.rows.map((r) => ({
+      sourceDimensionCode: r.source_dimension_code,
+      sourceValueCode: r.source_value_code,
+      targetDimensionCode: r.target_dimension_code,
+      targetValueCode: r.target_value_code,
+      updatedBy: r.updated_by,
+      updatedAt: r.updated_at,
+    }));
+
     // ──────────── Operator assignments ────────────
+
     const assignmentFilter = args.withSeedAssignments
       ? '1=1'
       : "(a.assigned_by IS NULL OR a.assigned_by NOT LIKE 'seed:%')";
@@ -241,11 +282,13 @@ async function main(): Promise<void> {
         dimensions: dimensions.length,
         values: total,
         familyRules: familyRules.length,
+        macroRules: macroRules.length,
         assignments: assignments.length,
         assignmentsMode: args.withSeedAssignments ? 'all' : 'operator-only',
       },
       dimensions,
       familyRules,
+      macroRules,
       assignments,
     };
 
@@ -259,6 +302,7 @@ async function main(): Promise<void> {
     console.log(`  dimensions    : ${out.counts.dimensions}`);
     console.log(`  values        : ${out.counts.values}`);
     console.log(`  family rules  : ${out.counts.familyRules}`);
+    console.log(`  macro rules   : ${out.counts.macroRules}`);
     console.log(`  assignments   : ${out.counts.assignments}  (${out.counts.assignmentsMode})`);
     console.log('');
     console.log(`  written to:`);

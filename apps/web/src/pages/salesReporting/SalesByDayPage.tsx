@@ -51,7 +51,7 @@ import { DraggableModal } from '../../components/draggable-modal'
 import { fmtChangeMoney, fmtMoney } from '../../utils/reportFormatters'
 import { useReportTemplate, useTouchReportTemplate } from '../../hooks/useReportTemplates'
 import { briefDateSpec, readDateSpecFromParams, resolveDateSpec, type DateSpec } from '../../utils/dateSpec'
-import { STORE_CHAINS } from '../../constants/storeChains'
+import { useStoreChains } from '../../hooks/useStores'
 
 const { Text } = Typography
 
@@ -172,7 +172,9 @@ function moveSalesByDayColumnLayout(
   const nextIndex = index + direction
   if (nextIndex < 0 || nextIndex >= layout.length) return layout
   const next = layout.map((column) => ({ ...column }))
-  const [moved] = next.splice(index, 1)
+  const moved = next[index]
+  if (!moved) return layout
+  next.splice(index, 1)
   next.splice(nextIndex, 0, moved)
   return next
 }
@@ -236,6 +238,78 @@ function withSalesByDayColumnClasses(
       }
     },
   }
+}
+
+function getSalesByDaySummaryCellClasses(key: SalesByDayColumnKey, extra?: string): string {
+  const classes = [`sales-by-day-col-${getSalesByDayColumnTone(key)}`]
+  if (key === 'comparedToDate' || key === 'dollarChange') classes.push('sales-by-day-col-boundary')
+  if (extra) classes.push(extra)
+  return classes.join(' ')
+}
+
+function getSalesByDaySummaryLabelKey(layout: SalesByDayColumnLayout[]): SalesByDayColumnKey {
+  const visible = layout.filter((column) => column.visible)
+  return (
+    visible.find((column) => column.key === 'dayName')?.key ??
+    visible.find((column) => column.key === 'date')?.key ??
+    visible[0]?.key ??
+    'date'
+  )
+}
+
+function renderSalesByDaySummaryValue(
+  key: SalesByDayColumnKey,
+  totals: SalesTotals,
+  labelKey: SalesByDayColumnKey,
+) {
+  if (key === labelKey) return 'Totals'
+
+  switch (key) {
+    case 'date':
+    case 'dayName':
+    case 'comparedToDate':
+      return null
+    case 'netSales':
+      return fmtMoney(totals.netSales)
+    case 'profit':
+      return fmtMoney(totals.profit)
+    case 'comparedNetSales':
+      return fmtMoney(totals.comparedNetSales)
+    case 'comparedProfit':
+      return fmtMoney(totals.comparedProfit)
+    case 'dollarChange':
+      return fmtChangeMoney(totals.dollarChange)
+    case 'profitChange':
+      return fmtChangeMoney(totals.profitChange)
+    case 'pctChange':
+      return <ChangePctBadge value={totals.pctChange} />
+  }
+}
+
+function renderSalesByDayTableSummary(
+  layout: SalesByDayColumnLayout[],
+  totals: SalesTotals,
+) {
+  const visibleColumns = layout.filter((column) => column.visible)
+  const labelKey = getSalesByDaySummaryLabelKey(layout)
+
+  return (
+    <Table.Summary.Row className="sales-by-day-summary-row">
+      {visibleColumns.map((column, index) => (
+        <Table.Summary.Cell
+          key={column.key}
+          index={index}
+          align={column.align}
+          className={getSalesByDaySummaryCellClasses(
+            column.key,
+            column.key === labelKey ? 'sales-by-day-summary-label' : 'sales-by-day-summary-value',
+          )}
+        >
+          {renderSalesByDaySummaryValue(column.key, totals, labelKey)}
+        </Table.Summary.Cell>
+      ))}
+    </Table.Summary.Row>
+  )
 }
 
 function buildSalesByDayColumns(
@@ -391,6 +465,7 @@ export default function SalesByDayPage() {
   const running = query != null && isFetching
 
   const { data: dims, isLoading: dimsLoading } = useSalesDimensions()
+  const { data: storeChains = [] } = useStoreChains()
   const storeOptions = useMemo(
     () =>
       (dims?.stores ?? []).map((store) => ({
@@ -419,7 +494,7 @@ export default function SalesByDayPage() {
   function onChainChange(next: string | undefined): void {
     setChainId(next)
     if (!next) return
-    const chain = STORE_CHAINS.find((candidate) => candidate.id === next)
+    const chain = storeChains.find((candidate) => candidate.id === next)
     if (chain) setStoreNumbers(chain.storeNumbers)
   }
 
@@ -592,7 +667,10 @@ export default function SalesByDayPage() {
             allowClear
             placeholder={dimsLoading ? 'Loading stores...' : 'Select store(s) or leave blank for all'}
             value={storeNumbers}
-            onChange={(values) => setStoreNumbers(values as number[])}
+            onChange={(values) => {
+              setChainId(undefined)
+              setStoreNumbers(values as number[])
+            }}
             options={storeOptions}
             optionFilterProp="label"
             style={{ minWidth: 360 }}
@@ -603,9 +681,9 @@ export default function SalesByDayPage() {
             placeholder="Or pick a chain"
             value={chainId}
             onChange={onChainChange}
-            options={STORE_CHAINS.map((chain) => ({
+            options={storeChains.map((chain) => ({
               value: chain.id,
-              label: `${chain.label} (${chain.storeNumbers.length})`,
+              label: `${chain.label} (${chain.storeCount})`,
             }))}
             style={{ minWidth: 220 }}
           />
@@ -619,15 +697,17 @@ export default function SalesByDayPage() {
             />
           </Space>
           <DateRangeControl value={dateSpec} onChange={setDateSpec} />
-          <InputNumber
-            min={1}
-            max={732}
-            placeholder="Compare offset days"
-            value={offset}
-            onChange={(value) => setOffset(value ?? 364)}
-            addonBefore="Offset"
-            style={{ width: 180 }}
-          />
+          <Space.Compact>
+            <Button disabled>Offset</Button>
+            <InputNumber
+              min={1}
+              max={732}
+              placeholder="Compare offset days"
+              value={offset}
+              onChange={(value) => setOffset(value ?? 364)}
+              style={{ width: 180 }}
+            />
+          </Space.Compact>
           <Button
             icon={<DownloadOutlined />}
             href={getSalesByDayCsvUrl(
@@ -690,6 +770,7 @@ export default function SalesByDayPage() {
           storeBreakdowns={data.storeBreakdowns}
           combineStores={data.combineStores}
           columns={columns}
+          columnLayout={columnLayout}
           tableWidth={tableWidth}
         />
       ) : null}
@@ -703,6 +784,7 @@ interface ResultsProps {
   storeBreakdowns: SalesByDayStoreBreakdown[]
   combineStores: boolean
   columns: TableColumnsType<SalesByDayRow>
+  columnLayout: SalesByDayColumnLayout[]
   tableWidth: number
 }
 
@@ -712,6 +794,7 @@ function SalesByDayResults({
   storeBreakdowns,
   combineStores,
   columns,
+  columnLayout,
   tableWidth,
 }: ResultsProps) {
   if (combineStores && combined) {
@@ -735,6 +818,7 @@ function SalesByDayResults({
           scroll={{ x: tableWidth }}
           tableLayout="fixed"
           rowClassName={(_row, index) => (index % 2 === 1 ? 'report-zebra-row' : '')}
+          summary={() => renderSalesByDayTableSummary(columnLayout, combined.totals)}
         />
       </>
     )
@@ -765,6 +849,7 @@ function SalesByDayResults({
             scroll={{ x: tableWidth }}
             tableLayout="fixed"
             rowClassName={(_row, index) => (index % 2 === 1 ? 'report-zebra-row' : '')}
+            summary={() => renderSalesByDayTableSummary(columnLayout, breakdown.totals)}
           />
         </div>
       ))}

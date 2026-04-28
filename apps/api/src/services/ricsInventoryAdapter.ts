@@ -191,6 +191,10 @@ export interface InventoryInquiry {
     brand: string | null;
     vendorCode: string | null;
     category: number | null;
+    categoryName: string | null;
+    vendorSku: string | null;
+    styleColor: string | null;
+    status: string | null;
     season: string | null;
     retailPrice: number | null;
     currentCost: number | null;
@@ -502,6 +506,33 @@ interface VendorRow {
   manuName: string | null;
 }
 
+interface CategoryRow {
+  number: number;
+  description: string | null;
+}
+
+async function loadCategoryMap(): Promise<Map<number, CategoryRow>> {
+  return cachedAsync('dim:categories', 300_000, async () => {
+    const rows = await prisma.taxonomyCategory.findMany({
+      select: {
+        number: true,
+        description: true,
+      },
+      orderBy: { number: 'asc' },
+    });
+    const map = new Map<number, CategoryRow>();
+    for (const row of rows) {
+      const number = Number(row.number);
+      if (!Number.isFinite(number)) continue;
+      map.set(number, {
+        number,
+        description: row.description?.trim() || null,
+      });
+    }
+    return map;
+  });
+}
+
 interface AppInventorySkuRow {
   id: string;
   code: string | null;
@@ -510,6 +541,8 @@ interface AppInventorySkuRow {
   vendorId: string | null;
   manufacturer: string | null;
   categoryNumber: number | null;
+  skuState: string | null;
+  ricsStatus: string | null;
   sizeType: number | null;
   season: string | null;
   vendorSku: string | null;
@@ -652,6 +685,8 @@ async function loadAppInventorySkuByCode(skuCode: string): Promise<AppInventoryS
       vendorId: true,
       manufacturer: true,
       categoryNumber: true,
+      skuState: true,
+      ricsStatus: true,
       sizeType: true,
       season: true,
       vendorSku: true,
@@ -682,6 +717,16 @@ async function loadAppInventorySkuByCode(skuCode: string): Promise<AppInventoryS
     currentCost: row.currentCost == null ? null : Number(row.currentCost),
     perks: row.perks == null ? null : Number(row.perks),
   };
+}
+
+function resolveSkuStatus(sku: Pick<AppInventorySkuRow, 'skuState' | 'ricsStatus'>): string {
+  const state = sku.skuState?.trim().toUpperCase();
+  if (state) return state;
+
+  const ricsStatus = sku.ricsStatus?.trim().toUpperCase();
+  if (ricsStatus === 'D') return 'DISCONTINUED';
+  if (ricsStatus) return ricsStatus;
+  return 'ACTIVE';
 }
 
 async function loadStockLevelRowsForSkuId(skuId: string): Promise<StockLevelCellRow[]> {
@@ -1333,6 +1378,45 @@ function appendTotalRow(grid: InquirySizeGrid, label = 'Total'): InquirySizeGrid
   };
 }
 
+function appendTotalColumn(grid: InquirySizeGrid, label = 'TOT'): InquirySizeGrid {
+  if (grid.columns.length === 0 || grid.rows.length === 0) return grid;
+  if (grid.columns.some((column) => column.trim().toLowerCase() === label.trim().toLowerCase())) {
+    return grid;
+  }
+  return {
+    ...grid,
+    columns: [...grid.columns, label],
+    rows: grid.rows.map((row) => ({
+      ...row,
+      cells: [
+        ...row.cells,
+        { value: row.cells.reduce((sum, cell) => sum + Number(cell.value ?? 0), 0) },
+      ],
+    })),
+  };
+}
+
+function removeNullOnlyColumns(grid: InquirySizeGrid): InquirySizeGrid {
+  if (grid.columns.length === 0 || grid.rows.length === 0) return grid;
+
+  const keepIndexes = grid.columns
+    .map((_, index) => index)
+    .filter((columnIndex) =>
+      grid.rows.some((row) => row.cells[columnIndex]?.value != null),
+    );
+
+  if (keepIndexes.length === grid.columns.length) return grid;
+
+  return {
+    ...grid,
+    columns: keepIndexes.map((index) => grid.columns[index]),
+    rows: grid.rows.map((row) => ({
+      ...row,
+      cells: keepIndexes.map((index) => row.cells[index] ?? { value: null }),
+    })),
+  };
+}
+
 function buildSingleStoreMetricGrid(
   storeEntries: InventoryInquiryStore[],
   storeId: number,
@@ -1558,34 +1642,40 @@ function buildGrids(
     scopedStoreId != null
       ? buildSingleStoreMetricGrid(storeEntries, scopedStoreId, columns, rowLabels, getValue)
       : buildStoreMetricGrid(storeEntries, columns, getValue);
+  const visibleMetricGrid = (getValue: (cell: InventoryCell) => number): InquirySizeGrid =>
+    removeNullOnlyColumns(scopedMetricGrid(getValue));
 
   return {
-    onHand: withGridTotal(scopedMetricGrid((cell) => cell.onHand)),
-    onOrderCurrent: scopedMetricGrid((cell) => cell.currentOnOrder),
-    onOrderFuture: scopedMetricGrid((cell) => cell.futureOnOrder),
-    model: scopedMetricGrid((cell) => cell.model),
-    max: scopedMetricGrid((cell) => cell.maxQty),
-    reorder: scopedMetricGrid((cell) => cell.reorder),
-    short: withGridTotal(scopedMetricGrid((cell) => cell.model - cell.onHand)),
-    mtdSales: withGridTotal(appendTotalRow(scopedMetricGrid((cell) => cell.mtdSales))),
-    stdSales: withGridTotal(appendTotalRow(scopedMetricGrid((cell) => cell.stdSales))),
-    ytdSales: withGridTotal(appendTotalRow(scopedMetricGrid((cell) => cell.ytdSales))),
-    lySales: withGridTotal(appendTotalRow(scopedMetricGrid((cell) => cell.lySales))),
-    singleColumn: {
-      columns,
-      rows: [
-        buildMetricRowByColumnGrid(storeEntries, columns, effectiveRow, 'On Hand', (cell) => cell.onHand),
-        buildMetricRowByColumnGrid(storeEntries, columns, effectiveRow, 'On Ord (A/O)', (cell) => cell.currentOnOrder),
-        buildMetricRowByColumnGrid(storeEntries, columns, effectiveRow, 'On Ord (Fut)', (cell) => cell.futureOnOrder),
-        buildMetricRowByColumnGrid(storeEntries, columns, effectiveRow, 'Model', (cell) => cell.model),
-        buildMetricRowByColumnGrid(storeEntries, columns, effectiveRow, 'Short', (cell) => cell.model - cell.onHand),
-        buildMetricRowByColumnGrid(storeEntries, columns, effectiveRow, 'MTD Sales', (cell) => cell.mtdSales),
-        buildMetricRowByColumnGrid(storeEntries, columns, effectiveRow, 'STD Sales', (cell) => cell.stdSales),
-        buildMetricRowByColumnGrid(storeEntries, columns, effectiveRow, 'YTD Sales', (cell) => cell.ytdSales),
-        buildMetricRowByColumnGrid(storeEntries, columns, effectiveRow, 'L/Y Sales', (cell) => cell.lySales),
-      ],
-    },
-    allStoresOnHand: buildStoreMetricGrid(storeEntries, columns, (cell) => cell.onHand, effectiveRow),
+    onHand: appendTotalColumn(withGridTotal(visibleMetricGrid((cell) => cell.onHand))),
+    onOrderCurrent: visibleMetricGrid((cell) => cell.currentOnOrder),
+    onOrderFuture: visibleMetricGrid((cell) => cell.futureOnOrder),
+    model: appendTotalRow(appendTotalColumn(withGridTotal(visibleMetricGrid((cell) => cell.model)))),
+    max: visibleMetricGrid((cell) => cell.maxQty),
+    reorder: visibleMetricGrid((cell) => cell.reorder),
+    short: withGridTotal(appendTotalRow(visibleMetricGrid((cell) => cell.model - cell.onHand))),
+    mtdSales: withGridTotal(appendTotalRow(visibleMetricGrid((cell) => cell.mtdSales))),
+    stdSales: withGridTotal(appendTotalRow(visibleMetricGrid((cell) => cell.stdSales))),
+    ytdSales: withGridTotal(appendTotalRow(visibleMetricGrid((cell) => cell.ytdSales))),
+    lySales: withGridTotal(appendTotalRow(visibleMetricGrid((cell) => cell.lySales))),
+    singleColumn: appendTotalColumn(
+      removeNullOnlyColumns({
+        columns,
+        rows: [
+          buildMetricRowByColumnGrid(storeEntries, columns, effectiveRow, 'On Hand', (cell) => cell.onHand),
+          buildMetricRowByColumnGrid(storeEntries, columns, effectiveRow, 'On Ord (A/O)', (cell) => cell.currentOnOrder),
+          buildMetricRowByColumnGrid(storeEntries, columns, effectiveRow, 'On Ord (Fut)', (cell) => cell.futureOnOrder),
+          buildMetricRowByColumnGrid(storeEntries, columns, effectiveRow, 'Model', (cell) => cell.model),
+          buildMetricRowByColumnGrid(storeEntries, columns, effectiveRow, 'Short', (cell) => cell.model - cell.onHand),
+          buildMetricRowByColumnGrid(storeEntries, columns, effectiveRow, 'MTD Sales', (cell) => cell.mtdSales),
+          buildMetricRowByColumnGrid(storeEntries, columns, effectiveRow, 'STD Sales', (cell) => cell.stdSales),
+          buildMetricRowByColumnGrid(storeEntries, columns, effectiveRow, 'YTD Sales', (cell) => cell.ytdSales),
+          buildMetricRowByColumnGrid(storeEntries, columns, effectiveRow, 'L/Y Sales', (cell) => cell.lySales),
+        ],
+      }),
+    ),
+    allStoresOnHand: removeNullOnlyColumns(
+      buildStoreMetricGrid(storeEntries, columns, (cell) => cell.onHand, effectiveRow),
+    ),
     allStoresOneRow:
       rowLabels.length <= 1
         ? buildStoreSummaryMetricsGrid(summaryByStore)
@@ -1638,8 +1728,14 @@ export async function getInventoryInquiry(
   const skuRow = await loadAppInventorySkuByCode(trimmed);
   if (!skuRow) return null;
 
-  const [stores, sizeTypes] = await Promise.all([loadStoreMap(), loadSizeTypeMap()]);
+  const [stores, sizeTypes, categories] = await Promise.all([
+    loadStoreMap(),
+    loadSizeTypeMap(),
+    loadCategoryMap(),
+  ]);
   const sizeType = skuRow.sizeType != null ? sizeTypes.get(Number(skuRow.sizeType)) ?? null : null;
+  const category =
+    skuRow.categoryNumber != null ? categories.get(Number(skuRow.categoryNumber)) ?? null : null;
   const effectiveStoreId =
     storeId != null && Number.isFinite(Number(storeId)) ? Math.trunc(Number(storeId)) : undefined;
   const skuCode = skuRow.code ?? skuRow.provisionalCode;
@@ -1784,6 +1880,10 @@ export async function getInventoryInquiry(
       brand,
       vendorCode: skuRow.vendorId?.trim() || null,
       category: skuRow.categoryNumber ?? null,
+      categoryName: category?.description ?? null,
+      vendorSku: skuRow.vendorSku?.trim() || null,
+      styleColor: skuRow.styleColor?.trim() || null,
+      status: resolveSkuStatus(skuRow),
       season: skuRow.season?.trim() || null,
       retailPrice: skuRow.retailPrice ?? null,
       currentCost: skuRow.currentCost ?? null,

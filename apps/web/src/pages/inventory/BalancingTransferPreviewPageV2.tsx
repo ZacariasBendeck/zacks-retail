@@ -537,12 +537,30 @@ export default function BalancingTransferPreviewPageV2() {
                       </Col>
                     </Row>
 
-                    <Input addonBefore="Vendors" value={vendorCodes} onChange={(event) => setVendorCodes(event.target.value)} placeholder="comma separated" />
-                    <Input addonBefore="Seasons" value={seasons} onChange={(event) => setSeasons(event.target.value)} placeholder="comma separated" />
-                    <Input addonBefore="Styles" value={styleColors} onChange={(event) => setStyleColors(event.target.value)} placeholder="comma separated" />
-                    <Input addonBefore="Groups" value={groupCodes} onChange={(event) => setGroupCodes(event.target.value)} placeholder="comma separated" />
-                    <Input addonBefore="Keywords" value={keywords} onChange={(event) => setKeywords(event.target.value)} placeholder="comma separated" />
-                    <Input addonBefore="SKUs" value={skuCodes} onChange={(event) => setSkuCodes(event.target.value)} placeholder="comma separated" />
+                    <Space.Compact style={{ width: '100%' }}>
+                      <Button disabled>Vendors</Button>
+                      <Input value={vendorCodes} onChange={(event) => setVendorCodes(event.target.value)} placeholder="comma separated" />
+                    </Space.Compact>
+                    <Space.Compact style={{ width: '100%' }}>
+                      <Button disabled>Seasons</Button>
+                      <Input value={seasons} onChange={(event) => setSeasons(event.target.value)} placeholder="comma separated" />
+                    </Space.Compact>
+                    <Space.Compact style={{ width: '100%' }}>
+                      <Button disabled>Styles</Button>
+                      <Input value={styleColors} onChange={(event) => setStyleColors(event.target.value)} placeholder="comma separated" />
+                    </Space.Compact>
+                    <Space.Compact style={{ width: '100%' }}>
+                      <Button disabled>Groups</Button>
+                      <Input value={groupCodes} onChange={(event) => setGroupCodes(event.target.value)} placeholder="comma separated" />
+                    </Space.Compact>
+                    <Space.Compact style={{ width: '100%' }}>
+                      <Button disabled>Keywords</Button>
+                      <Input value={keywords} onChange={(event) => setKeywords(event.target.value)} placeholder="comma separated" />
+                    </Space.Compact>
+                    <Space.Compact style={{ width: '100%' }}>
+                      <Button disabled>SKUs</Button>
+                      <Input value={skuCodes} onChange={(event) => setSkuCodes(event.target.value)} placeholder="comma separated" />
+                    </Space.Compact>
 
                     <Checkbox checked={includeOriginalRetailOnly} onChange={(event) => setIncludeOriginalRetailOnly(event.target.checked)}>
                       Original retail only

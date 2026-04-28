@@ -4,10 +4,11 @@ import { describe, expect, it, vi } from 'vitest';
 import { ViewModeSelector, VIEW_MODES } from './ViewModeSelector';
 
 describe('ViewModeSelector', () => {
-  it('renders all 15 modes', () => {
+  it('renders all 14 modes and omits the duplicate one-row summary mode', () => {
     render(<ViewModeSelector value="ALL_STORES_SUMMARY" onChange={() => {}} />);
-    expect(VIEW_MODES).toHaveLength(15);
+    expect(VIEW_MODES).toHaveLength(14);
     VIEW_MODES.forEach((m) => expect(screen.getByText(m.label)).toBeInTheDocument());
+    expect(screen.queryByText('All Stores - 1 Row')).not.toBeInTheDocument();
   });
 
   it('keeps the newly wired inventory modes enabled', () => {

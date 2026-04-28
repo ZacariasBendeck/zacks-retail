@@ -1,6 +1,9 @@
 jest.mock('../../src/db/prisma', () => ({
   prisma: {
     $queryRawUnsafe: jest.fn(),
+    seasonOverlay: {
+      findMany: jest.fn(),
+    },
   },
 }));
 
@@ -24,6 +27,9 @@ const mockQuery = prisma.$queryRawUnsafe as jest.MockedFunction<
 >;
 const mockRunPowerShell = runPowerShellJson as jest.MockedFunction<
   typeof runPowerShellJson
+>;
+const mockSeasonFindMany = prisma.seasonOverlay.findMany as jest.MockedFunction<
+  typeof prisma.seasonOverlay.findMany
 >;
 
 const INDEX_ROW = {
@@ -54,6 +60,8 @@ const INDEX_ROW = {
 beforeEach(() => {
   clearCache();
   mockQuery.mockReset();
+  mockSeasonFindMany.mockReset();
+  mockSeasonFindMany.mockResolvedValue([] as never);
   mockRunPowerShell.mockReset();
   delete process.env.SKU_LOOKUP_SOURCE;
 });
@@ -107,11 +115,56 @@ describe('ricsProductAdapter SKU lookup', () => {
       }
       throw new Error(`Unexpected SQL in test: ${text}`);
     });
+    mockSeasonFindMany.mockResolvedValue([{ code: 'A', description: 'NAV 25' }] as never);
 
     const facets = await getSkuLookupFacets();
 
-    expect(facets.seasons).toEqual(['A']);
+    expect(facets.seasons).toEqual([{ code: 'A', name: 'NAV 25', label: 'A - NAV 25' }]);
     expect(facets.vendors).toEqual([{ code: 'MAXF', label: 'MAXF — Max Factor' }]);
     expect(facets.departments).toEqual([{ number: 9, name: 'Dept 9' }]);
+  });
+
+  it('narrows lookup facets from the other selected filters', async () => {
+    const rows = [
+      { ...INDEX_ROW, SKU: '00', Vendor: 'MAXF', Category: 929, Season: 'A' },
+      { ...INDEX_ROW, SKU: '01', Vendor: 'ACME', Category: 929, Season: 'B' },
+      { ...INDEX_ROW, SKU: '02', Vendor: 'ACME', Category: 557, Season: 'A' },
+      { ...INDEX_ROW, SKU: '03', Vendor: 'ZETA', Category: 557, Season: 'C' },
+    ];
+    mockQuery.mockImplementation(async (sql: any) => {
+      const text = String(sql);
+      if (text.includes('FROM app.sku s') && text.includes('ORDER BY s.code')) {
+        return rows as never;
+      }
+      if (text.includes('FROM app.taxonomy_department')) {
+        return [
+          { Number: 5, Desc: 'Dept 5', BegCateg: 500, EndCateg: 599 },
+          { Number: 9, Desc: 'Dept 9', BegCateg: 900, EndCateg: 999 },
+        ] as never;
+      }
+      if (text.includes('FULL OUTER JOIN app.vendor_overlay')) {
+        return [
+          { Code: 'MAXF', 'Short Name': 'Max Factor', 'Manu Name': 'Max Factor SA' },
+          { Code: 'ACME', 'Short Name': 'Acme', 'Manu Name': 'Acme SA' },
+          { Code: 'ZETA', 'Short Name': 'Zeta', 'Manu Name': 'Zeta SA' },
+        ] as never;
+      }
+      throw new Error(`Unexpected SQL in test: ${text}`);
+    });
+
+    const seasonA = await getSkuLookupFacets({ season: 'A' });
+    expect(seasonA.vendors.map((vendor) => vendor.code)).toEqual(['ACME', 'MAXF']);
+    expect(seasonA.departments.map((department) => department.number)).toEqual([5, 9]);
+
+    const vendorAcme = await getSkuLookupFacets({ vendor: 'ACME' });
+    expect(vendorAcme.seasons.map((season) => season.code)).toEqual(['A', 'B']);
+    expect(vendorAcme.departments.map((department) => department.number)).toEqual([5, 9]);
+
+    const department5 = await getSkuLookupFacets({ department: 5 });
+    expect(department5.seasons.map((season) => season.code)).toEqual(['A', 'C']);
+    expect(department5.vendors.map((vendor) => vendor.code)).toEqual(['ACME', 'ZETA']);
+
+    const combined = await getSkuLookupFacets({ season: 'A', vendor: 'ACME' });
+    expect(combined.departments).toEqual([{ number: 5, name: 'Dept 5' }]);
   });
 });

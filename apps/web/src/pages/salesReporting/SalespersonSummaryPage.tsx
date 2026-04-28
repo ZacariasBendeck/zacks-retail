@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Alert, Checkbox, Input, Select, Space, Table, Typography, Spin,
+  Alert, Button, Checkbox, Drawer, Form, Input, InputNumber, Select, Space, Table, Typography, Spin, Switch, message,
 } from 'antd'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
@@ -23,6 +23,11 @@ import ShareBar from '../../components/reports/ShareBar'
 import { fmtMoney, fmtInt } from '../../utils/reportFormatters'
 import { useReportTemplate, useTouchReportTemplate } from '../../hooks/useReportTemplates'
 import { briefDateSpec, readDateSpecFromParams, resolveDateSpec, type DateSpec } from '../../utils/dateSpec'
+import {
+  fetchRicsSalesperson,
+  updateRicsSalesperson,
+  type RicsSalesperson,
+} from '../../services/employeeApi'
 
 function parseStores(s: string): number[] | undefined {
   const arr = s.split(',').map((x) => Number(x.trim())).filter((n) => Number.isFinite(n) && n > 0)
@@ -36,6 +41,7 @@ const DEFAULT_DATE_SPEC: DateSpec = { type: 'trailing_days', days: 30 }
 
 export default function SalespersonSummaryPage() {
   const qc = useQueryClient()
+  const [messageApi, messageContext] = message.useMessage()
   const [searchParams] = useSearchParams()
   const templateId = searchParams.get('templateId') ?? undefined
   const [dateSpec, setDateSpec] = useState<DateSpec>(DEFAULT_DATE_SPEC)
@@ -45,6 +51,12 @@ export default function SalespersonSummaryPage() {
   const [cashierSummary, setCashierSummary] = useState(false)
   const [query, setQuery] = useState<SalespersonSummaryArgs | null>(null)
   const [filterOpen, setFilterOpen] = useState(true)
+  const [employeeDrawerOpen, setEmployeeDrawerOpen] = useState(false)
+  const [employeeLoading, setEmployeeLoading] = useState(false)
+  const [employeeSaving, setEmployeeSaving] = useState(false)
+  const [selectedEmployeeCode, setSelectedEmployeeCode] = useState<string | null>(null)
+  const [selectedEmployee, setSelectedEmployee] = useState<RicsSalesperson | null>(null)
+  const [employeeForm] = Form.useForm()
 
   const { data, isFetching, error } = useSalespersonSummary(query)
   const running = query != null && isFetching
@@ -99,6 +111,47 @@ export default function SalespersonSummaryPage() {
     qc.cancelQueries({ queryKey: ['salesperson-summary', query] })
   }
 
+  async function openEmployee(code: string): Promise<void> {
+    setSelectedEmployeeCode(code)
+    setEmployeeDrawerOpen(true)
+    setEmployeeLoading(true)
+    try {
+      const employee = await fetchRicsSalesperson(code)
+      setSelectedEmployee(employee)
+      employeeForm.setFieldsValue(employee)
+    } catch (err) {
+      messageApi.error(getErrorMessage(err))
+    } finally {
+      setEmployeeLoading(false)
+    }
+  }
+
+  async function saveEmployee(): Promise<void> {
+    if (!selectedEmployeeCode) return
+    const values = await employeeForm.validateFields()
+    setEmployeeSaving(true)
+    try {
+      const employee = await updateRicsSalesperson(selectedEmployeeCode, {
+        displayName: values.displayName,
+        active: values.active,
+        otherInformation: values.otherInformation ?? null,
+        commissionRate: values.commissionRate ?? null,
+        commissionBase: values.commissionBase,
+        timeClockEnabled: values.timeClockEnabled,
+        timeClockAdmin: values.timeClockAdmin,
+        timeClockFullUser: values.timeClockFullUser,
+      })
+      setSelectedEmployee(employee)
+      employeeForm.setFieldsValue(employee)
+      await qc.invalidateQueries({ queryKey: ['salesperson-summary'] })
+      messageApi.success('Salesperson saved')
+    } catch (err) {
+      messageApi.error(getErrorMessage(err))
+    } finally {
+      setEmployeeSaving(false)
+    }
+  }
+
   // Max $ across the visible salespeople — powers the contribution bar.
   const maxSalespersonDollars = useMemo(() => {
     if (!data?.salespeople?.length) return 0
@@ -112,7 +165,26 @@ export default function SalespersonSummaryPage() {
 
   const spColumns = [
     { title: 'Code', dataIndex: 'salespersonCode', key: 'salespersonCode', width: 120 },
-    { title: 'Name', dataIndex: 'salespersonName', key: 'salespersonName', width: 200, render: (v: string | null) => v ?? '—' },
+    {
+      title: 'Name',
+      dataIndex: 'salespersonName',
+      key: 'salespersonName',
+      width: 220,
+      render: (v: string | null, record: SalespersonSummaryRow) => (
+        record.salespersonCode === '(unknown)' ? (
+          v ?? '—'
+        ) : (
+          <Button
+            type="link"
+            size="small"
+            style={{ padding: 0, height: 'auto' }}
+            onClick={() => void openEmployee(record.salespersonCode)}
+          >
+            {v ?? record.salespersonCode}
+          </Button>
+        )
+      ),
+    },
     { title: 'Store', dataIndex: 'storeNumber', key: 'storeNumber', width: 80 },
     {
       title: 'Qty', dataIndex: 'qty', key: 'qty', width: 90, align: 'right' as const,
@@ -157,6 +229,7 @@ export default function SalespersonSummaryPage() {
 
   return (
     <div>
+      {messageContext}
       <ReportHeader
         title="Salesperson Summary"
         description="Quantity, dollars, and perks per salesperson with optional subtotal breakdown."
@@ -304,6 +377,7 @@ export default function SalespersonSummaryPage() {
                           dataSource={record.subtotals}
                           columns={[
                             { title: 'Key', dataIndex: 'key', width: 150 },
+                            { title: query.subtotalBy === 'VENDOR' ? 'Vendor' : 'Category', dataIndex: 'label', width: 260 },
                             {
                               title: 'Qty', dataIndex: 'qty', align: 'right' as const, width: 100,
                               render: (v: number) => fmtInt(v),
@@ -337,6 +411,73 @@ export default function SalespersonSummaryPage() {
               />
             </>
           )}
+          <Drawer
+            title={selectedEmployee ? `${selectedEmployee.salespersonCode} - ${selectedEmployee.displayName}` : 'Salesperson'}
+            open={employeeDrawerOpen}
+            width={440}
+            onClose={() => setEmployeeDrawerOpen(false)}
+            extra={
+              <Space>
+                <Button onClick={() => setEmployeeDrawerOpen(false)}>Close</Button>
+                <Button type="primary" loading={employeeSaving} onClick={() => void saveEmployee()}>
+                  Save
+                </Button>
+              </Space>
+            }
+          >
+            <Spin spinning={employeeLoading}>
+              <Form form={employeeForm} layout="vertical">
+                <Form.Item label="Code" name="salespersonCode">
+                  <Input disabled />
+                </Form.Item>
+                <Form.Item
+                  label="Name"
+                  name="displayName"
+                  rules={[{ required: true, message: 'Name is required' }]}
+                >
+                  <Input />
+                </Form.Item>
+                <Form.Item label="Active" name="active" valuePropName="checked">
+                  <Switch />
+                </Form.Item>
+                <Form.Item label="Other information" name="otherInformation">
+                  <Input.TextArea rows={3} />
+                </Form.Item>
+                <Form.Item label="Commission rate" name="commissionRate">
+                  <InputNumber min={0} max={100} precision={2} style={{ width: '100%' }} />
+                </Form.Item>
+                <Form.Item label="Commission base" name="commissionBase">
+                  <Select
+                    options={[
+                      { value: 'NET_SALES', label: 'Net sales' },
+                      { value: 'GROSS_PROFIT', label: 'Gross profit' },
+                    ]}
+                  />
+                </Form.Item>
+                <Space size="large" wrap>
+                  <Form.Item label="Time clock" name="timeClockEnabled" valuePropName="checked">
+                    <Switch />
+                  </Form.Item>
+                  <Form.Item label="Clock admin" name="timeClockAdmin" valuePropName="checked">
+                    <Switch />
+                  </Form.Item>
+                  <Form.Item label="Full user" name="timeClockFullUser" valuePropName="checked">
+                    <Switch />
+                  </Form.Item>
+                </Space>
+                {selectedEmployee && (
+                  <Space direction="vertical" size={2}>
+                    <Typography.Text type="secondary">
+                      Time clock PIN: {selectedEmployee.hasTimeClockPin ? 'Imported' : 'None'}
+                    </Typography.Text>
+                    <Typography.Text type="secondary">
+                      Legacy cashier PIN: {selectedEmployee.hasLegacyCashierPin ? 'Imported' : 'None'}
+                    </Typography.Text>
+                  </Space>
+                )}
+              </Form>
+            </Spin>
+          </Drawer>
         </>
       ) : null}
     </div>

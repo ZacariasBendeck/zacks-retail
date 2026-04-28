@@ -1,4 +1,5 @@
 import React from 'react';
+import { Tag } from 'antd';
 import type { InventoryInquiry } from '../../../types/inventoryInquiry';
 
 // Compact header mirroring the RICS Inventory Inquiry layout:
@@ -57,9 +58,28 @@ export const HeaderCard: React.FC<{ inquiry: InventoryInquiry; storeId?: number 
       <tr>
         <th style={cellLabel}>Store</th>
         <td style={cellValue}>{storeId != null ? `Store ${storeId}` : 'All Stores'}</td>
-        <th style={cellLabel}></th>
-        <td style={cellValue}></td>
+        <th style={cellLabel}>Status</th>
+        <td style={cellValue}>
+          <Tag color={statusColor(inquiry.status)} style={{ marginRight: 0 }}>
+            {formatStatus(inquiry.status)}
+          </Tag>
+        </td>
       </tr>
     </tbody>
   </table>
 );
+
+function formatStatus(status: string | null): string {
+  const normalized = status?.trim().toUpperCase();
+  if (!normalized) return 'ACTIVE';
+  if (normalized === 'D') return 'DISCONTINUED';
+  return normalized;
+}
+
+function statusColor(status: string | null): string {
+  const normalized = formatStatus(status);
+  if (normalized === 'ACTIVE') return 'green';
+  if (normalized === 'DISCONTINUED') return 'red';
+  if (normalized === 'DRAFT') return 'gold';
+  return 'default';
+}

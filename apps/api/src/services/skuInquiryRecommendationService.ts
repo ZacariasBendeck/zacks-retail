@@ -154,7 +154,22 @@ interface RecommendationSnapshot {
 
 const PROMPT_PATH = path.join(__dirname, 'prompts', 'sku-inquiry-recommendation.md');
 const DEFAULT_MODEL = process.env.SKU_INQUIRY_AI_MODEL?.trim() || 'claude-sonnet-4-6';
+const DEFAULT_MAX_TOKENS = parsePositiveInteger(process.env.SKU_INQUIRY_AI_MAX_TOKENS, 1200);
+const RECOMMENDATION_CACHE_TTL_MS = parsePositiveInteger(
+  process.env.SKU_INQUIRY_AI_CACHE_TTL_MS,
+  5 * 60 * 1000,
+);
+const RECOMMENDATION_TIMEOUT_MS = parsePositiveInteger(
+  process.env.SKU_INQUIRY_AI_TIMEOUT_MS,
+  45 * 1000,
+);
+const SLOW_LOG_THRESHOLD_MS = parsePositiveInteger(
+  process.env.SKU_INQUIRY_AI_SLOW_LOG_MS,
+  5 * 1000,
+);
 let cachedPrompt: { prompt: string; mtimeMs: number } | null = null;
+const cachedRecommendations = new Map<string, { expiresAt: number; value: InquiryRecommendation }>();
+const inFlightRecommendations = new Map<string, Promise<InquiryRecommendation | null>>();
 const VALID_DECISIONS = new Set<InquiryRecommendationDecision>([
   'NO_ACTION',
   'REBALANCE',
@@ -175,6 +190,13 @@ const VALID_ACTION_TYPES = new Set<InquiryRecommendationAction['type']>([
   'INVESTIGATE',
 ]);
 
+function parsePositiveInteger(value: string | undefined, fallback: number): number {
+  if (!value) return fallback;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.trunc(parsed);
+}
+
 function loadPromptTemplate(): string {
   const stat = fs.statSync(PROMPT_PATH);
   if (cachedPrompt && cachedPrompt.mtimeMs === stat.mtimeMs) return cachedPrompt.prompt;
@@ -185,6 +207,11 @@ function loadPromptTemplate(): string {
 
 export function clearSkuInquiryRecommendationPromptCache(): void {
   cachedPrompt = null;
+}
+
+export function clearSkuInquiryRecommendationCache(): void {
+  cachedRecommendations.clear();
+  inFlightRecommendations.clear();
 }
 
 function asTextBlock(text: string): string {
@@ -350,6 +377,57 @@ function normalizeNotes(notes?: string | null): string | null {
   const trimmed = notes.trim();
   if (!trimmed) return null;
   return trimmed.length > 2000 ? trimmed.slice(0, 2000) : trimmed;
+}
+
+function buildRecommendationCacheKey(sku: string, notes: string | null): string {
+  return `${sku.trim().toUpperCase()}::${notes ?? ''}`;
+}
+
+function getCachedRecommendation(cacheKey: string): InquiryRecommendation | null {
+  const cached = cachedRecommendations.get(cacheKey);
+  if (!cached) return null;
+  if (cached.expiresAt <= Date.now()) {
+    cachedRecommendations.delete(cacheKey);
+    return null;
+  }
+  return cached.value;
+}
+
+function setCachedRecommendation(cacheKey: string, value: InquiryRecommendation): void {
+  cachedRecommendations.set(cacheKey, {
+    expiresAt: Date.now() + RECOMMENDATION_CACHE_TTL_MS,
+    value,
+  });
+}
+
+function shouldLogTiming(totalMs: number): boolean {
+  return process.env.SKU_INQUIRY_AI_LOG_TIMING === '1' || totalMs >= SLOW_LOG_THRESHOLD_MS;
+}
+
+function logRecommendationTiming(
+  sku: string,
+  timing: {
+    cached: boolean;
+    dataMs?: number;
+    snapshotMs?: number;
+    snapshotBytes?: number;
+    aiMs?: number;
+    parseMs?: number;
+    totalMs: number;
+  },
+): void {
+  if (!shouldLogTiming(timing.totalMs)) return;
+  const parts = [
+    `sku=${sku}`,
+    `cached=${timing.cached}`,
+    timing.dataMs != null ? `dataMs=${timing.dataMs}` : null,
+    timing.snapshotMs != null ? `snapshotMs=${timing.snapshotMs}` : null,
+    timing.snapshotBytes != null ? `snapshotBytes=${timing.snapshotBytes}` : null,
+    timing.aiMs != null ? `aiMs=${timing.aiMs}` : null,
+    timing.parseMs != null ? `parseMs=${timing.parseMs}` : null,
+    `totalMs=${timing.totalMs}`,
+  ].filter(Boolean);
+  console.info(`[skuInquiryRecommendation] ${parts.join(' ')}`);
 }
 
 function numericCellValue(value: number | null | undefined): number {
@@ -587,15 +665,53 @@ export async function analyzeSkuInquiryRecommendation(
   sku: string,
   request: InquiryRecommendationRequest = {},
 ): Promise<InquiryRecommendation | null> {
+  const startedAt = Date.now();
   const notes = normalizeNotes(request.notes);
+  const cacheKey = buildRecommendationCacheKey(sku, notes);
+  const cached = getCachedRecommendation(cacheKey);
+  if (cached) {
+    logRecommendationTiming(sku, {
+      cached: true,
+      totalMs: Date.now() - startedAt,
+    });
+    return cached;
+  }
+
+  const inFlight = inFlightRecommendations.get(cacheKey);
+  if (inFlight) return inFlight;
+
+  const pending = analyzeSkuInquiryRecommendationUncached(sku, notes, startedAt, cacheKey);
+  inFlightRecommendations.set(cacheKey, pending);
+  try {
+    return await pending;
+  } finally {
+    inFlightRecommendations.delete(cacheKey);
+  }
+}
+
+async function analyzeSkuInquiryRecommendationUncached(
+  sku: string,
+  notes: string | null,
+  startedAt: number,
+  cacheKey: string,
+): Promise<InquiryRecommendation | null> {
+  const dataStartedAt = Date.now();
   const [inquiry, info, trend, openPoRows] = await Promise.all([
     getInventoryInquiry(sku),
     getInquiryInfo(sku),
     getInquiryTrend(sku),
     getInquiryOpenPoRows(sku),
   ]);
+  const dataMs = Date.now() - dataStartedAt;
 
-  if (!inquiry) return null;
+  if (!inquiry) {
+    logRecommendationTiming(sku, {
+      cached: false,
+      dataMs,
+      totalMs: Date.now() - startedAt,
+    });
+    return null;
+  }
 
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
@@ -603,25 +719,58 @@ export async function analyzeSkuInquiryRecommendation(
   }
 
   const prompt = loadPromptTemplate();
+  const snapshotStartedAt = Date.now();
   const snapshot = buildSkuRecommendationSnapshot(inquiry, info, trend, openPoRows, notes);
+  const snapshotJson = JSON.stringify(snapshot);
+  const snapshotMs = Date.now() - snapshotStartedAt;
   const client = new Anthropic({ apiKey });
-  const response = await client.messages.create({
-    model: DEFAULT_MODEL,
-    max_tokens: 2200,
-    messages: [
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), RECOMMENDATION_TIMEOUT_MS);
+  let response;
+  const aiStartedAt = Date.now();
+  try {
+    response = await client.messages.create(
       {
-        role: 'user',
-        content:
-          `${prompt}\n\nReturn one complete JSON object and no surrounding text.` +
-          `\n\n## Snapshot\n\n${JSON.stringify(snapshot, null, 2)}`,
+        model: DEFAULT_MODEL,
+        max_tokens: DEFAULT_MAX_TOKENS,
+        messages: [
+          {
+            role: 'user',
+            content:
+              `${prompt}\n\nReturn one complete JSON object and no surrounding text.` +
+              `\n\n## Snapshot\n\n${snapshotJson}`,
+          },
+        ],
       },
-    ],
-  });
+      { signal: controller.signal },
+    );
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error(`AI recommendation timed out after ${RECOMMENDATION_TIMEOUT_MS}ms`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+  const aiMs = Date.now() - aiStartedAt;
 
   const textBlock = response.content.find((block) => block.type === 'text');
   if (!textBlock || textBlock.type !== 'text') {
     throw new Error('No structured response from AI recommendation service');
   }
 
-  return parseTextRecommendation(textBlock.text);
+  const parseStartedAt = Date.now();
+  const recommendation = parseTextRecommendation(textBlock.text);
+  const parseMs = Date.now() - parseStartedAt;
+  setCachedRecommendation(cacheKey, recommendation);
+  logRecommendationTiming(sku, {
+    cached: false,
+    dataMs,
+    snapshotMs,
+    snapshotBytes: Buffer.byteLength(snapshotJson),
+    aiMs,
+    parseMs,
+    totalMs: Date.now() - startedAt,
+  });
+  return recommendation;
 }

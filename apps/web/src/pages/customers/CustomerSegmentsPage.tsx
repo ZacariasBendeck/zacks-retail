@@ -80,7 +80,7 @@ function SegmentCard({
       hoverable
       onClick={onView}
       size="small"
-      bodyStyle={{ padding: 16, minHeight: 170 }}
+      styles={{ body: { padding: 16, minHeight: 170 } }}
       style={{ borderRadius: 12 }}
     >
       <Tag color={segment.color}>{segment.label}</Tag>

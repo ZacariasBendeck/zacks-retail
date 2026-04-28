@@ -6,6 +6,7 @@ import type {
   CustomerUpdatePayload,
   CustomerListParams,
   CustomerBalances,
+  CustomerTicketHistoryEntry,
   FamilyMember,
   FamilyMemberCreatePayload,
   FamilyMemberUpdatePayload,
@@ -62,6 +63,13 @@ export async function fetchCustomerBalances(id: string): Promise<CustomerBalance
   const res = await fetch(`/api/v1/customers/${id}/balances`)
   if (!res.ok) await throwApiError(res, 'Failed to fetch balances')
   return res.json()
+}
+
+export async function fetchCustomerTicketHistory(id: string): Promise<CustomerTicketHistoryEntry[]> {
+  const res = await fetch(`/api/v1/customers/${id}/tickets`)
+  if (!res.ok) await throwApiError(res, 'Failed to fetch customer ticket history')
+  const body = (await res.json()) as { data: CustomerTicketHistoryEntry[] }
+  return body.data
 }
 
 export async function createCustomer(payload: CustomerCreatePayload): Promise<Customer> {

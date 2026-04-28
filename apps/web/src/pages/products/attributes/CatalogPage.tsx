@@ -20,12 +20,14 @@ import {
   EditOutlined,
   PlusOutlined,
 } from '@ant-design/icons'
+import { useLocation, useNavigate } from 'react-router-dom'
 import {
   useAttributeDimensions,
   useDeleteDimension,
 } from '../../../hooks/useProductsAttributes'
 import CoverageTab from './CoverageTab'
 import DimensionFormModal from './DimensionFormModal'
+import MacroCategoriesTab from './MacroCategoriesTab'
 import RulesTab from './RulesTab'
 import ValuesTab from './ValuesTab'
 import type { AttributeDimension } from '../../../types/productsAttributes'
@@ -42,6 +44,8 @@ import type { AttributeDimension } from '../../../types/productsAttributes'
  */
 export default function CatalogPage() {
   const { message } = App.useApp()
+  const location = useLocation()
+  const navigate = useNavigate()
   const { data: dimensions, isLoading, error } = useAttributeDimensions(true)
   const del = useDeleteDimension()
   const [selected, setSelected] = useState<string | null>(null)
@@ -63,6 +67,7 @@ export default function CatalogPage() {
     () => dimensions?.find((d) => d.code === selected) ?? null,
     [dimensions, selected],
   )
+  const activeTopTab = location.pathname.endsWith('/macros') ? 'macros' : 'dimensions'
 
   if (isLoading) {
     return (
@@ -137,7 +142,15 @@ export default function CatalogPage() {
         (ver pestaña <strong>Reglas</strong>). La administración de familias vive en{' '}
         <a href="/products/families">Familias de producto</a>.
       </Typography.Paragraph>
-      <Row gutter={16}>
+      <Tabs
+        activeKey={activeTopTab}
+        onChange={(key) => navigate(key === 'macros' ? '/products/attributes/macros' : '/products/attributes')}
+        items={[
+          {
+            key: 'dimensions',
+            label: 'Dimensions',
+            children: (
+              <Row gutter={16}>
         <Col xs={24} md={8} lg={7}>
           <Card
             size="small"
@@ -212,7 +225,16 @@ export default function CatalogPage() {
             </Card>
           )}
         </Col>
-      </Row>
+              </Row>
+            ),
+          },
+          {
+            key: 'macros',
+            label: 'Macro Categories',
+            children: <MacroCategoriesTab dimensions={dimensions ?? []} />,
+          },
+        ]}
+      />
       <DimensionFormModal
         open={formOpen}
         editing={formEditing}

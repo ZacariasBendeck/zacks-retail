@@ -12,6 +12,21 @@ function fakeRepo() {
     replaceSkuAttributes: jest.fn(async () => Ok({ previous: [], next: [] })),
     findSkuCodesByAttributeFilters: jest.fn(async () => Ok(new Set<string>())),
     getCoverage: jest.fn(async () => Ok([])),
+    listAttributeMacroRuleSummaries: jest.fn(async () => Ok([])),
+    getAttributeMacroRuleSet: jest.fn(async () => Ok({
+      sourceDimensionCode: 'color',
+      sourceDimensionLabelEs: 'Color',
+      targetDimensionCode: 'color_family',
+      targetDimensionLabelEs: 'Familia de Color',
+      rules: [],
+    })),
+    replaceAttributeMacroRules: jest.fn(async () => Ok({
+      sourceDimensionCode: 'color',
+      sourceDimensionLabelEs: 'Color',
+      targetDimensionCode: 'color_family',
+      targetDimensionLabelEs: 'Familia de Color',
+      rules: [],
+    })),
     bulkAssign: jest.fn(async () => Ok(0)),
   };
 }
@@ -33,7 +48,8 @@ describe('attributesService.setForSku', () => {
     expect(repo.replaceSkuAttributes).toHaveBeenCalledWith(
       'ABC',
       [{ dimensionCode: 'buyer', valueCode: 'zb' }],
-      'operator@example'
+      'operator@example',
+      undefined
     );
   });
 
@@ -122,5 +138,37 @@ describe('attributesService.bulkAssign', () => {
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.kind).toBe('ConstraintViolation');
     expect(audit.record).not.toHaveBeenCalled();
+  });
+});
+
+describe('attributesService.replaceMacroRules', () => {
+  it('audits macro rule replacements', async () => {
+    const repo = fakeRepo();
+    const audit = fakeAudit();
+    const service = createAttributesService({
+      actor: 'operator@example',
+      audit,
+      repo: repo as unknown as typeof import('../../../src/repositories/products/AttributesRepository').AttributesRepository,
+    });
+
+    const r = await service.replaceMacroRules('color', 'color_family', [
+      { sourceValueCode: '1', targetValueCode: 'black' },
+    ]);
+
+    expect(r.ok).toBe(true);
+    expect(repo.replaceAttributeMacroRules).toHaveBeenCalledWith(
+      'color',
+      'color_family',
+      [{ sourceValueCode: '1', targetValueCode: 'black' }],
+      'operator@example',
+    );
+    expect(audit.record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actor: 'operator@example',
+        action: 'attribute_derivation_rules_replace',
+        targetTable: 'app.attribute_derivation_rule',
+        targetPk: 'color->color_family',
+      }),
+    );
   });
 });

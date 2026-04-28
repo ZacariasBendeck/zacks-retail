@@ -35,9 +35,8 @@ import { useAuth } from '../auth/useAuth'
 
 const { Header, Sider, Content } = Layout
 
-const PRODUCTS_TAXONOMY_MENU_KEY = '/products/taxonomy'
-const PRODUCTS_PIM_MENU_KEY = '/products/pim'
-const PRODUCTS_REFERENCE_MENU_KEY = '/products/reference'
+const PRODUCTS_ENRICHMENT_MENU_KEY = '/products/enrichment'
+const FILE_SETUP_MENU_KEY = '/file-setup'
 
 const menuItems = [
   {
@@ -46,52 +45,40 @@ const menuItems = [
     label: 'Products',
     children: [
       { key: '/products/skus/new', icon: <PlusOutlined />, label: 'New SKU' },
-      { key: '/products/skus/new-modern', icon: <PlusOutlined />, label: 'New SKU (Modern)' },
-      { key: '/inventory/skus', icon: <AppstoreOutlined />, label: 'SKU List' },
+      { key: '/inventory/skus', icon: <AppstoreOutlined />, label: 'SKU' },
       { key: '/inventory/sku-drafts', icon: <FileTextOutlined />, label: 'Borradores de SKU' },
       { key: '/products/inquiry', icon: <SearchOutlined />, label: 'Inquiry' },
       { type: 'divider' as const },
       {
-        key: PRODUCTS_TAXONOMY_MENU_KEY,
-        label: 'Taxonomy',
-        children: [
-          { key: '/products/taxonomy/categories', icon: <FileTextOutlined />, label: 'Categories' },
-          { key: '/products/taxonomy/departments', icon: <FileTextOutlined />, label: 'Departments' },
-          { key: '/products/taxonomy/sectors', icon: <FileTextOutlined />, label: 'Sectors' },
-          { key: '/products/taxonomy/groups', icon: <FileTextOutlined />, label: 'Groups' },
-          { key: '/products/taxonomy/keywords', icon: <FileTextOutlined />, label: 'Keywords' },
-          { key: '/products/taxonomy/seasons', icon: <FileTextOutlined />, label: 'Seasons' },
-        ],
-      },
-      { type: 'divider' as const },
-      {
-        key: PRODUCTS_PIM_MENU_KEY,
-        label: 'PIM',
+        key: PRODUCTS_ENRICHMENT_MENU_KEY,
+        label: 'Product Enrichment',
         children: [
           { key: '/products/attributes', icon: <AppstoreOutlined />, label: 'Attributes' },
+          { key: '/products/attributes/macros', icon: <TagOutlined />, label: 'Macro Categories' },
           { key: '/products/families', icon: <AppstoreOutlined />, label: 'Product Families' },
         ],
       },
-      { type: 'divider' as const },
-      {
-        key: PRODUCTS_REFERENCE_MENU_KEY,
-        label: 'Reference',
-        children: [
-          { key: '/products/vendors', icon: <AppstoreOutlined />, label: 'Vendors' },
-          { key: '/products/taxonomy/size-types', icon: <FileTextOutlined />, label: 'Size Types' },
-          { key: '/products/taxonomy/return-codes', icon: <FileTextOutlined />, label: 'Return Codes' },
-          { key: '/products/taxonomy/promotion-codes', icon: <FileTextOutlined />, label: 'Promotion Codes' },
-        ],
-      },
-      { type: 'divider' as const },
-      {
-        type: 'group' as const,
-        label: 'Legacy (temporary)',
-        children: [
-          { key: '/products/skus', icon: <AppstoreOutlined />, label: 'SKUs (Phase 1)' },
-          { key: '/products/skus/new-alt', icon: <FileTextOutlined />, label: 'New SKU alt' },
-        ],
-      },
+    ],
+  },
+  {
+    key: FILE_SETUP_MENU_KEY,
+    icon: <FileTextOutlined />,
+    label: 'File Setup',
+    children: [
+      { key: '/products/vendors', icon: <AppstoreOutlined />, label: 'Vendors' },
+      { key: '/products/taxonomy/categories', icon: <FileTextOutlined />, label: 'Categories' },
+      { key: '/products/taxonomy/departments', icon: <FileTextOutlined />, label: 'Departments' },
+      { key: '/products/taxonomy/sectors', icon: <FileTextOutlined />, label: 'Sectors' },
+      { key: '/products/taxonomy/groups', icon: <FileTextOutlined />, label: 'Groups' },
+      { key: '/products/taxonomy/keywords', icon: <FileTextOutlined />, label: 'Keywords' },
+      { key: '/products/taxonomy/seasons', icon: <FileTextOutlined />, label: 'Seasons' },
+      { key: '/products/taxonomy/size-types', icon: <FileTextOutlined />, label: 'Size Types' },
+      { key: '/file-setup/case-packs', icon: <FileTextOutlined />, label: 'Case Packs' },
+      { key: '/products/taxonomy/return-codes', icon: <FileTextOutlined />, label: 'Return Codes' },
+      { key: '/products/taxonomy/promotion-codes', icon: <FileTextOutlined />, label: 'Promotion Codes' },
+      { key: '/utilities/stores', icon: <ShopOutlined />, label: 'Stores' },
+      { key: '/utilities/store-chains', icon: <ApartmentOutlined />, label: 'Store Chains' },
+      { key: '/admin/users', icon: <UserOutlined />, label: 'Users' },
     ],
   },
   {
@@ -159,6 +146,14 @@ const menuItems = [
       { key: '/reports/on-hand', icon: <FileTextOutlined />, label: <DemotedLabel>On-Hand</DemotedLabel> },
       { key: '/reports/turnover', icon: <SyncOutlined />, label: <DemotedLabel>Turnover</DemotedLabel> },
       { key: '/reports/sell-through', icon: <FundOutlined />, label: <DemotedLabel>Sell-Through</DemotedLabel> },
+    ],
+  },
+  {
+    key: '/operations',
+    icon: <AuditOutlined />,
+    label: 'Operations',
+    children: [
+      { key: '/operations/migration-day', icon: <SyncOutlined />, label: 'Migration Day' },
     ],
   },
   {
@@ -301,6 +296,7 @@ export default function AppLayout() {
       .sort((a, b) => b.length - a.length)[0] ?? selectedMenuKey
 
   const activeModule =
+    menuItems.find((item) => item.children && collectLeafKeys(item.children).includes(selectedLeaf)) ??
     menuItems.find(
       (item) =>
         typeof item.key === 'string' &&

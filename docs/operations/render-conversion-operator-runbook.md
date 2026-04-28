@@ -35,6 +35,7 @@ For the detailed source-to-target map, see [render-conversion-day-matrix.md](ren
 ## What You Need Before Starting
 
 - access to the workstation that can run the extract command
+- the read-only RICS MDB source folder, normally `E:\data\rics-mdbs`
 - access to the target Render-side upload location
 - access to the target Render database / runtime environment
 - the optional CRM sidecar files if customer-history rehearsal is in scope:
@@ -45,6 +46,7 @@ For the detailed source-to-target map, see [render-conversion-day-matrix.md](ren
 
 Recommended before each run:
 
+- confirm the MDB source folder contains the canonical required MDB files
 - decide the bundle folder name ahead of time
 - decide whether this is a clean-db rehearsal or an incremental rehearsal
 - decide whether customer files are included on this run
@@ -78,21 +80,23 @@ A rehearsal run is considered usable when all of these are true:
 Run:
 
 ```bash
-pnpm --filter @benlow-rics/api cutover:render-export -- --out <bundle-dir> [--customer <Customer.csv> --mail <MailListNames.csv> --ticket-header <ticket_header.csv> --ticket-detail <ticket_detail.csv>]
+pnpm --filter @benlow-rics/api cutover:render-export -- --mdb-dir <mdb-dir> --out <bundle-dir> [--customer <Customer.csv> --mail <MailListNames.csv> --ticket-header <ticket_header.csv> --ticket-detail <ticket_detail.csv>]
 ```
 
 Example with customer-history files:
 
 ```bash
-pnpm --filter @benlow-rics/api cutover:render-export -- --out E:\cutover-bundles\render-conversion-20260425-run01 --customer E:\exports\Customer.csv --mail E:\exports\MailListNames.csv --ticket-header E:\exports\ticket_header.csv --ticket-detail E:\exports\ticket_detail.csv
+pnpm --filter @benlow-rics/api cutover:render-export -- --mdb-dir E:\data\rics-mdbs --out E:\cutover-bundles\render-conversion-20260425-run01 --customer E:\exports\Customer.csv --mail E:\exports\MailListNames.csv --ticket-header E:\exports\ticket_header.csv --ticket-detail E:\exports\ticket_detail.csv
 ```
+
+The bundle directory is not the MDB source folder. It is the temporary output package created by the export step. It contains the extracted legacy CSV files, manifests, app-native snapshots, and optional CRM sidecars that will be uploaded to Render.
 
 What this step should create:
 
 - `<bundle-dir>/bundle-manifest.json`
 - `<bundle-dir>/legacy/manifest.json`
 - `<bundle-dir>/legacy/*.csv`
-- `<bundle-dir>/app/attribute-catalog-export.json`
+- `<bundle-dir>/app/attribute-catalog-export.json`, including attribute dimensions, values, family rules, macro derivation rules, and portable assignments
 - optionally `<bundle-dir>/crm/*.csv`
 
 Stop the run if any of these are true:
@@ -199,8 +203,9 @@ What this step runs internally, in order:
 9. `seed:segmentation-defaults`
 10. `import:app-stock-from-artifact`
 11. `import:app-inventory-history-from-artifact` unless skipped
-12. `import:customers` if customer CSVs are present and not skipped
-13. `import:customer-transactions:rics` if ticket CSVs are present and not skipped
+12. `import:employees-from-rics` from the canonical `RISLSPSN.MDB / Salespeople` artifact
+13. `import:customers` if customer CSVs are present and not skipped
+14. `import:customer-transactions:rics` if ticket CSVs are present and not skipped
 
 Stop the run if any of these are true:
 
@@ -257,11 +262,13 @@ Expected:
 select count(*) as taxonomy_category_count from app.taxonomy_category;
 select count(*) as product_family_count from app.product_family;
 select count(*) as category_family_count from app.category_product_family;
+select count(*) as macro_rule_count from app.attribute_derivation_rule;
 ```
 
 Expected:
 
-- all three should be non-zero
+- taxonomy/category/family counts should be non-zero
+- `macro_rule_count` should be non-zero when the rehearsal includes macro categories such as `color -> color_family`
 
 ### Check 3: Inventory history landed when included
 
@@ -288,6 +295,7 @@ Expected:
 
 - `app.customer` should be non-zero if customer CSVs were included
 - `app.sales_history_ticket` and `app.sales_history_ticket_line` should be non-zero if ticket CSVs were included
+- This confirms the normalized sales-history load only. It does not prove that every raw RICS ticket field was preserved. Use [`sales-ticket-mdb-to-app-coverage.md`](./sales-ticket-mdb-to-app-coverage.md) for the field-level sales ticket coverage list.
 
 ## Operator Spot Checks In The App
 
@@ -297,7 +305,8 @@ After the DB checks, do a quick operator smoke pass:
 2. Check at least one SKU with sizes and confirm stock cells are populated.
 3. Check a known vendor and a known store.
 4. If customer files were included, open a known customer and confirm account/contact data exists.
-5. If ticket files were included, confirm a known sales-history/customer-metrics view is populated.
+5. Confirm the employee import created salesperson-code rows in `app.employee` before running salesperson reports.
+6. If ticket files were included, confirm a known sales-history/customer-metrics view is populated and Salesperson Summary is not dominated by `(unknown)`.
 
 If any of these fail, mark the run as failed even if the commands completed.
 

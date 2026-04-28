@@ -131,7 +131,7 @@ export default function SaveSnapshotButton({
         confirmLoading={create.isPending}
         okText="Save snapshot"
         cancelText="Cancel"
-        destroyOnClose
+        destroyOnHidden
       >
         <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
           Freezes exactly what is on screen now. Opening the snapshot later shows
