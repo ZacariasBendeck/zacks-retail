@@ -1,7 +1,7 @@
 /**
  * Product Family service — catalog + Category → Family resolution.
  *
- * The 11 families live in `app.product_family`. Every category in
+ * Product families live in `app.product_family`. Every category in
  * `app.taxonomy_category` is mapped to exactly one family via
  * `app.category_product_family`. Reads join `category_product_family` to
  * `app.taxonomy_category` + `app.taxonomy_department` so newly-created
@@ -137,9 +137,67 @@ export async function getCategoriesForFamily(familyCode: string): Promise<Catego
 }
 
 /**
- * Edit a family's metadata (labelEs, descriptionEs, sortOrder). The 11 family
- * rows are a fixed set right now — creating / deleting families is not exposed
- * (the UI tooltips mark those actions disabled). This only updates fields.
+ * Create a new family row. Codes are stable internal identifiers because they
+ * are referenced by category mappings, SKU assignments, and attribute rules.
+ */
+export async function createFamily(
+  input: { code: string; labelEs: string; descriptionEs?: string | null; sortOrder?: number | null },
+  actor: string,
+): Promise<Result<Family>> {
+  const code = input.code.trim();
+  const labelEs = input.labelEs.trim();
+  const descriptionEs = input.descriptionEs?.trim() ?? '';
+  const sortOrder = input.sortOrder ?? 0;
+
+  if (!/^[a-z0-9_-]{2,64}$/.test(code)) {
+    return Err({
+      kind: 'ConstraintViolation',
+      message: 'Family code must be 2-64 lowercase letters, numbers, underscores, or hyphens.',
+    });
+  }
+  if (labelEs.length === 0) {
+    return Err({ kind: 'ConstraintViolation', message: 'Family label is required.' });
+  }
+  if (!Number.isInteger(sortOrder) || sortOrder < 0 || sortOrder > 32767) {
+    return Err({ kind: 'ConstraintViolation', message: 'Sort order must be an integer from 0 to 32767.' });
+  }
+
+  try {
+    const existing = await prisma.productFamily.findUnique({ where: { code } });
+    if (existing) return Err({ kind: 'DuplicatePrimaryKey', message: `Family '${code}' already exists.` });
+
+    const created = await prisma.productFamily.create({
+      data: {
+        code,
+        labelEs,
+        descriptionEs: descriptionEs.length > 0 ? descriptionEs : null,
+        sortOrder,
+      },
+    });
+    clearFamilyCaches();
+
+    await auditLog.record({
+      actor,
+      action: 'product_family_create',
+      targetTable: TABLE_FAMILY,
+      targetPk: code,
+      payload: { code, labelEs, descriptionEs: descriptionEs.length > 0 ? descriptionEs : null, sortOrder },
+    });
+
+    return Ok({
+      code: created.code,
+      labelEs: created.labelEs,
+      descriptionEs: created.descriptionEs,
+      sortOrder: created.sortOrder,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return Err({ kind: 'AccessConnectionError', message, cause: err });
+  }
+}
+
+/**
+ * Edit a family's metadata (labelEs, descriptionEs, sortOrder).
  */
 export async function updateFamilyMetadata(
   code: string,
@@ -149,12 +207,22 @@ export async function updateFamilyMetadata(
   try {
     const existing = await prisma.productFamily.findUnique({ where: { code } });
     if (!existing) return Err({ kind: 'NotFound', message: `Family '${code}' not found.` });
+    const labelEs = patch.labelEs?.trim();
+    if (patch.labelEs !== undefined && (!labelEs || labelEs.length === 0)) {
+      return Err({ kind: 'ConstraintViolation', message: 'Family label is required.' });
+    }
+    if (
+      patch.sortOrder !== undefined &&
+      (!Number.isInteger(patch.sortOrder) || patch.sortOrder < 0 || patch.sortOrder > 32767)
+    ) {
+      return Err({ kind: 'ConstraintViolation', message: 'Sort order must be an integer from 0 to 32767.' });
+    }
 
     const updated = await prisma.productFamily.update({
       where: { code },
       data: {
-        ...(patch.labelEs !== undefined ? { labelEs: patch.labelEs } : {}),
-        ...(patch.descriptionEs !== undefined ? { descriptionEs: patch.descriptionEs } : {}),
+        ...(patch.labelEs !== undefined ? { labelEs } : {}),
+        ...(patch.descriptionEs !== undefined ? { descriptionEs: patch.descriptionEs?.trim() || null } : {}),
         ...(patch.sortOrder !== undefined ? { sortOrder: patch.sortOrder } : {}),
       },
     });

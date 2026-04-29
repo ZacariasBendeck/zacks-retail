@@ -39,6 +39,10 @@ export interface PoLineItem {
   skuId: string;
   skuCode?: string;
   brand?: string;
+  sizeType: number | null;
+  casePackId: string | null;
+  casePackMultiplier: number | null;
+  sizeCells: Array<{ columnLabel: string; rowLabel: string; quantity: number }>;
   quantityOrdered: number;
   quantityReceived: number;
   unitCost: number;
@@ -50,8 +54,27 @@ export interface PoLineItem {
 export interface PurchaseOrder {
   id: string;
   poNumber: string;
+  billToStoreId: number | null;
+  shipToStoreId: number | null;
   vendorId: string;
   vendorName?: string;
+  orderType: string;
+  classification: string;
+  origin: string;
+  originSourcePoId: string | null;
+  confirmationNumber: string | null;
+  accountNumber: string | null;
+  terms: string | null;
+  shipVia: string | null;
+  backorderAllowed: boolean;
+  splitShipment: boolean;
+  programCode: string | null;
+  storeLabelsOnReceive: boolean;
+  buyer: string | null;
+  orderDate: string;
+  shipDate: string | null;
+  cancelDate: string | null;
+  paymentDate: string | null;
   status: PoStatus;
   notes: string | null;
   cancellationReason: string | null;
@@ -78,6 +101,8 @@ export interface PoReceiptRow {
   location_id: string;
   received_by: string;
   reference_number: string | null;
+  discount_percent?: number | null;
+  freight_each?: number | null;
   received_at: string;
   created_at: string;
   location_name?: string;
@@ -120,6 +145,8 @@ export interface PoReceipt {
   locationName: string | null;
   receivedBy: string;
   referenceNumber: string | null;
+  discountPercent: number;
+  freightEach: number;
   receivedAt: string;
   createdAt: string;
   lines: PoReceiptLine[];
@@ -185,6 +212,10 @@ export function rowToPoLineItem(row: PoLineItemRow & { sku_code?: string; style?
     skuId: row.sku_id,
     skuCode: row.sku_code,
     brand: row.style,
+    sizeType: null,
+    casePackId: null,
+    casePackMultiplier: null,
+    sizeCells: [],
     quantityOrdered: row.quantity_ordered,
     quantityReceived: row.quantity_received,
     unitCost: row.unit_cost,
@@ -195,15 +226,55 @@ export function rowToPoLineItem(row: PoLineItemRow & { sku_code?: string; style?
 }
 
 export function rowToPurchaseOrder(
-  row: PurchaseOrderRow & { vendor_name?: string },
+  row: PurchaseOrderRow & {
+    vendor_name?: string;
+    bill_to_store_id?: number | null;
+    ship_to_store_id?: number | null;
+    order_type?: string;
+    classification?: string;
+    origin?: string;
+    origin_source_po_id?: string | null;
+    confirmation_number?: string | null;
+    account_number?: string | null;
+    terms?: string | null;
+    ship_via?: string | null;
+    backorder_allowed?: boolean;
+    split_shipment?: boolean;
+    program_code?: string | null;
+    store_labels_on_receive?: boolean;
+    buyer?: string | null;
+    order_date?: string;
+    ship_date?: string | null;
+    cancel_date?: string | null;
+    payment_date?: string | null;
+  },
   lineItemRows: (PoLineItemRow & { sku_code?: string; style?: string })[]
 ): PurchaseOrder {
   const lineItems = lineItemRows.map(rowToPoLineItem);
   return {
     id: row.id,
     poNumber: row.po_number,
+    billToStoreId: row.bill_to_store_id ?? null,
+    shipToStoreId: row.ship_to_store_id ?? null,
     vendorId: row.vendor_id,
     vendorName: row.vendor_name,
+    orderType: row.order_type ?? 'RO',
+    classification: row.classification ?? 'AT_ONCE',
+    origin: row.origin ?? 'MANUAL',
+    originSourcePoId: row.origin_source_po_id ?? null,
+    confirmationNumber: row.confirmation_number ?? null,
+    accountNumber: row.account_number ?? null,
+    terms: row.terms ?? null,
+    shipVia: row.ship_via ?? null,
+    backorderAllowed: row.backorder_allowed ?? false,
+    splitShipment: row.split_shipment ?? false,
+    programCode: row.program_code ?? null,
+    storeLabelsOnReceive: row.store_labels_on_receive ?? false,
+    buyer: row.buyer ?? null,
+    orderDate: row.order_date ?? row.created_at,
+    shipDate: row.ship_date ?? null,
+    cancelDate: row.cancel_date ?? null,
+    paymentDate: row.payment_date ?? null,
     status: row.status,
     notes: row.notes,
     cancellationReason: row.cancellation_reason,
@@ -252,6 +323,8 @@ export function rowToPoReceipt(row: PoReceiptRow, lineRows: PoReceiptLineRow[]):
     locationName: row.location_name ?? null,
     receivedBy: row.received_by,
     referenceNumber: row.reference_number,
+    discountPercent: row.discount_percent ?? 0,
+    freightEach: row.freight_each ?? 0,
     receivedAt: row.received_at,
     createdAt: row.created_at,
     lines: lineRows.map(rowToPoReceiptLine),

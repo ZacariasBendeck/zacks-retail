@@ -1,5 +1,6 @@
 import { Router, Request, Response, IRouter, NextFunction } from 'express';
 import * as reportService from '../services/reportService';
+import * as purchaseOrderService from '../services/purchaseOrderService';
 import * as inventoryAgingPg from '../services/reports/inventoryAgingPg';
 import * as salesReportFacade from '../services/salesReporting/salesReportFacade';
 import { validateQuery } from '../middleware/validation';
@@ -9,6 +10,46 @@ import { sendXlsx, XLSX_NUMFMT } from '../utils/xlsxExport';
 import { z } from 'zod';
 
 const router: IRouter = Router();
+
+const purchaseOrderReportQuerySchema = z.object({
+  status: z.enum(['DRAFT', 'SUBMITTED', 'CONFIRMED', 'PARTIALLY_RECEIVED', 'RECEIVED', 'CLOSED', 'CANCELLED']).optional(),
+  vendorId: z.string().trim().min(1).max(4).optional(),
+  balanceMode: z.enum(['ordered', 'open']).default('open'),
+  dateBy: z.enum(['orderDate', 'shipDate', 'cancelDate', 'paymentDate']).default('orderDate'),
+  dateFrom: z.string().optional(),
+  dateTo: z.string().optional(),
+});
+
+const openPoByMonthQuerySchema = z.object({
+  sortBy: z.enum(['vendor', 'category']).default('vendor'),
+  dateBy: z.enum(['shipDate', 'cancelDate', 'paymentDate']).default('shipDate'),
+  status: z.enum(['all', 'atOnce', 'future']).default('all'),
+});
+
+router.get(
+  '/purchase-orders',
+  validateQuery(purchaseOrderReportQuerySchema),
+  async (req: Request, res: Response): Promise<void> => {
+    const params = (req as any).validatedQuery;
+    const rows = await purchaseOrderService.listPurchaseOrderReport(params);
+    res.json({ rows });
+  },
+);
+
+router.get(
+  '/open-po-by-month',
+  validateQuery(openPoByMonthQuerySchema),
+  async (req: Request, res: Response): Promise<void> => {
+    const params = (req as any).validatedQuery;
+    const rows = await purchaseOrderService.listOpenPoByMonth(params);
+    res.json({ rows });
+  },
+);
+
+router.get('/po-cash-projection', async (_req: Request, res: Response): Promise<void> => {
+  const rows = await purchaseOrderService.listPoCashProjection();
+  res.json({ rows });
+});
 
 const reportPaginationFields = {
   page: z.coerce.number().int().min(1).default(1),
@@ -1286,6 +1327,7 @@ const salesHistoryByMonthQuerySchema = z.object({
       );
     }),
   detailLevel: z.enum(['sku', 'subtotals', 'department']).default('subtotals'),
+  includePriorYear: z.coerce.boolean().default(false),
   // Seven criteria facets — every facet is a raw RICS-grammar string and
   // optional. An empty / missing string means "no filter on this facet".
   critStores: z.string().optional(),
@@ -1409,6 +1451,7 @@ router.get(
         dataToPrint: readonly string[];
         deferredMetrics: readonly string[];
         detailLevel: 'sku' | 'subtotals' | 'department';
+        includePriorYear: boolean;
         critStores?: string;
         critCategories?: string;
         critVendors?: string;
@@ -1425,6 +1468,7 @@ router.get(
         sortBy: query.sortBy,
         combineStores: query.combineStores,
         detailLevel: query.detailLevel,
+        includePriorYear: query.includePriorYear,
         dataToPrint: query.dataToPrint as salesReportFacade.MonthlyMetricKey[],
         deferredMetrics: query.deferredMetrics as (
           'beginningOnHand' | 'roiPct' | 'turns'
@@ -1489,6 +1533,36 @@ router.get(
                 formatMetricCell(metric, grandTotal),
               ].join(','),
             );
+            if (report.priorYearMonths?.length) {
+              lines.push(escapeCsv(`${METRIC_LABEL[metric] ?? metric} PY`));
+              const priorHeader = ['Key', 'Label', ...report.priorYearMonths, 'Total'];
+              lines.push(priorHeader.map((h) => escapeCsv(h)).join(','));
+              for (const row of block.rows) {
+                const series = row.priorYearMetrics?.[metric as salesReportFacade.MonthlyMetricKey];
+                if (!series) continue;
+                const total = row.priorYearTotals?.[metric as salesReportFacade.MonthlyMetricKey] ?? 0;
+                lines.push(
+                  [
+                    escapeCsv(row.key),
+                    escapeCsv(row.label),
+                    ...series.map((v) => formatMetricCell(metric, v)),
+                    formatMetricCell(metric, total),
+                  ].join(','),
+                );
+              }
+              const colTotals = block.priorYearColumnTotals?.[metric as salesReportFacade.MonthlyMetricKey];
+              const grandTotal = block.priorYearGrandTotals?.[metric as salesReportFacade.MonthlyMetricKey] ?? 0;
+              if (colTotals) {
+                lines.push(
+                  [
+                    escapeCsv('Totals'),
+                    '',
+                    ...colTotals.map((v) => formatMetricCell(metric, v)),
+                    formatMetricCell(metric, grandTotal),
+                  ].join(','),
+                );
+              }
+            }
             lines.push('');
           }
         }
@@ -1542,6 +1616,32 @@ router.get(
             });
             totalsRec.total = grandTotal;
             rows.push(totalsRec);
+            if (report.priorYearMonths?.length) {
+              rows.push({
+                key: `${METRIC_LABEL[metric] ?? metric} PY`,
+                label: '',
+              });
+              for (const row of block.rows) {
+                const series = row.priorYearMetrics?.[metric as salesReportFacade.MonthlyMetricKey];
+                if (!series) continue;
+                const total = row.priorYearTotals?.[metric as salesReportFacade.MonthlyMetricKey] ?? 0;
+                const rec: Record<string, unknown> = { key: row.key, label: row.label };
+                months.forEach((m, i) => {
+                  rec[`m_${m}`] = series[i];
+                });
+                rec.total = total;
+                rows.push(rec);
+              }
+              const priorTotals = block.priorYearColumnTotals?.[metric as salesReportFacade.MonthlyMetricKey];
+              if (priorTotals) {
+                const priorTotalsRec: Record<string, unknown> = { key: 'Totals', label: '' };
+                months.forEach((m, i) => {
+                  priorTotalsRec[`m_${m}`] = priorTotals[i];
+                });
+                priorTotalsRec.total = block.priorYearGrandTotals?.[metric as salesReportFacade.MonthlyMetricKey] ?? 0;
+                rows.push(priorTotalsRec);
+              }
+            }
             rows.push({});
           }
           // Column numFmt — if a single metric is selected we can apply a

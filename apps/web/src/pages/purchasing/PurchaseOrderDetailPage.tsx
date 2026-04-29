@@ -17,6 +17,8 @@ import {
   ArrowLeftOutlined,
   CheckCircleOutlined,
   CloseCircleOutlined,
+  CopyOutlined,
+  EditOutlined,
   InboxOutlined,
   LockOutlined,
   SendOutlined,
@@ -28,6 +30,7 @@ import {
   useCancelPurchaseOrder,
   useClosePurchaseOrder,
   useConfirmPurchaseOrder,
+  useDuplicatePurchaseOrder,
   usePurchaseOrder,
   usePurchaseOrderHistory,
   usePurchaseOrderReceipts,
@@ -79,6 +82,7 @@ export default function PurchaseOrderDetailPage() {
   const confirmMutation = useConfirmPurchaseOrder()
   const cancelMutation = useCancelPurchaseOrder()
   const closeMutation = useClosePurchaseOrder()
+  const duplicateMutation = useDuplicatePurchaseOrder()
 
   const transitionPending =
     submitMutation.isPending || confirmMutation.isPending || cancelMutation.isPending || closeMutation.isPending
@@ -158,6 +162,19 @@ export default function PurchaseOrderDetailPage() {
     }
   }
 
+  const handleDuplicatePo = async () => {
+    try {
+      const duplicated = await duplicateMutation.mutateAsync({
+        poId,
+        payload: { changedBy: po.createdBy },
+      })
+      message.success(`Created draft ${duplicated.poNumber}`)
+      navigate(`/purchasing/orders/${duplicated.id}`)
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : 'Failed to duplicate purchase order')
+    }
+  }
+
   const lineColumns = [
     {
       title: 'SKU',
@@ -226,6 +243,15 @@ export default function PurchaseOrderDetailPage() {
           </div>
           <Tag color={STATUS_COLORS[po.status]}>{po.status.replace(/_/g, ' ')}</Tag>
 
+          {po.status === 'DRAFT' && (
+            <Button
+              icon={<EditOutlined />}
+              onClick={() => navigate(`/purchasing/orders/${po.id}/edit`)}
+            >
+              Edit
+            </Button>
+          )}
+
           {canSubmit && (
             <Popconfirm
               title="Submit this PO?"
@@ -275,11 +301,16 @@ export default function PurchaseOrderDetailPage() {
             </Button>
           )}
 
-          {po.status === 'DRAFT' && (
-            <Button onClick={() => navigate(`/purchasing/orders/new?clone=${po.id}`)}>
-              New Draft
+          <Popconfirm
+            title="Duplicate this PO?"
+            description="A new draft purchase order will be created with the same vendor and lines."
+            okText="Duplicate"
+            onConfirm={handleDuplicatePo}
+          >
+            <Button icon={<CopyOutlined />} loading={duplicateMutation.isPending}>
+              Duplicate
             </Button>
-          )}
+          </Popconfirm>
         </Space>
       </Card>
 
@@ -289,6 +320,20 @@ export default function PurchaseOrderDetailPage() {
           <Descriptions.Item label="Vendor">{po.vendorName ?? po.vendorId}</Descriptions.Item>
           <Descriptions.Item label="Status">
             <Tag color={STATUS_COLORS[po.status]}>{po.status.replace(/_/g, ' ')}</Tag>
+          </Descriptions.Item>
+          <Descriptions.Item label="Bill-to Store">{po.billToStoreId ?? '-'}</Descriptions.Item>
+          <Descriptions.Item label="Ship-to Store">{po.shipToStoreId ?? '-'}</Descriptions.Item>
+          <Descriptions.Item label="Classification">{po.classification.replace(/_/g, ' ')}</Descriptions.Item>
+          <Descriptions.Item label="Order Type">{po.orderType}</Descriptions.Item>
+          <Descriptions.Item label="Order Date">{dayjs(po.orderDate).format('YYYY-MM-DD')}</Descriptions.Item>
+          <Descriptions.Item label="Ship Date">
+            {po.shipDate ? dayjs(po.shipDate).format('YYYY-MM-DD') : '-'}
+          </Descriptions.Item>
+          <Descriptions.Item label="Cancel Date">
+            {po.cancelDate ? dayjs(po.cancelDate).format('YYYY-MM-DD') : '-'}
+          </Descriptions.Item>
+          <Descriptions.Item label="Payment Date">
+            {po.paymentDate ? dayjs(po.paymentDate).format('YYYY-MM-DD') : '-'}
           </Descriptions.Item>
           <Descriptions.Item label="Created">
             {dayjs(po.createdAt).format('YYYY-MM-DD HH:mm')}
@@ -302,6 +347,18 @@ export default function PurchaseOrderDetailPage() {
           </Descriptions.Item>
           <Descriptions.Item label="Units">
             {totalReceived}/{totalOrdered} received
+          </Descriptions.Item>
+          <Descriptions.Item label="Confirmation #">{po.confirmationNumber ?? '-'}</Descriptions.Item>
+          <Descriptions.Item label="Account #">{po.accountNumber ?? '-'}</Descriptions.Item>
+          <Descriptions.Item label="Terms">{po.terms ?? '-'}</Descriptions.Item>
+          <Descriptions.Item label="Ship Via">{po.shipVia ?? '-'}</Descriptions.Item>
+          <Descriptions.Item label="Flags" span={2}>
+            <Space wrap>
+              {po.backorderAllowed && <Tag>Backorder</Tag>}
+              {po.splitShipment && <Tag>Split shipment</Tag>}
+              {po.storeLabelsOnReceive && <Tag>Labels on receive</Tag>}
+              {!po.backorderAllowed && !po.splitShipment && !po.storeLabelsOnReceive ? '-' : null}
+            </Space>
           </Descriptions.Item>
           <Descriptions.Item label="Cancellation Reason">
             {po.cancellationReason ?? '-'}

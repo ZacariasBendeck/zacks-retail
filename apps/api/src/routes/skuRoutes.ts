@@ -34,6 +34,7 @@ import { SkuListParams } from '../models/sku';
 import {
   searchSkusForLookup,
   getSkuLookupFacets,
+  type SkuLookupMatchMode,
   type SkuLookupSort,
 } from '../services/ricsProductAdapter';
 
@@ -285,8 +286,8 @@ router.get('/lookup', (req: Request, res: Response): void => {
 
 /**
  * SKU Search for the Inventory Inquiry / SKU Lookup modal.
- * Supports prefix match on SKU code, substring/whole-word match on description,
- * sorting by SKU | DESCRIPTION | VENDOR | STYLE_COLOR, and pagination.
+ * Supports prefix or contains match on SKU code, substring/whole-word match on
+ * description, sorting by SKU | DESCRIPTION | VENDOR | STYLE_COLOR, and pagination.
  */
 router.get('/search', async (req: Request, res: Response, next): Promise<void> => {
   try {
@@ -311,6 +312,12 @@ router.get('/search', async (req: Request, res: Response, next): Promise<void> =
       : 'SKU';
 
     const wholeWord = req.query.wholeWord === 'true';
+    const skuMatchModeRaw = typeof req.query.skuMatchMode === 'string'
+      ? req.query.skuMatchMode.trim().toLowerCase()
+      : undefined;
+    const skuMatchMode: SkuLookupMatchMode = skuMatchModeRaw === 'prefix'
+      ? 'prefix'
+      : 'contains';
     const limit = req.query.limit ? Number(req.query.limit) : 50;
     const offset = req.query.offset ? Number(req.query.offset) : 0;
     const season = typeof req.query.season === 'string' && req.query.season.trim()
@@ -324,7 +331,7 @@ router.get('/search', async (req: Request, res: Response, next): Promise<void> =
       : undefined;
 
     const result = await searchSkusForLookup({
-      q, descContains, wholeWord, searchField, limit, offset,
+      q, descContains, wholeWord, searchField, skuMatchMode, limit, offset,
       season, vendor,
       department: department != null && Number.isFinite(department) ? department : undefined,
     });

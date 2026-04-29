@@ -7,6 +7,7 @@ export interface AttributeDimensionValue {
   id: number
   code: string
   labelEs: string
+  descriptionEs: string | null
   sortOrder: number
   isActive: boolean
   /** Present only when the catalog was fetched with `withCounts=true`. */
@@ -78,6 +79,8 @@ export interface AttributeCoverageRow {
   dimensionCode: string
   labelEs: string
   totalSkus: number
+  familySkus: number
+  familyClassifiedSkus: number
   classifiedSkus: number
   coveragePct: number
   bySource: { keyword: number; excel: number; operator: number }

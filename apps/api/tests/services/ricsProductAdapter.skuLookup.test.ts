@@ -94,6 +94,28 @@ describe('ricsProductAdapter SKU lookup', () => {
     ).toBe(true);
   });
 
+  it('supports SKU contains and prefix lookup modes', async () => {
+    mockQuery.mockImplementation(async (sql: any) => {
+      const text = String(sql);
+      if (text.includes('FROM app.sku s') && text.includes('ORDER BY s.code')) {
+        return [
+          { ...INDEX_ROW, SKU: '6017-130-BKPU' },
+          { ...INDEX_ROW, SKU: 'ABC-6017-130-BKPU' },
+        ] as never;
+      }
+      throw new Error(`Unexpected SQL in test: ${text}`);
+    });
+
+    const contains = await searchSkusForLookup({ q: '6017', skuMatchMode: 'contains' });
+    expect(contains.rows.map((row) => row.skuCode)).toEqual([
+      '6017-130-BKPU',
+      'ABC-6017-130-BKPU',
+    ]);
+
+    const prefix = await searchSkusForLookup({ q: '6017', skuMatchMode: 'prefix' });
+    expect(prefix.rows.map((row) => row.skuCode)).toEqual(['6017-130-BKPU']);
+  });
+
   it('falls back to app.vendor when vendor overlay metadata is unavailable', async () => {
     mockQuery.mockImplementation(async (sql: any) => {
       const text = String(sql);

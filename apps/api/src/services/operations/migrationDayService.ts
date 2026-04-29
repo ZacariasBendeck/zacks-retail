@@ -38,12 +38,11 @@ export interface MigrationActionConfig {
   bundleDir?: string;
   customerCsvPath?: string;
   mailListNamesCsvPath?: string;
-  ticketHeaderCsvPath?: string;
-  ticketDetailCsvPath?: string;
   inventoryHistoryAsOf?: string;
   skipInventoryHistory?: boolean;
   skipCustomers?: boolean;
-  skipCustomerTransactions?: boolean;
+  skipTickets?: boolean;
+  skipSalesHistory?: boolean;
   skipSegmentationDefaults?: boolean;
   strictFull?: boolean;
 }
@@ -125,12 +124,10 @@ function normalizeConfig(raw: unknown): MigrationActionConfig {
     mdbDir: cleanString(body.mdbDir) ?? undefined,
     customerCsvPath: cleanString(body.customerCsvPath) ?? undefined,
     mailListNamesCsvPath: cleanString(body.mailListNamesCsvPath) ?? undefined,
-    ticketHeaderCsvPath: cleanString(body.ticketHeaderCsvPath) ?? undefined,
-    ticketDetailCsvPath: cleanString(body.ticketDetailCsvPath) ?? undefined,
     inventoryHistoryAsOf: cleanString(body.inventoryHistoryAsOf) ?? undefined,
     skipInventoryHistory: bool(body.skipInventoryHistory),
     skipCustomers: bool(body.skipCustomers),
-    skipCustomerTransactions: bool(body.skipCustomerTransactions),
+    skipTickets: bool(body.skipTickets) || bool(body.skipSalesHistory) || bool(body.skipCustomerTransactions),
     skipSegmentationDefaults: bool(body.skipSegmentationDefaults),
     strictFull: bool(body.strictFull),
   };
@@ -160,6 +157,10 @@ function bundleCustomerPath(config: MigrationActionConfig, fileName: string): st
   return path.join(requireBundleDir(config), 'crm', fileName);
 }
 
+function bundleLegacyPath(config: MigrationActionConfig, fileName: string): string {
+  return path.join(requireBundleDir(config), 'legacy', fileName);
+}
+
 function optionalPathArgs(pairs: Array<[string, string | undefined]>): string[] {
   const out: string[] = [];
   for (const [flag, value] of pairs) {
@@ -174,7 +175,7 @@ function loadBundleArgs(config: MigrationActionConfig): string[] {
   if (config.strictFull) args.push('--strict-full');
   if (config.skipInventoryHistory) args.push('--skip-inventory-history');
   if (config.skipCustomers) args.push('--skip-customers');
-  if (config.skipCustomerTransactions) args.push('--skip-customer-transactions');
+  if (config.skipTickets || config.skipSalesHistory) args.push('--skip-tickets');
   if (config.skipSegmentationDefaults) args.push('--skip-segmentation-defaults');
   if (config.inventoryHistoryAsOf) args.push('--inventory-history-as-of', config.inventoryHistoryAsOf);
   return args;
@@ -211,7 +212,7 @@ const actions: ActionRegistration[] = [
     id: 'export-bundle',
     label: 'Export conversion bundle',
     group: 'sequence',
-    description: 'Creates the legacy CSV artifact pack, attribute snapshot, CRM sidecars, and bundle manifest.',
+    description: 'Creates the canonical RICS CSV artifact pack, attribute snapshot, optional customer files, and bundle manifest.',
     requiresMdbDir: true,
     requiresBundle: true,
     runner: {
@@ -224,8 +225,6 @@ const actions: ActionRegistration[] = [
         ...optionalPathArgs([
           ['--customer', config.customerCsvPath],
           ['--mail', config.mailListNamesCsvPath],
-          ['--ticket-header', config.ticketHeaderCsvPath],
-          ['--ticket-detail', config.ticketDetailCsvPath],
         ]),
       ]),
     },
@@ -310,6 +309,14 @@ const actions: ActionRegistration[] = [
     },
   },
   {
+    id: 'seed-legacy-ref-dimensions',
+    label: 'Seed SKU form attribute values',
+    group: 'individual',
+    description: 'Mirrors SKU-entry reference dropdowns into app.attribute_dimension/app.attribute_value.',
+    requiresBundle: false,
+    runner: { type: 'command', build: () => nodeScript('scripts/seeds/seed-legacy-ref-dimensions.ts') },
+  },
+  {
     id: 'seed-sku-attributes',
     label: 'Seed SKU attributes',
     group: 'individual',
@@ -331,6 +338,18 @@ const actions: ActionRegistration[] = [
     runner: {
       type: 'command',
       build: (config) => nodeScript('scripts/rics/sync/import-app-reference-baselines-from-artifact.ts', ['--manifest', legacyManifestPath(config)]),
+    },
+  },
+  {
+    id: 'import-native-purchase-orders',
+    label: 'Import native purchase orders',
+    group: 'individual',
+    description: 'Rebuilds native purchase order headers, lines, size cells, and status history from purchase_master.csv and purchase_detail.csv.',
+    requiresBundle: true,
+    requiresLegacyManifest: true,
+    runner: {
+      type: 'command',
+      build: (config) => nodeScript('scripts/rics/sync/import-native-purchase-orders-from-artifact.ts', ['--manifest', legacyManifestPath(config)]),
     },
   },
   {
@@ -401,22 +420,32 @@ const actions: ActionRegistration[] = [
     },
   },
   {
-    id: 'import-customer-transactions',
-    label: 'Import ticket history',
+    id: 'import-tickets',
+    label: 'Import tickets',
     group: 'individual',
-    description: 'Loads ticket_header.csv and ticket_detail.csv into sales history and KPI tables.',
+    description: 'Loads canonical RITRNSSV ticket header/detail/tender CSVs into app ticket tables, then refreshes derived reporting facts.',
     requiresBundle: true,
     requiresTicketFiles: true,
     runner: {
       type: 'command',
-      build: (config) => nodeScript('scripts/customers/import-customer-transactions-from-rics.ts', [
-        '--header',
-        bundleCustomerPath(config, 'ticket_header.csv'),
-        '--detail',
-        bundleCustomerPath(config, 'ticket_detail.csv'),
-        '--source',
-        'render_cutover_bundle',
-      ]),
+      build: (config) => {
+        const headerPath = bundleLegacyPath(config, 'ticket_header.csv');
+        const detailPath = bundleLegacyPath(config, 'ticket_detail.csv');
+        const tenderPath = bundleLegacyPath(config, 'ticket_tender.csv');
+        const args = [
+          '--header',
+          headerPath,
+          '--detail',
+          detailPath,
+          '--no-csv-header',
+          '--source',
+          'render_cutover_bundle',
+        ];
+        if (fs.existsSync(tenderPath)) {
+          args.push('--tender', tenderPath, '--tender-no-csv-header');
+        }
+        return nodeScript('scripts/sales/import-rics-tickets.ts', args);
+      },
     },
   },
 ];
@@ -882,6 +911,11 @@ async function runPreflightCheck(config: MigrationActionConfig, job: MigrationJo
       ['app.replenishment_target', 'replenishmentTarget'],
       ['app.customer', 'customer'],
       ['app.sales_history_ticket', 'salesHistoryTicket'],
+      ['app.ticket_header', 'ticketHeader'],
+      ['app.ticket_detail', 'ticketDetail'],
+      ['app.ticket_tender', 'ticketTender'],
+      ['app.purchase_order', 'purchaseOrder'],
+      ['app.purchase_order_line', 'purchaseOrderLine'],
     ]);
     checks.push({ name: 'Postgres connection', status: 'pass', detail: 'connected and count queries completed' });
     job.append('stdout', `Current data counts: ${JSON.stringify(counts)}`);
@@ -926,8 +960,9 @@ async function runBundleCheck(config: MigrationActionConfig, job: MigrationJob):
   const optional = {
     customer: fs.existsSync(path.join(bundleDir, 'crm', 'Customer.csv')),
     mail: fs.existsSync(path.join(bundleDir, 'crm', 'MailListNames.csv')),
-    ticketHeader: fs.existsSync(path.join(bundleDir, 'crm', 'ticket_header.csv')),
-    ticketDetail: fs.existsSync(path.join(bundleDir, 'crm', 'ticket_detail.csv')),
+    ticketHeader: fs.existsSync(path.join(bundleDir, 'legacy', 'ticket_header.csv')),
+    ticketDetail: fs.existsSync(path.join(bundleDir, 'legacy', 'ticket_detail.csv')),
+    ticketTender: fs.existsSync(path.join(bundleDir, 'legacy', 'ticket_tender.csv')),
   };
   job.append('stdout', `Bundle tables=${tables.length} optional=${JSON.stringify(optional)}`);
   return { bundleDir, tableCount: tables.length, optional };
@@ -951,6 +986,11 @@ async function runPostLoadChecks(_config: MigrationActionConfig, job: MigrationJ
     ['app.customer', 'customer'],
     ['app.sales_history_ticket', 'salesHistoryTicket'],
     ['app.sales_history_ticket_line', 'salesHistoryTicketLine'],
+    ['app.ticket_header', 'ticketHeader'],
+    ['app.ticket_detail', 'ticketDetail'],
+    ['app.ticket_tender', 'ticketTender'],
+    ['app.purchase_order', 'purchaseOrder'],
+    ['app.purchase_order_line', 'purchaseOrderLine'],
   ]);
 
   const required = [

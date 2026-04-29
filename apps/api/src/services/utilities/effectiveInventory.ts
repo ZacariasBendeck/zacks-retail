@@ -146,6 +146,12 @@ async function loadEffectiveRows(c: SkuCriteria): Promise<CriteriaLookupRow[]> {
   const groupsParam    = c.groups?.length     ? push(c.groups)                : null;
   const styleColorsPar = c.stylesColors?.length ? push(c.stylesColors)        : null;
   const keywordsParam  = c.keywords?.length   ? push(c.keywords)              : null;
+  const attributeFilters = Object.entries(c.attributes ?? {})
+    .map(([dimensionCode, valueCodes]) => ({
+      dimensionCode: dimensionCode.trim(),
+      valueCodes: Array.from(new Set(valueCodes.map((v) => v.trim()).filter(Boolean))),
+    }))
+    .filter((f) => f.dimensionCode && f.valueCodes.length > 0);
 
   const whereClauses: string[] = ['im.sku IS NOT NULL'];
   if (skusParam)      whereClauses.push(`im.sku = ANY(${skusParam}::text[])`);
@@ -176,6 +182,21 @@ async function loadEffectiveRows(c: SkuCriteria): Promise<CriteriaLookupRow[]> {
           SELECT 1 FROM app.sku_keyword_override a
           WHERE a.rics_sku_code = im.sku AND a.action = 'ADD' AND a.keyword = ANY(${keywordsParam}::text[])
         )
+      )`,
+    );
+  }
+  for (const f of attributeFilters) {
+    const dimParam = push(f.dimensionCode);
+    const valuesParam = push(f.valueCodes);
+    whereClauses.push(
+      `EXISTS (
+        SELECT 1
+        FROM app.sku_attribute_assignment a
+        JOIN app.attribute_value v ON v.id = a.value_id
+        JOIN app.attribute_dimension d ON d.id = a.dimension_id
+        WHERE a.sku_code = im.sku
+          AND d.code = ${dimParam}
+          AND v.code = ANY(${valuesParam}::text[])
       )`,
     );
   }

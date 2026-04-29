@@ -163,8 +163,9 @@ export function createAttributesService(opts: AttributesServiceOptions = {}) {
       descriptionEs: string | null;
       sortOrder: number;
       isMultiValue: boolean;
+      familyCode?: string | null;
     }): Promise<Result<DimensionRow>> {
-      const result = await repo.createDimension(input);
+      const result = await repo.createDimension({ ...input, actor });
       if (!result.ok) return result;
       await audit.record({
         actor,
@@ -222,7 +223,7 @@ export function createAttributesService(opts: AttributesServiceOptions = {}) {
 
     async createValue(
       dimensionCode: string,
-      input: { code: string; labelEs: string; sortOrder: number },
+      input: { code: string; labelEs: string; descriptionEs?: string | null; sortOrder: number },
     ): Promise<Result<DimensionValueRow>> {
       const result = await repo.createValue(dimensionCode, input);
       if (!result.ok) return result;
@@ -238,7 +239,7 @@ export function createAttributesService(opts: AttributesServiceOptions = {}) {
 
     async updateValue(
       valueId: number,
-      patch: Partial<{ labelEs: string; sortOrder: number; isActive: boolean }>,
+      patch: Partial<{ labelEs: string; descriptionEs: string | null; sortOrder: number; isActive: boolean }>,
     ): Promise<Result<DimensionValueRow>> {
       const result = await repo.updateValue(valueId, patch);
       if (!result.ok) return result;

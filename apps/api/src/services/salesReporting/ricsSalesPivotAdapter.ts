@@ -59,6 +59,7 @@ interface MasterRow {
   sku: string | null;
   desc: string | null;
   category: number | null;
+  picture_file_name: string | null;
 }
 
 interface TaxonomyRow {
@@ -165,7 +166,8 @@ async function loadMasterForSkus(skus: string[]): Promise<MasterRow[]> {
       SELECT
         UPPER(TRIM(s.code)) AS sku,
         s.description_rics AS desc,
-        s.category_number AS category
+        s.category_number AS category,
+        s.picture_file_name AS picture_file_name
       FROM app.sku s
       WHERE UPPER(TRIM(s.code)) = ANY($1::text[])
     `,
@@ -341,6 +343,7 @@ export async function getSalesPivotByDepartment(params: {
       groupDesc: null,
       sku: leaf.sku,
       skuDescription: m?.desc?.trim() || null,
+      pictureFileName: m?.picture_file_name?.trim() || null,
       onHandQty: leaf.onHandQty,
       onHandCostVal: leaf.onHandCostVal,
       qtyTY: leaf.qtyTY,

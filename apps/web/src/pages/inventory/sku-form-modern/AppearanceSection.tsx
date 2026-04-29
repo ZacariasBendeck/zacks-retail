@@ -1,11 +1,10 @@
 import { Col, Collapse, Form, Row, Select, Typography } from 'antd'
 import { sectionCard, sectionTitle, sectionSubtitle, tokens } from './styles'
-import { aiLabel, fieldStyle, isApparienciaFieldVisible, refOptions } from './formHelpers'
-import type { ReferenceItem } from '../../../types/sku'
+import { aiLabel, fieldStyle, isApparienciaFieldVisible } from './formHelpers'
 
 interface AppearanceSectionProps {
   selectedFamily: string | null
-  refData: Record<string, ReferenceItem[]> | undefined
+  attributeOptionsByDimension: Record<string, { label: string; value: string }[]>
   aiFilledFields: Set<string>
 }
 
@@ -14,7 +13,7 @@ interface AppearanceSectionProps {
  * family=zapatos (14 fields), collapsed by default otherwise (only 5 fields
  * show but still behind a toggle to keep the primary flow tight).
  */
-export function AppearanceSection({ selectedFamily, refData, aiFilledFields }: AppearanceSectionProps) {
+export function AppearanceSection({ selectedFamily, attributeOptionsByDimension, aiFilledFields }: AppearanceSectionProps) {
   const autoExpanded = selectedFamily === 'zapatos'
 
   return (
@@ -43,7 +42,7 @@ export function AppearanceSection({ selectedFamily, refData, aiFilledFields }: A
                     name="patternId"
                     style={fieldStyle(aiFilledFields, 'patternId')}
                   >
-                    <Select placeholder="Seleccionar" allowClear options={refOptions(refData?.['patterns'])} />
+                    <Select placeholder="Seleccionar" allowClear options={attributeOptionsByDimension.pattern ?? []} />
                   </Form.Item>
                 </Col>
                 <Col xs={24} sm={12} md={8} lg={6}>
@@ -52,7 +51,7 @@ export function AppearanceSection({ selectedFamily, refData, aiFilledFields }: A
                     name="finishId"
                     style={fieldStyle(aiFilledFields, 'finishId')}
                   >
-                    <Select placeholder="Seleccionar" allowClear options={refOptions(refData?.['finishes'])} />
+                    <Select placeholder="Seleccionar" allowClear options={attributeOptionsByDimension.finish ?? []} />
                   </Form.Item>
                 </Col>
                 <Col xs={24} sm={12} md={8} lg={6}>
@@ -61,7 +60,7 @@ export function AppearanceSection({ selectedFamily, refData, aiFilledFields }: A
                     name="occasionId"
                     style={fieldStyle(aiFilledFields, 'occasionId')}
                   >
-                    <Select placeholder="Seleccionar" allowClear options={refOptions(refData?.['occasions'])} />
+                    <Select placeholder="Seleccionar" allowClear options={attributeOptionsByDimension.occasion ?? []} />
                   </Form.Item>
                 </Col>
                 <Col xs={24} sm={12} md={8} lg={6}>
@@ -73,7 +72,7 @@ export function AppearanceSection({ selectedFamily, refData, aiFilledFields }: A
                     <Select
                       placeholder="Seleccionar"
                       allowClear
-                      options={refOptions(refData?.['target-audiences'])}
+                      options={attributeOptionsByDimension.target_audience ?? []}
                     />
                   </Form.Item>
                 </Col>
@@ -88,7 +87,7 @@ export function AppearanceSection({ selectedFamily, refData, aiFilledFields }: A
                   {isApparienciaFieldVisible('widthTypeId', selectedFamily) && (
                     <Col xs={24} sm={12} md={8} lg={6}>
                       <Form.Item label="Ancho" name="widthTypeId" style={{ marginBottom: 12 }}>
-                        <Select placeholder="Seleccionar" allowClear options={refOptions(refData?.['width-types'])} />
+                        <Select placeholder="Seleccionar" allowClear options={attributeOptionsByDimension.width_type ?? []} />
                       </Form.Item>
                     </Col>
                   )}
@@ -99,7 +98,7 @@ export function AppearanceSection({ selectedFamily, refData, aiFilledFields }: A
                         name="accessoryId"
                         style={fieldStyle(aiFilledFields, 'accessoryId')}
                       >
-                        <Select placeholder="Seleccionar" allowClear options={refOptions(refData?.['accessories'])} />
+                        <Select placeholder="Seleccionar" allowClear options={attributeOptionsByDimension.accessory ?? []} />
                       </Form.Item>
                     </Col>
                   )}
@@ -110,7 +109,7 @@ export function AppearanceSection({ selectedFamily, refData, aiFilledFields }: A
                         name="heelHeightId"
                         style={fieldStyle(aiFilledFields, 'heelHeightId')}
                       >
-                        <Select placeholder="Seleccionar" allowClear options={refOptions(refData?.['heel-heights'])} />
+                        <Select placeholder="Seleccionar" allowClear options={attributeOptionsByDimension.heel_height ?? []} />
                       </Form.Item>
                     </Col>
                   )}
@@ -121,7 +120,7 @@ export function AppearanceSection({ selectedFamily, refData, aiFilledFields }: A
                         name="heelShapeId"
                         style={fieldStyle(aiFilledFields, 'heelShapeId')}
                       >
-                        <Select placeholder="Seleccionar" allowClear options={refOptions(refData?.['heel-shapes'])} />
+                        <Select placeholder="Seleccionar" allowClear options={attributeOptionsByDimension.heel_shape ?? []} />
                       </Form.Item>
                     </Col>
                   )}
@@ -132,7 +131,7 @@ export function AppearanceSection({ selectedFamily, refData, aiFilledFields }: A
                         name="toeShapeId"
                         style={fieldStyle(aiFilledFields, 'toeShapeId')}
                       >
-                        <Select placeholder="Seleccionar" allowClear options={refOptions(refData?.['toe-shapes'])} />
+                        <Select placeholder="Seleccionar" allowClear options={attributeOptionsByDimension.toe_shape ?? []} />
                       </Form.Item>
                     </Col>
                   )}
@@ -155,7 +154,7 @@ export function AppearanceSection({ selectedFamily, refData, aiFilledFields }: A
                           allowClear
                           showSearch
                           optionFilterProp="label"
-                          options={refOptions(refData?.['upper-materials'])}
+                          options={attributeOptionsByDimension.upper_material ?? []}
                         />
                       </Form.Item>
                     </Col>
@@ -167,7 +166,7 @@ export function AppearanceSection({ selectedFamily, refData, aiFilledFields }: A
                         name="outsoleMaterialId"
                         style={fieldStyle(aiFilledFields, 'outsoleMaterialId')}
                       >
-                        <Select placeholder="Seleccionar" allowClear options={refOptions(refData?.['outsole-materials'])} />
+                        <Select placeholder="Seleccionar" allowClear options={attributeOptionsByDimension.outsole_material ?? []} />
                       </Form.Item>
                     </Col>
                   )}
@@ -178,7 +177,7 @@ export function AppearanceSection({ selectedFamily, refData, aiFilledFields }: A
                         name="heelMaterialId"
                         style={fieldStyle(aiFilledFields, 'heelMaterialId')}
                       >
-                        <Select placeholder="Seleccionar" allowClear options={refOptions(refData?.['heel-materials'])} />
+                        <Select placeholder="Seleccionar" allowClear options={attributeOptionsByDimension.heel_material ?? []} />
                       </Form.Item>
                     </Col>
                   )}

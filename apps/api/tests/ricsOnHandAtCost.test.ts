@@ -11,7 +11,11 @@ jest.mock('../src/db/prisma', () => ({
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { getOnHandAtCostByDimension, clearOnHandCache } = require('../src/services/salesReporting/ricsOnHandAtCostAdapter');
+const {
+  getOnHandAtCostByDimension,
+  getOnHandInventoryByDimension,
+  clearOnHandCache,
+} = require('../src/services/salesReporting/ricsOnHandAtCostAdapter');
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { prisma } = require('../src/db/prisma');
 
@@ -134,5 +138,24 @@ describe('getOnHandAtCostByDimension', () => {
     });
     expect(map.get('KISS001-BK')).toBeCloseTo(1000, 2);
     expect(map.get('KISS002-BK')).toBeCloseTo(400, 2);
+  });
+
+  it('returns on-hand units and weighted unit cost', async () => {
+    setMockRows([
+      { SKU: 'A', Store: 2, TotalOnHand: 10, Category: 556, CurrentCost: 100, Vendor: 'V1', Season: null },
+      { SKU: 'B', Store: 2, TotalOnHand: 5, Category: 556, CurrentCost: 80, Vendor: 'V1', Season: null },
+    ]);
+
+    const map = await getOnHandInventoryByDimension({
+      reportType: 'CATEGORY_SUMMARY',
+      storeOption: 'COMBINE',
+      criteria: {},
+    });
+
+    expect(map.get('556')).toMatchObject({
+      unitsOnHand: 15,
+      onHandAtCost: 1400,
+    });
+    expect(map.get('556')?.inventoryUnitCost).toBeCloseTo(93.33, 2);
   });
 });

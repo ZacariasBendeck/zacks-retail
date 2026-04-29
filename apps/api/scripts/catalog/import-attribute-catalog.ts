@@ -49,6 +49,7 @@ interface DimensionIn {
 interface ValueIn {
   code: string;
   labelEs: string;
+  descriptionEs?: string | null;
   sortOrder: number;
   isActive: boolean;
 }
@@ -196,15 +197,16 @@ async function upsertValues(
   for (const d of dimensions) {
     for (const v of d.values) {
       const r = await client.query<{ inserted: boolean }>(
-        `INSERT INTO app.attribute_value (dimension_id, code, label_es, sort_order, is_active)
-         SELECT dim.id, $2, $3, $4, $5
+        `INSERT INTO app.attribute_value (dimension_id, code, label_es, description_es, sort_order, is_active)
+         SELECT dim.id, $2, $3, $4, $5, $6
          FROM app.attribute_dimension dim WHERE dim.code = $1
          ON CONFLICT (dimension_id, code) DO UPDATE SET
-           label_es   = EXCLUDED.label_es,
-           sort_order = EXCLUDED.sort_order,
-           is_active  = EXCLUDED.is_active
+           label_es       = EXCLUDED.label_es,
+           description_es = EXCLUDED.description_es,
+           sort_order     = EXCLUDED.sort_order,
+           is_active      = EXCLUDED.is_active
          RETURNING (xmax = 0) AS inserted`,
-        [d.code, v.code, v.labelEs, v.sortOrder, v.isActive],
+        [d.code, v.code, v.labelEs, v.descriptionEs ?? null, v.sortOrder, v.isActive],
       );
       if (r.rows[0]?.inserted) counts.valuesInserted += 1;
       else counts.valuesUpdated += 1;

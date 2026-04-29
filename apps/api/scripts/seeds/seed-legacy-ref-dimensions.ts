@@ -50,9 +50,11 @@ interface DimensionSpec {
 
 const DIMENSIONS: DimensionSpec[] = [
   { code: 'color',            labelEs: 'Color',             descriptionEs: 'Color dominante del zapato',                sortOrder: 500, refTable: 'colors' },
+  { code: 'shoe_type',        labelEs: 'Tipo de Zapato',    descriptionEs: 'Clasificación general del zapato',          sortOrder: 505, refTable: 'shoe-types' },
   { code: 'width_type',       labelEs: 'Ancho',             descriptionEs: 'Ancho del zapato (calce)',                  sortOrder: 510, refTable: 'width-types' },
   { code: 'pattern',          labelEs: 'Patrón',            descriptionEs: 'Patrón o estampado del upper',              sortOrder: 520, refTable: 'patterns' },
   { code: 'finish',           labelEs: 'Acabado',           descriptionEs: 'Acabado superficial (brilloso, mate, …)',   sortOrder: 530, refTable: 'finishes' },
+  { code: 'closure_type',     labelEs: 'Tipo de Cierre',    descriptionEs: 'Mecanismo de cierre o silueta RICS',        sortOrder: 535, refTable: 'closure-types' },
   { code: 'accessory',        labelEs: 'Accesorio',         descriptionEs: 'Accesorio o adorno principal',              sortOrder: 540, refTable: 'accessories' },
   { code: 'heel_height',      labelEs: 'Altura del Tacón',  descriptionEs: 'Rango de altura del tacón',                 sortOrder: 550, refTable: 'heel-heights' },
   { code: 'heel_shape',       labelEs: 'Forma del Tacón',   descriptionEs: 'Forma/estilo del tacón',                    sortOrder: 560, refTable: 'heel-shapes' },
@@ -60,6 +62,9 @@ const DIMENSIONS: DimensionSpec[] = [
   { code: 'upper_material',   labelEs: 'Material Superior', descriptionEs: 'Material del upper (parte superior)',       sortOrder: 580, refTable: 'upper-materials' },
   { code: 'outsole_material', labelEs: 'Material de Suela', descriptionEs: 'Material de la suela exterior',             sortOrder: 590, refTable: 'outsole-materials' },
   { code: 'heel_material',    labelEs: 'Material del Tacón', descriptionEs: 'Material del tacón',                       sortOrder: 600, refTable: 'heel-materials' },
+  { code: 'occasion',         labelEs: 'Ocasión',            descriptionEs: 'Ocasión de uso',                            sortOrder: 640, refTable: 'occasions' },
+  { code: 'target_audience',  labelEs: 'Público Objetivo',   descriptionEs: 'Segmento objetivo',                         sortOrder: 650, refTable: 'target-audiences' },
+  { code: 'label_type',       labelEs: 'Tipo de Etiqueta',   descriptionEs: 'Tipo de etiqueta RICS',                     sortOrder: 660, refTable: 'label-types' },
 ];
 
 async function fetchRefData(): Promise<Record<string, RefRow[]>> {
@@ -122,7 +127,7 @@ async function main(): Promise<void> {
     await client.end();
   }
 
-  console.log('\n  OK — 11 dimensions seeded.');
+  console.log(`\n  OK - ${DIMENSIONS.length} dimensions seeded.`);
 }
 
 main().catch((err) => {

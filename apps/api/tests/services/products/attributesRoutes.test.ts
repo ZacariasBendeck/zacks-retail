@@ -14,6 +14,8 @@ const replaceMock = jest.fn();
 const bulkAssignMock = jest.fn();
 const findCodesMock = jest.fn();
 const replaceMacroRulesMock = jest.fn();
+const createValueMock = jest.fn();
+const updateValueMock = jest.fn();
 
 jest.mock('../../../src/repositories/products/AttributesRepository', () => {
   const DIMS_WITH_COUNTS = [
@@ -23,8 +25,8 @@ jest.mock('../../../src/repositories/products/AttributesRepository', () => {
       sortOrder: 10,
       isMultiValue: false,
       values: [
-        { code: 'zb', labelEs: 'Zacarias Bendeck', sortOrder: 10, skuCount: 50 },
-        { code: 'ab', labelEs: 'AB', sortOrder: 20, skuCount: 75 },
+        { id: 1, code: 'zb', labelEs: 'Zacarias Bendeck', descriptionEs: 'Zack, Zacarias', sortOrder: 10, isActive: true, skuCount: 50 },
+        { id: 2, code: 'ab', labelEs: 'AB', descriptionEs: null, sortOrder: 20, isActive: true, skuCount: 75 },
       ],
     },
     {
@@ -32,7 +34,7 @@ jest.mock('../../../src/repositories/products/AttributesRepository', () => {
       labelEs: 'Tipo de Descuento',
       sortOrder: 40,
       isMultiValue: true,
-      values: [{ code: 'pct_50', labelEs: '50% off', sortOrder: 150, skuCount: 12 }],
+      values: [{ id: 3, code: 'pct_50', labelEs: '50% off', descriptionEs: null, sortOrder: 150, isActive: true, skuCount: 12 }],
     },
   ];
   const DIMS_BARE = DIMS_WITH_COUNTS.map((d) => ({
@@ -110,6 +112,8 @@ jest.mock('../../../src/repositories/products/AttributesRepository', () => {
       getAttributeMacroRuleSet: jest.fn(async () => Ok(MACRO_RULE_SET)),
       replaceAttributeMacroRules: (...args: unknown[]) => replaceMacroRulesMock(...args),
       bulkAssign: (...args: unknown[]) => bulkAssignMock(...args),
+      createValue: (...args: unknown[]) => createValueMock(...args),
+      updateValue: (...args: unknown[]) => updateValueMock(...args),
     },
   };
 });
@@ -140,6 +144,8 @@ beforeEach(() => {
   bulkAssignMock.mockReset();
   findCodesMock.mockReset();
   replaceMacroRulesMock.mockReset();
+  createValueMock.mockReset();
+  updateValueMock.mockReset();
 });
 
 describe('GET /api/v1/products/attributes/dimensions', () => {
@@ -148,6 +154,7 @@ describe('GET /api/v1/products/attributes/dimensions', () => {
     expect(res.status).toBe(200);
     expect(Array.isArray(res.body)).toBe(true);
     expect(res.body[0].code).toBe('buyer');
+    expect(res.body[0].values[0].descriptionEs).toBe('Zack, Zacarias');
     expect(res.body[0].values[0].skuCount).toBeUndefined();
   });
 
@@ -155,6 +162,66 @@ describe('GET /api/v1/products/attributes/dimensions', () => {
     const res = await request(app).get('/api/v1/products/attributes/dimensions?withCounts=true');
     expect(res.status).toBe(200);
     expect(res.body[0].values[0].skuCount).toBe(50);
+  });
+});
+
+describe('value admin routes', () => {
+  it('creates a value with selection guidance', async () => {
+    createValueMock.mockResolvedValue(
+      Ok({
+        id: 99,
+        code: 'espadrille',
+        labelEs: 'Espadrille',
+        descriptionEs: 'Yute, alpargata; usar para forro de tacón tejido.',
+        sortOrder: 10,
+        isActive: true,
+      }),
+    );
+
+    const res = await request(app)
+      .post('/api/v1/products/attributes/dimensions/heel_material/values')
+      .send({
+        code: 'espadrille',
+        labelEs: 'Espadrille',
+        descriptionEs: ' Yute, alpargata; usar para forro de tacón tejido. ',
+        sortOrder: 10,
+      });
+
+    expect(res.status).toBe(201);
+    expect(createValueMock).toHaveBeenCalledWith(
+      'heel_material',
+      {
+        code: 'espadrille',
+        labelEs: 'Espadrille',
+        descriptionEs: 'Yute, alpargata; usar para forro de tacón tejido.',
+        sortOrder: 10,
+      },
+    );
+    expect(res.body.descriptionEs).toContain('alpargata');
+  });
+
+  it('updates and clears value guidance', async () => {
+    updateValueMock.mockResolvedValue(
+      Ok({
+        id: 99,
+        code: 'espadrille',
+        labelEs: 'Espadrille',
+        descriptionEs: null,
+        sortOrder: 10,
+        isActive: true,
+      }),
+    );
+
+    const res = await request(app)
+      .patch('/api/v1/products/attributes/values/99')
+      .send({ descriptionEs: '   ' });
+
+    expect(res.status).toBe(200);
+    expect(updateValueMock).toHaveBeenCalledWith(
+      99,
+      { descriptionEs: null },
+    );
+    expect(res.body.descriptionEs).toBeNull();
   });
 });
 

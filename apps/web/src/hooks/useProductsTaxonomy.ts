@@ -107,7 +107,10 @@ export function useCreateCategory() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (input: CategoryInput) => categoriesApi.create(input),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['taxonomy', 'categories'] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['taxonomy', 'categories'] })
+      qc.invalidateQueries({ queryKey: ['product-families'] })
+    },
   })
 }
 export function useUpdateCategory() {
@@ -115,14 +118,20 @@ export function useUpdateCategory() {
   return useMutation({
     mutationFn: ({ number, patch }: { number: number; patch: Partial<CategoryInput> }) =>
       categoriesApi.update(number, patch),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['taxonomy', 'categories'] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['taxonomy', 'categories'] })
+      qc.invalidateQueries({ queryKey: ['product-families'] })
+    },
   })
 }
 export function useDeleteCategory() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (n: number) => categoriesApi.remove(n),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['taxonomy', 'categories'] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['taxonomy', 'categories'] })
+      qc.invalidateQueries({ queryKey: ['product-families'] })
+    },
   })
 }
 

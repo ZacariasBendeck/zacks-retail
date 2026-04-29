@@ -38,11 +38,9 @@ For the detailed source-to-target map, see [render-conversion-day-matrix.md](ren
 - the read-only RICS MDB source folder, normally `E:\data\rics-mdbs`
 - access to the target Render-side upload location
 - access to the target Render database / runtime environment
-- the optional CRM sidecar files if customer-history rehearsal is in scope:
+- the optional customer files if customer-history rehearsal is in scope:
   - `Customer.csv`
   - `MailListNames.csv`
-  - `ticket_header.csv`
-  - `ticket_detail.csv`
 
 Recommended before each run:
 
@@ -80,16 +78,16 @@ A rehearsal run is considered usable when all of these are true:
 Run:
 
 ```bash
-pnpm --filter @benlow-rics/api cutover:render-export -- --mdb-dir <mdb-dir> --out <bundle-dir> [--customer <Customer.csv> --mail <MailListNames.csv> --ticket-header <ticket_header.csv> --ticket-detail <ticket_detail.csv>]
+pnpm --filter @benlow-rics/api cutover:render-export -- --mdb-dir <mdb-dir> --out <bundle-dir> [--customer <Customer.csv> --mail <MailListNames.csv>]
 ```
 
 Example with customer-history files:
 
 ```bash
-pnpm --filter @benlow-rics/api cutover:render-export -- --mdb-dir E:\data\rics-mdbs --out E:\cutover-bundles\render-conversion-20260425-run01 --customer E:\exports\Customer.csv --mail E:\exports\MailListNames.csv --ticket-header E:\exports\ticket_header.csv --ticket-detail E:\exports\ticket_detail.csv
+pnpm --filter @benlow-rics/api cutover:render-export -- --mdb-dir E:\data\rics-mdbs --out E:\cutover-bundles\render-conversion-20260425-run01 --customer E:\exports\Customer.csv --mail E:\exports\MailListNames.csv
 ```
 
-The bundle directory is not the MDB source folder. It is the temporary output package created by the export step. It contains the extracted legacy CSV files, manifests, app-native snapshots, and optional CRM sidecars that will be uploaded to Render.
+The bundle directory is not the MDB source folder. It is the temporary output package created by the export step. It contains the extracted canonical RICS CSV files, manifests, app-native snapshots, and optional customer files that will be uploaded to Render. Sales tickets come from `RITRNSSV.MDB` in the canonical artifact pack, not from `crm/`.
 
 What this step should create:
 
@@ -109,7 +107,7 @@ Stop the run if any of these are true:
 
 Expected warnings from this step:
 
-- a CRM sidecar file was not supplied because that data is intentionally out of scope for this rehearsal
+- a customer file was not supplied because that data is intentionally out of scope for this rehearsal
 
 Unexpected warnings from this step:
 
@@ -185,7 +183,7 @@ Optional flags for focused rehearsals:
 ```bash
 pnpm --filter @benlow-rics/api cutover:render-load -- --bundle <bundle-dir> --skip-inventory-history
 pnpm --filter @benlow-rics/api cutover:render-load -- --bundle <bundle-dir> --skip-customers
-pnpm --filter @benlow-rics/api cutover:render-load -- --bundle <bundle-dir> --skip-customer-transactions
+pnpm --filter @benlow-rics/api cutover:render-load -- --bundle <bundle-dir> --skip-tickets
 pnpm --filter @benlow-rics/api cutover:render-load -- --bundle <bundle-dir> --skip-segmentation-defaults
 pnpm --filter @benlow-rics/api cutover:render-load -- --bundle <bundle-dir> --inventory-history-as-of 2026-04-25
 ```
@@ -205,7 +203,7 @@ What this step runs internally, in order:
 11. `import:app-inventory-history-from-artifact` unless skipped
 12. `import:employees-from-rics` from the canonical `RISLSPSN.MDB / Salespeople` artifact
 13. `import:customers` if customer CSVs are present and not skipped
-14. `import:customer-transactions:rics` if ticket CSVs are present and not skipped
+14. `import:tickets:rics` if RITRNSSV ticket CSVs are present and not skipped
 
 Stop the run if any of these are true:
 
@@ -217,7 +215,7 @@ Stop the run if any of these are true:
 Expected warnings from this step:
 
 - customer master import skipped because customer CSVs were intentionally not included
-- customer transaction import skipped because ticket CSVs were intentionally not included
+- sales ticket import skipped because ticket CSVs were intentionally not included
 - inventory history skipped because you intentionally passed `--skip-inventory-history`
 - unresolved SKU warnings in reference/history imports only if you already know the source data contains bad or unmapped legacy values and you are explicitly tracking them
 
@@ -287,15 +285,20 @@ Expected:
 
 ```sql
 select count(*) as customer_count from app.customer;
-select count(*) as sales_history_ticket_count from app.sales_history_ticket;
-select count(*) as sales_history_ticket_line_count from app.sales_history_ticket_line;
+select count(*) as ticket_header_count from app.ticket_header;
+select count(*) as ticket_detail_count from app.ticket_detail;
+select count(*) as ticket_tender_count from app.ticket_tender;
+select count(*) as derived_sales_history_ticket_count from app.sales_history_ticket;
+select count(*) as derived_sales_history_ticket_line_count from app.sales_history_ticket_line;
 ```
 
 Expected:
 
 - `app.customer` should be non-zero if customer CSVs were included
-- `app.sales_history_ticket` and `app.sales_history_ticket_line` should be non-zero if ticket CSVs were included
-- This confirms the normalized sales-history load only. It does not prove that every raw RICS ticket field was preserved. Use [`sales-ticket-mdb-to-app-coverage.md`](./sales-ticket-mdb-to-app-coverage.md) for the field-level sales ticket coverage list.
+- `app.ticket_header` and `app.ticket_detail` should be non-zero when ticket header/detail artifact files were included
+- `app.ticket_tender` should be non-zero when `legacy/ticket_tender.csv` was included in the canonical artifact pack
+- `app.sales_history_ticket` and `app.sales_history_ticket_line` are derived reporting compatibility tables and should be non-zero if ticket CSVs contained completed posted sales
+- Use [`sales-ticket-mdb-to-app-coverage.md`](./sales-ticket-mdb-to-app-coverage.md) for the field-level sales ticket coverage list.
 
 ## Operator Spot Checks In The App
 

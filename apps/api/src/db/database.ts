@@ -3229,7 +3229,6 @@ function seedReferenceData(db: DatabaseSync): void {
     ['BALL', 'Ballena'],
     ['GOMA', 'Goma'],
     ['ESPA', 'Espartillo'],
-    ['PLAN', 'Plano'],
   ];
   for (const [code, name] of heelMaterials) {
     db.exec(`INSERT OR IGNORE INTO ref_heel_materials (code, name) VALUES ('${code}', '${name}')`);

@@ -145,6 +145,18 @@ const patchRicsSalespersonBody = z.object({
   timeClockFullUser: z.boolean().optional(),
 });
 
+const createRicsSalespersonBody = z.object({
+  salespersonCode: z.string().trim().regex(/^[A-Za-z0-9]{1,4}$/),
+  displayName: z.string().trim().min(1).max(200),
+  active: z.boolean().optional(),
+  otherInformation: z.string().max(2000).optional().nullable(),
+  commissionRate: z.coerce.number().min(0).max(100).optional().nullable(),
+  commissionBase: commissionBaseSchema.optional(),
+  timeClockEnabled: z.boolean().optional(),
+  timeClockAdmin: z.boolean().optional(),
+  timeClockFullUser: z.boolean().optional(),
+});
+
 type RicsSalespersonRow = {
   id: string;
   salespersonCode: string;
@@ -174,6 +186,29 @@ function serializeRicsSalesperson(row: RicsSalespersonRow) {
     ricsSalespersonChangedAt: row.ricsSalespersonChangedAt?.toISOString?.() ?? null,
     ricsSalespersonImportedAt: row.ricsSalespersonImportedAt?.toISOString?.() ?? null,
   };
+}
+
+async function listRicsSalespeople(prisma: PrismaClient): Promise<RicsSalespersonRow[]> {
+  return prisma.$queryRawUnsafe<RicsSalespersonRow[]>(`
+    SELECT
+      id::text AS "id",
+      salesperson_code AS "salespersonCode",
+      display_name AS "displayName",
+      active,
+      other_information AS "otherInformation",
+      commission_rate::text AS "commissionRate",
+      commission_base AS "commissionBase",
+      rics_commission_method AS "ricsCommissionMethod",
+      time_clock_enabled AS "timeClockEnabled",
+      time_clock_admin AS "timeClockAdmin",
+      time_clock_full_user AS "timeClockFullUser",
+      time_clock_pin_hash IS NOT NULL AS "hasTimeClockPin",
+      legacy_cashier_pin_hash IS NOT NULL AS "hasLegacyCashierPin",
+      rics_salesperson_changed_at AS "ricsSalespersonChangedAt",
+      rics_salesperson_imported_at AS "ricsSalespersonImportedAt"
+    FROM app.employee
+    ORDER BY active DESC, salesperson_code ASC
+  `);
 }
 
 async function findRicsSalespersonByCode(
@@ -264,6 +299,10 @@ function handleEmployeeError(res: any, err: unknown): boolean {
     res.status(409).json({ error: { code: 'CONFLICT', message: 'Employee already exists' } });
     return true;
   }
+  if ((err as any)?.code === '23505') {
+    res.status(409).json({ error: { code: 'SALESPERSON_CODE_CONFLICT', message: 'Salesperson code already in use' } });
+    return true;
+  }
   return false;
 }
 
@@ -283,6 +322,67 @@ export function createEmployeeRoutes(prisma: PrismaClient): Router {
       const employees = await listEmployees(prisma);
       res.json({ employees: employees.map(sanitizeEmployee) });
     } catch (err) {
+      next(err);
+    }
+  });
+
+  router.get('/salespeople', requirePermission(PERMISSIONS.EMPLOYEES_VIEW), async (_req, res, next) => {
+    try {
+      const salespeople = await listRicsSalespeople(prisma);
+      res.json({ salespeople: salespeople.map(serializeRicsSalesperson) });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.post('/salespeople', requirePermission(PERMISSIONS.EMPLOYEES_MANAGE), async (req, res, next) => {
+    try {
+      const parsed = createRicsSalespersonBody.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({
+          error: { code: 'INVALID_BODY', message: parsed.error.message },
+        });
+      }
+
+      const salespersonCode = normalizeSalespersonCodeParam(parsed.data.salespersonCode);
+      const existing = await findRicsSalespersonByCode(prisma, salespersonCode);
+      if (existing) {
+        return res.status(409).json({
+          error: { code: 'SALESPERSON_CODE_CONFLICT', message: 'Salesperson code already in use' },
+        });
+      }
+
+      await prisma.$executeRawUnsafe(
+        `
+        INSERT INTO app.employee (
+          salesperson_code,
+          display_name,
+          active,
+          other_information,
+          commission_rate,
+          commission_base,
+          time_clock_enabled,
+          time_clock_admin,
+          time_clock_full_user
+        )
+        VALUES ($1, $2, $3, $4, $5::numeric, $6, $7, $8, $9)
+        `,
+        salespersonCode,
+        parsed.data.displayName.trim(),
+        parsed.data.active ?? true,
+        parsed.data.otherInformation ?? null,
+        parsed.data.commissionRate ?? null,
+        parsed.data.commissionBase ?? 'NET_SALES',
+        parsed.data.timeClockEnabled ?? true,
+        parsed.data.timeClockAdmin ?? false,
+        parsed.data.timeClockFullUser ?? false,
+      );
+
+      clearSalesReportCache();
+      const salesperson = await findRicsSalespersonByCode(prisma, salespersonCode);
+      res.status(201).json({ salesperson: serializeRicsSalesperson(salesperson!) });
+    } catch (err) {
+      if (handleEmployeeError(res, err)) return;
       next(err);
     }
   });
@@ -351,6 +451,28 @@ export function createEmployeeRoutes(prisma: PrismaClient): Router {
       const salesperson = await findRicsSalespersonByCode(prisma, salespersonCode);
       res.json({ salesperson: serializeRicsSalesperson(salesperson!) });
     } catch (err) {
+      next(err);
+    }
+  });
+
+  router.delete('/salespeople/:code', requirePermission(PERMISSIONS.EMPLOYEES_MANAGE), async (req, res, next) => {
+    try {
+      const salespersonCode = normalizeSalespersonCodeParam(String(req.params.code));
+      const existing = await findRicsSalespersonByCode(prisma, salespersonCode);
+      if (!existing) {
+        return res.status(404).json({
+          error: { code: 'SALESPERSON_NOT_FOUND', message: 'Salesperson not found' },
+        });
+      }
+
+      await prisma.$executeRawUnsafe(
+        `DELETE FROM app.employee WHERE salesperson_code = $1`,
+        salespersonCode,
+      );
+      clearSalesReportCache();
+      res.status(204).send();
+    } catch (err) {
+      if (handleEmployeeError(res, err)) return;
       next(err);
     }
   });

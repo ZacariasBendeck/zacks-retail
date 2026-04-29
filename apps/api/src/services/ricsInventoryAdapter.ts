@@ -184,6 +184,23 @@ export interface InquiryOpenPoRow {
   openQty: number;
 }
 
+export interface InquiryPurchaseOrderHistoryRow {
+  poNumber: string;
+  shipStore: number | null;
+  vendorCode: string | null;
+  buyer: string | null;
+  orderDate: string | null;
+  dueDate: string | null;
+  lastReceivedAt: string | null;
+  orderType: string | null;
+  legacyStatus: string | null;
+  current: boolean | null;
+  orderedQty: number;
+  receivedQty: number;
+  openQty: number;
+  lineCount: number;
+}
+
 export interface InventoryInquiry {
   sku: string;
   master: {
@@ -1055,6 +1072,10 @@ async function loadOpenPurchaseOrderCellRowsForSku(
 }
 
 // ─────────────────────────── master lookup ────────────────────────────────
+
+function sumQuantityArray(values: number[] | null | undefined): number {
+  return (values ?? []).reduce((sum, value) => sum + Number(value ?? 0), 0);
+}
 
 interface MasterRow {
   SKU: string | null;
@@ -2540,6 +2561,89 @@ export async function getInquiryOpenPoRows(sku: string, storeId?: number): Promi
  * Size matching is case-insensitive exact-match against the SizeType's column
  * labels (or row labels when the shoe grid uses rows for width).
  */
+export async function getInquiryPurchaseOrderHistory(
+  sku: string,
+  storeId?: number,
+): Promise<InquiryPurchaseOrderHistoryRow[]> {
+  const trimmed = (sku ?? '').trim();
+  if (!trimmed) return [];
+
+  const skuRow = await loadAppInventorySkuByCode(trimmed);
+  if (!skuRow) return [];
+
+  const effectiveStoreId =
+    storeId != null && Number.isFinite(Number(storeId)) ? Math.trunc(Number(storeId)) : undefined;
+
+  const rows = await prisma.purchaseOrderLegacyLine.findMany({
+    where: {
+      OR: [{ skuId: skuRow.id }, { skuCode: skuRow.code ?? skuRow.provisionalCode }],
+      purchaseOrder: {
+        ...(effectiveStoreId != null ? { shipStore: effectiveStoreId } : {}),
+      },
+    },
+    select: {
+      poNumber: true,
+      orderedQtys: true,
+      receivedQtys: true,
+      purchaseOrder: {
+        select: {
+          shipStore: true,
+          vendorCode: true,
+          buyer: true,
+          orderDate: true,
+          dueDate: true,
+          lastReceivedAt: true,
+          orderType: true,
+          legacyStatus: true,
+          current: true,
+        },
+      },
+    },
+    orderBy: [{ poNumber: 'asc' }],
+  });
+
+  const byPo = new Map<string, InquiryPurchaseOrderHistoryRow>();
+  for (const row of rows) {
+    const orderedQty = sumQuantityArray(row.orderedQtys);
+    const receivedQty = sumQuantityArray(row.receivedQtys);
+    if (orderedQty === 0 && receivedQty === 0) continue;
+
+    const existing = byPo.get(row.poNumber);
+    if (existing) {
+      existing.orderedQty += orderedQty;
+      existing.receivedQty += receivedQty;
+      existing.openQty += orderedQty - receivedQty;
+      existing.lineCount += 1;
+      continue;
+    }
+
+    byPo.set(row.poNumber, {
+      poNumber: row.poNumber,
+      shipStore: row.purchaseOrder.shipStore,
+      vendorCode: row.purchaseOrder.vendorCode,
+      buyer: row.purchaseOrder.buyer,
+      orderDate: row.purchaseOrder.orderDate?.toISOString() ?? null,
+      dueDate: row.purchaseOrder.dueDate?.toISOString() ?? null,
+      lastReceivedAt: row.purchaseOrder.lastReceivedAt?.toISOString() ?? null,
+      orderType: row.purchaseOrder.orderType,
+      legacyStatus: row.purchaseOrder.legacyStatus,
+      current: row.purchaseOrder.current,
+      orderedQty,
+      receivedQty,
+      openQty: orderedQty - receivedQty,
+      lineCount: 1,
+    });
+  }
+
+  return [...byPo.values()].sort((a, b) => {
+    const dateA = a.lastReceivedAt ?? a.orderDate ?? '';
+    const dateB = b.lastReceivedAt ?? b.orderDate ?? '';
+    const dateCmp = dateB.localeCompare(dateA);
+    if (dateCmp !== 0) return dateCmp;
+    return a.poNumber.localeCompare(b.poNumber);
+  });
+}
+
 export async function findBySize(params: FindBySizeParams = {}): Promise<FindBySizeResult> {
   const seedSku = (params.seedSku ?? '').trim() || null;
   const columnLabel = (params.columnLabel ?? '').trim() || null;

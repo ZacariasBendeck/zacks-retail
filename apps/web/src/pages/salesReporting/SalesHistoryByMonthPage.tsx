@@ -202,6 +202,7 @@ type HistoryDisplayRow =
       storeId?: number
       pictureFileName?: string | null
       metric: MetricDef
+      isPriorYear?: boolean
       values: number[]
       total: number
     }
@@ -217,6 +218,7 @@ type HistoryDisplayRow =
       storeId?: number
       pictureFileName?: string | null
       metric: MetricDef
+      isPriorYear?: boolean
       values: number[]
       total: number
     }
@@ -257,6 +259,25 @@ function buildDisplayRows(
         values: row.metrics[metric.key] ?? new Array(monthCount).fill(0),
         total: row.totals[metric.key] ?? 0,
       })
+      const priorValues = row.priorYearMetrics?.[metric.key]
+      if (priorValues) {
+        rows.push({
+          key: `${kind}|${row.groupKey ?? ''}|${row.key}|${metric.key}|py`,
+          kind,
+          sourceIndex: rowIndex,
+          dimLabel: '',
+          groupKey: row.key,
+          hasChildren: options.hasChildren,
+          isChild: options.isChild,
+          skuCode: isSkuRow ? row.key : undefined,
+          storeId,
+          pictureFileName: isSkuRow ? row.pictureFileName ?? null : null,
+          metric,
+          isPriorYear: true,
+          values: priorValues,
+          total: row.priorYearTotals?.[metric.key] ?? 0,
+        })
+      }
     })
   }
 
@@ -279,6 +300,19 @@ function buildDisplayRows(
       values: block.columnTotals[metric.key] ?? new Array(monthCount).fill(0),
       total: block.grandTotals[metric.key] ?? 0,
     })
+    const priorValues = block.priorYearColumnTotals?.[metric.key]
+    if (priorValues) {
+      rows.push({
+        key: `total|${metric.key}|py`,
+        kind: 'total',
+        sourceIndex: block.rows.length,
+        dimLabel: '',
+        metric,
+        isPriorYear: true,
+        values: priorValues,
+        total: block.priorYearGrandTotals?.[metric.key] ?? 0,
+      })
+    }
   })
   return rows
 }
@@ -364,8 +398,10 @@ function buildColumns(
       width: 190,
       render: (_: unknown, row) => (
         row.kind === 'total' || row.kind === 'group'
-          ? <Text strong>{row.metric.label}</Text>
-          : <span data-testid={`metric-row-${row.metric.key}`}>{row.metric.label}</span>
+          ? <Text strong>{row.metric.label}{row.isPriorYear ? ' PY' : ''}</Text>
+          : <span data-testid={`metric-row-${row.metric.key}${row.isPriorYear ? '-py' : ''}`}>
+              {row.metric.label}{row.isPriorYear ? ' PY' : ''}
+            </span>
       ),
     },
     ...monthCols,
@@ -493,13 +529,17 @@ function Results({ report, stickyHeaders }: ResultsProps) {
           : 'Category'
 
   const metrics = selectedMetricDefs(report.dataToPrint)
+  const chartSeries = report.priorYearChartSeries?.length
+    ? [...report.chartSeries, ...report.priorYearChartSeries]
+    : report.chartSeries
 
   return (
     <>
       <Card style={{ marginBottom: 16 }} styles={{ body: { padding: 16 } }}>
-        <SalesHistoryChart months={report.months} series={report.chartSeries} />
+        <SalesHistoryChart months={report.months} series={chartSeries} />
         <Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0, fontSize: 12 }}>
           Chart tracks <b>Net Sales</b> regardless of the metric shown in the table.
+          {report.priorYearMonths?.length ? ' PY rows use ticket history for the same calendar months one year earlier.' : ''}
         </Paragraph>
       </Card>
 
@@ -541,6 +581,7 @@ export default function SalesHistoryByMonthPage() {
   const [endMonth, setEndMonth] = useState<Dayjs>(() => dayjs().startOf('month'))
   const [detailLevel, setDetailLevel] = useState<SalesHistoryByMonthDetailLevel>('subtotals')
   const [dataToPrint, setDataToPrint] = useState<SalesHistoryByMonthMetricKey[]>(['netSales'])
+  const [includePriorYear, setIncludePriorYear] = useState(false)
   const [deferredChecked, setDeferredChecked] = useState<SalesHistoryByMonthDeferredMetricKey[]>([])
 
   // Criteria — mirrors SalesAnalysisPage: separate selected[] and rawText per facet.
@@ -608,6 +649,7 @@ export default function SalesHistoryByMonthPage() {
     }
     if (p.sortBy) setSortBy(p.sortBy)
     if (p.combineStores !== undefined) setCombineStores(!!p.combineStores)
+    if (p.includePriorYear !== undefined) setIncludePriorYear(!!p.includePriorYear)
     if (p.endMonth) setEndMonth(dayjs(`${p.endMonth}-01`))
     if (p.detailLevel) setDetailLevel(p.detailLevel)
     if (Array.isArray(p.dataToPrint)) setDataToPrint(p.dataToPrint)
@@ -628,6 +670,7 @@ export default function SalesHistoryByMonthPage() {
         endMonth: p.endMonth,
         sortBy: p.sortBy ?? 'vendor',
         combineStores: p.combineStores ?? true,
+        includePriorYear: p.includePriorYear ?? false,
         detailLevel: p.detailLevel ?? 'subtotals',
         dataToPrint: p.dataToPrint,
         deferredMetrics: Array.isArray(p.deferredMetrics) ? p.deferredMetrics : [],
@@ -675,6 +718,7 @@ export default function SalesHistoryByMonthPage() {
       endMonth: endMonth.format('YYYY-MM'),
       sortBy,
       combineStores,
+      includePriorYear,
       detailLevel,
       dataToPrint,
       deferredMetrics: deferredChecked,
@@ -800,6 +844,7 @@ export default function SalesHistoryByMonthPage() {
                 endMonth: endMonth.format('YYYY-MM'),
                 sortBy,
                 combineStores,
+                includePriorYear,
                 detailLevel,
                 dataToPrint,
                 deferredMetrics: deferredChecked,
@@ -824,6 +869,7 @@ export default function SalesHistoryByMonthPage() {
                 endMonth: endMonth.format('YYYY-MM'),
                 sortBy,
                 combineStores,
+                includePriorYear,
                 detailLevel,
                 dataToPrint,
                 deferredMetrics: deferredChecked,
@@ -950,6 +996,14 @@ export default function SalesHistoryByMonthPage() {
                     onChange={setCombineStores}
                   />
                   <Text style={{ marginLeft: 8 }}>Combine stores</Text>
+                </div>
+                <div>
+                  <Switch
+                    aria-label="Include prior year"
+                    checked={includePriorYear}
+                    onChange={setIncludePriorYear}
+                  />
+                  <Text style={{ marginLeft: 8 }}>Include prior year</Text>
                 </div>
               </Space>
             </Card>
@@ -1088,6 +1142,7 @@ export default function SalesHistoryByMonthPage() {
                 { label: 'Sort', value: query.sortBy === 'vendor' ? 'Vendor' : 'Category' },
                 query.detailLevel ? { label: 'Detail', value: detailLevelLabel(query.detailLevel) } : null,
                 query.stores ? { label: 'Stores', value: storesChipValue(query.stores, query.combineStores ?? true) } : null,
+                query.includePriorYear ? { label: 'Prior Year', value: 'Ticket-backed' } : null,
                 query.dataToPrint && query.dataToPrint.length
                   ? { label: 'Metrics', value: metricsChipValue(query.dataToPrint) }
                   : null,

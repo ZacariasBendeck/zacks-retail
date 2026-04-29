@@ -16,6 +16,19 @@ export interface RicsSalesperson {
   ricsSalespersonImportedAt: string | null
 }
 
+export type RicsSalespersonCreate = Pick<
+  RicsSalesperson,
+  | 'salespersonCode'
+  | 'displayName'
+  | 'active'
+  | 'otherInformation'
+  | 'commissionRate'
+  | 'commissionBase'
+  | 'timeClockEnabled'
+  | 'timeClockAdmin'
+  | 'timeClockFullUser'
+>
+
 export type RicsSalespersonPatch = Partial<Pick<
   RicsSalesperson,
   | 'displayName'
@@ -37,6 +50,31 @@ async function parseEmployeeResponse(res: Response): Promise<{ salesperson: Rics
   return res.json()
 }
 
+async function parseSalespeopleResponse(res: Response): Promise<{ salespeople: RicsSalesperson[] }> {
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    const message = body?.error?.message || `Employee request failed: ${res.status}`
+    throw new Error(message)
+  }
+  return res.json()
+}
+
+export async function fetchRicsSalespeople(): Promise<RicsSalesperson[]> {
+  const res = await fetch('/api/v1/employees/salespeople')
+  const body = await parseSalespeopleResponse(res)
+  return body.salespeople
+}
+
+export async function createRicsSalesperson(input: RicsSalespersonCreate): Promise<RicsSalesperson> {
+  const res = await fetch('/api/v1/employees/salespeople', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+  const body = await parseEmployeeResponse(res)
+  return body.salesperson
+}
+
 export async function fetchRicsSalesperson(code: string): Promise<RicsSalesperson> {
   const res = await fetch(`/api/v1/employees/salespeople/${encodeURIComponent(code)}`)
   const body = await parseEmployeeResponse(res)
@@ -54,4 +92,15 @@ export async function updateRicsSalesperson(
   })
   const body = await parseEmployeeResponse(res)
   return body.salesperson
+}
+
+export async function deleteRicsSalesperson(code: string): Promise<void> {
+  const res = await fetch(`/api/v1/employees/salespeople/${encodeURIComponent(code)}`, {
+    method: 'DELETE',
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    const message = body?.error?.message || `Employee request failed: ${res.status}`
+    throw new Error(message)
+  }
 }

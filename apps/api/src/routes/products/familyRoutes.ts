@@ -2,12 +2,13 @@
  * Product Family routes — mount at /api/v1/products/families.
  *
  * READS
- *   GET  /                              — list all 11 families (sort_order asc)
+ *   GET  /                              — list all families (sort_order asc)
  *   GET  /:code/categories              — categories assigned to the family (joined w/ dept)
  *   GET  /:code/attribute-rules         — dimensions ruled for this family
  *   GET  /by-category/:categoryNumber   — resolve a RICS category to its dept + family
  *
  * ADMIN WRITES
+ *   POST  /                             — create a product family
  *   PATCH /:code                        — edit labelEs, descriptionEs, sortOrder
  *   PUT   /:code/categories             — replace category mapping (body: { categories: number[] })
  *                                         query ?force=true to override orphan-assignment 409
@@ -20,6 +21,7 @@
 import { Router, Request, Response, IRouter } from 'express';
 import {
   listFamilies,
+  createFamily,
   getCategoriesForFamily,
   resolveCategory,
   updateFamilyMetadata,
@@ -63,6 +65,17 @@ router.get('/', async (_req: Request, res: Response) => {
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ error: { code: 'INTERNAL', message } });
   }
+});
+
+router.post('/', async (req: Request, res: Response) => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const input = {
+    code: typeof body.code === 'string' ? body.code : '',
+    labelEs: typeof body.labelEs === 'string' ? body.labelEs : '',
+    descriptionEs: body.descriptionEs === null || typeof body.descriptionEs === 'string' ? body.descriptionEs : null,
+    sortOrder: typeof body.sortOrder === 'number' ? body.sortOrder : null,
+  };
+  send(res, await createFamily(input, resolveActor(req)), 201);
 });
 
 router.get('/by-category/:categoryNumber', async (req: Request, res: Response) => {

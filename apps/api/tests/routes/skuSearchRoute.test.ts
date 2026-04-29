@@ -74,6 +74,21 @@ describe('GET /api/v1/skus/search', () => {
     expect(typeof res.body.total).toBe('number');
   });
 
+  it('passes skuMatchMode through to the lookup adapter', async () => {
+    mockSearch.mockResolvedValue({ rows: FIXTURE_ROWS, total: 2 });
+
+    const res = await request(app).get('/api/v1/skus/search?q=ZN02&skuMatchMode=prefix');
+
+    expect(res.status).toBe(200);
+    expect(mockSearch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        q: 'ZN02',
+        searchField: 'SKU',
+        skuMatchMode: 'prefix',
+      }),
+    );
+  });
+
   it('applies descContains filter', async () => {
     const sandptRows: SkuLookupRow[] = [FIXTURE_ROWS[0]];
     mockSearch.mockResolvedValue({ rows: sandptRows, total: 1 });

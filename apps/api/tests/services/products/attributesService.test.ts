@@ -28,6 +28,19 @@ function fakeRepo() {
       rules: [],
     })),
     bulkAssign: jest.fn(async () => Ok(0)),
+    createValue: jest.fn(async (_dimensionCode: string, input: { code: string; labelEs: string; descriptionEs?: string | null; sortOrder: number }) =>
+      Ok({ id: 1, ...input, descriptionEs: input.descriptionEs ?? null, isActive: true })
+    ),
+    updateValue: jest.fn(async (id: number, patch: { labelEs?: string; descriptionEs?: string | null; sortOrder?: number; isActive?: boolean }) =>
+      Ok({
+        id,
+        code: 'espadrille',
+        labelEs: patch.labelEs ?? 'Espadrille',
+        descriptionEs: patch.descriptionEs ?? null,
+        sortOrder: patch.sortOrder ?? 10,
+        isActive: patch.isActive ?? true,
+      })
+    ),
   };
 }
 
@@ -168,6 +181,48 @@ describe('attributesService.replaceMacroRules', () => {
         action: 'attribute_derivation_rules_replace',
         targetTable: 'app.attribute_derivation_rule',
         targetPk: 'color->color_family',
+      }),
+    );
+  });
+});
+
+describe('attributesService value admin', () => {
+  it('passes value descriptions through create/update and audits them', async () => {
+    const repo = fakeRepo();
+    const audit = fakeAudit();
+    const service = createAttributesService({
+      actor: 'operator@example',
+      audit,
+      repo: repo as unknown as typeof import('../../../src/repositories/products/AttributesRepository').AttributesRepository,
+    });
+
+    await service.createValue('heel_material', {
+      code: 'espadrille',
+      labelEs: 'Espadrille',
+      descriptionEs: 'Jute or woven heel wrap.',
+      sortOrder: 10,
+    });
+    await service.updateValue(1, { descriptionEs: null });
+
+    expect(repo.createValue).toHaveBeenCalledWith('heel_material', {
+      code: 'espadrille',
+      labelEs: 'Espadrille',
+      descriptionEs: 'Jute or woven heel wrap.',
+      sortOrder: 10,
+    });
+    expect(repo.updateValue).toHaveBeenCalledWith(1, { descriptionEs: null });
+    expect(audit.record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actor: 'operator@example',
+        action: 'attribute_value_create',
+        targetTable: 'app.attribute_value',
+      }),
+    );
+    expect(audit.record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actor: 'operator@example',
+        action: 'attribute_value_update',
+        targetTable: 'app.attribute_value',
       }),
     );
   });

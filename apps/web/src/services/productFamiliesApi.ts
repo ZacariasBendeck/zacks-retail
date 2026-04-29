@@ -56,6 +56,13 @@ export interface FamilyMetadataPatch {
   sortOrder?: number
 }
 
+export interface FamilyCreateInput {
+  code: string
+  labelEs: string
+  descriptionEs?: string | null
+  sortOrder?: number
+}
+
 export interface FamilyAttributeRuleInput {
   dimensionCode: string
   enabled: boolean
@@ -76,6 +83,12 @@ export const productFamiliesApi = {
     )
   },
 
+  create(input: FamilyCreateInput): Promise<ProductFamily> {
+    return request<ProductFamily>(BASE, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    })
+  },
   updateMetadata(code: string, patch: FamilyMetadataPatch): Promise<ProductFamily> {
     return request<ProductFamily>(`${BASE}/${encodeURIComponent(code)}`, {
       method: 'PATCH',

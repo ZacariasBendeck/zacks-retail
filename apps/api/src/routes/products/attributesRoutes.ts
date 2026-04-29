@@ -13,7 +13,7 @@
  *   GET  /skus/:code/attributes
  *
  * DIMENSION ADMIN
- *   POST   /attributes/dimensions
+ *   POST   /attributes/dimensions             (optional familyCode; omitted/null = universal)
  *   PATCH  /attributes/dimensions/:code
  *   DELETE /attributes/dimensions/:code           (409 on assignments-in-use)
  *   POST   /attributes/dimensions/reorder          { entries: [{code, sortOrder}] }
@@ -24,7 +24,7 @@
  *
  * VALUE ADMIN
  *   POST   /attributes/dimensions/:code/values
- *   PATCH  /attributes/values/:id                   (labelEs, sortOrder, isActive)
+ *   PATCH  /attributes/values/:id                   (labelEs, descriptionEs, sortOrder, isActive)
  *   DELETE /attributes/values/:id                   (409 on assignments-in-use; merge or deactivate instead)
  *   POST   /attributes/values/:id/deactivate        (soft-delete via is_active=false)
  *   POST   /attributes/values/:id/merge-into/:targetId
@@ -173,6 +173,9 @@ router.post('/attributes/dimensions', async (req: Request, res: Response) => {
       : null;
   const sortOrder = typeof body.sortOrder === 'number' ? body.sortOrder : Number(body.sortOrder ?? 0);
   const isMultiValue = body.isMultiValue === true || body.isMultiValue === 'true';
+  const familyCode = typeof body.familyCode === 'string' && body.familyCode.trim().length > 0
+    ? body.familyCode.trim()
+    : null;
   if (!code || !labelEs) {
     return res
       .status(422)
@@ -187,6 +190,7 @@ router.post('/attributes/dimensions', async (req: Request, res: Response) => {
       descriptionEs,
       sortOrder: Number.isFinite(sortOrder) ? sortOrder : 0,
       isMultiValue,
+      familyCode,
     }),
     201,
   );
@@ -268,6 +272,10 @@ router.post('/attributes/dimensions/:code/values', async (req: Request, res: Res
   const body = (req.body ?? {}) as Record<string, unknown>;
   const code = typeof body.code === 'string' ? body.code.trim() : '';
   const labelEs = typeof body.labelEs === 'string' ? body.labelEs.trim() : '';
+  const descriptionEs =
+    typeof body.descriptionEs === 'string' && body.descriptionEs.trim().length > 0
+      ? body.descriptionEs.trim()
+      : null;
   const sortOrder = typeof body.sortOrder === 'number' ? body.sortOrder : Number(body.sortOrder ?? 0);
   if (!code || !labelEs) {
     return res
@@ -280,6 +288,7 @@ router.post('/attributes/dimensions/:code/values', async (req: Request, res: Res
     await perRequest.createValue(paramString(req.params.code), {
       code,
       labelEs,
+      descriptionEs,
       sortOrder: Number.isFinite(sortOrder) ? sortOrder : 0,
     }),
     201,
@@ -292,8 +301,12 @@ router.patch('/attributes/values/:id', async (req: Request, res: Response) => {
     return res.status(400).json({ error: { code: 'INVALID_ID', message: 'value id must be integer.' } });
   }
   const body = (req.body ?? {}) as Record<string, unknown>;
-  const patch: Partial<{ labelEs: string; sortOrder: number; isActive: boolean }> = {};
+  const patch: Partial<{ labelEs: string; descriptionEs: string | null; sortOrder: number; isActive: boolean }> = {};
   if (typeof body.labelEs === 'string') patch.labelEs = body.labelEs.trim();
+  if (body.descriptionEs === null) patch.descriptionEs = null;
+  else if (typeof body.descriptionEs === 'string') {
+    patch.descriptionEs = body.descriptionEs.trim().length > 0 ? body.descriptionEs.trim() : null;
+  }
   if (typeof body.sortOrder === 'number') patch.sortOrder = body.sortOrder;
   if (typeof body.isActive === 'boolean') patch.isActive = body.isActive;
   const perRequest = createAttributesService({ actor: resolveActor(req) });

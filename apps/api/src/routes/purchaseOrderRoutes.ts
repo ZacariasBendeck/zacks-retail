@@ -1,6 +1,7 @@
 import { Router, Request, Response, IRouter } from 'express';
 import * as poService from '../services/purchaseOrderService';
 import * as otbService from '../services/otbBudgetService';
+import { getLegacyPurchaseOrderByNumber } from '../services/legacyPurchaseOrderService';
 import {
   buildOtbPolicyAuditEvents,
   recordOtbPolicyAuditEvents,
@@ -12,6 +13,10 @@ import {
   poStatusTransitionSchema,
   poListQuerySchema,
   poReceiveSchema,
+  duplicatePurchaseOrderSchema,
+  replicatePurchaseOrderSchema,
+  combinePurchaseOrdersSchema,
+  poReceiveFullSchema,
   poSubmitSchema,
   poCancelSchema,
   validate,
@@ -40,8 +45,8 @@ const router: IRouter = Router();
  *       404:
  *         description: Vendor or SKU not found
  */
-router.post('/', validate(createPurchaseOrderSchema), (req: Request, res: Response): void => {
-  const result = poService.createPurchaseOrder(req.body);
+router.post('/', validate(createPurchaseOrderSchema), async (req: Request, res: Response): Promise<void> => {
+  const result = await poService.createPurchaseOrder(req.body);
 
   if ('error' in result) {
     if (result.error === 'VENDOR_NOT_FOUND') {
@@ -51,6 +56,14 @@ router.post('/', validate(createPurchaseOrderSchema), (req: Request, res: Respon
     if (result.error.startsWith('SKU_NOT_FOUND')) {
       const skuId = result.error.split(':')[1];
       res.status(404).json({ error: { code: 'SKU_NOT_FOUND', message: `SKU ${skuId} not found.` } });
+      return;
+    }
+    if (result.error === 'PO_NUMBER_EXISTS') {
+      res.status(409).json({ error: { code: 'PO_NUMBER_EXISTS', message: 'Purchase order number already exists.' } });
+      return;
+    }
+    if (result.error === 'RESERVED_PO_PREFIX') {
+      res.status(409).json({ error: { code: 'RESERVED_PO_PREFIX', message: 'PO numbers starting with A or V are reserved.' } });
       return;
     }
   }
@@ -93,9 +106,36 @@ router.post('/', validate(createPurchaseOrderSchema), (req: Request, res: Respon
  *       200:
  *         description: Paginated list of purchase orders
  */
-router.get('/', validateQuery(poListQuerySchema), (req: Request, res: Response): void => {
+router.get('/', validateQuery(poListQuerySchema), async (req: Request, res: Response): Promise<void> => {
   const params = (req as any).validatedQuery;
-  const result = poService.listPurchaseOrders(params);
+  const result = await poService.listPurchaseOrders(params);
+  res.json(result);
+});
+
+router.get('/vendor-options', async (req: Request, res: Response): Promise<void> => {
+  const q = typeof req.query.q === 'string' ? req.query.q : undefined;
+  const pageSize = Number(req.query.pageSize);
+  const result = await poService.listPurchaseOrderVendorOptions({
+    q,
+    pageSize: Number.isFinite(pageSize) ? pageSize : undefined,
+  });
+  res.json(result);
+});
+
+router.get('/buyer-options', async (_req: Request, res: Response): Promise<void> => {
+  const result = await poService.listPurchaseOrderBuyerOptions();
+  res.json(result);
+});
+
+router.get('/sku-options', async (req: Request, res: Response): Promise<void> => {
+  const q = typeof req.query.q === 'string' ? req.query.q : undefined;
+  const vendorId = typeof req.query.vendorId === 'string' ? req.query.vendorId : undefined;
+  const pageSize = Number(req.query.pageSize);
+  const result = await poService.listPurchaseOrderSkuOptions({
+    q,
+    vendorId,
+    pageSize: Number.isFinite(pageSize) ? pageSize : undefined,
+  });
   res.json(result);
 });
 
@@ -109,9 +149,40 @@ router.get('/', validateQuery(poListQuerySchema), (req: Request, res: Response):
  *       200:
  *         description: List of overdue PO exceptions with days overdue
  */
-router.get('/overdue-exceptions', (_req: Request, res: Response): void => {
-  const exceptions = poService.listOverdueExceptions();
+router.get('/overdue-exceptions', async (_req: Request, res: Response): Promise<void> => {
+  const exceptions = await poService.listOverdueExceptions();
   res.json(exceptions);
+});
+
+router.get('/legacy/:poNumber', async (req: Request, res: Response): Promise<void> => {
+  const poNumberRaw = req.params.poNumber;
+  const poNumber = Array.isArray(poNumberRaw) ? poNumberRaw[0] : poNumberRaw;
+  const result = await getLegacyPurchaseOrderByNumber(poNumber);
+  if (!result) {
+    res.status(404).json({
+      error: { code: 'LEGACY_PO_NOT_FOUND', message: `Legacy purchase order ${poNumber} not found.` },
+    });
+    return;
+  }
+  res.json(result);
+});
+
+router.post('/combine', validate(combinePurchaseOrdersSchema), async (req: Request, res: Response): Promise<void> => {
+  const result = await poService.combinePurchaseOrders(req.body.sourcePoId, req.body.intoPoId, {
+    changedBy: req.body.changedBy,
+  });
+
+  if (result === null) {
+    res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Source or destination purchase order not found.' } });
+    return;
+  }
+
+  if ('error' in result) {
+    res.status(409).json({ error: { code: result.error, message: result.error } });
+    return;
+  }
+
+  res.json(result);
 });
 
 /**
@@ -131,13 +202,39 @@ router.get('/overdue-exceptions', (_req: Request, res: Response): void => {
  *       404:
  *         description: Purchase order not found
  */
-router.get('/:poId', (req: Request, res: Response): void => {
-  const po = poService.getPurchaseOrderById(req.params.poId as string);
+router.get('/:poId', async (req: Request, res: Response): Promise<void> => {
+  const po = await poService.getPurchaseOrderById(req.params.poId as string);
   if (!po) {
     res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Purchase order not found.' } });
     return;
   }
   res.json(po);
+});
+
+router.post('/:poId/duplicate', validate(duplicatePurchaseOrderSchema), async (req: Request, res: Response): Promise<void> => {
+  const result = await poService.duplicatePurchaseOrder(req.params.poId as string, req.body);
+
+  if (result === null) {
+    res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Purchase order not found.' } });
+    return;
+  }
+
+  if ('error' in result) {
+    const status = result.error === 'PO_NUMBER_EXISTS' ? 409 : 400;
+    res.status(status).json({ error: { code: result.error, message: result.error } });
+    return;
+  }
+
+  res.status(201).json(result);
+});
+
+router.post('/:poId/replicate', validate(replicatePurchaseOrderSchema), async (req: Request, res: Response): Promise<void> => {
+  const result = await poService.replicatePurchaseOrder(req.params.poId as string, req.body);
+  if (result === null) {
+    res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Purchase order not found.' } });
+    return;
+  }
+  res.status(201).json(result);
 });
 
 /**
@@ -164,8 +261,8 @@ router.get('/:poId', (req: Request, res: Response): void => {
  *       409:
  *         description: Only draft POs can be edited
  */
-router.patch('/:poId', validate(updatePurchaseOrderSchema), (req: Request, res: Response): void => {
-  const result = poService.updatePurchaseOrder(req.params.poId as string, req.body);
+router.patch('/:poId', validate(updatePurchaseOrderSchema), async (req: Request, res: Response): Promise<void> => {
+  const result = await poService.updatePurchaseOrder(req.params.poId as string, req.body);
 
   if (result === null) {
     res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Purchase order not found.' } });
@@ -175,6 +272,18 @@ router.patch('/:poId', validate(updatePurchaseOrderSchema), (req: Request, res: 
   if ('error' in result) {
     if (result.error === 'ONLY_DRAFT_EDITABLE') {
       res.status(409).json({ error: { code: 'ONLY_DRAFT_EDITABLE', message: 'Only draft purchase orders can be edited.' } });
+      return;
+    }
+    if (result.error === 'VENDOR_NOT_FOUND') {
+      res.status(404).json({ error: { code: 'VENDOR_NOT_FOUND', message: 'Vendor not found.' } });
+      return;
+    }
+    if (result.error === 'PO_NUMBER_EXISTS') {
+      res.status(409).json({ error: { code: 'PO_NUMBER_EXISTS', message: 'Purchase order number already exists.' } });
+      return;
+    }
+    if (result.error === 'RESERVED_PO_PREFIX') {
+      res.status(409).json({ error: { code: 'RESERVED_PO_PREFIX', message: 'PO numbers starting with A or V are reserved.' } });
       return;
     }
     if (result.error.startsWith('SKU_NOT_FOUND')) {
@@ -216,8 +325,8 @@ router.patch('/:poId', validate(updatePurchaseOrderSchema), (req: Request, res: 
  *       409:
  *         description: Invalid status transition
  */
-router.patch('/:poId/status', validate(poStatusTransitionSchema), (req: Request, res: Response): void => {
-  const result = poService.transitionStatus(req.params.poId as string, req.body.status, {
+router.patch('/:poId/status', validate(poStatusTransitionSchema), async (req: Request, res: Response): Promise<void> => {
+  const result = await poService.transitionStatus(req.params.poId as string, req.body.status, {
     reason: req.body.reason,
   });
 
@@ -255,7 +364,7 @@ router.patch('/:poId/status', validate(poStatusTransitionSchema), (req: Request,
  *       409:
  *         description: Invalid transition or validation failure
  */
-router.patch('/:poId/submit', validate(poSubmitSchema), (req: Request, res: Response): void => {
+router.patch('/:poId/submit', validate(poSubmitSchema), async (req: Request, res: Response): Promise<void> => {
   const poId = req.params.poId as string;
   const {
     force,
@@ -350,7 +459,7 @@ router.patch('/:poId/submit', validate(poSubmitSchema), (req: Request, res: Resp
     }
   }
 
-  const result = poService.submitPurchaseOrder(poId, { changedBy });
+  const result = await poService.submitPurchaseOrder(poId, { changedBy });
 
   if (result === null) {
     res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Purchase order not found.' } });
@@ -410,8 +519,8 @@ router.patch('/:poId/submit', validate(poSubmitSchema), (req: Request, res: Resp
  *       409:
  *         description: Invalid transition
  */
-router.patch('/:poId/confirm', (req: Request, res: Response): void => {
-  const result = poService.transitionStatus(req.params.poId as string, 'CONFIRMED');
+router.patch('/:poId/confirm', async (req: Request, res: Response): Promise<void> => {
+  const result = await poService.transitionStatus(req.params.poId as string, 'CONFIRMED');
 
   if (result === null) {
     res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Purchase order not found.' } });
@@ -455,8 +564,8 @@ router.patch('/:poId/confirm', (req: Request, res: Response): void => {
  *       409:
  *         description: Invalid transition or reason required
  */
-router.patch('/:poId/cancel', validate(poCancelSchema), (req: Request, res: Response): void => {
-  const result = poService.cancelPurchaseOrder(req.params.poId as string, {
+router.patch('/:poId/cancel', validate(poCancelSchema), async (req: Request, res: Response): Promise<void> => {
+  const result = await poService.cancelPurchaseOrder(req.params.poId as string, {
     reason: req.body.reason,
   });
 
@@ -550,6 +659,34 @@ router.post('/:poId/receive', validate(poReceiveSchema), async (req: Request, re
   res.json(result);
 });
 
+router.post('/:poId/receive/full', validate(poReceiveFullSchema), async (req: Request, res: Response): Promise<void> => {
+  const result = await poService.receivePurchaseOrderFull(req.params.poId as string, req.body);
+
+  if (result === null) {
+    res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Purchase order not found.' } });
+    return;
+  }
+
+  if ('error' in result) {
+    if (result.error.startsWith('LOCATION_NOT_FOUND')) {
+      const locationId = result.error.split(':')[1];
+      res.status(404).json({ error: { code: 'LOCATION_NOT_FOUND', message: `Location ${locationId} not found.` } });
+      return;
+    }
+    if (result.error.startsWith('QUANTITY_EXCEEDS_ORDERED')) {
+      const lineId = result.error.split(':')[1];
+      res.status(409).json({ error: { code: 'QUANTITY_EXCEEDS_ORDERED', message: `Received quantity exceeds ordered quantity for line ${lineId}.` } });
+      return;
+    }
+    res.status(409).json({
+      error: { code: 'INVALID_STATUS_TRANSITION', message: `Invalid status transition: ${result.error.replace('INVALID_TRANSITION:', '')}` },
+    });
+    return;
+  }
+
+  res.json(result);
+});
+
 /**
  * @openapi
  * /api/v1/purchase-orders/{poId}/receipts:
@@ -567,8 +704,8 @@ router.post('/:poId/receive', validate(poReceiveSchema), async (req: Request, re
  *       404:
  *         description: Purchase order not found
  */
-router.get('/:poId/receipts', (req: Request, res: Response): void => {
-  const receipts = poService.listPoReceiptsByPurchaseOrder(req.params.poId as string);
+router.get('/:poId/receipts', async (req: Request, res: Response): Promise<void> => {
+  const receipts = await poService.listPoReceiptsByPurchaseOrder(req.params.poId as string);
   if (receipts === null) {
     res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Purchase order not found.' } });
     return;
@@ -595,8 +732,8 @@ router.get('/:poId/receipts', (req: Request, res: Response): void => {
  *       409:
  *         description: Invalid transition
  */
-router.patch('/:poId/close', (req: Request, res: Response): void => {
-  const result = poService.transitionStatus(req.params.poId as string, 'CLOSED');
+router.patch('/:poId/close', async (req: Request, res: Response): Promise<void> => {
+  const result = await poService.transitionStatus(req.params.poId as string, 'CLOSED');
 
   if (result === null) {
     res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Purchase order not found.' } });
@@ -630,13 +767,13 @@ router.patch('/:poId/close', (req: Request, res: Response): void => {
  *       404:
  *         description: Purchase order not found
  */
-router.get('/:poId/history', (req: Request, res: Response): void => {
-  const po = poService.getPurchaseOrderById(req.params.poId as string);
+router.get('/:poId/history', async (req: Request, res: Response): Promise<void> => {
+  const po = await poService.getPurchaseOrderById(req.params.poId as string);
   if (!po) {
     res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Purchase order not found.' } });
     return;
   }
-  const history = poService.getStatusHistory(req.params.poId as string);
+  const history = await poService.getStatusHistory(req.params.poId as string);
   res.json(history);
 });
 

@@ -67,6 +67,7 @@ interface DimensionOut {
 interface ValueOut {
   code: string;
   labelEs: string;
+  descriptionEs: string | null;
   sortOrder: number;
   isActive: boolean;
 }
@@ -150,10 +151,11 @@ async function main(): Promise<void> {
       dimension_id: number;
       code: string;
       label_es: string;
+      description_es: string | null;
       sort_order: number;
       is_active: boolean;
     }>(`
-      SELECT dimension_id, code, label_es, sort_order, is_active
+      SELECT dimension_id, code, label_es, description_es, sort_order, is_active
       FROM app.attribute_value
       ORDER BY dimension_id, sort_order, id
     `);
@@ -164,6 +166,7 @@ async function main(): Promise<void> {
       list.push({
         code: v.code,
         labelEs: v.label_es,
+        descriptionEs: v.description_es,
         sortOrder: v.sort_order,
         isActive: v.is_active,
       });

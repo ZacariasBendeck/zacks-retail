@@ -8,6 +8,11 @@ const prisma = new PrismaClient();
 const OWNER_EMAIL = `employee-roster-owner-${Date.now()}@example.com`;
 const OWNER_PASSWORD = 'employee-owner-password-123';
 const EMAIL_PREFIX = 'employee-roster-';
+const SALESPERSON_CODE_PREFIX = 'ZT';
+
+function testSalespersonCode(): string {
+  return `${SALESPERSON_CODE_PREFIX}${Math.random().toString(36).slice(2, 4)}`.toUpperCase();
+}
 
 async function ensureOwnerUser(): Promise<void> {
   await bootstrapOwner(prisma);
@@ -46,6 +51,9 @@ describe('employee roster routes', () => {
     await prisma.user.deleteMany({
       where: { email: { contains: EMAIL_PREFIX } },
     });
+    await prisma.$executeRawUnsafe(
+      `DELETE FROM app.employee WHERE salesperson_code LIKE '${SALESPERSON_CODE_PREFIX}%'`,
+    );
     await ensureOwnerUser();
   });
 
@@ -54,6 +62,9 @@ describe('employee roster routes', () => {
     await prisma.user.deleteMany({
       where: { email: { contains: EMAIL_PREFIX } },
     });
+    await prisma.$executeRawUnsafe(
+      `DELETE FROM app.employee WHERE salesperson_code LIKE '${SALESPERSON_CODE_PREFIX}%'`,
+    );
     await prisma.$disconnect();
   });
 
@@ -96,6 +107,62 @@ describe('employee roster routes', () => {
     expect(Array.isArray(res.body.employees)).toBe(true);
     expect(res.body.employees.length).toBeGreaterThan(0);
     expect(res.body.employees.every((user: any) => user.isEmployee === true)).toBe(true);
+  });
+
+  it('manages imported/native salespeople without creating login users', async () => {
+    const cookie = await ownerCookie();
+    const code = testSalespersonCode();
+
+    const create = await request(app)
+      .post('/api/v1/employees/salespeople')
+      .set('Cookie', cookie)
+      .send({
+        salespersonCode: code.toLowerCase(),
+        displayName: 'Native Salesperson',
+        active: true,
+        otherInformation: 'Floor seller',
+        commissionRate: 6.25,
+        commissionBase: 'GROSS_PROFIT',
+        timeClockEnabled: true,
+        timeClockAdmin: false,
+        timeClockFullUser: true,
+      });
+
+    expect(create.status).toBe(201);
+    expect(create.body.salesperson.salespersonCode).toBe(code);
+    expect(create.body.salesperson.commissionRate).toBe(6.25);
+    expect(create.body.salesperson.ricsSalespersonImportedAt).toBeNull();
+
+    const list = await request(app).get('/api/v1/employees/salespeople').set('Cookie', cookie);
+    expect(list.status).toBe(200);
+    expect(list.body.salespeople.some((row: any) => row.salespersonCode === code)).toBe(true);
+
+    const patch = await request(app)
+      .patch(`/api/v1/employees/salespeople/${code}`)
+      .set('Cookie', cookie)
+      .send({
+        displayName: 'Updated Salesperson',
+        active: false,
+        commissionRate: null,
+        commissionBase: 'NET_SALES',
+        timeClockEnabled: false,
+      });
+
+    expect(patch.status).toBe(200);
+    expect(patch.body.salesperson.displayName).toBe('Updated Salesperson');
+    expect(patch.body.salesperson.active).toBe(false);
+    expect(patch.body.salesperson.commissionRate).toBeNull();
+    expect(patch.body.salesperson.commissionBase).toBe('NET_SALES');
+
+    const del = await request(app)
+      .delete(`/api/v1/employees/salespeople/${code}`)
+      .set('Cookie', cookie);
+    expect(del.status).toBe(204);
+
+    const getAfterDelete = await request(app)
+      .get(`/api/v1/employees/salespeople/${code}`)
+      .set('Cookie', cookie);
+    expect(getAfterDelete.status).toBe(404);
   });
 
   it('POST /employees rejects duplicate salesperson codes', async () => {

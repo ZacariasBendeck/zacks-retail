@@ -12,7 +12,7 @@ interface Args {
   strictFull: boolean;
   skipInventoryHistory: boolean;
   skipCustomers: boolean;
-  skipCustomerTransactions: boolean;
+  skipTickets: boolean;
   skipSegmentationDefaults: boolean;
   inventoryHistoryAsOf: string | null;
 }
@@ -23,7 +23,7 @@ function parseArgs(): Args {
     strictFull: false,
     skipInventoryHistory: false,
     skipCustomers: false,
-    skipCustomerTransactions: false,
+    skipTickets: false,
     skipSegmentationDefaults: false,
     inventoryHistoryAsOf: null,
   };
@@ -46,8 +46,10 @@ function parseArgs(): Args {
       case '--skip-customers':
         args.skipCustomers = true;
         break;
+      case '--skip-tickets':
+      case '--skip-sales-history':
       case '--skip-customer-transactions':
-        args.skipCustomerTransactions = true;
+        args.skipTickets = true;
         break;
       case '--skip-segmentation-defaults':
         args.skipSegmentationDefaults = true;
@@ -80,12 +82,13 @@ function printHelpAndExit(code: number): never {
       '  - import:app-skus-from-artifact',
       '  - seed:sku-attributes -- --manifest <legacy-manifest>',
       '  - import:app-reference-baselines-from-artifact',
+      '  - import:native-purchase-orders-from-artifact',
       '  - import:app-replenishment-targets-from-artifact',
       '  - import:app-stock-from-artifact',
       '  - import:app-inventory-history-from-artifact',
       '  - import:employees-from-rics',
       '  - import:customers (when Customer.csv + MailListNames.csv are bundled)',
-      '  - import:customer-transactions:rics (when ticket CSVs are bundled)',
+      '  - import:tickets:rics (when RITRNSSV ticket CSVs are bundled)',
       '  - seed:segmentation-defaults',
       '',
       'Options:',
@@ -93,7 +96,7 @@ function printHelpAndExit(code: number): never {
       '  --strict-full                 Exit non-zero if known full-reset blockers remain',
       '  --skip-inventory-history      Skip app.inventory_history_* import',
       '  --skip-customers              Skip customer master import',
-      '  --skip-customer-transactions  Skip customer transaction import',
+      '  --skip-tickets                Skip RITRNSSV ticket import',
       '  --skip-segmentation-defaults  Skip default segment seed',
       '  --inventory-history-as-of <d> Pass --as-of to inventory-history import',
       '  --help                        Show this help',
@@ -189,8 +192,9 @@ async function main(): Promise<void> {
   );
   const customerCsvPath = path.join(bundleDir, 'crm', 'Customer.csv');
   const mailListNamesCsvPath = path.join(bundleDir, 'crm', 'MailListNames.csv');
-  const ticketHeaderCsvPath = path.join(bundleDir, 'crm', 'ticket_header.csv');
-  const ticketDetailCsvPath = path.join(bundleDir, 'crm', 'ticket_detail.csv');
+  const legacyTicketHeaderCsvPath = path.join(bundleDir, 'legacy', 'ticket_header.csv');
+  const legacyTicketDetailCsvPath = path.join(bundleDir, 'legacy', 'ticket_detail.csv');
+  const legacyTicketTenderCsvPath = path.join(bundleDir, 'legacy', 'ticket_tender.csv');
 
   console.log('========================================');
   console.log('  cutover:render-load');
@@ -234,6 +238,12 @@ async function main(): Promise<void> {
   await runNodeTsScript(
     'import:app-reference-baselines-from-artifact',
     path.join(API_DIR, 'scripts', 'rics', 'sync', 'import-app-reference-baselines-from-artifact.ts'),
+    ['--manifest', legacyManifestPath],
+  );
+
+  await runNodeTsScript(
+    'import:native-purchase-orders-from-artifact',
+    path.join(API_DIR, 'scripts', 'rics', 'sync', 'import-native-purchase-orders-from-artifact.ts'),
     ['--manifest', legacyManifestPath],
   );
 
@@ -299,22 +309,33 @@ async function main(): Promise<void> {
     }
   }
 
-  if (!args.skipCustomerTransactions) {
-    if (fileExists(ticketHeaderCsvPath) && fileExists(ticketDetailCsvPath)) {
+  if (!args.skipTickets) {
+    const hasLegacyTicketCsvs = fileExists(legacyTicketHeaderCsvPath) && fileExists(legacyTicketDetailCsvPath);
+
+    if (hasLegacyTicketCsvs) {
+      const ticketArgs = [
+        '--header',
+        legacyTicketHeaderCsvPath,
+        '--detail',
+        legacyTicketDetailCsvPath,
+        '--no-csv-header',
+        '--source',
+        'render_cutover_bundle',
+      ];
+      if (fileExists(legacyTicketTenderCsvPath)) {
+        ticketArgs.push('--tender', legacyTicketTenderCsvPath, '--tender-no-csv-header');
+      } else {
+        warnings.push('legacy/ticket_tender.csv not present in bundle; ticket tender import skipped.');
+      }
       await runNodeTsScript(
-        'import:customer-transactions:rics',
-        path.join(API_DIR, 'scripts', 'customers', 'import-customer-transactions-from-rics.ts'),
-        [
-          '--header',
-          ticketHeaderCsvPath,
-          '--detail',
-          ticketDetailCsvPath,
-          '--source',
-          'render_cutover_bundle',
-        ],
+        'import:tickets:rics',
+        path.join(API_DIR, 'scripts', 'sales', 'import-rics-tickets.ts'),
+        ticketArgs,
       );
     } else {
-      warnings.push('ticket_header.csv and/or ticket_detail.csv not present in bundle; customer transaction import skipped.');
+      warnings.push(
+        'legacy/ticket_header.csv and/or legacy/ticket_detail.csv not present; sales ticket import skipped.',
+      );
     }
   }
 

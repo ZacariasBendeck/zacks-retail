@@ -168,7 +168,9 @@ export interface SkuLookupQuery {
   q?: string
   descContains?: string
   wholeWord?: boolean
-  /** Which column the `q` prefix matches against. Default: SKU. */
+  /** SKU-code match behavior for `q` when `searchField` is SKU. Default: contains. */
+  skuMatchMode?: 'contains' | 'prefix'
+  /** Which column the `q` matches against. Default: SKU. */
   searchField?: SkuLookupSort
   limit?: number
   offset?: number
@@ -185,6 +187,7 @@ export async function searchSkusForLookup(query: SkuLookupQuery): Promise<SkuLoo
   if (query.q !== undefined) params.set('q', query.q)
   if (query.descContains) params.set('descContains', query.descContains)
   if (query.wholeWord) params.set('wholeWord', 'true')
+  if (query.skuMatchMode) params.set('skuMatchMode', query.skuMatchMode)
   if (query.searchField) params.set('searchField', query.searchField)
   if (query.limit) params.set('limit', String(query.limit))
   if (query.offset) params.set('offset', String(query.offset))

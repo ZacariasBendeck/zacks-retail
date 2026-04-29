@@ -15,6 +15,7 @@ import {
   getInquiryInfo,
   getInquiryTrend,
   getInquiryOpenPoRows,
+  getInquiryPurchaseOrderHistory,
   findBySize,
   getInventoryDetailReport,
   getChangeDetail,
@@ -29,6 +30,11 @@ import {
 import type { RecommendedTransferRule } from '../services/ricsInventoryAdapter';
 import { findNeighborSku } from '../services/ricsProductAdapter';
 import { analyzeSkuInquiryRecommendation } from '../services/skuInquiryRecommendationService';
+import {
+  createReorderDraftPurchaseOrder,
+  getReorderPlan,
+  saveReorderDefaults,
+} from '../services/reorderPlannerService';
 
 const router: IRouter = Router();
 
@@ -61,6 +67,78 @@ router.get('/inquiry/:sku', async (req: Request, res: Response, next: NextFuncti
       return;
     }
     res.json(inquiry);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/inquiry/:sku/reorder-plan', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const skuRaw = req.params.sku;
+    const sku = Array.isArray(skuRaw) ? skuRaw[0] : skuRaw;
+    const plan = await getReorderPlan(sku, {
+      leadTimeDays: parseIntOrUndefined(req.query.leadTimeDays),
+      orderCycleDays: parseIntOrUndefined(req.query.orderCycleDays),
+      moqQty: parseIntOrUndefined(req.query.moqQty),
+    });
+    if (!plan) {
+      res.status(404).json({ error: { code: 'SKU_NOT_FOUND', message: `SKU ${sku} not found` } });
+      return;
+    }
+    res.json(plan);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.put('/inquiry/:sku/reorder-defaults', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const skuRaw = req.params.sku;
+    const sku = Array.isArray(skuRaw) ? skuRaw[0] : skuRaw;
+    const defaults = await saveReorderDefaults(sku, {
+      scopeType: req.body?.scopeType === 'VENDOR' ? 'VENDOR' : 'SKU',
+      leadTimeDays: parseBodyInt(req.body?.leadTimeDays),
+      orderCycleDays: parseBodyInt(req.body?.orderCycleDays),
+      moqQty: parseBodyInt(req.body?.moqQty),
+      updatedBy: typeof req.body?.updatedBy === 'string' ? req.body.updatedBy : undefined,
+    });
+    if (!defaults) {
+      res.status(404).json({ error: { code: 'SKU_NOT_FOUND', message: `SKU ${sku} not found` } });
+      return;
+    }
+    res.json(defaults);
+  } catch (err: any) {
+    if (err?.message?.includes('no vendor')) {
+      res.status(400).json({ error: { code: 'SKU_VENDOR_REQUIRED', message: err.message } });
+      return;
+    }
+    next(err);
+  }
+});
+
+router.post('/inquiry/:sku/reorder-plan/draft-po', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const skuRaw = req.params.sku;
+    const sku = Array.isArray(skuRaw) ? skuRaw[0] : skuRaw;
+    const result = await createReorderDraftPurchaseOrder(sku, {
+      chainId: typeof req.body?.chainId === 'string' ? req.body.chainId : null,
+      chainLabel: typeof req.body?.chainLabel === 'string' ? req.body.chainLabel : null,
+      leadTimeDays: parseBodyInt(req.body?.leadTimeDays),
+      orderCycleDays: parseBodyInt(req.body?.orderCycleDays),
+      moqQty: parseBodyInt(req.body?.moqQty),
+      sizeCells: Array.isArray(req.body?.sizeCells) ? req.body.sizeCells : [],
+      createdBy: typeof req.body?.createdBy === 'string' ? req.body.createdBy : undefined,
+    });
+    if (!result) {
+      res.status(404).json({ error: { code: 'SKU_NOT_FOUND', message: `SKU ${sku} not found` } });
+      return;
+    }
+    if ('error' in result) {
+      const status = result.error === 'SKU_VENDOR_REQUIRED' || result.error === 'EMPTY_REORDER_QUANTITY' ? 400 : 409;
+      res.status(status).json({ error: { code: result.error, message: reorderDraftPoErrorMessage(result.error) } });
+      return;
+    }
+    res.status(201).json(result);
   } catch (err) {
     next(err);
   }
@@ -135,6 +213,18 @@ router.get('/inquiry/:sku/open-pos', async (req: Request, res: Response, next: N
     const sku = Array.isArray(skuRaw) ? skuRaw[0] : skuRaw;
     const storeId = parseIntOrUndefined(req.query.storeId);
     const rows = await getInquiryOpenPoRows(sku, storeId);
+    res.json({ rows, total: rows.length });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/inquiry/:sku/po-history', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const skuRaw = req.params.sku;
+    const sku = Array.isArray(skuRaw) ? skuRaw[0] : skuRaw;
+    const storeId = parseIntOrUndefined(req.query.storeId);
+    const rows = await getInquiryPurchaseOrderHistory(sku, storeId);
     res.json({ rows, total: rows.length });
   } catch (err) {
     next(err);
@@ -654,6 +744,20 @@ function parseIntOrUndefined(v: unknown): number | undefined {
   if (v == null || v === '') return undefined;
   const n = Number(v);
   return Number.isFinite(n) ? Math.trunc(n) : undefined;
+}
+
+function parseBodyInt(v: unknown): number | undefined {
+  if (v == null || v === '') return undefined;
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.trunc(n) : undefined;
+}
+
+function reorderDraftPoErrorMessage(code: string): string {
+  if (code === 'SKU_VENDOR_REQUIRED') return 'SKU must have a vendor before creating a reorder draft PO.';
+  if (code === 'EMPTY_REORDER_QUANTITY') return 'At least one reorder quantity is required.';
+  if (code === 'VENDOR_NOT_FOUND') return 'Vendor not found.';
+  if (code.startsWith('SKU_NOT_FOUND')) return 'SKU not found.';
+  return 'Failed to create reorder draft PO.';
 }
 
 export default router;

@@ -1,11 +1,12 @@
 import React, { useCallback, useMemo, useState } from 'react';
-import { Button, Radio, Select, Space } from 'antd';
+import { Button, Radio, Select, Space, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import {
   fetchSkuLookupFacets,
   searchSkusForLookup,
+  type SkuLookupFacetQuery,
   type SkuLookupRow,
   type SkuLookupSort,
 } from '../../services/skuApi';
@@ -16,6 +17,7 @@ export interface SkuLookupProps {
   onClose: () => void;
   onSelect: (picked: { skuCode: string; skuId: string }) => void;
   initialQuery?: string;
+  initialFilters?: Pick<SkuLookupFacetQuery, 'season' | 'vendor' | 'department'>;
   allowCreate?: boolean;
   onSubmitQuery?: (skuCode: string) => void;
   searchFnOverride?: (args: { query: string; page: number; pageSize: number }) => Promise<{ rows: SkuLookupRow[]; total: number }>;
@@ -26,6 +28,7 @@ export interface SkuLookupProps {
 }
 
 type SearchField = SkuLookupSort; // 'SKU' | 'DESCRIPTION' | 'VENDOR' | 'STYLE_COLOR'
+type SkuMatchMode = 'contains' | 'prefix';
 
 const SEARCH_FIELD_OPTIONS: Array<{ value: SearchField; label: string }> = [
   { value: 'SKU',         label: 'SKU' },
@@ -34,15 +37,28 @@ const SEARCH_FIELD_OPTIONS: Array<{ value: SearchField; label: string }> = [
   { value: 'STYLE_COLOR', label: 'Style/Color' },
 ];
 
+function cleanCode(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed.toUpperCase() : undefined;
+}
+
 export const SkuLookup: React.FC<SkuLookupProps> = ({
-  open, onClose, onSelect, initialQuery = '', allowCreate = false, onSubmitQuery,
+  open, onClose, onSelect, initialQuery = '', initialFilters, allowCreate = false, onSubmitQuery,
   searchFnOverride, hideSearchFieldSelector = false, hideFilters = false, helperTextOverride, placeholderOverride,
 }) => {
   const [searchField, setSearchField] = useState<SearchField>('SKU');
-  const [season, setSeason] = useState<string | undefined>(undefined);
-  const [vendor, setVendor] = useState<string | undefined>(undefined);
-  const [department, setDepartment] = useState<number | undefined>(undefined);
+  const [skuMatchMode, setSkuMatchMode] = useState<SkuMatchMode>('contains');
+  const [season, setSeason] = useState<string | undefined>(() => cleanCode(initialFilters?.season));
+  const [vendor, setVendor] = useState<string | undefined>(() => cleanCode(initialFilters?.vendor));
+  const [department, setDepartment] = useState<number | undefined>(() => initialFilters?.department);
   const navigate = useNavigate();
+
+  React.useEffect(() => {
+    if (!open || !initialFilters) return;
+    setSeason(cleanCode(initialFilters.season));
+    setVendor(cleanCode(initialFilters.vendor));
+    setDepartment(initialFilters.department);
+  }, [initialFilters?.department, initialFilters?.season, initialFilters?.vendor, open]);
 
   const { data: facets } = useQuery({
     queryKey: ['sku-lookup-facets', { season, vendor, department }],
@@ -54,8 +70,8 @@ export const SkuLookup: React.FC<SkuLookupProps> = ({
 
   React.useEffect(() => {
     if (!facets) return;
-    if (season && !facets.seasons.some((item) => item.code === season)) setSeason(undefined);
-    if (vendor && !facets.vendors.some((item) => item.code === vendor)) setVendor(undefined);
+    if (season && !facets.seasons.some((item) => item.code.toUpperCase() === season.toUpperCase())) setSeason(undefined);
+    if (vendor && !facets.vendors.some((item) => item.code.toUpperCase() === vendor.toUpperCase())) setVendor(undefined);
     if (department != null && !facets.departments.some((item) => item.number === department)) {
       setDepartment(undefined);
     }
@@ -70,13 +86,14 @@ export const SkuLookup: React.FC<SkuLookupProps> = ({
         : searchSkusForLookup({
           q: query,
           searchField,
+          skuMatchMode: searchField === 'SKU' ? skuMatchMode : undefined,
           season,
           vendor,
           department,
           limit: pageSize,
           offset: (page - 1) * pageSize,
         }).then((r) => ({ rows: r.rows, total: r.total })),
-    [searchField, season, vendor, department, searchFnOverride],
+    [searchField, skuMatchMode, season, vendor, department, searchFnOverride],
   );
 
   const columns: ColumnsType<SkuLookupRow> = useMemo(() => [
@@ -128,15 +145,40 @@ export const SkuLookup: React.FC<SkuLookupProps> = ({
   ], []);
 
   const searchFieldSlot = (
-    <Radio.Group
-      value={searchField}
-      onChange={(e) => setSearchField(e.target.value)}
-    >
-      {SEARCH_FIELD_OPTIONS.map((opt) => (
-        <Radio key={opt.value} value={opt.value}>{opt.label}</Radio>
-      ))}
-    </Radio.Group>
+    <Space wrap>
+      <Radio.Group
+        value={searchField}
+        onChange={(e) => setSearchField(e.target.value)}
+      >
+        {SEARCH_FIELD_OPTIONS.map((opt) => (
+          <Radio key={opt.value} value={opt.value}>{opt.label}</Radio>
+        ))}
+      </Radio.Group>
+      {searchField === 'SKU' ? (
+        <Space size={4}>
+          <Typography.Text type="secondary">SKU match:</Typography.Text>
+          <Radio.Group
+            aria-label="SKU match mode"
+            optionType="button"
+            buttonStyle="solid"
+            size="small"
+            value={skuMatchMode}
+            onChange={(e) => setSkuMatchMode(e.target.value)}
+          >
+            <Radio.Button value="prefix">Starts with</Radio.Button>
+            <Radio.Button value="contains">Contains</Radio.Button>
+          </Radio.Group>
+        </Space>
+      ) : null}
+    </Space>
   );
+
+  const placeholder = placeholderOverride
+    ?? (searchField === 'SKU'
+      ? skuMatchMode === 'prefix'
+        ? 'Search SKU - starts with typed text'
+        : 'Search SKU - SKU matches anywhere'
+      : 'Search selected field');
 
   const filterSlot = (
     <Space wrap>
@@ -195,7 +237,7 @@ export const SkuLookup: React.FC<SkuLookupProps> = ({
       width={960}
       pageSize={50}
       initialQuery={initialQuery}
-      placeholder={placeholderOverride}
+      placeholder={placeholder}
       searchFieldSlot={hideSearchFieldSelector ? null : searchFieldSlot}
       filterSlot={hideFilters ? null : filterSlot}
       footerExtras={footerExtras}

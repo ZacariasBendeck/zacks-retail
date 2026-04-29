@@ -32,6 +32,7 @@ vi.mock('../hooks/useReportTemplates', async () => {
 function buildDims(): SalesDimensionsResponse {
   return {
     stores: [{ number: 1, name: 'Main Street' }],
+    chains: [],
     categories: [],
     groups: [],
     sectors: [],
@@ -195,6 +196,7 @@ describe('SalesByDayPage', () => {
     })
 
     expect((await screen.findAllByText(/All Stores/i)).length).toBeGreaterThan(0)
+    expect(screen.queryByText(/^Store$/i)).not.toBeInTheDocument()
   })
 
   it('renders prior-period profit columns after running the report', async () => {

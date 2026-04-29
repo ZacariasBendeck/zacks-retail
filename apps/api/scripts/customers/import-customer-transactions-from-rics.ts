@@ -13,9 +13,12 @@ const DEFAULT_DETAIL_PATH = path.resolve(__dirname, '../../../../.tmp/rics-ticke
 type Args = {
   headerPath: string;
   detailPath: string;
+  tenderPath: string | null;
   source: string;
   replace: boolean;
   skipMetrics: boolean;
+  csvHasHeader: boolean;
+  tenderCsvHasHeader: boolean;
 };
 
 type ImportSummaryRow = {
@@ -24,6 +27,9 @@ type ImportSummaryRow = {
   matchedcustomers: bigint | number;
   factrows: bigint | number;
   itemrows: bigint | number;
+  ticketheaders: bigint | number;
+  ticketdetails: bigint | number;
+  tickettenders: bigint | number;
 };
 
 const CREATE_HEADER_STAGE_SQL = `
@@ -111,6 +117,26 @@ CREATE TEMP TABLE stage_rics_ticket_detail_raw (
   gift_acct text,
   cost text,
   comment text
+) ON COMMIT DROP;
+`;
+
+const CREATE_TENDER_STAGE_SQL = `
+CREATE TEMP TABLE stage_rics_ticket_tender_raw (
+  user_id text,
+  batch_date text,
+  use_date text,
+  terminal text,
+  store text,
+  ticket text,
+  real_date text,
+  tender text,
+  amount text,
+  alt_amount text,
+  alt_currency text,
+  exch_rate text,
+  gift_cert text,
+  gift_seq text,
+  gift_new text
 ) ON COMMIT DROP;
 `;
 
@@ -206,6 +232,28 @@ FROM STDIN
 WITH (FORMAT csv, HEADER true, NULL '\\N')
 `;
 
+const COPY_TENDER_SQL = `
+COPY stage_rics_ticket_tender_raw (
+  user_id,
+  batch_date,
+  use_date,
+  terminal,
+  store,
+  ticket,
+  real_date,
+  tender,
+  amount,
+  alt_amount,
+  alt_currency,
+  exch_rate,
+  gift_cert,
+  gift_seq,
+  gift_new
+)
+FROM STDIN
+WITH (FORMAT csv, HEADER true, NULL '\\N')
+`;
+
 const CREATE_CUSTOMER_LOOKUP_SQL = `
 CREATE TEMP TABLE stage_customer_lookup AS
 WITH raw_keys AS (
@@ -236,6 +284,59 @@ WHERE row_num = 1
   AND key_count = 1;
 `;
 
+const CREATE_HEADER_IDENTITY_SQL = `
+CREATE TEMP TABLE stage_rics_ticket_header_identity AS
+SELECT
+  h.*,
+  format(
+    'RITRNSSV:%s:%s:%s:%s:%s:%s',
+    BTRIM(h.store),
+    BTRIM(h.ticket),
+    COALESCE(NULLIF(h.real_date, ''), ''),
+    COALESCE(NULLIF(BTRIM(h.terminal), ''), ''),
+    COALESCE(NULLIF(BTRIM(h.user_id), ''), ''),
+    COALESCE(NULLIF(BTRIM(h.trans_type), ''), '')
+  ) AS external_transaction_id,
+  format(
+    'RITRNSSV:%s:%s:%s:%s:%s',
+    BTRIM(h.store),
+    BTRIM(h.ticket),
+    COALESCE(NULLIF(h.real_date, ''), ''),
+    COALESCE(NULLIF(BTRIM(h.terminal), ''), ''),
+    COALESCE(NULLIF(BTRIM(h.user_id), ''), '')
+  ) AS ticket_identity_key
+FROM stage_rics_ticket_header_raw h;
+`;
+
+const CREATE_HEADER_LOOKUP_SQL = `
+CREATE TEMP TABLE stage_rics_ticket_header_lookup AS
+SELECT
+  external_transaction_id,
+  ticket_identity_key,
+  COALESCE(BTRIM(user_id), '') AS user_id,
+  COALESCE(batch_date, '') AS batch_date,
+  COALESCE(NULLIF(BTRIM(terminal), ''), '') AS terminal,
+  COALESCE(BTRIM(store), '') AS store,
+  COALESCE(BTRIM(ticket), '') AS ticket,
+  COALESCE(real_date, '') AS real_date
+FROM (
+  SELECT
+    h.*,
+    ROW_NUMBER() OVER (
+      PARTITION BY
+        COALESCE(BTRIM(user_id), ''),
+        COALESCE(batch_date, ''),
+        COALESCE(NULLIF(BTRIM(terminal), ''), ''),
+        COALESCE(BTRIM(store), ''),
+        COALESCE(BTRIM(ticket), ''),
+        COALESCE(real_date, '')
+      ORDER BY COALESCE(BTRIM(trans_type), ''), external_transaction_id
+    ) AS row_num
+  FROM stage_rics_ticket_header_identity h
+) ranked
+WHERE row_num = 1;
+`;
+
 const CREATE_HEADER_CLEAN_SQL = `
 CREATE TEMP TABLE stage_rics_ticket_header_clean AS
 SELECT
@@ -263,7 +364,7 @@ SELECT
     COALESCE(NULLIF(BTRIM(h.user_id), ''), ''),
     COALESCE(NULLIF(BTRIM(h.trans_type), ''), '')
   ) AS external_transaction_id
-FROM stage_rics_ticket_header_raw h
+FROM stage_rics_ticket_header_identity h
 LEFT JOIN stage_customer_lookup l
   ON l.account_key = BTRIM(h.account)
 WHERE UPPER(COALESCE(BTRIM(h.posted), '')) = 'Y'
@@ -317,7 +418,11 @@ SELECT
   COALESCE(CAST(NULLIF(BTRIM(d.disc_amt), '') AS numeric(14, 2)), 0)::numeric(14, 2) AS disc_amt,
   COALESCE(CAST(NULLIF(BTRIM(d.extension), '') AS numeric(14, 2)), 0)::numeric(14, 2) AS extension,
   COALESCE(CAST(NULLIF(BTRIM(d.cost), '') AS numeric(14, 2)), 0)::numeric(14, 2) AS unit_cost,
-  NULLIF(BTRIM(d.return_code), '') AS return_code,
+  CASE
+    WHEN NULLIF(BTRIM(d.return_code), '') IS NULL OR BTRIM(d.return_code) IN ('0', '0.0000')
+      THEN NULL
+    ELSE BTRIM(d.return_code)
+  END AS return_code,
   NULLIF(BTRIM(d.salesperson), '') AS salesperson_code
 FROM stage_rics_ticket_header_clean h
 JOIN stage_rics_ticket_detail_raw d
@@ -527,6 +632,278 @@ WHERE NOT l.is_discount_line
   AND (l.qty <> 0 OR l.extension <> 0)
 `;
 
+const INSERT_RAW_HEADERS_SQL = `
+INSERT INTO app.ticket_header (
+  source,
+  external_transaction_id,
+  ticket_identity_key,
+  ticket_id,
+  user_id,
+  batch_date,
+  use_date,
+  terminal,
+  store,
+  ticket,
+  real_date,
+  cashier,
+  trans_type,
+  account,
+  tax_01,
+  tax_02,
+  tax_03,
+  tax_change,
+  oth_chg,
+  prev_paid,
+  comment,
+  change_amount,
+  alt_change,
+  exch_rate,
+  discount,
+  apply_to,
+  apply_tender,
+  apply_amount,
+  ship_state,
+  ship_county,
+  ship_city,
+  marketing_code,
+  voided,
+  printed,
+  posted
+)
+SELECT
+  $1,
+  h.external_transaction_id,
+  h.ticket_identity_key,
+  t.id,
+  h.user_id,
+  h.batch_date,
+  h.use_date,
+  h.terminal,
+  h.store,
+  h.ticket,
+  h.real_date,
+  h.cashier,
+  h.trans_type,
+  h.account,
+  h.tax_01,
+  h.tax_02,
+  h.tax_03,
+  h.tax_change,
+  h.oth_chg,
+  h.prev_paid,
+  h.comment,
+  h.change_amount,
+  h.alt_change,
+  h.exch_rate,
+  h.discount,
+  h.apply_to,
+  h.apply_tender,
+  h.apply_amount,
+  h.ship_state,
+  h.ship_county,
+  h.ship_city,
+  h.marketing_code,
+  h.voided,
+  h.printed,
+  h.posted
+FROM stage_rics_ticket_header_identity h
+LEFT JOIN app.sales_history_ticket t
+  ON t.source = $1
+ AND t.external_transaction_id = h.external_transaction_id;
+`;
+
+const INSERT_RAW_DETAILS_SQL = `
+INSERT INTO app.ticket_detail (
+  source,
+  source_row_number,
+  external_transaction_id,
+  ticket_identity_key,
+  ticket_id,
+  user_id,
+  batch_date,
+  use_date,
+  terminal,
+  store,
+  ticket,
+  real_date,
+  line_no,
+  sku,
+  column_label,
+  row_label,
+  qty,
+  price,
+  disc_pct,
+  disc_amt,
+  perks,
+  salesperson,
+  fam_member,
+  prices_01,
+  prices_02,
+  prices_03,
+  prices_04,
+  ovs_amt,
+  this_ovs_amt,
+  category,
+  vendor,
+  real_price,
+  extension,
+  orig_ticket,
+  tax_01,
+  tax_02,
+  tax_03,
+  taxamt_01,
+  taxamt_02,
+  taxamt_03,
+  fb_gen,
+  ds_ship_code,
+  ds_ship_desc,
+  ds_dest_code,
+  ds_dye_code,
+  ds_ship_chg,
+  return_code,
+  gift_cert,
+  gift_seq,
+  gift_acct,
+  cost,
+  comment
+)
+SELECT
+  $1,
+  ROW_NUMBER() OVER (
+    ORDER BY
+      COALESCE(h.ticket_identity_key, ''),
+      COALESCE(d.line_no, ''),
+      COALESCE(d.sku, ''),
+      COALESCE(d.column_label, ''),
+      COALESCE(d.row_label, '')
+  ) AS source_row_number,
+  h.external_transaction_id,
+  h.ticket_identity_key,
+  t.id,
+  d.user_id,
+  d.batch_date,
+  d.use_date,
+  d.terminal,
+  d.store,
+  d.ticket,
+  d.real_date,
+  d.line_no,
+  d.sku,
+  d.column_label,
+  d.row_label,
+  d.qty,
+  d.price,
+  d.disc_pct,
+  d.disc_amt,
+  d.perks,
+  d.salesperson,
+  d.fam_member,
+  d.prices_01,
+  d.prices_02,
+  d.prices_03,
+  d.prices_04,
+  d.ovs_amt,
+  d.this_ovs_amt,
+  d.category,
+  d.vendor,
+  d.real_price,
+  d.extension,
+  d.orig_ticket,
+  d.tax_01,
+  d.tax_02,
+  d.tax_03,
+  d.taxamt_01,
+  d.taxamt_02,
+  d.taxamt_03,
+  d.fb_gen,
+  d.ds_ship_code,
+  d.ds_ship_desc,
+  d.ds_dest_code,
+  d.ds_dye_code,
+  d.ds_ship_chg,
+  d.return_code,
+  d.gift_cert,
+  d.gift_seq,
+  d.gift_acct,
+  d.cost,
+  d.comment
+FROM stage_rics_ticket_detail_raw d
+LEFT JOIN stage_rics_ticket_header_lookup h
+  ON COALESCE(BTRIM(d.user_id), '') = h.user_id
+ AND COALESCE(d.batch_date, '') = h.batch_date
+ AND COALESCE(NULLIF(BTRIM(d.terminal), ''), '') = h.terminal
+ AND COALESCE(BTRIM(d.store), '') = h.store
+ AND COALESCE(BTRIM(d.ticket), '') = h.ticket
+ AND COALESCE(d.real_date, '') = h.real_date
+LEFT JOIN app.sales_history_ticket t
+  ON t.source = $1
+ AND t.external_transaction_id = h.external_transaction_id;
+`;
+
+const INSERT_RAW_TENDERS_SQL = `
+INSERT INTO app.ticket_tender (
+  source,
+  source_row_number,
+  external_transaction_id,
+  ticket_identity_key,
+  ticket_id,
+  user_id,
+  batch_date,
+  use_date,
+  terminal,
+  store,
+  ticket,
+  real_date,
+  tender,
+  amount,
+  alt_amount,
+  alt_currency,
+  exch_rate,
+  gift_cert,
+  gift_seq,
+  gift_new
+)
+SELECT
+  $1,
+  ROW_NUMBER() OVER (
+    ORDER BY
+      COALESCE(h.ticket_identity_key, ''),
+      COALESCE(td.tender, ''),
+      COALESCE(td.amount, ''),
+      COALESCE(td.gift_cert, ''),
+      COALESCE(td.gift_seq, '')
+  ) AS source_row_number,
+  h.external_transaction_id,
+  h.ticket_identity_key,
+  t.id,
+  td.user_id,
+  td.batch_date,
+  td.use_date,
+  td.terminal,
+  td.store,
+  td.ticket,
+  td.real_date,
+  td.tender,
+  td.amount,
+  td.alt_amount,
+  td.alt_currency,
+  td.exch_rate,
+  td.gift_cert,
+  td.gift_seq,
+  td.gift_new
+FROM stage_rics_ticket_tender_raw td
+LEFT JOIN stage_rics_ticket_header_lookup h
+  ON COALESCE(BTRIM(td.user_id), '') = h.user_id
+ AND COALESCE(td.batch_date, '') = h.batch_date
+ AND COALESCE(NULLIF(BTRIM(td.terminal), ''), '') = h.terminal
+ AND COALESCE(BTRIM(td.store), '') = h.store
+ AND COALESCE(BTRIM(td.ticket), '') = h.ticket
+ AND COALESCE(td.real_date, '') = h.real_date
+LEFT JOIN app.sales_history_ticket t
+  ON t.source = $1
+ AND t.external_transaction_id = h.external_transaction_id;
+`;
+
 const IMPORT_SUMMARY_SQL = `
 SELECT
   (
@@ -557,16 +934,34 @@ SELECT
     JOIN app.sales_history_ticket t
       ON t.id = i.ticket_id
     WHERE t.source = $1
-  ) AS itemRows
+  ) AS itemRows,
+  (
+    SELECT COUNT(*)
+    FROM app.ticket_header
+    WHERE source = $1
+  ) AS ticketHeaders,
+  (
+    SELECT COUNT(*)
+    FROM app.ticket_detail
+    WHERE source = $1
+  ) AS ticketDetails,
+  (
+    SELECT COUNT(*)
+    FROM app.ticket_tender
+    WHERE source = $1
+  ) AS ticketTenders
 `;
 
 function parseArgs(argv: string[]): Args {
   const args: Args = {
     headerPath: DEFAULT_HEADER_PATH,
     detailPath: DEFAULT_DETAIL_PATH,
+    tenderPath: null,
     source: 'rics_ticket_import',
     replace: true,
     skipMetrics: false,
+    csvHasHeader: true,
+    tenderCsvHasHeader: true,
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -580,9 +975,25 @@ function parseArgs(argv: string[]): Args {
         args.detailPath = path.resolve(String(argv[index + 1] ?? ''));
         index += 1;
         break;
+      case '--tender':
+        args.tenderPath = path.resolve(String(argv[index + 1] ?? ''));
+        index += 1;
+        break;
       case '--source':
         args.source = String(argv[index + 1] ?? 'rics_ticket_import') || 'rics_ticket_import';
         index += 1;
+        break;
+      case '--no-csv-header':
+        args.csvHasHeader = false;
+        break;
+      case '--csv-header':
+        args.csvHasHeader = true;
+        break;
+      case '--tender-no-csv-header':
+        args.tenderCsvHasHeader = false;
+        break;
+      case '--tender-csv-header':
+        args.tenderCsvHasHeader = true;
         break;
       case '--no-replace':
         args.replace = false;
@@ -602,7 +1013,7 @@ function parseArgs(argv: string[]): Args {
 
 function printUsage(): void {
   console.info(
-    'Usage: pnpm --filter @benlow-rics/api import:sales-history:rics -- [--header path] [--detail path] [--source rics_ticket_import] [--no-replace] [--skip-metrics]',
+    'Usage: pnpm --filter @benlow-rics/api import:tickets:rics -- [--header path] [--detail path] [--tender path] [--source rics_ticket_import] [--csv-header|--no-csv-header] [--tender-csv-header|--tender-no-csv-header] [--no-replace] [--skip-metrics]',
   );
 }
 
@@ -617,10 +1028,20 @@ async function copyCsvFile(client: Client, copySql: string, filePath: string): P
   await pipeline(fs.createReadStream(filePath), copyStream);
 }
 
-export async function importRicsSalesHistory(argv: string[] = process.argv.slice(2)): Promise<void> {
+function copySqlForHeaderMode(copySql: string, csvHasHeader: boolean): string {
+  const options = csvHasHeader
+    ? "WITH (FORMAT csv, HEADER true, NULL '\\N')"
+    : "WITH (FORMAT csv, NULL '\\N')";
+  return copySql.replace("WITH (FORMAT csv, HEADER true, NULL '\\N')", options);
+}
+
+export async function importRicsTickets(argv: string[] = process.argv.slice(2)): Promise<void> {
   const args = parseArgs(argv);
   ensureFileExists(args.headerPath, 'header');
   ensureFileExists(args.detailPath, 'detail');
+  if (args.tenderPath) {
+    ensureFileExists(args.tenderPath, 'tender');
+  }
 
   if (!process.env.DATABASE_URL) {
     throw new Error('DATABASE_URL is required');
@@ -635,15 +1056,25 @@ export async function importRicsSalesHistory(argv: string[] = process.argv.slice
 
     await client.query(CREATE_HEADER_STAGE_SQL);
     await client.query(CREATE_DETAIL_STAGE_SQL);
+    await client.query(CREATE_TENDER_STAGE_SQL);
 
-    await copyCsvFile(client, COPY_HEADER_SQL, args.headerPath);
-    await copyCsvFile(client, COPY_DETAIL_SQL, args.detailPath);
+    await copyCsvFile(client, copySqlForHeaderMode(COPY_HEADER_SQL, args.csvHasHeader), args.headerPath);
+    await copyCsvFile(client, copySqlForHeaderMode(COPY_DETAIL_SQL, args.csvHasHeader), args.detailPath);
+    if (args.tenderPath) {
+      await copyCsvFile(client, copySqlForHeaderMode(COPY_TENDER_SQL, args.tenderCsvHasHeader), args.tenderPath);
+    }
 
     await client.query('CREATE INDEX ON stage_rics_ticket_header_raw (account)');
     await client.query('CREATE INDEX ON stage_rics_ticket_detail_raw (user_id, batch_date, terminal, store, ticket, real_date)');
+    await client.query('CREATE INDEX ON stage_rics_ticket_tender_raw (user_id, batch_date, terminal, store, ticket, real_date)');
 
     await client.query(CREATE_CUSTOMER_LOOKUP_SQL);
     await client.query('CREATE INDEX ON stage_customer_lookup (account_key)');
+
+    await client.query(CREATE_HEADER_IDENTITY_SQL);
+    await client.query('CREATE INDEX ON stage_rics_ticket_header_identity (external_transaction_id)');
+    await client.query(CREATE_HEADER_LOOKUP_SQL);
+    await client.query('CREATE INDEX ON stage_rics_ticket_header_lookup (user_id, batch_date, terminal, store, ticket, real_date)');
 
     await client.query(CREATE_HEADER_CLEAN_SQL);
     await client.query('CREATE INDEX ON stage_rics_ticket_header_clean (external_transaction_id)');
@@ -654,25 +1085,35 @@ export async function importRicsSalesHistory(argv: string[] = process.argv.slice
     await client.query(CREATE_FACT_SOURCE_SQL);
 
     if (args.replace) {
+      await client.query('DELETE FROM app.ticket_tender WHERE source = $1', [args.source]);
+      await client.query('DELETE FROM app.ticket_detail WHERE source = $1', [args.source]);
+      await client.query('DELETE FROM app.ticket_header WHERE source = $1', [args.source]);
       await client.query('DELETE FROM app.sales_history_ticket WHERE source = $1', [args.source]);
     }
 
     await client.query(INSERT_FACTS_SQL, [args.source]);
     await client.query(INSERT_ITEMS_SQL, [args.source]);
+    await client.query(INSERT_RAW_HEADERS_SQL, [args.source]);
+    await client.query(INSERT_RAW_DETAILS_SQL, [args.source]);
+    await client.query(INSERT_RAW_TENDERS_SQL, [args.source]);
 
     const summaryResult = await client.query<ImportSummaryRow>(IMPORT_SUMMARY_SQL, [args.source]);
     await client.query('COMMIT');
 
     const summary = summaryResult.rows[0];
-    console.info('[sales-history] Imported RITRNSSV ticket history', {
+    console.info('[tickets] Imported RITRNSSV tickets', {
       source: args.source,
       headerPath: args.headerPath,
       detailPath: args.detailPath,
+      tenderPath: args.tenderPath,
       candidateHeaders: Number(summary?.candidateheaders ?? 0),
       importedHeaders: Number(summary?.importedheaders ?? 0),
       matchedCustomers: Number(summary?.matchedcustomers ?? 0),
       factRows: Number(summary?.factrows ?? 0),
       itemRows: Number(summary?.itemrows ?? 0),
+      ticketHeaders: Number(summary?.ticketheaders ?? 0),
+      ticketDetails: Number(summary?.ticketdetails ?? 0),
+      ticketTenders: Number(summary?.tickettenders ?? 0),
       skippedDuplicateSource:
         'RIMAILED.MDB exported but not loaded because canonical docs mark it as a duplicate customer-indexed copy of RITRNSSV.',
     });
@@ -690,13 +1131,15 @@ export async function importRicsSalesHistory(argv: string[] = process.argv.slice
 }
 
 async function main(): Promise<void> {
-  await importRicsSalesHistory();
+  await importRicsTickets();
 }
+
+export const importRicsSalesHistory = importRicsTickets;
 
 if (require.main === module) {
   main()
     .catch((error) => {
-      console.error('[sales-history] RITRNSSV import failed', error);
+      console.error('[tickets] RITRNSSV import failed', error);
       process.exitCode = 1;
     })
     .finally(async () => {

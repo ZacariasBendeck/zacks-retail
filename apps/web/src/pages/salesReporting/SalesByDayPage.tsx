@@ -807,7 +807,7 @@ function SalesByDayResults({
             { label: 'Compare offset', value: `${query.comparisonOffsetDays ?? 364} days` },
           ]}
         />
-        <SummaryRow storeLabel={combined.storeLabel} totals={combined.totals} />
+        <SummaryRow totals={combined.totals} />
         <Table<SalesByDayRow>
           className="sales-by-day-layout-table"
           dataSource={combined.rows}
@@ -838,7 +838,7 @@ function SalesByDayResults({
           <Typography.Title level={4} style={{ marginTop: 8 }}>
             {breakdown.storeLabel}
           </Typography.Title>
-          <SummaryRow storeLabel={breakdown.storeLabel} totals={breakdown.totals} />
+          <SummaryRow totals={breakdown.totals} />
           <Table<SalesByDayRow>
             className="sales-by-day-layout-table"
             dataSource={breakdown.rows}
@@ -857,14 +857,9 @@ function SalesByDayResults({
   )
 }
 
-function SummaryRow({ storeLabel, totals }: { storeLabel: string; totals: SalesTotals }) {
+function SummaryRow({ totals }: { totals: SalesTotals }) {
   return (
     <Row gutter={16} style={{ marginBottom: 16 }}>
-      <Col xs={24} sm={12} lg={8} xl={4}>
-        <Card>
-          <Statistic title="Store" value={storeLabel} />
-        </Card>
-      </Col>
       <Col xs={24} sm={12} lg={8} xl={4}>
         <Card>
           <Statistic title="Net Sales" value={totals.netSales} formatter={(value) => fmtMoney(Number(value))} />

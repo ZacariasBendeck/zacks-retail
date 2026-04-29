@@ -8,6 +8,7 @@ import {
   usePurchaseOrder,
   usePurchaseOrderReceipts,
   useReceivePurchaseOrder,
+  useReceivePurchaseOrderFull,
 } from '../hooks/usePurchaseOrders'
 import { useLocations } from '../hooks/useAdjustments'
 
@@ -17,6 +18,7 @@ vi.mock('../hooks/usePurchaseOrders', () => ({
   usePurchaseOrders: vi.fn(),
   usePurchaseOrder: vi.fn(),
   useReceivePurchaseOrder: vi.fn(),
+  useReceivePurchaseOrderFull: vi.fn(),
   usePurchaseOrderReceipts: vi.fn(),
 }))
 
@@ -32,8 +34,26 @@ describe('PoReceivePage discrepancy flow', () => {
       data: {
         id: 'po-1',
         poNumber: 'PO-000001',
+        billToStoreId: 1,
+        shipToStoreId: 1,
         vendorId: 'vendor-1',
         vendorName: 'Test Vendor',
+        orderType: 'RO',
+        classification: 'AT_ONCE',
+        origin: 'MANUAL',
+        originSourcePoId: null,
+        confirmationNumber: null,
+        accountNumber: null,
+        terms: null,
+        shipVia: null,
+        backorderAllowed: false,
+        splitShipment: false,
+        programCode: null,
+        storeLabelsOnReceive: false,
+        orderDate: '2026-04-01T12:00:00.000Z',
+        shipDate: null,
+        cancelDate: null,
+        paymentDate: null,
         status: 'CONFIRMED',
         notes: null,
         cancellationReason: null,
@@ -69,6 +89,10 @@ describe('PoReceivePage discrepancy flow', () => {
       mutateAsync: mockMutateAsync,
       isPending: false,
     } as never)
+    vi.mocked(useReceivePurchaseOrderFull).mockReturnValue({
+      mutateAsync: vi.fn(),
+      isPending: false,
+    } as never)
 
     vi.mocked(useLocations).mockReturnValue({
       data: [{ id: 'loc-01', name: 'Main Warehouse' }],
@@ -88,7 +112,7 @@ describe('PoReceivePage discrepancy flow', () => {
       </ConfigProvider>,
     )
 
-    const qtyInput = screen.getByRole('spinbutton')
+    const qtyInput = screen.getByRole('spinbutton', { name: /Receive quantity/i })
     await user.click(qtyInput)
     await user.keyboard('{Control>}a{/Control}5')
 
@@ -111,8 +135,16 @@ describe('PoReceivePage discrepancy flow', () => {
       expect.objectContaining({
         poId: 'po-1',
         payload: expect.objectContaining({
-          lines: [{ lineId: 'line-1', quantityReceived: 5 }],
+          lines: [
+            expect.objectContaining({
+              lineId: 'line-1',
+              quantityReceived: 5,
+              discrepancyReason: expect.stringContaining('Vendor short packed carton 2'),
+            }),
+          ],
           locationId: 'loc-01',
+          discountPercent: 0,
+          freightEach: 0,
           referenceNumber: 'RCV-42',
           receivedBy: 'warehouse.user',
           reason: expect.stringContaining('Vendor short packed carton 2'),

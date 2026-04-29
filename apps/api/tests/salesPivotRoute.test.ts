@@ -20,7 +20,16 @@ jest.mock('../src/services/salesReporting/ricsSalesReportAdapter', () => {
   const actual = jest.requireActual('../src/services/salesReporting/ricsSalesReportAdapter');
   return {
     ...actual,
-    listSalesDimensions: jest.fn().mockResolvedValue({ stores: [], categories: [], groups: [] }),
+    listSalesDimensions: jest.fn().mockResolvedValue({
+      stores: [],
+      chains: [],
+      categories: [],
+      groups: [],
+      sectors: [],
+      departments: [],
+      seasons: [],
+      buyers: [],
+    }),
   };
 });
 
@@ -359,6 +368,30 @@ describe('GET /api/v1/reports/sales/sales-pivot', () => {
     expect(getBuyerAdapterMock()).not.toHaveBeenCalled();
   });
 
+  it('dispatches to the custom adapter with a two-level hierarchy', async () => {
+    setCustomAdapterReport({
+      variant: 'custom',
+      levels: ['buyer', 'category'],
+      startDate: '2026-04-01', endDate: '2026-04-22',
+      currentYear: 2026, priorYear: 2025,
+      storeNumbers: [], rows: [],
+      totals: {
+        onHandQty: 0, onHandCostVal: 0,
+        qtyTY: 0, netSalesTY: 0, profitTY: 0,
+        qtyLY: 0, netSalesLY: 0, profitLY: 0,
+      },
+    });
+    const res = await request(app).get(
+      '/api/v1/reports/sales/sales-pivot?startDate=2026-04-01&endDate=2026-04-22&variant=custom&level1=buyer&level2=category',
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.levels).toEqual(['buyer', 'category']);
+    const call = getCustomAdapterMock().mock.calls.at(-1)?.[0];
+    expect(call).toMatchObject({
+      levels: ['buyer', 'category'],
+    });
+  });
+
   it('returns a buyer CSV with buyer + SKU columns', async () => {
     setBuyerAdapterReport(emptyReport('buyer', {
       rows: [
@@ -389,7 +422,7 @@ describe('GET /api/v1/reports/sales/sales-pivot', () => {
     expect(body).toContain('Blue shirt');
   });
 
-  it('forwards sector/department/season/buyer filters to the custom adapter', async () => {
+  it('forwards chain/sector/department/season/buyer filters to the custom adapter', async () => {
     setCustomAdapterReport({
       variant: 'custom',
       levels: ['buyer', 'vendor', 'category'],
@@ -406,10 +439,11 @@ describe('GET /api/v1/reports/sales/sales-pivot', () => {
       '/api/v1/reports/sales/sales-pivot' +
       '?startDate=2026-04-01&endDate=2026-04-22' +
       '&variant=custom&level1=buyer&level2=vendor&level3=category' +
-      '&sectors=1,2&departments=10,11&seasons=A,B&buyers=zb,ab',
+      '&chains=unlimited,magic-shoes&sectors=1,2&departments=10,11&seasons=A,B&buyers=zb,ab',
     );
     const call = getCustomAdapterMock().mock.calls.at(-1)?.[0];
     expect(call).toMatchObject({
+      chains: ['unlimited', 'magic-shoes'],
       sectors: [1, 2],
       departments: [10, 11],
       seasons: ['A', 'B'],

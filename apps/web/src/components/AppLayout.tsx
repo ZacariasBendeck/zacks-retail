@@ -45,7 +45,7 @@ const menuItems = [
     label: 'Products',
     children: [
       { key: '/products/skus/new', icon: <PlusOutlined />, label: 'New SKU' },
-      { key: '/inventory/skus', icon: <AppstoreOutlined />, label: 'SKU' },
+      { key: '/inventory/skus', icon: <AppstoreOutlined />, label: 'SKU List' },
       { key: '/inventory/sku-drafts', icon: <FileTextOutlined />, label: 'Borradores de SKU' },
       { key: '/products/inquiry', icon: <SearchOutlined />, label: 'Inquiry' },
       { type: 'divider' as const },
@@ -56,6 +56,7 @@ const menuItems = [
           { key: '/products/attributes', icon: <AppstoreOutlined />, label: 'Attributes' },
           { key: '/products/attributes/macros', icon: <TagOutlined />, label: 'Macro Categories' },
           { key: '/products/families', icon: <AppstoreOutlined />, label: 'Product Families' },
+          { key: '/products/matching-sets', icon: <ApartmentOutlined />, label: 'Matching Sets' },
         ],
       },
     ],
@@ -78,6 +79,7 @@ const menuItems = [
       { key: '/products/taxonomy/promotion-codes', icon: <FileTextOutlined />, label: 'Promotion Codes' },
       { key: '/utilities/stores', icon: <ShopOutlined />, label: 'Stores' },
       { key: '/utilities/store-chains', icon: <ApartmentOutlined />, label: 'Store Chains' },
+      { key: '/employees/salespeople', icon: <TeamOutlined />, label: 'Salespeople' },
       { key: '/admin/users', icon: <UserOutlined />, label: 'Users' },
     ],
   },
@@ -167,26 +169,16 @@ const menuItems = [
       { key: '/utilities/batch-history', icon: <HistoryOutlined />, label: 'Batch History' },
     ],
   },
-  // Demoted: modules not in active use.
-  // Parents render with a muted style so they read as deprioritised against the dark sider.
-  // Routes stay mounted in App.tsx, so direct URLs still resolve.
   {
     key: '/purchasing',
     icon: <ShoppingOutlined />,
-    label: <DemotedLabel>Purchasing</DemotedLabel>,
+    label: 'Purchasing',
     children: [
-      { key: '/purchasing/orders', icon: <FileTextOutlined />, label: 'Control Tower' },
+      { key: '/purchasing/orders', icon: <FileTextOutlined />, label: 'Purchase Orders' },
+      { key: '/purchasing/orders/new-spec-preview', icon: <ExperimentOutlined />, label: 'PO Entry (Spec Preview)' },
       { key: '/purchasing/receive', icon: <InboxOutlined />, label: 'Receive POs' },
-      {
-        key: '/purchasing/orders/new-spec-preview',
-        icon: <ExperimentOutlined />,
-        label: 'PO Entry (Spec Preview)',
-      },
-      {
-        key: '/purchasing/receive-spec-preview',
-        icon: <ExperimentOutlined />,
-        label: 'Receive PO (Spec Preview)',
-      },
+      { key: '/purchasing/receive-spec-preview', icon: <ExperimentOutlined />, label: 'Receive PO (Spec Preview)' },
+      { key: '/purchasing/reports', icon: <BarChartOutlined />, label: 'Reports' },
     ],
   },
   {
@@ -261,21 +253,31 @@ export default function AppLayout() {
   }
 
   const collectOpenKeysForPath = (items: readonly any[], path: string, ancestors: string[] = []): string[] => {
-    for (const item of items) {
-      if (!item || item.type === 'divider') continue
+    let bestKeys: string[] = []
+    let bestScore = -1
 
-      const itemKey = typeof item.key === 'string' ? item.key : null
-      const nextAncestors = itemKey ? [...ancestors, itemKey] : ancestors
+    const visit = (nodes: readonly any[], parentKeys: string[]) => {
+      for (const item of nodes) {
+        if (!item || item.type === 'divider') continue
 
-      if (Array.isArray(item.children)) {
-        const childMatch = collectOpenKeysForPath(item.children, path, nextAncestors)
-        if (childMatch.length > 0) return childMatch
-        if (itemKey && (path === itemKey || path.startsWith(`${itemKey}/`))) return nextAncestors
-      } else if (itemKey && (path === itemKey || path.startsWith(`${itemKey}/`))) {
-        return ancestors
+        const itemKey = typeof item.key === 'string' ? item.key : null
+        const hasChildren = Array.isArray(item.children)
+        const itemKeys = itemKey ? [...parentKeys, itemKey] : parentKeys
+
+        if (itemKey && (path === itemKey || path.startsWith(`${itemKey}/`))) {
+          const score = itemKey.length + (hasChildren ? 0 : 10_000)
+          if (score > bestScore) {
+            bestKeys = hasChildren ? itemKeys : parentKeys
+            bestScore = score
+          }
+        }
+
+        if (hasChildren) visit(item.children, itemKeys)
       }
     }
-    return []
+
+    visit(items, ancestors)
+    return bestKeys
   }
 
   const allMenuKeys = menuItems.flatMap((item) =>

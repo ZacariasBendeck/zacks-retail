@@ -56,6 +56,8 @@ export function useApplyBatchChange() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['utilities', 'batch'] })
       qc.invalidateQueries({ queryKey: ['utilities', 'sku-lookup'] })
+      qc.invalidateQueries({ queryKey: ['products-skus'] })
+      qc.invalidateQueries({ queryKey: ['products-attributes'] })
     },
   })
 }
@@ -100,6 +102,7 @@ function hasAnyCriterion(c: SkuCriteria): boolean {
     (c.stylesColors && c.stylesColors.length) ||
     (c.groups && c.groups.length) ||
     (c.keywords && c.keywords.length) ||
+    Object.values(c.attributes ?? {}).some((values) => values.length > 0) ||
     c.onlyFuturePriceChanges ||
     c.onlyWtdSales
   )

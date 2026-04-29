@@ -3,9 +3,19 @@ import { getCasePackByCode, listCasePacks } from '../services/casePackService';
 
 const router: IRouter = Router();
 
-router.get('/', async (_req: Request, res: Response) => {
+router.get('/', async (req: Request, res: Response) => {
   try {
-    const casePacks = await listCasePacks();
+    const rawSizeTypeCode = req.query.sizeTypeCode;
+    const sizeTypeCode = rawSizeTypeCode == null || rawSizeTypeCode === ''
+      ? undefined
+      : Number(rawSizeTypeCode);
+    if (sizeTypeCode != null && (!Number.isInteger(sizeTypeCode) || sizeTypeCode < 0)) {
+      res.status(400).json({
+        error: { code: 'INVALID_SIZE_TYPE_CODE', message: 'sizeTypeCode must be a positive integer.' },
+      });
+      return;
+    }
+    const casePacks = await listCasePacks({ sizeTypeCode });
     res.json({ casePacks });
   } catch (err) {
     res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: (err as Error).message } });

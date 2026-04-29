@@ -25,6 +25,7 @@ import type {
   RecommendedTransferRow,
   InquiryTrend,
   InquiryOpenPoRow,
+  InquiryPurchaseOrderHistoryRow,
   InquiryInfoDetail,
 } from './ricsInventoryAdapter';
 
@@ -67,6 +68,14 @@ export async function getInquiryInfo(sku: string, storeId?: number): Promise<Inq
 export async function getInquiryOpenPoRows(sku: string, storeId?: number): Promise<InquiryOpenPoRow[]> {
   if (!sourceIsRics()) throw new InventorySourceNotImplementedError(source());
   return ricsAdapter.getInquiryOpenPoRows(sku, storeId);
+}
+
+export async function getInquiryPurchaseOrderHistory(
+  sku: string,
+  storeId?: number,
+): Promise<InquiryPurchaseOrderHistoryRow[]> {
+  if (!sourceIsRics()) throw new InventorySourceNotImplementedError(source());
+  return ricsAdapter.getInquiryPurchaseOrderHistory(sku, storeId);
 }
 
 export async function findBySize(params: FindBySizeParams): Promise<FindBySizeResult> {

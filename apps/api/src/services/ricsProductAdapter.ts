@@ -1459,6 +1459,7 @@ export async function getPosSku(skuCode: string): Promise<PosSku | null> {
 // ── SKU Lookup modal search ──────────────────────────────────────────────────
 
 export type SkuLookupSort = 'SKU' | 'DESCRIPTION' | 'VENDOR' | 'STYLE_COLOR';
+export type SkuLookupMatchMode = 'contains' | 'prefix';
 
 export interface SkuLookupRow {
   skuId: string;
@@ -1476,7 +1477,9 @@ export interface SkuLookupParams {
   q?: string;
   descContains?: string;
   wholeWord?: boolean;
-  /** Which column the `q` prefix filters against. Default: SKU. */
+  /** SKU-code match behavior for `q` when `searchField` is SKU. Default: contains. */
+  skuMatchMode?: SkuLookupMatchMode;
+  /** Which column the `q` filters against. Default: SKU. */
   searchField?: SkuLookupSort;
   limit?: number;
   offset?: number;
@@ -1618,7 +1621,9 @@ export async function getSkuLookupFacets(filters: SkuLookupFacetParams = {}): Pr
  * Search the in-memory SKU index for the Inventory Inquiry's SKU Lookup modal.
  *
  * `q` filters by a user-selectable column (`searchField`: SKU / Description /
- * Vendor / Style-Color). `descContains` is an additional AND-filter on the
+ * Vendor / Style-Color). SKU searches can match anywhere in the code or only
+ * at the beginning, depending on `skuMatchMode`.
+ * `descContains` is an additional AND-filter on the
  * description text. Results are always ordered by SKU — the Inquiry modal's
  * table handles its own sort via column-header clicks on the client side.
  */
@@ -1632,6 +1637,7 @@ export async function searchSkusForLookup(
   const desc = (params.descContains ?? '').trim().toLowerCase();
   const whole = !!params.wholeWord;
   const searchField: SkuLookupSort = params.searchField ?? 'SKU';
+  const skuMatchMode: SkuLookupMatchMode = params.skuMatchMode === 'prefix' ? 'prefix' : 'contains';
   const seasonFilter = params.season?.trim().toUpperCase();
   const vendorFilter = params.vendor?.trim().toUpperCase();
   const departmentFilter = params.department;
@@ -1658,7 +1664,13 @@ export async function searchSkusForLookup(
   };
 
   const filtered = index.filter((row) => {
-    if (q && !fieldOf(row).startsWith(q)) return false;
+    if (q) {
+      const fieldText = fieldOf(row);
+      const matchesQuery = searchField === 'SKU' && skuMatchMode === 'prefix'
+        ? fieldText.startsWith(q)
+        : fieldText.includes(q);
+      if (!matchesQuery) return false;
+    }
     if (desc) {
       const description = String(row.Desc ?? '').toLowerCase();
       if (whole) {

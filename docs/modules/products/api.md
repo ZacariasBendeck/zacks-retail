@@ -290,7 +290,7 @@ The matching-set tables must reference `app.sku(id)` and `app.vendor(code)`. The
 - **Public storefront facet endpoints.** Storefront has its own router with anonymous auth + edge caching requirements. The shape of `/attributes/dimensions?withCounts=true` is the data the storefront facet endpoint will consume internally; the storefront-side endpoint is a separate brainstorm.
 - **Per-source filtering** ("give me only operator-overridden assignments"). The `assigned_by` field is in the read response; clients filter if needed.
 - **Bulk SKU-attribute fetch** (`POST /attributes/by-sku-codes`). Not building speculatively; add when a use case lands.
-- **Create / delete of `ProductFamily` rows** — the 11 families are fixed; admin UI surfaces the actions disabled.
+- **Delete of `ProductFamily` rows** - not exposed. Creating and editing product families is supported through `/api/v1/products/families`; deletion remains blocked because categories, SKU assignments, and attribute rules may reference a family code.
 - **Matching Set / Conjuntos admin** — out of scope for the attribute Phase 1 endpoints only. It is a Products-module feature planned under `/api/v1/products/matching-sets`; see the current-state plan linked above.
 
 ## Related

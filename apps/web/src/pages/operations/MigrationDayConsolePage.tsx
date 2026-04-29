@@ -157,12 +157,10 @@ function cleanConfig(config: MigrationActionConfig): MigrationActionConfig {
     bundleDir: cleanText(config.bundleDir),
     customerCsvPath: cleanText(config.customerCsvPath),
     mailListNamesCsvPath: cleanText(config.mailListNamesCsvPath),
-    ticketHeaderCsvPath: cleanText(config.ticketHeaderCsvPath),
-    ticketDetailCsvPath: cleanText(config.ticketDetailCsvPath),
     inventoryHistoryAsOf: cleanText(config.inventoryHistoryAsOf),
     skipInventoryHistory: config.skipInventoryHistory === true,
     skipCustomers: config.skipCustomers === true,
-    skipCustomerTransactions: config.skipCustomerTransactions === true,
+    skipTickets: config.skipTickets === true || config.skipSalesHistory === true,
     skipSegmentationDefaults: config.skipSegmentationDefaults === true,
     strictFull: config.strictFull === true,
   }
@@ -499,7 +497,7 @@ export default function MigrationDayConsolePage() {
             type="info"
             showIcon
             message="Use this console for rehearsals and cutover only."
-            description="The MDB folder is the read-only RICS source. The bundle directory is the temporary output folder where the export writes the portable package: legacy CSVs, attribute snapshot, optional CRM files, and manifests. The bundle is what gets uploaded to Render and then loaded into Postgres."
+            description="The MDB folder is the read-only RICS source. The bundle directory is the temporary output folder where the export writes the portable package: canonical RICS CSVs, the attribute snapshot, optional customer CRM files, and manifests. The bundle is what gets uploaded to Render and then loaded into Postgres."
           />
           <Row gutter={[16, 12]}>
             <Col xs={24} lg={12}>
@@ -542,22 +540,6 @@ export default function MigrationDayConsolePage() {
                 placeholder="Optional source copied into bundle"
               />
             </Col>
-            <Col xs={24} lg={12}>
-              <Text strong>Ticket header CSV source path</Text>
-              <Input
-                value={config.ticketHeaderCsvPath}
-                onChange={(event) => updateConfig('ticketHeaderCsvPath', event.target.value)}
-                placeholder="Optional source copied into bundle"
-              />
-            </Col>
-            <Col xs={24} lg={12}>
-              <Text strong>Ticket detail CSV source path</Text>
-              <Input
-                value={config.ticketDetailCsvPath}
-                onChange={(event) => updateConfig('ticketDetailCsvPath', event.target.value)}
-                placeholder="Optional source copied into bundle"
-              />
-            </Col>
           </Row>
           <Space size={[16, 8]} wrap>
             <Checkbox
@@ -576,10 +558,10 @@ export default function MigrationDayConsolePage() {
               Skip customers
             </Checkbox>
             <Checkbox
-              checked={config.skipCustomerTransactions}
-              onChange={(event) => updateConfig('skipCustomerTransactions', event.target.checked)}
+              checked={config.skipTickets}
+              onChange={(event) => updateConfig('skipTickets', event.target.checked)}
             >
-              Skip customer transactions
+              Skip sales tickets
             </Checkbox>
             <Checkbox
               checked={config.skipSegmentationDefaults}

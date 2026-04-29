@@ -20,31 +20,29 @@ export default function CoverageTab({ dimension }: Props) {
   )
 
   if (isLoading) {
-    return <Typography.Text type="secondary">Cargando cobertura…</Typography.Text>
+    return <Typography.Text type="secondary">Cargando cobertura...</Typography.Text>
   }
   if (!row) {
     return (
       <Alert
         type="info"
-        message="Sin datos de cobertura para esta dimensión"
-        description="La cobertura se mide contra rics_mirror.inventory_master. Si no aparecen valores, asegúrese de que el sync RICS se ha ejecutado."
+        message="Sin datos de cobertura para esta dimension"
+        description="La cobertura se mide contra los SKUs activos en app.sku. Si no aparecen valores, verifique que el import de productos se haya ejecutado."
       />
     )
   }
 
   return (
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-      <Descriptions size="small" column={3} bordered>
+      <Descriptions size="small" column={4} bordered>
         <Descriptions.Item label="SKUs totales">{fmtInt(row.totalSkus)}</Descriptions.Item>
-        <Descriptions.Item label="SKUs clasificados">{fmtInt(row.classifiedSkus)}</Descriptions.Item>
+        <Descriptions.Item label="SKUs en familia">{fmtInt(row.familySkus)}</Descriptions.Item>
+        <Descriptions.Item label="Con valor en familia">{fmtInt(row.familyClassifiedSkus)}</Descriptions.Item>
         <Descriptions.Item label="Cobertura">{row.coveragePct.toFixed(1)}%</Descriptions.Item>
-        <Descriptions.Item label="Desde keywords">{fmtInt(row.bySource.keyword)}</Descriptions.Item>
-        <Descriptions.Item label="Desde Excel">{fmtInt(row.bySource.excel)}</Descriptions.Item>
-        <Descriptions.Item label="Desde operador">{fmtInt(row.bySource.operator)}</Descriptions.Item>
       </Descriptions>
       <Typography.Text type="secondary">
-        Cobertura significa: cuántos SKUs únicos tienen al menos una asignación en esta dimensión,
-        dividido entre el total de SKUs en <code>rics_mirror.inventory_master</code>.
+        Cobertura significa: SKUs de la familia con valor en esta dimension,
+        dividido entre el total de SKUs activos de esa familia.
       </Typography.Text>
     </Space>
   )

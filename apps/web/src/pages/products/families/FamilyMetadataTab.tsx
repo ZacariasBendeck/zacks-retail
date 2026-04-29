@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { App, Button, Card, Form, Input, InputNumber, Space, Tooltip, Typography } from 'antd'
+import { App, Button, Card, Form, Input, InputNumber, Space } from 'antd'
 import type { ProductFamily } from '../../../types/sku'
 import { useUpdateFamilyMetadata } from '../../../hooks/useProductFamilies'
 
@@ -13,11 +13,7 @@ interface FormValues {
   sortOrder: number
 }
 
-/**
- * Edit labelEs / descriptionEs / sortOrder on a ProductFamily. Create /
- * delete actions are surfaced but disabled — the 11 families are a fixed
- * taxonomy today (see the plan's "Not created deliberately" section).
- */
+/** Edit labelEs / descriptionEs / sortOrder on a ProductFamily. */
 export default function FamilyMetadataTab({ family }: Props) {
   const [form] = Form.useForm<FormValues>()
   const { message } = App.useApp()
@@ -52,43 +48,26 @@ export default function FamilyMetadataTab({ family }: Props) {
     <Space direction="vertical" size="large" style={{ width: '100%' }}>
       <Card size="small" title="Metadatos">
         <Form<FormValues> form={form} layout="vertical" onFinish={onFinish}>
-          <Form.Item label="Código" tooltip="Identificador interno, no se puede cambiar.">
+          <Form.Item label="Codigo" tooltip="Identificador interno. No se cambia porque lo usan categorias, SKUs y reglas.">
             <Input value={family.code} disabled />
           </Form.Item>
           <Form.Item
-            label="Etiqueta (es)"
+            label="Etiqueta"
             name="labelEs"
             rules={[{ required: true, message: 'Etiqueta requerida' }]}
           >
             <Input />
           </Form.Item>
-          <Form.Item label="Descripción (es)" name="descriptionEs">
+          <Form.Item label="Descripcion" name="descriptionEs">
             <Input.TextArea rows={2} />
           </Form.Item>
           <Form.Item label="Orden" name="sortOrder">
-            <InputNumber min={0} step={10} style={{ width: 120 }} />
+            <InputNumber min={0} max={32767} step={10} style={{ width: 120 }} />
           </Form.Item>
           <Button type="primary" htmlType="submit" loading={updateMutation.isPending}>
             Guardar
           </Button>
         </Form>
-      </Card>
-
-      <Card size="small" title="Acciones avanzadas">
-        <Space>
-          <Tooltip title="Las 11 familias están fijas — contactar al admin para agregar/eliminar.">
-            <Button disabled>Nueva familia…</Button>
-          </Tooltip>
-          <Tooltip title="Las 11 familias están fijas — contactar al admin para agregar/eliminar.">
-            <Button disabled danger>
-              Eliminar familia
-            </Button>
-          </Tooltip>
-        </Space>
-        <Typography.Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0 }}>
-          El set de familias se mantiene estable para proteger las reglas y la clasificación
-          existente. Una migración futura puede abrir esta acción.
-        </Typography.Paragraph>
       </Card>
     </Space>
   )

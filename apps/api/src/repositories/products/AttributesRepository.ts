@@ -25,6 +25,7 @@ export interface DimensionValueRow {
   id: number;
   code: string;
   labelEs: string;
+  descriptionEs: string | null;
   sortOrder: number;
   isActive: boolean;
   skuCount?: number;
@@ -70,6 +71,8 @@ export interface CoverageRow {
   dimensionCode: string;
   labelEs: string;
   totalSkus: number;
+  familySkus: number;
+  familyClassifiedSkus: number;
   classifiedSkus: number;
   coveragePct: number;
   bySource: { keyword: number; excel: number; operator: number };
@@ -376,6 +379,7 @@ export const AttributesRepository = {
           id: v.id,
           code: v.code,
           labelEs: v.labelEs,
+          descriptionEs: v.descriptionEs,
           sortOrder: v.sortOrder,
           isActive: v.isActive,
           ...(counts ? { skuCount: counts.get(v.id) ?? 0 } : {}),
@@ -945,7 +949,7 @@ export const AttributesRepository = {
 
       const out: CoverageRow[] = [];
       for (const d of dims) {
-        const rows = await prisma.$queryRawUnsafe<{ source: string; n: string }[]>(
+        const sourceRows = await prisma.$queryRawUnsafe<{ source: string; n: string }[]>(
           `SELECT
              CASE
                WHEN assigned_by LIKE 'seed:keyword:%' THEN 'keyword'
@@ -959,24 +963,59 @@ export const AttributesRepository = {
           d.id
         );
         const bySource = { keyword: 0, excel: 0, operator: 0 };
-        for (const r of rows) {
+        for (const r of sourceRows) {
           if (r.source === 'keyword') bySource.keyword = Number(r.n);
           else if (r.source === 'excel') bySource.excel = Number(r.n);
           else bySource.operator = Number(r.n);
         }
-        const classifiedRow = await prisma.$queryRawUnsafe<{ n: string }[]>(
-          `SELECT COUNT(DISTINCT sku_code)::text AS n
-           FROM app.sku_attribute_assignment
-           WHERE dimension_id = $1`,
+
+        const rows = await prisma.$queryRawUnsafe<{
+          family_skus: string;
+          family_classified_skus: string;
+          classified_skus: string;
+        }[]>(
+          `WITH enabled_families AS (
+             SELECT family_code
+             FROM app.attribute_family_rule
+             WHERE dimension_id = $1
+               AND enabled = true
+           ),
+           scoped_skus AS (
+             SELECT DISTINCT COALESCE(s.code, s.provisional_code) AS sku_code
+             FROM app.sku s
+             LEFT JOIN app.category_product_family cpf ON cpf.category_number = s.category_number
+             WHERE s.sku_state <> 'DISCONTINUED'
+               AND (
+                 NOT EXISTS (SELECT 1 FROM enabled_families)
+                 OR cpf.family_code IN (SELECT family_code FROM enabled_families)
+               )
+           )
+           SELECT
+             (SELECT COUNT(*)::text FROM scoped_skus) AS family_skus,
+             (
+               SELECT COUNT(DISTINCT a.sku_code)::text
+               FROM app.sku_attribute_assignment a
+               JOIN scoped_skus ss ON ss.sku_code = a.sku_code
+               WHERE a.dimension_id = $1
+             ) AS family_classified_skus,
+             (
+               SELECT COUNT(DISTINCT sku_code)::text
+               FROM app.sku_attribute_assignment
+               WHERE dimension_id = $1
+             ) AS classified_skus`,
           d.id
         );
-        const classifiedSkus = Number(classifiedRow[0]?.n ?? 0);
+        const familySkus = Number(rows[0]?.family_skus ?? 0);
+        const familyClassifiedSkus = Number(rows[0]?.family_classified_skus ?? 0);
+        const classifiedSkus = Number(rows[0]?.classified_skus ?? 0);
         out.push({
           dimensionCode: d.code,
           labelEs: d.labelEs,
           totalSkus,
+          familySkus,
+          familyClassifiedSkus,
           classifiedSkus,
-          coveragePct: totalSkus === 0 ? 0 : Math.round((classifiedSkus / totalSkus) * 1000) / 10,
+          coveragePct: familySkus === 0 ? 0 : Math.round((familyClassifiedSkus / familySkus) * 1000) / 10,
           bySource,
         });
       }
@@ -997,6 +1036,8 @@ export const AttributesRepository = {
     descriptionEs: string | null;
     sortOrder: number;
     isMultiValue: boolean;
+    familyCode?: string | null;
+    actor?: string;
   }): Promise<Result<DimensionRow>> {
     try {
       const existing = await prisma.attributeDimension.findUnique({ where: { code: input.code } });
@@ -1006,14 +1047,34 @@ export const AttributesRepository = {
           message: `Dimension code '${input.code}' already exists.`,
         });
       }
-      const created = await prisma.attributeDimension.create({
-        data: {
-          code: input.code,
-          labelEs: input.labelEs,
-          descriptionEs: input.descriptionEs,
-          sortOrder: input.sortOrder,
-          isMultiValue: input.isMultiValue,
-        },
+      const familyCode = input.familyCode?.trim() || null;
+      if (familyCode != null) {
+        const family = await prisma.productFamily.findUnique({ where: { code: familyCode } });
+        if (!family) return Err({ kind: 'NotFound', message: `Family '${familyCode}' not found.` });
+      }
+      const created = await prisma.$transaction(async (tx) => {
+        const dimension = await tx.attributeDimension.create({
+          data: {
+            code: input.code,
+            labelEs: input.labelEs,
+            descriptionEs: input.descriptionEs,
+            sortOrder: input.sortOrder,
+            isMultiValue: input.isMultiValue,
+          },
+        });
+        if (familyCode != null) {
+          await tx.attributeFamilyRule.create({
+            data: {
+              dimensionId: dimension.id,
+              familyCode,
+              enabled: true,
+              isRequired: false,
+              sortOrder: input.sortOrder,
+              updatedBy: input.actor ?? 'system',
+            },
+          });
+        }
+        return dimension;
       });
       return Ok({
         code: created.code,
@@ -1108,7 +1169,7 @@ export const AttributesRepository = {
 
   async createValue(
     dimensionCode: string,
-    input: { code: string; labelEs: string; sortOrder: number },
+    input: { code: string; labelEs: string; descriptionEs?: string | null; sortOrder: number },
   ): Promise<Result<DimensionValueRow>> {
     try {
       const dim = await prisma.attributeDimension.findUnique({ where: { code: dimensionCode } });
@@ -1129,6 +1190,7 @@ export const AttributesRepository = {
           dimensionId: dim.id,
           code: input.code,
           labelEs: input.labelEs,
+          descriptionEs: input.descriptionEs ?? null,
           sortOrder: input.sortOrder,
           isActive: true,
         },
@@ -1137,6 +1199,7 @@ export const AttributesRepository = {
         id: created.id,
         code: created.code,
         labelEs: created.labelEs,
+        descriptionEs: created.descriptionEs,
         sortOrder: created.sortOrder,
         isActive: created.isActive,
       });
@@ -1147,7 +1210,7 @@ export const AttributesRepository = {
 
   async updateValue(
     valueId: number,
-    patch: Partial<{ labelEs: string; sortOrder: number; isActive: boolean }>,
+    patch: Partial<{ labelEs: string; descriptionEs: string | null; sortOrder: number; isActive: boolean }>,
   ): Promise<Result<DimensionValueRow>> {
     try {
       const existing = await prisma.attributeValue.findUnique({ where: { id: valueId } });
@@ -1157,6 +1220,7 @@ export const AttributesRepository = {
         where: { id: valueId },
         data: {
           ...(patch.labelEs !== undefined ? { labelEs: patch.labelEs } : {}),
+          ...(patch.descriptionEs !== undefined ? { descriptionEs: patch.descriptionEs } : {}),
           ...(patch.sortOrder !== undefined ? { sortOrder: patch.sortOrder } : {}),
           ...(patch.isActive !== undefined ? { isActive: patch.isActive } : {}),
         },
@@ -1165,6 +1229,7 @@ export const AttributesRepository = {
         id: updated.id,
         code: updated.code,
         labelEs: updated.labelEs,
+        descriptionEs: updated.descriptionEs,
         sortOrder: updated.sortOrder,
         isActive: updated.isActive,
       });

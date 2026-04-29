@@ -1,12 +1,14 @@
 import { useEffect } from 'react'
-import { App, Form, Input, InputNumber, Switch } from 'antd'
+import { App, Form, Input, InputNumber, Select, Switch } from 'antd'
 import { DraggableModal } from '../../../components/draggable-modal'
 import { useCreateDimension, useUpdateDimension } from '../../../hooks/useProductsAttributes'
+import { useProductFamilies } from '../../../hooks/useProductFamilies'
 import type { AttributeDimension } from '../../../types/productsAttributes'
 
 interface Props {
   open: boolean
   editing: AttributeDimension | null
+  defaults?: Partial<FormValues>
   onClose: () => void
   onSaved?: (code: string) => void
 }
@@ -17,13 +19,15 @@ interface FormValues {
   descriptionEs: string | null
   sortOrder: number
   isMultiValue: boolean
+  familyCode?: string | null
 }
 
-export default function DimensionFormModal({ open, editing, onClose, onSaved }: Props) {
+export default function DimensionFormModal({ open, editing, defaults, onClose, onSaved }: Props) {
   const [form] = Form.useForm<FormValues>()
   const { message } = App.useApp()
   const create = useCreateDimension()
   const update = useUpdateDimension()
+  const { data: families, isLoading: familiesLoading } = useProductFamilies()
   const isEdit = editing != null
 
   useEffect(() => {
@@ -35,6 +39,10 @@ export default function DimensionFormModal({ open, editing, onClose, onSaved }: 
         descriptionEs: editing.descriptionEs ?? '',
         sortOrder: editing.sortOrder,
         isMultiValue: editing.isMultiValue,
+        familyCode:
+          editing.familyRules.length === 1
+            ? editing.familyRules[0]?.familyCode
+            : undefined,
       })
     } else {
       form.resetFields()
@@ -44,9 +52,11 @@ export default function DimensionFormModal({ open, editing, onClose, onSaved }: 
         descriptionEs: '',
         sortOrder: 0,
         isMultiValue: false,
+        familyCode: undefined,
+        ...defaults,
       })
     }
-  }, [open, editing, form])
+  }, [open, editing, defaults, form])
 
   const handleOk = async () => {
     const vals = await form.validateFields()
@@ -74,6 +84,7 @@ export default function DimensionFormModal({ open, editing, onClose, onSaved }: 
           descriptionEs,
           sortOrder: vals.sortOrder,
           isMultiValue: vals.isMultiValue,
+          familyCode: vals.familyCode ?? null,
         })
         message.success(`Dimensión '${vals.code}' creada`)
         onSaved?.(vals.code)
@@ -118,6 +129,24 @@ export default function DimensionFormModal({ open, editing, onClose, onSaved }: 
         </Form.Item>
         <Form.Item label="Orden" name="sortOrder" initialValue={0}>
           <InputNumber min={0} step={10} style={{ width: 120 }} />
+        </Form.Item>
+        <Form.Item
+          label="Product Family"
+          name="familyCode"
+          tooltip="Leave blank to make this dimension universal. Select a family to scope it to that family on creation."
+        >
+          <Select
+            allowClear
+            showSearch
+            disabled={isEdit}
+            loading={familiesLoading}
+            optionFilterProp="label"
+            placeholder="Universal"
+            options={(families ?? []).map((family) => ({
+              value: family.code,
+              label: `${family.labelEs} (${family.code})`,
+            }))}
+          />
         </Form.Item>
         <Form.Item
           label="Multi-valor"

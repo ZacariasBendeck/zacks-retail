@@ -21,8 +21,11 @@ The new runtime reuses these existing tables rather than duplicating them:
 | `app.store_master` | Store identity, addresses, and legacy last-ticket baseline. |
 | `app.sku` | Product identity for ticket lines. |
 | `app.customer` | Customer account linkage. |
-| `app.sales_history_ticket` | Historical refund / reprint / reporting lookup. |
-| `app.sales_history_ticket_line` | Historical line reference for returns and reports. |
+| `app.ticket_header` | Canonical completed ticket header table. RICS conversion imports write here and POS completion writes here with `source = 'pos_live'`. |
+| `app.ticket_detail` | Canonical completed ticket detail table. RICS conversion imports write here and POS completion writes here with `source = 'pos_live'`. |
+| `app.ticket_tender` | Canonical completed ticket tender table. RICS conversion imports write here and POS completion writes here with `source = 'pos_live'`. |
+| `app.sales_history_ticket` | Derived reporting/refund/reprint compatibility lookup, built from imported or live ticket data. |
+| `app.sales_history_ticket_line` | Derived line reference for returns and reports, built from imported or live ticket detail data. |
 | `app.taxonomy_return_code` | Return-code catalog. |
 | `app.taxonomy_promotion_code` | Promotion-code catalog. |
 | `app.inventory` and `app.inventory_audit_log` | Inventory posting destination. |
@@ -134,6 +137,18 @@ CREATE TABLE app.pos_shift_tender_count (
 ```
 
 `detail_json` carries denomination detail for cash and per-item detail for checks / slips.
+
+### `app.ticket_header`, `app.ticket_detail`, and `app.ticket_tender`
+
+These are the canonical completed-ticket tables shared by imported RICS tickets and live browser POS tickets.
+
+POS draft editing still uses `app.pos_ticket`, `app.pos_ticket_line`, and `app.pos_ticket_tender` because drafts need shift/register lifecycle state and can be edited before tendering. At completion time, `completeTicket()` writes the completed ticket into:
+
+- `app.ticket_header` with `source = 'pos_live'` and `external_transaction_id = app.pos_ticket.id`
+- `app.ticket_detail` with one row per completed POS line
+- `app.ticket_tender` with one row per completed POS tender
+
+The same completion transaction also updates `app.sales_history_ticket` and `app.sales_history_ticket_line` as derived reporting compatibility tables. Those reporting tables are not the primary completed-ticket model.
 
 ### `app.pos_ticket`
 

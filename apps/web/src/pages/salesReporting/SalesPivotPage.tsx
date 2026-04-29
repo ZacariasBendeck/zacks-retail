@@ -20,6 +20,8 @@ import CollapsibleFilterCard from '../../components/reports/CollapsibleFilterCar
 import { fmtMoney, fmtQty, DASH } from '../../utils/reportFormatters'
 import { SkuLink } from '../../components/sku-link'
 import SaveSnapshotButton from '../../components/reports/SaveSnapshotButton'
+import ReportThumbnail from '../../components/reports/ReportThumbnail'
+import { buildRicsImageUrl } from '../../services/ricsImageUrl'
 
 const { Text } = Typography
 
@@ -86,8 +88,11 @@ interface TreeNode {
   /** Populated only on SKU leaves — makes the Group column render as a
    *  SkuLink that opens the inventory-inquiry popup on click. */
   skuCode?: string
+  pictureFileName?: string | null
   onHandQty: number
   onHandCostVal: number
+  onHandSkuCount: number
+  onHandSkuKeys: Set<string>
   qtyTY: number
   netSalesTY: number
   profitTY: number
@@ -97,7 +102,19 @@ interface TreeNode {
   children?: TreeNode[]
 }
 
-type Measures = Omit<TreeNode, 'rowKey' | 'label' | 'children'>
+type Measures = Pick<
+  TreeNode,
+  | 'onHandQty'
+  | 'onHandCostVal'
+  | 'onHandSkuCount'
+  | 'onHandSkuKeys'
+  | 'qtyTY'
+  | 'netSalesTY'
+  | 'profitTY'
+  | 'qtyLY'
+  | 'netSalesLY'
+  | 'profitLY'
+>
 
 function labelFor(code: number | string | null, desc: string | null, fallback: string): string {
   if (code != null && desc) return `${code} — ${desc}`
@@ -108,15 +125,21 @@ function labelFor(code: number | string | null, desc: string | null, fallback: s
 
 function emptyMeasures(): Measures {
   return {
-    onHandQty: 0, onHandCostVal: 0,
+    onHandQty: 0, onHandCostVal: 0, onHandSkuCount: 0, onHandSkuKeys: new Set<string>(),
     qtyTY: 0, netSalesTY: 0, profitTY: 0,
     qtyLY: 0, netSalesLY: 0, profitLY: 0,
   }
 }
 
-function addMeasures(into: Measures, r: Measures): void {
+function addMeasures(into: Measures, r: Measures | SalesPivotLeafRow): void {
   into.onHandQty += r.onHandQty
   into.onHandCostVal += r.onHandCostVal
+  if ('onHandSkuKeys' in r) {
+    for (const sku of r.onHandSkuKeys) into.onHandSkuKeys.add(sku)
+  } else if (r.onHandQty !== 0) {
+    into.onHandSkuKeys.add(r.sku)
+  }
+  into.onHandSkuCount = into.onHandSkuKeys.size
   into.qtyTY += r.qtyTY
   into.netSalesTY += r.netSalesTY
   into.profitTY += r.profitTY
@@ -188,6 +211,7 @@ function buildDepartmentTree(rows: SalesPivotLeafRow[]): TreeNode[] {
                   rowKey: `se:${sb.keyPart}/d:${db.keyPart}/c:${cb.keyPart}/s:${leaf.sku}`,
                   label: labelFor(leaf.sku, leaf.skuDescription, leaf.sku),
                   skuCode: leaf.sku,
+                  pictureFileName: leaf.pictureFileName,
                   ...emptyMeasures(),
                 }
                 addMeasures(node, leaf)
@@ -313,6 +337,7 @@ function buildBuyerTree(rows: SalesPivotLeafRow[]): TreeNode[] {
                   rowKey: `b:${bb.keyPart}/d:${db.keyPart}/c:${cb.keyPart}/s:${leaf.sku}`,
                   label: labelFor(leaf.sku, leaf.skuDescription, leaf.sku),
                   skuCode: leaf.sku,
+                  pictureFileName: leaf.pictureFileName,
                   ...emptyMeasures(),
                 }
                 addMeasures(node, leaf)
@@ -400,6 +425,7 @@ function buildBuyerVendorTree(rows: SalesPivotLeafRow[]): TreeNode[] {
               rowKey: `b:${bb.keyPart}/v:${vb.keyPart}/s:${leaf.sku}`,
               label: labelFor(leaf.sku, leaf.skuDescription, leaf.sku),
               skuCode: leaf.sku,
+              pictureFileName: leaf.pictureFileName,
               ...emptyMeasures(),
             }
             addMeasures(node, leaf)
@@ -526,6 +552,14 @@ export default function SalesPivotPage() {
     () => (data ? buildTree(data.rows, data.variant) : []),
     [data],
   )
+  const totalOnHandSkuCount = useMemo(() => {
+    if (!data) return 0
+    const skus = new Set<string>()
+    for (const row of data.rows) {
+      if (row.onHandQty !== 0) skus.add(row.sku)
+    }
+    return skus.size
+  }, [data])
 
   const currentYear = data?.currentYear
   const priorYear = data?.priorYear
@@ -543,14 +577,20 @@ export default function SalesPivotPage() {
         key: 'label',
         width: 420,
         fixed: 'left' as const,
-        // SKU leaves render as a SkuLink so clicking opens the inventory
-        // inquiry popup (see InquiryPopupProvider mounted at app root).
-        // Rollup rows (Buyer/Vendor/Store/Sector/Dept/Category) stay as
-        // plain text since there's nothing to drill into at those levels.
-        render: (_v: string, record: TreeNode) =>
-          record.skuCode
-            ? <SkuLink skuCode={record.skuCode}>{record.label}</SkuLink>
-            : record.label,
+        render: (_v: string, record: TreeNode) => {
+          if (!record.skuCode) return record.label
+          return (
+            <Space size={8}>
+              <ReportThumbnail
+                url={buildRicsImageUrl(record.pictureFileName)}
+                alt={record.skuCode}
+                height={28}
+                maxWidth={48}
+              />
+              <SkuLink skuCode={record.skuCode}>{record.label}</SkuLink>
+            </Space>
+          )
+        },
       },
       {
         title: 'On Hand',
@@ -561,6 +601,8 @@ export default function SalesPivotPage() {
             onCell: () => ({ style: { background: ZONE_BG.onHand } }), render: qtyCell },
           { title: 'Cost Val', dataIndex: 'onHandCostVal', key: 'onHandCostVal', width: 140, ...rightAlign,
             onCell: () => ({ style: { background: ZONE_BG.onHand } }), render: moneyCell },
+          { title: 'SKU Count', dataIndex: 'onHandSkuCount', key: 'onHandSkuCount', width: 110, ...rightAlign,
+            onCell: () => ({ style: { background: ZONE_BG.onHand } }), render: qtyCell },
         ],
       },
       {
@@ -740,7 +782,7 @@ export default function SalesPivotPage() {
                 rowKey="rowKey"
                 size="small"
                 pagination={false}
-                scroll={{ x: 1160 }}
+                scroll={{ x: 1270 }}
                 bordered
                 expandable={{ defaultExpandAllRows: false }}
                 summary={() => {
@@ -753,12 +795,13 @@ export default function SalesPivotPage() {
                         </Table.Summary.Cell>
                         <Table.Summary.Cell index={1} align="right">{fmtQty(t.onHandQty)}</Table.Summary.Cell>
                         <Table.Summary.Cell index={2} align="right">{fmtMoney(t.onHandCostVal)}</Table.Summary.Cell>
-                        <Table.Summary.Cell index={3} align="right">{fmtQty(t.qtyTY)}</Table.Summary.Cell>
-                        <Table.Summary.Cell index={4} align="right">{fmtMoney(t.netSalesTY)}</Table.Summary.Cell>
-                        <Table.Summary.Cell index={5} align="right">{fmtMoney(t.profitTY)}</Table.Summary.Cell>
-                        <Table.Summary.Cell index={6} align="right">{fmtQty(t.qtyLY)}</Table.Summary.Cell>
-                        <Table.Summary.Cell index={7} align="right">{fmtMoney(t.netSalesLY)}</Table.Summary.Cell>
-                        <Table.Summary.Cell index={8} align="right">{fmtMoney(t.profitLY)}</Table.Summary.Cell>
+                        <Table.Summary.Cell index={3} align="right">{fmtQty(totalOnHandSkuCount)}</Table.Summary.Cell>
+                        <Table.Summary.Cell index={4} align="right">{fmtQty(t.qtyTY)}</Table.Summary.Cell>
+                        <Table.Summary.Cell index={5} align="right">{fmtMoney(t.netSalesTY)}</Table.Summary.Cell>
+                        <Table.Summary.Cell index={6} align="right">{fmtMoney(t.profitTY)}</Table.Summary.Cell>
+                        <Table.Summary.Cell index={7} align="right">{fmtQty(t.qtyLY)}</Table.Summary.Cell>
+                        <Table.Summary.Cell index={8} align="right">{fmtMoney(t.netSalesLY)}</Table.Summary.Cell>
+                        <Table.Summary.Cell index={9} align="right">{fmtMoney(t.profitLY)}</Table.Summary.Cell>
                       </Table.Summary.Row>
                     </Table.Summary>
                   )

@@ -22,6 +22,9 @@ import {
   fetchStockStatus,
   fetchSalesDimensions,
   fetchSalesHistoryByMonth,
+  fetchPurchaseOrderReport,
+  fetchOpenPoByMonth,
+  fetchPoCashProjection,
   type ReportDetailQuery,
   type SalesBySkuSortBy,
   type SalespersonSubtotalBy,
@@ -37,6 +40,8 @@ import {
   type StockStatusItemFilter,
   type SalesHistoryByMonthParams,
   type AgingQueryArgs,
+  type PurchaseOrderReportQuery,
+  type OpenPoByMonthQuery,
 } from '../services/reportApi'
 
 export function useOnHandByDepartment() {
@@ -323,11 +328,8 @@ export type SalesPivotArgs = {
   endDate: string
   stores?: number[]
   variant: import('../services/reportApi').SalesPivotVariant
-  levels?: [
-    import('../services/reportApi').PivotDimension,
-    import('../services/reportApi').PivotDimension,
-    import('../services/reportApi').PivotDimension,
-  ]
+  levels?: import('../services/reportApi').SalesPivotLevels
+  chains?: string[]
   sectors?: number[]
   departments?: number[]
   seasons?: string[]
@@ -381,6 +383,30 @@ export function useSalesHistoryByMonth(params: SalesHistoryByMonthParams | null)
     queryFn: ({ signal }) => fetchSalesHistoryByMonth(params!, signal),
     enabled: !!params && params.stores.length > 0,
     staleTime: 60 * 1000,
+    placeholderData: keepPreviousData,
+  })
+}
+
+export function usePurchaseOrderReport(query: PurchaseOrderReportQuery) {
+  return useQuery({
+    queryKey: ['purchase-order-report', query] as const,
+    queryFn: () => fetchPurchaseOrderReport(query),
+    placeholderData: keepPreviousData,
+  })
+}
+
+export function useOpenPoByMonth(query: OpenPoByMonthQuery) {
+  return useQuery({
+    queryKey: ['open-po-by-month', query] as const,
+    queryFn: () => fetchOpenPoByMonth(query),
+    placeholderData: keepPreviousData,
+  })
+}
+
+export function usePoCashProjection() {
+  return useQuery({
+    queryKey: ['po-cash-projection'] as const,
+    queryFn: fetchPoCashProjection,
     placeholderData: keepPreviousData,
   })
 }

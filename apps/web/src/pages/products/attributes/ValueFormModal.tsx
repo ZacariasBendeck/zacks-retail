@@ -14,6 +14,7 @@ interface Props {
 interface FormValues {
   code: string
   labelEs: string
+  descriptionEs: string | null
   sortOrder: number
 }
 
@@ -30,11 +31,12 @@ export default function ValueFormModal({ open, dimension, editing, onClose }: Pr
       form.setFieldsValue({
         code: editing.code,
         labelEs: editing.labelEs,
+        descriptionEs: editing.descriptionEs,
         sortOrder: editing.sortOrder,
       })
     } else {
       form.resetFields()
-      form.setFieldsValue({ code: '', labelEs: '', sortOrder: 0 })
+      form.setFieldsValue({ code: '', labelEs: '', descriptionEs: null, sortOrder: 0 })
     }
   }, [open, editing, form])
 
@@ -44,13 +46,22 @@ export default function ValueFormModal({ open, dimension, editing, onClose }: Pr
       if (editing) {
         await update.mutateAsync({
           id: editing.id,
-          patch: { labelEs: vals.labelEs, sortOrder: vals.sortOrder },
+          patch: {
+            labelEs: vals.labelEs,
+            descriptionEs: vals.descriptionEs?.trim() || null,
+            sortOrder: vals.sortOrder,
+          },
         })
         message.success(`Valor '${editing.code}' actualizado`)
       } else {
         await create.mutateAsync({
           dimensionCode: dimension.code,
-          input: { code: vals.code, labelEs: vals.labelEs, sortOrder: vals.sortOrder },
+          input: {
+            code: vals.code,
+            labelEs: vals.labelEs,
+            descriptionEs: vals.descriptionEs?.trim() || null,
+            sortOrder: vals.sortOrder,
+          },
         })
         message.success(`Valor '${vals.code}' creado`)
       }
@@ -88,6 +99,18 @@ export default function ValueFormModal({ open, dimension, editing, onClose }: Pr
           rules={[{ required: true, message: 'Etiqueta requerida' }]}
         >
           <Input placeholder="Nombre visible" />
+        </Form.Item>
+        <Form.Item
+          label="DescripciÃ³n"
+          name="descriptionEs"
+          extra="SinÃ³nimos, notas o criterios para escoger este valor."
+        >
+          <Input.TextArea
+            placeholder="p. ej. usar cuando el forro del tacÃ³n sea yute/espadrille"
+            autoSize={{ minRows: 3, maxRows: 5 }}
+            maxLength={1000}
+            showCount
+          />
         </Form.Item>
         <Form.Item label="Orden" name="sortOrder" initialValue={0}>
           <InputNumber min={0} step={10} style={{ width: 120 }} />

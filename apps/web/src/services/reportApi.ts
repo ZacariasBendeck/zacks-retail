@@ -4,6 +4,7 @@ import {
   type DomainFilterContract,
   type DomainFilterContractOptions,
 } from './domainFilterContract'
+import type { PoStatus } from '../types/purchaseOrder'
 
 export interface DepartmentOnHand {
   department: string
@@ -657,12 +658,14 @@ export interface SalesGroupDim {
   code: string
   desc: string | null
 }
+export interface SalesStoreChainDim { code: string; label: string; storeNumbers: number[] }
 export interface SalesSectorDim { number: number; name: string | null }
 export interface SalesDepartmentDim { number: number; name: string | null }
 export interface SalesSeasonDim { code: string; description: string | null }
 export interface SalesBuyerDim { code: string; label: string | null }
 export interface SalesDimensionsResponse {
   stores: SalesStoreDim[]
+  chains: SalesStoreChainDim[]
   categories: SalesCategoryDim[]
   groups: SalesGroupDim[]
   sectors: SalesSectorDim[]
@@ -1016,6 +1019,8 @@ export interface SkuAttributeColumns {
   categoryDesc: string | null
   departmentNumber: number | null
   departmentDesc: string | null
+  season: string | null
+  groupCode: string | null
   styleColor: string | null
   currentPrice: number | null
   currentCost: number | null
@@ -1034,6 +1039,8 @@ export interface SalesAnalysisRow {
   cogs: number
   grossProfit: number
   gpPct: number | null
+  unitsOnHand: number
+  inventoryUnitCost: number | null
   onHandAtCost: number
   turns: number | null
   roiPct: number | null
@@ -1053,6 +1060,8 @@ export interface SalesAnalysisReport {
     netSales: number
     cogs: number
     grossProfit: number
+    unitsOnHand: number
+    inventoryUnitCost: number | null
     onHandAtCost: number
     gpPct: number | null
     turns: number | null
@@ -1319,6 +1328,10 @@ export type PivotDimension =
   | 'store'
   | 'category'
 
+export type SalesPivotLevels =
+  | [PivotDimension, PivotDimension]
+  | [PivotDimension, PivotDimension, PivotDimension]
+
 export interface SalesPivotLeafRow {
   storeNumber: number | null
   storeName: string | null
@@ -1338,6 +1351,7 @@ export interface SalesPivotLeafRow {
   groupDesc: string | null
   sku: string
   skuDescription: string | null
+  pictureFileName?: string | null
   onHandQty: number
   onHandCostVal: number
   qtyTY: number
@@ -1361,8 +1375,8 @@ export interface SalesPivotTotals {
 
 export interface SalesPivotReport {
   variant: SalesPivotVariant
-  /** Present when variant === 'custom'. The three hierarchy dimensions. */
-  levels?: [PivotDimension, PivotDimension, PivotDimension]
+  /** Present when variant === 'custom'. The selected hierarchy dimensions. */
+  levels?: SalesPivotLevels
   startDate: string
   endDate: string
   currentYear: number
@@ -1378,8 +1392,9 @@ export async function fetchSalesPivot(args: {
   stores?: number[]
   variant: SalesPivotVariant
   /** Required when variant === 'custom'. */
-  levels?: [PivotDimension, PivotDimension, PivotDimension]
+  levels?: SalesPivotLevels
   /** Criteria filters — variant='custom' only. */
+  chains?: string[]
   sectors?: number[]
   departments?: number[]
   seasons?: string[]
@@ -1395,7 +1410,8 @@ export async function fetchSalesPivot(args: {
   if (args.variant === 'custom' && args.levels) {
     params.set('level1', args.levels[0])
     params.set('level2', args.levels[1])
-    params.set('level3', args.levels[2])
+    if (args.levels[2]) params.set('level3', args.levels[2])
+    if (args.chains?.length) params.set('chains', args.chains.join(','))
     if (args.sectors?.length) params.set('sectors', args.sectors.join(','))
     if (args.departments?.length) params.set('departments', args.departments.join(','))
     if (args.seasons?.length) params.set('seasons', args.seasons.join(','))
@@ -1460,7 +1476,9 @@ export interface SalesHistoryByMonthRow {
   children?: SalesHistoryByMonthRow[]
   /** Per-metric 12-month grid. Undefined for metrics not in dataToPrint. */
   metrics: Partial<Record<SalesHistoryByMonthMetricKey, number[]>>
+  priorYearMetrics?: Partial<Record<SalesHistoryByMonthMetricKey, number[]>>
   totals: Partial<Record<SalesHistoryByMonthMetricKey, number>>
+  priorYearTotals?: Partial<Record<SalesHistoryByMonthMetricKey, number>>
 }
 
 export interface SalesHistoryByMonthBlock {
@@ -1468,7 +1486,9 @@ export interface SalesHistoryByMonthBlock {
   storeLabel: string
   rows: SalesHistoryByMonthRow[]
   columnTotals: Partial<Record<SalesHistoryByMonthMetricKey, number[]>>
+  priorYearColumnTotals?: Partial<Record<SalesHistoryByMonthMetricKey, number[]>>
   grandTotals: Partial<Record<SalesHistoryByMonthMetricKey, number>>
+  priorYearGrandTotals?: Partial<Record<SalesHistoryByMonthMetricKey, number>>
 }
 
 export interface SalesHistoryByMonthChartSeries {
@@ -1485,6 +1505,7 @@ export interface SalesHistoryByMonthReport {
   sortBy: SalesHistoryByMonthSortBy
   endMonth: string
   months: string[]
+  priorYearMonths?: string[]
   combineStores: boolean
   stores: SalesHistoryByMonthStoreRef[]
   detailLevel: SalesHistoryByMonthDetailLevel
@@ -1493,6 +1514,7 @@ export interface SalesHistoryByMonthReport {
   criteria: SalesHistoryByMonthCriteria
   blocks: SalesHistoryByMonthBlock[]
   chartSeries: SalesHistoryByMonthChartSeries[]
+  priorYearChartSeries?: SalesHistoryByMonthChartSeries[]
 }
 
 export interface SalesHistoryByMonthParams {
@@ -1503,6 +1525,7 @@ export interface SalesHistoryByMonthParams {
   detailLevel?: SalesHistoryByMonthDetailLevel
   dataToPrint?: SalesHistoryByMonthMetricKey[]
   deferredMetrics?: SalesHistoryByMonthDeferredMetricKey[]
+  includePriorYear?: boolean
   criteria?: SalesHistoryByMonthCriteria
 }
 
@@ -1523,6 +1546,7 @@ function buildSalesHistoryByMonthParams(
   if (params.deferredMetrics && params.deferredMetrics.length > 0) {
     qs.set('deferredMetrics', params.deferredMetrics.join(','))
   }
+  if (params.includePriorYear) qs.set('includePriorYear', 'true')
   const c = params.criteria ?? {}
   if (c.stores)       qs.set('critStores', c.stores)
   if (c.categories)   qs.set('critCategories', c.categories)
@@ -1555,4 +1579,110 @@ export function getSalesHistoryByMonthCsvUrl(params: SalesHistoryByMonthParams):
 export function getSalesHistoryByMonthXlsxUrl(params: SalesHistoryByMonthParams): string {
   const qs = buildSalesHistoryByMonthParams(params, 'xlsx')
   return `/api/v1/reports/rics-sales-history-by-month?${qs}`
+}
+
+export type PurchaseOrderReportDateBy = 'orderDate' | 'shipDate' | 'cancelDate' | 'paymentDate'
+export type PurchaseOrderReportBalanceMode = 'ordered' | 'open'
+
+export interface PurchaseOrderReportQuery {
+  status?: PoStatus
+  vendorId?: string
+  balanceMode?: PurchaseOrderReportBalanceMode
+  dateBy?: PurchaseOrderReportDateBy
+  dateFrom?: string
+  dateTo?: string
+}
+
+export interface PurchaseOrderReportRow {
+  poId: string
+  poNumber: string
+  vendorId: string
+  vendorName: string
+  status: PoStatus
+  orderDate: string
+  shipDate: string | null
+  cancelDate: string | null
+  paymentDate: string | null
+  lineCount: number
+  orderedQty: number
+  receivedQty: number
+  openQty: number
+  orderedCost: number
+  openCost: number
+}
+
+export type OpenPoByMonthSortBy = 'vendor' | 'category'
+export type OpenPoByMonthDateBy = 'shipDate' | 'cancelDate' | 'paymentDate'
+export type OpenPoByMonthStatus = 'all' | 'atOnce' | 'future'
+
+export interface OpenPoByMonthQuery {
+  sortBy?: OpenPoByMonthSortBy
+  dateBy?: OpenPoByMonthDateBy
+  status?: OpenPoByMonthStatus
+}
+
+export interface OpenPoByMonthRow {
+  bucket: string
+  month: string
+  openQty: number
+  openCost: number
+  openRetail: number
+}
+
+export interface PoCashProjectionRow {
+  paymentDate: string
+  vendorId: string
+  vendorName: string
+  openCost: number
+}
+
+function appendDefinedParams(params: URLSearchParams, values: Record<string, string | undefined>): void {
+  for (const [key, value] of Object.entries(values)) {
+    if (value != null && value !== '') params.set(key, value)
+  }
+}
+
+export async function fetchPurchaseOrderReport(
+  query: PurchaseOrderReportQuery = {},
+): Promise<{ rows: PurchaseOrderReportRow[] }> {
+  const params = new URLSearchParams()
+  appendDefinedParams(params, {
+    status: query.status,
+    vendorId: query.vendorId,
+    balanceMode: query.balanceMode,
+    dateBy: query.dateBy,
+    dateFrom: query.dateFrom,
+    dateTo: query.dateTo,
+  })
+  const qs = params.toString()
+  const res = await fetch(`/api/v1/reports/purchase-orders${qs ? `?${qs}` : ''}`)
+  if (!res.ok) {
+    await throwReportApiError(res, `Failed to fetch purchase order report: ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function fetchOpenPoByMonth(
+  query: OpenPoByMonthQuery = {},
+): Promise<{ rows: OpenPoByMonthRow[] }> {
+  const params = new URLSearchParams()
+  appendDefinedParams(params, {
+    sortBy: query.sortBy,
+    dateBy: query.dateBy,
+    status: query.status,
+  })
+  const qs = params.toString()
+  const res = await fetch(`/api/v1/reports/open-po-by-month${qs ? `?${qs}` : ''}`)
+  if (!res.ok) {
+    await throwReportApiError(res, `Failed to fetch open PO by month report: ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function fetchPoCashProjection(): Promise<{ rows: PoCashProjectionRow[] }> {
+  const res = await fetch('/api/v1/reports/po-cash-projection')
+  if (!res.ok) {
+    await throwReportApiError(res, `Failed to fetch PO cash projection: ${res.status}`)
+  }
+  return res.json()
 }

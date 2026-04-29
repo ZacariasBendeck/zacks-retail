@@ -68,7 +68,7 @@ CREATE INDEX attribute_family_rule_family_idx
 | `sort_order` | `smallint` | Per-family render order, overrides `attribute_dimension.sort_order` when rendering a family-specific form. |
 | `updated_by` | `text` | Seed migration (`migration:20260423120000`), operator email, or `seed`. |
 
-Deletion cascade: removing an `attribute_dimension` also removes its rule rows. Removing a `product_family` is blocked (`ON DELETE RESTRICT`) if any rule still points at it — this matches the current UI policy that the 11 families are a fixed set.
+Deletion cascade: removing an `attribute_dimension` also removes its rule rows. Removing a `product_family` is blocked (`ON DELETE RESTRICT`) if any rule still points at it. The UI supports creating and editing families, but deletion remains intentionally unavailable while category mappings, SKU assignments, and attribute rules reference family codes.
 
 ### `app.attribute_value`
 
