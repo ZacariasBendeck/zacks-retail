@@ -5,10 +5,11 @@ import type { ReferenceItem } from '../../../types/sku'
 
 interface AdvancedSectionProps {
   refData: Record<string, ReferenceItem[]> | undefined
+  attributeOptionsByDimension: Record<string, { label: string; value: string }[]>
   seasonsCatalog: { code: string; description: string }[] | undefined
 }
 
-export function AdvancedSection({ refData, seasonsCatalog }: AdvancedSectionProps) {
+export function AdvancedSection({ refData, attributeOptionsByDimension, seasonsCatalog }: AdvancedSectionProps) {
   return (
     <Collapse
       defaultActiveKey={[]}
@@ -46,7 +47,7 @@ export function AdvancedSection({ refData, seasonsCatalog }: AdvancedSectionProp
                 </Col>
                 <Col xs={24} sm={24} md={6}>
                   <Form.Item label="Tipo de Etiqueta" name="labelTypeId" style={{ marginBottom: 12 }}>
-                    <Select placeholder="Tipo" allowClear options={refOptions(refData?.['label-types'])} />
+                    <Select placeholder="Tipo" allowClear options={attributeOptionsByDimension.label_type ?? []} />
                   </Form.Item>
                 </Col>
               </Row>

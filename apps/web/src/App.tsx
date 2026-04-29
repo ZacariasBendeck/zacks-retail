@@ -5,6 +5,7 @@ import AppLayout from './components/AppLayout'
 import { AuthProvider } from './auth/AuthContext'
 import { RequireAuth } from './auth/RequireAuth'
 import { RequirePermission } from './auth/RequirePermission'
+import LegacyPurchaseOrderDetailPage from './pages/purchasing/LegacyPurchaseOrderDetailPage'
 
 const SkuListPage = lazy(() => import('./pages/inventory/SkuListPage'))
 const SkuFormPageModern = lazy(() => import('./pages/inventory/SkuFormPageModern'))
@@ -41,6 +42,7 @@ const PoReceivePage = lazy(() => import('./pages/inventory/PoReceivePage'))
 const PurchaseOrdersPage = lazy(() => import('./pages/purchasing/PurchaseOrdersPage'))
 const PurchaseOrderFormPage = lazy(() => import('./pages/purchasing/PurchaseOrderFormPage'))
 const PurchaseOrderDetailPage = lazy(() => import('./pages/purchasing/PurchaseOrderDetailPage'))
+const PurchaseOrderReportsPage = lazy(() => import('./pages/purchasing/PurchaseOrderReportsPage'))
 const PoEntryMockPage = lazy(() => import('./pages/purchasing/PoEntryMockPage'))
 const PoReceiveMockPage = lazy(() => import('./pages/purchasing/PoReceiveMockPage'))
 const OtbDashboardPage = lazy(() => import('./pages/otb/OtbDashboardPage'))
@@ -77,6 +79,7 @@ const CustomerDiscountSensitivePage = lazy(() => import('./pages/customers/Custo
 const LoginPage = lazy(() => import('./pages/auth/LoginPage'))
 const MePage = lazy(() => import('./pages/auth/MePage'))
 const ChangePasswordPage = lazy(() => import('./pages/auth/ChangePasswordPage'))
+const SalespeoplePage = lazy(() => import('./pages/employees/SalespeoplePage'))
 const UsersListPage = lazy(() => import('./pages/users/UsersListPage'))
 const UserFormPage = lazy(() => import('./pages/users/UserFormPage'))
 const EnterSalesPage = lazy(() => import('./pages/sales/enter/EnterSalesPage'))
@@ -218,10 +221,13 @@ export default function App() {
             <Route path="/inventory/audit" element={<InventoryAuditPage />} />
             <Route path="/purchasing" element={<Navigate to="/purchasing/orders" replace />} />
             <Route path="/purchasing/orders" element={<PurchaseOrdersPage />} />
+            <Route path="/purchasing/reports" element={<PurchaseOrderReportsPage />} />
             <Route path="/purchasing/orders/new" element={<PurchaseOrderFormPage />} />
             <Route path="/purchasing/orders/new-spec-preview" element={<PoEntryMockPage />} />
             <Route path="/purchasing/receive-spec-preview" element={<PoReceiveMockPage />} />
             <Route path="/purchasing/receive-spec-preview/:poId" element={<PoReceiveMockPage />} />
+            <Route path="/purchasing/legacy-orders/:poNumber" element={<LegacyPurchaseOrderDetailPage />} />
+            <Route path="/purchasing/orders/:poId/edit" element={<PurchaseOrderFormPage />} />
             <Route path="/purchasing/orders/:poId" element={<PurchaseOrderDetailPage />} />
             <Route path="/purchasing/receive" element={<PoReceivePage />} />
             <Route path="/purchasing/receive/:poId" element={<PoReceivePage />} />
@@ -338,6 +344,10 @@ export default function App() {
 
             <Route path="/me" element={<MePage />} />
             <Route path="/change-password" element={<ChangePasswordPage />} />
+            <Route
+              path="/employees/salespeople"
+              element={<RequirePermission permission="employees.view"><SalespeoplePage /></RequirePermission>}
+            />
             <Route
               path="/admin/users"
               element={<RequirePermission permission="employees.view"><UsersListPage /></RequirePermission>}

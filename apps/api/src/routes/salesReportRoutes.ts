@@ -25,7 +25,7 @@ import {
 } from '../services/salesReporting/salesReportFacade';
 import { validateQuery } from '../middleware/validation';
 import { sendXlsx, XLSX_NUMFMT } from '../utils/xlsxExport';
-import type { PivotDimension } from '../services/salesReporting/types';
+import type { PivotDimension, SalesPivotLevels } from '../services/salesReporting/types';
 
 const router: IRouter = Router();
 
@@ -458,10 +458,28 @@ router.get('/sales-analysis', validateQuery(salesAnalysisSchema), async (req: Re
       includeAttributes: q.includeAttributes,
     });
     if (q.format === 'csv') {
-      const header = ['Dimension', 'Label', 'Store', 'Qty', 'Net Sales', 'COGS', 'Gross Profit', 'GP %', 'Prior Yr Net', 'PY % Change'];
+      const header = [
+        'Dimension',
+        'Label',
+        'Store',
+        'On Hand Qty',
+        'Avg Cost',
+        'Total Inventory Cost',
+        'Qty Sold',
+        'Net Sales',
+        'COGS',
+        'Gross Profit',
+        'GP %',
+        'Prior Yr Net',
+        'PY % Change',
+      ];
       const rows = report.rows.map((r) => [
         r.dimensionKey, r.dimensionLabel ?? '', r.storeNumber ?? '',
-        r.qty, r.netSales.toFixed(2), r.cogs.toFixed(2), r.grossProfit.toFixed(2),
+        r.unitsOnHand,
+        r.inventoryUnitCost == null ? '' : r.inventoryUnitCost.toFixed(2),
+        r.onHandAtCost.toFixed(2),
+        r.qty,
+        r.netSales.toFixed(2), r.cogs.toFixed(2), r.grossProfit.toFixed(2),
         r.gpPct == null ? '' : r.gpPct.toFixed(1),
         r.priorYearNetSales == null ? '' : r.priorYearNetSales.toFixed(2),
         r.pyPctChange == null ? '' : r.pyPctChange.toFixed(1),
@@ -496,13 +514,14 @@ const salesPivotSchema = z.object({
     'buyer-vendor-separate-store',
     'custom',
   ]).default('department'),
-  // Three hierarchy dimensions, required when variant='custom'. Zod leaves
+  // Two or three hierarchy dimensions, required when variant='custom'. Zod leaves
   // them optional so the fixed variants don't have to pass them.
   level1: z.enum(['buyer', 'sector', 'department', 'season', 'group', 'vendor', 'store']).optional(),
-  level2: z.enum(['buyer', 'sector', 'department', 'season', 'group', 'vendor', 'store']).optional(),
+  level2: z.enum(['buyer', 'sector', 'department', 'season', 'group', 'vendor', 'store', 'category']).optional(),
   level3: z.enum(['buyer', 'sector', 'department', 'season', 'group', 'vendor', 'store', 'category']).optional(),
-  // Criteria filters (variant='custom'). CSV lists. Each narrows the SKU
-  // universe before aggregation; passing none = include every SKU.
+  // Criteria filters (variant='custom'). CSV lists. Chains narrow stores;
+  // the remaining selectors narrow the SKU universe before aggregation.
+  chains: csvStringList,
   sectors: csvIntList,
   departments: csvIntList,
   seasons: csvStringList,
@@ -517,24 +536,34 @@ router.get('/sales-pivot', validateQuery(salesPivotSchema), async (req: Request,
       res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'startDate must be <= endDate' } });
       return;
     }
-    let levels: [PivotDimension, PivotDimension, PivotDimension] | undefined;
+    let levels: SalesPivotLevels | undefined;
     if (q.variant === 'custom') {
-      if (!q.level1 || !q.level2 || !q.level3) {
+      if (!q.level1 || !q.level2) {
         res.status(400).json({ error: {
           code: 'VALIDATION_ERROR',
-          message: 'level1, level2, and level3 are required when variant=custom',
+          message: 'level1 and level2 are required when variant=custom',
         } });
         return;
       }
-      const set = new Set<PivotDimension>([q.level1, q.level2, q.level3]);
-      if (set.size !== 3) {
+      const candidateLevels = (q.level3
+        ? [q.level1, q.level2, q.level3]
+        : [q.level1, q.level2]) as SalesPivotLevels;
+      const set = new Set<PivotDimension>(candidateLevels);
+      if (set.size !== candidateLevels.length) {
         res.status(400).json({ error: {
           code: 'VALIDATION_ERROR',
-          message: 'level1, level2, level3 must be three distinct dimensions',
+          message: 'custom pivot levels must be distinct dimensions',
         } });
         return;
       }
-      levels = [q.level1, q.level2, q.level3];
+      if (q.level3 && q.level2 === 'category') {
+        res.status(400).json({ error: {
+          code: 'VALIDATION_ERROR',
+          message: 'category is only allowed as the deepest custom pivot level',
+        } });
+        return;
+      }
+      levels = candidateLevels;
     }
     const report = await getSalesPivot({
       startDate: q.startDate,
@@ -542,6 +571,7 @@ router.get('/sales-pivot', validateQuery(salesPivotSchema), async (req: Request,
       storeNumbers: q.stores,
       variant: q.variant,
       levels,
+      chains: q.chains,
       sectors: q.sectors,
       departments: q.departments,
       seasons: q.seasons,
@@ -608,12 +638,12 @@ router.get('/sales-pivot', validateQuery(salesPivotSchema), async (req: Request,
           }
         };
         const header = [
-          ...dimHeader(levels[0]), ...dimHeader(levels[1]), ...dimHeader(levels[2]),
+          ...levels.flatMap((level) => dimHeader(level)),
           'SKU', 'Description',
           ...measureHeader,
         ];
         const rows = report.rows.map((r) => [
-          ...dimCols(r, levels[0]), ...dimCols(r, levels[1]), ...dimCols(r, levels[2]),
+          ...levels.flatMap((level) => dimCols(r, level)),
           r.sku, r.skuDescription ?? '',
           ...measureCells(r),
         ]);

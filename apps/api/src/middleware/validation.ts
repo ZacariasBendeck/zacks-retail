@@ -174,16 +174,60 @@ const lineItemSchema = z.object({
   skuId: z.string().uuid(),
   quantity: z.number().int().positive(),
   unitCost: z.number().positive().refine(centPrecision, { message: CENT_PRECISION_MSG }),
+  casePackId: z.string().trim().max(6).optional().nullable(),
+  casePackMultiplier: z.number().int().positive().optional().nullable(),
+  sizeCells: z.array(z.object({
+    columnLabel: z.string().max(40).optional().default(''),
+    rowLabel: z.string().max(40).optional().default(''),
+    quantity: z.number().int().positive(),
+  })).optional(),
 });
 
 export const createPurchaseOrderSchema = z.object({
-  vendorId: z.string().uuid(),
+  poNumber: z.string().trim().min(1).max(32).optional().nullable(),
+  billToStoreId: z.number().int().positive().optional().nullable(),
+  shipToStoreId: z.number().int().positive().optional().nullable(),
+  vendorId: z.string().trim().min(1).max(4),
+  buyer: z.string().trim().min(1).max(120).optional().nullable(),
   lineItems: z.array(lineItemSchema).min(1, 'At least one line item is required'),
   notes: z.string().max(1000).optional().nullable(),
+  orderType: z.enum(['RO', 'RE', 'SA']).optional(),
+  classification: z.enum(['AT_ONCE', 'FUTURE']).optional(),
+  confirmationNumber: z.string().max(120).optional().nullable(),
+  accountNumber: z.string().max(120).optional().nullable(),
+  terms: z.string().max(120).optional().nullable(),
+  shipVia: z.string().max(120).optional().nullable(),
+  backorderAllowed: z.boolean().optional(),
+  splitShipment: z.boolean().optional(),
+  programCode: z.string().max(120).optional().nullable(),
+  storeLabelsOnReceive: z.boolean().optional(),
+  orderDate: z.string().datetime().optional().nullable(),
+  shipDate: z.string().datetime().optional().nullable(),
+  cancelDate: z.string().datetime().optional().nullable(),
+  paymentDate: z.string().datetime().optional().nullable(),
 });
 
 export const updatePurchaseOrderSchema = z.object({
+  poNumber: z.string().trim().min(1).max(32).optional().nullable(),
+  vendorId: z.string().trim().min(1).max(4).optional(),
+  buyer: z.string().trim().min(1).max(120).optional().nullable(),
   notes: z.string().max(1000).optional().nullable(),
+  billToStoreId: z.number().int().positive().optional().nullable(),
+  shipToStoreId: z.number().int().positive().optional().nullable(),
+  orderType: z.enum(['RO', 'RE', 'SA']).optional(),
+  classification: z.enum(['AT_ONCE', 'FUTURE']).optional(),
+  confirmationNumber: z.string().max(120).optional().nullable(),
+  accountNumber: z.string().max(120).optional().nullable(),
+  terms: z.string().max(120).optional().nullable(),
+  shipVia: z.string().max(120).optional().nullable(),
+  backorderAllowed: z.boolean().optional(),
+  splitShipment: z.boolean().optional(),
+  programCode: z.string().max(120).optional().nullable(),
+  storeLabelsOnReceive: z.boolean().optional(),
+  orderDate: z.string().datetime().optional().nullable(),
+  shipDate: z.string().datetime().optional().nullable(),
+  cancelDate: z.string().datetime().optional().nullable(),
+  paymentDate: z.string().datetime().optional().nullable(),
   lineItems: z.array(lineItemSchema).min(1, 'At least one line item is required').optional(),
 });
 
@@ -196,7 +240,7 @@ export const poReceiveSchema = z.object({
   lines: z.array(
     z.object({
       lineId: z.string().uuid(),
-      quantityReceived: z.number().int().positive(),
+      quantityReceived: z.number().int().refine((value) => value !== 0, { message: 'Quantity cannot be zero' }),
       discrepancyReason: z.string().min(1).max(500).optional().nullable(),
       auditReference: z.string().min(1).max(255).optional().nullable(),
     })
@@ -204,8 +248,44 @@ export const poReceiveSchema = z.object({
   locationId: z.string().max(100).optional(),
   receivedBy: z.string().max(100).optional(),
   referenceNumber: z.string().max(120).optional().nullable(),
+  discountPercent: z.coerce.number().min(0).max(100).optional().default(0),
+  freightEach: z.coerce.number().nonnegative().refine(centPrecision, { message: CENT_PRECISION_MSG }).optional().default(0),
   idempotencyKey: z.string().min(1).max(255).optional(),
   reason: z.string().max(500).optional(),
+});
+
+export const duplicatePurchaseOrderSchema = z.object({
+  poNumber: z.string().trim().min(1).max(32).optional(),
+  billToStoreId: z.number().int().positive().optional().nullable(),
+  shipToStoreId: z.number().int().positive().optional().nullable(),
+  orderDate: z.string().datetime().optional().nullable(),
+  shipDate: z.string().datetime().optional().nullable(),
+  cancelDate: z.string().datetime().optional().nullable(),
+  paymentDate: z.string().datetime().optional().nullable(),
+  storeLabelsOnReceive: z.boolean().optional(),
+  changedBy: z.string().max(100).optional(),
+});
+
+export const replicatePurchaseOrderSchema = z.object({
+  prefix: z.string().trim().min(1).max(5),
+  shipToStoreIds: z.array(z.number().int().positive()).min(1).max(200),
+  changedBy: z.string().max(100).optional(),
+});
+
+export const combinePurchaseOrdersSchema = z.object({
+  sourcePoId: z.string().uuid(),
+  intoPoId: z.string().uuid(),
+  changedBy: z.string().max(100).optional(),
+});
+
+export const poReceiveFullSchema = z.object({
+  locationId: z.string().max(100).optional(),
+  receivedBy: z.string().max(100).optional(),
+  referenceNumber: z.string().max(120).optional().nullable(),
+  discountPercent: z.coerce.number().min(0).max(100).optional().default(0),
+  freightEach: z.coerce.number().nonnegative().refine(centPrecision, { message: CENT_PRECISION_MSG }).optional().default(0),
+  idempotencyKey: z.string().min(1).max(255).optional(),
+  changedBy: z.string().max(100).optional(),
 });
 
 export const poSubmitSchema = z.object({
@@ -230,7 +310,8 @@ export const poListQuerySchema = z.object({
   sort: z.enum(['poNumber', 'status', 'createdAt', 'updatedAt']).default('createdAt'),
   order: z.enum(['asc', 'desc']).default('desc'),
   status: z.enum(PO_STATUSES).optional(),
-  vendorId: z.string().uuid().optional(),
+  vendorId: z.string().trim().min(1).max(4).optional(),
+  buyer: z.string().trim().min(1).max(120).optional(),
   q: z.string().optional(),
 });
 

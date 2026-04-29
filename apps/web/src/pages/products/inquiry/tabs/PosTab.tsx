@@ -1,8 +1,22 @@
 import React from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Empty, Table, Tag, Typography } from 'antd';
+import { Card, Empty, Space, Table, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { fetchInquiryOpenPos, type InquiryOpenPoRow } from '../../../../services/ricsInventoryApi';
+import { Link } from 'react-router-dom';
+import {
+  fetchInquiryOpenPos,
+  fetchInquiryPurchaseOrderHistory,
+  type InquiryOpenPoRow,
+  type InquiryPurchaseOrderHistoryRow,
+} from '../../../../services/ricsInventoryApi';
+
+function legacyPoLink(poNumber: string): string {
+  return `/purchasing/legacy-orders/${encodeURIComponent(poNumber)}`;
+}
+
+function formatDate(value: string | null): string {
+  return value ? value.slice(0, 10) : '';
+}
 
 const columns: ColumnsType<InquiryOpenPoRow> = [
   {
@@ -10,6 +24,11 @@ const columns: ColumnsType<InquiryOpenPoRow> = [
     dataIndex: 'poNumber',
     key: 'poNumber',
     width: 140,
+    render: (value: string) => (
+      <Link to={legacyPoLink(value)}>
+        {value}
+      </Link>
+    ),
   },
   {
     title: 'Store',
@@ -33,7 +52,7 @@ const columns: ColumnsType<InquiryOpenPoRow> = [
     dataIndex: 'dueDate',
     key: 'dueDate',
     width: 110,
-    render: (value: string | null) => value?.slice(0, 10) ?? '',
+    render: formatDate,
   },
   {
     title: 'Row',
@@ -71,30 +90,143 @@ const columns: ColumnsType<InquiryOpenPoRow> = [
   },
 ];
 
+const historyColumns: ColumnsType<InquiryPurchaseOrderHistoryRow> = [
+  {
+    title: 'PO #',
+    dataIndex: 'poNumber',
+    key: 'poNumber',
+    width: 140,
+    render: (value: string) => (
+      <Link to={legacyPoLink(value)}>
+        {value}
+      </Link>
+    ),
+  },
+  {
+    title: 'Store',
+    dataIndex: 'shipStore',
+    key: 'shipStore',
+    width: 80,
+    render: (value: number | null) => value ?? '',
+  },
+  {
+    title: 'Vendor',
+    dataIndex: 'vendorCode',
+    key: 'vendorCode',
+    width: 110,
+    render: (value: string | null) => value ?? '',
+  },
+  {
+    title: 'Order Date',
+    dataIndex: 'orderDate',
+    key: 'orderDate',
+    width: 110,
+    render: formatDate,
+  },
+  {
+    title: 'Last Received',
+    dataIndex: 'lastReceivedAt',
+    key: 'lastReceivedAt',
+    width: 120,
+    render: formatDate,
+  },
+  {
+    title: 'Type',
+    dataIndex: 'orderType',
+    key: 'orderType',
+    width: 120,
+    render: (_: string | null, row) =>
+      row.orderType ?? row.legacyStatus ?? (row.current === false ? 'Future' : 'Current'),
+  },
+  {
+    title: 'Buyer',
+    dataIndex: 'buyer',
+    key: 'buyer',
+    width: 100,
+    render: (value: string | null) => value ?? '',
+  },
+  {
+    title: 'Lines',
+    dataIndex: 'lineCount',
+    key: 'lineCount',
+    align: 'right',
+    width: 80,
+  },
+  {
+    title: 'Ordered',
+    dataIndex: 'orderedQty',
+    key: 'orderedQty',
+    align: 'right',
+    width: 90,
+  },
+  {
+    title: 'Received',
+    dataIndex: 'receivedQty',
+    key: 'receivedQty',
+    align: 'right',
+    width: 90,
+  },
+  {
+    title: 'Open',
+    dataIndex: 'openQty',
+    key: 'openQty',
+    align: 'right',
+    width: 90,
+  },
+];
+
 export const PosTab: React.FC<{ skuCode: string; storeId?: number }> = ({ skuCode, storeId }) => {
-  const { data, isLoading, error } = useQuery({
+  const openPos = useQuery({
     queryKey: ['inquiry-open-pos', skuCode, storeId ?? null],
     queryFn: () => fetchInquiryOpenPos(skuCode, storeId),
     staleTime: 30_000,
   });
 
+  const history = useQuery({
+    queryKey: ['inquiry-po-history', skuCode, storeId ?? null],
+    queryFn: () => fetchInquiryPurchaseOrderHistory(skuCode, storeId),
+    staleTime: 30_000,
+  });
+
+  const error = openPos.error ?? history.error;
   if (error) {
     return <Typography.Text type="danger">{(error as Error).message}</Typography.Text>;
   }
 
-  if (!isLoading && (data?.rows.length ?? 0) === 0) {
-    return <Empty description="No open purchase orders for this SKU" />;
+  const hasOpenRows = (openPos.data?.rows.length ?? 0) > 0;
+  const hasHistoryRows = (history.data?.rows.length ?? 0) > 0;
+  if (!openPos.isLoading && !history.isLoading && !hasOpenRows && !hasHistoryRows) {
+    return <Empty description="No purchase orders found for this SKU" />;
   }
 
   return (
-    <Table<InquiryOpenPoRow>
-      size="small"
-      loading={isLoading}
-      columns={columns}
-      dataSource={data?.rows ?? []}
-      pagination={false}
-      rowKey={(row) => `${row.poNumber}-${row.storeId}-${row.rowLabel}-${row.columnLabel}`}
-      scroll={{ x: 860 }}
-    />
+    <Space direction="vertical" size="small" style={{ width: '100%' }}>
+      <Card size="small" title="Open Purchase Orders">
+        <Table<InquiryOpenPoRow>
+          size="small"
+          loading={openPos.isLoading}
+          columns={columns}
+          dataSource={openPos.data?.rows ?? []}
+          pagination={false}
+          rowKey={(row) => `${row.poNumber}-${row.storeId}-${row.rowLabel}-${row.columnLabel}`}
+          scroll={{ x: 860 }}
+        />
+      </Card>
+      <Card
+        size="small"
+        title="Purchase Order History"
+        extra={<Typography.Text type="secondary">Click a PO number to open the full legacy PO.</Typography.Text>}
+      >
+        <Table<InquiryPurchaseOrderHistoryRow>
+          size="small"
+          loading={history.isLoading}
+          columns={historyColumns}
+          dataSource={history.data?.rows ?? []}
+          pagination={{ pageSize: 10, size: 'small' }}
+          rowKey={(row) => row.poNumber}
+          scroll={{ x: 1120 }}
+        />
+      </Card>
+    </Space>
   );
 };

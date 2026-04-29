@@ -37,7 +37,7 @@ Use ONLY values from these lists. If none fit cleanly, return `null`.
 - **color**: Black, White, Brown, Tan, Camel, Beige, Nude, Red, Burgundy, Blue, Navy, Pink, Fuchsia, Green, Gold, Silver, Rose Gold, Gray, Yellow, Orange, Purple, Multicolor
 - **upper_material**: Leather, Suede, Patent Leather, Synthetic, Canvas, Satin, Mesh, Velvet, Fabric, Nubuck
 - **outsole_material**: Rubber, TPR, PU, Leather, Synthetic, EVA
-- **heel_material**: Plastic, Wrapped, Rubber, Stacked Leather, None *(flat shoe)*
+- **heel_material**: Plastic, Wrapped, Rubber, Stacked Leather, Espadrille
 - **finish**: Matte, Glossy, Patent, Metallic, Distressed, Brushed, Natural, Textured, Embossed, Printed
 - **pattern**: Solid, Two-Tone, Animal Print, Floral, Geometric, Striped, Plaid, Embossed, Studded, Woven
 - **occasion**: Formal, Business, Casual, Everyday, Evening, Party, Bridal, Athletic, Outdoor, Beach
@@ -53,6 +53,7 @@ Use ONLY values from these lists. If none fit cleanly, return `null`.
 
 - **Prefer `null` over guessing.** If the image is too dark, cropped, or angled to tell a reliable value, use `null`. Half-right data is worse than missing data.
 - **`color`** — pick the single dominant color. Multi-color items use `Multicolor`. Neutrals: cream / ivory / off-white → `Beige` or `Nude`; cognac / chestnut → `Brown` or `Camel`; wine / maroon → `Burgundy`. Metallic: warm gold → `Gold`; silver/chrome → `Silver`; blush-metallic → `Rose Gold`.
+- **`heel_material`** is the visible outer covering/material of the heel, not the heel height or shape. Use `Espadrille` when the heel is wrapped in jute/espadrille rope. Never return `Flat`, `None`, or `Plano` for `heel_material`; flat/no heel means `heel_material: null`.
 - **`outsole_material` and `heel_material`** — only fill if you can clearly see the sole or heel in the photo. From a top-down product shot you usually cannot — return `null`.
 - **`accessory`** — use `None` only when the shoe is clearly plain. If you can't tell (e.g. only a side view), return `null`.
 - **`target_audience`** is a styling cue, not a size/demographic. A hot-pink stiletto = Young/Trendy; a muted block-heel pump = Classic Adult; an athletic sneaker = Athletic. Return `null` when nothing about the styling speaks to an audience.
@@ -94,7 +95,7 @@ Use ONLY values from these lists. If none fit cleanly, return `null`.
   "color": "Tan",
   "upper_material": "Leather",
   "outsole_material": "Rubber",
-  "heel_material": "None",
+  "heel_material": null,
   "finish": "Natural",
   "pattern": "Solid",
   "occasion": "Casual",

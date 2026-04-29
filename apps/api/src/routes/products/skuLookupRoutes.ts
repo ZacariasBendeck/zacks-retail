@@ -33,9 +33,20 @@ function normalizeCriteria(body: Record<string, unknown>): SkuCriteria {
     stylesColors:     toStringArray(body.stylesColors),
     groups:           toStringArray(body.groups),
     keywords:         toStringArray(body.keywords),
+    attributes:       toAttributeFilters(body.attributes),
     onlyFuturePriceChanges: body.onlyFuturePriceChanges === true,
     onlyWtdSales:     body.onlyWtdSales === true,
   };
+}
+
+function toAttributeFilters(raw: unknown): Record<string, string[]> | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const out: Record<string, string[]> = {};
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    const values = toStringArray(value);
+    if (key.trim() && values?.length) out[key.trim()] = values;
+  }
+  return Object.keys(out).length ? out : undefined;
 }
 
 function toStringArray(raw: unknown): string[] | undefined {

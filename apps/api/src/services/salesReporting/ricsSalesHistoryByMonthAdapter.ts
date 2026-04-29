@@ -74,6 +74,8 @@ export interface QueryMonthlyMeasuresParams {
   categoryFilter?: number[];
 }
 
+export interface QueryPriorYearTicketMeasuresParams extends QueryMonthlyMeasuresParams {}
+
 // Back-compat shim — some callers only need Net Sales and the v1 shape.
 export interface MonthlyNetSalesRow {
   storeNumber: number;
@@ -374,6 +376,154 @@ GROUP BY 1, 2, 3, 4`;
     prisma.$queryRawUnsafe<RawMonthlyRow[]>(sql, ...sqlParams),
   ]);
 
+  const categoryLabels =
+    params.sortBy === 'category' || params.detailLevel === 'department'
+      ? await loadCategoryLabels()
+      : null;
+
+  const rows: MonthlyMeasuresRow[] = [];
+  for (const r of raw) {
+    if (r.StoreNumber == null || r.Y == null || r.M == null) continue;
+    const yearMonth = `${String(Number(r.Y)).padStart(4, '0')}-${String(Number(r.M)).padStart(2, '0')}`;
+
+    let dimKey: string;
+    let dimLabel: string;
+    if (params.detailLevel === 'sku') {
+      const s = r.DimKey == null ? '(none)' : String(r.DimKey).trim() || '(none)';
+      dimKey = s;
+      dimLabel = s;
+    } else if (params.detailLevel === 'department') {
+      const n = r.DimKey == null ? 0 : Number(r.DimKey);
+      dimKey = String(n);
+      dimLabel = categoryLabels?.get(n) ?? String(n);
+    } else if (params.sortBy === 'vendor') {
+      const v = r.DimKey == null ? '(none)' : String(r.DimKey).trim() || '(none)';
+      dimKey = v;
+      dimLabel = v;
+    } else {
+      const n = r.DimKey == null ? 0 : Number(r.DimKey);
+      dimKey = String(n);
+      dimLabel = categoryLabels?.get(n) ?? String(n);
+    }
+
+    rows.push({
+      storeNumber: Number(r.StoreNumber),
+      yearMonth,
+      dimKey,
+      dimLabel,
+      categoryKey: r.Category == null ? null : String(Number(r.Category)),
+      vendorKey: r.Vendor == null ? null : String(r.Vendor).trim() || null,
+      pictureFileName: r.PictureFileName?.trim() || null,
+      quantity: Number(r.Qty ?? 0),
+      netSales: Number(r.NetSales ?? 0),
+      cogs: Number(r.CostTotal ?? 0),
+    });
+  }
+  return rows;
+}
+
+/**
+ * Ticket-backed companion for Sales History by Month prior-year comparisons.
+ *
+ * `app.inventory_history_month` only holds RICS's rolling closed 12-month
+ * window. Prior-year comparison months outside that window come from the
+ * normalized ticket history tables imported from RICS tickets.
+ */
+export async function queryPriorYearTicketMeasures(
+  params: QueryPriorYearTicketMeasuresParams,
+): Promise<MonthlyMeasuresRow[]> {
+  assertYearMonth(params.fromYearMonth, 'fromYearMonth');
+  assertYearMonth(params.toYearMonth, 'toYearMonth');
+  if (params.fromYearMonth > params.toYearMonth) {
+    throw new Error('fromYearMonth must be <= toYearMonth');
+  }
+  if (!params.storeNumbers.length) {
+    throw new Error('storeNumbers must have at least one entry');
+  }
+  if (params.sortBy !== 'vendor' && params.sortBy !== 'category') {
+    throw new Error(`sortBy must be 'vendor' or 'category', got: ${params.sortBy}`);
+  }
+  if (params.skuFilter && params.skuFilter.length === 0) {
+    return [];
+  }
+
+  const storeExpr = params.combineStores ? `0` : `src.store_id`;
+  let dimExpr: string;
+  if (params.detailLevel === 'sku') {
+    dimExpr = `src.sku`;
+  } else if (params.detailLevel === 'department') {
+    dimExpr = `src.category`;
+  } else {
+    dimExpr = params.sortBy === 'vendor' ? `src.vendor` : `src.category`;
+  }
+
+  const sqlParams: unknown[] = [
+    params.fromYearMonth,
+    params.toYearMonth,
+    params.storeNumbers.map((n) => Number(n)),
+  ];
+  const wheres: string[] = [
+    `src.year_month >= $1::text`,
+    `src.year_month <= $2::text`,
+    `src.store_id = ANY($3::int[])`,
+    `(src.qty_sales <> 0 OR src.net_sales <> 0 OR src.cost_total <> 0)`,
+  ];
+  if (params.skuFilter && params.skuFilter.length > 0) {
+    sqlParams.push(params.skuFilter.map((s) => s.trim().toUpperCase()).filter(Boolean));
+    wheres.push(`UPPER(src.sku) = ANY($${sqlParams.length}::text[])`);
+  }
+  if (params.vendorFilter && params.vendorFilter.length > 0) {
+    sqlParams.push(params.vendorFilter.map((s) => s.trim().toUpperCase()).filter(Boolean));
+    wheres.push(`UPPER(src.vendor) = ANY($${sqlParams.length}::text[])`);
+  }
+  if (params.categoryFilter && params.categoryFilter.length > 0) {
+    sqlParams.push(params.categoryFilter.map((c) => Number(c)));
+    wheres.push(`src.category = ANY($${sqlParams.length}::int[])`);
+  }
+
+  const sql = `
+WITH src AS (
+  SELECT
+    t.store_id,
+    UPPER(BTRIM(COALESCE(NULLIF(l.sku_code, ''), k.code, ''))) AS sku,
+    COALESCE(NULLIF(BTRIM(k.vendor_id), ''), '(none)') AS vendor,
+    COALESCE(
+      k.category_number,
+      NULLIF(regexp_replace(COALESCE(l.category_key, ''), '\\D', '', 'g'), '')::int,
+      0
+    ) AS category,
+    NULLIF(BTRIM(k.picture_file_name), '') AS picture_file_name,
+    to_char(t.purchased_at AT TIME ZONE 'America/Tegucigalpa', 'YYYY-MM') AS year_month,
+    COALESCE(l.quantity, 0)::float8 AS qty_sales,
+    COALESCE(l.net_amount, 0)::float8 AS net_sales,
+    COALESCE(l.cost_amount, 0)::float8 AS cost_total
+  FROM app.sales_history_ticket t
+  INNER JOIN app.sales_history_ticket_line l
+    ON l.ticket_id = t.id
+  LEFT JOIN app.sku k
+    ON k.id = l.sku_id
+  WHERE t.purchased_at >= (($1::text || '-01')::date::timestamp AT TIME ZONE 'America/Tegucigalpa')
+    AND t.purchased_at < ((($2::text || '-01')::date + INTERVAL '1 month')::timestamp AT TIME ZONE 'America/Tegucigalpa')
+    AND t.store_id = ANY($3::int[])
+    AND LOWER(COALESCE(t.status, '')) = 'completed'
+)
+SELECT
+  ${storeExpr} AS "StoreNumber",
+  substring(src.year_month from 1 for 4)::int AS "Y",
+  substring(src.year_month from 6 for 2)::int AS "M",
+  ${dimExpr} AS "DimKey",
+  MIN(src.vendor) AS "Vendor",
+  MIN(src.category) AS "Category",
+  MIN(src.picture_file_name) AS "PictureFileName",
+  SUM(src.qty_sales)::int AS "Qty",
+  SUM(src.net_sales)::float8 AS "NetSales",
+  SUM(src.cost_total)::float8 AS "CostTotal"
+FROM src
+WHERE
+  ${wheres.join(' AND ')}
+GROUP BY 1, 2, 3, 4`;
+
+  const raw = await prisma.$queryRawUnsafe<RawMonthlyRow[]>(sql, ...sqlParams);
   const categoryLabels =
     params.sortBy === 'category' || params.detailLevel === 'department'
       ? await loadCategoryLabels()

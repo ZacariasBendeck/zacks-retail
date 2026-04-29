@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { App, Form, Spin } from 'antd'
-import { useMutation } from '@tanstack/react-query'
+import { App, Button, Form, Result, Spin } from 'antd'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import {
   useAnalyzeImage,
   useReferenceData,
@@ -29,7 +29,7 @@ import {
 import type { SkuLifecycleRow, CreateDraftInput } from '../../types/skuLifecycle'
 import { productsAttributesApi } from '../../services/productsAttributesApi'
 import { buildRicsImageUrl } from '../../services/ricsImageUrl'
-import { useSkuAttributes } from '../../hooks/useProductsAttributes'
+import { useAttributeDimensions, useSkuAttributes } from '../../hooks/useProductsAttributes'
 import { VendorLookup } from '../../components/vendor-lookup'
 import { SkuLookup } from '../../components/sku-lookup'
 import { useProductFamilies } from '../../hooks/useProductFamilies'
@@ -44,7 +44,7 @@ import type {
 } from '../../types/sku'
 import { ALLOWED_DEPARTMENTS, isValidDepartment } from '../../constants/domain'
 import { SkuApiError } from '../../services/skuApi'
-import { matchReference } from './sku-form-modern/formHelpers'
+import { matchReference, normalize } from './sku-form-modern/formHelpers'
 import { pageContainer } from './sku-form-modern/styles'
 import { PageHeader } from './sku-form-modern/PageHeader'
 import { SkuCodeStrip } from './sku-form-modern/SkuCodeStrip'
@@ -59,10 +59,13 @@ import MatchingSetsCard from '../../components/products/MatchingSetsCard'
 const DEPARTMENTS: Department[] = ALLOWED_DEPARTMENTS
 const SKU_ROOT_PATH = '/products/skus'
 const NEW_SKU_PATH = `${SKU_ROOT_PATH}/new`
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 type SkuFormValues = SkuCreatePayload & {
   styleColorId?: string | null
 }
+
+type AttributeSelectOptions = Record<string, { label: string; value: string }[]>
 
 /** Mapping: AI response key -> form field name + reference table slug. */
 const AI_FIELD_MAP: { aiKey: keyof ImageAnalysisResult; formField: string; type: 'text' | 'enum' | 'reference'; refTable?: string }[] = [
@@ -90,9 +93,11 @@ const AI_FIELD_MAP: { aiKey: keyof ImageAnalysisResult; formField: string; type:
  */
 const DIMENSIONAL_ATTR_MAP: readonly { formField: string; dimensionCode: string }[] = [
   { formField: 'colorId',           dimensionCode: 'color' },
+  { formField: 'shoeTypeId',        dimensionCode: 'shoe_type' },
   { formField: 'widthTypeId',       dimensionCode: 'width_type' },
   { formField: 'patternId',         dimensionCode: 'pattern' },
   { formField: 'finishId',          dimensionCode: 'finish' },
+  { formField: 'closureTypeId',     dimensionCode: 'closure_type' },
   { formField: 'accessoryId',       dimensionCode: 'accessory' },
   { formField: 'heelHeightId',      dimensionCode: 'heel_height' },
   { formField: 'heelShapeId',       dimensionCode: 'heel_shape' },
@@ -100,8 +105,12 @@ const DIMENSIONAL_ATTR_MAP: readonly { formField: string; dimensionCode: string 
   { formField: 'upperMaterialId',   dimensionCode: 'upper_material' },
   { formField: 'outsoleMaterialId', dimensionCode: 'outsole_material' },
   { formField: 'heelMaterialId',    dimensionCode: 'heel_material' },
+  { formField: 'occasionId',        dimensionCode: 'occasion' },
+  { formField: 'genderId',          dimensionCode: 'target_audience' },
+  { formField: 'labelTypeId',       dimensionCode: 'label_type' },
 ] as const
 const DIMENSIONAL_FORM_FIELDS = new Set(DIMENSIONAL_ATTR_MAP.map((m) => m.formField))
+const DIMENSION_CODE_BY_FORM_FIELD = new Map(DIMENSIONAL_ATTR_MAP.map((m) => [m.formField, m.dimensionCode] as const))
 
 /** Column fields known to app.sku. Everything else on the form goes into legacy_attrs. */
 const APP_SKU_COLUMN_KEYS = new Set<string>([
@@ -241,16 +250,67 @@ function inferImageMimeType(fileName: string): string {
   return 'image/jpeg'
 }
 
+function toAttributeCode(value: unknown): string | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value)
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    return trimmed ? trimmed : null
+  }
+  return null
+}
+
+function matchAttributeOptionCode(
+  aiValue: string,
+  options: { label: string; value: string }[] | undefined,
+): string | null {
+  if (!aiValue || !options?.length) return null
+  const norm = normalize(aiValue)
+
+  const exact = options.find((o) => normalize(o.label) === norm || normalize(o.value) === norm)
+  if (exact) return exact.value
+
+  const substr = options.find((o) => {
+    const labelNorm = normalize(o.label)
+    return labelNorm.includes(norm) || norm.includes(labelNorm)
+  })
+  if (substr) return substr.value
+
+  const aiWords = norm.split(/[\s/,]+/).filter(Boolean)
+  let bestScore = 0
+  let bestValue: string | null = null
+  for (const option of options) {
+    const refWords = normalize(option.label).split(/[\s/,]+/).filter(Boolean)
+    const overlap = aiWords.filter((w) => refWords.some((rw) => rw.includes(w) || w.includes(rw))).length
+    const score = overlap / Math.max(aiWords.length, refWords.length)
+    if (score > bestScore && score >= 0.5) {
+      bestScore = score
+      bestValue = option.value
+    }
+  }
+  return bestValue
+}
+
 export default function SkuFormPageModern() {
-  const { skuId } = useParams<{ skuId: string }>()
+  const { skuId: skuRouteParam } = useParams<{ skuId: string }>()
   const navigate = useNavigate()
   const { message } = App.useApp()
   const [form] = Form.useForm()
 
-  const isRouteEdit = !!skuId
-  const { data: lifecycleSku, isLoading: skuLoading } = useSkuDraft(skuId)
+  const routeParam = skuRouteParam?.trim()
+  const routeDraftId = routeParam && UUID_RE.test(routeParam) ? routeParam : undefined
+  const routeSkuCode = routeParam && !routeDraftId ? routeParam : undefined
+  const isRouteEdit = !!routeParam
+  const { data: lifecycleSkuById, isLoading: skuByIdLoading } = useSkuDraft(routeDraftId)
+  const { data: lifecycleSkuByCode, isLoading: skuByCodeLoading } = useQuery({
+    queryKey: ['sku-drafts', 'by-code', routeSkuCode],
+    queryFn: () => fetchSkuDraftByCode(routeSkuCode!),
+    enabled: !!routeSkuCode,
+  })
+  const lifecycleSku = lifecycleSkuById ?? lifecycleSkuByCode ?? undefined
+  const skuLoading = skuByIdLoading || skuByCodeLoading
   const { data: vendors, isLoading: vendorsLoading } = useVendors()
   const { data: refData, isLoading: refLoading } = useReferenceData()
+  const { data: attributeDimensions, isLoading: attributeDimensionsLoading } = useAttributeDimensions(false)
   const { data: sizeTypes, isLoading: sizeTypesLoading } = useSizeTypes()
   const { data: groups, isLoading: groupsLoading } = useGroups()
   const { data: promotionCodes, isLoading: promotionCodesLoading } = usePromotionCodes()
@@ -310,13 +370,19 @@ export default function SkuFormPageModern() {
   const { data: autocompleteResults, isFetching: isSearching } = useAutocompleteSkus(debouncedSearch)
 
   const watchedDepartment = Form.useWatch('department', form) as Department | undefined
-  const watchedColorId = Form.useWatch('colorId', form) as number | undefined
+  const watchedColorCode = Form.useWatch('colorId', form) as string | number | undefined
+  const watchedColorId =
+    typeof watchedColorCode === 'number'
+      ? watchedColorCode
+      : typeof watchedColorCode === 'string'
+        ? Number.parseInt(watchedColorCode, 10)
+        : undefined
 
   const styleColorFilters = useMemo(
     () => ({
       active: true,
       department: isValidDepartment(watchedDepartment) ? watchedDepartment : undefined,
-      colorId: watchedColorId,
+      colorId: Number.isFinite(watchedColorId) ? watchedColorId : undefined,
     }),
     [watchedDepartment, watchedColorId],
   )
@@ -351,6 +417,18 @@ export default function SkuFormPageModern() {
       label: `${styleColor.style} · ${styleColor.department} · cat ${styleColor.categoryId}`,
     }))
   }, [styleColors])
+
+  const attributeOptionsByDimension = useMemo<AttributeSelectOptions>(() => {
+    const result: AttributeSelectOptions = {}
+    for (const dim of attributeDimensions ?? []) {
+      result[dim.code] = dim.values
+        .filter((value) => value.isActive)
+        .slice()
+        .sort((a, b) => a.sortOrder - b.sortOrder || a.labelEs.localeCompare(b.labelEs))
+        .map((value) => ({ label: value.labelEs, value: value.code }))
+    }
+    return result
+  }, [attributeDimensions])
 
   const existingSkuPictureUrl = useMemo(() => {
     return buildRicsImageUrl(matchedSku?.pictureFileName ?? lifecycleSku?.pictureFileName ?? null)
@@ -465,8 +543,8 @@ export default function SkuFormPageModern() {
     if (!styleColorId) return
     const styleColor = styleColorMap.get(styleColorId)
     if (!styleColor) return
-    const nextValues: Partial<SkuFormValues> = {
-      colorId: styleColor.colorId,
+    const nextValues: Record<string, unknown> = {
+      colorId: String(styleColor.colorId),
       categoryId: styleColor.categoryId,
       department: styleColor.department,
       heelTypeCode: styleColor.heelTypeCode ?? null,
@@ -518,8 +596,21 @@ export default function SkuFormPageModern() {
         const mappedId = typeof rawMappedId === 'number' ? rawMappedId : null
         const refItems = refData[mapping.refTable] ?? []
         const matchedId = mappedId ?? matchReference(aiValue, refItems)
-        if (matchedId != null) {
+        const dimensionCode = DIMENSION_CODE_BY_FORM_FIELD.get(mapping.formField)
+        const dimensionOptions = dimensionCode ? attributeOptionsByDimension[dimensionCode] : undefined
+        const matchedAttributeCode =
+          dimensionCode
+            ? matchAttributeOptionCode(aiValue, dimensionOptions)
+              ?? (matchedId != null && dimensionOptions?.some((o) => o.value === String(matchedId))
+                ? String(matchedId)
+                : null)
+            : null
+        if (matchedId != null || matchedAttributeCode != null) {
           if (mapping.formField === 'categoryId') {
+            if (matchedId == null) {
+              skipped.push('categoryId')
+              continue
+            }
             const cat = validCategoriesById.get(matchedId)
             if (cat && (!selectedFamily || !cat.familyCode || cat.familyCode === selectedFamily)) {
               fieldsToSet[mapping.formField] = matchedId
@@ -533,6 +624,13 @@ export default function SkuFormPageModern() {
               fieldsToSet['department'] = cat.departmentDesc ?? undefined
             } else {
               skipped.push('categoryId')
+            }
+          } else if (dimensionCode) {
+            if (matchedAttributeCode != null) {
+              fieldsToSet[mapping.formField] = matchedAttributeCode
+              filled.push(mapping.formField)
+            } else {
+              skipped.push(mapping.formField)
             }
           } else {
             fieldsToSet[mapping.formField] = matchedId
@@ -549,7 +647,7 @@ export default function SkuFormPageModern() {
     const summary = { filled, skipped, total: AI_FIELD_MAP.length }
     setAiFillSummary(summary)
     return summary
-  }, [refData, form, validCategoriesById, selectedFamily])
+  }, [refData, form, validCategoriesById, selectedFamily, attributeOptionsByDimension])
 
   const populateForm = useCallback((s: import('../../types/sku').Sku) => {
     const legacyGenderId = (s as import('../../types/sku').Sku & { genderId?: number | null }).genderId
@@ -579,25 +677,25 @@ export default function SkuFormPageModern() {
       keywords: s.keywords,
       season: s.season,
       manufacturer: s.manufacturer,
-      colorId: s.colorId,
-      heelMaterialId: s.heelMaterialId,
+      colorId: toAttributeCode(s.colorId),
+      heelMaterialId: toAttributeCode(s.heelMaterialId),
       heelTypeCode: s.heelTypeCode ?? null,
       heelMaterialTypeCode: s.heelMaterialTypeCode ?? null,
-      shoeTypeId: s.shoeTypeId,
-      heelShapeId: s.heelShapeId,
-      heelHeightId: s.heelHeightId,
-      toeShapeId: s.toeShapeId,
-      closureTypeId: s.closureTypeId,
-      upperMaterialId: s.upperMaterialId,
-      outsoleMaterialId: s.outsoleMaterialId,
-      finishId: s.finishId,
-      widthTypeId: s.widthTypeId,
-      patternId: s.patternId,
-      occasionId: s.occasionId,
-      genderId: legacyGenderId ?? s.targetAudienceId,
-      accessoryId: s.accessoryId,
+      shoeTypeId: toAttributeCode(s.shoeTypeId),
+      heelShapeId: toAttributeCode(s.heelShapeId),
+      heelHeightId: toAttributeCode(s.heelHeightId),
+      toeShapeId: toAttributeCode(s.toeShapeId),
+      closureTypeId: toAttributeCode(s.closureTypeId),
+      upperMaterialId: toAttributeCode(s.upperMaterialId),
+      outsoleMaterialId: toAttributeCode(s.outsoleMaterialId),
+      finishId: toAttributeCode(s.finishId),
+      widthTypeId: toAttributeCode(s.widthTypeId),
+      patternId: toAttributeCode(s.patternId),
+      occasionId: toAttributeCode(s.occasionId),
+      genderId: toAttributeCode(legacyGenderId ?? s.targetAudienceId),
+      accessoryId: toAttributeCode(s.accessoryId),
       seasonId: s.seasonId,
-      labelTypeId: s.labelTypeId,
+      labelTypeId: toAttributeCode(s.labelTypeId),
       styleColorId: s.styleColorLink?.styleColorId ?? null,
     })
   }, [form])
@@ -608,13 +706,12 @@ export default function SkuFormPageModern() {
 
   useEffect(() => {
     if (!skuDimAttrs) return
-    const patch: Record<string, number | null> = {}
+    const patch: Record<string, string | null> = {}
     for (const m of DIMENSIONAL_ATTR_MAP) {
       const entry = skuDimAttrs.byDimension[m.dimensionCode]
       const first = entry?.values?.[0]
       if (first) {
-        const n = Number.parseInt(first.code, 10)
-        if (Number.isFinite(n)) patch[m.formField] = n
+        patch[m.formField] = first.code
       } else {
         patch[m.formField] = null
       }
@@ -831,15 +928,16 @@ export default function SkuFormPageModern() {
     try {
       const normalized: Record<string, unknown> = { ...values }
       const lifecyclePayload = splitFormValuesForLifecycle(normalized, derivedFamilyCode)
-      const editId = skuId ?? matchedSku?.id
+      const editId = lifecycleSku?.id ?? matchedSku?.id
 
       const dimAssignments: { dimension_code: string; value_code: string }[] = []
       const scope: string[] = []
       for (const m of DIMENSIONAL_ATTR_MAP) {
         scope.push(m.dimensionCode)
         const v = (normalized as Record<string, unknown>)[m.formField]
-        if (typeof v === 'number' && Number.isFinite(v)) {
-          dimAssignments.push({ dimension_code: m.dimensionCode, value_code: String(v) })
+        const valueCode = toAttributeCode(v)
+        if (valueCode) {
+          dimAssignments.push({ dimension_code: m.dimensionCode, value_code: valueCode })
         }
       }
       const writeDims = async (skuKey: string) => {
@@ -1047,7 +1145,24 @@ export default function SkuFormPageModern() {
     )
   }
 
-  if (refLoading) {
+  if (isRouteEdit && !lifecycleSku) {
+    return (
+      <div style={pageContainer}>
+        <Result
+          status="404"
+          title="SKU no encontrado"
+          subTitle={`No se encontro ${routeParam ?? 'este SKU'} en los SKU importados o creados.`}
+          extra={
+            <Button type="primary" onClick={() => navigate(SKU_ROOT_PATH)}>
+              Volver a SKU List
+            </Button>
+          }
+        />
+      </div>
+    )
+  }
+
+  if (refLoading || attributeDimensionsLoading) {
     return (
       <div style={{ textAlign: 'center', padding: 80 }}>
         <Spin size="large" tip="Cargando datos de referencia..." />
@@ -1157,7 +1272,7 @@ export default function SkuFormPageModern() {
           familyLabelByCode={familyLabelByCode}
           derivedFamilyCode={derivedFamilyCode}
           derivedDepartmentLabel={derivedDepartmentLabel}
-          refData={refData}
+          attributeOptionsByDimension={attributeOptionsByDimension}
           sizeTypes={sizeTypes}
           sizeTypesLoading={sizeTypesLoading}
           groups={groups}
@@ -1181,11 +1296,15 @@ export default function SkuFormPageModern() {
 
         <AppearanceSection
           selectedFamily={selectedFamily}
-          refData={refData}
+          attributeOptionsByDimension={attributeOptionsByDimension}
           aiFilledFields={aiFilledFields}
         />
 
-        <AdvancedSection refData={refData} seasonsCatalog={seasonsCatalog} />
+        <AdvancedSection
+          refData={refData}
+          attributeOptionsByDimension={attributeOptionsByDimension}
+          seasonsCatalog={seasonsCatalog}
+        />
 
         <MatchingSetsCard skuRef={skuLookupKey} />
       </Form>

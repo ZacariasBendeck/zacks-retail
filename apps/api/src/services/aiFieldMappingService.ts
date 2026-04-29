@@ -229,8 +229,9 @@ const ENGLISH_TO_SPANISH: Record<string, Record<string, string[]>> = {
     'rubber': ['hule'],
     'stacked leather': ['ballena'],
     'stacked': ['ballena'],
-    'none': ['plano'],
-    'flat': ['plano'],
+    'espadrille': ['espartillo'],
+    'jute': ['espartillo'],
+    'rope': ['espartillo'],
   },
   'target-audiences': {
     // Género — the table holds exactly 4 values (Mujer, Hombre, Niña, Niño).
@@ -330,6 +331,14 @@ export function matchReferenceValue(
 ): number | null {
   if (!aiValue) return null;
 
+  const normalizedInput = stripAccents(aiValue.toLowerCase().trim());
+  if (
+    refTableName === 'heel-materials' &&
+    ['none', 'flat', 'plano', 'no heel', 'sin tacon'].includes(normalizedInput)
+  ) {
+    return null;
+  }
+
   const rawData = getReferenceData(refTableName);
   if (!rawData || rawData.length === 0) return null;
 
@@ -337,7 +346,7 @@ export function matchReferenceValue(
   const refData = rawData.filter((r): r is ReferenceItem => 'name' in r);
   if (refData.length === 0) return null;
 
-  const normalizedAi = stripAccents(aiValue.toLowerCase().trim());
+  const normalizedAi = normalizedInput;
 
   // Step 1: Try English-to-Spanish mapping
   const tableMap = ENGLISH_TO_SPANISH[refTableName];

@@ -1,12 +1,21 @@
 import type {
   CreatePurchaseOrderPayload,
+  LegacyPurchaseOrderDetail,
   UpdatePurchaseOrderPayload,
   SubmitPurchaseOrderPayload,
   PurchaseOrder,
   PoStatus,
   PoStatusHistory,
   PoListParams,
+  PurchaseOrderSkuOption,
+  PurchaseOrderVendorOption,
+  PurchaseOrderBuyerOption,
   ReceivePurchaseOrderPayload,
+  DuplicatePurchaseOrderPayload,
+  ReplicatePurchaseOrderPayload,
+  ReplicatePurchaseOrderResult,
+  CombinePurchaseOrdersPayload,
+  ReceivePurchaseOrderFullPayload,
   PoReceipt,
   OverduePoException,
   TransferOrder,
@@ -60,6 +69,10 @@ function generateMockPOs(count: number): PurchaseOrder[] {
         skuId: sku.id,
         skuCode: sku.skuCode,
         brand: sku.style,
+        sizeType: null,
+        casePackId: null,
+        casePackMultiplier: null,
+        sizeCells: [],
         quantityOrdered: qtyOrdered,
         quantityReceived: qtyReceived,
         unitCost,
@@ -75,8 +88,27 @@ function generateMockPOs(count: number): PurchaseOrder[] {
     pos.push({
       id: poId,
       poNumber: `PO-${String(1000 + i).padStart(5, '0')}`,
+      billToStoreId: 1,
+      shipToStoreId: 1,
       vendorId: vendor.id,
       vendorName: vendor.name,
+      orderType: 'RO',
+      classification: 'AT_ONCE',
+      origin: 'MANUAL',
+      originSourcePoId: null,
+      confirmationNumber: null,
+      accountNumber: null,
+      terms: null,
+      shipVia: null,
+      backorderAllowed: false,
+      splitShipment: false,
+      programCode: null,
+      storeLabelsOnReceive: false,
+      buyer: null,
+      orderDate: new Date().toISOString(),
+      shipDate: null,
+      cancelDate: null,
+      paymentDate: null,
       status,
       notes: null,
       cancellationReason: null,
@@ -118,6 +150,8 @@ function generateMockReceipts(po: PurchaseOrder): PoReceipt[] {
           skuSizeId: null,
           quantityReceived: allocated,
           unitCost: line.unitCost,
+          discrepancyReason: null,
+          auditReference: null,
           createdAt: new Date(Date.now() - (i + 1) * 86400000).toISOString(),
         }
       })
@@ -132,6 +166,8 @@ function generateMockReceipts(po: PurchaseOrder): PoReceipt[] {
       locationName: 'Almacen Principal',
       receivedBy: 'warehouse@benlow.com',
       referenceNumber: `RCV-${String(i + 1).padStart(3, '0')}`,
+      discountPercent: 0,
+      freightEach: 0,
       receivedAt: new Date(Date.now() - (i + 1) * 86400000).toISOString(),
       createdAt: new Date(Date.now() - (i + 1) * 86400000).toISOString(),
       lines,
@@ -210,6 +246,13 @@ export async function fetchPurchaseOrders(
       filtered = filtered.filter((po) => po.status === params.status)
     }
 
+    if (params.q) {
+      const q = params.q.toLowerCase()
+      filtered = filtered.filter((po) =>
+        po.poNumber.toLowerCase().includes(q) || (po.notes ?? '').toLowerCase().includes(q)
+      )
+    }
+
     const page = params.page ?? 1
     const pageSize = params.pageSize ?? 25
     const totalItems = filtered.length
@@ -231,6 +274,40 @@ export async function fetchPurchaseOrders(
   return res.json()
 }
 
+export async function fetchPurchaseOrderVendorOptions(params: {
+  q?: string
+  pageSize?: number
+} = {}): Promise<PurchaseOrderVendorOption[]> {
+  const searchParams = new URLSearchParams()
+  if (params.q?.trim()) searchParams.set('q', params.q.trim())
+  if (params.pageSize != null) searchParams.set('pageSize', String(params.pageSize))
+  const query = searchParams.toString()
+  const res = await fetch(`/api/v1/purchase-orders/vendor-options${query ? `?${query}` : ''}`)
+  if (!res.ok) throw new Error(`Failed to fetch purchase-order vendors: ${res.status}`)
+  return res.json()
+}
+
+export async function fetchPurchaseOrderBuyerOptions(): Promise<PurchaseOrderBuyerOption[]> {
+  const res = await fetch('/api/v1/purchase-orders/buyer-options')
+  if (!res.ok) throw new Error(`Failed to fetch purchase-order buyers: ${res.status}`)
+  return res.json()
+}
+
+export async function fetchPurchaseOrderSkuOptions(params: {
+  q?: string
+  vendorId?: string
+  pageSize?: number
+} = {}): Promise<PurchaseOrderSkuOption[]> {
+  const searchParams = new URLSearchParams()
+  if (params.q?.trim()) searchParams.set('q', params.q.trim())
+  if (params.vendorId?.trim()) searchParams.set('vendorId', params.vendorId.trim())
+  if (params.pageSize != null) searchParams.set('pageSize', String(params.pageSize))
+  const query = searchParams.toString()
+  const res = await fetch(`/api/v1/purchase-orders/sku-options${query ? `?${query}` : ''}`)
+  if (!res.ok) throw new Error(`Failed to fetch purchase-order SKUs: ${res.status}`)
+  return res.json()
+}
+
 export async function fetchPurchaseOrder(poId: string): Promise<PurchaseOrder> {
   if (USE_MOCK) {
     await new Promise((r) => setTimeout(r, 100))
@@ -240,6 +317,12 @@ export async function fetchPurchaseOrder(poId: string): Promise<PurchaseOrder> {
   }
   const res = await fetch(`/api/v1/purchase-orders/${poId}`)
   if (!res.ok) throw new Error(`Failed to fetch purchase order: ${res.status}`)
+  return res.json()
+}
+
+export async function fetchLegacyPurchaseOrder(poNumber: string): Promise<LegacyPurchaseOrderDetail> {
+  const res = await fetch(`/api/v1/purchase-orders/legacy/${encodeURIComponent(poNumber)}`)
+  if (!res.ok) throw new Error(`Failed to fetch legacy purchase order: ${res.status}`)
   return res.json()
 }
 
@@ -268,6 +351,10 @@ export async function createPurchaseOrder(payload: CreatePurchaseOrderPayload): 
         skuId: line.skuId,
         skuCode: sku?.skuCode,
         brand: sku?.style,
+        sizeType: null,
+        casePackId: null,
+        casePackMultiplier: null,
+        sizeCells: [],
         quantityOrdered: line.quantity,
         quantityReceived: 0,
         unitCost: line.unitCost,
@@ -280,8 +367,27 @@ export async function createPurchaseOrder(payload: CreatePurchaseOrderPayload): 
     const po: PurchaseOrder = {
       id: poId,
       poNumber: `PO-${String(1000 + MOCK_POS.length).padStart(5, '0')}`,
+      billToStoreId: payload.billToStoreId ?? null,
+      shipToStoreId: payload.shipToStoreId ?? null,
       vendorId: vendor.id,
       vendorName: vendor.name,
+      orderType: payload.orderType ?? 'RO',
+      classification: payload.classification ?? 'AT_ONCE',
+      origin: 'MANUAL',
+      originSourcePoId: null,
+      confirmationNumber: payload.confirmationNumber ?? null,
+      accountNumber: payload.accountNumber ?? null,
+      terms: payload.terms ?? null,
+      shipVia: payload.shipVia ?? null,
+      backorderAllowed: payload.backorderAllowed ?? false,
+      splitShipment: payload.splitShipment ?? false,
+      programCode: payload.programCode ?? null,
+      storeLabelsOnReceive: payload.storeLabelsOnReceive ?? false,
+      buyer: null,
+      orderDate: payload.orderDate ?? new Date().toISOString(),
+      shipDate: payload.shipDate ?? null,
+      cancelDate: payload.cancelDate ?? null,
+      paymentDate: payload.paymentDate ?? null,
       status: 'DRAFT',
       notes: payload.notes ?? null,
       cancellationReason: null,
@@ -325,6 +431,10 @@ export async function updatePurchaseOrder(
           skuId: line.skuId,
           skuCode: sku?.skuCode,
           brand: sku?.style,
+          sizeType: null,
+          casePackId: null,
+          casePackMultiplier: null,
+          sizeCells: [],
           quantityOrdered: line.quantity,
           quantityReceived: 0,
           unitCost: line.unitCost,
@@ -478,6 +588,65 @@ export async function receivePurchaseOrder(
   })
   if (!res.ok) {
     await throwPoApiError(res, `Failed to receive PO: ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function receivePurchaseOrderFull(
+  poId: string,
+  payload: ReceivePurchaseOrderFullPayload,
+): Promise<PurchaseOrder> {
+  const res = await fetch(`/api/v1/purchase-orders/${poId}/receive/full`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!res.ok) {
+    await throwPoApiError(res, `Failed to fully receive PO: ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function duplicatePurchaseOrder(
+  poId: string,
+  payload: DuplicatePurchaseOrderPayload = {},
+): Promise<PurchaseOrder> {
+  const res = await fetch(`/api/v1/purchase-orders/${poId}/duplicate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!res.ok) {
+    await throwPoApiError(res, `Failed to duplicate PO: ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function replicatePurchaseOrder(
+  poId: string,
+  payload: ReplicatePurchaseOrderPayload,
+): Promise<ReplicatePurchaseOrderResult> {
+  const res = await fetch(`/api/v1/purchase-orders/${poId}/replicate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!res.ok) {
+    await throwPoApiError(res, `Failed to replicate PO: ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function combinePurchaseOrders(
+  payload: CombinePurchaseOrdersPayload,
+): Promise<PurchaseOrder> {
+  const res = await fetch('/api/v1/purchase-orders/combine', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!res.ok) {
+    await throwPoApiError(res, `Failed to combine POs: ${res.status}`)
   }
   return res.json()
 }

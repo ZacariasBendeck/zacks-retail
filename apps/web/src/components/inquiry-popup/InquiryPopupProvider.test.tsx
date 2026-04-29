@@ -16,9 +16,20 @@ vi.mock('../draggable-modal', () => ({
 }));
 
 vi.mock('../../pages/products/inquiry/InquiryBody', () => ({
-  InquiryBody: ({ skuCode, storeId }: { skuCode: string; storeId?: number }) => (
+  InquiryBody: ({
+    skuCode,
+    storeId,
+    onOpenMatchingSets,
+  }: {
+    skuCode: string
+    storeId?: number
+    onOpenMatchingSets?: () => void
+  }) => (
     <div data-testid="inquiry-body">
       {skuCode} / {storeId}
+      <button type="button" onClick={onOpenMatchingSets}>
+        Open matching sets
+      </button>
     </div>
   ),
 }));
@@ -47,5 +58,21 @@ describe('InquiryPopupProvider', () => {
     const dialog = screen.getByRole('dialog', { name: 'Inventory Inquiry - ZN02-NDPT' });
     expect(dialog).toHaveAttribute('data-width', '92vw');
     expect(screen.getByTestId('inquiry-body')).toHaveTextContent('ZN02-NDPT / 21');
+  });
+
+  it('lets popup content close the inquiry before navigating elsewhere', async () => {
+    render(
+      <MemoryRouter>
+        <InquiryPopupProvider>
+          <OpenInquiryButton />
+        </InquiryPopupProvider>
+      </MemoryRouter>
+    );
+
+    await userEvent.click(screen.getByRole('button', { name: /open inquiry/i }));
+    expect(screen.getByRole('dialog', { name: 'Inventory Inquiry - ZN02-NDPT' })).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: /open matching sets/i }));
+    expect(screen.queryByRole('dialog', { name: 'Inventory Inquiry - ZN02-NDPT' })).not.toBeInTheDocument();
   });
 });

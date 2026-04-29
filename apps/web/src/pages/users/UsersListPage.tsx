@@ -1,10 +1,11 @@
-import { Button, Card, Popconfirm, Space, Table, Tag, Typography, message } from 'antd';
+import { Button, Card, Popconfirm, Space, Table, Tabs, Tag, Typography, message } from 'antd';
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { AdminUser, userApi } from '../../services/userApi';
 
 export default function UsersListPage() {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const { data, isLoading } = useQuery({
     queryKey: ['users'],
     queryFn: () => userApi.list(),
@@ -20,6 +21,16 @@ export default function UsersListPage() {
 
   return (
     <Card>
+      <Tabs
+        activeKey="users"
+        onChange={(key) => {
+          if (key === 'salespeople') navigate('/employees/salespeople');
+        }}
+        items={[
+          { key: 'salespeople', label: 'Salespeople' },
+          { key: 'users', label: 'Users' },
+        ]}
+      />
       <Space style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
         <Typography.Title level={3} style={{ margin: 0 }}>Users</Typography.Title>
         <Link to="/admin/users/new"><Button type="primary">New user</Button></Link>

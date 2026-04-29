@@ -92,6 +92,25 @@ describe('Module Shell Navigation', () => {
     expect(screen.getByRole('heading', { name: 'Inventory' })).toBeInTheDocument()
   })
 
+  it('keeps File Setup open when navigating between its child routes', async () => {
+    const user = userEvent.setup()
+    renderModuleShell('/inventory/dashboard')
+
+    const fileSetupMenu = screen.getByRole('menuitem', { name: /File Setup/i })
+    await user.click(fileSetupMenu)
+
+    const vendorsLabel = await screen.findByText('Vendors', { selector: '.ant-menu-title-content' })
+    const vendorsItem = vendorsLabel.closest('[role="menuitem"]')
+    expect(vendorsItem).toBeTruthy()
+    if (!vendorsItem) throw new Error('Vendors menu item not found')
+
+    await user.click(vendorsItem)
+
+    expect(await screen.findByTestId('file-setup-vendors')).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: /File Setup/i })).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByText('Categories', { selector: '.ant-menu-title-content' })).toBeVisible()
+  })
+
   it('navigates across all module child routes and updates module header', async () => {
     const user = userEvent.setup()
     renderModuleShell('/inventory/dashboard')
@@ -103,7 +122,7 @@ describe('Module Shell Navigation', () => {
       openModuleLabel?: string
     }> = [
       { label: 'Balances', pageId: 'inventory-balances', moduleTitle: 'Inventory' },
-      { label: 'SKU', pageId: 'inventory-skus', moduleTitle: 'Products', openModuleLabel: 'Products' },
+      { label: 'SKU List', pageId: 'inventory-skus', moduleTitle: 'Products', openModuleLabel: 'Products' },
       { label: 'Stock Maintenance', pageId: 'inventory-adjustments', moduleTitle: 'Inventory' },
       { label: 'Find by Size', pageId: 'inventory-find-by-size', moduleTitle: 'Inventory' },
       { label: 'Model Quantities', pageId: 'inventory-replenishment', moduleTitle: 'Inventory' },

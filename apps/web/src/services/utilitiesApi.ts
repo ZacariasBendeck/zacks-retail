@@ -47,6 +47,7 @@ export interface SkuCriteria {
   stylesColors?: string[]
   groups?: string[]
   keywords?: string[]
+  attributes?: Record<string, string[]>
   onlyFuturePriceChanges?: boolean
   onlyWtdSales?: boolean
 }
@@ -58,6 +59,7 @@ export type BatchOperationType =
   | 'CHANGE_VENDOR'
   | 'CHANGE_SEASON'
   | 'CHANGE_GROUP_CODE'
+  | 'CHANGE_SKU_ATTRIBUTE'
   | 'CHANGE_SIZE_COLUMN'
   | 'CHANGE_SIZE_TYPE_STRUCTURE'
 
@@ -68,6 +70,12 @@ export type AttributeChange =
   | { type: 'CHANGE_VENDOR'; vendor: string }
   | { type: 'CHANGE_SEASON'; season: string }
   | { type: 'CHANGE_GROUP_CODE'; groupCode: string }
+  | {
+      type: 'CHANGE_SKU_ATTRIBUTE'
+      dimensionCode: string
+      valueCodes: string[]
+      mode: 'REPLACE' | 'ADD' | 'REMOVE'
+    }
 
 export interface EffectiveSku {
   sku: string

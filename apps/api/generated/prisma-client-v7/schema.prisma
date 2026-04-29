@@ -1811,15 +1811,16 @@ model AttributeFamilyRule {
 /// `is_active=false` hides the value from new-assignment dropdowns but
 /// preserves it for existing assignments and audit history.
 model AttributeValue {
-  id          Int                      @id @default(autoincrement()) @db.SmallInt
-  dimensionId Int                      @map("dimension_id") @db.SmallInt
-  dimension   AttributeDimension       @relation(fields: [dimensionId], references: [id], onDelete: Restrict, onUpdate: Cascade)
-  code        String
-  labelEs     String                   @map("label_es")
-  sortOrder   Int                      @map("sort_order") @db.SmallInt
-  isActive    Boolean                  @default(true) @map("is_active")
-  createdAt   DateTime                 @default(now()) @map("created_at")
-  assignments SkuAttributeAssignment[]
+  id            Int                      @id @default(autoincrement()) @db.SmallInt
+  dimensionId   Int                      @map("dimension_id") @db.SmallInt
+  dimension     AttributeDimension       @relation(fields: [dimensionId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  code          String
+  labelEs       String                   @map("label_es")
+  descriptionEs String?                  @map("description_es")
+  sortOrder     Int                      @map("sort_order") @db.SmallInt
+  isActive      Boolean                  @default(true) @map("is_active")
+  createdAt     DateTime                 @default(now()) @map("created_at")
+  assignments   SkuAttributeAssignment[]
 
   @@unique([dimensionId, code])
   @@map("attribute_value")
@@ -2267,7 +2268,7 @@ model SalesHistoryTicketLine {
   @@schema("app")
 }
 
-model SalesHistoryTicketLegacyRaw {
+model TicketHeader {
   id                    String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   source                String   @default("rics_ticket_import")
   externalTransactionId String?  @map("external_transaction_id")
@@ -2306,15 +2307,15 @@ model SalesHistoryTicketLegacyRaw {
   posted                String?
   importedAt            DateTime @default(now()) @map("imported_at") @db.Timestamptz(6)
 
-  @@index([source, externalTransactionId], map: "idx_sales_history_ticket_legacy_raw_source_external")
-  @@index([ticketIdentityKey], map: "idx_sales_history_ticket_legacy_raw_identity")
-  @@index([ticketId], map: "idx_sales_history_ticket_legacy_raw_ticket")
-  @@index([store, ticket, realDate], map: "idx_sales_history_ticket_legacy_raw_store_ticket")
-  @@map("sales_history_ticket_legacy_raw")
+  @@index([source, externalTransactionId], map: "idx_ticket_header_source_external")
+  @@index([ticketIdentityKey], map: "idx_ticket_header_identity")
+  @@index([ticketId], map: "idx_ticket_header_sales_history_ticket")
+  @@index([store, ticket, realDate], map: "idx_ticket_header_store_ticket")
+  @@map("ticket_header")
   @@schema("app")
 }
 
-model SalesHistoryTicketLineLegacyRaw {
+model TicketDetail {
   id                    String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   source                String   @default("rics_ticket_import")
   sourceRowNumber       BigInt   @map("source_row_number")
@@ -2370,15 +2371,15 @@ model SalesHistoryTicketLineLegacyRaw {
   comment               String?
   importedAt            DateTime @default(now()) @map("imported_at") @db.Timestamptz(6)
 
-  @@index([source, externalTransactionId], map: "idx_sales_history_ticket_line_legacy_raw_source_external")
-  @@index([ticketIdentityKey], map: "idx_sales_history_ticket_line_legacy_raw_identity")
-  @@index([ticketId], map: "idx_sales_history_ticket_line_legacy_raw_ticket")
-  @@index([store, ticket, realDate], map: "idx_sales_history_ticket_line_legacy_raw_store_ticket")
-  @@map("sales_history_ticket_line_legacy_raw")
+  @@index([source, externalTransactionId], map: "idx_ticket_detail_source_external")
+  @@index([ticketIdentityKey], map: "idx_ticket_detail_identity")
+  @@index([ticketId], map: "idx_ticket_detail_sales_history_ticket")
+  @@index([store, ticket, realDate], map: "idx_ticket_detail_store_ticket")
+  @@map("ticket_detail")
   @@schema("app")
 }
 
-model SalesHistoryTicketTenderLegacyRaw {
+model TicketTender {
   id                    String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   source                String   @default("rics_ticket_import")
   sourceRowNumber       BigInt   @map("source_row_number")
@@ -2402,11 +2403,11 @@ model SalesHistoryTicketTenderLegacyRaw {
   giftNew               String?  @map("gift_new")
   importedAt            DateTime @default(now()) @map("imported_at") @db.Timestamptz(6)
 
-  @@index([source, externalTransactionId], map: "idx_sales_history_ticket_tender_legacy_raw_source_external")
-  @@index([ticketIdentityKey], map: "idx_sales_history_ticket_tender_legacy_raw_identity")
-  @@index([ticketId], map: "idx_sales_history_ticket_tender_legacy_raw_ticket")
-  @@index([store, ticket, realDate], map: "idx_sales_history_ticket_tender_legacy_raw_store_ticket")
-  @@map("sales_history_ticket_tender_legacy_raw")
+  @@index([source, externalTransactionId], map: "idx_ticket_tender_source_external")
+  @@index([ticketIdentityKey], map: "idx_ticket_tender_identity")
+  @@index([ticketId], map: "idx_ticket_tender_sales_history_ticket")
+  @@index([store, ticket, realDate], map: "idx_ticket_tender_store_ticket")
+  @@map("ticket_tender")
   @@schema("app")
 }
 

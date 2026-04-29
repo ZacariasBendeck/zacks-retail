@@ -19,6 +19,7 @@ import {
 import { AuditOutlined, SearchOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { useChangeDetail, useInventoryInquiry } from '../../hooks/useRicsInventory';
+import { useStores } from '../../hooks/useStores';
 import type { ChangeDetailRow } from '../../services/ricsInventoryApi';
 import { SkuLookup } from '../../components/sku-lookup';
 import { getErrorMessage } from '../../utils/errors';
@@ -51,10 +52,11 @@ export default function InventoryAuditPage() {
   const [storeId, setStoreId] = useState<number | null>(null);
   const [lookupOpen, setLookupOpen] = useState(false);
 
-  // Pull per-store on-hand from the inquiry endpoint so we can (a) populate
-  // the Store dropdown with only stores that have a balance and (b) anchor
-  // the running balance to a current on-hand number.
+  // Pull per-store on-hand from the inquiry endpoint to anchor the running
+  // balance. The dropdown uses store master so zero-balance stores can still
+  // be audited for movement history.
   const { data: inquiry, isLoading: inquiryLoading } = useInventoryInquiry(skuCode || null);
+  const { data: stores = [], isLoading: storesLoading } = useStores();
 
   const storeOptions = useMemo(
     () =>
@@ -63,6 +65,21 @@ export default function InventoryAuditPage() {
         label: `${s.storeNumber}${s.storeName ? ` — ${s.storeName}` : ''} (on-hand ${s.totals.onHand})`,
       })),
     [inquiry],
+  );
+
+  const auditStoreOptions = useMemo(
+    () =>
+      stores.length > 0
+        ? stores.map((store) => {
+            const inquiryStore = inquiry?.stores.find((s) => s.storeNumber === store.id);
+            const onHand = inquiryStore?.totals.onHand ?? 0;
+            return {
+              value: store.id,
+              label: `${store.id}${store.name ? ` - ${store.name}` : ''} (on-hand ${onHand})`,
+            };
+          })
+        : storeOptions,
+    [inquiry, storeOptions, stores],
   );
 
   const currentOnHand = useMemo(() => {
@@ -162,9 +179,9 @@ export default function InventoryAuditPage() {
                 placeholder={skuCode ? 'Select store' : 'Enter a SKU first'}
                 value={storeId ?? undefined}
                 onChange={(v) => setStoreId(v)}
-                options={storeOptions}
-                disabled={!skuCode || inquiryLoading}
-                loading={inquiryLoading}
+                options={auditStoreOptions}
+                disabled={!skuCode || storesLoading}
+                loading={storesLoading || inquiryLoading}
                 style={{ width: 320 }}
                 allowClear
               />

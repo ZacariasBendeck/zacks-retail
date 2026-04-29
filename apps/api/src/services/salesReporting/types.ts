@@ -277,6 +277,8 @@ export interface SkuAttributeColumns {
    *  over the effective category number. */
   departmentNumber: number | null;
   departmentDesc: string | null;
+  season: string | null;
+  groupCode: string | null;
   styleColor: string | null;
   currentPrice: number | null;
   /** Per-unit cost from inventory_master.current_cost. Distinct from the row's
@@ -297,6 +299,8 @@ export interface SalesAnalysisRow {
   cogs: number;
   grossProfit: number;
   gpPct: number | null;         // grossProfit / netSales × 100; null when netSales=0
+  unitsOnHand: number;          // on-hand inventory units for the row grain
+  inventoryUnitCost: number | null; // weighted avg current/average cost; null when unitsOnHand=0
   onHandAtCost: number;         // Σ(OnHand × CurrentCost) for the dimension; 0 when unknown
   turns: number | null;         // annualized; null when onHandAtCost=0
   roiPct: number | null;        // GMROI, annualized; null when onHandAtCost=0
@@ -322,6 +326,8 @@ export interface SalesAnalysisReport {
     netSales: number;
     cogs: number;
     grossProfit: number;
+    unitsOnHand: number;
+    inventoryUnitCost: number | null;
     onHandAtCost: number;
     gpPct: number | null;
     turns: number | null;
@@ -429,6 +435,10 @@ export type PivotDimension =
   | 'store'
   | 'category';
 
+export type SalesPivotLevels =
+  | [PivotDimension, PivotDimension]
+  | [PivotDimension, PivotDimension, PivotDimension];
+
 export interface SalesPivotLeafRow {
   /** Set for `department-separate-store` only. Null otherwise. */
   storeNumber: number | null;
@@ -463,6 +473,7 @@ export interface SalesPivotLeafRow {
 
   sku: string;
   skuDescription: string | null;
+  pictureFileName?: string | null;
 
   onHandQty: number;
   onHandCostVal: number;
@@ -489,9 +500,9 @@ export interface SalesPivotTotals {
 
 export interface SalesPivotReport {
   variant: SalesPivotVariant;
-  /** The three hierarchy dimensions when variant === 'custom'. Absent for
-   *  the fixed variants — their hierarchies are implied by the variant name. */
-  levels?: [PivotDimension, PivotDimension, PivotDimension];
+  /** The hierarchy dimensions when variant === 'custom'. Absent for the
+   *  fixed variants — their hierarchies are implied by the variant name. */
+  levels?: SalesPivotLevels;
   startDate: string;      // YYYY-MM-DD, TY window start
   endDate: string;        // YYYY-MM-DD, TY window end
   currentYear: number;    // derived from startDate.getFullYear()

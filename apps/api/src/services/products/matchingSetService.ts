@@ -65,9 +65,15 @@ export interface MatchingSetDetail {
   vendorId: string | null;
   vendorName: string | null;
   vendorStyle: string | null;
+  materialCode: string | null;
+  materialLabel: string | null;
   sharedColorCode: string | null;
   sharedColorLabel: string | null;
   season: string | null;
+  chainId: string | null;
+  chainLabel: string | null;
+  sellMode: 'separates' | 'bundle_required';
+  planningActive: boolean;
   notes: string | null;
   active: boolean;
   memberCount: number;
@@ -103,9 +109,14 @@ export interface MatchingSetCreateInput {
   descriptionEs?: string | null;
   vendorId?: string | null;
   vendorStyle?: string | null;
+  materialCode?: string | null;
+  materialLabel?: string | null;
   sharedColorCode?: string | null;
   sharedColorLabel?: string | null;
   season?: string | null;
+  chainId?: string | null;
+  sellMode?: 'separates' | 'bundle_required' | null;
+  planningActive?: boolean | null;
   notes?: string | null;
   members?: MatchingSetMemberInput[];
 }
@@ -115,9 +126,14 @@ export interface MatchingSetPatchInput {
   descriptionEs?: string | null;
   vendorId?: string | null;
   vendorStyle?: string | null;
+  materialCode?: string | null;
+  materialLabel?: string | null;
   sharedColorCode?: string | null;
   sharedColorLabel?: string | null;
   season?: string | null;
+  chainId?: string | null;
+  sellMode?: 'separates' | 'bundle_required' | null;
+  planningActive?: boolean | null;
   notes?: string | null;
 }
 
@@ -172,6 +188,19 @@ function asNumber(v: unknown): number {
   }
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
+}
+
+function sellMode(v: unknown): 'separates' | 'bundle_required' {
+  return v === 'bundle_required' ? 'bundle_required' : 'separates';
+}
+
+function defaultQuantityRatio(setTypeCode: string, roleCode: string, value: number | null | undefined): number {
+  if (value != null && Number.isFinite(value) && value > 0) return value;
+  if (setTypeCode === 'suit') {
+    if (roleCode === 'pant') return 1.2;
+    if (roleCode === 'vest') return 0.5;
+  }
+  return 1;
 }
 
 function err(kind: RepoError['kind'], message: string, cause?: unknown): Result<never> {
@@ -307,16 +336,17 @@ async function stockSummary(skuIds: string[]): Promise<Map<string, { onHandTotal
 
 async function salesSummary(skuIds: string[]): Promise<Map<string, number>> {
   if (skuIds.length === 0) return new Map();
+  // RICS ticket quantities are already signed: sales positive, returns negative.
   const rows = await prisma.$queryRawUnsafe<{ sku_id: string; sales_last_90_days: unknown }[]>(
     `
     SELECT
       l.sku_id::text,
-      COALESCE(SUM(CASE WHEN l.is_return THEN -ABS(l.quantity) ELSE l.quantity END), 0)::int AS sales_last_90_days
+      COALESCE(SUM(l.quantity), 0)::int AS sales_last_90_days
     FROM app.sales_history_ticket_line l
     JOIN app.sales_history_ticket t ON t.id = l.ticket_id
     WHERE l.sku_id = ANY($1::uuid[])
       AND t.purchased_at >= now() - (90 * interval '1 day')
-      AND t.status <> 'voided'
+      AND t.status = 'completed'
     GROUP BY l.sku_id
     `,
     skuIds,
@@ -332,15 +362,93 @@ type DetailRow = Prisma.MatchingSetGetPayload<{
   };
 }>;
 
+interface MatchingSetPlanningFields {
+  materialCode: string | null;
+  materialLabel: string | null;
+  chainId: string | null;
+  chainLabel: string | null;
+  sellMode: 'separates' | 'bundle_required';
+  planningActive: boolean;
+}
+
+async function loadPlanningFields(id: string): Promise<MatchingSetPlanningFields> {
+  const rows = await prisma.$queryRawUnsafe<Array<{
+    material_code: string | null;
+    material_label: string | null;
+    chain_id: string | null;
+    chain_label: string | null;
+    sell_mode: string | null;
+    planning_active: boolean | null;
+  }>>(
+    `
+      SELECT
+        s.material_code,
+        s.material_label,
+        s.chain_id,
+        sg.label AS chain_label,
+        s.sell_mode,
+        s.planning_active
+      FROM app.matching_set s
+      LEFT JOIN app.store_group sg ON sg.code = s.chain_id
+      WHERE s.id = $1::uuid
+      LIMIT 1
+    `,
+    id,
+  );
+  const row = rows[0];
+  return {
+    materialCode: row?.material_code ?? null,
+    materialLabel: row?.material_label ?? null,
+    chainId: row?.chain_id ?? null,
+    chainLabel: row?.chain_label ?? null,
+    sellMode: sellMode(row?.sell_mode),
+    planningActive: row?.planning_active ?? true,
+  };
+}
+
+async function writePlanningFields(
+  tx: Tx,
+  id: string,
+  input: {
+    materialCode?: string | null;
+    materialLabel?: string | null;
+    chainId?: string | null;
+    sellMode?: 'separates' | 'bundle_required' | null;
+    planningActive?: boolean | null;
+  },
+  mode: 'create' | 'patch',
+): Promise<void> {
+  const sets: string[] = [];
+  const values: unknown[] = [];
+  function add(column: string, value: unknown): void {
+    values.push(value);
+    sets.push(`${column} = $${values.length}`);
+  }
+  if (mode === 'create' || input.materialCode !== undefined) add('material_code', cleanText(input.materialCode));
+  if (mode === 'create' || input.materialLabel !== undefined) add('material_label', cleanText(input.materialLabel));
+  if (mode === 'create' || input.chainId !== undefined) add('chain_id', cleanText(input.chainId));
+  if (mode === 'create' || input.sellMode !== undefined) add('sell_mode', sellMode(input.sellMode));
+  if (mode === 'create' || (input.planningActive !== undefined && input.planningActive !== null)) {
+    add('planning_active', input.planningActive ?? true);
+  }
+  if (sets.length === 0) return;
+  values.push(id);
+  await tx.$executeRawUnsafe(
+    `UPDATE app.matching_set SET ${sets.join(', ')} WHERE id = $${values.length}::uuid`,
+    ...values,
+  );
+}
+
 async function mapDetail(row: DetailRow): Promise<MatchingSetDetail> {
   const skuIds = row.members.map((m) => m.skuId);
-  const [stock, sales, roles] = await Promise.all([
+  const [stock, sales, roles, planning] = await Promise.all([
     stockSummary(skuIds),
     salesSummary(skuIds),
     prisma.matchingSetRole.findMany({
       where: { setTypeCode: row.setTypeCode },
       orderBy: [{ sortOrder: 'asc' }, { code: 'asc' }],
     }),
+    loadPlanningFields(row.id),
   ]);
 
   const roleMap = new Map(roles.map((r) => [r.code, r]));
@@ -402,9 +510,15 @@ async function mapDetail(row: DetailRow): Promise<MatchingSetDetail> {
     vendorId: row.vendorId,
     vendorName: row.vendor?.shortName ?? row.vendor?.mailName ?? null,
     vendorStyle: row.vendorStyle,
+    materialCode: planning.materialCode,
+    materialLabel: planning.materialLabel,
     sharedColorCode: row.sharedColorCode,
     sharedColorLabel: row.sharedColorLabel,
     season: row.season,
+    chainId: planning.chainId,
+    chainLabel: planning.chainLabel,
+    sellMode: planning.sellMode,
+    planningActive: planning.planningActive,
     notes: row.notes,
     active: row.active,
     memberCount: members.length,
@@ -568,6 +682,8 @@ export const matchingSetService = {
             { code: { contains: q, mode: 'insensitive' } },
             { descriptionEs: { contains: q, mode: 'insensitive' } },
             { vendorStyle: { contains: q, mode: 'insensitive' } },
+            { materialCode: { contains: q, mode: 'insensitive' } },
+            { materialLabel: { contains: q, mode: 'insensitive' } },
             { sharedColorCode: { contains: q, mode: 'insensitive' } },
             { sharedColorLabel: { contains: q, mode: 'insensitive' } },
             { vendor: { shortName: { contains: q, mode: 'insensitive' } } },
@@ -663,6 +779,7 @@ export const matchingSetService = {
             updatedBy: actor,
           },
         });
+        await writePlanningFields(tx, set.id, input, 'create');
 
         for (let i = 0; i < members.length; i++) {
           const member = members[i];
@@ -678,7 +795,7 @@ export const matchingSetService = {
               skuId: sku.skuId,
               roleCode,
               isPrimary: member.isPrimary === true || (members.length === 1 && i === 0),
-              quantityRatio: new Prisma.Decimal(member.quantityRatio ?? 1),
+              quantityRatio: new Prisma.Decimal(defaultQuantityRatio(setTypeCode, roleCode, member.quantityRatio)),
               addedBy: actor,
               updatedBy: actor,
             },
@@ -724,6 +841,7 @@ export const matchingSetService = {
             updatedBy: actor,
           },
         });
+        await writePlanningFields(tx, id, input, 'patch');
         return { ok: true as const };
       });
       if (!result.ok) return Err(result.error);
@@ -770,7 +888,7 @@ export const matchingSetService = {
             skuId: sku.skuId,
             roleCode,
             isPrimary: input.isPrimary === true,
-            quantityRatio: new Prisma.Decimal(input.quantityRatio ?? 1),
+            quantityRatio: new Prisma.Decimal(defaultQuantityRatio(set.setTypeCode, roleCode, input.quantityRatio)),
             addedBy: actor,
             updatedBy: actor,
           },

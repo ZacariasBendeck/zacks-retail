@@ -69,7 +69,7 @@ const MOCK_AI_SANDAL_RESULT: imageAnalysisService.ImageAnalysisResult = {
   color: 'Tan',
   upper_material: 'Leather',
   outsole_material: 'Rubber',
-  heel_material: 'None',
+  heel_material: null,
   finish: 'Natural',
   pattern: 'Solid',
   occasion: 'Casual',
@@ -371,7 +371,7 @@ describe('POST /api/v1/skus/analyze-image (mocked AI)', () => {
     expect(res.status).toBe(200);
     expect(res.body.raw.shoe_type).toBe('Sandal');
     expect(typeof res.body.mapped.shoeTypeId).toBe('number');
-    expect(typeof res.body.mapped.categoryId).toBe('number');
+    expect(res.body.mapped.categoryId).toBeNull();
   });
 
   it('handles partial null AI response gracefully', async () => {
@@ -611,7 +611,7 @@ describe('English-to-Spanish mapping — completeness for all AI prompt values',
     'color-families': ['Black', 'Brown', 'Tan', 'White', 'Red', 'Blue', 'Pink', 'Green', 'Gold', 'Silver', 'Multi', 'Nude', 'Navy', 'Burgundy'],
     'upper-materials': ['Leather', 'Suede', 'Patent Leather', 'Synthetic', 'Canvas', 'Satin', 'Mesh', 'Velvet', 'Fabric'],
     'outsole-materials': ['Rubber', 'TPR', 'PU', 'Leather', 'Synthetic', 'EVA'],
-    'heel-materials': ['Plastic', 'Wrapped', 'Rubber', 'None', 'Stacked Leather'],
+    'heel-materials': ['Plastic', 'Wrapped', 'Rubber', 'Espadrille', 'Stacked Leather'],
     'finishes': ['Matte', 'Glossy', 'Patent', 'Metallic', 'Distressed', 'Brushed', 'Natural'],
     'patterns': ['Solid', 'Two-Tone', 'Animal Print', 'Floral', 'Striped', 'Plaid', 'Embossed', 'Studded', 'Woven'],
     'occasions': ['Formal', 'Business', 'Casual', 'Evening', 'Party', 'Bridal', 'Athletic', 'Outdoor'],

@@ -12,6 +12,10 @@ vi.mock('../../../components/products/AttributeBadgeStrip', () => ({
   default: () => null,
 }));
 
+vi.mock('../../../components/products/MatchingSetsCard', () => ({
+  default: () => null,
+}));
+
 vi.mock('../../../components/sku-lookup', () => ({
   SkuLookup: ({
     open,
@@ -33,6 +37,11 @@ vi.mock('../../../components/sku-lookup', () => ({
 vi.mock('./SkuAiRecommendationModal', () => ({
   SkuAiRecommendationModal: ({ open }: { open: boolean }) =>
     open ? <div>Recommended reorder modal</div> : null,
+}));
+
+vi.mock('./ReorderPlannerModal', () => ({
+  ReorderPlannerModal: ({ open }: { open: boolean }) =>
+    open ? <div>Reorder planner modal</div> : null,
 }));
 
 import { useInquiryData } from './useInquiryData';
@@ -175,7 +184,63 @@ describe('InquiryBody', () => {
 
     const totalRow = screen.getByRole('row', { name: /Total/ });
     expect(within(totalRow).getByRole('rowheader')).toHaveTextContent('Total');
-    expect(within(totalRow).getAllByRole('cell').map((cell) => cell.textContent)).toEqual(['3', '1']);
+    expect(within(totalRow).getAllByRole('cell').map((cell) => cell.textContent)).toEqual(['3', '1', '4']);
+  });
+
+  it('adds right-side and bottom totals to store/size grids when the backend grid has only size columns', () => {
+    vi.mocked(useInquiryData).mockReturnValue({
+      data: {
+        ...baseInquiry,
+        grids: {
+          lySales: {
+            columns: ['7', '8'],
+            rows: [
+              { label: 'Store 21', cells: [{ value: 2 }, { value: 5 }] },
+              { label: 'Store 22', cells: [{ value: null }, { value: 3 }] },
+            ],
+            total: 10,
+          },
+        },
+      },
+      isLoading: false,
+      error: null,
+    } as unknown as ReturnType<typeof useInquiryData>);
+
+    renderInquiryBody({ mode: 'LY_SALES' });
+
+    expect(screen.getByRole('columnheader', { name: 'TOT' })).toBeInTheDocument();
+    const store21 = screen.getByRole('row', { name: /Store 21/ });
+    expect(within(store21).getAllByRole('cell').map((cell) => cell.textContent)).toEqual(['2', '5', '7']);
+    const store22 = screen.getByRole('row', { name: /Store 22/ });
+    expect(within(store22).getAllByRole('cell').map((cell) => cell.textContent)).toEqual(['—', '3', '3']);
+    const total = screen.getByRole('row', { name: /Total/ });
+    expect(within(total).getAllByRole('cell').map((cell) => cell.textContent)).toEqual(['2', '8', '10']);
+  });
+
+  it('does not add a bottom total row to summary-style grids where rows are metrics', () => {
+    vi.mocked(useInquiryData).mockReturnValue({
+      data: {
+        ...baseInquiry,
+        grids: {
+          singleColumn: {
+            columns: ['7', '8'],
+            rows: [
+              { label: 'On Hand', cells: [{ value: 2 }, { value: 5 }] },
+              { label: 'L/Y Sales', cells: [{ value: 1 }, { value: 3 }] },
+            ],
+          },
+        },
+      },
+      isLoading: false,
+      error: null,
+    } as unknown as ReturnType<typeof useInquiryData>);
+
+    renderInquiryBody({ mode: 'SINGLE_COLUMN' });
+
+    expect(screen.getByRole('columnheader', { name: 'TOT' })).toBeInTheDocument();
+    expect(screen.queryByRole('row', { name: /^Total/ })).not.toBeInTheDocument();
+    const onHand = screen.getByRole('row', { name: /On Hand/ });
+    expect(within(onHand).getAllByRole('cell').map((cell) => cell.textContent)).toEqual(['2', '5', '7']);
   });
 
   it('opens the recommendation modal from the Recommended reorder button', async () => {
@@ -189,6 +254,19 @@ describe('InquiryBody', () => {
 
     await userEvent.click(screen.getByRole('button', { name: /Recommended reorder/i }));
     expect(screen.getByText('Recommended reorder modal')).toBeInTheDocument();
+  });
+
+  it('opens the reorder planner from the Reorder button', async () => {
+    vi.mocked(useInquiryData).mockReturnValue({
+      data: baseInquiry,
+      isLoading: false,
+      error: null,
+    } as unknown as ReturnType<typeof useInquiryData>);
+
+    renderInquiryBody();
+
+    await userEvent.click(screen.getByRole('button', { name: /shopping-cart Reorder/i }));
+    expect(screen.getByText('Reorder planner modal')).toBeInTheDocument();
   });
 
   it('calls the edit handler from the Edit SKU button', async () => {

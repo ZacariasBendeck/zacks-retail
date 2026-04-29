@@ -572,12 +572,16 @@ describe('getSalesAnalysis', () => {
     expect(report.rows).toHaveLength(1);
     const row = report.rows[0];
     expect(row.dimensionKey).toBe('556');
+    expect(row.unitsOnHand).toBe(50);
+    expect(row.inventoryUnitCost).toBeCloseTo(100, 2);
     expect(row.onHandAtCost).toBeCloseTo(5000, 2);
     // COGS = 100 × 10 = 1000; annualizer 365/30 ≈ 12.166; Turns = 1000*12.166/5000 ≈ 2.43
     expect(row.turns).toBeCloseTo(2.43, 1);
     // grossProfit = 1500 - 1000 = 500; ROI = 500*12.166/5000 ≈ 1.22
     expect(row.roiPct).toBeCloseTo(1.22, 1);
     expect(report.totals.onHandAtCost).toBeCloseTo(5000, 2);
+    expect(report.totals.unitsOnHand).toBe(50);
+    expect(report.totals.inventoryUnitCost).toBeCloseTo(100, 2);
     expect(report.totals.turns).toBeCloseTo(2.43, 1);
     expect(report.totals.roiPct).toBeCloseTo(1.22, 1);
     expect(report.periodDays).toBe(30);

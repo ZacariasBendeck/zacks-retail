@@ -45,6 +45,15 @@ export interface ApplyBatchChangeResult {
 
 const PREVIEW_LIMIT = 20;
 
+interface AttributeAssignmentSnapshot {
+  dimensionId: number;
+  dimensionCode: string;
+  valueId: number;
+  valueCode: string;
+  assignedBy: string | null;
+  assignedAt: string;
+}
+
 export async function applyBatchChange(input: ApplyBatchChangeInput): Promise<ApplyBatchChangeResult> {
   if (!isChangeTypeCompatible(input.operationType, input.change)) {
     throw new BatchChangeValidationError(
@@ -64,6 +73,9 @@ export async function applyBatchChange(input: ApplyBatchChangeInput): Promise<Ap
 
   // 2. Compute before snapshots (pure read).
   const beforeMap = await getEffectiveSkus(skus);
+  const beforeAttributeMap = input.change.type === 'CHANGE_SKU_ATTRIBUTE'
+    ? await getAttributeAssignmentSnapshots(skus, input.change.dimensionCode)
+    : new Map<string, AttributeAssignmentSnapshot[]>();
 
   // 3. One transaction — op header + items + overlay writes + completion.
   const batchId = await prisma.$transaction(async (tx) => {
@@ -82,9 +94,11 @@ export async function applyBatchChange(input: ApplyBatchChangeInput): Promise<Ap
       return {
         batchId: op.id,
         ricsSkuCode: sku,
-        beforeJson: before
-          ? (beforeSnapshot(before, input.change) as Prisma.InputJsonValue)
-          : Prisma.JsonNull,
+        beforeJson: input.change.type === 'CHANGE_SKU_ATTRIBUTE'
+          ? ({ assignments: beforeAttributeMap.get(sku) ?? [] } as unknown as Prisma.InputJsonValue)
+          : before
+            ? (beforeSnapshot(before, input.change) as Prisma.InputJsonValue)
+            : Prisma.JsonNull,
         afterJson: afterSnapshot(input.change) as Prisma.InputJsonValue,
       };
     });
@@ -227,6 +241,10 @@ async function applyOverlayWrites(
       return;
     }
 
+    case 'CHANGE_SKU_ATTRIBUTE':
+      await applyExtendedAttributeWrite(tx, change, skus, actor);
+      return;
+
     case 'CHANGE_SIZE_COLUMN':
     case 'CHANGE_SIZE_TYPE_STRUCTURE':
       // Handled by size-utility specific paths (to land in A2); not reached from SKU criteria flow.
@@ -302,6 +320,11 @@ async function reverseOneItem(
       return;
     }
 
+    case 'CHANGE_SKU_ATTRIBUTE':
+      await restoreExtendedAttributeSnapshot(tx, change.dimensionCode, sku, beforeJson);
+      await deriveAttributeMacrosForSkus(tx, [change.dimensionCode], [sku]);
+      return;
+
     case 'CHANGE_SIZE_COLUMN':
     case 'CHANGE_SIZE_TYPE_STRUCTURE':
       throw new BatchChangeValidationError(`undo for ${change.type} lives in the size-utility path.`);
@@ -323,6 +346,8 @@ function beforeSnapshot(before: EffectiveSku, change: AttributeChange): Record<s
       return { season: before.season };
     case 'CHANGE_GROUP_CODE':
       return { groupCode: before.groupCode };
+    case 'CHANGE_SKU_ATTRIBUTE':
+      return {};
     default:
       return {};
   }
@@ -336,11 +361,309 @@ function afterSnapshot(change: AttributeChange): Record<string, unknown> {
     case 'CHANGE_VENDOR':         return { vendor: change.vendor };
     case 'CHANGE_SEASON':         return { season: change.season };
     case 'CHANGE_GROUP_CODE':     return { groupCode: change.groupCode };
+    case 'CHANGE_SKU_ATTRIBUTE':
+      return { dimensionCode: change.dimensionCode, valueCodes: change.valueCodes, mode: change.mode };
     default:                      return {};
   }
 }
 
 // ─────────── validation ───────────
+
+async function getAttributeAssignmentSnapshots(
+  skuCodes: string[],
+  dimensionCode: string,
+): Promise<Map<string, AttributeAssignmentSnapshot[]>> {
+  if (skuCodes.length === 0) return new Map();
+  const rows = await prisma.$queryRawUnsafe<{
+    sku_code: string;
+    dimension_id: number;
+    dimension_code: string;
+    value_id: number;
+    value_code: string;
+    assigned_by: string | null;
+    assigned_at: Date | string;
+  }[]>(
+    `SELECT
+       a.sku_code,
+       a.dimension_id,
+       d.code AS dimension_code,
+       a.value_id,
+       v.code AS value_code,
+       a.assigned_by,
+       a.assigned_at
+     FROM app.sku_attribute_assignment a
+     JOIN app.attribute_dimension d ON d.id = a.dimension_id
+     JOIN app.attribute_value v ON v.id = a.value_id
+     WHERE a.sku_code = ANY($1::varchar[])
+       AND d.code = $2
+     ORDER BY a.sku_code, a.assigned_at, v.sort_order, v.code`,
+    skuCodes,
+    dimensionCode,
+  );
+
+  const out = new Map<string, AttributeAssignmentSnapshot[]>();
+  for (const sku of skuCodes) out.set(sku, []);
+  for (const r of rows) {
+    out.get(r.sku_code)?.push({
+      dimensionId: Number(r.dimension_id),
+      dimensionCode: r.dimension_code,
+      valueId: Number(r.value_id),
+      valueCode: r.value_code,
+      assignedBy: r.assigned_by,
+      assignedAt: r.assigned_at instanceof Date ? r.assigned_at.toISOString() : String(r.assigned_at),
+    });
+  }
+  return out;
+}
+
+async function applyExtendedAttributeWrite(
+  tx: TxClient,
+  change: Extract<AttributeChange, { type: 'CHANGE_SKU_ATTRIBUTE' }>,
+  skus: string[],
+  actor: string,
+): Promise<void> {
+  const target = await validateExtendedAttributeChange(tx, change);
+
+  if (change.mode === 'REPLACE') {
+    await tx.$executeRawUnsafe(
+      `DELETE FROM app.sku_attribute_assignment
+       WHERE dimension_id = $1
+         AND sku_code = ANY($2::varchar[])
+         AND (assigned_by IS NULL OR assigned_by NOT LIKE 'seed:keyword:%')`,
+      target.dimensionId,
+      skus,
+    );
+    await insertExtendedAttributeRows(tx, skus, target.dimensionId, target.valueIds, actor);
+  } else if (change.mode === 'ADD') {
+    await insertExtendedAttributeRows(tx, skus, target.dimensionId, target.valueIds, actor);
+  } else {
+    await tx.$executeRawUnsafe(
+      `DELETE FROM app.sku_attribute_assignment
+       WHERE dimension_id = $1
+         AND sku_code = ANY($2::varchar[])
+         AND value_id = ANY($3::smallint[])`,
+      target.dimensionId,
+      skus,
+      target.valueIds,
+    );
+  }
+
+  await deriveAttributeMacrosForSkus(tx, [change.dimensionCode], skus);
+}
+
+async function validateExtendedAttributeChange(
+  tx: TxClient,
+  change: Extract<AttributeChange, { type: 'CHANGE_SKU_ATTRIBUTE' }>,
+): Promise<{ dimensionId: number; valueIds: number[] }> {
+  const dimensionCode = change.dimensionCode.trim();
+  const valueCodes = Array.from(new Set(change.valueCodes.map((v) => v.trim()).filter(Boolean)));
+  if (!dimensionCode) {
+    throw new BatchChangeValidationError('dimensionCode is required.');
+  }
+  if (!['REPLACE', 'ADD', 'REMOVE'].includes(change.mode)) {
+    throw new BatchChangeValidationError('mode must be one of REPLACE, ADD, REMOVE.');
+  }
+  if (valueCodes.length === 0) {
+    throw new BatchChangeValidationError('Pick at least one attribute value.');
+  }
+
+  const derivedTargets = await listDerivedTargetDimensionCodes(tx);
+  if (derivedTargets.has(dimensionCode)) {
+    throw new BatchChangeValidationError(
+      `Dimension '${dimensionCode}' is derived from another attribute and cannot be bulk-assigned manually.`,
+    );
+  }
+
+  const dim = await tx.attributeDimension.findUnique({
+    where: { code: dimensionCode },
+    include: { values: true },
+  });
+  if (!dim) {
+    throw new BatchChangeValidationError(`Unknown dimension '${dimensionCode}'.`);
+  }
+  if (!dim.isMultiValue && valueCodes.length > 1) {
+    throw new BatchChangeValidationError(
+      `Dimension '${dimensionCode}' is single-value; received ${valueCodes.length} values.`,
+    );
+  }
+  if (!dim.isMultiValue && change.mode !== 'REPLACE') {
+    throw new BatchChangeValidationError(
+      `Dimension '${dimensionCode}' is single-value; use replace mode.`,
+    );
+  }
+
+  const valueIds: number[] = [];
+  for (const valueCode of valueCodes) {
+    const value = dim.values.find((v) => v.code === valueCode);
+    if (!value) {
+      throw new BatchChangeValidationError(
+        `Value '${valueCode}' does not belong to dimension '${dimensionCode}'.`,
+      );
+    }
+    if (change.mode !== 'REMOVE' && !value.isActive) {
+      throw new BatchChangeValidationError(
+        `Value '${valueCode}' in dimension '${dimensionCode}' is inactive; cannot be bulk-assigned.`,
+      );
+    }
+    valueIds.push(value.id);
+  }
+
+  return { dimensionId: dim.id, valueIds };
+}
+
+async function insertExtendedAttributeRows(
+  tx: TxClient,
+  skus: string[],
+  dimensionId: number,
+  valueIds: number[],
+  actor: string,
+): Promise<void> {
+  const rows: Prisma.SkuAttributeAssignmentCreateManyInput[] = [];
+  for (const skuCode of skus) {
+    for (const valueId of valueIds) {
+      rows.push({ skuCode, dimensionId, valueId, assignedBy: actor });
+    }
+  }
+  if (rows.length > 0) {
+    await tx.skuAttributeAssignment.createMany({ data: rows, skipDuplicates: true });
+  }
+}
+
+async function restoreExtendedAttributeSnapshot(
+  tx: TxClient,
+  dimensionCode: string,
+  skuCode: string,
+  beforeJson: unknown,
+): Promise<void> {
+  const dim = await tx.attributeDimension.findUnique({ where: { code: dimensionCode } });
+  if (!dim) {
+    throw new BatchChangeValidationError(`Unknown dimension '${dimensionCode}'.`);
+  }
+
+  const snapshot = beforeJson as { assignments?: AttributeAssignmentSnapshot[] } | null;
+  const assignments = (snapshot?.assignments ?? []).filter((a) => a.dimensionCode === dimensionCode);
+
+  await tx.skuAttributeAssignment.deleteMany({
+    where: { skuCode, dimensionId: dim.id },
+  });
+
+  if (assignments.length === 0) return;
+
+  await tx.skuAttributeAssignment.createMany({
+    data: assignments.map((a) => ({
+      skuCode,
+      dimensionId: a.dimensionId,
+      valueId: a.valueId,
+      assignedBy: a.assignedBy,
+      assignedAt: new Date(a.assignedAt),
+    })),
+    skipDuplicates: true,
+  });
+}
+
+async function listDerivedTargetDimensionCodes(tx: TxClient): Promise<Set<string>> {
+  const rows = await tx.$queryRawUnsafe<{ target_dimension_code: string }[]>(
+    `SELECT DISTINCT target_dimension_code
+     FROM app.attribute_derivation_rule`,
+  );
+  return new Set(rows.map((r) => r.target_dimension_code));
+}
+
+function derivedActorFor(sourceDimensionCode: string, targetDimensionCode: string): string {
+  if (sourceDimensionCode === 'color' && targetDimensionCode === 'color_family') {
+    return 'seed:derived:color_family';
+  }
+  return `seed:derived:${sourceDimensionCode}->${targetDimensionCode}`;
+}
+
+async function deriveAttributeMacrosForSkus(
+  tx: TxClient,
+  sourceDimensionCodes: string[],
+  skuCodes: string[],
+): Promise<void> {
+  const uniqueSourceCodes = Array.from(new Set(sourceDimensionCodes.map((code) => code.trim()).filter(Boolean)));
+  const uniqueSkuCodes = Array.from(new Set(skuCodes.map((sku) => sku.trim()).filter(Boolean)));
+  if (uniqueSourceCodes.length === 0 || uniqueSkuCodes.length === 0) return;
+
+  const pairs = await tx.$queryRawUnsafe<{
+    source_dimension_code: string;
+    target_dimension_code: string;
+  }[]>(
+    `SELECT DISTINCT source_dimension_code, target_dimension_code
+     FROM app.attribute_derivation_rule
+     WHERE source_dimension_code = ANY($1::text[])`,
+    uniqueSourceCodes,
+  );
+
+  for (const pair of pairs) {
+    await deriveAttributeMacroPairForSkus(
+      tx,
+      pair.source_dimension_code,
+      pair.target_dimension_code,
+      uniqueSkuCodes,
+    );
+  }
+}
+
+async function deriveAttributeMacroPairForSkus(
+  tx: TxClient,
+  sourceDimensionCode: string,
+  targetDimensionCode: string,
+  skuCodes: string[],
+): Promise<void> {
+  const derivedBy = derivedActorFor(sourceDimensionCode, targetDimensionCode);
+  await tx.$executeRawUnsafe(
+    `WITH target_dim AS (
+       SELECT id FROM app.attribute_dimension WHERE code = $1
+     )
+     DELETE FROM app.sku_attribute_assignment a
+     USING target_dim td
+     WHERE a.dimension_id = td.id
+       AND a.assigned_by = $2
+       AND a.sku_code = ANY($3::varchar[])`,
+    targetDimensionCode,
+    derivedBy,
+    skuCodes,
+  );
+
+  await tx.$executeRawUnsafe(
+    `WITH source_dim AS (
+       SELECT id FROM app.attribute_dimension WHERE code = $1
+     ),
+     target_dim AS (
+       SELECT id FROM app.attribute_dimension WHERE code = $2
+     ),
+     current_source AS (
+       SELECT DISTINCT ON (a.sku_code)
+              a.sku_code,
+              sv.code AS source_value_code
+       FROM app.sku_attribute_assignment a
+       JOIN app.attribute_value sv ON sv.id = a.value_id
+       JOIN source_dim sd ON sd.id = a.dimension_id
+       WHERE a.sku_code = ANY($4::varchar[])
+       ORDER BY a.sku_code, a.assigned_at DESC
+     )
+     INSERT INTO app.sku_attribute_assignment (sku_code, dimension_id, value_id, assigned_by)
+     SELECT cs.sku_code,
+            td.id,
+            tv.id,
+            $3
+     FROM current_source cs
+     JOIN app.attribute_derivation_rule r
+       ON r.source_dimension_code = $1
+      AND r.target_dimension_code = $2
+      AND r.source_value_code = cs.source_value_code
+     JOIN target_dim td ON true
+     JOIN app.attribute_value tv
+       ON tv.dimension_id = td.id
+      AND tv.code = r.target_value_code
+     ON CONFLICT DO NOTHING`,
+    sourceDimensionCode,
+    targetDimensionCode,
+    derivedBy,
+    skuCodes,
+  );
+}
 
 function isChangeTypeCompatible(opType: BatchOperationType, change: AttributeChange): boolean {
   return opType === change.type;

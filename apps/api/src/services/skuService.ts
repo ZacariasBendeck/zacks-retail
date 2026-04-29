@@ -776,7 +776,10 @@ export function getReferenceData(tableName: string): ReferenceItem[] | CategoryI
   // Coded tables (brands, heel-materials)
   if (CODED_REF_TABLES[tableName]) {
     const table = CODED_REF_TABLES[tableName];
-    const rows = db.prepare(`SELECT id, code, name, active FROM ${table} WHERE active = 1 ORDER BY name`).all() as unknown as { id: number; code: string; name: string; active: number }[];
+    const extraWhere = tableName === 'heel-materials'
+      ? " AND upper(code) <> 'PLAN' AND lower(trim(name)) <> 'plano'"
+      : '';
+    const rows = db.prepare(`SELECT id, code, name, active FROM ${table} WHERE active = 1${extraWhere} ORDER BY name`).all() as unknown as { id: number; code: string; name: string; active: number }[];
     return rows.map(r => ({ id: r.id, code: r.code, name: r.name, active: r.active === 1 }));
   }
 

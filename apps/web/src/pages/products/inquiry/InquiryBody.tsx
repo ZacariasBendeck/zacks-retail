@@ -1,6 +1,6 @@
 import React from 'react';
 import { Alert, Button, Select, Space, Typography, message, Spin } from 'antd';
-import { EditOutlined, RobotOutlined, SearchOutlined } from '@ant-design/icons';
+import { EditOutlined, RobotOutlined, SearchOutlined, ShoppingCartOutlined } from '@ant-design/icons';
 import { HeaderCard } from './HeaderCard';
 import { PicturePanel } from './PicturePanel';
 import { PricingPanel } from './PricingPanel';
@@ -19,8 +19,23 @@ import { TrendTab } from './tabs/TrendTab';
 import AttributeBadgeStrip from '../../../components/products/AttributeBadgeStrip';
 import { SkuAiRecommendationModal } from './SkuAiRecommendationModal';
 import MatchingSetsCard from '../../../components/products/MatchingSetsCard';
+import { ReorderPlannerModal } from './ReorderPlannerModal';
 
 const GRID_TOTAL_MODES = new Set<ViewMode>(['ON_HAND', 'SHORT', 'MTD_SALES', 'STD_SALES', 'YTD_SALES', 'LY_SALES']);
+const GRID_TOTAL_ROW_MODES = new Set<ViewMode>([
+  'ON_HAND',
+  'ON_ORDER_CURRENT',
+  'ON_ORDER_FUTURE',
+  'MODEL',
+  'SHORT',
+  'MTD_SALES',
+  'STD_SALES',
+  'YTD_SALES',
+  'LY_SALES',
+  'ALL_STORES_ON_HAND',
+  'MAX',
+  'REORDER',
+]);
 
 const GRID_KEY_BY_MODE: Partial<Record<ViewMode, keyof InquiryGrids>> = {
   ON_HAND:             'onHand',
@@ -52,6 +67,7 @@ export interface InquiryBodyProps {
    */
   onPickSku: (picked: { skuCode: string; skuId: string }) => void;
   onEditSku?: (skuCode: string) => void;
+  onOpenMatchingSets?: () => void;
   mode: ViewMode;
   activeTab: InquiryTab | null;
   scope: NeighborScope;
@@ -78,6 +94,7 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
   selectedRow,
   onPickSku,
   onEditSku,
+  onOpenMatchingSets,
   mode,
   activeTab,
   scope,
@@ -88,7 +105,9 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
 }) => {
   const [lookupOpen, setLookupOpen] = React.useState(false);
   const [aiModalOpen, setAiModalOpen] = React.useState(false);
+  const [reorderModalOpen, setReorderModalOpen] = React.useState(false);
   const [navLoading, setNavLoading] = React.useState(false);
+  const activeTabPanelRef = React.useRef<HTMLDivElement | null>(null);
   const prevSkuCodeRef = React.useRef(skuCode);
 
   React.useEffect(() => {
@@ -96,10 +115,18 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
     prevSkuCodeRef.current = skuCode;
     setLookupOpen(false);
     setAiModalOpen(false);
+    setReorderModalOpen(false);
     if (!skuCode) onActiveTabChange(null);
   }, [skuCode, onActiveTabChange]);
 
   const { data, isLoading, error } = useInquiryData(skuCode, storeId, selectedRow);
+
+  React.useEffect(() => {
+    if (!activeTab) return;
+    window.requestAnimationFrame(() => {
+      activeTabPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }, [activeTab]);
 
   const handleLookupSelect = (picked: { skuCode: string; skuId: string }) => {
     setLookupOpen(false);
@@ -175,8 +202,9 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
   if (!data) return null;
 
   const gridKey = GRID_KEY_BY_MODE[mode];
-  const grid = gridKey ? data.grids[gridKey] : undefined;
-  const headerTotal = GRID_TOTAL_MODES.has(mode) ? resolveGridTotal(grid) : undefined;
+  const sourceGrid = gridKey ? data.grids[gridKey] : undefined;
+  const grid = withDisplayTotals(sourceGrid, mode);
+  const headerTotal = GRID_TOTAL_MODES.has(mode) ? resolveGridTotal(sourceGrid) : undefined;
   const gridNullDisplay =
     mode === 'ALL_STORES_SUMMARY' || mode === 'SINGLE_COLUMN'
       ? ''
@@ -202,6 +230,14 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
         />
       )}
 
+      {reorderModalOpen && (
+        <ReorderPlannerModal
+          open={reorderModalOpen}
+          skuCode={skuCode}
+          onClose={() => setReorderModalOpen(false)}
+        />
+      )}
+
       {/* Top row: Header (left) | Pricing + Rollup + Picture (right) */}
       <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start', marginBottom: 8 }}>
         <div style={{ flex: '1 1 0', minWidth: 0 }}>
@@ -212,6 +248,9 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
               </Button>
               <Button size="small" icon={<RobotOutlined />} onClick={() => setAiModalOpen(true)}>
                 Recommended reorder
+              </Button>
+              <Button size="small" icon={<ShoppingCartOutlined />} onClick={() => setReorderModalOpen(true)}>
+                Reorder
               </Button>
               <Button
                 size="small"
@@ -224,7 +263,7 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
           </div>
           <HeaderCard inquiry={data} storeId={storeId} />
           <AttributeBadgeStrip skuCode={data.sku} mode="assigned" />
-          <MatchingSetsCard skuRef={data.sku} compact />
+          <MatchingSetsCard skuRef={data.sku} compact onOpenMatchingSets={onOpenMatchingSets} />
         </div>
 
         <div style={{ flex: '0 0 auto', display: 'flex', gap: 12, alignItems: 'flex-start' }}>
@@ -304,7 +343,7 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
 
       {/* Active tab panel */}
       {activeTab && (
-        <div style={{ marginTop: 8 }}>
+        <div ref={activeTabPanelRef} style={{ marginTop: 8 }}>
           {activeTab === 'UPCS' && <UpcsTab skuCode={data.sku} />}
           {activeTab === 'INFO' && (
             <InfoTab skuCode={data.sku} storeId={storeId} onClose={() => onActiveTabChange(null)} />
@@ -387,6 +426,46 @@ function resolveGridTotal(grid: InquirySizeGrid | undefined): number | undefined
       (sum, row) => sum + row.cells.reduce((rowSum, cell) => rowSum + Number(cell.value ?? 0), 0),
       0,
     );
+}
+
+function withDisplayTotals(grid: InquirySizeGrid | undefined, mode: ViewMode): InquirySizeGrid | undefined {
+  if (!grid) return undefined;
+  const withTotalColumn = appendRowTotalColumn(grid);
+  return GRID_TOTAL_ROW_MODES.has(mode) ? appendColumnTotalRow(withTotalColumn) : withTotalColumn;
+}
+
+function appendRowTotalColumn(grid: InquirySizeGrid): InquirySizeGrid {
+  if (grid.columns.some((column) => column.trim().toUpperCase() === 'TOT')) return grid;
+
+  return {
+    ...grid,
+    columns: [...grid.columns, 'TOT'],
+    rows: grid.rows.map((row) => ({
+      ...row,
+      cells: [
+        ...row.cells,
+        {
+          value: row.cells.reduce((sum, cell) => sum + Number(cell.value ?? 0), 0),
+        },
+      ],
+    })),
+  };
+}
+
+function appendColumnTotalRow(grid: InquirySizeGrid): InquirySizeGrid {
+  if (grid.rows.some((row) => row.label.trim().toLowerCase() === 'total')) return grid;
+  return {
+    ...grid,
+    rows: [
+      ...grid.rows,
+      {
+        label: 'Total',
+        cells: grid.columns.map((_, columnIndex) => ({
+          value: grid.rows.reduce((sum, row) => sum + Number(row.cells[columnIndex]?.value ?? 0), 0),
+        })),
+      },
+    ],
+  };
 }
 
 function formatPercent(value: number): string {

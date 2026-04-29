@@ -4,9 +4,9 @@ Last reviewed: 2026-04-27
 
 ## Purpose
 
-This is the field-level coverage list for legacy sales ticket data coming from the RICS sales MDB into the Zack's Retail app database.
+This is the field-level coverage list for RICS sales ticket data coming from the RICS sales MDB into the Zack's Retail app database.
 
-Current branch conclusion: the conversion upload preserves every sales ticket header, detail, and tender source field in app-owned raw tables, while continuing to build the normalized sales history baseline in `app.sales_history_ticket` and `app.sales_history_ticket_line`. Several RICS fields are still not first-class normalized reporting columns, but they are no longer lost during upload.
+Current branch conclusion: the conversion upload preserves every sales ticket header, detail, and tender source field in app-owned ticket tables: `app.ticket_header`, `app.ticket_detail`, and `app.ticket_tender`. It also continues to build the derived reporting baseline in `app.sales_history_ticket` and `app.sales_history_ticket_line` for existing reports. Several RICS fields are still not first-class normalized reporting columns, but they are no longer lost during upload.
 
 This document should be used when testing whether cutover has enough sales-ticket detail for reporting, customer history, refunds, tax review, gift certificates, direct-ship review, and operator audit workflows.
 
@@ -14,24 +14,26 @@ This document should be used when testing whether cutover has enough sales-ticke
 
 | Source | Table / CSV | Current use |
 |---|---|---|
-| `RITRNSSV.MDB` | `TicketHeader` -> `crm/ticket_header.csv` | Main sales ticket header source for the conversion bundle. |
-| `RITRNSSV.MDB` | `TicketDetail` -> `crm/ticket_detail.csv` | Main sales ticket line source for the conversion bundle. |
-| `RITRNSSV.MDB` | `TicketTender` -> `legacy/ticket_tender.csv` | Canonical MDB extraction includes this table, but the current `import:customer-transactions:rics` path does not load tender rows into app sales history. |
+| `RITRNSSV.MDB` | `TicketHeader` -> `legacy/ticket_header.csv` | Main sales ticket header source for the conversion bundle. |
+| `RITRNSSV.MDB` | `TicketDetail` -> `legacy/ticket_detail.csv` | Main sales ticket line source for the conversion bundle. |
+| `RITRNSSV.MDB` | `TicketTender` -> `legacy/ticket_tender.csv` | Main sales ticket tender source for the conversion bundle. |
 | `RIMAILED.MDB` | `Mail Purch Detail`, `Mail Tender Detail`, `Mail Ticket Detail`, `Mail Comment Detail` | Exported in the canonical MDB list, but not loaded by the sales-history importer because it is treated as a customer-indexed duplicate/derivative of `RITRNSSV`. |
 
 The conversion bundle location for these CSVs is:
 
 ```text
-<bundle-dir>/crm/ticket_header.csv
-<bundle-dir>/crm/ticket_detail.csv
+<bundle-dir>/legacy/ticket_header.csv
+<bundle-dir>/legacy/ticket_detail.csv
 <bundle-dir>/legacy/ticket_tender.csv
 ```
+
+Ticket files are not CRM sidecars. The only remaining `crm/` sidecar files are `Customer.csv` and `MailListNames.csv`.
 
 The header/detail field names below use the current importer CSV/staging names. They correspond to the MDB fields scanned from `RITRNSSV.MDB` with original Access casing, for example `UserID`, `BatchDate`, `TransType`, `MarketingCode`, `DiscPct`, and `ReturnCode`.
 
 ## Current Import Scope
 
-The current importer is `apps/api/scripts/customers/import-customer-transactions-from-rics.ts`.
+The operator-facing importer is `import:tickets:rics`, implemented by `apps/api/scripts/sales/import-rics-tickets.ts`.
 
 The normalized sales-history baseline imports only headers where:
 
@@ -52,7 +54,7 @@ The normalized sales-history line baseline imports only detail lines where:
 
 ## Summary
 
-Raw preservation imports all staged header/detail/tender rows into `app.sales_history_*_legacy_raw`. These raw tables are not filtered to only normalized sales facts.
+Import preservation stores all staged header/detail/tender rows into `app.ticket_header`, `app.ticket_detail`, and `app.ticket_tender`. These ticket tables are not filtered to only derived reporting facts.
 
 | Source table | Source fields | Raw fields preserved in app DB | Used by normalized importer | Pending raw-field coverage |
 |---|---:|---:|---:|---:|
@@ -68,11 +70,11 @@ These are the current app-owned destinations for the uploaded sales ticket data:
 
 | App table | Purpose | Source / derivation |
 |---|---|---|
-| `app.sales_history_ticket` | Imported completed historical ticket headers/facts. | Built from `ticket_header.csv` plus line rollups from `ticket_detail.csv`. |
-| `app.sales_history_ticket_line` | Imported historical merchandise line rows. | Built from `ticket_detail.csv`, joined to `app.sales_history_ticket` by generated external transaction id. |
-| `app.sales_history_ticket_legacy_raw` | Complete raw `TicketHeader` preservation. | One row per staged header with all 31 header fields plus source/run linkage. |
-| `app.sales_history_ticket_line_legacy_raw` | Complete raw `TicketDetail` preservation. | One row per staged detail line with all 47 detail fields plus source/run linkage. |
-| `app.sales_history_ticket_tender_legacy_raw` | Complete raw `TicketTender` preservation. | One row per staged tender with all 15 tender fields plus source/run linkage. |
+| `app.ticket_header` | Complete `TicketHeader` import and POS ticket header destination. | One row per staged header with all 31 header fields plus source/run linkage. |
+| `app.ticket_detail` | Complete `TicketDetail` import and POS ticket line destination. | One row per staged detail line with all 47 detail fields plus source/run linkage. |
+| `app.ticket_tender` | Complete `TicketTender` import and POS ticket tender destination. | One row per staged tender with all 15 tender fields plus source/run linkage. |
+| `app.sales_history_ticket` | Derived completed-ticket reporting facts. | Built from `ticket_header.csv` plus line rollups from `ticket_detail.csv` for existing reports. |
+| `app.sales_history_ticket_line` | Derived merchandise line reporting rows. | Built from `ticket_detail.csv`, joined to `app.sales_history_ticket` by generated external transaction id. |
 | `app.customer_metrics` | Derived customer metrics. | Refreshed after ticket import unless `--skip-metrics` is used. |
 | `app.customer_features_current` | Derived current customer feature row. | Refreshed after ticket import unless `--skip-metrics` is used. |
 | `app.customer_category_features` | Derived customer/category affinity rows. | Refreshed from imported sales history. |
@@ -80,6 +82,8 @@ These are the current app-owned destinations for the uploaded sales ticket data:
 | `app.customer_size_profiles` | Derived customer/size affinity rows. | Refreshed from imported sales history. |
 
 ## Header Field Coverage
+
+In the field tables below, `Pending` means pending first-class normalization into the reporting/operational ticket model. The field is still preserved in the corresponding `app.ticket_*` table.
 
 | MDB / CSV field | Current app destination | Usage | Status |
 |---|---|---|---|
@@ -160,7 +164,7 @@ These are the current app-owned destinations for the uploaded sales ticket data:
 | `ds_dest_code` | None | Direct-ship destination not currently stored. | Pending. |
 | `ds_dye_code` | None | Direct-ship dye code not currently stored. | Pending. |
 | `ds_ship_chg` | None | Direct-ship charge not currently stored. | Pending. |
-| `return_code` | `app.sales_history_ticket_line.return_code`, `is_return` | Return reason/classification. | Uploaded. |
+| `return_code` | `app.sales_history_ticket_line.return_code`, `is_return` | Return reason/classification; source zero values are treated as no return code. | Uploaded. |
 | `gift_cert` | None | Gift certificate id/reference not currently stored. | Pending. |
 | `gift_seq` | None | Gift certificate sequence not currently stored. | Pending. |
 | `gift_acct` | None | Gift certificate account not currently stored. | Pending. |
@@ -169,9 +173,9 @@ These are the current app-owned destinations for the uploaded sales ticket data:
 
 ## Tender Field Coverage
 
-`TicketTender` is part of the canonical `RITRNSSV.MDB` sales ticket record set. It is extracted by the canonical MDB artifact path, but the current sales-history import does not load it into app-owned historical tender tables.
+`TicketTender` is part of the canonical `RITRNSSV.MDB` sales ticket record set. It is extracted by the canonical MDB artifact path and preserved in `app.ticket_tender`.
 
-Some tender fields duplicate the same ticket identity already stored from `TicketHeader`, such as store and ticket number. The status below answers a narrower question: whether the `TicketTender` row and that tender-specific source value are preserved. Today they are not, because no app tender-history table exists yet.
+Some tender fields duplicate the same ticket identity already stored from `TicketHeader`, such as store and ticket number. The status below distinguishes normalized sales-history columns from sales-ticket import preservation.
 
 | MDB field | Current app destination | Usage | Status |
 |---|---|---|---|
@@ -240,8 +244,8 @@ Some tender fields duplicate the same ticket identity already stored from `Ticke
 | `cost_amount` | `TicketDetail.cost * qty`. |
 | `discount_amount` | Derived line discount amount. |
 | `is_markdown` | Constant `false` in current importer. |
-| `is_return` | Derived from ticket kind, negative quantity, and/or `return_code`. |
-| `return_code` | `TicketDetail.return_code`. |
+| `is_return` | Derived from ticket kind, negative quantity, and/or nonzero `return_code`. |
+| `return_code` | `TicketDetail.return_code`, with blank/zero values normalized to `NULL`. |
 | `salesperson_code` | `TicketDetail.salesperson`. |
 
 ## Remaining Normalization Gaps
@@ -250,7 +254,7 @@ The following data is uploaded to raw app-owned tables on this branch, but is no
 
 | Area | Missing data |
 |---|---|
-| Tenders | Split tenders, house charge tender, gift certificate tender, check/card tender detail, and change attribution land in `app.sales_history_ticket_tender_legacy_raw`; no normalized tender-history table exists yet. |
+| Tenders | Split tenders, house charge tender, gift certificate tender, check/card tender detail, and change attribution land in `app.ticket_tender`; the POS-facing tender normalization still needs to read from this table directly. |
 | Header tax/charges | Header `tax_01`, `tax_02`, `tax_03`, `tax_change`, `oth_chg`, `prev_paid`, `change_amount`, `alt_change`, `exch_rate`, `discount`, apply-to fields, and shipping/tax location fields are raw-only. |
 | Header comments/audit flags | Header `comment`, `printed`, raw `posted`, and raw `voided` are raw-only. `posted`/`voided` still control normalized fact inclusion. |
 | Line tax | Line `tax_01`, `tax_02`, `tax_03`, `taxamt_01`, `taxamt_02`, `taxamt_03` are raw-only. |
@@ -270,9 +274,9 @@ Minimum recommended target:
 
 | Raw table | Purpose |
 |---|---|
-| `app.sales_history_ticket_legacy_raw` | One row per imported `TicketHeader`, preserving every source header field plus source file/run metadata. |
-| `app.sales_history_ticket_line_legacy_raw` | One row per imported `TicketDetail`, preserving every source detail field plus source file/run metadata. |
-| `app.sales_history_ticket_tender_legacy_raw` | One row per imported `TicketTender`, preserving every source tender field plus source file/run metadata. |
+| `app.ticket_header` | One row per imported `TicketHeader`, preserving every source header field plus source file/run metadata. |
+| `app.ticket_detail` | One row per imported `TicketDetail`, preserving every source detail field plus source file/run metadata. |
+| `app.ticket_tender` | One row per imported `TicketTender`, preserving every source tender field plus source file/run metadata. |
 
 Then expand normalized tables only where the application needs first-class query fields, for example tax buckets, tender rows, comments, direct-ship fields, gift certificate references, layaway/special-order references, and family-member attribution.
 

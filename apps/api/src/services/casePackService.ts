@@ -59,8 +59,17 @@ function normalizeSummary(row: CasePackSummaryRow): CasePackSummary {
   };
 }
 
-export async function listCasePacks(): Promise<CasePackSummary[]> {
-  const rows = await prisma.$queryRaw<CasePackSummaryRow[]>`
+export async function listCasePacks(filters: { sizeTypeCode?: number } = {}): Promise<CasePackSummary[]> {
+  const conditions: string[] = [];
+  const values: unknown[] = [];
+  if (filters.sizeTypeCode != null) {
+    values.push(filters.sizeTypeCode);
+    conditions.push(`cp.size_type_code = $${values.length}`);
+  }
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+  const rows = await prisma.$queryRawUnsafe<CasePackSummaryRow[]>(
+    `
     SELECT
       cp.code,
       cp."desc" AS description,
@@ -72,9 +81,12 @@ export async function listCasePacks(): Promise<CasePackSummary[]> {
     FROM app.case_pack cp
     LEFT JOIN app.case_pack_cell cpc
       ON cpc.case_pack_code = cp.code
+    ${whereClause}
     GROUP BY cp.code, cp."desc", cp.size_type_code, cp.active, cp.date_last_changed
     ORDER BY cp.code ASC
-  `;
+  `,
+    ...values,
+  );
 
   return rows.map(normalizeSummary);
 }

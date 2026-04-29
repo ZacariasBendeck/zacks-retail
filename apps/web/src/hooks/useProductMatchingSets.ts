@@ -49,6 +49,18 @@ export function useMatchingSetsBySku(skuRef: string | null | undefined) {
   })
 }
 
+export function useMatchingSetBuyingPlan(
+  id: string | null | undefined,
+  params?: { chainId?: string | null; receiptMonth?: string | null; horizonWeeks?: number; targetCoverWeeks?: number },
+) {
+  return useQuery({
+    queryKey: ['product-matching-sets', 'buying-plan', id, params ?? {}],
+    queryFn: () => productMatchingSetsApi.buyingPlan(id!, params),
+    enabled: !!id,
+    staleTime: 30_000,
+  })
+}
+
 export function useCreateMatchingSet() {
   const qc = useQueryClient()
   return useMutation({
@@ -112,6 +124,28 @@ export function useRemoveMatchingSetMember() {
   return useMutation({
     mutationFn: ({ id, skuId }: { id: string; skuId: string }) =>
       productMatchingSetsApi.removeMember(id, skuId),
+    onSuccess: () => invalidate(qc),
+  })
+}
+
+export function useSaveMatchingSetBuyingPlan() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({
+      id,
+      input,
+    }: {
+      id: string
+      input: { chainId?: string | null; receiptMonth?: string | null; horizonWeeks?: number; targetCoverWeeks?: number }
+    }) => productMatchingSetsApi.saveBuyingPlan(id, input),
+    onSuccess: () => invalidate(qc),
+  })
+}
+
+export function useCreatePoFromMatchingSetBuyingPlan() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (planId: string) => productMatchingSetsApi.createPoFromBuyingPlan(planId),
     onSuccess: () => invalidate(qc),
   })
 }

@@ -25,11 +25,14 @@ export interface Category {
   description: string
   dateLastChanged: string | null
   skuCount: number
+  productFamilyCode: string | null
+  productFamilyLabelEs: string | null
 }
 
 export interface CategoryInput {
   number: number
   description: string
+  productFamilyCode?: string | null
 }
 
 export interface Group {

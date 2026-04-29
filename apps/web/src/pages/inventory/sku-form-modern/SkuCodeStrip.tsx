@@ -1,4 +1,4 @@
-import { AutoComplete, Button, Col, Form, Input, Row, Spin, Typography } from 'antd'
+import { AutoComplete, Button, Col, Form, Input, Modal, Row, Spin, Typography } from 'antd'
 import { SearchOutlined } from '@ant-design/icons'
 import { useState } from 'react'
 import { sectionCard, sectionTitle, sectionSubtitle, readonlyInput, tokens } from './styles'
@@ -49,6 +49,7 @@ export function SkuCodeStrip({
   onOpenSkuLookup,
 }: SkuCodeStripProps) {
   const [text, setText] = useState('')
+  const [previewOpen, setPreviewOpen] = useState(false)
   const showExistingPreview = matched
   return (
     <div style={sectionCard}>
@@ -113,25 +114,75 @@ export function SkuCodeStrip({
                       alignItems: 'center',
                       justifyContent: 'center',
                       overflow: 'hidden',
+                      position: 'relative',
                     }}
                   >
                     {existingSkuImageUrl ? (
-                      <img
-                        src={existingSkuImageUrl}
-                        alt="SKU existente"
-                        style={{
-                          width: '100%',
-                          height: '100%',
-                          objectFit: 'contain',
-                          pointerEvents: 'none',
-                        }}
-                      />
+                      <>
+                        <img
+                          src={existingSkuImageUrl}
+                          alt="SKU existente"
+                          style={{
+                            width: '100%',
+                            height: '100%',
+                            objectFit: 'contain',
+                            pointerEvents: 'none',
+                          }}
+                        />
+                        <Button
+                          type="primary"
+                          shape="circle"
+                          size="small"
+                          icon={<SearchOutlined />}
+                          aria-label="Ampliar foto existente"
+                          title="Ampliar foto existente"
+                          onClick={() => setPreviewOpen(true)}
+                          style={{
+                            position: 'absolute',
+                            right: 8,
+                            bottom: 8,
+                            boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
+                          }}
+                        />
+                      </>
                     ) : (
                       <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                         Sin foto RICS
                       </Typography.Text>
                     )}
                   </div>
+                  <Modal
+                    title="Foto existente"
+                    open={previewOpen}
+                    footer={null}
+                    centered
+                    width="min(92vw, 900px)"
+                    onCancel={() => setPreviewOpen(false)}
+                  >
+                    <div
+                      style={{
+                        minHeight: 420,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        background: tokens.colors.mutedBg,
+                        borderRadius: tokens.image.borderRadius,
+                        overflow: 'hidden',
+                      }}
+                    >
+                      {existingSkuImageUrl && (
+                        <img
+                          src={existingSkuImageUrl}
+                          alt="SKU existente ampliado"
+                          style={{
+                            maxWidth: '100%',
+                            maxHeight: '72vh',
+                            objectFit: 'contain',
+                          }}
+                        />
+                      )}
+                    </div>
+                  </Modal>
                 </div>
               </div>
             </Col>
@@ -161,7 +212,7 @@ export function SkuCodeStrip({
               />
             </Form.Item>
           </Col>
-          {lifecycleSku && (
+          {isDraft && lifecycleSku && (
             <Col xs={24} sm={12} md={8}>
               <Form.Item label="Código provisional" style={{ marginBottom: 0 }}>
                 <Input value={lifecycleSku.provisionalCode} readOnly style={{ ...readonlyInput, fontFamily: 'monospace' }} size="large" />

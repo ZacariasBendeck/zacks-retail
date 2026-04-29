@@ -27,12 +27,11 @@ export interface MigrationActionConfig {
   bundleDir?: string
   customerCsvPath?: string
   mailListNamesCsvPath?: string
-  ticketHeaderCsvPath?: string
-  ticketDetailCsvPath?: string
   inventoryHistoryAsOf?: string
   skipInventoryHistory?: boolean
   skipCustomers?: boolean
-  skipCustomerTransactions?: boolean
+  skipTickets?: boolean
+  skipSalesHistory?: boolean
   skipSegmentationDefaults?: boolean
   strictFull?: boolean
 }

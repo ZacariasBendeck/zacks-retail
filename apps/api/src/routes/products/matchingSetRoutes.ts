@@ -6,6 +6,11 @@
 import { Router, Request, Response, IRouter } from 'express';
 import { matchingSetService } from '../../services/products/matchingSetService';
 import {
+  computeMatchingSetBuyingPlan,
+  createPurchaseOrderFromMatchingSetPlan,
+  saveMatchingSetBuyingPlan,
+} from '../../services/products/matchingSetBuyingPlanService';
+import {
   repoHttpCode,
   repoHttpStatus,
   type RepoError,
@@ -121,6 +126,38 @@ router.get('/:id/gaps', async (req: Request, res: Response) => {
     return;
   }
   res.json(result.value.gaps);
+});
+
+router.get('/:id/buying-plan', async (req: Request, res: Response) => {
+  send(
+    res,
+    await computeMatchingSetBuyingPlan(String(req.params.id), {
+      chainId: typeof req.query.chainId === 'string' ? req.query.chainId : null,
+      receiptMonth: typeof req.query.receiptMonth === 'string' ? req.query.receiptMonth : null,
+      horizonWeeks: intParam(req.query.horizonWeeks),
+      targetCoverWeeks: intParam(req.query.targetCoverWeeks),
+    }),
+  );
+});
+
+router.post('/:id/buying-plan', async (req: Request, res: Response) => {
+  send(
+    res,
+    await saveMatchingSetBuyingPlan(
+      String(req.params.id),
+      req.body ?? {},
+      resolveActor(req),
+    ),
+    201,
+  );
+});
+
+router.post('/buying-plans/:planId/create-po', async (req: Request, res: Response) => {
+  send(
+    res,
+    await createPurchaseOrderFromMatchingSetPlan(String(req.params.planId), resolveActor(req)),
+    201,
+  );
 });
 
 router.post('/:id/members', async (req: Request, res: Response) => {

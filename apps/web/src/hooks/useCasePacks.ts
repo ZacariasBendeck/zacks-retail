@@ -1,10 +1,10 @@
 import { useQuery } from '@tanstack/react-query'
-import { fetchCasePackByCode, fetchCasePacks } from '../services/casePackApi'
+import { fetchCasePackByCode, fetchCasePacks, type CasePackSummary } from '../services/casePackApi'
 
-export function useCasePacks() {
-  return useQuery({
-    queryKey: ['case-packs'],
-    queryFn: fetchCasePacks,
+export function useCasePacks(params: { sizeTypeCode?: number } = {}) {
+  return useQuery<CasePackSummary[]>({
+    queryKey: ['case-packs', params],
+    queryFn: () => fetchCasePacks(params),
     staleTime: 5 * 60_000,
   })
 }

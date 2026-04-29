@@ -9,6 +9,7 @@ import type { MatchingSetMember } from '../../services/productMatchingSetsApi'
 export interface MatchingSetsCardProps {
   skuRef: string | null | undefined
   compact?: boolean
+  onOpenMatchingSets?: () => void
 }
 
 function codeFor(member: MatchingSetMember): string {
@@ -20,7 +21,7 @@ function formatNumber(value: number | null | undefined): string {
   return new Intl.NumberFormat('es-HN', { maximumFractionDigits: 0 }).format(value)
 }
 
-export default function MatchingSetsCard({ skuRef, compact = false }: MatchingSetsCardProps) {
+export default function MatchingSetsCard({ skuRef, compact = false, onOpenMatchingSets }: MatchingSetsCardProps) {
   const navigate = useNavigate()
   const { data, isFetching } = useMatchingSetsBySku(skuRef)
 
@@ -62,7 +63,10 @@ export default function MatchingSetsCard({ skuRef, compact = false }: MatchingSe
         <Button
           size="small"
           icon={<LinkOutlined />}
-          onClick={() => navigate(`/products/matching-sets?sku=${encodeURIComponent(String(skuRef))}`)}
+          onClick={() => {
+            onOpenMatchingSets?.()
+            navigate(`/products/matching-sets?sku=${encodeURIComponent(String(skuRef))}`)
+          }}
         >
           Open
         </Button>

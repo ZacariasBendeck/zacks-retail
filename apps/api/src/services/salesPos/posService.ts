@@ -368,6 +368,15 @@ function iso(value: Date | null | undefined): string | null {
   return value ? value.toISOString() : null;
 }
 
+function ticketDateText(value: Date | null | undefined): string | null {
+  return value ? value.toISOString() : null;
+}
+
+function numberText(value: Prisma.Decimal | number | string | null | undefined): string | null {
+  if (value == null) return null;
+  return String(requiredMoney(value));
+}
+
 function assertUuidish(value: string | null | undefined): string | null {
   if (!value) return null;
   return value;
@@ -1161,7 +1170,7 @@ async function upsertSalesHistoryFromTicket(
     storeId: number;
     cashierCode: string | null;
   },
-): Promise<string | null> {
+): Promise<{ matchedCustomerId: string | null; salesHistoryTicketId: string }> {
   const purchasedAt = args.ticket.completedAt ?? new Date();
   const totalAmount = requiredMoney(args.ticket.grandTotal);
   const matchedCustomerId = await resolveSalesHistoryCustomerId(tx, args.ticket);
@@ -1256,7 +1265,176 @@ async function upsertSalesHistoryFromTicket(
       })),
   });
 
-  return matchedCustomerId;
+  return { matchedCustomerId, salesHistoryTicketId: ticketRecord.id };
+}
+
+async function writeCanonicalTicketTablesFromPos(
+  tx: PosTx,
+  args: {
+    ticket: PosTicketGraph;
+    salesHistoryTicketId: string;
+    cashierCode: string | null;
+  },
+): Promise<void> {
+  const source = 'pos_live';
+  const completedAt = args.ticket.completedAt ?? new Date();
+  const register = await tx.posRegister.findUnique({
+    where: { id: args.ticket.registerId },
+    select: { code: true },
+  });
+  const terminalCode = register?.code ?? args.ticket.registerId;
+  const transactionType = String(TRANSACTION_TYPE_NUMBER[args.ticket.transactionType] ?? 1);
+  const ticketIdentityKey = [
+    'POS',
+    args.ticket.storeId,
+    args.ticket.ticketNumber,
+    completedAt.toISOString(),
+    terminalCode,
+    args.ticket.cashierUserId,
+    transactionType,
+  ].join(':');
+
+  await tx.ticketTender.deleteMany({
+    where: { source, externalTransactionId: args.ticket.id },
+  });
+  await tx.ticketDetail.deleteMany({
+    where: { source, externalTransactionId: args.ticket.id },
+  });
+  await tx.ticketHeader.deleteMany({
+    where: { source, externalTransactionId: args.ticket.id },
+  });
+
+  await tx.ticketHeader.create({
+    data: {
+      source,
+      externalTransactionId: args.ticket.id,
+      ticketIdentityKey,
+      ticketId: args.salesHistoryTicketId,
+      userId: args.ticket.cashierUserId,
+      batchDate: ticketDateText(args.ticket.createdAt),
+      useDate: ticketDateText(args.ticket.completedAt),
+      terminal: terminalCode,
+      store: String(args.ticket.storeId),
+      ticket: String(args.ticket.ticketNumber),
+      realDate: ticketDateText(completedAt),
+      cashier: args.cashierCode ?? args.ticket.cashierName,
+      transType: transactionType,
+      account: args.ticket.customerAccountNumber,
+      tax01: numberText(args.ticket.taxTotal),
+      tax02: numberText(args.ticket.secondaryTaxTotal),
+      tax03: '0',
+      taxChange: 'false',
+      othChg: numberText(args.ticket.otherCharges),
+      prevPaid: '0',
+      comment: args.ticket.comment,
+      changeAmount: numberText(args.ticket.changeGiven),
+      altChange: '0',
+      exchRate: '0',
+      discount: numberText(args.ticket.headerDiscountPct),
+      applyTo: null,
+      applyTender: null,
+      applyAmount: null,
+      shipState: args.ticket.shipToState,
+      shipCounty: null,
+      shipCity: null,
+      marketingCode: args.ticket.promotionCode,
+      voided: 'false',
+      printed: args.ticket.receiptPrintCount > 0 ? 'true' : 'false',
+      posted: 'Y',
+    },
+  });
+
+  if (args.ticket.lines.length > 0) {
+    await tx.ticketDetail.createMany({
+      data: args.ticket.lines
+        .slice()
+        .sort((a, b) => a.lineNumber - b.lineNumber)
+        .map((line) => ({
+          source,
+          sourceRowNumber: BigInt(line.lineNumber),
+          externalTransactionId: args.ticket.id,
+          ticketIdentityKey,
+          ticketId: args.salesHistoryTicketId,
+          userId: args.ticket.cashierUserId,
+          batchDate: ticketDateText(args.ticket.createdAt),
+          useDate: ticketDateText(args.ticket.completedAt),
+          terminal: terminalCode,
+          store: String(args.ticket.storeId),
+          ticket: String(args.ticket.ticketNumber),
+          realDate: ticketDateText(completedAt),
+          lineNo: String(line.lineNumber),
+          sku: line.skuCode,
+          columnLabel: line.columnLabel,
+          rowLabel: line.rowLabel,
+          qty: String(line.quantity),
+          price: numberText(line.unitPrice),
+          discPct: numberText(line.discountPct),
+          discAmt: numberText(line.discountAmount),
+          perks: null,
+          salesperson: line.salespersonCode,
+          famMember: line.familyMemberId,
+          prices01: numberText(line.unitPrice),
+          prices02: null,
+          prices03: null,
+          prices04: null,
+          ovsAmt: null,
+          thisOvsAmt: null,
+          category: null,
+          vendor: null,
+          realPrice: numberText(line.unitPrice),
+          extension: numberText(line.lineSubtotal),
+          origTicket: null,
+          tax01: line.taxable ? 'true' : 'false',
+          tax02: requiredMoney(line.lineSecondaryTax) !== 0 ? 'true' : 'false',
+          tax03: 'false',
+          taxamt01: numberText(line.lineTax),
+          taxamt02: numberText(line.lineSecondaryTax),
+          taxamt03: '0',
+          fbGen: null,
+          dsShipCode: null,
+          dsShipDesc: null,
+          dsDestCode: null,
+          dsDyeCode: null,
+          dsShipChg: null,
+          returnCode: line.returnCode == null ? null : String(line.returnCode),
+          giftCert: null,
+          giftSeq: null,
+          giftAcct: null,
+          cost: '0',
+          comment: line.comment,
+        })),
+    });
+  }
+
+  if (args.ticket.tenders.length > 0) {
+    await tx.ticketTender.createMany({
+      data: args.ticket.tenders
+        .slice()
+        .sort((a, b) => a.sequence - b.sequence)
+        .map((tender) => ({
+          source,
+          sourceRowNumber: BigInt(tender.sequence),
+          externalTransactionId: args.ticket.id,
+          ticketIdentityKey,
+          ticketId: args.salesHistoryTicketId,
+          userId: args.ticket.cashierUserId,
+          batchDate: ticketDateText(args.ticket.createdAt),
+          useDate: ticketDateText(args.ticket.completedAt),
+          terminal: terminalCode,
+          store: String(args.ticket.storeId),
+          ticket: String(args.ticket.ticketNumber),
+          realDate: ticketDateText(completedAt),
+          tender: tender.tenderCode,
+          amount: numberText(tender.amount),
+          altAmount: null,
+          altCurrency: null,
+          exchRate: null,
+          giftCert: tender.tenderKind === 'GIFT_CARD' ? tender.reference : null,
+          giftSeq: null,
+          giftNew: null,
+        })),
+    });
+  }
 }
 
 async function resolveSalesHistoryCustomerId(
@@ -2252,9 +2430,14 @@ export async function completeTicket(
       });
     }
 
-    const matchedCustomerId = await upsertSalesHistoryFromTicket(tx, {
+    const salesHistoryResult = await upsertSalesHistoryFromTicket(tx, {
       ticket: finalTicket,
       storeId: finalTicket.storeId,
+      cashierCode: args.actorSalespersonCode ?? null,
+    });
+    await writeCanonicalTicketTablesFromPos(tx, {
+      ticket: finalTicket,
+      salesHistoryTicketId: salesHistoryResult.salesHistoryTicketId,
       cashierCode: args.actorSalespersonCode ?? null,
     });
 
@@ -2288,7 +2471,7 @@ export async function completeTicket(
       ticket: finalTicket,
       receipt,
       nextTicket,
-      matchedCustomerId,
+      matchedCustomerId: salesHistoryResult.matchedCustomerId,
     };
   });
 

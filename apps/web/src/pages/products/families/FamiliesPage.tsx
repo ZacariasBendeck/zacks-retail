@@ -1,18 +1,44 @@
+import { PlusOutlined } from '@ant-design/icons'
 import { useEffect, useMemo, useState } from 'react'
-import { Alert, Card, Col, Menu, Row, Space, Spin, Tabs, Tag, Typography } from 'antd'
-import { useProductFamilies, useFamilyCategories } from '../../../hooks/useProductFamilies'
-import FamilyCategoriesTab from './FamilyCategoriesTab'
+import {
+  Alert,
+  App,
+  Button,
+  Card,
+  Col,
+  Form,
+  Input,
+  InputNumber,
+  Menu,
+  Modal,
+  Row,
+  Space,
+  Spin,
+  Tabs,
+  Tag,
+  Typography,
+} from 'antd'
+import {
+  useCreateProductFamily,
+  useFamilyCategories,
+  useProductFamilies,
+} from '../../../hooks/useProductFamilies'
+import type { FamilyCreateInput } from '../../../services/productFamiliesApi'
 import FamilyAttributesTab from './FamilyAttributesTab'
+import FamilyCategoriesTab from './FamilyCategoriesTab'
 import FamilyMetadataTab from './FamilyMetadataTab'
 
 /**
- * Product Families admin — layer 3 of the mini-PIM (family → categories,
- * family → attribute rules, family metadata). Pairs with /products/attributes
- * which owns layers 1 + 2.
+ * Product Families admin: family -> categories, family -> attribute rules,
+ * and family metadata.
  */
 export default function FamiliesPage() {
+  const { message } = App.useApp()
   const { data: families, isLoading, error } = useProductFamilies()
   const [selected, setSelected] = useState<string | null>(null)
+  const [createOpen, setCreateOpen] = useState(false)
+  const [createForm] = Form.useForm<FamilyCreateInput>()
+  const createFamily = useCreateProductFamily()
 
   useEffect(() => {
     if (!families || families.length === 0) {
@@ -29,8 +55,40 @@ export default function FamiliesPage() {
     () => families?.find((f) => f.code === selected) ?? null,
     [families, selected],
   )
+  const nextSortOrder = useMemo(() => {
+    const max = Math.max(0, ...(families ?? []).map((family) => family.sortOrder))
+    return max + 10
+  }, [families])
 
   const { data: categories } = useFamilyCategories(selected)
+
+  const openCreate = () => {
+    createForm.setFieldsValue({
+      code: '',
+      labelEs: '',
+      descriptionEs: '',
+      sortOrder: nextSortOrder,
+    })
+    setCreateOpen(true)
+  }
+
+  const submitCreate = async () => {
+    const values = await createForm.validateFields()
+    const descriptionEs = values.descriptionEs?.trim() ?? ''
+    try {
+      const created = await createFamily.mutateAsync({
+        code: values.code.trim().toLowerCase(),
+        labelEs: values.labelEs.trim(),
+        descriptionEs: descriptionEs.length > 0 ? descriptionEs : null,
+        sortOrder: values.sortOrder ?? nextSortOrder,
+      })
+      setSelected(created.code)
+      setCreateOpen(false)
+      message.success('Familia creada')
+    } catch (e) {
+      message.error((e as Error).message)
+    }
+  }
 
   if (isLoading) {
     return (
@@ -67,13 +125,22 @@ export default function FamiliesPage() {
         Familias de producto
       </Typography.Title>
       <Typography.Paragraph type="secondary">
-        Las 11 familias agrupan categorías RICS y gobiernan qué dimensiones de atributo se aplican
-        a cada SKU. El catálogo de dimensiones y sus valores se administra en{' '}
+        Las familias agrupan categorias RICS y gobiernan que dimensiones de atributo se aplican
+        a cada SKU. El catalogo de dimensiones y sus valores se administra en{' '}
         <a href="/products/attributes">Atributos extendidos</a>.
       </Typography.Paragraph>
       <Row gutter={16}>
         <Col xs={24} md={7}>
-          <Card size="small" title="Familias" styles={{ body: { padding: 0 } }}>
+          <Card
+            size="small"
+            title="Familias"
+            extra={
+              <Button size="small" icon={<PlusOutlined />} onClick={openCreate}>
+                Nueva
+              </Button>
+            }
+            styles={{ body: { padding: 0 } }}
+          >
             <Menu
               mode="inline"
               selectedKeys={selected ? [selected] : []}
@@ -92,7 +159,7 @@ export default function FamiliesPage() {
                   <Typography.Text strong>{selectedFamily.labelEs}</Typography.Text>
                   <Tag>{selectedFamily.code}</Tag>
                   <Typography.Text type="secondary">
-                    {categories?.length ?? 0} categoría{categories?.length === 1 ? '' : 's'}
+                    {categories?.length ?? 0} categoria{categories?.length === 1 ? '' : 's'}
                   </Typography.Text>
                 </Space>
               }
@@ -106,12 +173,12 @@ export default function FamiliesPage() {
                 items={[
                   {
                     key: 'categorias',
-                    label: 'Categorías',
+                    label: 'Categorias',
                     children: <FamilyCategoriesTab family={selectedFamily} />,
                   },
                   {
                     key: 'atributos',
-                    label: 'Atributos',
+                    label: 'Dimensions',
                     children: <FamilyAttributesTab family={selectedFamily} />,
                   },
                   {
@@ -129,6 +196,46 @@ export default function FamiliesPage() {
           )}
         </Col>
       </Row>
+
+      <Modal
+        open={createOpen}
+        title="Nueva familia de producto"
+        onCancel={() => setCreateOpen(false)}
+        onOk={() => void submitCreate()}
+        okText="Crear"
+        confirmLoading={createFamily.isPending}
+        destroyOnHidden
+      >
+        <Form<FamilyCreateInput> form={createForm} layout="vertical">
+          <Form.Item
+            name="code"
+            label="Codigo"
+            extra="Identificador interno estable. Use letras minusculas, numeros, guion o guion bajo."
+            rules={[
+              { required: true, message: 'Codigo requerido' },
+              {
+                pattern: /^[a-z0-9_-]{2,64}$/,
+                message: 'Use 2-64 caracteres: a-z, 0-9, _ o -',
+              },
+            ]}
+          >
+            <Input placeholder="ej. ropa_formal" />
+          </Form.Item>
+          <Form.Item
+            name="labelEs"
+            label="Etiqueta"
+            rules={[{ required: true, message: 'Etiqueta requerida' }]}
+          >
+            <Input placeholder="Ej. Ropa formal" />
+          </Form.Item>
+          <Form.Item name="descriptionEs" label="Descripcion">
+            <Input.TextArea rows={2} />
+          </Form.Item>
+          <Form.Item name="sortOrder" label="Orden">
+            <InputNumber min={0} max={32767} step={10} style={{ width: 140 }} />
+          </Form.Item>
+        </Form>
+      </Modal>
     </div>
   )
 }

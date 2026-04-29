@@ -71,6 +71,19 @@ export default function CategoryListPage() {
       },
     },
     {
+      title: 'Product Family',
+      key: 'productFamily',
+      width: 220,
+      render: (_: unknown, row: Category) => row.productFamilyCode ? (
+        <Space size={4}>
+          <Tag>{row.productFamilyCode}</Tag>
+          <span>{row.productFamilyLabelEs ?? row.productFamilyCode}</span>
+        </Space>
+      ) : (
+        <Typography.Text type="warning">No product family</Typography.Text>
+      ),
+    },
+    {
       title: 'Sector',
       key: 'sector',
       width: 180,

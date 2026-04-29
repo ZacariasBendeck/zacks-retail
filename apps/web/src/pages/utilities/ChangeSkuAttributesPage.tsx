@@ -17,6 +17,7 @@ import {
   App,
   Button,
   Card,
+  Collapse,
   Image,
   Input,
   Popconfirm,
@@ -42,23 +43,30 @@ import {
   useSectors,
 } from '../../hooks/useProductsTaxonomy'
 import { useVendors } from '../../hooks/useProductsVendors'
+import { useAttributeDimensions, useAttributeMacroRules } from '../../hooks/useProductsAttributes'
 import { useApplyBatchChange } from '../../hooks/useUtilities'
 import { buildRicsImageUrl } from '../../services/ricsImageUrl'
 import type { SkuListFilters } from '../../types/productsSku'
+import type { AttributeDimension } from '../../types/productsAttributes'
 import type { Department, Sector } from '../../types/productsTaxonomy'
 import type {
   AttributeChange,
   BatchOperationType,
 } from '../../services/utilitiesApi'
 
-type ActionKind = 'CATEGORY' | 'VENDOR' | 'SEASON' | 'GROUP'
+type CoreActionKind = 'CATEGORY' | 'VENDOR' | 'SEASON' | 'GROUP' | 'KEYWORD_ADD' | 'KEYWORD_REMOVE'
+type AttributeMode = 'REPLACE' | 'ADD' | 'REMOVE'
 
-const ACTION_META: Record<ActionKind, { label: string; verb: string; opType: BatchOperationType }> = {
-  CATEGORY: { label: 'Category', verb: 'Move to category', opType: 'CHANGE_CATEGORY' },
-  VENDOR:   { label: 'Vendor',   verb: 'Reassign to vendor', opType: 'CHANGE_VENDOR' },
-  SEASON:   { label: 'Season',   verb: 'Reassign to season', opType: 'CHANGE_SEASON' },
-  GROUP:    { label: 'Group',    verb: 'Reassign to group',  opType: 'CHANGE_GROUP_CODE' },
+const CORE_ACTION_META: Record<CoreActionKind, { label: string; verb: string; opType: BatchOperationType }> = {
+  CATEGORY:       { label: 'Category',       verb: 'Move to category',      opType: 'CHANGE_CATEGORY' },
+  VENDOR:         { label: 'Vendor',         verb: 'Reassign to vendor',    opType: 'CHANGE_VENDOR' },
+  SEASON:         { label: 'Season',         verb: 'Reassign to season',    opType: 'CHANGE_SEASON' },
+  GROUP:          { label: 'Group',          verb: 'Reassign to group',     opType: 'CHANGE_GROUP_CODE' },
+  KEYWORD_ADD:    { label: 'Keyword add',    verb: 'Add keyword',           opType: 'CHANGE_KEYWORDS_ADD' },
+  KEYWORD_REMOVE: { label: 'Keyword remove', verb: 'Remove keyword',        opType: 'CHANGE_KEYWORDS_REMOVE' },
 }
+
+const ATTRIBUTE_ACTION_PREFIX = 'ATTR:'
 
 export default function ChangeSkuAttributesPage() {
   const navigate = useNavigate()
@@ -75,24 +83,31 @@ export default function ChangeSkuAttributesPage() {
   const [vendorCodes, setVendorCodes] = useState<string[]>([])
   const [styleColor, setStyleColor] = useState('')
   const [description, setDescription] = useState('')
+  const [attributeFilters, setAttributeFilters] = useState<Record<string, string[]>>({})
 
   // Selection persists across filter/sort changes for bulk ops.
   const [selectedCodes, setSelectedCodes] = useState<string[]>([])
 
   // Action + per-action target value. Reset all targets when action changes
   // so a stale category target doesn't apply when we switch to vendor.
-  const [action, setAction] = useState<ActionKind>('CATEGORY')
+  const [action, setAction] = useState<string>('CATEGORY')
   const [targetCategory, setTargetCategory] = useState<number | undefined>(undefined)
   const [targetVendor, setTargetVendor] = useState<string | undefined>(undefined)
   const [targetSeason, setTargetSeason] = useState<string | undefined>(undefined)
   const [targetGroup, setTargetGroup] = useState<string | undefined>(undefined)
+  const [targetKeyword, setTargetKeyword] = useState<string | undefined>(undefined)
+  const [targetAttributeValues, setTargetAttributeValues] = useState<string[]>([])
+  const [attributeMode, setAttributeMode] = useState<AttributeMode>('REPLACE')
 
-  const onActionChange = (next: ActionKind) => {
+  const onActionChange = (next: string) => {
     setAction(next)
     setTargetCategory(undefined)
     setTargetVendor(undefined)
     setTargetSeason(undefined)
     setTargetGroup(undefined)
+    setTargetKeyword(undefined)
+    setTargetAttributeValues([])
+    setAttributeMode('REPLACE')
   }
 
   // Taxonomy data
@@ -103,6 +118,24 @@ export default function ChangeSkuAttributesPage() {
   const { data: keywords } = useKeywords()
   const { data: seasons } = useSeasons()
   const { data: vendors } = useVendors()
+  const { data: attributeDimensions } = useAttributeDimensions(true)
+  const { data: macroRules } = useAttributeMacroRules()
+
+  const sortedAttributeDimensions = useMemo(
+    () => [...(attributeDimensions ?? [])].sort((a, b) => a.sortOrder - b.sortOrder || a.labelEs.localeCompare(b.labelEs)),
+    [attributeDimensions],
+  )
+
+  const derivedDimensionCodes = useMemo(
+    () => new Set((macroRules ?? []).map((r) => r.targetDimensionCode)),
+    [macroRules],
+  )
+
+  const selectedAttributeDimension = useMemo(() => {
+    if (!action.startsWith(ATTRIBUTE_ACTION_PREFIX)) return null
+    const code = action.slice(ATTRIBUTE_ACTION_PREFIX.length)
+    return sortedAttributeDimensions.find((d) => d.code === code) ?? null
+  }, [action, sortedAttributeDimensions])
 
   // Department → category range
   const deptCategoryRange = useMemo(() => {
@@ -414,6 +447,22 @@ export default function ChangeSkuAttributesPage() {
     },
   ]
 
+  const cleanAttributeFilters = (): Record<string, string[]> | undefined => {
+    const entries = Object.entries(attributeFilters)
+      .map(([code, values]) => [code, values.filter(Boolean)] as const)
+      .filter(([, values]) => values.length > 0)
+    return entries.length > 0 ? Object.fromEntries(entries) : undefined
+  }
+
+  const setAttributeFilterValues = (dimensionCode: string, values: string[]) => {
+    setAttributeFilters((prev) => {
+      const next = { ...prev }
+      if (values.length === 0) delete next[dimensionCode]
+      else next[dimensionCode] = values
+      return next
+    })
+  }
+
   const buildFilters = (): SkuListFilters => ({
     q: q.trim() || undefined,
     vendors: vendorCodes.length > 0 ? vendorCodes : undefined,
@@ -423,6 +472,7 @@ export default function ChangeSkuAttributesPage() {
     keywords: keywordCodes.length > 0 ? keywordCodes : undefined,
     styleColor: styleColor.trim() || undefined,
     description: description.trim() || undefined,
+    attributes: cleanAttributeFilters(),
   })
 
   const runQuery = () => setActiveFilters(buildFilters())
@@ -438,6 +488,7 @@ export default function ChangeSkuAttributesPage() {
     setVendorCodes([])
     setStyleColor('')
     setDescription('')
+    setAttributeFilters({})
   }
 
   const anyFilterSet =
@@ -450,7 +501,8 @@ export default function ChangeSkuAttributesPage() {
     seasonCodes.length > 0 ||
     vendorCodes.length > 0 ||
     styleColor.trim().length > 0 ||
-    description.trim().length > 0
+    description.trim().length > 0 ||
+    Object.values(attributeFilters).some((values) => values.length > 0)
 
   const selectAllVisible = () => {
     const visible = enriched.map((r) => r.code)
@@ -461,27 +513,57 @@ export default function ChangeSkuAttributesPage() {
   // ─────────── action helpers ───────────
 
   /** Returns the currently-set target value for the active action (null/undefined if blank). */
-  const currentTarget = (): number | string | undefined => {
+  const currentTarget = (): number | string | string[] | undefined => {
+    if (selectedAttributeDimension) return targetAttributeValues
     switch (action) {
       case 'CATEGORY': return targetCategory
       case 'VENDOR':   return targetVendor
       case 'SEASON':   return targetSeason
       case 'GROUP':    return targetGroup
+      case 'KEYWORD_ADD':
+      case 'KEYWORD_REMOVE':
+        return targetKeyword
     }
   }
 
   /** Build the AttributeChange payload from action + target. Returns null if invalid. */
   const buildChange = (): AttributeChange | null => {
+    if (selectedAttributeDimension) {
+      const mode = selectedAttributeDimension.isMultiValue ? attributeMode : 'REPLACE'
+      return targetAttributeValues.length > 0
+        ? {
+            type: 'CHANGE_SKU_ATTRIBUTE',
+            dimensionCode: selectedAttributeDimension.code,
+            valueCodes: targetAttributeValues,
+            mode,
+          }
+        : null
+    }
     switch (action) {
       case 'CATEGORY': return targetCategory != null ? { type: 'CHANGE_CATEGORY', category: targetCategory } : null
       case 'VENDOR':   return targetVendor ? { type: 'CHANGE_VENDOR', vendor: targetVendor } : null
       case 'SEASON':   return targetSeason ? { type: 'CHANGE_SEASON', season: targetSeason } : null
       case 'GROUP':    return targetGroup ? { type: 'CHANGE_GROUP_CODE', groupCode: targetGroup } : null
+      case 'KEYWORD_ADD': return targetKeyword ? { type: 'CHANGE_KEYWORDS_ADD', keyword: targetKeyword } : null
+      case 'KEYWORD_REMOVE': return targetKeyword ? { type: 'CHANGE_KEYWORDS_REMOVE', keyword: targetKeyword } : null
     }
+    return null
   }
 
-  const targetReady = currentTarget() != null && currentTarget() !== ''
-  const meta = ACTION_META[action]
+  const currentTargetValue = currentTarget()
+  const targetReady = Array.isArray(currentTargetValue)
+    ? currentTargetValue.length > 0
+    : currentTargetValue != null && currentTargetValue !== ''
+  const meta = selectedAttributeDimension
+    ? {
+        label: selectedAttributeDimension.labelEs,
+        verb: selectedAttributeDimension.isMultiValue
+          ? `${attributeMode.toLowerCase()} ${selectedAttributeDimension.labelEs}`
+          : `Set ${selectedAttributeDimension.labelEs}`,
+        opType: 'CHANGE_SKU_ATTRIBUTE' as BatchOperationType,
+      }
+    : CORE_ACTION_META[action as CoreActionKind]
+      ?? CORE_ACTION_META.CATEGORY
 
   const applyChange = async () => {
     if (selectedCodes.length === 0) {
@@ -504,10 +586,14 @@ export default function ChangeSkuAttributesPage() {
         return
       }
       const targetDisplay =
-        action === 'CATEGORY' ? `category ${targetCategory}`
-        : action === 'VENDOR' ? `vendor ${targetVendor}`
-        : action === 'SEASON' ? `season ${targetSeason}`
-        : `group ${targetGroup}`
+        selectedAttributeDimension
+          ? `${selectedAttributeDimension.labelEs}: ${targetAttributeValues.join(', ')}`
+          : action === 'CATEGORY' ? `category ${targetCategory}`
+          : action === 'VENDOR' ? `vendor ${targetVendor}`
+          : action === 'SEASON' ? `season ${targetSeason}`
+          : action === 'GROUP' ? `group ${targetGroup}`
+          : action === 'KEYWORD_ADD' ? `keyword ${targetKeyword}`
+          : `without keyword ${targetKeyword}`
       notification.success({
         message: `Reassigned ${result.affectedCount} SKU${result.affectedCount === 1 ? '' : 's'} to ${targetDisplay}`,
         description: result.batchId && (
@@ -520,6 +606,8 @@ export default function ChangeSkuAttributesPage() {
       setTargetVendor(undefined)
       setTargetSeason(undefined)
       setTargetGroup(undefined)
+      setTargetKeyword(undefined)
+      setTargetAttributeValues([])
     } catch (e) {
       message.error((e as Error).message)
     }
@@ -531,6 +619,49 @@ export default function ChangeSkuAttributesPage() {
 
   // Target value field — single component depending on action.
   const renderTargetField = () => {
+    if (selectedAttributeDimension) {
+      const activeValues = selectedAttributeDimension.values.filter((v) => v.isActive)
+      return (
+        <Space wrap>
+          {selectedAttributeDimension.isMultiValue ? (
+            <Radio.Group
+              value={attributeMode}
+              onChange={(e) => setAttributeMode(e.target.value as AttributeMode)}
+              optionType="button"
+              buttonStyle="solid"
+            >
+              <Radio.Button value="REPLACE">Replace</Radio.Button>
+              <Radio.Button value="ADD">Add</Radio.Button>
+              <Radio.Button value="REMOVE">Remove</Radio.Button>
+            </Radio.Group>
+          ) : null}
+          <Select<string | string[]>
+            mode={selectedAttributeDimension.isMultiValue ? 'multiple' : undefined}
+            placeholder={`Target ${selectedAttributeDimension.labelEs}`}
+            value={
+              selectedAttributeDimension.isMultiValue
+                ? targetAttributeValues
+                : targetAttributeValues[0]
+            }
+            options={activeValues.map((v) => ({
+              value: v.code,
+              label: `${v.code} - ${v.labelEs}${v.skuCount != null ? ` (${v.skuCount.toLocaleString()})` : ''}`,
+            }))}
+            onChange={(value) => {
+              if (Array.isArray(value)) setTargetAttributeValues(value)
+              else setTargetAttributeValues(value ? [value] : [])
+            }}
+            allowClear
+            showSearch
+            style={{ minWidth: selectedAttributeDimension.isMultiValue ? 340 : 280 }}
+            maxTagCount={2}
+            filterOption={(input, option) =>
+              (option?.label as string).toLowerCase().includes(input.toLowerCase())
+            }
+          />
+        </Space>
+      )
+    }
     switch (action) {
       case 'CATEGORY':
         return (
@@ -604,7 +735,257 @@ export default function ChangeSkuAttributesPage() {
             }
           />
         )
+      case 'KEYWORD_ADD':
+      case 'KEYWORD_REMOVE':
+        return (
+          <Select<string>
+            placeholder="Target keyword"
+            value={targetKeyword}
+            options={(keywords ?? []).map((k) => ({
+              value: k.keyword,
+              label: k.description ? `${k.keyword} - ${k.description}` : k.keyword,
+            }))}
+            onChange={setTargetKeyword}
+            allowClear
+            showSearch
+            style={{ minWidth: 260 }}
+            filterOption={(input, option) =>
+              (option?.label as string).toLowerCase().includes(input.toLowerCase())
+            }
+          />
+        )
     }
+  }
+
+  const attributeValueOptions = (dimension: AttributeDimension) =>
+    dimension.values
+      .filter((v) => v.isActive)
+      .map((v) => ({
+        value: v.code,
+        label: `${v.code} - ${v.labelEs}${v.skuCount != null ? ` (${v.skuCount.toLocaleString()})` : ''}`,
+      }))
+
+  const renderMerchandiseFilters = () => (
+    <Space wrap size={8}>
+      <Input
+        placeholder="Search code, desc, style..."
+        prefix={<SearchOutlined />}
+        value={q}
+        onChange={(e) => setQ(e.target.value)}
+        onPressEnter={runQuery}
+        allowClear
+        style={{ width: 240 }}
+      />
+      <Select
+        placeholder="Sector"
+        value={sectorNumber ?? undefined}
+        onChange={(v) => onSectorChange(typeof v === 'number' ? v : null)}
+        allowClear
+        showSearch
+        style={{ minWidth: 200 }}
+        options={(sectors ?? []).map((s) => ({
+          value: s.number,
+          label: `${s.number} - ${s.description}`,
+        }))}
+        filterOption={(input, option) =>
+          (option?.label as string).toLowerCase().includes(input.toLowerCase())
+        }
+      />
+      <Select
+        placeholder={
+          sectorNumber != null
+            ? `Department (${availableDepartments.length} in sector)`
+            : 'Department'
+        }
+        value={departmentNumber ?? undefined}
+        onChange={(v) => onDepartmentChange(typeof v === 'number' ? v : null)}
+        allowClear
+        showSearch
+        style={{ minWidth: 240 }}
+        options={availableDepartments.map((d) => ({
+          value: d.number,
+          label: `${d.number} - ${d.description}`,
+        }))}
+        filterOption={(input, option) =>
+          (option?.label as string).toLowerCase().includes(input.toLowerCase())
+        }
+      />
+      <Select
+        mode="multiple"
+        placeholder={
+          departmentNumber != null || sectorNumber != null
+            ? `Category (${availableCategories.length} in scope)`
+            : 'Category'
+        }
+        value={categoryNumbers}
+        onChange={setCategoryNumbers}
+        allowClear
+        style={{ minWidth: 280 }}
+        maxTagCount={2}
+        options={availableCategories.map((c) => ({
+          value: c.number,
+          label: `${c.number} - ${c.description}`,
+        }))}
+        filterOption={(input, option) =>
+          (option?.label as string).toLowerCase().includes(input.toLowerCase())
+        }
+      />
+    </Space>
+  )
+
+  const renderCoreFilters = () => (
+    <Space wrap size={8}>
+      <Select
+        mode="multiple"
+        placeholder="Vendor"
+        value={vendorCodes}
+        onChange={setVendorCodes}
+        allowClear
+        style={{ minWidth: 260 }}
+        maxTagCount={2}
+        showSearch
+        options={(vendors ?? []).map((v) => ({
+          value: v.code,
+          label: `${v.code} - ${v.name}`,
+        }))}
+        filterOption={(input, option) =>
+          (option?.label as string).toLowerCase().includes(input.toLowerCase())
+        }
+      />
+      <Select
+        mode="multiple"
+        placeholder="Season"
+        value={seasonCodes}
+        onChange={setSeasonCodes}
+        allowClear
+        style={{ minWidth: 200 }}
+        maxTagCount={2}
+        options={(seasons ?? []).map((s) => ({
+          value: s.code,
+          label: `${s.code} - ${s.description}`,
+        }))}
+      />
+      <Select
+        mode="multiple"
+        placeholder="Group"
+        value={groupCodes}
+        onChange={setGroupCodes}
+        allowClear
+        style={{ minWidth: 220 }}
+        maxTagCount={2}
+        options={(groups ?? []).map((g) => ({
+          value: g.code,
+          label: `${g.code} - ${g.description}`,
+        }))}
+        filterOption={(input, option) =>
+          (option?.label as string).toLowerCase().includes(input.toLowerCase())
+        }
+      />
+      <Select
+        mode="multiple"
+        placeholder="Keyword"
+        value={keywordCodes}
+        onChange={setKeywordCodes}
+        allowClear
+        style={{ minWidth: 220 }}
+        maxTagCount={2}
+        options={(keywords ?? []).map((k) => ({
+          value: k.keyword,
+          label: k.description ? `${k.keyword} - ${k.description}` : k.keyword,
+        }))}
+        filterOption={(input, option) =>
+          (option?.label as string).toLowerCase().includes(input.toLowerCase())
+        }
+      />
+      <Input
+        placeholder="Style/Color contains..."
+        value={styleColor}
+        onChange={(e) => setStyleColor(e.target.value)}
+        onPressEnter={runQuery}
+        allowClear
+        style={{ width: 200 }}
+      />
+      <Tooltip title="Description match with optional asterisks. Examples: BOOT (contains), BOOT* (starts with), *BOOT (ends with), BOOT*CUERO (starts BOOT ends CUERO).">
+        <Input
+          placeholder="Description (BOOT*, *CUERO, BO*RO)"
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          onPressEnter={runQuery}
+          allowClear
+          style={{ width: 260 }}
+        />
+      </Tooltip>
+    </Space>
+  )
+
+  const renderExtendedFilters = () => (
+    <Space wrap size={8}>
+      {sortedAttributeDimensions.map((dimension) => (
+        <Select
+          key={dimension.code}
+          mode="multiple"
+          placeholder={dimension.labelEs}
+          value={attributeFilters[dimension.code] ?? []}
+          onChange={(values) => setAttributeFilterValues(dimension.code, values)}
+          allowClear
+          showSearch
+          style={{ minWidth: 250 }}
+          maxTagCount={1}
+          options={attributeValueOptions(dimension)}
+          filterOption={(input, option) =>
+            (option?.label as string).toLowerCase().includes(input.toLowerCase())
+          }
+        />
+      ))}
+      {sortedAttributeDimensions.length === 0 ? (
+        <Typography.Text type="secondary">No extended attributes are available.</Typography.Text>
+      ) : null}
+    </Space>
+  )
+
+  const renderFilterSummary = () => {
+    if (!anyFilterSet) return null
+    return (
+      <Space direction="vertical" size={4} style={{ width: '100%' }}>
+        <Space wrap size={4}>
+          <Typography.Text type="secondary">Merchandise</Typography.Text>
+          {q.trim() ? <Tag closable onClose={() => setQ('')}>Search: {q.trim()}</Tag> : null}
+          {sectorNumber != null ? <Tag closable onClose={() => setSectorNumber(null)}>Sector: {sectorNumber}</Tag> : null}
+          {departmentNumber != null ? <Tag closable onClose={() => setDepartmentNumber(null)}>Department: {departmentNumber}</Tag> : null}
+          {categoryNumbers.map((n) => (
+            <Tag key={`cat-${n}`} closable onClose={() => setCategoryNumbers((prev) => prev.filter((x) => x !== n))}>
+              Category: {n}
+            </Tag>
+          ))}
+        </Space>
+        <Space wrap size={4}>
+          <Typography.Text type="secondary">Core</Typography.Text>
+          {vendorCodes.map((code) => <Tag key={`vendor-${code}`} closable onClose={() => setVendorCodes((prev) => prev.filter((x) => x !== code))}>Vendor: {code}</Tag>)}
+          {seasonCodes.map((code) => <Tag key={`season-${code}`} closable onClose={() => setSeasonCodes((prev) => prev.filter((x) => x !== code))}>Season: {code}</Tag>)}
+          {groupCodes.map((code) => <Tag key={`group-${code}`} closable onClose={() => setGroupCodes((prev) => prev.filter((x) => x !== code))}>Group: {code}</Tag>)}
+          {keywordCodes.map((code) => <Tag key={`keyword-${code}`} closable onClose={() => setKeywordCodes((prev) => prev.filter((x) => x !== code))}>Keyword: {code}</Tag>)}
+          {styleColor.trim() ? <Tag closable onClose={() => setStyleColor('')}>Style/Color: {styleColor.trim()}</Tag> : null}
+          {description.trim() ? <Tag closable onClose={() => setDescription('')}>Description: {description.trim()}</Tag> : null}
+        </Space>
+        <Space wrap size={4}>
+          <Typography.Text type="secondary">Extended</Typography.Text>
+          {Object.entries(attributeFilters).flatMap(([dimensionCode, values]) => {
+            const dimension = sortedAttributeDimensions.find((d) => d.code === dimensionCode)
+            return values.map((value) => (
+              <Tag
+                key={`attr-${dimensionCode}-${value}`}
+                closable
+                onClose={() =>
+                  setAttributeFilterValues(dimensionCode, values.filter((v) => v !== value))
+                }
+              >
+                {(dimension?.labelEs ?? dimensionCode)}: {value}
+              </Tag>
+            ))
+          })}
+        </Space>
+      </Space>
+    )
   }
 
   return (
@@ -632,8 +1013,32 @@ export default function ChangeSkuAttributesPage() {
           → Apply. Reversible via Batch History. <Typography.Text type="secondary">RICS p. 194.</Typography.Text>
         </Typography.Paragraph>
 
-        {/* Filter bar */}
-        <Space wrap size={8}>
+        <Collapse
+          size="small"
+          defaultActiveKey={['merchandise', 'core', 'extended']}
+          items={[
+            {
+              key: 'merchandise',
+              label: 'Merchandise hierarchy',
+              children: renderMerchandiseFilters(),
+            },
+            {
+              key: 'core',
+              label: 'Core SKU fields',
+              children: renderCoreFilters(),
+            },
+            {
+              key: 'extended',
+              label: 'Extended attributes',
+              children: renderExtendedFilters(),
+            },
+          ]}
+        />
+
+        {renderFilterSummary()}
+
+        {/* Legacy filter bar kept hidden while the grouped controls own the UI. */}
+        <Space wrap size={8} style={{ display: 'none' }}>
           <Input
             placeholder="Search code, desc, style…"
             prefix={<SearchOutlined />}
@@ -815,17 +1220,41 @@ export default function ChangeSkuAttributesPage() {
             </Space>
             <Space wrap>
               <span>Change:</span>
-              <Radio.Group
+              <Select
                 value={action}
-                onChange={(e) => onActionChange(e.target.value as ActionKind)}
-                optionType="button"
-                buttonStyle="solid"
-              >
-                <Radio.Button value="CATEGORY">Category</Radio.Button>
-                <Radio.Button value="VENDOR">Vendor</Radio.Button>
-                <Radio.Button value="SEASON">Season</Radio.Button>
-                <Radio.Button value="GROUP">Group</Radio.Button>
-              </Radio.Group>
+                onChange={onActionChange}
+                style={{ minWidth: 260 }}
+                options={[
+                  {
+                    label: 'Core fields',
+                    options: [
+                      { value: 'CATEGORY', label: 'Category' },
+                      { value: 'VENDOR', label: 'Vendor' },
+                      { value: 'SEASON', label: 'Season' },
+                      { value: 'GROUP', label: 'Group' },
+                      { value: 'KEYWORD_ADD', label: 'Keyword add' },
+                      { value: 'KEYWORD_REMOVE', label: 'Keyword remove' },
+                    ],
+                  },
+                  {
+                    label: 'Extended attributes',
+                    options: sortedAttributeDimensions.map((dimension) => {
+                      const disabled = derivedDimensionCodes.has(dimension.code)
+                      return {
+                        value: `${ATTRIBUTE_ACTION_PREFIX}${dimension.code}`,
+                        disabled,
+                        label: disabled ? (
+                          <Tooltip title="Derived from another attribute; query is allowed but manual bulk change is disabled.">
+                            <span>{dimension.labelEs}</span>
+                          </Tooltip>
+                        ) : (
+                          dimension.labelEs
+                        ),
+                      }
+                    }),
+                  },
+                ]}
+              />
               <span style={{ marginLeft: 12 }}>{meta.verb}:</span>
               {renderTargetField()}
               <Popconfirm

@@ -18,6 +18,7 @@ import {
   Select,
   Progress,
   Collapse,
+  Popconfirm,
 } from 'antd'
 import {
   ArrowLeftOutlined,
@@ -29,6 +30,7 @@ import {
   usePurchaseOrders,
   usePurchaseOrder,
   useReceivePurchaseOrder,
+  useReceivePurchaseOrderFull,
   usePurchaseOrderReceipts,
 } from '../../hooks/usePurchaseOrders'
 import { useLocations } from '../../hooks/useAdjustments'
@@ -238,10 +240,13 @@ function PoReceiveForm({
   const { data: receipts, isLoading: receiptsLoading } = usePurchaseOrderReceipts(poId)
   const { data: locations } = useLocations()
   const receiveMutation = useReceivePurchaseOrder()
+  const fullReceiveMutation = useReceivePurchaseOrderFull()
   const [receiveQtys, setReceiveQtys] = useState<Record<string, number>>({})
   const [referenceNumber, setReferenceNumber] = useState('')
   const [locationId, setLocationId] = useState<string | undefined>('loc-01')
   const [receivedBy, setReceivedBy] = useState('')
+  const [discountPercent, setDiscountPercent] = useState(0)
+  const [freightEach, setFreightEach] = useState(0)
   const [varianceReasonCode, setVarianceReasonCode] = useState<string | undefined>()
   const [varianceReasonNotes, setVarianceReasonNotes] = useState('')
 
@@ -284,7 +289,7 @@ function PoReceiveForm({
     const lines: Array<ReceiveLinePayload & { remaining: number }> = []
     for (const line of po.lineItems) {
       const qty = receiveQtys[line.id]
-      if (qty && qty > 0) {
+      if (qty && qty !== 0) {
         lines.push({
           lineId: line.id,
           quantityReceived: qty,
@@ -322,10 +327,13 @@ function PoReceiveForm({
           lines: receiveLines.map((line) => ({
             lineId: line.lineId,
             quantityReceived: line.quantityReceived,
+            discrepancyReason: hasPartialVariance ? varianceReason : undefined,
           })),
           locationId,
           receivedBy: receivedBy.trim() || undefined,
           referenceNumber: referenceNumber.trim() || undefined,
+          discountPercent,
+          freightEach,
           idempotencyKey: crypto.randomUUID(),
           reason: hasPartialVariance ? varianceReason : undefined,
         },
@@ -334,6 +342,37 @@ function PoReceiveForm({
       navigate('/purchasing/receive')
     } catch (err) {
       messageApi?.error?.(err instanceof Error ? err.message : 'Failed to receive inventory')
+    }
+  }
+
+  const handleFullReceive = async () => {
+    if (!canReceive) return
+    const remainingQuantity = po.lineItems.reduce(
+      (sum, line) => sum + Math.max(0, line.quantityOrdered - line.quantityReceived),
+      0,
+    )
+    if (remainingQuantity <= 0) {
+      messageApi?.warning?.('This purchase order has no remaining units to receive')
+      return
+    }
+
+    try {
+      await fullReceiveMutation.mutateAsync({
+        poId,
+        payload: {
+          locationId,
+          receivedBy: receivedBy.trim() || undefined,
+          referenceNumber: referenceNumber.trim() || undefined,
+          discountPercent,
+          freightEach,
+          idempotencyKey: crypto.randomUUID(),
+          changedBy: receivedBy.trim() || undefined,
+        },
+      })
+      messageApi?.success?.('All remaining units received')
+      navigate(`/purchasing/orders/${poId}`)
+    } catch (err) {
+      messageApi?.error?.(err instanceof Error ? err.message : 'Failed to fully receive inventory')
     }
   }
 
@@ -415,12 +454,13 @@ function PoReceiveForm({
             align: 'center' as const,
             render: (_: unknown, r: PoLineItem) => {
               const remaining = r.quantityOrdered - r.quantityReceived
-              if (remaining <= 0) {
+              if (remaining <= 0 && r.quantityReceived <= 0) {
                 return <Tag color="green" icon={<CheckCircleOutlined />}>Complete</Tag>
               }
               return (
                 <InputNumber
-                  min={0}
+                  aria-label={`Receive quantity for ${r.skuCode ?? r.skuId}`}
+                  min={-r.quantityReceived}
                   max={remaining}
                   value={receiveQtys[r.id] ?? 0}
                   onChange={(v) => handleQtyChange(r.id, v)}
@@ -478,6 +518,22 @@ function PoReceiveForm({
       align: 'right' as const,
       render: (_: unknown, receipt: PoReceipt) =>
         receipt.lines.reduce((sum, line) => sum + line.quantityReceived, 0),
+    },
+    {
+      title: 'Discount %',
+      dataIndex: 'discountPercent',
+      key: 'discountPercent',
+      width: 110,
+      align: 'right' as const,
+      render: (value: number) => value.toLocaleString('en-US', { maximumFractionDigits: 2 }),
+    },
+    {
+      title: 'Freight Each',
+      dataIndex: 'freightEach',
+      key: 'freightEach',
+      width: 120,
+      align: 'right' as const,
+      render: formatMoney,
     },
   ]
 
@@ -590,6 +646,33 @@ function PoReceiveForm({
                     onChange={(event) => setReceivedBy(event.target.value)}
                     placeholder="Warehouse user"
                     maxLength={100}
+                  />
+                </Col>
+                <Col xs={24} md={6}>
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    Discount %
+                  </Typography.Text>
+                  <InputNumber
+                    aria-label="Discount percent"
+                    min={0}
+                    max={100}
+                    precision={2}
+                    value={discountPercent}
+                    onChange={(value) => setDiscountPercent(value ?? 0)}
+                    style={{ width: '100%' }}
+                  />
+                </Col>
+                <Col xs={24} md={6}>
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    Freight each
+                  </Typography.Text>
+                  <InputNumber
+                    aria-label="Freight each"
+                    min={0}
+                    precision={2}
+                    value={freightEach}
+                    onChange={(value) => setFreightEach(value ?? 0)}
+                    style={{ width: '100%' }}
                   />
                 </Col>
                 <Col xs={24} md={12}>
@@ -725,6 +808,19 @@ function PoReceiveForm({
               <Button onClick={() => navigate('/purchasing/receive')}>
                 Cancel
               </Button>
+              <Popconfirm
+                title="Receive all remaining units?"
+                description="This creates one receipt for every open line on the purchase order."
+                okText="Full Receive"
+                onConfirm={handleFullReceive}
+              >
+                <Button
+                  icon={<CheckCircleOutlined />}
+                  loading={fullReceiveMutation.isPending}
+                >
+                  Full Receive
+                </Button>
+              </Popconfirm>
               <Button
                 type="primary"
                 icon={<InboxOutlined />}

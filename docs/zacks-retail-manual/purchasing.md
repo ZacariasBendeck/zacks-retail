@@ -3,7 +3,7 @@
 > **Status:** Draft
 > **Module spec:** [../modules/purchasing.md](../modules/purchasing.md)
 > **RICS ancestry:** Ch. 3
-> **Last updated:** 2026-04-21
+> **Last updated:** 2026-04-29
 
 ## What this module does
 
@@ -11,22 +11,22 @@ Purchasing is how stock gets into the stores. Buyers create purchase orders agai
 
 ## Audience
 
-- **Buyers** — PO entry, auto-POs, order worksheets, vendor terms.
-- **Receivers** — receive POs, reconcile ASN cartons, flag discrepancies.
-- **Accounts Payable** — open-PO-by-month, vendor statements cross-check.
-- **Store managers** — read-only PO status for their stores.
+- **Buyers** - PO entry, auto-POs, order worksheets, vendor terms.
+- **Receivers** - receive POs, reconcile ASN cartons, flag discrepancies.
+- **Accounts Payable** - open-PO-by-month, vendor statements cross-check.
+- **Store managers** - read-only PO status for their stores.
 
 ## Prerequisites
 
-- [Products](products.md) — SKUs + vendor master.
-- [Store Operations](store-ops.md) — stores to distribute lines across.
+- [Products](products.md) - SKUs + vendor master.
+- [Store Operations](store-ops.md) - stores to distribute lines across.
 
 ## Screens
 
 _TODO. Intended screens:_
 - _PO list + filter (status, vendor, date, store)_
 - _PO entry (header + lines + store distribution)_
-- _Auto-PO — review + approve_
+- _Auto-PO - review + approve_
 - _Order worksheet (velocity-driven batch)_
 - _Receive PO (full / partial / carton-level)_
 - _ASN carton reconciliation_
@@ -51,9 +51,9 @@ _TODO._
 
 | Report | Where | Filters | Exports |
 |---|---|---|---|
-| Open POs | — | Vendor, store, date | CSV / PDF |
-| Open P.O. by Month | — | Month range | CSV / PDF |
-| Receipt discrepancies | — | Date range, vendor | CSV |
+| Open POs | - | Vendor, store, date | CSV / PDF |
+| Open P.O. by Month | - | Month range | CSV / PDF |
+| Receipt discrepancies | - | Date range, vendor | CSV |
 
 ## Keyboard shortcuts
 
@@ -63,18 +63,18 @@ _TODO._
 
 _TODO._
 
-## Data sources (Phase A)
+## Data Sources
 
-- **Primary read:** `rics_mirror` PO tables (specific table names TBD — see module spec).
-- **Primary write (Phase A):** none from app; RICS owns writes. Phase B flips this.
-- **Future (Phase C):** `purchasing.*` schema — purchase_order, po_line, po_receipt.
+- **Legacy baseline read:** imported `app.purchase_order_legacy` and `app.purchase_order_legacy_line` rows from direct CSV artifact imports.
+- **Development write:** native purchase-order work lands in Postgres `app.*` tables only. RICS remains the operational source of truth until cutover, and Zack's Retail must not write back to MDB files.
+- **Cutover target:** native `app.purchase_order`, `app.purchase_order_line`, `app.purchase_order_line_size_cell`, `app.po_receipt`, and related purchasing tables become the operational source after rehearsal validation.
 
 ## Related modules
 
-- [Products](products.md) — SKU + vendor master.
-- [Inventory](inventory.md) — on-order and receipts create inventory movements.
-- [Accounts Receivable](accounts-receivable.md) — PO dollars feed vendor-side ledgering (future).
-- [OTB Planning](otb-planning.md) — PO commitments count against plan.
+- [Products](products.md) - SKU + vendor master.
+- [Inventory](inventory.md) - on-order and receipts create inventory movements.
+- [Accounts Receivable](accounts-receivable.md) - PO dollars feed vendor-side ledgering (future).
+- [OTB Planning](otb-planning.md) - PO commitments count against plan.
 
 ## What's different from RICS
 

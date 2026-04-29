@@ -126,6 +126,13 @@ describe('GET /api/v1/skus/reference/all', () => {
     expect(names).toContain('Muy Alto (4+ in)');
     expect(names).toContain('Sin Tacon / Deportivo (0 in)');
   });
+
+  it('does not expose flat/no heel as a heel material', async () => {
+    const res = await request(app).get('/api/v1/skus/reference/all');
+    const names = res.body['heel-materials'].map((item: any) => item.name);
+    expect(names).toContain('Espartillo');
+    expect(names).not.toContain('Plano');
+  });
 });
 
 describe('GET /api/v1/skus/reference/:tableName', () => {
@@ -520,6 +527,7 @@ describe('POST /api/v1/skus/analyze-image', () => {
     try {
       const res = await request(app)
         .post('/api/v1/skus/analyze-image')
+        .field('family', 'zapatos')
         .attach('image', pngHeader, {
           filename: 'test.png',
           contentType: 'image/png',

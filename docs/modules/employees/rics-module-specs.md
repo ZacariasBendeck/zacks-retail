@@ -5,9 +5,10 @@
 > **Shipped surface:**
 > - `POST /api/v1/auth/login`, `POST /api/v1/auth/logout`, `GET /api/v1/auth/me`, `POST /api/v1/auth/change-password`
 > - `GET/POST/PATCH/DELETE /api/v1/users`, `GET /api/v1/users/_meta/roles`
+> - `GET/POST /api/v1/employees/salespeople`, `GET/PATCH/DELETE /api/v1/employees/salespeople/:code` for the app-owned salesperson roster in `app.employee`
 > - Six seed roles: OWNER, ADMIN, FINANCE, BUYER, MANAGER, SALESPERSON with 19 permission strings across all modules
 > - Permission middleware (`requireAuth`, `requirePermission`) at `apps/api/src/middleware/authMiddleware.ts`
-> - Web: `/login`, `/me`, `/change-password`, `/admin/users`, `/admin/users/new`, `/admin/users/:id/edit`
+> - Web: `/login`, `/me`, `/change-password`, `/employees/salespeople`, `/admin/users`, `/admin/users/new`, `/admin/users/:id/edit`
 > - OWNER bootstrapped from `AUTH_OWNER_EMAIL` + `AUTH_OWNER_PASSWORD` env vars on first boot
 >
 > **Key decisions made during Slice 1 (confirmed with user):**

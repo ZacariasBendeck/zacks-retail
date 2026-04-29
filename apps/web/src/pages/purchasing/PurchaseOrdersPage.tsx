@@ -1,5 +1,5 @@
-import { useCallback, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   Alert,
   App,
@@ -17,6 +17,7 @@ import {
 import {
   ArrowRightOutlined,
   ClockCircleOutlined,
+  EditOutlined,
   EyeOutlined,
   InboxOutlined,
   PlusOutlined,
@@ -28,6 +29,7 @@ import dayjs from 'dayjs'
 import ServerDataTable, { type ServerQueryChange, type ServerTableColumn } from '../../components/ServerDataTable'
 import {
   usePurchaseOrderOverdueExceptions,
+  usePurchaseOrderBuyerOptions,
   usePurchaseOrders,
   useTransferOrders,
 } from '../../hooks/usePurchaseOrders'
@@ -57,7 +59,7 @@ interface ReceivingExceptionRow {
   remainingUnits: number
   exceptionType: ExceptionType
   overdueDays: number
-  lastUpdatedAt: string
+  shipDate: string | null
 }
 
 // Currency is Honduran Lempira (HNL) system-wide — labeled once at the top of
@@ -168,7 +170,7 @@ function buildReceivingExceptionRows(
       remainingUnits: totals.ordered - totals.received,
       exceptionType,
       overdueDays: overdue?.daysOverdue ?? 0,
-      lastUpdatedAt: order.updatedAt,
+      shipDate: order.shipDate,
     })
   }
 
@@ -181,17 +183,24 @@ function buildReceivingExceptionRows(
 
 export default function PurchaseOrdersPage() {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const { message } = App.useApp()
-  const [poParams, setPoParams] = useState<PoListParams>({
+  const [poParams, setPoParams] = useState<PoListParams>(() => ({
     page: 1,
     pageSize: 50,
     sort: 'createdAt',
     order: 'desc',
-  })
+    q: searchParams.get('q')?.trim() || undefined,
+  }))
   const [transferParams, setTransferParams] = useState<TransferOrderListParams>({
     page: 1,
     pageSize: 25,
   })
+
+  useEffect(() => {
+    const nextQ = searchParams.get('q')?.trim() || undefined
+    setPoParams((prev) => (prev.q === nextQ ? prev : { ...prev, page: 1, q: nextQ }))
+  }, [searchParams])
 
   const { data: poData, isLoading: poLoading, isFetching: poFetching, refetch: refetchPos } = usePurchaseOrders(poParams)
   const {
@@ -201,19 +210,21 @@ export default function PurchaseOrdersPage() {
   } = useTransferOrders(transferParams)
   const { data: locations } = useLocations()
   const { data: vendors } = useVendors()
+  const { data: buyerOptions } = usePurchaseOrderBuyerOptions()
   const { data: overdueExceptions, isLoading: overdueLoading } = usePurchaseOrderOverdueExceptions()
   const { data: otbSummaryData, isLoading: otbSummaryLoading } = useOtbSummary({
     year: new Date().getFullYear(),
     month: new Date().getMonth() + 1,
   })
 
-  const { data: draftTotals } = usePurchaseOrders({ page: 1, pageSize: 1, status: 'DRAFT' })
-  const { data: submittedTotals } = usePurchaseOrders({ page: 1, pageSize: 1, status: 'SUBMITTED' })
-  const { data: confirmedTotals } = usePurchaseOrders({ page: 1, pageSize: 1, status: 'CONFIRMED' })
-  const { data: partialTotals } = usePurchaseOrders({ page: 1, pageSize: 1, status: 'PARTIALLY_RECEIVED' })
-  const { data: receivedTotals } = usePurchaseOrders({ page: 1, pageSize: 1, status: 'RECEIVED' })
-  const { data: closedTotals } = usePurchaseOrders({ page: 1, pageSize: 1, status: 'CLOSED' })
-  const { data: cancelledTotals } = usePurchaseOrders({ page: 1, pageSize: 1, status: 'CANCELLED' })
+  const buyerFilter = poParams.buyer
+  const { data: draftTotals } = usePurchaseOrders({ page: 1, pageSize: 1, status: 'DRAFT', buyer: buyerFilter })
+  const { data: submittedTotals } = usePurchaseOrders({ page: 1, pageSize: 1, status: 'SUBMITTED', buyer: buyerFilter })
+  const { data: confirmedTotals } = usePurchaseOrders({ page: 1, pageSize: 1, status: 'CONFIRMED', buyer: buyerFilter })
+  const { data: partialTotals } = usePurchaseOrders({ page: 1, pageSize: 1, status: 'PARTIALLY_RECEIVED', buyer: buyerFilter })
+  const { data: receivedTotals } = usePurchaseOrders({ page: 1, pageSize: 1, status: 'RECEIVED', buyer: buyerFilter })
+  const { data: closedTotals } = usePurchaseOrders({ page: 1, pageSize: 1, status: 'CLOSED', buyer: buyerFilter })
+  const { data: cancelledTotals } = usePurchaseOrders({ page: 1, pageSize: 1, status: 'CANCELLED', buyer: buyerFilter })
 
   const { data: confirmedExceptionsData, isLoading: confirmedExceptionsLoading } = usePurchaseOrders({
     page: 1,
@@ -221,6 +232,7 @@ export default function PurchaseOrdersPage() {
     status: 'CONFIRMED',
     sort: 'updatedAt',
     order: 'desc',
+    buyer: buyerFilter,
   })
   const { data: partialExceptionsData, isLoading: partialExceptionsLoading } = usePurchaseOrders({
     page: 1,
@@ -228,6 +240,7 @@ export default function PurchaseOrdersPage() {
     status: 'PARTIALLY_RECEIVED',
     sort: 'updatedAt',
     order: 'desc',
+    buyer: buyerFilter,
   })
 
   const statusCounts: Record<PoStatus, number> = {
@@ -350,6 +363,15 @@ export default function PurchaseOrdersPage() {
           >
             View
           </Button>
+          {record.status === 'DRAFT' && (
+            <Button
+              size="small"
+              icon={<EditOutlined />}
+              onClick={() => navigate(`/purchasing/orders/${record.id}/edit`)}
+            >
+              Edit
+            </Button>
+          )}
           {(record.status === 'CONFIRMED' || record.status === 'PARTIALLY_RECEIVED') && (
             <Button
               size="small"
@@ -430,11 +452,12 @@ export default function PurchaseOrdersPage() {
         value > 0 ? <Typography.Text type="danger">{value}</Typography.Text> : '-',
     },
     {
-      title: 'Updated',
-      dataIndex: 'lastUpdatedAt',
-      key: 'lastUpdatedAt',
+      title: 'Ship Date',
+      dataIndex: 'shipDate',
+      key: 'shipDate',
       width: 130,
-      render: (value: string) => dayjs(value).format('YYYY-MM-DD'),
+      render: (value: string | null) => value ? dayjs(value).format('YYYY-MM-DD') : '-',
+      exportValue: (record) => record.shipDate ? dayjs(record.shipDate).format('YYYY-MM-DD') : '',
     },
     {
       title: 'Action',
@@ -567,6 +590,28 @@ export default function PurchaseOrdersPage() {
               <Typography.Text type="secondary">
                 Transfers in transit: {transferInTransitCount}
               </Typography.Text>
+            </Space>
+            <Space size={6} wrap style={{ marginTop: 12 }}>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                Buyer
+              </Typography.Text>
+              <Button
+                size="small"
+                type={poParams.buyer ? 'default' : 'primary'}
+                onClick={() => setPoParams((prev) => ({ ...prev, page: 1, buyer: undefined }))}
+              >
+                All buyers
+              </Button>
+              {(buyerOptions ?? []).map((buyer) => (
+                <Button
+                  key={buyer.id}
+                  size="small"
+                  type={poParams.buyer === buyer.id ? 'primary' : 'default'}
+                  onClick={() => setPoParams((prev) => ({ ...prev, page: 1, buyer: buyer.id }))}
+                >
+                  {buyer.label} ({buyer.count})
+                </Button>
+              ))}
             </Space>
           </Col>
           <Col>

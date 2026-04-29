@@ -85,9 +85,15 @@ export interface MatchingSet {
   vendorId: string | null
   vendorName: string | null
   vendorStyle: string | null
+  materialCode: string | null
+  materialLabel: string | null
   sharedColorCode: string | null
   sharedColorLabel: string | null
   season: string | null
+  chainId: string | null
+  chainLabel: string | null
+  sellMode: 'separates' | 'bundle_required'
+  planningActive: boolean
   notes: string | null
   active: boolean
   memberCount: number
@@ -132,9 +138,14 @@ export interface MatchingSetInput {
   descriptionEs?: string | null
   vendorId?: string | null
   vendorStyle?: string | null
+  materialCode?: string | null
+  materialLabel?: string | null
   sharedColorCode?: string | null
   sharedColorLabel?: string | null
   season?: string | null
+  chainId?: string | null
+  sellMode?: 'separates' | 'bundle_required' | null
+  planningActive?: boolean | null
   notes?: string | null
   members?: MatchingSetMemberInput[]
 }
@@ -155,6 +166,102 @@ export interface MatchingSetTypeInput {
   descriptionEs?: string | null
   sortOrder?: number
   active?: boolean
+}
+
+export interface MatchingSetBuyingPlanMember {
+  skuId: string
+  skuCode: string | null
+  roleCode: string
+  roleLabelEs: string
+  quantityRatio: number
+  description: string | null
+  categoryNumber: number | null
+  departmentNumber: number | null
+  unitCost: number
+  retailPrice: number
+  onHand: number
+  onOrder: number
+  salesLookback: number
+  projectedSales: number
+  targetEnding: number
+  weeksOfSupply: number | null
+  baseRecommendedQty: number
+  recommendedQty: number
+  orphanQty: number
+}
+
+export interface MatchingSetBuyingPlanSizeLine {
+  skuId: string
+  skuCode: string | null
+  roleCode: string
+  sizeLabel: string
+  columnLabel: string
+  rowLabel: string
+  onHand: number
+  onOrder: number
+  salesLookback: number
+  projectedSales: number
+  targetEnding: number
+  recommendedQty: number
+  unitCost: number
+  retailPrice: number
+  categoryNumber: number | null
+  departmentNumber: number | null
+}
+
+export interface MatchingSetOtbImpactRow {
+  departmentNumber: number | null
+  departmentName: string | null
+  categoryNumber: number | null
+  categoryName: string | null
+  receiptMonth: string
+  proposedUnits: number
+  proposedCost: number
+  proposedRetail: number
+  committedCost: number
+  plannedCost: number | null
+  remainingBeforeProposed: number | null
+  remainingAfterProposed: number | null
+  status: 'OK' | 'WARN' | 'BLOCK' | 'NO_PLAN'
+}
+
+export interface MatchingSetBuyingPlan {
+  setId: string
+  setCode: string
+  setTypeCode: string
+  descriptionEs: string | null
+  vendorId: string | null
+  vendorName: string | null
+  vendorStyle: string | null
+  materialCode: string | null
+  materialLabel: string | null
+  sharedColorCode: string | null
+  sharedColorLabel: string | null
+  season: string | null
+  chainId: string | null
+  chainLabel: string | null
+  sellMode: 'separates' | 'bundle_required'
+  planningActive: boolean
+  receiptMonth: string
+  horizonWeeks: number
+  targetCoverWeeks: number
+  completeSetCapacity: number
+  bottleneckRoleCode: string | null
+  orphanUnits: number
+  recommendedUnits: number
+  recommendedCost: number
+  recommendedRetail: number
+  members: MatchingSetBuyingPlanMember[]
+  sizeLines: MatchingSetBuyingPlanSizeLine[]
+  otbImpact: MatchingSetOtbImpactRow[]
+  warnings: string[]
+}
+
+export interface SavedMatchingSetBuyingPlan extends MatchingSetBuyingPlan {
+  planId: string
+  status: string
+  createdAt: string
+  generatedPoId: string | null
 }
 
 function buildParams(filter?: MatchingSetListFilters): string {
@@ -241,6 +348,33 @@ export const productMatchingSetsApi = {
     return request<MatchingSet>(
       `${BASE}/${encodeURIComponent(id)}/members/${encodeURIComponent(skuId)}`,
       { method: 'DELETE' },
+    )
+  },
+  buyingPlan(
+    id: string,
+    params?: { chainId?: string | null; receiptMonth?: string | null; horizonWeeks?: number; targetCoverWeeks?: number },
+  ): Promise<MatchingSetBuyingPlan> {
+    const p = new URLSearchParams()
+    if (params?.chainId) p.set('chainId', params.chainId)
+    if (params?.receiptMonth) p.set('receiptMonth', params.receiptMonth)
+    if (params?.horizonWeeks) p.set('horizonWeeks', String(params.horizonWeeks))
+    if (params?.targetCoverWeeks) p.set('targetCoverWeeks', String(params.targetCoverWeeks))
+    const qs = p.toString() ? `?${p.toString()}` : ''
+    return request<MatchingSetBuyingPlan>(`${BASE}/${encodeURIComponent(id)}/buying-plan${qs}`)
+  },
+  saveBuyingPlan(
+    id: string,
+    input: { chainId?: string | null; receiptMonth?: string | null; horizonWeeks?: number; targetCoverWeeks?: number },
+  ): Promise<SavedMatchingSetBuyingPlan> {
+    return request<SavedMatchingSetBuyingPlan>(`${BASE}/${encodeURIComponent(id)}/buying-plan`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    })
+  },
+  createPoFromBuyingPlan(planId: string): Promise<{ planId: string; poId: string; poNumber: string }> {
+    return request<{ planId: string; poId: string; poNumber: string }>(
+      `${BASE}/buying-plans/${encodeURIComponent(planId)}/create-po`,
+      { method: 'POST' },
     )
   },
 }

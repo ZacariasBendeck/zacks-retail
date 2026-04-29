@@ -1,12 +1,16 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   App,
+  Alert,
   Button,
+  Card,
+  Divider,
   Drawer,
   Flex,
   Form,
   Input,
   InputNumber,
+  Modal,
   Popconfirm,
   Select,
   Space,
@@ -19,6 +23,7 @@ import {
 import type { ColumnsType } from 'antd/es/table'
 import {
   PlusOutlined,
+  QuestionCircleOutlined,
   ReloadOutlined,
   SearchOutlined,
   SettingOutlined,
@@ -34,16 +39,25 @@ import {
   useCreateMatchingSetRole,
   useCreateMatchingSetType,
   useMatchingSet,
+  useMatchingSetBuyingPlan,
   useMatchingSets,
   useMatchingSetTypes,
   useRemoveMatchingSetMember,
   useRestoreMatchingSet,
+  useSaveMatchingSetBuyingPlan,
+  useCreatePoFromMatchingSetBuyingPlan,
   useUpdateMatchingSet,
   useUpdateMatchingSetMember,
   useUpdateMatchingSetRole,
   useUpdateMatchingSetType,
 } from '../../../hooks/useProductMatchingSets'
+import { useStoreChains } from '../../../hooks/useStores'
+import { matchingSetSuitBuyingHelp } from '../../../content/help/matchingSetSuitBuying'
 import type {
+  MatchingSetBuyingPlan,
+  MatchingSetBuyingPlanMember,
+  MatchingSetBuyingPlanSizeLine,
+  MatchingSetOtbImpactRow,
   MatchingSetInput,
   MatchingSetListFilters,
   MatchingSetListItem,
@@ -57,9 +71,14 @@ type HeaderFormValues = {
   descriptionEs?: string | null
   vendorId?: string | null
   vendorStyle?: string | null
+  materialCode?: string | null
+  materialLabel?: string | null
   sharedColorCode?: string | null
   sharedColorLabel?: string | null
   season?: string | null
+  chainId?: string | null
+  sellMode?: 'separates' | 'bundle_required'
+  planningActive?: boolean
   notes?: string | null
 }
 
@@ -101,14 +120,23 @@ export default function MatchingSetsPage() {
   const [memberTarget, setMemberTarget] = useState<'draft' | 'existing'>('draft')
   const [draftMembers, setDraftMembers] = useState<DraftMember[]>([])
   const [newMemberRole, setNewMemberRole] = useState<string | null>(null)
+  const [receiptMonth, setReceiptMonth] = useState(() => new Date().toISOString().slice(0, 7))
+  const [horizonWeeks, setHorizonWeeks] = useState(13)
+  const [targetCoverWeeks, setTargetCoverWeeks] = useState(8)
+  const [savedPlanId, setSavedPlanId] = useState<string | null>(null)
   const [typeForm] = Form.useForm()
   const [roleForm] = Form.useForm()
   const [form] = Form.useForm<HeaderFormValues>()
 
   const { data: types } = useMatchingSetTypes()
   const { data: vendors } = useVendors()
+  const { data: chains } = useStoreChains()
   const { data: rows, isFetching, refetch } = useMatchingSets(filters)
   const { data: detail, isFetching: detailLoading } = useMatchingSet(selectedId)
+  const { data: buyingPlan, isFetching: buyingPlanLoading, refetch: refetchBuyingPlan } = useMatchingSetBuyingPlan(
+    selectedId,
+    { chainId: detail?.chainId, receiptMonth, horizonWeeks, targetCoverWeeks },
+  )
   const createSet = useCreateMatchingSet()
   const updateSet = useUpdateMatchingSet()
   const archiveSet = useArchiveMatchingSet()
@@ -116,6 +144,8 @@ export default function MatchingSetsPage() {
   const addMember = useAddMatchingSetMember()
   const updateMember = useUpdateMatchingSetMember()
   const removeMember = useRemoveMatchingSetMember()
+  const saveBuyingPlan = useSaveMatchingSetBuyingPlan()
+  const createPoFromPlan = useCreatePoFromMatchingSetBuyingPlan()
   const createType = useCreateMatchingSetType()
   const updateType = useUpdateMatchingSetType()
   const createRole = useCreateMatchingSetRole()
@@ -127,10 +157,15 @@ export default function MatchingSetsPage() {
   }, [searchParams])
 
   const watchedType = Form.useWatch('setTypeCode', form)
+  const watchedVendorId = Form.useWatch('vendorId', form)
   const selectedType = useMemo(
     () => types?.find((type) => type.code === (watchedType ?? detail?.setTypeCode)),
     [detail?.setTypeCode, types, watchedType],
   )
+  const skuLookupInitialFilters = useMemo(() => {
+    const vendor = clean(watchedVendorId) ?? clean(detail?.vendorId)
+    return vendor ? { vendor } : undefined
+  }, [detail?.vendorId, watchedVendorId])
 
   useEffect(() => {
     if (!drawerOpen) return
@@ -140,17 +175,28 @@ export default function MatchingSetsPage() {
         descriptionEs: detail.descriptionEs,
         vendorId: detail.vendorId,
         vendorStyle: detail.vendorStyle,
+        materialCode: detail.materialCode,
+        materialLabel: detail.materialLabel,
         sharedColorCode: detail.sharedColorCode,
         sharedColorLabel: detail.sharedColorLabel,
         season: detail.season,
+        chainId: detail.chainId,
+        sellMode: detail.sellMode,
+        planningActive: detail.planningActive,
         notes: detail.notes,
       })
+      setSavedPlanId(null)
       setNewMemberRole(detail.setTypeCode === selectedType?.code ? roleOptions(selectedType)[0]?.value ?? null : null)
       return
     }
     const firstType = types?.find((type) => type.active) ?? types?.[0]
     form.resetFields()
-    form.setFieldsValue({ setTypeCode: firstType?.code ?? 'suit' })
+    form.setFieldsValue({
+      setTypeCode: firstType?.code ?? 'suit',
+      sellMode: 'separates',
+      planningActive: true,
+    })
+    setSavedPlanId(null)
     setDraftMembers([])
   }, [detail, drawerOpen, form, selectedType, types])
 
@@ -165,6 +211,10 @@ export default function MatchingSetsPage() {
   const vendorOptions = useMemo(
     () => (vendors ?? []).map((vendor) => ({ value: vendor.code, label: `${vendor.code} - ${vendor.name}` })),
     [vendors],
+  )
+  const chainOptions = useMemo(
+    () => (chains ?? []).filter((chain) => chain.active).map((chain) => ({ value: chain.id, label: chain.label })),
+    [chains],
   )
 
   const openNew = () => {
@@ -184,9 +234,14 @@ export default function MatchingSetsPage() {
       descriptionEs: clean(values.descriptionEs),
       vendorId: clean(values.vendorId),
       vendorStyle: clean(values.vendorStyle),
+      materialCode: clean(values.materialCode),
+      materialLabel: clean(values.materialLabel),
       sharedColorCode: clean(values.sharedColorCode),
       sharedColorLabel: clean(values.sharedColorLabel),
       season: clean(values.season),
+      chainId: clean(values.chainId),
+      sellMode: values.sellMode ?? 'separates',
+      planningActive: values.planningActive ?? true,
       notes: clean(values.notes),
     }
     if (detail) {
@@ -314,6 +369,26 @@ export default function MatchingSetsPage() {
         />
       ),
     },
+    {
+      title: 'Ratio',
+      dataIndex: 'quantityRatio',
+      width: 105,
+      render: (value, record) => (
+        <InputNumber
+          min={0.001}
+          step={0.1}
+          value={value}
+          style={{ width: 86 }}
+          onBlur={(event) => {
+            if (!detail) return
+            const next = Number(event.target.value)
+            if (Number.isFinite(next) && next > 0 && next !== record.quantityRatio) {
+              updateMember.mutate({ id: detail.id, skuId: record.skuId, patch: { quantityRatio: next } })
+            }
+          }}
+        />
+      ),
+    },
     { title: 'State', dataIndex: 'skuState', width: 120, render: (v) => <Tag>{v}</Tag> },
     { title: 'On Hand', dataIndex: 'onHandTotal', width: 90, align: 'right', render: formatNumber },
     { title: '90d Sales', dataIndex: 'salesLast90Days', width: 90, align: 'right', render: formatNumber },
@@ -362,6 +437,23 @@ export default function MatchingSetsPage() {
                 ...member,
                 isPrimary: checked ? member.key === record.key : false,
               })),
+            )
+          }
+        />
+      ),
+    },
+    {
+      title: 'Ratio',
+      width: 105,
+      render: (_, record) => (
+        <InputNumber
+          min={0.001}
+          step={0.1}
+          value={record.quantityRatio ?? 1}
+          style={{ width: 86 }}
+          onChange={(quantityRatio) =>
+            setDraftMembers((current) =>
+              current.map((member) => member.key === record.key ? { ...member, quantityRatio: Number(quantityRatio ?? 1) } : member),
             )
           }
         />
@@ -500,11 +592,33 @@ export default function MatchingSetsPage() {
             <Form.Item name="descriptionEs" label="Description" style={{ minWidth: 300, flex: 2 }}>
               <Input />
             </Form.Item>
+            <Form.Item name="materialCode" label="Material Code" style={{ minWidth: 150, flex: 1 }}>
+              <Input />
+            </Form.Item>
+            <Form.Item name="materialLabel" label="Material" style={{ minWidth: 200, flex: 1 }}>
+              <Input />
+            </Form.Item>
             <Form.Item name="sharedColorCode" label="Color Code" style={{ minWidth: 140, flex: 1 }}>
               <Input />
             </Form.Item>
             <Form.Item name="sharedColorLabel" label="Color Label" style={{ minWidth: 180, flex: 1 }}>
               <Input />
+            </Form.Item>
+          </Flex>
+          <Flex gap={12} wrap="wrap">
+            <Form.Item name="chainId" label="Retail Chain" style={{ minWidth: 260, flex: 1 }}>
+              <Select allowClear showSearch optionFilterProp="label" options={chainOptions} />
+            </Form.Item>
+            <Form.Item name="sellMode" label="Sell Mode" style={{ minWidth: 190, flex: 1 }}>
+              <Select
+                options={[
+                  { value: 'separates', label: 'Separates' },
+                  { value: 'bundle_required', label: 'Bundle required' },
+                ]}
+              />
+            </Form.Item>
+            <Form.Item name="planningActive" label="Planning Active" valuePropName="checked" style={{ width: 150 }}>
+              <Switch />
             </Form.Item>
           </Flex>
           <Form.Item name="notes" label="Notes">
@@ -543,13 +657,63 @@ export default function MatchingSetsPage() {
         </Flex>
 
         {detail ? (
-          <Table
-            rowKey="skuId"
-            size="small"
-            loading={detailLoading}
-            columns={memberColumns}
-            dataSource={detail.members}
-            pagination={false}
+          <Tabs
+            items={[
+              {
+                key: 'members',
+                label: 'Members',
+                children: (
+                  <Table
+                    rowKey="skuId"
+                    size="small"
+                    loading={detailLoading}
+                    columns={memberColumns}
+                    dataSource={detail.members}
+                    pagination={false}
+                  />
+                ),
+              },
+              {
+                key: 'buying-plan',
+                label: 'Buying Plan',
+                children: (
+                  <BuyingPlanPanel
+                    plan={buyingPlan}
+                    loading={buyingPlanLoading}
+                    receiptMonth={receiptMonth}
+                    horizonWeeks={horizonWeeks}
+                    targetCoverWeeks={targetCoverWeeks}
+                    savedPlanId={savedPlanId}
+                    saving={saveBuyingPlan.isPending}
+                    creatingPo={createPoFromPlan.isPending}
+                    onReceiptMonthChange={setReceiptMonth}
+                    onHorizonWeeksChange={setHorizonWeeks}
+                    onTargetCoverWeeksChange={setTargetCoverWeeks}
+                    onRefresh={() => void refetchBuyingPlan()}
+                    onSave={async () => {
+                      if (!detail) return
+                      const saved = await saveBuyingPlan.mutateAsync({
+                        id: detail.id,
+                        input: {
+                          chainId: detail.chainId,
+                          receiptMonth,
+                          horizonWeeks,
+                          targetCoverWeeks,
+                        },
+                      })
+                      setSavedPlanId(saved.planId)
+                      message.success('Buying plan saved')
+                    }}
+                    onCreatePo={async () => {
+                      if (!savedPlanId) return
+                      const created = await createPoFromPlan.mutateAsync(savedPlanId)
+                      message.success(`PO worksheet created: ${created.poNumber}`)
+                      setSavedPlanId(null)
+                    }}
+                  />
+                ),
+              },
+            ]}
           />
         ) : (
           <Table
@@ -578,6 +742,7 @@ export default function MatchingSetsPage() {
         open={skuLookupOpen}
         onClose={() => setSkuLookupOpen(false)}
         onSelect={handlePickedSku}
+        initialFilters={skuLookupInitialFilters}
       />
     </div>
   )
@@ -756,5 +921,233 @@ function RoleSettingsDrawer({
         ]}
       />
     </Drawer>
+  )
+}
+
+function formatMoney(value: number | null | undefined): string {
+  if (value == null) return '-'
+  return new Intl.NumberFormat('es-HN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value)
+}
+
+function BuyingPlanPanel({
+  plan,
+  loading,
+  receiptMonth,
+  horizonWeeks,
+  targetCoverWeeks,
+  savedPlanId,
+  saving,
+  creatingPo,
+  onReceiptMonthChange,
+  onHorizonWeeksChange,
+  onTargetCoverWeeksChange,
+  onRefresh,
+  onSave,
+  onCreatePo,
+}: {
+  plan: MatchingSetBuyingPlan | undefined
+  loading: boolean
+  receiptMonth: string
+  horizonWeeks: number
+  targetCoverWeeks: number
+  savedPlanId: string | null
+  saving: boolean
+  creatingPo: boolean
+  onReceiptMonthChange: (value: string) => void
+  onHorizonWeeksChange: (value: number) => void
+  onTargetCoverWeeksChange: (value: number) => void
+  onRefresh: () => void
+  onSave: () => Promise<void>
+  onCreatePo: () => Promise<void>
+}) {
+  const [workflowOpen, setWorkflowOpen] = useState(false)
+
+  const roleColumns: ColumnsType<MatchingSetBuyingPlanMember> = [
+    { title: 'Role', dataIndex: 'roleLabelEs', width: 130 },
+    {
+      title: 'SKU',
+      width: 130,
+      render: (_, record) => record.skuCode ? <SkuLink skuCode={record.skuCode}>{record.skuCode}</SkuLink> : '-',
+    },
+    { title: 'Ratio', dataIndex: 'quantityRatio', width: 80, align: 'right' },
+    { title: 'On Hand', dataIndex: 'onHand', width: 90, align: 'right', render: formatNumber },
+    { title: 'On Order', dataIndex: 'onOrder', width: 90, align: 'right', render: formatNumber },
+    { title: 'Sales', dataIndex: 'salesLookback', width: 80, align: 'right', render: formatNumber },
+    { title: 'WOS', dataIndex: 'weeksOfSupply', width: 80, align: 'right', render: (v) => v == null ? '-' : formatMoney(v) },
+    { title: 'Base Buy', dataIndex: 'baseRecommendedQty', width: 90, align: 'right', render: formatNumber },
+    { title: 'Balanced Buy', dataIndex: 'recommendedQty', width: 110, align: 'right', render: formatNumber },
+    { title: 'Orphans', dataIndex: 'orphanQty', width: 90, align: 'right', render: formatNumber },
+  ]
+
+  const sizeColumns: ColumnsType<MatchingSetBuyingPlanSizeLine> = [
+    { title: 'Role', dataIndex: 'roleCode', width: 100 },
+    {
+      title: 'SKU',
+      width: 130,
+      render: (_, record) => record.skuCode ? <SkuLink skuCode={record.skuCode}>{record.skuCode}</SkuLink> : '-',
+    },
+    { title: 'Size', dataIndex: 'sizeLabel', width: 120 },
+    { title: 'On Hand', dataIndex: 'onHand', width: 85, align: 'right', render: formatNumber },
+    { title: 'On Order', dataIndex: 'onOrder', width: 85, align: 'right', render: formatNumber },
+    { title: 'Sales', dataIndex: 'salesLookback', width: 80, align: 'right', render: formatNumber },
+    { title: 'Projected', dataIndex: 'projectedSales', width: 90, align: 'right', render: formatNumber },
+    { title: 'Target EOH', dataIndex: 'targetEnding', width: 95, align: 'right', render: formatNumber },
+    { title: 'Buy', dataIndex: 'recommendedQty', width: 80, align: 'right', render: formatNumber },
+  ]
+
+  const otbColumns: ColumnsType<MatchingSetOtbImpactRow> = [
+    { title: 'Department', render: (_, r) => r.departmentName ?? r.departmentNumber ?? '-' },
+    { title: 'Category', render: (_, r) => r.categoryName ?? r.categoryNumber ?? '-' },
+    { title: 'Units', dataIndex: 'proposedUnits', width: 80, align: 'right', render: formatNumber },
+    { title: 'Proposed Cost', dataIndex: 'proposedCost', width: 120, align: 'right', render: formatMoney },
+    { title: 'Proposed Retail', dataIndex: 'proposedRetail', width: 120, align: 'right', render: formatMoney },
+    { title: 'Committed Cost', dataIndex: 'committedCost', width: 125, align: 'right', render: formatMoney },
+    {
+      title: 'Status',
+      dataIndex: 'status',
+      width: 100,
+      render: (status) => <Tag color={status === 'NO_PLAN' ? 'gold' : status === 'BLOCK' ? 'red' : 'green'}>{status}</Tag>,
+    },
+  ]
+
+  return (
+    <Space direction="vertical" size={12} style={{ width: '100%' }}>
+      <Flex justify="space-between" align="start" gap={12} wrap="wrap">
+        <Alert
+          type="info"
+          showIcon
+          style={{ flex: 1, minWidth: 360 }}
+          message="Amounts in Lempira (HNL). OTB preview is Postgres-safe; if no Postgres OTB plan exists yet, status shows NO_PLAN instead of reading legacy SQLite budgets."
+        />
+        <Button icon={<QuestionCircleOutlined />} onClick={() => setWorkflowOpen(true)}>
+          Buyer Workflow
+        </Button>
+      </Flex>
+      <Flex gap={8} wrap="wrap" align="end">
+        <div>
+          <Typography.Text type="secondary">Receipt month</Typography.Text>
+          <Input
+            type="month"
+            value={receiptMonth}
+            onChange={(event) => onReceiptMonthChange(event.target.value)}
+            style={{ display: 'block', width: 150 }}
+          />
+        </div>
+        <div>
+          <Typography.Text type="secondary">Horizon weeks</Typography.Text>
+          <InputNumber
+            min={1}
+            max={52}
+            value={horizonWeeks}
+            onChange={(value) => onHorizonWeeksChange(Number(value ?? 13))}
+            style={{ display: 'block', width: 130 }}
+          />
+        </div>
+        <div>
+          <Typography.Text type="secondary">Target cover weeks</Typography.Text>
+          <InputNumber
+            min={1}
+            max={52}
+            value={targetCoverWeeks}
+            onChange={(value) => onTargetCoverWeeksChange(Number(value ?? 8))}
+            style={{ display: 'block', width: 160 }}
+          />
+        </div>
+        <Button onClick={onRefresh} loading={loading}>Recalculate</Button>
+        <Button type="primary" onClick={() => void onSave()} loading={saving} disabled={!plan || (plan.recommendedUnits ?? 0) <= 0}>
+          Save Plan
+        </Button>
+        <Button onClick={() => void onCreatePo()} loading={creatingPo} disabled={!savedPlanId}>
+          Create PO Worksheet
+        </Button>
+      </Flex>
+
+      {plan?.warnings.map((warning) => (
+        <Alert key={warning} type="warning" showIcon message={warning} />
+      ))}
+
+      <Flex gap={12} wrap="wrap">
+        <Card size="small" title="Complete Set Capacity" style={{ minWidth: 180, flex: 1 }}>
+          <Typography.Title level={3} style={{ margin: 0 }}>{formatNumber(plan?.completeSetCapacity)}</Typography.Title>
+        </Card>
+        <Card size="small" title="Bottleneck" style={{ minWidth: 180, flex: 1 }}>
+          <Typography.Title level={3} style={{ margin: 0 }}>{plan?.bottleneckRoleCode ?? '-'}</Typography.Title>
+        </Card>
+        <Card size="small" title="Orphan Units" style={{ minWidth: 180, flex: 1 }}>
+          <Typography.Title level={3} style={{ margin: 0 }}>{formatNumber(plan?.orphanUnits)}</Typography.Title>
+        </Card>
+        <Card size="small" title="Recommended Buy" style={{ minWidth: 180, flex: 1 }}>
+          <Typography.Title level={3} style={{ margin: 0 }}>{formatNumber(plan?.recommendedUnits)}</Typography.Title>
+          <Typography.Text type="secondary">{formatMoney(plan?.recommendedCost)} cost</Typography.Text>
+        </Card>
+      </Flex>
+
+      <Divider orientation="left">Roles</Divider>
+      <Table
+        rowKey={(record) => record.skuId}
+        size="small"
+        loading={loading}
+        columns={roleColumns}
+        dataSource={plan?.members ?? []}
+        pagination={false}
+        scroll={{ x: 1000 }}
+      />
+
+      <Divider orientation="left">Size Recommendation</Divider>
+      <Table
+        rowKey={(record) => `${record.skuId}:${record.columnLabel}:${record.rowLabel}`}
+        size="small"
+        loading={loading}
+        columns={sizeColumns}
+        dataSource={(plan?.sizeLines ?? []).filter((line) => line.recommendedQty > 0)}
+        pagination={{ pageSize: 20 }}
+        scroll={{ x: 980 }}
+      />
+
+      <Divider orientation="left">OTB Preview</Divider>
+      <Table
+        rowKey={(record) => `${record.departmentNumber ?? ''}:${record.categoryNumber ?? ''}`}
+        size="small"
+        loading={loading}
+        columns={otbColumns}
+        dataSource={plan?.otbImpact ?? []}
+        pagination={false}
+      />
+
+      <Modal
+        open={workflowOpen}
+        title={matchingSetSuitBuyingHelp.title}
+        onCancel={() => setWorkflowOpen(false)}
+        footer={<Button onClick={() => setWorkflowOpen(false)}>Close</Button>}
+        width={760}
+      >
+        <Space direction="vertical" size={16} style={{ width: '100%' }}>
+          <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
+            {matchingSetSuitBuyingHelp.subtitle}
+          </Typography.Paragraph>
+
+          <Card size="small" title="Context for this screen">
+            <Space direction="vertical" size={8}>
+              {matchingSetSuitBuyingHelp.context.map((item) => (
+                <Typography.Text key={item}>{item}</Typography.Text>
+              ))}
+            </Space>
+          </Card>
+
+          <Space direction="vertical" size={12} style={{ width: '100%' }}>
+            {matchingSetSuitBuyingHelp.steps.map((step, index) => (
+              <Card
+                key={step.title}
+                size="small"
+                title={`${index + 1}. ${step.title}`}
+                styles={{ body: { paddingTop: 8 } }}
+              >
+                <Typography.Paragraph style={{ marginBottom: 0 }}>{step.body}</Typography.Paragraph>
+              </Card>
+            ))}
+          </Space>
+        </Space>
+      </Modal>
+    </Space>
   )
 }

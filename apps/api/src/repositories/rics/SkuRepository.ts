@@ -315,7 +315,13 @@ function buildWhere(opts: FindAllOptions): { clauses: string[]; params: unknown[
       `(
         UPPER(s.code) LIKE ${ref}
         OR UPPER(COALESCE(NULLIF(BTRIM(s.description_rics), ''), NULLIF(BTRIM(s.description_web), ''), s.provisional_code, '')) LIKE ${ref}
+        OR UPPER(COALESCE(s.description_web, '')) LIKE ${ref}
         OR UPPER(COALESCE(s.style_color, '')) LIKE ${ref}
+        OR UPPER(COALESCE(o.vendor, s.vendor_id, '')) LIKE ${ref}
+        OR UPPER(COALESCE(s.vendor_sku, '')) LIKE ${ref}
+        OR UPPER(COALESCE(s.manufacturer, '')) LIKE ${ref}
+        OR UPPER(COALESCE(c."desc", '')) LIKE ${ref}
+        OR UPPER(COALESCE(d."desc", '')) LIKE ${ref}
       )`,
     );
   }
@@ -433,6 +439,9 @@ function baseSelect(): string {
       s.order_uom AS "orderUom"
     FROM app.sku s
     LEFT JOIN app.sku_attribute_override o ON o.rics_sku_code = s.code
+    LEFT JOIN app.taxonomy_category c ON c.number = COALESCE(o.category, s.category_number)
+    LEFT JOIN app.taxonomy_department d
+      ON COALESCE(o.category, s.category_number) BETWEEN d.beg_categ AND d.end_categ
   `;
 }
 

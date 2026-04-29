@@ -24,15 +24,16 @@ describe('getAiFillConfig', () => {
     const config = getAiFillConfig();
     expect(config.version).toBe(1);
     expect(config.attributes).toBeDefined();
-    expect(Object.keys(config.attributes).length).toBe(13);
+    expect(Object.keys(config.attributes).length).toBe(16);
   });
 
   it('includes all expected attribute keys', () => {
     const config = getAiFillConfig();
     const expected = [
-      'color', 'description', 'department', 'shoeTypeId', 'heelHeightId',
+      'color', 'description', 'shoeTypeId', 'heelHeightId',
       'heelShapeId', 'toeShapeId', 'colorId', 'upperMaterialId',
-      'finishId', 'patternId', 'occasionId', 'categoryId',
+      'outsoleMaterialId', 'heelMaterialId', 'finishId', 'patternId',
+      'occasionId', 'targetAudienceId', 'accessoryId', 'categoryId',
     ];
     for (const key of expected) {
       expect(config.attributes[key]).toBeDefined();
@@ -44,9 +45,10 @@ describe('getAiFillConfig', () => {
     const config = getAiFillConfig();
     expect(config.attributes.color.type).toBe('text');
     expect(config.attributes.description.type).toBe('text');
-    expect(config.attributes.department.type).toBe('enum');
     expect(config.attributes.shoeTypeId.type).toBe('reference');
     expect(config.attributes.shoeTypeId.refTable).toBe('shoe-types');
+    expect(config.attributes.heelMaterialId.type).toBe('reference');
+    expect(config.attributes.heelMaterialId.refTable).toBe('heel-materials');
   });
 });
 
@@ -70,6 +72,17 @@ describe('matchReferenceValue', () => {
   it('matches English to Spanish — upper material', () => {
     const id = matchReferenceValue('upper-materials', 'Leather');
     expect(id).not.toBeNull();
+  });
+
+  it('maps espadrille as a heel covering material', () => {
+    const id = matchReferenceValue('heel-materials', 'Espadrille');
+    expect(id).not.toBeNull();
+  });
+
+  it('does not map flat/no heel to a heel material', () => {
+    expect(matchReferenceValue('heel-materials', 'None')).toBeNull();
+    expect(matchReferenceValue('heel-materials', 'Flat')).toBeNull();
+    expect(matchReferenceValue('heel-materials', 'Plano')).toBeNull();
   });
 
   it('matches English to Spanish — toe shape', () => {
@@ -151,7 +164,6 @@ describe('mapAiResultsToReferenceIds', () => {
     // Text/enum types should be the raw string
     expect(mapped.color).toBe('Black');
     expect(mapped.description).toBe('A classic black leather pump');
-    expect(mapped.department).toBe('FORMAL');
   });
 
   it('handles null AI values gracefully', () => {
@@ -174,7 +186,6 @@ describe('mapAiResultsToReferenceIds', () => {
 
     expect(mapped.shoeTypeId).toBeNull();
     expect(mapped.color).toBeNull();
-    expect(mapped.department).toBeNull();
   });
 });
 
@@ -184,7 +195,7 @@ describe('GET /api/v1/skus/ai-fill-config', () => {
     expect(res.status).toBe(200);
     expect(res.body.version).toBe(1);
     expect(res.body.attributes).toBeDefined();
-    expect(Object.keys(res.body.attributes).length).toBe(13);
+    expect(Object.keys(res.body.attributes).length).toBe(16);
     expect(res.body.attributes.shoeTypeId.type).toBe('reference');
     expect(res.body.attributes.shoeTypeId.refTable).toBe('shoe-types');
     expect(res.body.attributes.categoryId.type).toBe('reference');

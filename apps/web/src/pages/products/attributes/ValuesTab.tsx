@@ -56,6 +56,20 @@ export default function ValuesTab({ dimension }: Props) {
       ),
     },
     { title: 'Etiqueta', dataIndex: 'labelEs', key: 'labelEs' },
+    {
+      title: 'DescripciÃ³n',
+      dataIndex: 'descriptionEs',
+      key: 'descriptionEs',
+      ellipsis: true,
+      render: (value: string | null) =>
+        value ? (
+          <Tooltip title={value}>
+            <Typography.Text>{value}</Typography.Text>
+          </Tooltip>
+        ) : (
+          <Typography.Text type="secondary">â€”</Typography.Text>
+        ),
+    },
     { title: 'Orden', dataIndex: 'sortOrder', key: 'sortOrder', width: 80, align: 'right' as const },
     {
       title: 'Activo',

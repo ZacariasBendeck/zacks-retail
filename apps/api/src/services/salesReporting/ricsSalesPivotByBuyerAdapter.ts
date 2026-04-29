@@ -57,6 +57,7 @@ interface MasterRow {
   category: number | null;
   vendor: string | null;
   vendor_label: string | null;
+  picture_file_name: string | null;
 }
 
 interface DeptMapRow {
@@ -165,6 +166,7 @@ async function loadMasterForSkus(skus: string[]): Promise<MasterRow[]> {
         s.description_rics AS desc,
         s.category_number AS category,
         s.vendor_id AS vendor,
+        s.picture_file_name AS picture_file_name,
         COALESCE(NULLIF(TRIM(v.short_name), ''), NULLIF(TRIM(v.manu_name), '')) AS vendor_label
       FROM app.sku s
       LEFT JOIN app.vendor v ON v.code = s.vendor_id
@@ -363,6 +365,7 @@ export async function getSalesPivotByBuyer(params: {
       groupDesc: null,
       sku: leaf.sku,
       skuDescription: m?.desc?.trim() || null,
+      pictureFileName: m?.picture_file_name?.trim() || null,
       onHandQty: leaf.onHandQty,
       onHandCostVal: leaf.onHandCostVal,
       qtyTY: leaf.qtyTY,

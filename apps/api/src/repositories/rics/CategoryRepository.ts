@@ -26,17 +26,22 @@ export interface Category {
   description: string;
   dateLastChanged: Date | null;
   skuCount: number;
+  productFamilyCode: string | null;
+  productFamilyLabelEs: string | null;
 }
 
 export interface CategoryInput {
   number: number;
   description: string;
+  productFamilyCode?: string | null;
 }
 
 interface CategoryRow {
   number: number;
   description: string;
   dateLastChanged: Date;
+  productFamilyCode?: string | null;
+  productFamilyLabelEs?: string | null;
 }
 
 function mapRow(row: CategoryRow): Category {
@@ -45,6 +50,8 @@ function mapRow(row: CategoryRow): Category {
     description: row.description,
     dateLastChanged: row.dateLastChanged,
     skuCount: 0,
+    productFamilyCode: row.productFamilyCode ?? null,
+    productFamilyLabelEs: row.productFamilyLabelEs ?? null,
   };
 }
 
@@ -65,24 +72,59 @@ function validate(input: CategoryInput): RepoError | null {
 export const CategoryRepository = {
   async list(): Promise<Result<Category[]>> {
     const rows = await prisma.taxonomyCategory.findMany({ orderBy: { number: 'asc' } });
+    const mappings = await prisma.categoryProductFamily.findMany({ include: { family: true } });
+    const mappingByCategory = new Map(mappings.map((m) => [m.categoryNumber, m]));
     const counts = await loadSkuCountsByCategory();
-    return Ok(rows.map(mapRow).map((c) => ({ ...c, skuCount: counts.get(c.number) ?? 0 })));
+    return Ok(rows.map((row) => {
+      const mapping = mappingByCategory.get(row.number);
+      return {
+        ...mapRow({
+          ...row,
+          productFamilyCode: mapping?.familyCode ?? null,
+          productFamilyLabelEs: mapping?.family.labelEs ?? null,
+        }),
+        skuCount: counts.get(row.number) ?? 0,
+      };
+    }));
   },
 
   async getByNumber(number: number): Promise<Result<Category>> {
     const row = await prisma.taxonomyCategory.findUnique({ where: { number } });
     if (row == null) return Err(notFound(`Category ${number} not found.`));
+    const mapping = await prisma.categoryProductFamily.findUnique({
+      where: { categoryNumber: number },
+      include: { family: true },
+    });
     const counts = await loadSkuCountsByCategory();
-    return Ok({ ...mapRow(row), skuCount: counts.get(number) ?? 0 });
+    return Ok({
+      ...mapRow({
+        ...row,
+        productFamilyCode: mapping?.familyCode ?? null,
+        productFamilyLabelEs: mapping?.family.labelEs ?? null,
+      }),
+      skuCount: counts.get(number) ?? 0,
+    });
   },
 
   async create(input: CategoryInput): Promise<Result<Category>> {
     const validationErr = validate(input);
     if (validationErr) return Err(validationErr);
+    const familyCode = input.productFamilyCode?.trim() || null;
+    if (familyCode != null) {
+      const family = await prisma.productFamily.findUnique({ where: { code: familyCode } });
+      if (!family) return Err({ kind: 'ConstraintViolation', message: `Product family '${familyCode}' does not exist.` });
+    }
 
     try {
-      await prisma.taxonomyCategory.create({
-        data: { number: input.number, description: input.description.trim() },
+      await prisma.$transaction(async (tx) => {
+        await tx.taxonomyCategory.create({
+          data: { number: input.number, description: input.description.trim() },
+        });
+        if (familyCode != null) {
+          await tx.categoryProductFamily.create({
+            data: { categoryNumber: input.number, familyCode, updatedBy: 'taxonomy-category-form' },
+          });
+        }
       });
     } catch (err) {
       if (isUniqueViolation(err)) {
@@ -103,11 +145,29 @@ export const CategoryRepository = {
     };
     const validationErr = validate(merged);
     if (validationErr) return Err(validationErr);
+    const familyCode = patch.productFamilyCode === undefined ? undefined : patch.productFamilyCode?.trim() || null;
+    if (familyCode != null) {
+      const family = await prisma.productFamily.findUnique({ where: { code: familyCode } });
+      if (!family) return Err({ kind: 'ConstraintViolation', message: `Product family '${familyCode}' does not exist.` });
+    }
 
     try {
-      await prisma.taxonomyCategory.update({
-        where: { number },
-        data: { description: merged.description.trim() },
+      await prisma.$transaction(async (tx) => {
+        await tx.taxonomyCategory.update({
+          where: { number },
+          data: { description: merged.description.trim() },
+        });
+        if (familyCode !== undefined) {
+          if (familyCode == null) {
+            await tx.categoryProductFamily.deleteMany({ where: { categoryNumber: number } });
+          } else {
+            await tx.categoryProductFamily.upsert({
+              where: { categoryNumber: number },
+              create: { categoryNumber: number, familyCode, updatedBy: 'taxonomy-category-form' },
+              update: { familyCode, updatedBy: 'taxonomy-category-form' },
+            });
+          }
+        }
       });
     } catch (err) {
       if (isRecordNotFound(err)) return Err(notFound(`Category ${number} not found.`));
@@ -118,7 +178,10 @@ export const CategoryRepository = {
 
   async delete(number: number): Promise<Result<void>> {
     try {
-      await prisma.taxonomyCategory.delete({ where: { number } });
+      await prisma.$transaction(async (tx) => {
+        await tx.categoryProductFamily.deleteMany({ where: { categoryNumber: number } });
+        await tx.taxonomyCategory.delete({ where: { number } });
+      });
     } catch (err) {
       if (isRecordNotFound(err)) return Err(notFound(`Category ${number} not found.`));
       throw err;

@@ -45,6 +45,15 @@ async function ownerCookie(): Promise<string> {
   return res.headers['set-cookie'][0];
 }
 
+async function waitForCustomerMetrics(customerId: string): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const metrics = await prisma.customerMetrics.findUnique({ where: { customerId } });
+    if (metrics) return;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+
 describe('pos routes', () => {
   beforeAll(async () => {
     process.env.AUTH_OWNER_EMAIL = EMAIL;
@@ -117,6 +126,9 @@ describe('pos routes', () => {
   });
 
   afterAll(async () => {
+    await prisma.ticketTender.deleteMany({ where: { source: 'pos_live', store: String(STORE_NUMBER) } });
+    await prisma.ticketDetail.deleteMany({ where: { source: 'pos_live', store: String(STORE_NUMBER) } });
+    await prisma.ticketHeader.deleteMany({ where: { source: 'pos_live', store: String(STORE_NUMBER) } });
     await prisma.salesHistoryTicket.deleteMany({ where: { storeId: STORE_NUMBER } });
     if (importedCustomerId) {
       await prisma.customerMetrics.deleteMany({ where: { customerId: importedCustomerId } });
@@ -143,7 +155,7 @@ describe('pos routes', () => {
     await prisma.$disconnect();
   });
 
-  it('opens a shift, adds a line, tenders a sale, and writes inventory + sales history', async () => {
+  it('opens a shift, adds a line, tenders a sale, and writes inventory + canonical ticket tables', async () => {
     const cookie = await ownerCookie();
 
     const bootstrap = await request(app)
@@ -263,5 +275,32 @@ describe('pos routes', () => {
     expect(salesHistory?.lines).toHaveLength(1);
     expect(salesHistory?.lines[0].skuId).toBe(skuId);
     expect(Number(salesHistory?.lines[0].unitPrice ?? 0)).toBe(100);
+
+    const ticketHeader = await prisma.ticketHeader.findFirst({
+      where: { source: 'pos_live', externalTransactionId: ticketId },
+    });
+    expect(ticketHeader).toBeTruthy();
+    expect(ticketHeader?.store).toBe(String(STORE_NUMBER));
+    expect(ticketHeader?.ticket).toBe(String(complete.body.ticket.ticketNumber));
+    expect(ticketHeader?.account).toBe(CUSTOMER_ACCOUNT);
+    expect(ticketHeader?.posted).toBe('Y');
+    expect(ticketHeader?.ticketId).toBe(salesHistory?.id);
+
+    const ticketDetail = await prisma.ticketDetail.findMany({
+      where: { source: 'pos_live', externalTransactionId: ticketId },
+    });
+    expect(ticketDetail).toHaveLength(1);
+    expect(ticketDetail[0].sku).toBe(SKU_CODE);
+    expect(ticketDetail[0].qty).toBe('1');
+    expect(ticketDetail[0].price).toBe('100');
+
+    const ticketTender = await prisma.ticketTender.findMany({
+      where: { source: 'pos_live', externalTransactionId: ticketId },
+    });
+    expect(ticketTender).toHaveLength(1);
+    expect(ticketTender[0].tender).toBe(cashTender.code);
+    expect(ticketTender[0].amount).toBe('115');
+
+    await waitForCustomerMetrics(importedCustomerId);
   }, 20000);
 });

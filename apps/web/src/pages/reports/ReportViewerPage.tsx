@@ -199,30 +199,30 @@ function buildSkuDetailColumns(hasPriorYear: boolean, extendedDimensions: string
     ...buildExtendedColumnDefs(extendedDimensions),
     // ── On-hand / Inventory ──────────────────────────────────────────
     {
-      key: 'attr:unitsOnHand', title: 'Inv (Units)', zone: 'on-hand', align: 'right', width: 80, sumable: true,
-      render: (r) => fmtQty(r.attributes?.unitsOnHand ?? 0),
-      sortValue: (r) => r.attributes?.unitsOnHand ?? 0,
+      key: 'unitsOnHand', title: 'On Hand Qty', zone: 'on-hand', align: 'right', width: 95, sumable: true,
+      render: (r) => fmtQty(r.unitsOnHand),
+      sortValue: (r) => r.unitsOnHand,
     },
     {
-      key: 'attr:currentCost', title: 'Current Cost', zone: 'on-hand', align: 'right', width: 90,
-      render: (r) => fmtMoney(r.attributes?.currentCost ?? null),
-      sortValue: (r) => r.attributes?.currentCost ?? 0,
+      key: 'inventoryUnitCost', title: 'Avg Cost', zone: 'on-hand', align: 'right', width: 90,
+      render: (r) => fmtMoney(r.inventoryUnitCost),
+      sortValue: (r) => r.inventoryUnitCost ?? 0,
     },
     {
-      key: 'onHandAtCost', title: 'Total Cost', zone: 'on-hand', align: 'right', width: 100, sumable: true,
+      key: 'onHandAtCost', title: 'Total Inv Cost', zone: 'on-hand', align: 'right', width: 115, sumable: true,
       render: (r) => fmtMoney(r.onHandAtCost),
       sortValue: (r) => r.onHandAtCost,
     },
-    {
-      key: 'attr:currentPrice', title: 'Current Price', zone: 'on-hand', align: 'right', width: 90,
-      render: (r) => fmtMoney(r.attributes?.currentPrice ?? null),
-      sortValue: (r) => r.attributes?.currentPrice ?? 0,
-    },
     // ── Current period sales + derived metrics ───────────────────────
     {
-      key: 'qty', title: 'Qty (Sales)', zone: 'current', align: 'right', width: 75, sumable: true,
+      key: 'qty', title: 'Qty Sold', zone: 'current', align: 'right', width: 75, sumable: true,
       render: (r) => fmtQty(r.qty),
       sortValue: (r) => r.qty,
+    },
+    {
+      key: 'attr:currentPrice', title: 'Current Price', zone: 'current', align: 'right', width: 90,
+      render: (r) => fmtMoney(r.attributes?.currentPrice ?? null),
+      sortValue: (r) => r.attributes?.currentPrice ?? 0,
     },
     {
       key: 'netSales', title: 'Net Sales', zone: 'current', align: 'right', width: 100, sumable: true,
@@ -297,12 +297,22 @@ function buildSummaryColumns(keyColumnTitle: string, hasPriorYear: boolean): Col
       sortValue: (r) => r.dimensionLabel ?? '',
     },
     {
-      key: 'onHandAtCost', title: 'Total Cost', zone: 'on-hand', align: 'right', width: 105, sumable: true,
+      key: 'unitsOnHand', title: 'On Hand Qty', zone: 'on-hand', align: 'right', width: 95, sumable: true,
+      render: (r) => fmtQty(r.unitsOnHand),
+      sortValue: (r) => r.unitsOnHand,
+    },
+    {
+      key: 'inventoryUnitCost', title: 'Avg Cost', zone: 'on-hand', align: 'right', width: 90,
+      render: (r) => fmtMoney(r.inventoryUnitCost),
+      sortValue: (r) => r.inventoryUnitCost ?? 0,
+    },
+    {
+      key: 'onHandAtCost', title: 'Total Inv Cost', zone: 'on-hand', align: 'right', width: 115, sumable: true,
       render: (r) => fmtMoney(r.onHandAtCost),
       sortValue: (r) => r.onHandAtCost,
     },
     {
-      key: 'qty', title: 'Qty (Sales)', zone: 'current', align: 'right', width: 80, sumable: true,
+      key: 'qty', title: 'Qty Sold', zone: 'current', align: 'right', width: 80, sumable: true,
       render: (r) => fmtQty(r.qty),
       sortValue: (r) => r.qty,
     },
@@ -633,7 +643,7 @@ export default function ReportViewerPage() {
         if (c.sumable) {
           // Unit-count columns use the integer formatter; everything else
           // (money sums) uses the 2-dp money formatter.
-          const isUnitCol = c.key === 'qty' || c.key === 'attr:unitsOnHand'
+          const isUnitCol = c.key === 'qty' || c.key === 'unitsOnHand'
           return (
             <Text strong>
               {isUnitCol ? fmtQty(record.sums[c.key] ?? 0) : fmtMoney(record.sums[c.key] ?? 0)}
@@ -808,7 +818,9 @@ export default function ReportViewerPage() {
                         {colIdx === 0 ? (
                           'Totals'
                         ) : c.sumable ? (
-                          c.key === 'qty' ? fmtQty(grandTotals[c.key] ?? 0) : fmtMoney(grandTotals[c.key] ?? 0)
+                          c.key === 'qty' || c.key === 'unitsOnHand'
+                            ? fmtQty(grandTotals[c.key] ?? 0)
+                            : fmtMoney(grandTotals[c.key] ?? 0)
                         ) : null}
                       </div>
                     </Table.Summary.Cell>

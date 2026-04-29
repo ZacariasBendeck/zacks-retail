@@ -47,6 +47,7 @@ import type {
   SalesHierarchyReport,
   SalesHierarchyStoreOption,
   PivotDimension,
+  SalesPivotLevels,
   SalesPivotReport,
   SalesPivotVariant,
   StockStatusReport,
@@ -161,8 +162,9 @@ export async function getSalesPivot(params: {
   storeNumbers?: number[];
   variant: SalesPivotVariant;
   /** Required when variant === 'custom'; ignored otherwise. */
-  levels?: [PivotDimension, PivotDimension, PivotDimension];
+  levels?: SalesPivotLevels;
   /** Criteria filters — variant='custom' only. Empty/undefined = no filter. */
+  chains?: string[];
   sectors?: number[];
   departments?: number[];
   seasons?: string[];
@@ -178,6 +180,7 @@ export async function getSalesPivot(params: {
       endDate: params.endDate,
       storeNumbers: params.storeNumbers,
       levels: params.levels,
+      chains: params.chains,
       sectors: params.sectors,
       departments: params.departments,
       seasons: params.seasons,
@@ -268,6 +271,13 @@ export type MonthlyMetricKey = (typeof SUPPORTED_MONTHLY_METRICS)[number];
  * echoed back in the response and otherwise ignored by the facade. */
 export const DEFERRED_MONTHLY_METRICS = [] as const;
 export type DeferredMetricKey = 'beginningOnHand' | 'roiPct' | 'turns';
+const PRIOR_YEAR_TICKET_METRICS: ReadonlySet<MonthlyMetricKey> = new Set([
+  'quantitySold',
+  'netSales',
+  'pctOfStoreNetSales',
+  'profit',
+  'grossProfit',
+]);
 
 export interface SalesHistoryByMonthCriteria {
   /** Raw RICS-grammar strings per facet. Empty strings = "no filter". */
@@ -292,9 +302,12 @@ export interface SalesHistoryByMonthBlockRow {
   children?: SalesHistoryByMonthBlockRow[];
   /** Per-metric 12-month values keyed by MonthlyMetricKey. */
   metrics: Partial<Record<MonthlyMetricKey, number[]>>;
+  /** Optional ticket-backed same-calendar-month values from the prior year. */
+  priorYearMetrics?: Partial<Record<MonthlyMetricKey, number[]>>;
   /** Per-metric row total over 12 months (for pct-of-store the value
    *  is the row's weighted total share — see compute path below). */
   totals: Partial<Record<MonthlyMetricKey, number>>;
+  priorYearTotals?: Partial<Record<MonthlyMetricKey, number>>;
 }
 
 export interface SalesHistoryByMonthBlock {
@@ -303,8 +316,10 @@ export interface SalesHistoryByMonthBlock {
   rows: SalesHistoryByMonthBlockRow[];
   /** Per-metric column totals (length 12). */
   columnTotals: Partial<Record<MonthlyMetricKey, number[]>>;
+  priorYearColumnTotals?: Partial<Record<MonthlyMetricKey, number[]>>;
   /** Per-metric grand total (sum of columnTotals). */
   grandTotals: Partial<Record<MonthlyMetricKey, number>>;
+  priorYearGrandTotals?: Partial<Record<MonthlyMetricKey, number>>;
 }
 
 export interface SalesHistoryByMonthChartSeries {
@@ -316,6 +331,7 @@ export interface SalesHistoryByMonthResult {
   sortBy: 'vendor' | 'category';
   endMonth: string;
   months: string[];                       // length 12, ascending
+  priorYearMonths?: string[];             // same calendar months, one year earlier
   combineStores: boolean;
   stores: Array<{ number: number; label: string }>;
   detailLevel: MonthlyDetailLevel;
@@ -324,6 +340,7 @@ export interface SalesHistoryByMonthResult {
   criteria: SalesHistoryByMonthCriteria;
   blocks: SalesHistoryByMonthBlock[];
   chartSeries: SalesHistoryByMonthChartSeries[];
+  priorYearChartSeries?: SalesHistoryByMonthChartSeries[];
 }
 
 export interface GetSalesHistoryByMonthParams {
@@ -333,6 +350,7 @@ export interface GetSalesHistoryByMonthParams {
   combineStores: boolean;
   detailLevel?: MonthlyDetailLevel;
   dataToPrint?: MonthlyMetricKey[];
+  includePriorYear?: boolean;
   criteria?: SalesHistoryByMonthCriteria;
   /** Metrics the caller requested that we can't produce yet (passed through
    * to the response for UI display). Accepted names: beginningOnHand, roiPct,
@@ -363,6 +381,14 @@ function trailing12Months(endYearMonth: string): string[] {
     if (m === 13) { m = 1; y += 1; }
   }
   return out;
+}
+
+function shiftYearMonth(ym: string, deltaMonths: number): string {
+  assertYearMonth(ym, 'yearMonth');
+  const y = Number(ym.slice(0, 4));
+  const m = Number(ym.slice(5, 7));
+  const d = new Date(Date.UTC(y, m - 1 + deltaMonths, 1));
+  return `${String(d.getUTCFullYear()).padStart(4, '0')}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
 }
 
 function round2(value: number): number {
@@ -626,10 +652,14 @@ export async function getSalesHistoryByMonth(
   const deferredMetrics = params.deferredMetrics ?? [];
 
   const months = trailing12Months(params.endYearMonth);
+  const includePriorYear = params.includePriorYear === true;
+  const priorYearMonths = months.map((m) => shiftYearMonth(m, -12));
   const fromYearMonth = months[0];
   const toYearMonth = months[11];
   const monthIndex = new Map<string, number>();
   months.forEach((m, i) => monthIndex.set(m, i));
+  const priorYearMonthIndex = new Map<string, number>();
+  priorYearMonths.forEach((m, i) => priorYearMonthIndex.set(m, i));
 
   // Resolve criteria → SQL filters + optional SKU set.
   const resolved = await resolveCriteria(criteria, params.storeNumbers);
@@ -677,6 +707,9 @@ export async function getSalesHistoryByMonth(
     quantity: number[];
     netSales: number[];
     cogs: number[];
+    priorYearQuantity: number[];
+    priorYearNetSales: number[];
+    priorYearCogs: number[];
   };
   const pivotMap = new Map<string, PivotRow>();
   const groupPivotMap = new Map<string, PivotRow>();
@@ -684,11 +717,21 @@ export async function getSalesHistoryByMonth(
   // Per-store NetSales totals (for % of Store).
   type StoreTotals = { netSales: number[]; total: number };
   const storeNetSales = new Map<number | 'ALL', StoreTotals>();
+  const priorYearStoreNetSales = new Map<number | 'ALL', StoreTotals>();
   function bumpStoreTotals(bucket: number | 'ALL', mIdx: number, v: number): void {
     let s = storeNetSales.get(bucket);
     if (!s) {
       s = { netSales: new Array<number>(12).fill(0), total: 0 };
       storeNetSales.set(bucket, s);
+    }
+    s.netSales[mIdx] += v;
+    s.total += v;
+  }
+  function bumpPriorYearStoreTotals(bucket: number | 'ALL', mIdx: number, v: number): void {
+    let s = priorYearStoreNetSales.get(bucket);
+    if (!s) {
+      s = { netSales: new Array<number>(12).fill(0), total: 0 };
+      priorYearStoreNetSales.set(bucket, s);
     }
     s.netSales[mIdx] += v;
     s.total += v;
@@ -725,6 +768,9 @@ export async function getSalesHistoryByMonth(
         quantity: new Array<number>(12).fill(0),
         netSales: new Array<number>(12).fill(0),
         cogs: new Array<number>(12).fill(0),
+        priorYearQuantity: new Array<number>(12).fill(0),
+        priorYearNetSales: new Array<number>(12).fill(0),
+        priorYearCogs: new Array<number>(12).fill(0),
       };
       pivotMap.set(mapKey, row);
     }
@@ -742,6 +788,9 @@ export async function getSalesHistoryByMonth(
           quantity: new Array<number>(12).fill(0),
           netSales: new Array<number>(12).fill(0),
           cogs: new Array<number>(12).fill(0),
+          priorYearQuantity: new Array<number>(12).fill(0),
+          priorYearNetSales: new Array<number>(12).fill(0),
+          priorYearCogs: new Array<number>(12).fill(0),
         };
         groupPivotMap.set(groupMapKey, groupRow);
       }
@@ -750,6 +799,111 @@ export async function getSalesHistoryByMonth(
       groupRow.cogs[mIdx] += r.cogs;
     }
     bumpStoreTotals(storeBucket, mIdx, r.netSales);
+  }
+
+  function ensurePivotRow(
+    storeBucket: number | 'ALL',
+    dimKey: string,
+    dimLabel: string,
+    groupKey?: string,
+    groupLabel?: string,
+    pictureFileName?: string | null,
+  ): PivotRow {
+    const mapKey = `${storeBucket}|${dimKey}`;
+    let row = pivotMap.get(mapKey);
+    if (!row) {
+      row = {
+        storeBucket,
+        dimKey,
+        dimLabel,
+        groupKey,
+        groupLabel,
+        pictureFileName: detailLevel === 'sku' ? pictureFileName ?? null : null,
+        quantity: new Array<number>(12).fill(0),
+        netSales: new Array<number>(12).fill(0),
+        cogs: new Array<number>(12).fill(0),
+        priorYearQuantity: new Array<number>(12).fill(0),
+        priorYearNetSales: new Array<number>(12).fill(0),
+        priorYearCogs: new Array<number>(12).fill(0),
+      };
+      pivotMap.set(mapKey, row);
+    }
+    return row;
+  }
+
+  function ensureGroupPivotRow(
+    storeBucket: number | 'ALL',
+    groupKey: string,
+    groupLabel: string,
+  ): PivotRow {
+    const groupMapKey = `${storeBucket}|${groupKey}`;
+    let row = groupPivotMap.get(groupMapKey);
+    if (!row) {
+      row = {
+        storeBucket,
+        dimKey: groupKey,
+        dimLabel: groupLabel,
+        quantity: new Array<number>(12).fill(0),
+        netSales: new Array<number>(12).fill(0),
+        cogs: new Array<number>(12).fill(0),
+        priorYearQuantity: new Array<number>(12).fill(0),
+        priorYearNetSales: new Array<number>(12).fill(0),
+        priorYearCogs: new Array<number>(12).fill(0),
+      };
+      groupPivotMap.set(groupMapKey, row);
+    }
+    return row;
+  }
+
+  if (includePriorYear) {
+    const priorRows = await monthlyAdapter.queryPriorYearTicketMeasures({
+      storeNumbers: effectiveStores,
+      fromYearMonth: priorYearMonths[0],
+      toYearMonth: priorYearMonths[11],
+      sortBy: params.sortBy,
+      detailLevel,
+      combineStores: params.combineStores,
+      skuFilter: resolved.skuFilter,
+      vendorFilter: resolved.vendorFilter,
+      categoryFilter: resolved.categoryFilter,
+    });
+
+    for (const r of priorRows) {
+      const mIdx = priorYearMonthIndex.get(r.yearMonth);
+      if (mIdx === undefined) continue;
+      const storeBucket: number | 'ALL' = params.combineStores ? 'ALL' : r.storeNumber;
+      let dimKey = r.dimKey;
+      let dimLabel = r.dimLabel;
+      if (detailLevel === 'department' && deptMap) {
+        const n = Number(r.dimKey);
+        const d = deptMap(n);
+        dimKey = d.key;
+        dimLabel = d.label;
+      }
+      const groupKey = detailLevel === 'sku' && params.sortBy === 'vendor'
+        ? (r.vendorKey?.trim() || '(none)')
+        : undefined;
+      const groupLabel = groupKey;
+
+      const row = ensurePivotRow(
+        storeBucket,
+        dimKey,
+        dimLabel,
+        groupKey,
+        groupLabel,
+        r.pictureFileName ?? null,
+      );
+      row.priorYearQuantity[mIdx] += r.quantity;
+      row.priorYearNetSales[mIdx] += r.netSales;
+      row.priorYearCogs[mIdx] += r.cogs;
+      if (groupKey) {
+        const groupRow = ensureGroupPivotRow(storeBucket, groupKey, groupLabel ?? groupKey);
+        groupRow.priorYearQuantity[mIdx] += r.quantity;
+        groupRow.priorYearNetSales[mIdx] += r.netSales;
+        groupRow.priorYearCogs[mIdx] += r.cogs;
+      }
+      bumpPriorYearStoreTotals(storeBucket, mIdx, r.netSales);
+    }
   }
 
   // ─── Inventory history (for Beginning On-Hand / ROI% / Turns) ─────────
@@ -1019,6 +1173,16 @@ export async function getSalesHistoryByMonth(
       roiPct: new Array(12).fill(0),
       turns: new Array(12).fill(0),
     };
+    const priorYearColTotals: Record<MonthlyMetricKey, number[]> = {
+      quantitySold: new Array(12).fill(0),
+      netSales: new Array(12).fill(0),
+      pctOfStoreNetSales: new Array(12).fill(0),
+      profit: new Array(12).fill(0),
+      grossProfit: new Array(12).fill(0),
+      beginningOnHand: new Array(12).fill(0),
+      roiPct: new Array(12).fill(0),
+      turns: new Array(12).fill(0),
+    };
     // Block-level inventory-value accumulators, indexed by RICS calendar slot.
     // Used to compute column ROI%/Turns as aggregate profit/cogs divided by
     // aggregate avg inventory value (avoids Simpson's paradox at rollup).
@@ -1030,6 +1194,8 @@ export async function getSalesHistoryByMonth(
     ): SalesHistoryByMonthBlockRow => {
       const metrics: Partial<Record<MonthlyMetricKey, number[]>> = {};
       const totals: Partial<Record<MonthlyMetricKey, number>> = {};
+      const priorYearMetrics: Partial<Record<MonthlyMetricKey, number[]>> = {};
+      const priorYearTotals: Partial<Record<MonthlyMetricKey, number>> = {};
 
       // Raw per-metric series.
       const qty = r.quantity.map((v) => Math.round(v));
@@ -1040,26 +1206,61 @@ export async function getSalesHistoryByMonth(
         const tot = storeTotals.netSales[i];
         return tot !== 0 ? round1((v / tot) * 100) : 0;
       });
+      const priorStoreTotals = priorYearStoreNetSales.get(b.storeNumber) ?? {
+        netSales: new Array<number>(12).fill(0),
+        total: 0,
+      };
+      const priorQty = r.priorYearQuantity.map((v) => Math.round(v));
+      const priorNetSales = r.priorYearNetSales.map((v) => round2(v));
+      const priorProfit = r.priorYearNetSales.map((v, i) => round2(v - r.priorYearCogs[i]));
+      const priorGpPct = r.priorYearNetSales.map((v, i) =>
+        v !== 0 ? round1(((v - r.priorYearCogs[i]) / v) * 100) : 0,
+      );
+      const priorPctStore = r.priorYearNetSales.map((v, i) => {
+        const tot = priorStoreTotals.netSales[i];
+        return tot !== 0 ? round1((v / tot) * 100) : 0;
+      });
 
       if (dataToPrint.includes('quantitySold')) {
         metrics.quantitySold = qty;
         totals.quantitySold = qty.reduce((s, v) => s + v, 0);
+        if (includePriorYear) {
+          priorYearMetrics.quantitySold = priorQty;
+          priorYearTotals.quantitySold = priorQty.reduce((s, v) => s + v, 0);
+        }
         if (accumulateBlockTotals) {
           for (let i = 0; i < 12; i++) colTotals.quantitySold[i] += qty[i];
+          if (includePriorYear) {
+            for (let i = 0; i < 12; i++) priorYearColTotals.quantitySold[i] += priorQty[i];
+          }
         }
       }
       if (dataToPrint.includes('netSales')) {
         metrics.netSales = netSales;
         totals.netSales = round2(netSales.reduce((s, v) => s + v, 0));
+        if (includePriorYear) {
+          priorYearMetrics.netSales = priorNetSales;
+          priorYearTotals.netSales = round2(priorNetSales.reduce((s, v) => s + v, 0));
+        }
         if (accumulateBlockTotals) {
           for (let i = 0; i < 12; i++) colTotals.netSales[i] += netSales[i];
+          if (includePriorYear) {
+            for (let i = 0; i < 12; i++) priorYearColTotals.netSales[i] += priorNetSales[i];
+          }
         }
       }
       if (dataToPrint.includes('profit')) {
         metrics.profit = profit;
         totals.profit = round2(profit.reduce((s, v) => s + v, 0));
+        if (includePriorYear) {
+          priorYearMetrics.profit = priorProfit;
+          priorYearTotals.profit = round2(priorProfit.reduce((s, v) => s + v, 0));
+        }
         if (accumulateBlockTotals) {
           for (let i = 0; i < 12; i++) colTotals.profit[i] += profit[i];
+          if (includePriorYear) {
+            for (let i = 0; i < 12; i++) priorYearColTotals.profit[i] += priorProfit[i];
+          }
         }
       }
       if (dataToPrint.includes('grossProfit')) {
@@ -1068,6 +1269,24 @@ export async function getSalesHistoryByMonth(
         const rowNet = r.netSales.reduce((s, v) => s + v, 0);
         const rowCogs = r.cogs.reduce((s, v) => s + v, 0);
         totals.grossProfit = rowNet !== 0 ? round1(((rowNet - rowCogs) / rowNet) * 100) : 0;
+        if (accumulateBlockTotals) {
+          for (let i = 0; i < 12; i++) {
+            if (!dataToPrint.includes('netSales')) colTotals.netSales[i] += netSales[i];
+            if (!dataToPrint.includes('profit')) colTotals.profit[i] += profit[i];
+            if (includePriorYear) {
+              if (!dataToPrint.includes('netSales')) priorYearColTotals.netSales[i] += priorNetSales[i];
+              if (!dataToPrint.includes('profit')) priorYearColTotals.profit[i] += priorProfit[i];
+            }
+          }
+        }
+        if (includePriorYear) {
+          priorYearMetrics.grossProfit = priorGpPct;
+          const priorRowNet = r.priorYearNetSales.reduce((s, v) => s + v, 0);
+          const priorRowCogs = r.priorYearCogs.reduce((s, v) => s + v, 0);
+          priorYearTotals.grossProfit = priorRowNet !== 0
+            ? round1(((priorRowNet - priorRowCogs) / priorRowNet) * 100)
+            : 0;
+        }
       }
       if (dataToPrint.includes('pctOfStoreNetSales')) {
         metrics.pctOfStoreNetSales = pctStore;
@@ -1075,6 +1294,19 @@ export async function getSalesHistoryByMonth(
         totals.pctOfStoreNetSales = storeTotals.total !== 0
           ? round1((rowNet / storeTotals.total) * 100)
           : 0;
+        if (accumulateBlockTotals && !dataToPrint.includes('netSales') && !dataToPrint.includes('grossProfit')) {
+          for (let i = 0; i < 12; i++) {
+            colTotals.netSales[i] += netSales[i];
+            if (includePriorYear) priorYearColTotals.netSales[i] += priorNetSales[i];
+          }
+        }
+        if (includePriorYear) {
+          priorYearMetrics.pctOfStoreNetSales = priorPctStore;
+          const priorRowNet = r.priorYearNetSales.reduce((s, v) => s + v, 0);
+          priorYearTotals.pctOfStoreNetSales = priorStoreTotals.total !== 0
+            ? round1((priorRowNet / priorStoreTotals.total) * 100)
+            : 0;
+        }
       }
 
       // ─ Inventory-backed metrics (BoH, ROI%, Turns) ─
@@ -1154,7 +1386,9 @@ export async function getSalesHistoryByMonth(
         groupLabel: r.groupLabel,
         pictureFileName: r.pictureFileName ?? null,
         metrics,
+        priorYearMetrics: includePriorYear ? priorYearMetrics : undefined,
         totals,
+        priorYearTotals: includePriorYear ? priorYearTotals : undefined,
       };
     };
 
@@ -1180,16 +1414,30 @@ export async function getSalesHistoryByMonth(
 
     const columnTotals: Partial<Record<MonthlyMetricKey, number[]>> = {};
     const grandTotals: Partial<Record<MonthlyMetricKey, number>> = {};
+    const priorYearColumnTotals: Partial<Record<MonthlyMetricKey, number[]>> = {};
+    const priorYearGrandTotals: Partial<Record<MonthlyMetricKey, number>> = {};
     for (const k of dataToPrint) {
       if (k === 'quantitySold') {
         columnTotals.quantitySold = colTotals.quantitySold.map((v) => Math.round(v));
         grandTotals.quantitySold = columnTotals.quantitySold!.reduce((s, v) => s + v, 0);
+        if (includePriorYear) {
+          priorYearColumnTotals.quantitySold = priorYearColTotals.quantitySold.map((v) => Math.round(v));
+          priorYearGrandTotals.quantitySold = priorYearColumnTotals.quantitySold.reduce((s, v) => s + v, 0);
+        }
       } else if (k === 'netSales') {
         columnTotals.netSales = colTotals.netSales.map((v) => round2(v));
         grandTotals.netSales = round2(columnTotals.netSales!.reduce((s, v) => s + v, 0));
+        if (includePriorYear) {
+          priorYearColumnTotals.netSales = priorYearColTotals.netSales.map((v) => round2(v));
+          priorYearGrandTotals.netSales = round2(priorYearColumnTotals.netSales.reduce((s, v) => s + v, 0));
+        }
       } else if (k === 'profit') {
         columnTotals.profit = colTotals.profit.map((v) => round2(v));
         grandTotals.profit = round2(columnTotals.profit!.reduce((s, v) => s + v, 0));
+        if (includePriorYear) {
+          priorYearColumnTotals.profit = priorYearColTotals.profit.map((v) => round2(v));
+          priorYearGrandTotals.profit = round2(priorYearColumnTotals.profit.reduce((s, v) => s + v, 0));
+        }
       } else if (k === 'grossProfit') {
         // Column GP% = column Profit / column NetSales (aggregated).
         const perMonth: number[] = [];
@@ -1202,6 +1450,20 @@ export async function getSalesHistoryByMonth(
         const totNet = colTotals.netSales.reduce((s, v) => s + v, 0);
         const totProf = colTotals.profit.reduce((s, v) => s + v, 0);
         grandTotals.grossProfit = totNet !== 0 ? round1((totProf / totNet) * 100) : 0;
+        if (includePriorYear) {
+          const priorPerMonth: number[] = [];
+          for (let i = 0; i < 12; i++) {
+            const net = priorYearColTotals.netSales[i];
+            const prof = priorYearColTotals.profit[i];
+            priorPerMonth.push(net !== 0 ? round1((prof / net) * 100) : 0);
+          }
+          priorYearColumnTotals.grossProfit = priorPerMonth;
+          const priorTotNet = priorYearColTotals.netSales.reduce((s, v) => s + v, 0);
+          const priorTotProf = priorYearColTotals.profit.reduce((s, v) => s + v, 0);
+          priorYearGrandTotals.grossProfit = priorTotNet !== 0
+            ? round1((priorTotProf / priorTotNet) * 100)
+            : 0;
+        }
       } else if (k === 'pctOfStoreNetSales') {
         // Column sum is always ~100 when every row is included; we still
         // compute explicitly so it tolerates numerical drift.
@@ -1214,6 +1476,21 @@ export async function getSalesHistoryByMonth(
               (colTotals.netSales.reduce((s, v) => s + v, 0) / storeTotals.total) * 100,
             )
           : 0;
+        if (includePriorYear) {
+          const priorStoreTotals = priorYearStoreNetSales.get(b.storeNumber) ?? {
+            netSales: new Array<number>(12).fill(0),
+            total: 0,
+          };
+          priorYearColumnTotals.pctOfStoreNetSales = priorYearColTotals.netSales.map((v, i) => {
+            const tot = priorStoreTotals.netSales[i];
+            return tot !== 0 ? round1((v / tot) * 100) : 0;
+          });
+          priorYearGrandTotals.pctOfStoreNetSales = priorStoreTotals.total !== 0
+            ? round1(
+                (priorYearColTotals.netSales.reduce((s, v) => s + v, 0) / priorStoreTotals.total) * 100,
+              )
+            : 0;
+        }
       } else if (k === 'beginningOnHand') {
         columnTotals.beginningOnHand = colTotals.beginningOnHand.map((v) => Math.round(v));
         grandTotals.beginningOnHand = Math.round(
@@ -1265,7 +1542,9 @@ export async function getSalesHistoryByMonth(
       storeLabel: b.storeLabel,
       rows: resultRows,
       columnTotals,
+      priorYearColumnTotals: includePriorYear ? priorYearColumnTotals : undefined,
       grandTotals,
+      priorYearGrandTotals: includePriorYear ? priorYearGrandTotals : undefined,
     };
   });
 
@@ -1277,11 +1556,19 @@ export async function getSalesHistoryByMonth(
     const values = b.columnTotals.netSales ?? (storeNetSales.get(b.storeNumber)?.netSales ?? new Array(12).fill(0));
     return { name: b.storeLabel, values: values.slice() };
   });
+  const priorYearChartSeries: SalesHistoryByMonthChartSeries[] | undefined = includePriorYear
+    ? blocks.map((b) => {
+        const values = b.priorYearColumnTotals?.netSales
+          ?? (priorYearStoreNetSales.get(b.storeNumber)?.netSales ?? new Array(12).fill(0));
+        return { name: `${b.storeLabel} PY`, values: values.slice() };
+      })
+    : undefined;
 
   return {
     sortBy: params.sortBy,
     endMonth: params.endYearMonth,
     months,
+    priorYearMonths: includePriorYear ? priorYearMonths : undefined,
     combineStores: params.combineStores,
     stores,
     detailLevel,
@@ -1290,6 +1577,7 @@ export async function getSalesHistoryByMonth(
     criteria,
     blocks,
     chartSeries,
+    priorYearChartSeries,
   };
 }
 

@@ -25,6 +25,12 @@ import type {
   SalesAnalysisStoreOption,
 } from './types';
 
+export interface OnHandInventoryMetrics {
+  unitsOnHand: number;
+  onHandAtCost: number;
+  inventoryUnitCost: number | null;
+}
+
 // Cache the app-owned snapshot independently of the report-specific criteria;
 // callers apply criteria in-memory after the raw data lands. Five-minute TTL is
 // tight enough that stock movements show up within one coffee break.
@@ -122,6 +128,17 @@ export async function getOnHandAtCostByDimension(params: {
   storeOption: SalesAnalysisStoreOption;
   criteria: SalesAnalysisCriteria;
 }): Promise<Map<string, number>> {
+  const metrics = await getOnHandInventoryByDimension(params);
+  const out = new Map<string, number>();
+  for (const [key, value] of metrics) out.set(key, value.onHandAtCost);
+  return out;
+}
+
+export async function getOnHandInventoryByDimension(params: {
+  reportType: SalesAnalysisReportType;
+  storeOption: SalesAnalysisStoreOption;
+  criteria: SalesAnalysisCriteria;
+}): Promise<Map<string, OnHandInventoryMetrics>> {
   const rows = await loadOnHandSnapshot();
 
   const categoryExpr = parseCriteria(params.criteria.categoriesRaw);
@@ -130,7 +147,7 @@ export async function getOnHandAtCostByDimension(params: {
   const storeExpr = parseCriteria(params.criteria.storesRaw);
 
   const combine = params.storeOption === 'COMBINE';
-  const out = new Map<string, number>();
+  const out = new Map<string, OnHandInventoryMetrics>();
 
   for (const row of rows) {
     const sku = row.SKU?.trim();
@@ -144,16 +161,30 @@ export async function getOnHandAtCostByDimension(params: {
 
     const onHand = Number(row.TotalOnHand ?? 0);
     const cost = Number(row.CurrentCost ?? 0);
-    if (onHand <= 0 || cost <= 0) continue;
-    const value = onHand * cost;
+    if (onHand <= 0) continue;
+    const value = onHand * Math.max(0, cost);
 
     const dimKey = dimensionKeyFor(params.reportType, sku, row);
     if (!dimKey) continue;
     const key = combine ? dimKey : `${dimKey}|${store}`;
-    out.set(key, (out.get(key) ?? 0) + value);
+    addInventoryMetrics(out, key, onHand, value);
   }
 
   return out;
+}
+
+function addInventoryMetrics(
+  out: Map<string, OnHandInventoryMetrics>,
+  key: string,
+  unitsOnHand: number,
+  onHandAtCost: number,
+): void {
+  const current = out.get(key) ?? { unitsOnHand: 0, onHandAtCost: 0, inventoryUnitCost: null };
+  current.unitsOnHand += unitsOnHand;
+  current.onHandAtCost += onHandAtCost;
+  current.inventoryUnitCost =
+    current.unitsOnHand > 0 ? current.onHandAtCost / current.unitsOnHand : null;
+  out.set(key, current);
 }
 
 // ─────────────────────────── units-by-SKU export (purchase-planning) ──────

@@ -15,6 +15,7 @@ export interface DimensionInput {
   descriptionEs?: string | null
   sortOrder: number
   isMultiValue: boolean
+  familyCode?: string | null
 }
 
 export interface DimensionPatch {
@@ -27,11 +28,13 @@ export interface DimensionPatch {
 export interface ValueInput {
   code: string
   labelEs: string
+  descriptionEs?: string | null
   sortOrder: number
 }
 
 export interface ValuePatch {
   labelEs?: string
+  descriptionEs?: string | null
   sortOrder?: number
   isActive?: boolean
 }

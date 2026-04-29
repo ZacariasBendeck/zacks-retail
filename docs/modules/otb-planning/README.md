@@ -6,6 +6,10 @@ Open-To-Buy plan setup per store × category × month (two calculation methods �
 **RICS chapters:** Ch. 11 (OTB Plan p. 158), Ch. 6 (OTB Report p. 100, OTB vs. Sales p. 100), Ch. 17 (Company Setup — OTB calculation method)
 **Registry:** [`../MODULES.md`](../MODULES.md)
 
+## Matching-set OTB preview
+
+Matching-set buy plans do not replace OTB. They feed proposed component receipts into OTB by category/department/month so buyers can see the cost and retail impact before creating or submitting a PO. The current Buying Plan preview is Postgres-safe: it reads proposed set-plan lines and committed native PO dollars from `app.*` and returns `NO_PLAN` when no Postgres OTB budget table exists yet, rather than reading legacy SQLite OTB tables. Once OTB plan rows move fully to Postgres, the same preview contract should populate planned and remaining OTB values.
+
 ## Documents in this module
 
 | File | Purpose |

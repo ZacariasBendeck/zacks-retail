@@ -10,9 +10,16 @@ import {
   cancelPurchaseOrder,
   closePurchaseOrder,
   receivePurchaseOrder,
+  receivePurchaseOrderFull,
+  duplicatePurchaseOrder,
+  replicatePurchaseOrder,
+  combinePurchaseOrders,
   fetchPurchaseOrderReceipts,
   fetchTransferOrders,
   fetchPurchaseOrderOverdueExceptions,
+  fetchPurchaseOrderSkuOptions,
+  fetchPurchaseOrderVendorOptions,
+  fetchPurchaseOrderBuyerOptions,
 } from '../services/purchaseOrderApi'
 import type {
   PoListParams,
@@ -20,6 +27,10 @@ import type {
   UpdatePurchaseOrderPayload,
   SubmitPurchaseOrderPayload,
   ReceivePurchaseOrderPayload,
+  ReceivePurchaseOrderFullPayload,
+  DuplicatePurchaseOrderPayload,
+  ReplicatePurchaseOrderPayload,
+  CombinePurchaseOrdersPayload,
   TransferOrderListParams,
 } from '../types/purchaseOrder'
 
@@ -44,6 +55,32 @@ export function usePurchaseOrderHistory(poId: string | undefined) {
     queryKey: ['purchase-order-history', poId],
     queryFn: () => fetchPurchaseOrderHistory(poId!),
     enabled: !!poId,
+  })
+}
+
+export function usePurchaseOrderVendorOptions(q: string) {
+  return useQuery({
+    queryKey: ['purchase-order-vendor-options', q],
+    queryFn: () => fetchPurchaseOrderVendorOptions({ q, pageSize: 50 }),
+    staleTime: 60_000,
+    placeholderData: (prev) => prev,
+  })
+}
+
+export function usePurchaseOrderBuyerOptions() {
+  return useQuery({
+    queryKey: ['purchase-order-buyer-options'],
+    queryFn: fetchPurchaseOrderBuyerOptions,
+    staleTime: 60_000,
+  })
+}
+
+export function usePurchaseOrderSkuOptions(params: { q: string; vendorId?: string }) {
+  return useQuery({
+    queryKey: ['purchase-order-sku-options', params],
+    queryFn: () => fetchPurchaseOrderSkuOptions({ ...params, pageSize: 50 }),
+    staleTime: 30_000,
+    placeholderData: (prev) => prev,
   })
 }
 
@@ -113,8 +150,67 @@ export function useReceivePurchaseOrder() {
     onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ['purchase-orders'] })
       queryClient.invalidateQueries({ queryKey: ['purchase-order', variables.poId] })
+      queryClient.invalidateQueries({ queryKey: ['purchase-order-history', variables.poId] })
+      queryClient.invalidateQueries({ queryKey: ['purchase-order-receipts', variables.poId] })
       queryClient.invalidateQueries({ queryKey: ['inventory-summary'] })
       queryClient.invalidateQueries({ queryKey: ['low-stock'] })
+    },
+  })
+}
+
+export function useReceivePurchaseOrderFull() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ poId, payload }: { poId: string; payload: ReceivePurchaseOrderFullPayload }) =>
+      receivePurchaseOrderFull(poId, payload),
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['purchase-orders'] })
+      queryClient.invalidateQueries({ queryKey: ['purchase-order', variables.poId] })
+      queryClient.invalidateQueries({ queryKey: ['purchase-order-history', variables.poId] })
+      queryClient.invalidateQueries({ queryKey: ['purchase-order-receipts', variables.poId] })
+      queryClient.invalidateQueries({ queryKey: ['inventory-summary'] })
+      queryClient.invalidateQueries({ queryKey: ['low-stock'] })
+    },
+  })
+}
+
+export function useDuplicatePurchaseOrder() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ poId, payload }: { poId: string; payload?: DuplicatePurchaseOrderPayload }) =>
+      duplicatePurchaseOrder(poId, payload),
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['purchase-orders'] })
+      queryClient.setQueryData(['purchase-order', data.id], data)
+    },
+  })
+}
+
+export function useReplicatePurchaseOrder() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ poId, payload }: { poId: string; payload: ReplicatePurchaseOrderPayload }) =>
+      replicatePurchaseOrder(poId, payload),
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['purchase-orders'] })
+      for (const po of data.created) {
+        queryClient.setQueryData(['purchase-order', po.id], po)
+      }
+    },
+  })
+}
+
+export function useCombinePurchaseOrders() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (payload: CombinePurchaseOrdersPayload) => combinePurchaseOrders(payload),
+    onSuccess: (data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['purchase-orders'] })
+      queryClient.invalidateQueries({ queryKey: ['purchase-order', variables.sourcePoId] })
+      queryClient.invalidateQueries({ queryKey: ['purchase-order', variables.intoPoId] })
+      queryClient.invalidateQueries({ queryKey: ['purchase-order-history', variables.sourcePoId] })
+      queryClient.invalidateQueries({ queryKey: ['purchase-order-history', variables.intoPoId] })
+      queryClient.setQueryData(['purchase-order', data.id], data)
     },
   })
 }

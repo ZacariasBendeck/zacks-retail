@@ -4,6 +4,7 @@ import {
   productFamiliesApi,
   type FamilyAttributeRuleInput,
   type FamilyCategory,
+  type FamilyCreateInput,
   type FamilyMetadataPatch,
 } from '../services/productFamiliesApi'
 
@@ -12,6 +13,7 @@ const CATALOG_STALE_MS = 10 * 60 * 1000
 function invalidateAllFamilies(qc: ReturnType<typeof useQueryClient>) {
   qc.invalidateQueries({ queryKey: ['product-families'] })
   qc.invalidateQueries({ queryKey: ['products-attributes'] })
+  qc.invalidateQueries({ queryKey: ['taxonomy', 'categories'] })
 }
 
 export function useProductFamilies() {
@@ -19,6 +21,14 @@ export function useProductFamilies() {
     queryKey: ['product-families', 'list'],
     queryFn: () => productFamiliesApi.list() as Promise<ProductFamily[]>,
     staleTime: CATALOG_STALE_MS,
+  })
+}
+
+export function useCreateProductFamily() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (input: FamilyCreateInput) => productFamiliesApi.create(input),
+    onSuccess: () => invalidateAllFamilies(qc),
   })
 }
 

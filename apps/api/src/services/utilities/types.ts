@@ -15,6 +15,8 @@ export interface SkuCriteria {
   groups?: string[];
   /** Effective keywords (RICS string ∪ ADD-overrides − REMOVE-overrides). */
   keywords?: string[];
+  /** Extended app-owned SKU attributes. Union within a dimension, intersection across dimensions. */
+  attributes?: Record<string, string[]>;
   /** Disabled for now — rics_mirror has no price-changes table. */
   onlyFuturePriceChanges?: boolean;
   /** Disabled for now — reserved for WTD sales filter once ticket history is wired. */
@@ -28,6 +30,7 @@ export type BatchOperationType =
   | 'CHANGE_VENDOR'
   | 'CHANGE_SEASON'
   | 'CHANGE_GROUP_CODE'
+  | 'CHANGE_SKU_ATTRIBUTE'
   | 'CHANGE_SIZE_COLUMN'
   | 'CHANGE_SIZE_TYPE_STRUCTURE';
 
@@ -38,6 +41,12 @@ export type AttributeChange =
   | { type: 'CHANGE_VENDOR'; vendor: string }
   | { type: 'CHANGE_SEASON'; season: string }
   | { type: 'CHANGE_GROUP_CODE'; groupCode: string }
+  | {
+      type: 'CHANGE_SKU_ATTRIBUTE';
+      dimensionCode: string;
+      valueCodes: string[];
+      mode: 'REPLACE' | 'ADD' | 'REMOVE';
+    }
   | { type: 'CHANGE_SIZE_COLUMN'; oldLabel: string; newLabel: string }
   | { type: 'CHANGE_SIZE_TYPE_STRUCTURE'; code: number; columns: string[]; rows: string[] };
 

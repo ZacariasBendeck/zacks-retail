@@ -48,6 +48,7 @@ function buildDims(): SalesDimensionsResponse {
       { number: 1, name: 'Main Street' },
       { number: 2, name: 'Downtown' },
     ],
+    chains: [],
     categories: [],
     groups: [],
     sectors: [],

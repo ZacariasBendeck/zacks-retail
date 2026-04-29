@@ -83,6 +83,23 @@ export interface InquiryOpenPoRow {
   openQty: number;
 }
 
+export interface InquiryPurchaseOrderHistoryRow {
+  poNumber: string;
+  shipStore: number | null;
+  vendorCode: string | null;
+  buyer: string | null;
+  orderDate: string | null;
+  dueDate: string | null;
+  lastReceivedAt: string | null;
+  orderType: string | null;
+  legacyStatus: string | null;
+  current: boolean | null;
+  orderedQty: number;
+  receivedQty: number;
+  openQty: number;
+  lineCount: number;
+}
+
 export interface InquiryInfoMonth {
   label: string;
   qty: number;
@@ -431,8 +448,112 @@ export interface SkuStoreCellRollupResponse {
   total: number
 }
 
-async function fetchJson<T>(url: string): Promise<T> {
-  const res = await fetch(url)
+export interface ReorderPlannerDefaults {
+  scope: 'SKU' | 'VENDOR' | 'DEFAULT'
+  scopeKey: string | null
+  leadTimeDays: number
+  orderCycleDays: number
+  moqQty: number
+  updatedAt: string | null
+  updatedBy: string | null
+}
+
+export interface ReorderPlanSizeLine {
+  rowLabel: string
+  columnLabel: string
+  sizeLabel: string
+  onHand: number
+  currentOnOrder: number
+  futureOnOrder: number
+  onOrder: number
+  modelQty: number
+  modelShort: number
+  skuSalesQty: number
+  categorySalesQty: number
+  previousOrderQty: number
+  curvePct: number
+  curveSource: 'SKU_SALES' | 'CATEGORY_SALES' | 'MODEL' | 'PREVIOUS_ORDER' | 'NONE'
+  projectedSales: number
+  recommendedQty: number
+}
+
+export interface ReorderPlanChain {
+  chainId: string | null
+  chainLabel: string
+  source: 'TOTAL' | 'MATCHING_SET' | 'STORE_MODEL' | 'FALLBACK'
+  storeNumbers: number[]
+  storeCount: number
+  totals: {
+    onHand: number
+    currentOnOrder: number
+    futureOnOrder: number
+    modelQty: number
+    modelShort: number
+    skuSalesQty: number
+    categorySalesQty: number
+    previousOrderQty: number
+    projectedSales: number
+    recommendedQty: number
+  }
+  previousOrder: {
+    poNumber: string | null
+    orderDate: string | null
+    source: 'NATIVE' | 'LEGACY' | null
+  }
+  sizeLines: ReorderPlanSizeLine[]
+}
+
+export interface ReorderPlan {
+  sku: {
+    id: string
+    code: string
+    description: string | null
+    vendorCode: string | null
+    category: number | null
+    sizeTypeCode: number | null
+    orderMultiple: number | null
+    unitCost: number
+    retailPrice: number
+  }
+  planning: {
+    analysisDate: string
+    leadTimeDays: number
+    orderCycleDays: number
+    coverageDays: number
+    moqQty: number
+    salesLookbackDays: number
+  }
+  defaults: ReorderPlannerDefaults
+  chains: ReorderPlanChain[]
+  warnings: string[]
+}
+
+export interface ReorderPlanParams {
+  leadTimeDays?: number
+  orderCycleDays?: number
+  moqQty?: number
+}
+
+export interface ReorderDefaultsInput extends ReorderPlanParams {
+  scopeType?: 'SKU' | 'VENDOR'
+  updatedBy?: string
+}
+
+export interface CreateReorderDraftPoInput extends ReorderPlanParams {
+  chainId?: string | null
+  chainLabel?: string | null
+  createdBy?: string
+  sizeCells: Array<{ rowLabel: string; columnLabel: string; quantity: number }>
+}
+
+export interface CreateReorderDraftPoResult {
+  poId: string
+  poNumber: string
+  totalQuantity: number
+}
+
+async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(url, init)
   if (!res.ok) {
     let detail: string | undefined
     try {
@@ -470,6 +591,17 @@ export function fetchInquiryOpenPos(
   if (storeId != null) qs.set('storeId', String(storeId))
   return fetchJson<{ rows: InquiryOpenPoRow[]; total: number }>(
     `/api/v1/inventory/inquiry/${encodeURIComponent(sku)}/open-pos?${qs}`
+  )
+}
+
+export function fetchInquiryPurchaseOrderHistory(
+  sku: string,
+  storeId?: number,
+): Promise<{ rows: InquiryPurchaseOrderHistoryRow[]; total: number }> {
+  const qs = new URLSearchParams()
+  if (storeId != null) qs.set('storeId', String(storeId))
+  return fetchJson<{ rows: InquiryPurchaseOrderHistoryRow[]; total: number }>(
+    `/api/v1/inventory/inquiry/${encodeURIComponent(sku)}/po-history?${qs}`
   )
 }
 
@@ -571,4 +703,44 @@ export function fetchSkuStoreCellRollup(
   if (params.skus?.length) qs.set('skus', params.skus.join(','))
   if (params.limit != null) qs.set('limit', String(params.limit))
   return fetchJson<SkuStoreCellRollupResponse>(`/api/v1/inventory/sku-store-cell-rollup?${qs}`)
+}
+
+export function fetchInquiryReorderPlan(
+  sku: string,
+  params: ReorderPlanParams = {},
+): Promise<ReorderPlan> {
+  const qs = new URLSearchParams()
+  if (params.leadTimeDays != null) qs.set('leadTimeDays', String(params.leadTimeDays))
+  if (params.orderCycleDays != null) qs.set('orderCycleDays', String(params.orderCycleDays))
+  if (params.moqQty != null) qs.set('moqQty', String(params.moqQty))
+  const suffix = qs.toString() ? `?${qs}` : ''
+  return fetchJson<ReorderPlan>(`/api/v1/inventory/inquiry/${encodeURIComponent(sku)}/reorder-plan${suffix}`)
+}
+
+export function saveInquiryReorderDefaults(
+  sku: string,
+  input: ReorderDefaultsInput,
+): Promise<ReorderPlannerDefaults> {
+  return fetchJson<ReorderPlannerDefaults>(
+    `/api/v1/inventory/inquiry/${encodeURIComponent(sku)}/reorder-defaults`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    },
+  )
+}
+
+export function createInquiryReorderDraftPo(
+  sku: string,
+  input: CreateReorderDraftPoInput,
+): Promise<CreateReorderDraftPoResult> {
+  return fetchJson<CreateReorderDraftPoResult>(
+    `/api/v1/inventory/inquiry/${encodeURIComponent(sku)}/reorder-plan/draft-po`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    },
+  )
 }

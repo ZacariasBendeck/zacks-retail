@@ -27,9 +27,9 @@ type ImportSummaryRow = {
   matchedcustomers: bigint | number;
   factrows: bigint | number;
   itemrows: bigint | number;
-  rawheaders: bigint | number;
-  rawdetails: bigint | number;
-  rawtenders: bigint | number;
+  ticketheaders: bigint | number;
+  ticketdetails: bigint | number;
+  tickettenders: bigint | number;
 };
 
 const CREATE_HEADER_STAGE_SQL = `
@@ -418,7 +418,11 @@ SELECT
   COALESCE(CAST(NULLIF(BTRIM(d.disc_amt), '') AS numeric(14, 2)), 0)::numeric(14, 2) AS disc_amt,
   COALESCE(CAST(NULLIF(BTRIM(d.extension), '') AS numeric(14, 2)), 0)::numeric(14, 2) AS extension,
   COALESCE(CAST(NULLIF(BTRIM(d.cost), '') AS numeric(14, 2)), 0)::numeric(14, 2) AS unit_cost,
-  NULLIF(BTRIM(d.return_code), '') AS return_code,
+  CASE
+    WHEN NULLIF(BTRIM(d.return_code), '') IS NULL OR BTRIM(d.return_code) IN ('0', '0.0000')
+      THEN NULL
+    ELSE BTRIM(d.return_code)
+  END AS return_code,
   NULLIF(BTRIM(d.salesperson), '') AS salesperson_code
 FROM stage_rics_ticket_header_clean h
 JOIN stage_rics_ticket_detail_raw d
@@ -629,7 +633,7 @@ WHERE NOT l.is_discount_line
 `;
 
 const INSERT_RAW_HEADERS_SQL = `
-INSERT INTO app.sales_history_ticket_legacy_raw (
+INSERT INTO app.ticket_header (
   source,
   external_transaction_id,
   ticket_identity_key,
@@ -709,7 +713,7 @@ LEFT JOIN app.sales_history_ticket t
 `;
 
 const INSERT_RAW_DETAILS_SQL = `
-INSERT INTO app.sales_history_ticket_line_legacy_raw (
+INSERT INTO app.ticket_detail (
   source,
   source_row_number,
   external_transaction_id,
@@ -837,7 +841,7 @@ LEFT JOIN app.sales_history_ticket t
 `;
 
 const INSERT_RAW_TENDERS_SQL = `
-INSERT INTO app.sales_history_ticket_tender_legacy_raw (
+INSERT INTO app.ticket_tender (
   source,
   source_row_number,
   external_transaction_id,
@@ -933,19 +937,19 @@ SELECT
   ) AS itemRows,
   (
     SELECT COUNT(*)
-    FROM app.sales_history_ticket_legacy_raw
+    FROM app.ticket_header
     WHERE source = $1
-  ) AS rawHeaders,
+  ) AS ticketHeaders,
   (
     SELECT COUNT(*)
-    FROM app.sales_history_ticket_line_legacy_raw
+    FROM app.ticket_detail
     WHERE source = $1
-  ) AS rawDetails,
+  ) AS ticketDetails,
   (
     SELECT COUNT(*)
-    FROM app.sales_history_ticket_tender_legacy_raw
+    FROM app.ticket_tender
     WHERE source = $1
-  ) AS rawTenders
+  ) AS ticketTenders
 `;
 
 function parseArgs(argv: string[]): Args {
@@ -1009,7 +1013,7 @@ function parseArgs(argv: string[]): Args {
 
 function printUsage(): void {
   console.info(
-    'Usage: pnpm --filter @benlow-rics/api import:sales-history:rics -- [--header path] [--detail path] [--tender path] [--source rics_ticket_import] [--csv-header|--no-csv-header] [--tender-csv-header|--tender-no-csv-header] [--no-replace] [--skip-metrics]',
+    'Usage: pnpm --filter @benlow-rics/api import:tickets:rics -- [--header path] [--detail path] [--tender path] [--source rics_ticket_import] [--csv-header|--no-csv-header] [--tender-csv-header|--tender-no-csv-header] [--no-replace] [--skip-metrics]',
   );
 }
 
@@ -1031,7 +1035,7 @@ function copySqlForHeaderMode(copySql: string, csvHasHeader: boolean): string {
   return copySql.replace("WITH (FORMAT csv, HEADER true, NULL '\\N')", options);
 }
 
-export async function importRicsSalesHistory(argv: string[] = process.argv.slice(2)): Promise<void> {
+export async function importRicsTickets(argv: string[] = process.argv.slice(2)): Promise<void> {
   const args = parseArgs(argv);
   ensureFileExists(args.headerPath, 'header');
   ensureFileExists(args.detailPath, 'detail');
@@ -1081,9 +1085,9 @@ export async function importRicsSalesHistory(argv: string[] = process.argv.slice
     await client.query(CREATE_FACT_SOURCE_SQL);
 
     if (args.replace) {
-      await client.query('DELETE FROM app.sales_history_ticket_tender_legacy_raw WHERE source = $1', [args.source]);
-      await client.query('DELETE FROM app.sales_history_ticket_line_legacy_raw WHERE source = $1', [args.source]);
-      await client.query('DELETE FROM app.sales_history_ticket_legacy_raw WHERE source = $1', [args.source]);
+      await client.query('DELETE FROM app.ticket_tender WHERE source = $1', [args.source]);
+      await client.query('DELETE FROM app.ticket_detail WHERE source = $1', [args.source]);
+      await client.query('DELETE FROM app.ticket_header WHERE source = $1', [args.source]);
       await client.query('DELETE FROM app.sales_history_ticket WHERE source = $1', [args.source]);
     }
 
@@ -1097,7 +1101,7 @@ export async function importRicsSalesHistory(argv: string[] = process.argv.slice
     await client.query('COMMIT');
 
     const summary = summaryResult.rows[0];
-    console.info('[sales-history] Imported RITRNSSV ticket history', {
+    console.info('[tickets] Imported RITRNSSV tickets', {
       source: args.source,
       headerPath: args.headerPath,
       detailPath: args.detailPath,
@@ -1107,9 +1111,9 @@ export async function importRicsSalesHistory(argv: string[] = process.argv.slice
       matchedCustomers: Number(summary?.matchedcustomers ?? 0),
       factRows: Number(summary?.factrows ?? 0),
       itemRows: Number(summary?.itemrows ?? 0),
-      rawHeaders: Number(summary?.rawheaders ?? 0),
-      rawDetails: Number(summary?.rawdetails ?? 0),
-      rawTenders: Number(summary?.rawtenders ?? 0),
+      ticketHeaders: Number(summary?.ticketheaders ?? 0),
+      ticketDetails: Number(summary?.ticketdetails ?? 0),
+      ticketTenders: Number(summary?.tickettenders ?? 0),
       skippedDuplicateSource:
         'RIMAILED.MDB exported but not loaded because canonical docs mark it as a duplicate customer-indexed copy of RITRNSSV.',
     });
@@ -1127,13 +1131,15 @@ export async function importRicsSalesHistory(argv: string[] = process.argv.slice
 }
 
 async function main(): Promise<void> {
-  await importRicsSalesHistory();
+  await importRicsTickets();
 }
+
+export const importRicsSalesHistory = importRicsTickets;
 
 if (require.main === module) {
   main()
     .catch((error) => {
-      console.error('[sales-history] RITRNSSV import failed', error);
+      console.error('[tickets] RITRNSSV import failed', error);
       process.exitCode = 1;
     })
     .finally(async () => {

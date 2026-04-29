@@ -33,7 +33,11 @@
  */
 
 import { prisma } from '../../db/prisma';
-import { getOnHandAtCostByDimension } from './ricsOnHandAtCostAdapter';
+import {
+  getOnHandAtCostByDimension,
+  getOnHandInventoryByDimension,
+  type OnHandInventoryMetrics,
+} from './ricsOnHandAtCostAdapter';
 import { computeRoiTurnsGp } from './metrics';
 import { loadSkuAttributesBySku } from './skuAttributesEnricher';
 import {
@@ -201,6 +205,12 @@ interface GroupRow {
   desc: string | null;
 }
 
+interface StoreChainRow {
+  code: string;
+  label: string;
+  storeNumbers: number[];
+}
+
 async function loadGroupList(): Promise<GroupRow[]> {
   return cachedAsync('sr:dim:groups', 300_000, async () => {
     const rows = await prisma.$queryRawUnsafe<{ Code: string | null; Desc: string | null }[]>(
@@ -216,6 +226,38 @@ async function loadGroupList(): Promise<GroupRow[]> {
   });
 }
 
+async function loadStoreChainList(): Promise<StoreChainRow[]> {
+  return cachedAsync('sr:dim:store-chains', 300_000, async () => {
+    const rows = await prisma.$queryRawUnsafe<Array<{
+      code: string;
+      label: string | null;
+      store_numbers: number[] | string[] | null;
+    }>>(
+      `
+        SELECT
+          sg.code,
+          sg.label,
+          ARRAY_AGG(sgm.store_number ORDER BY sgm.store_number)
+            FILTER (WHERE sgm.store_number IS NOT NULL) AS store_numbers
+        FROM app.store_group sg
+        LEFT JOIN app.store_group_member sgm ON sgm.group_code = sg.code
+        WHERE sg.active = true
+        GROUP BY sg.code, sg.label, sg.sort_order
+        ORDER BY sg.sort_order ASC, sg.label ASC
+      `,
+    );
+    return rows.map((row) => ({
+      code: row.code,
+      label: row.label?.trim() || row.code,
+      storeNumbers: Array.isArray(row.store_numbers)
+        ? row.store_numbers
+            .map((n) => Number(n))
+            .filter((n) => Number.isInteger(n) && n > 0)
+        : [],
+    }));
+  });
+}
+
 /**
  * Returns the dimension lookups UI dropdowns need. Every list is small
  * (<500 rows each), cached 5 min, returned in one response so a page loads
@@ -226,6 +268,7 @@ async function loadGroupList(): Promise<GroupRow[]> {
  */
 export interface SalesDimensionsResponse {
   stores: Array<{ number: number; name: string | null }>;
+  chains: StoreChainRow[];
   categories: CategoryRow[];
   groups: GroupRow[];
   sectors: Array<{ number: number; name: string | null }>;
@@ -300,8 +343,9 @@ async function loadBuyerList(): Promise<Array<{ code: string; label: string | nu
 }
 
 export async function listSalesDimensions(): Promise<SalesDimensionsResponse> {
-  const [storeMap, categories, groups, sectors, departments, seasons, buyers] = await Promise.all([
+  const [storeMap, chains, categories, groups, sectors, departments, seasons, buyers] = await Promise.all([
     loadStoreMap(),
+    loadStoreChainList(),
     loadCategoryList(),
     loadGroupList(),
     loadSectorList(),
@@ -312,7 +356,7 @@ export async function listSalesDimensions(): Promise<SalesDimensionsResponse> {
   const stores = [...storeMap.values()]
     .map(({ number, name }) => ({ number, name }))
     .sort((a, b) => a.number - b.number);
-  return { stores, categories, groups, sectors, departments, seasons, buyers };
+  return { stores, chains, categories, groups, sectors, departments, seasons, buyers };
 }
 
 // ─────────────────────────── row shapes (raw from MDB) ────────────────────
@@ -436,6 +480,25 @@ function round2(value: number): number {
 
 function round1(value: number): number {
   return Math.round((value + Number.EPSILON) * 10) / 10;
+}
+
+const EMPTY_INVENTORY_METRICS: OnHandInventoryMetrics = {
+  unitsOnHand: 0,
+  onHandAtCost: 0,
+  inventoryUnitCost: null,
+};
+
+function addInventoryMetrics(
+  out: Map<string, OnHandInventoryMetrics>,
+  key: string,
+  value: OnHandInventoryMetrics,
+): void {
+  const current = out.get(key) ?? { ...EMPTY_INVENTORY_METRICS };
+  current.unitsOnHand += value.unitsOnHand;
+  current.onHandAtCost += value.onHandAtCost;
+  current.inventoryUnitCost =
+    current.unitsOnHand > 0 ? current.onHandAtCost / current.unitsOnHand : null;
+  out.set(key, current);
 }
 
 /**
@@ -1520,8 +1583,9 @@ export async function getSalesAnalysis(params: {
     }
   }
 
-  // On-hand-at-cost lookup (Turns/ROI denominator).
-  const rawOnHandMap = await getOnHandAtCostByDimension({
+  // On-hand inventory lookup. Cost is the Turns/ROI denominator; units and
+  // weighted unit cost are displayed beside it in the report.
+  const rawInventoryMap = await getOnHandInventoryByDimension({
     reportType: params.reportType,
     storeOption: params.storeOption,
     criteria: params.criteria,
@@ -1530,10 +1594,10 @@ export async function getSalesAnalysis(params: {
   // DEPT_SUMMARY comes back keyed as `CAT:<category>[|<store>]` — the
   // on-hand adapter doesn't have the dept map. Re-bucket here using the
   // existing deptNumberForCategory helper.
-  let onHandLookup = rawOnHandMap;
+  let inventoryLookup = rawInventoryMap;
   if (params.reportType === 'DEPT_SUMMARY' && deptMap) {
-    onHandLookup = new Map<string, number>();
-    for (const [k, v] of rawOnHandMap) {
+    inventoryLookup = new Map<string, OnHandInventoryMetrics>();
+    for (const [k, v] of rawInventoryMap) {
       const pipeIdx = k.indexOf('|');
       const head = pipeIdx === -1 ? k : k.slice(0, pipeIdx);
       const tail = pipeIdx === -1 ? '' : k.slice(pipeIdx);
@@ -1541,11 +1605,11 @@ export async function getSalesAnalysis(params: {
       const dept = deptNumberForCategory(catNum, deptMap);
       if (dept == null) continue;
       const newKey = `${dept}${tail}`;
-      onHandLookup.set(newKey, (onHandLookup.get(newKey) ?? 0) + v);
+      addInventoryMetrics(inventoryLookup, newKey, v);
     }
   } else if (params.reportType === 'SECTOR_SUMMARY' && deptMap && sectorMap) {
-    onHandLookup = new Map<string, number>();
-    for (const [k, v] of rawOnHandMap) {
+    inventoryLookup = new Map<string, OnHandInventoryMetrics>();
+    for (const [k, v] of rawInventoryMap) {
       const pipeIdx = k.indexOf('|');
       const head = pipeIdx === -1 ? k : k.slice(0, pipeIdx);
       const tail = pipeIdx === -1 ? '' : k.slice(pipeIdx);
@@ -1554,14 +1618,14 @@ export async function getSalesAnalysis(params: {
       const sector = sectorNumberForDepartment(dept, sectorMap);
       if (sector == null) continue;
       const newKey = `${sector}${tail}`;
-      onHandLookup.set(newKey, (onHandLookup.get(newKey) ?? 0) + v);
+      addInventoryMetrics(inventoryLookup, newKey, v);
     }
   } else if (params.reportType === 'PRICE_POINT_SUMMARY') {
     // PP bucketing requires SKU → bucket mapping from the sales adapter's
     // own bucketization, which is not currently exposed. Until that's
     // refactored, leave onHandLookup empty so ROI/Turns render as null
     // on price-point rows. Documented as spec Open Question 2.
-    onHandLookup = new Map();
+    inventoryLookup = new Map();
   }
 
   const periodDays =
@@ -1583,7 +1647,8 @@ export async function getSalesAnalysis(params: {
         params.storeOption === 'COMBINE'
           ? b.dimensionKey
           : `${b.dimensionKey}|${b.storeNumber}`;
-      const onHandAtCost = onHandLookup.get(onHandKey) ?? 0;
+      const inventory = inventoryLookup.get(onHandKey) ?? EMPTY_INVENTORY_METRICS;
+      const onHandAtCost = inventory.onHandAtCost;
 
       const metrics = computeRoiTurnsGp({
         netSales: b.netSales,
@@ -1602,6 +1667,10 @@ export async function getSalesAnalysis(params: {
         cogs: round2(b.cogs),
         grossProfit: round2(grossProfit),
         gpPct: metrics.gpPct,
+        unitsOnHand: round2(inventory.unitsOnHand),
+        inventoryUnitCost: inventory.inventoryUnitCost != null
+          ? round2(inventory.inventoryUnitCost)
+          : null,
         onHandAtCost: round2(onHandAtCost),
         turns: metrics.turns,
         roiPct: metrics.roiPct,
@@ -1620,6 +1689,7 @@ export async function getSalesAnalysis(params: {
   const totalNetSales = rows.reduce((s, r) => s + r.netSales, 0);
   const totalCogs = rows.reduce((s, r) => s + r.cogs, 0);
   const totalGrossProfit = rows.reduce((s, r) => s + r.grossProfit, 0);
+  const totalUnitsOnHand = rows.reduce((s, r) => s + r.unitsOnHand, 0);
   const totalOnHandAtCost = rows.reduce((s, r) => s + r.onHandAtCost, 0);
   const totalsMetrics = computeRoiTurnsGp({
     netSales: totalNetSales,
@@ -1633,6 +1703,10 @@ export async function getSalesAnalysis(params: {
     netSales: round2(totalNetSales),
     cogs: round2(totalCogs),
     grossProfit: round2(totalGrossProfit),
+    unitsOnHand: round2(totalUnitsOnHand),
+    inventoryUnitCost: totalUnitsOnHand > 0
+      ? round2(totalOnHandAtCost / totalUnitsOnHand)
+      : null,
     onHandAtCost: round2(totalOnHandAtCost),
     gpPct: totalsMetrics.gpPct,
     turns: totalsMetrics.turns,

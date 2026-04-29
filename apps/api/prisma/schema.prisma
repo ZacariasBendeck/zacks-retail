@@ -561,13 +561,16 @@ model StoreMaster {
 /// App-owned chain / banner definitions for store grouping.
 /// Stores belong to at most one chain through StoreGroupMember.
 model StoreGroup {
-  code      String             @id @db.VarChar(64)
-  label     String             @db.VarChar(120)
-  active    Boolean            @default(true)
-  sortOrder Int                @default(0) @map("sort_order")
-  createdAt DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt DateTime           @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
-  members   StoreGroupMember[]
+  code             String                       @id @db.VarChar(64)
+  label            String                       @db.VarChar(120)
+  active           Boolean                      @default(true)
+  sortOrder        Int                          @default(0) @map("sort_order")
+  createdAt        DateTime                     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime                     @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  members          StoreGroupMember[]
+  matchingSets     MatchingSet[]
+  sizeCurves       MatchingSetMemberSizeCurve[]
+  matchingBuyPlans MatchingSetBuyPlan[]
 
   @@map("store_group")
   @@schema("app")
@@ -733,6 +736,162 @@ model PurchaseOrderLegacyLine {
   @@index([skuCode], map: "purchase_order_legacy_line_sku_code_idx")
   @@index([skuId], map: "purchase_order_legacy_line_sku_id_idx")
   @@map("purchase_order_legacy_line")
+  @@schema("app")
+}
+
+/// Native Zack's Retail purchase-order header. This is the Postgres write
+/// surface for development-stage draft/operator POs and the cutover target for
+/// operational purchasing. Legacy imported POs remain in purchase_order_legacy.
+model PurchaseOrder {
+  id                   String    @id @default(uuid()) @db.Uuid
+  poNumber             String    @unique(map: "purchase_order_po_number_key") @map("po_number") @db.VarChar(32)
+  billToStoreId        Int?      @map("bill_to_store_id") @db.SmallInt
+  shipToStoreId        Int?      @map("ship_to_store_id") @db.SmallInt
+  vendorCode           String    @map("vendor_code") @db.VarChar(4)
+  orderType            String    @default("RO") @map("order_type") @db.VarChar(8)
+  classification       String    @default("AT_ONCE") @db.VarChar(16)
+  status               String    @default("DRAFT") @db.VarChar(32)
+  origin               String    @default("MANUAL") @db.VarChar(32)
+  originSourcePoId     String?   @map("origin_source_po_id") @db.Uuid
+  confirmationNumber   String?   @map("confirmation_number")
+  accountNumber        String?   @map("account_number")
+  terms                String?
+  shipVia              String?   @map("ship_via")
+  backorderAllowed     Boolean   @default(false) @map("backorder_allowed")
+  splitShipment        Boolean   @default(false) @map("split_shipment")
+  programCode          String?   @map("program_code")
+  storeLabelsOnReceive Boolean   @default(false) @map("store_labels_on_receive")
+  buyer                String?
+  comments             String?
+  orderDate            DateTime  @default(now()) @map("order_date") @db.Timestamptz(6)
+  shipDate             DateTime? @map("ship_date") @db.Timestamptz(6)
+  cancelDate           DateTime? @map("cancel_date") @db.Timestamptz(6)
+  paymentDate          DateTime? @map("payment_date") @db.Timestamptz(6)
+  createdBy            String    @map("created_by")
+  submittedAt          DateTime? @map("submitted_at") @db.Timestamptz(6)
+  closedAt             DateTime? @map("closed_at") @db.Timestamptz(6)
+  cancellationReason   String?   @map("cancellation_reason")
+  createdAt            DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  lines               PurchaseOrderLine[]
+  receipts            PoReceipt[]
+  statusHistory       PoStatusHistory[]
+  matchingSetBuyPlans MatchingSetBuyPlan[]
+
+  @@index([vendorCode, status], map: "purchase_order_vendor_status_idx")
+  @@index([buyer, status], map: "purchase_order_buyer_status_idx")
+  @@index([shipToStoreId, shipDate], map: "purchase_order_ship_store_ship_date_idx")
+  @@index([classification, status], map: "purchase_order_classification_status_idx")
+  @@map("purchase_order")
+  @@schema("app")
+}
+
+/// Native PO line at SKU level. Per-size ordered quantities live in
+/// purchase_order_line_size_cell; quantity_received is a denormalized rollup
+/// maintained by the service from receipt-line ledger rows.
+model PurchaseOrderLine {
+  id                 String        @id @default(uuid()) @db.Uuid
+  poId               String        @map("po_id") @db.Uuid
+  purchaseOrder      PurchaseOrder @relation(fields: [poId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  skuId              String        @map("sku_id") @db.Uuid
+  sku                Sku           @relation(fields: [skuId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  lineSequence       Int           @map("line_sequence")
+  casePackId         String?       @map("case_pack_id")
+  casePackMultiplier Int?          @default(1) @map("case_pack_multiplier")
+  retailPrice        Decimal?      @map("retail_price") @db.Decimal(12, 2)
+  unitCost           Decimal       @map("unit_cost") @db.Decimal(12, 2)
+  quantityOrdered    Int           @map("quantity_ordered")
+  quantityReceived   Int           @default(0) @map("quantity_received")
+  writeBackToMaster  Boolean       @default(false) @map("write_back_to_master")
+  createdAt          DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime      @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  sizeCells            PurchaseOrderLineSizeCell[]
+  receiptLines         PoReceiptLine[]
+  matchingSetPlanLines MatchingSetBuyPlanLine[]
+
+  @@unique([poId, lineSequence], map: "purchase_order_line_sequence_key")
+  @@index([poId], map: "purchase_order_line_po_id_idx")
+  @@index([skuId], map: "purchase_order_line_sku_id_idx")
+  @@map("purchase_order_line")
+  @@schema("app")
+}
+
+model PurchaseOrderLineSizeCell {
+  id              String            @id @default(uuid()) @db.Uuid
+  poLineId        String            @map("po_line_id") @db.Uuid
+  poLine          PurchaseOrderLine @relation(fields: [poLineId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  columnLabel     String            @default("") @map("column_label")
+  rowLabel        String            @default("") @map("row_label")
+  quantityOrdered Int               @map("quantity_ordered")
+  createdAt       DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime          @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([poLineId, columnLabel, rowLabel], map: "purchase_order_line_size_cell_key")
+  @@map("purchase_order_line_size_cell")
+  @@schema("app")
+}
+
+model PoReceipt {
+  id                  String        @id @default(uuid()) @db.Uuid
+  poId                String        @map("po_id") @db.Uuid
+  purchaseOrder       PurchaseOrder @relation(fields: [poId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  receivedAtStoreId   Int?          @map("received_at_store_id") @db.SmallInt
+  receivedBy          String        @map("received_by")
+  referenceNumber     String?       @map("reference_number")
+  idempotencyKey      String?       @unique(map: "po_receipt_idempotency_key") @map("idempotency_key")
+  asnCartonId         String?       @map("asn_carton_id") @db.Uuid
+  mode                String        @default("MANUAL") @db.VarChar(16)
+  discountPercent     Decimal?      @default(0) @map("discount_percent") @db.Decimal(5, 2)
+  freightEach         Decimal?      @default(0) @map("freight_each") @db.Decimal(12, 2)
+  receivedAt          DateTime      @default(now()) @map("received_at") @db.Timestamptz(6)
+  reversalOfReceiptId String?       @map("reversal_of_receipt_id") @db.Uuid
+  createdAt           DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  lines PoReceiptLine[]
+
+  @@index([poId, receivedAt(sort: Desc)], map: "po_receipt_po_received_at_idx")
+  @@map("po_receipt")
+  @@schema("app")
+}
+
+model PoReceiptLine {
+  id                String             @id @default(uuid()) @db.Uuid
+  receiptId         String             @map("receipt_id") @db.Uuid
+  receipt           PoReceipt          @relation(fields: [receiptId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  poLineId          String?            @map("po_line_id") @db.Uuid
+  poLine            PurchaseOrderLine? @relation(fields: [poLineId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  skuId             String             @map("sku_id") @db.Uuid
+  sku               Sku                @relation(fields: [skuId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  columnLabel       String             @default("") @map("column_label")
+  rowLabel          String             @default("") @map("row_label")
+  quantityReceived  Int                @map("quantity_received")
+  effectiveUnitCost Decimal            @map("effective_unit_cost") @db.Decimal(12, 2)
+  discrepancyReason String?            @map("discrepancy_reason")
+  auditReference    String?            @map("audit_reference")
+  movementId        String?            @map("movement_id") @db.Uuid
+  createdAt         DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([receiptId], map: "po_receipt_line_receipt_id_idx")
+  @@index([poLineId], map: "po_receipt_line_po_line_id_idx")
+  @@index([skuId], map: "po_receipt_line_sku_id_idx")
+  @@map("po_receipt_line")
+  @@schema("app")
+}
+
+model PoStatusHistory {
+  id            String        @id @default(uuid()) @db.Uuid
+  poId          String        @map("po_id") @db.Uuid
+  purchaseOrder PurchaseOrder @relation(fields: [poId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  fromStatus    String?       @map("from_status") @db.VarChar(32)
+  toStatus      String        @map("to_status") @db.VarChar(32)
+  changedBy     String        @map("changed_by")
+  reason        String?
+  createdAt     DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([poId, createdAt], map: "po_status_history_po_created_at_idx")
+  @@map("po_status_history")
   @@schema("app")
 }
 
@@ -984,7 +1143,10 @@ model Sku {
   inventorySalesCells       InventorySalesCell[]
   upcs                      SkuUpc[]
   futurePriceChanges        FuturePriceChange[]
+  purchaseOrderLines        PurchaseOrderLine[]
+  poReceiptLines            PoReceiptLine[]
   purchaseOrderLegacyLines  PurchaseOrderLegacyLine[]
+  matchingSetBuyPlanLines   MatchingSetBuyPlanLine[]
   manualReceipts            ManualReceipt[]
   manualReturns             ManualReturn[]
   transferLines             TransferLine[]
@@ -1040,28 +1202,36 @@ model MatchingSetRole {
 /// Header record for a conjunto / matching set. Members remain independently
 /// sellable SKUs but are analyzed and maintained together.
 model MatchingSet {
-  id               String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  code             String              @unique(map: "matching_set_code_key")
-  setTypeCode      String              @map("set_type_code")
-  setType          MatchingSetType     @relation(fields: [setTypeCode], references: [code], onDelete: Restrict, onUpdate: Cascade)
-  descriptionEs    String?             @map("description_es")
-  vendorId         String?             @map("vendor_id") @db.VarChar(4)
-  vendor           Vendor?             @relation(fields: [vendorId], references: [code], onDelete: SetNull, onUpdate: Cascade)
-  vendorStyle      String?             @map("vendor_style")
-  sharedColorCode  String?             @map("shared_color_code")
-  sharedColorLabel String?             @map("shared_color_label")
-  season           String?             @db.VarChar(2)
+  id               String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  code             String               @unique(map: "matching_set_code_key")
+  setTypeCode      String               @map("set_type_code")
+  setType          MatchingSetType      @relation(fields: [setTypeCode], references: [code], onDelete: Restrict, onUpdate: Cascade)
+  descriptionEs    String?              @map("description_es")
+  vendorId         String?              @map("vendor_id") @db.VarChar(4)
+  vendor           Vendor?              @relation(fields: [vendorId], references: [code], onDelete: SetNull, onUpdate: Cascade)
+  vendorStyle      String?              @map("vendor_style")
+  materialCode     String?              @map("material_code")
+  materialLabel    String?              @map("material_label")
+  sharedColorCode  String?              @map("shared_color_code")
+  sharedColorLabel String?              @map("shared_color_label")
+  season           String?              @db.VarChar(2)
+  chainId          String?              @map("chain_id") @db.VarChar(64)
+  chain            StoreGroup?          @relation(fields: [chainId], references: [code], onDelete: SetNull, onUpdate: Cascade)
+  sellMode         String               @default("separates") @map("sell_mode") @db.VarChar(24)
+  planningActive   Boolean              @default(true) @map("planning_active")
   notes            String?
-  active           Boolean             @default(true)
-  createdAt        DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
-  createdBy        String              @default("system") @map("created_by")
-  updatedAt        DateTime            @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
-  updatedBy        String              @default("system") @map("updated_by")
+  active           Boolean              @default(true)
+  createdAt        DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy        String               @default("system") @map("created_by")
+  updatedAt        DateTime             @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy        String               @default("system") @map("updated_by")
   members          MatchingSetMember[]
+  buyPlans         MatchingSetBuyPlan[]
 
   @@index([setTypeCode], map: "matching_set_type_idx")
   @@index([vendorId], map: "matching_set_vendor_idx")
   @@index([vendorId, vendorStyle, sharedColorCode, season], map: "matching_set_lookup_idx")
+  @@index([chainId], map: "matching_set_chain_idx")
   @@index([active, updatedAt], map: "matching_set_active_idx")
   @@map("matching_set")
   @@schema("app")
@@ -1069,17 +1239,19 @@ model MatchingSet {
 
 /// Member row linking a Product matching set to an app.sku UUID.
 model MatchingSetMember {
-  setId         String      @map("set_id") @db.Uuid
-  skuId         String      @map("sku_id") @db.Uuid
-  roleCode      String      @map("role_code")
-  isPrimary     Boolean     @default(false) @map("is_primary")
-  quantityRatio Decimal     @default(1) @map("quantity_ratio") @db.Decimal(8, 3)
-  addedAt       DateTime    @default(now()) @map("added_at") @db.Timestamptz(6)
-  addedBy       String      @default("system") @map("added_by")
-  updatedAt     DateTime    @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
-  updatedBy     String      @default("system") @map("updated_by")
-  set           MatchingSet @relation(fields: [setId], references: [id], onDelete: Cascade, onUpdate: Cascade)
-  sku           Sku         @relation(fields: [skuId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  setId         String                       @map("set_id") @db.Uuid
+  skuId         String                       @map("sku_id") @db.Uuid
+  roleCode      String                       @map("role_code")
+  isPrimary     Boolean                      @default(false) @map("is_primary")
+  quantityRatio Decimal                      @default(1) @map("quantity_ratio") @db.Decimal(8, 3)
+  addedAt       DateTime                     @default(now()) @map("added_at") @db.Timestamptz(6)
+  addedBy       String                       @default("system") @map("added_by")
+  updatedAt     DateTime                     @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy     String                       @default("system") @map("updated_by")
+  set           MatchingSet                  @relation(fields: [setId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  sku           Sku                          @relation(fields: [skuId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  sizeCurves    MatchingSetMemberSizeCurve[]
+  buyPlanLines  MatchingSetBuyPlanLine[]
 
   @@id([setId, skuId])
   @@index([skuId], map: "matching_set_member_sku_idx")
@@ -1090,6 +1262,96 @@ model MatchingSetMember {
 
 /// State-transition audit log. Written by skuLifecycleService — no DB trigger,
 /// because we want the service to own the who/why context (actor, reason).
+/// Optional role/size profile used to split a matching-set buy recommendation
+/// into purchase-order size cells. Percent values are normalized by service
+/// code, so buyers can enter rough curves and still get a valid split.
+model MatchingSetMemberSizeCurve {
+  id          String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  setId       String            @map("set_id") @db.Uuid
+  skuId       String            @map("sku_id") @db.Uuid
+  member      MatchingSetMember @relation(fields: [setId, skuId], references: [setId, skuId], onDelete: Cascade, onUpdate: Cascade)
+  chainId     String?           @map("chain_id") @db.VarChar(64)
+  chain       StoreGroup?       @relation(fields: [chainId], references: [code], onDelete: SetNull, onUpdate: Cascade)
+  storeId     Int?              @map("store_id") @db.SmallInt
+  sizeLabel   String            @map("size_label")
+  columnLabel String            @default("") @map("column_label")
+  rowLabel    String            @default("") @map("row_label")
+  ratioPct    Decimal           @map("ratio_pct") @db.Decimal(7, 4)
+  createdAt   DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy   String            @default("system") @map("created_by")
+  updatedAt   DateTime          @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy   String            @default("system") @map("updated_by")
+
+  @@index([chainId], map: "matching_set_member_size_curve_chain_idx")
+  @@map("matching_set_member_size_curve")
+  @@schema("app")
+}
+
+/// Saved recommendation generated from a matching set. It is a planning
+/// artifact until the buyer turns it into a normal purchase order.
+model MatchingSetBuyPlan {
+  id               String                   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  setId            String                   @map("set_id") @db.Uuid
+  set              MatchingSet              @relation(fields: [setId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  chainId          String?                  @map("chain_id") @db.VarChar(64)
+  chain            StoreGroup?              @relation(fields: [chainId], references: [code], onDelete: SetNull, onUpdate: Cascade)
+  receiptMonth     String                   @map("receipt_month") @db.VarChar(7)
+  horizonWeeks     Int                      @default(13) @map("horizon_weeks") @db.SmallInt
+  targetCoverWeeks Int                      @default(8) @map("target_cover_weeks") @db.SmallInt
+  status           String                   @default("draft") @db.VarChar(24)
+  generatedPoId    String?                  @map("generated_po_id") @db.Uuid
+  generatedPo      PurchaseOrder?           @relation(fields: [generatedPoId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  otbStatus        String?                  @map("otb_status") @db.VarChar(24)
+  otbSnapshotJson  Json?                    @map("otb_snapshot_json")
+  createdAt        DateTime                 @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy        String                   @default("system") @map("created_by")
+  updatedAt        DateTime                 @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy        String                   @default("system") @map("updated_by")
+  lines            MatchingSetBuyPlanLine[]
+
+  @@index([setId, createdAt(sort: Desc)], map: "matching_set_buy_plan_set_created_idx")
+  @@index([chainId, receiptMonth], map: "matching_set_buy_plan_chain_month_idx")
+  @@index([generatedPoId], map: "matching_set_buy_plan_po_idx")
+  @@map("matching_set_buy_plan")
+  @@schema("app")
+}
+
+/// Recommendation line at SKU x role x size grain. PO creation explodes these
+/// into normal purchase_order_line and purchase_order_line_size_cell records.
+model MatchingSetBuyPlanLine {
+  id               String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  planId           String             @map("plan_id") @db.Uuid
+  plan             MatchingSetBuyPlan @relation(fields: [planId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  setId            String             @map("set_id") @db.Uuid
+  skuId            String             @map("sku_id") @db.Uuid
+  member           MatchingSetMember  @relation(fields: [setId, skuId], references: [setId, skuId], onDelete: Restrict, onUpdate: Cascade)
+  sku              Sku                @relation(fields: [skuId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  roleCode         String             @map("role_code")
+  sizeLabel        String             @map("size_label")
+  columnLabel      String             @default("") @map("column_label")
+  rowLabel         String             @default("") @map("row_label")
+  onHand           Int                @default(0) @map("on_hand")
+  onOrder          Int                @default(0) @map("on_order")
+  projectedSales   Int                @default(0) @map("projected_sales")
+  targetEnding     Int                @default(0) @map("target_ending")
+  recommendedQty   Int                @map("recommended_qty")
+  unitCost         Decimal            @default(0) @map("unit_cost") @db.Decimal(12, 2)
+  retailPrice      Decimal            @default(0) @map("retail_price") @db.Decimal(12, 2)
+  categoryNumber   Int?               @map("category_number")
+  departmentNumber Int?               @map("department_number") @db.SmallInt
+  poLineId         String?            @map("po_line_id") @db.Uuid
+  poLine           PurchaseOrderLine? @relation(fields: [poLineId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  createdAt        DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime           @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([planId], map: "matching_set_buy_plan_line_plan_idx")
+  @@index([skuId], map: "matching_set_buy_plan_line_sku_idx")
+  @@index([poLineId], map: "matching_set_buy_plan_line_po_line_idx")
+  @@index([categoryNumber, departmentNumber], map: "matching_set_buy_plan_line_taxonomy_idx")
+  @@map("matching_set_buy_plan_line")
+  @@schema("app")
+}
+
 model SkuActivity {
   id          String   @id @default(uuid()) @db.Uuid
   skuId       String   @map("sku_id") @db.Uuid
@@ -1358,6 +1620,26 @@ model InventorySalesCell {
   @@index([skuId, storeId], map: "inventory_sales_cell_sku_store_idx")
   @@index([storeId], map: "inventory_sales_cell_store_idx")
   @@map("inventory_sales_cell")
+  @@schema("app")
+}
+
+/// Saved defaults for the Inventory Inquiry reorder planner. SKU-scoped rows
+/// win over vendor-scoped rows; request handlers still let buyers override
+/// values for a single planning run.
+model ReorderPlannerDefaults {
+  id             String   @id @default(uuid()) @db.Uuid
+  scopeType      String   @map("scope_type") @db.VarChar(16)
+  scopeKey       String   @map("scope_key") @db.VarChar(64)
+  leadTimeDays   Int      @default(90) @map("lead_time_days") @db.SmallInt
+  orderCycleDays Int      @default(90) @map("order_cycle_days") @db.SmallInt
+  moqQty         Int      @default(0) @map("moq_qty")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy      String   @default("system") @map("created_by") @db.VarChar(120)
+  updatedAt      DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy      String   @default("system") @map("updated_by") @db.VarChar(120)
+
+  @@unique([scopeType, scopeKey], map: "reorder_planner_defaults_scope_key")
+  @@map("reorder_planner_defaults")
   @@schema("app")
 }
 
@@ -1811,15 +2093,16 @@ model AttributeFamilyRule {
 /// `is_active=false` hides the value from new-assignment dropdowns but
 /// preserves it for existing assignments and audit history.
 model AttributeValue {
-  id          Int                      @id @default(autoincrement()) @db.SmallInt
-  dimensionId Int                      @map("dimension_id") @db.SmallInt
-  dimension   AttributeDimension       @relation(fields: [dimensionId], references: [id], onDelete: Restrict, onUpdate: Cascade)
-  code        String
-  labelEs     String                   @map("label_es")
-  sortOrder   Int                      @map("sort_order") @db.SmallInt
-  isActive    Boolean                  @default(true) @map("is_active")
-  createdAt   DateTime                 @default(now()) @map("created_at")
-  assignments SkuAttributeAssignment[]
+  id            Int                      @id @default(autoincrement()) @db.SmallInt
+  dimensionId   Int                      @map("dimension_id") @db.SmallInt
+  dimension     AttributeDimension       @relation(fields: [dimensionId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  code          String
+  labelEs       String                   @map("label_es")
+  descriptionEs String?                  @map("description_es")
+  sortOrder     Int                      @map("sort_order") @db.SmallInt
+  isActive      Boolean                  @default(true) @map("is_active")
+  createdAt     DateTime                 @default(now()) @map("created_at")
+  assignments   SkuAttributeAssignment[]
 
   @@unique([dimensionId, code])
   @@map("attribute_value")
@@ -2267,7 +2550,7 @@ model SalesHistoryTicketLine {
   @@schema("app")
 }
 
-model SalesHistoryTicketLegacyRaw {
+model TicketHeader {
   id                    String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   source                String   @default("rics_ticket_import")
   externalTransactionId String?  @map("external_transaction_id")
@@ -2306,15 +2589,15 @@ model SalesHistoryTicketLegacyRaw {
   posted                String?
   importedAt            DateTime @default(now()) @map("imported_at") @db.Timestamptz(6)
 
-  @@index([source, externalTransactionId], map: "idx_sales_history_ticket_legacy_raw_source_external")
-  @@index([ticketIdentityKey], map: "idx_sales_history_ticket_legacy_raw_identity")
-  @@index([ticketId], map: "idx_sales_history_ticket_legacy_raw_ticket")
-  @@index([store, ticket, realDate], map: "idx_sales_history_ticket_legacy_raw_store_ticket")
-  @@map("sales_history_ticket_legacy_raw")
+  @@index([source, externalTransactionId], map: "idx_ticket_header_source_external")
+  @@index([ticketIdentityKey], map: "idx_ticket_header_identity")
+  @@index([ticketId], map: "idx_ticket_header_sales_history_ticket")
+  @@index([store, ticket, realDate], map: "idx_ticket_header_store_ticket")
+  @@map("ticket_header")
   @@schema("app")
 }
 
-model SalesHistoryTicketLineLegacyRaw {
+model TicketDetail {
   id                    String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   source                String   @default("rics_ticket_import")
   sourceRowNumber       BigInt   @map("source_row_number")
@@ -2370,15 +2653,15 @@ model SalesHistoryTicketLineLegacyRaw {
   comment               String?
   importedAt            DateTime @default(now()) @map("imported_at") @db.Timestamptz(6)
 
-  @@index([source, externalTransactionId], map: "idx_sales_history_ticket_line_legacy_raw_source_external")
-  @@index([ticketIdentityKey], map: "idx_sales_history_ticket_line_legacy_raw_identity")
-  @@index([ticketId], map: "idx_sales_history_ticket_line_legacy_raw_ticket")
-  @@index([store, ticket, realDate], map: "idx_sales_history_ticket_line_legacy_raw_store_ticket")
-  @@map("sales_history_ticket_line_legacy_raw")
+  @@index([source, externalTransactionId], map: "idx_ticket_detail_source_external")
+  @@index([ticketIdentityKey], map: "idx_ticket_detail_identity")
+  @@index([ticketId], map: "idx_ticket_detail_sales_history_ticket")
+  @@index([store, ticket, realDate], map: "idx_ticket_detail_store_ticket")
+  @@map("ticket_detail")
   @@schema("app")
 }
 
-model SalesHistoryTicketTenderLegacyRaw {
+model TicketTender {
   id                    String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   source                String   @default("rics_ticket_import")
   sourceRowNumber       BigInt   @map("source_row_number")
@@ -2402,11 +2685,11 @@ model SalesHistoryTicketTenderLegacyRaw {
   giftNew               String?  @map("gift_new")
   importedAt            DateTime @default(now()) @map("imported_at") @db.Timestamptz(6)
 
-  @@index([source, externalTransactionId], map: "idx_sales_history_ticket_tender_legacy_raw_source_external")
-  @@index([ticketIdentityKey], map: "idx_sales_history_ticket_tender_legacy_raw_identity")
-  @@index([ticketId], map: "idx_sales_history_ticket_tender_legacy_raw_ticket")
-  @@index([store, ticket, realDate], map: "idx_sales_history_ticket_tender_legacy_raw_store_ticket")
-  @@map("sales_history_ticket_tender_legacy_raw")
+  @@index([source, externalTransactionId], map: "idx_ticket_tender_source_external")
+  @@index([ticketIdentityKey], map: "idx_ticket_tender_identity")
+  @@index([ticketId], map: "idx_ticket_tender_sales_history_ticket")
+  @@index([store, ticket, realDate], map: "idx_ticket_tender_store_ticket")
+  @@map("ticket_tender")
   @@schema("app")
 }
 

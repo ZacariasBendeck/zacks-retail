@@ -8,6 +8,10 @@ Forecast-driven replenishment calculator. Given historical sales and current on-
 
 > Independent of `otb-planning`. The two share no tables, routes, or screens.
 
+## Matching-set bridge
+
+Matching-set purchasing is a Product-owned planning bridge for cases where the buyer must keep coordinated SKUs in ratio, such as suit jackets, pants, and vests. It uses the same replenishment concepts as purchase planning (sales velocity, on-hand, on-order, target cover), but computes at matching-set role and size grain instead of department/category/vendor grain. It saves recommendations in `app.matching_set_buy_plan*` and can create a draft PO worksheet; it does not replace the broader purchase-planning module.
+
 ## Documents in this module
 
 | File | Purpose |

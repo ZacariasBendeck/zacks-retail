@@ -13,8 +13,6 @@ interface Args {
   withSeedAssignments: boolean;
   customerCsvPath: string | null;
   mailListNamesCsvPath: string | null;
-  ticketHeaderCsvPath: string | null;
-  ticketDetailCsvPath: string | null;
 }
 
 interface BundleManifest {
@@ -43,8 +41,6 @@ function parseArgs(): Args {
     withSeedAssignments: false,
     customerCsvPath: null,
     mailListNamesCsvPath: null,
-    ticketHeaderCsvPath: null,
-    ticketDetailCsvPath: null,
   };
 
   const argv = process.argv.slice(2);
@@ -77,12 +73,6 @@ function parseArgs(): Args {
       case '--mail':
         args.mailListNamesCsvPath = path.resolve(String(argv[++i] ?? ''));
         break;
-      case '--ticket-header':
-        args.ticketHeaderCsvPath = path.resolve(String(argv[++i] ?? ''));
-        break;
-      case '--ticket-detail':
-        args.ticketDetailCsvPath = path.resolve(String(argv[++i] ?? ''));
-        break;
       case '--help':
       case '-h':
         printHelpAndExit(0);
@@ -103,7 +93,7 @@ function printHelpAndExit(code: number): never {
       'Creates a Render cutover bundle with:',
       '  - legacy/manifest.json + canonical RICS CSV artifact pack',
       '  - app/attribute-catalog-export.json',
-      '  - optional crm/*.csv files copied into the bundle when supplied',
+      '  - optional customer CRM CSVs copied into the bundle when supplied',
       '',
       'Options:',
       `  --out <dir>                 Bundle output directory (default ${DEFAULT_OUT_DIR})`,
@@ -113,8 +103,6 @@ function printHelpAndExit(code: number): never {
       '  --with-seed-assignments     Include seed:* attribute assignments in snapshot',
       '  --customer <path>           Optional Customer.csv path',
       '  --mail <path>               Optional MailListNames.csv path',
-      '  --ticket-header <path>      Optional ticket_header.csv path',
-      '  --ticket-detail <path>      Optional ticket_detail.csv path',
       '  --help                      Show this help',
     ].join('\n'),
   );
@@ -242,22 +230,6 @@ async function main(): Promise<void> {
     'MailListNames.csv',
     args.mailListNamesCsvPath,
     path.join(crmDir, 'MailListNames.csv'),
-    warnings,
-    optionalFiles,
-    bundleDir,
-  );
-  copyIfPresent(
-    'ticket_header.csv',
-    args.ticketHeaderCsvPath,
-    path.join(crmDir, 'ticket_header.csv'),
-    warnings,
-    optionalFiles,
-    bundleDir,
-  );
-  copyIfPresent(
-    'ticket_detail.csv',
-    args.ticketDetailCsvPath,
-    path.join(crmDir, 'ticket_detail.csv'),
     warnings,
     optionalFiles,
     bundleDir,

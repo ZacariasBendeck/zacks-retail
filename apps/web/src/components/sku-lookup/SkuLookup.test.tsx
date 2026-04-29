@@ -118,6 +118,44 @@ describe('SkuLookup', () => {
     );
   });
 
+  it('starts with caller-provided lookup filters', async () => {
+    renderLookup(vi.fn(), { initialFilters: { vendor: 'ACME' } });
+    await screen.findByText('A1');
+
+    await waitFor(() =>
+      expect(skuApi.searchSkusForLookup).toHaveBeenCalledWith(
+        expect.objectContaining({ vendor: 'ACME' }),
+      ),
+    );
+    expect(skuApi.fetchSkuLookupFacets).toHaveBeenCalledWith(
+      expect.objectContaining({ vendor: 'ACME' }),
+    );
+  });
+
+  it('defaults SKU lookup searches to contains mode', async () => {
+    renderLookup();
+    await screen.findByText('A1');
+
+    await waitFor(() =>
+      expect(skuApi.searchSkusForLookup).toHaveBeenCalledWith(
+        expect.objectContaining({ searchField: 'SKU', skuMatchMode: 'contains' }),
+      ),
+    );
+  });
+
+  it('passes prefix mode when the operator selects Starts with', async () => {
+    renderLookup();
+    await screen.findByText('A1');
+
+    await userEvent.click(screen.getByText('Starts with'));
+
+    await waitFor(() =>
+      expect(skuApi.searchSkusForLookup).toHaveBeenLastCalledWith(
+        expect.objectContaining({ searchField: 'SKU', skuMatchMode: 'prefix' }),
+      ),
+    );
+  });
+
   it('calls onSelect when user double-clicks a row', async () => {
     const onSelect = renderLookup();
     await screen.findByText('A1');
@@ -137,7 +175,7 @@ describe('SkuLookup', () => {
     const onSelect = renderLookup();
     await screen.findByText('A1');
     // Focus the search input (autoFocus already put it there, but be explicit).
-    const input = screen.getByPlaceholderText(/Prefix match/i);
+    const input = screen.getByPlaceholderText(/SKU matches anywhere/i);
     input.focus();
     await userEvent.keyboard('{ArrowDown}');
     await userEvent.keyboard('{Enter}');
@@ -147,7 +185,7 @@ describe('SkuLookup', () => {
   it('ArrowDown twice then Enter picks the second row', async () => {
     const onSelect = renderLookup();
     await screen.findByText('A1');
-    const input = screen.getByPlaceholderText(/Prefix match/i);
+    const input = screen.getByPlaceholderText(/SKU matches anywhere/i);
     input.focus();
     await userEvent.keyboard('{ArrowDown}{ArrowDown}{Enter}');
     expect(onSelect).toHaveBeenCalledWith({ skuCode: 'A2', skuId: 'A2' });
@@ -158,7 +196,7 @@ describe('SkuLookup', () => {
     const onSubmitQuery = vi.fn();
     renderLookup(vi.fn(), { initialQuery: 'NEW-SKU-123', onSubmitQuery });
     await waitFor(() => expect(skuApi.searchSkusForLookup).toHaveBeenCalled());
-    const input = screen.getByPlaceholderText(/Prefix match/i);
+    const input = screen.getByPlaceholderText(/SKU matches anywhere/i);
     input.focus();
     await userEvent.keyboard('{Enter}');
     expect(onSubmitQuery).toHaveBeenCalledWith('NEW-SKU-123');

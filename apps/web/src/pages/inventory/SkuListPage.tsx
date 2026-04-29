@@ -559,7 +559,7 @@ export default function SkuListPage() {
         <Row gutter={[12, 12]} align="middle">
           <Col flex="auto">
             <Input.Search
-              placeholder="Search by brand, style, color, SKU code, vendor, description..."
+              placeholder="Search SKU, vendor, brand, style/color, web description, category, department..."
               value={q}
               onChange={(e) => setQ(e.target.value)}
               onSearch={runQuery}
@@ -861,7 +861,7 @@ export default function SkuListPage() {
             type="info"
             showIcon
             message="Search or apply filters to load SKUs"
-            description="Use the general search bar for brand, style, color, SKU code, vendor, or description. Open Filters for exact taxonomy and attribute filters."
+            description="Use the general search bar for SKU, vendor, brand, style/color, RICS or web description, category, or department. Open Filters for exact taxonomy and attribute filters."
           />
         ) : (
           <Table<EnrichedSku>

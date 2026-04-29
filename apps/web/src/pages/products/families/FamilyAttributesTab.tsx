@@ -1,3 +1,4 @@
+import { DeleteOutlined, PlusOutlined } from '@ant-design/icons'
 import { useMemo, useState } from 'react'
 import {
   Alert,
@@ -14,7 +15,6 @@ import {
   Tooltip,
   Typography,
 } from 'antd'
-import { DeleteOutlined, PlusOutlined } from '@ant-design/icons'
 import { useAttributeDimensions } from '../../../hooks/useProductsAttributes'
 import {
   useFamilyAttributeRules,
@@ -22,75 +22,115 @@ import {
   useToggleFamilyAttributeRule,
 } from '../../../hooks/useProductFamilies'
 import type { ProductFamily } from '../../../types/sku'
-import type { FamilyAttributeRuleRow } from '../../../types/productsAttributes'
+import type { AttributeDimension, FamilyAttributeRuleRow } from '../../../types/productsAttributes'
 
 interface Props {
   family: ProductFamily
 }
 
+function bySortThenLabel(a: { sortOrder: number; labelEs: string }, b: { sortOrder: number; labelEs: string }) {
+  if (a.sortOrder !== b.sortOrder) return a.sortOrder - b.sortOrder
+  return a.labelEs.localeCompare(b.labelEs)
+}
+
 /**
- * Atributos tab — per-family rule editor. Two sections:
- *
- * 1. **Reglas de esta familia** — dimensions with a rule row for this family.
- *    Each row has enabled + isRequired + sortOrder editors plus a Remove.
- *    Adding a new one opens a picker of dimensions not yet ruled for this
- *    family.
- *
- * 2. **Universales** — dimensions with ZERO rule rows. Read-only here; they
- *    apply to every family including this one. Edit them in
- *    /products/attributes → Reglas → flip "Universal" off.
+ * Dimensions for the selected family only. The left family list controls this
+ * tab; do not render every family here.
  */
 export default function FamilyAttributesTab({ family }: Props) {
   const { message } = App.useApp()
-  const { data: dimensions } = useAttributeDimensions()
-  const { data: rules } = useFamilyAttributeRules(family.code)
+  const { data: dimensions, isLoading: dimensionsLoading } = useAttributeDimensions()
+  const { data: rules, isLoading: rulesLoading } = useFamilyAttributeRules(family.code)
   const toggle = useToggleFamilyAttributeRule()
   const remove = useRemoveFamilyAttributeRule()
-  const [pickerDim, setPickerDim] = useState<string | null>(null)
-
-  const ruledDimensionCodes = useMemo(
-    () => new Set((rules ?? []).map((r) => r.dimensionCode)),
-    [rules],
-  )
+  const [pickerDim, setPickerDim] = useState<string | undefined>()
 
   const universalDims = useMemo(
-    () => (dimensions ?? []).filter((d) => d.familyRules.length === 0),
+    () => [...(dimensions ?? [])].filter((dimension) => dimension.familyRules.length === 0).sort(bySortThenLabel),
     [dimensions],
   )
 
-  // Candidates = dims that aren't universal and aren't already ruled for this family.
-  const addableDims = useMemo(() => {
-    return (dimensions ?? []).filter((d) => {
-      if (ruledDimensionCodes.has(d.code)) return false
-      if (d.familyRules.length === 0) return false // universal — lives in the other section
-      return true
-    })
-  }, [dimensions, ruledDimensionCodes])
+  const ruledDimensionCodes = useMemo(
+    () => new Set((rules ?? []).map((rule) => rule.dimensionCode)),
+    [rules],
+  )
+
+  const addableDims = useMemo(
+    () =>
+      [...(dimensions ?? [])]
+        .filter((dimension) => dimension.familyRules.length > 0 && !ruledDimensionCodes.has(dimension.code))
+        .sort(bySortThenLabel),
+    [dimensions, ruledDimensionCodes],
+  )
+
+  const selectedFamilyRows = useMemo(
+    () => [...(rules ?? [])].sort(bySortThenLabel),
+    [rules],
+  )
+
+  const effectiveDimensionRows = useMemo(
+    () => [
+      ...universalDims.map((dimension) => ({
+        key: `universal:${dimension.code}`,
+        scope: 'Universal',
+        code: dimension.code,
+        labelEs: dimension.labelEs,
+        enabled: true,
+        isRequired: false,
+        valuesCount: dimension.values.length,
+      })),
+      ...selectedFamilyRows.map((row) => ({
+        key: `family:${row.dimensionCode}`,
+        scope: family.labelEs,
+        code: row.dimensionCode,
+        labelEs: row.labelEs,
+        enabled: row.enabled,
+        isRequired: row.isRequired,
+        valuesCount: null,
+      })),
+    ],
+    [family.labelEs, selectedFamilyRows, universalDims],
+  )
+
+  const handleAddDim = async () => {
+    if (!pickerDim) return
+    try {
+      await toggle.mutateAsync({
+        familyCode: family.code,
+        dimensionCode: pickerDim,
+        patch: { enabled: true, isRequired: false, sortOrder: 0 },
+      })
+      message.success(`'${pickerDim}' agregado a '${family.code}'`)
+      setPickerDim(undefined)
+    } catch (e) {
+      message.error((e as Error).message)
+    }
+  }
 
   const ruleColumns = [
-    { title: 'Dimensión', dataIndex: 'labelEs', key: 'labelEs', width: 220 },
+    { title: 'Dimension', dataIndex: 'labelEs', key: 'labelEs', width: 240 },
     {
-      title: 'Código',
+      title: 'Code',
       dataIndex: 'dimensionCode',
       key: 'dimensionCode',
-      width: 160,
-      render: (c: string) => <Tag>{c}</Tag>,
+      width: 170,
+      render: (code: string) => <Tag>{code}</Tag>,
     },
     {
-      title: 'Habilitada',
+      title: 'Enabled',
       key: 'enabled',
       width: 110,
       align: 'center' as const,
-      render: (_: unknown, r: FamilyAttributeRuleRow) => (
+      render: (_: unknown, row: FamilyAttributeRuleRow) => (
         <Switch
           size="small"
-          checked={r.enabled}
+          checked={row.enabled}
           loading={toggle.isPending}
           onChange={async (checked) => {
             try {
               await toggle.mutateAsync({
                 familyCode: family.code,
-                dimensionCode: r.dimensionCode,
+                dimensionCode: row.dimensionCode,
                 patch: { enabled: checked, ...(checked ? {} : { isRequired: false }) },
               })
             } catch (e) {
@@ -101,21 +141,21 @@ export default function FamilyAttributesTab({ family }: Props) {
       ),
     },
     {
-      title: 'Requerida',
+      title: 'Required',
       key: 'isRequired',
       width: 110,
       align: 'center' as const,
-      render: (_: unknown, r: FamilyAttributeRuleRow) => (
+      render: (_: unknown, row: FamilyAttributeRuleRow) => (
         <Switch
           size="small"
-          checked={r.isRequired}
-          disabled={!r.enabled}
+          checked={row.isRequired}
+          disabled={!row.enabled}
           loading={toggle.isPending}
           onChange={async (checked) => {
             try {
               await toggle.mutateAsync({
                 familyCode: family.code,
-                dimensionCode: r.dimensionCode,
+                dimensionCode: row.dimensionCode,
                 patch: { isRequired: checked },
               })
             } catch (e) {
@@ -126,26 +166,27 @@ export default function FamilyAttributesTab({ family }: Props) {
       ),
     },
     {
-      title: 'Orden',
+      title: 'Order',
       key: 'sortOrder',
       width: 100,
-      render: (_: unknown, r: FamilyAttributeRuleRow) => (
+      render: (_: unknown, row: FamilyAttributeRuleRow) => (
         <InputNumber
           size="small"
           min={0}
+          max={32767}
           step={10}
-          defaultValue={r.sortOrder}
-          onBlur={async (e) => {
-            const n = Number((e.target as HTMLInputElement).value)
-            if (!Number.isFinite(n) || n === r.sortOrder) return
+          defaultValue={row.sortOrder}
+          onBlur={async (event) => {
+            const next = Number((event.target as HTMLInputElement).value)
+            if (!Number.isFinite(next) || next === row.sortOrder) return
             try {
               await toggle.mutateAsync({
                 familyCode: family.code,
-                dimensionCode: r.dimensionCode,
-                patch: { sortOrder: n },
+                dimensionCode: row.dimensionCode,
+                patch: { sortOrder: next },
               })
-            } catch (err) {
-              message.error((err as Error).message)
+            } catch (e) {
+              message.error((e as Error).message)
             }
           }}
           style={{ width: 80 }}
@@ -156,17 +197,17 @@ export default function FamilyAttributesTab({ family }: Props) {
       title: '',
       key: 'actions',
       width: 60,
-      render: (_: unknown, r: FamilyAttributeRuleRow) => (
+      render: (_: unknown, row: FamilyAttributeRuleRow) => (
         <Popconfirm
-          title="¿Quitar la regla?"
-          description="La dimensión seguirá existiendo, pero ya no se aplicará a esta familia."
+          title="Remove rule?"
+          description="The dimension will still exist, but it will no longer apply to this family."
           onConfirm={async () => {
             try {
               await remove.mutateAsync({
                 familyCode: family.code,
-                dimensionCode: r.dimensionCode,
+                dimensionCode: row.dimensionCode,
               })
-              message.success(`'${r.dimensionCode}' removido de '${family.code}'`)
+              message.success(`'${row.dimensionCode}' removido de '${family.code}'`)
             } catch (e) {
               message.error((e as Error).message)
             }
@@ -178,35 +219,126 @@ export default function FamilyAttributesTab({ family }: Props) {
     },
   ]
 
-  const handleAddDim = async () => {
-    if (!pickerDim) return
-    try {
-      await toggle.mutateAsync({
-        familyCode: family.code,
-        dimensionCode: pickerDim,
-        patch: { enabled: true, isRequired: false, sortOrder: 0 },
-      })
-      message.success(`'${pickerDim}' agregado a '${family.code}'`)
-      setPickerDim(null)
-    } catch (e) {
-      message.error((e as Error).message)
-    }
-  }
-
   return (
     <Space direction="vertical" size="large" style={{ width: '100%' }}>
+      <Alert
+        type="info"
+        showIcon
+        message="Dimensions for the selected family."
+        description={`The left family list controls this tab. Universal dimensions also apply to ${family.labelEs}, so they are shown here together with the family-specific dimensions.`}
+      />
+
       <Card
         size="small"
-        title="Reglas específicas de esta familia"
+        title={
+          <Space>
+            <Typography.Text>Effective Dimensions for Selected Family</Typography.Text>
+            <Tag>{family.code}</Tag>
+            <Typography.Text type="secondary">
+              {universalDims.length} universal + {selectedFamilyRows.length} family-specific
+            </Typography.Text>
+          </Space>
+        }
+      >
+        <Table
+          size="small"
+          rowKey="key"
+          loading={dimensionsLoading || rulesLoading}
+          columns={[
+            {
+              title: 'Scope',
+              dataIndex: 'scope',
+              key: 'scope',
+              width: 150,
+              render: (scope: string) =>
+                scope === 'Universal' ? <Tag color="blue">Universal</Tag> : <Tag>{scope}</Tag>,
+            },
+            { title: 'Dimension', dataIndex: 'labelEs', key: 'labelEs', width: 260 },
+            {
+              title: 'Code',
+              dataIndex: 'code',
+              key: 'code',
+              width: 180,
+              render: (code: string) => <Tag>{code}</Tag>,
+            },
+            {
+              title: 'Enabled',
+              dataIndex: 'enabled',
+              key: 'enabled',
+              width: 90,
+              render: (enabled: boolean) => (enabled ? 'Yes' : 'No'),
+            },
+            {
+              title: 'Required',
+              dataIndex: 'isRequired',
+              key: 'isRequired',
+              width: 90,
+              render: (required: boolean) => (required ? 'Yes' : 'No'),
+            },
+          ]}
+          dataSource={effectiveDimensionRows}
+          pagination={false}
+        />
+      </Card>
+
+      <Card size="small" title="Universal Dimensions">
+        {universalDims.length > 0 ? (
+          <Table<AttributeDimension>
+            size="small"
+            rowKey="code"
+            loading={dimensionsLoading}
+            columns={[
+              { title: 'Dimension', dataIndex: 'labelEs', key: 'labelEs', width: 260 },
+              {
+                title: 'Code',
+                dataIndex: 'code',
+                key: 'code',
+                width: 180,
+                render: (code: string) => <Tag>{code}</Tag>,
+              },
+              {
+                title: 'Multi-value',
+                key: 'multiValue',
+                width: 120,
+                render: (_: unknown, row: AttributeDimension) => (row.isMultiValue ? 'Yes' : 'No'),
+              },
+              {
+                title: 'Values',
+                key: 'values',
+                width: 100,
+                align: 'right' as const,
+                render: (_: unknown, row: AttributeDimension) => row.values.length,
+              },
+            ]}
+            dataSource={universalDims}
+            pagination={false}
+          />
+        ) : (
+          <Typography.Text type="secondary">No universal dimensions.</Typography.Text>
+        )}
+      </Card>
+
+      <Card
+        size="small"
+        title={
+          <Space>
+            <Typography.Text>Dimensions Scoped Only to Selected Family</Typography.Text>
+            <Tag>{family.code}</Tag>
+            <Typography.Text type="secondary">{family.labelEs}</Typography.Text>
+          </Space>
+        }
         extra={
           <Space>
             <Select
               size="small"
-              placeholder="Agregar dimensión…"
-              value={pickerDim ?? undefined}
-              onChange={(v) => setPickerDim(v as string)}
-              style={{ minWidth: 200 }}
-              options={addableDims.map((d) => ({ value: d.code, label: `${d.code} — ${d.labelEs}` }))}
+              placeholder="Add dimension..."
+              value={pickerDim}
+              onChange={setPickerDim}
+              style={{ minWidth: 260 }}
+              options={addableDims.map((dimension) => ({
+                value: dimension.code,
+                label: `${dimension.code} - ${dimension.labelEs}`,
+              }))}
               showSearch
               optionFilterProp="label"
               allowClear
@@ -214,7 +346,7 @@ export default function FamilyAttributesTab({ family }: Props) {
             <Tooltip
               title={
                 addableDims.length === 0
-                  ? 'Todas las dimensiones no universales ya tienen regla para esta familia.'
+                  ? 'All non-universal dimensions already have a rule for this family.'
                   : ''
               }
             >
@@ -224,52 +356,32 @@ export default function FamilyAttributesTab({ family }: Props) {
                 icon={<PlusOutlined />}
                 disabled={!pickerDim}
                 loading={toggle.isPending}
-                onClick={handleAddDim}
+                onClick={() => void handleAddDim()}
               >
-                Agregar
+                Add
               </Button>
             </Tooltip>
           </Space>
         }
       >
-        {rules && rules.length > 0 ? (
+        {selectedFamilyRows.length > 0 ? (
           <Table<FamilyAttributeRuleRow>
             size="small"
             rowKey="dimensionCode"
+            loading={rulesLoading}
             columns={ruleColumns}
-            dataSource={rules}
+            dataSource={selectedFamilyRows}
             pagination={false}
+            scroll={{ x: 790 }}
           />
         ) : (
           <Alert
             type="info"
             showIcon
-            message="Sin reglas específicas"
-            description="Agregue una dimensión arriba para habilitarla sólo para esta familia."
+            message="No dimensions scoped to this family"
+            description="Use Add dimension above to assign a non-universal dimension to the selected family."
           />
         )}
-      </Card>
-
-      <Card size="small" title="Universales (se aplican a todas las familias)">
-        {universalDims.length > 0 ? (
-          <Table
-            size="small"
-            rowKey="code"
-            columns={[
-              { title: 'Dimensión', dataIndex: 'labelEs', key: 'labelEs', width: 220 },
-              { title: 'Código', dataIndex: 'code', key: 'code', width: 160 },
-              { title: 'Multi-valor', key: 'mv', width: 110, render: (_: unknown, r: any) => (r.isMultiValue ? 'Sí' : 'No') },
-            ]}
-            dataSource={universalDims}
-            pagination={false}
-          />
-        ) : (
-          <Typography.Text type="secondary">No hay dimensiones universales.</Typography.Text>
-        )}
-        <Typography.Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0 }}>
-          Para quitar una dimensión de la lista universal y hacerla específica por familia, vaya a{' '}
-          <a href="/products/attributes">Atributos extendidos</a> → pestaña <strong>Reglas</strong>.
-        </Typography.Paragraph>
       </Card>
     </Space>
   )

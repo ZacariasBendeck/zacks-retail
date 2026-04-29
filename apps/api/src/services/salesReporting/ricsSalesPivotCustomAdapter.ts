@@ -18,6 +18,7 @@
 import { prisma } from '../../db/prisma';
 import type {
   PivotDimension,
+  SalesPivotLevels,
   SalesPivotLeafRow,
   SalesPivotReport,
   SalesPivotTotals,
@@ -67,6 +68,7 @@ interface OnHandAggRow {
 interface MasterRow {
   sku: string | null;
   desc: string | null;
+  picture_file_name: string | null;
   category: number | null;
   vendor: string | null;
   vendor_label: string | null;
@@ -95,6 +97,7 @@ async function loadSalesAgg(p: {
   separateStore: boolean; storeNumbers?: number[];
   skuFilter?: string[];
 }): Promise<SalesAggRow[]> {
+  if (p.storeNumbers && p.storeNumbers.length === 0) return [];
   const args: unknown[] = [p.tyStart, p.tyEndExcl, p.lyStart, p.lyEndExcl];
   let storeClause = '';
   if (p.storeNumbers && p.storeNumbers.length > 0) {
@@ -151,6 +154,7 @@ async function loadOnHandAgg(p: {
   separateStore: boolean; storeNumbers?: number[];
   skuFilter?: string[];
 }): Promise<OnHandAggRow[]> {
+  if (p.storeNumbers && p.storeNumbers.length === 0) return [];
   const args: unknown[] = [];
   const where: string[] = [];
   if (p.storeNumbers && p.storeNumbers.length > 0) {
@@ -187,6 +191,7 @@ async function loadMasterForSkus(skus: string[]): Promise<MasterRow[]> {
       SELECT
         UPPER(TRIM(s.code)) AS sku,
         s.description_rics AS desc,
+        NULLIF(BTRIM(s.picture_file_name), '') AS picture_file_name,
         s.category_number AS category,
         s.vendor_id AS vendor,
         COALESCE(NULLIF(TRIM(v.short_name), ''), NULLIF(TRIM(v.manu_name), '')) AS vendor_label,
@@ -268,6 +273,42 @@ async function loadGroupMap(): Promise<GroupRow[]> {
 
 function norm(s: string | null | undefined): string {
   return (s ?? '').trim().toUpperCase();
+}
+
+async function resolveStoreNumbersForChains(filters: {
+  storeNumbers?: number[];
+  chains?: string[];
+}): Promise<number[] | undefined> {
+  const explicitStores = (filters.storeNumbers ?? [])
+    .map((n) => Number(n))
+    .filter((n) => Number.isInteger(n) && n > 0);
+  const chains = (filters.chains ?? [])
+    .map((c) => c.trim())
+    .filter(Boolean);
+
+  if (chains.length === 0) {
+    return explicitStores.length > 0 ? [...new Set(explicitStores)].sort((a, b) => a - b) : undefined;
+  }
+
+  const rows = await prisma.$queryRawUnsafe<{ store_number: number | null }[]>(
+    `
+      SELECT sgm.store_number
+      FROM app.store_group_member sgm
+      INNER JOIN app.store_group sg ON sg.code = sgm.group_code
+      WHERE sg.active = true
+        AND sgm.group_code = ANY($1::text[])
+    `,
+    chains,
+  );
+
+  const out = new Set<number>(explicitStores);
+  for (const row of rows) {
+    const storeNumber = Number(row.store_number);
+    if (Number.isInteger(storeNumber) && storeNumber > 0) {
+      out.add(storeNumber);
+    }
+  }
+  return [...out].sort((a, b) => a - b);
 }
 
 /**
@@ -374,9 +415,10 @@ export async function getSalesPivotCustom(params: {
   startDate: string;
   endDate: string;
   storeNumbers?: number[];
-  levels: [PivotDimension, PivotDimension, PivotDimension];
-  /** Criteria filters — all applied as intersection against the SKU
-   *  universe before aggregation. */
+  levels: SalesPivotLevels;
+  /** Criteria filters. Chains narrow the store universe; the rest narrow
+   *  the SKU universe before aggregation. */
+  chains?: string[];
   sectors?: number[];
   departments?: number[];
   seasons?: string[];
@@ -387,19 +429,19 @@ export async function getSalesPivotCustom(params: {
   if (params.startDate > params.endDate) {
     throw new Error('startDate must be <= endDate');
   }
-  const [l1, l2, l3] = params.levels;
-  if (!L1_L2_DIMENSIONS.has(l1)) {
-    throw new Error(`Invalid level 1 dimension: ${l1}`);
+  if (params.levels.length < 2 || params.levels.length > 3) {
+    throw new Error('Pivot levels must contain two or three dimensions');
   }
-  if (!L1_L2_DIMENSIONS.has(l2)) {
-    throw new Error(`Invalid level 2 dimension: ${l2}`);
-  }
-  if (!L3_DIMENSIONS.has(l3)) {
-    throw new Error(`Invalid level 3 dimension: ${l3}`);
-  }
-  const set = new Set([l1, l2, l3]);
-  if (set.size !== 3) {
-    throw new Error('Pivot levels must be three distinct dimensions');
+  params.levels.forEach((level, index) => {
+    const isDeepest = index === params.levels.length - 1;
+    const allowed = isDeepest ? L3_DIMENSIONS : L1_L2_DIMENSIONS;
+    if (!allowed.has(level)) {
+      throw new Error(`Invalid level ${index + 1} dimension: ${level}`);
+    }
+  });
+  const set = new Set(params.levels);
+  if (set.size !== params.levels.length) {
+    throw new Error('Pivot levels must be distinct dimensions');
   }
 
   // Store splits grain whenever it's one of the three levels.
@@ -409,6 +451,10 @@ export async function getSalesPivotCustom(params: {
   const tyEndExcl = exclusiveEnd(params.endDate);
   const lyStart = shiftYear(tyStart, -1);
   const lyEndExcl = shiftYear(tyEndExcl, -1);
+  const effectiveStoreNumbers = await resolveStoreNumbersForChains({
+    storeNumbers: params.storeNumbers,
+    chains: params.chains,
+  });
 
   // Resolve the SKU whitelist from sector/department/season/buyer criteria
   // before we run the expensive sales + on-hand aggregations. `null` means
@@ -424,12 +470,12 @@ export async function getSalesPivotCustom(params: {
     loadSalesAgg({
       tyStart, tyEndExcl, lyStart, lyEndExcl,
       separateStore,
-      storeNumbers: params.storeNumbers,
+      storeNumbers: effectiveStoreNumbers,
       skuFilter: skuFilter ?? undefined,
     }),
     loadOnHandAgg({
       separateStore,
-      storeNumbers: params.storeNumbers,
+      storeNumbers: effectiveStoreNumbers,
       skuFilter: skuFilter ?? undefined,
     }),
     loadTaxonomy(),
@@ -568,6 +614,7 @@ export async function getSalesPivotCustom(params: {
       groupDesc: groupKey ? groupLabelByCode.get(groupKey) ?? null : null,
       sku: leaf.sku,
       skuDescription: m?.desc?.trim() || null,
+      pictureFileName: m?.picture_file_name?.trim() || null,
       onHandQty: leaf.onHandQty,
       onHandCostVal: leaf.onHandCostVal,
       qtyTY: leaf.qtyTY,
@@ -590,12 +637,12 @@ export async function getSalesPivotCustom(params: {
   const currentYear = Number(params.startDate.slice(0, 4));
   return {
     variant: 'custom',
-    levels: [l1, l2, l3],
+    levels: params.levels,
     startDate: params.startDate,
     endDate: params.endDate,
     currentYear,
     priorYear: currentYear - 1,
-    storeNumbers: params.storeNumbers ?? [],
+    storeNumbers: effectiveStoreNumbers ?? [],
     rows,
     totals,
   };

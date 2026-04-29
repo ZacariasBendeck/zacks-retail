@@ -460,6 +460,8 @@ These are the three things blocking a real storefront launch — each is a concr
 
 A new app-native taxonomy layer sits on top of every SKU at `app.attribute_dimension` / `app.attribute_value` / `app.sku_attribute_assignment`. **Phase 1 of the layer covers four dimensions derivable from `InventoryMaster.KeyWords`** — Comprador (buyer), Empresa (company), Cadena (store chain), Tipo de Descuento (discount type). Future phases extend the same schema to a 15-dim footwear classification populated by operator entry and Excel import.
 
+Each `app.attribute_value` may carry an operator-facing `description_es` with synonyms or selection guidance, for example when two labels are visually close but should be chosen under different product conditions.
+
 The keyword field on `inventory_master` is **read-only** to this layer; derived data lives only in the app schema. Operator overrides are immune to re-seeding.
 
 Detail lives in the canonical module files, not here:

@@ -3,212 +3,1211 @@ import { getDb } from '../db/database';
 import { prisma } from '../db/prisma';
 import {
   PurchaseOrder,
-  PurchaseOrderRow,
-  PoLineItemRow,
-  PoStatus,
-  PoStatusHistoryRow,
+  PoLineItem,
   PoReceipt,
-  PoReceiptLineRow,
-  PoReceiptRow,
+  PoReceiptLine,
+  PoStatus,
+  PoStatusHistory,
   TransferOrder,
   TransferOrderLineRow,
   TransferOrderRow,
   TransferOrderStatus,
-  rowToPurchaseOrder,
-  rowToPoReceipt,
-  rowToPoStatusHistory,
   rowToTransferOrder,
-  PoStatusHistory,
 } from '../models/purchaseOrder';
 import { PaginationEnvelope } from '../models/sku';
-import { applyInventoryDelta } from './postgresInventoryLedger';
 
-type DbValue = null | number | bigint | string;
+type SortOrder = 'asc' | 'desc';
+type DbValue = null | number | string;
+type TxClient = {
+  $executeRawUnsafe: typeof prisma.$executeRawUnsafe;
+  $queryRawUnsafe: typeof prisma.$queryRawUnsafe;
+};
 
-function generatePoNumber(): string {
-  const db = getDb();
-  const prefix = 'PO';
-  db.prepare(
-    'INSERT INTO sku_code_seq (prefix, next_val) VALUES (?, 1) ON CONFLICT(prefix) DO UPDATE SET next_val = next_val + 1'
-  ).run(prefix);
-  const row = db.prepare('SELECT next_val FROM sku_code_seq WHERE prefix = ?').get(prefix) as unknown as { next_val: number };
-  return `${prefix}-${String(row.next_val).padStart(6, '0')}`;
+interface NativePoRow {
+  id: string;
+  po_number: string;
+  bill_to_store_id: number | null;
+  ship_to_store_id: number | null;
+  vendor_code: string;
+  vendor_name: string | null;
+  order_type: string;
+  classification: string;
+  origin: string;
+  origin_source_po_id: string | null;
+  confirmation_number: string | null;
+  account_number: string | null;
+  terms: string | null;
+  ship_via: string | null;
+  backorder_allowed: boolean;
+  split_shipment: boolean;
+  program_code: string | null;
+  store_labels_on_receive: boolean;
+  buyer: string | null;
+  order_date: Date | string;
+  ship_date: Date | string | null;
+  cancel_date: Date | string | null;
+  payment_date: Date | string | null;
+  status: PoStatus;
+  comments: string | null;
+  cancellation_reason: string | null;
+  created_by: string;
+  created_at: Date | string;
+  updated_at: Date | string;
 }
 
-interface EnrichedPoLineItemRow extends PoLineItemRow {
-  sku_code?: string;
-  style?: string;
+interface NativePoLineRow {
+  id: string;
+  po_id: string;
+  sku_id: string;
+  sku_code: string | null;
+  style: string | null;
+  size_type: number | null;
+  case_pack_id: string | null;
+  case_pack_multiplier: number | null;
+  size_cells: unknown;
+  quantity_ordered: number;
+  quantity_received: number;
+  unit_cost: unknown;
+  created_at: Date | string;
+  updated_at: Date | string;
 }
 
-function loadLineItems(poId: string): EnrichedPoLineItemRow[] {
-  const db = getDb();
-  return db.prepare(`
-    SELECT pol.*, s.sku_code, s.style
-    FROM purchase_order_lines pol
-    LEFT JOIN skus s ON s.id = pol.sku_id
-    WHERE pol.po_id = ?
-    ORDER BY pol.created_at ASC
-  `).all(poId) as unknown as EnrichedPoLineItemRow[];
+interface NativeReceiptRow {
+  id: string;
+  po_id: string;
+  received_at_store_id: number | null;
+  received_by: string;
+  reference_number: string | null;
+  discount_percent: unknown;
+  freight_each: unknown;
+  received_at: Date | string;
+  created_at: Date | string;
 }
 
-function loadPoWithVendor(poId: string): (PurchaseOrderRow & { vendor_name?: string }) | undefined {
-  const db = getDb();
-  return db.prepare(`
-    SELECT po.*, v.name as vendor_name
-    FROM purchase_orders po
-    LEFT JOIN vendors v ON v.id = po.vendor_id
-    WHERE po.id = ?
-  `).get(poId) as unknown as (PurchaseOrderRow & { vendor_name?: string }) | undefined;
+interface NativeReceiptLineRow {
+  id: string;
+  receipt_id: string;
+  po_line_id: string | null;
+  sku_id: string;
+  sku_code: string | null;
+  style: string | null;
+  quantity_received: number;
+  effective_unit_cost: unknown;
+  discrepancy_reason: string | null;
+  audit_reference: string | null;
+  created_at: Date | string;
 }
 
-function loadPoReceiptLines(receiptId: string): PoReceiptLineRow[] {
-  const db = getDb();
-  return db.prepare(`
-    SELECT
-      prl.*,
-      s.sku_code,
-      s.style
-    FROM po_receipt_lines prl
-    LEFT JOIN skus s ON s.id = prl.sku_id
-    WHERE prl.receipt_id = ?
-    ORDER BY prl.created_at ASC
-  `).all(receiptId) as unknown as PoReceiptLineRow[];
+interface PurchaseOrderVendorOptionRow {
+  id: string;
+  name: string | null;
 }
 
-function loadPoReceipts(poId: string): PoReceipt[] {
-  const db = getDb();
-  const rows = db.prepare(`
-    SELECT
-      pr.*,
-      l.name AS location_name
-    FROM po_receipts pr
-    LEFT JOIN inventory_locations l ON l.id = pr.location_id
-    WHERE pr.po_id = ?
-    ORDER BY pr.received_at DESC
-  `).all(poId) as unknown as PoReceiptRow[];
-
-  return rows.map((row) => rowToPoReceipt(row, loadPoReceiptLines(row.id)));
+interface PurchaseOrderSkuOptionRow {
+  id: string;
+  sku_code: string;
+  description: string | null;
+  style_color: string | null;
+  vendor_code: string | null;
+  category_number: number | null;
+  size_type: number | null;
+  unit_cost: unknown;
 }
 
-function loadTransferOrderLines(transferOrderId: string): TransferOrderLineRow[] {
-  const db = getDb();
-  return db.prepare(`
-    SELECT
-      tol.*,
-      s.sku_code,
-      s.style
-    FROM transfer_order_lines tol
-    LEFT JOIN skus s ON s.id = tol.sku_id
-    WHERE tol.transfer_order_id = ?
-    ORDER BY tol.created_at ASC
-  `).all(transferOrderId) as unknown as TransferOrderLineRow[];
+export interface PurchaseOrderVendorOption {
+  id: string;
+  name: string;
 }
 
-function insertStatusHistory(poId: string, fromStatus: string | null, toStatus: string, changedBy: string, reason?: string | null): void {
-  const db = getDb();
-  db.prepare(
-    'INSERT INTO po_status_history (id, po_id, from_status, to_status, changed_by, reason) VALUES (?, ?, ?, ?, ?, ?)'
-  ).run(uuidv4(), poId, fromStatus, toStatus, changedBy, reason ?? null);
+export interface PurchaseOrderBuyerOption {
+  id: string;
+  label: string;
+  count: number;
 }
 
-export function createPurchaseOrder(data: {
-  vendorId: string;
-  lineItems: { skuId: string; quantity: number; unitCost: number }[];
-  notes?: string | null;
-  createdBy?: string;
-}): PurchaseOrder | { error: string } {
-  const db = getDb();
+export interface PurchaseOrderSkuOption {
+  id: string;
+  skuCode: string;
+  description: string | null;
+  styleColor: string | null;
+  vendorId: string | null;
+  category: number | null;
+  sizeType: number | null;
+  unitCost: number | null;
+}
 
-  // Validate vendor exists
-  const vendor = db.prepare('SELECT id FROM vendors WHERE id = ?').get(data.vendorId);
-  if (!vendor) return { error: 'VENDOR_NOT_FOUND' };
+interface NativeStatusHistoryRow {
+  id: string;
+  po_id: string;
+  from_status: string | null;
+  to_status: string;
+  changed_by: string;
+  reason: string | null;
+  created_at: Date | string;
+}
 
-  // Validate all SKUs exist
-  for (const item of data.lineItems) {
-    const sku = db.prepare('SELECT id FROM skus WHERE id = ?').get(item.skuId);
-    if (!sku) return { error: `SKU_NOT_FOUND:${item.skuId}` };
+function toIso(value: Date | string): string {
+  return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
+}
+
+function toNumber(value: unknown): number {
+  if (value == null) return 0;
+  if (typeof value === 'number') return value;
+  if (typeof value === 'bigint') return Number(value);
+  if (typeof value === 'object' && 'toNumber' in value && typeof value.toNumber === 'function') {
+    return value.toNumber();
+  }
+  return Number(value);
+}
+
+function vendorEffectiveCte(): string {
+  return `
+    WITH vendor_effective AS (
+      SELECT
+        COALESCE(o.code, v.code) AS code,
+        COALESCE(o.short_name, v.short_name, o.mail_name, v.mail_name, COALESCE(o.code, v.code)) AS name
+      FROM app.vendor v
+      FULL OUTER JOIN app.vendor_overlay o ON o.code = v.code
+      WHERE (o.source IS NULL OR o.source <> 'tombstone')
+        AND (v.code IS NOT NULL OR o.code IS NOT NULL)
+    )
+  `;
+}
+
+async function generatePoNumber(tx: TxClient | typeof prisma = prisma): Promise<string> {
+  const rows = await tx.$queryRawUnsafe<Array<{ next_val: number }>>(
+    `SELECT nextval('app.purchase_order_number_seq')::int AS next_val`,
+  );
+  return `PO-${String(rows[0]?.next_val ?? 1).padStart(6, '0')}`;
+}
+
+async function vendorExists(vendorCode: string, tx: TxClient | typeof prisma = prisma): Promise<boolean> {
+  const rows = await tx.$queryRawUnsafe<Array<{ code: string }>>(
+    `
+      ${vendorEffectiveCte()}
+      SELECT code
+      FROM vendor_effective
+      WHERE UPPER(code) = $1
+      LIMIT 1
+    `,
+    vendorCode.trim().toUpperCase(),
+  );
+  return rows.length > 0;
+}
+
+export async function listPurchaseOrderVendorOptions(params: {
+  q?: string;
+  pageSize?: number;
+}): Promise<PurchaseOrderVendorOption[]> {
+  const values: DbValue[] = [];
+  const conditions: string[] = [];
+
+  if (params.q?.trim()) {
+    values.push(`%${params.q.trim().toLowerCase()}%`);
+    const idx = values.length;
+    conditions.push(`(LOWER(code) LIKE $${idx} OR LOWER(COALESCE(name, '')) LIKE $${idx})`);
   }
 
-  const poId = uuidv4();
-  const poNumber = generatePoNumber();
-  const createdBy = data.createdBy ?? 'system';
+  const limit = Math.min(Math.max(params.pageSize ?? 50, 1), 100);
+  values.push(limit);
+  const limitIdx = values.length;
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
-  db.exec('BEGIN TRANSACTION');
-  try {
-    db.prepare(
-      'INSERT INTO purchase_orders (id, po_number, vendor_id, status, notes, created_by) VALUES (?, ?, ?, ?, ?, ?)'
-    ).run(poId, poNumber, data.vendorId, 'DRAFT', data.notes ?? null, createdBy);
+  const rows = await prisma.$queryRawUnsafe<PurchaseOrderVendorOptionRow[]>(
+    `
+      ${vendorEffectiveCte()}
+      SELECT code AS id, name
+      FROM vendor_effective
+      ${whereClause}
+      ORDER BY name ASC NULLS LAST, code ASC
+      LIMIT $${limitIdx}
+    `,
+    ...values,
+  );
 
-    for (const item of data.lineItems) {
-      db.prepare(
-        'INSERT INTO purchase_order_lines (id, po_id, sku_id, quantity_ordered, unit_cost) VALUES (?, ?, ?, ?, ?)'
-      ).run(uuidv4(), poId, item.skuId, item.quantity, item.unitCost);
+  return rows.map((row) => ({
+    id: row.id,
+    name: row.name?.trim() || row.id,
+  }));
+}
+
+export async function listPurchaseOrderBuyerOptions(): Promise<PurchaseOrderBuyerOption[]> {
+  const rows = await prisma.$queryRawUnsafe<Array<{ id: string; label: string | null; count: bigint }>>(
+    `
+      WITH po_buyers AS (
+        SELECT
+          btrim(po.buyer) AS id,
+          btrim(po.buyer) AS label,
+          po.id AS po_id
+        FROM app.purchase_order po
+        WHERE po.buyer IS NOT NULL
+          AND btrim(po.buyer) <> ''
+
+        UNION ALL
+
+        SELECT
+          av.code AS id,
+          av.label_es AS label,
+          po.id AS po_id
+        FROM app.purchase_order po
+        JOIN app.purchase_order_line pol ON pol.po_id = po.id
+        JOIN app.sku s ON s.id = pol.sku_id
+        JOIN app.sku_attribute_assignment saa
+          ON UPPER(TRIM(saa.sku_code)) = UPPER(TRIM(COALESCE(s.code, s.provisional_code)))
+        JOIN app.attribute_dimension ad
+          ON ad.id = saa.dimension_id
+         AND ad.code = 'buyer'
+        JOIN app.attribute_value av ON av.id = saa.value_id
+        WHERE COALESCE(s.code, s.provisional_code) IS NOT NULL
+      )
+      SELECT
+        id,
+        MAX(NULLIF(label, '')) AS label,
+        COUNT(DISTINCT po_id)::bigint AS count
+      FROM po_buyers
+      WHERE id IS NOT NULL
+        AND btrim(id) <> ''
+      GROUP BY id
+      ORDER BY MAX(NULLIF(label, '')) ASC NULLS LAST, id ASC
+    `,
+  );
+
+  return rows.map((row) => ({
+    id: row.id,
+    label: row.label?.trim() || row.id,
+    count: Number(row.count),
+  }));
+}
+
+async function skuExists(skuId: string, tx: TxClient | typeof prisma = prisma): Promise<boolean> {
+  const rows = await tx.$queryRawUnsafe<Array<{ id: string }>>(
+    `SELECT id::text AS id FROM app.sku WHERE id = $1::uuid LIMIT 1`,
+    skuId,
+  );
+  return rows.length > 0;
+}
+
+export async function listPurchaseOrderSkuOptions(params: {
+  q?: string;
+  vendorId?: string;
+  pageSize?: number;
+}): Promise<PurchaseOrderSkuOption[]> {
+  const values: DbValue[] = [];
+  const conditions = [`COALESCE(s.code, s.provisional_code) IS NOT NULL`];
+
+  if (params.vendorId?.trim()) {
+    values.push(params.vendorId.trim().toUpperCase());
+    conditions.push(`UPPER(COALESCE(s.vendor_id, '')) = $${values.length}`);
+  }
+
+  if (params.q?.trim()) {
+    values.push(`%${params.q.trim().toLowerCase()}%`);
+    const idx = values.length;
+    conditions.push(
+      `(` +
+        `LOWER(COALESCE(s.code, '')) LIKE $${idx} OR ` +
+        `LOWER(COALESCE(s.provisional_code, '')) LIKE $${idx} OR ` +
+        `LOWER(COALESCE(s.description_web, '')) LIKE $${idx} OR ` +
+        `LOWER(COALESCE(s.description_rics, '')) LIKE $${idx} OR ` +
+        `LOWER(COALESCE(s.style_color, '')) LIKE $${idx} OR ` +
+        `LOWER(COALESCE(s.vendor_id, '')) LIKE $${idx}` +
+      `)`,
+    );
+  }
+
+  const limit = Math.min(Math.max(params.pageSize ?? 50, 1), 100);
+  values.push(limit);
+  const limitIdx = values.length;
+
+  const rows = await prisma.$queryRawUnsafe<PurchaseOrderSkuOptionRow[]>(
+    `
+      SELECT
+        s.id::text,
+        COALESCE(s.code, s.provisional_code) AS sku_code,
+        COALESCE(s.description_web, s.description_rics) AS description,
+        s.style_color,
+        s.vendor_id AS vendor_code,
+        s.category_number,
+        s.size_type,
+        COALESCE(s.current_cost, 0) AS unit_cost
+      FROM app.sku s
+      WHERE ${conditions.join(' AND ')}
+      ORDER BY COALESCE(s.code, s.provisional_code) ASC
+      LIMIT $${limitIdx}
+    `,
+    ...values,
+  );
+
+  return rows.map((row) => ({
+    id: row.id,
+    skuCode: row.sku_code,
+    description: row.description,
+    styleColor: row.style_color,
+    vendorId: row.vendor_code,
+    category: row.category_number,
+    sizeType: row.size_type,
+    unitCost: row.unit_cost == null ? null : toNumber(row.unit_cost),
+  }));
+}
+
+function rowToPoLineItem(row: NativePoLineRow): PoLineItem {
+  const unitCost = toNumber(row.unit_cost);
+  const rawSizeCells = Array.isArray(row.size_cells) ? row.size_cells : [];
+  const sizeCells = rawSizeCells
+    .map((cell) => {
+      const value = cell as { columnLabel?: unknown; rowLabel?: unknown; quantity?: unknown };
+      return {
+        columnLabel: String(value.columnLabel ?? ''),
+        rowLabel: String(value.rowLabel ?? ''),
+        quantity: Math.trunc(Number(value.quantity) || 0),
+      };
+    })
+    .filter((cell) => cell.quantity > 0);
+  return {
+    id: row.id,
+    poId: row.po_id,
+    skuId: row.sku_id,
+    skuCode: row.sku_code ?? undefined,
+    brand: row.style ?? undefined,
+    sizeType: row.size_type,
+    casePackId: row.case_pack_id,
+    casePackMultiplier: row.case_pack_multiplier,
+    sizeCells,
+    quantityOrdered: Number(row.quantity_ordered),
+    quantityReceived: Number(row.quantity_received),
+    unitCost,
+    lineTotal: Number(row.quantity_ordered) * unitCost,
+    createdAt: toIso(row.created_at),
+    updatedAt: toIso(row.updated_at),
+  };
+}
+
+function rowToPurchaseOrder(row: NativePoRow, lineRows: NativePoLineRow[]): PurchaseOrder {
+  const lineItems = lineRows.map(rowToPoLineItem);
+  return {
+    id: row.id,
+    poNumber: row.po_number,
+    billToStoreId: row.bill_to_store_id,
+    shipToStoreId: row.ship_to_store_id,
+    vendorId: row.vendor_code,
+    vendorName: row.vendor_name ?? row.vendor_code,
+    orderType: row.order_type,
+    classification: row.classification,
+    origin: row.origin,
+    originSourcePoId: row.origin_source_po_id,
+    confirmationNumber: row.confirmation_number,
+    accountNumber: row.account_number,
+    terms: row.terms,
+    shipVia: row.ship_via,
+    backorderAllowed: row.backorder_allowed,
+    splitShipment: row.split_shipment,
+    programCode: row.program_code,
+    storeLabelsOnReceive: row.store_labels_on_receive,
+    buyer: row.buyer,
+    orderDate: toIso(row.order_date),
+    shipDate: row.ship_date == null ? null : toIso(row.ship_date),
+    cancelDate: row.cancel_date == null ? null : toIso(row.cancel_date),
+    paymentDate: row.payment_date == null ? null : toIso(row.payment_date),
+    status: row.status,
+    notes: row.comments,
+    cancellationReason: row.cancellation_reason,
+    createdBy: row.created_by,
+    lineItems,
+    subtotal: lineItems.reduce((sum, line) => sum + line.lineTotal, 0),
+    createdAt: toIso(row.created_at),
+    updatedAt: toIso(row.updated_at),
+  };
+}
+
+function rowToPoReceiptLine(row: NativeReceiptLineRow): PoReceiptLine {
+  return {
+    id: row.id,
+    receiptId: row.receipt_id,
+    poLineId: row.po_line_id,
+    skuId: row.sku_id,
+    skuCode: row.sku_code ?? undefined,
+    style: row.style ?? undefined,
+    skuSizeId: null,
+    quantityReceived: Number(row.quantity_received),
+    unitCost: toNumber(row.effective_unit_cost),
+    discrepancyReason: row.discrepancy_reason,
+    auditReference: row.audit_reference,
+    createdAt: toIso(row.created_at),
+  };
+}
+
+function rowToPoReceipt(row: NativeReceiptRow, lineRows: NativeReceiptLineRow[]): PoReceipt {
+  const storeLabel = row.received_at_store_id == null ? null : `Store ${row.received_at_store_id}`;
+  return {
+    id: row.id,
+    poId: row.po_id,
+    locationId: row.received_at_store_id == null ? '' : String(row.received_at_store_id),
+    locationName: storeLabel,
+    receivedBy: row.received_by,
+    referenceNumber: row.reference_number,
+    discountPercent: toNumber(row.discount_percent),
+    freightEach: toNumber(row.freight_each),
+    receivedAt: toIso(row.received_at),
+    createdAt: toIso(row.created_at),
+    lines: lineRows.map(rowToPoReceiptLine),
+  };
+}
+
+function rowToPoStatusHistory(row: NativeStatusHistoryRow): PoStatusHistory {
+  return {
+    id: row.id,
+    poId: row.po_id,
+    fromStatus: row.from_status,
+    toStatus: row.to_status,
+    changedBy: row.changed_by,
+    reason: row.reason,
+    createdAt: toIso(row.created_at),
+  };
+}
+
+async function loadLineItems(poId: string, tx: TxClient | typeof prisma = prisma): Promise<NativePoLineRow[]> {
+  return tx.$queryRawUnsafe<NativePoLineRow[]>(
+    `
+      SELECT
+        pol.id::text,
+        pol.po_id::text,
+        pol.sku_id::text,
+        COALESCE(s.code, s.provisional_code) AS sku_code,
+        COALESCE(s.description_web, s.description_rics, s.style_color) AS style,
+        s.size_type,
+        pol.case_pack_id,
+        pol.case_pack_multiplier,
+        COALESCE(
+          jsonb_agg(
+            jsonb_build_object(
+              'columnLabel', COALESCE(polsc.column_label, ''),
+              'rowLabel', COALESCE(polsc.row_label, ''),
+              'quantity', polsc.quantity_ordered
+            )
+            ORDER BY NULLIF(polsc.row_label, '') NULLS FIRST, polsc.column_label
+          ) FILTER (WHERE polsc.id IS NOT NULL),
+          '[]'::jsonb
+        ) AS size_cells,
+        pol.quantity_ordered,
+        pol.quantity_received,
+        pol.unit_cost,
+        pol.created_at,
+        pol.updated_at
+      FROM app.purchase_order_line pol
+      JOIN app.sku s ON s.id = pol.sku_id
+      LEFT JOIN app.purchase_order_line_size_cell polsc ON polsc.po_line_id = pol.id
+      WHERE pol.po_id = $1::uuid
+      GROUP BY
+        pol.id,
+        pol.po_id,
+        pol.sku_id,
+        COALESCE(s.code, s.provisional_code),
+        COALESCE(s.description_web, s.description_rics, s.style_color),
+        s.size_type,
+        pol.case_pack_id,
+        pol.case_pack_multiplier,
+        pol.quantity_ordered,
+        pol.quantity_received,
+        pol.unit_cost,
+        pol.created_at,
+        pol.updated_at,
+        pol.line_sequence
+      ORDER BY pol.line_sequence ASC
+    `,
+    poId,
+  );
+}
+
+async function poNumberExists(
+  poNumber: string,
+  tx: TxClient | typeof prisma = prisma,
+  excludingPoId?: string,
+): Promise<boolean> {
+  const excludeClause = excludingPoId ? 'AND id <> $2::uuid' : '';
+  const values = excludingPoId
+    ? [poNumber.trim().toUpperCase(), excludingPoId]
+    : [poNumber.trim().toUpperCase()];
+  const rows = await tx.$queryRawUnsafe<Array<{ id: string }>>(
+    `SELECT id::text FROM app.purchase_order WHERE UPPER(po_number) = $1 ${excludeClause} LIMIT 1`,
+    ...values,
+  );
+  return rows.length > 0;
+}
+
+function isReservedManualPoNumber(poNumber: string): boolean {
+  return /^[AV]/i.test(poNumber.trim());
+}
+
+async function loadPoRow(poId: string, tx: TxClient | typeof prisma = prisma): Promise<NativePoRow | undefined> {
+  const rows = await tx.$queryRawUnsafe<NativePoRow[]>(
+    `
+      ${vendorEffectiveCte()}
+      SELECT
+        po.id::text,
+        po.po_number,
+        po.bill_to_store_id,
+        po.ship_to_store_id,
+        po.vendor_code,
+        ve.name AS vendor_name,
+        po.order_type,
+        po.classification,
+        po.origin,
+        po.origin_source_po_id::text,
+        po.confirmation_number,
+        po.account_number,
+        po.terms,
+        po.ship_via,
+        po.backorder_allowed,
+        po.split_shipment,
+        po.program_code,
+        po.store_labels_on_receive,
+        po.buyer,
+        po.order_date,
+        po.ship_date,
+        po.cancel_date,
+        po.payment_date,
+        po.status,
+        po.comments,
+        po.cancellation_reason,
+        po.created_by,
+        po.created_at,
+        po.updated_at
+      FROM app.purchase_order po
+      LEFT JOIN vendor_effective ve ON ve.code = po.vendor_code
+      WHERE po.id = $1::uuid
+      LIMIT 1
+    `,
+    poId,
+  );
+  return rows[0];
+}
+
+async function loadPurchaseOrder(poId: string, tx: TxClient | typeof prisma = prisma): Promise<PurchaseOrder | null> {
+  const row = await loadPoRow(poId, tx);
+  if (!row) return null;
+  return rowToPurchaseOrder(row, await loadLineItems(poId, tx));
+}
+
+async function insertStatusHistory(
+  poId: string,
+  fromStatus: string | null,
+  toStatus: string,
+  changedBy: string,
+  reason?: string | null,
+  tx: TxClient | typeof prisma = prisma,
+): Promise<void> {
+  await tx.$executeRawUnsafe(
+    `
+      INSERT INTO app.po_status_history (id, po_id, from_status, to_status, changed_by, reason)
+      VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6)
+    `,
+    uuidv4(),
+    poId,
+    fromStatus,
+    toStatus,
+    changedBy,
+    reason ?? null,
+  );
+}
+
+export async function createPurchaseOrder(data: {
+  poNumber?: string | null;
+  billToStoreId?: number | null;
+  shipToStoreId?: number | null;
+  vendorId: string;
+  buyer?: string | null;
+  lineItems: {
+    skuId: string;
+    quantity: number;
+    unitCost: number;
+    casePackId?: string | null;
+    casePackMultiplier?: number | null;
+    sizeCells?: Array<{ columnLabel?: string | null; rowLabel?: string | null; quantity: number }>;
+  }[];
+  notes?: string | null;
+  orderType?: 'RO' | 'RE' | 'SA';
+  classification?: 'AT_ONCE' | 'FUTURE';
+  confirmationNumber?: string | null;
+  accountNumber?: string | null;
+  terms?: string | null;
+  shipVia?: string | null;
+  backorderAllowed?: boolean;
+  splitShipment?: boolean;
+  programCode?: string | null;
+  storeLabelsOnReceive?: boolean;
+  orderDate?: string | null;
+  shipDate?: string | null;
+  cancelDate?: string | null;
+  paymentDate?: string | null;
+  createdBy?: string;
+  origin?: string;
+}): Promise<PurchaseOrder | { error: string }> {
+  const vendorCode = data.vendorId.trim().toUpperCase();
+  if (!(await vendorExists(vendorCode))) return { error: 'VENDOR_NOT_FOUND' };
+  if (data.poNumber?.trim()) {
+    const poNumber = data.poNumber.trim().toUpperCase();
+    if (isReservedManualPoNumber(poNumber)) return { error: 'RESERVED_PO_PREFIX' };
+    if (await poNumberExists(poNumber)) return { error: 'PO_NUMBER_EXISTS' };
+  }
+
+  for (const item of data.lineItems) {
+    if (!(await skuExists(item.skuId))) return { error: `SKU_NOT_FOUND:${item.skuId}` };
+  }
+
+  const poId = await prisma.$transaction(async (tx) => {
+    const id = uuidv4();
+    const poNumber = data.poNumber?.trim().toUpperCase() || await generatePoNumber(tx);
+    const createdBy = data.createdBy ?? 'system';
+
+    await tx.$executeRawUnsafe(
+      `
+        INSERT INTO app.purchase_order (
+          id, po_number, bill_to_store_id, ship_to_store_id, vendor_code,
+          order_type, classification, status, origin,
+          confirmation_number, account_number, terms, ship_via,
+          backorder_allowed, split_shipment, program_code, store_labels_on_receive,
+          buyer, comments, order_date, ship_date, cancel_date, payment_date, created_by
+        ) VALUES (
+          $1::uuid, $2, $3, $4, $5,
+          $6, $7, 'DRAFT', $23,
+          $8, $9, $10, $11,
+          $12, $13, $14, $15,
+          $16, $17, COALESCE($18::timestamptz, CURRENT_TIMESTAMP), $19::timestamptz, $20::timestamptz, $21::timestamptz, $22
+        )
+      `,
+      id,
+      poNumber,
+      data.billToStoreId ?? null,
+      data.shipToStoreId ?? null,
+      vendorCode,
+      data.orderType ?? 'RO',
+      data.classification ?? 'AT_ONCE',
+      data.confirmationNumber ?? null,
+      data.accountNumber ?? null,
+      data.terms ?? null,
+      data.shipVia ?? null,
+      data.backorderAllowed ?? false,
+      data.splitShipment ?? false,
+      data.programCode ?? null,
+      data.storeLabelsOnReceive ?? false,
+      data.buyer?.trim() || null,
+      data.notes ?? null,
+      data.orderDate ?? null,
+      data.shipDate ?? null,
+      data.cancelDate ?? null,
+      data.paymentDate ?? null,
+      createdBy,
+      data.origin ?? 'MANUAL',
+    );
+
+    for (const [index, item] of data.lineItems.entries()) {
+      const lineId = uuidv4();
+      await tx.$executeRawUnsafe(
+        `
+          INSERT INTO app.purchase_order_line (
+            id, po_id, sku_id, line_sequence, case_pack_id, case_pack_multiplier,
+            quantity_ordered, quantity_received, unit_cost
+          ) VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6, $7, 0, $8::numeric)
+        `,
+        lineId,
+        id,
+        item.skuId,
+        index + 1,
+        item.casePackId?.trim() || null,
+        item.casePackId ? item.casePackMultiplier ?? 1 : null,
+        item.quantity,
+        item.unitCost,
+      );
+      const sizeCells = (item.sizeCells ?? [])
+        .map((cell) => ({
+          columnLabel: (cell.columnLabel ?? '').trim(),
+          rowLabel: (cell.rowLabel ?? '').trim(),
+          quantity: Math.trunc(Number(cell.quantity)),
+        }))
+        .filter((cell) => cell.quantity > 0);
+      const cellsToInsert = sizeCells.length > 0
+        ? sizeCells
+        : [{ columnLabel: '', rowLabel: '', quantity: item.quantity }];
+      for (const cell of cellsToInsert) {
+        await tx.$executeRawUnsafe(
+          `
+            INSERT INTO app.purchase_order_line_size_cell (
+              id, po_line_id, column_label, row_label, quantity_ordered
+            ) VALUES ($1::uuid, $2::uuid, $3, $4, $5)
+            ON CONFLICT (po_line_id, column_label, row_label)
+            DO UPDATE SET quantity_ordered = app.purchase_order_line_size_cell.quantity_ordered + EXCLUDED.quantity_ordered
+          `,
+          uuidv4(),
+          lineId,
+          cell.columnLabel,
+          cell.rowLabel,
+          cell.quantity,
+        );
+      }
     }
 
-    insertStatusHistory(poId, null, 'DRAFT', createdBy);
+    await insertStatusHistory(id, null, 'DRAFT', createdBy, null, tx);
+    return id;
+  });
 
-    db.exec('COMMIT');
-  } catch (err) {
-    db.exec('ROLLBACK');
-    throw err;
-  }
-
-  const row = loadPoWithVendor(poId)!;
-  return rowToPurchaseOrder(row, loadLineItems(poId));
+  return (await loadPurchaseOrder(poId))!;
 }
 
-export function getPurchaseOrderById(id: string): PurchaseOrder | null {
-  const row = loadPoWithVendor(id);
-  if (!row) return null;
-  return rowToPurchaseOrder(row, loadLineItems(id));
+export function getPurchaseOrderById(id: string): Promise<PurchaseOrder | null> {
+  return loadPurchaseOrder(id);
 }
 
-export function updatePurchaseOrder(
+export async function updatePurchaseOrder(
   id: string,
   data: {
+    poNumber?: string | null;
+    vendorId?: string;
+    buyer?: string | null;
     notes?: string | null;
-    lineItems?: { skuId: string; quantity: number; unitCost: number }[];
-  }
-): PurchaseOrder | null | { error: string } {
-  const db = getDb();
-  const existing = db.prepare('SELECT * FROM purchase_orders WHERE id = ?').get(id) as unknown as PurchaseOrderRow | undefined;
+    billToStoreId?: number | null;
+    shipToStoreId?: number | null;
+    orderType?: 'RO' | 'RE' | 'SA';
+    classification?: 'AT_ONCE' | 'FUTURE';
+    confirmationNumber?: string | null;
+    accountNumber?: string | null;
+    terms?: string | null;
+    shipVia?: string | null;
+    backorderAllowed?: boolean;
+    splitShipment?: boolean;
+    programCode?: string | null;
+    storeLabelsOnReceive?: boolean;
+    orderDate?: string | null;
+    shipDate?: string | null;
+    cancelDate?: string | null;
+    paymentDate?: string | null;
+    lineItems?: {
+      skuId: string;
+      quantity: number;
+      unitCost: number;
+      casePackId?: string | null;
+      casePackMultiplier?: number | null;
+      sizeCells?: Array<{ columnLabel?: string | null; rowLabel?: string | null; quantity: number }>;
+    }[];
+  },
+): Promise<PurchaseOrder | null | { error: string }> {
+  const existing = await loadPoRow(id);
   if (!existing) return null;
+  if (existing.status !== 'DRAFT') return { error: 'ONLY_DRAFT_EDITABLE' };
 
-  if (existing.status !== 'DRAFT') {
-    return { error: 'ONLY_DRAFT_EDITABLE' };
+  if (data.poNumber?.trim()) {
+    const poNumber = data.poNumber.trim().toUpperCase();
+    if (isReservedManualPoNumber(poNumber)) return { error: 'RESERVED_PO_PREFIX' };
+    if (await poNumberExists(poNumber, prisma, id)) return { error: 'PO_NUMBER_EXISTS' };
   }
 
-  // Validate SKUs if line items are being replaced
+  if (data.vendorId?.trim() && !(await vendorExists(data.vendorId.trim().toUpperCase()))) {
+    return { error: 'VENDOR_NOT_FOUND' };
+  }
+
   if (data.lineItems) {
     for (const item of data.lineItems) {
-      const sku = db.prepare('SELECT id FROM skus WHERE id = ?').get(item.skuId);
-      if (!sku) return { error: `SKU_NOT_FOUND:${item.skuId}` };
+      if (!(await skuExists(item.skuId))) return { error: `SKU_NOT_FOUND:${item.skuId}` };
     }
   }
 
-  db.exec('BEGIN TRANSACTION');
-  try {
-    if (data.notes !== undefined) {
-      db.prepare("UPDATE purchase_orders SET notes = ?, updated_at = datetime('now') WHERE id = ?").run(data.notes, id);
+  await prisma.$transaction(async (tx) => {
+    const headerColumns: Array<[keyof typeof data, string, string?]> = [
+      ['poNumber', 'po_number'],
+      ['vendorId', 'vendor_code'],
+      ['buyer', 'buyer'],
+      ['notes', 'comments'],
+      ['billToStoreId', 'bill_to_store_id'],
+      ['shipToStoreId', 'ship_to_store_id'],
+      ['orderType', 'order_type'],
+      ['classification', 'classification'],
+      ['confirmationNumber', 'confirmation_number'],
+      ['accountNumber', 'account_number'],
+      ['terms', 'terms'],
+      ['shipVia', 'ship_via'],
+      ['backorderAllowed', 'backorder_allowed'],
+      ['splitShipment', 'split_shipment'],
+      ['programCode', 'program_code'],
+      ['storeLabelsOnReceive', 'store_labels_on_receive'],
+      ['orderDate', 'order_date', '::timestamptz'],
+      ['shipDate', 'ship_date', '::timestamptz'],
+      ['cancelDate', 'cancel_date', '::timestamptz'],
+      ['paymentDate', 'payment_date', '::timestamptz'],
+    ];
+    const sets: string[] = [];
+    const values: unknown[] = [];
+
+    for (const [key, column, cast] of headerColumns) {
+      if (data[key] !== undefined) {
+        const value = key === 'poNumber' || key === 'vendorId'
+          ? String(data[key] ?? '').trim().toUpperCase()
+          : data[key];
+        if ((key === 'poNumber' || key === 'vendorId') && !value) continue;
+        values.push(value);
+        sets.push(`${column} = $${values.length}${cast ?? ''}`);
+      }
+    }
+
+    if (sets.length > 0) {
+      values.push(id);
+      await tx.$executeRawUnsafe(
+        `UPDATE app.purchase_order SET ${sets.join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE id = $${values.length}::uuid`,
+        ...values,
+      );
     }
 
     if (data.lineItems) {
-      db.prepare('DELETE FROM purchase_order_lines WHERE po_id = ?').run(id);
-      for (const item of data.lineItems) {
-        db.prepare(
-          'INSERT INTO purchase_order_lines (id, po_id, sku_id, quantity_ordered, unit_cost) VALUES (?, ?, ?, ?, ?)'
-        ).run(uuidv4(), id, item.skuId, item.quantity, item.unitCost);
+      await tx.$executeRawUnsafe(`DELETE FROM app.purchase_order_line WHERE po_id = $1::uuid`, id);
+      for (const [index, item] of data.lineItems.entries()) {
+        const lineId = uuidv4();
+        await tx.$executeRawUnsafe(
+          `
+            INSERT INTO app.purchase_order_line (
+              id, po_id, sku_id, line_sequence, case_pack_id, case_pack_multiplier,
+              quantity_ordered, quantity_received, unit_cost
+            ) VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6, $7, 0, $8::numeric)
+          `,
+          lineId,
+          id,
+          item.skuId,
+          index + 1,
+          item.casePackId?.trim() || null,
+          item.casePackId ? item.casePackMultiplier ?? 1 : null,
+          item.quantity,
+          item.unitCost,
+        );
+        const sizeCells = (item.sizeCells ?? [])
+          .map((cell) => ({
+            columnLabel: (cell.columnLabel ?? '').trim(),
+            rowLabel: (cell.rowLabel ?? '').trim(),
+            quantity: Math.trunc(Number(cell.quantity)),
+          }))
+          .filter((cell) => cell.quantity > 0);
+        const cellsToInsert = sizeCells.length > 0
+          ? sizeCells
+          : [{ columnLabel: '', rowLabel: '', quantity: item.quantity }];
+        for (const cell of cellsToInsert) {
+          await tx.$executeRawUnsafe(
+            `
+              INSERT INTO app.purchase_order_line_size_cell (
+                id, po_line_id, column_label, row_label, quantity_ordered
+              ) VALUES ($1::uuid, $2::uuid, $3, $4, $5)
+              ON CONFLICT (po_line_id, column_label, row_label)
+              DO UPDATE SET quantity_ordered = app.purchase_order_line_size_cell.quantity_ordered + EXCLUDED.quantity_ordered
+            `,
+            uuidv4(),
+            lineId,
+            cell.columnLabel,
+            cell.rowLabel,
+            cell.quantity,
+          );
+        }
       }
-      db.prepare("UPDATE purchase_orders SET updated_at = datetime('now') WHERE id = ?").run(id);
+      await tx.$executeRawUnsafe(
+        `UPDATE app.purchase_order SET updated_at = CURRENT_TIMESTAMP WHERE id = $1::uuid`,
+        id,
+      );
     }
+  });
 
-    db.exec('COMMIT');
-  } catch (err) {
-    db.exec('ROLLBACK');
-    throw err;
+  return loadPurchaseOrder(id);
+}
+
+async function clonePurchaseOrderInsideTx(
+  tx: TxClient,
+  sourcePoId: string,
+  options: {
+    poNumber?: string | null;
+    billToStoreId?: number | null;
+    shipToStoreId?: number | null;
+    orderDate?: string | null;
+    shipDate?: string | null;
+    cancelDate?: string | null;
+    paymentDate?: string | null;
+    storeLabelsOnReceive?: boolean;
+    origin: 'DUPLICATE' | 'REPLICATE';
+    changedBy: string;
+  },
+): Promise<string | { error: string }> {
+  const sourceRows = await tx.$queryRawUnsafe<Array<{
+    id: string;
+    vendor_code: string;
+    bill_to_store_id: number | null;
+    ship_to_store_id: number | null;
+    order_type: string;
+    classification: string;
+    confirmation_number: string | null;
+    account_number: string | null;
+    terms: string | null;
+    ship_via: string | null;
+    backorder_allowed: boolean;
+    split_shipment: boolean;
+    program_code: string | null;
+    store_labels_on_receive: boolean;
+    comments: string | null;
+    order_date: Date | string;
+    ship_date: Date | string | null;
+    cancel_date: Date | string | null;
+    payment_date: Date | string | null;
+  }>>(
+    `
+      SELECT
+        id::text,
+        vendor_code,
+        bill_to_store_id,
+        ship_to_store_id,
+        order_type,
+        classification,
+        confirmation_number,
+        account_number,
+        terms,
+        ship_via,
+        backorder_allowed,
+        split_shipment,
+        program_code,
+        store_labels_on_receive,
+        comments,
+        order_date,
+        ship_date,
+        cancel_date,
+        payment_date
+      FROM app.purchase_order
+      WHERE id = $1::uuid
+      LIMIT 1
+    `,
+    sourcePoId,
+  );
+  const source = sourceRows[0];
+  if (!source) return { error: 'SOURCE_PO_NOT_FOUND' };
+
+  const poNumber = options.poNumber?.trim() || await generatePoNumber(tx);
+  if (options.poNumber && isReservedManualPoNumber(poNumber)) return { error: 'RESERVED_PO_PREFIX' };
+  if (await poNumberExists(poNumber, tx)) return { error: 'PO_NUMBER_EXISTS' };
+
+  const newPoId = uuidv4();
+  await tx.$executeRawUnsafe(
+    `
+      INSERT INTO app.purchase_order (
+        id, po_number, bill_to_store_id, ship_to_store_id, vendor_code,
+        order_type, classification, status, origin, origin_source_po_id,
+        confirmation_number, account_number, terms, ship_via,
+        backorder_allowed, split_shipment, program_code, store_labels_on_receive,
+        comments, order_date, ship_date, cancel_date, payment_date, created_by
+      ) VALUES (
+        $1::uuid, $2, $3, $4, $5,
+        $6, $7, 'DRAFT', $8, $9::uuid,
+        $10, $11, $12, $13,
+        $14, $15, $16, $17,
+        $18, COALESCE($19::timestamptz, $20::timestamptz), $21::timestamptz, $22::timestamptz, $23::timestamptz, $24
+      )
+    `,
+    newPoId,
+    poNumber,
+    options.billToStoreId ?? source.bill_to_store_id,
+    options.shipToStoreId ?? source.ship_to_store_id,
+    source.vendor_code,
+    source.order_type,
+    source.classification,
+    options.origin,
+    sourcePoId,
+    source.confirmation_number,
+    source.account_number,
+    source.terms,
+    source.ship_via,
+    source.backorder_allowed,
+    source.split_shipment,
+    source.program_code,
+    options.storeLabelsOnReceive ?? source.store_labels_on_receive,
+    source.comments,
+    options.orderDate ?? null,
+    toIso(source.order_date),
+    options.shipDate ?? (source.ship_date == null ? null : toIso(source.ship_date)),
+    options.cancelDate ?? (source.cancel_date == null ? null : toIso(source.cancel_date)),
+    options.paymentDate ?? (source.payment_date == null ? null : toIso(source.payment_date)),
+    options.changedBy,
+  );
+
+  const sourceLines = await tx.$queryRawUnsafe<Array<{
+    id: string;
+    sku_id: string;
+    line_sequence: number;
+    case_pack_id: string | null;
+    case_pack_multiplier: number | null;
+    retail_price: unknown;
+    unit_cost: unknown;
+    quantity_ordered: number;
+    write_back_to_master: boolean;
+  }>>(
+    `
+      SELECT
+        id::text,
+        sku_id::text,
+        line_sequence,
+        case_pack_id,
+        case_pack_multiplier,
+        retail_price,
+        unit_cost,
+        quantity_ordered,
+        write_back_to_master
+      FROM app.purchase_order_line
+      WHERE po_id = $1::uuid
+      ORDER BY line_sequence ASC
+    `,
+    sourcePoId,
+  );
+
+  for (const line of sourceLines) {
+    const newLineId = uuidv4();
+    await tx.$executeRawUnsafe(
+      `
+        INSERT INTO app.purchase_order_line (
+          id, po_id, sku_id, line_sequence, case_pack_id, case_pack_multiplier,
+          retail_price, unit_cost, quantity_ordered, quantity_received,
+          write_back_to_master
+        ) VALUES (
+          $1::uuid, $2::uuid, $3::uuid, $4, $5, $6,
+          $7::numeric, $8::numeric, $9, 0,
+          $10
+        )
+      `,
+      newLineId,
+      newPoId,
+      line.sku_id,
+      line.line_sequence,
+      line.case_pack_id,
+      line.case_pack_multiplier,
+      line.retail_price == null ? null : toNumber(line.retail_price),
+      toNumber(line.unit_cost),
+      line.quantity_ordered,
+      line.write_back_to_master,
+    );
+
+    await tx.$executeRawUnsafe(
+      `
+        INSERT INTO app.purchase_order_line_size_cell (
+          id, po_line_id, column_label, row_label, quantity_ordered
+        )
+        SELECT gen_random_uuid(), $1::uuid, column_label, row_label, quantity_ordered
+        FROM app.purchase_order_line_size_cell
+        WHERE po_line_id = $2::uuid
+      `,
+      newLineId,
+      line.id,
+    );
   }
 
-  return getPurchaseOrderById(id);
+  await insertStatusHistory(newPoId, null, 'DRAFT', options.changedBy, null, tx);
+  return newPoId;
+}
+
+export async function duplicatePurchaseOrder(
+  sourcePoId: string,
+  input: {
+    poNumber?: string | null;
+    billToStoreId?: number | null;
+    shipToStoreId?: number | null;
+    orderDate?: string | null;
+    shipDate?: string | null;
+    cancelDate?: string | null;
+    paymentDate?: string | null;
+    storeLabelsOnReceive?: boolean;
+    changedBy?: string;
+  },
+): Promise<PurchaseOrder | null | { error: string }> {
+  const changedBy = input.changedBy ?? 'system';
+  const result = await prisma.$transaction((tx) =>
+    clonePurchaseOrderInsideTx(tx, sourcePoId, {
+      ...input,
+      origin: 'DUPLICATE',
+      changedBy,
+    }),
+  );
+  if (typeof result !== 'string') {
+    if (result.error === 'SOURCE_PO_NOT_FOUND') return null;
+    return result;
+  }
+  return loadPurchaseOrder(result);
+}
+
+export async function replicatePurchaseOrder(
+  sourcePoId: string,
+  input: { prefix: string; shipToStoreIds: number[]; changedBy?: string },
+): Promise<{ created: PurchaseOrder[]; skipped: Array<{ shipToStoreId: number; poNumber: string; reason: string }> } | null> {
+  const source = await loadPoRow(sourcePoId);
+  if (!source) return null;
+
+  const createdIds: string[] = [];
+  const skipped: Array<{ shipToStoreId: number; poNumber: string; reason: string }> = [];
+  const changedBy = input.changedBy ?? 'system';
+  const prefix = input.prefix.trim().toUpperCase();
+
+  await prisma.$transaction(async (tx) => {
+    for (const shipToStoreId of input.shipToStoreIds) {
+      const poNumber = `${prefix}${String(shipToStoreId).padStart(3, '0')}`;
+      if (await poNumberExists(poNumber, tx)) {
+        skipped.push({ shipToStoreId, poNumber, reason: 'PO_NUMBER_EXISTS' });
+        continue;
+      }
+      const result = await clonePurchaseOrderInsideTx(tx, sourcePoId, {
+        poNumber,
+        shipToStoreId,
+        origin: 'REPLICATE',
+        changedBy,
+      });
+      if (typeof result === 'string') {
+        createdIds.push(result);
+      } else {
+        skipped.push({ shipToStoreId, poNumber, reason: result.error });
+      }
+    }
+  });
+
+  const created: PurchaseOrder[] = [];
+  for (const id of createdIds) {
+    const po = await loadPurchaseOrder(id);
+    if (po) created.push(po);
+  }
+  return { created, skipped };
+}
+
+export async function combinePurchaseOrders(
+  sourcePoId: string,
+  intoPoId: string,
+  options?: { changedBy?: string },
+): Promise<PurchaseOrder | null | { error: string }> {
+  if (sourcePoId === intoPoId) return { error: 'SOURCE_EQUALS_DESTINATION' };
+
+  const source = await loadPoRow(sourcePoId);
+  const destination = await loadPoRow(intoPoId);
+  if (!source || !destination) return null;
+  if (source.status !== 'DRAFT' || destination.status !== 'DRAFT') return { error: 'ONLY_DRAFT_COMBINE_SUPPORTED' };
+
+  await prisma.$transaction(async (tx) => {
+    const maxRows = await tx.$queryRawUnsafe<Array<{ max_sequence: number | null }>>(
+      `SELECT MAX(line_sequence) AS max_sequence FROM app.purchase_order_line WHERE po_id = $1::uuid`,
+      intoPoId,
+    );
+    const offset = Number(maxRows[0]?.max_sequence ?? 0);
+    await tx.$executeRawUnsafe(
+      `
+        UPDATE app.purchase_order_line
+        SET po_id = $1::uuid,
+            line_sequence = line_sequence + $2,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE po_id = $3::uuid
+      `,
+      intoPoId,
+      offset,
+      sourcePoId,
+    );
+    await tx.$executeRawUnsafe(
+      `UPDATE app.purchase_order SET updated_at = CURRENT_TIMESTAMP WHERE id = $1::uuid`,
+      intoPoId,
+    );
+    await tx.$executeRawUnsafe(`DELETE FROM app.purchase_order WHERE id = $1::uuid`, sourcePoId);
+    await insertStatusHistory(intoPoId, destination.status, destination.status, options?.changedBy ?? 'system', `Combined source PO ${source.po_number}`, tx);
+  });
+
+  return loadPurchaseOrder(intoPoId);
 }
 
 const VALID_TRANSITIONS: Record<PoStatus, PoStatus[]> = {
@@ -221,91 +1220,90 @@ const VALID_TRANSITIONS: Record<PoStatus, PoStatus[]> = {
   CANCELLED: [],
 };
 
-export function transitionStatus(
+export async function transitionStatus(
   id: string,
   newStatus: PoStatus,
-  options?: { changedBy?: string; reason?: string }
-): PurchaseOrder | null | { error: string } {
-  const db = getDb();
-  const existing = db.prepare('SELECT * FROM purchase_orders WHERE id = ?').get(id) as unknown as PurchaseOrderRow | undefined;
+  options?: { changedBy?: string; reason?: string },
+): Promise<PurchaseOrder | null | { error: string }> {
+  const existing = await loadPoRow(id);
   if (!existing) return null;
 
   const allowed = VALID_TRANSITIONS[existing.status];
   if (!allowed.includes(newStatus)) {
-    return { error: `INVALID_TRANSITION:${existing.status}→${newStatus}` };
+    return { error: `INVALID_TRANSITION:${existing.status}->${newStatus}` };
   }
 
   const changedBy = options?.changedBy ?? 'system';
+  await prisma.$transaction(async (tx) => {
+    await tx.$executeRawUnsafe(
+      `
+        UPDATE app.purchase_order
+        SET status = $1,
+            cancellation_reason = CASE WHEN $1 = 'CANCELLED' THEN $2 ELSE cancellation_reason END,
+            submitted_at = CASE WHEN $1 = 'SUBMITTED' THEN CURRENT_TIMESTAMP ELSE submitted_at END,
+            closed_at = CASE WHEN $1 = 'CLOSED' THEN CURRENT_TIMESTAMP ELSE closed_at END,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = $3::uuid
+      `,
+      newStatus,
+      options?.reason ?? null,
+      id,
+    );
+    await insertStatusHistory(id, existing.status, newStatus, changedBy, options?.reason, tx);
+  });
 
-  db.exec('BEGIN TRANSACTION');
-  try {
-    if (newStatus === 'CANCELLED' && options?.reason) {
-      db.prepare("UPDATE purchase_orders SET status = ?, cancellation_reason = ?, updated_at = datetime('now') WHERE id = ?")
-        .run(newStatus, options.reason, id);
-    } else {
-      db.prepare("UPDATE purchase_orders SET status = ?, updated_at = datetime('now') WHERE id = ?")
-        .run(newStatus, id);
-    }
-
-    insertStatusHistory(id, existing.status, newStatus, changedBy, options?.reason);
-
-    db.exec('COMMIT');
-  } catch (err) {
-    db.exec('ROLLBACK');
-    throw err;
-  }
-
-  return getPurchaseOrderById(id);
+  return loadPurchaseOrder(id);
 }
 
-export function submitPurchaseOrder(
+export async function submitPurchaseOrder(
   id: string,
-  options?: { changedBy?: string }
-): PurchaseOrder | null | { error: string } {
-  const db = getDb();
-  const existing = db.prepare('SELECT * FROM purchase_orders WHERE id = ?').get(id) as unknown as PurchaseOrderRow | undefined;
+  options?: { changedBy?: string },
+): Promise<PurchaseOrder | null | { error: string }> {
+  const existing = await loadPoRow(id);
   if (!existing) return null;
+  if (existing.status !== 'DRAFT') return { error: `INVALID_TRANSITION:${existing.status}->SUBMITTED` };
 
-  if (existing.status !== 'DRAFT') {
-    return { error: `INVALID_TRANSITION:${existing.status}→SUBMITTED` };
-  }
+  const lines = await loadLineItems(id);
+  if (lines.length === 0) return { error: 'NO_LINE_ITEMS' };
 
-  // Validate at least one line item exists
-  const lines = loadLineItems(id);
-  if (lines.length === 0) {
-    return { error: 'NO_LINE_ITEMS' };
-  }
-
-  // Validate all SKUs are active
-  for (const line of lines) {
-    const sku = db.prepare('SELECT id, active FROM skus WHERE id = ?').get(line.sku_id) as unknown as { id: string; active: number } | undefined;
-    if (!sku || !sku.active) {
-      return { error: `INACTIVE_SKU:${line.sku_id}` };
-    }
-  }
+  const inactiveRows = await prisma.$queryRawUnsafe<Array<{ id: string }>>(
+    `
+      SELECT pol.sku_id::text AS id
+      FROM app.purchase_order_line pol
+      JOIN app.sku s ON s.id = pol.sku_id
+      WHERE pol.po_id = $1::uuid
+        AND s.sku_state = 'DISCONTINUED'
+      LIMIT 1
+    `,
+    id,
+  );
+  if (inactiveRows.length > 0) return { error: `INACTIVE_SKU:${inactiveRows[0].id}` };
 
   return transitionStatus(id, 'SUBMITTED', options);
 }
 
-export function cancelPurchaseOrder(
+export async function cancelPurchaseOrder(
   id: string,
-  options?: { changedBy?: string; reason?: string }
-): PurchaseOrder | null | { error: string } {
-  const db = getDb();
-  const existing = db.prepare('SELECT * FROM purchase_orders WHERE id = ?').get(id) as unknown as PurchaseOrderRow | undefined;
+  options?: { changedBy?: string; reason?: string },
+): Promise<PurchaseOrder | null | { error: string }> {
+  const existing = await loadPoRow(id);
   if (!existing) return null;
-
-  const allowed = VALID_TRANSITIONS[existing.status];
-  if (!allowed.includes('CANCELLED')) {
-    return { error: `INVALID_TRANSITION:${existing.status}→CANCELLED` };
+  if (!VALID_TRANSITIONS[existing.status].includes('CANCELLED')) {
+    return { error: `INVALID_TRANSITION:${existing.status}->CANCELLED` };
   }
-
-  // Require reason for SUBMITTED or CONFIRMED cancellations
   if ((existing.status === 'SUBMITTED' || existing.status === 'CONFIRMED') && !options?.reason) {
     return { error: 'REASON_REQUIRED' };
   }
-
   return transitionStatus(id, 'CANCELLED', options);
+}
+
+function parseStoreId(locationId?: string): number | null {
+  if (!locationId) return 1;
+  const trimmed = locationId.trim();
+  if (/^\d+$/.test(trimmed)) return Number(trimmed);
+  const locMatch = /^loc-(\d+)$/i.exec(trimmed);
+  if (locMatch) return Number(locMatch[1]);
+  return null;
 }
 
 export async function receivePurchaseOrder(
@@ -315,152 +1313,222 @@ export async function receivePurchaseOrder(
     locationId?: string;
     receivedBy?: string;
     referenceNumber?: string;
+    discountPercent?: number;
+    freightEach?: number;
     idempotencyKey?: string;
     reason?: string;
+    mode?: 'MANUAL' | 'FULL' | 'SCAN' | 'ASN';
   },
-  options?: { changedBy?: string }
+  options?: { changedBy?: string },
 ): Promise<PurchaseOrder | null | { error: string }> {
-  const db = getDb();
-  const existing = db.prepare('SELECT * FROM purchase_orders WHERE id = ?').get(id) as unknown as PurchaseOrderRow | undefined;
+  const existing = await loadPoRow(id);
   if (!existing) return null;
 
-  // Idempotency check: if key was already used, return the current PO state
   if (data.idempotencyKey) {
-    const existingReceipt = db.prepare(
-      'SELECT id FROM po_receipts WHERE idempotency_key = ?'
-    ).get(data.idempotencyKey) as { id: string } | undefined;
-    if (existingReceipt) {
-      return getPurchaseOrderById(id)!;
-    }
+    const rows = await prisma.$queryRawUnsafe<Array<{ id: string }>>(
+      `SELECT id::text FROM app.po_receipt WHERE idempotency_key = $1 LIMIT 1`,
+      data.idempotencyKey,
+    );
+    if (rows.length > 0) return loadPurchaseOrder(id);
   }
 
   if (existing.status !== 'CONFIRMED' && existing.status !== 'PARTIALLY_RECEIVED') {
-    return { error: `INVALID_TRANSITION:${existing.status}→RECEIVED` };
+    return { error: `INVALID_TRANSITION:${existing.status}->RECEIVED` };
   }
 
-  // Validate all lineIds belong to this PO
-  const poLines = loadLineItems(id);
-  const poLineMap = new Map(poLines.map(l => [l.id, l]));
+  const storeId = parseStoreId(data.locationId);
+  if (storeId == null) return { error: `LOCATION_NOT_FOUND:${data.locationId}` };
+  const discountPercent = data.discountPercent ?? 0;
+  const freightEach = data.freightEach ?? 0;
+
+  const poLines = await loadLineItems(id);
+  const poLineMap = new Map(poLines.map((line) => [line.id, line]));
   for (const line of data.lines) {
-    if (!poLineMap.has(line.lineId)) {
-      return { error: `LINE_NOT_FOUND:${line.lineId}` };
-    }
+    if (!poLineMap.has(line.lineId)) return { error: `LINE_NOT_FOUND:${line.lineId}` };
   }
-
-  // Conditional validation: discrepancyReason required when receiving less than remaining ordered
   for (const line of data.lines) {
     const poLine = poLineMap.get(line.lineId)!;
     const remainingToReceive = poLine.quantity_ordered - poLine.quantity_received;
-    if (line.quantityReceived < remainingToReceive && !line.discrepancyReason) {
+    if (line.quantityReceived < remainingToReceive && !line.discrepancyReason && !data.reason) {
       return { error: `DISCREPANCY_REASON_REQUIRED:${line.lineId}` };
+    }
+    const newQtyReceived = poLine.quantity_received + line.quantityReceived;
+    if (newQtyReceived > poLine.quantity_ordered || newQtyReceived < 0) {
+      return { error: `QUANTITY_EXCEEDS_ORDERED:${line.lineId}` };
     }
   }
 
   const changedBy = options?.changedBy ?? 'system';
-  const receiptLocationId = data.locationId ?? 'loc-01';
-  const receiptLocation = db.prepare('SELECT id FROM inventory_locations WHERE id = ?').get(receiptLocationId);
-  if (!receiptLocation) {
-    return { error: `LOCATION_NOT_FOUND:${receiptLocationId}` };
-  }
+  const receiptCreatedBy = data.receivedBy ?? changedBy;
 
-  db.exec('BEGIN TRANSACTION');
-  try {
-    const inventoryMutations: Array<{ skuId: string; quantityDelta: number; reason: string; performedBy: string }> = [];
+  await prisma.$transaction(async (tx) => {
     const receiptId = uuidv4();
-    const receiptCreatedBy = data.receivedBy ?? changedBy;
-    db.prepare(`
-      INSERT INTO po_receipts (
-        id,
-        po_id,
-        location_id,
-        received_by,
-        reference_number,
-        idempotency_key
-      ) VALUES (?, ?, ?, ?, ?, ?)
-    `).run(
+    await tx.$executeRawUnsafe(
+      `
+        INSERT INTO app.po_receipt (
+          id, po_id, received_at_store_id, received_by, reference_number, idempotency_key, mode,
+          discount_percent, freight_each
+        ) VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8::numeric, $9::numeric)
+      `,
       receiptId,
       id,
-      receiptLocationId,
+      storeId,
       receiptCreatedBy,
       data.referenceNumber ?? null,
       data.idempotencyKey ?? null,
+      data.mode ?? 'MANUAL',
+      discountPercent,
+      freightEach,
     );
 
-    // Update each line's quantity_received and inventory
     for (const line of data.lines) {
       const poLine = poLineMap.get(line.lineId)!;
       const newQtyReceived = poLine.quantity_received + line.quantityReceived;
+      const effectiveUnitCost = (toNumber(poLine.unit_cost) * (1 - discountPercent / 100)) + freightEach;
+      const discrepancyReason = line.discrepancyReason ?? data.reason ?? null;
+      await tx.$executeRawUnsafe(
+        `
+          UPDATE app.purchase_order_line
+          SET quantity_received = $1, updated_at = CURRENT_TIMESTAMP
+          WHERE id = $2::uuid
+        `,
+        newQtyReceived,
+        line.lineId,
+      );
 
-      if (newQtyReceived > poLine.quantity_ordered) {
-        db.exec('ROLLBACK');
-        return { error: `QUANTITY_EXCEEDS_ORDERED:${line.lineId}` };
-      }
+      const movementId = uuidv4();
+      await tx.$executeRawUnsafe(
+        `
+          INSERT INTO app.stock_movement (
+            id, store_id, sku_id, column_label, row_label, movement_type,
+            quantity_delta, unit_cost_snapshot, source_document_type,
+            source_document_id, reason_code, comment, performed_by, movement_at,
+            idempotency_key
+          ) VALUES (
+            $1::uuid, $2, $3::uuid, '', '', 'PO_RECEIPT',
+            $4, $5::numeric, 'PO_RECEIPT',
+            $6, NULL, $7, $8, CURRENT_TIMESTAMP, $9
+          )
+        `,
+        movementId,
+        storeId,
+        poLine.sku_id,
+        line.quantityReceived,
+        effectiveUnitCost,
+        receiptId,
+        data.referenceNumber ?? `PO receive: ${existing.po_number}`,
+        changedBy,
+        data.idempotencyKey ? `${data.idempotencyKey}:${line.lineId}` : null,
+      );
 
-      db.prepare(
-        "UPDATE purchase_order_lines SET quantity_received = ?, updated_at = datetime('now') WHERE id = ?"
-      ).run(newQtyReceived, line.lineId);
+      await tx.$executeRawUnsafe(
+        `
+          INSERT INTO app.stock_level (
+            id, store_id, sku_id, column_label, row_label, on_hand, reserved,
+            last_received_at, last_movement_at, version, updated_at
+          ) VALUES ($1::uuid, $2, $3::uuid, '', '', $4, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1, CURRENT_TIMESTAMP)
+          ON CONFLICT (store_id, sku_id, column_label, row_label)
+          DO UPDATE SET
+            on_hand = app.stock_level.on_hand + EXCLUDED.on_hand,
+            last_received_at = CURRENT_TIMESTAMP,
+            last_movement_at = CURRENT_TIMESTAMP,
+            version = app.stock_level.version + 1,
+            updated_at = CURRENT_TIMESTAMP
+        `,
+        uuidv4(),
+        storeId,
+        poLine.sku_id,
+        line.quantityReceived,
+      );
 
-      inventoryMutations.push({
-        skuId: poLine.sku_id,
-        quantityDelta: line.quantityReceived,
-        reason: `PO receive: ${existing.po_number}`,
-        performedBy: changedBy,
-      });
-
-      db.prepare(`
-        INSERT INTO po_receipt_lines (
-          id,
-          receipt_id,
-          po_line_id,
-          sku_id,
-          sku_size_id,
-          quantity_received,
-          unit_cost,
-          discrepancy_reason,
-          audit_reference
-        ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?)
-      `).run(
+      await tx.$executeRawUnsafe(
+        `
+          INSERT INTO app.po_receipt_line (
+            id, receipt_id, po_line_id, sku_id, column_label, row_label,
+            quantity_received, effective_unit_cost, discrepancy_reason,
+            audit_reference, movement_id
+          ) VALUES (
+            $1::uuid, $2::uuid, $3::uuid, $4::uuid, '', '',
+            $5, $6::numeric, $7, $8, $9::uuid
+          )
+        `,
         uuidv4(),
         receiptId,
         poLine.id,
         poLine.sku_id,
         line.quantityReceived,
-        poLine.unit_cost,
-        line.discrepancyReason ?? null,
+        effectiveUnitCost,
+        discrepancyReason,
         line.auditReference ?? null,
+        movementId,
       );
     }
 
-    // Reload lines to determine new status
-    const updatedLines = loadLineItems(id);
-    const allFullyReceived = updatedLines.every(l => l.quantity_received >= l.quantity_ordered);
+    const updatedRows = await loadLineItems(id, tx);
+    const allFullyReceived = updatedRows.every((line) => line.quantity_received >= line.quantity_ordered);
     const newStatus: PoStatus = allFullyReceived ? 'RECEIVED' : 'PARTIALLY_RECEIVED';
 
-    db.prepare("UPDATE purchase_orders SET status = ?, updated_at = datetime('now') WHERE id = ?")
-      .run(newStatus, id);
+    await tx.$executeRawUnsafe(
+      `UPDATE app.purchase_order SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2::uuid`,
+      newStatus,
+      id,
+    );
+    await insertStatusHistory(id, existing.status, newStatus, changedBy, data.reason ?? null, tx);
+  });
 
-    insertStatusHistory(id, existing.status, newStatus, changedBy, data.reason ?? null);
-
-    await prisma.$transaction(async (tx) => {
-      for (const mutation of inventoryMutations) {
-        await applyInventoryDelta(mutation, tx);
-      }
-    });
-
-    db.exec('COMMIT');
-  } catch (err) {
-    db.exec('ROLLBACK');
-    throw err;
-  }
-
-  return getPurchaseOrderById(id);
+  return loadPurchaseOrder(id);
 }
 
-export function getStatusHistory(poId: string): PoStatusHistory[] {
-  const db = getDb();
-  const rows = db.prepare(
-    'SELECT * FROM po_status_history WHERE po_id = ? ORDER BY created_at ASC'
-  ).all(poId) as unknown as PoStatusHistoryRow[];
+export async function receivePurchaseOrderFull(
+  id: string,
+  data: {
+    locationId?: string;
+    receivedBy?: string;
+    referenceNumber?: string | null;
+    discountPercent?: number;
+    freightEach?: number;
+    idempotencyKey?: string;
+    changedBy?: string;
+  },
+): Promise<PurchaseOrder | null | { error: string }> {
+  const po = await loadPurchaseOrder(id);
+  if (!po) return null;
+
+  const lines = po.lineItems
+    .map((line) => ({
+      lineId: line.id,
+      quantityReceived: line.quantityOrdered - line.quantityReceived,
+    }))
+    .filter((line) => line.quantityReceived > 0);
+
+  if (lines.length === 0) return po;
+
+  return receivePurchaseOrder(
+    id,
+    {
+      lines,
+      locationId: data.locationId,
+      receivedBy: data.receivedBy,
+      referenceNumber: data.referenceNumber ?? undefined,
+      discountPercent: data.discountPercent,
+      freightEach: data.freightEach,
+      idempotencyKey: data.idempotencyKey,
+      mode: 'FULL',
+    },
+    { changedBy: data.changedBy },
+  );
+}
+
+export async function getStatusHistory(poId: string): Promise<PoStatusHistory[]> {
+  const rows = await prisma.$queryRawUnsafe<NativeStatusHistoryRow[]>(
+    `
+      SELECT id::text, po_id::text, from_status, to_status, changed_by, reason, created_at
+      FROM app.po_status_history
+      WHERE po_id = $1::uuid
+      ORDER BY created_at ASC
+    `,
+    poId,
+  );
   return rows.map(rowToPoStatusHistory);
 }
 
@@ -471,53 +1539,115 @@ const PO_SORT_MAP: Record<string, string> = {
   updatedAt: 'po.updated_at',
 };
 
-export function listPurchaseOrders(params: {
+export async function listPurchaseOrders(params: {
   page: number;
   pageSize: number;
   sort?: string;
-  order?: 'asc' | 'desc';
+  order?: SortOrder;
   status?: PoStatus;
   vendorId?: string;
+  buyer?: string;
   q?: string;
-}): PaginationEnvelope<PurchaseOrder> {
-  const db = getDb();
+}): Promise<PaginationEnvelope<PurchaseOrder>> {
   const conditions: string[] = [];
   const values: DbValue[] = [];
 
   if (params.status) {
-    conditions.push('po.status = ?');
     values.push(params.status);
+    conditions.push(`po.status = $${values.length}`);
   }
-
   if (params.vendorId) {
-    conditions.push('po.vendor_id = ?');
-    values.push(params.vendorId);
+    values.push(params.vendorId.trim().toUpperCase());
+    conditions.push(`po.vendor_code = $${values.length}`);
   }
-
+  if (params.buyer?.trim()) {
+    values.push(params.buyer.trim());
+    conditions.push(`
+      (
+        btrim(COALESCE(po.buyer, '')) = $${values.length}
+        OR EXISTS (
+          SELECT 1
+          FROM app.purchase_order_line pol_buyer
+          JOIN app.sku s_buyer ON s_buyer.id = pol_buyer.sku_id
+          JOIN app.sku_attribute_assignment saa_buyer
+            ON UPPER(TRIM(saa_buyer.sku_code)) = UPPER(TRIM(COALESCE(s_buyer.code, s_buyer.provisional_code)))
+          JOIN app.attribute_dimension ad_buyer
+            ON ad_buyer.id = saa_buyer.dimension_id
+           AND ad_buyer.code = 'buyer'
+          JOIN app.attribute_value av_buyer ON av_buyer.id = saa_buyer.value_id
+          WHERE pol_buyer.po_id = po.id
+            AND COALESCE(s_buyer.code, s_buyer.provisional_code) IS NOT NULL
+            AND av_buyer.code = $${values.length}
+        )
+      )
+    `);
+  }
   if (params.q) {
-    const pattern = `%${params.q}%`;
-    conditions.push('(po.po_number LIKE ? OR po.notes LIKE ?)');
-    values.push(pattern, pattern);
+    values.push(`%${params.q.trim().toLowerCase()}%`);
+    conditions.push(`(LOWER(po.po_number) LIKE $${values.length} OR LOWER(COALESCE(po.comments,'')) LIKE $${values.length})`);
   }
 
   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-
-  const countRow = db.prepare(
-    `SELECT COUNT(*) as total FROM purchase_orders po ${whereClause}`
-  ).get(...values) as unknown as { total: number };
-
-  const totalItems = countRow.total;
-  const totalPages = Math.ceil(totalItems / params.pageSize);
+  const countRows = await prisma.$queryRawUnsafe<Array<{ total: bigint }>>(
+    `SELECT COUNT(*)::bigint AS total FROM app.purchase_order po ${whereClause}`,
+    ...values,
+  );
+  const totalItems = Number(countRows[0]?.total ?? 0n);
+  const totalPages = Math.max(1, Math.ceil(totalItems / params.pageSize));
   const offset = (params.page - 1) * params.pageSize;
+  const sortCol = PO_SORT_MAP[params.sort ?? 'createdAt'] ?? 'po.created_at';
+  const sortDir = params.order === 'asc' ? 'ASC' : 'DESC';
+  const limitIdx = values.length + 1;
+  const offsetIdx = values.length + 2;
 
-  const sortCol = PO_SORT_MAP[params.sort ?? 'createdAt'] || 'po.created_at';
-  const sortDir = params.order === 'desc' ? 'DESC' : 'ASC';
+  const rows = await prisma.$queryRawUnsafe<NativePoRow[]>(
+    `
+      ${vendorEffectiveCte()}
+      SELECT
+        po.id::text,
+        po.po_number,
+        po.bill_to_store_id,
+        po.ship_to_store_id,
+        po.vendor_code,
+        ve.name AS vendor_name,
+        po.order_type,
+        po.classification,
+        po.origin,
+        po.origin_source_po_id::text,
+        po.confirmation_number,
+        po.account_number,
+        po.terms,
+        po.ship_via,
+        po.backorder_allowed,
+        po.split_shipment,
+        po.program_code,
+        po.store_labels_on_receive,
+        po.buyer,
+        po.order_date,
+        po.ship_date,
+        po.cancel_date,
+        po.payment_date,
+        po.status,
+        po.comments,
+        po.cancellation_reason,
+        po.created_by,
+        po.created_at,
+        po.updated_at
+      FROM app.purchase_order po
+      LEFT JOIN vendor_effective ve ON ve.code = po.vendor_code
+      ${whereClause}
+      ORDER BY ${sortCol} ${sortDir}, po.po_number ASC
+      LIMIT $${limitIdx} OFFSET $${offsetIdx}
+    `,
+    ...values,
+    params.pageSize,
+    offset,
+  );
 
-  const rows = db.prepare(
-    `SELECT po.*, v.name as vendor_name FROM purchase_orders po LEFT JOIN vendors v ON v.id = po.vendor_id ${whereClause} ORDER BY ${sortCol} ${sortDir} LIMIT ? OFFSET ?`
-  ).all(...values, params.pageSize, offset) as unknown as (PurchaseOrderRow & { vendor_name?: string })[];
-
-  const data = rows.map((row) => rowToPurchaseOrder(row, loadLineItems(row.id)));
+  const data: PurchaseOrder[] = [];
+  for (const row of rows) {
+    data.push(rowToPurchaseOrder(row, await loadLineItems(row.id)));
+  }
 
   return {
     data,
@@ -542,59 +1672,293 @@ export interface OverduePoException {
   daysOverdue: number;
 }
 
-export function listOverdueExceptions(): OverduePoException[] {
-  const db = getDb();
-  const rows = db.prepare(`
-    SELECT
-      po.id AS po_id,
-      po.po_number,
-      po.vendor_id,
-      v.name AS vendor_name,
-      po.status,
-      v.lead_time_days,
-      sh.created_at AS submitted_at
-    FROM purchase_orders po
-    JOIN vendors v ON v.id = po.vendor_id
-    JOIN po_status_history sh ON sh.po_id = po.id AND sh.to_status = 'SUBMITTED'
-    WHERE po.status IN ('SUBMITTED', 'CONFIRMED')
-      AND v.lead_time_days IS NOT NULL
-      AND date(sh.created_at, '+' || v.lead_time_days || ' days') < date('now')
-    ORDER BY date(sh.created_at, '+' || v.lead_time_days || ' days') ASC
-  `).all() as unknown as {
+export async function listOverdueExceptions(): Promise<OverduePoException[]> {
+  // RICS/vendor baselines do not currently carry lead-time days in app.vendor.
+  // Keep the endpoint stable and empty until store-ops/vendor terms define it.
+  return [];
+}
+
+export interface PurchaseOrderReportRow {
+  poId: string;
+  poNumber: string;
+  vendorId: string;
+  vendorName: string;
+  status: PoStatus;
+  orderDate: string;
+  shipDate: string | null;
+  cancelDate: string | null;
+  paymentDate: string | null;
+  lineCount: number;
+  orderedQty: number;
+  receivedQty: number;
+  openQty: number;
+  orderedCost: number;
+  openCost: number;
+}
+
+export async function listPurchaseOrderReport(params: {
+  status?: PoStatus;
+  vendorId?: string;
+  balanceMode?: 'ordered' | 'open';
+  dateBy?: 'orderDate' | 'shipDate' | 'cancelDate' | 'paymentDate';
+  dateFrom?: string;
+  dateTo?: string;
+}): Promise<PurchaseOrderReportRow[]> {
+  const values: DbValue[] = [];
+  const conditions: string[] = [];
+  if (params.status) {
+    values.push(params.status);
+    conditions.push(`po.status = $${values.length}`);
+  }
+  if (params.vendorId) {
+    values.push(params.vendorId.trim().toUpperCase());
+    conditions.push(`po.vendor_code = $${values.length}`);
+  }
+
+  const dateColumn = ({
+    orderDate: 'po.order_date',
+    shipDate: 'po.ship_date',
+    cancelDate: 'po.cancel_date',
+    paymentDate: 'po.payment_date',
+  } as const)[params.dateBy ?? 'orderDate'];
+  if (params.dateFrom) {
+    values.push(params.dateFrom);
+    conditions.push(`${dateColumn} >= $${values.length}::date`);
+  }
+  if (params.dateTo) {
+    values.push(params.dateTo);
+    conditions.push(`${dateColumn} < ($${values.length}::date + INTERVAL '1 day')`);
+  }
+
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  const rows = await prisma.$queryRawUnsafe<Array<{
     po_id: string;
     po_number: string;
     vendor_id: string;
-    vendor_name: string;
+    vendor_name: string | null;
     status: PoStatus;
-    lead_time_days: number;
-    submitted_at: string;
-  }[];
+    order_date: Date | string;
+    ship_date: Date | string | null;
+    cancel_date: Date | string | null;
+    payment_date: Date | string | null;
+    line_count: bigint;
+    ordered_qty: bigint;
+    received_qty: bigint;
+    open_qty: bigint;
+    ordered_cost: unknown;
+    open_cost: unknown;
+  }>>(
+    `
+      ${vendorEffectiveCte()}
+      SELECT
+        po.id::text AS po_id,
+        po.po_number,
+        po.vendor_code AS vendor_id,
+        ve.name AS vendor_name,
+        po.status,
+        po.order_date,
+        po.ship_date,
+        po.cancel_date,
+        po.payment_date,
+        COUNT(pol.id)::bigint AS line_count,
+        COALESCE(SUM(pol.quantity_ordered), 0)::bigint AS ordered_qty,
+        COALESCE(SUM(pol.quantity_received), 0)::bigint AS received_qty,
+        COALESCE(SUM(pol.quantity_ordered - pol.quantity_received), 0)::bigint AS open_qty,
+        COALESCE(SUM(pol.quantity_ordered * pol.unit_cost), 0) AS ordered_cost,
+        COALESCE(SUM((pol.quantity_ordered - pol.quantity_received) * pol.unit_cost), 0) AS open_cost
+      FROM app.purchase_order po
+      LEFT JOIN app.purchase_order_line pol ON pol.po_id = po.id
+      LEFT JOIN vendor_effective ve ON ve.code = po.vendor_code
+      ${whereClause}
+      GROUP BY po.id, ve.name
+      ORDER BY po.order_date DESC, po.po_number ASC
+    `,
+    ...values,
+  );
 
-  return rows.map((row) => {
-    const expectedDate = new Date(row.submitted_at);
-    expectedDate.setDate(expectedDate.getDate() + row.lead_time_days);
-    const now = new Date();
-    const daysOverdue = Math.floor((now.getTime() - expectedDate.getTime()) / (1000 * 60 * 60 * 24));
-
-    return {
-      poId: row.po_id,
-      poNumber: row.po_number,
-      vendorId: row.vendor_id,
-      vendorName: row.vendor_name,
-      status: row.status,
-      leadTimeDays: row.lead_time_days,
-      submittedAt: row.submitted_at,
-      expectedDeliveryDate: expectedDate.toISOString().split('T')[0],
-      daysOverdue,
-    };
-  });
+  return rows.map((row) => ({
+    poId: row.po_id,
+    poNumber: row.po_number,
+    vendorId: row.vendor_id,
+    vendorName: row.vendor_name ?? row.vendor_id,
+    status: row.status,
+    orderDate: toIso(row.order_date),
+    shipDate: row.ship_date == null ? null : toIso(row.ship_date),
+    cancelDate: row.cancel_date == null ? null : toIso(row.cancel_date),
+    paymentDate: row.payment_date == null ? null : toIso(row.payment_date),
+    lineCount: Number(row.line_count),
+    orderedQty: Number(row.ordered_qty),
+    receivedQty: Number(row.received_qty),
+    openQty: Number(row.open_qty),
+    orderedCost: toNumber(row.ordered_cost),
+    openCost: toNumber(row.open_cost),
+  }));
 }
 
-export function listPoReceiptsByPurchaseOrder(poId: string): PoReceipt[] | null {
-  const db = getDb();
-  const po = db.prepare('SELECT id FROM purchase_orders WHERE id = ?').get(poId);
+export interface OpenPoByMonthRow {
+  bucket: string;
+  month: string;
+  openQty: number;
+  openCost: number;
+  openRetail: number;
+}
+
+export async function listOpenPoByMonth(params: {
+  sortBy?: 'vendor' | 'category';
+  dateBy?: 'shipDate' | 'cancelDate' | 'paymentDate';
+  status?: 'all' | 'atOnce' | 'future';
+}): Promise<OpenPoByMonthRow[]> {
+  const groupExpr = params.sortBy === 'category'
+    ? `COALESCE(s.category_number::text, 'Unclassified')`
+    : `COALESCE(ve.name, po.vendor_code)`;
+  const dateExpr = ({
+    shipDate: 'po.ship_date',
+    cancelDate: 'po.cancel_date',
+    paymentDate: 'po.payment_date',
+  } as const)[params.dateBy ?? 'shipDate'];
+  const conditions = [`po.status IN ('SUBMITTED','CONFIRMED','PARTIALLY_RECEIVED')`];
+  if (params.status === 'atOnce') conditions.push(`po.classification = 'AT_ONCE'`);
+  if (params.status === 'future') conditions.push(`po.classification = 'FUTURE'`);
+
+  const rows = await prisma.$queryRawUnsafe<Array<{
+    bucket: string;
+    month: string;
+    open_qty: bigint;
+    open_cost: unknown;
+    open_retail: unknown;
+  }>>(
+    `
+      ${vendorEffectiveCte()}
+      SELECT
+        ${groupExpr} AS bucket,
+        TO_CHAR(DATE_TRUNC('month', COALESCE(${dateExpr}, po.order_date)), 'YYYY-MM') AS month,
+        COALESCE(SUM(pol.quantity_ordered - pol.quantity_received), 0)::bigint AS open_qty,
+        COALESCE(SUM((pol.quantity_ordered - pol.quantity_received) * pol.unit_cost), 0) AS open_cost,
+        COALESCE(SUM((pol.quantity_ordered - pol.quantity_received) * COALESCE(pol.retail_price, s.retail_price, 0)), 0) AS open_retail
+      FROM app.purchase_order po
+      JOIN app.purchase_order_line pol ON pol.po_id = po.id
+      JOIN app.sku s ON s.id = pol.sku_id
+      LEFT JOIN vendor_effective ve ON ve.code = po.vendor_code
+      WHERE ${conditions.join(' AND ')}
+        AND (pol.quantity_ordered - pol.quantity_received) > 0
+      GROUP BY bucket, month
+      ORDER BY bucket ASC, month ASC
+    `,
+  );
+
+  return rows.map((row) => ({
+    bucket: row.bucket,
+    month: row.month,
+    openQty: Number(row.open_qty),
+    openCost: toNumber(row.open_cost),
+    openRetail: toNumber(row.open_retail),
+  }));
+}
+
+export interface PoCashProjectionRow {
+  paymentDate: string;
+  vendorId: string;
+  vendorName: string;
+  openCost: number;
+}
+
+export async function listPoCashProjection(): Promise<PoCashProjectionRow[]> {
+  const rows = await prisma.$queryRawUnsafe<Array<{
+    payment_date: Date | string;
+    vendor_id: string;
+    vendor_name: string | null;
+    open_cost: unknown;
+  }>>(
+    `
+      ${vendorEffectiveCte()}
+      SELECT
+        COALESCE(po.payment_date, po.ship_date, po.order_date) AS payment_date,
+        po.vendor_code AS vendor_id,
+        ve.name AS vendor_name,
+        COALESCE(SUM((pol.quantity_ordered - pol.quantity_received) * pol.unit_cost), 0) AS open_cost
+      FROM app.purchase_order po
+      JOIN app.purchase_order_line pol ON pol.po_id = po.id
+      LEFT JOIN vendor_effective ve ON ve.code = po.vendor_code
+      WHERE po.status IN ('SUBMITTED','CONFIRMED','PARTIALLY_RECEIVED')
+        AND (pol.quantity_ordered - pol.quantity_received) > 0
+      GROUP BY COALESCE(po.payment_date, po.ship_date, po.order_date), po.vendor_code, ve.name
+      ORDER BY payment_date ASC, po.vendor_code ASC
+    `,
+  );
+
+  return rows.map((row) => ({
+    paymentDate: toIso(row.payment_date),
+    vendorId: row.vendor_id,
+    vendorName: row.vendor_name ?? row.vendor_id,
+    openCost: toNumber(row.open_cost),
+  }));
+}
+
+async function loadPoReceiptLines(receiptId: string): Promise<NativeReceiptLineRow[]> {
+  return prisma.$queryRawUnsafe<NativeReceiptLineRow[]>(
+    `
+      SELECT
+        prl.id::text,
+        prl.receipt_id::text,
+        prl.po_line_id::text,
+        prl.sku_id::text,
+        COALESCE(s.code, s.provisional_code) AS sku_code,
+        COALESCE(s.description_web, s.description_rics, s.style_color) AS style,
+        prl.quantity_received,
+        prl.effective_unit_cost,
+        prl.discrepancy_reason,
+        prl.audit_reference,
+        prl.created_at
+      FROM app.po_receipt_line prl
+      JOIN app.sku s ON s.id = prl.sku_id
+      WHERE prl.receipt_id = $1::uuid
+      ORDER BY prl.created_at ASC
+    `,
+    receiptId,
+  );
+}
+
+export async function listPoReceiptsByPurchaseOrder(poId: string): Promise<PoReceipt[] | null> {
+  const po = await loadPoRow(poId);
   if (!po) return null;
-  return loadPoReceipts(poId);
+  const rows = await prisma.$queryRawUnsafe<NativeReceiptRow[]>(
+    `
+      SELECT
+        id::text,
+        po_id::text,
+        received_at_store_id,
+        received_by,
+        reference_number,
+        discount_percent,
+        freight_each,
+        received_at,
+        created_at
+      FROM app.po_receipt
+      WHERE po_id = $1::uuid
+      ORDER BY received_at DESC
+    `,
+    poId,
+  );
+
+  const receipts: PoReceipt[] = [];
+  for (const row of rows) {
+    receipts.push(rowToPoReceipt(row, await loadPoReceiptLines(row.id)));
+  }
+  return receipts;
+}
+
+function loadTransferOrderLines(_transferOrderId: string): TransferOrderLineRow[] {
+  const db = getDb();
+  return db.prepare(`
+    SELECT
+      tol.*,
+      s.sku_code,
+      s.style
+    FROM transfer_order_lines tol
+    LEFT JOIN skus s ON s.id = tol.sku_id
+    WHERE tol.transfer_order_id = ?
+    ORDER BY tol.created_at ASC
+  `).all(_transferOrderId) as unknown as TransferOrderLineRow[];
 }
 
 export function listTransferOrders(params: {

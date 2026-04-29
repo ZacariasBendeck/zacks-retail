@@ -10,6 +10,12 @@ SKUs, taxonomy (department / category / group / season / keyword), vendors, size
 
 RICS remains the operational system of record until cutover day. This module must not write to RICS MDB files, must not read MDBs at request time, and must not add new `rics_mirror` dependencies. During development, canonical CSV artifact imports populate owned Postgres tables such as `app.sku`, `app.vendor`, `app.product_family`, and `app.category_product_family`; app-owned drafts, enrichments, overlays, configuration, and future workflow data also live in Postgres-owned schemas such as `app.*`, `public.*`, or future module schemas. Final operational keys, foreign keys, and authoritative product tables are validated during the Cutover Migration.
 
+## Matching-set purchasing
+
+Matching sets model products that share a style/material story but remain separate sellable SKUs. A suit set links jacket, pant, vest, and related components through `app.matching_set` and `app.matching_set_member`; each component still owns its own stock, size grid, cost, retail, sales history, and purchase-order line. Suit planning defaults to `jacket:pant:vest = 1:1.2:0.5`, with the ratio stored on `matching_set_member.quantity_ratio`.
+
+The Products module owns the set definition, selling mode (`separates` or `bundle_required`), material fields, chain assignment, size curves, and generated buy-plan records. The Buying Plan surface computes complete-set capacity, bottleneck role, orphan component units, role/size recommendations, and OTB impact from Postgres `app.*` data only.
+
 ## Documents in this module
 
 | File | Purpose |

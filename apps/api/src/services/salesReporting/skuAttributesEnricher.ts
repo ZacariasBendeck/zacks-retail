@@ -52,6 +52,8 @@ export async function loadSkuAttributesBySku(
     category_desc: string | null;
     department_number: number | null;
     department_desc: string | null;
+    season: string | null;
+    group_code: string | null;
     style_color: string | null;
     current_price: number | null;
     current_cost: number | null;
@@ -68,6 +70,8 @@ export async function loadSkuAttributesBySku(
       c."desc"                                     AS category_desc,
       d.number                                     AS department_number,
       d."desc"                                     AS department_desc,
+      s.season                                     AS season,
+      s.group_code                                 AS group_code,
       s.style_color                                AS style_color,
       s.retail_price::float8                       AS current_price,
       s.current_cost::float8                       AS current_cost,
@@ -94,6 +98,8 @@ export async function loadSkuAttributesBySku(
       categoryDesc: r.category_desc ?? null,
       departmentNumber: r.department_number ?? null,
       departmentDesc: r.department_desc ?? null,
+      season: r.season?.trim() || null,
+      groupCode: r.group_code?.trim() || null,
       styleColor: r.style_color ?? null,
       currentPrice: r.current_price ?? null,
       currentCost: r.current_cost ?? null,
@@ -115,6 +121,8 @@ export async function loadSkuAttributesBySku(
         categoryDesc: null,
         departmentNumber: null,
         departmentDesc: null,
+        season: null,
+        groupCode: null,
         styleColor: null,
         currentPrice: null,
         currentCost: null,

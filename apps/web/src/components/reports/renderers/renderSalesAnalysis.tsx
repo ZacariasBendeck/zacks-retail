@@ -37,12 +37,14 @@ export default function RenderSalesAnalysis({ result }: { result: SalesAnalysisR
       title: 'Store', dataIndex: 'storeNumber', key: 'storeNumber', width: 80,
       render: (v: number | null) => v ?? '(all)',
     },
-    { title: 'Qty', dataIndex: 'qty', key: 'qty', width: 80, align: 'right' as const, render: (v: number) => fmtQty(v) },
+    { title: 'On Hand Qty', dataIndex: 'unitsOnHand', key: 'unitsOnHand', width: 110, align: 'right' as const, render: (v: number) => fmtQty(v) },
+    { title: 'Avg Cost', dataIndex: 'inventoryUnitCost', key: 'inventoryUnitCost', width: 100, align: 'right' as const, render: (v: number | null) => fmtMoney(v) },
+    { title: 'Total Inv Cost', dataIndex: 'onHandAtCost', key: 'onHandAtCost', width: 130, align: 'right' as const, render: (v: number) => fmtMoney(v) },
+    { title: 'Qty Sold', dataIndex: 'qty', key: 'qty', width: 90, align: 'right' as const, render: (v: number) => fmtQty(v) },
     { title: 'Net Sales', dataIndex: 'netSales', key: 'netSales', width: 130, align: 'right' as const, render: (v: number) => fmtMoney(v) },
     { title: 'COGS', dataIndex: 'cogs', key: 'cogs', width: 130, align: 'right' as const, render: (v: number) => fmtMoney(v) },
     { title: 'Gross Profit', dataIndex: 'grossProfit', key: 'grossProfit', width: 130, align: 'right' as const, render: (v: number) => fmtMoney(v) },
     { title: 'GP %', dataIndex: 'gpPct', key: 'gpPct', width: 90, align: 'right' as const, render: (v: number | null) => <GpBadge value={v} /> },
-    { title: 'Inv (Cost)', dataIndex: 'onHandAtCost', key: 'onHandAtCost', width: 130, align: 'right' as const, render: (v: number) => fmtMoney(v) },
     { title: 'Turns', dataIndex: 'turns', key: 'turns', width: 80, align: 'right' as const, render: (v: number | null) => fmtPctBare1(v) },
     {
       title: 'ROI', dataIndex: 'roiPct', key: 'roiPct', width: 90, align: 'right' as const,
@@ -71,20 +73,22 @@ export default function RenderSalesAnalysis({ result }: { result: SalesAnalysisR
         <Table.Summary fixed>
           <Table.Summary.Row>
             <SummaryLabelCell index={0} colSpan={labelSpan} variant="grand">Totals</SummaryLabelCell>
-            <SummaryNumericCell index={1} variant="grand">{fmtQty(t.qty)}</SummaryNumericCell>
-            <SummaryNumericCell index={2} variant="grand">{fmtMoney(t.netSales)}</SummaryNumericCell>
-            <SummaryNumericCell index={3} variant="grand">{fmtMoney(t.cogs)}</SummaryNumericCell>
-            <SummaryNumericCell index={4} variant="grand">{fmtMoney(t.grossProfit)}</SummaryNumericCell>
-            <SummaryNumericCell index={5} variant="grand">{fmtPct1(t.gpPct)}</SummaryNumericCell>
-            <SummaryNumericCell index={6} variant="grand">{fmtMoney(t.onHandAtCost)}</SummaryNumericCell>
-            <SummaryNumericCell index={7} variant="grand">{fmtPctBare1(t.turns)}</SummaryNumericCell>
-            <SummaryNumericCell index={8} variant="grand">
+            <SummaryNumericCell index={1} variant="grand">{fmtQty(t.unitsOnHand)}</SummaryNumericCell>
+            <SummaryNumericCell index={2} variant="grand">{fmtMoney(t.inventoryUnitCost)}</SummaryNumericCell>
+            <SummaryNumericCell index={3} variant="grand">{fmtMoney(t.onHandAtCost)}</SummaryNumericCell>
+            <SummaryNumericCell index={4} variant="grand">{fmtQty(t.qty)}</SummaryNumericCell>
+            <SummaryNumericCell index={5} variant="grand">{fmtMoney(t.netSales)}</SummaryNumericCell>
+            <SummaryNumericCell index={6} variant="grand">{fmtMoney(t.cogs)}</SummaryNumericCell>
+            <SummaryNumericCell index={7} variant="grand">{fmtMoney(t.grossProfit)}</SummaryNumericCell>
+            <SummaryNumericCell index={8} variant="grand">{fmtPct1(t.gpPct)}</SummaryNumericCell>
+            <SummaryNumericCell index={9} variant="grand">{fmtPctBare1(t.turns)}</SummaryNumericCell>
+            <SummaryNumericCell index={10} variant="grand">
               {t.roiPct == null ? DASH : `${fmtPctBare1(t.roiPct)}×`}
             </SummaryNumericCell>
             {priorYear ? (
               <>
-                <SummaryNumericCell index={9} variant="grand">{fmtMoney(t.priorYearNetSales)}</SummaryNumericCell>
-                <SummaryNumericCell index={10} variant="grand">{DASH}</SummaryNumericCell>
+                <SummaryNumericCell index={11} variant="grand">{fmtMoney(t.priorYearNetSales)}</SummaryNumericCell>
+                <SummaryNumericCell index={12} variant="grand">{DASH}</SummaryNumericCell>
               </>
             ) : null}
           </Table.Summary.Row>

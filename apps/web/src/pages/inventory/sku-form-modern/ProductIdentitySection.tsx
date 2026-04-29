@@ -2,8 +2,8 @@ import { Button, Col, Form, Input, Row, Select, Space, Tag, Typography, Upload }
 import { CameraOutlined, LoadingOutlined, ThunderboltOutlined } from '@ant-design/icons'
 import { useState } from 'react'
 import { sectionCard, sectionTitle, sectionSubtitle, tokens, monoInput } from './styles'
-import { aiLabel, fieldStyle, refOptions } from './formHelpers'
-import type { ProductFamily, ReferenceItem } from '../../../types/sku'
+import { aiLabel, fieldStyle } from './formHelpers'
+import type { ProductFamily } from '../../../types/sku'
 import type { PostgresCategory } from '../../../hooks/useProductCategories'
 import type { Group, SizeType } from '../../../types/productsTaxonomy'
 
@@ -31,7 +31,7 @@ interface ProductIdentitySectionProps {
   derivedDepartmentLabel: string | null
 
   /** Color, size type. */
-  refData: Record<string, ReferenceItem[]> | undefined
+  attributeOptionsByDimension: Record<string, { label: string; value: string }[]>
   sizeTypes: SizeType[] | undefined
   sizeTypesLoading: boolean
 
@@ -65,7 +65,7 @@ export function ProductIdentitySection({
   familyLabelByCode,
   derivedFamilyCode,
   derivedDepartmentLabel,
-  refData,
+  attributeOptionsByDimension,
   sizeTypes,
   sizeTypesLoading,
   groups,
@@ -305,7 +305,7 @@ export function ProductIdentitySection({
                   showSearch
                   size="large"
                   optionFilterProp="label"
-                  options={refOptions(refData?.['colors'])}
+                  options={attributeOptionsByDimension.color ?? []}
                 />
               </Form.Item>
             </Col>

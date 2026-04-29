@@ -93,6 +93,7 @@ export const InquiryPopupProvider: React.FC<{ children: React.ReactNode }> = ({ 
             selectedRow={selectedRow}
             onPickSku={handlePickSku}
             onEditSku={handleEditSku}
+            onOpenMatchingSets={closeInquiry}
             mode={mode}
             activeTab={activeTab}
             scope={scope}

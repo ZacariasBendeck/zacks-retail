@@ -87,7 +87,7 @@ Execute, in order:
 
 ```bash
 pnpm --filter @benlow-rics/api exec prisma migrate deploy
-# then run the module-specific direct CSV import commands required for cutover
+pnpm --filter @benlow-rics/api cutover:render-load -- --bundle <final-bundle-dir>
 pnpm --filter @benlow-rics/api verify:cutover-readiness -- --max-sync-age-hours 1
 ```
 
@@ -95,6 +95,7 @@ Rules:
 
 - import only into owned tables
 - do not recreate `rics_mirror`
+- purchase orders are loaded through `import:native-purchase-orders-from-artifact`, which rebuilds native `app.purchase_order*` from `purchase_master.csv` and `purchase_detail.csv`
 - if a source has no owned target yet, keep that CSV offline and do not load it to hosted Postgres
 
 #### 5. Validation gate

@@ -28,8 +28,11 @@ async function parseJsonOrThrow<T>(res: Response, fallbackCode: string): Promise
   return res.json() as Promise<T>
 }
 
-export async function fetchCasePacks(): Promise<CasePackSummary[]> {
-  const res = await fetch('/api/v1/case-packs')
+export async function fetchCasePacks(params: { sizeTypeCode?: number } = {}): Promise<CasePackSummary[]> {
+  const searchParams = new URLSearchParams()
+  if (params.sizeTypeCode != null) searchParams.set('sizeTypeCode', String(params.sizeTypeCode))
+  const query = searchParams.toString()
+  const res = await fetch(`/api/v1/case-packs${query ? `?${query}` : ''}`)
   const body = await parseJsonOrThrow<{ casePacks: CasePackSummary[] }>(res, 'FETCH_CASE_PACKS_FAILED')
   return body.casePacks
 }
