@@ -192,7 +192,7 @@ The attribute catalog + family rules are administered in-app at `/products/attri
 
 | Method + path | Purpose | Notable response |
 |---|---|---|
-| `POST   /products/attributes/dimensions` | Create a dimension (`{ code, labelEs, descriptionEs?, sortOrder, isMultiValue }`). | `201` with the created row. |
+| `POST   /products/attributes/dimensions` | Create a dimension (`{ code, labelEs, descriptionEs?, sortOrder, isMultiValue, familyCode? }`). Omitted/null `familyCode` creates a universal dimension; a supplied `familyCode` creates the dimension plus an enabled family rule atomically. | `201` with the created row. |
 | `PATCH  /products/attributes/dimensions/:code` | Update labelEs / descriptionEs / sortOrder / isMultiValue. | `200`. |
 | `DELETE /products/attributes/dimensions/:code` | Hard delete. **409** if any `sku_attribute_assignment` references it. |  |
 | `POST   /products/attributes/dimensions/reorder` | Bulk `sortOrder` update (`{ entries: [{code, sortOrder}...] }`). | `200`. |
@@ -237,6 +237,7 @@ Validation:
 
 | Method + path | Purpose |
 |---|---|
+| `POST /products/families` | Create a product family (`{ code, labelEs, descriptionEs?, sortOrder? }`). |
 | `PATCH /products/families/:code` | Update labelEs / descriptionEs / sortOrder. |
 | `PUT /products/families/:code/categories` | Replace the set of RICS category numbers mapped to this family (one category maps to one family — reassignment is upsert). Body: `{ categories: number[] }`. Appends `?force=true` to override the orphan-assignment soft block. |
 | `GET /products/families/:code/attribute-rules` | Reverse view of rule rows for this family. |
@@ -252,6 +253,8 @@ Validation:
 4. **Required-attribute enforcement** — for every dim with `is_required=true` for the SKU's family, the post-replace state must have ≥1 assignment (keyword-derived assignments that stay through the replace also satisfy the requirement). Errors: `409` with the list of missing dim codes.
 
 ## Planned Matching Set / Conjunto endpoints
+
+> Warning: May be stale per 2026-04-29 /index-knowledge pass: matching-set create/edit and buying-plan endpoints have shipped under the Products module. Review this section and promote it from planned contract to current API contract.
 
 Matching sets belong to the Products module, not Inventory. The current implementation plan is [`../../dev/plans/2026-04-28-products-matching-sets.md`](../../dev/plans/2026-04-28-products-matching-sets.md).
 
@@ -285,6 +288,8 @@ app.use('/api/v1/products/skus', productsSkuRoutes);
 
 The matching-set tables must reference `app.sku(id)` and `app.vendor(code)`. They must not soft-reference `rics_mirror.inventory_master`.
 
+Matching-set material fields represent exact shared fabric identity. `materialCode` and `materialLabel` are matching-set header fields, not generic SKU attributes. If a separate fabric vendor is required, it should be exposed as an optional matching-set header field backed by controlled vendor data. Broad fabric classifications such as fabric family or fabric weight bucket belong in SKU attributes when needed for filtering, reporting, or web display.
+
 ## Out of scope (Phase 1)
 
 - **Public storefront facet endpoints.** Storefront has its own router with anonymous auth + edge caching requirements. The shape of `/attributes/dimensions?withCounts=true` is the data the storefront facet endpoint will consume internally; the storefront-side endpoint is a separate brainstorm.
@@ -292,6 +297,7 @@ The matching-set tables must reference `app.sku(id)` and `app.vendor(code)`. The
 - **Bulk SKU-attribute fetch** (`POST /attributes/by-sku-codes`). Not building speculatively; add when a use case lands.
 - **Delete of `ProductFamily` rows** - not exposed. Creating and editing product families is supported through `/api/v1/products/families`; deletion remains blocked because categories, SKU assignments, and attribute rules may reference a family code.
 - **Matching Set / Conjuntos admin** — out of scope for the attribute Phase 1 endpoints only. It is a Products-module feature planned under `/api/v1/products/matching-sets`; see the current-state plan linked above.
+  > Warning: May be stale per 2026-04-29 /index-knowledge pass: matching-set admin and buying-plan work has shipped in Products; this line is only accurate if read narrowly as "out of scope for the original attribute-only Phase 1 endpoints."
 
 ## Related
 

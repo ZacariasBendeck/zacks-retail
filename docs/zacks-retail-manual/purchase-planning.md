@@ -40,6 +40,23 @@ _TODO. Expected flows:_
 - _Adjust the EOH target method and see how the buy quantity changes_
 - _Filter to one vendor and export the resulting plan_
 
+### Buy a matching suit set
+
+Use matching-set buying when jackets, pants, vests, and related components share one material story but are purchased and stocked as separate SKUs.
+
+1. Confirm the component SKUs exist for each sellable piece: jacket, pant, vest, and any optional related component.
+2. Open Products -> Matching Sets and create or open the set header.
+3. Enter the finished-goods vendor, vendor style, shared color, season, chain, sell mode, material code, and exact material description.
+4. Add the component SKUs as members and confirm the buying ratio. The normal suit starting point is 1 jacket : 1.2 pants : 0.5 vests.
+5. Open the Buying Plan tab and review complete-set capacity, bottleneck role, and orphan units before adding more inventory.
+6. Choose receipt month, planning horizon, and target cover weeks, then recalculate the plan.
+7. Review role and size recommendations. The plan should correct shortages without creating excess jackets, pants, or vests above the set ratio.
+8. Review the OTB preview. If proposed cost exceeds the plan, reduce quantities, move the receipt month, or follow the override policy.
+9. Save the buying plan and create a PO worksheet. The worksheet creates normal PO lines for the component SKUs, not a fake bundle SKU.
+10. After receipt, re-run the set balance before reorders so the next buy restores the sellable proportion.
+
+Exact fabric identity belongs on the matching-set material fields. Broad classifications such as fabric family or fabric weight bucket may be SKU attributes. If exact material text includes a fabric weight such as GSM or ounces, the application may suggest a controlled weight bucket for the component SKUs, but the exact source text remains on the matching set.
+
 ## Reports
 
 _TODO._

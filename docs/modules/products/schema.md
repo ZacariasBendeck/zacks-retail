@@ -41,6 +41,8 @@ CREATE TABLE app.attribute_dimension (
 
 **Family scoping is many-to-many** via `app.attribute_family_rule` (see below). A dim with zero rule rows is **universal** — applies to every family. Introduced 2026-04-23 via migration `20260423120000_attribute_family_rules`; the previous single-FK `product_family` column was dropped.
 
+Creating a dimension from the admin UI may include an optional family code. If no family is selected, the dimension starts universal with zero rule rows. If a family is selected, the API creates the dimension and its initial enabled `app.attribute_family_rule` row in one atomic operation so a failed family lookup does not leave an orphan dimension.
+
 ### `app.attribute_family_rule`
 
 Join table between `attribute_dimension` and `product_family`. Presence of ≥1 rule flips a dim from universal to family-scoped.
@@ -69,6 +71,8 @@ CREATE INDEX attribute_family_rule_family_idx
 | `updated_by` | `text` | Seed migration (`migration:20260423120000`), operator email, or `seed`. |
 
 Deletion cascade: removing an `attribute_dimension` also removes its rule rows. Removing a `product_family` is blocked (`ON DELETE RESTRICT`) if any rule still points at it. The UI supports creating and editing families, but deletion remains intentionally unavailable while category mappings, SKU assignments, and attribute rules reference family codes.
+
+Product families are app-owned catalog rows, not a hardcoded fixed list. Category-to-family assignments live in `app.category_product_family`; changing a category's family changes which family-scoped attribute dimensions apply when that category resolves to the affected SKU family.
 
 ### `app.attribute_value`
 

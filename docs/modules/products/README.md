@@ -16,6 +16,22 @@ Matching sets model products that share a style/material story but remain separa
 
 The Products module owns the set definition, selling mode (`separates` or `bundle_required`), material fields, chain assignment, size curves, and generated buy-plan records. The Buying Plan surface computes complete-set capacity, bottleneck role, orphan component units, role/size recommendations, and OTB impact from Postgres `app.*` data only.
 
+### Matching-set material identity
+
+Exact fabric/material identity belongs on the matching-set header, not in generic SKU attributes. The matching set carries the shared material story through `material_code` and `material_label` so jacket, pant, vest, and related components can be planned as one material lot while remaining separate sellable SKUs.
+
+The finished-goods vendor and fabric vendor can be different business parties. Finished-goods vendor remains the vendor used for the garment SKU, matching set, and PO workflow. Fabric vendor should be modeled as a separate optional matching-set header field backed by controlled vendor data, not as a free-text SKU attribute. Broad searchable fabric characteristics, such as fabric family or fabric weight bucket, can be SKU attributes.
+
+Exact fabric details may be captured in `material_label`, for example a vendor fabric description with GSM or ounce weight. If a controlled weight bucket is needed, the application should derive or suggest a SKU attribute such as `fabric_weight_bucket` from the exact material text, with operator override. The exact source text remains on the matching set; the bucket is the reporting/filtering attribute.
+
+### Product families and attribute dimensions
+
+Product families are editable app-owned records in `app.product_family`; they are not a fixed eleven-row taxonomy. Deletion remains intentionally unavailable because category mappings, SKU attribute rules, and SKU assignments can reference family codes.
+
+Categories map to product families through `app.category_product_family`. The category maintenance screen must show the current family and allow operators to change it using the family catalog from Store/Product Family administration.
+
+Attribute dimensions are either universal or scoped to one or more product families through `app.attribute_family_rule`. Creating a dimension with no family selected creates a universal dimension. Creating a dimension with a family selected creates the dimension and an initial enabled family rule in one atomic operation. Universal dimensions apply to every family; family-specific dimensions are shown under the selected family in the Families screen and under the family rollups in Attributes.
+
 ## Documents in this module
 
 | File | Purpose |
