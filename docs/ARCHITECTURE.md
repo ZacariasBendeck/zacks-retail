@@ -274,7 +274,7 @@ Observability: ETL runs write to `platform.etl_run` and `platform.etl_run_table`
 - **Postgres-only for new development.** No new SQLite columns, no new keys on `app.sku.legacy_attrs`, and no new dependency on old SQLite reference tables.
 - **OLEDB helper stays async.** Use `child_process.spawn`, never `spawnSync`.
 - **SKU Lookup index warmup covers every SKU.** Never cap it.
-- **Currency: HNL plain numbers.** No `$`, `USD`, or `L` symbol inside data cells, charts, CSV, or XLSX.
+- **Currency: HNL base currency and plain HNL numbers.** No `$`, `USD`, or `L` symbol inside HNL data cells, charts, CSV, or XLSX. Import Management may store/display ISO-labeled `CNY`, `USD`, or `HNL` source amounts with FX metadata, but valuation, OTB, accounting, and reports consume computed HNL amounts.
 - **`legacy/` is retired.** Do not recreate it.
 
 ---

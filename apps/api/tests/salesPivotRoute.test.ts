@@ -6,6 +6,8 @@
  * on `variant` is exercised directly.
  */
 
+import { randomUUID } from 'node:crypto';
+
 jest.mock('../src/services/salesReporting/ricsSalesPivotAdapter', () => ({
   getSalesPivotByDepartment: jest.fn(),
 }));
@@ -91,17 +93,62 @@ function getCustomAdapterMock(): jest.Mock {
 describe('GET /api/v1/reports/sales/sales-pivot', () => {
   const ORIGINAL_SOURCE = process.env.SALES_SOURCE;
   let app: any;
+  let prisma: any;
 
   beforeAll(async () => {
     process.env.SALES_SOURCE = 'rics';
     jest.resetModules();
     app = (await import('../src/app')).default;
+    prisma = (await import('../src/db/prisma')).prisma;
+    const { bootstrapOwner } = await import('../src/services/employees/bootstrapOwner');
+    await bootstrapOwner(prisma);
+    await cleanupScopedUsers();
   });
 
-  afterAll(() => {
+  afterAll(async () => {
+    await cleanupScopedUsers();
+    await prisma?.$disconnect();
     if (ORIGINAL_SOURCE === undefined) delete process.env.SALES_SOURCE;
     else process.env.SALES_SOURCE = ORIGINAL_SOURCE;
   });
+
+  async function cleanupScopedUsers(): Promise<void> {
+    if (!prisma) return;
+    const users = await prisma.user.findMany({
+      where: { email: { contains: 'sales-pivot-scope-' } },
+      select: { id: true },
+    });
+    const userIds = users.map((user: { id: string }) => user.id);
+    if (userIds.length > 0) {
+      await prisma.session.deleteMany({ where: { userId: { in: userIds } } });
+      await prisma.user.deleteMany({ where: { id: { in: userIds } } });
+    }
+  }
+
+  async function createScopedUserCookie(storeId: number): Promise<string> {
+    const role = await prisma.role.findUnique({ where: { name: 'OWNER' } });
+    const userId = randomUUID();
+    const sessionId = randomUUID();
+    await prisma.user.create({
+      data: {
+        id: userId,
+        email: `sales-pivot-scope-${Date.now()}-${storeId}@example.com`,
+        passwordHash: 'not-used-in-route-test',
+        displayName: 'Sales Pivot Scoped User',
+        roleId: role.id,
+        active: true,
+        homeStoreId: String(storeId),
+      },
+    });
+    await prisma.session.create({
+      data: {
+        id: sessionId,
+        userId,
+        expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      },
+    });
+    return `sid=${sessionId}`;
+  }
 
   it('defaults to the department variant when none is passed', async () => {
     setDeptAdapterReport(emptyReport('department'));
@@ -170,6 +217,30 @@ describe('GET /api/v1/reports/sales/sales-pivot', () => {
       endDate: '2026-04-22',
       storeNumbers: [2, 13],
     });
+  });
+
+  it('rejects authenticated scoped users requesting an unauthorized store', async () => {
+    const cookie = await createScopedUserCookie(2);
+    setDeptAdapterReport(emptyReport('department'));
+    const res = await request(app)
+      .get('/api/v1/reports/sales/sales-pivot?startDate=2026-04-01&endDate=2026-04-22&stores=2,13')
+      .set('Cookie', cookie);
+
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe('STORE_SCOPE_FORBIDDEN');
+    expect(getDeptAdapterMock()).not.toHaveBeenCalled();
+  });
+
+  it('narrows authenticated all-store sales pivot requests to allowed stores', async () => {
+    const cookie = await createScopedUserCookie(2);
+    setDeptAdapterReport(emptyReport('department'));
+    const res = await request(app)
+      .get('/api/v1/reports/sales/sales-pivot?startDate=2026-04-01&endDate=2026-04-22')
+      .set('Cookie', cookie);
+
+    expect(res.status).toBe(200);
+    const call = getDeptAdapterMock().mock.calls.at(-1)?.[0];
+    expect(call).toMatchObject({ storeNumbers: [2] });
   });
 
   it('returns a department CSV with YoY-labeled headers', async () => {

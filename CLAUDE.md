@@ -168,11 +168,11 @@ The OLEDB adapter ([`apps/api/src/services/accessOleDb.ts`](apps/api/src/service
 
 **Out of scope (RICS features explicitly not being ported):** modem / dial-up comms, diskette POS sync, RICS.CFG editor, DOS prompt, screen spool files, hardware-printer driver setup, etc. The "What's not being ported" table in `docs/MODULES.md` is authoritative.
 
-**Currency.** All monetary values in RICS are in **Honduran Lempira (HNL, symbol `L`)**. The system is single-currency; no other currency has been introduced.
+**Currency.** All monetary values in RICS are in **Honduran Lempira (HNL, symbol `L`)**. Zack's Retail uses HNL as the base currency for accounting, inventory valuation, OTB, pricing, and reports. Import Management may preserve foreign source-document amounts in `CNY` or `USD` with FX rate/date metadata, but every foreign amount must also store the computed HNL amount used by the rest of the system.
 
-**Rendering policy:** do **not** render the currency symbol inside individual cells, chart axes, tooltips, or CSV/XLSX cells. Show a plain number with thousands separators and appropriate decimals (e.g. `1,234.56`, `1,860`). This avoids repeating "L" on every row and keeps grids dense. Where clarity matters (reports, purchase orders, ledgers), put a one-line note at the top of the page — e.g. "Amounts in Lempira (HNL)" — so the reader understands the unit once.
+**Rendering policy:** do **not** render the currency symbol inside individual HNL cells, chart axes, tooltips, or CSV/XLSX cells. Show a plain number with thousands separators and appropriate decimals (e.g. `1,234.56`, `1,860`). This avoids repeating "L" on every row and keeps grids dense. Where clarity matters (reports, purchase orders, ledgers), put a one-line note at the top of the page — e.g. "Amounts in Lempira (HNL)" — so the reader understands the unit once.
 
-Do **not** hardcode `$`, `USD`, or `en-US` currency formatters anywhere. For `Intl.NumberFormat`, use `{ minimumFractionDigits, maximumFractionDigits }` on a plain number (no `style: 'currency'`) or the locale `es-HN` without a currency style. For Excel number formats, use patterns like `#,##0.00` / `#,##0` (no symbol). If you find an existing USD-formatted screen, fix it in the same pass.
+Do **not** hardcode `$`, `USD`, or `en-US` currency formatters for HNL values. For `Intl.NumberFormat`, use `{ minimumFractionDigits, maximumFractionDigits }` on a plain number (no `style: 'currency'`) or the locale `es-HN` without a currency style. For Excel number formats, use patterns like `#,##0.00` / `#,##0` (no symbol). Import source-currency screens should show explicit ISO currency labels/fields (`CNY`, `USD`, `HNL`) at the document or section level rather than repeated symbols in every grid cell. If you find an existing USD-formatted HNL screen, fix it in the same pass.
 
 ## Rollout phases
 

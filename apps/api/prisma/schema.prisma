@@ -129,6 +129,10 @@ model User {
   roleId               String
   role                 Role                         @relation(fields: [roleId], references: [id])
   sessions             Session[]
+  identityRoleAssignments  IdentityUserRoleAssignment[]
+  identityStoreScopes      IdentityUserStoreScope[]
+  identityMfaFactors       IdentityMfaFactor[]
+  identityExternalIdentities IdentityExternalIdentity[]
   salesPasswords       EmployeeSalesPassword[]      @relation("EmployeeSalesPasswords")
   salesPasswordAudits  EmployeeSalesPasswordAudit[] @relation("EmployeeSalesPasswordAuditEmployee")
   salesOverrideTokens  EmployeeSalesOverrideToken[] @relation("EmployeeSalesOverrideTokens")
@@ -177,10 +181,14 @@ model Role {
   id          String   @id @default(uuid())
   name        String   @unique
   permissions String[]
+  description String?
+  archivedAt  DateTime? @map("archived_at")
   users       User[]
+  identityRoleAssignments IdentityUserRoleAssignment[]
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
+  @@index([archivedAt], map: "role_archived_at_idx")
   @@schema("public")
 }
 
@@ -193,6 +201,121 @@ model Session {
 
   @@index([userId])
   @@index([expiresAt])
+  @@schema("public")
+}
+
+/// Identity & Access module -- durable role assignment history. The current
+/// User.roleId column remains as the compatibility read path during migration.
+model IdentityUserRoleAssignment {
+  id               String    @id @default(uuid())
+  userId           String    @map("user_id")
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  roleId           String    @map("role_id")
+  role             Role      @relation(fields: [roleId], references: [id], onDelete: Restrict)
+  assignedByUserId String?   @map("assigned_by_user_id")
+  assignedAt       DateTime  @default(now()) @map("assigned_at")
+  revokedByUserId  String?   @map("revoked_by_user_id")
+  revokedAt        DateTime? @map("revoked_at")
+  reason           String?
+  createdAt        DateTime  @default(now()) @map("created_at")
+
+  @@index([userId, revokedAt], map: "identity_user_role_assignment_user_active_idx")
+  @@index([roleId, revokedAt], map: "identity_user_role_assignment_role_active_idx")
+  @@map("identity_user_role_assignment")
+  @@schema("public")
+}
+
+/// Identity & Access module -- store/data visibility grants. V1 supports
+/// ALL_STORES, STORE, and WAREHOUSE; region/group scopes can be added later.
+model IdentityUserStoreScope {
+  id              String    @id @default(uuid())
+  userId          String    @map("user_id")
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  scopeType       String    @map("scope_type")
+  scopeId         String?   @map("scope_id")
+  grantedByUserId String?   @map("granted_by_user_id")
+  grantedAt       DateTime  @default(now()) @map("granted_at")
+  revokedByUserId String?   @map("revoked_by_user_id")
+  revokedAt       DateTime? @map("revoked_at")
+  reason          String?
+  createdAt       DateTime  @default(now()) @map("created_at")
+
+  @@index([userId, revokedAt], map: "identity_user_store_scope_user_active_idx")
+  @@index([scopeType, scopeId], map: "identity_user_store_scope_scope_idx")
+  @@map("identity_user_store_scope")
+  @@schema("public")
+}
+
+/// Identity & Access module -- MFA enrollment records. Secrets/public keys are
+/// intentionally stored as opaque values so TOTP and WebAuthn can coexist.
+model IdentityMfaFactor {
+  id            String    @id @default(uuid())
+  userId        String    @map("user_id")
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  factorType    String    @map("factor_type")
+  label         String?
+  secretHash    String?   @map("secret_hash")
+  publicKeyJson Json?     @map("public_key_json")
+  active        Boolean   @default(true)
+  verifiedAt    DateTime? @map("verified_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  revokedAt     DateTime? @map("revoked_at")
+
+  @@index([userId, active], map: "identity_mfa_factor_user_active_idx")
+  @@map("identity_mfa_factor")
+  @@schema("public")
+}
+
+/// Identity & Access module -- future SSO/OAuth/SAML identity mapping.
+model IdentityExternalIdentity {
+  id                  String    @id @default(uuid())
+  userId              String    @map("user_id")
+  user                User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  provider            String
+  providerSubject     String    @map("provider_subject")
+  emailAtProvider     String?   @map("email_at_provider")
+  createdAt           DateTime  @default(now()) @map("created_at")
+  lastAuthenticatedAt DateTime? @map("last_authenticated_at")
+
+  @@unique([provider, providerSubject], map: "identity_external_identity_provider_subject_key")
+  @@index([userId], map: "identity_external_identity_user_idx")
+  @@map("identity_external_identity")
+  @@schema("public")
+}
+
+/// Identity & Access module -- login trail for security reporting.
+model IdentityLoginEvent {
+  id         String   @id @default(uuid())
+  userId     String?  @map("user_id")
+  roleId     String?  @map("role_id")
+  email      String
+  outcome    String
+  reason     String?
+  ipAddress  String?  @map("ip_address")
+  userAgent  String?  @map("user_agent")
+  occurredAt DateTime @default(now()) @map("occurred_at")
+
+  @@index([userId, occurredAt(sort: Desc)], map: "identity_login_event_user_idx")
+  @@index([email, occurredAt(sort: Desc)], map: "identity_login_event_email_idx")
+  @@index([outcome, occurredAt(sort: Desc)], map: "identity_login_event_outcome_idx")
+  @@map("identity_login_event")
+  @@schema("public")
+}
+
+/// Identity & Access module -- session lifecycle trail for revoke/report flows.
+model IdentitySessionEvent {
+  id         String   @id @default(uuid())
+  sessionId  String?  @map("session_id")
+  userId     String?  @map("user_id")
+  eventType  String   @map("event_type")
+  reason     String?
+  ipAddress  String?  @map("ip_address")
+  userAgent  String?  @map("user_agent")
+  occurredAt DateTime @default(now()) @map("occurred_at")
+
+  @@index([userId, occurredAt(sort: Desc)], map: "identity_session_event_user_idx")
+  @@index([sessionId, occurredAt(sort: Desc)], map: "identity_session_event_session_idx")
+  @@map("identity_session_event")
   @@schema("public")
 }
 
@@ -419,6 +542,34 @@ model EtlRun {
 
 /// Replace-style overlay for singular SKU attributes. Sparse — only non-null columns override.
 /// Read path: COALESCE(override.field, mirror.field) for each attribute.
+/// Platform-owned append-only audit spine.
+model PlatformAuditLog {
+  id             String   @id @default(uuid())
+  eventType      String   @map("event_type")
+  action         String
+  resourceType   String   @map("resource_type")
+  resourceId     String?  @map("resource_id")
+  actorUserId    String?  @map("actor_user_id")
+  actorSessionId String?  @map("actor_session_id")
+  outcome        String   @default("SUCCESS")
+  reason         String?
+  ipAddress      String?  @map("ip_address")
+  userAgent      String?  @map("user_agent")
+  beforeJson     Json?    @map("before_json")
+  afterJson      Json?    @map("after_json")
+  metadataJson   Json?    @map("metadata_json")
+  traceId        String?  @map("trace_id")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([resourceType, resourceId, createdAt(sort: Desc)], map: "platform_audit_log_resource_idx")
+  @@index([actorUserId, createdAt(sort: Desc)], map: "platform_audit_log_actor_idx")
+  @@index([eventType, createdAt(sort: Desc)], map: "platform_audit_log_event_idx")
+  @@index([traceId], map: "platform_audit_log_trace_idx")
+  @@map("platform_audit_log")
+  @@schema("platform")
+}
+
+/// Replace-style overlay for singular SKU attributes.
 model SkuAttributeOverride {
   ricsSkuCode String   @id @map("rics_sku_code") @db.VarChar(15)
   category    Int?
@@ -571,6 +722,7 @@ model StoreGroup {
   matchingSets     MatchingSet[]
   sizeCurves       MatchingSetMemberSizeCurve[]
   matchingBuyPlans MatchingSetBuyPlan[]
+  purchasePlans    PurchasePlan[]
 
   @@map("store_group")
   @@schema("app")
@@ -587,6 +739,104 @@ model StoreGroupMember {
 
   @@index([groupCode], map: "store_group_member_group_code_idx")
   @@map("store_group_member")
+  @@schema("app")
+}
+
+model PurchasePlan {
+  id                       String                   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeGroupCode           String                   @map("store_group_code") @db.VarChar(64)
+  storeGroup               StoreGroup               @relation(fields: [storeGroupCode], references: [code], onDelete: Restrict, onUpdate: Cascade)
+  label                    String
+  status                   String                   @default("draft") @db.VarChar(16)
+  season                   String                   @db.VarChar(16)
+  seasonYear               Int                      @map("season_year") @db.SmallInt
+  seasonMonths             String[]                 @map("season_months")
+  selectedDepartments      Int[]                    @map("selected_departments")
+  forecastMethod           String                   @map("forecast_method") @db.VarChar(32)
+  eohMethod                String                   @map("eoh_method") @db.VarChar(16)
+  coverMonths              Int                      @default(3) @map("cover_months") @db.SmallInt
+  discountNormalization    Boolean                  @default(true) @map("discount_normalization")
+  historyFromYearMonth     String                   @map("history_from_year_month") @db.VarChar(7)
+  historyToYearMonth       String                   @map("history_to_year_month") @db.VarChar(7)
+  createdBy                String                   @default("system") @map("created_by")
+  createdAt                DateTime                 @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                DateTime                 @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  archivedAt               DateTime?                @map("archived_at") @db.Timestamptz(6)
+  rows                     PurchasePlanRow[]
+  adjustments              PurchasePlanAdjustment[]
+  audits                   PurchasePlanAudit[]
+
+  @@index([storeGroupCode, season, seasonYear, status], map: "purchase_plan_chain_season_idx")
+  @@index([status, updatedAt], map: "purchase_plan_status_updated_idx")
+  @@map("purchase_plan")
+  @@schema("app")
+}
+
+model PurchasePlanRow {
+  id                  String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  planId              String       @map("plan_id") @db.Uuid
+  plan                PurchasePlan @relation(fields: [planId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  departmentKey       String       @map("department_key") @db.VarChar(32)
+  departmentNumber    Int?         @map("department_number") @db.SmallInt
+  departmentLabel     String       @map("department_label")
+  yearMonth           String       @map("year_month") @db.VarChar(7)
+  baselineBoh         Int          @map("baseline_boh")
+  baselineProjSales   Int          @map("baseline_proj_sales")
+  baselineEohTarget   Int          @map("baseline_eoh_target")
+  baselineBuy         Int          @map("baseline_buy")
+  baselineEohActual   Int          @map("baseline_eoh_actual")
+  currentBoh          Int          @map("current_boh")
+  currentProjSales    Int          @map("current_proj_sales")
+  currentEohTarget    Int          @map("current_eoh_target")
+  currentBuy          Int          @map("current_buy")
+  currentEohActual    Int          @map("current_eoh_actual")
+  onHand              Int          @default(0) @map("on_hand")
+  currentOnOrder      Int          @default(0) @map("current_on_order")
+  futureOnOrder       Int          @default(0) @map("future_on_order")
+  nativeOpenPo        Int          @default(0) @map("native_open_po")
+  stockPosition       Int          @default(0) @map("stock_position")
+  normalizationFactor Decimal?     @map("normalization_factor") @db.Decimal(10, 4)
+  rawProjSales        Int?         @map("raw_proj_sales")
+  metadata            Json?
+  createdAt           DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime     @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([planId, departmentKey, yearMonth], map: "purchase_plan_row_key")
+  @@index([planId, departmentKey], map: "purchase_plan_row_plan_department_idx")
+  @@map("purchase_plan_row")
+  @@schema("app")
+}
+
+model PurchasePlanAdjustment {
+  id             String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  planId         String       @map("plan_id") @db.Uuid
+  plan           PurchasePlan @relation(fields: [planId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  departmentKey  String       @map("department_key") @db.VarChar(32)
+  kind           String       @db.VarChar(24)
+  value          Decimal      @db.Decimal(12, 4)
+  reason         String
+  appliedBy      String       @default("system") @map("applied_by")
+  appliedAt      DateTime     @default(now()) @map("applied_at") @db.Timestamptz(6)
+  beforeRowsJson Json?        @map("before_rows_json")
+  afterRowsJson  Json?        @map("after_rows_json")
+
+  @@index([planId, departmentKey, appliedAt], map: "purchase_plan_adjustment_plan_department_idx")
+  @@map("purchase_plan_adjustment")
+  @@schema("app")
+}
+
+model PurchasePlanAudit {
+  id          String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  planId      String       @map("plan_id") @db.Uuid
+  plan        PurchasePlan @relation(fields: [planId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  action      String       @db.VarChar(32)
+  actor       String       @default("system")
+  at          DateTime     @default(now()) @db.Timestamptz(6)
+  beforeJson  Json?        @map("before_json")
+  afterJson   Json?        @map("after_json")
+
+  @@index([planId, at], map: "purchase_plan_audit_plan_at_idx")
+  @@map("purchase_plan_audit")
   @@schema("app")
 }
 
@@ -763,8 +1013,15 @@ model PurchaseOrder {
   storeLabelsOnReceive Boolean   @default(false) @map("store_labels_on_receive")
   buyer                String?
   comments             String?
+  sourceCurrency       String    @default("HNL") @map("source_currency") @db.VarChar(3)
+  fxRate               Decimal   @default(1) @map("fx_rate") @db.Decimal(18, 8)
+  fxDate               DateTime  @default(now()) @map("fx_date") @db.Date
+  incotermCode         String?   @map("incoterm_code") @db.VarChar(8)
+  incotermPlace        String?   @map("incoterm_place")
+  costBasis            String    @default("LANDED_LEGACY_HNL") @map("cost_basis") @db.VarChar(40)
   orderDate            DateTime  @default(now()) @map("order_date") @db.Timestamptz(6)
   shipDate             DateTime? @map("ship_date") @db.Timestamptz(6)
+  plannedReceiptDate   DateTime? @map("planned_receipt_date") @db.Timestamptz(6)
   cancelDate           DateTime? @map("cancel_date") @db.Timestamptz(6)
   paymentDate          DateTime? @map("payment_date") @db.Timestamptz(6)
   createdBy            String    @map("created_by")
@@ -782,6 +1039,7 @@ model PurchaseOrder {
   @@index([vendorCode, status], map: "purchase_order_vendor_status_idx")
   @@index([buyer, status], map: "purchase_order_buyer_status_idx")
   @@index([shipToStoreId, shipDate], map: "purchase_order_ship_store_ship_date_idx")
+  @@index([plannedReceiptDate, status], map: "purchase_order_planned_receipt_status_idx")
   @@index([classification, status], map: "purchase_order_classification_status_idx")
   @@map("purchase_order")
   @@schema("app")
@@ -801,6 +1059,9 @@ model PurchaseOrderLine {
   casePackMultiplier Int?          @default(1) @map("case_pack_multiplier")
   retailPrice        Decimal?      @map("retail_price") @db.Decimal(12, 2)
   unitCost           Decimal       @map("unit_cost") @db.Decimal(12, 2)
+  sourceUnitCost     Decimal?      @map("source_unit_cost") @db.Decimal(14, 4)
+  commercialUnitCostHnl Decimal?   @map("commercial_unit_cost_hnl") @db.Decimal(14, 4)
+  estimatedLandedUnitCostHnl Decimal? @map("estimated_landed_unit_cost_hnl") @db.Decimal(14, 4)
   quantityOrdered    Int           @map("quantity_ordered")
   quantityReceived   Int           @default(0) @map("quantity_received")
   writeBackToMaster  Boolean       @default(false) @map("write_back_to_master")
@@ -810,6 +1071,7 @@ model PurchaseOrderLine {
   sizeCells            PurchaseOrderLineSizeCell[]
   receiptLines         PoReceiptLine[]
   matchingSetPlanLines MatchingSetBuyPlanLine[]
+  importShipmentLines  ImportShipmentLine[]
 
   @@unique([poId, lineSequence], map: "purchase_order_line_sequence_key")
   @@index([poId], map: "purchase_order_line_po_id_idx")
@@ -1571,6 +1833,404 @@ model ManualReceiptLine {
   @@unique([manualReceiptId, columnLabel, rowLabel], map: "manual_receipt_line_cell_key")
   @@index([manualReceiptId], map: "manual_receipt_line_receipt_id_idx")
   @@map("manual_receipt_line")
+  @@schema("app")
+}
+
+/// Import Management shipment/voyage header. This is not CSV/RICS importing;
+/// it is the international buying, goods-in-transit, and landed-cost workflow.
+model ImportShipment {
+  id                  String    @id @default(uuid()) @db.Uuid
+  shipmentNumber      String    @unique(map: "import_shipment_number_key") @map("shipment_number") @db.VarChar(64)
+  displayName         String    @map("display_name")
+  status              String    @default("DRAFT") @db.VarChar(32)
+  buyer               String?
+  originPort          String?   @map("origin_port")
+  destinationPort     String?   @map("destination_port")
+  carrier             String?
+  freightForwarder    String?   @map("freight_forwarder")
+  customsPolicyNumber String?   @map("customs_policy_number")
+  blNumber            String?   @map("bl_number")
+  expectedDepartureAt DateTime? @map("expected_departure_at") @db.Date
+  expectedArrivalAt   DateTime? @map("expected_arrival_at") @db.Date
+  actualArrivalAt     DateTime? @map("actual_arrival_at") @db.Date
+  baseCurrency        String    @default("HNL") @map("base_currency") @db.VarChar(3)
+  sourceWorkbookName  String?   @map("source_workbook_name")
+  notes               String?
+  approvedEstimateAt  DateTime? @map("approved_estimate_at") @db.Timestamptz(6)
+  approvedEstimateBy  String?   @map("approved_estimate_by")
+  finalLiquidationAt  DateTime? @map("final_liquidation_at") @db.Timestamptz(6)
+  closedAt            DateTime? @map("closed_at") @db.Timestamptz(6)
+  createdBy           String    @map("created_by")
+  createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  containers          ImportContainer[]
+  shipmentLines       ImportShipmentLine[]
+  supplierInvoices    ImportSupplierInvoice[]
+  charges             ImportCharge[]
+  allocations         ImportLandedCostAllocation[]
+  goodsInTransit      GoodsInTransitRecord[]
+  verificationChecks  ImportVerificationCheck[]
+  suggestedPrices     ImportSuggestedPrice[]
+  payableHandoffs     ImportPayableHandoff[]
+  inventoryReceipts   ImportInventoryReceipt[]
+  inventoryTrueUps    ImportInventoryTrueUp[]
+
+  @@index([status, expectedArrivalAt], map: "import_shipment_status_arrival_idx")
+  @@index([buyer, status], map: "import_shipment_buyer_status_idx")
+  @@map("import_shipment")
+  @@schema("app")
+}
+
+model ImportContainer {
+  id                String         @id @default(uuid()) @db.Uuid
+  shipmentId        String         @map("shipment_id") @db.Uuid
+  shipment          ImportShipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  containerNumber   String?        @map("container_number")
+  containerType     String         @default("CONTAINER") @map("container_type") @db.VarChar(24)
+  sealNumber        String?        @map("seal_number")
+  cargoGroup        String?        @map("cargo_group")
+  status            String         @default("PLANNED") @db.VarChar(24)
+  expectedArrivalAt DateTime?      @map("expected_arrival_at") @db.Date
+  actualArrivalAt   DateTime?      @map("actual_arrival_at") @db.Date
+  notes             String?
+  createdAt         DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime       @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  goodsInTransit    GoodsInTransitRecord[]
+  shipmentLines     ImportShipmentLine[]
+
+  @@index([shipmentId], map: "import_container_shipment_id_idx")
+  @@map("import_container")
+  @@schema("app")
+}
+
+model ImportShipmentLine {
+  id                         String              @id @default(uuid()) @db.Uuid
+  shipmentId                 String              @map("shipment_id") @db.Uuid
+  shipment                   ImportShipment      @relation(fields: [shipmentId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  purchaseOrderLineId        String              @map("purchase_order_line_id") @db.Uuid
+  purchaseOrderLine          PurchaseOrderLine   @relation(fields: [purchaseOrderLineId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  containerId                String?             @map("container_id") @db.Uuid
+  container                  ImportContainer?    @relation(fields: [containerId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  invoiceLineId              String?             @map("invoice_line_id") @db.Uuid
+  invoiceLine                ImportInvoiceLine?  @relation(fields: [invoiceLineId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  expectedQuantity           Decimal             @map("expected_quantity") @db.Decimal(12, 3)
+  sourceUnitCost             Decimal?            @map("source_unit_cost") @db.Decimal(14, 4)
+  sourceCurrency             String              @map("source_currency") @db.VarChar(3)
+  fxRate                     Decimal             @map("fx_rate") @db.Decimal(18, 8)
+  fxDate                     DateTime            @map("fx_date") @db.Date
+  incotermCode               String?             @map("incoterm_code") @db.VarChar(8)
+  incotermPlace              String?             @map("incoterm_place")
+  commercialUnitCostHnl      Decimal             @map("commercial_unit_cost_hnl") @db.Decimal(14, 4)
+  estimatedLandedUnitCostHnl Decimal             @map("estimated_landed_unit_cost_hnl") @db.Decimal(14, 4)
+  allocatedLandedCostHnl     Decimal             @default(0) @map("allocated_landed_cost_hnl") @db.Decimal(14, 2)
+  landedUnitCostHnl          Decimal?            @map("landed_unit_cost_hnl") @db.Decimal(14, 4)
+  status                     String              @default("EXPECTED") @db.VarChar(24)
+  invoiceMatchApprovedAt     DateTime?           @map("invoice_match_approved_at") @db.Timestamptz(6)
+  invoiceMatchApprovedBy     String?             @map("invoice_match_approved_by")
+  invoiceMatchApprovalReason String?             @map("invoice_match_approval_reason")
+  notes                      String?
+  createdAt                  DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                  DateTime            @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  allocations                ImportLandedCostAllocation[]
+  goodsInTransit             GoodsInTransitRecord[]
+
+  @@unique([shipmentId, purchaseOrderLineId], map: "import_shipment_line_unique_po_line_key")
+  @@index([shipmentId], map: "import_shipment_line_shipment_id_idx")
+  @@index([purchaseOrderLineId], map: "import_shipment_line_po_line_id_idx")
+  @@index([invoiceLineId], map: "import_shipment_line_invoice_line_id_idx")
+  @@index([containerId], map: "import_shipment_line_container_id_idx")
+  @@map("import_shipment_line")
+  @@schema("app")
+}
+
+model ImportSupplierInvoice {
+  id             String              @id @default(uuid()) @db.Uuid
+  shipmentId     String              @map("shipment_id") @db.Uuid
+  shipment       ImportShipment      @relation(fields: [shipmentId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  invoiceNumber  String              @map("invoice_number")
+  supplierCode   String?             @map("supplier_code") @db.VarChar(16)
+  supplierName   String              @map("supplier_name")
+  invoiceDate    DateTime?           @map("invoice_date") @db.Date
+  invoiceGroup   String              @default("TAXABLE") @map("invoice_group") @db.VarChar(24)
+  invoiceKind    String              @default("MERCHANDISE") @map("invoice_kind") @db.VarChar(24)
+  sourceAmount   Decimal             @map("source_amount") @db.Decimal(14, 4)
+  sourceCurrency String              @map("source_currency") @db.VarChar(3)
+  fxRate         Decimal             @map("fx_rate") @db.Decimal(18, 8)
+  fxDate         DateTime            @map("fx_date") @db.Date
+  hnlAmount      Decimal             @map("hnl_amount") @db.Decimal(14, 2)
+  notes          String?
+  createdAt      DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime            @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  lines          ImportInvoiceLine[]
+
+  @@index([shipmentId], map: "import_supplier_invoice_shipment_id_idx")
+  @@index([supplierCode], map: "import_supplier_invoice_supplier_code_idx")
+  @@map("import_supplier_invoice")
+  @@schema("app")
+}
+
+model ImportInvoiceLine {
+  id                     String                @id @default(uuid()) @db.Uuid
+  invoiceId              String                @map("invoice_id") @db.Uuid
+  invoice                ImportSupplierInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  skuId                  String?               @map("sku_id") @db.Uuid
+  purchaseOrderLineId    String?               @map("purchase_order_line_id") @db.Uuid
+  lineNumber             Int                   @map("line_number")
+  itemCode               String?               @map("item_code")
+  styleCode              String?               @map("style_code")
+  description            String?
+  materialMeters         Decimal?              @map("material_meters") @db.Decimal(12, 3)
+  cartonCount            Decimal?              @map("carton_count") @db.Decimal(12, 3)
+  weightKg               Decimal?              @map("weight_kg") @db.Decimal(12, 3)
+  volumeCbm              Decimal?              @map("volume_cbm") @db.Decimal(12, 3)
+  quantity               Decimal               @db.Decimal(12, 3)
+  unitOfMeasure          String                @default("UNIT") @map("unit_of_measure") @db.VarChar(16)
+  sourceUnitCost         Decimal?              @map("source_unit_cost") @db.Decimal(14, 4)
+  sourceAmount           Decimal               @map("source_amount") @db.Decimal(14, 4)
+  sourceCurrency         String                @map("source_currency") @db.VarChar(3)
+  fxRate                 Decimal               @map("fx_rate") @db.Decimal(18, 8)
+  fxDate                 DateTime              @map("fx_date") @db.Date
+  hnlAmount              Decimal               @map("hnl_amount") @db.Decimal(14, 2)
+  baseUnitCostHnl        Decimal               @map("base_unit_cost_hnl") @db.Decimal(14, 4)
+  allocatedLandedCostHnl Decimal               @default(0) @map("allocated_landed_cost_hnl") @db.Decimal(14, 2)
+  landedUnitCostHnl      Decimal?              @map("landed_unit_cost_hnl") @db.Decimal(14, 4)
+  taxable                Boolean               @default(true)
+  createdAt              DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt              DateTime              @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  allocations            ImportLandedCostAllocation[]
+  goodsInTransit         GoodsInTransitRecord[]
+  importShipmentLines    ImportShipmentLine[]
+  suggestedPrices        ImportSuggestedPrice[]
+  inventoryReceipts      ImportInventoryReceipt[]
+  inventoryTrueUps       ImportInventoryTrueUp[]
+
+  @@unique([invoiceId, lineNumber], map: "import_invoice_line_number_key")
+  @@index([invoiceId], map: "import_invoice_line_invoice_id_idx")
+  @@index([skuId], map: "import_invoice_line_sku_id_idx")
+  @@index([purchaseOrderLineId], map: "import_invoice_line_po_line_id_idx")
+  @@map("import_invoice_line")
+  @@schema("app")
+}
+
+model ImportCharge {
+  id              String                         @id @default(uuid()) @db.Uuid
+  shipmentId      String                         @map("shipment_id") @db.Uuid
+  shipment        ImportShipment                 @relation(fields: [shipmentId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  chargeType      String                         @map("charge_type") @db.VarChar(32)
+  counterparty    String?
+  documentNumber  String?                        @map("document_number")
+  sourceAmount    Decimal                        @map("source_amount") @db.Decimal(14, 4)
+  sourceCurrency  String                         @map("source_currency") @db.VarChar(3)
+  fxRate          Decimal                        @map("fx_rate") @db.Decimal(18, 8)
+  fxDate          DateTime                       @map("fx_date") @db.Date
+  hnlAmount       Decimal                        @map("hnl_amount") @db.Decimal(14, 2)
+  allocationBasis String                         @default("PRODUCT_COST_SHARE") @map("allocation_basis") @db.VarChar(32)
+  taxable         Boolean                        @default(false)
+  estimated       Boolean                        @default(true)
+  final           Boolean                        @default(false)
+  costTreatment   String                         @default("ALLOCATE_TO_LANDED") @map("cost_treatment") @db.VarChar(32)
+  notes           String?
+  createdAt       DateTime                       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime                       @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  allocations     ImportLandedCostAllocation[]
+
+  @@index([shipmentId], map: "import_charge_shipment_id_idx")
+  @@map("import_charge")
+  @@schema("app")
+}
+
+model ImportLandedCostAllocation {
+  id                 String            @id @default(uuid()) @db.Uuid
+  shipmentId         String            @map("shipment_id") @db.Uuid
+  shipment           ImportShipment    @relation(fields: [shipmentId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  chargeId           String            @map("charge_id") @db.Uuid
+  charge             ImportCharge      @relation(fields: [chargeId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  invoiceLineId      String?           @map("invoice_line_id") @db.Uuid
+  invoiceLine        ImportInvoiceLine? @relation(fields: [invoiceLineId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  shipmentLineId     String?           @map("shipment_line_id") @db.Uuid
+  shipmentLine       ImportShipmentLine? @relation(fields: [shipmentLineId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  allocationBasis    String            @default("PRODUCT_COST_SHARE") @map("allocation_basis") @db.VarChar(32)
+  allocatedHnlAmount Decimal           @map("allocated_hnl_amount") @db.Decimal(14, 2)
+  createdAt          DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([chargeId, invoiceLineId], map: "import_landed_cost_allocation_key")
+  @@index([shipmentId], map: "import_landed_cost_allocation_shipment_id_idx")
+  @@index([invoiceLineId], map: "import_landed_cost_allocation_invoice_line_id_idx")
+  @@index([shipmentLineId], map: "import_landed_cost_allocation_shipment_line_id_idx")
+  @@map("import_landed_cost_allocation")
+  @@schema("app")
+}
+
+model GoodsInTransitRecord {
+  id                  String             @id @default(uuid()) @db.Uuid
+  shipmentId          String             @map("shipment_id") @db.Uuid
+  shipment            ImportShipment     @relation(fields: [shipmentId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  containerId         String?            @map("container_id") @db.Uuid
+  container           ImportContainer?   @relation(fields: [containerId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  invoiceLineId       String?            @map("invoice_line_id") @db.Uuid
+  invoiceLine         ImportInvoiceLine? @relation(fields: [invoiceLineId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  shipmentLineId      String?            @map("shipment_line_id") @db.Uuid
+  shipmentLine        ImportShipmentLine? @relation(fields: [shipmentLineId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  status              String             @default("PENDING") @db.VarChar(32)
+  ownershipTransferAt DateTime?          @map("ownership_transfer_at") @db.Date
+  expectedReceiptAt   DateTime?          @map("expected_receipt_at") @db.Date
+  receivedAt          DateTime?          @map("received_at") @db.Date
+  quantityInTransit   Decimal?           @map("quantity_in_transit") @db.Decimal(12, 3)
+  auditReason         String?            @map("audit_reason")
+  createdAt           DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime           @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  inventoryReceipts   ImportInventoryReceipt[]
+  inventoryTrueUps    ImportInventoryTrueUp[]
+
+  @@index([shipmentId, status], map: "goods_in_transit_shipment_status_idx")
+  @@index([containerId], map: "goods_in_transit_container_id_idx")
+  @@index([invoiceLineId], map: "goods_in_transit_invoice_line_id_idx")
+  @@index([shipmentLineId], map: "goods_in_transit_shipment_line_id_idx")
+  @@map("goods_in_transit_record")
+  @@schema("app")
+}
+
+model ImportVerificationCheck {
+  id                String         @id @default(uuid()) @db.Uuid
+  shipmentId        String         @map("shipment_id") @db.Uuid
+  shipment          ImportShipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  checkCode         String         @map("check_code") @db.VarChar(64)
+  status            String         @default("PENDING") @db.VarChar(16)
+  expectedHnlAmount Decimal?       @map("expected_hnl_amount") @db.Decimal(14, 2)
+  actualHnlAmount   Decimal?       @map("actual_hnl_amount") @db.Decimal(14, 2)
+  varianceHnlAmount Decimal?       @map("variance_hnl_amount") @db.Decimal(14, 2)
+  message           String?
+  createdAt         DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime       @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([shipmentId, checkCode], map: "import_verification_check_key")
+  @@index([shipmentId, status], map: "import_verification_check_shipment_status_idx")
+  @@map("import_verification_check")
+  @@schema("app")
+}
+
+model ImportSuggestedPrice {
+  id                  String            @id @default(uuid()) @db.Uuid
+  shipmentId          String            @map("shipment_id") @db.Uuid
+  shipment            ImportShipment    @relation(fields: [shipmentId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  invoiceLineId       String            @map("invoice_line_id") @db.Uuid
+  invoiceLine         ImportInvoiceLine @relation(fields: [invoiceLineId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  skuId               String?           @map("sku_id") @db.Uuid
+  landedUnitCostHnl   Decimal           @map("landed_unit_cost_hnl") @db.Decimal(14, 4)
+  markupFactor        Decimal           @default(2.5) @map("markup_factor") @db.Decimal(8, 4)
+  suggestedRetailHnl  Decimal           @map("suggested_retail_hnl") @db.Decimal(14, 2)
+  approvalStatus      String            @default("SUGGESTED") @map("approval_status") @db.VarChar(24)
+  approvedBy          String?           @map("approved_by")
+  approvedAt          DateTime?         @map("approved_at") @db.Timestamptz(6)
+  createdAt           DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime          @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([shipmentId, invoiceLineId], map: "import_suggested_price_line_key")
+  @@index([shipmentId, approvalStatus], map: "import_suggested_price_shipment_status_idx")
+  @@index([skuId], map: "import_suggested_price_sku_id_idx")
+  @@map("import_suggested_price")
+  @@schema("app")
+}
+
+model ImportPayableHandoff {
+  id             String         @id @default(uuid()) @db.Uuid
+  shipmentId     String         @map("shipment_id") @db.Uuid
+  shipment       ImportShipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  sourceType     String         @map("source_type") @db.VarChar(32)
+  sourceId       String         @map("source_id") @db.Uuid
+  counterparty   String
+  documentNumber String?        @map("document_number")
+  payableKind    String         @map("payable_kind") @db.VarChar(32)
+  sourceAmount   Decimal        @map("source_amount") @db.Decimal(14, 4)
+  sourceCurrency String         @map("source_currency") @db.VarChar(3)
+  fxRate         Decimal        @map("fx_rate") @db.Decimal(18, 8)
+  fxDate         DateTime       @map("fx_date") @db.Date
+  hnlAmount      Decimal        @map("hnl_amount") @db.Decimal(14, 2)
+  final          Boolean        @default(false)
+  handoffStatus  String         @default("READY") @map("handoff_status") @db.VarChar(24)
+  apReference    String?        @map("ap_reference")
+  sentToApBy     String?        @map("sent_to_ap_by")
+  sentToApAt     DateTime?      @map("sent_to_ap_at") @db.Timestamptz(6)
+  paymentReference String?      @map("payment_reference")
+  paidBy          String?       @map("paid_by")
+  paidAt          DateTime?     @map("paid_at") @db.Timestamptz(6)
+  voidedBy        String?       @map("voided_by")
+  voidedAt        DateTime?     @map("voided_at") @db.Timestamptz(6)
+  voidReason      String?       @map("void_reason")
+  notes          String?
+  createdBy      String         @map("created_by")
+  createdAt      DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime       @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([sourceType, sourceId], map: "import_payable_handoff_source_key")
+  @@index([shipmentId, handoffStatus], map: "import_payable_handoff_shipment_status_idx")
+  @@index([counterparty], map: "import_payable_handoff_counterparty_idx")
+  @@map("import_payable_handoff")
+  @@schema("app")
+}
+
+model ImportInventoryReceipt {
+  id                     String                @id @default(uuid()) @db.Uuid
+  shipmentId             String                @map("shipment_id") @db.Uuid
+  shipment               ImportShipment        @relation(fields: [shipmentId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  invoiceLineId          String                @map("invoice_line_id") @db.Uuid
+  invoiceLine            ImportInvoiceLine     @relation(fields: [invoiceLineId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  goodsInTransitRecordId String?               @map("goods_in_transit_record_id") @db.Uuid
+  goodsInTransitRecord   GoodsInTransitRecord? @relation(fields: [goodsInTransitRecordId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  stockMovementId        String                @unique(map: "import_inventory_receipt_movement_key") @map("stock_movement_id") @db.Uuid
+  skuId                  String                @map("sku_id") @db.Uuid
+  storeId                Int                   @map("store_id")
+  receiptBasis           String                @map("receipt_basis") @db.VarChar(16)
+  quantity               Decimal               @db.Decimal(12, 3)
+  unitCostHnl            Decimal               @map("unit_cost_hnl") @db.Decimal(14, 4)
+  hnlAmount              Decimal               @map("hnl_amount") @db.Decimal(14, 2)
+  postedBy               String                @map("posted_by")
+  auditReason            String?               @map("audit_reason")
+  postedAt               DateTime              @default(now()) @map("posted_at") @db.Timestamptz(6)
+
+  @@unique([shipmentId, invoiceLineId, receiptBasis], map: "import_inventory_receipt_line_basis_key")
+  @@index([shipmentId, receiptBasis], map: "import_inventory_receipt_shipment_basis_idx")
+  @@index([invoiceLineId], map: "import_inventory_receipt_invoice_line_idx")
+  @@index([skuId, storeId], map: "import_inventory_receipt_sku_store_idx")
+  @@map("import_inventory_receipt")
+  @@schema("app")
+}
+
+model ImportInventoryTrueUp {
+  id                     String                @id @default(uuid()) @db.Uuid
+  shipmentId             String                @map("shipment_id") @db.Uuid
+  shipment               ImportShipment        @relation(fields: [shipmentId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  invoiceLineId          String                @map("invoice_line_id") @db.Uuid
+  invoiceLine            ImportInvoiceLine     @relation(fields: [invoiceLineId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  goodsInTransitRecordId String?               @map("goods_in_transit_record_id") @db.Uuid
+  goodsInTransitRecord   GoodsInTransitRecord? @relation(fields: [goodsInTransitRecordId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  purchaseOrderId        String?               @map("purchase_order_id") @db.Uuid
+  purchaseOrderLineId    String?               @map("purchase_order_line_id") @db.Uuid
+  poReceiptLineId        String?               @map("po_receipt_line_id") @db.Uuid
+  importInventoryReceiptId String?             @map("import_inventory_receipt_id") @db.Uuid
+  stockMovementId        String                @unique(map: "import_inventory_true_up_movement_key") @map("stock_movement_id") @db.Uuid
+  skuId                  String                @map("sku_id") @db.Uuid
+  storeId                Int                   @map("store_id")
+  quantity               Decimal               @db.Decimal(12, 3)
+  estimatedUnitCostHnl   Decimal               @map("estimated_unit_cost_hnl") @db.Decimal(14, 4)
+  finalUnitCostHnl       Decimal               @map("final_unit_cost_hnl") @db.Decimal(14, 4)
+  deltaUnitCostHnl       Decimal               @map("delta_unit_cost_hnl") @db.Decimal(14, 4)
+  deltaHnlAmount         Decimal               @map("delta_hnl_amount") @db.Decimal(14, 2)
+  postedBy               String                @map("posted_by")
+  auditReason            String?               @map("audit_reason")
+  postedAt               DateTime              @default(now()) @map("posted_at") @db.Timestamptz(6)
+
+  @@unique([shipmentId, invoiceLineId], map: "import_inventory_true_up_line_key")
+  @@index([shipmentId], map: "import_inventory_true_up_shipment_id_idx")
+  @@index([invoiceLineId], map: "import_inventory_true_up_invoice_line_id_idx")
+  @@index([skuId, storeId], map: "import_inventory_true_up_sku_store_idx")
+  @@map("import_inventory_true_up")
   @@schema("app")
 }
 

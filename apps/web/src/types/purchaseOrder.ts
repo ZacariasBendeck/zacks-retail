@@ -7,12 +7,16 @@ export type PoStatus =
   | 'CLOSED'
   | 'CANCELLED'
 
+export type PoSourceCurrency = 'CNY' | 'USD' | 'HNL'
+export type PoCostBasis = 'LANDED_LEGACY_HNL' | 'HNL_DOMESTIC' | 'VENDOR_CURRENCY_ESTIMATED_LANDED'
+
 export interface PoLineItem {
   id: string
   poId: string
   skuId: string
   skuCode?: string
   brand?: string
+  pictureUrl?: string | null
   sizeType: number | null
   casePackId: string | null
   casePackMultiplier: number | null
@@ -20,6 +24,9 @@ export interface PoLineItem {
   quantityOrdered: number
   quantityReceived: number
   unitCost: number
+  sourceUnitCost: number | null
+  commercialUnitCostHnl: number | null
+  estimatedLandedUnitCostHnl: number | null
   lineTotal: number
   createdAt: string
   updatedAt: string
@@ -45,8 +52,15 @@ export interface PurchaseOrder {
   programCode: string | null
   storeLabelsOnReceive: boolean
   buyer: string | null
+  sourceCurrency: PoSourceCurrency
+  fxRate: number
+  fxDate: string
+  incotermCode: string | null
+  incotermPlace: string | null
+  costBasis: PoCostBasis
   orderDate: string
   shipDate: string | null
+  plannedReceiptDate: string | null
   cancelDate: string | null
   paymentDate: string | null
   status: PoStatus
@@ -120,6 +134,9 @@ export interface PurchaseOrderLineInput {
   skuId: string
   quantity: number
   unitCost: number
+  sourceUnitCost?: number | null
+  commercialUnitCostHnl?: number | null
+  estimatedLandedUnitCostHnl?: number | null
   casePackId?: string | null
   casePackMultiplier?: number | null
   sizeCells?: Array<{ columnLabel?: string | null; rowLabel?: string | null; quantity: number }>
@@ -141,6 +158,7 @@ export interface PurchaseOrderSkuOption {
   skuCode: string
   description: string | null
   styleColor: string | null
+  pictureUrl: string | null
   vendorId: string | null
   category: number | null
   sizeType: number | null
@@ -153,6 +171,12 @@ export interface CreatePurchaseOrderPayload {
   shipToStoreId?: number | null
   vendorId: string
   buyer?: string | null
+  sourceCurrency?: PoSourceCurrency
+  fxRate?: number
+  fxDate?: string | null
+  incotermCode?: string | null
+  incotermPlace?: string | null
+  costBasis?: PoCostBasis
   lineItems: PurchaseOrderLineInput[]
   notes?: string | null
   orderType?: 'RO' | 'RE' | 'SA'
@@ -167,6 +191,7 @@ export interface CreatePurchaseOrderPayload {
   storeLabelsOnReceive?: boolean
   orderDate?: string | null
   shipDate?: string | null
+  plannedReceiptDate?: string | null
   cancelDate?: string | null
   paymentDate?: string | null
 }
@@ -175,6 +200,12 @@ export interface UpdatePurchaseOrderPayload {
   poNumber?: string | null
   vendorId?: string
   buyer?: string | null
+  sourceCurrency?: PoSourceCurrency
+  fxRate?: number
+  fxDate?: string | null
+  incotermCode?: string | null
+  incotermPlace?: string | null
+  costBasis?: PoCostBasis
   notes?: string | null
   billToStoreId?: number | null
   shipToStoreId?: number | null
@@ -190,6 +221,7 @@ export interface UpdatePurchaseOrderPayload {
   storeLabelsOnReceive?: boolean
   orderDate?: string | null
   shipDate?: string | null
+  plannedReceiptDate?: string | null
   cancelDate?: string | null
   paymentDate?: string | null
   lineItems?: PurchaseOrderLineInput[]
@@ -231,6 +263,7 @@ export interface DuplicatePurchaseOrderPayload {
   shipToStoreId?: number | null
   orderDate?: string | null
   shipDate?: string | null
+  plannedReceiptDate?: string | null
   cancelDate?: string | null
   paymentDate?: string | null
   storeLabelsOnReceive?: boolean
@@ -249,7 +282,8 @@ export interface ReplicatePurchaseOrderResult {
 }
 
 export interface CombinePurchaseOrdersPayload {
-  sourcePoId: string
+  sourcePoId?: string
+  sourcePoIds?: string[]
   intoPoId: string
   changedBy?: string
 }

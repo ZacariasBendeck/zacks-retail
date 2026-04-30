@@ -145,6 +145,7 @@ export async function getSalesAnalysis(params: {
   endDate?: string;
   /** Opt-in per-SKU attribute enrichment (SKU_DETAIL only). See adapter. */
   includeAttributes?: boolean;
+  includeOnOrder?: boolean;
 }): Promise<SalesAnalysisReport> {
   if (!sourceIsRics()) throw new SalesSourceNotImplementedError(source());
   return ricsAdapter.getSalesAnalysis(params);

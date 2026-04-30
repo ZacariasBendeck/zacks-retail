@@ -10,6 +10,10 @@ Open-To-Buy plan setup per store × category × month (two calculation methods �
 
 Matching-set buy plans do not replace OTB. They feed proposed component receipts into OTB by category/department/month so buyers can see the cost and retail impact before creating or submitting a PO. The current Buying Plan preview is Postgres-safe: it reads proposed set-plan lines and committed native PO dollars from `app.*` and returns `NO_PLAN` when no Postgres OTB budget table exists yet, rather than reading legacy SQLite OTB tables. Once OTB plan rows move fully to Postgres, the same preview contract should populate planned and remaining OTB values.
 
+## Import Management feed
+
+OTB consumes import commitments in HNL. Before final liquidation, Import Management exposes approved estimated landed cost by category/department/month; after final liquidation, it exposes final landed cost and true-ups. OTB must not join import shipment tables directly; consume a stable summary contract from `import-management` so voyage/container/liquidation details stay out of the planning module.
+
 ## Documents in this module
 
 | File | Purpose |

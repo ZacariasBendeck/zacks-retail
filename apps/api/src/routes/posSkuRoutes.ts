@@ -8,8 +8,14 @@ import {
 } from '../services/ricsProductAdapter';
 import { skuGate } from '../services/products/skuLifecycleGate';
 import { repoHttpStatus, repoHttpCode } from '../repositories/rics/repoResult';
+import { requirePermission } from '../middleware/authMiddleware';
+import { PERMISSIONS } from '../services/identityAccess/permissions';
+import { requireRequestStoreScope } from '../middleware/storeScopeMiddleware';
+import { prisma } from '../db/prisma';
 
 const router: IRouter = Router();
+
+router.use(requirePermission(PERMISSIONS.SALES_POS_OPERATE));
 
 /**
  * Phase 5g gate — checks if the given `code` matches a non-ACTIVE SKU in
@@ -113,6 +119,7 @@ router.get('/skus/:skuCode/price-slots', async (req: Request, res: Response): Pr
  */
 router.get('/promotions', async (req: Request, res: Response): Promise<void> => {
   const storeId = Number(req.query.storeId ?? 1);
+  if (!(await requireRequestStoreScope(prisma, req, res, storeId))) return;
   const data = await listActivePromotions(storeId, new Date());
   res.json({ data });
 });

@@ -294,6 +294,8 @@ export interface SalesAnalysisRow {
   dimensionKey: string;
   dimensionLabel: string | null;
   storeNumber: number | null;   // null when storeOption=COMBINE
+  storeChainCode?: string | null;
+  storeChainLabel?: string | null;
   qty: number;
   netSales: number;
   cogs: number;
@@ -304,6 +306,9 @@ export interface SalesAnalysisRow {
   onHandAtCost: number;         // Σ(OnHand × CurrentCost) for the dimension; 0 when unknown
   turns: number | null;         // annualized; null when onHandAtCost=0
   roiPct: number | null;        // GMROI, annualized; null when onHandAtCost=0
+  onOrderQty?: number;
+  onOrderUnitCost?: number | null;
+  onOrderCost?: number;
   priorYearNetSales: number | null;
   pyPctChange: number | null;
   /**
@@ -332,6 +337,9 @@ export interface SalesAnalysisReport {
     gpPct: number | null;
     turns: number | null;
     roiPct: number | null;
+    onOrderQty?: number;
+    onOrderUnitCost?: number | null;
+    onOrderCost?: number;
     priorYearNetSales: number | null;
   };
   periodDays: number;

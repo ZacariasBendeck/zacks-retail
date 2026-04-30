@@ -14,6 +14,10 @@ RICS remains the live purchasing system until cutover. This module must not crea
 
 Matching-set buy plans create normal draft purchase orders in `app.purchase_order`. The set plan is planning context only: jacket, pant, vest, and other components are exploded into separate `purchase_order_line` records with size cells, and `app.matching_set_buy_plan_line.po_line_id` preserves the link back to the recommendation. Purchasing remains responsible for PO lifecycle, receiving, cancellation, status history, and OTB validation at submit time.
 
+## Import Management boundary
+
+International voyage/container/goods-in-transit and landed-cost liquidation workflows live in `import-management`. Purchasing owns PO lifecycle and receiving mechanics only. Import Management may create or link purchase orders and provide estimated/final HNL landed unit costs, but purchasing must not own customs, FX, freight/insurance allocation, AP payment state, or liquidation verification.
+
 ## Documents in this module
 
 | File | Purpose |

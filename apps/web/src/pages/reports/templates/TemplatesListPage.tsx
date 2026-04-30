@@ -29,6 +29,7 @@ const REPORT_TYPE_LABELS: Record<ReportType, string> = {
   'sales-by-time': 'Sales by Time',
   'salesperson-summary': 'Salesperson Summary',
   'sales-history-by-month': 'Sales History by Month',
+  'balancing-transfer': 'Balancing Transfer',
 }
 
 // Where each report's builder lives.
@@ -42,6 +43,7 @@ const REPORT_TYPE_PATHS: Record<ReportType, string> = {
   'sales-by-time': '/reports/others/sales-by-time',
   'salesperson-summary': '/reports/others/salesperson-summary',
   'sales-history-by-month': '/reports/sales/history-by-month',
+  'balancing-transfer': '/inventory/transfers/balancing',
 }
 
 function VisibilityTag({ v }: { v: string }): JSX.Element {

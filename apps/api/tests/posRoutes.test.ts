@@ -3,6 +3,7 @@ import app from '../src/app';
 import { PrismaClient } from '../src/prismaClient';
 import { bootstrapOwner } from '../src/services/employees/bootstrapOwner';
 import { hashPassword } from '../src/services/employees/passwordHash';
+import { grantStoreScope } from '../src/services/identityAccess/storeScopeService';
 
 const prisma = new PrismaClient();
 
@@ -10,6 +11,7 @@ const RUN_ID = Date.now();
 const EMAIL = `pos-routes-owner-${RUN_ID}@example.com`;
 const PASSWORD = 'pos-routes-owner-123';
 const STORE_NUMBER = 32000 + (RUN_ID % 100);
+const OTHER_STORE_NUMBER = STORE_NUMBER + 100;
 const SKU_CODE = `POS${String(RUN_ID).slice(-10)}`;
 const UPC = `95${String(RUN_ID).slice(-12)}`;
 const CUSTOMER_ACCOUNT = `POSCUST${String(RUN_ID).slice(-8)}`;
@@ -73,6 +75,20 @@ describe('pos routes', () => {
       create: {
         number: STORE_NUMBER,
         description: 'POS Smoke Test Store',
+        otherChargeDesc: 'Misc Charge',
+        rawJson: {},
+      },
+    });
+    await prisma.storeMaster.upsert({
+      where: { number: OTHER_STORE_NUMBER },
+      update: {
+        description: 'POS Scoped Test Store',
+        otherChargeDesc: 'Misc Charge',
+        rawJson: {},
+      },
+      create: {
+        number: OTHER_STORE_NUMBER,
+        description: 'POS Scoped Test Store',
         otherChargeDesc: 'Misc Charge',
         rawJson: {},
       },
@@ -141,15 +157,15 @@ describe('pos routes', () => {
     await prisma.customerIntelligenceCustomer.deleteMany({ where: { id: importedCustomerId } });
     await prisma.stockMovement.deleteMany({ where: { storeId: STORE_NUMBER, skuId } });
     await prisma.stockLevel.deleteMany({ where: { storeId: STORE_NUMBER, skuId } });
-    await prisma.posShift.deleteMany({ where: { storeId: STORE_NUMBER } });
-    await prisma.posRegister.deleteMany({ where: { storeId: STORE_NUMBER } });
-    await prisma.posTenderType.deleteMany({ where: { storeId: STORE_NUMBER } });
-    await prisma.posPayoutCategory.deleteMany({ where: { storeId: STORE_NUMBER } });
+    await prisma.posShift.deleteMany({ where: { storeId: { in: [STORE_NUMBER, OTHER_STORE_NUMBER] } } });
+    await prisma.posRegister.deleteMany({ where: { storeId: { in: [STORE_NUMBER, OTHER_STORE_NUMBER] } } });
+    await prisma.posTenderType.deleteMany({ where: { storeId: { in: [STORE_NUMBER, OTHER_STORE_NUMBER] } } });
+    await prisma.posPayoutCategory.deleteMany({ where: { storeId: { in: [STORE_NUMBER, OTHER_STORE_NUMBER] } } });
     await prisma.skuUpc.deleteMany({ where: { upc: UPC } });
     if (skuId) {
       await prisma.sku.deleteMany({ where: { id: skuId } });
     }
-    await prisma.storeMaster.deleteMany({ where: { number: STORE_NUMBER } });
+    await prisma.storeMaster.deleteMany({ where: { number: { in: [STORE_NUMBER, OTHER_STORE_NUMBER] } } });
     await prisma.session.deleteMany({});
     await prisma.user.deleteMany({ where: { email: EMAIL } });
     await prisma.$disconnect();
@@ -303,4 +319,46 @@ describe('pos routes', () => {
 
     await waitForCustomerMetrics(importedCustomerId);
   }, 20000);
+
+  it('blocks POS store actions outside the user store scope', async () => {
+    const cookie = await ownerCookie();
+    const owner = await prisma.user.findUniqueOrThrow({
+      where: { email: EMAIL },
+      select: { id: true },
+    });
+
+    await grantStoreScope(prisma, {
+      userId: owner.id,
+      scopeType: 'STORE',
+      scopeId: String(OTHER_STORE_NUMBER),
+      actorUserId: owner.id,
+      reason: 'pos-route store scope denial test',
+    });
+
+    const scopedBootstrap = await request(app)
+      .get('/api/v1/pos/bootstrap')
+      .set('Cookie', cookie);
+
+    expect(scopedBootstrap.status).toBe(200);
+    expect(scopedBootstrap.body.selectedStoreId).toBe(OTHER_STORE_NUMBER);
+    expect(scopedBootstrap.body.stores.map((store: { id: number }) => store.id)).toEqual([OTHER_STORE_NUMBER]);
+
+    const bootstrap = await request(app)
+      .get(`/api/v1/pos/bootstrap?storeId=${STORE_NUMBER}`)
+      .set('Cookie', cookie);
+
+    expect(bootstrap.status).toBe(403);
+    expect(bootstrap.body.error.code).toBe('STORE_SCOPE_FORBIDDEN');
+
+    const openShift = await request(app)
+      .post('/api/v1/pos/shifts/open')
+      .set('Cookie', cookie)
+      .send({
+        storeId: STORE_NUMBER,
+        openingCashFloat: 25,
+      });
+
+    expect(openShift.status).toBe(403);
+    expect(openShift.body.error.code).toBe('STORE_SCOPE_FORBIDDEN');
+  });
 });

@@ -1,4 +1,8 @@
+import { buildRicsImageUrl } from '../services/ricsImageUrl';
+
 export type PoStatus = 'DRAFT' | 'SUBMITTED' | 'CONFIRMED' | 'PARTIALLY_RECEIVED' | 'RECEIVED' | 'CLOSED' | 'CANCELLED';
+export type PoSourceCurrency = 'CNY' | 'USD' | 'HNL';
+export type PoCostBasis = 'LANDED_LEGACY_HNL' | 'HNL_DOMESTIC' | 'VENDOR_CURRENCY_ESTIMATED_LANDED';
 
 export interface PurchaseOrderRow {
   id: string;
@@ -19,6 +23,9 @@ export interface PoLineItemRow {
   quantity_ordered: number;
   quantity_received: number;
   unit_cost: number;
+  source_unit_cost?: number | null;
+  commercial_unit_cost_hnl?: number | null;
+  estimated_landed_unit_cost_hnl?: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -39,6 +46,7 @@ export interface PoLineItem {
   skuId: string;
   skuCode?: string;
   brand?: string;
+  pictureUrl?: string | null;
   sizeType: number | null;
   casePackId: string | null;
   casePackMultiplier: number | null;
@@ -46,6 +54,9 @@ export interface PoLineItem {
   quantityOrdered: number;
   quantityReceived: number;
   unitCost: number;
+  sourceUnitCost: number | null;
+  commercialUnitCostHnl: number | null;
+  estimatedLandedUnitCostHnl: number | null;
   lineTotal: number;
   createdAt: string;
   updatedAt: string;
@@ -71,8 +82,15 @@ export interface PurchaseOrder {
   programCode: string | null;
   storeLabelsOnReceive: boolean;
   buyer: string | null;
+  sourceCurrency: PoSourceCurrency;
+  fxRate: number;
+  fxDate: string;
+  incotermCode: string | null;
+  incotermPlace: string | null;
+  costBasis: PoCostBasis;
   orderDate: string;
   shipDate: string | null;
+  plannedReceiptDate: string | null;
   cancelDate: string | null;
   paymentDate: string | null;
   status: PoStatus;
@@ -205,13 +223,16 @@ export interface TransferOrder {
   lines: TransferOrderLine[];
 }
 
-export function rowToPoLineItem(row: PoLineItemRow & { sku_code?: string; style?: string }): PoLineItem {
+export function rowToPoLineItem(
+  row: PoLineItemRow & { sku_code?: string; style?: string; picture_file_name?: string | null }
+): PoLineItem {
   return {
     id: row.id,
     poId: row.po_id,
     skuId: row.sku_id,
     skuCode: row.sku_code,
     brand: row.style,
+    pictureUrl: buildRicsImageUrl(row.picture_file_name),
     sizeType: null,
     casePackId: null,
     casePackMultiplier: null,
@@ -219,6 +240,9 @@ export function rowToPoLineItem(row: PoLineItemRow & { sku_code?: string; style?
     quantityOrdered: row.quantity_ordered,
     quantityReceived: row.quantity_received,
     unitCost: row.unit_cost,
+    sourceUnitCost: row.source_unit_cost ?? row.unit_cost,
+    commercialUnitCostHnl: row.commercial_unit_cost_hnl ?? row.unit_cost,
+    estimatedLandedUnitCostHnl: row.estimated_landed_unit_cost_hnl ?? row.unit_cost,
     lineTotal: row.quantity_ordered * row.unit_cost,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -243,12 +267,19 @@ export function rowToPurchaseOrder(
     program_code?: string | null;
     store_labels_on_receive?: boolean;
     buyer?: string | null;
+    source_currency?: PoSourceCurrency;
+    fx_rate?: number | string;
+    fx_date?: string;
+    incoterm_code?: string | null;
+    incoterm_place?: string | null;
+    cost_basis?: PoCostBasis;
     order_date?: string;
     ship_date?: string | null;
+    planned_receipt_date?: string | null;
     cancel_date?: string | null;
     payment_date?: string | null;
   },
-  lineItemRows: (PoLineItemRow & { sku_code?: string; style?: string })[]
+  lineItemRows: (PoLineItemRow & { sku_code?: string; style?: string; picture_file_name?: string | null })[]
 ): PurchaseOrder {
   const lineItems = lineItemRows.map(rowToPoLineItem);
   return {
@@ -271,8 +302,15 @@ export function rowToPurchaseOrder(
     programCode: row.program_code ?? null,
     storeLabelsOnReceive: row.store_labels_on_receive ?? false,
     buyer: row.buyer ?? null,
+    sourceCurrency: row.source_currency ?? 'HNL',
+    fxRate: Number(row.fx_rate ?? 1),
+    fxDate: row.fx_date ?? row.created_at,
+    incotermCode: row.incoterm_code ?? null,
+    incotermPlace: row.incoterm_place ?? null,
+    costBasis: row.cost_basis ?? 'LANDED_LEGACY_HNL',
     orderDate: row.order_date ?? row.created_at,
     shipDate: row.ship_date ?? null,
+    plannedReceiptDate: row.planned_receipt_date ?? null,
     cancelDate: row.cancel_date ?? null,
     paymentDate: row.payment_date ?? null,
     status: row.status,

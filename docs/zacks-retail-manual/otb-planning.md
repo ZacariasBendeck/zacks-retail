@@ -7,7 +7,7 @@
 
 ## What this module does
 
-Open-To-Buy planning is how buyers set and track spending authority. A buyer builds a plan per store × category × month — either by fixed percentage of last-year sales or by a % change vs. last-year actuals — and the system projects the 12-month OTB budget, compares it against current sales and committed POs, and surfaces overruns or underruns in time to act.
+Open-To-Buy planning is how buyers set and track spending authority. A buyer builds a plan per store × category × month — either by fixed percentage of last-year sales or by a % change vs. last-year actuals — and the system projects the 12-month OTB budget, compares it against current sales, committed POs, and approved import landed-cost commitments, and surfaces overruns or underruns in time to act.
 
 ## Audience
 
@@ -19,6 +19,7 @@ Open-To-Buy planning is how buyers set and track spending authority. A buyer bui
 
 - [Sales Reporting](sales-reporting.md) — historical sales by store × category × month.
 - [Purchasing](purchasing.md) — committed PO dollars by month count against plan.
+- [Import Management](import-management.md) — approved estimated/final landed HNL commitments for international shipments.
 - [Store Operations](store-ops.md) — stores, categories, and the company-wide OTB calculation method setting.
 
 ## Screens
@@ -59,11 +60,13 @@ _TODO._
 
 - **Primary read:** sales history from `rics_mirror` (tables TBD); PO commitments from `rics_mirror` PO tables.
 - **Primary write:** plan rows in `public.*` or `app.*` (scaffolding being retired — see existing `otbBudgetRoutes`, `otbMonthlyPlanRoutes` in [apps/api/src/routes](../../apps/api/src/routes/)).
+- **Import feed:** estimated HNL landed commitments from Import Management before final liquidation; final HNL landed cost and true-ups after liquidation approval.
 - **Future (Phase C):** dedicated `otb_planning.*` schema.
 
 ## Related modules
 
 - [Purchasing](purchasing.md) — committed PO dollars roll up to OTB actuals.
+- [Import Management](import-management.md) — estimated and final landed HNL cost feeds for imported shipments.
 - [Sales Reporting](sales-reporting.md) — baseline sales data for plan calculation.
 - [Store Operations](store-ops.md) — per-company OTB calculation method.
 

@@ -1,0 +1,10 @@
+﻿store,sku,row_label,column_label,column_index,on_hand,reason
+99,EVER787BK,,100,6,-1,negative on-hand cannot receive
+2,PY309715BK,,065,4,-1,negative on-hand cannot receive
+2,YSZ100115CFPU,,060,3,-1,negative on-hand cannot receive
+14,YSZWD0715W9CML,,070,5,-1,negative on-hand cannot receive
+14,255NVWN,,085,8,-1,negative on-hand cannot receive
+99,5701KDGYBK,,3.5,12,-1,negative on-hand cannot receive
+99,5701KDWH,,1.5,8,-1,negative on-hand cannot receive
+99,042KDPK,,13,15,-1,negative on-hand cannot receive
+12,1017SBLKD,,15,2,-1,negative on-hand cannot receive

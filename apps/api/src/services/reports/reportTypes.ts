@@ -15,6 +15,7 @@ export const REPORT_TYPES = [
   'sales-by-time',
   'salesperson-summary',
   'sales-history-by-month',
+  'balancing-transfer',
 ] as const;
 
 export type ReportType = (typeof REPORT_TYPES)[number];

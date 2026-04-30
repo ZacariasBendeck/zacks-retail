@@ -3,7 +3,10 @@ import * as reportService from '../services/reportService';
 import * as purchaseOrderService from '../services/purchaseOrderService';
 import * as inventoryAgingPg from '../services/reports/inventoryAgingPg';
 import * as salesReportFacade from '../services/salesReporting/salesReportFacade';
+import { getSeasonalityIndexReport } from '../services/seasonalityIndexService';
 import { validateQuery } from '../middleware/validation';
+import { getRequestStoreScopeConstraintIfAuthenticated } from '../middleware/storeScopeMiddleware';
+import { prisma } from '../db/prisma';
 import { getDb } from '../db/database';
 import { ALLOWED_DEPARTMENTS, CATEGORY_CODE_MIN, CATEGORY_CODE_MAX } from '../constants/domain';
 import { sendXlsx, XLSX_NUMFMT } from '../utils/xlsxExport';
@@ -500,6 +503,9 @@ router.get('/rics-sales-by-day-store', validateQuery(ricsSalesByDayStoreQuerySch
     });
     return;
   }
+
+  const scopeConstraint = await getRequestStoreScopeConstraintIfAuthenticated(prisma, req, res, [query.store]);
+  if (scopeConstraint === null) return;
 
   const fullReport = await salesReportFacade.getSalesByDay({
     storeNumbers: [query.store],
@@ -1268,6 +1274,34 @@ const SUPPORTED_METRIC_KEYS = [
   'turns',
 ] as const;
 const DEFERRED_METRIC_KEYS = ['beginningOnHand', 'roiPct', 'turns'] as const;
+
+const seasonalityIndexQuerySchema = z.object({
+  endMonth: z
+    .string()
+    .regex(/^\d{4}-(0[1-9]|1[0-2])$/, 'endMonth must be YYYY-MM')
+    .optional(),
+  department: z.coerce.number().int().positive().optional(),
+});
+
+router.get(
+  '/seasonality-index',
+  validateQuery(seasonalityIndexQuerySchema),
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const query = (req as any).validatedQuery as {
+        endMonth?: string;
+        department?: number;
+      };
+      const report = await getSeasonalityIndexReport({
+        endMonth: query.endMonth,
+        departmentNumber: query.department,
+      });
+      res.json(report);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
 
 const salesHistoryByMonthQuerySchema = z.object({
   stores: z

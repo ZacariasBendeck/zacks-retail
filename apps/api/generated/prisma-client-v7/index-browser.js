@@ -220,6 +220,8 @@ exports.Prisma.RoleScalarFieldEnum = {
   id: 'id',
   name: 'name',
   permissions: 'permissions',
+  description: 'description',
+  archivedAt: 'archivedAt',
   createdAt: 'createdAt',
   updatedAt: 'updatedAt'
 };
@@ -229,6 +231,77 @@ exports.Prisma.SessionScalarFieldEnum = {
   userId: 'userId',
   expiresAt: 'expiresAt',
   createdAt: 'createdAt'
+};
+
+exports.Prisma.IdentityUserRoleAssignmentScalarFieldEnum = {
+  id: 'id',
+  userId: 'userId',
+  roleId: 'roleId',
+  assignedByUserId: 'assignedByUserId',
+  assignedAt: 'assignedAt',
+  revokedByUserId: 'revokedByUserId',
+  revokedAt: 'revokedAt',
+  reason: 'reason',
+  createdAt: 'createdAt'
+};
+
+exports.Prisma.IdentityUserStoreScopeScalarFieldEnum = {
+  id: 'id',
+  userId: 'userId',
+  scopeType: 'scopeType',
+  scopeId: 'scopeId',
+  grantedByUserId: 'grantedByUserId',
+  grantedAt: 'grantedAt',
+  revokedByUserId: 'revokedByUserId',
+  revokedAt: 'revokedAt',
+  reason: 'reason',
+  createdAt: 'createdAt'
+};
+
+exports.Prisma.IdentityMfaFactorScalarFieldEnum = {
+  id: 'id',
+  userId: 'userId',
+  factorType: 'factorType',
+  label: 'label',
+  secretHash: 'secretHash',
+  publicKeyJson: 'publicKeyJson',
+  active: 'active',
+  verifiedAt: 'verifiedAt',
+  createdAt: 'createdAt',
+  revokedAt: 'revokedAt'
+};
+
+exports.Prisma.IdentityExternalIdentityScalarFieldEnum = {
+  id: 'id',
+  userId: 'userId',
+  provider: 'provider',
+  providerSubject: 'providerSubject',
+  emailAtProvider: 'emailAtProvider',
+  createdAt: 'createdAt',
+  lastAuthenticatedAt: 'lastAuthenticatedAt'
+};
+
+exports.Prisma.IdentityLoginEventScalarFieldEnum = {
+  id: 'id',
+  userId: 'userId',
+  roleId: 'roleId',
+  email: 'email',
+  outcome: 'outcome',
+  reason: 'reason',
+  ipAddress: 'ipAddress',
+  userAgent: 'userAgent',
+  occurredAt: 'occurredAt'
+};
+
+exports.Prisma.IdentitySessionEventScalarFieldEnum = {
+  id: 'id',
+  sessionId: 'sessionId',
+  userId: 'userId',
+  eventType: 'eventType',
+  reason: 'reason',
+  ipAddress: 'ipAddress',
+  userAgent: 'userAgent',
+  occurredAt: 'occurredAt'
 };
 
 exports.Prisma.EmployeeSalesPasswordScalarFieldEnum = {
@@ -362,6 +435,25 @@ exports.Prisma.EtlRunScalarFieldEnum = {
   errorText: 'errorText'
 };
 
+exports.Prisma.PlatformAuditLogScalarFieldEnum = {
+  id: 'id',
+  eventType: 'eventType',
+  action: 'action',
+  resourceType: 'resourceType',
+  resourceId: 'resourceId',
+  actorUserId: 'actorUserId',
+  actorSessionId: 'actorSessionId',
+  outcome: 'outcome',
+  reason: 'reason',
+  ipAddress: 'ipAddress',
+  userAgent: 'userAgent',
+  beforeJson: 'beforeJson',
+  afterJson: 'afterJson',
+  metadataJson: 'metadataJson',
+  traceId: 'traceId',
+  createdAt: 'createdAt'
+};
+
 exports.Prisma.SkuAttributeOverrideScalarFieldEnum = {
   ricsSkuCode: 'ricsSkuCode',
   category: 'category',
@@ -472,6 +564,79 @@ exports.Prisma.StoreGroupMemberScalarFieldEnum = {
   groupCode: 'groupCode',
   createdAt: 'createdAt',
   updatedAt: 'updatedAt'
+};
+
+exports.Prisma.PurchasePlanScalarFieldEnum = {
+  id: 'id',
+  storeGroupCode: 'storeGroupCode',
+  label: 'label',
+  status: 'status',
+  season: 'season',
+  seasonYear: 'seasonYear',
+  seasonMonths: 'seasonMonths',
+  selectedDepartments: 'selectedDepartments',
+  forecastMethod: 'forecastMethod',
+  eohMethod: 'eohMethod',
+  coverMonths: 'coverMonths',
+  discountNormalization: 'discountNormalization',
+  historyFromYearMonth: 'historyFromYearMonth',
+  historyToYearMonth: 'historyToYearMonth',
+  createdBy: 'createdBy',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt',
+  archivedAt: 'archivedAt'
+};
+
+exports.Prisma.PurchasePlanRowScalarFieldEnum = {
+  id: 'id',
+  planId: 'planId',
+  departmentKey: 'departmentKey',
+  departmentNumber: 'departmentNumber',
+  departmentLabel: 'departmentLabel',
+  yearMonth: 'yearMonth',
+  baselineBoh: 'baselineBoh',
+  baselineProjSales: 'baselineProjSales',
+  baselineEohTarget: 'baselineEohTarget',
+  baselineBuy: 'baselineBuy',
+  baselineEohActual: 'baselineEohActual',
+  currentBoh: 'currentBoh',
+  currentProjSales: 'currentProjSales',
+  currentEohTarget: 'currentEohTarget',
+  currentBuy: 'currentBuy',
+  currentEohActual: 'currentEohActual',
+  onHand: 'onHand',
+  currentOnOrder: 'currentOnOrder',
+  futureOnOrder: 'futureOnOrder',
+  nativeOpenPo: 'nativeOpenPo',
+  stockPosition: 'stockPosition',
+  normalizationFactor: 'normalizationFactor',
+  rawProjSales: 'rawProjSales',
+  metadata: 'metadata',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+};
+
+exports.Prisma.PurchasePlanAdjustmentScalarFieldEnum = {
+  id: 'id',
+  planId: 'planId',
+  departmentKey: 'departmentKey',
+  kind: 'kind',
+  value: 'value',
+  reason: 'reason',
+  appliedBy: 'appliedBy',
+  appliedAt: 'appliedAt',
+  beforeRowsJson: 'beforeRowsJson',
+  afterRowsJson: 'afterRowsJson'
+};
+
+exports.Prisma.PurchasePlanAuditScalarFieldEnum = {
+  id: 'id',
+  planId: 'planId',
+  action: 'action',
+  actor: 'actor',
+  at: 'at',
+  beforeJson: 'beforeJson',
+  afterJson: 'afterJson'
 };
 
 exports.Prisma.SkuUpcScalarFieldEnum = {
@@ -595,8 +760,15 @@ exports.Prisma.PurchaseOrderScalarFieldEnum = {
   storeLabelsOnReceive: 'storeLabelsOnReceive',
   buyer: 'buyer',
   comments: 'comments',
+  sourceCurrency: 'sourceCurrency',
+  fxRate: 'fxRate',
+  fxDate: 'fxDate',
+  incotermCode: 'incotermCode',
+  incotermPlace: 'incotermPlace',
+  costBasis: 'costBasis',
   orderDate: 'orderDate',
   shipDate: 'shipDate',
+  plannedReceiptDate: 'plannedReceiptDate',
   cancelDate: 'cancelDate',
   paymentDate: 'paymentDate',
   createdBy: 'createdBy',
@@ -616,6 +788,9 @@ exports.Prisma.PurchaseOrderLineScalarFieldEnum = {
   casePackMultiplier: 'casePackMultiplier',
   retailPrice: 'retailPrice',
   unitCost: 'unitCost',
+  sourceUnitCost: 'sourceUnitCost',
+  commercialUnitCostHnl: 'commercialUnitCostHnl',
+  estimatedLandedUnitCostHnl: 'estimatedLandedUnitCostHnl',
   quantityOrdered: 'quantityOrdered',
   quantityReceived: 'quantityReceived',
   writeBackToMaster: 'writeBackToMaster',
@@ -1038,6 +1213,267 @@ exports.Prisma.ManualReceiptLineScalarFieldEnum = {
   unitCost: 'unitCost',
   retailPrice: 'retailPrice',
   movementId: 'movementId'
+};
+
+exports.Prisma.ImportShipmentScalarFieldEnum = {
+  id: 'id',
+  shipmentNumber: 'shipmentNumber',
+  displayName: 'displayName',
+  status: 'status',
+  buyer: 'buyer',
+  originPort: 'originPort',
+  destinationPort: 'destinationPort',
+  carrier: 'carrier',
+  freightForwarder: 'freightForwarder',
+  customsPolicyNumber: 'customsPolicyNumber',
+  blNumber: 'blNumber',
+  expectedDepartureAt: 'expectedDepartureAt',
+  expectedArrivalAt: 'expectedArrivalAt',
+  actualArrivalAt: 'actualArrivalAt',
+  baseCurrency: 'baseCurrency',
+  sourceWorkbookName: 'sourceWorkbookName',
+  notes: 'notes',
+  approvedEstimateAt: 'approvedEstimateAt',
+  approvedEstimateBy: 'approvedEstimateBy',
+  finalLiquidationAt: 'finalLiquidationAt',
+  closedAt: 'closedAt',
+  createdBy: 'createdBy',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+};
+
+exports.Prisma.ImportContainerScalarFieldEnum = {
+  id: 'id',
+  shipmentId: 'shipmentId',
+  containerNumber: 'containerNumber',
+  containerType: 'containerType',
+  sealNumber: 'sealNumber',
+  cargoGroup: 'cargoGroup',
+  status: 'status',
+  expectedArrivalAt: 'expectedArrivalAt',
+  actualArrivalAt: 'actualArrivalAt',
+  notes: 'notes',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+};
+
+exports.Prisma.ImportShipmentLineScalarFieldEnum = {
+  id: 'id',
+  shipmentId: 'shipmentId',
+  purchaseOrderLineId: 'purchaseOrderLineId',
+  containerId: 'containerId',
+  invoiceLineId: 'invoiceLineId',
+  expectedQuantity: 'expectedQuantity',
+  sourceUnitCost: 'sourceUnitCost',
+  sourceCurrency: 'sourceCurrency',
+  fxRate: 'fxRate',
+  fxDate: 'fxDate',
+  incotermCode: 'incotermCode',
+  incotermPlace: 'incotermPlace',
+  commercialUnitCostHnl: 'commercialUnitCostHnl',
+  estimatedLandedUnitCostHnl: 'estimatedLandedUnitCostHnl',
+  allocatedLandedCostHnl: 'allocatedLandedCostHnl',
+  landedUnitCostHnl: 'landedUnitCostHnl',
+  status: 'status',
+  invoiceMatchApprovedAt: 'invoiceMatchApprovedAt',
+  invoiceMatchApprovedBy: 'invoiceMatchApprovedBy',
+  invoiceMatchApprovalReason: 'invoiceMatchApprovalReason',
+  notes: 'notes',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+};
+
+exports.Prisma.ImportSupplierInvoiceScalarFieldEnum = {
+  id: 'id',
+  shipmentId: 'shipmentId',
+  invoiceNumber: 'invoiceNumber',
+  supplierCode: 'supplierCode',
+  supplierName: 'supplierName',
+  invoiceDate: 'invoiceDate',
+  invoiceGroup: 'invoiceGroup',
+  invoiceKind: 'invoiceKind',
+  sourceAmount: 'sourceAmount',
+  sourceCurrency: 'sourceCurrency',
+  fxRate: 'fxRate',
+  fxDate: 'fxDate',
+  hnlAmount: 'hnlAmount',
+  notes: 'notes',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+};
+
+exports.Prisma.ImportInvoiceLineScalarFieldEnum = {
+  id: 'id',
+  invoiceId: 'invoiceId',
+  skuId: 'skuId',
+  purchaseOrderLineId: 'purchaseOrderLineId',
+  lineNumber: 'lineNumber',
+  itemCode: 'itemCode',
+  styleCode: 'styleCode',
+  description: 'description',
+  materialMeters: 'materialMeters',
+  cartonCount: 'cartonCount',
+  weightKg: 'weightKg',
+  volumeCbm: 'volumeCbm',
+  quantity: 'quantity',
+  unitOfMeasure: 'unitOfMeasure',
+  sourceUnitCost: 'sourceUnitCost',
+  sourceAmount: 'sourceAmount',
+  sourceCurrency: 'sourceCurrency',
+  fxRate: 'fxRate',
+  fxDate: 'fxDate',
+  hnlAmount: 'hnlAmount',
+  baseUnitCostHnl: 'baseUnitCostHnl',
+  allocatedLandedCostHnl: 'allocatedLandedCostHnl',
+  landedUnitCostHnl: 'landedUnitCostHnl',
+  taxable: 'taxable',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+};
+
+exports.Prisma.ImportChargeScalarFieldEnum = {
+  id: 'id',
+  shipmentId: 'shipmentId',
+  chargeType: 'chargeType',
+  counterparty: 'counterparty',
+  documentNumber: 'documentNumber',
+  sourceAmount: 'sourceAmount',
+  sourceCurrency: 'sourceCurrency',
+  fxRate: 'fxRate',
+  fxDate: 'fxDate',
+  hnlAmount: 'hnlAmount',
+  allocationBasis: 'allocationBasis',
+  taxable: 'taxable',
+  estimated: 'estimated',
+  final: 'final',
+  costTreatment: 'costTreatment',
+  notes: 'notes',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+};
+
+exports.Prisma.ImportLandedCostAllocationScalarFieldEnum = {
+  id: 'id',
+  shipmentId: 'shipmentId',
+  chargeId: 'chargeId',
+  invoiceLineId: 'invoiceLineId',
+  shipmentLineId: 'shipmentLineId',
+  allocationBasis: 'allocationBasis',
+  allocatedHnlAmount: 'allocatedHnlAmount',
+  createdAt: 'createdAt'
+};
+
+exports.Prisma.GoodsInTransitRecordScalarFieldEnum = {
+  id: 'id',
+  shipmentId: 'shipmentId',
+  containerId: 'containerId',
+  invoiceLineId: 'invoiceLineId',
+  shipmentLineId: 'shipmentLineId',
+  status: 'status',
+  ownershipTransferAt: 'ownershipTransferAt',
+  expectedReceiptAt: 'expectedReceiptAt',
+  receivedAt: 'receivedAt',
+  quantityInTransit: 'quantityInTransit',
+  auditReason: 'auditReason',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+};
+
+exports.Prisma.ImportVerificationCheckScalarFieldEnum = {
+  id: 'id',
+  shipmentId: 'shipmentId',
+  checkCode: 'checkCode',
+  status: 'status',
+  expectedHnlAmount: 'expectedHnlAmount',
+  actualHnlAmount: 'actualHnlAmount',
+  varianceHnlAmount: 'varianceHnlAmount',
+  message: 'message',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+};
+
+exports.Prisma.ImportSuggestedPriceScalarFieldEnum = {
+  id: 'id',
+  shipmentId: 'shipmentId',
+  invoiceLineId: 'invoiceLineId',
+  skuId: 'skuId',
+  landedUnitCostHnl: 'landedUnitCostHnl',
+  markupFactor: 'markupFactor',
+  suggestedRetailHnl: 'suggestedRetailHnl',
+  approvalStatus: 'approvalStatus',
+  approvedBy: 'approvedBy',
+  approvedAt: 'approvedAt',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+};
+
+exports.Prisma.ImportPayableHandoffScalarFieldEnum = {
+  id: 'id',
+  shipmentId: 'shipmentId',
+  sourceType: 'sourceType',
+  sourceId: 'sourceId',
+  counterparty: 'counterparty',
+  documentNumber: 'documentNumber',
+  payableKind: 'payableKind',
+  sourceAmount: 'sourceAmount',
+  sourceCurrency: 'sourceCurrency',
+  fxRate: 'fxRate',
+  fxDate: 'fxDate',
+  hnlAmount: 'hnlAmount',
+  final: 'final',
+  handoffStatus: 'handoffStatus',
+  apReference: 'apReference',
+  sentToApBy: 'sentToApBy',
+  sentToApAt: 'sentToApAt',
+  paymentReference: 'paymentReference',
+  paidBy: 'paidBy',
+  paidAt: 'paidAt',
+  voidedBy: 'voidedBy',
+  voidedAt: 'voidedAt',
+  voidReason: 'voidReason',
+  notes: 'notes',
+  createdBy: 'createdBy',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+};
+
+exports.Prisma.ImportInventoryReceiptScalarFieldEnum = {
+  id: 'id',
+  shipmentId: 'shipmentId',
+  invoiceLineId: 'invoiceLineId',
+  goodsInTransitRecordId: 'goodsInTransitRecordId',
+  stockMovementId: 'stockMovementId',
+  skuId: 'skuId',
+  storeId: 'storeId',
+  receiptBasis: 'receiptBasis',
+  quantity: 'quantity',
+  unitCostHnl: 'unitCostHnl',
+  hnlAmount: 'hnlAmount',
+  postedBy: 'postedBy',
+  auditReason: 'auditReason',
+  postedAt: 'postedAt'
+};
+
+exports.Prisma.ImportInventoryTrueUpScalarFieldEnum = {
+  id: 'id',
+  shipmentId: 'shipmentId',
+  invoiceLineId: 'invoiceLineId',
+  goodsInTransitRecordId: 'goodsInTransitRecordId',
+  purchaseOrderId: 'purchaseOrderId',
+  purchaseOrderLineId: 'purchaseOrderLineId',
+  poReceiptLineId: 'poReceiptLineId',
+  importInventoryReceiptId: 'importInventoryReceiptId',
+  stockMovementId: 'stockMovementId',
+  skuId: 'skuId',
+  storeId: 'storeId',
+  quantity: 'quantity',
+  estimatedUnitCostHnl: 'estimatedUnitCostHnl',
+  finalUnitCostHnl: 'finalUnitCostHnl',
+  deltaUnitCostHnl: 'deltaUnitCostHnl',
+  deltaHnlAmount: 'deltaHnlAmount',
+  postedBy: 'postedBy',
+  auditReason: 'auditReason',
+  postedAt: 'postedAt'
 };
 
 exports.Prisma.ReplenishmentTargetScalarFieldEnum = {
@@ -2391,6 +2827,12 @@ exports.Prisma.ModelName = {
   Employee: 'Employee',
   Role: 'Role',
   Session: 'Session',
+  IdentityUserRoleAssignment: 'IdentityUserRoleAssignment',
+  IdentityUserStoreScope: 'IdentityUserStoreScope',
+  IdentityMfaFactor: 'IdentityMfaFactor',
+  IdentityExternalIdentity: 'IdentityExternalIdentity',
+  IdentityLoginEvent: 'IdentityLoginEvent',
+  IdentitySessionEvent: 'IdentitySessionEvent',
   EmployeeSalesPassword: 'EmployeeSalesPassword',
   EmployeeSalesPasswordAudit: 'EmployeeSalesPasswordAudit',
   EmployeeSalesOverrideToken: 'EmployeeSalesOverrideToken',
@@ -2401,6 +2843,7 @@ exports.Prisma.ModelName = {
   ProductsAuditLog: 'ProductsAuditLog',
   SeasonOverlay: 'SeasonOverlay',
   EtlRun: 'EtlRun',
+  PlatformAuditLog: 'PlatformAuditLog',
   SkuAttributeOverride: 'SkuAttributeOverride',
   VendorOverlay: 'VendorOverlay',
   Vendor: 'Vendor',
@@ -2408,6 +2851,10 @@ exports.Prisma.ModelName = {
   StoreMaster: 'StoreMaster',
   StoreGroup: 'StoreGroup',
   StoreGroupMember: 'StoreGroupMember',
+  PurchasePlan: 'PurchasePlan',
+  PurchasePlanRow: 'PurchasePlanRow',
+  PurchasePlanAdjustment: 'PurchasePlanAdjustment',
+  PurchasePlanAudit: 'PurchasePlanAudit',
   SkuUpc: 'SkuUpc',
   CasePack: 'CasePack',
   CasePackCell: 'CasePackCell',
@@ -2447,6 +2894,19 @@ exports.Prisma.ModelName = {
   StockMovement: 'StockMovement',
   ManualReceipt: 'ManualReceipt',
   ManualReceiptLine: 'ManualReceiptLine',
+  ImportShipment: 'ImportShipment',
+  ImportContainer: 'ImportContainer',
+  ImportShipmentLine: 'ImportShipmentLine',
+  ImportSupplierInvoice: 'ImportSupplierInvoice',
+  ImportInvoiceLine: 'ImportInvoiceLine',
+  ImportCharge: 'ImportCharge',
+  ImportLandedCostAllocation: 'ImportLandedCostAllocation',
+  GoodsInTransitRecord: 'GoodsInTransitRecord',
+  ImportVerificationCheck: 'ImportVerificationCheck',
+  ImportSuggestedPrice: 'ImportSuggestedPrice',
+  ImportPayableHandoff: 'ImportPayableHandoff',
+  ImportInventoryReceipt: 'ImportInventoryReceipt',
+  ImportInventoryTrueUp: 'ImportInventoryTrueUp',
   ReplenishmentTarget: 'ReplenishmentTarget',
   InventorySalesCell: 'InventorySalesCell',
   ReorderPlannerDefaults: 'ReorderPlannerDefaults',

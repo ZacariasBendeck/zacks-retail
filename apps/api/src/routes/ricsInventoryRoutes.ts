@@ -126,6 +126,8 @@ router.post('/inquiry/:sku/reorder-plan/draft-po', async (req: Request, res: Res
       leadTimeDays: parseBodyInt(req.body?.leadTimeDays),
       orderCycleDays: parseBodyInt(req.body?.orderCycleDays),
       moqQty: parseBodyInt(req.body?.moqQty),
+      casePackId: typeof req.body?.casePackId === 'string' ? req.body.casePackId : null,
+      casePackMultiplier: parseBodyInt(req.body?.casePackMultiplier),
       sizeCells: Array.isArray(req.body?.sizeCells) ? req.body.sizeCells : [],
       createdBy: typeof req.body?.createdBy === 'string' ? req.body.createdBy : undefined,
     });
@@ -134,7 +136,13 @@ router.post('/inquiry/:sku/reorder-plan/draft-po', async (req: Request, res: Res
       return;
     }
     if ('error' in result) {
-      const status = result.error === 'SKU_VENDOR_REQUIRED' || result.error === 'EMPTY_REORDER_QUANTITY' ? 400 : 409;
+      const status = [
+        'SKU_VENDOR_REQUIRED',
+        'EMPTY_REORDER_QUANTITY',
+        'CASE_PACK_NOT_FOUND',
+        'CASE_PACK_INACTIVE',
+        'CASE_PACK_SIZE_TYPE_MISMATCH',
+      ].includes(result.error) ? 400 : 409;
       res.status(status).json({ error: { code: result.error, message: reorderDraftPoErrorMessage(result.error) } });
       return;
     }
@@ -755,6 +763,12 @@ function parseBodyInt(v: unknown): number | undefined {
 function reorderDraftPoErrorMessage(code: string): string {
   if (code === 'SKU_VENDOR_REQUIRED') return 'SKU must have a vendor before creating a reorder draft PO.';
   if (code === 'EMPTY_REORDER_QUANTITY') return 'At least one reorder quantity is required.';
+  if (code === 'CASE_PACK_NOT_FOUND') return 'Selected case pack was not found.';
+  if (code === 'CASE_PACK_INACTIVE') return 'Selected case pack is inactive.';
+  if (code === 'CASE_PACK_SIZE_TYPE_MISMATCH') return 'Selected case pack does not match the SKU size type.';
+  if (code === 'EXISTING_PO_NOT_FOUND') return 'The vendor draft PO is no longer available.';
+  if (code === 'ONLY_DRAFT_EDITABLE') return 'Only draft purchase orders can be updated by the reorder planner.';
+  if (code === 'PO_VENDOR_MISMATCH') return 'The selected draft PO no longer matches the SKU vendor.';
   if (code === 'VENDOR_NOT_FOUND') return 'Vendor not found.';
   if (code.startsWith('SKU_NOT_FOUND')) return 'SKU not found.';
   return 'Failed to create reorder draft PO.';

@@ -1,5 +1,5 @@
 import { PrismaClient } from './prismaClient';
-import { bootstrapOwner } from './services/employees/bootstrapOwner';
+import { bootstrapOwner } from './services/identityAccess/bootstrapOwner';
 import app from './app';
 import { warmup as warmRicsAdapter } from './services/ricsProductAdapter';
 import { warmup as warmRicsInventoryAdapter } from './services/ricsInventoryFacade';

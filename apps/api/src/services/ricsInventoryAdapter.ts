@@ -1487,6 +1487,10 @@ function buildStoreMetricGrid(
   };
 }
 
+function shortQuantity(cell: InventoryCell): number {
+  return Math.max(cell.model - cell.onHand, 0);
+}
+
 function buildMetricRowByColumnGrid(
   storeEntries: InventoryInquiryStore[],
   columns: string[],
@@ -1673,7 +1677,7 @@ function buildGrids(
     model: appendTotalRow(appendTotalColumn(withGridTotal(visibleMetricGrid((cell) => cell.model)))),
     max: visibleMetricGrid((cell) => cell.maxQty),
     reorder: visibleMetricGrid((cell) => cell.reorder),
-    short: withGridTotal(appendTotalRow(visibleMetricGrid((cell) => cell.model - cell.onHand))),
+    short: withGridTotal(appendTotalRow(visibleMetricGrid(shortQuantity))),
     mtdSales: withGridTotal(appendTotalRow(visibleMetricGrid((cell) => cell.mtdSales))),
     stdSales: withGridTotal(appendTotalRow(visibleMetricGrid((cell) => cell.stdSales))),
     ytdSales: withGridTotal(appendTotalRow(visibleMetricGrid((cell) => cell.ytdSales))),
@@ -1686,7 +1690,7 @@ function buildGrids(
           buildMetricRowByColumnGrid(storeEntries, columns, effectiveRow, 'On Ord (A/O)', (cell) => cell.currentOnOrder),
           buildMetricRowByColumnGrid(storeEntries, columns, effectiveRow, 'On Ord (Fut)', (cell) => cell.futureOnOrder),
           buildMetricRowByColumnGrid(storeEntries, columns, effectiveRow, 'Model', (cell) => cell.model),
-          buildMetricRowByColumnGrid(storeEntries, columns, effectiveRow, 'Short', (cell) => cell.model - cell.onHand),
+          buildMetricRowByColumnGrid(storeEntries, columns, effectiveRow, 'Short', shortQuantity),
           buildMetricRowByColumnGrid(storeEntries, columns, effectiveRow, 'MTD Sales', (cell) => cell.mtdSales),
           buildMetricRowByColumnGrid(storeEntries, columns, effectiveRow, 'STD Sales', (cell) => cell.stdSales),
           buildMetricRowByColumnGrid(storeEntries, columns, effectiveRow, 'YTD Sales', (cell) => cell.ytdSales),

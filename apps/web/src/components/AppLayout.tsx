@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type CSSProperties, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
 import { Avatar, Button, Dropdown, Layout, Menu, Typography } from 'antd'
 import {
   UserOutlined,
@@ -29,8 +29,9 @@ import {
   TagOutlined,
   ApartmentOutlined,
   CreditCardOutlined,
+  ContainerOutlined,
 } from '@ant-design/icons'
-import { Outlet, useLocation, useNavigate } from 'react-router-dom'
+import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth/useAuth'
 
 const { Header, Sider, Content } = Layout
@@ -38,25 +39,41 @@ const { Header, Sider, Content } = Layout
 const PRODUCTS_ENRICHMENT_MENU_KEY = '/products/enrichment'
 const FILE_SETUP_MENU_KEY = '/file-setup'
 
-const menuItems = [
+const ROUTER_LINK_STYLE: CSSProperties = {
+  color: 'inherit',
+  display: 'block',
+  textDecoration: 'none',
+}
+
+const routeForMenuKey = (key: string) => (key === '/utilities/overview' ? '/utilities' : key)
+
+const isModifiedNavigationEvent = (
+  event: MouseEvent<HTMLElement> | KeyboardEvent<HTMLElement>,
+) => {
+  if (event.defaultPrevented) return true
+  if ('button' in event && event.button !== 0) return true
+  return event.metaKey || event.ctrlKey || event.shiftKey || event.altKey
+}
+
+const appMenuItems = [
   {
     key: '/products',
     icon: <AppstoreOutlined />,
     label: 'Products',
     children: [
-      { key: '/products/skus/new', icon: <PlusOutlined />, label: 'New SKU' },
-      { key: '/inventory/skus', icon: <AppstoreOutlined />, label: 'SKU List' },
-      { key: '/inventory/sku-drafts', icon: <FileTextOutlined />, label: 'Borradores de SKU' },
-      { key: '/products/inquiry', icon: <SearchOutlined />, label: 'Inquiry' },
+      { key: '/products/skus/new', icon: <PlusOutlined />, label: 'New SKU', requiredPermissions: ['products.write'] },
+      { key: '/inventory/skus', icon: <AppstoreOutlined />, label: 'SKU List', requiredPermissions: ['products.view'] },
+      { key: '/inventory/sku-drafts', icon: <FileTextOutlined />, label: 'Borradores de SKU', requiredPermissions: ['products.write'] },
+      { key: '/products/inquiry', icon: <SearchOutlined />, label: 'Inquiry', requiredPermissions: ['products.view'] },
       { type: 'divider' as const },
       {
         key: PRODUCTS_ENRICHMENT_MENU_KEY,
         label: 'Product Enrichment',
         children: [
-          { key: '/products/attributes', icon: <AppstoreOutlined />, label: 'Attributes' },
-          { key: '/products/attributes/macros', icon: <TagOutlined />, label: 'Macro Categories' },
-          { key: '/products/families', icon: <AppstoreOutlined />, label: 'Product Families' },
-          { key: '/products/matching-sets', icon: <ApartmentOutlined />, label: 'Matching Sets' },
+          { key: '/products/attributes', icon: <AppstoreOutlined />, label: 'Attributes', requiredPermissions: ['products.view'] },
+          { key: '/products/attributes/macros', icon: <TagOutlined />, label: 'Macro Categories', requiredPermissions: ['products.view'] },
+          { key: '/products/families', icon: <AppstoreOutlined />, label: 'Product Families', requiredPermissions: ['products.view'] },
+          { key: '/products/matching-sets', icon: <ApartmentOutlined />, label: 'Matching Sets', requiredPermissions: ['products.view'] },
         ],
       },
     ],
@@ -66,21 +83,25 @@ const menuItems = [
     icon: <FileTextOutlined />,
     label: 'File Setup',
     children: [
-      { key: '/products/vendors', icon: <AppstoreOutlined />, label: 'Vendors' },
-      { key: '/products/taxonomy/categories', icon: <FileTextOutlined />, label: 'Categories' },
-      { key: '/products/taxonomy/departments', icon: <FileTextOutlined />, label: 'Departments' },
-      { key: '/products/taxonomy/sectors', icon: <FileTextOutlined />, label: 'Sectors' },
-      { key: '/products/taxonomy/groups', icon: <FileTextOutlined />, label: 'Groups' },
-      { key: '/products/taxonomy/keywords', icon: <FileTextOutlined />, label: 'Keywords' },
-      { key: '/products/taxonomy/seasons', icon: <FileTextOutlined />, label: 'Seasons' },
-      { key: '/products/taxonomy/size-types', icon: <FileTextOutlined />, label: 'Size Types' },
-      { key: '/file-setup/case-packs', icon: <FileTextOutlined />, label: 'Case Packs' },
-      { key: '/products/taxonomy/return-codes', icon: <FileTextOutlined />, label: 'Return Codes' },
-      { key: '/products/taxonomy/promotion-codes', icon: <FileTextOutlined />, label: 'Promotion Codes' },
-      { key: '/utilities/stores', icon: <ShopOutlined />, label: 'Stores' },
-      { key: '/utilities/store-chains', icon: <ApartmentOutlined />, label: 'Store Chains' },
-      { key: '/employees/salespeople', icon: <TeamOutlined />, label: 'Salespeople' },
-      { key: '/admin/users', icon: <UserOutlined />, label: 'Users' },
+      { key: '/products/vendors', icon: <AppstoreOutlined />, label: 'Vendors', requiredPermissions: ['products.view'] },
+      { key: '/products/taxonomy/categories', icon: <FileTextOutlined />, label: 'Categories', requiredPermissions: ['products.view'] },
+      { key: '/products/taxonomy/departments', icon: <FileTextOutlined />, label: 'Departments', requiredPermissions: ['products.view'] },
+      { key: '/products/taxonomy/sectors', icon: <FileTextOutlined />, label: 'Sectors', requiredPermissions: ['products.view'] },
+      { key: '/products/taxonomy/groups', icon: <FileTextOutlined />, label: 'Groups', requiredPermissions: ['products.view'] },
+      { key: '/products/taxonomy/keywords', icon: <FileTextOutlined />, label: 'Keywords', requiredPermissions: ['products.view'] },
+      { key: '/products/taxonomy/seasons', icon: <FileTextOutlined />, label: 'Seasons', requiredPermissions: ['products.view'] },
+      { key: '/products/taxonomy/size-types', icon: <FileTextOutlined />, label: 'Size Types', requiredPermissions: ['products.view'] },
+      { key: '/file-setup/case-packs', icon: <FileTextOutlined />, label: 'Case Packs', requiredPermissions: ['products.view'] },
+      { key: '/products/taxonomy/return-codes', icon: <FileTextOutlined />, label: 'Return Codes', requiredPermissions: ['products.view'] },
+      { key: '/products/taxonomy/promotion-codes', icon: <FileTextOutlined />, label: 'Promotion Codes', requiredPermissions: ['products.view'] },
+      { key: '/utilities/stores', icon: <ShopOutlined />, label: 'Stores', requiredPermissions: ['store_ops.view'] },
+      { key: '/utilities/store-chains', icon: <ApartmentOutlined />, label: 'Store Chains', requiredPermissions: ['store_ops.view'] },
+      { key: '/employees/salespeople', icon: <TeamOutlined />, label: 'Salespeople', requiredPermissions: ['employees.view'] },
+      { key: '/admin/users', icon: <UserOutlined />, label: 'Users', requiredPermissions: ['identity_access.view'] },
+      { key: '/admin/roles', icon: <CrownOutlined />, label: 'Roles & Permissions', requiredPermissions: ['identity_access.manage'] },
+      { key: '/admin/security', icon: <AlertOutlined />, label: 'Security Center', requiredPermissions: ['identity_access.view'] },
+      { key: '/admin/effective-access', icon: <AuditOutlined />, label: 'Effective Access', requiredPermissions: ['identity_access.view'] },
+      { key: '/admin/audit', icon: <AuditOutlined />, label: 'Security Audit', requiredPermissions: ['identity_access.view'] },
     ],
   },
   {
@@ -88,33 +109,40 @@ const menuItems = [
     icon: <ShopOutlined />,
     label: 'Inventory',
     children: [
-      { key: '/inventory/adjustments', icon: <SwapOutlined />, label: 'Stock Maintenance' },
-      { key: '/inventory/balances', icon: <InboxOutlined />, label: 'Balances' },
-      { key: '/inventory/find-by-size', icon: <ColumnHeightOutlined />, label: 'Find by Size' },
-      { key: '/inventory/replenishment', icon: <FundOutlined />, label: 'Model Quantities' },
-      { key: '/inventory/transfers/manual', icon: <SwapOutlined />, label: 'Transfer - Manual' },
-      { key: '/inventory/transfers/automatic', icon: <ExperimentOutlined />, label: 'Transfer - Automatic' },
-      { key: '/inventory/transfers/balancing', icon: <ExperimentOutlined />, label: 'Transfer - Balancing (Legacy)' },
-      { key: '/inventory/transfers/balancing-v2', icon: <ExperimentOutlined />, label: 'Transfer - Balancing v2' },
-      { key: '/inventory/movements', icon: <SyncOutlined />, label: 'Movements' },
-      { key: '/inventory/change-detail', icon: <HistoryOutlined />, label: 'Change Detail' },
-      { key: '/inventory/sales-ledger', icon: <HistoryOutlined />, label: 'Sales Ledger' },
-      { key: '/inventory/audit', icon: <AuditOutlined />, label: 'Audit' },
+      { key: '/inventory/adjustments', icon: <SwapOutlined />, label: 'Stock Maintenance', requiredPermissions: ['inventory.adjust'] },
+      { key: '/inventory/balances', icon: <InboxOutlined />, label: 'Balances', requiredPermissions: ['inventory.view'] },
+      { key: '/inventory/find-by-size', icon: <ColumnHeightOutlined />, label: 'Find by Size', requiredPermissions: ['inventory.view'] },
+      { key: '/inventory/replenishment', icon: <FundOutlined />, label: 'Model Quantities', requiredPermissions: ['inventory.view'] },
+      { key: '/inventory/transfers/manual', icon: <SwapOutlined />, label: 'Transfer - Manual', requiredPermissions: ['inventory.adjust'] },
+      { key: '/inventory/transfers/automatic', icon: <ExperimentOutlined />, label: 'Transfer - Automatic', requiredPermissions: ['inventory.adjust'] },
+      { key: '/inventory/transfers/balancing', icon: <ExperimentOutlined />, label: 'Transfer - Balancing (Legacy)', requiredPermissions: ['inventory.adjust'] },
+      { key: '/inventory/transfers/balancing-v2', icon: <ExperimentOutlined />, label: 'Transfer - Balancing v2', requiredPermissions: ['inventory.adjust'] },
+      { key: '/inventory/movements', icon: <SyncOutlined />, label: 'Movements', requiredPermissions: ['inventory.view'] },
+      { key: '/inventory/change-detail', icon: <HistoryOutlined />, label: 'Change Detail', requiredPermissions: ['inventory.view'] },
+      { key: '/inventory/sales-ledger', icon: <HistoryOutlined />, label: 'Sales Ledger', requiredPermissions: ['inventory.view'] },
+      { key: '/inventory/audit', icon: <AuditOutlined />, label: 'Audit', requiredPermissions: ['inventory.view'] },
       // Demoted - not in active use (muted style)
-      { key: '/inventory/dashboard', icon: <DashboardOutlined />, label: <DemotedLabel>Dashboard</DemotedLabel> },
+      { key: '/inventory/dashboard', icon: <DashboardOutlined />, label: <DemotedLabel>Dashboard</DemotedLabel>, requiredPermissions: ['inventory.view'] },
     ],
   },
   {
     key: '/purchase-planning',
     icon: <FundOutlined />,
     label: 'Plan de Compras',
+    requiredPermissions: ['purchasing.view'],
+  },
+  {
+    key: '/import-management',
+    icon: <ContainerOutlined />,
+    label: 'Import Management',
+    requiredPermissions: ['import_management.view'],
   },
   {
     key: '/sales',
     icon: <CreditCardOutlined />,
     label: 'Sales POS',
     children: [
-      { key: '/sales/enter', icon: <CreditCardOutlined />, label: 'Enter Sales' },
+      { key: '/sales/enter', icon: <CreditCardOutlined />, label: 'Enter Sales', requiredPermissions: ['sales_pos.operate'] },
     ],
   },
   {
@@ -122,13 +150,13 @@ const menuItems = [
     icon: <TeamOutlined />,
     label: 'Customer Intelligence',
     children: [
-      { key: '/customers/dashboard', icon: <PieChartOutlined />, label: 'Dashboard' },
-      { key: '/customers/intelligence', icon: <TeamOutlined />, label: 'Customers (KPI)' },
-      { key: '/customers', icon: <TeamOutlined />, label: 'Customer Records' },
-      { key: '/customers/segments', icon: <ApartmentOutlined />, label: 'Segments' },
-      { key: '/customers/churn-risk', icon: <AlertOutlined />, label: 'Churn Risk' },
-      { key: '/customers/vip', icon: <CrownOutlined />, label: 'VIP Customers' },
-      { key: '/customers/discount-sensitive', icon: <TagOutlined />, label: 'Discount Sensitivity' },
+      { key: '/customers/dashboard', icon: <PieChartOutlined />, label: 'Dashboard', requiredPermissions: ['segmentation.read'] },
+      { key: '/customers/intelligence', icon: <TeamOutlined />, label: 'Customers (KPI)', requiredPermissions: ['segmentation.read'] },
+      { key: '/customers', icon: <TeamOutlined />, label: 'Customer Records', requiredPermissions: ['segmentation.read'] },
+      { key: '/customers/segments', icon: <ApartmentOutlined />, label: 'Segments', requiredPermissions: ['segmentation.read'] },
+      { key: '/customers/churn-risk', icon: <AlertOutlined />, label: 'Churn Risk', requiredPermissions: ['segmentation.read'] },
+      { key: '/customers/vip', icon: <CrownOutlined />, label: 'VIP Customers', requiredPermissions: ['segmentation.read'] },
+      { key: '/customers/discount-sensitive', icon: <TagOutlined />, label: 'Discount Sensitivity', requiredPermissions: ['segmentation.read'] },
     ],
   },
   {
@@ -136,18 +164,19 @@ const menuItems = [
     icon: <FileTextOutlined />,
     label: 'Reports',
     children: [
-      { key: '/reports/aging', icon: <ClockCircleOutlined />, label: 'Aging' },
-      { key: '/reports/inventory-detail', icon: <InboxOutlined />, label: 'Inventory Detail' },
-      { key: '/reports/transfer-summary', icon: <SwapOutlined />, label: 'Transfer Summary' },
-      { key: '/reports/recommended-transfers', icon: <FundOutlined />, label: 'Recommended Transfers' },
-      { key: '/reports/sales', icon: <BarChartOutlined />, label: 'Sales' },
-      { key: '/reports/others', icon: <AppstoreOutlined />, label: 'Others' },
-      { key: '/reports/templates', icon: <BookOutlined />, label: 'Templates' },
-      { key: '/reports/runs', icon: <CameraOutlined />, label: 'Snapshots' },
+      { key: '/reports/aging', icon: <ClockCircleOutlined />, label: 'Aging', requiredPermissions: ['reports.view'] },
+      { key: '/reports/inventory-detail', icon: <InboxOutlined />, label: 'Inventory Detail', requiredPermissions: ['reports.view'] },
+      { key: '/reports/transfer-summary', icon: <SwapOutlined />, label: 'Transfer Summary', requiredPermissions: ['reports.view'] },
+      { key: '/reports/recommended-transfers', icon: <FundOutlined />, label: 'Recommended Transfers', requiredPermissions: ['reports.view'] },
+      { key: '/reports/sales', icon: <BarChartOutlined />, label: 'Sales', requiredPermissions: ['reports.view'] },
+      { key: '/reports/sales/seasonality-index', icon: <FundOutlined />, label: 'Seasonality Index', requiredPermissions: ['reports.view'] },
+      { key: '/reports/others', icon: <AppstoreOutlined />, label: 'Others', requiredPermissions: ['reports.view'] },
+      { key: '/reports/templates', icon: <BookOutlined />, label: 'Templates', requiredPermissions: ['reports.admin'] },
+      { key: '/reports/runs', icon: <CameraOutlined />, label: 'Snapshots', requiredPermissions: ['reports.admin'] },
       // Demoted - not in active use (muted style)
-      { key: '/reports/on-hand', icon: <FileTextOutlined />, label: <DemotedLabel>On-Hand</DemotedLabel> },
-      { key: '/reports/turnover', icon: <SyncOutlined />, label: <DemotedLabel>Turnover</DemotedLabel> },
-      { key: '/reports/sell-through', icon: <FundOutlined />, label: <DemotedLabel>Sell-Through</DemotedLabel> },
+      { key: '/reports/on-hand', icon: <FileTextOutlined />, label: <DemotedLabel>On-Hand</DemotedLabel>, requiredPermissions: ['reports.view'] },
+      { key: '/reports/turnover', icon: <SyncOutlined />, label: <DemotedLabel>Turnover</DemotedLabel>, requiredPermissions: ['reports.view'] },
+      { key: '/reports/sell-through', icon: <FundOutlined />, label: <DemotedLabel>Sell-Through</DemotedLabel>, requiredPermissions: ['reports.view'] },
     ],
   },
   {
@@ -155,7 +184,7 @@ const menuItems = [
     icon: <AuditOutlined />,
     label: 'Operations',
     children: [
-      { key: '/operations/migration-day', icon: <SyncOutlined />, label: 'Migration Day' },
+      { key: '/operations/migration-day', icon: <SyncOutlined />, label: 'Migration Day', requiredPermissions: ['employees.manage'] },
     ],
   },
   {
@@ -163,10 +192,10 @@ const menuItems = [
     icon: <ExperimentOutlined />,
     label: 'Utilities',
     children: [
-      { key: '/utilities/overview', icon: <ExperimentOutlined />, label: 'Overview' },
-      { key: '/utilities/change-sku-attributes', icon: <FileTextOutlined />, label: 'Change SKU Attributes' },
-      { key: '/utilities/change-keywords', icon: <FileTextOutlined />, label: 'Change Keywords' },
-      { key: '/utilities/batch-history', icon: <HistoryOutlined />, label: 'Batch History' },
+      { key: '/utilities/overview', icon: <ExperimentOutlined />, label: 'Overview', requiredPermissions: ['store_ops.view'] },
+      { key: '/utilities/change-sku-attributes', icon: <FileTextOutlined />, label: 'Change SKU Attributes', requiredPermissions: ['products.write'] },
+      { key: '/utilities/change-keywords', icon: <FileTextOutlined />, label: 'Change Keywords', requiredPermissions: ['products.write'] },
+      { key: '/utilities/batch-history', icon: <HistoryOutlined />, label: 'Batch History', requiredPermissions: ['products.write'] },
     ],
   },
   {
@@ -174,11 +203,11 @@ const menuItems = [
     icon: <ShoppingOutlined />,
     label: 'Purchasing',
     children: [
-      { key: '/purchasing/orders', icon: <FileTextOutlined />, label: 'Purchase Orders' },
-      { key: '/purchasing/orders/new-spec-preview', icon: <ExperimentOutlined />, label: 'PO Entry (Spec Preview)' },
-      { key: '/purchasing/receive', icon: <InboxOutlined />, label: 'Receive POs' },
-      { key: '/purchasing/receive-spec-preview', icon: <ExperimentOutlined />, label: 'Receive PO (Spec Preview)' },
-      { key: '/purchasing/reports', icon: <BarChartOutlined />, label: 'Reports' },
+      { key: '/purchasing/orders', icon: <FileTextOutlined />, label: 'Purchase Orders', requiredPermissions: ['purchasing.view'] },
+      { key: '/purchasing/orders/new-spec-preview', icon: <ExperimentOutlined />, label: 'PO Entry (Spec Preview)', requiredPermissions: ['purchasing.edit'] },
+      { key: '/purchasing/receive', icon: <InboxOutlined />, label: 'Receive POs', requiredPermissions: ['purchasing.edit'] },
+      { key: '/purchasing/receive-spec-preview', icon: <ExperimentOutlined />, label: 'Receive PO (Spec Preview)', requiredPermissions: ['purchasing.edit'] },
+      { key: '/purchasing/reports', icon: <BarChartOutlined />, label: 'Reports', requiredPermissions: ['purchasing.view'] },
     ],
   },
   {
@@ -186,11 +215,84 @@ const menuItems = [
     icon: <BarChartOutlined />,
     label: <DemotedLabel>OTB</DemotedLabel>,
     children: [
-      { key: '/otb/monthly-plans', icon: <CalendarOutlined />, label: 'Monthly Plans' },
-      { key: '/otb/dashboard', icon: <DashboardOutlined />, label: 'Budget Dashboard' },
+      { key: '/otb/monthly-plans', icon: <CalendarOutlined />, label: 'Monthly Plans', requiredPermissions: ['otb.view'] },
+      { key: '/otb/dashboard', icon: <DashboardOutlined />, label: 'Budget Dashboard', requiredPermissions: ['otb.view'] },
     ],
   },
 ]
+
+function hasMenuPermission(item: any, permissions: ReadonlySet<string>): boolean {
+  const required = item?.requiredPermissions as string[] | undefined;
+  if (!required || required.length === 0) return true;
+  return required.some((permission) => permissions.has(permission));
+}
+
+function compactDividers(items: any[]): any[] {
+  const out: any[] = [];
+  for (const item of items) {
+    if (item?.type === 'divider') {
+      if (out.length === 0 || out[out.length - 1]?.type === 'divider') continue;
+    }
+    out.push(item);
+  }
+  while (out[out.length - 1]?.type === 'divider') out.pop();
+  return out;
+}
+
+function filterMenuItemsForPermissions(items: readonly any[], permissions: ReadonlySet<string>): any[] {
+  const filtered = items.flatMap((item) => {
+    if (!item) return [];
+    if (item.type === 'divider') return [item];
+    if (Array.isArray(item.children)) {
+      const children = filterMenuItemsForPermissions(item.children, permissions);
+      if (children.length === 0) return [];
+      if (!hasMenuPermission(item, permissions)) return [];
+      return [{ ...item, children }];
+    }
+    return hasMenuPermission(item, permissions) ? [item] : [];
+  });
+  return compactDividers(filtered);
+}
+
+function firstLeafRoute(items: readonly any[]): string | null {
+  for (const item of items) {
+    if (!item || item.type === 'divider') continue;
+    if (Array.isArray(item.children)) {
+      const childRoute = firstLeafRoute(item.children);
+      if (childRoute) return childRoute;
+      continue;
+    }
+    if (typeof item.key === 'string' && item.key.startsWith('/')) return routeForMenuKey(item.key);
+  }
+  return null;
+}
+
+export function firstAccessibleMenuRoute(permissions: ReadonlySet<string>): string {
+  return firstLeafRoute(filterMenuItemsForPermissions(appMenuItems, permissions)) ?? '/me';
+}
+
+function linkLeafMenuItems(items: readonly any[]): any[] {
+  return items.map((item) => {
+    if (!item || item.type === 'divider') return item
+    const menuItem = { ...item }
+    delete menuItem.requiredPermissions
+    if (Array.isArray(item.children)) {
+      return {
+        ...menuItem,
+        children: linkLeafMenuItems(item.children),
+      }
+    }
+    if (typeof item.key !== 'string' || !item.key.startsWith('/')) return item
+    return {
+      ...menuItem,
+      label: (
+        <Link to={routeForMenuKey(item.key)} style={ROUTER_LINK_STYLE}>
+          {item.label}
+        </Link>
+      ),
+    }
+  })
+}
 
 function DemotedLabel({ children }: { children: ReactNode }) {
   return (
@@ -205,19 +307,21 @@ export default function AppLayout() {
   const navigate = useNavigate()
   const location = useLocation()
   const currentPath = location.pathname
-  const { user, logout } = useAuth()
+  const { user, logout, permissions } = useAuth()
+  const visibleAppMenuItems = useMemo(() => filterMenuItemsForPermissions(appMenuItems, permissions), [permissions])
+  const menuItems = useMemo(() => linkLeafMenuItems(visibleAppMenuItems), [visibleAppMenuItems])
 
   const userMenuItems = [
     {
       key: 'me',
-      label: 'My account',
-      onClick: () => navigate('/me'),
+      label: <Link to="/me">My account</Link>,
     },
-    {
-      key: 'users',
-      label: 'Users',
-      onClick: () => navigate('/admin/users'),
-    },
+    ...(permissions.has('identity_access.view')
+      ? [{
+          key: 'users',
+          label: <Link to="/admin/users">Users</Link>,
+        }]
+      : []),
     { type: 'divider' as const },
     {
       key: 'logout',
@@ -280,10 +384,10 @@ export default function AppLayout() {
     return bestKeys
   }
 
-  const allMenuKeys = menuItems.flatMap((item) =>
+  const allMenuKeys = visibleAppMenuItems.flatMap((item) =>
     item.children ? [item.key, ...collectMenuKeys(item.children)] : typeof item.key === 'string' ? [item.key] : [],
   )
-  const allLeafKeys = menuItems.flatMap((item) =>
+  const allLeafKeys = visibleAppMenuItems.flatMap((item) =>
     item.children ? collectLeafKeys(item.children) : typeof item.key === 'string' ? [item.key] : [],
   )
 
@@ -298,16 +402,16 @@ export default function AppLayout() {
       .sort((a, b) => b.length - a.length)[0] ?? selectedMenuKey
 
   const activeModule =
-    menuItems.find((item) => item.children && collectLeafKeys(item.children).includes(selectedLeaf)) ??
-    menuItems.find(
+    visibleAppMenuItems.find((item) => item.children && collectLeafKeys(item.children).includes(selectedLeaf)) ??
+    visibleAppMenuItems.find(
       (item) =>
         typeof item.key === 'string' &&
         (currentPath === item.key || currentPath.startsWith(`${item.key}/`)),
     ) ??
-    menuItems.find((item) => item.children && collectMenuKeys(item.children).includes(selectedMenuKey)) ??
-    menuItems[0]
+    visibleAppMenuItems.find((item) => item.children && collectMenuKeys(item.children).includes(selectedMenuKey)) ??
+    visibleAppMenuItems[0]
 
-  const desiredOpenKeys = Array.from(new Set(collectOpenKeysForPath(menuItems, currentPath)))
+  const desiredOpenKeys = Array.from(new Set(collectOpenKeysForPath(visibleAppMenuItems, currentPath)))
   const [openKeys, setOpenKeys] = useState<string[]>(() => desiredOpenKeys)
 
   useEffect(() => {
@@ -329,7 +433,10 @@ export default function AppLayout() {
           openKeys={openKeys}
           onOpenChange={(keys) => setOpenKeys(keys as string[])}
           items={menuItems}
-          onClick={({ key }) => navigate(key === '/utilities/overview' ? '/utilities' : key)}
+          onClick={({ key, domEvent }) => {
+            if (isModifiedNavigationEvent(domEvent)) return
+            navigate(routeForMenuKey(String(key)))
+          }}
         />
       </Sider>
       <Layout>

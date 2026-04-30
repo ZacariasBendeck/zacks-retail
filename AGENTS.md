@@ -43,3 +43,9 @@ RICS CSV files
   -> validate and normalize
   -> good records inserted into app customer tables
   -> incomplete or unsafe records inserted into import reject/audit tables
+
+  ## You will be required to test modules by clicking through things in the browser.  
+
+  -email: zbendeck@gmail.com
+  -login: 123
+

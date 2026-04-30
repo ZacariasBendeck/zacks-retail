@@ -1,0 +1,47 @@
+{
+  "algorithm": {
+    "scope": "RICS Balancing Transfers Preview",
+    "mode": "over_under_models",
+    "metric": "month_to_date_turns",
+    "mtd_turns_formula": "mtd_sales / (current_on_hand + mtd_sales / 2) * 12",
+    "product_order": "category",
+    "donor_order": "store",
+    "receiver_order": "turns_desc",
+    "store_selection": "2,5-25,28-30,35-43,99",
+    "category_range": "301-499",
+    "season_filter": "A-Z,1-9,0",
+    "keyword_exclusions": [
+      "DST",
+      "VER26*"
+    ],
+    "keyword_notes": "RP20ABR is present in the RICS report; <><>RP20ABR is not treated as an exclusion here."
+  },
+  "generated": {
+    "unit_keys": 2722,
+    "total_units": 2842,
+    "sku_count": 1143,
+    "store_pair_count": 87,
+    "exception_count": 88
+  },
+  "rics_report": {
+    "unit_keys": 2715,
+    "total_units": 2841,
+    "sku_count": 1142,
+    "store_pair_count": 82
+  },
+  "comparison": {
+    "exact_keys": 2486,
+    "missing_keys": 213,
+    "extra_keys": 220,
+    "quantity_mismatch_keys": 16,
+    "total_abs_quantity_delta": 479,
+    "matched_unit_quantity": 2602,
+    "unit_precision": 0.9155524278676987,
+    "unit_recall": 0.9158746920098557
+  },
+  "outputs": {
+    "generated_units": "E:\\dev\\zacks-retail\\outputs\\balancing_transfers_2026-04-28_132646\\replay_store_receiver_turns\\generated_transfer_units.csv",
+    "comparison_diff": "E:\\dev\\zacks-retail\\outputs\\balancing_transfers_2026-04-28_132646\\replay_store_receiver_turns\\comparison_diff.csv",
+    "generated_exceptions": "E:\\dev\\zacks-retail\\outputs\\balancing_transfers_2026-04-28_132646\\replay_store_receiver_turns\\generated_exceptions.csv"
+  }
+}

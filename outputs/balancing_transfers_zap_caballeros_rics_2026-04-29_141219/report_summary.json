@@ -1,0 +1,27 @@
+{
+  "source_pdf": "C:\\RICSWIN\\PDF\\LLAMADAS-RICS 2026-04-29 141219 Balancing Transfers ZAP CABALLEROS.PDF",
+  "report_date": "29/04/2026",
+  "report_time": "02:12",
+  "title": "RICS - Balancing Transfers (Preview)",
+  "report_name": "LLAMADAS",
+  "selection_name": "ZAP CABALLEROS",
+  "sort_order": "vendor order",
+  "transfer_basis": "SKUs over/under models; inventory based on Month-to-Date turns",
+  "selected_stores": "2,5-24,28-30,35-43,99",
+  "selected_categories": "500-555",
+  "selected_seasons": "Q-Z,1-9,A",
+  "selected_keywords": "<>DST",
+  "pages": 94,
+  "transfer_item_rows": 473,
+  "transfer_unit_rows": 523,
+  "total_units_to_transfer": 532,
+  "store_pair_count": 73,
+  "store_pair_subtotal_delta": 0,
+  "parse_warning_count": 0,
+  "parse_warnings_sample": [],
+  "outputs": {
+    "transfer_items": "E:\\dev\\zacks-retail\\outputs\\balancing_transfers_zap_caballeros_rics_2026-04-29_141219\\transfer_items.csv",
+    "transfer_units_by_size": "E:\\dev\\zacks-retail\\outputs\\balancing_transfers_zap_caballeros_rics_2026-04-29_141219\\transfer_units_by_size.csv",
+    "store_pair_summary": "E:\\dev\\zacks-retail\\outputs\\balancing_transfers_zap_caballeros_rics_2026-04-29_141219\\store_pair_summary.csv"
+  }
+}

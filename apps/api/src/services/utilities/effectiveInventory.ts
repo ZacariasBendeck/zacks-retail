@@ -1,15 +1,13 @@
 /**
- * Effective-value adapter — merges app.sku_attribute_override +
- * app.sku_keyword_override on top of rics_mirror.inventory_master.
+ * Effective-value adapter - merges app.sku_attribute_override +
+ * app.sku_keyword_override on top of app.sku.
  *
  * Spec: docs/dev/specs/2026-04-21-utilities-batch-change-design.md
  * Module: docs/modules/utilities.md
  *
  * Every read path that needs to filter or list SKUs respecting operator-applied
- * batch changes goes through here. This is the only place the overlay-merge SQL
- * lives — the effective-value CTE is the single source of truth.
- *
- * Writes never happen from this file — see batchChangeService.ts.
+ * batch changes goes through here. Writes never happen from this file; see
+ * batchChangeService.ts.
  */
 
 import { prisma } from '../../db/prisma';
@@ -24,7 +22,6 @@ interface CriteriaLookupRow {
   season: string | null;
   group_code: string | null;
   style_color: string | null;
-  mirror_keywords: string | null;
   retail_price: string | number | null;
   description: string | null;
 }
@@ -32,11 +29,6 @@ interface CriteriaLookupRow {
 /**
  * Resolve an SkuCriteria to matching SKUs. Returns total count + sku codes +
  * a bounded sample of effective-value rows for preview UIs.
- *
- * Scan cost is O(n) over rics_mirror.inventory_master (~200-300k rows). The
- * mirror has no indexes by design; at dev scale this runs sub-second. If it
- * becomes a bottleneck, the sync ETL can append `CREATE INDEX` after the
- * schema swap — no app-layer change required.
  */
 export async function findSkusByCriteria(
   c: SkuCriteria,
@@ -64,28 +56,33 @@ export async function findSkusByCriteria(
  * before-snapshot logic in batchChangeService and by targeted warmup invalidation.
  */
 export async function getEffectiveSkus(skuCodes: string[]): Promise<Map<string, EffectiveSku>> {
-  if (skuCodes.length === 0) return new Map();
+  const normalizedCodes = normalizeTextSet(skuCodes);
+  if (normalizedCodes.length === 0) return new Map();
 
   const rows = await prisma.$queryRawUnsafe<CriteriaLookupRow[]>(
     `
     SELECT
-      im.sku,
-      COALESCE(o.category, im.category)    AS category,
-      COALESCE(o.vendor, im.vendor)        AS vendor,
-      COALESCE(o.season, im.season)        AS season,
-      COALESCE(o.group_code, im.group_code) AS group_code,
-      im.style_color                        AS style_color,
-      im.key_words                          AS mirror_keywords,
-      im.retail_price                       AS retail_price,
-      im."desc"                             AS description
-    FROM rics_mirror.inventory_master im
-    LEFT JOIN app.sku_attribute_override o ON im.sku = o.rics_sku_code
-    WHERE im.sku = ANY($1::text[])
+      s.code AS sku,
+      COALESCE(o.category, s.category_number) AS category,
+      COALESCE(o.vendor, s.vendor_id) AS vendor,
+      COALESCE(o.season, s.season) AS season,
+      COALESCE(o.group_code, s.group_code) AS group_code,
+      s.style_color AS style_color,
+      s.retail_price AS retail_price,
+      COALESCE(
+        NULLIF(BTRIM(s.description_rics), ''),
+        NULLIF(BTRIM(s.description_web), ''),
+        s.provisional_code
+      ) AS description
+    FROM app.sku s
+    LEFT JOIN app.sku_attribute_override o ON o.rics_sku_code = s.code
+    WHERE s.code IS NOT NULL
+      AND UPPER(s.code) = ANY($1::text[])
     `,
-    skuCodes,
+    normalizedCodes,
   );
 
-  const effectiveKeywords = await loadEffectiveKeywordsForSkus(skuCodes);
+  const effectiveKeywords = await loadEffectiveKeywordsForSkus(rows.map(r => r.sku));
 
   const map = new Map<string, EffectiveSku>();
   for (const r of rows) {
@@ -96,56 +93,58 @@ export async function getEffectiveSkus(skuCodes: string[]): Promise<Map<string, 
 
 /**
  * Load every SKU with effective values. Used by the SKU Lookup warmup index.
- * MUST cover every SKU — per CLAUDE.md hard rule (no capping).
+ * MUST cover every SKU - no capping.
  */
 export async function loadAllEffectiveRows(): Promise<EffectiveSku[]> {
   const rows = await prisma.$queryRawUnsafe<CriteriaLookupRow[]>(
     `
     SELECT
-      im.sku,
-      COALESCE(o.category, im.category)    AS category,
-      COALESCE(o.vendor, im.vendor)        AS vendor,
-      COALESCE(o.season, im.season)        AS season,
-      COALESCE(o.group_code, im.group_code) AS group_code,
-      im.style_color                        AS style_color,
-      im.key_words                          AS mirror_keywords,
-      im.retail_price                       AS retail_price,
-      im."desc"                             AS description
-    FROM rics_mirror.inventory_master im
-    LEFT JOIN app.sku_attribute_override o ON im.sku = o.rics_sku_code
-    WHERE im.sku IS NOT NULL
+      s.code AS sku,
+      COALESCE(o.category, s.category_number) AS category,
+      COALESCE(o.vendor, s.vendor_id) AS vendor,
+      COALESCE(o.season, s.season) AS season,
+      COALESCE(o.group_code, s.group_code) AS group_code,
+      s.style_color AS style_color,
+      s.retail_price AS retail_price,
+      COALESCE(
+        NULLIF(BTRIM(s.description_rics), ''),
+        NULLIF(BTRIM(s.description_web), ''),
+        s.provisional_code
+      ) AS description
+    FROM app.sku s
+    LEFT JOIN app.sku_attribute_override o ON o.rics_sku_code = s.code
+    WHERE s.code IS NOT NULL
+    ORDER BY s.code
     `,
   );
 
-  // Keywords: compute in one pass to avoid N+1.
   const skuCodes = rows.map(r => r.sku);
   const effectiveKeywords = await loadEffectiveKeywordsForSkus(skuCodes);
 
   return rows.map(r => rowToEffectiveSku(r, effectiveKeywords.get(r.sku) ?? []));
 }
 
-// ─────────── internals ───────────
+// ---------------- internals ----------------
 
 /**
  * Main criteria query. Returns effective rows that match every criterion.
  * Arrays combine OR within a field; boolean filters are AND across.
- * `stylesColors` does case-insensitive substring OR-match.
+ * styleColor does case-insensitive substring OR-match.
  */
 async function loadEffectiveRows(c: SkuCriteria): Promise<CriteriaLookupRow[]> {
-  // Bind-param indices must match the $N below.
   const params: unknown[] = [];
   const push = <T>(v: T): string => {
     params.push(v);
     return `$${params.length}`;
   };
 
-  const skusParam      = c.skus?.length       ? push(c.skus)                  : null;
-  const categoriesPar  = c.categories?.length ? push(c.categories)            : null;
-  const vendorsParam   = c.vendors?.length    ? push(c.vendors)               : null;
-  const seasonsParam   = c.seasons?.length    ? push(c.seasons)               : null;
-  const groupsParam    = c.groups?.length     ? push(c.groups)                : null;
-  const styleColorsPar = c.stylesColors?.length ? push(c.stylesColors)        : null;
-  const keywordsParam  = c.keywords?.length   ? push(c.keywords)              : null;
+  const skusParam = c.skus?.length ? push(normalizeTextSet(c.skus)) : null;
+  const categoriesParam = c.categories?.length ? push(c.categories) : null;
+  const vendorsParam = c.vendors?.length ? push(normalizeTextSet(c.vendors)) : null;
+  const seasonsParam = c.seasons?.length ? push(normalizeTextSet(c.seasons)) : null;
+  const groupsParam = c.groups?.length ? push(normalizeTextSet(c.groups)) : null;
+  const styleColorsParam = c.stylesColors?.length ? push(c.stylesColors) : null;
+  const keywordsParam = c.keywords?.length ? push(normalizeTextSet(c.keywords)) : null;
   const attributeFilters = Object.entries(c.attributes ?? {})
     .map(([dimensionCode, valueCodes]) => ({
       dimensionCode: dimensionCode.trim(),
@@ -153,34 +152,42 @@ async function loadEffectiveRows(c: SkuCriteria): Promise<CriteriaLookupRow[]> {
     }))
     .filter((f) => f.dimensionCode && f.valueCodes.length > 0);
 
-  const whereClauses: string[] = ['im.sku IS NOT NULL'];
-  if (skusParam)      whereClauses.push(`im.sku = ANY(${skusParam}::text[])`);
-  if (categoriesPar)  whereClauses.push(`COALESCE(o.category, im.category) = ANY(${categoriesPar}::int[])`);
-  if (vendorsParam)   whereClauses.push(`COALESCE(o.vendor, im.vendor) = ANY(${vendorsParam}::text[])`);
-  if (seasonsParam)   whereClauses.push(`COALESCE(o.season, im.season) = ANY(${seasonsParam}::text[])`);
-  if (groupsParam)    whereClauses.push(`COALESCE(o.group_code, im.group_code) = ANY(${groupsParam}::text[])`);
-  if (styleColorsPar) {
+  const whereClauses: string[] = ['s.code IS NOT NULL'];
+  if (skusParam) whereClauses.push(`UPPER(s.code) = ANY(${skusParam}::text[])`);
+  if (categoriesParam) whereClauses.push(`COALESCE(o.category, s.category_number) = ANY(${categoriesParam}::int[])`);
+  if (vendorsParam) whereClauses.push(`UPPER(COALESCE(o.vendor, s.vendor_id, '')) = ANY(${vendorsParam}::text[])`);
+  if (seasonsParam) whereClauses.push(`UPPER(COALESCE(o.season, s.season, '')) = ANY(${seasonsParam}::text[])`);
+  if (groupsParam) whereClauses.push(`UPPER(COALESCE(o.group_code, s.group_code, '')) = ANY(${groupsParam}::text[])`);
+  if (styleColorsParam) {
     whereClauses.push(
-      `EXISTS (SELECT 1 FROM UNNEST(${styleColorsPar}::text[]) s WHERE im.style_color ILIKE '%' || s || '%')`,
+      `EXISTS (
+        SELECT 1
+        FROM UNNEST(${styleColorsParam}::text[]) needle
+        WHERE s.style_color ILIKE '%' || needle || '%'
+      )`,
     );
   }
   if (keywordsParam) {
-    // Effective keywords: (mirror string split) ∪ ADD-overrides − REMOVE-overrides.
-    // We check each requested keyword against that set for this sku.
     whereClauses.push(
       `(
         EXISTS (
           SELECT 1
-          FROM UNNEST(string_to_array(COALESCE(im.key_words, ''), ' ')) AS kw
-          WHERE TRIM(kw) = ANY(${keywordsParam}::text[])
+          FROM UNNEST(string_to_array(COALESCE(s.keywords, ''), ' ')) AS kw(keyword)
+          WHERE UPPER(BTRIM(kw.keyword)) = ANY(${keywordsParam}::text[])
             AND NOT EXISTS (
-              SELECT 1 FROM app.sku_keyword_override r
-              WHERE r.rics_sku_code = im.sku AND r.keyword = TRIM(kw) AND r.action = 'REMOVE'
+              SELECT 1
+              FROM app.sku_keyword_override r
+              WHERE UPPER(r.rics_sku_code) = UPPER(s.code)
+                AND UPPER(r.keyword) = UPPER(BTRIM(kw.keyword))
+                AND r.action = 'REMOVE'
             )
         )
         OR EXISTS (
-          SELECT 1 FROM app.sku_keyword_override a
-          WHERE a.rics_sku_code = im.sku AND a.action = 'ADD' AND a.keyword = ANY(${keywordsParam}::text[])
+          SELECT 1
+          FROM app.sku_keyword_override a
+          WHERE UPPER(a.rics_sku_code) = UPPER(s.code)
+            AND a.action = 'ADD'
+            AND UPPER(a.keyword) = ANY(${keywordsParam}::text[])
         )
       )`,
     );
@@ -194,7 +201,7 @@ async function loadEffectiveRows(c: SkuCriteria): Promise<CriteriaLookupRow[]> {
         FROM app.sku_attribute_assignment a
         JOIN app.attribute_value v ON v.id = a.value_id
         JOIN app.attribute_dimension d ON d.id = a.dimension_id
-        WHERE a.sku_code = im.sku
+        WHERE a.sku_code = s.code
           AND d.code = ${dimParam}
           AND v.code = ANY(${valuesParam}::text[])
       )`,
@@ -203,18 +210,22 @@ async function loadEffectiveRows(c: SkuCriteria): Promise<CriteriaLookupRow[]> {
 
   const sql = `
     SELECT
-      im.sku,
-      COALESCE(o.category, im.category)    AS category,
-      COALESCE(o.vendor, im.vendor)        AS vendor,
-      COALESCE(o.season, im.season)        AS season,
-      COALESCE(o.group_code, im.group_code) AS group_code,
-      im.style_color                        AS style_color,
-      im.key_words                          AS mirror_keywords,
-      im.retail_price                       AS retail_price,
-      im."desc"                             AS description
-    FROM rics_mirror.inventory_master im
-    LEFT JOIN app.sku_attribute_override o ON im.sku = o.rics_sku_code
+      s.code AS sku,
+      COALESCE(o.category, s.category_number) AS category,
+      COALESCE(o.vendor, s.vendor_id) AS vendor,
+      COALESCE(o.season, s.season) AS season,
+      COALESCE(o.group_code, s.group_code) AS group_code,
+      s.style_color AS style_color,
+      s.retail_price AS retail_price,
+      COALESCE(
+        NULLIF(BTRIM(s.description_rics), ''),
+        NULLIF(BTRIM(s.description_web), ''),
+        s.provisional_code
+      ) AS description
+    FROM app.sku s
+    LEFT JOIN app.sku_attribute_override o ON o.rics_sku_code = s.code
     WHERE ${whereClauses.join(' AND ')}
+    ORDER BY s.code
   `;
 
   return prisma.$queryRawUnsafe<CriteriaLookupRow[]>(sql, ...params);
@@ -227,32 +238,44 @@ interface KeywordRow {
 
 /**
  * Compute effective keywords for a given set of SKUs.
- * Returns one row per (sku, keyword) pair after applying ADD/REMOVE overrides
- * on top of the RICS space-separated KeyWords string.
+ * Effective keywords = app.sku.keywords tokens union ADD overrides minus
+ * REMOVE overrides.
  */
 async function loadEffectiveKeywordsForSkus(skuCodes: string[]): Promise<Map<string, string[]>> {
-  if (skuCodes.length === 0) return new Map();
+  const normalizedCodes = normalizeTextSet(skuCodes);
+  if (normalizedCodes.length === 0) return new Map();
 
   const rows = await prisma.$queryRawUnsafe<KeywordRow[]>(
     `
-    WITH mirror_words AS (
-      SELECT im.sku, TRIM(kw) AS keyword
-      FROM rics_mirror.inventory_master im,
-           UNNEST(string_to_array(COALESCE(im.key_words, ''), ' ')) AS kw
-      WHERE im.sku = ANY($1::text[]) AND TRIM(kw) <> ''
+    WITH sku_scope AS (
+      SELECT code, keywords
+      FROM app.sku
+      WHERE code IS NOT NULL
+        AND UPPER(code) = ANY($1::text[])
+    ),
+    base_words AS (
+      SELECT s.code AS sku, UPPER(BTRIM(kw.keyword)) AS keyword
+      FROM sku_scope s,
+           UNNEST(string_to_array(COALESCE(s.keywords, ''), ' ')) AS kw(keyword)
+      WHERE BTRIM(kw.keyword) <> ''
     ),
     combined AS (
-      SELECT sku, keyword FROM mirror_words
+      SELECT sku, keyword FROM base_words
       UNION
-      SELECT rics_sku_code AS sku, keyword FROM app.sku_keyword_override
-      WHERE rics_sku_code = ANY($1::text[]) AND action = 'ADD'
+      SELECT s.code AS sku, UPPER(a.keyword) AS keyword
+      FROM sku_scope s
+      JOIN app.sku_keyword_override a ON UPPER(a.rics_sku_code) = UPPER(s.code)
+      WHERE a.action = 'ADD'
     )
     SELECT sku, keyword FROM combined
     EXCEPT
-    SELECT rics_sku_code AS sku, keyword FROM app.sku_keyword_override
-    WHERE rics_sku_code = ANY($1::text[]) AND action = 'REMOVE'
+    SELECT s.code AS sku, UPPER(r.keyword) AS keyword
+    FROM sku_scope s
+    JOIN app.sku_keyword_override r ON UPPER(r.rics_sku_code) = UPPER(s.code)
+    WHERE r.action = 'REMOVE'
+    ORDER BY sku, keyword
     `,
-    skuCodes,
+    normalizedCodes,
   );
 
   const map = new Map<string, string[]>();
@@ -262,6 +285,16 @@ async function loadEffectiveKeywordsForSkus(skuCodes: string[]): Promise<Map<str
     else map.set(r.sku, [r.keyword]);
   }
   return map;
+}
+
+function normalizeTextSet(values: string[]): string[] {
+  return Array.from(
+    new Set(
+      values
+        .map((value) => String(value).trim().toUpperCase())
+        .filter((value) => value.length > 0),
+    ),
+  );
 }
 
 function rowToEffectiveSku(r: CriteriaLookupRow, keywords: string[]): EffectiveSku {

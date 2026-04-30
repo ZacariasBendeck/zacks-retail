@@ -1,0 +1,96 @@
+{
+  "scope": "from warehouse/store 99 only",
+  "rics": {
+    "keys": 929,
+    "units": 955,
+    "sku_count": 203,
+    "destination_store_count": 11
+  },
+  "generated": {
+    "keys": 930,
+    "units": 956,
+    "sku_count": 204,
+    "destination_store_count": 11
+  },
+  "comparison": {
+    "matched_units": 955,
+    "unit_precision": 0.9989539748953975,
+    "unit_recall": 1.0,
+    "exact_keys": 929,
+    "missing_keys": 0,
+    "extra_keys": 1,
+    "quantity_mismatch_keys": 0,
+    "total_abs_quantity_delta": 1
+  },
+  "by_destination_store": [
+    {
+      "to_store": 2,
+      "rics_units": 126,
+      "generated_units": 126,
+      "delta": 0
+    },
+    {
+      "to_store": 5,
+      "rics_units": 125,
+      "generated_units": 125,
+      "delta": 0
+    },
+    {
+      "to_store": 6,
+      "rics_units": 3,
+      "generated_units": 3,
+      "delta": 0
+    },
+    {
+      "to_store": 9,
+      "rics_units": 2,
+      "generated_units": 2,
+      "delta": 0
+    },
+    {
+      "to_store": 12,
+      "rics_units": 103,
+      "generated_units": 103,
+      "delta": 0
+    },
+    {
+      "to_store": 13,
+      "rics_units": 115,
+      "generated_units": 115,
+      "delta": 0
+    },
+    {
+      "to_store": 14,
+      "rics_units": 113,
+      "generated_units": 113,
+      "delta": 0
+    },
+    {
+      "to_store": 16,
+      "rics_units": 36,
+      "generated_units": 36,
+      "delta": 0
+    },
+    {
+      "to_store": 28,
+      "rics_units": 111,
+      "generated_units": 111,
+      "delta": 0
+    },
+    {
+      "to_store": 29,
+      "rics_units": 106,
+      "generated_units": 107,
+      "delta": 1
+    },
+    {
+      "to_store": 30,
+      "rics_units": 115,
+      "generated_units": 115,
+      "delta": 0
+    }
+  ],
+  "outputs": {
+    "diff_csv": "E:\\dev\\zacks-retail\\outputs\\balancing_transfers_2026-04-28_132646\\replay\\warehouse99_comparison_diff.csv"
+  }
+}

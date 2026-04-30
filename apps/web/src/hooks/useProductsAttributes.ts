@@ -31,6 +31,15 @@ export function useAttributeDimensions(withCounts = false) {
   })
 }
 
+export function useAttributeDimensionsForSkus(skuCodes: string[], withCounts = false) {
+  return useQuery({
+    queryKey: ['products-attributes', 'dimensions-for-skus', { skuCodes, withCounts }],
+    queryFn: () => productsAttributesApi.listDimensionsForSkus(skuCodes, withCounts),
+    enabled: skuCodes.length > 0,
+    staleTime: CATALOG_STALE_MS,
+  })
+}
+
 export function useSkuAttributes(code: string | undefined) {
   return useQuery({
     queryKey: ['products-attributes', 'sku', code],

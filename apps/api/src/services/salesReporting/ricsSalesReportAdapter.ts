@@ -210,6 +210,11 @@ interface StoreChainRow {
   label: string;
   storeNumbers: number[];
 }
+interface StoreChainByStoreRow {
+  store_number: number | null;
+  chain_code: string | null;
+  chain_label: string | null;
+}
 
 async function loadGroupList(): Promise<GroupRow[]> {
   return cachedAsync('sr:dim:groups', 300_000, async () => {
@@ -256,6 +261,120 @@ async function loadStoreChainList(): Promise<StoreChainRow[]> {
         : [],
     }));
   });
+}
+
+async function loadStoreChainByStore(): Promise<Map<number, { code: string; label: string }>> {
+  return cachedAsync('sr:store-chain-by-store', 300_000, async () => {
+    const rows = await prisma.$queryRawUnsafe<StoreChainByStoreRow[]>(
+      `
+        SELECT
+          sgm.store_number,
+          sg.code AS chain_code,
+          sg.label AS chain_label
+        FROM app.store_group_member sgm
+        INNER JOIN app.store_group sg ON sg.code = sgm.group_code
+        WHERE sg.active = true
+      `,
+    );
+    const out = new Map<number, { code: string; label: string }>();
+    for (const row of rows) {
+      const storeNumber = Number(row.store_number);
+      const code = row.chain_code?.trim();
+      if (!Number.isInteger(storeNumber) || storeNumber <= 0 || !code) continue;
+      out.set(storeNumber, {
+        code,
+        label: row.chain_label?.trim() || code,
+      });
+    }
+    return out;
+  });
+}
+
+async function loadOpenPurchaseOrdersBySku(skuCodes: string[]): Promise<Map<string, OnOrderMetrics>> {
+  const unique = Array.from(new Set(
+    skuCodes
+      .map((sku) => sku?.trim().toUpperCase())
+      .filter((sku): sku is string => !!sku),
+  ));
+  const out = new Map<string, OnOrderMetrics>();
+  if (unique.length === 0) return out;
+
+  const nativeRows = await prisma.$queryRawUnsafe<Array<{
+    sku_code: string | null;
+    store_number: number | null;
+    open_qty: number | bigint | null;
+    open_cost: number | string | null;
+  }>>(
+    `
+      SELECT
+        UPPER(TRIM(s.code)) AS sku_code,
+        po.ship_to_store_id AS store_number,
+        COALESCE(SUM(pol.quantity_ordered - pol.quantity_received), 0)::int AS open_qty,
+        COALESCE(SUM(
+          (pol.quantity_ordered - pol.quantity_received)
+          * COALESCE(pol.estimated_landed_unit_cost_hnl, pol.unit_cost)
+        ), 0)::float8 AS open_cost
+      FROM app.purchase_order_line pol
+      JOIN app.purchase_order po ON po.id = pol.po_id
+      JOIN app.sku s ON s.id = pol.sku_id
+      WHERE po.status IN ('SUBMITTED', 'CONFIRMED', 'PARTIALLY_RECEIVED')
+        AND (pol.quantity_ordered - pol.quantity_received) > 0
+        AND s.code IS NOT NULL
+        AND UPPER(TRIM(s.code)) = ANY($1::text[])
+      GROUP BY UPPER(TRIM(s.code)), po.ship_to_store_id
+    `,
+    unique,
+  );
+
+  const legacyRows = await prisma.$queryRawUnsafe<Array<{
+    sku_code: string | null;
+    store_number: number | null;
+    open_qty: number | bigint | null;
+    open_cost: number | string | null;
+  }>>(
+    `
+      WITH legacy_open AS (
+        SELECT
+          UPPER(TRIM(l.sku_code)) AS sku_code,
+          po.ship_store AS store_number,
+          GREATEST(COALESCE(ordered.qty, 0) - COALESCE(received.qty, 0), 0) AS open_qty,
+          COALESCE(l.cost, 0)::float8 AS unit_cost
+        FROM app.purchase_order_legacy_line l
+        JOIN app.purchase_order_legacy po ON po.po_number = l.po_number
+        CROSS JOIN LATERAL (
+          SELECT COALESCE(SUM(v), 0)::int AS qty FROM unnest(l.ordered_qtys) AS v
+        ) ordered
+        CROSS JOIN LATERAL (
+          SELECT COALESCE(SUM(v), 0)::int AS qty FROM unnest(l.received_qtys) AS v
+        ) received
+        WHERE COALESCE(TRIM(l.sku_code), '') <> ''
+          AND UPPER(TRIM(l.sku_code)) = ANY($1::text[])
+      )
+      SELECT
+        sku_code,
+        store_number,
+        COALESCE(SUM(open_qty), 0)::int AS open_qty,
+        COALESCE(SUM(open_qty * unit_cost), 0)::float8 AS open_cost
+      FROM legacy_open
+      WHERE open_qty > 0
+      GROUP BY sku_code, store_number
+    `,
+    unique,
+  );
+
+  for (const row of [...nativeRows, ...legacyRows]) {
+    const sku = row.sku_code?.trim().toUpperCase();
+    if (!sku) continue;
+    const qty = Number(row.open_qty ?? 0);
+    const cost = Number(row.open_cost ?? 0);
+    addOnOrderMetrics(out, `${sku}|*`, qty, cost);
+    const storeNumber = Number(row.store_number);
+    if (Number.isInteger(storeNumber) && storeNumber > 0) {
+      addOnOrderMetrics(out, `${sku}|${storeNumber}`, qty, cost);
+    }
+  }
+
+  return out;
 }
 
 /**
@@ -488,6 +607,18 @@ const EMPTY_INVENTORY_METRICS: OnHandInventoryMetrics = {
   inventoryUnitCost: null,
 };
 
+interface OnOrderMetrics {
+  qty: number;
+  cost: number;
+  unitCost: number | null;
+}
+
+const EMPTY_ON_ORDER_METRICS: OnOrderMetrics = {
+  qty: 0,
+  cost: 0,
+  unitCost: null,
+};
+
 function addInventoryMetrics(
   out: Map<string, OnHandInventoryMetrics>,
   key: string,
@@ -498,6 +629,20 @@ function addInventoryMetrics(
   current.onHandAtCost += value.onHandAtCost;
   current.inventoryUnitCost =
     current.unitsOnHand > 0 ? current.onHandAtCost / current.unitsOnHand : null;
+  out.set(key, current);
+}
+
+function addOnOrderMetrics(
+  out: Map<string, OnOrderMetrics>,
+  key: string,
+  qty: number,
+  cost: number,
+): void {
+  if (qty <= 0) return;
+  const current = out.get(key) ?? { ...EMPTY_ON_ORDER_METRICS };
+  current.qty += qty;
+  current.cost += cost;
+  current.unitCost = current.qty > 0 ? current.cost / current.qty : null;
   out.set(key, current);
 }
 
@@ -1458,6 +1603,7 @@ export async function getSalesAnalysis(params: {
    * full-screen ReportViewerPage opts in to get the richer payload.
    */
   includeAttributes?: boolean;
+  includeOnOrder?: boolean;
 }): Promise<SalesAnalysisReport> {
   const { startDate, endDate } = resolveAnalysisWindow(params);
 
@@ -1632,6 +1778,10 @@ export async function getSalesAnalysis(params: {
     Math.round(
       (new Date(endDate).getTime() - new Date(startDate).getTime()) / 86_400_000,
     ) + 1;
+  const storeChainByStore = combine ? new Map<number, { code: string; label: string }>() : await loadStoreChainByStore();
+  const onOrderLookup = params.includeOnOrder && params.reportType === 'SKU_DETAIL'
+    ? await loadOpenPurchaseOrdersBySku([...buckets.values()].map((b) => b.dimensionKey))
+    : new Map<string, OnOrderMetrics>();
 
   // Default sort: by dimensionKey (numeric-aware). For DEPT_SUMMARY /
   // CATEGORY_SUMMARY this gives numeric ascending; for VENDOR_SUMMARY /
@@ -1649,6 +1799,12 @@ export async function getSalesAnalysis(params: {
           : `${b.dimensionKey}|${b.storeNumber}`;
       const inventory = inventoryLookup.get(onHandKey) ?? EMPTY_INVENTORY_METRICS;
       const onHandAtCost = inventory.onHandAtCost;
+      const storeChain = b.storeNumber != null ? storeChainByStore.get(b.storeNumber) ?? null : null;
+      const onOrderKey =
+        params.storeOption === 'COMBINE'
+          ? `${b.dimensionKey}|*`
+          : `${b.dimensionKey}|${b.storeNumber}`;
+      const onOrder = onOrderLookup.get(onOrderKey) ?? EMPTY_ON_ORDER_METRICS;
 
       const metrics = computeRoiTurnsGp({
         netSales: b.netSales,
@@ -1662,6 +1818,8 @@ export async function getSalesAnalysis(params: {
         dimensionKey: b.dimensionKey,
         dimensionLabel: b.dimensionLabel,
         storeNumber: b.storeNumber,
+        storeChainCode: storeChain?.code ?? null,
+        storeChainLabel: storeChain?.label ?? null,
         qty: b.qty,
         netSales: round2(b.netSales),
         cogs: round2(b.cogs),
@@ -1674,6 +1832,13 @@ export async function getSalesAnalysis(params: {
         onHandAtCost: round2(onHandAtCost),
         turns: metrics.turns,
         roiPct: metrics.roiPct,
+        ...(params.includeOnOrder
+          ? {
+              onOrderQty: round2(onOrder.qty),
+              onOrderUnitCost: onOrder.unitCost != null ? round2(onOrder.unitCost) : null,
+              onOrderCost: round2(onOrder.cost),
+            }
+          : {}),
         priorYearNetSales: priorYear != null ? round2(priorYear) : null,
         pyPctChange: priorYear == null || priorYear === 0
           ? null
@@ -1691,6 +1856,8 @@ export async function getSalesAnalysis(params: {
   const totalGrossProfit = rows.reduce((s, r) => s + r.grossProfit, 0);
   const totalUnitsOnHand = rows.reduce((s, r) => s + r.unitsOnHand, 0);
   const totalOnHandAtCost = rows.reduce((s, r) => s + r.onHandAtCost, 0);
+  const totalOnOrderQty = rows.reduce((s, r) => s + (r.onOrderQty ?? 0), 0);
+  const totalOnOrderCost = rows.reduce((s, r) => s + (r.onOrderCost ?? 0), 0);
   const totalsMetrics = computeRoiTurnsGp({
     netSales: totalNetSales,
     cogs: totalCogs,
@@ -1711,6 +1878,13 @@ export async function getSalesAnalysis(params: {
     gpPct: totalsMetrics.gpPct,
     turns: totalsMetrics.turns,
     roiPct: totalsMetrics.roiPct,
+    ...(params.includeOnOrder
+      ? {
+          onOrderQty: round2(totalOnOrderQty),
+          onOrderUnitCost: totalOnOrderQty > 0 ? round2(totalOnOrderCost / totalOnOrderQty) : null,
+          onOrderCost: round2(totalOnOrderCost),
+        }
+      : {}),
     priorYearNetSales: priorYearByDimStore
       ? round2(rows.reduce((s, r) => s + (r.priorYearNetSales ?? 0), 0))
       : null,

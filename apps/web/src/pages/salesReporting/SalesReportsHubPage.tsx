@@ -8,6 +8,7 @@ import {
   FundOutlined,
   TableOutlined,
   ApartmentOutlined,
+  FundProjectionScreenOutlined,
 } from '@ant-design/icons'
 import { Link } from 'react-router-dom'
 import ReportHeader from '../../components/reports/ReportHeader'
@@ -74,6 +75,14 @@ const REPORTS: ReportCard[] = [
     citation: 'RICS Ch. 6 p. 95',
     to: '/reports/sales/history-by-month',
     icon: <CalendarOutlined />,
+    status: 'live',
+  },
+  {
+    title: 'Seasonality Index',
+    description: 'Department monthly demand weights across all stores. Used by reorder planning to forecast coverage.',
+    citation: 'App-native',
+    to: '/reports/sales/seasonality-index',
+    icon: <FundProjectionScreenOutlined />,
     status: 'live',
   },
   {

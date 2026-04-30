@@ -25,6 +25,7 @@ export const REPORT_TYPE_LABELS: Record<ReportType, string> = {
   'sales-by-time': 'Sales by Time',
   'salesperson-summary': 'Salesperson Summary',
   'sales-history-by-month': 'Sales History by Month',
+  'balancing-transfer': 'Balancing Transfer',
 }
 
 /**

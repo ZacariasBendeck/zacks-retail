@@ -4,24 +4,24 @@ Execution order for bringing the RICS salespeople surface to cutover readiness.
 
 This plan follows the current repo reality:
 
-- Slice 1 auth/users is already shipped.
-- The current implementation unified employee-facing fields onto `public.User`.
-- The remaining work should continue from that model instead of introducing a second employee identity table mid-stream.
+- Slice 1 auth/users shipped and has moved under the standalone Identity & Access module.
+- Employees should now treat login accounts as an external dependency.
+- The remaining work should keep salesperson/time-clock/commission data separate from app identity.
 
 ## Build Slices
 
-### Slice 1. Auth / Users foundation
+### Slice 1. Identity & Access dependency
 
-**Status:** shipped
+**Status:** moved to `identity-access`
 
-Already live:
+Already live through the Identity & Access module:
 
 - login / logout / me / change-password
-- user CRUD
+- user CRUD / deactivate
 - roles + permission middleware
 - owner bootstrap
 
-This slice is the dependency base for everything else in `employees`.
+This module depends on Identity & Access for authenticated actor identity and permissions. Employees no longer owns app users, sessions, MFA, SSO, or access-scope design.
 
 ### Slice 2. Employee roster core
 

@@ -93,6 +93,31 @@ describe('auth routes', () => {
       .send({ oldPassword: 'wrong', newPassword: 'new-password-456' });
     expect(res.status).toBe(400);
   });
+
+  it('POST /auth/change-password changes the password and revokes other sessions', async () => {
+    const newPassword = 'new-password-789';
+    const firstLogin = await request(app).post('/api/v1/auth/login').send({ email, password });
+    const secondLogin = await request(app).post('/api/v1/auth/login').send({ email, password });
+    const firstCookie = firstLogin.headers['set-cookie'][0];
+    const secondCookie = secondLogin.headers['set-cookie'][0];
+
+    const change = await request(app)
+      .post('/api/v1/auth/change-password')
+      .set('Cookie', firstCookie)
+      .send({ oldPassword: password, newPassword });
+
+    expect(change.status).toBe(204);
+
+    const currentSession = await request(app).get('/api/v1/auth/me').set('Cookie', firstCookie);
+    expect(currentSession.status).toBe(200);
+    const revokedSession = await request(app).get('/api/v1/auth/me').set('Cookie', secondCookie);
+    expect(revokedSession.status).toBe(401);
+
+    const oldLogin = await request(app).post('/api/v1/auth/login').send({ email, password });
+    expect(oldLogin.status).toBe(401);
+    const newLogin = await request(app).post('/api/v1/auth/login').send({ email, password: newPassword });
+    expect(newLogin.status).toBe(200);
+  });
 });
 
 

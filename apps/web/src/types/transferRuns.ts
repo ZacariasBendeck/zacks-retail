@@ -88,6 +88,10 @@ export interface AutoTransferPreviewRecord {
 
 export interface BalancingTransferCriteria {
   storeIds?: number[]
+  ricsStoreSelection?: string | null
+  ricsCategorySelection?: string | null
+  ricsSeasonSelection?: string | null
+  ricsKeywordExclusions?: string | null
   vendorCodes?: string[]
   categoryMin?: number | null
   categoryMax?: number | null
@@ -103,6 +107,7 @@ export interface BalancingTransferCriteria {
 }
 
 export interface CreateBalancingTransferRunPayload {
+  algorithmMode?: 'APP_LEGACY' | 'RICS_MIMIC'
   balancingMethod: 'OVER_UNDER_MODELS' | 'WITHOUT_MODELS' | 'WITHOUT_CONSIDERING_MODELS'
   performanceMetric: 'ROI' | 'TURNS' | 'SELL_THRU'
   salesPeriod: 'MONTH' | 'SEASON' | 'YEAR'
@@ -148,6 +153,7 @@ export interface BalancingTransferPreviewLine {
 export interface BalancingTransferPreviewRecord {
   id: string
   status: 'PREVIEWED' | 'COMMITTED' | 'CANCELLED'
+  algorithmMode: 'APP_LEGACY' | 'RICS_MIMIC'
   balancingMethod: 'OVER_UNDER_MODELS' | 'WITHOUT_MODELS' | 'WITHOUT_CONSIDERING_MODELS'
   performanceMetric: 'ROI' | 'TURNS' | 'SELL_THRU'
   salesPeriod: 'MONTH' | 'SEASON' | 'YEAR'
@@ -164,9 +170,29 @@ export interface BalancingTransferPreviewRecord {
     storePairCount: number
     totalUnits: number
     exceptionCount: number
+    negativeMtdSalesSkipCount?: number
   }
   lines: BalancingTransferPreviewLine[]
   exceptions: TransferPreviewException[]
+  negativeMtdSalesSkips?: Array<{
+    skuId: string
+    skuCode: string
+    description: string | null
+    vendorCode: string | null
+    categoryNumber: number | null
+    negativeStores: Array<{
+      storeId: number
+      storeLabel: string
+      totalMtdSales: number
+      onHandTotal: number
+      modelTotal: number
+      negativeCells: Array<{
+        rowLabel: string
+        columnLabel: string
+        mtdSales: number
+      }>
+    }>
+  }>
   requestedBy: string
   createdAt: string
   previewedAt: string | null

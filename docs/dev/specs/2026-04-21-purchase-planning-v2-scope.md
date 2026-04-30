@@ -1,5 +1,7 @@
 # Purchase Planning v2 — Scope & Design Decisions
 
+> 2026-04-30 update: the implemented V2 scope uses saved chain + department seasonal plans, not category-range plans. The current module spec is [`../../modules/purchase-planning/README.md`](../../modules/purchase-planning/README.md).
+
 **Date:** 2026-04-21
 **Source:** `/index-knowledge` pass — purchase-planning conversation turn
 **Type:** Design decision

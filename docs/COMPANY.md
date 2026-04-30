@@ -14,13 +14,15 @@ Retail chain operating in **Honduras** — brick-and-mortar stores plus an onlin
 
 ## Currency
 
-All monetary values are in **Honduran Lempira** (`HNL`, symbol `L`). The system is single-currency — no other currency is introduced.
+The system's base currency is **Honduran Lempira** (`HNL`, symbol `L`). Accounting, inventory valuation, OTB, retail pricing, and management reports use HNL.
+
+Import Management is the exception for source documents: supplier proformas, freight, insurance, and shipment liquidation workbooks may store source amounts in `CNY`, `USD`, or `HNL` with FX rate, FX date, and computed HNL amount. The HNL amount remains the value used for inventory, planning, accounting, and reports.
 
 **Display policy** (enforced in code — see [`CLAUDE.md`](../CLAUDE.md) "Currency"):
 - Plain numbers with comma thousands separators and two decimals: `1,234.56`, `1,860`.
-- **No currency symbol inside cells, chart axes, tooltips, CSV, or XLSX.** The repetition adds noise; the data is single-currency.
-- One-line "Amounts in Lempira (HNL)" note at the top of reports, purchase orders, and ledgers where unit clarity matters.
-- Never hardcode `$`, `USD`, or `en-US` currency formatters. Use `Intl.NumberFormat` without `style: 'currency'`, or the `es-HN` locale without currency style.
+- **No currency symbol inside HNL cells, chart axes, tooltips, CSV, or XLSX.** The repetition adds noise; HNL is already the base reporting unit.
+- One-line "Amounts in Lempira (HNL)" note at the top of reports, purchase orders, and ledgers where unit clarity matters. Import source-document screens label the source currency once at the document or section level.
+- Never hardcode `$`, `USD`, or `en-US` currency formatters for HNL values. Use `Intl.NumberFormat` without `style: 'currency'`, or the `es-HN` locale without currency style. Foreign source-currency values use explicit ISO currency fields/labels, not repeated symbols inside grid cells.
 
 ## Chain structure
 

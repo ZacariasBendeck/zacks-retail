@@ -46,6 +46,8 @@ function buildParams(f?: SkuListFilters): string {
   // Multi-value filters — sent comma-separated; backend accepts either
   // comma-separated OR repeated-key shapes.
   if (f.vendors && f.vendors.length > 0) p.set('vendors', f.vendors.join(','))
+  if (f.sectors && f.sectors.length > 0) p.set('sectors', f.sectors.join(','))
+  if (f.departments && f.departments.length > 0) p.set('departments', f.departments.join(','))
   if (f.categories && f.categories.length > 0)
     p.set('categories', f.categories.join(','))
   if (f.seasons && f.seasons.length > 0) p.set('seasons', f.seasons.join(','))

@@ -32,6 +32,7 @@ describe('CasePacksPage', () => {
           dateLastChanged: '2026-04-27T12:00:00.000Z',
           totalUnits: 12,
           cellCount: 2,
+          skuCount: 7,
         },
       ],
       isLoading: false,
@@ -45,6 +46,7 @@ describe('CasePacksPage', () => {
         dateLastChanged: '2026-04-27T12:00:00.000Z',
         totalUnits: 12,
         cellCount: 2,
+        skuCount: 7,
         cells: [
           { rowLabel: '', columnLabel: 'Small', quantity: 6 },
           { rowLabel: '', columnLabel: 'Medium', quantity: 6 },
@@ -58,6 +60,7 @@ describe('CasePacksPage', () => {
     expect(screen.getByRole('heading', { name: 'Case Packs' })).toBeInTheDocument()
     expect(screen.getAllByText('A12').length).toBeGreaterThan(0)
     expect(screen.getAllByText('Assorted 12 pack').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('7').length).toBeGreaterThan(0)
     expect(screen.getByText('Small')).toBeInTheDocument()
     expect(screen.getByText('Medium')).toBeInTheDocument()
   })

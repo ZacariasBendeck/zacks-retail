@@ -1,10 +1,11 @@
-import { Suspense, lazy } from 'react'
+import { Suspense, lazy, type ReactElement } from 'react'
 import { Flex, Spin } from 'antd'
 import { Routes, Route, Navigate, Outlet, useParams, useSearchParams } from 'react-router-dom'
-import AppLayout from './components/AppLayout'
+import AppLayout, { firstAccessibleMenuRoute } from './components/AppLayout'
 import { AuthProvider } from './auth/AuthContext'
 import { RequireAuth } from './auth/RequireAuth'
 import { RequirePermission } from './auth/RequirePermission'
+import { useAuth } from './auth/useAuth'
 import LegacyPurchaseOrderDetailPage from './pages/purchasing/LegacyPurchaseOrderDetailPage'
 
 const SkuListPage = lazy(() => import('./pages/inventory/SkuListPage'))
@@ -47,6 +48,7 @@ const PoEntryMockPage = lazy(() => import('./pages/purchasing/PoEntryMockPage'))
 const PoReceiveMockPage = lazy(() => import('./pages/purchasing/PoReceiveMockPage'))
 const OtbDashboardPage = lazy(() => import('./pages/otb/OtbDashboardPage'))
 const PurchasePlanningPage = lazy(() => import('./pages/purchasePlanning/PurchasePlanningPage'))
+const ImportShipmentsPage = lazy(() => import('./pages/importManagement/ImportShipmentsPage'))
 const OtbMonthlyPlansPage = lazy(() => import('./pages/otb/OtbMonthlyPlansPage'))
 const OtbPlanEntryPage = lazy(() => import('./pages/otb/OtbPlanEntryPage'))
 const SalesReportsHubPage = lazy(() => import('./pages/salesReporting/SalesReportsHubPage'))
@@ -56,6 +58,7 @@ const SalesPivotPage = lazy(() => import('./pages/salesReporting/SalesPivotPage'
 const SalesPivotCustomPage = lazy(() => import('./pages/salesReporting/SalesPivotCustomPage'))
 const BestSellersPage = lazy(() => import('./pages/salesReporting/BestSellersPage'))
 const SalesHistoryByMonthPage = lazy(() => import('./pages/salesReporting/SalesHistoryByMonthPage'))
+const SeasonalityIndexPage = lazy(() => import('./pages/salesReporting/SeasonalityIndexPage'))
 const StockStatusPage = lazy(() => import('./pages/salesReporting/StockStatusPage'))
 const SizeTypeAnalysisPage = lazy(() => import('./pages/salesReporting/SizeTypeAnalysisPage'))
 const OtbVsSalesPage = lazy(() => import('./pages/salesReporting/OtbVsSalesPage'))
@@ -82,6 +85,10 @@ const ChangePasswordPage = lazy(() => import('./pages/auth/ChangePasswordPage'))
 const SalespeoplePage = lazy(() => import('./pages/employees/SalespeoplePage'))
 const UsersListPage = lazy(() => import('./pages/users/UsersListPage'))
 const UserFormPage = lazy(() => import('./pages/users/UserFormPage'))
+const PlatformAuditPage = lazy(() => import('./pages/users/PlatformAuditPage'))
+const RolePermissionsPage = lazy(() => import('./pages/users/RolePermissionsPage'))
+const EffectiveAccessPage = lazy(() => import('./pages/users/EffectiveAccessPage'))
+const SecurityCenterPage = lazy(() => import('./pages/users/SecurityCenterPage'))
 const EnterSalesPage = lazy(() => import('./pages/sales/enter/EnterSalesPage'))
 const CasePacksPage = lazy(() => import('./pages/fileSetup/CasePacksPage'))
 
@@ -157,6 +164,15 @@ function LazyRouteOutlet() {
   )
 }
 
+function DefaultRoute() {
+  const { permissions } = useAuth()
+  return <Navigate to={firstAccessibleMenuRoute(permissions)} replace />
+}
+
+function gate(permission: string, element: ReactElement) {
+  return <RequirePermission permission={permission}>{element}</RequirePermission>
+}
+
 export default function App() {
   return (
     <AuthProvider>
@@ -180,162 +196,165 @@ export default function App() {
           }
         />
         <Route element={<RequireAuth><AppLayout /></RequireAuth>}>
-          <Route path="/" element={<Navigate to="/inventory/dashboard" replace />} />
-          <Route path="/dashboard" element={<Navigate to="/inventory/dashboard" replace />} />
+          <Route path="/" element={<DefaultRoute />} />
+          <Route path="/dashboard" element={<DefaultRoute />} />
           <Route path="/inventory" element={<Navigate to="/inventory/dashboard" replace />} />
           <Route element={<LazyRouteOutlet />}>
-            <Route path="/inventory/dashboard" element={<DashboardPage />} />
-            <Route path="/inventory/balances" element={<InventoryBalancesPage />} />
-            <Route path="/inventory/skus" element={<SkuListPage />} />
+            <Route path="/inventory/dashboard" element={gate('inventory.view', <DashboardPage />)} />
+            <Route path="/inventory/balances" element={gate('inventory.view', <InventoryBalancesPage />)} />
+            <Route path="/inventory/skus" element={gate('products.view', <SkuListPage />)} />
             {/* Primary SKU creator lives at /products/skus/new.
                 Legacy URL kept as a redirect so in-app links / bookmarks still work. */}
             <Route path="/inventory/skus/new" element={<Navigate to="/products/skus/new" replace />} />
-            <Route path="/inventory/skus/:skuId/edit" element={<SkuFormPageModern />} />
-            <Route path="/inventory/sku-drafts" element={<SkuDraftsListPage />} />
-            <Route path="/inventory/adjustments" element={<AdjustmentListPage />} />
-            <Route path="/inventory/adjustments/new" element={<AdjustmentFormPage />} />
-            <Route path="/inventory/adjustments/:adjustmentId" element={<AdjustmentDetailPage />} />
-            <Route path="/inventory/manual-receipts/new" element={<ManualReceiptFormPage />} />
-            <Route path="/inventory/manual-receipts/:receiptId" element={<ManualReceiptDetailPage />} />
-            <Route path="/inventory/manual-returns/new" element={<ManualReturnFormPage />} />
-            <Route path="/inventory/manual-returns/:returnId" element={<ManualReturnDetailPage />} />
-            <Route path="/inventory/sales-ledger" element={<SalesLedgerPage />} />
-            <Route path="/inventory/movements" element={<InventoryMovementPage />} />
+            <Route path="/inventory/skus/:skuId/edit" element={gate('products.write', <SkuFormPageModern />)} />
+            <Route path="/inventory/sku-drafts" element={gate('products.write', <SkuDraftsListPage />)} />
+            <Route path="/inventory/adjustments" element={gate('inventory.adjust', <AdjustmentListPage />)} />
+            <Route path="/inventory/adjustments/new" element={gate('inventory.adjust', <AdjustmentFormPage />)} />
+            <Route path="/inventory/adjustments/:adjustmentId" element={gate('inventory.view', <AdjustmentDetailPage />)} />
+            <Route path="/inventory/manual-receipts/new" element={gate('inventory.adjust', <ManualReceiptFormPage />)} />
+            <Route path="/inventory/manual-receipts/:receiptId" element={gate('inventory.view', <ManualReceiptDetailPage />)} />
+            <Route path="/inventory/manual-returns/new" element={gate('inventory.adjust', <ManualReturnFormPage />)} />
+            <Route path="/inventory/manual-returns/:returnId" element={gate('inventory.view', <ManualReturnDetailPage />)} />
+            <Route path="/inventory/sales-ledger" element={gate('inventory.view', <SalesLedgerPage />)} />
+            <Route path="/inventory/movements" element={gate('inventory.view', <InventoryMovementPage />)} />
             <Route path="/inventory/inquiry" element={<LegacyInquiryRedirect />} />
             <Route path="/inventory/inquiry/:skuCode" element={<LegacyInquiryRedirect />} />
-            <Route path="/products/inquiry" element={<InquiryPage />} />
-            <Route path="/products/inquiry/:skuCode" element={<InquiryPage />} />
-            <Route path="/inventory/find-by-size" element={<FindBySizePage />} />
-            <Route path="/inventory/replenishment" element={<ReplenishmentTargetsPage />} />
-            <Route path="/inventory/transfers/manual" element={<ManualTransferEntryPage />} />
-            <Route path="/inventory/transfers/automatic" element={<AutoTransferPreviewPage />} />
+            <Route path="/products/inquiry" element={gate('products.view', <InquiryPage />)} />
+            <Route path="/products/inquiry/:skuCode" element={gate('products.view', <InquiryPage />)} />
+            <Route path="/inventory/find-by-size" element={gate('inventory.view', <FindBySizePage />)} />
+            <Route path="/inventory/replenishment" element={gate('inventory.view', <ReplenishmentTargetsPage />)} />
+            <Route path="/inventory/transfers/manual" element={gate('inventory.adjust', <ManualTransferEntryPage />)} />
+            <Route path="/inventory/transfers/automatic" element={gate('inventory.adjust', <AutoTransferPreviewPage />)} />
             <Route path="/inventory/transfers/auto-preview" element={<Navigate to="/inventory/transfers/automatic" replace />} />
-            <Route path="/inventory/transfers/balancing" element={<BalancingTransferPreviewPage />} />
-            <Route path="/inventory/transfers/balancing-v2" element={<BalancingTransferPreviewPageV2 />} />
+            <Route path="/inventory/transfers/balancing" element={gate('inventory.adjust', <BalancingTransferPreviewPage />)} />
+            <Route path="/inventory/transfers/balancing-v2" element={gate('inventory.adjust', <BalancingTransferPreviewPageV2 />)} />
             <Route path="/inventory/transfers/balancing-preview" element={<Navigate to="/inventory/transfers/balancing" replace />} />
-            <Route path="/reports/transfer-summary" element={<TransferSummaryReportPage />} />
-            <Route path="/reports/recommended-transfers" element={<RecommendedTransferReportPage />} />
-            <Route path="/reports/inventory-detail" element={<InventoryDetailReportPage />} />
-            <Route path="/inventory/change-detail" element={<ChangeDetailPage />} />
-            <Route path="/inventory/change-detail/:sku" element={<SkuChangeDetailPage />} />
-            <Route path="/inventory/audit" element={<InventoryAuditPage />} />
+            <Route path="/reports/transfer-summary" element={gate('reports.view', <TransferSummaryReportPage />)} />
+            <Route path="/reports/recommended-transfers" element={gate('reports.view', <RecommendedTransferReportPage />)} />
+            <Route path="/reports/inventory-detail" element={gate('reports.view', <InventoryDetailReportPage />)} />
+            <Route path="/inventory/change-detail" element={gate('inventory.view', <ChangeDetailPage />)} />
+            <Route path="/inventory/change-detail/:sku" element={gate('inventory.view', <SkuChangeDetailPage />)} />
+            <Route path="/inventory/audit" element={gate('inventory.view', <InventoryAuditPage />)} />
             <Route path="/purchasing" element={<Navigate to="/purchasing/orders" replace />} />
-            <Route path="/purchasing/orders" element={<PurchaseOrdersPage />} />
-            <Route path="/purchasing/reports" element={<PurchaseOrderReportsPage />} />
-            <Route path="/purchasing/orders/new" element={<PurchaseOrderFormPage />} />
-            <Route path="/purchasing/orders/new-spec-preview" element={<PoEntryMockPage />} />
-            <Route path="/purchasing/receive-spec-preview" element={<PoReceiveMockPage />} />
-            <Route path="/purchasing/receive-spec-preview/:poId" element={<PoReceiveMockPage />} />
-            <Route path="/purchasing/legacy-orders/:poNumber" element={<LegacyPurchaseOrderDetailPage />} />
-            <Route path="/purchasing/orders/:poId/edit" element={<PurchaseOrderFormPage />} />
-            <Route path="/purchasing/orders/:poId" element={<PurchaseOrderDetailPage />} />
-            <Route path="/purchasing/receive" element={<PoReceivePage />} />
-            <Route path="/purchasing/receive/:poId" element={<PoReceivePage />} />
+            <Route path="/purchasing/orders" element={gate('purchasing.view', <PurchaseOrdersPage />)} />
+            <Route path="/purchasing/reports" element={gate('purchasing.view', <PurchaseOrderReportsPage />)} />
+            <Route path="/purchasing/orders/new" element={gate('purchasing.edit', <PurchaseOrderFormPage />)} />
+            <Route path="/purchasing/orders/new-spec-preview" element={gate('purchasing.edit', <PoEntryMockPage />)} />
+            <Route path="/purchasing/receive-spec-preview" element={gate('purchasing.edit', <PoReceiveMockPage />)} />
+            <Route path="/purchasing/receive-spec-preview/:poId" element={gate('purchasing.edit', <PoReceiveMockPage />)} />
+            <Route path="/purchasing/legacy-orders/:poNumber" element={gate('purchasing.view', <LegacyPurchaseOrderDetailPage />)} />
+            <Route path="/purchasing/orders/:poId/edit" element={gate('purchasing.edit', <PurchaseOrderFormPage />)} />
+            <Route path="/purchasing/orders/:poId" element={gate('purchasing.view', <PurchaseOrderDetailPage />)} />
+            <Route path="/purchasing/receive" element={gate('purchasing.edit', <PoReceivePage />)} />
+            <Route path="/purchasing/receive/:poId" element={gate('purchasing.edit', <PoReceivePage />)} />
             <Route path="/otb" element={<Navigate to="/otb/monthly-plans" replace />} />
-            <Route path="/otb/monthly-plans" element={<OtbMonthlyPlansPage />} />
-            <Route path="/otb/dashboard" element={<OtbDashboardPage />} />
-            <Route path="/otb/plan" element={<OtbPlanEntryPage />} />
-            <Route path="/purchase-planning" element={<PurchasePlanningPage />} />
+            <Route path="/otb/monthly-plans" element={gate('otb.view', <OtbMonthlyPlansPage />)} />
+            <Route path="/otb/dashboard" element={gate('otb.view', <OtbDashboardPage />)} />
+            <Route path="/otb/plan" element={gate('otb.edit', <OtbPlanEntryPage />)} />
+            <Route path="/purchase-planning" element={gate('purchasing.view', <PurchasePlanningPage />)} />
+            <Route path="/import-management" element={gate('import_management.view', <ImportShipmentsPage />)} />
+            <Route path="/import-management/:shipmentId" element={gate('import_management.view', <ImportShipmentsPage />)} />
             <Route
               path="/sales/enter"
               element={<RequirePermission permission="sales_pos.operate"><EnterSalesPage /></RequirePermission>}
             />
             <Route path="/reports" element={<Navigate to="/reports/sales" replace />} />
-            <Route path="/reports/templates" element={<TemplatesListPage />} />
-            <Route path="/reports/runs" element={<RunsListPage />} />
-            <Route path="/reports/runs/:id" element={<RunViewPage />} />
-            <Route path="/reports/on-hand" element={<OnHandReportPage />} />
-            <Route path="/reports/sales" element={<SalesReportsHubPage />} />
-            <Route path="/reports/sales/performance" element={<SalesReportPage />} />
-            <Route path="/reports/sales/analysis" element={<SalesAnalysisPage />} />
-            <Route path="/reports/sales/hierarchy-drill-down" element={<SalesHierarchyDrillDownPage />} />
-            <Route path="/reports/sales/pivot" element={<SalesPivotPage />} />
-            <Route path="/reports/sales/pivot-custom" element={<SalesPivotCustomPage />} />
-            <Route path="/reports/sales/best-sellers" element={<BestSellersPage />} />
-            <Route path="/reports/sales/history-by-month" element={<SalesHistoryByMonthPage />} />
-            <Route path="/reports/sales/stock-status" element={<StockStatusPage />} />
-            <Route path="/reports/sales/size-type-analysis" element={<SizeTypeAnalysisPage />} />
-            <Route path="/reports/sales/otb-vs-sales" element={<OtbVsSalesPage />} />
-            <Route path="/reports/others" element={<ReportsOthersHubPage />} />
-            <Route path="/reports/others/sales-by-day" element={<SalesByDayPage />} />
-            <Route path="/reports/others/sales-by-time" element={<SalesByTimePage />} />
-            <Route path="/reports/others/salesperson-summary" element={<SalespersonSummaryPage />} />
-            <Route path="/reports/turnover" element={<InventoryTurnoverReportPage />} />
-            <Route path="/reports/aging" element={<InventoryAgingReportPage />} />
-            <Route path="/reports/sell-through" element={<SellThroughReportPage />} />
-            <Route path="/customers" element={<CustomerListPage />} />
-            <Route path="/customers/dashboard" element={<CustomerKpiDashboardPage />} />
-            <Route path="/customers/intelligence" element={<CustomerKpiListPage />} />
-            <Route path="/customers/segments" element={<CustomerSegmentsPage />} />
-            <Route path="/customers/churn-risk" element={<CustomerChurnRiskPage />} />
-            <Route path="/customers/vip" element={<CustomerVipPage />} />
-            <Route path="/customers/discount-sensitive" element={<CustomerDiscountSensitivePage />} />
-            <Route path="/customers/new" element={<CustomerFormPage />} />
-            <Route path="/customers/:customerId/edit" element={<CustomerFormPage />} />
-            <Route path="/customers/:customerId" element={<CustomerKpiDetailPage />} />
+            <Route path="/reports/templates" element={gate('reports.admin', <TemplatesListPage />)} />
+            <Route path="/reports/runs" element={gate('reports.admin', <RunsListPage />)} />
+            <Route path="/reports/runs/:id" element={gate('reports.view', <RunViewPage />)} />
+            <Route path="/reports/on-hand" element={gate('reports.view', <OnHandReportPage />)} />
+            <Route path="/reports/sales" element={gate('reports.view', <SalesReportsHubPage />)} />
+            <Route path="/reports/sales/performance" element={gate('reports.view', <SalesReportPage />)} />
+            <Route path="/reports/sales/analysis" element={gate('reports.view', <SalesAnalysisPage />)} />
+            <Route path="/reports/sales/hierarchy-drill-down" element={gate('reports.view', <SalesHierarchyDrillDownPage />)} />
+            <Route path="/reports/sales/pivot" element={gate('reports.view', <SalesPivotPage />)} />
+            <Route path="/reports/sales/pivot-custom" element={gate('reports.view', <SalesPivotCustomPage />)} />
+            <Route path="/reports/sales/best-sellers" element={gate('reports.view', <BestSellersPage />)} />
+            <Route path="/reports/sales/history-by-month" element={gate('reports.view', <SalesHistoryByMonthPage />)} />
+            <Route path="/reports/sales/seasonality-index" element={gate('reports.view', <SeasonalityIndexPage />)} />
+            <Route path="/reports/sales/stock-status" element={gate('reports.view', <StockStatusPage />)} />
+            <Route path="/reports/sales/size-type-analysis" element={gate('reports.view', <SizeTypeAnalysisPage />)} />
+            <Route path="/reports/sales/otb-vs-sales" element={gate('reports.view', <OtbVsSalesPage />)} />
+            <Route path="/reports/others" element={gate('reports.view', <ReportsOthersHubPage />)} />
+            <Route path="/reports/others/sales-by-day" element={gate('reports.view', <SalesByDayPage />)} />
+            <Route path="/reports/others/sales-by-time" element={gate('reports.view', <SalesByTimePage />)} />
+            <Route path="/reports/others/salesperson-summary" element={gate('reports.view', <SalespersonSummaryPage />)} />
+            <Route path="/reports/turnover" element={gate('reports.view', <InventoryTurnoverReportPage />)} />
+            <Route path="/reports/aging" element={gate('reports.view', <InventoryAgingReportPage />)} />
+            <Route path="/reports/sell-through" element={gate('reports.view', <SellThroughReportPage />)} />
+            <Route path="/customers" element={gate('segmentation.read', <CustomerListPage />)} />
+            <Route path="/customers/dashboard" element={gate('segmentation.read', <CustomerKpiDashboardPage />)} />
+            <Route path="/customers/intelligence" element={gate('segmentation.read', <CustomerKpiListPage />)} />
+            <Route path="/customers/segments" element={gate('segmentation.read', <CustomerSegmentsPage />)} />
+            <Route path="/customers/churn-risk" element={gate('segmentation.read', <CustomerChurnRiskPage />)} />
+            <Route path="/customers/vip" element={gate('segmentation.read', <CustomerVipPage />)} />
+            <Route path="/customers/discount-sensitive" element={gate('segmentation.read', <CustomerDiscountSensitivePage />)} />
+            <Route path="/customers/new" element={gate('segmentation.write', <CustomerFormPage />)} />
+            <Route path="/customers/:customerId/edit" element={gate('segmentation.write', <CustomerFormPage />)} />
+            <Route path="/customers/:customerId" element={gate('segmentation.read', <CustomerKpiDetailPage />)} />
 
             {/* products module — Phase 1 Step 2 taxonomy pages */}
             <Route path="/products" element={<Navigate to="/inventory/skus" replace />} />
             <Route path="/file-setup" element={<Navigate to="/products/vendors" replace />} />
-            <Route path="/file-setup/case-packs" element={<CasePacksPage />} />
-            <Route path="/products/taxonomy" element={<TaxonomyHomePage />} />
-            <Route path="/products/taxonomy/departments" element={<DepartmentListPage />} />
-            <Route path="/products/taxonomy/departments/new" element={<DepartmentFormPage />} />
-            <Route path="/products/taxonomy/departments/:number" element={<DepartmentFormPage />} />
-            <Route path="/products/taxonomy/categories" element={<CategoryListPage />} />
-            <Route path="/products/taxonomy/categories/new" element={<CategoryFormPage />} />
-            <Route path="/products/taxonomy/categories/:number" element={<CategoryFormPage />} />
-            <Route path="/products/taxonomy/groups" element={<GroupListPage />} />
-            <Route path="/products/taxonomy/groups/new" element={<GroupFormPage />} />
-            <Route path="/products/taxonomy/groups/:code" element={<GroupFormPage />} />
-            <Route path="/products/taxonomy/keywords" element={<KeywordListPage />} />
-            <Route path="/products/taxonomy/keywords/new" element={<KeywordFormPage />} />
-            <Route path="/products/taxonomy/keywords/:keyword" element={<KeywordFormPage />} />
-            <Route path="/products/taxonomy/sectors" element={<SectorListPage />} />
-            <Route path="/products/taxonomy/sectors/new" element={<SectorFormPage />} />
-            <Route path="/products/taxonomy/sectors/:number" element={<SectorFormPage />} />
-            <Route path="/products/taxonomy/return-codes" element={<ReturnCodeListPage />} />
-            <Route path="/products/taxonomy/return-codes/new" element={<ReturnCodeFormPage />} />
-            <Route path="/products/taxonomy/return-codes/:code" element={<ReturnCodeFormPage />} />
-            <Route path="/products/taxonomy/promotion-codes" element={<PromotionCodeListPage />} />
-            <Route path="/products/taxonomy/promotion-codes/new" element={<PromotionCodeFormPage />} />
-            <Route path="/products/taxonomy/promotion-codes/:code" element={<PromotionCodeFormPage />} />
-            <Route path="/products/taxonomy/seasons" element={<SeasonListPage />} />
-            <Route path="/products/taxonomy/seasons/new" element={<SeasonFormPage />} />
-            <Route path="/products/taxonomy/seasons/:code" element={<SeasonFormPage />} />
-            <Route path="/products/taxonomy/size-types" element={<SizeTypeListPage />} />
-            <Route path="/products/taxonomy/size-types/new" element={<SizeTypeGridEditorPage />} />
-            <Route path="/products/taxonomy/size-types/:code" element={<SizeTypeGridEditorPage />} />
-            <Route path="/products/vendors" element={<VendorListPage />} />
-            <Route path="/products/vendors/new" element={<VendorFormPage />} />
-            <Route path="/products/vendors/:code" element={<VendorFormPage />} />
-            <Route path="/products/skus" element={<SkuListPage />} />
+            <Route path="/file-setup/case-packs" element={gate('products.view', <CasePacksPage />)} />
+            <Route path="/products/taxonomy" element={gate('products.view', <TaxonomyHomePage />)} />
+            <Route path="/products/taxonomy/departments" element={gate('products.view', <DepartmentListPage />)} />
+            <Route path="/products/taxonomy/departments/new" element={gate('products.write', <DepartmentFormPage />)} />
+            <Route path="/products/taxonomy/departments/:number" element={gate('products.write', <DepartmentFormPage />)} />
+            <Route path="/products/taxonomy/categories" element={gate('products.view', <CategoryListPage />)} />
+            <Route path="/products/taxonomy/categories/new" element={gate('products.write', <CategoryFormPage />)} />
+            <Route path="/products/taxonomy/categories/:number" element={gate('products.write', <CategoryFormPage />)} />
+            <Route path="/products/taxonomy/groups" element={gate('products.view', <GroupListPage />)} />
+            <Route path="/products/taxonomy/groups/new" element={gate('products.write', <GroupFormPage />)} />
+            <Route path="/products/taxonomy/groups/:code" element={gate('products.write', <GroupFormPage />)} />
+            <Route path="/products/taxonomy/keywords" element={gate('products.view', <KeywordListPage />)} />
+            <Route path="/products/taxonomy/keywords/new" element={gate('products.write', <KeywordFormPage />)} />
+            <Route path="/products/taxonomy/keywords/:keyword" element={gate('products.write', <KeywordFormPage />)} />
+            <Route path="/products/taxonomy/sectors" element={gate('products.view', <SectorListPage />)} />
+            <Route path="/products/taxonomy/sectors/new" element={gate('products.write', <SectorFormPage />)} />
+            <Route path="/products/taxonomy/sectors/:number" element={gate('products.write', <SectorFormPage />)} />
+            <Route path="/products/taxonomy/return-codes" element={gate('products.view', <ReturnCodeListPage />)} />
+            <Route path="/products/taxonomy/return-codes/new" element={gate('products.write', <ReturnCodeFormPage />)} />
+            <Route path="/products/taxonomy/return-codes/:code" element={gate('products.write', <ReturnCodeFormPage />)} />
+            <Route path="/products/taxonomy/promotion-codes" element={gate('products.view', <PromotionCodeListPage />)} />
+            <Route path="/products/taxonomy/promotion-codes/new" element={gate('products.write', <PromotionCodeFormPage />)} />
+            <Route path="/products/taxonomy/promotion-codes/:code" element={gate('products.write', <PromotionCodeFormPage />)} />
+            <Route path="/products/taxonomy/seasons" element={gate('products.view', <SeasonListPage />)} />
+            <Route path="/products/taxonomy/seasons/new" element={gate('products.write', <SeasonFormPage />)} />
+            <Route path="/products/taxonomy/seasons/:code" element={gate('products.write', <SeasonFormPage />)} />
+            <Route path="/products/taxonomy/size-types" element={gate('products.view', <SizeTypeListPage />)} />
+            <Route path="/products/taxonomy/size-types/new" element={gate('products.write', <SizeTypeGridEditorPage />)} />
+            <Route path="/products/taxonomy/size-types/:code" element={gate('products.write', <SizeTypeGridEditorPage />)} />
+            <Route path="/products/vendors" element={gate('products.view', <VendorListPage />)} />
+            <Route path="/products/vendors/new" element={gate('products.write', <VendorFormPage />)} />
+            <Route path="/products/vendors/:code" element={gate('products.write', <VendorFormPage />)} />
+            <Route path="/products/skus" element={gate('products.view', <SkuListPage />)} />
             {/* Primary SKU creator. The modern form is now the only New SKU flow. */}
-            <Route path="/products/skus/new" element={<SkuFormPageModern />} />
+            <Route path="/products/skus/new" element={gate('products.write', <SkuFormPageModern />)} />
             <Route path="/products/skus/new-modern" element={<Navigate to="/products/skus/new" replace />} />
-            <Route path="/products/skus/:skuId/edit" element={<SkuFormPageModern />} />
+            <Route path="/products/skus/:skuId/edit" element={gate('products.write', <SkuFormPageModern />)} />
             {/* Legacy RICS-tabs creator, kept as an alternate entry. */}
-            <Route path="/products/skus/new-alt" element={<ProductsSkuFormPage />} />
-            <Route path="/products/skus/:code" element={<ProductsSkuFormPage />} />
-            <Route path="/products/attributes" element={<AttributesCatalogPage />} />
-            <Route path="/products/attributes/macros" element={<AttributesCatalogPage />} />
-            <Route path="/products/families" element={<ProductFamiliesPage />} />
-            <Route path="/products/matching-sets" element={<MatchingSetsPage />} />
+            <Route path="/products/skus/new-alt" element={gate('products.write', <ProductsSkuFormPage />)} />
+            <Route path="/products/skus/:code" element={gate('products.view', <ProductsSkuFormPage />)} />
+            <Route path="/products/attributes" element={gate('products.view', <AttributesCatalogPage />)} />
+            <Route path="/products/attributes/macros" element={gate('products.view', <AttributesCatalogPage />)} />
+            <Route path="/products/families" element={gate('products.view', <ProductFamiliesPage />)} />
+            <Route path="/products/matching-sets" element={gate('products.view', <MatchingSetsPage />)} />
 
             {/* utilities module — RICS Ch. 15 batch-change ports */}
-            <Route path="/utilities" element={<UtilitiesHubPage />} />
+            <Route path="/utilities" element={gate('store_ops.view', <UtilitiesHubPage />)} />
             <Route path="/utilities/overview" element={<Navigate to="/utilities" replace />} />
-            <Route path="/utilities/stores" element={<StoresPage />} />
-            <Route path="/utilities/store-chains" element={<StoreChainsPage />} />
-            <Route path="/utilities/change-keywords" element={<ChangeKeywordsPage />} />
-            <Route path="/utilities/change-sku-attributes" element={<ChangeSkuAttributesPage />} />
+            <Route path="/utilities/stores" element={gate('store_ops.view', <StoresPage />)} />
+            <Route path="/utilities/store-chains" element={gate('store_ops.view', <StoreChainsPage />)} />
+            <Route path="/utilities/change-keywords" element={gate('products.write', <ChangeKeywordsPage />)} />
+            <Route path="/utilities/change-sku-attributes" element={gate('products.write', <ChangeSkuAttributesPage />)} />
             {/* Backward-compat redirects from the four pre-consolidation routes. */}
             <Route path="/utilities/change-categories" element={<Navigate to="/utilities/change-sku-attributes" replace />} />
             <Route path="/utilities/change-vendors" element={<Navigate to="/utilities/change-sku-attributes" replace />} />
             <Route path="/utilities/change-seasons" element={<Navigate to="/utilities/change-sku-attributes" replace />} />
             <Route path="/utilities/change-group-codes" element={<Navigate to="/utilities/change-sku-attributes" replace />} />
-            <Route path="/utilities/batch-history" element={<BatchHistoryPage />} />
-            <Route path="/utilities/batch-history/:id" element={<BatchHistoryDetailPage />} />
+            <Route path="/utilities/batch-history" element={gate('products.write', <BatchHistoryPage />)} />
+            <Route path="/utilities/batch-history/:id" element={gate('products.write', <BatchHistoryDetailPage />)} />
             <Route path="/operations" element={<Navigate to="/operations/migration-day" replace />} />
             <Route
               path="/operations/migration-day"
@@ -350,15 +369,31 @@ export default function App() {
             />
             <Route
               path="/admin/users"
-              element={<RequirePermission permission="employees.view"><UsersListPage /></RequirePermission>}
+              element={<RequirePermission permission="identity_access.view"><UsersListPage /></RequirePermission>}
             />
             <Route
               path="/admin/users/new"
-              element={<RequirePermission permission="employees.manage"><UserFormPage /></RequirePermission>}
+              element={<RequirePermission permission="identity_access.manage"><UserFormPage /></RequirePermission>}
             />
             <Route
               path="/admin/users/:id/edit"
-              element={<RequirePermission permission="employees.manage"><UserFormPage /></RequirePermission>}
+              element={<RequirePermission permission="identity_access.manage"><UserFormPage /></RequirePermission>}
+            />
+            <Route
+              path="/admin/audit"
+              element={<RequirePermission permission="identity_access.view"><PlatformAuditPage /></RequirePermission>}
+            />
+            <Route
+              path="/admin/roles"
+              element={<RequirePermission permission="identity_access.manage"><RolePermissionsPage /></RequirePermission>}
+            />
+            <Route
+              path="/admin/effective-access"
+              element={<RequirePermission permission="identity_access.view"><EffectiveAccessPage /></RequirePermission>}
+            />
+            <Route
+              path="/admin/security"
+              element={<RequirePermission permission="identity_access.view"><SecurityCenterPage /></RequirePermission>}
             />
           </Route>
         </Route>

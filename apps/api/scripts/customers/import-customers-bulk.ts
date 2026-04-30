@@ -1,6 +1,10 @@
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { pipeline } from 'node:stream/promises';
 import { Client } from 'pg';
+import { to as copyTo } from 'pg-copy-streams';
 import {
   CustomerCsvRow,
   MailListNamesCsvRow,
@@ -15,12 +19,20 @@ import {
   parseImportedDecimal,
   parseImportedInteger,
 } from '../../src/services/customers/customerImportCsv';
+import { quoteIdent } from '../../src/services/sync/typeMapping';
+import {
+  loadManifest,
+  requireTable,
+  stageTable,
+} from '../rics/sync/artifactManifest';
 
 interface Args {
   customerCsvPath: string;
   mailListNamesCsvPath: string;
+  manifestPath: string | null;
   source: string;
   batchSize: number;
+  replace: boolean;
 }
 
 interface CandidateProfileData {
@@ -249,8 +261,10 @@ function parseArgs(argv: string[]): Args {
   const args: Args = {
     customerCsvPath: path.resolve('../.tmp/customer-import-extract/Customer.csv'),
     mailListNamesCsvPath: path.resolve('../.tmp/customer-import-extract/MailListNames.csv'),
+    manifestPath: null,
     source: 'rics_csv_bulk',
     batchSize: 5000,
+    replace: false,
   };
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -264,11 +278,17 @@ function parseArgs(argv: string[]): Args {
       case '-m':
         args.mailListNamesCsvPath = path.resolve(String(argv[++i] ?? ''));
         break;
+      case '--manifest':
+        args.manifestPath = path.resolve(String(argv[++i] ?? ''));
+        break;
       case '--source':
         args.source = String(argv[++i] ?? 'rics_csv_bulk') || 'rics_csv_bulk';
         break;
       case '--batch-size':
         args.batchSize = Math.max(100, Number(argv[++i] ?? '5000') || 5000);
+        break;
+      case '--replace':
+        args.replace = true;
         break;
       case '--help':
       case '-h':
@@ -282,26 +302,50 @@ function parseArgs(argv: string[]): Args {
 
 function printUsage(): void {
   console.log(
-    'Usage: pnpm --filter @benlow-rics/api import:customers:bulk -- --customer <Customer.csv> --mail <MailListNames.csv> [--source rics_csv_bulk] [--batch-size 5000]',
+    [
+      'Usage: pnpm --filter @benlow-rics/api import:customers:bulk -- [options]',
+      '',
+      'Options:',
+      '  --manifest <path>   Import from canonical RICS artifact tables mail_list_family + mail_list_names.',
+      '  --customer <path>   Import from legacy Customer.csv.',
+      '  --mail <path>       Import from legacy MailListNames.csv.',
+      '  --source <name>     Source label. Default rics_csv_bulk.',
+      '  --batch-size <n>    Flush batch size. Default 5000.',
+      '  --replace           Truncate existing customer import targets before loading.',
+    ].join('\n'),
   );
 }
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const client = new Client({ connectionString: process.env.DATABASE_URL });
+  let manifestTempDir: string | null = null;
   await client.connect();
 
   try {
-    await assertEmptyTargetTables(client);
+    const inputPaths = args.manifestPath
+      ? await materializeCustomerCsvsFromManifest(client, args.manifestPath)
+      : {
+          customerCsvPath: args.customerCsvPath,
+          mailListNamesCsvPath: args.mailListNamesCsvPath,
+          tempDir: null,
+        };
+    manifestTempDir = inputPaths.tempDir;
+
+    if (args.replace) {
+      await replaceTargetTables(client);
+    } else {
+      await assertEmptyTargetTables(client);
+    }
 
     const batchId = randomUUID();
     await client.query(
       `INSERT INTO app.customer_import_batch (id, source, file_name)
        VALUES ($1::uuid, $2, $3)`,
-      [batchId, args.source, `${path.basename(args.customerCsvPath)} + ${path.basename(args.mailListNamesCsvPath)}`],
+      [batchId, args.source, `${path.basename(inputPaths.customerCsvPath)} + ${path.basename(inputPaths.mailListNamesCsvPath)}`],
     );
 
-    const customerRows = await loadCustomerRows(args.customerCsvPath);
+    const customerRows = await loadCustomerRows(inputPaths.customerCsvPath);
     const stats: ImportStats = {
       totalRows: 0,
       createdCount: 0,
@@ -318,7 +362,7 @@ async function main(): Promise<void> {
     const consumedCustomerAccounts = new Set<string>();
 
     let mailRowNumber = 1;
-    for await (const record of parseCsvFileRecords(args.mailListNamesCsvPath)) {
+    for await (const record of parseCsvFileRecords(inputPaths.mailListNamesCsvPath)) {
       mailRowNumber += 1;
       stats.totalRows += 1;
       const mailRow = record as unknown as MailListNamesCsvRow;
@@ -329,10 +373,10 @@ async function main(): Promise<void> {
       const candidate = makeCandidate({
         customerRow: customerRef?.row ?? null,
         customerRowNumber: customerRef?.rowNumber ?? null,
-        customerFileName: path.basename(args.customerCsvPath),
+        customerFileName: path.basename(inputPaths.customerCsvPath),
         mailRow,
         mailRowNumber,
-        mailFileName: path.basename(args.mailListNamesCsvPath),
+        mailFileName: path.basename(inputPaths.mailListNamesCsvPath),
       });
 
       const rejectReason = validateCandidate(candidate);
@@ -411,10 +455,10 @@ async function main(): Promise<void> {
       const candidate = makeCandidate({
         customerRow: leftover.row,
         customerRowNumber: leftover.rowNumber,
-        customerFileName: path.basename(args.customerCsvPath),
+        customerFileName: path.basename(inputPaths.customerCsvPath),
         mailRow: null,
         mailRowNumber: null,
-        mailFileName: path.basename(args.mailListNamesCsvPath),
+        mailFileName: path.basename(inputPaths.mailListNamesCsvPath),
       });
 
       const rejectReason = validateCandidate(candidate);
@@ -498,8 +542,9 @@ async function main(): Promise<void> {
           updatedCount: stats.updatedCount,
           skippedCount: stats.skippedCount,
           rejectedCount: stats.rejectedCount,
-          customerCsvPath: args.customerCsvPath,
-          mailListNamesCsvPath: args.mailListNamesCsvPath,
+          customerCsvPath: inputPaths.customerCsvPath,
+          mailListNamesCsvPath: inputPaths.mailListNamesCsvPath,
+          manifestPath: args.manifestPath,
         },
         null,
         2,
@@ -507,7 +552,26 @@ async function main(): Promise<void> {
     );
   } finally {
     await client.end();
+    if (manifestTempDir) {
+      fs.rmSync(manifestTempDir, { recursive: true, force: true });
+    }
   }
+}
+
+async function replaceTargetTables(client: Client): Promise<void> {
+  await client.query(`
+    TRUNCATE TABLE
+      app.customer_import_reject,
+      app.customer_import_batch,
+      app.customer_sales_summary_legacy,
+      app.customer_financial_profile,
+      app.customer_legacy_profile,
+      app.customer_address,
+      app.customer_contact,
+      app.customer_identity,
+      app.customer
+    CASCADE
+  `);
 }
 
 async function assertEmptyTargetTables(client: Client): Promise<void> {
@@ -517,6 +581,96 @@ async function assertEmptyTargetTables(client: Client): Promise<void> {
       throw new Error(`Bulk importer requires empty customer-import tables; ${table} is not empty.`);
     }
   }
+}
+
+async function materializeCustomerCsvsFromManifest(
+  client: Client,
+  manifestPath: string,
+): Promise<{ customerCsvPath: string; mailListNamesCsvPath: string; tempDir: string }> {
+  const { manifest, manifestDir } = loadManifest(manifestPath);
+  const familyTable = await stageTable(client, manifestDir, requireTable(manifest, 'mail_list_family'));
+  const namesTable = await stageTable(client, manifestDir, requireTable(manifest, 'mail_list_names'));
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rics-customers-'));
+  const customerCsvPath = path.join(tempDir, 'MailListFamily-as-Customer.csv');
+  const mailListNamesCsvPath = path.join(tempDir, 'MailListNames.csv');
+
+  await copyQueryToCsv(
+    client,
+    `
+      SELECT
+        account::text AS "Account",
+        code::text AS "Code",
+        name::text AS "Name",
+        gender::text AS "Gender",
+        date_added::text AS "DateAdded",
+        birthday::text AS "Birthday",
+        extra_01::text AS "Extra_01",
+        extra_02::text AS "Extra_02",
+        extra_03::text AS "Extra_03",
+        extra_04::text AS "Extra_04",
+        extra_05::text AS "Extra_05",
+        extra_06::text AS "Extra_06",
+        status::text AS "Status",
+        comment::text AS "Comment",
+        date_last_changed::text AS "DateLastChanged"
+      FROM ${quoteIdent(familyTable)}
+    `,
+    customerCsvPath,
+  );
+
+  await copyQueryToCsv(
+    client,
+    `
+      SELECT
+        account::text AS "Account",
+        name::text AS "Name",
+        addr1::text AS "Addr1",
+        addr2::text AS "Addr2",
+        city::text AS "City",
+        state::text AS "State",
+        zip::text AS "Zip",
+        credit_limit::text AS "CreditLimit",
+        curr_bal::text AS "CurrBal",
+        cred_slip::text AS "CredSlip",
+        status::text AS "Status",
+        date_added::text AS "DateAdded",
+        date_lst_purch::text AS "DateLstPurch",
+        plan_num::text AS "PlanNum",
+        plan_count::text AS "PlanCount",
+        plan_dollars::text AS "PlanDollars",
+        plan_last_cred::text AS "PlanLastCred",
+        plan_cred_bal::text AS "PlanCredBal",
+        non_taxable::text AS "NonTaxable",
+        e_mail::text AS "EMail",
+        extra_01::text AS "Extra_01",
+        extra_02::text AS "Extra_02",
+        extra_03::text AS "Extra_03",
+        extra_04::text AS "Extra_04",
+        extra_05::text AS "Extra_05",
+        extra_06::text AS "Extra_06",
+        qty_sales_01::text AS "QtySales_01",
+        qty_sales_02::text AS "QtySales_02",
+        qty_sales_03::text AS "QtySales_03",
+        qty_sales_04::text AS "QtySales_04",
+        dollar_sales_01::text AS "DollarSales_01",
+        dollar_sales_02::text AS "DollarSales_02",
+        dollar_sales_03::text AS "DollarSales_03",
+        dollar_sales_04::text AS "DollarSales_04",
+        county::text AS "County",
+        comment::text AS "Comment",
+        change_to::text AS "ChangeTo",
+        date_last_changed::text AS "DateLastChanged"
+      FROM ${quoteIdent(namesTable)}
+    `,
+    mailListNamesCsvPath,
+  );
+
+  return { customerCsvPath, mailListNamesCsvPath, tempDir };
+}
+
+async function copyQueryToCsv(client: Client, selectSql: string, outputPath: string): Promise<void> {
+  const stream = client.query(copyTo(`COPY (${selectSql}) TO STDOUT WITH (FORMAT csv, HEADER true, NULL '')`));
+  await pipeline(stream, fs.createWriteStream(outputPath));
 }
 
 async function loadCustomerRows(filePath: string): Promise<{

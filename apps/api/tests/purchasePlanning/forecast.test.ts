@@ -167,6 +167,36 @@ describe('forecast — blendedMultiYear', () => {
   });
 });
 
+describe('forecast - holtWinters', () => {
+  it('uses trend and monthly seasonality when enough history exists', () => {
+    const history: HistoryPoint[] = [];
+    for (let year = 2024; year <= 2025; year++) {
+      for (let month = 1; month <= 12; month++) {
+        const seasonal = month === 2 ? 40 : 10;
+        const trend = year === 2025 ? 12 : 0;
+        history.push({
+          dimKey: 'D',
+          yearMonth: `${year}-${String(month).padStart(2, '0')}`,
+          qty: seasonal + trend,
+        });
+      }
+    }
+
+    const out = forecast(history, 'holtWinters', {}, ['2026-02', '2026-03']);
+    expect(out[0].projQty).toBeGreaterThan(out[1].projQty);
+    expect(out[0].projQty).toBeGreaterThan(40);
+  });
+
+  it('falls back gracefully when history is short', () => {
+    const history = buildHistory('D', [
+      ['2025-02', 20],
+      ['2025-03', 10],
+    ]);
+    const out = forecast(history, 'holtWinters', {}, ['2026-02']);
+    expect(out[0].projQty).toBe(20);
+  });
+});
+
 describe('forecast — multi-dim', () => {
   it('produces a full rectangle (dimKey × horizon) in deterministic order', () => {
     const history: HistoryPoint[] = [

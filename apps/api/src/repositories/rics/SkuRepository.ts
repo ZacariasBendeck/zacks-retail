@@ -108,6 +108,8 @@ export interface FindAllOptions {
   group?: string;
   keyword?: string;
   vendors?: string[];
+  sectors?: number[];
+  departments?: number[];
   categories?: number[];
   seasons?: string[];
   groups?: string[];
@@ -345,6 +347,26 @@ function buildWhere(opts: FindAllOptions): { clauses: string[]; params: unknown[
     );
   }
 
+  const sectors = numSet(opts.sectors ?? []);
+  if (sectors.length > 0) {
+    pushClause(
+      clauses,
+      params,
+      `sc.number = ANY(?::int[])`,
+      sectors,
+    );
+  }
+
+  const departments = numSet(opts.departments ?? []);
+  if (departments.length > 0) {
+    pushClause(
+      clauses,
+      params,
+      `d.number = ANY(?::int[])`,
+      departments,
+    );
+  }
+
   const categories = numSet(opts.categories ?? (opts.category != null ? [opts.category] : []));
   if (categories.length > 0) {
     pushClause(
@@ -442,6 +464,8 @@ function baseSelect(): string {
     LEFT JOIN app.taxonomy_category c ON c.number = COALESCE(o.category, s.category_number)
     LEFT JOIN app.taxonomy_department d
       ON COALESCE(o.category, s.category_number) BETWEEN d.beg_categ AND d.end_categ
+    LEFT JOIN app.taxonomy_sector sc
+      ON d.number BETWEEN sc.beg_dept AND sc.end_dept
   `;
 }
 

@@ -1,502 +1,683 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import {
   Alert,
   Button,
   Card,
   Col,
-  DatePicker,
   Empty,
+  Form,
+  Input,
   InputNumber,
+  Modal,
   Row,
-  Segmented,
   Select,
-  Skeleton,
   Space,
+  Switch,
   Table,
   Tag,
   Typography,
+  message,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
-import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query'
-import dayjs, { type Dayjs } from 'dayjs'
-import { useSalesDimensions } from '../../hooks/useReports'
-import CriteriaInput from '../salesReporting/CriteriaInput'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import dayjs from 'dayjs'
+import { useStoreChains } from '../../hooks/useStores'
+import { useDepartments } from '../../hooks/useProductsTaxonomy'
 import {
-  postPurchasePlan,
-  type PurchasePlanDimension,
+  addSavedPurchasePlanAdjustment,
+  archiveSavedPurchasePlan,
+  createSavedPurchasePlan,
+  fetchSavedPurchasePlan,
+  fetchSavedPurchasePlans,
+  generateSeasonalPurchaseReport,
+  recalculateSavedPurchasePlan,
+  type PurchasePlanAdjustmentKind,
   type PurchasePlanEohMethod,
   type PurchasePlanForecastMethod,
-  type PurchasePlanRequest,
-  type PurchasePlanResponse,
-  type PurchasePlanRow,
-  type PurchasePlanTotals,
+  type PurchasePlanningSeason,
+  type SavedPurchasePlanAdjustmentRequest,
+  type SavedPurchasePlanCreateRequest,
+  type SavedPurchasePlanDepartment,
+  type SavedPurchasePlanListItem,
+  type SavedPurchasePlanRow,
+  type SeasonalPurchaseReportResponse,
+  type SeasonalPurchaseReportSeason,
+  type SeasonalPurchaseReportValue,
 } from '../../services/purchasePlanningApi'
 
 const { Title, Paragraph, Text } = Typography
 
-const DIMENSION_OPTIONS: Array<{ value: PurchasePlanDimension; label: string }> = [
-  { value: 'department', label: 'Departamento' },
-  { value: 'category', label: 'Categoría' },
-  { value: 'vendor', label: 'Proveedor' },
+const integerFmt = new Intl.NumberFormat('en-US')
+const moneyFmt = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 })
+const pctFmt = new Intl.NumberFormat('en-US', { maximumFractionDigits: 1 })
+
+const SEASONS: Array<{ value: PurchasePlanningSeason; label: string }> = [
+  { value: 'spring', label: 'Spring (Feb-Apr)' },
+  { value: 'summer', label: 'Summer (May-Jul)' },
+  { value: 'fall', label: 'Fall (Aug-Oct)' },
+  { value: 'winter', label: 'Winter (Nov-Jan)' },
 ]
 
 const FORECAST_OPTIONS: Array<{ value: PurchasePlanForecastMethod; label: string }> = [
-  { value: 'sameMonthLastYear', label: 'Mes año pasado' },
-  { value: 'trailingAverage', label: 'Promedio móvil' },
-  { value: 'yoyGrowth', label: 'Crecimiento YoY %' },
-  { value: 'blendedMultiYear', label: 'Promedio 2–3 años' },
+  { value: 'holtWinters', label: 'Holt-Winters' },
+  { value: 'sameMonthLastYear', label: 'Same month last year' },
+  { value: 'trailingAverage', label: 'Trailing average' },
+  { value: 'yoyGrowth', label: 'YoY growth %' },
+  { value: 'blendedMultiYear', label: 'Blended multi-year' },
 ]
 
 const EOH_OPTIONS: Array<{ value: PurchasePlanEohMethod; label: string }> = [
-  { value: 'forward', label: 'Cobertura forward' },
-  { value: 'seasonal', label: 'Multiplicador estacional' },
+  { value: 'forward', label: 'Forward cover' },
+  { value: 'seasonal', label: 'Seasonal multiplier' },
 ]
 
-const integerFmt = new Intl.NumberFormat('en-US')
-
-function formatMonthShort(yearMonth: string): string {
-  return dayjs(`${yearMonth}-01`).format('MMM-YY')
+interface CreatePlanForm {
+  label?: string
+  storeGroupCode: string
+  season: PurchasePlanningSeason
+  seasonYear: number
+  departmentNumbers: number[]
+  forecastMethod: PurchasePlanForecastMethod
+  eohMethod: PurchasePlanEohMethod
+  coverMonths: number
+  discountNormalization: boolean
 }
 
-interface PivotRow {
-  key: string
-  dimKey: string
-  dimLabel: string
-  currentOnHand: number
-  hasHistory: boolean
-  buyByMonth: Record<string, number>
-  totalBuy: number
+interface AdjustmentForm {
+  kind: PurchasePlanAdjustmentKind
+  value: number
+  reason: string
 }
 
-function buildPivot(
-  totals: PurchasePlanTotals[],
-  rows: PurchasePlanRow[],
-  horizon: string[],
-): PivotRow[] {
-  const byDim = new Map<string, PivotRow>()
-  for (const t of totals) {
-    byDim.set(t.dimKey, {
-      key: t.dimKey,
-      dimKey: t.dimKey,
-      dimLabel: t.dimLabel,
-      currentOnHand: t.currentOnHand,
-      hasHistory: t.hasHistory,
-      buyByMonth: Object.fromEntries(horizon.map((ym) => [ym, 0])),
-      totalBuy: t.totalBuy,
-    })
-  }
-  for (const r of rows) {
-    const pivot = byDim.get(r.dimKey)
-    if (pivot) pivot.buyByMonth[r.yearMonth] = r.buy
-  }
-  return [...byDim.values()]
+interface SeasonalReportForm {
+  storeGroupCode: string
+  departmentNumber: number
+  year: number
+  forecastMethod: PurchasePlanForecastMethod
+  eohMethod: PurchasePlanEohMethod
+  coverMonths: number
+  discountNormalization: boolean
 }
 
-function buildDetailColumns(): ColumnsType<PurchasePlanRow> {
-  return [
-    { title: 'Mes', dataIndex: 'yearMonth', key: 'yearMonth', render: (v: string) => formatMonthShort(v) },
-    {
-      title: 'BOH', dataIndex: 'boh', key: 'boh', align: 'right',
-      render: (v: number) => integerFmt.format(v),
-    },
-    {
-      title: 'Venta Proy', dataIndex: 'projSales', key: 'projSales', align: 'right',
-      render: (v: number) => integerFmt.format(v),
-    },
-    {
-      title: 'EOH Target', dataIndex: 'eohTarget', key: 'eohTarget', align: 'right',
-      render: (v: number) => integerFmt.format(v),
-    },
-    {
-      title: 'Compras', dataIndex: 'buy', key: 'buy', align: 'right',
-      render: (v: number) => <Text strong style={{ color: '#389e0d' }}>{integerFmt.format(v)}</Text>,
-    },
-    {
-      title: 'EOH Real', dataIndex: 'eohActual', key: 'eohActual', align: 'right',
-      render: (v: number) => integerFmt.format(v),
-    },
-  ]
+interface SeasonalReportRow {
+  key: keyof Pick<
+    SeasonalPurchaseReportSeason,
+    'projectedBoh' | 'projectedSales' | 'baselineBuy' | 'draftPos' | 'confirmedPos' | 'openToBuy'
+  >
+  label: string
+}
+
+const REPORT_ROWS: SeasonalReportRow[] = [
+  { key: 'projectedBoh', label: 'Projected BOH' },
+  { key: 'projectedSales', label: 'Projected Sales' },
+  { key: 'baselineBuy', label: 'Baseline Buy' },
+  { key: 'draftPos', label: 'Draft POs' },
+  { key: 'confirmedPos', label: 'Confirmed POs' },
+  { key: 'openToBuy', label: 'Open To Buy' },
+]
+
+function formatMonth(yearMonth: string): string {
+  return dayjs(`${yearMonth}-01`).format('MMM YYYY')
+}
+
+function formatInt(value: number): string {
+  return integerFmt.format(Math.round(value ?? 0))
+}
+
+function formatHnl(value: number): string {
+  return `HNL ${moneyFmt.format(Math.round(value ?? 0))}`
+}
+
+function renderReportValue(value: SeasonalPurchaseReportValue): ReactNode {
+  return (
+    <Space direction="vertical" size={0} style={{ lineHeight: 1.2 }}>
+      <Text strong>{formatInt(value.units)}</Text>
+      <Text type="secondary" style={{ fontSize: 12 }}>{formatHnl(value.costHnl)}</Text>
+    </Space>
+  )
+}
+
+function adjustmentLabel(kind: PurchasePlanAdjustmentKind): string {
+  return kind === 'percent_lift' ? 'Percent lift/reduction' : 'Absolute season total'
 }
 
 export default function PurchasePlanningPage() {
-  // ── Form state ──
-  const [dimension, setDimension] = useState<PurchasePlanDimension>('vendor')
-  const [selectedStores, setSelectedStores] = useState<number[]>([])
-  const [forecastMethod, setForecastMethod] =
-    useState<PurchasePlanForecastMethod>('sameMonthLastYear')
-  const [trailingMonths, setTrailingMonths] = useState<number>(6)
-  const [growthPct, setGrowthPct] = useState<number>(0)
-  const [yearsToBlend, setYearsToBlend] = useState<2 | 3>(2)
-  const [eohMethod, setEohMethod] = useState<PurchasePlanEohMethod>('forward')
-  const [coverMonths, setCoverMonths] = useState<number>(6)
-  const [asOfMonth, setAsOfMonth] = useState<Dayjs>(() => dayjs().startOf('month'))
-
-  const [categoriesSelected, setCategoriesSelected] = useState<number[]>([])
-  const [categoriesRaw, setCategoriesRaw] = useState('')
-  const [vendorsRaw, setVendorsRaw] = useState('')
-  const [departmentsRaw, setDepartmentsRaw] = useState('')
-
-  // ── Committed query (null until Run is clicked) ──
-  const [query, setQuery] = useState<PurchasePlanRequest | null>(null)
-
+  const [form] = Form.useForm<CreatePlanForm>()
+  const [reportForm] = Form.useForm<SeasonalReportForm>()
+  const [adjustmentForm] = Form.useForm<AdjustmentForm>()
+  const [messageApi, contextHolder] = message.useMessage()
   const qc = useQueryClient()
-  const { data: dims, isLoading: dimsLoading } = useSalesDimensions()
+  const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null)
+  const [adjustmentTarget, setAdjustmentTarget] = useState<SavedPurchasePlanDepartment | null>(null)
+  const [seasonalReport, setSeasonalReport] = useState<SeasonalPurchaseReportResponse | null>(null)
 
-  const result = useQuery<PurchasePlanResponse>({
-    queryKey: ['purchase-planning', query] as const,
-    queryFn: ({ signal }) => postPurchasePlan(query!, signal),
-    enabled: !!query,
-    staleTime: 60 * 1000,
-    placeholderData: keepPreviousData,
+  const { data: chains = [], isLoading: chainsLoading } = useStoreChains()
+  const { data: departments = [], isLoading: departmentsLoading } = useDepartments()
+
+  const plans = useQuery({
+    queryKey: ['purchase-planning', 'saved-plans'],
+    queryFn: () => fetchSavedPurchasePlans({ status: 'draft' }),
+    staleTime: 60_000,
   })
 
-  const running = !!query && result.isFetching
+  const detail = useQuery({
+    queryKey: ['purchase-planning', 'saved-plan', selectedPlanId],
+    queryFn: () => fetchSavedPurchasePlan(selectedPlanId!),
+    enabled: !!selectedPlanId,
+  })
 
-  function onRun(): void {
-    const combinedCategories = [
-      ...categoriesSelected.map(String),
-      ...(categoriesRaw.trim() ? [categoriesRaw.trim()] : []),
-    ].join(',')
-    setQuery({
-      dimension,
-      // Empty → all stores (server resolves via listSalesDimensions).
-      storeNumbers: selectedStores.length > 0 ? selectedStores : undefined,
-      forecast: {
-        method: forecastMethod,
-        trailingMonths: forecastMethod === 'trailingAverage' ? trailingMonths : undefined,
-        growthPct: forecastMethod === 'yoyGrowth' ? growthPct : undefined,
-        yearsToBlend: forecastMethod === 'blendedMultiYear' ? yearsToBlend : undefined,
-      },
-      eohMethod,
-      coverMonths: eohMethod === 'forward' ? coverMonths : undefined,
-      asOfYearMonth: asOfMonth.format('YYYY-MM'),
-      filters: {
-        categoriesRaw: combinedCategories || undefined,
-        vendorsRaw: vendorsRaw.trim() || undefined,
-        departmentsRaw: departmentsRaw.trim() || undefined,
+  const createMutation = useMutation({
+    mutationFn: (values: CreatePlanForm) => {
+      const payload: SavedPurchasePlanCreateRequest = {
+        label: values.label?.trim() || undefined,
+        storeGroupCode: values.storeGroupCode,
+        season: values.season,
+        seasonYear: values.seasonYear,
+        departmentNumbers: values.departmentNumbers,
+        forecast: { method: values.forecastMethod },
+        eohMethod: values.eohMethod,
+        coverMonths: values.coverMonths,
+        discountNormalization: values.discountNormalization,
+        createdBy: 'buyer',
+      }
+      return createSavedPurchasePlan(payload)
+    },
+    onSuccess: async (created) => {
+      setSelectedPlanId(created.plan.id)
+      await qc.invalidateQueries({ queryKey: ['purchase-planning'] })
+      messageApi.success('Plan saved')
+    },
+    onError: (err) => messageApi.error(err instanceof Error ? err.message : 'Could not create plan'),
+  })
+
+  const seasonalReportMutation = useMutation({
+    mutationFn: (values: SeasonalReportForm) => generateSeasonalPurchaseReport({
+      storeGroupCode: values.storeGroupCode,
+      departmentNumber: values.departmentNumber,
+      year: values.year,
+      forecast: { method: values.forecastMethod },
+      eohMethod: values.eohMethod,
+      coverMonths: values.coverMonths,
+      discountNormalization: values.discountNormalization,
+      createdBy: 'buyer',
+    }),
+    onSuccess: async (report) => {
+      setSeasonalReport(report)
+      await qc.invalidateQueries({ queryKey: ['purchase-planning'] })
+      messageApi.success('Seasonal report refreshed')
+    },
+    onError: (err) => messageApi.error(err instanceof Error ? err.message : 'Could not build seasonal report'),
+  })
+
+  const adjustmentMutation = useMutation({
+    mutationFn: ({ planId, payload }: { planId: string; payload: SavedPurchasePlanAdjustmentRequest }) =>
+      addSavedPurchasePlanAdjustment(planId, payload),
+    onSuccess: async (updated) => {
+      setAdjustmentTarget(null)
+      adjustmentForm.resetFields()
+      await qc.invalidateQueries({ queryKey: ['purchase-planning'] })
+      setSelectedPlanId(updated.plan.id)
+      messageApi.success('Adjustment saved')
+    },
+    onError: (err) => messageApi.error(err instanceof Error ? err.message : 'Could not save adjustment'),
+  })
+
+  const recalculateMutation = useMutation({
+    mutationFn: (planId: string) => recalculateSavedPurchasePlan(planId, 'buyer'),
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ['purchase-planning'] })
+      messageApi.success('Plan recalculated')
+    },
+    onError: (err) => messageApi.error(err instanceof Error ? err.message : 'Could not recalculate plan'),
+  })
+
+  const archiveMutation = useMutation({
+    mutationFn: (planId: string) => archiveSavedPurchasePlan(planId, 'buyer'),
+    onSuccess: async () => {
+      setSelectedPlanId(null)
+      await qc.invalidateQueries({ queryKey: ['purchase-planning'] })
+      messageApi.success('Plan archived')
+    },
+    onError: (err) => messageApi.error(err instanceof Error ? err.message : 'Could not archive plan'),
+  })
+
+  const selectedPlan = detail.data
+
+  const seasonalReportColumns = useMemo<ColumnsType<SeasonalReportRow>>(() => [
+    {
+      title: 'Report row',
+      dataIndex: 'label',
+      fixed: 'left',
+      width: 155,
+      render: (value: string) => <Text>{value}</Text>,
+    },
+    ...(seasonalReport?.seasons ?? []).map((season) => ({
+      title: (
+        <Space size={4} wrap>
+          <Text>{season.seasonLabel}</Text>
+          {season.autoCreated ? <Tag color="blue">auto</Tag> : null}
+        </Space>
+      ),
+      key: season.season,
+      align: 'right' as const,
+      render: (_: unknown, row: SeasonalReportRow) => renderReportValue(season[row.key]),
+    })),
+  ], [seasonalReport])
+
+  const planColumns = useMemo<ColumnsType<SavedPurchasePlanListItem>>(() => [
+    {
+      title: 'Plan',
+      dataIndex: 'label',
+      render: (value: string, row) => (
+        <Button type="link" onClick={() => setSelectedPlanId(row.id)} style={{ padding: 0 }}>
+          {value}
+        </Button>
+      ),
+    },
+    { title: 'Chain', dataIndex: 'storeGroupLabel', width: 150, render: (_: string | null, row) => row.storeGroupLabel ?? row.storeGroupCode },
+    { title: 'Season', width: 120, render: (_: unknown, row) => `${row.season} ${row.seasonYear}` },
+    { title: 'Departments', dataIndex: 'departmentCount', width: 110, align: 'right' },
+    { title: 'Units', dataIndex: 'currentTotalBuy', width: 100, align: 'right', render: formatInt },
+  ], [])
+
+  const departmentColumns = useMemo<ColumnsType<SavedPurchasePlanDepartment>>(() => [
+    {
+      title: 'Department',
+      dataIndex: 'departmentLabel',
+      fixed: 'left',
+      width: 230,
+      render: (value: string, row) => (
+        <Space size={6}>
+          <Text>{value}</Text>
+          {!row.hasHistory ? <Tag color="gold">no history</Tag> : null}
+        </Space>
+      ),
+    },
+    { title: 'On hand', dataIndex: 'currentOnHand', width: 95, align: 'right', render: formatInt },
+    {
+      title: 'On order',
+      width: 95,
+      align: 'right',
+      render: (_: unknown, row) => formatInt(row.currentOnOrder + row.futureOnOrder + row.nativeOpenPo),
+    },
+    { title: 'Projected sales', dataIndex: 'totalProjSales', width: 125, align: 'right', render: formatInt },
+    { title: 'Baseline buy', dataIndex: 'baselineTotalBuy', width: 115, align: 'right', render: formatInt },
+    {
+      title: 'Current buy',
+      dataIndex: 'currentTotalBuy',
+      width: 115,
+      align: 'right',
+      render: (value: number) => <Text strong>{formatInt(value)}</Text>,
+    },
+    {
+      title: 'Delta',
+      dataIndex: 'deltaBuy',
+      width: 95,
+      align: 'right',
+      render: (value: number) => (
+        <Text type={value === 0 ? 'secondary' : value > 0 ? 'success' : 'danger'}>
+          {value > 0 ? '+' : ''}{formatInt(value)}
+        </Text>
+      ),
+    },
+    {
+      title: '',
+      width: 110,
+      render: (_: unknown, row) => (
+        <Button size="small" onClick={() => {
+          setAdjustmentTarget(row)
+          adjustmentForm.setFieldsValue({ kind: 'absolute_total', value: row.currentTotalBuy, reason: '' })
+        }}>
+          Adjust
+        </Button>
+      ),
+    },
+  ], [adjustmentForm])
+
+  const monthColumns = useMemo<ColumnsType<SavedPurchasePlanRow>>(() => [
+    { title: 'Month', dataIndex: 'yearMonth', render: formatMonth },
+    { title: 'Projected BOH', dataIndex: 'currentBoh', align: 'right', render: formatInt },
+    { title: 'Projected', dataIndex: 'currentProjSales', align: 'right', render: formatInt },
+    { title: 'Target', dataIndex: 'currentEohTarget', align: 'right', render: formatInt },
+    { title: 'Baseline buy', dataIndex: 'baselineBuy', align: 'right', render: formatInt },
+    { title: 'Current buy', dataIndex: 'currentBuy', align: 'right', render: (value: number) => <Text strong>{formatInt(value)}</Text> },
+    { title: 'EOH', dataIndex: 'currentEohActual', align: 'right', render: formatInt },
+    {
+      title: 'Norm',
+      dataIndex: 'normalizationFactor',
+      align: 'right',
+      render: (value: number | null) => value == null ? '-' : `${pctFmt.format(value * 100)}%`,
+    },
+  ], [])
+
+  function submitAdjustment(values: AdjustmentForm): void {
+    if (!selectedPlanId || !adjustmentTarget) return
+    adjustmentMutation.mutate({
+      planId: selectedPlanId,
+      payload: {
+        departmentKey: adjustmentTarget.departmentKey,
+        kind: values.kind,
+        value: values.value,
+        reason: values.reason,
+        appliedBy: 'buyer',
       },
     })
   }
 
-  // Cancel the in-flight query. TanStack Query aborts the fetch via
-  // AbortSignal (wired through postPurchasePlan → fetch). We also reset the
-  // committed query so the UI returns to the "not run yet" state — otherwise
-  // clicking Run again with identical params would be a no-op (cache hit).
-  function onStop(): void {
-    qc.cancelQueries({ queryKey: ['purchase-planning', query] })
-    setQuery(null)
-  }
-
-  const pivotRows = useMemo(() => {
-    if (!result.data) return []
-    return buildPivot(result.data.totals, result.data.rows, result.data.meta.horizonYearMonths)
-  }, [result.data])
-
-  const columns = useMemo<ColumnsType<PivotRow>>(() => {
-    const horizon = result.data?.meta.horizonYearMonths ?? []
-    const dimLabel =
-      dimension === 'department' ? 'Departamento' : dimension === 'category' ? 'Categoría' : 'Proveedor'
-    const monthCols: ColumnsType<PivotRow> = horizon.map((ym) => ({
-      title: formatMonthShort(ym),
-      key: `m-${ym}`,
-      align: 'right',
-      width: 70,
-      render: (_: unknown, row: PivotRow) => integerFmt.format(row.buyByMonth[ym] ?? 0),
-    }))
-    return [
-      {
-        title: dimLabel,
-        dataIndex: 'dimLabel',
-        key: 'dimLabel',
-        fixed: 'left',
-        width: 180,
-        render: (label: string, row: PivotRow) =>
-          row.hasHistory ? (
-            <Text>{label}</Text>
-          ) : (
-            <Space size={4}>
-              <Text>{label}</Text>
-              <Tag color="gold">sin historial</Tag>
-            </Space>
-          ),
-      },
-      {
-        title: 'OH Actual',
-        dataIndex: 'currentOnHand',
-        key: 'currentOnHand',
-        align: 'right',
-        width: 90,
-        render: (v: number) => integerFmt.format(v),
-      },
-      ...monthCols,
-      {
-        title: 'Total Compras',
-        dataIndex: 'totalBuy',
-        key: 'totalBuy',
-        align: 'right',
-        fixed: 'right',
-        width: 110,
-        defaultSortOrder: 'descend',
-        sorter: (a, b) => a.totalBuy - b.totalBuy,
-        render: (v: number) => (
-          <Text strong style={{ color: '#389e0d' }}>{integerFmt.format(v)}</Text>
-        ),
-      },
-    ]
-  }, [dimension, result.data])
-
-  // ── Expanded-row detail ──
-  const detailColumns = useMemo(() => buildDetailColumns(), [])
-
   return (
     <div>
-      <Title level={2} style={{ marginBottom: 0 }}>Plan de Compras</Title>
-      <Paragraph type="secondary" style={{ marginBottom: 4 }}>
-        Plan mensual de compras por departamento, categoría o proveedor. Proyección a 12 meses
-        calculada a partir de ventas históricas y el inventario actual. Lectura en vivo de RICS.
-      </Paragraph>
-      <Paragraph type="secondary" style={{ marginTop: 0, fontSize: 12 }}>
-        Cantidades en unidades. Montos en <strong>Lempira (HNL)</strong> cuando se muestran.
+      {contextHolder}
+      <Title level={2} style={{ marginBottom: 0 }}>Purchase Planning</Title>
+      <Paragraph type="secondary" style={{ marginBottom: 16 }}>
+        Saved chain and department seasonal buying plans. Quantities are units; Purchasing remains separate for vendor and item selection.
       </Paragraph>
 
-      <Card style={{ marginBottom: 16 }}>
-        <Row gutter={16}>
-          <Col xs={24} md={12}>
-            <Card size="small" title="Dimensión" style={{ marginBottom: 12 }}>
-              <Segmented<PurchasePlanDimension>
-                value={dimension}
-                onChange={(v) => setDimension(v as PurchasePlanDimension)}
-                options={DIMENSION_OPTIONS}
-                block
-              />
-            </Card>
-            <Card size="small" title="Método de proyección" style={{ marginBottom: 12 }}>
-              <Space direction="vertical" size={8} style={{ width: '100%' }}>
-                <Segmented<PurchasePlanForecastMethod>
-                  value={forecastMethod}
-                  onChange={(v) => setForecastMethod(v as PurchasePlanForecastMethod)}
-                  options={FORECAST_OPTIONS}
-                  block
-                />
-                {forecastMethod === 'trailingAverage' && (
-                  <Space>
-                    <Text>Meses a promediar:</Text>
-                    <InputNumber
-                      min={1}
-                      max={24}
-                      value={trailingMonths}
-                      onChange={(v) => setTrailingMonths(Number(v) || 6)}
-                    />
-                  </Space>
-                )}
-                {forecastMethod === 'yoyGrowth' && (
-                  <Space>
-                    <Text>Crecimiento vs. año anterior:</Text>
-                    <Space.Compact>
-                      <InputNumber
-                        min={-99}
-                        max={500}
-                        value={growthPct}
-                        onChange={(v) => setGrowthPct(Number(v) || 0)}
-                      />
-                      <Button disabled>%</Button>
-                    </Space.Compact>
-                  </Space>
-                )}
-                {forecastMethod === 'blendedMultiYear' && (
-                  <Space>
-                    <Text>Años a promediar:</Text>
-                    <Select<2 | 3>
-                      value={yearsToBlend}
-                      onChange={(v) => setYearsToBlend(v)}
-                      options={[
-                        { value: 2, label: '2 años' },
-                        { value: 3, label: '3 años' },
-                      ]}
-                      style={{ width: 120 }}
-                    />
-                  </Space>
-                )}
-              </Space>
-            </Card>
-            <Card size="small" title="Método EOH">
-              <Space direction="vertical" size={8} style={{ width: '100%' }}>
-                <Segmented<PurchasePlanEohMethod>
-                  value={eohMethod}
-                  onChange={(v) => setEohMethod(v as PurchasePlanEohMethod)}
-                  options={EOH_OPTIONS}
-                  block
-                />
-                {eohMethod === 'forward' && (
-                  <Space>
-                    <Text>Cobertura (meses):</Text>
-                    <InputNumber
-                      min={1}
-                      max={24}
-                      value={coverMonths}
-                      onChange={(v) => setCoverMonths(Number(v) || 6)}
-                    />
-                  </Space>
-                )}
-              </Space>
-            </Card>
-          </Col>
-
-          <Col xs={24} md={12}>
-            <Card size="small" title="Período" style={{ marginBottom: 12 }}>
-              <Space direction="vertical" size={8} style={{ width: '100%' }}>
-                <div>
-                  <Text type="secondary" style={{ fontSize: 12, display: 'block' }}>
-                    Mes base (el plan empieza en el siguiente mes):
-                  </Text>
-                  <DatePicker
-                    picker="month"
-                    value={asOfMonth}
-                    allowClear={false}
-                    onChange={(v) => v && setAsOfMonth(v.startOf('month'))}
-                    style={{ width: '100%' }}
-                  />
-                </div>
-              </Space>
-            </Card>
-            <Card size="small" title="Tiendas" style={{ marginBottom: 12 }}>
-              <Select<number[]>
-                mode="multiple"
-                allowClear
-                loading={dimsLoading}
-                value={selectedStores}
-                onChange={setSelectedStores}
-                placeholder="Todas las tiendas (dejar vacío para incluir todas)"
-                optionFilterProp="label"
-                style={{ width: '100%' }}
-                options={(dims?.stores ?? []).map((s) => ({
-                  value: s.number,
-                  label: s.name ? `${s.number} — ${s.name}` : String(s.number),
-                }))}
-              />
-              <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 4 }}>
-                {selectedStores.length === 0
-                  ? `Se incluirán todas las tiendas (${dims?.stores?.length ?? 0}).`
-                  : `${selectedStores.length} tienda${selectedStores.length === 1 ? '' : 's'} seleccionada${selectedStores.length === 1 ? '' : 's'}.`}
-              </Text>
-            </Card>
-
-            <Card size="small" title="Filtros (opcional)">
-              <Space direction="vertical" size={12} style={{ width: '100%' }}>
-                <CriteriaInput
-                  label="Departamentos"
-                  mode="numeric"
-                  options={[]}
-                  selected={[]}
-                  onSelectedChange={() => {}}
-                  rawText={departmentsRaw}
-                  onRawTextChange={setDepartmentsRaw}
-                  hideDropdown
-                  helpText="Rangos/excluir: 1-10, <>5"
-                />
-                <CriteriaInput
-                  label="Categorías"
-                  mode="numeric"
-                  loading={dimsLoading}
-                  options={(dims?.categories ?? []).map((c) => ({
-                    value: c.number,
-                    label: c.desc ? `${c.number} — ${c.desc}` : String(c.number),
-                  }))}
-                  selected={categoriesSelected}
-                  onSelectedChange={setCategoriesSelected}
-                  rawText={categoriesRaw}
-                  onRawTextChange={setCategoriesRaw}
-                />
-                <CriteriaInput
-                  label="Proveedores"
-                  mode="string"
-                  options={[]}
-                  selected={[]}
-                  onSelectedChange={() => {}}
-                  rawText={vendorsRaw}
-                  onRawTextChange={setVendorsRaw}
-                  hideDropdown
-                  helpText="e.g. NIKE, <>ADIDAS"
-                />
-              </Space>
-            </Card>
-          </Col>
-        </Row>
-
-        <div style={{ marginTop: 16, borderTop: '1px solid #f0f0f0', paddingTop: 16 }}>
-          <Space align="center">
-            <Button
-              type="primary"
-              onClick={onRun}
-              loading={running}
-              disabled={running}
+      <Row gutter={[16, 16]}>
+        <Col xs={24} xl={8}>
+          <Card title="Seasonal report">
+            <Form<SeasonalReportForm>
+              name="seasonalReport"
+              form={reportForm}
+              layout="vertical"
+              initialValues={{
+                year: dayjs().year(),
+                forecastMethod: 'holtWinters',
+                eohMethod: 'forward',
+                coverMonths: 3,
+                discountNormalization: true,
+              }}
+              onFinish={(values) => seasonalReportMutation.mutate(values)}
             >
-              Calcular plan
-            </Button>
-            <Button onClick={onStop} disabled={!running} danger>
-              Detener
-            </Button>
-            {running && (
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                Calculando… puedes presionar Detener si fue un error.
-              </Text>
-            )}
-            {!running && query && result.data?.meta && (
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                Historia: {result.data.meta.historyFromYearMonth} a {result.data.meta.historyToYearMonth}.
-                OH actualizado: {dayjs(result.data.meta.onHandAsOf).format('DD/MM HH:mm')}.
-              </Text>
-            )}
-          </Space>
-        </div>
-      </Card>
+              <Form.Item label="Report chain" name="storeGroupCode" rules={[{ required: true, message: 'Select a chain' }]}>
+                <Select
+                  loading={chainsLoading}
+                  options={chains.map((chain) => ({
+                    value: chain.id,
+                    label: `${chain.label} (${chain.storeCount})`,
+                    disabled: !chain.active || chain.storeCount === 0,
+                  }))}
+                />
+              </Form.Item>
+              <Row gutter={12}>
+                <Col span={14}>
+                  <Form.Item label="Report department" name="departmentNumber" rules={[{ required: true, message: 'Select a department' }]}>
+                    <Select
+                      loading={departmentsLoading}
+                      optionFilterProp="label"
+                      options={departments.map((department) => ({
+                        value: department.number,
+                        label: `${department.number} - ${department.description}`,
+                      }))}
+                    />
+                  </Form.Item>
+                </Col>
+                <Col span={10}>
+                  <Form.Item label="Year" name="year" rules={[{ required: true }]}>
+                    <InputNumber min={2020} max={2100} style={{ width: '100%' }} />
+                  </Form.Item>
+                </Col>
+              </Row>
+              <Row gutter={12}>
+                <Col span={14}>
+                  <Form.Item label="Forecast" name="forecastMethod">
+                    <Select options={FORECAST_OPTIONS} />
+                  </Form.Item>
+                </Col>
+                <Col span={10}>
+                  <Form.Item label="EOH" name="eohMethod">
+                    <Select options={EOH_OPTIONS} />
+                  </Form.Item>
+                </Col>
+              </Row>
+              <Row gutter={12} align="middle">
+                <Col span={12}>
+                  <Form.Item label="Cover months" name="coverMonths">
+                    <InputNumber min={1} max={12} style={{ width: '100%' }} />
+                  </Form.Item>
+                </Col>
+                <Col span={12}>
+                  <Form.Item label="Normalize discounts" name="discountNormalization" valuePropName="checked">
+                    <Switch />
+                  </Form.Item>
+                </Col>
+              </Row>
+              <Button type="primary" htmlType="submit" loading={seasonalReportMutation.isPending} block>
+                Generate report
+              </Button>
+            </Form>
+          </Card>
 
-      {result.error && (
-        <Alert
-          type="error"
-          message="No se pudo calcular el plan"
-          description={result.error instanceof Error ? result.error.message : String(result.error)}
-          style={{ marginBottom: 16 }}
-        />
-      )}
+          <Card title="Create seasonal plan" style={{ marginTop: 16 }}>
+            <Form<CreatePlanForm>
+              name="createSeasonalPlan"
+              form={form}
+              layout="vertical"
+              initialValues={{
+                season: 'spring',
+                seasonYear: dayjs().year(),
+                forecastMethod: 'holtWinters',
+                eohMethod: 'forward',
+                coverMonths: 3,
+                discountNormalization: true,
+              }}
+              onFinish={(values) => createMutation.mutate(values)}
+            >
+              <Form.Item label="Plan label" name="label">
+                <Input placeholder="Optional" maxLength={200} />
+              </Form.Item>
+              <Form.Item label="Chain" name="storeGroupCode" rules={[{ required: true, message: 'Select a chain' }]}>
+                <Select
+                  loading={chainsLoading}
+                  options={chains.map((chain) => ({
+                    value: chain.id,
+                    label: `${chain.label} (${chain.storeCount})`,
+                    disabled: !chain.active || chain.storeCount === 0,
+                  }))}
+                />
+              </Form.Item>
+              <Row gutter={12}>
+                <Col span={14}>
+                  <Form.Item label="Season" name="season" rules={[{ required: true }]}>
+                    <Select options={SEASONS} />
+                  </Form.Item>
+                </Col>
+                <Col span={10}>
+                  <Form.Item label="Year" name="seasonYear" rules={[{ required: true }]}>
+                    <InputNumber min={2020} max={2100} style={{ width: '100%' }} />
+                  </Form.Item>
+                </Col>
+              </Row>
+              <Form.Item label="Departments" name="departmentNumbers" rules={[{ required: true, message: 'Select at least one department' }]}>
+                <Select
+                  mode="multiple"
+                  loading={departmentsLoading}
+                  optionFilterProp="label"
+                  maxTagCount="responsive"
+                  options={departments.map((department) => ({
+                    value: department.number,
+                    label: `${department.number} - ${department.description}`,
+                  }))}
+                />
+              </Form.Item>
+              <Row gutter={12}>
+                <Col span={14}>
+                  <Form.Item label="Forecast" name="forecastMethod">
+                    <Select options={FORECAST_OPTIONS} />
+                  </Form.Item>
+                </Col>
+                <Col span={10}>
+                  <Form.Item label="EOH" name="eohMethod">
+                    <Select options={EOH_OPTIONS} />
+                  </Form.Item>
+                </Col>
+              </Row>
+              <Row gutter={12} align="middle">
+                <Col span={12}>
+                  <Form.Item label="Cover months" name="coverMonths">
+                    <InputNumber min={1} max={12} style={{ width: '100%' }} />
+                  </Form.Item>
+                </Col>
+                <Col span={12}>
+                  <Form.Item label="Normalize discounts" name="discountNormalization" valuePropName="checked">
+                    <Switch />
+                  </Form.Item>
+                </Col>
+              </Row>
+              <Button type="primary" htmlType="submit" loading={createMutation.isPending} block>
+                Save plan
+              </Button>
+            </Form>
+          </Card>
 
-      {!query ? (
-        <Empty
-          description="Configura los filtros y presiona Calcular plan."
-          image={Empty.PRESENTED_IMAGE_SIMPLE}
-          style={{ padding: 40 }}
-        />
-      ) : result.isFetching && !result.data ? (
-        <Card>
-          <Skeleton active paragraph={{ rows: 10 }} />
-        </Card>
-      ) : result.data ? (
-        <Card>
-          <Table<PivotRow>
-            dataSource={pivotRows}
-            columns={columns}
-            rowKey="key"
-            size="small"
-            pagination={{ pageSize: 50, showSizeChanger: true }}
-            scroll={{ x: 'max-content' }}
-            sticky
-            expandable={{
-              expandedRowRender: (row) => {
-                const detailRows = result.data!.rows.filter((r) => r.dimKey === row.dimKey)
-                return (
-                  <Table<PurchasePlanRow>
-                    dataSource={detailRows}
-                    columns={detailColumns}
-                    rowKey={(r) => `${r.dimKey}-${r.yearMonth}`}
-                    size="small"
-                    pagination={false}
-                  />
-                )
-              },
-            }}
-          />
-        </Card>
-      ) : null}
+          <Card title="Saved draft plans" style={{ marginTop: 16 }}>
+            <Table<SavedPurchasePlanListItem>
+              dataSource={plans.data ?? []}
+              columns={planColumns}
+              rowKey="id"
+              size="small"
+              loading={plans.isLoading}
+              pagination={{ pageSize: 8 }}
+            />
+          </Card>
+        </Col>
+
+        <Col xs={24} xl={16}>
+          {seasonalReport ? (
+            <Card
+              title={`${seasonalReport.storeGroupLabel ?? seasonalReport.storeGroupCode} ${seasonalReport.departmentLabel} ${seasonalReport.year}`}
+              style={{ marginBottom: 16 }}
+              extra={<Text type="secondary">Units and HNL cost</Text>}
+            >
+              {seasonalReport.warnings.length > 0 ? (
+                <Alert
+                  type="warning"
+                  showIcon
+                  message={seasonalReport.warnings.join(' ')}
+                  style={{ marginBottom: 12 }}
+                />
+              ) : null}
+              <Table<SeasonalReportRow>
+                dataSource={REPORT_ROWS}
+                columns={seasonalReportColumns}
+                rowKey="key"
+                size="small"
+                pagination={false}
+                scroll={{ x: 'max-content' }}
+              />
+              <Space wrap style={{ marginTop: 12 }}>
+                {seasonalReport.seasons.map((season) => (
+                  <Button key={season.planId} size="small" onClick={() => setSelectedPlanId(season.planId)}>
+                    Open {season.seasonLabel} worksheet
+                  </Button>
+                ))}
+              </Space>
+            </Card>
+          ) : null}
+
+          {detail.error ? (
+            <Alert
+              type="error"
+              message="Could not load plan"
+              description={detail.error instanceof Error ? detail.error.message : String(detail.error)}
+              style={{ marginBottom: 16 }}
+            />
+          ) : null}
+
+          {!selectedPlanId ? (
+            <Empty description="Create or select a saved plan." image={Empty.PRESENTED_IMAGE_SIMPLE} style={{ padding: 56 }} />
+          ) : selectedPlan ? (
+            <Card
+              title={selectedPlan.plan.label}
+              extra={(
+                <Space>
+                  <Tag>{selectedPlan.plan.storeGroupLabel ?? selectedPlan.plan.storeGroupCode}</Tag>
+                  <Tag>{selectedPlan.plan.season} {selectedPlan.plan.seasonYear}</Tag>
+                  <Button onClick={() => recalculateMutation.mutate(selectedPlan.plan.id)} loading={recalculateMutation.isPending}>
+                    Recalculate
+                  </Button>
+                  <Button danger onClick={() => archiveMutation.mutate(selectedPlan.plan.id)} loading={archiveMutation.isPending}>
+                    Archive
+                  </Button>
+                </Space>
+              )}
+            >
+              <Space wrap style={{ marginBottom: 12 }}>
+                <Text type="secondary">Months: {selectedPlan.plan.seasonMonths.map(formatMonth).join(', ')}</Text>
+                <Text type="secondary">History: {selectedPlan.plan.historyFromYearMonth} to {selectedPlan.plan.historyToYearMonth}</Text>
+                <Text type="secondary">Forecast: {selectedPlan.plan.forecastMethod}</Text>
+                {selectedPlan.plan.discountNormalization ? <Tag color="blue">discount normalization</Tag> : null}
+              </Space>
+              <Row gutter={12} style={{ marginBottom: 16 }}>
+                <Col xs={24} sm={8}>
+                  <Text type="secondary">Baseline buy</Text>
+                  <Title level={4} style={{ margin: 0 }}>{formatInt(selectedPlan.totals.baselineTotalBuy)}</Title>
+                </Col>
+                <Col xs={24} sm={8}>
+                  <Text type="secondary">Current buy</Text>
+                  <Title level={4} style={{ margin: 0 }}>{formatInt(selectedPlan.totals.currentTotalBuy)}</Title>
+                </Col>
+                <Col xs={24} sm={8}>
+                  <Text type="secondary">Adjusted delta</Text>
+                  <Title level={4} style={{ margin: 0 }}>{selectedPlan.totals.deltaBuy > 0 ? '+' : ''}{formatInt(selectedPlan.totals.deltaBuy)}</Title>
+                </Col>
+              </Row>
+              <Table<SavedPurchasePlanDepartment>
+                dataSource={selectedPlan.departments}
+                columns={departmentColumns}
+                rowKey="departmentKey"
+                size="small"
+                loading={detail.isFetching}
+                pagination={false}
+                scroll={{ x: 'max-content' }}
+                expandable={{
+                  expandedRowRender: (row) => (
+                    <Table<SavedPurchasePlanRow>
+                      dataSource={row.months}
+                      columns={monthColumns}
+                      rowKey="id"
+                      size="small"
+                      pagination={false}
+                    />
+                  ),
+                }}
+              />
+            </Card>
+          ) : (
+            <Card loading />
+          )}
+        </Col>
+      </Row>
+
+      <Modal
+        title={adjustmentTarget ? `Adjust ${adjustmentTarget.departmentLabel}` : 'Adjust department'}
+        open={!!adjustmentTarget}
+        onCancel={() => setAdjustmentTarget(null)}
+        onOk={() => adjustmentForm.submit()}
+        confirmLoading={adjustmentMutation.isPending}
+        forceRender
+      >
+        <Form<AdjustmentForm>
+          form={adjustmentForm}
+          layout="vertical"
+          initialValues={{ kind: 'absolute_total' }}
+          onFinish={submitAdjustment}
+        >
+          <Form.Item label="Adjustment type" name="kind" rules={[{ required: true }]}>
+            <Select
+              options={[
+                { value: 'absolute_total', label: adjustmentLabel('absolute_total') },
+                { value: 'percent_lift', label: adjustmentLabel('percent_lift') },
+              ]}
+            />
+          </Form.Item>
+          <Form.Item label="Value" name="value" rules={[{ required: true, message: 'Enter a value' }]}>
+            <InputNumber style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item label="Reason" name="reason" rules={[{ required: true, message: 'Reason is required' }]}>
+            <Input.TextArea rows={3} maxLength={1000} />
+          </Form.Item>
+        </Form>
+      </Modal>
     </div>
   )
 }

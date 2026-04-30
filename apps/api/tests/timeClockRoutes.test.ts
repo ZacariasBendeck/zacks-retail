@@ -3,6 +3,7 @@ import { PrismaClient } from '../src/prismaClient';
 import app from '../src/app';
 import { bootstrapOwner } from '../src/services/employees/bootstrapOwner';
 import { hashPassword } from '../src/services/employees/passwordHash';
+import { grantStoreScope } from '../src/services/identityAccess/storeScopeService';
 
 const prisma = new PrismaClient();
 const EMAIL_PREFIX = 'time-clock-route-';
@@ -264,6 +265,67 @@ describe('time clock routes', () => {
     expect(clockOut.status).toBe(200);
     expect(clockOut.body.entry.employeeId).toBe(salesperson.id);
     expect(clockOut.body.entry.clockedOutAt).toBeTruthy();
+  });
+
+  it('enforces Identity & Access store scopes on time clock administration', async () => {
+    const ownerCookie = await loginCookie(OWNER_EMAIL, OWNER_PASSWORD);
+    await request(app)
+      .patch(`/api/v1/time-clock-policy?storeId=${STORE_A}`)
+      .set('Cookie', ownerCookie)
+      .send({ enabled: true, requireClockInBeforeSale: false });
+    await request(app)
+      .patch(`/api/v1/time-clock-policy?storeId=${STORE_B}`)
+      .set('Cookie', ownerCookie)
+      .send({ enabled: true, requireClockInBeforeSale: false });
+
+    const owner = await prisma.user.findUniqueOrThrow({
+      where: { email: OWNER_EMAIL },
+      select: { id: true },
+    });
+    const manager = await createEmployee(ownerCookie, {
+      suffix: 'scopedmgr',
+      roleName: 'MANAGER',
+    });
+    const salesperson = await createEmployee(ownerCookie, {
+      suffix: 'scopedstaff',
+      roleName: 'SALESPERSON',
+      timeClockPin: '9753',
+    });
+    await grantStoreScope(prisma, {
+      userId: manager.id,
+      scopeType: 'STORE',
+      scopeId: String(STORE_A),
+      actorUserId: owner.id,
+      reason: 'time clock route store scope test',
+    });
+    const managerCookie = await loginCookie(manager.email, manager.password);
+
+    const allowedPolicy = await request(app)
+      .get(`/api/v1/time-clock-policy?storeId=${STORE_A}`)
+      .set('Cookie', managerCookie);
+    expect(allowedPolicy.status).toBe(200);
+
+    const deniedPolicy = await request(app)
+      .get(`/api/v1/time-clock-policy?storeId=${STORE_B}`)
+      .set('Cookie', managerCookie);
+    expect(deniedPolicy.status).toBe(403);
+    expect(deniedPolicy.body.error.code).toBe('STORE_SCOPE_FORBIDDEN');
+
+    const deniedClockIn = await request(app)
+      .post('/api/v1/employees/time-clock/clock-in')
+      .set('Cookie', managerCookie)
+      .send({
+        employeeId: salesperson.id,
+        storeId: STORE_B,
+      });
+    expect(deniedClockIn.status).toBe(403);
+    expect(deniedClockIn.body.error.code).toBe('STORE_SCOPE_FORBIDDEN');
+
+    const deniedReport = await request(app)
+      .get(`/api/v1/reports/time-clock?storeIds=${STORE_A},${STORE_B}`)
+      .set('Cookie', managerCookie);
+    expect(deniedReport.status).toBe(403);
+    expect(deniedReport.body.error.code).toBe('STORE_SCOPE_FORBIDDEN');
   });
 
   it('lets a manager adjust an entry and review the adjustment audit trail', async () => {

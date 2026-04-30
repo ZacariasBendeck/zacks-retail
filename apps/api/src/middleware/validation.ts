@@ -162,6 +162,9 @@ export const updateVendorSchema = z.object({
 // ── Purchase Order schemas ──────────────────────────────────────────
 
 const PO_STATUSES = ['DRAFT', 'SUBMITTED', 'CONFIRMED', 'PARTIALLY_RECEIVED', 'RECEIVED', 'CLOSED', 'CANCELLED'] as const;
+const PO_SOURCE_CURRENCIES = ['CNY', 'USD', 'HNL'] as const;
+const PO_COST_BASES = ['LANDED_LEGACY_HNL', 'HNL_DOMESTIC', 'VENDOR_CURRENCY_ESTIMATED_LANDED'] as const;
+const PO_INCOTERMS = ['EXW', 'FCA', 'FAS', 'FOB', 'CFR', 'CIF', 'CPT', 'CIP', 'DAP', 'DPU', 'DDP'] as const;
 
 /** Reusable cent-precision refinement for currency fields (max 2 decimal places). */
 function centPrecision(val: number): boolean {
@@ -174,6 +177,9 @@ const lineItemSchema = z.object({
   skuId: z.string().uuid(),
   quantity: z.number().int().positive(),
   unitCost: z.number().positive().refine(centPrecision, { message: CENT_PRECISION_MSG }),
+  sourceUnitCost: z.number().nonnegative().optional().nullable(),
+  commercialUnitCostHnl: z.number().nonnegative().optional().nullable(),
+  estimatedLandedUnitCostHnl: z.number().nonnegative().optional().nullable(),
   casePackId: z.string().trim().max(6).optional().nullable(),
   casePackMultiplier: z.number().int().positive().optional().nullable(),
   sizeCells: z.array(z.object({
@@ -189,6 +195,12 @@ export const createPurchaseOrderSchema = z.object({
   shipToStoreId: z.number().int().positive().optional().nullable(),
   vendorId: z.string().trim().min(1).max(4),
   buyer: z.string().trim().min(1).max(120).optional().nullable(),
+  sourceCurrency: z.enum(PO_SOURCE_CURRENCIES).optional(),
+  fxRate: z.number().positive().optional(),
+  fxDate: z.string().optional().nullable(),
+  incotermCode: z.enum(PO_INCOTERMS).optional().nullable(),
+  incotermPlace: z.string().trim().max(200).optional().nullable(),
+  costBasis: z.enum(PO_COST_BASES).optional(),
   lineItems: z.array(lineItemSchema).min(1, 'At least one line item is required'),
   notes: z.string().max(1000).optional().nullable(),
   orderType: z.enum(['RO', 'RE', 'SA']).optional(),
@@ -203,6 +215,7 @@ export const createPurchaseOrderSchema = z.object({
   storeLabelsOnReceive: z.boolean().optional(),
   orderDate: z.string().datetime().optional().nullable(),
   shipDate: z.string().datetime().optional().nullable(),
+  plannedReceiptDate: z.string().datetime().optional().nullable(),
   cancelDate: z.string().datetime().optional().nullable(),
   paymentDate: z.string().datetime().optional().nullable(),
 });
@@ -211,6 +224,12 @@ export const updatePurchaseOrderSchema = z.object({
   poNumber: z.string().trim().min(1).max(32).optional().nullable(),
   vendorId: z.string().trim().min(1).max(4).optional(),
   buyer: z.string().trim().min(1).max(120).optional().nullable(),
+  sourceCurrency: z.enum(PO_SOURCE_CURRENCIES).optional(),
+  fxRate: z.number().positive().optional(),
+  fxDate: z.string().optional().nullable(),
+  incotermCode: z.enum(PO_INCOTERMS).optional().nullable(),
+  incotermPlace: z.string().trim().max(200).optional().nullable(),
+  costBasis: z.enum(PO_COST_BASES).optional(),
   notes: z.string().max(1000).optional().nullable(),
   billToStoreId: z.number().int().positive().optional().nullable(),
   shipToStoreId: z.number().int().positive().optional().nullable(),
@@ -226,6 +245,7 @@ export const updatePurchaseOrderSchema = z.object({
   storeLabelsOnReceive: z.boolean().optional(),
   orderDate: z.string().datetime().optional().nullable(),
   shipDate: z.string().datetime().optional().nullable(),
+  plannedReceiptDate: z.string().datetime().optional().nullable(),
   cancelDate: z.string().datetime().optional().nullable(),
   paymentDate: z.string().datetime().optional().nullable(),
   lineItems: z.array(lineItemSchema).min(1, 'At least one line item is required').optional(),
@@ -260,6 +280,7 @@ export const duplicatePurchaseOrderSchema = z.object({
   shipToStoreId: z.number().int().positive().optional().nullable(),
   orderDate: z.string().datetime().optional().nullable(),
   shipDate: z.string().datetime().optional().nullable(),
+  plannedReceiptDate: z.string().datetime().optional().nullable(),
   cancelDate: z.string().datetime().optional().nullable(),
   paymentDate: z.string().datetime().optional().nullable(),
   storeLabelsOnReceive: z.boolean().optional(),
@@ -273,9 +294,13 @@ export const replicatePurchaseOrderSchema = z.object({
 });
 
 export const combinePurchaseOrdersSchema = z.object({
-  sourcePoId: z.string().uuid(),
+  sourcePoId: z.string().uuid().optional(),
+  sourcePoIds: z.array(z.string().uuid()).min(1).max(100).optional(),
   intoPoId: z.string().uuid(),
   changedBy: z.string().max(100).optional(),
+}).refine((value) => value.sourcePoId || (value.sourcePoIds && value.sourcePoIds.length > 0), {
+  message: 'sourcePoId or sourcePoIds is required',
+  path: ['sourcePoIds'],
 });
 
 export const poReceiveFullSchema = z.object({
@@ -779,6 +804,7 @@ export const createAutoTransferRunSchema = z.object({
 });
 
 export const createBalancingTransferRunSchema = z.object({
+  algorithmMode: z.enum(['APP_LEGACY', 'RICS_MIMIC']).optional().default('APP_LEGACY'),
   balancingMethod: z.enum(['OVER_UNDER_MODELS', 'WITHOUT_MODELS', 'WITHOUT_CONSIDERING_MODELS']),
   performanceMetric: z.enum(['ROI', 'TURNS', 'SELL_THRU']),
   salesPeriod: z.enum(['MONTH', 'SEASON', 'YEAR']),
@@ -790,6 +816,10 @@ export const createBalancingTransferRunSchema = z.object({
   inTransitPos: z.boolean().optional().default(false),
   criteria: transferCriteriaSchema.extend({
     storeIds: z.array(z.coerce.number().int().min(0)).optional().default([]),
+    ricsStoreSelection: z.string().trim().max(500).optional().nullable(),
+    ricsCategorySelection: z.string().trim().max(500).optional().nullable(),
+    ricsSeasonSelection: z.string().trim().max(500).optional().nullable(),
+    ricsKeywordExclusions: z.string().trim().max(500).optional().nullable(),
     styleColors: z.array(z.string().trim().min(1)).optional().default([]),
     includeOriginalRetailOnly: z.boolean().optional().default(false),
     includeMarkdownOnly: z.boolean().optional().default(false),

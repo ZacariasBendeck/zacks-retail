@@ -82,6 +82,17 @@ router.get('/attributes/dimensions', async (req: Request, res: Response) => {
   send(res, await attributesService.listDimensions(withCounts));
 });
 
+router.post('/attributes/dimensions/for-skus', async (req: Request, res: Response) => {
+  const body = (req.body ?? {}) as { skuCodes?: unknown; withCounts?: unknown };
+  const skuCodes = Array.isArray(body.skuCodes)
+    ? body.skuCodes
+        .filter((sku): sku is string => typeof sku === 'string' && sku.trim().length > 0)
+        .map((sku) => sku.trim())
+    : [];
+  const withCounts = body.withCounts === true || body.withCounts === 'true' || body.withCounts === 1;
+  send(res, await attributesService.listDimensionsForSkus(skuCodes, withCounts));
+});
+
 router.get('/attributes/coverage', async (_req: Request, res: Response) => {
   send(res, await attributesService.getCoverage());
 });

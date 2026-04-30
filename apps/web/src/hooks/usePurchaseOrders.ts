@@ -206,9 +206,12 @@ export function useCombinePurchaseOrders() {
     mutationFn: (payload: CombinePurchaseOrdersPayload) => combinePurchaseOrders(payload),
     onSuccess: (data, variables) => {
       queryClient.invalidateQueries({ queryKey: ['purchase-orders'] })
-      queryClient.invalidateQueries({ queryKey: ['purchase-order', variables.sourcePoId] })
+      const sourcePoIds = variables.sourcePoIds ?? (variables.sourcePoId ? [variables.sourcePoId] : [])
+      for (const sourcePoId of sourcePoIds) {
+        queryClient.invalidateQueries({ queryKey: ['purchase-order', sourcePoId] })
+        queryClient.invalidateQueries({ queryKey: ['purchase-order-history', sourcePoId] })
+      }
       queryClient.invalidateQueries({ queryKey: ['purchase-order', variables.intoPoId] })
-      queryClient.invalidateQueries({ queryKey: ['purchase-order-history', variables.sourcePoId] })
       queryClient.invalidateQueries({ queryKey: ['purchase-order-history', variables.intoPoId] })
       queryClient.setQueryData(['purchase-order', data.id], data)
     },

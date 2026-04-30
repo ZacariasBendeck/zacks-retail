@@ -11,7 +11,7 @@
  * RICS p. 194.
  */
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   Alert,
   App,
@@ -29,7 +29,7 @@ import {
   Tooltip,
   Typography,
 } from 'antd'
-import { PlayCircleOutlined, SearchOutlined } from '@ant-design/icons'
+import { PlayCircleOutlined, PlusOutlined, SearchOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { productsSkuApi } from '../../services/productsSkuApi'
@@ -43,11 +43,16 @@ import {
   useSectors,
 } from '../../hooks/useProductsTaxonomy'
 import { useVendors } from '../../hooks/useProductsVendors'
-import { useAttributeDimensions, useAttributeMacroRules } from '../../hooks/useProductsAttributes'
+import {
+  useAttributeDimensions,
+  useAttributeDimensionsForSkus,
+  useAttributeMacroRules,
+  useCreateValue,
+} from '../../hooks/useProductsAttributes'
 import { useApplyBatchChange } from '../../hooks/useUtilities'
 import { buildRicsImageUrl } from '../../services/ricsImageUrl'
 import type { SkuListFilters } from '../../types/productsSku'
-import type { AttributeDimension } from '../../types/productsAttributes'
+import type { AttributeDimension, AttributeDimensionValue } from '../../types/productsAttributes'
 import type { Department, Sector } from '../../types/productsTaxonomy'
 import type {
   AttributeChange,
@@ -67,6 +72,8 @@ const CORE_ACTION_META: Record<CoreActionKind, { label: string; verb: string; op
 }
 
 const ATTRIBUTE_ACTION_PREFIX = 'ATTR:'
+
+const ATTRIBUTE_VALUE_CODE_PATTERN = /^[a-z0-9][a-z0-9_]*$/
 
 export default function ChangeSkuAttributesPage() {
   const navigate = useNavigate()
@@ -98,6 +105,9 @@ export default function ChangeSkuAttributesPage() {
   const [targetKeyword, setTargetKeyword] = useState<string | undefined>(undefined)
   const [targetAttributeValues, setTargetAttributeValues] = useState<string[]>([])
   const [attributeMode, setAttributeMode] = useState<AttributeMode>('REPLACE')
+  const [newAttributeValueCode, setNewAttributeValueCode] = useState('')
+  const [newAttributeValueLabel, setNewAttributeValueLabel] = useState('')
+  const [localAttributeValues, setLocalAttributeValues] = useState<Record<string, AttributeDimensionValue[]>>({})
 
   const onActionChange = (next: string) => {
     setAction(next)
@@ -108,6 +118,8 @@ export default function ChangeSkuAttributesPage() {
     setTargetKeyword(undefined)
     setTargetAttributeValues([])
     setAttributeMode('REPLACE')
+    setNewAttributeValueCode('')
+    setNewAttributeValueLabel('')
   }
 
   // Taxonomy data
@@ -120,6 +132,7 @@ export default function ChangeSkuAttributesPage() {
   const { data: vendors } = useVendors()
   const { data: attributeDimensions } = useAttributeDimensions(true)
   const { data: macroRules } = useAttributeMacroRules()
+  const createAttributeValue = useCreateValue()
 
   const sortedAttributeDimensions = useMemo(
     () => [...(attributeDimensions ?? [])].sort((a, b) => a.sortOrder - b.sortOrder || a.labelEs.localeCompare(b.labelEs)),
@@ -136,6 +149,16 @@ export default function ChangeSkuAttributesPage() {
     const code = action.slice(ATTRIBUTE_ACTION_PREFIX.length)
     return sortedAttributeDimensions.find((d) => d.code === code) ?? null
   }, [action, sortedAttributeDimensions])
+
+  const selectedAttributeValues = useMemo(() => {
+    if (!selectedAttributeDimension) return []
+    const byCode = new Map<string, AttributeDimensionValue>()
+    for (const value of selectedAttributeDimension.values) byCode.set(value.code, value)
+    for (const value of localAttributeValues[selectedAttributeDimension.code] ?? []) {
+      byCode.set(value.code, value)
+    }
+    return Array.from(byCode.values()).sort((a, b) => a.sortOrder - b.sortOrder || a.code.localeCompare(b.code))
+  }, [localAttributeValues, selectedAttributeDimension])
 
   // Department → category range
   const deptCategoryRange = useMemo(() => {
@@ -159,21 +182,6 @@ export default function ChangeSkuAttributesPage() {
     }
     return out
   }, [sectorNumber, sectors, departments])
-
-  const effectiveCategories = useMemo(() => {
-    const sets: Set<number>[] = []
-    if (deptCategoryRange) sets.push(new Set(deptCategoryRange))
-    if (sectorCategoryRange) sets.push(new Set(sectorCategoryRange))
-    if (categoryNumbers.length > 0) sets.push(new Set(categoryNumbers))
-    if (sets.length === 0) return undefined
-    const first = sets[0]!
-    let result = Array.from(first)
-    for (let i = 1; i < sets.length; i++) {
-      const s = sets[i]!
-      result = result.filter((x) => s.has(x))
-    }
-    return result
-  }, [deptCategoryRange, sectorCategoryRange, categoryNumbers])
 
   // Hierarchical narrowing: Sector → Departments → Categories
   const availableDepartments = useMemo(() => {
@@ -233,6 +241,7 @@ export default function ChangeSkuAttributesPage() {
   const apply = useApplyBatchChange()
 
   // Parallel on-hand totals query
+  const hasRun = activeFilters != null
   const skuCodes = useMemo(() => (skus ?? []).map((s) => s.code), [skus])
   const { data: onHandTotals } = useQuery({
     queryKey: ['products-skus', 'on-hand-totals', skuCodes],
@@ -240,6 +249,22 @@ export default function ChangeSkuAttributesPage() {
     enabled: skuCodes.length > 0,
     staleTime: 5 * 60_000,
   })
+  const {
+    data: resultAttributeDimensions,
+    isFetching: isFetchingResultAttributeDimensions,
+  } = useAttributeDimensionsForSkus(hasRun ? skuCodes : [], true)
+  const actionAttributeDimensions = useMemo(() => {
+    if (!hasRun) return sortedAttributeDimensions
+    return resultAttributeDimensions ?? []
+  }, [hasRun, resultAttributeDimensions, sortedAttributeDimensions])
+
+  useEffect(() => {
+    if (!hasRun || !action.startsWith(ATTRIBUTE_ACTION_PREFIX) || isFetchingResultAttributeDimensions) return
+    const dimensionCode = action.slice(ATTRIBUTE_ACTION_PREFIX.length)
+    if (!actionAttributeDimensions.some((dimension) => dimension.code === dimensionCode)) {
+      onActionChange('CATEGORY')
+    }
+  }, [action, actionAttributeDimensions, hasRun, isFetchingResultAttributeDimensions])
 
   // Dept/Sector rollup
   const deptFor = useMemo(() => {
@@ -466,7 +491,9 @@ export default function ChangeSkuAttributesPage() {
   const buildFilters = (): SkuListFilters => ({
     q: q.trim() || undefined,
     vendors: vendorCodes.length > 0 ? vendorCodes : undefined,
-    categories: effectiveCategories,
+    sectors: sectorNumber != null ? [sectorNumber] : undefined,
+    departments: departmentNumber != null ? [departmentNumber] : undefined,
+    categories: categoryNumbers.length > 0 ? categoryNumbers : undefined,
     seasons: seasonCodes.length > 0 ? seasonCodes : undefined,
     groups: groupCodes.length > 0 ? groupCodes : undefined,
     keywords: keywordCodes.length > 0 ? keywordCodes : undefined,
@@ -564,6 +591,32 @@ export default function ChangeSkuAttributesPage() {
       }
     : CORE_ACTION_META[action as CoreActionKind]
       ?? CORE_ACTION_META.CATEGORY
+  const attributeActionOptions = actionAttributeDimensions.length > 0
+    ? actionAttributeDimensions.map((dimension) => {
+        const disabled = derivedDimensionCodes.has(dimension.code)
+        return {
+          value: `${ATTRIBUTE_ACTION_PREFIX}${dimension.code}`,
+          disabled,
+          label: disabled ? (
+            <Tooltip title="Derived from another attribute; query is allowed but manual bulk change is disabled.">
+              <span>{dimension.labelEs}</span>
+            </Tooltip>
+          ) : (
+            dimension.labelEs
+          ),
+        }
+      })
+    : [
+        {
+          value: '__NO_RESULT_ATTRIBUTES__',
+          disabled: true,
+          label: isFetchingResultAttributeDimensions
+            ? 'Loading result attributes...'
+            : hasRun
+              ? 'No attributes on current results'
+              : 'No extended attributes',
+        },
+      ]
 
   const applyChange = async () => {
     if (selectedCodes.length === 0) {
@@ -614,13 +667,59 @@ export default function ChangeSkuAttributesPage() {
   }
 
   const isRunning = isLoading || isFetching
-  const hasRun = activeFilters != null
   const resultCount = enriched.length
+
+  const createAndSelectAttributeValue = async () => {
+    if (!selectedAttributeDimension) return
+    const code = newAttributeValueCode.trim()
+    const labelEs = newAttributeValueLabel.trim()
+    if (!code || !labelEs) {
+      message.warning('Enter a code and label for the new value.')
+      return
+    }
+    if (!ATTRIBUTE_VALUE_CODE_PATTERN.test(code)) {
+      message.warning('Use lowercase letters, digits, and underscores for the value code.')
+      return
+    }
+    if (selectedAttributeValues.some((value) => value.code === code)) {
+      message.warning(`Value '${code}' already exists in ${selectedAttributeDimension.labelEs}.`)
+      return
+    }
+
+    const nextSortOrder = Math.max(0, ...selectedAttributeValues.map((value) => value.sortOrder)) + 10
+    try {
+      const created = await createAttributeValue.mutateAsync({
+        dimensionCode: selectedAttributeDimension.code,
+        input: {
+          code,
+          labelEs,
+          descriptionEs: null,
+          sortOrder: nextSortOrder,
+        },
+      })
+      setLocalAttributeValues((prev) => ({
+        ...prev,
+        [selectedAttributeDimension.code]: [
+          ...(prev[selectedAttributeDimension.code] ?? []),
+          created,
+        ],
+      }))
+      setTargetAttributeValues((prev) => {
+        if (!selectedAttributeDimension.isMultiValue) return [created.code]
+        return Array.from(new Set([...prev, created.code]))
+      })
+      setNewAttributeValueCode('')
+      setNewAttributeValueLabel('')
+      message.success(`Value '${created.code}' created and selected.`)
+    } catch (e) {
+      message.error((e as Error).message)
+    }
+  }
 
   // Target value field — single component depending on action.
   const renderTargetField = () => {
     if (selectedAttributeDimension) {
-      const activeValues = selectedAttributeDimension.values.filter((v) => v.isActive)
+      const activeValues = selectedAttributeValues.filter((v) => v.isActive)
       return (
         <Space wrap>
           {selectedAttributeDimension.isMultiValue ? (
@@ -659,6 +758,34 @@ export default function ChangeSkuAttributesPage() {
               (option?.label as string).toLowerCase().includes(input.toLowerCase())
             }
           />
+          {attributeMode !== 'REMOVE' ? (
+            <>
+              <Input
+                placeholder="New value code"
+                value={newAttributeValueCode}
+                onChange={(e) => setNewAttributeValueCode(e.target.value.trim().toLowerCase())}
+                onPressEnter={createAndSelectAttributeValue}
+                style={{ width: 160 }}
+              />
+              <Input
+                placeholder="New value label"
+                value={newAttributeValueLabel}
+                onChange={(e) => setNewAttributeValueLabel(e.target.value)}
+                onPressEnter={createAndSelectAttributeValue}
+                style={{ width: 220 }}
+              />
+              <Tooltip title="Create this attribute value and select it for the pending change.">
+                <Button
+                  icon={<PlusOutlined />}
+                  onClick={createAndSelectAttributeValue}
+                  loading={createAttributeValue.isPending}
+                  disabled={!newAttributeValueCode.trim() || !newAttributeValueLabel.trim()}
+                >
+                  Create value
+                </Button>
+              </Tooltip>
+            </>
+          ) : null}
         </Space>
       )
     }
@@ -1238,20 +1365,7 @@ export default function ChangeSkuAttributesPage() {
                   },
                   {
                     label: 'Extended attributes',
-                    options: sortedAttributeDimensions.map((dimension) => {
-                      const disabled = derivedDimensionCodes.has(dimension.code)
-                      return {
-                        value: `${ATTRIBUTE_ACTION_PREFIX}${dimension.code}`,
-                        disabled,
-                        label: disabled ? (
-                          <Tooltip title="Derived from another attribute; query is allowed but manual bulk change is disabled.">
-                            <span>{dimension.labelEs}</span>
-                          </Tooltip>
-                        ) : (
-                          dimension.labelEs
-                        ),
-                      }
-                    }),
+                    options: attributeActionOptions,
                   },
                 ]}
               />

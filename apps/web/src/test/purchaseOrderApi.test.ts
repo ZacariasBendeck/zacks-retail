@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   cancelPurchaseOrder,
   closePurchaseOrder,
+  combinePurchaseOrders,
   confirmPurchaseOrder,
   createPurchaseOrder,
   fetchPurchaseOrderOverdueExceptions,
@@ -110,6 +111,59 @@ describe('purchaseOrderApi contracts', () => {
       '/api/v1/purchase-orders/po-1/close',
       expect.objectContaining({
         method: 'PATCH',
+      }),
+    )
+  })
+
+  it('combines multiple purchase orders through the merge endpoint', async () => {
+    const payload = {
+      intoPoId: 'po-destination',
+      sourcePoIds: ['po-source-1', 'po-source-2'],
+      changedBy: 'system',
+    }
+    vi.mocked(fetch).mockResolvedValue(buildOkResponse({ id: 'po-destination' }))
+
+    await combinePurchaseOrders(payload)
+
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/v1/purchase-orders/combine',
+      expect.objectContaining({
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      }),
+    )
+  })
+
+  it('creates import POs with vendor currency, incoterm, and estimated landed HNL costs', async () => {
+    const payload = {
+      vendorId: 'vendor-1',
+      buyer: 'IB',
+      sourceCurrency: 'CNY' as const,
+      fxRate: 3.5,
+      fxDate: '2026-04-29',
+      incotermCode: 'FOB',
+      incotermPlace: 'Guangzhou',
+      costBasis: 'VENDOR_CURRENCY_ESTIMATED_LANDED' as const,
+      lineItems: [{
+        skuId: 'sku-1',
+        quantity: 12,
+        unitCost: 225,
+        sourceUnitCost: 45,
+        commercialUnitCostHnl: 157.5,
+        estimatedLandedUnitCostHnl: 225,
+      }],
+    }
+    vi.mocked(fetch).mockResolvedValue(buildOkResponse({ id: 'po-1' }))
+
+    await createPurchaseOrder(payload)
+
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/v1/purchase-orders',
+      expect.objectContaining({
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
       }),
     )
   })

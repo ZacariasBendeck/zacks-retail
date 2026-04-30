@@ -177,6 +177,36 @@ export default function PurchaseOrderDetailPage() {
 
   const lineColumns = [
     {
+      title: 'Image',
+      key: 'image',
+      width: 76,
+      render: (_: unknown, line: PoLineItem) =>
+        line.pictureUrl ? (
+          <img
+            src={line.pictureUrl}
+            alt={line.skuCode ?? 'PO line item'}
+            loading="lazy"
+            style={{ width: 56, height: 56, objectFit: 'contain', border: '1px solid #d9d9d9', borderRadius: 4 }}
+          />
+        ) : (
+          <span
+            aria-label="No image"
+            style={{
+              display: 'inline-block',
+              width: 56,
+              height: 56,
+              border: '1px dashed #d9d9d9',
+              borderRadius: 4,
+              color: '#999',
+              lineHeight: '56px',
+              textAlign: 'center',
+            }}
+          >
+            -
+          </span>
+        ),
+    },
+    {
       title: 'SKU',
       key: 'sku',
       width: 200,
@@ -209,7 +239,23 @@ export default function PurchaseOrderDetailPage() {
       align: 'right' as const,
     },
     {
-      title: 'Unit Cost',
+      title: 'Source Unit',
+      dataIndex: 'sourceUnitCost',
+      key: 'sourceUnitCost',
+      width: 120,
+      align: 'right' as const,
+      render: (value: number | null) => value == null ? '-' : formatMoney(value),
+    },
+    {
+      title: 'Commercial HNL',
+      dataIndex: 'commercialUnitCostHnl',
+      key: 'commercialUnitCostHnl',
+      width: 140,
+      align: 'right' as const,
+      render: (value: number | null) => value == null ? '-' : formatMoney(value),
+    },
+    {
+      title: 'Est Landed HNL',
       dataIndex: 'unitCost',
       key: 'unitCost',
       width: 130,
@@ -315,7 +361,7 @@ export default function PurchaseOrderDetailPage() {
       </Card>
 
       <Card>
-        <Descriptions bordered size="small" column={{ xs: 1, sm: 2, lg: 3 }}>
+        <Descriptions bordered size="small" column={3}>
           <Descriptions.Item label="PO Number">{po.poNumber}</Descriptions.Item>
           <Descriptions.Item label="Vendor">{po.vendorName ?? po.vendorId}</Descriptions.Item>
           <Descriptions.Item label="Status">
@@ -325,9 +371,18 @@ export default function PurchaseOrderDetailPage() {
           <Descriptions.Item label="Ship-to Store">{po.shipToStoreId ?? '-'}</Descriptions.Item>
           <Descriptions.Item label="Classification">{po.classification.replace(/_/g, ' ')}</Descriptions.Item>
           <Descriptions.Item label="Order Type">{po.orderType}</Descriptions.Item>
+          <Descriptions.Item label="Currency">{po.sourceCurrency}</Descriptions.Item>
+          <Descriptions.Item label="FX Rate">{po.fxRate}</Descriptions.Item>
+          <Descriptions.Item label="FX Date">{po.fxDate ? dayjs(po.fxDate).format('YYYY-MM-DD') : '-'}</Descriptions.Item>
+          <Descriptions.Item label="Incoterm">{po.incotermCode ?? '-'}</Descriptions.Item>
+          <Descriptions.Item label="Incoterm Place">{po.incotermPlace ?? '-'}</Descriptions.Item>
+          <Descriptions.Item label="Cost Basis">{po.costBasis.replace(/_/g, ' ')}</Descriptions.Item>
           <Descriptions.Item label="Order Date">{dayjs(po.orderDate).format('YYYY-MM-DD')}</Descriptions.Item>
           <Descriptions.Item label="Ship Date">
             {po.shipDate ? dayjs(po.shipDate).format('YYYY-MM-DD') : '-'}
+          </Descriptions.Item>
+          <Descriptions.Item label="Planned Receipt Date">
+            {po.plannedReceiptDate ? dayjs(po.plannedReceiptDate).format('YYYY-MM-DD') : '-'}
           </Descriptions.Item>
           <Descriptions.Item label="Cancel Date">
             {po.cancelDate ? dayjs(po.cancelDate).format('YYYY-MM-DD') : '-'}
@@ -352,7 +407,7 @@ export default function PurchaseOrderDetailPage() {
           <Descriptions.Item label="Account #">{po.accountNumber ?? '-'}</Descriptions.Item>
           <Descriptions.Item label="Terms">{po.terms ?? '-'}</Descriptions.Item>
           <Descriptions.Item label="Ship Via">{po.shipVia ?? '-'}</Descriptions.Item>
-          <Descriptions.Item label="Flags" span={2}>
+          <Descriptions.Item label="Flags">
             <Space wrap>
               {po.backorderAllowed && <Tag>Backorder</Tag>}
               {po.splitShipment && <Tag>Split shipment</Tag>}
@@ -360,7 +415,7 @@ export default function PurchaseOrderDetailPage() {
               {!po.backorderAllowed && !po.splitShipment && !po.storeLabelsOnReceive ? '-' : null}
             </Space>
           </Descriptions.Item>
-          <Descriptions.Item label="Cancellation Reason">
+          <Descriptions.Item label="Cancellation Reason" span={3}>
             {po.cancellationReason ?? '-'}
           </Descriptions.Item>
           <Descriptions.Item label="Notes" span={3}>
@@ -376,7 +431,7 @@ export default function PurchaseOrderDetailPage() {
           columns={lineColumns}
           size="small"
           pagination={false}
-          scroll={{ x: 900 }}
+          scroll={{ x: 1220 }}
         />
       </Card>
 

@@ -10,6 +10,7 @@
 
 import type {
   EohMethod,
+  InventoryPosition,
   PlanRow,
   ProjectedPoint,
 } from './types';
@@ -18,6 +19,15 @@ export interface ComputePlanOptions {
   eohMethod: EohMethod;
   /** Only used when eohMethod='forward'. Default 6. */
   coverMonths?: number;
+}
+
+export interface ComputePlanWithInventoryPositionOptions extends ComputePlanOptions {
+  /**
+   * Months between the inventory snapshot and the first planned horizon month.
+   * Forecast demand in these months is used only to project BOH at the season
+   * boundary; it does not create buy rows before the saved plan starts.
+   */
+  preHorizonYearMonths?: string[];
 }
 
 /**
@@ -118,6 +128,67 @@ export function computePlan(
   }
 
   return rows;
+}
+
+export function computePlanWithInventoryPosition(
+  projected: ProjectedPoint[],
+  positions: Map<string, InventoryPosition>,
+  horizonYearMonths: string[],
+  opts: ComputePlanWithInventoryPositionOptions,
+): PlanRow[] {
+  const preHorizonMonths = opts.preHorizonYearMonths ?? [];
+  const projByDim = new Map<string, Map<string, number>>();
+  for (const p of projected) {
+    let inner = projByDim.get(p.dimKey);
+    if (!inner) {
+      inner = new Map();
+      projByDim.set(p.dimKey, inner);
+    }
+    inner.set(p.yearMonth, p.projQty);
+  }
+
+  const dimKeys = new Set<string>([...positions.keys(), ...projByDim.keys()]);
+  const onHand = new Map<string, number>();
+  for (const dimKey of dimKeys) {
+    const position = positions.get(dimKey) ?? {
+      onHand: 0,
+      currentOnOrder: 0,
+      futureOnOrder: 0,
+      nativeOpenPo: 0,
+    };
+    let projectedStartStock = stockPosition(position);
+    const innerProj = projByDim.get(dimKey);
+    for (const yearMonth of preHorizonMonths) {
+      projectedStartStock -= Math.max(0, Math.round(innerProj?.get(yearMonth) ?? 0));
+    }
+    onHand.set(dimKey, Math.max(0, projectedStartStock));
+  }
+  const rows = computePlan(projected, onHand, horizonYearMonths, opts);
+  return rows.map((row) => {
+    const position = positions.get(row.dimKey) ?? {
+      onHand: 0,
+      currentOnOrder: 0,
+      futureOnOrder: 0,
+      nativeOpenPo: 0,
+    };
+    return {
+      ...row,
+      stockPosition: stockPosition(position),
+      onHand: Math.max(0, Math.round(position.onHand ?? 0)),
+      currentOnOrder: Math.max(0, Math.round(position.currentOnOrder ?? 0)),
+      futureOnOrder: Math.max(0, Math.round(position.futureOnOrder ?? 0)),
+      nativeOpenPo: Math.max(0, Math.round(position.nativeOpenPo ?? 0)),
+    };
+  });
+}
+
+function stockPosition(position: InventoryPosition): number {
+  return Math.max(0, Math.round(
+    (position.onHand ?? 0) +
+    (position.currentOnOrder ?? 0) +
+    (position.futureOnOrder ?? 0) +
+    (position.nativeOpenPo ?? 0),
+  ));
 }
 
 /**

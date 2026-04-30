@@ -22,6 +22,7 @@ import {
   fetchStockStatus,
   fetchSalesDimensions,
   fetchSalesHistoryByMonth,
+  fetchSeasonalityIndex,
   fetchPurchaseOrderReport,
   fetchOpenPoByMonth,
   fetchPoCashProjection,
@@ -283,6 +284,7 @@ export type SalesAnalysisArgs = {
   /** Opt-in per-SKU attribute columns. ReportViewerPage sets this; the
    *  inline builder preview does not, to keep payloads small. */
   includeAttributes?: boolean
+  includeOnOrder?: boolean
 }
 export function useSalesAnalysis(args: SalesAnalysisArgs | null) {
   return useQuery({
@@ -383,6 +385,15 @@ export function useSalesHistoryByMonth(params: SalesHistoryByMonthParams | null)
     queryFn: ({ signal }) => fetchSalesHistoryByMonth(params!, signal),
     enabled: !!params && params.stores.length > 0,
     staleTime: 60 * 1000,
+    placeholderData: keepPreviousData,
+  })
+}
+
+export function useSeasonalityIndex(args: { endMonth?: string; department?: number } = {}) {
+  return useQuery({
+    queryKey: ['seasonality-index', args] as const,
+    queryFn: ({ signal }) => fetchSeasonalityIndex({ ...args, signal }),
+    staleTime: 5 * 60 * 1000,
     placeholderData: keepPreviousData,
   })
 }

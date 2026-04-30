@@ -76,6 +76,9 @@ function generateMockPOs(count: number): PurchaseOrder[] {
         quantityOrdered: qtyOrdered,
         quantityReceived: qtyReceived,
         unitCost,
+        sourceUnitCost: unitCost,
+        commercialUnitCostHnl: unitCost,
+        estimatedLandedUnitCostHnl: unitCost,
         lineTotal: qtyOrdered * unitCost,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -105,8 +108,15 @@ function generateMockPOs(count: number): PurchaseOrder[] {
       programCode: null,
       storeLabelsOnReceive: false,
       buyer: null,
+      sourceCurrency: 'HNL',
+      fxRate: 1,
+      fxDate: new Date().toISOString().slice(0, 10),
+      incotermCode: null,
+      incotermPlace: null,
+      costBasis: 'LANDED_LEGACY_HNL',
       orderDate: new Date().toISOString(),
       shipDate: null,
+      plannedReceiptDate: null,
       cancelDate: null,
       paymentDate: null,
       status,
@@ -358,6 +368,9 @@ export async function createPurchaseOrder(payload: CreatePurchaseOrderPayload): 
         quantityOrdered: line.quantity,
         quantityReceived: 0,
         unitCost: line.unitCost,
+        sourceUnitCost: line.sourceUnitCost ?? line.unitCost,
+        commercialUnitCostHnl: line.commercialUnitCostHnl ?? line.unitCost,
+        estimatedLandedUnitCostHnl: line.estimatedLandedUnitCostHnl ?? line.unitCost,
         lineTotal: line.quantity * line.unitCost,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -384,8 +397,15 @@ export async function createPurchaseOrder(payload: CreatePurchaseOrderPayload): 
       programCode: payload.programCode ?? null,
       storeLabelsOnReceive: payload.storeLabelsOnReceive ?? false,
       buyer: null,
+      sourceCurrency: payload.sourceCurrency ?? 'HNL',
+      fxRate: payload.fxRate ?? 1,
+      fxDate: payload.fxDate ?? new Date().toISOString().slice(0, 10),
+      incotermCode: payload.incotermCode ?? null,
+      incotermPlace: payload.incotermPlace ?? null,
+      costBasis: payload.costBasis ?? 'LANDED_LEGACY_HNL',
       orderDate: payload.orderDate ?? new Date().toISOString(),
       shipDate: payload.shipDate ?? null,
+      plannedReceiptDate: payload.plannedReceiptDate ?? null,
       cancelDate: payload.cancelDate ?? null,
       paymentDate: payload.paymentDate ?? null,
       status: 'DRAFT',
@@ -422,6 +442,17 @@ export async function updatePurchaseOrder(
     if (!po) throw new Error('Purchase order not found')
     if (po.status !== 'DRAFT') throw new Error('Only draft purchase orders can be edited.')
     if (payload.notes !== undefined) po.notes = payload.notes
+    if (payload.sourceCurrency !== undefined) po.sourceCurrency = payload.sourceCurrency ?? 'HNL'
+    if (payload.fxRate !== undefined) po.fxRate = payload.fxRate ?? 1
+    if (payload.fxDate !== undefined) po.fxDate = payload.fxDate ?? new Date().toISOString().slice(0, 10)
+    if (payload.incotermCode !== undefined) po.incotermCode = payload.incotermCode
+    if (payload.incotermPlace !== undefined) po.incotermPlace = payload.incotermPlace
+    if (payload.costBasis !== undefined) po.costBasis = payload.costBasis ?? 'LANDED_LEGACY_HNL'
+    if (payload.orderDate !== undefined) po.orderDate = payload.orderDate ?? po.orderDate
+    if (payload.shipDate !== undefined) po.shipDate = payload.shipDate
+    if (payload.plannedReceiptDate !== undefined) po.plannedReceiptDate = payload.plannedReceiptDate
+    if (payload.cancelDate !== undefined) po.cancelDate = payload.cancelDate
+    if (payload.paymentDate !== undefined) po.paymentDate = payload.paymentDate
     if (payload.lineItems) {
       po.lineItems = payload.lineItems.map((line) => {
         const sku = MOCK_SKUS.find((item) => item.id === line.skuId)
@@ -438,6 +469,9 @@ export async function updatePurchaseOrder(
           quantityOrdered: line.quantity,
           quantityReceived: 0,
           unitCost: line.unitCost,
+          sourceUnitCost: line.sourceUnitCost ?? line.unitCost,
+          commercialUnitCostHnl: line.commercialUnitCostHnl ?? line.unitCost,
+          estimatedLandedUnitCostHnl: line.estimatedLandedUnitCostHnl ?? line.unitCost,
           lineTotal: line.quantity * line.unitCost,
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),

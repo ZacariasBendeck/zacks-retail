@@ -4,6 +4,13 @@ import { pipeline } from 'node:stream/promises';
 import { Client } from 'pg';
 import { from as copyFrom } from 'pg-copy-streams';
 import { prisma } from '../../src/db/prisma';
+import { quoteIdent } from '../../src/services/sync/typeMapping';
+import {
+  loadManifest,
+  requireTable,
+  stageTable,
+  type ArtifactManifest,
+} from '../rics/sync/artifactManifest';
 import { backfillTransactionCustomerMetrics } from './backfill-transaction-customer-metrics';
 
 const LEGACY_POS_TIME_ZONE = 'America/Guatemala';
@@ -11,6 +18,7 @@ const DEFAULT_HEADER_PATH = path.resolve(__dirname, '../../../../.tmp/rics-ticke
 const DEFAULT_DETAIL_PATH = path.resolve(__dirname, '../../../../.tmp/rics-ticket-export/ritrnssv/ticket_detail.csv');
 
 type Args = {
+  manifestPath: string | null;
   headerPath: string;
   detailPath: string;
   tenderPath: string | null;
@@ -954,6 +962,7 @@ SELECT
 
 function parseArgs(argv: string[]): Args {
   const args: Args = {
+    manifestPath: null,
     headerPath: DEFAULT_HEADER_PATH,
     detailPath: DEFAULT_DETAIL_PATH,
     tenderPath: null,
@@ -967,6 +976,10 @@ function parseArgs(argv: string[]): Args {
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index];
     switch (value) {
+      case '--manifest':
+        args.manifestPath = path.resolve(String(argv[index + 1] ?? ''));
+        index += 1;
+        break;
       case '--header':
         args.headerPath = path.resolve(String(argv[index + 1] ?? ''));
         index += 1;
@@ -1013,7 +1026,20 @@ function parseArgs(argv: string[]): Args {
 
 function printUsage(): void {
   console.info(
-    'Usage: pnpm --filter @benlow-rics/api import:tickets:rics -- [--header path] [--detail path] [--tender path] [--source rics_ticket_import] [--csv-header|--no-csv-header] [--tender-csv-header|--tender-no-csv-header] [--no-replace] [--skip-metrics]',
+    [
+      'Usage: pnpm --filter @benlow-rics/api import:tickets:rics -- [options]',
+      '',
+      'Options:',
+      '  --manifest <path>             Import from canonical RICS artifact tables ticket_header/detail/tender.',
+      '  --header <path>               Import from a ticket_header CSV.',
+      '  --detail <path>               Import from a ticket_detail CSV.',
+      '  --tender <path>               Import from a ticket_tender CSV.',
+      '  --source <name>               Source label. Default rics_ticket_import.',
+      '  --csv-header|--no-csv-header  Header mode for header/detail file imports.',
+      '  --tender-csv-header|--tender-no-csv-header',
+      '  --no-replace                  Keep existing rows for the selected source.',
+      '  --skip-metrics                Skip customer metric recomputation.',
+    ].join('\n'),
   );
 }
 
@@ -1035,12 +1061,147 @@ function copySqlForHeaderMode(copySql: string, csvHasHeader: boolean): string {
   return copySql.replace("WITH (FORMAT csv, HEADER true, NULL '\\N')", options);
 }
 
+function findManifestTable(manifest: ArtifactManifest, targetTable: string) {
+  return manifest.tables.find((table) => table.targetTable === targetTable) ?? null;
+}
+
+async function insertManifestTableIntoRawStage(
+  client: Client,
+  sourceTable: string,
+  targetStage: string,
+  mappings: Array<{ source: string; target: string }>,
+): Promise<void> {
+  const targetColumns = mappings.map((mapping) => quoteIdent(mapping.target)).join(', ');
+  const sourceColumns = mappings.map((mapping) => `${quoteIdent(mapping.source)}::text`).join(', ');
+  await client.query(`
+    INSERT INTO ${quoteIdent(targetStage)} (${targetColumns})
+    SELECT ${sourceColumns}
+    FROM ${quoteIdent(sourceTable)}
+  `);
+}
+
+async function loadTicketStagesFromManifest(client: Client, manifestPath: string): Promise<{
+  tenderLoaded: boolean;
+}> {
+  const { manifest, manifestDir } = loadManifest(manifestPath);
+  const headerTable = await stageTable(client, manifestDir, requireTable(manifest, 'ticket_header'));
+  const detailTable = await stageTable(client, manifestDir, requireTable(manifest, 'ticket_detail'));
+  const tenderManifestTable = findManifestTable(manifest, 'ticket_tender');
+
+  await insertManifestTableIntoRawStage(client, headerTable, 'stage_rics_ticket_header_raw', [
+    { source: 'user_id', target: 'user_id' },
+    { source: 'batch_date', target: 'batch_date' },
+    { source: 'use_date', target: 'use_date' },
+    { source: 'terminal', target: 'terminal' },
+    { source: 'store', target: 'store' },
+    { source: 'ticket', target: 'ticket' },
+    { source: 'real_date', target: 'real_date' },
+    { source: 'cashier', target: 'cashier' },
+    { source: 'trans_type', target: 'trans_type' },
+    { source: 'account', target: 'account' },
+    { source: 'tax_01', target: 'tax_01' },
+    { source: 'tax_02', target: 'tax_02' },
+    { source: 'tax_03', target: 'tax_03' },
+    { source: 'tax_change', target: 'tax_change' },
+    { source: 'oth_chg', target: 'oth_chg' },
+    { source: 'prev_paid', target: 'prev_paid' },
+    { source: 'comment', target: 'comment' },
+    { source: 'change', target: 'change_amount' },
+    { source: 'alt_change', target: 'alt_change' },
+    { source: 'exch_rate', target: 'exch_rate' },
+    { source: 'discount', target: 'discount' },
+    { source: 'apply_to', target: 'apply_to' },
+    { source: 'apply_tender', target: 'apply_tender' },
+    { source: 'apply_amount', target: 'apply_amount' },
+    { source: 'ship_state', target: 'ship_state' },
+    { source: 'ship_county', target: 'ship_county' },
+    { source: 'ship_city', target: 'ship_city' },
+    { source: 'marketing_code', target: 'marketing_code' },
+    { source: 'voided', target: 'voided' },
+    { source: 'printed', target: 'printed' },
+    { source: 'posted', target: 'posted' },
+  ]);
+
+  await insertManifestTableIntoRawStage(client, detailTable, 'stage_rics_ticket_detail_raw', [
+    { source: 'user_id', target: 'user_id' },
+    { source: 'batch_date', target: 'batch_date' },
+    { source: 'use_date', target: 'use_date' },
+    { source: 'terminal', target: 'terminal' },
+    { source: 'store', target: 'store' },
+    { source: 'ticket', target: 'ticket' },
+    { source: 'real_date', target: 'real_date' },
+    { source: 'line', target: 'line_no' },
+    { source: 'sku', target: 'sku' },
+    { source: 'column', target: 'column_label' },
+    { source: 'row', target: 'row_label' },
+    { source: 'qty', target: 'qty' },
+    { source: 'price', target: 'price' },
+    { source: 'disc_pct', target: 'disc_pct' },
+    { source: 'disc_amt', target: 'disc_amt' },
+    { source: 'perks', target: 'perks' },
+    { source: 'sales_person', target: 'salesperson' },
+    { source: 'fam_member', target: 'fam_member' },
+    { source: 'prices_01', target: 'prices_01' },
+    { source: 'prices_02', target: 'prices_02' },
+    { source: 'prices_03', target: 'prices_03' },
+    { source: 'prices_04', target: 'prices_04' },
+    { source: 'ovs_amt', target: 'ovs_amt' },
+    { source: 'this_ovs_amt', target: 'this_ovs_amt' },
+    { source: 'category', target: 'category' },
+    { source: 'vendor', target: 'vendor' },
+    { source: 'real_price', target: 'real_price' },
+    { source: 'extension', target: 'extension' },
+    { source: 'orig_ticket', target: 'orig_ticket' },
+    { source: 'tax_01', target: 'tax_01' },
+    { source: 'tax_02', target: 'tax_02' },
+    { source: 'tax_03', target: 'tax_03' },
+    { source: 'tax_amt_01', target: 'taxamt_01' },
+    { source: 'tax_amt_02', target: 'taxamt_02' },
+    { source: 'tax_amt_03', target: 'taxamt_03' },
+    { source: 'fb_gen', target: 'fb_gen' },
+    { source: 'ds_ship_code', target: 'ds_ship_code' },
+    { source: 'ds_ship_desc', target: 'ds_ship_desc' },
+    { source: 'ds_dest_code', target: 'ds_dest_code' },
+    { source: 'ds_dye_code', target: 'ds_dye_code' },
+    { source: 'ds_ship_chg', target: 'ds_ship_chg' },
+    { source: 'return_code', target: 'return_code' },
+    { source: 'gift_cert', target: 'gift_cert' },
+    { source: 'gift_seq', target: 'gift_seq' },
+    { source: 'gift_acct', target: 'gift_acct' },
+    { source: 'cost', target: 'cost' },
+    { source: 'comment', target: 'comment' },
+  ]);
+
+  if (!tenderManifestTable) return { tenderLoaded: false };
+  const tenderTable = await stageTable(client, manifestDir, tenderManifestTable);
+  await insertManifestTableIntoRawStage(client, tenderTable, 'stage_rics_ticket_tender_raw', [
+    { source: 'user_id', target: 'user_id' },
+    { source: 'batch_date', target: 'batch_date' },
+    { source: 'use_date', target: 'use_date' },
+    { source: 'terminal', target: 'terminal' },
+    { source: 'store', target: 'store' },
+    { source: 'ticket', target: 'ticket' },
+    { source: 'real_date', target: 'real_date' },
+    { source: 'tender', target: 'tender' },
+    { source: 'amount', target: 'amount' },
+    { source: 'alt_amount', target: 'alt_amount' },
+    { source: 'alt_currency', target: 'alt_currency' },
+    { source: 'exch_rate', target: 'exch_rate' },
+    { source: 'gift_cert', target: 'gift_cert' },
+    { source: 'gift_seq', target: 'gift_seq' },
+    { source: 'gift_new', target: 'gift_new' },
+  ]);
+  return { tenderLoaded: true };
+}
+
 export async function importRicsTickets(argv: string[] = process.argv.slice(2)): Promise<void> {
   const args = parseArgs(argv);
-  ensureFileExists(args.headerPath, 'header');
-  ensureFileExists(args.detailPath, 'detail');
-  if (args.tenderPath) {
-    ensureFileExists(args.tenderPath, 'tender');
+  if (!args.manifestPath) {
+    ensureFileExists(args.headerPath, 'header');
+    ensureFileExists(args.detailPath, 'detail');
+    if (args.tenderPath) {
+      ensureFileExists(args.tenderPath, 'tender');
+    }
   }
 
   if (!process.env.DATABASE_URL) {
@@ -1058,10 +1219,15 @@ export async function importRicsTickets(argv: string[] = process.argv.slice(2)):
     await client.query(CREATE_DETAIL_STAGE_SQL);
     await client.query(CREATE_TENDER_STAGE_SQL);
 
-    await copyCsvFile(client, copySqlForHeaderMode(COPY_HEADER_SQL, args.csvHasHeader), args.headerPath);
-    await copyCsvFile(client, copySqlForHeaderMode(COPY_DETAIL_SQL, args.csvHasHeader), args.detailPath);
-    if (args.tenderPath) {
-      await copyCsvFile(client, copySqlForHeaderMode(COPY_TENDER_SQL, args.tenderCsvHasHeader), args.tenderPath);
+    let manifestTenderLoaded = false;
+    if (args.manifestPath) {
+      ({ tenderLoaded: manifestTenderLoaded } = await loadTicketStagesFromManifest(client, args.manifestPath));
+    } else {
+      await copyCsvFile(client, copySqlForHeaderMode(COPY_HEADER_SQL, args.csvHasHeader), args.headerPath);
+      await copyCsvFile(client, copySqlForHeaderMode(COPY_DETAIL_SQL, args.csvHasHeader), args.detailPath);
+      if (args.tenderPath) {
+        await copyCsvFile(client, copySqlForHeaderMode(COPY_TENDER_SQL, args.tenderCsvHasHeader), args.tenderPath);
+      }
     }
 
     await client.query('CREATE INDEX ON stage_rics_ticket_header_raw (account)');
@@ -1103,9 +1269,10 @@ export async function importRicsTickets(argv: string[] = process.argv.slice(2)):
     const summary = summaryResult.rows[0];
     console.info('[tickets] Imported RITRNSSV tickets', {
       source: args.source,
-      headerPath: args.headerPath,
-      detailPath: args.detailPath,
-      tenderPath: args.tenderPath,
+      manifestPath: args.manifestPath,
+      headerPath: args.manifestPath ? 'manifest:ticket_header' : args.headerPath,
+      detailPath: args.manifestPath ? 'manifest:ticket_detail' : args.detailPath,
+      tenderPath: args.manifestPath ? (manifestTenderLoaded ? 'manifest:ticket_tender' : null) : args.tenderPath,
       candidateHeaders: Number(summary?.candidateheaders ?? 0),
       importedHeaders: Number(summary?.importedheaders ?? 0),
       matchedCustomers: Number(summary?.matchedcustomers ?? 0),

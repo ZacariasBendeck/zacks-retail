@@ -8,7 +8,7 @@
 
 ## Conventions
 
-- **Currency:** HNL (Honduran Lempira). Plain numbers with thousands separators — no `$`, no `L` inside tables or on-screen cells. Reports carry one top-of-page note: "Amounts in Lempira (HNL)".
+- **Currency:** HNL (Honduran Lempira) is the base reporting, inventory valuation, and OTB currency. Plain HNL numbers use thousands separators with no `$` or `L` inside tables or on-screen cells. Import Management may preserve CNY/USD/HNL source-document amounts with FX rates and dates, while reports and valuation remain HNL.
 - **Keyboard shortcuts** shown as `Ctrl+S`-style.
 - **Screenshots:** `assets/<module-slug>/`.
 - **Status legend:** Draft (scaffolded) • Spec (design done, UI pending) • In progress (UI shipping) • Stable (matches UI, reviewed) • Stale (drift detected)
@@ -27,10 +27,12 @@
 | 8 | [Sales Reporting](sales-reporting.md) | [sales-reporting](../modules/sales-reporting.md) | Ch. 2, Ch. 6 | Draft |
 | 9 | [CRM](crm.md) | [crm](../modules/crm.md) | Ch. 9, Ch. 15, Ch. 17 | Draft |
 | 10 | [Accounts Receivable](accounts-receivable.md) | [accounts-receivable](../modules/accounts-receivable.md) | Ch. 6, Ch. 8, Ch. 16, Ch. 17 | Draft |
-| 11 | [Employees](employees.md) | [employees](../modules/employees.md) | Ch. 7, Ch. 11 | Draft |
-| 12 | [Store Operations](store-ops.md) | [store-ops](../modules/store-ops.md) | Ch. 11, Ch. 17 | Draft |
-| 13 | [Platform](platform.md) | [platform](../modules/platform.md) | Ch. 5, Ch. 8, Ch. 13, Ch. 14, Ch. 15, Ch. 17 | Draft |
+| 11 | [Identity & Access](identity-access.md) | [identity-access](../modules/identity-access/README.md) | Ch. 11 | Spec |
+| 12 | [Employees](employees.md) | [employees](../modules/employees/README.md) | Ch. 7 | Draft |
+| 13 | [Store Operations](store-ops.md) | [store-ops](../modules/store-ops.md) | Ch. 11, Ch. 17 | Draft |
+| 14 | [Platform](platform.md) | [platform](../modules/platform.md) | Ch. 5, Ch. 8, Ch. 13, Ch. 14, Ch. 15, Ch. 17 | Draft |
 | N1 | [Purchase Planning](purchase-planning.md) | [purchase-planning](../modules/purchase-planning.md) | — (net-new) | Draft |
+| N2 | [Import Management](import-management.md) | [import-management](../modules/import-management/README.md) | — (net-new) | Initial implementation |
 
 ## How this manual relates to the module specs
 

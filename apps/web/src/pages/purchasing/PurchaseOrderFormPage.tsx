@@ -10,17 +10,20 @@ import {
   Form,
   Input,
   InputNumber,
+  Modal,
   Row,
   Select,
   Space,
   Table,
   Tabs,
+  Tooltip,
   Typography,
 } from 'antd'
 import {
   ArrowLeftOutlined,
   DeleteOutlined,
   PlusOutlined,
+  QuestionCircleOutlined,
   SaveOutlined,
   SearchOutlined,
 } from '@ant-design/icons'
@@ -45,6 +48,7 @@ interface LineItemRow {
   key: string
   skuId: string
   skuLabel?: string
+  pictureUrl?: string | null
   sizeType?: number | null
   sizeColumns?: string[]
   sizeRows?: string[]
@@ -54,6 +58,9 @@ interface LineItemRow {
   casePackMultiplier?: number | null
   quantity: number
   unitCost: number
+  sourceUnitCost?: number | null
+  commercialUnitCostHnl?: number | null
+  estimatedLandedUnitCostHnl?: number | null
 }
 
 interface PurchaseOrderFormValues {
@@ -65,6 +72,12 @@ interface PurchaseOrderFormValues {
   buyer?: string
   orderType?: 'RO' | 'RE' | 'SA'
   classification?: 'AT_ONCE' | 'FUTURE'
+  sourceCurrency?: 'CNY' | 'USD' | 'HNL'
+  fxRate?: number
+  fxDate?: string
+  incotermCode?: string
+  incotermPlace?: string
+  costBasis?: 'LANDED_LEGACY_HNL' | 'HNL_DOMESTIC' | 'VENDOR_CURRENCY_ESTIMATED_LANDED'
   confirmationNumber?: string
   accountNumber?: string
   terms?: string
@@ -74,12 +87,16 @@ interface PurchaseOrderFormValues {
   storeLabelsOnReceive?: boolean
   orderDate?: string
   shipDate?: string
+  plannedReceiptDate?: string
   cancelDate?: string
   paymentDate?: string
   notes?: string
 }
 
 const cellKey = (columnLabel: string, rowLabel = '') => `${columnLabel}\u0000${rowLabel}`
+const SOURCE_CURRENCY_OPTIONS = ['HNL', 'USD', 'CNY'] as const
+const PO_COST_BASIS_OPTIONS = ['LANDED_LEGACY_HNL', 'HNL_DOMESTIC', 'VENDOR_CURRENCY_ESTIMATED_LANDED'] as const
+const INCOTERM_OPTIONS = ['FOB', 'FCA', 'CIF', 'CIP', 'EXW', 'DAP', 'DDP'] as const
 
 // Currency is Honduran Lempira (HNL) system-wide — labeled once at the top of
 // the page, not repeated in every cell (see CLAUDE.md "Currency" policy).
@@ -89,6 +106,17 @@ function formatMoney(value: number | null | undefined): string {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })
+}
+
+function helpTitle(label: string, help: string) {
+  return (
+    <Space size={4}>
+      <span>{label}</span>
+      <Tooltip title={help}>
+        <QuestionCircleOutlined style={{ color: '#8c8c8c', fontSize: 12 }} />
+      </Tooltip>
+    </Space>
+  )
 }
 
 export default function PurchaseOrderFormPage() {
@@ -102,13 +130,17 @@ export default function PurchaseOrderFormPage() {
   const { data: existingPo, isLoading: existingPoLoading } = usePurchaseOrder(poId)
 
   const [lineItems, setLineItems] = useState<LineItemRow[]>([
-    { key: crypto.randomUUID(), skuId: '', quantity: 1, unitCost: 1 },
+    { key: crypto.randomUUID(), skuId: '', quantity: 1, unitCost: 1, estimatedLandedUnitCostHnl: 1 },
   ])
   const [loadedPoId, setLoadedPoId] = useState<string | null>(null)
   const [vendorSearch, setVendorSearch] = useState('')
   const [skuSearch, setSkuSearch] = useState('')
   const [lookupLineKey, setLookupLineKey] = useState<string | null>(null)
+  const [casePackDialogLineKey, setCasePackDialogLineKey] = useState<string | null>(null)
+  const [casePackSearch, setCasePackSearch] = useState('')
   const selectedVendorId = Form.useWatch('vendorId', form)
+  const selectedSourceCurrency = Form.useWatch('sourceCurrency', form) ?? 'HNL'
+  const selectedFxRate = Number(Form.useWatch('fxRate', form) ?? 1)
 
   const { data: vendors, isFetching: vendorsFetching } = usePurchaseOrderVendorOptions(vendorSearch)
   const { data: buyerOptions } = usePurchaseOrderBuyerOptions()
@@ -157,6 +189,25 @@ export default function PurchaseOrderFormPage() {
     }
     return options
   }, [buyerOptions, existingPo?.buyer])
+
+  const casePackDialogLine = useMemo(
+    () => lineItems.find((line) => line.key === casePackDialogLineKey) ?? null,
+    [casePackDialogLineKey, lineItems],
+  )
+
+  const filteredCasePackOptions = useMemo(() => {
+    const packs = casePackDialogLine?.casePacks ?? []
+    const q = casePackSearch.trim().toLowerCase()
+    if (!q) return packs
+    return packs.filter((pack) =>
+      [
+        pack.code,
+        pack.description,
+        String(pack.totalUnits),
+        String(pack.cellCount),
+      ].some((value) => (value ?? '').toLowerCase().includes(q)),
+    )
+  }, [casePackDialogLine?.casePacks, casePackSearch])
 
   const buildSkuLabel = (sku: {
     skuCode: string
@@ -222,6 +273,12 @@ export default function PurchaseOrderFormPage() {
       buyer: po.buyer ?? undefined,
       orderType: po.orderType === 'RE' || po.orderType === 'SA' ? po.orderType : 'RO',
       classification: po.classification === 'FUTURE' ? 'FUTURE' : 'AT_ONCE',
+      sourceCurrency: po.sourceCurrency ?? 'HNL',
+      fxRate: po.fxRate ?? 1,
+      fxDate: toDateInput(po.fxDate) ?? new Date().toISOString().slice(0, 10),
+      incotermCode: po.incotermCode ?? undefined,
+      incotermPlace: po.incotermPlace ?? undefined,
+      costBasis: po.costBasis ?? 'LANDED_LEGACY_HNL',
       confirmationNumber: po.confirmationNumber ?? undefined,
       accountNumber: po.accountNumber ?? undefined,
       terms: po.terms ?? undefined,
@@ -231,6 +288,7 @@ export default function PurchaseOrderFormPage() {
       storeLabelsOnReceive: po.storeLabelsOnReceive,
       orderDate: toDateInput(po.orderDate),
       shipDate: toDateInput(po.shipDate),
+      plannedReceiptDate: toDateInput(po.plannedReceiptDate),
       cancelDate: toDateInput(po.cancelDate),
       paymentDate: toDateInput(po.paymentDate),
       notes: po.notes ?? undefined,
@@ -254,6 +312,7 @@ export default function PurchaseOrderFormPage() {
             line.skuCode,
             line.brand,
           ].filter(Boolean).join(' - '),
+          pictureUrl: line.pictureUrl ?? null,
           sizeType: line.sizeType,
           sizeColumns,
           sizeRows,
@@ -263,10 +322,13 @@ export default function PurchaseOrderFormPage() {
           casePackMultiplier: line.casePackMultiplier,
           quantity: line.quantityOrdered,
           unitCost: line.unitCost,
+          sourceUnitCost: line.sourceUnitCost,
+          commercialUnitCostHnl: line.commercialUnitCostHnl,
+          estimatedLandedUnitCostHnl: line.estimatedLandedUnitCostHnl ?? line.unitCost,
         } satisfies LineItemRow
       }))
       if (cancelled) return
-      setLineItems(rows.length > 0 ? rows : [{ key: crypto.randomUUID(), skuId: '', quantity: 1, unitCost: 1 }])
+      setLineItems(rows.length > 0 ? rows : [{ key: crypto.randomUUID(), skuId: '', quantity: 1, unitCost: 1, estimatedLandedUnitCostHnl: 1 }])
       setLoadedPoId(po.id)
     }
 
@@ -277,7 +339,7 @@ export default function PurchaseOrderFormPage() {
   }, [existingPo, form, loadedPoId])
 
   const addLineItem = () => {
-    setLineItems((prev) => [...prev, { key: crypto.randomUUID(), skuId: '', quantity: 1, unitCost: 1 }])
+    setLineItems((prev) => [...prev, { key: crypto.randomUUID(), skuId: '', quantity: 1, unitCost: 1, estimatedLandedUnitCostHnl: 1 }])
   }
 
   const removeLineItem = (key: string) => {
@@ -286,11 +348,17 @@ export default function PurchaseOrderFormPage() {
 
   const updateLineItem = (
     key: string,
-    field: 'skuId' | 'quantity' | 'unitCost',
+    field: 'skuId' | 'quantity' | 'unitCost' | 'sourceUnitCost' | 'commercialUnitCostHnl' | 'estimatedLandedUnitCostHnl',
     value: string | number,
   ) => {
     setLineItems((prev) =>
       prev.map((line) => (line.key === key ? { ...line, [field]: value } : line)),
+    )
+  }
+
+  const updateLineItemCostFields = (key: string, patch: Partial<LineItemRow>) => {
+    setLineItems((prev) =>
+      prev.map((line) => (line.key === key ? { ...line, ...patch } : line)),
     )
   }
 
@@ -307,10 +375,12 @@ export default function PurchaseOrderFormPage() {
         const nextUnitCost = selectedSku?.unitCost && selectedSku.unitCost > 0
           ? selectedSku.unitCost
           : line.unitCost
+        const nextSourceUnitCost = selectedSourceCurrency === 'HNL' ? nextUnitCost : line.sourceUnitCost ?? null
         return {
           ...line,
           skuId,
           skuLabel,
+          pictureUrl: selectedSku?.pictureUrl ?? null,
           sizeType: selectedSku?.sizeType,
           sizeColumns,
           sizeRows,
@@ -320,6 +390,9 @@ export default function PurchaseOrderFormPage() {
           casePackMultiplier: null,
           quantity: sizeColumns.length > 0 ? 0 : line.quantity,
           unitCost: nextUnitCost,
+          sourceUnitCost: nextSourceUnitCost,
+          commercialUnitCostHnl: nextSourceUnitCost == null ? nextUnitCost : Number((nextSourceUnitCost * selectedFxRate).toFixed(4)),
+          estimatedLandedUnitCostHnl: nextUnitCost,
         }
       }),
     )
@@ -350,10 +423,12 @@ export default function PurchaseOrderFormPage() {
           const nextUnitCost = selectedSku.unitCost && selectedSku.unitCost > 0
             ? selectedSku.unitCost
             : line.unitCost
+          const nextSourceUnitCost = selectedSourceCurrency === 'HNL' ? nextUnitCost : line.sourceUnitCost ?? null
           return {
             ...line,
             skuId: selectedSku.id,
             skuLabel,
+            pictureUrl: selectedSku.pictureUrl,
             sizeType: selectedSku.sizeType,
             sizeColumns,
             sizeRows,
@@ -363,6 +438,9 @@ export default function PurchaseOrderFormPage() {
             casePackMultiplier: null,
             quantity: sizeColumns.length > 0 ? 0 : line.quantity,
             unitCost: nextUnitCost,
+            sourceUnitCost: nextSourceUnitCost,
+            commercialUnitCostHnl: nextSourceUnitCost == null ? nextUnitCost : Number((nextSourceUnitCost * selectedFxRate).toFixed(4)),
+            estimatedLandedUnitCostHnl: nextUnitCost,
           }
         }),
       )
@@ -442,6 +520,26 @@ export default function PurchaseOrderFormPage() {
     await applyCasePackToLine(record.key, record.casePackId, multiplier)
   }
 
+  const openCasePackDialog = (record: LineItemRow) => {
+    if (!record.skuId) {
+      message.warning('Select a SKU before choosing a case pack')
+      return
+    }
+    setCasePackDialogLineKey(record.key)
+    setCasePackSearch('')
+  }
+
+  const closeCasePackDialog = () => {
+    setCasePackDialogLineKey(null)
+    setCasePackSearch('')
+  }
+
+  const selectCasePackFromDialog = async (pack: CasePackSummary) => {
+    if (!casePackDialogLine) return
+    await handleCasePackChange(casePackDialogLine, pack.code)
+    closeCasePackDialog()
+  }
+
   const toIsoDate = (value: string | undefined) => value ? new Date(`${value}T00:00:00`).toISOString() : null
 
   const handleSubmit = async (values: PurchaseOrderFormValues) => {
@@ -465,6 +563,14 @@ export default function PurchaseOrderFormPage() {
         message.error('Unit cost must be greater than zero')
         return
       }
+      if ((line.estimatedLandedUnitCostHnl ?? line.unitCost) <= 0) {
+        message.error('Estimated landed unit cost must be greater than zero')
+        return
+      }
+      if (line.sourceUnitCost != null && line.sourceUnitCost < 0) {
+        message.error('Source unit cost cannot be negative')
+        return
+      }
     }
 
     try {
@@ -477,6 +583,12 @@ export default function PurchaseOrderFormPage() {
         notes: values.notes?.trim() || null,
         orderType: values.orderType ?? 'RO',
         classification: values.classification ?? 'AT_ONCE',
+        sourceCurrency: values.sourceCurrency ?? 'HNL',
+        fxRate: values.sourceCurrency === 'HNL' ? 1 : values.fxRate ?? 1,
+        fxDate: values.fxDate ?? new Date().toISOString().slice(0, 10),
+        incotermCode: values.incotermCode?.trim() || null,
+        incotermPlace: values.incotermPlace?.trim() || null,
+        costBasis: values.costBasis ?? 'LANDED_LEGACY_HNL',
         confirmationNumber: values.confirmationNumber?.trim() || null,
         accountNumber: values.accountNumber?.trim() || null,
         terms: values.terms?.trim() || null,
@@ -486,12 +598,18 @@ export default function PurchaseOrderFormPage() {
         storeLabelsOnReceive: values.storeLabelsOnReceive ?? false,
         orderDate: toIsoDate(values.orderDate),
         shipDate: toIsoDate(values.shipDate),
+        plannedReceiptDate: toIsoDate(values.plannedReceiptDate),
         cancelDate: toIsoDate(values.cancelDate),
         paymentDate: toIsoDate(values.paymentDate),
         lineItems: validLines.map((line) => ({
           skuId: line.skuId,
           quantity: lineQuantity(line),
-          unitCost: Number(line.unitCost.toFixed(2)),
+          unitCost: Number((line.estimatedLandedUnitCostHnl ?? line.unitCost).toFixed(2)),
+          sourceUnitCost: line.sourceUnitCost == null ? null : Number(line.sourceUnitCost.toFixed(4)),
+          commercialUnitCostHnl: line.commercialUnitCostHnl == null
+            ? Number((line.sourceUnitCost == null ? line.unitCost : line.sourceUnitCost * (values.sourceCurrency === 'HNL' ? 1 : values.fxRate ?? 1)).toFixed(4))
+            : Number(line.commercialUnitCostHnl.toFixed(4)),
+          estimatedLandedUnitCostHnl: Number((line.estimatedLandedUnitCostHnl ?? line.unitCost).toFixed(4)),
           casePackId: line.casePackId ?? null,
           casePackMultiplier: line.casePackId ? line.casePackMultiplier ?? 1 : null,
           sizeCells: lineSizeCells(line),
@@ -523,31 +641,39 @@ export default function PurchaseOrderFormPage() {
     return (
       <Space direction="vertical" size={4} style={{ width: '100%' }}>
         <Space wrap size={[8, 4]}>
-          <Select
-            allowClear
-            value={record.casePackId ?? undefined}
-            onChange={(value) => handleCasePackChange(record, value)}
-            placeholder="Case pack"
-            style={{ width: 240 }}
-            options={(record.casePacks ?? []).map((pack) => ({
-              value: pack.code,
-              label: [
-                pack.code,
-                pack.description,
-                `${pack.totalUnits.toLocaleString('en-US')} units`,
-              ].filter(Boolean).join(' - '),
-            }))}
-            notFoundContent="No case packs"
-          />
-          <InputNumber
-            min={1}
-            precision={0}
-            value={packMultiplier}
-            onChange={(value) => handleCasePackMultiplierChange(record, value)}
-            disabled={!record.casePackId}
-            addonBefore="X"
-            style={{ width: 100 }}
-          />
+          <Button icon={<SearchOutlined />} onClick={() => openCasePackDialog(record)}>
+            {selectedPack
+              ? `${selectedPack.code} - ${selectedPack.totalUnits.toLocaleString('en-US')} units`
+              : 'Search case pack'}
+          </Button>
+          {record.casePackId ? (
+            <Button onClick={() => handleCasePackChange(record, undefined)}>
+              Clear case pack
+            </Button>
+          ) : null}
+          <Space.Compact>
+            <span
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                padding: '0 8px',
+                border: '1px solid #d9d9d9',
+                borderRight: 0,
+                borderRadius: '6px 0 0 6px',
+                background: '#fafafa',
+              }}
+            >
+              X
+            </span>
+            <InputNumber
+              min={1}
+              precision={0}
+              value={packMultiplier}
+              onChange={(value) => handleCasePackMultiplierChange(record, value)}
+              disabled={!record.casePackId}
+              style={{ width: 68 }}
+            />
+          </Space.Compact>
           {selectedPack ? (
             <Typography.Text type="secondary">
               {selectedPack.totalUnits.toLocaleString('en-US')} units/pack x {packMultiplier} ={' '}
@@ -555,33 +681,121 @@ export default function PurchaseOrderFormPage() {
             </Typography.Text>
           ) : null}
         </Space>
-        {rowLabels.map((rowLabel) => (
-          <div key={rowLabel || 'single-row'}>
-            {rowLabel ? (
-              <Typography.Text type="secondary" style={{ display: 'block', marginBottom: 4 }}>
-                {rowLabel}
-              </Typography.Text>
-            ) : null}
-            <Space wrap size={[6, 6]}>
-              {columns.map((columnLabel) => (
-                <InputNumber
-                  key={`${rowLabel}:${columnLabel}`}
-                  min={0}
-                  precision={0}
-                  value={record.sizeCells?.[cellKey(columnLabel, rowLabel)] ?? null}
-                  onChange={(value) => updateSizeCell(record.key, columnLabel, rowLabel, value)}
-                  addonBefore={columnLabel}
-                  style={{ width: 92 }}
-                />
+        <div style={{ overflowX: 'auto' }}>
+          <table
+            style={{
+              borderCollapse: 'collapse',
+              minWidth: Math.max(320, columns.length * 72 + (rowLabels.length > 1 ? 72 : 0)),
+            }}
+          >
+            <thead>
+              <tr>
+                {rowLabels.length > 1 ? (
+                  <th
+                    style={{
+                      border: '1px solid #d9d9d9',
+                      background: '#f0f5ff',
+                      padding: '4px 6px',
+                      textAlign: 'left',
+                      fontWeight: 700,
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    Row
+                  </th>
+                ) : null}
+                {columns.map((columnLabel) => (
+                  <th
+                    key={columnLabel}
+                    style={{
+                      border: '1px solid #d9d9d9',
+                      background: '#f0f5ff',
+                      padding: '4px 6px',
+                      textAlign: 'center',
+                      fontWeight: 700,
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {columnLabel}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rowLabels.map((rowLabel) => (
+                <tr key={rowLabel || 'single-row'}>
+                  {rowLabels.length > 1 ? (
+                    <th
+                      scope="row"
+                      style={{
+                        border: '1px solid #d9d9d9',
+                        background: '#fafafa',
+                        padding: '4px 6px',
+                        textAlign: 'left',
+                        fontWeight: 600,
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {rowLabel || '-'}
+                    </th>
+                  ) : null}
+                  {columns.map((columnLabel) => (
+                    <td
+                      key={`${rowLabel}:${columnLabel}`}
+                      style={{ border: '1px solid #d9d9d9', padding: 4, textAlign: 'center', minWidth: 64 }}
+                    >
+                      <InputNumber
+                        min={0}
+                        precision={0}
+                        value={record.sizeCells?.[cellKey(columnLabel, rowLabel)] ?? null}
+                        onChange={(value) => updateSizeCell(record.key, columnLabel, rowLabel, value)}
+                        controls={false}
+                        style={{ width: 56 }}
+                      />
+                    </td>
+                  ))}
+                </tr>
               ))}
-            </Space>
-          </div>
-        ))}
+            </tbody>
+          </table>
+        </div>
       </Space>
     )
   }
 
+  const renderSkuThumbnail = (record: LineItemRow) =>
+    record.pictureUrl ? (
+      <img
+        src={record.pictureUrl}
+        alt={record.skuLabel ?? 'PO line item'}
+        loading="lazy"
+        style={{ width: 56, height: 56, objectFit: 'contain', border: '1px solid #d9d9d9', borderRadius: 4 }}
+      />
+    ) : (
+      <span
+        aria-label="No image"
+        style={{
+          display: 'inline-block',
+          width: 56,
+          height: 56,
+          border: '1px dashed #d9d9d9',
+          borderRadius: 4,
+          color: '#999',
+          lineHeight: '56px',
+          textAlign: 'center',
+        }}
+      >
+        -
+      </span>
+    )
+
   const lineItemColumns = [
+    {
+      title: 'Image',
+      key: 'image',
+      width: 76,
+      render: (_: unknown, record: LineItemRow) => renderSkuThumbnail(record),
+    },
     {
       title: 'SKU',
       key: 'skuId',
@@ -643,7 +857,49 @@ export default function PurchaseOrderFormPage() {
         ),
     },
     {
-      title: 'Unit Cost',
+      title: helpTitle(
+        'Source Unit',
+        'Supplier quoted unit price in the PO currency. For a USD FOB Xiamen import PO, enter the vendor dollar price before freight, insurance, duties, taxes, customs agency, or local delivery.',
+      ),
+      key: 'sourceUnitCost',
+      width: 150,
+      render: (_: unknown, record: LineItemRow) => (
+        <InputNumber
+          min={0}
+          step={0.0001}
+          precision={4}
+          value={record.sourceUnitCost ?? undefined}
+          onChange={(value) => {
+            const sourceUnitCost = value == null ? null : Number(value)
+            updateLineItemCostFields(record.key, {
+              sourceUnitCost,
+              commercialUnitCostHnl: sourceUnitCost == null ? null : Number((sourceUnitCost * selectedFxRate).toFixed(4)),
+            })
+          }}
+          style={{ width: '100%' }}
+        />
+      ),
+    },
+    {
+      title: 'Commercial HNL',
+      key: 'commercialUnitCostHnl',
+      width: 150,
+      render: (_: unknown, record: LineItemRow) => (
+        <InputNumber
+          min={0}
+          step={0.0001}
+          precision={4}
+          value={record.commercialUnitCostHnl ?? undefined}
+          onChange={(value) => updateLineItem(record.key, 'commercialUnitCostHnl', value ?? 0)}
+          style={{ width: '100%' }}
+        />
+      ),
+    },
+    {
+      title: helpTitle(
+        'Est Landed HNL',
+        'Estimated all-in unit cost in HNL used by OTB and receiving until final import liquidation. It should include the commercial item cost plus expected freight, insurance, duties, taxes, agency, and local charges.',
+      ),
       key: 'unitCost',
       width: 170,
       render: (_: unknown, record: LineItemRow) => (
@@ -651,8 +907,14 @@ export default function PurchaseOrderFormPage() {
           min={0.01}
           step={0.01}
           precision={2}
-          value={record.unitCost}
-          onChange={(value) => updateLineItem(record.key, 'unitCost', value ?? 0.01)}
+          value={record.estimatedLandedUnitCostHnl ?? record.unitCost}
+          onChange={(value) => {
+            const estimated = value ?? 0.01
+            updateLineItemCostFields(record.key, {
+              estimatedLandedUnitCostHnl: estimated,
+              unitCost: estimated,
+            })
+          }}
           style={{ width: '100%' }}
         />
       ),
@@ -663,7 +925,7 @@ export default function PurchaseOrderFormPage() {
       width: 160,
       align: 'right' as const,
       render: (_: unknown, record: LineItemRow) =>
-        formatMoney(lineQuantity(record) * record.unitCost),
+        formatMoney(lineQuantity(record) * (record.estimatedLandedUnitCostHnl ?? record.unitCost)),
     },
     {
       title: '',
@@ -683,7 +945,7 @@ export default function PurchaseOrderFormPage() {
     },
   ]
 
-  const subtotal = lineItems.reduce((sum, line) => sum + lineQuantity(line) * line.unitCost, 0)
+  const subtotal = lineItems.reduce((sum, line) => sum + lineQuantity(line) * (line.estimatedLandedUnitCostHnl ?? line.unitCost), 0)
 
   if (isEditMode && existingPoLoading) {
     return (
@@ -734,7 +996,15 @@ export default function PurchaseOrderFormPage() {
         layout="vertical"
         onFinish={handleSubmit}
         requiredMark="optional"
-        initialValues={{ status: 'DRAFT', orderType: 'RO', classification: 'AT_ONCE' }}
+        initialValues={{
+          status: 'DRAFT',
+          orderType: 'RO',
+          classification: 'AT_ONCE',
+          sourceCurrency: 'HNL',
+          fxRate: 1,
+          fxDate: new Date().toISOString().slice(0, 10),
+          costBasis: 'LANDED_LEGACY_HNL',
+        }}
       >
         <Tabs
           defaultActiveKey="header"
@@ -826,6 +1096,55 @@ export default function PurchaseOrderFormPage() {
                     </Row>
                   </Card>
 
+                  <Card title="Import Costing">
+                    <Row gutter={16}>
+                      <Col xs={24} md={4}>
+                        <Form.Item label="Currency" name="sourceCurrency" rules={[{ required: true }]}>
+                          <Select
+                            options={SOURCE_CURRENCY_OPTIONS.map((value) => ({ value, label: value }))}
+                            onChange={(value) => {
+                              if (value === 'HNL') form.setFieldValue('fxRate', 1)
+                            }}
+                          />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={24} md={4}>
+                        <Form.Item label="FX Rate" name="fxRate" rules={[{ required: true }]}>
+                          <InputNumber min={0.000001} step={0.0001} style={{ width: '100%' }} />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={24} md={4}>
+                        <Form.Item label="FX Date" name="fxDate" rules={[{ required: true }]}>
+                          <Input type="date" />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={24} md={4}>
+                        <Form.Item label="Incoterm" name="incotermCode">
+                          <Select allowClear options={INCOTERM_OPTIONS.map((value) => ({ value, label: value }))} />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={24} md={8}>
+                        <Form.Item label="Incoterm Place" name="incotermPlace">
+                          <Input maxLength={160} placeholder="Port, city, or named place" />
+                        </Form.Item>
+                      </Col>
+                    </Row>
+                    <Row gutter={16}>
+                      <Col xs={24} md={10}>
+                        <Form.Item label="Cost Basis" name="costBasis" rules={[{ required: true }]}>
+                          <Select options={PO_COST_BASIS_OPTIONS.map((value) => ({ value, label: value.replace(/_/g, ' ') }))} />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={24} md={14}>
+                        <Alert
+                          showIcon
+                          type="info"
+                          message="For import POs, Unit Cost is the HNL estimated landed cost used by OTB and receiving."
+                        />
+                      </Col>
+                    </Row>
+                  </Card>
+
                   <Card title="Header Details">
                     <Row gutter={16}>
                       <Col xs={24} md={6}>
@@ -861,22 +1180,27 @@ export default function PurchaseOrderFormPage() {
 
                   <Card title="Dates">
                     <Row gutter={16}>
-                      <Col xs={24} md={6}>
+                      <Col xs={24} md={8}>
                         <Form.Item label="Order Date" name="orderDate">
                           <Input type="date" />
                         </Form.Item>
                       </Col>
-                      <Col xs={24} md={6}>
+                      <Col xs={24} md={8}>
                         <Form.Item label="Ship Date" name="shipDate">
                           <Input type="date" />
                         </Form.Item>
                       </Col>
-                      <Col xs={24} md={6}>
+                      <Col xs={24} md={8}>
+                        <Form.Item label="Planned Receipt Date" name="plannedReceiptDate">
+                          <Input type="date" />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={24} md={8}>
                         <Form.Item label="Cancel Date" name="cancelDate">
                           <Input type="date" />
                         </Form.Item>
                       </Col>
-                      <Col xs={24} md={6}>
+                      <Col xs={24} md={8}>
                         <Form.Item label="Payment Date" name="paymentDate">
                           <Input type="date" />
                         </Form.Item>
@@ -910,7 +1234,7 @@ export default function PurchaseOrderFormPage() {
                     dataSource={lineItems}
                     pagination={false}
                     size="small"
-                    scroll={{ x: 1480 }}
+                    scroll={{ x: 1860 }}
                     footer={() => (
                       <Button type="dashed" icon={<PlusOutlined />} onClick={addLineItem} block>
                         Add Line Item
@@ -954,6 +1278,77 @@ export default function PurchaseOrderFormPage() {
         onSelect={handleLookupSelect}
         initialFilters={{ vendor: selectedVendorId }}
       />
+
+      <Modal
+        title="Search Case Packs"
+        open={casePackDialogLine != null}
+        onCancel={closeCasePackDialog}
+        footer={null}
+        width={820}
+        destroyOnHidden
+      >
+        <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+          <Input.Search
+            allowClear
+            autoFocus
+            placeholder="Search by case pack code, description, units, or cell count"
+            value={casePackSearch}
+            onChange={(event) => setCasePackSearch(event.target.value)}
+          />
+          <Table<CasePackSummary>
+            rowKey="code"
+            dataSource={filteredCasePackOptions}
+            size="small"
+            pagination={{ pageSize: 8, showSizeChanger: false }}
+            scroll={{ y: 360 }}
+            locale={{
+              emptyText: casePackDialogLine?.casePacks?.length
+                ? 'No case packs match your search'
+                : 'No active case packs for this SKU size type',
+            }}
+            columns={[
+              {
+                title: 'Code',
+                dataIndex: 'code',
+                key: 'code',
+                width: 110,
+                render: (value: string) => <Typography.Text strong>{value}</Typography.Text>,
+              },
+              {
+                title: 'Description',
+                dataIndex: 'description',
+                key: 'description',
+                render: (value: string | null) => value ?? '-',
+              },
+              {
+                title: 'Units',
+                dataIndex: 'totalUnits',
+                key: 'totalUnits',
+                width: 90,
+                align: 'right' as const,
+                render: (value: number) => value.toLocaleString('en-US'),
+              },
+              {
+                title: 'Cells',
+                dataIndex: 'cellCount',
+                key: 'cellCount',
+                width: 80,
+                align: 'right' as const,
+              },
+              {
+                title: '',
+                key: 'action',
+                width: 90,
+                render: (_: unknown, pack: CasePackSummary) => (
+                  <Button size="small" type="primary" onClick={() => void selectCasePackFromDialog(pack)}>
+                    Select
+                  </Button>
+                ),
+              },
+            ]}
+          />
+        </Space>
+      </Modal>
     </Space>
   )
 }

@@ -30,9 +30,11 @@ Thumbs.db
 *.log
 npm-debug.log*
 pnpm-debug.log*
+outputs/dev-logs/
 
 # Testing
 coverage/
+.playwright-mcp/
 
 # TypeScript
 *.tsbuildinfo
@@ -58,3 +60,6 @@ test.xlsx
 apps/api/data/*.db
 apps/api/data/*.db-shm
 apps/api/data/*.db-wal
+
+# Runtime temp files
+*.dll.node.tmp*

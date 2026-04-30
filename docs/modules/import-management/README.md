@@ -2,7 +2,7 @@
 
 ERP-style landed-cost workflow for international buying. Import Management owns voyages/shipments, containers, goods in transit, foreign-currency supplier invoices, customs/taxes, shipment liquidation, estimated/final landed costs, and suggested retail pricing.
 
-**Phase:** Spec - net-new module; no RICS predecessor.
+**Phase:** Initial implementation - net-new module; no RICS predecessor.
 **RICS chapters:** _none - RICS did not model import voyages/liquidation._
 **Registry:** [`../MODULES.md`](../MODULES.md)
 
@@ -26,7 +26,11 @@ Import Management follows the ERP landed-cost/voyage pattern:
 - Invoice item lines with style, description, item code, box data, ordered/received quantity, source cost, discounts, and HNL landed cost.
 - Import charges: freight, insurance, internal freight, customs duties, import taxes, customs agency fees, local delivery, and other costs.
 - Estimated landed cost before final invoices are known, final landed cost after liquidation, and true-up from estimate to final.
+- Manual verification checks for customs policy totals, liquidation totals, invoice/charge reconciliation, FX review, and other shipment exceptions.
 - Suggested retail prices from landed cost and buyer-selected markup/factor.
+- Payable handoff bridge for supplier invoices and final landed-cost charges until the full Accounts Payable module owns the vendor ledger.
+- Shipment-level JSON/CSV/XLSX reports for liquidation, goods in transit, expected PO shipment lines, landed-cost allocation, suggested pricing review, and AP handoff.
+- Shipment-level audit history for cost changes, invoice matches, receiving, true-ups, AP handoff actions, and status transitions.
 - Spreadsheet staging from known workbooks, with review and reconciliation before records are posted.
 
 ## Module Boundaries
@@ -48,6 +52,8 @@ Import Management follows the ERP landed-cost/voyage pattern:
 - `GoodsInTransitRecord` - ownership and movement state before warehouse receipt.
 - `ImportVerificationCheck` - reconciliation row for invoice totals, taxable/non-taxable groups, FX, charges, and liquidation totals.
 - `ImportSuggestedPrice` - calculated sale-price recommendation from landed cost.
+- `ImportInventoryReceipt` - direct stock receipt for SKU-linked import lines that are not linked to native PO lines.
+- `ImportInventoryTrueUp` - final landed-cost adjustment posted after goods were first received at estimated cost.
 
 ## Status Model
 
@@ -67,9 +73,25 @@ Import Management follows the ERP landed-cost/voyage pattern:
 - V1 source currencies are `CNY`, `USD`, and `HNL`.
 - Every non-HNL amount stores source amount, source currency, FX rate to HNL, FX date, and computed HNL amount.
 - Landed costs allocate by product-cost share in v1.
-- Estimated receiving is allowed only by permission and requires an audit reason.
-- Final liquidation can post a true-up adjustment when estimated receiving differs from final landed cost.
-- Suggested retail prices are recommendations only; price updates require Products/Pricing approval.
+- Verification checks can be imported from workbooks or entered manually. `FAIL` checks block final liquidation when they are part of readiness; `WARN` and `PENDING` checks remain visible for review.
+- Estimated receiving is allowed only by users with `import_management.receive_estimated` and requires an audit reason. The same permission is required when manually setting goods-in-transit or shipment status to `RECEIVING_ESTIMATED`.
+- Receiving may be scoped to the full shipment, a container/cargo group, selected expected PO shipment lines, or selected goods-in-transit records. Repeated receiving actions are idempotent and must not duplicate receipts or true-ups.
+- Final liquidation can post a true-up adjustment when estimated receiving differs from final landed cost. The true-up records estimated unit cost, final unit cost, unit delta, quantity, and total HNL delta.
+- Suggested retail prices are recommendations only. They must be SKU-linked and approved before they can be marked `POSTED`; posting requires `products.write` and records the handoff to Products/Pricing without directly mutating product price in v1.
+- Posted suggested prices lock landed-cost recalculation and SKU remapping for that shipment. Corrections after posting require a controlled correction workflow instead of silently overwriting a pricing handoff.
+- Import supplier invoices and final landed-cost charges can be staged as payable handoffs. Handoff statuses are `READY`, `SENT_TO_AP`, `PAID`, and `VOIDED`.
+- Import supplier invoices and final landed-cost charges lock after their payable handoff is marked `SENT_TO_AP` or `PAID`. Corrections after AP handoff should be handled by AP adjustment/void/reissue workflow, not by editing the sent source document in place.
+- Staged or sent payable handoffs may be voided with a reason. Paid handoffs require a future AP reversal workflow.
+
+## Permissions and Audit
+
+- `import_management.view` allows users to see import shipments, costs, receiving readiness, AP handoffs, and reports.
+- `import_management.cost_override` is required to enter or edit supplier invoices, invoice lines, import charges, expected-line landed-cost estimates, and landed-cost allocation.
+- `import_management.receive_estimated` is required to receive against estimated landed cost or manually move records into `RECEIVING_ESTIMATED`; an audit reason is required.
+- `import_management.final_liquidation` is required to move shipments into final liquidation/received-final/closed status and to post final receiving or inventory true-ups.
+- `import_management.approve_mismatch` is required to approve or clear supplier-invoice match warnings on expected PO shipment lines.
+- Import Management records platform audit events for cost changes, FX-bearing source document changes, invoice matches and mismatch approvals, estimated receiving, final receiving/true-ups, landed-cost allocation, and status transitions.
+- The shipment detail Audit tab shows both shipment-level events and related line/invoice/charge events linked by `metadata.shipmentId`.
 
 ## Spreadsheet Evidence
 

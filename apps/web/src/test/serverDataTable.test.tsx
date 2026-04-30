@@ -104,6 +104,42 @@ describe('ServerDataTable', () => {
     expect(document.querySelector('.ant-table-virtual')).not.toBeInTheDocument()
   })
 
+  it('passes row selection through to the table', async () => {
+    const user = userEvent.setup()
+    const onSelectionChange = vi.fn()
+
+    const { container } = render(
+      <ConfigProvider>
+        <ServerDataTable<DemoRow>
+          title="Selectable"
+          data={rows.slice(0, 3)}
+          rowKey="id"
+          columns={[
+            { title: 'Name', dataIndex: 'name', key: 'name' },
+            { title: 'Units', dataIndex: 'units', key: 'units' },
+          ]}
+          rowSelection={{
+            selectedRowKeys: ['row-1'],
+            onChange: onSelectionChange,
+          }}
+        />
+      </ConfigProvider>,
+    )
+
+    const checkboxes = container.querySelectorAll<HTMLInputElement>(
+      '.ant-table-selection-column input[type="checkbox"]',
+    )
+    expect(checkboxes.length).toBeGreaterThan(1)
+
+    await user.click(checkboxes[2]!)
+
+    await waitFor(() => {
+      expect(onSelectionChange).toHaveBeenCalled()
+    })
+    const firstCall = onSelectionChange.mock.calls[0]
+    expect(firstCall?.[0]).toEqual(['row-1', 'row-2'])
+  })
+
   it('supports column visibility toggles and CSV/Excel exports', async () => {
     const user = userEvent.setup()
     const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})

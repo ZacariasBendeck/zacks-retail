@@ -1,0 +1,5 @@
+﻿sku,description,category_code,vendor,negative_store_numbers,negative_mtd_sales_detail,blocked_from_store_number,blocked_from_store_name,blocked_to_store_number,blocked_to_store_name,row_label,column_index,column_label,blocked_quantity,blocked_from_mtd_turns,blocked_to_mtd_turns
+LRL002LTPK2,CamRayBotMlLOREN 3,323,GCHX,14,14: total_mtd_sales=-1 on_hand=7 model=7 cells=/XL:-1,,,,,,,,0,,
+D023LBE,CamBotUsfMlPAULM 9,329,GCHX,14,14: total_mtd_sales=-1 on_hand=7 model=5 cells=/XL:-1,99,BODEGA GENERAL,29,Unlimited GaleriasSP,,4,M,1,0.0,2.7
+AL109BK1,CamtCpBotMcPAULM 8,336,GSIH,28,28: total_mtd_sales=-1 on_hand=4 model=5 cells=/XL:-1,,,,,,,,0,,
+375223Z183NV,ChaqCoUsfMlLOREN 6,462,CHAP,30,30: total_mtd_sales=-1 on_hand=2 model=6 cells=/XL:-1,,,,,,,,0,,

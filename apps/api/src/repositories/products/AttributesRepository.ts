@@ -391,6 +391,74 @@ export const AttributesRepository = {
     }
   },
 
+  async listDimensionsWithValuesForSkus(
+    skuCodes: string[],
+    opts: { withCounts?: boolean } = {},
+  ): Promise<Result<DimensionWithValues[]>> {
+    try {
+      const uniqueSkuCodes = Array.from(new Set(skuCodes.map((sku) => sku.trim()).filter(Boolean)));
+      if (uniqueSkuCodes.length === 0) return Ok([]);
+
+      const dimensionRows = await prisma.$queryRawUnsafe<{ dimension_id: number }[]>(
+        `SELECT DISTINCT dimension_id
+         FROM app.sku_attribute_assignment
+         WHERE sku_code = ANY($1::varchar[])`,
+        uniqueSkuCodes,
+      );
+      const dimensionIds = dimensionRows.map((row) => row.dimension_id);
+      if (dimensionIds.length === 0) return Ok([]);
+
+      const dims = await prisma.attributeDimension.findMany({
+        where: { id: { in: dimensionIds } },
+        orderBy: { sortOrder: 'asc' },
+        include: {
+          values: { orderBy: { sortOrder: 'asc' } },
+          familyRules: { orderBy: { sortOrder: 'asc' } },
+        },
+      });
+
+      let counts: Map<number, number> | null = null;
+      if (opts.withCounts) {
+        const rows = await prisma.$queryRawUnsafe<{ value_id: number; n: string }[]>(
+          `SELECT value_id, COUNT(DISTINCT sku_code)::text AS n
+           FROM app.sku_attribute_assignment
+           WHERE sku_code = ANY($1::varchar[])
+           GROUP BY value_id`,
+          uniqueSkuCodes,
+        );
+        counts = new Map(rows.map((r) => [r.value_id, Number(r.n)]));
+      }
+
+      return Ok(
+        dims.map((d) => ({
+          id: d.id,
+          code: d.code,
+          labelEs: d.labelEs,
+          descriptionEs: d.descriptionEs,
+          sortOrder: d.sortOrder,
+          isMultiValue: d.isMultiValue,
+          familyRules: d.familyRules.map((r) => ({
+            familyCode: r.familyCode,
+            enabled: r.enabled,
+            isRequired: r.isRequired,
+            sortOrder: r.sortOrder,
+          })),
+          values: d.values.map((v) => ({
+            id: v.id,
+            code: v.code,
+            labelEs: v.labelEs,
+            descriptionEs: v.descriptionEs,
+            sortOrder: v.sortOrder,
+            isActive: v.isActive,
+            ...(counts ? { skuCount: counts.get(v.id) ?? 0 } : {}),
+          })),
+        })),
+      );
+    } catch (err) {
+      return Err(toRepoError(err));
+    }
+  },
+
   /**
    * Per-SKU attributes. Returns every declared dim — even unclassified ones —
    * so the client can render uniformly. Returns NotFound if the SKU doesn't

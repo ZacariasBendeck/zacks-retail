@@ -89,6 +89,12 @@ export const productsAttributesApi = {
     const q = withCounts ? '?withCounts=true' : ''
     return request<AttributeDimension[]>(`${BASE}/attributes/dimensions${q}`)
   },
+  listDimensionsForSkus(skuCodes: string[], withCounts = false): Promise<AttributeDimension[]> {
+    return request<AttributeDimension[]>(`${BASE}/attributes/dimensions/for-skus`, {
+      method: 'POST',
+      body: JSON.stringify({ skuCodes, withCounts }),
+    })
+  },
   getForSku(code: string): Promise<SkuAttributes> {
     return request<SkuAttributes>(`${BASE}/skus/${encodeURIComponent(code)}/attributes`)
   },

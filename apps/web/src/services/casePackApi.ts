@@ -6,6 +6,7 @@ export interface CasePackSummary {
   dateLastChanged: string | null
   totalUnits: number
   cellCount: number
+  skuCount: number
 }
 
 export interface CasePackCell {

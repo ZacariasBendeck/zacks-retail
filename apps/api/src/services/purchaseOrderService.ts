@@ -4,8 +4,10 @@ import { prisma } from '../db/prisma';
 import {
   PurchaseOrder,
   PoLineItem,
+  PoCostBasis,
   PoReceipt,
   PoReceiptLine,
+  PoSourceCurrency,
   PoStatus,
   PoStatusHistory,
   TransferOrder,
@@ -15,6 +17,7 @@ import {
   rowToTransferOrder,
 } from '../models/purchaseOrder';
 import { PaginationEnvelope } from '../models/sku';
+import { buildRicsImageUrl } from './ricsImageUrl';
 
 type SortOrder = 'asc' | 'desc';
 type DbValue = null | number | string;
@@ -43,8 +46,15 @@ interface NativePoRow {
   program_code: string | null;
   store_labels_on_receive: boolean;
   buyer: string | null;
+  source_currency: PoSourceCurrency;
+  fx_rate: unknown;
+  fx_date: Date | string;
+  incoterm_code: string | null;
+  incoterm_place: string | null;
+  cost_basis: PoCostBasis;
   order_date: Date | string;
   ship_date: Date | string | null;
+  planned_receipt_date: Date | string | null;
   cancel_date: Date | string | null;
   payment_date: Date | string | null;
   status: PoStatus;
@@ -61,6 +71,7 @@ interface NativePoLineRow {
   sku_id: string;
   sku_code: string | null;
   style: string | null;
+  picture_file_name: string | null;
   size_type: number | null;
   case_pack_id: string | null;
   case_pack_multiplier: number | null;
@@ -68,6 +79,9 @@ interface NativePoLineRow {
   quantity_ordered: number;
   quantity_received: number;
   unit_cost: unknown;
+  source_unit_cost: unknown;
+  commercial_unit_cost_hnl: unknown;
+  estimated_landed_unit_cost_hnl: unknown;
   created_at: Date | string;
   updated_at: Date | string;
 }
@@ -108,6 +122,7 @@ interface PurchaseOrderSkuOptionRow {
   sku_code: string;
   description: string | null;
   style_color: string | null;
+  picture_file_name: string | null;
   vendor_code: string | null;
   category_number: number | null;
   size_type: number | null;
@@ -130,6 +145,7 @@ export interface PurchaseOrderSkuOption {
   skuCode: string;
   description: string | null;
   styleColor: string | null;
+  pictureUrl: string | null;
   vendorId: string | null;
   category: number | null;
   sizeType: number | null;
@@ -158,6 +174,18 @@ function toNumber(value: unknown): number {
     return value.toNumber();
   }
   return Number(value);
+}
+
+function nullableNumber(value: unknown): number | null {
+  return value == null ? null : toNumber(value);
+}
+
+function round2(value: number): number {
+  return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
+function round4(value: number): number {
+  return Math.round((value + Number.EPSILON) * 10000) / 10000;
 }
 
 function vendorEffectiveCte(): string {
@@ -326,6 +354,7 @@ export async function listPurchaseOrderSkuOptions(params: {
         COALESCE(s.code, s.provisional_code) AS sku_code,
         COALESCE(s.description_web, s.description_rics) AS description,
         s.style_color,
+        s.picture_file_name,
         s.vendor_id AS vendor_code,
         s.category_number,
         s.size_type,
@@ -343,6 +372,7 @@ export async function listPurchaseOrderSkuOptions(params: {
     skuCode: row.sku_code,
     description: row.description,
     styleColor: row.style_color,
+    pictureUrl: buildRicsImageUrl(row.picture_file_name),
     vendorId: row.vendor_code,
     category: row.category_number,
     sizeType: row.size_type,
@@ -369,6 +399,7 @@ function rowToPoLineItem(row: NativePoLineRow): PoLineItem {
     skuId: row.sku_id,
     skuCode: row.sku_code ?? undefined,
     brand: row.style ?? undefined,
+    pictureUrl: buildRicsImageUrl(row.picture_file_name),
     sizeType: row.size_type,
     casePackId: row.case_pack_id,
     casePackMultiplier: row.case_pack_multiplier,
@@ -376,6 +407,9 @@ function rowToPoLineItem(row: NativePoLineRow): PoLineItem {
     quantityOrdered: Number(row.quantity_ordered),
     quantityReceived: Number(row.quantity_received),
     unitCost,
+    sourceUnitCost: nullableNumber(row.source_unit_cost) ?? unitCost,
+    commercialUnitCostHnl: nullableNumber(row.commercial_unit_cost_hnl) ?? unitCost,
+    estimatedLandedUnitCostHnl: nullableNumber(row.estimated_landed_unit_cost_hnl) ?? unitCost,
     lineTotal: Number(row.quantity_ordered) * unitCost,
     createdAt: toIso(row.created_at),
     updatedAt: toIso(row.updated_at),
@@ -404,8 +438,15 @@ function rowToPurchaseOrder(row: NativePoRow, lineRows: NativePoLineRow[]): Purc
     programCode: row.program_code,
     storeLabelsOnReceive: row.store_labels_on_receive,
     buyer: row.buyer,
+    sourceCurrency: row.source_currency ?? 'HNL',
+    fxRate: row.fx_rate == null ? 1 : toNumber(row.fx_rate),
+    fxDate: row.fx_date == null ? toIso(row.order_date).slice(0, 10) : toIso(row.fx_date).slice(0, 10),
+    incotermCode: row.incoterm_code,
+    incotermPlace: row.incoterm_place,
+    costBasis: row.cost_basis ?? 'LANDED_LEGACY_HNL',
     orderDate: toIso(row.order_date),
     shipDate: row.ship_date == null ? null : toIso(row.ship_date),
+    plannedReceiptDate: row.planned_receipt_date == null ? null : toIso(row.planned_receipt_date),
     cancelDate: row.cancel_date == null ? null : toIso(row.cancel_date),
     paymentDate: row.payment_date == null ? null : toIso(row.payment_date),
     status: row.status,
@@ -474,6 +515,7 @@ async function loadLineItems(poId: string, tx: TxClient | typeof prisma = prisma
         pol.sku_id::text,
         COALESCE(s.code, s.provisional_code) AS sku_code,
         COALESCE(s.description_web, s.description_rics, s.style_color) AS style,
+        s.picture_file_name,
         s.size_type,
         pol.case_pack_id,
         pol.case_pack_multiplier,
@@ -491,6 +533,9 @@ async function loadLineItems(poId: string, tx: TxClient | typeof prisma = prisma
         pol.quantity_ordered,
         pol.quantity_received,
         pol.unit_cost,
+        pol.source_unit_cost,
+        pol.commercial_unit_cost_hnl,
+        pol.estimated_landed_unit_cost_hnl,
         pol.created_at,
         pol.updated_at
       FROM app.purchase_order_line pol
@@ -503,12 +548,16 @@ async function loadLineItems(poId: string, tx: TxClient | typeof prisma = prisma
         pol.sku_id,
         COALESCE(s.code, s.provisional_code),
         COALESCE(s.description_web, s.description_rics, s.style_color),
+        s.picture_file_name,
         s.size_type,
         pol.case_pack_id,
         pol.case_pack_multiplier,
         pol.quantity_ordered,
         pol.quantity_received,
         pol.unit_cost,
+        pol.source_unit_cost,
+        pol.commercial_unit_cost_hnl,
+        pol.estimated_landed_unit_cost_hnl,
         pol.created_at,
         pol.updated_at,
         pol.line_sequence
@@ -538,6 +587,8 @@ function isReservedManualPoNumber(poNumber: string): boolean {
   return /^[AV]/i.test(poNumber.trim());
 }
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 async function loadPoRow(poId: string, tx: TxClient | typeof prisma = prisma): Promise<NativePoRow | undefined> {
   const rows = await tx.$queryRawUnsafe<NativePoRow[]>(
     `
@@ -562,8 +613,15 @@ async function loadPoRow(poId: string, tx: TxClient | typeof prisma = prisma): P
         po.program_code,
         po.store_labels_on_receive,
         po.buyer,
+        po.source_currency,
+        po.fx_rate,
+        po.fx_date,
+        po.incoterm_code,
+        po.incoterm_place,
+        po.cost_basis,
         po.order_date,
         po.ship_date,
+        po.planned_receipt_date,
         po.cancel_date,
         po.payment_date,
         po.status,
@@ -582,10 +640,82 @@ async function loadPoRow(poId: string, tx: TxClient | typeof prisma = prisma): P
   return rows[0];
 }
 
+async function loadPoRowByNumber(
+  poNumber: string,
+  tx: TxClient | typeof prisma = prisma,
+): Promise<NativePoRow | undefined> {
+  const rows = await tx.$queryRawUnsafe<NativePoRow[]>(
+    `
+      ${vendorEffectiveCte()}
+      SELECT
+        po.id::text,
+        po.po_number,
+        po.bill_to_store_id,
+        po.ship_to_store_id,
+        po.vendor_code,
+        ve.name AS vendor_name,
+        po.order_type,
+        po.classification,
+        po.origin,
+        po.origin_source_po_id::text,
+        po.confirmation_number,
+        po.account_number,
+        po.terms,
+        po.ship_via,
+        po.backorder_allowed,
+        po.split_shipment,
+        po.program_code,
+        po.store_labels_on_receive,
+        po.buyer,
+        po.source_currency,
+        po.fx_rate,
+        po.fx_date,
+        po.incoterm_code,
+        po.incoterm_place,
+        po.cost_basis,
+        po.order_date,
+        po.ship_date,
+        po.planned_receipt_date,
+        po.cancel_date,
+        po.payment_date,
+        po.status,
+        po.comments,
+        po.cancellation_reason,
+        po.created_by,
+        po.created_at,
+        po.updated_at
+      FROM app.purchase_order po
+      LEFT JOIN vendor_effective ve ON ve.code = po.vendor_code
+      WHERE UPPER(po.po_number) = $1
+      LIMIT 1
+    `,
+    poNumber.trim().toUpperCase(),
+  );
+  return rows[0];
+}
+
+async function loadPoRowByIdentifier(
+  identifier: string,
+  tx: TxClient | typeof prisma = prisma,
+): Promise<NativePoRow | undefined> {
+  const value = identifier.trim();
+  if (!value) return undefined;
+  return UUID_PATTERN.test(value) ? loadPoRow(value, tx) : loadPoRowByNumber(value, tx);
+}
+
 async function loadPurchaseOrder(poId: string, tx: TxClient | typeof prisma = prisma): Promise<PurchaseOrder | null> {
   const row = await loadPoRow(poId, tx);
   if (!row) return null;
   return rowToPurchaseOrder(row, await loadLineItems(poId, tx));
+}
+
+async function loadPurchaseOrderByIdentifier(
+  identifier: string,
+  tx: TxClient | typeof prisma = prisma,
+): Promise<PurchaseOrder | null> {
+  const row = await loadPoRowByIdentifier(identifier, tx);
+  if (!row) return null;
+  return rowToPurchaseOrder(row, await loadLineItems(row.id, tx));
 }
 
 async function insertStatusHistory(
@@ -610,16 +740,92 @@ async function insertStatusHistory(
   );
 }
 
+interface PoCostHeaderInput {
+  sourceCurrency?: PoSourceCurrency;
+  fxRate?: number;
+  fxDate?: string | null;
+  incotermCode?: string | null;
+  incotermPlace?: string | null;
+  costBasis?: PoCostBasis;
+}
+
+interface NormalizedPoCostHeader {
+  sourceCurrency: PoSourceCurrency;
+  fxRate: number;
+  fxDate: string;
+  incotermCode: string | null;
+  incotermPlace: string | null;
+  costBasis: PoCostBasis;
+}
+
+interface PoCostLineInput {
+  unitCost: number;
+  sourceUnitCost?: number | null;
+  commercialUnitCostHnl?: number | null;
+  estimatedLandedUnitCostHnl?: number | null;
+}
+
+function dateOnlyInput(value: string | null | undefined): string {
+  if (!value) return new Date().toISOString().slice(0, 10);
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? new Date().toISOString().slice(0, 10) : parsed.toISOString().slice(0, 10);
+}
+
+function normalizePoCostHeader(input: PoCostHeaderInput): NormalizedPoCostHeader | { error: string } {
+  const sourceCurrency = input.sourceCurrency ?? 'HNL';
+  const fxRate = sourceCurrency === 'HNL' ? 1 : input.fxRate ?? 1;
+  if (sourceCurrency !== 'HNL' && (!Number.isFinite(fxRate) || fxRate <= 0)) {
+    return { error: 'INVALID_FX_RATE' };
+  }
+  const costBasis = input.costBasis ?? (
+    sourceCurrency === 'HNL' ? 'LANDED_LEGACY_HNL' : 'VENDOR_CURRENCY_ESTIMATED_LANDED'
+  );
+  return {
+    sourceCurrency,
+    fxRate,
+    fxDate: dateOnlyInput(input.fxDate),
+    incotermCode: input.incotermCode?.trim().toUpperCase() || null,
+    incotermPlace: input.incotermPlace?.trim() || null,
+    costBasis,
+  };
+}
+
+function normalizePoLineCost(input: PoCostLineInput, header: NormalizedPoCostHeader) {
+  const sourceUnitCost = input.sourceUnitCost ?? (
+    header.sourceCurrency === 'HNL'
+      ? input.commercialUnitCostHnl ?? input.estimatedLandedUnitCostHnl ?? input.unitCost
+      : input.unitCost
+  );
+  const commercialUnitCostHnl = input.commercialUnitCostHnl ?? round4(sourceUnitCost * header.fxRate);
+  const estimatedLandedUnitCostHnl = input.estimatedLandedUnitCostHnl ?? input.unitCost ?? commercialUnitCostHnl;
+  const unitCost = round2(estimatedLandedUnitCostHnl);
+  return {
+    unitCost,
+    sourceUnitCost: round4(sourceUnitCost),
+    commercialUnitCostHnl: round4(commercialUnitCostHnl),
+    estimatedLandedUnitCostHnl: round4(estimatedLandedUnitCostHnl),
+  };
+}
+
 export async function createPurchaseOrder(data: {
   poNumber?: string | null;
   billToStoreId?: number | null;
   shipToStoreId?: number | null;
   vendorId: string;
   buyer?: string | null;
+  sourceCurrency?: PoSourceCurrency;
+  fxRate?: number;
+  fxDate?: string | null;
+  incotermCode?: string | null;
+  incotermPlace?: string | null;
+  costBasis?: PoCostBasis;
   lineItems: {
     skuId: string;
     quantity: number;
     unitCost: number;
+    sourceUnitCost?: number | null;
+    commercialUnitCostHnl?: number | null;
+    estimatedLandedUnitCostHnl?: number | null;
     casePackId?: string | null;
     casePackMultiplier?: number | null;
     sizeCells?: Array<{ columnLabel?: string | null; rowLabel?: string | null; quantity: number }>;
@@ -637,6 +843,7 @@ export async function createPurchaseOrder(data: {
   storeLabelsOnReceive?: boolean;
   orderDate?: string | null;
   shipDate?: string | null;
+  plannedReceiptDate?: string | null;
   cancelDate?: string | null;
   paymentDate?: string | null;
   createdBy?: string;
@@ -653,6 +860,8 @@ export async function createPurchaseOrder(data: {
   for (const item of data.lineItems) {
     if (!(await skuExists(item.skuId))) return { error: `SKU_NOT_FOUND:${item.skuId}` };
   }
+  const costHeader = normalizePoCostHeader(data);
+  if ('error' in costHeader) return { error: costHeader.error };
 
   const poId = await prisma.$transaction(async (tx) => {
     const id = uuidv4();
@@ -666,13 +875,15 @@ export async function createPurchaseOrder(data: {
           order_type, classification, status, origin,
           confirmation_number, account_number, terms, ship_via,
           backorder_allowed, split_shipment, program_code, store_labels_on_receive,
-          buyer, comments, order_date, ship_date, cancel_date, payment_date, created_by
+          buyer, comments, source_currency, fx_rate, fx_date, incoterm_code, incoterm_place,
+          cost_basis, order_date, ship_date, planned_receipt_date, cancel_date, payment_date, created_by
         ) VALUES (
           $1::uuid, $2, $3, $4, $5,
           $6, $7, 'DRAFT', $23,
           $8, $9, $10, $11,
           $12, $13, $14, $15,
-          $16, $17, COALESCE($18::timestamptz, CURRENT_TIMESTAMP), $19::timestamptz, $20::timestamptz, $21::timestamptz, $22
+          $16, $17, $24, $25::numeric, $26::date, $27, $28,
+          $29, COALESCE($18::timestamptz, CURRENT_TIMESTAMP), $19::timestamptz, $30::timestamptz, $20::timestamptz, $21::timestamptz, $22
         )
       `,
       id,
@@ -698,16 +909,25 @@ export async function createPurchaseOrder(data: {
       data.paymentDate ?? null,
       createdBy,
       data.origin ?? 'MANUAL',
+      costHeader.sourceCurrency,
+      costHeader.fxRate,
+      costHeader.fxDate,
+      costHeader.incotermCode,
+      costHeader.incotermPlace,
+      costHeader.costBasis,
+      data.plannedReceiptDate ?? null,
     );
 
     for (const [index, item] of data.lineItems.entries()) {
       const lineId = uuidv4();
+      const lineCost = normalizePoLineCost(item, costHeader);
       await tx.$executeRawUnsafe(
         `
           INSERT INTO app.purchase_order_line (
             id, po_id, sku_id, line_sequence, case_pack_id, case_pack_multiplier,
-            quantity_ordered, quantity_received, unit_cost
-          ) VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6, $7, 0, $8::numeric)
+            quantity_ordered, quantity_received, unit_cost, source_unit_cost,
+            commercial_unit_cost_hnl, estimated_landed_unit_cost_hnl
+          ) VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6, $7, 0, $8::numeric, $9::numeric, $10::numeric, $11::numeric)
         `,
         lineId,
         id,
@@ -716,7 +936,10 @@ export async function createPurchaseOrder(data: {
         item.casePackId?.trim() || null,
         item.casePackId ? item.casePackMultiplier ?? 1 : null,
         item.quantity,
-        item.unitCost,
+        lineCost.unitCost,
+        lineCost.sourceUnitCost,
+        lineCost.commercialUnitCostHnl,
+        lineCost.estimatedLandedUnitCostHnl,
       );
       const sizeCells = (item.sizeCells ?? [])
         .map((cell) => ({
@@ -753,8 +976,133 @@ export async function createPurchaseOrder(data: {
   return (await loadPurchaseOrder(poId))!;
 }
 
-export function getPurchaseOrderById(id: string): Promise<PurchaseOrder | null> {
+export async function appendPurchaseOrderLineItem(
+  id: string,
+  data: {
+    skuId: string;
+    quantity: number;
+    unitCost: number;
+    casePackId?: string | null;
+    casePackMultiplier?: number | null;
+    sizeCells?: Array<{ columnLabel?: string | null; rowLabel?: string | null; quantity: number }>;
+    notes?: string | null;
+    expectedVendorId?: string | null;
+  },
+): Promise<PurchaseOrder | null | { error: string }> {
+  const quantity = Math.trunc(Number(data.quantity));
+  if (quantity <= 0) return { error: 'EMPTY_LINE_QUANTITY' };
+
+  const result = await prisma.$transaction(async (tx): Promise<null | { ok: true } | { error: string }> => {
+    const poRows = await tx.$queryRawUnsafe<Array<{ status: PoStatus; vendor_code: string }>>(
+      `
+        SELECT status, vendor_code
+        FROM app.purchase_order
+        WHERE id = $1::uuid
+        FOR UPDATE
+      `,
+      id,
+    );
+    const poRow = poRows[0];
+    if (!poRow) return null;
+    if (poRow.status !== 'DRAFT') return { error: 'ONLY_DRAFT_EDITABLE' };
+
+    const expectedVendorCode = data.expectedVendorId?.trim().toUpperCase();
+    if (expectedVendorCode && poRow.vendor_code.trim().toUpperCase() !== expectedVendorCode) {
+      return { error: 'PO_VENDOR_MISMATCH' };
+    }
+
+    if (!(await skuExists(data.skuId, tx))) return { error: `SKU_NOT_FOUND:${data.skuId}` };
+
+    const sequenceRows = await tx.$queryRawUnsafe<Array<{ next_sequence: number }>>(
+      `
+        SELECT COALESCE(MAX(line_sequence), 0)::int + 1 AS next_sequence
+        FROM app.purchase_order_line
+        WHERE po_id = $1::uuid
+      `,
+      id,
+    );
+    const nextSequence = Number(sequenceRows[0]?.next_sequence ?? 1);
+    const lineId = uuidv4();
+    const casePackId = data.casePackId?.trim() || null;
+
+    await tx.$executeRawUnsafe(
+      `
+        INSERT INTO app.purchase_order_line (
+          id, po_id, sku_id, line_sequence, case_pack_id, case_pack_multiplier,
+          quantity_ordered, quantity_received, unit_cost
+        ) VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6, $7, 0, $8::numeric)
+      `,
+      lineId,
+      id,
+      data.skuId,
+      nextSequence,
+      casePackId,
+      casePackId ? data.casePackMultiplier ?? 1 : null,
+      quantity,
+      data.unitCost,
+    );
+
+    const sizeCells = (data.sizeCells ?? [])
+      .map((cell) => ({
+        columnLabel: (cell.columnLabel ?? '').trim(),
+        rowLabel: (cell.rowLabel ?? '').trim(),
+        quantity: Math.trunc(Number(cell.quantity)),
+      }))
+      .filter((cell) => cell.quantity > 0);
+    const cellsToInsert = sizeCells.length > 0
+      ? sizeCells
+      : [{ columnLabel: '', rowLabel: '', quantity }];
+
+    for (const cell of cellsToInsert) {
+      await tx.$executeRawUnsafe(
+        `
+          INSERT INTO app.purchase_order_line_size_cell (
+            id, po_line_id, column_label, row_label, quantity_ordered
+          ) VALUES ($1::uuid, $2::uuid, $3, $4, $5)
+          ON CONFLICT (po_line_id, column_label, row_label)
+          DO UPDATE SET quantity_ordered = app.purchase_order_line_size_cell.quantity_ordered + EXCLUDED.quantity_ordered
+        `,
+        uuidv4(),
+        lineId,
+        cell.columnLabel,
+        cell.rowLabel,
+        cell.quantity,
+      );
+    }
+
+    const notes = data.notes?.trim();
+    if (notes) {
+      await tx.$executeRawUnsafe(
+        `
+          UPDATE app.purchase_order
+          SET
+            comments = CASE
+              WHEN NULLIF(BTRIM(comments), '') IS NULL THEN $2
+              ELSE comments || E'\n' || $2
+            END,
+            updated_at = CURRENT_TIMESTAMP
+          WHERE id = $1::uuid
+        `,
+        id,
+        notes,
+      );
+    } else {
+      await tx.$executeRawUnsafe(
+        `UPDATE app.purchase_order SET updated_at = CURRENT_TIMESTAMP WHERE id = $1::uuid`,
+        id,
+      );
+    }
+
+    return { ok: true };
+  });
+
+  if (!result) return null;
+  if ('error' in result) return result;
   return loadPurchaseOrder(id);
+}
+
+export function getPurchaseOrderById(id: string): Promise<PurchaseOrder | null> {
+  return loadPurchaseOrderByIdentifier(id);
 }
 
 export async function updatePurchaseOrder(
@@ -766,6 +1114,12 @@ export async function updatePurchaseOrder(
     notes?: string | null;
     billToStoreId?: number | null;
     shipToStoreId?: number | null;
+    sourceCurrency?: PoSourceCurrency;
+    fxRate?: number;
+    fxDate?: string | null;
+    incotermCode?: string | null;
+    incotermPlace?: string | null;
+    costBasis?: PoCostBasis;
     orderType?: 'RO' | 'RE' | 'SA';
     classification?: 'AT_ONCE' | 'FUTURE';
     confirmationNumber?: string | null;
@@ -778,12 +1132,16 @@ export async function updatePurchaseOrder(
     storeLabelsOnReceive?: boolean;
     orderDate?: string | null;
     shipDate?: string | null;
+    plannedReceiptDate?: string | null;
     cancelDate?: string | null;
     paymentDate?: string | null;
     lineItems?: {
       skuId: string;
       quantity: number;
       unitCost: number;
+      sourceUnitCost?: number | null;
+      commercialUnitCostHnl?: number | null;
+      estimatedLandedUnitCostHnl?: number | null;
       casePackId?: string | null;
       casePackMultiplier?: number | null;
       sizeCells?: Array<{ columnLabel?: string | null; rowLabel?: string | null; quantity: number }>;
@@ -809,6 +1167,15 @@ export async function updatePurchaseOrder(
       if (!(await skuExists(item.skuId))) return { error: `SKU_NOT_FOUND:${item.skuId}` };
     }
   }
+  const costHeader = normalizePoCostHeader({
+    sourceCurrency: data.sourceCurrency ?? existing.source_currency,
+    fxRate: data.fxRate ?? toNumber(existing.fx_rate),
+    fxDate: data.fxDate ?? dateOnlyInput(String(existing.fx_date)),
+    incotermCode: data.incotermCode ?? existing.incoterm_code,
+    incotermPlace: data.incotermPlace ?? existing.incoterm_place,
+    costBasis: data.costBasis ?? existing.cost_basis,
+  });
+  if ('error' in costHeader) return { error: costHeader.error };
 
   await prisma.$transaction(async (tx) => {
     const headerColumns: Array<[keyof typeof data, string, string?]> = [
@@ -816,6 +1183,12 @@ export async function updatePurchaseOrder(
       ['vendorId', 'vendor_code'],
       ['buyer', 'buyer'],
       ['notes', 'comments'],
+      ['sourceCurrency', 'source_currency'],
+      ['fxRate', 'fx_rate'],
+      ['fxDate', 'fx_date', '::date'],
+      ['incotermCode', 'incoterm_code'],
+      ['incotermPlace', 'incoterm_place'],
+      ['costBasis', 'cost_basis'],
       ['billToStoreId', 'bill_to_store_id'],
       ['shipToStoreId', 'ship_to_store_id'],
       ['orderType', 'order_type'],
@@ -830,6 +1203,7 @@ export async function updatePurchaseOrder(
       ['storeLabelsOnReceive', 'store_labels_on_receive'],
       ['orderDate', 'order_date', '::timestamptz'],
       ['shipDate', 'ship_date', '::timestamptz'],
+      ['plannedReceiptDate', 'planned_receipt_date', '::timestamptz'],
       ['cancelDate', 'cancel_date', '::timestamptz'],
       ['paymentDate', 'payment_date', '::timestamptz'],
     ];
@@ -840,7 +1214,9 @@ export async function updatePurchaseOrder(
       if (data[key] !== undefined) {
         const value = key === 'poNumber' || key === 'vendorId'
           ? String(data[key] ?? '').trim().toUpperCase()
-          : data[key];
+          : key === 'sourceCurrency' || key === 'incotermCode' || key === 'costBasis'
+            ? data[key] == null ? null : String(data[key]).trim().toUpperCase() || null
+            : data[key];
         if ((key === 'poNumber' || key === 'vendorId') && !value) continue;
         values.push(value);
         sets.push(`${column} = $${values.length}${cast ?? ''}`);
@@ -859,12 +1235,14 @@ export async function updatePurchaseOrder(
       await tx.$executeRawUnsafe(`DELETE FROM app.purchase_order_line WHERE po_id = $1::uuid`, id);
       for (const [index, item] of data.lineItems.entries()) {
         const lineId = uuidv4();
+        const lineCost = normalizePoLineCost(item, costHeader);
         await tx.$executeRawUnsafe(
           `
             INSERT INTO app.purchase_order_line (
               id, po_id, sku_id, line_sequence, case_pack_id, case_pack_multiplier,
-              quantity_ordered, quantity_received, unit_cost
-            ) VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6, $7, 0, $8::numeric)
+              quantity_ordered, quantity_received, unit_cost, source_unit_cost,
+              commercial_unit_cost_hnl, estimated_landed_unit_cost_hnl
+            ) VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6, $7, 0, $8::numeric, $9::numeric, $10::numeric, $11::numeric)
           `,
           lineId,
           id,
@@ -873,7 +1251,10 @@ export async function updatePurchaseOrder(
           item.casePackId?.trim() || null,
           item.casePackId ? item.casePackMultiplier ?? 1 : null,
           item.quantity,
-          item.unitCost,
+          lineCost.unitCost,
+          lineCost.sourceUnitCost,
+          lineCost.commercialUnitCostHnl,
+          lineCost.estimatedLandedUnitCostHnl,
         );
         const sizeCells = (item.sizeCells ?? [])
           .map((cell) => ({
@@ -921,6 +1302,7 @@ async function clonePurchaseOrderInsideTx(
     shipToStoreId?: number | null;
     orderDate?: string | null;
     shipDate?: string | null;
+    plannedReceiptDate?: string | null;
     cancelDate?: string | null;
     paymentDate?: string | null;
     storeLabelsOnReceive?: boolean;
@@ -946,6 +1328,7 @@ async function clonePurchaseOrderInsideTx(
     comments: string | null;
     order_date: Date | string;
     ship_date: Date | string | null;
+    planned_receipt_date: Date | string | null;
     cancel_date: Date | string | null;
     payment_date: Date | string | null;
   }>>(
@@ -968,6 +1351,7 @@ async function clonePurchaseOrderInsideTx(
         comments,
         order_date,
         ship_date,
+        planned_receipt_date,
         cancel_date,
         payment_date
       FROM app.purchase_order
@@ -991,13 +1375,13 @@ async function clonePurchaseOrderInsideTx(
         order_type, classification, status, origin, origin_source_po_id,
         confirmation_number, account_number, terms, ship_via,
         backorder_allowed, split_shipment, program_code, store_labels_on_receive,
-        comments, order_date, ship_date, cancel_date, payment_date, created_by
+        comments, order_date, ship_date, planned_receipt_date, cancel_date, payment_date, created_by
       ) VALUES (
         $1::uuid, $2, $3, $4, $5,
         $6, $7, 'DRAFT', $8, $9::uuid,
         $10, $11, $12, $13,
         $14, $15, $16, $17,
-        $18, COALESCE($19::timestamptz, $20::timestamptz), $21::timestamptz, $22::timestamptz, $23::timestamptz, $24
+        $18, COALESCE($19::timestamptz, $20::timestamptz), $21::timestamptz, $22::timestamptz, $23::timestamptz, $24::timestamptz, $25
       )
     `,
     newPoId,
@@ -1021,6 +1405,7 @@ async function clonePurchaseOrderInsideTx(
     options.orderDate ?? null,
     toIso(source.order_date),
     options.shipDate ?? (source.ship_date == null ? null : toIso(source.ship_date)),
+    options.plannedReceiptDate ?? (source.planned_receipt_date == null ? null : toIso(source.planned_receipt_date)),
     options.cancelDate ?? (source.cancel_date == null ? null : toIso(source.cancel_date)),
     options.paymentDate ?? (source.payment_date == null ? null : toIso(source.payment_date)),
     options.changedBy,
@@ -1107,6 +1492,7 @@ export async function duplicatePurchaseOrder(
     shipToStoreId?: number | null;
     orderDate?: string | null;
     shipDate?: string | null;
+    plannedReceiptDate?: string | null;
     cancelDate?: string | null;
     paymentDate?: string | null;
     storeLabelsOnReceive?: boolean;
@@ -1169,44 +1555,148 @@ export async function replicatePurchaseOrder(
   return { created, skipped };
 }
 
+interface CombinePurchaseOrderRow {
+  id: string;
+  po_number: string;
+  vendor_code: string;
+  status: PoStatus;
+}
+
+function normalizeCombineSourcePoIds(sourcePoIdOrIds: string | string[]): string[] {
+  const rawIds = Array.isArray(sourcePoIdOrIds) ? sourcePoIdOrIds : [sourcePoIdOrIds];
+  return Array.from(new Set(rawIds.map((id) => id.trim()).filter(Boolean)));
+}
+
+function normalizedPoVendorCode(row: Pick<CombinePurchaseOrderRow, 'vendor_code'>): string {
+  return row.vendor_code.trim().toUpperCase();
+}
+
+function validatePurchaseOrderMergeRows(
+  destination: CombinePurchaseOrderRow,
+  sources: CombinePurchaseOrderRow[],
+): string | null {
+  if (destination.status !== 'DRAFT') return 'DESTINATION_PO_NOT_DRAFT';
+  if (sources.some((source) => source.status !== 'DRAFT')) return 'SOURCE_PO_NOT_DRAFT';
+
+  const destinationVendor = normalizedPoVendorCode(destination);
+  if (sources.some((source) => normalizedPoVendorCode(source) !== destinationVendor)) {
+    return 'PO_VENDOR_MISMATCH';
+  }
+
+  return null;
+}
+
 export async function combinePurchaseOrders(
-  sourcePoId: string,
+  sourcePoIdOrIds: string | string[],
   intoPoId: string,
   options?: { changedBy?: string },
 ): Promise<PurchaseOrder | null | { error: string }> {
-  if (sourcePoId === intoPoId) return { error: 'SOURCE_EQUALS_DESTINATION' };
+  const sourcePoIds = normalizeCombineSourcePoIds(sourcePoIdOrIds);
+  if (sourcePoIds.length === 0) return { error: 'EMPTY_SOURCE_PO_IDS' };
+  if (sourcePoIds.includes(intoPoId)) {
+    return { error: sourcePoIds.length === 1 ? 'SOURCE_EQUALS_DESTINATION' : 'SOURCE_DESTINATION_OVERLAP' };
+  }
 
-  const source = await loadPoRow(sourcePoId);
   const destination = await loadPoRow(intoPoId);
-  if (!source || !destination) return null;
-  if (source.status !== 'DRAFT' || destination.status !== 'DRAFT') return { error: 'ONLY_DRAFT_COMBINE_SUPPORTED' };
+  const sources = await Promise.all(sourcePoIds.map((sourcePoId) => loadPoRow(sourcePoId)));
+  if (!destination || sources.some((source) => !source)) return null;
 
-  await prisma.$transaction(async (tx) => {
+  const validationError = validatePurchaseOrderMergeRows(destination, sources as CombinePurchaseOrderRow[]);
+  if (validationError) return { error: validationError };
+
+  const changedBy = options?.changedBy ?? 'system';
+  const allPoIds = [intoPoId, ...sourcePoIds];
+
+  const mergeResult = await prisma.$transaction(async (tx): Promise<null | { ok: true } | { error: string }> => {
+    const idPlaceholders = allPoIds.map((_, index) => `$${index + 1}::uuid`).join(', ');
+    const lockedRows = await tx.$queryRawUnsafe<CombinePurchaseOrderRow[]>(
+      `
+        SELECT id::text, po_number, vendor_code, status
+        FROM app.purchase_order
+        WHERE id IN (${idPlaceholders})
+        FOR UPDATE
+      `,
+      ...allPoIds,
+    );
+    const rowsById = new Map(lockedRows.map((row) => [row.id, row]));
+    const lockedDestination = rowsById.get(intoPoId);
+    const lockedSources = sourcePoIds.map((sourcePoId) => rowsById.get(sourcePoId));
+    if (!lockedDestination || lockedSources.some((source) => !source)) return null;
+
+    const lockedValidationError = validatePurchaseOrderMergeRows(
+      lockedDestination,
+      lockedSources as CombinePurchaseOrderRow[],
+    );
+    if (lockedValidationError) return { error: lockedValidationError };
+
     const maxRows = await tx.$queryRawUnsafe<Array<{ max_sequence: number | null }>>(
       `SELECT MAX(line_sequence) AS max_sequence FROM app.purchase_order_line WHERE po_id = $1::uuid`,
       intoPoId,
     );
-    const offset = Number(maxRows[0]?.max_sequence ?? 0);
+    let offset = Number(maxRows[0]?.max_sequence ?? 0);
+
+    for (const source of lockedSources as CombinePurchaseOrderRow[]) {
+      const sourceMaxRows = await tx.$queryRawUnsafe<Array<{ max_sequence: number | null }>>(
+        `SELECT MAX(line_sequence) AS max_sequence FROM app.purchase_order_line WHERE po_id = $1::uuid`,
+        source.id,
+      );
+      await tx.$executeRawUnsafe(
+        `
+          UPDATE app.purchase_order_line
+          SET po_id = $1::uuid,
+              line_sequence = line_sequence + $2,
+              updated_at = CURRENT_TIMESTAMP
+          WHERE po_id = $3::uuid
+        `,
+        intoPoId,
+        offset,
+        source.id,
+      );
+      offset += Number(sourceMaxRows[0]?.max_sequence ?? 0);
+
+      const sourceReason = `Merged into PO ${lockedDestination.po_number}`;
+      await tx.$executeRawUnsafe(
+        `
+          UPDATE app.purchase_order
+          SET status = 'CANCELLED',
+              cancellation_reason = $2,
+              comments = CASE
+                WHEN NULLIF(BTRIM(comments), '') IS NULL THEN $2
+                ELSE comments || E'\n' || $2
+              END,
+              updated_at = CURRENT_TIMESTAMP
+          WHERE id = $1::uuid
+        `,
+        source.id,
+        sourceReason,
+      );
+      await insertStatusHistory(source.id, source.status, 'CANCELLED', changedBy, sourceReason, tx);
+    }
+
+    const sourcePoNumbers = (lockedSources as CombinePurchaseOrderRow[])
+      .map((source) => source.po_number)
+      .join(', ');
+    const destinationNote = `Merged source PO${lockedSources.length > 1 ? 's' : ''}: ${sourcePoNumbers}`;
     await tx.$executeRawUnsafe(
       `
-        UPDATE app.purchase_order_line
-        SET po_id = $1::uuid,
-            line_sequence = line_sequence + $2,
+        UPDATE app.purchase_order
+        SET comments = CASE
+              WHEN NULLIF(BTRIM(comments), '') IS NULL THEN $2
+              ELSE comments || E'\n' || $2
+            END,
             updated_at = CURRENT_TIMESTAMP
-        WHERE po_id = $3::uuid
+        WHERE id = $1::uuid
       `,
       intoPoId,
-      offset,
-      sourcePoId,
+      destinationNote,
     );
-    await tx.$executeRawUnsafe(
-      `UPDATE app.purchase_order SET updated_at = CURRENT_TIMESTAMP WHERE id = $1::uuid`,
-      intoPoId,
-    );
-    await tx.$executeRawUnsafe(`DELETE FROM app.purchase_order WHERE id = $1::uuid`, sourcePoId);
-    await insertStatusHistory(intoPoId, destination.status, destination.status, options?.changedBy ?? 'system', `Combined source PO ${source.po_number}`, tx);
+    await insertStatusHistory(intoPoId, lockedDestination.status, lockedDestination.status, changedBy, destinationNote, tx);
+
+    return { ok: true };
   });
 
+  if (!mergeResult) return null;
+  if ('error' in mergeResult) return mergeResult;
   return loadPurchaseOrder(intoPoId);
 }
 
@@ -1520,6 +2010,8 @@ export async function receivePurchaseOrderFull(
 }
 
 export async function getStatusHistory(poId: string): Promise<PoStatusHistory[]> {
+  const po = await loadPoRowByIdentifier(poId);
+  if (!po) return [];
   const rows = await prisma.$queryRawUnsafe<NativeStatusHistoryRow[]>(
     `
       SELECT id::text, po_id::text, from_status, to_status, changed_by, reason, created_at
@@ -1527,7 +2019,7 @@ export async function getStatusHistory(poId: string): Promise<PoStatusHistory[]>
       WHERE po_id = $1::uuid
       ORDER BY created_at ASC
     `,
-    poId,
+    po.id,
   );
   return rows.map(rowToPoStatusHistory);
 }
@@ -1623,8 +2115,15 @@ export async function listPurchaseOrders(params: {
         po.program_code,
         po.store_labels_on_receive,
         po.buyer,
+        po.source_currency,
+        po.fx_rate,
+        po.fx_date,
+        po.incoterm_code,
+        po.incoterm_place,
+        po.cost_basis,
         po.order_date,
         po.ship_date,
+        po.planned_receipt_date,
         po.cancel_date,
         po.payment_date,
         po.status,
@@ -1758,6 +2257,7 @@ export async function listPurchaseOrderReport(params: {
         po.status,
         po.order_date,
         po.ship_date,
+        po.planned_receipt_date,
         po.cancel_date,
         po.payment_date,
         COUNT(pol.id)::bigint AS line_count,
@@ -1919,7 +2419,7 @@ async function loadPoReceiptLines(receiptId: string): Promise<NativeReceiptLineR
 }
 
 export async function listPoReceiptsByPurchaseOrder(poId: string): Promise<PoReceipt[] | null> {
-  const po = await loadPoRow(poId);
+  const po = await loadPoRowByIdentifier(poId);
   if (!po) return null;
   const rows = await prisma.$queryRawUnsafe<NativeReceiptRow[]>(
     `
@@ -1937,7 +2437,7 @@ export async function listPoReceiptsByPurchaseOrder(poId: string): Promise<PoRec
       WHERE po_id = $1::uuid
       ORDER BY received_at DESC
     `,
-    poId,
+    po.id,
   );
 
   const receipts: PoReceipt[] = [];

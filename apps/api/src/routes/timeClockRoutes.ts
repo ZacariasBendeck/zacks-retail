@@ -5,6 +5,10 @@ import { requireAuth, requirePermission } from '../middleware/authMiddleware';
 import { EmployeeNotFoundError } from '../services/employees/employeeService';
 import { PERMISSIONS } from '../services/employees/permissions';
 import {
+  getRequestStoreScopeConstraint,
+  requireRequestStoreScope,
+} from '../middleware/storeScopeMiddleware';
+import {
   TimeClockAlreadyClockedInError,
   TimeClockEntryNotFoundError,
   TimeClockForbiddenError,
@@ -134,6 +138,42 @@ function asIso(value: Date | null): string {
 
 function serializeAdjustment(adjustment: any) {
   return adjustment;
+}
+
+async function scopedStoreIdsForOptionalStore(
+  prisma: PrismaClient,
+  req: any,
+  res: any,
+  storeId?: number,
+): Promise<{ storeId?: number; storeIds?: number[] } | null> {
+  const constraint = await getRequestStoreScopeConstraint(
+    prisma,
+    req,
+    res,
+    storeId !== undefined ? [storeId] : [],
+  );
+  if (!constraint) return null;
+  if (storeId !== undefined || constraint.allStores) return { storeId };
+  return { storeIds: constraint.storeIds };
+}
+
+async function requireEntryStoreScope(
+  prisma: PrismaClient,
+  req: any,
+  res: any,
+  entryId: string,
+  nextStoreId?: number,
+): Promise<boolean> {
+  const entry = await prisma.timeClockEntry.findUnique({
+    where: { id: entryId },
+    select: { storeId: true },
+  });
+  const storeIds = [
+    ...(entry ? [entry.storeId] : []),
+    ...(nextStoreId !== undefined ? [nextStoreId] : []),
+  ];
+  const constraint = await getRequestStoreScopeConstraint(prisma, req, res, storeIds);
+  return Boolean(constraint);
 }
 
 function buildTimeClockReportCsv(report: any): string {
@@ -285,6 +325,7 @@ export function createTimeClockRoutes(prisma: PrismaClient): Router {
             error: { code: 'INVALID_QUERY', message: parsed.error.message },
           });
         }
+        if (!(await requireRequestStoreScope(prisma, req, res, parsed.data.storeId))) return;
         const policy = await getTimeClockPolicy(prisma, parsed.data.storeId);
         res.json({ policy });
       } catch (err) {
@@ -317,6 +358,7 @@ export function createTimeClockRoutes(prisma: PrismaClient): Router {
             },
           });
         }
+        if (!(await requireRequestStoreScope(prisma, req, res, parsedQuery.data.storeId))) return;
         const policy = await setTimeClockPolicy(prisma, {
           storeId: parsedQuery.data.storeId,
           enabled: parsedBody.data.enabled,
@@ -338,6 +380,7 @@ export function createTimeClockRoutes(prisma: PrismaClient): Router {
           error: { code: 'INVALID_BODY', message: parsed.error.message },
         });
       }
+      if (!(await requireRequestStoreScope(prisma, req, res, parsed.data.storeId))) return;
       const entry = await clockInEmployee(prisma, {
         actorUserId: req.user!.id,
         permissions: req.permissions,
@@ -363,6 +406,8 @@ export function createTimeClockRoutes(prisma: PrismaClient): Router {
           error: { code: 'INVALID_BODY', message: parsed.error.message },
         });
       }
+      const constraint = await getRequestStoreScopeConstraint(prisma, req, res);
+      if (!constraint) return;
       const entry = await clockOutEmployee(prisma, {
         actorUserId: req.user!.id,
         permissions: req.permissions,
@@ -370,6 +415,7 @@ export function createTimeClockRoutes(prisma: PrismaClient): Router {
         pin: parsed.data.pin,
         at: parsed.data.at,
         note: parsed.data.note,
+        storeIds: constraint.allStores ? undefined : constraint.storeIds,
       });
       res.json({ entry: serializeEntry(entry) });
     } catch (err) {
@@ -389,7 +435,9 @@ export function createTimeClockRoutes(prisma: PrismaClient): Router {
             error: { code: 'INVALID_QUERY', message: parsed.error.message },
           });
         }
-        const entries = await listOpenTimeClockEntries(prisma, parsed.data);
+        const scoped = await scopedStoreIdsForOptionalStore(prisma, req, res, parsed.data.storeId);
+        if (!scoped) return;
+        const entries = await listOpenTimeClockEntries(prisma, { ...parsed.data, ...scoped });
         res.json({ entries: entries.map(serializeEntry) });
       } catch (err) {
         if (handleTimeClockError(res, err)) return;
@@ -409,7 +457,9 @@ export function createTimeClockRoutes(prisma: PrismaClient): Router {
             error: { code: 'INVALID_QUERY', message: parsed.error.message },
           });
         }
-        const entries = await listTimeClockEntries(prisma, parsed.data);
+        const scoped = await scopedStoreIdsForOptionalStore(prisma, req, res, parsed.data.storeId);
+        if (!scoped) return;
+        const entries = await listTimeClockEntries(prisma, { ...parsed.data, ...scoped });
         res.json({ entries: entries.map(serializeEntry) });
       } catch (err) {
         if (handleTimeClockError(res, err)) return;
@@ -435,6 +485,7 @@ export function createTimeClockRoutes(prisma: PrismaClient): Router {
             error: { code: 'INVALID_BODY', message: parsedBody.error.message },
           });
         }
+        if (!(await requireEntryStoreScope(prisma, req, res, parsedParams.data.id, parsedBody.data.storeId))) return;
         const result = await adjustTimeClockEntry(prisma, {
           actorUserId: req.user!.id,
           permissions: req.permissions,
@@ -468,6 +519,7 @@ export function createTimeClockRoutes(prisma: PrismaClient): Router {
             error: { code: 'INVALID_REQUEST', message: parsed.error.message },
           });
         }
+        if (!(await requireEntryStoreScope(prisma, req, res, parsed.data.id))) return;
         const adjustments = await listTimeClockEntryAdjustments(prisma, {
           entryId: parsed.data.id,
         });
@@ -490,7 +542,9 @@ export function createTimeClockRoutes(prisma: PrismaClient): Router {
             error: { code: 'INVALID_QUERY', message: parsed.error.message },
           });
         }
-        const entries = await listTimeClockReconciliationEntries(prisma, parsed.data);
+        const scoped = await scopedStoreIdsForOptionalStore(prisma, req, res, parsed.data.storeId);
+        if (!scoped) return;
+        const entries = await listTimeClockReconciliationEntries(prisma, { ...parsed.data, ...scoped });
         res.json({ entries: entries.map(serializeEntry) });
       } catch (err) {
         if (handleTimeClockError(res, err)) return;
@@ -514,12 +568,19 @@ export function createTimeClockRoutes(prisma: PrismaClient): Router {
           ...(parsed.data.storeId !== undefined ? [parsed.data.storeId] : []),
           ...(parsed.data.storeIds ?? []),
         ];
+        const scopeConstraint = await getRequestStoreScopeConstraint(prisma, req, res, storeIds);
+        if (!scopeConstraint) return;
+        const effectiveStoreIds = storeIds.length
+          ? Array.from(new Set(storeIds))
+          : scopeConstraint.allStores
+            ? undefined
+            : scopeConstraint.storeIds;
         const employeeIds = [
           ...(parsed.data.employeeId ? [parsed.data.employeeId] : []),
           ...(parsed.data.employeeIds ?? []),
         ];
         const report = await buildTimeClockReport(prisma, {
-          storeIds: storeIds.length ? Array.from(new Set(storeIds)) : undefined,
+          storeIds: effectiveStoreIds,
           employeeIds: employeeIds.length ? Array.from(new Set(employeeIds)) : undefined,
           from: parsed.data.from,
           to: parsed.data.to,

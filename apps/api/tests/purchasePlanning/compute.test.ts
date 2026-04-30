@@ -1,4 +1,4 @@
-import { computePlan } from '../../src/services/purchasePlanning/compute';
+import { computePlan, computePlanWithInventoryPosition } from '../../src/services/purchasePlanning/compute';
 import type { ProjectedPoint } from '../../src/services/purchasePlanning/types';
 
 function makeProj(dimKey: string, rows: Array<[string, number]>): ProjectedPoint[] {
@@ -183,6 +183,59 @@ describe('computePlan — multi-dim, full running walk', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
       dimKey: 'V', boh: 20, projSales: 0, buy: 0, eohActual: 20,
+    });
+  });
+});
+
+describe('computePlanWithInventoryPosition', () => {
+  it('starts the plan from on-hand plus on-order and native open POs', () => {
+    const proj = makeProj('D', [['2026-02', 40], ['2026-03', 20]]);
+    const rows = computePlanWithInventoryPosition(
+      proj,
+      new Map([['D', { onHand: 10, currentOnOrder: 15, futureOnOrder: 20, nativeOpenPo: 5 }]]),
+      ['2026-02', '2026-03'],
+      { eohMethod: 'forward', coverMonths: 1 },
+    );
+
+    expect(rows[0]).toMatchObject({
+      boh: 50,
+      stockPosition: 50,
+      onHand: 10,
+      currentOnOrder: 15,
+      futureOnOrder: 20,
+      nativeOpenPo: 5,
+      buy: 10,
+    });
+  });
+
+  it('projects season-start BOH by consuming forecast demand before the horizon', () => {
+    const proj = makeProj('D', [
+      ['2026-05', 20],
+      ['2026-06', 30],
+      ['2026-11', 40],
+      ['2026-12', 10],
+    ]);
+    const rows = computePlanWithInventoryPosition(
+      proj,
+      new Map([['D', { onHand: 100, currentOnOrder: 0, futureOnOrder: 0, nativeOpenPo: 0 }]]),
+      ['2026-11', '2026-12'],
+      {
+        eohMethod: 'forward',
+        coverMonths: 1,
+        preHorizonYearMonths: ['2026-05', '2026-06'],
+      },
+    );
+
+    expect(rows[0]).toMatchObject({
+      yearMonth: '2026-11',
+      boh: 50,
+      stockPosition: 100,
+      buy: 0,
+      eohActual: 10,
+    });
+    expect(rows[1]).toMatchObject({
+      yearMonth: '2026-12',
+      boh: 10,
     });
   });
 });

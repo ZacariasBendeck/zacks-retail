@@ -1,9 +1,9 @@
 # Employees
 
-Salespeople, time clock (login / logout / admin / print), commission overrides, hours + perks, salesperson analysis, close salesperson period, users + auth + permissions, sales passwords, manager options. Owns three cleanly-separated concepts that RICS partially conflates: Employee / Salesperson, User / Account, Sales Password.
+Salespeople, time clock (login / logout / admin / print), commission overrides, hours + perks, salesperson analysis, close salesperson period, sales passwords, and manager options. Employees owns the retail-person concepts that RICS partially conflates: Employee / Salesperson and Sales Password. Internal app users, auth, roles, sessions, MFA, SSO, and access scopes now belong to [Identity & Access](../identity-access/README.md).
 
 **Phase:** TBD
-**RICS chapters:** Ch. 7, Ch. 11 (Users p. 163)
+**RICS chapters:** Ch. 7; Ch. 11 users are lineage for Identity & Access
 **Registry:** [`../MODULES.md`](../MODULES.md)
 
 ## Documents in this module

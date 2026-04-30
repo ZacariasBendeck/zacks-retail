@@ -19,6 +19,7 @@
     "rics:discover": "tsx scripts/rics/discovery/discover-rics-schema.ts",
     "rics:convert": "tsx scripts/rics/sync/convert-rics-mdbs.ts",
     "extract:rics-artifact": "node --env-file-if-exists=.env -r tsx/cjs scripts/rics/sync/extract-rics-artifact.ts",
+    "import:all-rics-csvs": "node --env-file-if-exists=.env -r tsx/cjs scripts/rics/sync/import-all-rics-csvs.ts",
     "import:app-skus-from-artifact": "node --env-file-if-exists=.env -r tsx/cjs scripts/rics/sync/import-app-skus-from-artifact.ts",
     "import:app-reference-baselines-from-artifact": "node --env-file-if-exists=.env -r tsx/cjs scripts/rics/sync/import-app-reference-baselines-from-artifact.ts",
     "import:native-purchase-orders-from-artifact": "node --env-file-if-exists=.env -r tsx/cjs scripts/rics/sync/import-native-purchase-orders-from-artifact.ts",

@@ -94,6 +94,8 @@ export interface SkuListFilters {
   keyword?: string
   /** Multi-value filters for the admin workbench. */
   vendors?: string[]
+  sectors?: number[]
+  departments?: number[]
   categories?: number[]
   seasons?: string[]
   groups?: string[]

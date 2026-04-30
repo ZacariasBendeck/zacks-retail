@@ -24,6 +24,7 @@ const REPORT_TYPE_LABELS: Record<ReportType, string> = {
   'sales-by-time': 'Sales by Time',
   'salesperson-summary': 'Salesperson Summary',
   'sales-history-by-month': 'Sales History by Month',
+  'balancing-transfer': 'Balancing Transfer',
 }
 
 // Where each report's builder lives. Used by the "Open in builder" fallback
@@ -39,6 +40,7 @@ const REPORT_TYPE_PATHS: Record<ReportType, string> = {
   'sales-by-time': '/reports/others/sales-by-time',
   'salesperson-summary': '/reports/others/salesperson-summary',
   'sales-history-by-month': '/reports/sales/history-by-month',
+  'balancing-transfer': '/inventory/transfers/balancing',
 }
 
 function formatDate(iso: string | null | undefined): string {
@@ -55,11 +57,11 @@ function formatBytes(n: number): string {
 // Dispatch on reportType. Renderers are intentionally tiny & dumb — they
 // receive the frozen resultJson and render a read-only view. When a type
 // has no dedicated renderer we show the envelope + a builder-link fallback.
-function RendererFor(props: { reportType: ReportType; result: unknown }): JSX.Element {
-  const { reportType, result } = props
+function RendererFor(props: { reportType: ReportType; result: unknown; params: Record<string, unknown> }): JSX.Element {
+  const { reportType, result, params } = props
   switch (reportType) {
     case 'sales-analysis':
-      return <RenderSalesAnalysis result={result as SalesAnalysisReport} />
+      return <RenderSalesAnalysis result={result as SalesAnalysisReport} params={params} />
     case 'sales-hierarchy-drill-down':
       return <RenderSalesHierarchyDrillDown result={result as SalesHierarchyReport} />
     case 'best-sellers':
@@ -214,7 +216,7 @@ export default function RunViewPage() {
         </Card>
       )}
 
-      <RendererFor reportType={reportType} result={r.resultJson} />
+      <RendererFor reportType={reportType} result={r.resultJson} params={r.paramsJson} />
     </div>
   )
 }

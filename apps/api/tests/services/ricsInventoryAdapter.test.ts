@@ -194,6 +194,74 @@ describe('ricsInventoryAdapter inquiry grids', () => {
     expect(grids.model?.total).toBe(7);
   });
 
+  it('does not report negative short quantities for stores over model', () => {
+    const overModelStores: InventoryInquiryStore[] = [
+      {
+        storeNumber: 99,
+        storeName: 'BODEGA GENERAL',
+        cells: [
+          {
+            storeNumber: 99,
+            rowLabel: 'M',
+            columnLabel: '7',
+            onHand: 40,
+            currentOnOrder: 0,
+            futureOnOrder: 0,
+            model: 0,
+            maxQty: 0,
+            reorder: 0,
+            mtdSales: 0,
+            stdSales: 0,
+            ytdSales: 0,
+            lySales: 0,
+          },
+        ],
+        totals: { onHand: 40, currentOnOrder: 0, futureOnOrder: 0, ytdSales: 0, lySales: 0 },
+      },
+      {
+        storeNumber: 21,
+        storeName: 'Store 21',
+        cells: [
+          {
+            storeNumber: 21,
+            rowLabel: 'M',
+            columnLabel: '7',
+            onHand: 1,
+            currentOnOrder: 0,
+            futureOnOrder: 0,
+            model: 3,
+            maxQty: 0,
+            reorder: 0,
+            mtdSales: 0,
+            stdSales: 0,
+            ytdSales: 0,
+            lySales: 0,
+          },
+        ],
+        totals: { onHand: 1, currentOnOrder: 0, futureOnOrder: 0, ytdSales: 0, lySales: 0 },
+      },
+    ];
+
+    const grids = buildGrids(
+      overModelStores,
+      { rows: ['M'], columns: ['7'] } as any,
+      buildSummaryMetricsByStore(overModelStores),
+      undefined,
+      'M',
+    );
+
+    expect(grids.short?.rows).toEqual([
+      { label: 'BODEGA GENERAL', cells: [{ value: 0 }] },
+      { label: 'Store 21', cells: [{ value: 2 }] },
+      { label: 'Total', cells: [{ value: 2 }] },
+    ]);
+    expect(grids.short?.total).toBe(2);
+    expect(grids.singleColumn?.rows).toContainEqual({
+      label: 'Short',
+      cells: [{ value: 2 }, { value: 2 }],
+    });
+  });
+
   it('adds a per-size total row to all-store short quantities', () => {
     const grids = buildGrids(
       stores,

@@ -8,6 +8,7 @@ export interface CasePackSummary {
   dateLastChanged: string | null;
   totalUnits: number;
   cellCount: number;
+  skuCount: number;
 }
 
 export interface CasePackCell {
@@ -28,6 +29,7 @@ type CasePackSummaryRow = {
   dateLastChanged: Date | null;
   totalUnits: number | bigint | string | null;
   cellCount: number | bigint | string | null;
+  skuCount: number | bigint | string | null;
 };
 
 type CasePackCellRow = {
@@ -56,6 +58,7 @@ function normalizeSummary(row: CasePackSummaryRow): CasePackSummary {
     dateLastChanged: row.dateLastChanged ? row.dateLastChanged.toISOString() : null,
     totalUnits: toNumber(row.totalUnits),
     cellCount: toNumber(row.cellCount),
+    skuCount: toNumber(row.skuCount),
   };
 }
 
@@ -76,13 +79,39 @@ export async function listCasePacks(filters: { sizeTypeCode?: number } = {}): Pr
       cp.size_type_code AS "sizeTypeCode",
       cp.active,
       cp.date_last_changed AS "dateLastChanged",
-      COALESCE(SUM(cpc.quantity), 0)::integer AS "totalUnits",
-      COUNT(cpc.case_pack_code)::integer AS "cellCount"
+      COALESCE(cell_totals.total_units, 0)::integer AS "totalUnits",
+      COALESCE(cell_totals.cell_count, 0)::integer AS "cellCount",
+      COALESCE(sku_usage.sku_count, 0)::integer AS "skuCount"
     FROM app.case_pack cp
-    LEFT JOIN app.case_pack_cell cpc
-      ON cpc.case_pack_code = cp.code
+    LEFT JOIN (
+      SELECT
+        case_pack_code,
+        SUM(quantity)::integer AS total_units,
+        COUNT(*)::integer AS cell_count
+      FROM app.case_pack_cell
+      GROUP BY case_pack_code
+    ) cell_totals ON cell_totals.case_pack_code = cp.code
+    LEFT JOIN (
+      SELECT
+        UPPER(case_pack_code) AS case_pack_code,
+        COUNT(DISTINCT sku_key)::integer AS sku_count
+      FROM (
+        SELECT
+          NULLIF(BTRIM(pol.case_pack_id), '') AS case_pack_code,
+          pol.sku_id::text AS sku_key
+        FROM app.purchase_order_line pol
+        WHERE NULLIF(BTRIM(pol.case_pack_id), '') IS NOT NULL
+        UNION
+        SELECT
+          NULLIF(BTRIM(pol.case_pack_code), '') AS case_pack_code,
+          COALESCE(pol.sku_id::text, NULLIF(BTRIM(pol.sku_code), '')) AS sku_key
+        FROM app.purchase_order_legacy_line pol
+        WHERE NULLIF(BTRIM(pol.case_pack_code), '') IS NOT NULL
+      ) usage_rows
+      WHERE sku_key IS NOT NULL
+      GROUP BY UPPER(case_pack_code)
+    ) sku_usage ON sku_usage.case_pack_code = UPPER(cp.code)
     ${whereClause}
-    GROUP BY cp.code, cp."desc", cp.size_type_code, cp.active, cp.date_last_changed
     ORDER BY cp.code ASC
   `,
     ...values,
@@ -102,13 +131,39 @@ export async function getCasePackByCode(code: string): Promise<CasePackDetail | 
       cp.size_type_code AS "sizeTypeCode",
       cp.active,
       cp.date_last_changed AS "dateLastChanged",
-      COALESCE(SUM(cpc.quantity), 0)::integer AS "totalUnits",
-      COUNT(cpc.case_pack_code)::integer AS "cellCount"
+      COALESCE(cell_totals.total_units, 0)::integer AS "totalUnits",
+      COALESCE(cell_totals.cell_count, 0)::integer AS "cellCount",
+      COALESCE(sku_usage.sku_count, 0)::integer AS "skuCount"
     FROM app.case_pack cp
-    LEFT JOIN app.case_pack_cell cpc
-      ON cpc.case_pack_code = cp.code
+    LEFT JOIN (
+      SELECT
+        case_pack_code,
+        SUM(quantity)::integer AS total_units,
+        COUNT(*)::integer AS cell_count
+      FROM app.case_pack_cell
+      GROUP BY case_pack_code
+    ) cell_totals ON cell_totals.case_pack_code = cp.code
+    LEFT JOIN (
+      SELECT
+        UPPER(case_pack_code) AS case_pack_code,
+        COUNT(DISTINCT sku_key)::integer AS sku_count
+      FROM (
+        SELECT
+          NULLIF(BTRIM(pol.case_pack_id), '') AS case_pack_code,
+          pol.sku_id::text AS sku_key
+        FROM app.purchase_order_line pol
+        WHERE NULLIF(BTRIM(pol.case_pack_id), '') IS NOT NULL
+        UNION
+        SELECT
+          NULLIF(BTRIM(pol.case_pack_code), '') AS case_pack_code,
+          COALESCE(pol.sku_id::text, NULLIF(BTRIM(pol.sku_code), '')) AS sku_key
+        FROM app.purchase_order_legacy_line pol
+        WHERE NULLIF(BTRIM(pol.case_pack_code), '') IS NOT NULL
+      ) usage_rows
+      WHERE sku_key IS NOT NULL
+      GROUP BY UPPER(case_pack_code)
+    ) sku_usage ON sku_usage.case_pack_code = UPPER(cp.code)
     WHERE cp.code = ${normalizedCode}
-    GROUP BY cp.code, cp."desc", cp.size_type_code, cp.active, cp.date_last_changed
     LIMIT 1
   `;
   const summary = summaries[0];

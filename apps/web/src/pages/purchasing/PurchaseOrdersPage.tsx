@@ -7,11 +7,15 @@ import {
   Card,
   Col,
   Input,
+  Modal,
+  Radio,
   Row,
   Select,
   Space,
   Statistic,
+  Table,
   Tag,
+  Tooltip,
   Typography,
 } from 'antd'
 import {
@@ -28,6 +32,7 @@ import {
 import dayjs from 'dayjs'
 import ServerDataTable, { type ServerQueryChange, type ServerTableColumn } from '../../components/ServerDataTable'
 import {
+  useCombinePurchaseOrders,
   usePurchaseOrderOverdueExceptions,
   usePurchaseOrderBuyerOptions,
   usePurchaseOrders,
@@ -70,6 +75,14 @@ function formatMoney(value: number | null | undefined): string {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })
+}
+
+function normalizedPurchaseOrderVendor(order: Pick<PurchaseOrder, 'vendorId'>): string {
+  return order.vendorId.trim().toUpperCase()
+}
+
+function getPurchaseOrderUnits(order: PurchaseOrder): number {
+  return order.lineItems.reduce((sum, line) => sum + line.quantityOrdered, 0)
 }
 
 const STATUS_COLORS: Record<PoStatus, string> = {
@@ -183,7 +196,7 @@ function buildReceivingExceptionRows(
 
 export default function PurchaseOrdersPage() {
   const navigate = useNavigate()
-  const [searchParams] = useSearchParams()
+  const [searchParams, setSearchParams] = useSearchParams()
   const { message } = App.useApp()
   const [poParams, setPoParams] = useState<PoListParams>(() => ({
     page: 1,
@@ -196,6 +209,9 @@ export default function PurchaseOrdersPage() {
     page: 1,
     pageSize: 25,
   })
+  const [selectedDraftPoIds, setSelectedDraftPoIds] = useState<string[]>([])
+  const [mergeModalOpen, setMergeModalOpen] = useState(false)
+  const [mergeDestinationId, setMergeDestinationId] = useState<string | null>(null)
 
   useEffect(() => {
     const nextQ = searchParams.get('q')?.trim() || undefined
@@ -212,6 +228,7 @@ export default function PurchaseOrdersPage() {
   const { data: vendors } = useVendors()
   const { data: buyerOptions } = usePurchaseOrderBuyerOptions()
   const { data: overdueExceptions, isLoading: overdueLoading } = usePurchaseOrderOverdueExceptions()
+  const combinePurchaseOrders = useCombinePurchaseOrders()
   const { data: otbSummaryData, isLoading: otbSummaryLoading } = useOtbSummary({
     year: new Date().getFullYear(),
     month: new Date().getMonth() + 1,
@@ -260,6 +277,63 @@ export default function PurchaseOrdersPage() {
     [transferData],
   )
 
+  const visiblePurchaseOrders = poData?.data ?? []
+  const hasPoFilters = Boolean(poParams.q || poParams.vendorId || poParams.status || poParams.buyer)
+
+  useEffect(() => {
+    setSelectedDraftPoIds((prev) => {
+      if (prev.length === 0) return prev
+      const visibleIds = new Set(visiblePurchaseOrders.map((order) => order.id))
+      const next = prev.filter((id) => visibleIds.has(id))
+      return next.length === prev.length ? prev : next
+    })
+  }, [visiblePurchaseOrders])
+
+  const selectedDraftPos = useMemo(
+    () =>
+      visiblePurchaseOrders.filter(
+        (order) => selectedDraftPoIds.includes(order.id) && order.status === 'DRAFT',
+      ),
+    [selectedDraftPoIds, visiblePurchaseOrders],
+  )
+
+  const selectedVendorCodes = useMemo(
+    () => Array.from(new Set(selectedDraftPos.map((order) => normalizedPurchaseOrderVendor(order)))),
+    [selectedDraftPos],
+  )
+  const selectedVendorLabel = selectedDraftPos[0]?.vendorName ?? selectedDraftPos[0]?.vendorId ?? null
+  const selectedMergeLines = selectedDraftPos.reduce(
+    (sum, order) => sum + order.lineItems.length,
+    0,
+  )
+  const selectedMergeUnits = selectedDraftPos.reduce(
+    (sum, order) => sum + getPurchaseOrderUnits(order),
+    0,
+  )
+  const selectedMergeSubtotal = selectedDraftPos.reduce((sum, order) => sum + order.subtotal, 0)
+  const canMergeSelected = selectedDraftPos.length >= 2 && selectedVendorCodes.length === 1
+  const mergeDisabledReason =
+    selectedDraftPos.length < 2
+      ? 'Select at least two draft POs.'
+      : selectedVendorCodes.length > 1
+        ? 'Selected POs must belong to the same supplier.'
+        : undefined
+
+  const mergePreviewOrders = useMemo(
+    () =>
+      [...selectedDraftPos].sort((left, right) => {
+        const createdDelta = dayjs(left.createdAt).valueOf() - dayjs(right.createdAt).valueOf()
+        return createdDelta !== 0 ? createdDelta : left.poNumber.localeCompare(right.poNumber)
+      }),
+    [selectedDraftPos],
+  )
+  const defaultMergeDestination = mergePreviewOrders[0] ?? null
+  const mergeDestination =
+    mergePreviewOrders.find((order) => order.id === mergeDestinationId) ?? defaultMergeDestination
+  const mergeSourcePos = mergeDestination
+    ? mergePreviewOrders.filter((order) => order.id !== mergeDestination.id)
+    : []
+
   const receivingExceptionRows = useMemo(
     () =>
       buildReceivingExceptionRows(
@@ -292,6 +366,66 @@ export default function PurchaseOrdersPage() {
       pageSize: query.pageSize,
     }))
   }, [])
+
+  const handleClearPoFilters = useCallback(() => {
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current)
+      next.delete('q')
+      return next
+    }, { replace: true })
+    setPoParams((prev) => ({
+      page: 1,
+      pageSize: prev.pageSize,
+      sort: prev.sort,
+      order: prev.order,
+    }))
+  }, [setSearchParams])
+
+  const openMergeModal = useCallback(() => {
+    if (!canMergeSelected || !defaultMergeDestination) return
+    setMergeDestinationId(defaultMergeDestination.id)
+    setMergeModalOpen(true)
+  }, [canMergeSelected, defaultMergeDestination])
+
+  const closeMergeModal = useCallback(() => {
+    if (combinePurchaseOrders.isPending) return
+    setMergeModalOpen(false)
+  }, [combinePurchaseOrders.isPending])
+
+  const handleConfirmMerge = useCallback(async () => {
+    if (!mergeDestination || mergeSourcePos.length === 0) {
+      message.warning('Choose one destination PO and at least one source PO.')
+      return
+    }
+
+    try {
+      const mergedPo = await combinePurchaseOrders.mutateAsync({
+        intoPoId: mergeDestination.id,
+        sourcePoIds: mergeSourcePos.map((order) => order.id),
+        changedBy: 'system',
+      })
+      setMergeModalOpen(false)
+      setSelectedDraftPoIds([])
+      setMergeDestinationId(null)
+      await refetchPos()
+      message.open({
+        type: 'success',
+        content: (
+          <Space>
+            <span>
+              Merged {mergeSourcePos.length} PO{mergeSourcePos.length === 1 ? '' : 's'} into{' '}
+              {mergedPo.poNumber}.
+            </span>
+            <Button type="link" size="small" href={`/purchasing/orders/${mergedPo.id}`}>
+              Open merged PO
+            </Button>
+          </Space>
+        ),
+      })
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : 'Unable to merge purchase orders')
+    }
+  }, [combinePurchaseOrders, mergeDestination, mergeSourcePos, message, refetchPos])
 
   const columns: ServerTableColumn<PurchaseOrder>[] = [
     {
@@ -661,10 +795,32 @@ export default function PurchaseOrdersPage() {
       <Card size="small">
         <Row align="middle" justify="space-between" style={{ marginBottom: 12 }} gutter={[12, 12]}>
           <Col>
-            <Typography.Text strong>Purchase Order List</Typography.Text>
+            <Space direction="vertical" size={2}>
+              <Typography.Text strong>Purchase Order List</Typography.Text>
+              {selectedDraftPos.length > 0 && (
+                <Typography.Text type={selectedVendorCodes.length > 1 ? 'danger' : 'secondary'}>
+                  Selected: {selectedDraftPos.length} draft PO
+                  {selectedDraftPos.length === 1 ? '' : 's'}
+                  {selectedVendorCodes.length === 1 && selectedVendorLabel
+                    ? ` for ${selectedVendorLabel}`
+                    : ''}
+                </Typography.Text>
+              )}
+            </Space>
           </Col>
           <Col flex="auto">
             <Space wrap style={{ width: '100%', justifyContent: 'flex-end' }}>
+              <Tooltip title={canMergeSelected ? undefined : mergeDisabledReason}>
+                <span>
+                  <Button
+                    icon={<SwapOutlined />}
+                    disabled={!canMergeSelected}
+                    onClick={openMergeModal}
+                  >
+                    Merge POs
+                  </Button>
+                </span>
+              </Tooltip>
               <Input.Search
                 allowClear
                 placeholder="Search PO number or notes"
@@ -692,6 +848,11 @@ export default function PurchaseOrdersPage() {
                 onChange={(value) => setPoParams((prev) => ({ ...prev, status: value, page: 1 }))}
                 options={STATUS_OPTIONS}
               />
+              {hasPoFilters && (
+                <Button onClick={handleClearPoFilters}>
+                  Clear filters
+                </Button>
+              )}
             </Space>
           </Col>
         </Row>
@@ -704,11 +865,138 @@ export default function PurchaseOrdersPage() {
           fetching={poFetching}
           pagination={poData?.pagination}
           onQueryChange={handlePoQueryChange}
+          rowSelection={{
+            selectedRowKeys: selectedDraftPoIds,
+            getCheckboxProps: (record) => ({
+              disabled: record.status !== 'DRAFT',
+              title:
+                record.status === 'DRAFT'
+                  ? undefined
+                  : 'Only draft purchase orders can be merged.',
+            }),
+            onChange: (_selectedRowKeys, selectedRows) => {
+              setSelectedDraftPoIds(
+                selectedRows
+                  .filter((order) => order.status === 'DRAFT')
+                  .map((order) => order.id),
+              )
+            },
+          }}
           expectedTotalRows={poData?.pagination.totalItems}
           exportFileName={`purchase-orders-${new Date().toISOString().slice(0, 10)}`}
           scrollX={1100}
         />
       </Card>
+
+      <Modal
+        title="Merge purchase orders"
+        open={mergeModalOpen}
+        onCancel={closeMergeModal}
+        onOk={handleConfirmMerge}
+        okText="Merge POs"
+        width={820}
+        destroyOnClose
+        okButtonProps={{
+          loading: combinePurchaseOrders.isPending,
+          disabled: !mergeDestination || mergeSourcePos.length === 0,
+        }}
+        cancelButtonProps={{ disabled: combinePurchaseOrders.isPending }}
+      >
+        <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+          <Alert
+            showIcon
+            type="info"
+            message={`Merging ${selectedDraftPos.length} draft PO${
+              selectedDraftPos.length === 1 ? '' : 's'
+            }${selectedVendorLabel ? ` for ${selectedVendorLabel}` : ''}`}
+            description="All source lines will be appended to the destination PO. Source PO headers remain visible as cancelled merge records."
+          />
+
+          <Space wrap>
+            <Tag>Lines: {selectedMergeLines.toLocaleString()}</Tag>
+            <Tag>Units: {selectedMergeUnits.toLocaleString()}</Tag>
+            <Tag>Subtotal: {formatMoney(selectedMergeSubtotal)}</Tag>
+          </Space>
+
+          <Space direction="vertical" size={8} style={{ width: '100%' }}>
+            <Typography.Text strong>Destination PO</Typography.Text>
+            <Radio.Group
+              value={mergeDestination?.id}
+              onChange={(event) => setMergeDestinationId(String(event.target.value))}
+              style={{ width: '100%' }}
+            >
+              <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                {mergePreviewOrders.map((order) => (
+                  <Radio key={order.id} value={order.id}>
+                    <Space wrap>
+                      <Typography.Text strong={order.id === mergeDestination?.id}>
+                        {order.poNumber}
+                      </Typography.Text>
+                      <Typography.Text type="secondary">
+                        Created {dayjs(order.createdAt).format('YYYY-MM-DD')}
+                      </Typography.Text>
+                      <Typography.Text type="secondary">
+                        {order.lineItems.length} line{order.lineItems.length === 1 ? '' : 's'}
+                      </Typography.Text>
+                      <Typography.Text type="secondary">{formatMoney(order.subtotal)}</Typography.Text>
+                    </Space>
+                  </Radio>
+                ))}
+              </Space>
+            </Radio.Group>
+          </Space>
+
+          <Table<PurchaseOrder>
+            size="small"
+            rowKey="id"
+            dataSource={mergePreviewOrders}
+            pagination={false}
+            columns={[
+              {
+                title: 'Role',
+                key: 'role',
+                width: 120,
+                render: (_: unknown, record: PurchaseOrder) =>
+                  record.id === mergeDestination?.id ? (
+                    <Tag color="blue">Destination</Tag>
+                  ) : (
+                    <Tag>Source</Tag>
+                  ),
+              },
+              {
+                title: 'PO Number',
+                dataIndex: 'poNumber',
+                key: 'poNumber',
+              },
+              {
+                title: 'Created',
+                dataIndex: 'createdAt',
+                key: 'createdAt',
+                render: (value: string) => dayjs(value).format('YYYY-MM-DD'),
+              },
+              {
+                title: 'Lines',
+                key: 'lines',
+                align: 'right',
+                render: (_: unknown, record: PurchaseOrder) => record.lineItems.length,
+              },
+              {
+                title: 'Units',
+                key: 'units',
+                align: 'right',
+                render: (_: unknown, record: PurchaseOrder) => getPurchaseOrderUnits(record),
+              },
+              {
+                title: 'Subtotal',
+                dataIndex: 'subtotal',
+                key: 'subtotal',
+                align: 'right',
+                render: (value: number) => formatMoney(value),
+              },
+            ]}
+          />
+        </Space>
+      </Modal>
 
       <Card
         size="small"

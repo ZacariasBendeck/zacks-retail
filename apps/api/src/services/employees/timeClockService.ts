@@ -434,6 +434,7 @@ export async function clockOutEmployee(
     pin?: string | null;
     at?: Date;
     note?: string | null;
+    storeIds?: number[];
   },
 ): Promise<TimeClockEntry> {
   const at = nowOr(args.at);
@@ -447,6 +448,9 @@ export async function clockOutEmployee(
   const openEntry = await findOpenEntry(prisma, employee.id);
   if (!openEntry) {
     throw new TimeClockNotClockedInError(employee.id);
+  }
+  if (args.storeIds?.length && !args.storeIds.includes(openEntry.storeId)) {
+    throw new TimeClockForbiddenError();
   }
 
   assertShiftWindow(openEntry.clockedInAt, at);
@@ -466,6 +470,7 @@ export async function listOpenTimeClockEntries(
   prisma: TimeClockDbClient,
   args: {
     storeId?: number;
+    storeIds?: number[];
     employeeId?: string;
   },
 ): Promise<TimeClockEntryWithEmployee[]> {
@@ -473,6 +478,7 @@ export async function listOpenTimeClockEntries(
     where: {
       clockedOutAt: null,
       ...(args.storeId !== undefined ? { storeId: args.storeId } : {}),
+      ...(args.storeId === undefined && args.storeIds?.length ? { storeId: { in: args.storeIds } } : {}),
       ...(args.employeeId ? { employeeId: args.employeeId } : {}),
     },
     orderBy: [
@@ -491,6 +497,7 @@ export async function listTimeClockEntries(
   prisma: TimeClockDbClient,
   args: {
     storeId?: number;
+    storeIds?: number[];
     employeeId?: string;
     from?: Date;
     to?: Date;
@@ -499,6 +506,7 @@ export async function listTimeClockEntries(
   return prisma.timeClockEntry.findMany({
     where: {
       ...(args.storeId !== undefined ? { storeId: args.storeId } : {}),
+      ...(args.storeId === undefined && args.storeIds?.length ? { storeId: { in: args.storeIds } } : {}),
       ...(args.employeeId ? { employeeId: args.employeeId } : {}),
       ...buildTimeRangeWhere(args),
     },
@@ -620,6 +628,7 @@ export async function listTimeClockReconciliationEntries(
   prisma: TimeClockDbClient,
   args: {
     storeId?: number;
+    storeIds?: number[];
     employeeId?: string;
     from?: Date;
     to?: Date;
@@ -630,6 +639,7 @@ export async function listTimeClockReconciliationEntries(
   return prisma.timeClockEntry.findMany({
     where: {
       ...(args.storeId !== undefined ? { storeId: args.storeId } : {}),
+      ...(args.storeId === undefined && args.storeIds?.length ? { storeId: { in: args.storeIds } } : {}),
       ...(args.employeeId ? { employeeId: args.employeeId } : {}),
       ...buildTimeRangeWhere(args),
       ...(status === 'OPEN'

@@ -18,7 +18,14 @@ vi.mock('../auth/useAuth', () => ({
       displayName: 'Test User',
       role: { id: 'role-1', name: 'Admin' },
     },
-    permissions: new Set<string>(['sales_pos.operate']),
+    permissions: new Set<string>([
+      'import_management.view',
+      'inventory.view',
+      'otb.view',
+      'purchasing.view',
+      'reports.view',
+      'sales_pos.operate',
+    ]),
     loading: false,
     login: vi.fn(),
     logout: vi.fn(async () => {}),
@@ -39,6 +46,9 @@ vi.mock('../pages/otb/OtbDashboardPage', () => ({
 vi.mock('../pages/otb/OtbMonthlyPlansPage', () => ({
   default: () => <div data-testid="page-otb-monthly-plans">OTB Monthly Plans</div>,
 }))
+vi.mock('../pages/importManagement/ImportShipmentsPage', () => ({
+  default: () => <div data-testid="page-import-management">Import Management</div>,
+}))
 vi.mock('../pages/inventory/SalesReportPage', () => ({
   default: () => <div data-testid="page-reports-sales">Sales Report</div>,
 }))
@@ -52,6 +62,12 @@ vi.mock('../pages/sales/enter/EnterSalesPage', () => ({
 describe('App lazy routes', () => {
   it('renders fallback while loading a lazy route and navigates across module routes', async () => {
     const user = userEvent.setup()
+    const openSubmenu = async (label: RegExp) => {
+      const menuItem = screen.getByRole('menuitem', { name: label })
+      if (menuItem.getAttribute('aria-expanded') !== 'true') {
+        await user.click(menuItem)
+      }
+    }
 
     render(
       <ConfigProvider>
@@ -64,24 +80,23 @@ describe('App lazy routes', () => {
     expect(screen.getByTestId('route-loading-fallback')).toBeInTheDocument()
     expect(await screen.findByTestId('page-inventory-dashboard')).toBeInTheDocument()
 
-    await user.click(screen.getByRole('menuitem', { name: /Purchasing/i }))
-    const purchaseOrdersLabel = await screen.findByText('Control Tower', { selector: '.ant-menu-title-content' })
-    await user.click(purchaseOrdersLabel.closest('[role="menuitem"]')!)
+    await openSubmenu(/Purchasing/i)
+    await user.click(await screen.findByRole('link', { name: 'Purchase Orders' }))
     expect(await screen.findByTestId('page-purchasing-orders')).toBeInTheDocument()
 
-    await user.click(screen.getByRole('menuitem', { name: /OTB/i }))
-    const otbMonthlyPlansLabel = await screen.findByText('Monthly Plans', { selector: '.ant-menu-title-content' })
-    await user.click(otbMonthlyPlansLabel.closest('[role="menuitem"]')!)
+    await openSubmenu(/OTB/i)
+    await user.click(await screen.findByRole('link', { name: 'Monthly Plans' }))
     expect(await screen.findByTestId('page-otb-monthly-plans')).toBeInTheDocument()
 
-    await user.click(screen.getByRole('menuitem', { name: /Reports/i }))
-    const salesReportLabel = await screen.findByText('Sales', { selector: '.ant-menu-title-content' })
-    await user.click(salesReportLabel.closest('[role="menuitem"]')!)
+    await user.click(await screen.findByRole('link', { name: 'Import Management' }))
+    expect(await screen.findByTestId('page-import-management')).toBeInTheDocument()
+
+    await openSubmenu(/Reports/i)
+    await user.click(await screen.findByRole('link', { name: 'Sales' }))
     expect(await screen.findByTestId('page-reports-sales-hub')).toBeInTheDocument()
 
-    await user.click(screen.getByRole('menuitem', { name: /Sales POS/i }))
-    const enterSalesLabel = await screen.findByText('Enter Sales', { selector: '.ant-menu-title-content' })
-    await user.click(enterSalesLabel.closest('[role="menuitem"]')!)
+    await openSubmenu(/Sales POS/i)
+    await user.click(await screen.findByRole('link', { name: 'Enter Sales' }))
     expect(await screen.findByTestId('page-sales-enter')).toBeInTheDocument()
   })
 })

@@ -24,6 +24,8 @@ import {
   ReportTypeNotImplementedError,
 } from '../services/salesReporting/salesReportFacade';
 import { validateQuery } from '../middleware/validation';
+import { getRequestStoreScopeConstraintIfAuthenticated, sendStoreScopeForbidden } from '../middleware/storeScopeMiddleware';
+import { prisma } from '../db/prisma';
 import { sendXlsx, XLSX_NUMFMT } from '../utils/xlsxExport';
 import type { PivotDimension, SalesPivotLevels } from '../services/salesReporting/types';
 
@@ -64,6 +66,26 @@ function sendCsv(res: Response, header: string[], rows: (string | number | null 
   res.setHeader('Content-Type', 'text/csv');
   res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
   res.send(body);
+}
+
+async function scopedStoreNumbersForRequest(
+  req: Request,
+  res: Response,
+  requestedStores: number[] | undefined,
+  rawStoreCriteria?: string,
+): Promise<number[] | undefined | null> {
+  const explicitStores = requestedStores ?? [];
+  const constraint = await getRequestStoreScopeConstraintIfAuthenticated(prisma, req, res, explicitStores);
+  if (constraint === undefined) return requestedStores;
+  if (constraint === null) return null;
+
+  if (rawStoreCriteria?.trim() && !constraint.allStores) {
+    sendStoreScopeForbidden(res, null);
+    return null;
+  }
+
+  if (explicitStores.length > 0 || constraint.allStores) return requestedStores;
+  return constraint.storeIds;
 }
 
 // ─────────────────────────── /dimensions ──────────────────────────────────
@@ -111,7 +133,9 @@ router.get('/by-day', validateQuery(byDaySchema), async (req: Request, res: Resp
       res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'startDate must be <= endDate' } });
       return;
     }
-    const stores = q.stores ?? [];
+    const scopedStores = await scopedStoreNumbersForRequest(req, res, q.stores);
+    if (scopedStores === null) return;
+    const stores = scopedStores ?? [];
     const report = await getSalesByDay({
       storeNumbers: stores,
       startDate: q.startDate,
@@ -237,12 +261,14 @@ const byTimeSchema = z.object({
 router.get('/by-time', validateQuery(byTimeSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const q = (req as any).validatedQuery as z.infer<typeof byTimeSchema>;
+    const scopedStores = await scopedStoreNumbersForRequest(req, res, q.stores);
+    if (scopedStores === null) return;
     const report = await getSalesByTime({
       startDate: q.startDate,
       endDate: q.endDate,
       compareStartDate: q.compareStartDate,
       compareEndDate: q.compareEndDate,
-      storeNumbers: q.stores,
+      storeNumbers: scopedStores,
       printPctOfTotal: q.pctOfTotal,
     });
     if (q.format === 'csv') {
@@ -272,10 +298,12 @@ const bySkuSchema = z.object({
 router.get('/by-sku', validateQuery(bySkuSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const q = (req as any).validatedQuery as z.infer<typeof bySkuSchema>;
+    const scopedStores = await scopedStoreNumbersForRequest(req, res, q.stores);
+    if (scopedStores === null) return;
     const report = await getSalesBySku({
       startDate: q.startDate,
       endDate: q.endDate,
-      storeNumbers: q.stores,
+      storeNumbers: scopedStores,
       sortBy: q.sortBy,
       includeReturns: q.includeReturns,
       skus: q.skus,
@@ -307,10 +335,12 @@ const salespersonSchema = z.object({
 router.get('/salesperson-summary', validateQuery(salespersonSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const q = (req as any).validatedQuery as z.infer<typeof salespersonSchema>;
+    const scopedStores = await scopedStoreNumbersForRequest(req, res, q.stores);
+    if (scopedStores === null) return;
     const report = await getSalespersonSummary({
       startDate: q.startDate,
       endDate: q.endDate,
-      storeNumbers: q.stores,
+      storeNumbers: scopedStores,
       subtotalBy: q.subtotalBy,
       combineStores: q.combineStores,
       cashierSummary: q.cashierSummary,
@@ -347,11 +377,13 @@ router.get('/best-sellers', validateQuery(bestSellersSchema), async (req: Reques
       res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'Either period or lastNMonths is required' } });
       return;
     }
+    const scopedStores = await scopedStoreNumbersForRequest(req, res, q.stores);
+    if (scopedStores === null) return;
     const report = await getBestSellers({
       dimension: q.dimension,
       metric: q.metric,
       period: q.lastNMonths ? { lastNMonths: q.lastNMonths } : (q.period as 'WTD' | 'MTD' | 'STD' | 'YTD'),
-      storeNumbers: q.stores,
+      storeNumbers: scopedStores,
       combineStores: q.combineStores,
       topN: q.topN,
     });
@@ -413,6 +445,7 @@ const salesAnalysisSchema = z.object({
   // Opt-in per-SKU enrichment. Defaults to false so the preview endpoint
   // stays fast — only the full-screen viewer asks for these columns.
   includeAttributes: z.coerce.boolean().default(false),
+  includeOnOrder: z.coerce.boolean().default(false),
   format: z.enum(['json', 'csv']).default('json'),
 });
 
@@ -430,12 +463,14 @@ router.get('/sales-analysis', validateQuery(salesAnalysisSchema), async (req: Re
       });
       return;
     }
+    const scopedStores = await scopedStoreNumbersForRequest(req, res, q.stores, q.storesRaw);
+    if (scopedStores === null) return;
     const report = await getSalesAnalysis({
       dimension: q.dimension,
       reportType: q.reportType,
       storeOption: q.storeOption,
       criteria: {
-        stores: q.stores,
+        stores: scopedStores,
         categories: q.categories,
         vendors: q.vendors,
         seasons: q.seasons,
@@ -456,6 +491,7 @@ router.get('/sales-analysis', validateQuery(salesAnalysisSchema), async (req: Re
       startDate: q.startDate,
       endDate: q.endDate,
       includeAttributes: q.includeAttributes,
+      includeOnOrder: q.includeOnOrder,
     });
     if (q.format === 'csv') {
       const header = [
@@ -470,6 +506,7 @@ router.get('/sales-analysis', validateQuery(salesAnalysisSchema), async (req: Re
         'COGS',
         'Gross Profit',
         'GP %',
+        ...(q.includeOnOrder ? ['On Order Qty', 'Landed Cost/Unit', 'Total Order Cost'] : []),
         'Prior Yr Net',
         'PY % Change',
       ];
@@ -481,6 +518,13 @@ router.get('/sales-analysis', validateQuery(salesAnalysisSchema), async (req: Re
         r.qty,
         r.netSales.toFixed(2), r.cogs.toFixed(2), r.grossProfit.toFixed(2),
         r.gpPct == null ? '' : r.gpPct.toFixed(1),
+        ...(q.includeOnOrder
+          ? [
+              r.onOrderQty ?? 0,
+              r.onOrderUnitCost == null ? '' : r.onOrderUnitCost.toFixed(2),
+              r.onOrderCost == null ? '' : r.onOrderCost.toFixed(2),
+            ]
+          : []),
         r.priorYearNetSales == null ? '' : r.priorYearNetSales.toFixed(2),
         r.pyPctChange == null ? '' : r.pyPctChange.toFixed(1),
       ]);
@@ -565,10 +609,12 @@ router.get('/sales-pivot', validateQuery(salesPivotSchema), async (req: Request,
       }
       levels = candidateLevels;
     }
+    const scopedStores = await scopedStoreNumbersForRequest(req, res, q.stores);
+    if (scopedStores === null) return;
     const report = await getSalesPivot({
       startDate: q.startDate,
       endDate: q.endDate,
-      storeNumbers: q.stores,
+      storeNumbers: scopedStores,
       variant: q.variant,
       levels,
       chains: q.chains,
@@ -740,10 +786,12 @@ router.get('/hierarchy-drill-down', validateQuery(hierarchyDrillDownSchema), asy
       res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'startDate must be <= endDate' } });
       return;
     }
+    const scopedStores = await scopedStoreNumbersForRequest(req, res, q.stores, q.storesRaw);
+    if (scopedStores === null) return;
     const report = await getSalesHierarchy({
       storeOption: q.storeOption,
       criteria: {
-        stores: q.stores,
+        stores: scopedStores,
         categories: q.categories,
         vendors: q.vendors,
         seasons: q.seasons,

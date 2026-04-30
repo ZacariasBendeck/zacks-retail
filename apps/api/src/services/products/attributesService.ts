@@ -48,6 +48,10 @@ export function createAttributesService(opts: AttributesServiceOptions = {}) {
       return repo.listDimensionsWithValues({ withCounts });
     },
 
+    listDimensionsForSkus(skuCodes: string[], withCounts = false): Promise<Result<DimensionWithValues[]>> {
+      return repo.listDimensionsWithValuesForSkus(skuCodes, { withCounts });
+    },
+
     getForSku(skuCode: string): Promise<Result<SkuAttributesResponse>> {
       return repo.getSkuAttributes(skuCode);
     },

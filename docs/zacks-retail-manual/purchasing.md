@@ -20,6 +20,7 @@ Purchasing is how stock gets into the stores. Buyers create purchase orders agai
 
 - [Products](products.md) - SKUs + vendor master.
 - [Store Operations](store-ops.md) - stores to distribute lines across.
+- [Import Management](import-management.md) - linked import shipments can provide estimated or final landed unit costs for international PO lines.
 
 ## Screens
 
@@ -44,6 +45,10 @@ _TODO. Expected flows:_
 - _Process ASN cartons with discrepancy handling_
 - _Combine two POs into one_
 - _Replicate a seasonal PO to next year_
+
+## Import Management boundary
+
+Normal PO entry, status, and receiving stay in Purchasing. Imported shipments, voyages, containers, goods-in-transit, customs/tax liquidation, freight/insurance allocation, and landed-cost verification live in [Import Management](import-management.md). When an import shipment reaches receiving, Purchasing consumes the linked PO lines and the estimated or final HNL landed unit costs supplied by Import Management.
 
 ## Reports
 
@@ -73,7 +78,8 @@ _TODO._
 
 - [Products](products.md) - SKU + vendor master.
 - [Inventory](inventory.md) - on-order and receipts create inventory movements.
-- [Accounts Receivable](accounts-receivable.md) - PO dollars feed vendor-side ledgering (future).
+- [Import Management](import-management.md) - voyages, containers, goods in transit, and landed-cost liquidation for international buying.
+- Accounts Payable - vendor-side invoices, payables, and payments (future).
 - [OTB Planning](otb-planning.md) - PO commitments count against plan.
 
 ## What's different from RICS

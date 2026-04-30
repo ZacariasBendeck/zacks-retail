@@ -30,7 +30,7 @@ export default function CasePacksPage() {
     const needle = searchText.trim().toLowerCase()
     if (!needle) return casePacks
     return casePacks.filter((casePack) =>
-      [casePack.code, casePack.description ?? '', String(casePack.sizeTypeCode)]
+      [casePack.code, casePack.description ?? '', String(casePack.sizeTypeCode), String(casePack.skuCount)]
         .some((value) => value.toLowerCase().includes(needle)),
     )
   }, [casePacks, searchText])
@@ -69,6 +69,13 @@ export default function CasePacksPage() {
       width: 90,
       align: 'right',
       sorter: (a, b) => a.cellCount - b.cellCount,
+    },
+    {
+      title: 'SKUs',
+      dataIndex: 'skuCount',
+      width: 90,
+      align: 'right',
+      sorter: (a, b) => a.skuCount - b.skuCount,
     },
     {
       title: 'Status',
@@ -169,14 +176,17 @@ export default function CasePacksPage() {
                   <div>{selectedCasePack.description || '-'}</div>
                 </div>
                 <Row gutter={12}>
-                  <Col span={8}>
+                  <Col span={6}>
                     <Statistic title="Size Type" value={selectedCasePack.sizeTypeCode} />
                   </Col>
-                  <Col span={8}>
+                  <Col span={6}>
                     <Statistic title="Units" value={selectedCasePack.totalUnits} />
                   </Col>
-                  <Col span={8}>
+                  <Col span={6}>
                     <Statistic title="Cells" value={selectedCasePack.cellCount} />
+                  </Col>
+                  <Col span={6}>
+                    <Statistic title="SKUs" value={selectedCasePack.skuCount} />
                   </Col>
                 </Row>
                 <Table<CasePackCell>

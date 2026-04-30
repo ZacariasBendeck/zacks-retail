@@ -22,6 +22,7 @@ import {
   type CreateReorderDraftPoResult,
   type ReorderPlan,
   type ReorderPlanChain,
+  type ReorderCasePackSuggestion,
   type ReorderPlanSizeLine,
 } from '../../../services/ricsInventoryApi';
 
@@ -33,6 +34,31 @@ interface ReorderPlannerModalProps {
 
 type QuantityMap = Record<string, number>;
 
+type PackSelection = {
+  casePackId: string;
+  casePackMultiplier: number;
+};
+
+type MatrixMetric =
+  | 'onHand'
+  | 'onOrder'
+  | 'modelQty'
+  | 'modelShort'
+  | 'previousOrderQty'
+  | 'skuSalesQty'
+  | 'categorySalesQty'
+  | 'forecastDemandQty'
+  | 'baselineMonthlyDemand'
+  | 'curve'
+  | 'suggested'
+  | 'cases'
+  | 'order';
+
+interface SizeMatrixRow {
+  key: MatrixMetric;
+  label: React.ReactNode;
+}
+
 function formatNumber(value: number, digits = 0): string {
   return new Intl.NumberFormat('es-HN', {
     minimumFractionDigits: digits,
@@ -42,6 +68,49 @@ function formatNumber(value: number, digits = 0): string {
 
 function lineKey(line: Pick<ReorderPlanSizeLine, 'rowLabel' | 'columnLabel'>): string {
   return `${line.rowLabel}|${line.columnLabel}`;
+}
+
+function casePackQuantityMap(suggestion: ReorderCasePackSuggestion | null | undefined): QuantityMap {
+  if (!suggestion) return {};
+  return Object.fromEntries(suggestion.sizeCells.map((cell) => [`${cell.rowLabel}|${cell.columnLabel}`, cell.quantity]));
+}
+
+function recommendedQuantityMap(chain: ReorderPlanChain): QuantityMap {
+  return Object.fromEntries(chain.sizeLines.map((line) => [lineKey(line), line.recommendedQty]));
+}
+
+function shouldAutoApplyCasePack(suggestion: ReorderCasePackSuggestion | null | undefined): boolean {
+  return suggestion?.autoApply === true;
+}
+
+function initialQuantityMap(chain: ReorderPlanChain): QuantityMap {
+  return shouldAutoApplyCasePack(chain.casePackSuggestion)
+    ? casePackQuantityMap(chain.casePackSuggestion)
+    : recommendedQuantityMap(chain);
+}
+
+function packUsageLabel(suggestion: ReorderCasePackSuggestion): string | null {
+  if (suggestion.sameSkuPreviousPack) return 'Previously used on this SKU';
+  if (suggestion.supplierUsed && suggestion.supplierUsageCount > 0) {
+    return `Used by supplier ${formatNumber(suggestion.supplierUsageCount)} ${suggestion.supplierUsageCount === 1 ? 'time' : 'times'}`;
+  }
+  if (suggestion.supplierUsed) return 'Used by supplier';
+  return null;
+}
+
+function numericMetricValue(line: ReorderPlanSizeLine, metric: MatrixMetric): number {
+  switch (metric) {
+    case 'onHand': return line.onHand;
+    case 'onOrder': return line.onOrder;
+    case 'modelQty': return line.modelQty;
+    case 'modelShort': return line.modelShort;
+    case 'previousOrderQty': return line.previousOrderQty;
+    case 'skuSalesQty': return line.skuSalesQty;
+    case 'categorySalesQty': return line.categorySalesQty;
+    case 'forecastDemandQty': return line.forecastDemandQty;
+    case 'baselineMonthlyDemand': return line.baselineMonthlyDemand;
+    default: return 0;
+  }
 }
 
 function chainKey(chain: ReorderPlanChain, index: number): string {
@@ -59,7 +128,12 @@ function sourceLabel(source: ReorderPlanSizeLine['curveSource']): string {
 }
 
 const PROJECTED_FORMULA =
-  'Projected = ceil((adjusted sales by size after last received / elapsed months) * coverage months). Uses up to two months after the last received date; December sales count as one third.';
+  'Forecast demand = recent SKU sales de-seasonalized by the department all-store monthly index, then re-seasonalized across the coverage months. Order = model + forecast demand - on hand - on order.';
+
+const MATRIX_METRIC_COLUMN_WIDTH = 92;
+const MATRIX_SIZE_COLUMN_WIDTH = 46;
+const MATRIX_TOTAL_COLUMN_WIDTH = 62;
+const MATRIX_ORDER_INPUT_WIDTH = 42;
 
 export function ReorderPlannerModal({ open, skuCode, onClose }: ReorderPlannerModalProps) {
   const [plan, setPlan] = React.useState<ReorderPlan | null>(null);
@@ -74,6 +148,7 @@ export function ReorderPlannerModal({ open, skuCode, onClose }: ReorderPlannerMo
   const [orderCycleDays, setOrderCycleDays] = React.useState(90);
   const [moqQty, setMoqQty] = React.useState(0);
   const [quantitiesByChain, setQuantitiesByChain] = React.useState<Record<string, QuantityMap>>({});
+  const [packSelectionsByChain, setPackSelectionsByChain] = React.useState<Record<string, PackSelection | null>>({});
 
   const loadPlan = React.useCallback(async (params?: { leadTimeDays?: number; orderCycleDays?: number; moqQty?: number }) => {
     if (!open || !skuCode) return;
@@ -88,13 +163,17 @@ export function ReorderPlannerModal({ open, skuCode, onClose }: ReorderPlannerMo
       setOrderCycleDays(next.planning.orderCycleDays);
       setMoqQty(next.planning.moqQty);
       const nextQuantities: Record<string, QuantityMap> = {};
+      const nextPackSelections: Record<string, PackSelection | null> = {};
       next.chains.forEach((chain, index) => {
         const key = chainKey(chain, index);
-        nextQuantities[key] = Object.fromEntries(
-          chain.sizeLines.map((line) => [lineKey(line), line.recommendedQty]),
-        );
+        const suggestion = chain.casePackSuggestion;
+        nextQuantities[key] = initialQuantityMap(chain);
+        nextPackSelections[key] = shouldAutoApplyCasePack(suggestion) && suggestion
+          ? { casePackId: suggestion.code, casePackMultiplier: suggestion.multiplier }
+          : null;
       });
       setQuantitiesByChain(nextQuantities);
+      setPackSelectionsByChain(nextPackSelections);
       setActiveChainKey(next.chains[0] ? chainKey(next.chains[0], 0) : '0');
     } catch (err) {
       setError((err as Error).message);
@@ -116,15 +195,43 @@ export function ReorderPlannerModal({ open, skuCode, onClose }: ReorderPlannerMo
   const activeTotal = activeChain
     ? activeChain.sizeLines.reduce((sum, line) => sum + Number(activeQuantities[lineKey(line)] ?? 0), 0)
     : 0;
+  const createButtonLabel = plan?.vendorDraftPo ? 'Add to draft PO' : 'Create draft PO';
 
-  const updateQuantity = (line: ReorderPlanSizeLine, value: number | null) => {
+  const updateQuantity = (targetChainKey: string, line: ReorderPlanSizeLine, value: number | null) => {
     const nextValue = Math.max(0, Math.trunc(Number(value ?? 0)));
     setQuantitiesByChain((current) => ({
       ...current,
-      [activeChainKey]: {
-        ...(current[activeChainKey] ?? {}),
+      [targetChainKey]: {
+        ...(current[targetChainKey] ?? {}),
         [lineKey(line)]: nextValue,
       },
+    }));
+  };
+
+  const applyCasePackSuggestion = (targetChainKey: string, chain: ReorderPlanChain) => {
+    const suggestion = chain.casePackSuggestion;
+    if (!suggestion) return;
+    setPackSelectionsByChain((current) => ({
+      ...current,
+      [targetChainKey]: {
+        casePackId: suggestion.code,
+        casePackMultiplier: suggestion.multiplier,
+      },
+    }));
+    setQuantitiesByChain((current) => ({
+      ...current,
+      [targetChainKey]: casePackQuantityMap(suggestion),
+    }));
+  };
+
+  const clearCasePackSuggestion = (targetChainKey: string, chain: ReorderPlanChain) => {
+    setPackSelectionsByChain((current) => ({
+      ...current,
+      [targetChainKey]: null,
+    }));
+    setQuantitiesByChain((current) => ({
+      ...current,
+      [targetChainKey]: recommendedQuantityMap(chain),
     }));
   };
 
@@ -164,17 +271,24 @@ export function ReorderPlannerModal({ open, skuCode, onClose }: ReorderPlannerMo
     setCreateError(null);
     setCreatedPo(null);
     try {
+      const packSelection = packSelectionsByChain[activeChainKey] ?? null;
       const result = await createInquiryReorderDraftPo(skuCode, {
         chainId: activeChain.chainId,
         chainLabel: activeChain.chainLabel,
         leadTimeDays,
         orderCycleDays,
         moqQty,
+        casePackId: packSelection?.casePackId ?? null,
+        casePackMultiplier: packSelection?.casePackMultiplier ?? null,
         createdBy: 'system',
         sizeCells,
       });
       setCreatedPo(result);
-      message.success(`Draft PO ${result.poNumber} created for ${formatNumber(result.totalQuantity)} units.`);
+      message.success(
+        result.appendedToExistingPo
+          ? `Added ${formatNumber(result.totalQuantity)} units to draft PO ${result.poNumber}.`
+          : `Draft PO ${result.poNumber} created for ${formatNumber(result.totalQuantity)} units.`,
+      );
     } catch (err) {
       const messageText = (err as Error).message;
       setCreateError(messageText);
@@ -184,44 +298,132 @@ export function ReorderPlannerModal({ open, skuCode, onClose }: ReorderPlannerMo
     }
   };
 
-  const columns: ColumnsType<ReorderPlanSizeLine> = [
-    { title: 'Size', dataIndex: 'sizeLabel', key: 'sizeLabel', fixed: 'left', width: 96 },
-    { title: <Tooltip title="Includes warehouse on-hand">On hand</Tooltip>, dataIndex: 'onHand', key: 'onHand', width: 84, align: 'right' },
-    { title: 'On order', dataIndex: 'onOrder', key: 'onOrder', width: 84, align: 'right' },
-    { title: 'Model', dataIndex: 'modelQty', key: 'modelQty', width: 76, align: 'right' },
-    { title: 'Short', dataIndex: 'modelShort', key: 'modelShort', width: 76, align: 'right' },
-    { title: 'Prev order', dataIndex: 'previousOrderQty', key: 'previousOrderQty', width: 96, align: 'right' },
-    { title: 'SKU 12M', dataIndex: 'skuSalesQty', key: 'skuSalesQty', width: 86, align: 'right' },
-    { title: 'Cat sales', dataIndex: 'categorySalesQty', key: 'categorySalesQty', width: 86, align: 'right' },
-    { title: 'Projected', dataIndex: 'projectedSales', key: 'projectedSales', width: 92, align: 'right' },
-    {
-      title: 'Curve',
-      key: 'curve',
-      width: 120,
-      render: (_, line) => (
-        <Space size={4}>
-          <Tag>{sourceLabel(line.curveSource)}</Tag>
-          <Typography.Text type="secondary">{formatNumber(line.curvePct * 100, 1)}%</Typography.Text>
-        </Space>
-      ),
-    },
-    {
-      title: 'Order',
-      key: 'orderQty',
-      fixed: 'right',
-      width: 110,
-      align: 'right',
-      render: (_, line) => (
+  const matrixRows: SizeMatrixRow[] = [
+    { key: 'onHand', label: <Tooltip title="Includes warehouse on-hand">On hand</Tooltip> },
+    { key: 'onOrder', label: 'On order' },
+    { key: 'modelQty', label: 'Model' },
+    { key: 'modelShort', label: 'Short' },
+    { key: 'previousOrderQty', label: 'Prev order' },
+    { key: 'skuSalesQty', label: 'SKU 12M' },
+    { key: 'categorySalesQty', label: 'Cat sales' },
+    { key: 'forecastDemandQty', label: <Tooltip title={PROJECTED_FORMULA}>Forecast</Tooltip> },
+    { key: 'baselineMonthlyDemand', label: 'Base/mo' },
+    { key: 'curve', label: 'Curve' },
+    { key: 'suggested', label: 'Suggested' },
+    { key: 'cases', label: 'Cases' },
+    { key: 'order', label: 'Order' },
+  ];
+
+  const renderMatrixCell = (
+    row: SizeMatrixRow,
+    line: ReorderPlanSizeLine,
+    targetChainKey: string,
+    quantityMap: QuantityMap,
+    caseQuantityMap: QuantityMap,
+  ) => {
+    const key = lineKey(line);
+    if (row.key === 'order') {
+      return (
         <InputNumber
+          size="small"
+          controls={false}
           min={0}
           precision={0}
-          value={activeQuantities[lineKey(line)] ?? line.recommendedQty}
-          onChange={(value) => updateQuantity(line, value)}
-          style={{ width: 88 }}
+          value={quantityMap[key] ?? 0}
+          onChange={(value) => updateQuantity(targetChainKey, line, value)}
+          style={{ width: MATRIX_ORDER_INPUT_WIDTH, textAlign: 'right' }}
         />
-      ),
-    },
-  ];
+      );
+    }
+    if (row.key === 'cases') return formatNumber(caseQuantityMap[key] ?? 0);
+    if (row.key === 'suggested') return formatNumber(line.recommendedQty);
+    if (row.key === 'curve') {
+      return (
+        <Space size={1} direction="vertical" style={{ lineHeight: 1.05 }}>
+          <Tooltip title={sourceLabel(line.curveSource)}>
+            <Tag style={{ marginRight: 0, paddingInline: 2, fontSize: 10 }}>
+              {sourceLabel(line.curveSource).slice(0, 3)}
+            </Tag>
+          </Tooltip>
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            {formatNumber(line.curvePct * 100, 0)}%
+          </Typography.Text>
+        </Space>
+      );
+    }
+    if (row.key === 'baselineMonthlyDemand') return formatNumber(line.baselineMonthlyDemand, 1);
+    return formatNumber(numericMetricValue(line, row.key));
+  };
+
+  const buildMatrixColumns = (
+    chain: ReorderPlanChain,
+    targetChainKey: string,
+    quantityMap: QuantityMap,
+    _selectedPack: PackSelection | null,
+  ): ColumnsType<SizeMatrixRow> => {
+    const caseQuantities = chain.casePackSuggestion ? casePackQuantityMap(chain.casePackSuggestion) : {};
+    const visibleLines = chain.sizeLines.filter((line) => {
+      const key = lineKey(line);
+      return [
+        line.onHand,
+        line.onOrder,
+        line.modelQty,
+        line.modelShort,
+        line.previousOrderQty,
+        line.skuSalesQty,
+        line.categorySalesQty,
+        line.forecastDemandQty,
+        line.baselineMonthlyDemand,
+        line.recommendedQty,
+        caseQuantities[key] ?? 0,
+        quantityMap[key] ?? 0,
+      ].some((value) => Math.abs(Number(value) || 0) > 0);
+    });
+    const totalForRow = (row: SizeMatrixRow) => {
+      if (row.key === 'order') {
+        return formatNumber(visibleLines.reduce((sum, line) => sum + Number(quantityMap[lineKey(line)] ?? 0), 0));
+      }
+      if (row.key === 'cases') {
+        return formatNumber(visibleLines.reduce((sum, line) => sum + Number(caseQuantities[lineKey(line)] ?? 0), 0));
+      }
+      if (row.key === 'suggested') {
+        return formatNumber(visibleLines.reduce((sum, line) => sum + line.recommendedQty, 0));
+      }
+      if (row.key === 'curve') {
+        const totalCurve = visibleLines.reduce((sum, line) => sum + line.curvePct, 0);
+        return totalCurve > 0 ? `${formatNumber(totalCurve * 100, 1)}%` : '';
+      }
+      if (row.key === 'baselineMonthlyDemand') {
+        return formatNumber(visibleLines.reduce((sum, line) => sum + line.baselineMonthlyDemand, 0), 1);
+      }
+      return formatNumber(visibleLines.reduce((sum, line) => sum + numericMetricValue(line, row.key), 0));
+    };
+    return [
+      {
+        title: 'Metric',
+        dataIndex: 'label',
+        key: 'metric',
+        width: MATRIX_METRIC_COLUMN_WIDTH,
+        ellipsis: true,
+      },
+      ...visibleLines.map((line) => ({
+        title: line.sizeLabel,
+        key: lineKey(line),
+        width: MATRIX_SIZE_COLUMN_WIDTH,
+        align: 'right' as const,
+        ellipsis: true,
+        render: (_: unknown, row: SizeMatrixRow) => renderMatrixCell(row, line, targetChainKey, quantityMap, caseQuantities),
+      })),
+      {
+        title: 'Total',
+        key: 'total',
+        width: MATRIX_TOTAL_COLUMN_WIDTH,
+        align: 'right' as const,
+        ellipsis: true,
+        render: (_: unknown, row: SizeMatrixRow) => <Typography.Text strong>{totalForRow(row)}</Typography.Text>,
+      },
+    ];
+  };
 
   return (
     <Modal
@@ -229,7 +431,7 @@ export function ReorderPlannerModal({ open, skuCode, onClose }: ReorderPlannerMo
       title={`Reorder planner - ${skuCode}`}
       onCancel={onClose}
       width="min(1180px, 96vw)"
-      destroyOnClose
+      destroyOnHidden
       footer={[
         <Button key="close" onClick={onClose}>Close</Button>,
         createdPo ? (
@@ -249,7 +451,7 @@ export function ReorderPlannerModal({ open, skuCode, onClose }: ReorderPlannerMo
           Recalculate
         </Button>,
         <Button key="create" type={createdPo ? 'default' : 'primary'} onClick={handleCreatePo} loading={creating} disabled={!activeChain || activeTotal <= 0}>
-          Create draft PO
+          {createButtonLabel}
         </Button>,
       ]}
     >
@@ -261,6 +463,25 @@ export function ReorderPlannerModal({ open, skuCode, onClose }: ReorderPlannerMo
         <Alert type="error" message={error} />
       ) : plan ? (
         <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+          <style>
+            {`
+              .reorder-planner-matrix .ant-table-cell {
+                padding: 4px 3px !important;
+                font-size: 14px;
+                line-height: 1.25;
+                white-space: nowrap;
+              }
+              .reorder-planner-matrix .ant-input-number {
+                width: 100%;
+                max-width: ${MATRIX_ORDER_INPUT_WIDTH}px;
+              }
+              .reorder-planner-matrix .ant-input-number-input {
+                padding-inline: 2px;
+                text-align: right;
+                font-size: 14px;
+              }
+            `}
+          </style>
           {plan.warnings.map((warning) => (
             <Alert key={warning} type="warning" showIcon message={warning} />
           ))}
@@ -271,7 +492,7 @@ export function ReorderPlannerModal({ open, skuCode, onClose }: ReorderPlannerMo
             <Alert
               type="success"
               showIcon
-              message={`Draft PO ${createdPo.poNumber} created`}
+              message={createdPo.appendedToExistingPo ? `Added to draft PO ${createdPo.poNumber}` : `Draft PO ${createdPo.poNumber} created`}
               description={`${formatNumber(createdPo.totalQuantity)} units were saved with per-size quantities.`}
               action={<Button size="small" href={`/purchasing/orders/${createdPo.poId}`}>Open</Button>}
             />
@@ -282,6 +503,33 @@ export function ReorderPlannerModal({ open, skuCode, onClose }: ReorderPlannerMo
             <Descriptions.Item label="Category">{plan.sku.category ?? 'None'}</Descriptions.Item>
             <Descriptions.Item label="Order multiple">{plan.sku.orderMultiple ?? 'None'}</Descriptions.Item>
             <Descriptions.Item label="Default source">{plan.defaults.scope}</Descriptions.Item>
+            <Descriptions.Item label="Seasonality dept">{plan.seasonality.departmentLabel ?? 'Neutral'}</Descriptions.Item>
+            <Descriptions.Item label="Seasonality thru">{plan.planning.seasonalityHistoryEndMonth} ({plan.seasonality.sampleMonths} months)</Descriptions.Item>
+            <Descriptions.Item label="Forecast months">{plan.planning.forecastMonths.join(', ')}</Descriptions.Item>
+            <Descriptions.Item label="Index">
+              {plan.seasonality.departmentNumber != null ? (
+                <Button
+                  type="link"
+                  size="small"
+                  href={`/reports/sales/seasonality-index?department=${plan.seasonality.departmentNumber}`}
+                  style={{ padding: 0 }}
+                >
+                  View
+                </Button>
+              ) : 'Neutral'}
+            </Descriptions.Item>
+            <Descriptions.Item label="Vendor draft PO">
+              {plan.vendorDraftPo ? (
+                <Button
+                  type="link"
+                  size="small"
+                  href={`/purchasing/orders/${plan.vendorDraftPo.poId}`}
+                  style={{ padding: 0 }}
+                >
+                  {plan.vendorDraftPo.poNumber} ({formatNumber(plan.vendorDraftPo.totalQuantity)})
+                </Button>
+              ) : 'None'}
+            </Descriptions.Item>
           </Descriptions>
 
           <Space wrap>
@@ -300,7 +548,7 @@ export function ReorderPlannerModal({ open, skuCode, onClose }: ReorderPlannerMo
               <InputNumber min={0} precision={0} value={moqQty} onChange={(value) => setMoqQty(Number(value ?? 0))} />
             </Space>
             <Typography.Text type="secondary">
-              Coverage: {formatNumber(leadTimeDays + orderCycleDays)} days
+              Coverage: {formatNumber(leadTimeDays + orderCycleDays)} days, starting after {formatNumber(leadTimeDays)} day lead time
             </Typography.Text>
           </Space>
 
@@ -310,50 +558,98 @@ export function ReorderPlannerModal({ open, skuCode, onClose }: ReorderPlannerMo
             items={plan.chains.map((chain, index) => {
               const key = chainKey(chain, index);
               const quantityMap = quantitiesByChain[key] ?? {};
+              const packSelection = packSelectionsByChain[key] ?? null;
               const total = chain.sizeLines.reduce((sum, line) => sum + Number(quantityMap[lineKey(line)] ?? 0), 0);
+              const packUsage = chain.casePackSuggestion ? packUsageLabel(chain.casePackSuggestion) : null;
+              const packOverCap = Boolean(
+                chain.casePackSuggestion
+                  && !chain.casePackSuggestion.autoApply
+                  && chain.casePackSuggestion.overbuyQty > chain.casePackSuggestion.overbuyLimitQty,
+              );
+              const previousPack = chain.previousOrder.casePackId
+                ? ` · ${chain.previousOrder.casePackId}${chain.previousOrder.casePackMultiplier ? ` x ${chain.previousOrder.casePackMultiplier}` : ''}`
+                : '';
               return {
                 key,
                 label: `${chain.chainLabel} (${formatNumber(total)})`,
                 children: (
                   <Space direction="vertical" size="small" style={{ width: '100%' }}>
-                    <Descriptions size="small" column={4}>
+                    <Descriptions size="small" column={5}>
                       <Descriptions.Item label="Stores">{chain.storeCount}</Descriptions.Item>
                       <Descriptions.Item label="Model short">{formatNumber(chain.totals.modelShort)}</Descriptions.Item>
-                      <Descriptions.Item label={<Tooltip title={PROJECTED_FORMULA}>Projected</Tooltip>}>
-                        {formatNumber(chain.totals.projectedSales)}
+                      <Descriptions.Item label={<Tooltip title={PROJECTED_FORMULA}>Forecast</Tooltip>}>
+                        {formatNumber(chain.totals.forecastDemandQty)}
                       </Descriptions.Item>
+                      <Descriptions.Item label="Suggested order">{formatNumber(chain.totals.recommendedQty)}</Descriptions.Item>
                       <Descriptions.Item label="Previous PO">
                         {chain.previousOrder.poNumber
-                          ? `${chain.previousOrder.poNumber}${chain.previousOrder.source ? ` (${chain.previousOrder.source})` : ''}`
+                          ? `${chain.previousOrder.poNumber}${chain.previousOrder.source ? ` (${chain.previousOrder.source})` : ''}${previousPack}`
                           : 'None'}
                       </Descriptions.Item>
                     </Descriptions>
+                    {chain.casePackSuggestion ? (
+                      <Space wrap size={[8, 4]}>
+                        <Tag color={packSelection ? 'purple' : 'default'}>
+                          {chain.casePackSuggestion.code}
+                        </Tag>
+                        {chain.casePackSuggestion.description ? (
+                          <Typography.Text>{chain.casePackSuggestion.description}</Typography.Text>
+                        ) : null}
+                        <Typography.Text type="secondary">
+                          {formatNumber(chain.casePackSuggestion.unitsPerPack)} units/pack x {formatNumber(chain.casePackSuggestion.multiplier)}
+                          {' = '}
+                          {formatNumber(chain.casePackSuggestion.totalUnits)}
+                        </Typography.Text>
+                        <Tag color={chain.casePackSuggestion.shortageQty > 0 ? 'orange' : 'green'}>
+                          Short {formatNumber(chain.casePackSuggestion.shortageQty)}
+                        </Tag>
+                        <Tag color={chain.casePackSuggestion.excessQty > 0 ? 'blue' : 'green'}>
+                          Excess {formatNumber(chain.casePackSuggestion.excessQty)}
+                        </Tag>
+                        {chain.casePackSuggestion.overbuyQty > 0 ? (
+                          <Tag color={packOverCap ? 'orange' : 'blue'}>
+                            Overbuy {formatNumber(chain.casePackSuggestion.overbuyQty)} / cap {formatNumber(chain.casePackSuggestion.overbuyLimitQty)}
+                          </Tag>
+                        ) : null}
+                        {packOverCap ? (
+                          <Tag color="orange">Not auto-applied: exceeds overbuy cap</Tag>
+                        ) : chain.casePackSuggestion.autoApply ? (
+                          <Tag color="green">Auto-applied</Tag>
+                        ) : null}
+                        {packUsage ? (
+                          <Tag color={chain.casePackSuggestion.sameSkuPreviousPack ? 'green' : 'cyan'}>
+                            {packUsage}
+                            {chain.casePackSuggestion.supplierLastUsedAt && !chain.casePackSuggestion.sameSkuPreviousPack
+                              ? ` - last ${chain.casePackSuggestion.supplierLastUsedAt.slice(0, 10)}`
+                              : ''}
+                          </Tag>
+                        ) : null}
+                        {packSelection ? (
+                          <Button size="small" onClick={() => clearCasePackSuggestion(key, chain)}>
+                            Clear pack
+                          </Button>
+                        ) : (
+                          <Button size="small" onClick={() => applyCasePackSuggestion(key, chain)}>
+                            Use pack
+                          </Button>
+                        )}
+                      </Space>
+                    ) : (
+                      <Typography.Text type="secondary">No active case-pack suggestion for this SKU size type.</Typography.Text>
+                    )}
                     <Table
                       size="small"
-                      rowKey={(line) => lineKey(line)}
-                      columns={columns}
-                      dataSource={chain.sizeLines}
+                      className="reorder-planner-matrix"
+                      rowKey={(row) => row.key}
+                      columns={buildMatrixColumns(chain, key, quantityMap, packSelection)}
+                      dataSource={matrixRows}
                       pagination={false}
-                      scroll={{ x: 1050, y: 420 }}
-                      summary={() => (
-                        <Table.Summary fixed>
-                          <Table.Summary.Row>
-                            <Table.Summary.Cell index={0}>Total</Table.Summary.Cell>
-                            <Table.Summary.Cell index={1} align="right">{formatNumber(chain.totals.onHand)}</Table.Summary.Cell>
-                            <Table.Summary.Cell index={2} align="right">
-                              {formatNumber(chain.totals.currentOnOrder + chain.totals.futureOnOrder)}
-                            </Table.Summary.Cell>
-                            <Table.Summary.Cell index={3} align="right">{formatNumber(chain.totals.modelQty)}</Table.Summary.Cell>
-                            <Table.Summary.Cell index={4} align="right">{formatNumber(chain.totals.modelShort)}</Table.Summary.Cell>
-                            <Table.Summary.Cell index={5} align="right">{formatNumber(chain.totals.previousOrderQty)}</Table.Summary.Cell>
-                            <Table.Summary.Cell index={6} align="right">{formatNumber(chain.totals.skuSalesQty)}</Table.Summary.Cell>
-                            <Table.Summary.Cell index={7} align="right">{formatNumber(chain.totals.categorySalesQty)}</Table.Summary.Cell>
-                            <Table.Summary.Cell index={8} align="right">{formatNumber(chain.totals.projectedSales)}</Table.Summary.Cell>
-                            <Table.Summary.Cell index={9} />
-                            <Table.Summary.Cell index={10} align="right">{formatNumber(total)}</Table.Summary.Cell>
-                          </Table.Summary.Row>
-                        </Table.Summary>
-                      )}
+                      tableLayout="fixed"
+                      style={{ width: '100%' }}
+                      scroll={{
+                        x: 'max-content',
+                        y: 520,
+                      }}
                     />
                   </Space>
                 ),

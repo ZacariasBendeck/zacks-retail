@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Button, Checkbox, Popover, Space, Table, Typography } from 'antd'
 import type { ColumnType, ColumnsType, TablePaginationConfig } from 'antd/es/table'
-import type { FilterValue, SorterResult } from 'antd/es/table/interface'
+import type { FilterValue, SorterResult, TableRowSelection } from 'antd/es/table/interface'
 import { AppstoreOutlined, FileExcelOutlined, FileTextOutlined } from '@ant-design/icons'
 
 export interface ServerPagination {
@@ -37,6 +37,7 @@ interface ServerDataTableProps<T extends object> {
   exportFileName?: string
   scrollX?: number
   tableSize?: 'small' | 'middle' | 'large'
+  rowSelection?: TableRowSelection<T>
 }
 
 function getColumnId<T extends object>(column: ServerTableColumn<T>): string {
@@ -102,6 +103,7 @@ export default function ServerDataTable<T extends object>({
   exportFileName = 'table-export',
   scrollX = 1200,
   tableSize = 'small',
+  rowSelection,
 }: ServerDataTableProps<T>) {
   const usableColumns = useMemo(
     () => columns.filter((column) => column.title != null && getColumnId(column)),
@@ -235,6 +237,7 @@ export default function ServerDataTable<T extends object>({
         size={tableSize}
         virtual={shouldVirtualize}
         scroll={{ x: scrollX, y: shouldVirtualize ? 560 : undefined }}
+        rowSelection={rowSelection}
         onChange={handleTableChange}
         pagination={
           pagination

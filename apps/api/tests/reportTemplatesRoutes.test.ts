@@ -85,6 +85,24 @@ describe('GET/POST/PATCH/DELETE /api/v1/reports/templates', () => {
     expect(res.body.template.paramsJson).toEqual({ dimension: 'CATEGORY' });
   });
 
+  it('POST / accepts balancing-transfer templates', async () => {
+    const res = await request(app)
+      .post('/api/v1/reports/templates')
+      .set('Cookie', userCookie)
+      .send({
+        reportType: 'balancing-transfer',
+        title: 'ZAP CABALLEROS',
+        visibility: 'shared',
+        paramsJson: {
+          algorithmMode: 'RICS_MIMIC',
+          criteria: { ricsStoreSelection: '2,5-24,28-30,35-43,99' },
+        },
+      });
+    expect(res.status).toBe(201);
+    expect(res.body.template.reportType).toBe('balancing-transfer');
+    expect(res.body.template.visibility).toBe('shared');
+  });
+
   it('POST / rejects unknown reportType', async () => {
     const res = await request(app)
       .post('/api/v1/reports/templates')

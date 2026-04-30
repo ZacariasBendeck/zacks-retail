@@ -13,7 +13,26 @@ vi.mock('../auth/useAuth', () => ({
       displayName: 'Test User',
       role: { id: 'role-1', name: 'Admin' },
     },
-    permissions: new Set<string>(),
+    permissions: new Set<string>([
+      'employees.manage',
+      'employees.view',
+      'identity_access.manage',
+      'identity_access.view',
+      'import_management.view',
+      'inventory.adjust',
+      'inventory.view',
+      'otb.edit',
+      'otb.view',
+      'products.write',
+      'products.view',
+      'purchasing.edit',
+      'purchasing.view',
+      'reports.admin',
+      'reports.view',
+      'sales_pos.operate',
+      'segmentation.read',
+      'store_ops.view',
+    ]),
     loading: false,
     login: vi.fn(),
     logout: vi.fn(async () => {}),
@@ -41,6 +60,7 @@ function renderModuleShell(initialEntry = '/inventory/dashboard') {
             <Route path="/inventory/sales-ledger" element={<div data-testid="inventory-sales-ledger">Sales Ledger</div>} />
             <Route path="/inventory/movements" element={<div data-testid="inventory-movements">Movements</div>} />
             <Route path="/purchase-planning" element={<div data-testid="purchase-planning">Purchase Planning</div>} />
+            <Route path="/import-management" element={<div data-testid="import-management">Import Management</div>} />
             <Route path="/customers" element={<div data-testid="customers">Customers</div>} />
             <Route path="/products/vendors" element={<div data-testid="file-setup-vendors">Vendors</div>} />
             <Route path="/products/taxonomy/categories" element={<div data-testid="file-setup-categories">Categories</div>} />
@@ -82,6 +102,7 @@ describe('Module Shell Navigation', () => {
     expect(screen.getByRole('menuitem', { name: /Customer Intelligence/i })).toBeInTheDocument()
     expect(screen.getByRole('menuitem', { name: /Utilities/i })).toBeInTheDocument()
     expect(screen.getByRole('menuitem', { name: /Purchasing/i })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: /Import Management/i })).toBeInTheDocument()
     expect(screen.getByRole('menuitem', { name: /OTB/i })).toBeInTheDocument()
     expect(screen.getByRole('menuitem', { name: /Reports/i })).toBeInTheDocument()
   })
@@ -99,8 +120,8 @@ describe('Module Shell Navigation', () => {
     const fileSetupMenu = screen.getByRole('menuitem', { name: /File Setup/i })
     await user.click(fileSetupMenu)
 
-    const vendorsLabel = await screen.findByText('Vendors', { selector: '.ant-menu-title-content' })
-    const vendorsItem = vendorsLabel.closest('[role="menuitem"]')
+    const vendorsLink = await screen.findByRole('link', { name: 'Vendors' })
+    const vendorsItem = vendorsLink.closest('[role="menuitem"]')
     expect(vendorsItem).toBeTruthy()
     if (!vendorsItem) throw new Error('Vendors menu item not found')
 
@@ -108,7 +129,7 @@ describe('Module Shell Navigation', () => {
 
     expect(await screen.findByTestId('file-setup-vendors')).toBeInTheDocument()
     expect(screen.getByRole('menuitem', { name: /File Setup/i })).toHaveAttribute('aria-expanded', 'true')
-    expect(screen.getByText('Categories', { selector: '.ant-menu-title-content' })).toBeVisible()
+    expect(screen.getByRole('link', { name: 'Categories' })).toBeVisible()
   })
 
   it('navigates across all module child routes and updates module header', async () => {
@@ -123,7 +144,7 @@ describe('Module Shell Navigation', () => {
     }> = [
       { label: 'Balances', pageId: 'inventory-balances', moduleTitle: 'Inventory' },
       { label: 'SKU List', pageId: 'inventory-skus', moduleTitle: 'Products', openModuleLabel: 'Products' },
-      { label: 'Stock Maintenance', pageId: 'inventory-adjustments', moduleTitle: 'Inventory' },
+      { label: 'Stock Maintenance', pageId: 'inventory-adjustments', moduleTitle: 'Inventory', openModuleLabel: 'Inventory' },
       { label: 'Find by Size', pageId: 'inventory-find-by-size', moduleTitle: 'Inventory' },
       { label: 'Model Quantities', pageId: 'inventory-replenishment', moduleTitle: 'Inventory' },
       { label: 'Transfer - Balancing (Legacy)', pageId: 'inventory-balancing-legacy', moduleTitle: 'Inventory' },
@@ -131,6 +152,7 @@ describe('Module Shell Navigation', () => {
       { label: 'Sales Ledger', pageId: 'inventory-sales-ledger', moduleTitle: 'Inventory' },
       { label: 'Movements', pageId: 'inventory-movements', moduleTitle: 'Inventory' },
       { label: 'Plan de Compras', pageId: 'purchase-planning', moduleTitle: 'Plan de Compras' },
+      { label: 'Import Management', pageId: 'import-management', moduleTitle: 'Import Management' },
       { label: 'Customer Records', pageId: 'customers', moduleTitle: 'Customer Intelligence', openModuleLabel: 'Customer Intelligence' },
       { label: 'Vendors', pageId: 'file-setup-vendors', moduleTitle: 'File Setup', openModuleLabel: 'File Setup' },
       { label: 'Categories', pageId: 'file-setup-categories', moduleTitle: 'File Setup', openModuleLabel: 'File Setup' },
@@ -140,8 +162,8 @@ describe('Module Shell Navigation', () => {
       { label: 'Stores', pageId: 'utilities-stores', moduleTitle: 'File Setup', openModuleLabel: 'File Setup' },
       { label: 'Store Chains', pageId: 'utilities-store-chains', moduleTitle: 'File Setup', openModuleLabel: 'File Setup' },
       { label: 'Users', pageId: 'file-setup-users', moduleTitle: 'File Setup', openModuleLabel: 'File Setup' },
-      { label: 'Control Tower', pageId: 'purchasing-orders', moduleTitle: 'Purchasing - no en uso', openModuleLabel: 'Purchasing' },
-      { label: 'Receive POs', pageId: 'purchasing-receive', moduleTitle: 'Purchasing - no en uso', openModuleLabel: 'Purchasing' },
+      { label: 'Purchase Orders', pageId: 'purchasing-orders', moduleTitle: 'Purchasing', openModuleLabel: 'Purchasing' },
+      { label: 'Receive POs', pageId: 'purchasing-receive', moduleTitle: 'Purchasing', openModuleLabel: 'Purchasing' },
       { label: 'Monthly Plans', pageId: 'otb-monthly-plans', moduleTitle: 'OTB - no en uso', openModuleLabel: 'OTB' },
       { label: 'Budget Dashboard', pageId: 'otb-dashboard', moduleTitle: 'OTB - no en uso', openModuleLabel: 'OTB' },
       { label: 'Sales', pageId: 'reports-sales', moduleTitle: 'Reports', openModuleLabel: 'Reports' },
@@ -149,10 +171,13 @@ describe('Module Shell Navigation', () => {
 
     for (const check of routeChecks) {
       if (check.openModuleLabel) {
-        await user.click(screen.getByRole('menuitem', { name: new RegExp(check.openModuleLabel, 'i') }))
+        const moduleMenu = screen.getByRole('menuitem', { name: new RegExp(check.openModuleLabel, 'i') })
+        if (moduleMenu.getAttribute('aria-expanded') !== 'true') {
+          await user.click(moduleMenu)
+        }
       }
-      const menuLabel = await screen.findByText(check.label, { selector: '.ant-menu-title-content' })
-      const menuItem = menuLabel.closest('[role="menuitem"]')
+      const menuLink = await screen.findByRole('link', { name: check.label })
+      const menuItem = menuLink.closest('[role="menuitem"]')
       expect(menuItem).toBeTruthy()
       if (!menuItem) {
         throw new Error(`Menu item not found for label: ${check.label}`)

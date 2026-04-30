@@ -16,6 +16,8 @@ import type {
 
 const DEFAULT_TRAILING_MONTHS = 6;
 const DEFAULT_YEARS_TO_BLEND: 2 | 3 = 2;
+const HOLT_WINTERS_PERIOD = 12;
+const HOLT_WINTERS_MIN_POINTS = 18;
 
 /**
  * Produce a projection point for every (dimKey × horizon month) pair.
@@ -51,6 +53,8 @@ function projectOne(
   horizonYm: string,
 ): number {
   switch (method) {
+    case 'holtWinters':
+      return Math.max(0, holtWinters(series, horizonYm));
     case 'sameMonthLastYear':
       return Math.max(0, sameMonthLastYear(series, horizonYm));
     case 'trailingAverage': {
@@ -116,6 +120,63 @@ function blendedMultiYear(
   }
   if (count === 0) return 0;
   return sum / count;
+}
+
+function holtWinters(series: Map<string, number>, horizonYm: string): number {
+  const points = [...series.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([yearMonth, value]) => ({ yearMonth, value: Math.max(0, Number(value) || 0) }));
+
+  if (points.length < HOLT_WINTERS_MIN_POINTS) {
+    return blendedMultiYear(series, horizonYm, DEFAULT_YEARS_TO_BLEND) || trailingAverage(series, horizonYm, DEFAULT_TRAILING_MONTHS);
+  }
+
+  const firstSeason = points.slice(0, HOLT_WINTERS_PERIOD);
+  const secondSeason = points.slice(HOLT_WINTERS_PERIOD, HOLT_WINTERS_PERIOD * 2);
+  const firstAvg = average(firstSeason.map((p) => p.value));
+  const secondAvg = secondSeason.length === HOLT_WINTERS_PERIOD
+    ? average(secondSeason.map((p) => p.value))
+    : firstAvg;
+
+  let level = firstAvg;
+  let trend = (secondAvg - firstAvg) / HOLT_WINTERS_PERIOD;
+  const seasonals = new Array<number>(HOLT_WINTERS_PERIOD).fill(0);
+  for (let i = 0; i < HOLT_WINTERS_PERIOD; i++) {
+    const values = points.filter((p) => Number(p.yearMonth.slice(5, 7)) === i + 1).map((p) => p.value);
+    seasonals[i] = average(values) - firstAvg;
+  }
+
+  const alpha = 0.35;
+  const beta = 0.10;
+  const gamma = 0.25;
+
+  for (let i = 0; i < points.length; i++) {
+    const observed = points[i].value;
+    const monthIndex = Number(points[i].yearMonth.slice(5, 7)) - 1;
+    const prevLevel = level;
+    const seasonal = seasonals[monthIndex] ?? 0;
+    level = alpha * (observed - seasonal) + (1 - alpha) * (level + trend);
+    trend = beta * (level - prevLevel) + (1 - beta) * trend;
+    seasonals[monthIndex] = gamma * (observed - level) + (1 - gamma) * seasonal;
+  }
+
+  const lastMonth = points[points.length - 1].yearMonth;
+  const steps = Math.max(1, monthsBetween(lastMonth, horizonYm));
+  const horizonMonthIndex = Number(horizonYm.slice(5, 7)) - 1;
+  return level + steps * trend + (seasonals[horizonMonthIndex] ?? 0);
+}
+
+function average(values: number[]): number {
+  if (values.length === 0) return 0;
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function monthsBetween(fromYm: string, toYm: string): number {
+  const fromYear = Number(fromYm.slice(0, 4));
+  const fromMonth = Number(fromYm.slice(5, 7));
+  const toYear = Number(toYm.slice(0, 4));
+  const toMonth = Number(toYm.slice(5, 7));
+  return (toYear * 12 + (toMonth - 1)) - (fromYear * 12 + (fromMonth - 1));
 }
 
 /** Returns a Map<dimKey, Map<'YYYY-MM', qty>>. Collapses duplicate rows by sum. */

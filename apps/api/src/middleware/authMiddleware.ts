@@ -1,7 +1,8 @@
 import { PrismaClient, User } from '../prismaClient';
 import { NextFunction, Request, Response } from 'express';
-import { findActiveSession } from '../services/employees/sessionService';
-import type { Permission } from '../services/employees/permissions';
+import { findActiveSession } from '../services/identityAccess/sessionService';
+import type { Permission } from '../services/identityAccess/permissions';
+import { getEffectivePermissions } from '../services/identityAccess/effectiveAccessService';
 
 // Extend Express Request with auth state via the global Express namespace.
 declare global {
@@ -29,7 +30,7 @@ export function attachUser(prisma: PrismaClient) {
     if (!user || !user.active) return next();
     req.user = user;
     req.sessionId = session.id;
-    req.permissions = new Set(user.role.permissions);
+    req.permissions = await getEffectivePermissions(prisma, user.id);
     next();
   };
 }

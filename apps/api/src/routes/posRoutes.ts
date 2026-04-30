@@ -1,7 +1,15 @@
 import { Router, type IRouter, type Request, type Response } from 'express';
 import { z } from 'zod';
 import { requirePermission } from '../middleware/authMiddleware';
-import { PERMISSIONS } from '../services/employees/permissions';
+import { PERMISSIONS } from '../services/identityAccess/permissions';
+import {
+  getStoreAccessSummary,
+  storeAccessSummaryAllowsStore,
+} from '../services/identityAccess/storeAccessService';
+import {
+  requireRequestStoreScope,
+  sendStoreScopeForbidden,
+} from '../middleware/storeScopeMiddleware';
 import {
   SalesPasswordTokenError,
   consumeEmployeeSalesOverrideToken,
@@ -184,6 +192,10 @@ function parseQuery<T>(schema: z.ZodSchema<T>, req: Request, res: Response): T |
   return null;
 }
 
+async function requireStoreScope(req: Request, res: Response, storeId: number): Promise<boolean> {
+  return requireRequestStoreScope(prisma, req, res, storeId);
+}
+
 async function consumeOverrideIfRequired(
   req: Request,
   res: Response,
@@ -228,9 +240,23 @@ router.get('/bootstrap', async (req: Request, res: Response) => {
   const query = parseQuery(bootstrapQuerySchema, req, res);
   if (!query) return;
 
+  const access = await getStoreAccessSummary(prisma, req.user!.id);
+  const defaultScopedStoreId = access.storeIds
+    .map((value) => Number.parseInt(value, 10))
+    .find((value) => Number.isInteger(value) && value > 0);
+  const requestedStoreId = query.storeId ?? defaultScopedStoreId;
+  if (requestedStoreId && !storeAccessSummaryAllowsStore(access, requestedStoreId)) {
+    sendStoreScopeForbidden(res, requestedStoreId);
+    return;
+  }
+  if (!access.allStores && !requestedStoreId) {
+    sendStoreScopeForbidden(res, null);
+    return;
+  }
+
   try {
     const data = await getPosBootstrap(prisma, {
-      requestedStoreId: query.storeId ?? null,
+      requestedStoreId: requestedStoreId ?? null,
       requestedRegisterCode: query.registerCode ?? null,
       currentUser: {
         id: req.user!.id,
@@ -240,6 +266,9 @@ router.get('/bootstrap', async (req: Request, res: Response) => {
         homeStoreId: req.user!.homeStoreId ?? null,
       },
     });
+    if (!access.allStores) {
+      data.stores = data.stores.filter((store) => access.storeIds.includes(String(store.id)));
+    }
     res.json(data);
   } catch (err) {
     if (sendError(res, err)) return;
@@ -263,6 +292,7 @@ router.get('/catalog/lookup', async (req: Request, res: Response) => {
 router.post('/shifts/open', async (req: Request, res: Response) => {
   const body = parseBody(openShiftBody, req, res);
   if (!body) return;
+  if (!(await requireStoreScope(req, res, body.storeId))) return;
 
   try {
     const data = await openShift(prisma, {

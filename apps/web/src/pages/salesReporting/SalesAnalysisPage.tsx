@@ -48,15 +48,25 @@ const STORE_OPTION_LABELS = Object.fromEntries(
   STORE_OPTIONS.map((o) => [o.value, o.label.replace(/ Stores$/, '')]),
 ) as Record<SalesAnalysisStoreOption, string>
 
-type SalesAnalysisHierarchyDimension = 'department' | 'category' | 'vendor' | 'store' | 'season' | 'group'
+type SalesAnalysisHierarchyDimension =
+  | 'department'
+  | 'category'
+  | 'vendor'
+  | 'store'
+  | 'store_chain'
+  | 'season'
+  | 'group'
+  | 'buyer'
 
 const HIERARCHY_OPTIONS: Array<{ value: SalesAnalysisHierarchyDimension; label: string }> = [
   { value: 'department', label: 'Department' },
   { value: 'category', label: 'Category' },
   { value: 'vendor', label: 'Vendor' },
   { value: 'store', label: 'Store' },
+  { value: 'store_chain', label: 'Store Chain' },
   { value: 'season', label: 'Season' },
   { value: 'group', label: 'Group' },
+  { value: 'buyer', label: 'Buyer' },
 ]
 
 const HIERARCHY_LABELS = Object.fromEntries(
@@ -86,6 +96,9 @@ interface SalesAnalysisTreeNode {
   onHandAtCost: number
   turns: number | null
   roiPct: number | null
+  onOrderQty: number
+  onOrderUnitCost: number | null
+  onOrderCost: number
   priorYearNetSales: number | null
   pyPctChange: number | null
   children?: SalesAnalysisTreeNode[]
@@ -103,6 +116,9 @@ type SalesAnalysisMeasures = Pick<
   | 'onHandAtCost'
   | 'turns'
   | 'roiPct'
+  | 'onOrderQty'
+  | 'onOrderUnitCost'
+  | 'onOrderCost'
   | 'priorYearNetSales'
   | 'pyPctChange'
 >
@@ -119,6 +135,9 @@ function emptyAnalysisMeasures(): SalesAnalysisMeasures {
     onHandAtCost: 0,
     turns: null,
     roiPct: null,
+    onOrderQty: 0,
+    onOrderUnitCost: null,
+    onOrderCost: 0,
     priorYearNetSales: null,
     pyPctChange: null,
   }
@@ -136,6 +155,8 @@ function recomputeAnalysisRatios(node: SalesAnalysisMeasures, periodDays: number
     node.turns = Math.round(((node.cogs / node.onHandAtCost) * annualFactor) * 10) / 10
     node.roiPct = Math.round(((node.grossProfit / node.onHandAtCost) * annualFactor) * 10) / 10
   }
+  node.onOrderUnitCost =
+    node.onOrderQty === 0 ? null : Math.round((node.onOrderCost / node.onOrderQty) * 100) / 100
   node.pyPctChange =
     node.priorYearNetSales == null || node.priorYearNetSales === 0
       ? null
@@ -149,7 +170,39 @@ function addAnalysisMeasures(into: SalesAnalysisMeasures, row: SalesAnalysisMeas
   into.grossProfit += row.grossProfit
   into.unitsOnHand += row.unitsOnHand
   into.onHandAtCost += row.onHandAtCost
+  into.onOrderQty += row.onOrderQty
+  into.onOrderCost += row.onOrderCost
   into.priorYearNetSales = (into.priorYearNetSales ?? 0) + (row.priorYearNetSales ?? 0)
+}
+
+function aggregateChainLeaves(leaves: SalesAnalysisRow[], periodDays: number): SalesAnalysisRow[] {
+  const bySku = new Map<string, SalesAnalysisRow & SalesAnalysisMeasures>()
+  for (const leaf of leaves) {
+    const existing = bySku.get(leaf.dimensionKey)
+    if (!existing) {
+      bySku.set(leaf.dimensionKey, {
+        ...leaf,
+        storeNumber: null,
+        onOrderQty: leaf.onOrderQty ?? 0,
+        onOrderUnitCost: leaf.onOrderUnitCost ?? null,
+        onOrderCost: leaf.onOrderCost ?? 0,
+      })
+      continue
+    }
+    existing.qty += leaf.qty
+    existing.netSales += leaf.netSales
+    existing.cogs += leaf.cogs
+    existing.grossProfit += leaf.grossProfit
+    existing.unitsOnHand += leaf.unitsOnHand
+    existing.onHandAtCost += leaf.onHandAtCost
+    existing.onOrderQty = (existing.onOrderQty ?? 0) + (leaf.onOrderQty ?? 0)
+    existing.onOrderCost = (existing.onOrderCost ?? 0) + (leaf.onOrderCost ?? 0)
+    existing.priorYearNetSales = (existing.priorYearNetSales ?? 0) + (leaf.priorYearNetSales ?? 0)
+  }
+  for (const row of bySku.values()) {
+    recomputeAnalysisRatios(row, periodDays)
+  }
+  return [...bySku.values()]
 }
 
 function analysisDimKeyLabel(
@@ -177,10 +230,16 @@ function analysisDimKeyLabel(
       return attrs?.vendorCode ? value(attrs.vendorCode, null) : missing('(No vendor)')
     case 'store':
       return row.storeNumber != null ? value(String(row.storeNumber), null, row.storeNumber) : missing('(All stores)')
+    case 'store_chain':
+      return row.storeChainCode
+        ? value(row.storeChainCode, row.storeChainLabel)
+        : missing('(No store chain)')
     case 'season':
       return attrs?.season ? value(attrs.season, null) : missing('(No season)')
     case 'group':
       return attrs?.groupCode ? value(attrs.groupCode, null) : missing('(No group)')
+    case 'buyer':
+      return attrs?.extended?.buyer ? value(attrs.extended.buyer, null) : missing('(No buyer)')
   }
 }
 
@@ -217,6 +276,7 @@ function buildSalesAnalysisTree(
     if (a.sortNumeric != null && b.sortNumeric != null) return a.sortNumeric - b.sortNumeric
     return a.label.localeCompare(b.label)
   }
+  const shouldAggregateChainLeaves = levels.includes('store_chain') && !levels.includes('store')
   const buildLeaf = (row: SalesAnalysisRow, path: string): SalesAnalysisTreeNode => {
     const skuLabel = row.attributes?.description
       ? `${row.dimensionKey} - ${row.attributes.description}`
@@ -239,6 +299,9 @@ function buildSalesAnalysisTree(
       onHandAtCost: row.onHandAtCost,
       turns: row.turns,
       roiPct: row.roiPct,
+      onOrderQty: row.onOrderQty ?? 0,
+      onOrderUnitCost: row.onOrderUnitCost ?? null,
+      onOrderCost: row.onOrderCost ?? 0,
       priorYearNetSales: row.priorYearNetSales,
       pyPctChange: row.pyPctChange,
     }
@@ -248,7 +311,7 @@ function buildSalesAnalysisTree(
       rowKey: `${path}/${levels[1]}:${bucket.key}`,
       label: bucket.label,
       ...emptyAnalysisMeasures(),
-      children: bucket.leaves
+      children: (shouldAggregateChainLeaves ? aggregateChainLeaves(bucket.leaves, periodDays) : bucket.leaves)
         .sort((a, b) => b.netSales - a.netSales || a.dimensionKey.localeCompare(b.dimensionKey))
         .map((leaf) => buildLeaf(leaf, `${path}/${levels[1]}:${bucket.key}`)),
     }
@@ -294,6 +357,7 @@ export default function SalesAnalysisPage() {
   const [groupsRaw, setGroupsRaw] = useState('')
   const [keywordsRaw, setKeywordsRaw] = useState('')
   const [priorYear, setPriorYear] = useState(false)
+  const [includeOnOrder, setIncludeOnOrder] = useState(false)
   const [query, setQuery] = useState<SalesAnalysisArgs | null>(null)
   // Auto-collapses after a successful report run so results get the
   // vertical real-estate instead of the tall filter form. Operators expand
@@ -351,12 +415,14 @@ export default function SalesAnalysisPage() {
     setGroupsRaw(p.groupsRaw ?? '')
     setKeywordsRaw(p.keywordsRaw ?? '')
     setPriorYear(!!p.priorYear)
+    setIncludeOnOrder(!!p.includeOnOrder)
     // Use the full hydrated params as the query directly — don't rely on the
     // state setters above having flushed before this setQuery call.
     setQuery({
       dimension: 'CATEGORY',
       reportType: 'SKU_DETAIL',
       storeOption: hierarchy.level1 === 'store' || hierarchy.level2 === 'store'
+        || hierarchy.level1 === 'store_chain' || hierarchy.level2 === 'store_chain'
         ? 'SEPARATE'
         : p.storeOption ?? 'COMBINE',
       startDate: resolvedStart,
@@ -374,6 +440,7 @@ export default function SalesAnalysisPage() {
       keywordsRaw: p.keywordsRaw?.trim() || undefined,
       priorYear: !!p.priorYear,
       includeAttributes: true,
+      includeOnOrder: !!p.includeOnOrder,
     })
     touchTemplate.mutate(templateId)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -411,6 +478,7 @@ export default function SalesAnalysisPage() {
       keywordsRaw: keywordsRaw.trim() || undefined,
       priorYear,
       includeAttributes: true,
+      includeOnOrder,
     })
   }
   function onStop(): void {
@@ -503,10 +571,31 @@ export default function SalesAnalysisPage() {
           },
         ]
       : []),
+    ...(query?.includeOnOrder
+      ? [
+          {
+            title: 'On Order Qty', dataIndex: 'onOrderQty', key: 'onOrderQty', width: 120,
+            align: 'right' as const,
+            render: (v: number) => fmtQty(v),
+          },
+          {
+            title: 'Landed Cost/Unit', dataIndex: 'onOrderUnitCost', key: 'onOrderUnitCost', width: 140,
+            align: 'right' as const,
+            render: (v: number | null) => fmtMoney(v),
+          },
+          {
+            title: 'Total Order Cost', dataIndex: 'onOrderCost', key: 'onOrderCost', width: 140,
+            align: 'right' as const,
+            render: (v: number) => fmtMoney(v),
+          },
+        ]
+      : []),
   ]
 
   const effectiveStoreOption: SalesAnalysisStoreOption =
-    level1 === 'store' || level2 === 'store' ? 'SEPARATE' : storeOption
+    level1 === 'store' || level2 === 'store' || level1 === 'store_chain' || level2 === 'store_chain'
+      ? 'SEPARATE'
+      : storeOption
   const currentHierarchyDescriptor = hierarchyDescriptor(level1, level2)
 
   return (
@@ -556,6 +645,7 @@ export default function SalesAnalysisPage() {
                 keywordsRaw: keywordsRaw.trim() || undefined,
                 priorYear,
                 includeAttributes: true,
+                includeOnOrder,
               })}
             />
             <SaveSnapshotButton
@@ -582,6 +672,7 @@ export default function SalesAnalysisPage() {
                 keywordsRaw: keywordsRaw.trim() || undefined,
                 priorYear,
                 includeAttributes: true,
+                includeOnOrder,
               })}
               getResultJson={() => data}
               getDescriptor={() => {
@@ -601,6 +692,7 @@ export default function SalesAnalysisPage() {
                 if (counts.length) parts.push(counts.join(', '))
                 parts.push(briefDateSpec(dateSpec))
                 if (priorYear) parts.push('vs PY')
+                if (includeOnOrder) parts.push('on order')
                 return parts.join(' · ')
               }}
             />
@@ -646,16 +738,21 @@ export default function SalesAnalysisPage() {
           </Col>
           <Col xs={24} md={10}>
             <Card size="small" title={<Text strong>Detail</Text>}>
-              <Radio.Group
-                value="SKU_DETAIL"
-                style={{ display: 'flex', flexDirection: 'column', gap: 4 }}
-              >
-                {[{ value: 'SKU_DETAIL', label: 'SKU Detail' }].map((o) => (
-                  <Radio key={o.value} value={o.value} disabled={false}>
-                    {o.label}
-                  </Radio>
-                ))}
-              </Radio.Group>
+              <Space direction="vertical" size={8}>
+                <Radio.Group
+                  value="SKU_DETAIL"
+                  style={{ display: 'flex', flexDirection: 'column', gap: 4 }}
+                >
+                  {[{ value: 'SKU_DETAIL', label: 'SKU Detail' }].map((o) => (
+                    <Radio key={o.value} value={o.value} disabled={false}>
+                      {o.label}
+                    </Radio>
+                  ))}
+                </Radio.Group>
+                <Checkbox checked={includeOnOrder} onChange={(e) => setIncludeOnOrder(e.target.checked)}>
+                  Include on order
+                </Checkbox>
+              </Space>
             </Card>
           </Col>
           <Col xs={24} md={8}>
@@ -807,6 +904,7 @@ export default function SalesAnalysisPage() {
             query.storeOption ? { label: 'Stores', value: STORE_OPTION_LABELS[query.storeOption] } : null,
             query.startDate && query.endDate ? { label: 'Period', value: `${query.startDate} → ${query.endDate}` } : null,
             query.priorYear ? { label: 'Compare', value: 'Prior year' } : null,
+            query.includeOnOrder ? { label: 'On order', value: 'Included' } : null,
             query.stores?.length ? { label: 'Stores in', value: `${query.stores.length} selected` } : null,
             query.categories?.length ? { label: 'Categories in', value: `${query.categories.length} selected` } : null,
             query.groups?.length ? { label: 'Groups in', value: `${query.groups.length} selected` } : null,
@@ -827,9 +925,10 @@ export default function SalesAnalysisPage() {
           size="small"
           pagination={{ pageSize: 50 }}
           expandable={{ defaultExpandAllRows: false }}
-          scroll={{ x: query.priorYear ? 1620 : 1380 }}
+          scroll={{ x: (query.priorYear ? 1620 : 1380) + (query.includeOnOrder ? 400 : 0) }}
           summary={() => {
             const t = data.totals
+            const onOrderStartIndex = query.priorYear ? 13 : 11
             return (
               <Table.Summary fixed>
                 <Table.Summary.Row>
@@ -852,6 +951,19 @@ export default function SalesAnalysisPage() {
                     <>
                       <SummaryNumericCell index={11} variant="grand">{fmtMoney(t.priorYearNetSales)}</SummaryNumericCell>
                       <SummaryNumericCell index={12} variant="grand">{DASH}</SummaryNumericCell>
+                    </>
+                  ) : null}
+                  {query.includeOnOrder ? (
+                    <>
+                      <SummaryNumericCell index={onOrderStartIndex} variant="grand">
+                        {fmtQty(t.onOrderQty ?? 0)}
+                      </SummaryNumericCell>
+                      <SummaryNumericCell index={onOrderStartIndex + 1} variant="grand">
+                        {fmtMoney(t.onOrderUnitCost ?? null)}
+                      </SummaryNumericCell>
+                      <SummaryNumericCell index={onOrderStartIndex + 2} variant="grand">
+                        {fmtMoney(t.onOrderCost ?? 0)}
+                      </SummaryNumericCell>
                     </>
                   ) : null}
                 </Table.Summary.Row>

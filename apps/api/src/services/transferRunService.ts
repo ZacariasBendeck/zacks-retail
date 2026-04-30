@@ -13,6 +13,7 @@ import type {
   AutoTransferPreviewSummary,
   BalancingTransferCriteria,
   BalancingTransferMetricSnapshot,
+  BalancingTransferNegativeMtdSalesSkip,
   BalancingTransferPreviewLine,
   BalancingTransferPreviewRecord,
   BalancingTransferPreviewSummary,
@@ -80,6 +81,23 @@ interface WorkingCellState {
   reorderQty: number | null;
 }
 
+interface InventorySalesCellState {
+  rowLabel: string;
+  columnLabel: string;
+  mtdSales: number;
+}
+
+interface RicsWorkingCellState extends WorkingCellState {
+  mtdSales: number;
+}
+
+interface RicsStoreSkuState {
+  cells: Map<string, RicsWorkingCellState>;
+  onHandTotal: number;
+  modelTotal: number;
+  mtdSalesTotal: number;
+}
+
 interface LegacyTransferStoreContext extends TransferLaneStoreContext {
   storeLabel: string;
 }
@@ -108,6 +126,7 @@ interface StoredBalancingRunPayload {
   summary: BalancingTransferPreviewSummary;
   lines: BalancingTransferPreviewLine[];
   exceptions: TransferPreviewException[];
+  negativeMtdSalesSkips?: BalancingTransferNegativeMtdSalesSkip[];
 }
 
 function toNumber(value: Prisma.Decimal | number | string | null | undefined): number | null {
@@ -169,6 +188,60 @@ function normalizeLimit(value: number | undefined): number | undefined {
   return Math.max(1, Math.trunc(value));
 }
 
+export function parseRicsNumberSelection(value: string | null | undefined): number[] {
+  const selected = new Set<number>();
+  for (const token of (value ?? '').split(',')) {
+    const part = token.trim();
+    if (!part) continue;
+    const rangeMatch = part.match(/^(\d+)\s*-\s*(\d+)$/);
+    if (rangeMatch) {
+      const start = Number(rangeMatch[1]);
+      const end = Number(rangeMatch[2]);
+      const low = Math.min(start, end);
+      const high = Math.max(start, end);
+      for (let number = low; number <= high; number += 1) selected.add(number);
+      continue;
+    }
+    const parsed = Number(part);
+    if (Number.isInteger(parsed) && parsed >= 0) selected.add(parsed);
+  }
+  return [...selected].sort((left, right) => left - right);
+}
+
+export function parseRicsSeasonSelection(value: string | null | undefined): string[] {
+  const selected = new Set<string>();
+  for (const token of (value ?? '').split(',')) {
+    const part = token.trim().toUpperCase();
+    if (!part) continue;
+    if (/^[A-Z0-9]-[A-Z0-9]$/.test(part)) {
+      const start = part.charCodeAt(0);
+      const end = part.charCodeAt(2);
+      const low = Math.min(start, end);
+      const high = Math.max(start, end);
+      for (let code = low; code <= high; code += 1) selected.add(String.fromCharCode(code));
+      continue;
+    }
+    selected.add(part);
+  }
+  return [...selected].sort();
+}
+
+export function parseRicsKeywordExclusions(value: string | null | undefined): string[] {
+  return (value ?? '')
+    .split(',')
+    .map((token) => token.trim().toUpperCase().replace(/^(<>)+/, '').trim())
+    .filter(Boolean);
+}
+
+function keywordAllowedForRics(keywordText: string | null | undefined, exclusions: string[]): boolean {
+  const normalized = (keywordText ?? '').toUpperCase();
+  for (const pattern of exclusions) {
+    const normalizedPattern = pattern.replace(/\*+$/, '');
+    if (normalizedPattern && normalized.includes(normalizedPattern)) return false;
+  }
+  return true;
+}
+
 function startOfSalesPeriod(period: 'MONTH' | 'SEASON' | 'YEAR'): Date {
   const now = new Date();
   const start = new Date(now);
@@ -208,6 +281,7 @@ function buildAutoPreviewSummary(
 function buildBalancingPreviewSummary(
   lines: BalancingTransferPreviewLine[],
   exceptions: TransferPreviewException[],
+  negativeMtdSalesSkips: BalancingTransferNegativeMtdSalesSkip[] = [],
 ): BalancingTransferPreviewSummary {
   return {
     transferCount: lines.length,
@@ -215,6 +289,7 @@ function buildBalancingPreviewSummary(
     storePairCount: new Set(lines.map((line) => `${line.fromStoreId}-${line.toStoreId}`)).size,
     totalUnits: lines.reduce((sum, line) => sum + line.suggestedQuantity, 0),
     exceptionCount: exceptions.length,
+    negativeMtdSalesSkipCount: negativeMtdSalesSkips.length,
   };
 }
 
@@ -420,6 +495,54 @@ async function loadCandidateSkus(
   });
 }
 
+async function loadCandidateSkusForRics(
+  criteria: BalancingTransferCriteria,
+  categorySelection: number[],
+  seasonSelection: string[],
+  keywordExclusions: string[],
+): Promise<CandidateSkuRow[]> {
+  const baseCriteria: BalancingTransferCriteria = {
+    ...criteria,
+    categoryMin: categorySelection.length > 0 ? null : criteria.categoryMin,
+    categoryMax: categorySelection.length > 0 ? null : criteria.categoryMax,
+    seasons: seasonSelection.length > 0 ? [] : criteria.seasons,
+  };
+  const where = buildSkuWhere(baseCriteria);
+  const andClauses = Array.isArray(where.AND) ? [...where.AND] : where.AND ? [where.AND] : [];
+  if (categorySelection.length > 0) {
+    andClauses.push({ categoryNumber: { in: categorySelection } });
+  }
+  if (seasonSelection.length > 0) {
+    andClauses.push({ season: { in: seasonSelection } });
+  }
+  if (andClauses.length > 0) where.AND = andClauses;
+
+  const rows = await prisma.sku.findMany({
+    where,
+    select: {
+      id: true,
+      code: true,
+      provisionalCode: true,
+      descriptionRics: true,
+      vendorId: true,
+      categoryNumber: true,
+      season: true,
+      styleColor: true,
+      groupCode: true,
+      keywords: true,
+      currentCost: true,
+      retailPrice: true,
+      listPrice: true,
+      currentPriceSlot: true,
+      perks: true,
+    },
+    orderBy: [{ code: 'asc' }],
+    take: normalizeLimit(criteria.limit),
+  });
+
+  return rows.filter((sku) => keywordAllowedForRics(sku.keywords, keywordExclusions));
+}
+
 async function loadStockAndTargets(
   skuIds: string[],
   storeIds: number[],
@@ -512,6 +635,42 @@ async function loadStockAndTargets(
   }
 
   return { stockBySku, targetBySku };
+}
+
+async function loadInventorySalesCells(
+  skuIds: string[],
+  storeIds: number[],
+): Promise<Map<string, Map<number, Map<string, InventorySalesCellState>>>> {
+  const salesBySku = new Map<string, Map<number, Map<string, InventorySalesCellState>>>();
+  if (skuIds.length === 0 || storeIds.length === 0) return salesBySku;
+
+  for (const skuChunk of chunkArray(skuIds, 2_000)) {
+    const rows = await prisma.inventorySalesCell.findMany({
+      where: {
+        skuId: { in: skuChunk },
+        storeId: { in: storeIds },
+      },
+      select: {
+        skuId: true,
+        storeId: true,
+        columnLabel: true,
+        rowLabel: true,
+        mtdSales: true,
+      },
+    });
+
+    for (const row of rows) {
+      const storeMap = ensureMap(salesBySku, row.skuId, () => new Map<number, Map<string, InventorySalesCellState>>());
+      const cellMap = ensureMap(storeMap, row.storeId, () => new Map<string, InventorySalesCellState>());
+      cellMap.set(cellKey(row.rowLabel, row.columnLabel), {
+        rowLabel: row.rowLabel,
+        columnLabel: row.columnLabel,
+        mtdSales: row.mtdSales,
+      });
+    }
+  }
+
+  return salesBySku;
 }
 
 function autoSortComparator(
@@ -1178,6 +1337,295 @@ function buildBalancingPreview(
   return { lines, exceptions };
 }
 
+function compareCellLabels(left: RicsWorkingCellState, right: RicsWorkingCellState): number {
+  const rowCompare = left.rowLabel.localeCompare(right.rowLabel);
+  if (rowCompare !== 0) return rowCompare;
+  const leftNumber = Number(left.columnLabel);
+  const rightNumber = Number(right.columnLabel);
+  if (Number.isFinite(leftNumber) && Number.isFinite(rightNumber) && leftNumber !== rightNumber) {
+    return leftNumber - rightNumber;
+  }
+  return left.columnLabel.localeCompare(right.columnLabel, undefined, { numeric: true });
+}
+
+function ricsMtdTurns(state: RicsStoreSkuState | undefined): number {
+  if (!state) return 0;
+  const denominator = state.onHandTotal + state.mtdSalesTotal / 2;
+  if (denominator <= 0) return 0;
+  return (state.mtdSalesTotal / denominator) * 12;
+}
+
+function ricsMetricSnapshot(state: RicsStoreSkuState | undefined): BalancingTransferMetricSnapshot {
+  return {
+    metricValue: ricsMtdTurns(state),
+    displayValue: ricsMtdTurns(state),
+    netSoldUnits: state?.mtdSalesTotal ?? 0,
+    beginningOnHand: state?.onHandTotal ?? 0,
+    endingOnHand: state?.onHandTotal ?? 0,
+  };
+}
+
+function ricsDonorKey(storeId: number, stateByStore: Map<number, RicsStoreSkuState>): [number, number, number, number] {
+  const state = stateByStore.get(storeId);
+  const totalSurplus = (state?.onHandTotal ?? 0) - (state?.modelTotal ?? 0);
+  if ((state?.modelTotal ?? 0) <= 0 && (state?.onHandTotal ?? 0) > 0) {
+    return [0, storeId === 99 ? 0 : 1, storeId, 0];
+  }
+  if (totalSurplus <= 0) {
+    return [1, ricsMtdTurns(state), storeId, 0];
+  }
+  return [2, -totalSurplus, ricsMtdTurns(state), storeId];
+}
+
+function ricsReceiverKey(storeId: number, stateByStore: Map<number, RicsStoreSkuState>): [number, number] {
+  return [-ricsMtdTurns(stateByStore.get(storeId)), storeId];
+}
+
+function compareTuple(left: readonly number[], right: readonly number[]): number {
+  for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
+    const delta = (left[index] ?? 0) - (right[index] ?? 0);
+    if (delta !== 0) return delta;
+  }
+  return 0;
+}
+
+function cloneRicsWorkingCells(
+  stockBySku: Map<string, Map<number, Map<string, StockCellState>>>,
+  targetBySku: Map<string, Map<number, Map<string, TargetCellState>>>,
+  salesBySku: Map<string, Map<number, Map<string, InventorySalesCellState>>>,
+  skuId: string,
+  storeIds: number[],
+): Map<number, RicsStoreSkuState> {
+  const result = new Map<number, RicsStoreSkuState>();
+  const skuStock = stockBySku.get(skuId) ?? new Map<number, Map<string, StockCellState>>();
+  const skuTargets = targetBySku.get(skuId) ?? new Map<number, Map<string, TargetCellState>>();
+  const skuSales = salesBySku.get(skuId) ?? new Map<number, Map<string, InventorySalesCellState>>();
+
+  for (const storeId of storeIds) {
+    const stockCells = skuStock.get(storeId) ?? new Map<string, StockCellState>();
+    const targetCells = skuTargets.get(storeId) ?? new Map<string, TargetCellState>();
+    const salesCells = skuSales.get(storeId) ?? new Map<string, InventorySalesCellState>();
+    const keys = new Set<string>([...stockCells.keys(), ...targetCells.keys(), ...salesCells.keys()]);
+    const cells = new Map<string, RicsWorkingCellState>();
+    let onHandTotal = 0;
+    let modelTotal = 0;
+    let mtdSalesTotal = 0;
+
+    for (const key of keys) {
+      const stockCell = stockCells.get(key);
+      const targetCell = targetCells.get(key);
+      const salesCell = salesCells.get(key);
+      const onHand = stockCell?.onHand ?? 0;
+      const modelQty = targetCell?.modelQty ?? 0;
+      const mtdSales = salesCell?.mtdSales ?? 0;
+      const maxQty = targetCell?.maxQty ?? 0;
+      const reorderQty = targetCell?.reorderQty ?? null;
+      if (onHand === 0 && modelQty === 0 && mtdSales === 0 && maxQty === 0 && (reorderQty ?? 0) === 0) continue;
+      const rowLabel = stockCell?.rowLabel ?? targetCell?.rowLabel ?? salesCell?.rowLabel ?? '';
+      const columnLabel = stockCell?.columnLabel ?? targetCell?.columnLabel ?? salesCell?.columnLabel ?? '';
+      cells.set(key, {
+        rowLabel,
+        columnLabel,
+        onHand,
+        modelQty,
+        maxQty,
+        reorderQty,
+        mtdSales,
+      });
+      onHandTotal += onHand;
+      modelTotal += modelQty;
+      mtdSalesTotal += mtdSales;
+    }
+
+    if (cells.size > 0) {
+      result.set(storeId, { cells, onHandTotal, modelTotal, mtdSalesTotal });
+    }
+  }
+
+  return result;
+}
+
+function addRicsBalancingPreviewCell(
+  bucket: Map<string, BalancingTransferPreviewLine>,
+  sku: CandidateSkuRow,
+  fromStoreId: number,
+  toStoreId: number,
+  fromMetric: BalancingTransferMetricSnapshot,
+  toMetric: BalancingTransferMetricSnapshot,
+  cell: TransferPreviewCell,
+): void {
+  addBalancingPreviewCell(
+    bucket,
+    sku,
+    fromStoreId,
+    toStoreId,
+    fromMetric,
+    toMetric,
+    cell,
+    'RICS mimic: transfer SKU over/under model using month-to-date turns.',
+  );
+}
+
+function buildNegativeMtdSalesSkip(
+  sku: CandidateSkuRow,
+  stateByStore: Map<number, RicsStoreSkuState>,
+  storeContextById: Map<number, LegacyTransferStoreContext>,
+): BalancingTransferNegativeMtdSalesSkip | null {
+  const negativeStores = [...stateByStore.entries()]
+    .filter(([, state]) => state.mtdSalesTotal < 0)
+    .map(([storeId, state]) => ({
+      storeId,
+      storeLabel: storeContextById.get(storeId)?.storeLabel ?? storeLabel(storeId),
+      totalMtdSales: state.mtdSalesTotal,
+      onHandTotal: state.onHandTotal,
+      modelTotal: state.modelTotal,
+      negativeCells: [...state.cells.values()]
+        .filter((cell) => cell.mtdSales < 0)
+        .sort(compareCellLabels)
+        .map((cell) => ({
+          rowLabel: cell.rowLabel,
+          columnLabel: cell.columnLabel,
+          mtdSales: cell.mtdSales,
+        })),
+    }));
+  if (negativeStores.length === 0) return null;
+  return {
+    skuId: sku.id,
+    skuCode: skuCodeOf(sku),
+    description: sku.descriptionRics,
+    vendorCode: sku.vendorId,
+    categoryNumber: sku.categoryNumber,
+    negativeStores,
+  };
+}
+
+function sortProductsForRics(skus: CandidateSkuRow[], sortOrder: 'SKU' | 'VENDOR' | 'CATEGORY'): CandidateSkuRow[] {
+  const skuComparator = (left: CandidateSkuRow, right: CandidateSkuRow) => skuCodeOf(left).localeCompare(skuCodeOf(right));
+  return [...skus].sort((left, right) => {
+    if (sortOrder === 'VENDOR') {
+      return (left.vendorId ?? '').localeCompare(right.vendorId ?? '')
+        || (left.categoryNumber ?? 0) - (right.categoryNumber ?? 0)
+        || skuComparator(left, right);
+    }
+    if (sortOrder === 'CATEGORY') {
+      return (left.categoryNumber ?? 0) - (right.categoryNumber ?? 0)
+        || (left.vendorId ?? '').localeCompare(right.vendorId ?? '')
+        || skuComparator(left, right);
+    }
+    return skuComparator(left, right);
+  });
+}
+
+function buildRicsMimicPreview(
+  skus: CandidateSkuRow[],
+  stockBySku: Map<string, Map<number, Map<string, StockCellState>>>,
+  targetBySku: Map<string, Map<number, Map<string, TargetCellState>>>,
+  salesBySku: Map<string, Map<number, Map<string, InventorySalesCellState>>>,
+  input: CreateBalancingTransferRunInput,
+  storeIds: number[],
+  storeContextById: Map<number, LegacyTransferStoreContext>,
+): {
+  lines: BalancingTransferPreviewLine[];
+  exceptions: TransferPreviewException[];
+  negativeMtdSalesSkips: BalancingTransferNegativeMtdSalesSkip[];
+} {
+  const lineBucket = new Map<string, BalancingTransferPreviewLine>();
+  const exceptions: TransferPreviewException[] = [];
+  const negativeMtdSalesSkips: BalancingTransferNegativeMtdSalesSkip[] = [];
+
+  for (const sku of sortProductsForRics(skus, input.sortOrder ?? 'SKU')) {
+    const stateByStore = cloneRicsWorkingCells(stockBySku, targetBySku, salesBySku, sku.id, storeIds);
+    if (stateByStore.size < 2) continue;
+
+    const negativeSkip = buildNegativeMtdSalesSkip(sku, stateByStore, storeContextById);
+    if (negativeSkip) {
+      negativeMtdSalesSkips.push(negativeSkip);
+      continue;
+    }
+
+    const allCells = [...stateByStore.values()].flatMap((state) => [...state.cells.values()]);
+    const sortedCellKeys = [...new Set([...stateByStore.values()].flatMap((state) => [...state.cells.keys()]))]
+      .sort((left, right) => {
+        const leftCell = allCells.find((cell) => cellKey(cell.rowLabel, cell.columnLabel) === left);
+        const rightCell = allCells.find((cell) => cellKey(cell.rowLabel, cell.columnLabel) === right);
+        if (!leftCell || !rightCell) return left.localeCompare(right);
+        return compareCellLabels(leftCell, rightCell);
+      });
+
+    for (const key of sortedCellKeys) {
+      const cellStates = [...stateByStore.entries()]
+        .map(([storeId, storeState]) => ({ storeId, state: storeState, cell: storeState.cells.get(key) }))
+        .filter((entry): entry is { storeId: number; state: RicsStoreSkuState; cell: RicsWorkingCellState } => Boolean(entry.cell));
+
+      for (const entry of cellStates) {
+        if (entry.cell.onHand < 0 && entry.cell.modelQty > entry.cell.onHand) {
+          pushException(exceptions, {
+            code: 'BALANCING_NEGATIVE_ON_HAND',
+            severity: 'warning',
+            message: `Skipped ${skuCodeOf(sku)} ${entry.cell.rowLabel || 'empty'} ${entry.cell.columnLabel || 'empty'} at store ${entry.storeId} because on hand is negative.`,
+            skuId: sku.id,
+            skuCode: skuCodeOf(sku),
+            fromStoreId: entry.storeId,
+            rowLabel: entry.cell.rowLabel,
+            columnLabel: entry.cell.columnLabel,
+          });
+        }
+      }
+
+      const donors = cellStates
+        .filter(({ cell }) => cell.onHand >= 0 && cell.onHand > cell.modelQty)
+        .sort((left, right) => compareTuple(ricsDonorKey(left.storeId, stateByStore), ricsDonorKey(right.storeId, stateByStore)));
+      const receivers = cellStates
+        .filter(({ cell }) => cell.onHand >= 0 && cell.modelQty > cell.onHand);
+
+      for (const donor of donors) {
+        let surplus = donor.cell.onHand - donor.cell.modelQty;
+        if (surplus <= 0) continue;
+        const orderedReceivers = [...receivers]
+          .sort((left, right) => compareTuple(ricsReceiverKey(left.storeId, stateByStore), ricsReceiverKey(right.storeId, stateByStore)));
+        for (const receiver of orderedReceivers) {
+          if (receiver.storeId === donor.storeId) continue;
+          const need = receiver.cell.modelQty - receiver.cell.onHand;
+          if (need <= 0) continue;
+          const moveQty = Math.min(surplus, need);
+          if (moveQty <= 0) continue;
+          addRicsBalancingPreviewCell(
+            lineBucket,
+            sku,
+            donor.storeId,
+            receiver.storeId,
+            ricsMetricSnapshot(donor.state),
+            ricsMetricSnapshot(receiver.state),
+            {
+              rowLabel: donor.cell.rowLabel,
+              columnLabel: donor.cell.columnLabel,
+              suggestedQuantity: moveQty,
+              fromOnHand: donor.cell.onHand,
+              toOnHand: receiver.cell.onHand,
+              fromModelQty: donor.cell.modelQty,
+              toModelQty: receiver.cell.modelQty,
+              reorderQty: donor.cell.reorderQty,
+            },
+          );
+          donor.cell.onHand -= moveQty;
+          receiver.cell.onHand += moveQty;
+          surplus -= moveQty;
+          if (surplus <= 0) break;
+        }
+      }
+    }
+  }
+
+  const lines = [...lineBucket.values()];
+  sortBalancingLines(lines, input.sortOrder ?? 'SKU');
+  for (const line of lines) {
+    line.cells.sort((left, right) =>
+      left.rowLabel.localeCompare(right.rowLabel) || left.columnLabel.localeCompare(right.columnLabel, undefined, { numeric: true }),
+    );
+  }
+  return { lines, exceptions, negativeMtdSalesSkips };
+}
+
 function buildAutoRecordFromStored(
   row: {
     id: string;
@@ -1242,6 +1690,7 @@ function buildBalancingRecordFromStored(
   return {
     id: row.id,
     status: row.status as BalancingTransferPreviewRecord['status'],
+    algorithmMode: payload.request.algorithmMode ?? 'APP_LEGACY',
     balancingMethod: row.balancingMethod,
     performanceMetric: row.performanceMetric,
     salesPeriod: row.salesPeriod,
@@ -1255,6 +1704,7 @@ function buildBalancingRecordFromStored(
     summary: payload.summary,
     lines: payload.lines,
     exceptions,
+    negativeMtdSalesSkips: payload.negativeMtdSalesSkips ?? [],
     requestedBy: row.requestedBy,
     createdAt: row.createdAt.toISOString(),
     previewedAt: row.previewedAt?.toISOString() ?? null,
@@ -1456,6 +1906,10 @@ export async function createBalancingTransferRun(
   const requestedBy = actorOverride?.trim() || 'system';
   const criteria: BalancingTransferCriteria = {
     storeIds: uniqueSortedNumbers(input.criteria?.storeIds ?? []),
+    ricsStoreSelection: input.criteria?.ricsStoreSelection?.trim() || null,
+    ricsCategorySelection: input.criteria?.ricsCategorySelection?.trim() || null,
+    ricsSeasonSelection: input.criteria?.ricsSeasonSelection?.trim() || null,
+    ricsKeywordExclusions: input.criteria?.ricsKeywordExclusions?.trim() || null,
     vendorCodes: trimCodes(input.criteria?.vendorCodes),
     categoryMin: input.criteria?.categoryMin ?? null,
     categoryMax: input.criteria?.categoryMax ?? null,
@@ -1478,8 +1932,26 @@ export async function createBalancingTransferRun(
     );
   }
 
+  const algorithmMode = input.algorithmMode ?? 'APP_LEGACY';
+  if (algorithmMode === 'RICS_MIMIC') {
+    if (
+      input.balancingMethod !== 'OVER_UNDER_MODELS'
+      || input.performanceMetric !== 'TURNS'
+      || input.salesPeriod !== 'MONTH'
+    ) {
+      throw new TransferRunServiceError(
+        422,
+        'RICS_MIMIC_UNSUPPORTED_OPTIONS',
+        'RICS mimic currently supports Over/Under Models, Turns, and Month-to-Date only.',
+      );
+    }
+  }
+
   const availableStores = await listDistinctTransferStoreIds();
-  const effectiveStoreIds = criteria.storeIds && criteria.storeIds.length > 0
+  const ricsStoreIds = criteria.ricsStoreSelection ? parseRicsNumberSelection(criteria.ricsStoreSelection) : [];
+  const effectiveStoreIds = algorithmMode === 'RICS_MIMIC' && ricsStoreIds.length > 0
+    ? ricsStoreIds
+    : criteria.storeIds && criteria.storeIds.length > 0
     ? criteria.storeIds
     : availableStores;
   if (effectiveStoreIds.length < 2) {
@@ -1488,30 +1960,48 @@ export async function createBalancingTransferRun(
 
   const normalizedInput: CreateBalancingTransferRunInput = {
     ...input,
+    algorithmMode,
     sortOrder: input.sortOrder ?? 'SKU',
     criteria,
   };
   const storeContextById = await loadTransferStoreContexts(effectiveStoreIds);
 
-  const skus = await loadCandidateSkus(criteria);
+  const ricsCategorySelection = criteria.ricsCategorySelection ? parseRicsNumberSelection(criteria.ricsCategorySelection) : [];
+  const ricsSeasonSelection = criteria.ricsSeasonSelection ? parseRicsSeasonSelection(criteria.ricsSeasonSelection) : [];
+  const ricsKeywordExclusions = criteria.ricsKeywordExclusions ? parseRicsKeywordExclusions(criteria.ricsKeywordExclusions) : [];
+  const skus = algorithmMode === 'RICS_MIMIC'
+    ? await loadCandidateSkusForRics(criteria, ricsCategorySelection, ricsSeasonSelection, ricsKeywordExclusions)
+    : await loadCandidateSkus(criteria);
   const { stockBySku, targetBySku } = await loadStockAndTargets(
     skus.map((sku) => sku.id),
     effectiveStoreIds,
   );
-  const metricAggregates = await loadMetricAggregates(
-    skus.map((sku) => sku.id),
-    effectiveStoreIds,
-    startOfSalesPeriod(input.salesPeriod),
-  );
-  const { lines, exceptions } = buildBalancingPreview(
-    skus,
-    stockBySku,
-    targetBySku,
-    normalizedInput,
-    effectiveStoreIds,
-    metricAggregates,
-    storeContextById,
-  );
+  const previewResult = algorithmMode === 'RICS_MIMIC'
+    ? buildRicsMimicPreview(
+      skus,
+      stockBySku,
+      targetBySku,
+      await loadInventorySalesCells(skus.map((sku) => sku.id), effectiveStoreIds),
+      normalizedInput,
+      effectiveStoreIds,
+      storeContextById,
+    )
+    : buildBalancingPreview(
+      skus,
+      stockBySku,
+      targetBySku,
+      normalizedInput,
+      effectiveStoreIds,
+      await loadMetricAggregates(
+        skus.map((sku) => sku.id),
+        effectiveStoreIds,
+        startOfSalesPeriod(input.salesPeriod),
+      ),
+      storeContextById,
+    );
+  const { lines, exceptions } = previewResult;
+  const negativeMtdSalesSkips =
+    (previewResult as { negativeMtdSalesSkips?: BalancingTransferNegativeMtdSalesSkip[] }).negativeMtdSalesSkips ?? [];
 
   if (criteria.limit != null && skus.length >= criteria.limit) {
     pushException(exceptions, {
@@ -1521,7 +2011,7 @@ export async function createBalancingTransferRun(
     });
   }
 
-  const summary = buildBalancingPreviewSummary(lines, exceptions);
+  const summary = buildBalancingPreviewSummary(lines, exceptions, negativeMtdSalesSkips);
   const previewedAt = new Date();
   const row = await prisma.balancingTransferRun.create({
     data: {
@@ -1538,6 +2028,7 @@ export async function createBalancingTransferRun(
         summary,
         lines,
         exceptions,
+        negativeMtdSalesSkips,
       } as unknown) as Prisma.InputJsonValue,
       inTransitPos: Boolean(input.inTransitPos),
       requestedBy,

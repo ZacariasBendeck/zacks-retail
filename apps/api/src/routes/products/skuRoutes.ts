@@ -106,6 +106,8 @@ router.get('/', async (req: Request, res: Response) => {
   const keyword = typeof req.query.keyword === 'string' ? req.query.keyword : undefined;
   // Multi-value filters — the admin workbench sends these.
   const vendors = parseStringArray(req.query.vendors);
+  const sectors = parseIntArray(req.query.sectors);
+  const departments = parseIntArray(req.query.departments);
   const categories = parseIntArray(req.query.categories);
   const seasons = parseStringArray(req.query.seasons);
   const groups = parseStringArray(req.query.groups);
@@ -142,6 +144,8 @@ router.get('/', async (req: Request, res: Response) => {
       group,
       keyword,
       vendors,
+      sectors,
+      departments,
       categories,
       seasons,
       groups,

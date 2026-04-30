@@ -1,0 +1,53 @@
+{
+  "algorithm": {
+    "scope": "RICS Balancing Transfers Preview",
+    "mode": "over_under_models",
+    "metric": "month_to_date_turns",
+    "mtd_turns_formula": "mtd_sales / (current_on_hand + mtd_sales / 2) * 12",
+    "product_order": "vendor",
+    "donor_order": "rics",
+    "donor_order_notes": "RICS replay buckets donors as warehouse/no-model stock first, then SKU-stores at or below total model by lower M-T-D turns, then SKU-stores over total model by largest total surplus.",
+    "receiver_order": "rics",
+    "receiver_order_notes": "RICS replay gives receiver priority to higher M-T-D turns, then lower store number for ties.",
+    "store_selection": "2,5-24,28-30,35-43,99",
+    "category_range": "500-555",
+    "season_filter": "Q-Z,1-9,A",
+    "keyword_exclusions": [
+      "DST"
+    ],
+    "keyword_notes": "RP20ABR is present in the RICS report; <><>RP20ABR is not treated as an exclusion here.",
+    "negative_mtd_sales_rule": "Skip a SKU if any selected store has negative total M-T-D sales for that SKU."
+  },
+  "generated": {
+    "unit_keys": 523,
+    "total_units": 532,
+    "sku_count": 316,
+    "store_pair_count": 74,
+    "exception_count": 9,
+    "negative_mtd_sales_skip_rows": 1,
+    "negative_mtd_sales_skip_sku_count": 1,
+    "negative_mtd_sales_blocked_units": 0
+  },
+  "rics_report": {
+    "unit_keys": 523,
+    "total_units": 532,
+    "sku_count": 316,
+    "store_pair_count": 73
+  },
+  "comparison": {
+    "exact_keys": 489,
+    "missing_keys": 34,
+    "extra_keys": 34,
+    "quantity_mismatch_keys": 0,
+    "total_abs_quantity_delta": 68,
+    "matched_unit_quantity": 498,
+    "unit_precision": 0.9360902255639098,
+    "unit_recall": 0.9360902255639098
+  },
+  "outputs": {
+    "generated_units": "E:\\dev\\zacks-retail\\outputs\\balancing_transfers_zap_caballeros_rics_2026-04-29_141219\\replay_dynamic_totals_test\\generated_transfer_units.csv",
+    "comparison_diff": "E:\\dev\\zacks-retail\\outputs\\balancing_transfers_zap_caballeros_rics_2026-04-29_141219\\replay_dynamic_totals_test\\comparison_diff.csv",
+    "generated_exceptions": "E:\\dev\\zacks-retail\\outputs\\balancing_transfers_zap_caballeros_rics_2026-04-29_141219\\replay_dynamic_totals_test\\generated_exceptions.csv",
+    "negative_mtd_sales_skips": "E:\\dev\\zacks-retail\\outputs\\balancing_transfers_zap_caballeros_rics_2026-04-29_141219\\replay_dynamic_totals_test\\negative_mtd_sales_skips.csv"
+  }
+}

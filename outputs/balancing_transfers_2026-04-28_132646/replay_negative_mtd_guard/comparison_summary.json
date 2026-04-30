@@ -1,0 +1,50 @@
+{
+  "algorithm": {
+    "scope": "RICS Balancing Transfers Preview",
+    "mode": "over_under_models",
+    "metric": "month_to_date_turns",
+    "mtd_turns_formula": "mtd_sales / (current_on_hand + mtd_sales / 2) * 12",
+    "product_order": "category",
+    "donor_order": "rics",
+    "donor_order_notes": "RICS replay buckets donors as warehouse/no-model stock first, then SKU-stores at or below total model by lower M-T-D turns, then SKU-stores over total model by largest total surplus.",
+    "receiver_order": "rics",
+    "receiver_order_notes": "RICS replay gives receiver priority to higher M-T-D turns, then lower store number for ties.",
+    "store_selection": "2,5-25,28-30,35-43,99",
+    "category_range": "301-499",
+    "season_filter": "A-Z,1-9,0",
+    "keyword_exclusions": [
+      "DST",
+      "VER26*"
+    ],
+    "keyword_notes": "RP20ABR is present in the RICS report; <><>RP20ABR is not treated as an exclusion here.",
+    "negative_mtd_sales_rule": "Skip a SKU if any selected store has negative total M-T-D sales for that SKU."
+  },
+  "generated": {
+    "unit_keys": 2713,
+    "total_units": 2841,
+    "sku_count": 1142,
+    "store_pair_count": 84,
+    "exception_count": 88
+  },
+  "rics_report": {
+    "unit_keys": 2715,
+    "total_units": 2841,
+    "sku_count": 1142,
+    "store_pair_count": 82
+  },
+  "comparison": {
+    "exact_keys": 2563,
+    "missing_keys": 141,
+    "extra_keys": 139,
+    "quantity_mismatch_keys": 11,
+    "total_abs_quantity_delta": 296,
+    "matched_unit_quantity": 2693,
+    "unit_precision": 0.9479056670186554,
+    "unit_recall": 0.9479056670186554
+  },
+  "outputs": {
+    "generated_units": "E:\\dev\\zacks-retail\\outputs\\balancing_transfers_2026-04-28_132646\\replay_negative_mtd_guard\\generated_transfer_units.csv",
+    "comparison_diff": "E:\\dev\\zacks-retail\\outputs\\balancing_transfers_2026-04-28_132646\\replay_negative_mtd_guard\\comparison_diff.csv",
+    "generated_exceptions": "E:\\dev\\zacks-retail\\outputs\\balancing_transfers_2026-04-28_132646\\replay_negative_mtd_guard\\generated_exceptions.csv"
+  }
+}

@@ -1034,6 +1034,8 @@ export interface SalesAnalysisRow {
   dimensionKey: string
   dimensionLabel: string | null
   storeNumber: number | null
+  storeChainCode?: string | null
+  storeChainLabel?: string | null
   qty: number
   netSales: number
   cogs: number
@@ -1044,6 +1046,9 @@ export interface SalesAnalysisRow {
   onHandAtCost: number
   turns: number | null
   roiPct: number | null
+  onOrderQty?: number
+  onOrderUnitCost?: number | null
+  onOrderCost?: number
   priorYearNetSales: number | null
   pyPctChange: number | null
   /** Present only when the endpoint was called with includeAttributes=true. */
@@ -1066,6 +1071,9 @@ export interface SalesAnalysisReport {
     gpPct: number | null
     turns: number | null
     roiPct: number | null
+    onOrderQty?: number
+    onOrderUnitCost?: number | null
+    onOrderCost?: number
     priorYearNetSales: number | null
   }
   periodDays: number
@@ -1100,6 +1108,8 @@ export async function fetchSalesAnalysis(args: {
   priorYear?: boolean
   /** Request per-SKU attribute columns (description / color / extended). SKU_DETAIL only. */
   includeAttributes?: boolean
+  /** Request open purchase-order quantities and landed cost columns. SKU_DETAIL only. */
+  includeOnOrder?: boolean
   signal?: AbortSignal
 }): Promise<SalesAnalysisReport> {
   const params = new URLSearchParams({
@@ -1131,6 +1141,7 @@ export async function fetchSalesAnalysis(args: {
   if (args.ytd) params.set('ytd', 'true')
   if (args.priorYear) params.set('priorYear', 'true')
   if (args.includeAttributes) params.set('includeAttributes', 'true')
+  if (args.includeOnOrder) params.set('includeOnOrder', 'true')
   const res = await fetch(`/api/v1/reports/sales/sales-analysis?${params}`, { signal: args.signal })
   if (!res.ok) await throwReportApiError(res, `Failed to fetch sales analysis: ${res.status}`)
   return res.json()
@@ -1579,6 +1590,48 @@ export function getSalesHistoryByMonthCsvUrl(params: SalesHistoryByMonthParams):
 export function getSalesHistoryByMonthXlsxUrl(params: SalesHistoryByMonthParams): string {
   const qs = buildSalesHistoryByMonthParams(params, 'xlsx')
   return `/api/v1/reports/rics-sales-history-by-month?${qs}`
+}
+
+// ── Seasonality Index ─────────────────────────────────────────────
+
+export interface SeasonalityMonth {
+  month: number
+  label: string
+  rawSalesQty: number
+  index: number
+}
+
+export interface DepartmentSeasonalityRow {
+  departmentNumber: number
+  departmentLabel: string
+  totalSalesQty: number
+  averageMonthlyQty: number
+  sampleMonths: number
+  months: SeasonalityMonth[]
+}
+
+export interface SeasonalityIndexReport {
+  basis: 'DEPARTMENT_ALL_STORES'
+  generatedAt: string
+  historyStartMonth: string
+  historyEndMonth: string
+  rows: DepartmentSeasonalityRow[]
+}
+
+export async function fetchSeasonalityIndex(args: {
+  endMonth?: string
+  department?: number
+  signal?: AbortSignal
+} = {}): Promise<SeasonalityIndexReport> {
+  const params = new URLSearchParams()
+  if (args.endMonth) params.set('endMonth', args.endMonth)
+  if (args.department != null) params.set('department', String(args.department))
+  const qs = params.toString()
+  const res = await fetch(`/api/v1/reports/seasonality-index${qs ? `?${qs}` : ''}`, { signal: args.signal })
+  if (!res.ok) {
+    await throwReportApiError(res, `Failed to fetch seasonality index: ${res.status}`)
+  }
+  return res.json()
 }
 
 export type PurchaseOrderReportDateBy = 'orderDate' | 'shipDate' | 'cancelDate' | 'paymentDate'

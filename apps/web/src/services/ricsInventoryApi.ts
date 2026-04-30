@@ -473,8 +473,37 @@ export interface ReorderPlanSizeLine {
   previousOrderQty: number
   curvePct: number
   curveSource: 'SKU_SALES' | 'CATEGORY_SALES' | 'MODEL' | 'PREVIOUS_ORDER' | 'NONE'
+  forecastDemandQty: number
+  baselineMonthlyDemand: number
+  activeDemandMonths: number
   projectedSales: number
   recommendedQty: number
+}
+
+export interface ReorderCasePackCell {
+  rowLabel: string
+  columnLabel: string
+  sizeLabel: string
+  quantity: number
+}
+
+export interface ReorderCasePackSuggestion {
+  code: string
+  description: string | null
+  multiplier: number
+  unitsPerPack: number
+  totalUnits: number
+  autoApply: boolean
+  overbuyQty: number
+  overbuyLimitQty: number
+  supplierUsed: boolean
+  supplierUsageCount: number
+  supplierLastUsedAt: string | null
+  sameSkuPreviousPack: boolean
+  shortageQty: number
+  excessQty: number
+  differenceQty: number
+  sizeCells: ReorderCasePackCell[]
 }
 
 export interface ReorderPlanChain {
@@ -492,6 +521,7 @@ export interface ReorderPlanChain {
     skuSalesQty: number
     categorySalesQty: number
     previousOrderQty: number
+    forecastDemandQty: number
     projectedSales: number
     recommendedQty: number
   }
@@ -499,7 +529,10 @@ export interface ReorderPlanChain {
     poNumber: string | null
     orderDate: string | null
     source: 'NATIVE' | 'LEGACY' | null
+    casePackId: string | null
+    casePackMultiplier: number | null
   }
+  casePackSuggestion: ReorderCasePackSuggestion | null
   sizeLines: ReorderPlanSizeLine[]
 }
 
@@ -522,7 +555,25 @@ export interface ReorderPlan {
     coverageDays: number
     moqQty: number
     salesLookbackDays: number
+    forecastMonths: string[]
+    forecastStartMonth: string
+    seasonalityHistoryEndMonth: string
   }
+  seasonality: {
+    basis: 'DEPARTMENT_ALL_STORES'
+    departmentNumber: number | null
+    departmentLabel: string | null
+    averageMonthlyQty: number
+    sampleMonths: number
+    indexes: Array<{ month: number; label: string; index: number; rawSalesQty: number }>
+  }
+  vendorDraftPo: {
+    poId: string
+    poNumber: string
+    updatedAt: string
+    lineCount: number
+    totalQuantity: number
+  } | null
   defaults: ReorderPlannerDefaults
   chains: ReorderPlanChain[]
   warnings: string[]
@@ -542,6 +593,8 @@ export interface ReorderDefaultsInput extends ReorderPlanParams {
 export interface CreateReorderDraftPoInput extends ReorderPlanParams {
   chainId?: string | null
   chainLabel?: string | null
+  casePackId?: string | null
+  casePackMultiplier?: number | null
   createdBy?: string
   sizeCells: Array<{ rowLabel: string; columnLabel: string; quantity: number }>
 }
@@ -550,6 +603,8 @@ export interface CreateReorderDraftPoResult {
   poId: string
   poNumber: string
   totalQuantity: number
+  mode: 'CREATED' | 'APPENDED'
+  appendedToExistingPo: boolean
 }
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {

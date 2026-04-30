@@ -28,6 +28,7 @@ import otbLinesRoutes from './routes/otbLinesRoutes';
 import otbMonthlyPlanRoutes from './routes/otbMonthlyPlanRoutes';
 import otbPlanRowRoutes from './routes/otbPlanRowRoutes';
 import purchasePlanningRoutes from './routes/purchasePlanningRoutes';
+import importManagementRoutes from './routes/importManagementRoutes';
 import companySettingsRoutes from './routes/companySettingsRoutes';
 import publicProductRoutes from './routes/publicProductRoutes';
 import cartRoutes from './routes/cartRoutes';
@@ -56,6 +57,7 @@ import { createAuthRoutes } from './routes/authRoutes';
 import { createEmployeeRoutes } from './routes/employeeRoutes';
 import { createTimeClockRoutes } from './routes/timeClockRoutes';
 import { createUserRoutes } from './routes/userRoutes';
+import { createPlatformAuditRoutes } from './routes/platformAuditRoutes';
 import { createReportTemplatesRoutes } from './routes/reports/reportTemplatesRoutes';
 import { createReportRunsRoutes } from './routes/reports/reportRunsRoutes';
 import { attachUser } from './middleware/authMiddleware';
@@ -131,6 +133,7 @@ app.use('/api/v1/otb', otbLinesRoutes);
 app.use('/api/v1/otb/monthly-plans', otbMonthlyPlanRoutes);
 app.use('/api/v1/otb/plan-rows', otbPlanRowRoutes);
 app.use('/api/v1/purchase-planning', purchasePlanningRoutes);
+app.use('/api/v1/import-management', importManagementRoutes);
 app.use('/api/v1/company-settings', companySettingsRoutes);
 app.use('/api/public/products', publicProductRoutes);
 app.use('/api/public/cart', cartRoutes);
@@ -172,11 +175,16 @@ app.use('/api/v1/products/skus', productsSkuRoutes);
 app.use('/api/v1/utilities', utilitiesBatchRoutes);
 app.use('/api/v1/operations/migration-day', migrationDayRoutes);
 
-// employees module
+// identity-access module
 app.use('/api/v1/auth', createAuthRoutes(prisma));
+app.use('/api/v1/users', createUserRoutes(prisma));
+
+// platform shared audit log
+app.use('/api/v1/platform/audit', createPlatformAuditRoutes(prisma));
+
+// employees module
 app.use('/api/v1/employees', createEmployeeRoutes(prisma));
 app.use('/api/v1', createTimeClockRoutes(prisma));
-app.use('/api/v1/users', createUserRoutes(prisma));
 
 // reports module — saved templates (Phase 1) + frozen snapshots (Phase 1.1).
 app.use('/api/v1/reports/templates', createReportTemplatesRoutes(prisma));

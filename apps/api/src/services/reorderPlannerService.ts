@@ -1,12 +1,24 @@
 import { prisma } from '../db/prisma';
 import { getInventoryInquiry } from './ricsInventoryFacade';
-import { createPurchaseOrder } from './purchaseOrderService';
-import type { PurchaseOrder } from '../models/purchaseOrder';
+import { appendPurchaseOrderLineItem, createPurchaseOrder } from './purchaseOrderService';
+import { getCasePackByCode } from './casePackService';
+import type { PoLineItem, PurchaseOrder } from '../models/purchaseOrder';
+import {
+  currentYearMonth,
+  forecastSeasonalDemand,
+  getDepartmentSeasonalityRow,
+  indexesByCalendarMonth,
+  lastCompletedYearMonth,
+  nextYearMonths,
+  resolveDepartmentForCategory,
+  type MonthQuantity,
+} from './seasonalityIndexService';
 
 const DEFAULT_LEAD_TIME_DAYS = 90;
 const DEFAULT_ORDER_CYCLE_DAYS = 90;
 const DEFAULT_MOQ_QTY = 0;
 const AVERAGE_DAYS_PER_MONTH = 365 / 12;
+const REORDER_PLAN_MAX_CONCURRENT = Math.max(1, Math.trunc(Number(process.env.REORDER_PLAN_MAX_CONCURRENT ?? 1)));
 
 type CurveSource = 'SKU_SALES' | 'CATEGORY_SALES' | 'MODEL' | 'PREVIOUS_ORDER' | 'NONE';
 type DefaultsScope = 'SKU' | 'VENDOR' | 'DEFAULT';
@@ -41,11 +53,14 @@ interface MutableSizeLine {
   modelQty: number;
   modelShort: number;
   skuSalesQty: number;
-  projectionSalesQty: number;
+  skuMonthlySales: Map<string, number>;
   categorySalesQty: number;
   previousOrderQty: number;
   curvePct: number;
   curveSource: CurveSource;
+  forecastDemandQty: number;
+  baselineMonthlyDemand: number;
+  activeDemandMonths: number;
   projectedSales: number;
   recommendedQty: number;
 }
@@ -57,17 +72,73 @@ interface MonthlySizeSalesRow {
   qty: unknown;
 }
 
-interface VelocitySizeSalesRow {
-  column_label: string;
-  row_label: string;
-  adjusted_qty: unknown;
+interface CasePackRow {
+  code: string;
+  description: string | null;
+  column_label: string | null;
+  row_label: string | null;
+  quantity: unknown;
 }
 
-interface ProjectionWindow {
-  start: Date;
-  end: Date;
-  days: number;
-  months: number;
+interface VendorDraftPoRow {
+  po_id: string;
+  po_number: string;
+  updated_at: Date | string | null;
+  line_count: unknown;
+  total_quantity: unknown;
+}
+
+interface CasePackSupplierUsage {
+  usageCount: number;
+  lastUsedAt: string | null;
+}
+
+let activeReorderPlanBuilds = 0;
+const reorderPlanWaiters: Array<() => void> = [];
+
+export interface ReorderCasePackCell {
+  rowLabel: string;
+  columnLabel: string;
+  sizeLabel: string;
+  quantity: number;
+}
+
+export interface ReorderCasePackCandidate {
+  code: string;
+  description: string | null;
+  unitsPerPack: number;
+  cells: ReorderCasePackCell[];
+  supplierUsed?: boolean;
+  supplierUsageCount?: number;
+  supplierLastUsedAt?: string | null;
+  sameSkuPreviousPack?: boolean;
+}
+
+export interface ReorderCasePackSuggestion {
+  code: string;
+  description: string | null;
+  multiplier: number;
+  unitsPerPack: number;
+  totalUnits: number;
+  autoApply: boolean;
+  overbuyQty: number;
+  overbuyLimitQty: number;
+  supplierUsed: boolean;
+  supplierUsageCount: number;
+  supplierLastUsedAt: string | null;
+  sameSkuPreviousPack: boolean;
+  shortageQty: number;
+  excessQty: number;
+  differenceQty: number;
+  sizeCells: ReorderCasePackCell[];
+}
+
+export interface VendorDraftPoSummary {
+  poId: string;
+  poNumber: string;
+  updatedAt: string;
+  lineCount: number;
+  totalQuantity: number;
 }
 
 export interface ReorderPlannerDefaults {
@@ -95,6 +166,9 @@ export interface ReorderPlanSizeLine {
   previousOrderQty: number;
   curvePct: number;
   curveSource: CurveSource;
+  forecastDemandQty: number;
+  baselineMonthlyDemand: number;
+  activeDemandMonths: number;
   projectedSales: number;
   recommendedQty: number;
 }
@@ -114,6 +188,7 @@ export interface ReorderPlanChain {
     skuSalesQty: number;
     categorySalesQty: number;
     previousOrderQty: number;
+    forecastDemandQty: number;
     projectedSales: number;
     recommendedQty: number;
   };
@@ -121,7 +196,10 @@ export interface ReorderPlanChain {
     poNumber: string | null;
     orderDate: string | null;
     source: 'NATIVE' | 'LEGACY' | null;
+    casePackId: string | null;
+    casePackMultiplier: number | null;
   };
+  casePackSuggestion: ReorderCasePackSuggestion | null;
   sizeLines: ReorderPlanSizeLine[];
 }
 
@@ -144,7 +222,25 @@ export interface ReorderPlan {
     coverageDays: number;
     moqQty: number;
     salesLookbackDays: number;
+    forecastMonths: string[];
+    forecastStartMonth: string;
+    seasonalityHistoryEndMonth: string;
   };
+  seasonality: {
+    basis: 'DEPARTMENT_ALL_STORES';
+    departmentNumber: number | null;
+    departmentLabel: string | null;
+    averageMonthlyQty: number;
+    sampleMonths: number;
+    indexes: Array<{ month: number; label: string; index: number; rawSalesQty: number }>;
+  };
+  vendorDraftPo: {
+    poId: string;
+    poNumber: string;
+    updatedAt: string;
+    lineCount: number;
+    totalQuantity: number;
+  } | null;
   defaults: ReorderPlannerDefaults;
   chains: ReorderPlanChain[];
   warnings: string[];
@@ -167,6 +263,8 @@ export interface SaveReorderDefaultsInput {
 export interface CreateReorderDraftPoInput extends ReorderPlanOptions {
   chainId?: string | null;
   chainLabel?: string | null;
+  casePackId?: string | null;
+  casePackMultiplier?: number | null;
   sizeCells: Array<{ rowLabel?: string | null; columnLabel?: string | null; quantity: number }>;
   createdBy?: string | null;
 }
@@ -175,6 +273,8 @@ export interface ReorderDraftPoResult {
   poId: string;
   poNumber: string;
   totalQuantity: number;
+  mode: 'CREATED' | 'APPENDED';
+  appendedToExistingPo: boolean;
   purchaseOrder: PurchaseOrder;
 }
 
@@ -213,25 +313,29 @@ function toIsoDate(value: Date | string | null | undefined): string | null {
   return Number.isNaN(d.getTime()) ? null : d.toISOString();
 }
 
-function addCalendarMonths(date: Date, months: number): Date {
-  const copy = new Date(date);
-  copy.setMonth(copy.getMonth() + months);
-  return copy;
+async function acquireReorderPlanSlot(): Promise<() => void> {
+  if (activeReorderPlanBuilds < REORDER_PLAN_MAX_CONCURRENT) {
+    activeReorderPlanBuilds += 1;
+    return releaseReorderPlanSlot;
+  }
+  await new Promise<void>((resolve) => {
+    reorderPlanWaiters.push(resolve);
+  });
+  activeReorderPlanBuilds += 1;
+  return releaseReorderPlanSlot;
 }
 
-function resolveProjectionWindow(lastReceivedAt: string | null | undefined, analysisDate: Date): ProjectionWindow | null {
-  if (!lastReceivedAt) return null;
-  const start = new Date(lastReceivedAt);
-  if (Number.isNaN(start.getTime()) || start >= analysisDate) return null;
-  const twoMonthsAfterReceipt = addCalendarMonths(start, 2);
-  const end = twoMonthsAfterReceipt < analysisDate ? twoMonthsAfterReceipt : analysisDate;
-  const days = Math.max(1, Math.ceil((end.getTime() - start.getTime()) / 86400000));
-  return {
-    start,
-    end,
-    days,
-    months: days / AVERAGE_DAYS_PER_MONTH,
-  };
+function releaseReorderPlanSlot(): void {
+  activeReorderPlanBuilds = Math.max(0, activeReorderPlanBuilds - 1);
+  const next = reorderPlanWaiters.shift();
+  if (next) next();
+}
+
+function isTemporaryDatabaseResourceError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err ?? '');
+  return message.includes('Code: `53100`')
+    || message.includes('could not resize shared memory segment')
+    || message.includes('No space left on device');
 }
 
 function sizeKey(columnLabel: string | null | undefined, rowLabel: string | null | undefined): string {
@@ -284,6 +388,10 @@ function resolveSizeGridCell(
 
 function addToMap(map: Map<string, number>, key: string, value: number): void {
   map.set(key, (map.get(key) ?? 0) + value);
+}
+
+function normalizeCasePackCode(code: string | null | undefined): string {
+  return (code ?? '').trim().toUpperCase();
 }
 
 function sumLine(lines: ReorderPlanSizeLine[], get: (line: ReorderPlanSizeLine) => number): number {
@@ -349,6 +457,183 @@ export function applyOrderConstraints(
   }));
 }
 
+function addDays(date: Date, days: number): Date {
+  return new Date(date.getTime() + days * 86400000);
+}
+
+export function calculateRecommendedReorderQty(input: {
+  modelQty: number;
+  forecastDemandQty: number;
+  onHand: number;
+  onOrder: number;
+}): number {
+  return Math.max(0, Math.ceil(
+    Math.max(0, input.modelQty)
+    + Math.max(0, input.forecastDemandQty)
+    - Math.max(0, input.onHand)
+    - Math.max(0, input.onOrder),
+  ));
+}
+
+export function resolveForecastMonths(analysisDate: Date, leadTimeDays: number, orderCycleDays: number): {
+  forecastStartMonth: string;
+  forecastMonths: string[];
+} {
+  const forecastStartMonth = currentYearMonth(addDays(analysisDate, Math.max(0, Math.trunc(leadTimeDays))));
+  const buyHorizonDays = Math.max(1, Math.trunc(leadTimeDays) + Math.trunc(orderCycleDays));
+  const forecastMonthCount = Math.max(1, Math.ceil(buyHorizonDays / AVERAGE_DAYS_PER_MONTH));
+  return {
+    forecastStartMonth,
+    forecastMonths: nextYearMonths(forecastStartMonth, forecastMonthCount),
+  };
+}
+
+export function calculateNativeOnOrderSupplement(input: {
+  currentOnOrder: number;
+  futureOnOrder: number;
+  nativeOpenQty: number;
+}): number {
+  const existingOnOrder = Math.max(0, input.currentOnOrder) + Math.max(0, input.futureOnOrder);
+  return Math.max(0, Math.trunc(Math.max(0, input.nativeOpenQty) - existingOnOrder));
+}
+
+export function buildReorderAppendLineItems(
+  existingLines: PoLineItem[],
+  newLine: {
+    skuId: string;
+    quantity: number;
+    unitCost: number;
+    casePackId?: string | null;
+    casePackMultiplier?: number | null;
+    sizeCells: Array<{ columnLabel: string; rowLabel: string; quantity: number }>;
+  },
+): Array<{
+  skuId: string;
+  quantity: number;
+  unitCost: number;
+  casePackId?: string | null;
+  casePackMultiplier?: number | null;
+  sizeCells: Array<{ columnLabel: string; rowLabel: string; quantity: number }>;
+}> {
+  return [
+    ...existingLines.map((line) => ({
+      skuId: line.skuId,
+      quantity: line.quantityOrdered,
+      unitCost: line.unitCost,
+      casePackId: line.casePackId,
+      casePackMultiplier: line.casePackMultiplier,
+      sizeCells: line.sizeCells.map((cell) => ({
+        columnLabel: cell.columnLabel,
+        rowLabel: cell.rowLabel,
+        quantity: cell.quantity,
+      })),
+    })),
+    newLine,
+  ];
+}
+
+function compareCasePackScores(
+  a: Pick<ReorderCasePackSuggestion, 'shortageQty' | 'excessQty' | 'differenceQty' | 'sameSkuPreviousPack' | 'supplierUsed' | 'supplierUsageCount' | 'supplierLastUsedAt' | 'multiplier' | 'code'>,
+  b: Pick<ReorderCasePackSuggestion, 'shortageQty' | 'excessQty' | 'differenceQty' | 'sameSkuPreviousPack' | 'supplierUsed' | 'supplierUsageCount' | 'supplierLastUsedAt' | 'multiplier' | 'code'>,
+): number {
+  const supplierLastUsedA = a.supplierLastUsedAt ? new Date(a.supplierLastUsedAt).getTime() : 0;
+  const supplierLastUsedB = b.supplierLastUsedAt ? new Date(b.supplierLastUsedAt).getTime() : 0;
+  return a.shortageQty - b.shortageQty
+    || a.excessQty - b.excessQty
+    || a.differenceQty - b.differenceQty
+    || Number(b.sameSkuPreviousPack) - Number(a.sameSkuPreviousPack)
+    || Number(b.supplierUsed) - Number(a.supplierUsed)
+    || b.supplierUsageCount - a.supplierUsageCount
+    || supplierLastUsedB - supplierLastUsedA
+    || a.multiplier - b.multiplier
+    || a.code.localeCompare(b.code, undefined, { numeric: true });
+}
+
+export function buildCasePackSuggestion(
+  lines: ReorderPlanSizeLine[],
+  casePacks: ReorderCasePackCandidate[],
+): ReorderCasePackSuggestion | null {
+  const targetTotal = lines.reduce((sum, line) => sum + Math.max(0, Math.trunc(line.recommendedQty)), 0);
+  if (targetTotal <= 0) return null;
+
+  let bestAutoApply: ReorderCasePackSuggestion | null = null;
+  let bestOptional: ReorderCasePackSuggestion | null = null;
+  for (const pack of casePacks) {
+    if (pack.unitsPerPack <= 0 || pack.cells.length === 0) continue;
+    const packQtyBySize = new Map<string, number>();
+    for (const cell of pack.cells) {
+      const qty = Math.max(0, Math.trunc(cell.quantity));
+      if (qty <= 0) continue;
+      addToMap(packQtyBySize, sizeKey(cell.columnLabel, cell.rowLabel), qty);
+    }
+    if (packQtyBySize.size === 0) continue;
+
+    let maxNeededForCoveredSizes = 1;
+    for (const line of lines) {
+      const target = Math.max(0, Math.trunc(line.recommendedQty));
+      const packQty = packQtyBySize.get(sizeKey(line.columnLabel, line.rowLabel)) ?? 0;
+      if (target > 0 && packQty > 0) {
+        maxNeededForCoveredSizes = Math.max(maxNeededForCoveredSizes, Math.ceil(target / packQty));
+      }
+    }
+    const maxByTotal = Math.max(1, Math.ceil(targetTotal / pack.unitsPerPack));
+    const maxMultiplier = Math.min(10000, Math.max(maxNeededForCoveredSizes, maxByTotal));
+
+    for (let multiplier = 1; multiplier <= maxMultiplier; multiplier += 1) {
+      let shortageQty = 0;
+      let excessQty = 0;
+      let differenceQty = 0;
+      const sizeCells: ReorderCasePackCell[] = [];
+
+      for (const line of lines) {
+        const target = Math.max(0, Math.trunc(line.recommendedQty));
+        const quantity = (packQtyBySize.get(sizeKey(line.columnLabel, line.rowLabel)) ?? 0) * multiplier;
+        shortageQty += Math.max(0, target - quantity);
+        excessQty += Math.max(0, quantity - target);
+        differenceQty += Math.abs(quantity - target);
+        if (quantity > 0) {
+          sizeCells.push({
+            rowLabel: line.rowLabel,
+            columnLabel: line.columnLabel,
+            sizeLabel: line.sizeLabel,
+            quantity,
+          });
+        }
+      }
+
+      const candidate: ReorderCasePackSuggestion = {
+        code: pack.code,
+        description: pack.description,
+        multiplier,
+        unitsPerPack: pack.unitsPerPack,
+        totalUnits: pack.unitsPerPack * multiplier,
+        autoApply: false,
+        overbuyQty: 0,
+        overbuyLimitQty: Math.max(Math.ceil(targetTotal * 0.10), pack.unitsPerPack),
+        supplierUsed: Boolean(pack.supplierUsed),
+        supplierUsageCount: Math.max(0, Math.trunc(Number(pack.supplierUsageCount ?? 0))),
+        supplierLastUsedAt: pack.supplierLastUsedAt ?? null,
+        sameSkuPreviousPack: Boolean(pack.sameSkuPreviousPack),
+        shortageQty,
+        excessQty,
+        differenceQty,
+        sizeCells,
+      };
+      candidate.overbuyQty = Math.max(0, candidate.totalUnits - targetTotal);
+      candidate.autoApply = candidate.shortageQty === 0 && candidate.overbuyQty <= candidate.overbuyLimitQty;
+
+      if (candidate.autoApply && (!bestAutoApply || compareCasePackScores(candidate, bestAutoApply) < 0)) {
+        bestAutoApply = candidate;
+      }
+      if (!bestOptional || compareCasePackScores(candidate, bestOptional) < 0) {
+        bestOptional = candidate;
+      }
+    }
+  }
+
+  return bestAutoApply ?? bestOptional;
+}
+
 async function loadSku(skuCode: string): Promise<SkuRow | null> {
   const rows = await prisma.$queryRawUnsafe<SkuRow[]>(
     `
@@ -369,6 +654,38 @@ async function loadSku(skuCode: string): Promise<SkuRow | null> {
     skuCode.trim(),
   );
   return rows[0] ?? null;
+}
+
+async function findVendorDraftPurchaseOrder(vendorId: string | null | undefined): Promise<VendorDraftPoSummary | null> {
+  const vendorCode = cleanText(vendorId)?.toUpperCase();
+  if (!vendorCode) return null;
+  const rows = await prisma.$queryRawUnsafe<VendorDraftPoRow[]>(
+    `
+      SELECT
+        po.id::text AS po_id,
+        po.po_number,
+        po.updated_at,
+        COUNT(pol.id)::int AS line_count,
+        COALESCE(SUM(pol.quantity_ordered), 0)::int AS total_quantity
+      FROM app.purchase_order po
+      LEFT JOIN app.purchase_order_line pol ON pol.po_id = po.id
+      WHERE po.vendor_code = $1
+        AND po.status = 'DRAFT'
+      GROUP BY po.id, po.po_number, po.updated_at, po.created_at
+      ORDER BY po.updated_at DESC NULLS LAST, po.created_at DESC
+      LIMIT 1
+    `,
+    vendorCode,
+  );
+  const row = rows[0];
+  if (!row) return null;
+  return {
+    poId: row.po_id,
+    poNumber: row.po_number,
+    updatedAt: toIsoDate(row.updated_at) ?? new Date(0).toISOString(),
+    lineCount: Math.trunc(asNumber(row.line_count)),
+    totalQuantity: Math.trunc(asNumber(row.total_quantity)),
+  };
 }
 
 async function loadDefaults(sku: SkuRow): Promise<ReorderPlannerDefaults> {
@@ -529,6 +846,156 @@ async function loadCategorySalesBySize(
   return new Map(rows.map((r) => [sizeKey(r.column_label, r.row_label), asNumber(r.qty)]));
 }
 
+async function loadActiveCasePackCandidates(
+  sizeTypeCode: number | null | undefined,
+  columnLabels: string[],
+  rowLabels: string[],
+): Promise<ReorderCasePackCandidate[]> {
+  if (sizeTypeCode == null) return [];
+  const rows = await prisma.$queryRawUnsafe<CasePackRow[]>(
+    `
+      SELECT
+        cp.code,
+        NULLIF(BTRIM(cp."desc"), '') AS description,
+        cpc.column_label,
+        cpc.row_label,
+        COALESCE(cpc.quantity, 0)::int AS quantity
+      FROM app.case_pack cp
+      JOIN app.case_pack_cell cpc ON cpc.case_pack_code = cp.code
+      WHERE cp.active = true
+        AND cp.size_type_code = $1
+      ORDER BY cp.code, NULLIF(cpc.row_label, '') NULLS FIRST, cpc.column_label
+    `,
+    sizeTypeCode,
+  );
+
+  const byPack = new Map<string, {
+    code: string;
+    description: string | null;
+    cellsBySize: Map<string, ReorderCasePackCell>;
+  }>();
+  for (const row of rows) {
+    const resolved = resolveSizeGridCell(row.column_label, row.row_label, columnLabels, rowLabels);
+    if (!resolved) continue;
+    const quantity = Math.max(0, Math.trunc(asNumber(row.quantity)));
+    if (quantity <= 0) continue;
+    let pack = byPack.get(row.code);
+    if (!pack) {
+      pack = { code: row.code, description: row.description, cellsBySize: new Map() };
+      byPack.set(row.code, pack);
+    }
+    const key = sizeKey(resolved.columnLabel, resolved.rowLabel);
+    const existing = pack.cellsBySize.get(key);
+    const nextQty = (existing?.quantity ?? 0) + quantity;
+    pack.cellsBySize.set(key, {
+      rowLabel: resolved.rowLabel,
+      columnLabel: resolved.columnLabel,
+      sizeLabel: sizeLabel(resolved.columnLabel, resolved.rowLabel),
+      quantity: nextQty,
+    });
+  }
+
+  return [...byPack.values()]
+    .map((pack) => {
+      const cells = [...pack.cellsBySize.values()]
+        .sort((a, b) => a.rowLabel.localeCompare(b.rowLabel, undefined, { numeric: true })
+          || a.columnLabel.localeCompare(b.columnLabel, undefined, { numeric: true }));
+      return {
+        code: pack.code,
+        description: pack.description,
+        unitsPerPack: cells.reduce((sum, cell) => sum + cell.quantity, 0),
+        cells,
+      };
+    })
+    .filter((pack) => pack.unitsPerPack > 0);
+}
+
+async function loadSupplierCasePackUsage(
+  vendorCode: string | null | undefined,
+  sizeTypeCode: number | null | undefined,
+): Promise<Map<string, CasePackSupplierUsage>> {
+  const normalizedVendor = cleanText(vendorCode)?.toUpperCase() ?? '';
+  if (!normalizedVendor || sizeTypeCode == null) return new Map();
+
+  const rows = await prisma.$queryRawUnsafe<Array<{
+    code: string;
+    usage_count: unknown;
+    last_used_at: Date | string | null;
+  }>>(
+    `
+      WITH usage_rows AS (
+        SELECT
+          NULLIF(BTRIM(pol.case_pack_id), '') AS case_pack_code,
+          po.po_number::text AS po_number,
+          po.order_date AS used_at
+        FROM app.purchase_order po
+        JOIN app.purchase_order_line pol ON pol.po_id = po.id
+        WHERE UPPER(BTRIM(po.vendor_code)) = $1
+          AND po.status <> 'CANCELLED'
+          AND NULLIF(BTRIM(pol.case_pack_id), '') IS NOT NULL
+        UNION ALL
+        SELECT
+          NULLIF(BTRIM(l.case_pack_code), '') AS case_pack_code,
+          po.po_number::text AS po_number,
+          COALESCE(po.last_received_at, po.order_date) AS used_at
+        FROM app.purchase_order_legacy po
+        JOIN app.purchase_order_legacy_line l ON l.po_number = po.po_number
+        WHERE UPPER(BTRIM(COALESCE(l.vendor_code, po.vendor_code, ''))) = $1
+          AND NULLIF(BTRIM(l.case_pack_code), '') IS NOT NULL
+      )
+      SELECT
+        cp.code,
+        COUNT(DISTINCT usage_rows.po_number)::int AS usage_count,
+        MAX(usage_rows.used_at) AS last_used_at
+      FROM usage_rows
+      JOIN app.case_pack cp ON UPPER(cp.code) = UPPER(usage_rows.case_pack_code)
+      WHERE cp.active = true
+        AND cp.size_type_code = $2
+      GROUP BY cp.code
+    `,
+    normalizedVendor,
+    sizeTypeCode,
+  );
+
+  return new Map(rows.map((row) => [normalizeCasePackCode(row.code), {
+    usageCount: asNumber(row.usage_count),
+    lastUsedAt: toIsoDate(row.last_used_at),
+  }]));
+}
+
+async function loadNativeOpenPurchaseOrdersBySize(skuId: string): Promise<Map<string, number>> {
+  const rows = await prisma.$queryRawUnsafe<Array<{
+    column_label: string;
+    row_label: string;
+    qty: unknown;
+  }>>(
+    `
+      SELECT
+        COALESCE(c.column_label, '') AS column_label,
+        COALESCE(c.row_label, '') AS row_label,
+        COALESCE(SUM(
+          CASE
+            WHEN c.id IS NULL THEN GREATEST(pol.quantity_ordered - pol.quantity_received, 0)
+            ELSE GREATEST(0, ROUND(
+              c.quantity_ordered::numeric
+              * GREATEST(pol.quantity_ordered - pol.quantity_received, 0)::numeric
+              / NULLIF(pol.quantity_ordered, 0)
+            ))::int
+          END
+        ), 0)::int AS qty
+      FROM app.purchase_order_line pol
+      JOIN app.purchase_order po ON po.id = pol.po_id
+      LEFT JOIN app.purchase_order_line_size_cell c ON c.po_line_id = pol.id
+      WHERE pol.sku_id = $1::uuid
+        AND po.status IN ('DRAFT','SUBMITTED','CONFIRMED','PARTIALLY_RECEIVED')
+        AND GREATEST(pol.quantity_ordered - pol.quantity_received, 0) > 0
+      GROUP BY COALESCE(c.column_label, ''), COALESCE(c.row_label, '')
+    `,
+    skuId,
+  );
+  return new Map(rows.map((row) => [sizeKey(row.column_label, row.row_label), asNumber(row.qty)]));
+}
+
 async function loadSkuMonthlySalesBySize(
   sku: SkuRow,
   storeNumbers: number[],
@@ -551,41 +1018,6 @@ async function loadSkuMonthlySalesBySize(
     `,
     sku.id,
     sku.sku_code,
-    ...(hasStores ? [storeNumbers] : []),
-  );
-}
-
-async function loadSkuVelocitySalesBySize(
-  sku: SkuRow,
-  storeNumbers: number[],
-  window: ProjectionWindow | null,
-): Promise<VelocitySizeSalesRow[]> {
-  if (!window) return [];
-  const hasStores = storeNumbers.length > 0;
-  return prisma.$queryRawUnsafe<VelocitySizeSalesRow[]>(
-    `
-      SELECT
-        COALESCE(l.column_label, '') AS column_label,
-        COALESCE(l.row_label, l.size_value, '') AS row_label,
-        COALESCE(SUM(
-          CASE
-            WHEN EXTRACT(MONTH FROM t.purchased_at) = 12 THEN l.quantity::numeric / 3
-            ELSE l.quantity::numeric
-          END
-        ), 0)::float8 AS adjusted_qty
-      FROM app.sales_history_ticket t
-      JOIN app.sales_history_ticket_line l ON l.ticket_id = t.id
-      WHERE (l.sku_id = $1::uuid OR UPPER(l.sku_code) = UPPER($2))
-        AND t.status = 'completed'
-        AND t.purchased_at >= $3::timestamptz
-        AND t.purchased_at < $4::timestamptz
-        ${hasStores ? 'AND t.store_id = ANY($5::int[])' : ''}
-      GROUP BY COALESCE(l.column_label, ''), COALESCE(l.row_label, l.size_value, '')
-    `,
-    sku.id,
-    sku.sku_code,
-    window.start,
-    window.end,
     ...(hasStores ? [storeNumbers] : []),
   );
 }
@@ -650,17 +1082,31 @@ interface PreviousOrder {
   poNumber: string | null;
   orderDate: string | null;
   source: 'NATIVE' | 'LEGACY' | null;
+  casePackId: string | null;
+  casePackMultiplier: number | null;
   cells: Map<string, number>;
 }
 
 async function loadNativePreviousOrder(skuId: string): Promise<PreviousOrder | null> {
-  const candidates = await prisma.$queryRawUnsafe<Array<{ id: string; po_number: string; order_date: Date | string | null }>>(
+  const candidates = await prisma.$queryRawUnsafe<Array<{
+    id: string;
+    po_number: string;
+    order_date: Date | string | null;
+    case_pack_id: string | null;
+    case_pack_multiplier: unknown;
+  }>>(
     `
-      SELECT po.id::text, po.po_number, po.order_date
+      SELECT
+        po.id::text,
+        po.po_number,
+        po.order_date,
+        MAX(NULLIF(BTRIM(pol.case_pack_id), '')) AS case_pack_id,
+        MAX(pol.case_pack_multiplier) AS case_pack_multiplier
       FROM app.purchase_order po
       JOIN app.purchase_order_line pol ON pol.po_id = po.id
       WHERE pol.sku_id = $1::uuid
         AND po.status <> 'CANCELLED'
+      GROUP BY po.id, po.po_number, po.order_date, po.created_at
       ORDER BY po.order_date DESC, po.created_at DESC
       LIMIT 1
     `,
@@ -693,6 +1139,8 @@ async function loadNativePreviousOrder(skuId: string): Promise<PreviousOrder | n
     poNumber: candidate.po_number,
     orderDate: toIsoDate(candidate.order_date),
     source: 'NATIVE',
+    casePackId: cleanText(candidate.case_pack_id),
+    casePackMultiplier: candidate.case_pack_multiplier == null ? null : Math.trunc(asNumber(candidate.case_pack_multiplier)),
     cells,
   };
 }
@@ -701,9 +1149,20 @@ async function loadLegacyPreviousOrder(
   sku: SkuRow,
   columnLabels: string[],
 ): Promise<PreviousOrder | null> {
-  const candidates = await prisma.$queryRawUnsafe<Array<{ po_number: string; order_date: Date | string | null; last_received_at: Date | string | null }>>(
+  const candidates = await prisma.$queryRawUnsafe<Array<{
+    po_number: string;
+    order_date: Date | string | null;
+    last_received_at: Date | string | null;
+    case_pack_code: string | null;
+    case_multiplier: unknown;
+  }>>(
     `
-      SELECT po.po_number, po.order_date, po.last_received_at
+      SELECT
+        po.po_number,
+        po.order_date,
+        po.last_received_at,
+        MAX(NULLIF(BTRIM(l.case_pack_code), '')) AS case_pack_code,
+        MAX(l.case_multiplier) AS case_multiplier
       FROM app.purchase_order_legacy po
       JOIN app.purchase_order_legacy_line l ON l.po_number = po.po_number
       WHERE (l.sku_id = $1::uuid OR UPPER(l.sku_code) = UPPER($2))
@@ -746,6 +1205,8 @@ async function loadLegacyPreviousOrder(
     poNumber: candidate.po_number,
     orderDate: toIsoDate(candidate.last_received_at ?? candidate.order_date),
     source: 'LEGACY',
+    casePackId: cleanText(candidate.case_pack_code),
+    casePackMultiplier: candidate.case_multiplier == null ? null : Math.trunc(asNumber(candidate.case_multiplier)),
     cells,
   };
 }
@@ -763,7 +1224,14 @@ async function loadPreviousOrder(
     const legacyTime = legacy.orderDate ? new Date(legacy.orderDate).getTime() : 0;
     return nativeTime >= legacyTime ? native : legacy;
   }
-  return native ?? legacy ?? { poNumber: null, orderDate: null, source: null, cells: new Map() };
+  return native ?? legacy ?? {
+    poNumber: null,
+    orderDate: null,
+    source: null,
+    casePackId: null,
+    casePackMultiplier: null,
+    cells: new Map(),
+  };
 }
 
 function addBaseSizeCells(
@@ -788,11 +1256,14 @@ function addBaseSizeCells(
           modelQty: 0,
           modelShort: 0,
           skuSalesQty: 0,
-          projectionSalesQty: 0,
+          skuMonthlySales: new Map<string, number>(),
           categorySalesQty: 0,
           previousOrderQty: 0,
           curvePct: 0,
           curveSource: 'NONE',
+          forecastDemandQty: 0,
+          baselineMonthlyDemand: 0,
+          activeDemandMonths: 0,
           projectedSales: 0,
           recommendedQty: 0,
         });
@@ -816,11 +1287,14 @@ function ensureLine(map: Map<string, MutableSizeLine>, columnLabel: string, rowL
       modelQty: 0,
       modelShort: 0,
       skuSalesQty: 0,
-      projectionSalesQty: 0,
+      skuMonthlySales: new Map<string, number>(),
       categorySalesQty: 0,
       previousOrderQty: 0,
       curvePct: 0,
       curveSource: 'NONE',
+      forecastDemandQty: 0,
+      baselineMonthlyDemand: 0,
+      activeDemandMonths: 0,
       projectedSales: 0,
       recommendedQty: 0,
     };
@@ -829,20 +1303,25 @@ function ensureLine(map: Map<string, MutableSizeLine>, columnLabel: string, rowL
   return line;
 }
 
-export async function getReorderPlan(skuCode: string, options: ReorderPlanOptions = {}): Promise<ReorderPlan | null> {
+async function buildReorderPlan(skuCode: string, options: ReorderPlanOptions = {}): Promise<ReorderPlan | null> {
   const sku = await loadSku(skuCode);
   if (!sku) return null;
   const inquiry = await getInventoryInquiry(sku.sku_code);
   if (!inquiry) return null;
 
-  const defaults = await loadDefaults(sku);
+  const [defaults, department, vendorDraftPo] = await Promise.all([
+    loadDefaults(sku),
+    resolveDepartmentForCategory(sku.category_number),
+    findVendorDraftPurchaseOrder(sku.vendor_id),
+  ]);
   const leadTimeDays = clampPositiveInt(options.leadTimeDays, defaults.leadTimeDays);
   const orderCycleDays = clampPositiveInt(options.orderCycleDays, defaults.orderCycleDays);
   const moqQty = clampNonNegativeInt(options.moqQty, defaults.moqQty);
   const analysisDate = new Date();
-  const projectionWindow = resolveProjectionWindow(inquiry.lastReceivedAt, analysisDate);
-  const salesLookbackDays = projectionWindow?.days ?? 0;
   const coverageDays = leadTimeDays + orderCycleDays;
+  const { forecastStartMonth, forecastMonths } = resolveForecastMonths(analysisDate, leadTimeDays, orderCycleDays);
+  const seasonalityHistoryEndMonth = lastCompletedYearMonth(analysisDate);
+  const salesLookbackDays = 365;
   const columnLabels = inquiry.master.sizeType.columnLabels.filter((label) => label.trim().length > 0);
   const rowLabels = inquiry.master.sizeType.rowLabels.filter((label) => label.trim().length > 0);
   const modeledStoreNumbers = inquiry.stores
@@ -864,13 +1343,33 @@ export async function getReorderPlan(skuCode: string, options: ReorderPlanOption
   const warnings: string[] = [];
   if (!sku.vendor_id) warnings.push('SKU has no vendor; draft PO creation will be blocked until a vendor is assigned.');
   if (detectedChains.length === 0) warnings.push('No planning chains were detected for this SKU.');
-  if (!projectionWindow) {
-    warnings.push('No usable last received date was found; projected sales are treated as 0 and recommendation falls back to model fill.');
+  if (department.departmentNumber == null) {
+    warnings.push('SKU category is not mapped to a department; reorder demand uses neutral seasonality.');
   }
-  const [previousOrder, warehouseStoreNumbers] = await Promise.all([
+  const [previousOrder, warehouseStoreNumbers, seasonalityRow, casePacks, supplierCasePackUsage, nativeOpenPoBySize] = await Promise.all([
     loadPreviousOrder(sku, columnLabels),
     loadWarehouseStoreNumbers(),
+    getDepartmentSeasonalityRow(department.departmentNumber, seasonalityHistoryEndMonth),
+    loadActiveCasePackCandidates(sku.size_type, columnLabels, rowLabels),
+    loadSupplierCasePackUsage(sku.vendor_id, sku.size_type),
+    loadNativeOpenPurchaseOrdersBySize(sku.id),
   ]);
+  const previousCasePackCode = normalizeCasePackCode(previousOrder.casePackId);
+  const casePacksForSuggestion = casePacks.map((pack) => {
+    const usage = supplierCasePackUsage.get(normalizeCasePackCode(pack.code));
+    return {
+      ...pack,
+      supplierUsed: Boolean(usage),
+      supplierUsageCount: usage?.usageCount ?? 0,
+      supplierLastUsedAt: usage?.lastUsedAt ?? null,
+      sameSkuPreviousPack: previousCasePackCode.length > 0
+        && normalizeCasePackCode(pack.code) === previousCasePackCode,
+    };
+  });
+  const seasonalityIndexes = indexesByCalendarMonth(seasonalityRow);
+  if (seasonalityRow.sampleMonths === 0) {
+    warnings.push('Department seasonality history is empty; every month is treated as a neutral 1.00 index.');
+  }
   const warehouseStockByStore = await loadWarehouseStockBySize(sku.id, warehouseStoreNumbers);
   const totalWarehouseOnHand = [...warehouseStockByStore.values()]
     .flatMap((bySize) => [...bySize.values()])
@@ -883,6 +1382,7 @@ export async function getReorderPlan(skuCode: string, options: ReorderPlanOption
   }
 
   const planChains: ReorderPlanChain[] = [];
+  let categorySalesFallbackWarningAdded = false;
   for (const chain of chains) {
     const chainStores = chain.storeNumbers.length > 0 ? chain.storeNumbers : fallbackStoreNumbers;
     const storeSet = new Set(chainStores);
@@ -914,31 +1414,52 @@ export async function getReorderPlan(skuCode: string, options: ReorderPlanOption
         line.onHand += qty;
       }
     }
+    let nativeOnOrderSupplementQty = 0;
+    for (const [key, nativeOpenQty] of nativeOpenPoBySize) {
+      const [rowLabel, columnLabel] = key.split('|');
+      const resolved = resolveSizeGridCell(columnLabel, rowLabel, columnLabels, rowLabels);
+      if (!resolved) continue;
+      const line = ensureLine(lineMap, resolved.columnLabel, resolved.rowLabel);
+      const supplement = calculateNativeOnOrderSupplement({
+        currentOnOrder: line.currentOnOrder,
+        futureOnOrder: line.futureOnOrder,
+        nativeOpenQty,
+      });
+      line.futureOnOrder += supplement;
+      nativeOnOrderSupplementQty += supplement;
+    }
+    if (nativeOnOrderSupplementQty > 0 && chain.chainId == null) {
+      warnings.push(`Open native purchase orders add ${nativeOnOrderSupplementQty} units to on-order availability before calculating the reorder suggestion.`);
+    }
 
-    const [skuSalesRows, velocitySalesRows, categorySales] = await Promise.all([
-      loadSkuMonthlySalesBySize(sku, chainStores),
-      loadSkuVelocitySalesBySize(sku, chainStores, projectionWindow),
-      loadCategorySalesBySize(sku, chainStores),
-    ]);
+    const skuSalesRows = await loadSkuMonthlySalesBySize(sku, chainStores);
 
     for (const row of skuSalesRows) {
       const resolved = resolveSizeGridCell(row.column_label, row.row_label, columnLabels, rowLabels);
       if (!resolved) continue;
       const line = ensureLine(lineMap, resolved.columnLabel, resolved.rowLabel);
-      line.skuSalesQty += asNumber(row.qty);
+      const qty = asNumber(row.qty);
+      line.skuSalesQty += qty;
+      line.skuMonthlySales.set(row.year_month, (line.skuMonthlySales.get(row.year_month) ?? 0) + qty);
     }
-    for (const row of velocitySalesRows) {
-      const resolved = resolveSizeGridCell(row.column_label, row.row_label, columnLabels, rowLabels);
-      if (!resolved) continue;
-      const line = ensureLine(lineMap, resolved.columnLabel, resolved.rowLabel);
-      line.projectionSalesQty += asNumber(row.adjusted_qty);
-    }
-    for (const [key, qty] of categorySales) {
-      const [rowLabel, columnLabel] = key.split('|');
-      const resolved = resolveSizeGridCell(columnLabel, rowLabel, columnLabels, rowLabels);
-      if (!resolved) continue;
-      const line = ensureLine(lineMap, resolved.columnLabel, resolved.rowLabel);
-      line.categorySalesQty += qty;
+    const chainSkuSalesQty = [...lineMap.values()].reduce((sum, line) => sum + line.skuSalesQty, 0);
+    if (chainSkuSalesQty <= 0) {
+      try {
+        const categorySales = await loadCategorySalesBySize(sku, chainStores);
+        for (const [key, qty] of categorySales) {
+          const [rowLabel, columnLabel] = key.split('|');
+          const resolved = resolveSizeGridCell(columnLabel, rowLabel, columnLabels, rowLabels);
+          if (!resolved) continue;
+          const line = ensureLine(lineMap, resolved.columnLabel, resolved.rowLabel);
+          line.categorySalesQty += qty;
+        }
+      } catch (err) {
+        if (!isTemporaryDatabaseResourceError(err)) throw err;
+        if (!categorySalesFallbackWarningAdded) {
+          warnings.push('Category sales curve fallback could not be loaded because the database was temporarily resource constrained; the planner used model/previous-order curve fallback instead.');
+          categorySalesFallbackWarningAdded = true;
+        }
+      }
     }
     for (const [key, qty] of previousOrder.cells) {
       const [rowLabel, columnLabel] = key.split('|');
@@ -960,15 +1481,25 @@ export async function getReorderPlan(skuCode: string, options: ReorderPlanOption
             : totalPrevious > 0 ? 'PREVIOUS_ORDER'
               : 'NONE';
     normalizeRatios(lines, curveSource);
-    const projectionMonths = projectionWindow?.months ?? 0;
 
     const normalized = lines.map((line) => {
       const onOrder = line.currentOnOrder + line.futureOnOrder;
       line.modelShort = Math.max(0, line.modelQty - line.onHand - onOrder);
-      line.projectedSales = projectionMonths > 0
-        ? Math.ceil((line.projectionSalesQty / projectionMonths) * (coverageDays / AVERAGE_DAYS_PER_MONTH))
-        : 0;
-      line.recommendedQty = Math.max(0, Math.ceil(line.modelQty + line.projectedSales - line.onHand - onOrder));
+      const forecast = forecastSeasonalDemand(
+        [...line.skuMonthlySales.entries()].map(([yearMonth, quantity]): MonthQuantity => ({ yearMonth, quantity })),
+        seasonalityIndexes,
+        forecastMonths,
+      );
+      line.forecastDemandQty = forecast.forecastQty;
+      line.baselineMonthlyDemand = forecast.baselineMonthlyQty;
+      line.activeDemandMonths = forecast.activeMonths;
+      line.projectedSales = line.forecastDemandQty;
+      line.recommendedQty = calculateRecommendedReorderQty({
+        modelQty: line.modelQty,
+        forecastDemandQty: line.forecastDemandQty,
+        onHand: line.onHand,
+        onOrder,
+      });
       return {
         rowLabel: line.rowLabel,
         columnLabel: line.columnLabel,
@@ -984,6 +1515,9 @@ export async function getReorderPlan(skuCode: string, options: ReorderPlanOption
         previousOrderQty: line.previousOrderQty,
         curvePct: line.curvePct,
         curveSource: line.curveSource,
+        forecastDemandQty: line.forecastDemandQty,
+        baselineMonthlyDemand: line.baselineMonthlyDemand,
+        activeDemandMonths: line.activeDemandMonths,
         projectedSales: line.projectedSales,
         recommendedQty: line.recommendedQty,
       };
@@ -992,6 +1526,7 @@ export async function getReorderPlan(skuCode: string, options: ReorderPlanOption
     const constrained = applyOrderConstraints(normalized, moqQty, sku.order_multiple)
       .sort((a, b) => a.rowLabel.localeCompare(b.rowLabel, undefined, { numeric: true })
         || a.columnLabel.localeCompare(b.columnLabel, undefined, { numeric: true }));
+    const casePackSuggestion = buildCasePackSuggestion(constrained, casePacksForSuggestion);
 
     planChains.push({
       chainId: chain.chainId,
@@ -1003,7 +1538,10 @@ export async function getReorderPlan(skuCode: string, options: ReorderPlanOption
         poNumber: previousOrder.poNumber,
         orderDate: previousOrder.orderDate,
         source: previousOrder.source,
+        casePackId: previousOrder.casePackId,
+        casePackMultiplier: previousOrder.casePackMultiplier,
       },
+      casePackSuggestion,
       sizeLines: constrained,
       totals: {
         onHand: sumLine(constrained, (line) => line.onHand),
@@ -1014,6 +1552,7 @@ export async function getReorderPlan(skuCode: string, options: ReorderPlanOption
         skuSalesQty: sumLine(constrained, (line) => line.skuSalesQty),
         categorySalesQty: sumLine(constrained, (line) => line.categorySalesQty),
         previousOrderQty: sumLine(constrained, (line) => line.previousOrderQty),
+        forecastDemandQty: sumLine(constrained, (line) => line.forecastDemandQty),
         projectedSales: sumLine(constrained, (line) => line.projectedSales),
         recommendedQty: sumLine(constrained, (line) => line.recommendedQty),
       },
@@ -1039,11 +1578,37 @@ export async function getReorderPlan(skuCode: string, options: ReorderPlanOption
       coverageDays,
       moqQty,
       salesLookbackDays,
+      forecastMonths,
+      forecastStartMonth,
+      seasonalityHistoryEndMonth,
     },
+    seasonality: {
+      basis: 'DEPARTMENT_ALL_STORES',
+      departmentNumber: department.departmentNumber,
+      departmentLabel: department.departmentLabel ?? seasonalityRow.departmentLabel,
+      averageMonthlyQty: seasonalityRow.averageMonthlyQty,
+      sampleMonths: seasonalityRow.sampleMonths,
+      indexes: seasonalityRow.months.map((month) => ({
+        month: month.month,
+        label: month.label,
+        index: month.index,
+        rawSalesQty: month.rawSalesQty,
+      })),
+    },
+    vendorDraftPo,
     defaults,
     chains: planChains,
     warnings,
   };
+}
+
+export async function getReorderPlan(skuCode: string, options: ReorderPlanOptions = {}): Promise<ReorderPlan | null> {
+  const release = await acquireReorderPlanSlot();
+  try {
+    return await buildReorderPlan(skuCode, options);
+  } finally {
+    release();
+  }
 }
 
 export async function saveReorderDefaults(
@@ -1123,22 +1688,57 @@ export async function createReorderDraftPurchaseOrder(
     .filter((cell) => cell.quantity > 0);
   const totalQuantity = sizeCells.reduce((sum, cell) => sum + cell.quantity, 0);
   if (totalQuantity <= 0) return { error: 'EMPTY_REORDER_QUANTITY' };
+  const casePackId = cleanText(input.casePackId);
+  let casePackMultiplier: number | null = null;
+  if (casePackId) {
+    const casePack = await getCasePackByCode(casePackId);
+    if (!casePack) return { error: 'CASE_PACK_NOT_FOUND' };
+    if (!casePack.active) return { error: 'CASE_PACK_INACTIVE' };
+    if (sku.size_type == null || casePack.sizeTypeCode !== sku.size_type) {
+      return { error: 'CASE_PACK_SIZE_TYPE_MISMATCH' };
+    }
+    casePackMultiplier = Math.max(1, Math.trunc(Number(input.casePackMultiplier ?? 1) || 1));
+  }
 
   const notes = [
     `Generated from Inventory Inquiry reorder planner for SKU ${sku.sku_code}.`,
     `Chain: ${cleanText(input.chainLabel) ?? cleanText(input.chainId) ?? 'Unassigned'}.`,
     `Lead time: ${leadTimeDays} days. Order cycle: ${orderCycleDays} days. MOQ: ${moqQty}.`,
+    casePackId ? `Case pack: ${casePackId} x ${casePackMultiplier}.` : null,
     `Calculation date: ${new Date().toISOString()}.`,
-  ].join(' ');
+  ].filter(Boolean).join(' ');
+
+  const newLineItem = {
+    skuId: sku.id,
+    quantity: totalQuantity,
+    unitCost: asNumber(sku.current_cost),
+    casePackId,
+    casePackMultiplier,
+    sizeCells,
+  };
+
+  const existingVendorDraftPo = await findVendorDraftPurchaseOrder(sku.vendor_id);
+  if (existingVendorDraftPo) {
+    const appendResult = await appendPurchaseOrderLineItem(existingVendorDraftPo.poId, {
+      ...newLineItem,
+      notes,
+      expectedVendorId: sku.vendor_id,
+    });
+    if (!appendResult) return { error: 'EXISTING_PO_NOT_FOUND' };
+    if ('error' in appendResult) return appendResult;
+    return {
+      poId: appendResult.id,
+      poNumber: appendResult.poNumber,
+      totalQuantity,
+      mode: 'APPENDED',
+      appendedToExistingPo: true,
+      purchaseOrder: appendResult,
+    };
+  }
 
   const result = await createPurchaseOrder({
     vendorId: sku.vendor_id,
-    lineItems: [{
-      skuId: sku.id,
-      quantity: totalQuantity,
-      unitCost: asNumber(sku.current_cost),
-      sizeCells,
-    }],
+    lineItems: [newLineItem],
     notes,
     createdBy,
     origin: 'REORDER_PLANNER',
@@ -1148,6 +1748,8 @@ export async function createReorderDraftPurchaseOrder(
     poId: result.id,
     poNumber: result.poNumber,
     totalQuantity,
+    mode: 'CREATED',
+    appendedToExistingPo: false,
     purchaseOrder: result,
   };
 }

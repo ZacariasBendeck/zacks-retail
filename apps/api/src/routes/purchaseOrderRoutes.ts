@@ -66,6 +66,10 @@ router.post('/', validate(createPurchaseOrderSchema), async (req: Request, res: 
       res.status(409).json({ error: { code: 'RESERVED_PO_PREFIX', message: 'PO numbers starting with A or V are reserved.' } });
       return;
     }
+    if (result.error === 'INVALID_FX_RATE') {
+      res.status(422).json({ error: { code: 'INVALID_FX_RATE', message: 'Foreign-currency purchase orders require an FX rate greater than zero.' } });
+      return;
+    }
   }
 
   res.status(201).json(result);
@@ -168,7 +172,10 @@ router.get('/legacy/:poNumber', async (req: Request, res: Response): Promise<voi
 });
 
 router.post('/combine', validate(combinePurchaseOrdersSchema), async (req: Request, res: Response): Promise<void> => {
-  const result = await poService.combinePurchaseOrders(req.body.sourcePoId, req.body.intoPoId, {
+  const sourcePoIds = Array.isArray(req.body.sourcePoIds)
+    ? req.body.sourcePoIds
+    : req.body.sourcePoId;
+  const result = await poService.combinePurchaseOrders(sourcePoIds, req.body.intoPoId, {
     changedBy: req.body.changedBy,
   });
 
@@ -284,6 +291,10 @@ router.patch('/:poId', validate(updatePurchaseOrderSchema), async (req: Request,
     }
     if (result.error === 'RESERVED_PO_PREFIX') {
       res.status(409).json({ error: { code: 'RESERVED_PO_PREFIX', message: 'PO numbers starting with A or V are reserved.' } });
+      return;
+    }
+    if (result.error === 'INVALID_FX_RATE') {
+      res.status(422).json({ error: { code: 'INVALID_FX_RATE', message: 'Foreign-currency purchase orders require an FX rate greater than zero.' } });
       return;
     }
     if (result.error.startsWith('SKU_NOT_FOUND')) {
