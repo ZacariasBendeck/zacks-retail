@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import dayjs from 'dayjs'
 import {
   Alert,
@@ -11,6 +12,7 @@ import {
   InputNumber,
   Modal,
   App as AntdApp,
+  Popover,
   Select,
   Segmented,
   Space,
@@ -23,8 +25,9 @@ import {
   Upload,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import { useAuth } from '../../auth/useAuth'
+import ReportThumbnail from '../../components/reports/ReportThumbnail'
 import { SkuLookup } from '../../components/sku-lookup/SkuLookup'
 import {
   ArrowLeftOutlined,
@@ -34,6 +37,7 @@ import {
   InboxOutlined,
   LinkOutlined,
   PlusOutlined,
+  QuestionCircleOutlined,
   ReloadOutlined,
   SearchOutlined,
   ShoppingCartOutlined,
@@ -86,7 +90,10 @@ import {
   useVoidImportPayable,
 } from '../../hooks/useImportManagement'
 import { usePurchaseOrderBuyerOptions } from '../../hooks/usePurchaseOrders'
+import { useVendors } from '../../hooks/useProductsVendors'
+import { searchSkusForLookup, type SkuLookupRow } from '../../services/skuApi'
 import type {
+  CreateImportInvoiceLinePayload,
   GoodsInTransitRecordDto,
   GoodsInTransitStatus,
   ImportChargeRecord,
@@ -94,7 +101,14 @@ import type {
   ImportContainerStatus,
   ImportContainerType,
   ImportCommitmentBasis,
+  ImportCostBuildRecord,
+  ImportCostBuildPreviewComponent,
+  ImportCostBuildPreviewOutput,
+  ImportCostBuildPreviewRecord,
+  ImportCostComponentAllocationRecord,
   ImportInvoiceLineRecord,
+  ImportInvoiceLineCostRole,
+  ImportInvoiceLineReceiptPolicy,
   ImportInvoiceMatchSuggestion,
   ImportInvoiceMatchReviewStatus,
   ImportLiquidationReadinessCheck,
@@ -154,6 +168,20 @@ const INCOTERM_OPTIONS = ['EXW', 'FCA', 'FOB', 'CFR', 'CIF', 'CPT', 'CIP', 'DAP'
 const PO_CANDIDATE_STATUS_OPTIONS = ['DRAFT', 'SUBMITTED', 'CONFIRMED', 'PARTIALLY_RECEIVED']
 const INVOICE_GROUP_OPTIONS = ['TAXABLE', 'NON_TAXABLE', 'MIXED']
 const INVOICE_KIND_OPTIONS = ['MERCHANDISE', 'FABRIC', 'CMT', 'ACCESSORY', 'OTHER']
+const INVOICE_LINE_COST_ROLE_OPTIONS: ImportInvoiceLineCostRole[] = [
+  'FINISHED_GOOD',
+  'MATERIAL',
+  'CONVERSION',
+  'ACCESSORY_COMPONENT',
+  'RECEIPT_ACCESSORY',
+  'EXPENSE',
+]
+const INVOICE_LINE_RECEIPT_POLICY_OPTIONS: ImportInvoiceLineReceiptPolicy[] = [
+  'RECEIVE_TO_STOCK',
+  'ROLL_TO_OUTPUT',
+  'EXPENSE_ONLY',
+  'IGNORE',
+]
 const CHARGE_TYPE_OPTIONS = ['FREIGHT', 'INSURANCE', 'DUTY', 'TAX', 'CUSTOMS_AGENCY', 'LOCAL_FREIGHT', 'OTHER']
 const CHARGE_COST_TREATMENT_OPTIONS = ['ALLOCATE_TO_LANDED', 'INCLUDED_IN_COMMERCIAL_PRICE', 'EXCLUDE_FROM_LANDED']
 const CONTAINER_TYPE_OPTIONS: ImportContainerType[] = ['CONTAINER', 'LOOSE_CARGO', 'CARTON_GROUP']
@@ -176,6 +204,174 @@ const IMPORT_REPORT_EXPORTS = [
   { key: 'suggested-pricing-review', label: 'Suggested pricing review' },
   { key: 'ap-handoff', label: 'AP handoff' },
 ] as const
+
+type ImportTabGuideKey =
+  | 'overview'
+  | 'invoices'
+  | 'cost-builds'
+  | 'expected-pos'
+  | 'po-links'
+  | 'charges'
+  | 'payables'
+  | 'transit'
+  | 'receiving'
+  | 'verification'
+  | 'pricing'
+  | 'reports'
+  | 'audit'
+
+interface ImportTabGuideConfig {
+  eyebrow: string
+  title: string
+  information: string
+  purpose: string
+  use: string
+}
+
+const IMPORT_TAB_GUIDES: Record<ImportTabGuideKey, ImportTabGuideConfig> = {
+  overview: {
+    eyebrow: 'Shipment snapshot',
+    title: 'Header fields and shipment identity',
+    information: 'Buyer, workbook source, origin and destination ports, forwarder, BL, customs policy, ETA, and notes.',
+    purpose: 'Use this tab to confirm the shipment record is the right container or workbook before changing cost, transit, or status data.',
+    use: 'Check the header first when troubleshooting because every other tab rolls up to this shipment.',
+  },
+  invoices: {
+    eyebrow: 'Commercial documents',
+    title: 'Supplier invoices and invoice lines',
+    information: 'Supplier invoice headers, imported line items, currencies, SKU mappings, PO links, base HNL amounts, and landed-cost fields.',
+    purpose: 'Use this tab to turn supplier paperwork into app-owned cost lines for liquidation, OTB, receiving, pricing, and AP.',
+    use: 'If a PO exists, bring merchandise in from Expected PO lines. If no PO exists, add CI merchandise rows here as FINISHED_GOOD / RECEIVE_TO_STOCK lines. Add service, barcode, fabric, and tag costs here too as ROLL_TO_OUTPUT component lines.',
+  },
+  'cost-builds': {
+    eyebrow: 'Component costing',
+    title: 'Live and persisted cost builds',
+    information: 'Allocation groups, output lines, component lines, component HNL totals, warnings, and persisted build audit detail.',
+    purpose: 'Use this tab to verify that material, conversion, and accessory costs can roll into the finished goods correctly.',
+    use: 'Resolve warnings here before running landed-cost allocation; failed groups block allocation.',
+  },
+  'expected-pos': {
+    eyebrow: 'Pre-invoice planning',
+    title: 'Expected purchase-order lines',
+    information: 'Open PO lines expected in the shipment, suggested invoice matches, and filters for vendor, buyer, currency, incoterm, status, and container.',
+    purpose: 'Use this tab to build the shipment contents before all supplier invoices or workbook rows are available.',
+    use: 'Search open PO lines, add selected lines to the shipment, and match invoice lines when the paperwork arrives.',
+  },
+  'po-links': {
+    eyebrow: 'Purchasing bridge',
+    title: 'Import lines linked to native POs',
+    information: 'Every import line, its source type, SKU mapping, purchase-order connection, and draft-PO readiness.',
+    purpose: 'Use this tab to make import costs visible to purchasing and to prepare clean receiving handoff.',
+    use: 'Link invoice lines to PO lines, clear bad links, or create a draft purchase order for unmapped import lines.',
+  },
+  charges: {
+    eyebrow: 'Landed-cost inputs',
+    title: 'Freight, duty, tax, and local charges',
+    information: 'Non-merchandise costs such as freight, insurance, customs duty, taxes, agency fees, local freight, and other import charges.',
+    purpose: 'Use this tab to capture the extra costs that determine true landed cost and AP obligations.',
+    use: 'Add or edit charges before allocation, and mark estimates as final when the actual charge is known.',
+  },
+  payables: {
+    eyebrow: 'Accounting handoff',
+    title: 'AP staging and payable status',
+    information: 'Supplier invoice payables and landed-cost charge payables with staged, sent, paid, voided, and blocked status totals.',
+    purpose: 'Use this tab to decide what is ready for accounting and what must wait for final landed-cost amounts.',
+    use: 'Stage payables, mark ready rows as sent to AP, and track paid or voided handoff records.',
+  },
+  transit: {
+    eyebrow: 'Physical movement',
+    title: 'Containers and goods in transit',
+    information: 'Container records, loose cargo groups, carton groups, goods-in-transit records, linked lines, quantities, and transit statuses.',
+    purpose: 'Use this tab to keep the physical movement of imported stock aligned with the cost and receiving records.',
+    use: 'Assign lines to containers or transit records and keep statuses current from planning through final receipt.',
+  },
+  receiving: {
+    eyebrow: 'Inventory posting',
+    title: 'Estimated, final, and true-up receiving',
+    information: 'Ready, blocked, PO-linked, direct, and true-up receiving lines plus posted PO receipt, direct receipt, and true-up audit rows.',
+    purpose: 'Use this tab to post import inventory into the app ledger with either estimated or final landed costs.',
+    use: 'Filter receiving lines, select specific records, post estimated or final receipts, then review the audit section.',
+  },
+  verification: {
+    eyebrow: 'Finalization checks',
+    title: 'Liquidation readiness and manual checks',
+    information: 'System readiness checks and manually recorded verification checks with pass, warning, and fail states.',
+    purpose: 'Use this tab to keep final liquidation from closing while cost, receiving, PO, or AP issues remain unresolved.',
+    use: 'Review failed checks, fix the source tab, and add verification checks as operational steps are completed.',
+  },
+  pricing: {
+    eyebrow: 'Retail review',
+    title: 'Suggested prices from landed cost',
+    information: 'Suggested retail prices, approval states, mapped app SKUs, and the pricing handoff status created after allocation.',
+    purpose: 'Use this tab to review whether the landed cost supports the intended retail price and margin.',
+    use: 'Approve, reject, or post suggested prices after the relevant SKU and landed-cost data are ready.',
+  },
+  reports: {
+    eyebrow: 'Exports',
+    title: 'Operational and accounting extracts',
+    information: 'CSV and XLSX exports for shipment liquidation, goods in transit, expected POs, allocation, suggested pricing, and AP handoff.',
+    purpose: 'Use this tab to produce stable files for review, reconciliation, accounting, or external analysis.',
+    use: 'Download the report format needed by the receiving, buying, accounting, or operations team.',
+  },
+  audit: {
+    eyebrow: 'Change history',
+    title: 'Import audit events',
+    information: 'Recent audit events with actor, event type, reason, timestamps, before payloads, after payloads, and metadata.',
+    purpose: 'Use this tab to understand who changed import records, why the change happened, and what data moved.',
+    use: 'Refresh events and expand rows when researching cost changes, receiving posts, payable handoffs, or status moves.',
+  },
+}
+
+function importTabHelpLabel(label: string, guideKey: ImportTabGuideKey) {
+  const guide = IMPORT_TAB_GUIDES[guideKey]
+  return (
+    <Space size={5} align="center" wrap={false}>
+      <span>{label}</span>
+      <Popover
+        trigger="click"
+        placement="bottom"
+        title={guide.title}
+        content={(
+          <Space direction="vertical" size="small" style={{ width: 320 }}>
+            <Text type="secondary">{guide.information}</Text>
+            <div>
+              <Text strong>Purpose</Text>
+              <Text type="secondary" style={{ display: 'block' }}>{guide.purpose}</Text>
+            </div>
+            <div>
+              <Text strong>How to use it</Text>
+              <Text type="secondary" style={{ display: 'block' }}>{guide.use}</Text>
+            </div>
+          </Space>
+        )}
+      >
+        <Button
+          type="text"
+          shape="circle"
+          size="small"
+          aria-label={`${label} help`}
+          data-testid={`import-tab-help-${guideKey}`}
+          icon={<QuestionCircleOutlined />}
+          onClick={(event) => event.stopPropagation()}
+          style={{
+            width: 18,
+            minWidth: 18,
+            height: 18,
+            color: '#64748b',
+          }}
+        />
+      </Popover>
+    </Space>
+  )
+}
+
+function addImportTabHelp<T extends { key: string; label: string }>(item: T) {
+  if (!(item.key in IMPORT_TAB_GUIDES)) return item
+  return {
+    ...item,
+    label: importTabHelpLabel(item.label, item.key as ImportTabGuideKey),
+  }
+}
 
 const CONTAINER_STATUS_COLOR: Record<ImportContainerStatus, string> = {
   PLANNED: 'default',
@@ -231,6 +427,8 @@ const INVOICE_MATCH_STATUS_COLOR: Record<ImportInvoiceMatchReviewStatus, string>
 
 type ReceivingLineFilter = 'ALL' | 'READY' | 'BLOCKED' | 'TRUE_UP' | 'PO_LINKED' | 'DIRECT'
 type ReceivingAuditBasisFilter = 'ALL' | ImportReceivingCostBasis
+type InvoiceLineEntryMode = 'PO_LINES' | 'MANUAL'
+type VendorSelectOption = { value: string; label: string; vendorName: string }
 const IMPORT_MANAGEMENT_RECEIVE_ESTIMATED_PERMISSION = 'import_management.receive_estimated'
 const IMPORT_MANAGEMENT_FINAL_LIQUIDATION_PERMISSION = 'import_management.final_liquidation'
 const IMPORT_MANAGEMENT_COST_OVERRIDE_PERMISSION = 'import_management.cost_override'
@@ -370,10 +568,12 @@ function containerLabel(record: ImportContainerRecord) {
 export default function ImportShipmentsPage() {
   const { message } = AntdApp.useApp()
   const navigate = useNavigate()
+  const location = useLocation()
   const { shipmentId } = useParams<{ shipmentId?: string }>()
   const [page, setPage] = useState(1)
   const [status, setStatus] = useState<ImportShipmentStatus | undefined>()
   const [q, setQ] = useState('')
+  const [activeDetailTab, setActiveDetailTab] = useState<ImportTabGuideKey>('overview')
   const [createOpen, setCreateOpen] = useState(false)
   const [invoiceOpen, setInvoiceOpen] = useState(false)
   const [editingInvoiceId, setEditingInvoiceId] = useState<string | null>(null)
@@ -381,6 +581,13 @@ export default function ImportShipmentsPage() {
   const [editingChargeId, setEditingChargeId] = useState<string | null>(null)
   const [lineInvoiceId, setLineInvoiceId] = useState<string | null>(null)
   const [editingLineId, setEditingLineId] = useState<string | null>(null)
+  const [lineEntryMode, setLineEntryMode] = useState<InvoiceLineEntryMode>('PO_LINES')
+  const [selectedExpectedLineIds, setSelectedExpectedLineIds] = useState<string[]>([])
+  const [expectedLineInvoiceQuantities, setExpectedLineInvoiceQuantities] = useState<Record<string, number>>({})
+  const [addingExpectedLineIds, setAddingExpectedLineIds] = useState<string[]>([])
+  const [locallyAddedExpectedLineIds, setLocallyAddedExpectedLineIds] = useState<string[]>([])
+  const [nextInvoiceLineNumber, setNextInvoiceLineNumber] = useState<number | null>(null)
+  const [autoSelectExpectedLines, setAutoSelectExpectedLines] = useState(false)
   const [statusOpen, setStatusOpen] = useState(false)
   const [allocationOpen, setAllocationOpen] = useState(false)
   const [workbookOpen, setWorkbookOpen] = useState(false)
@@ -414,11 +621,20 @@ export default function ImportShipmentsPage() {
   const [poCandidateContainerId, setPoCandidateContainerId] = useState<string | null>(null)
   const [selectedPoCandidateLineIds, setSelectedPoCandidateLineIds] = useState<string[]>([])
   const [selectedReceivingRecordIds, setSelectedReceivingRecordIds] = useState<string[]>([])
-  const selectedShipmentId = shipmentId ?? null
+  const [clickedShipmentId, setClickedShipmentId] = useState<string | null>(null)
+  const pathShipmentId = useMemo(() => {
+    const match = /^\/import-management\/([^/?#]+)/.exec(location.pathname)
+    return match?.[1] ? decodeURIComponent(match[1]) : null
+  }, [location.pathname])
+  const selectedShipmentId = shipmentId ?? pathShipmentId ?? clickedShipmentId
   const openShipmentDetail = useCallback((id: string) => {
+    setActiveDetailTab('overview')
+    setClickedShipmentId(id)
     navigate(`/import-management/${id}`)
   }, [navigate])
   const closeShipmentDetail = useCallback(() => {
+    setActiveDetailTab('overview')
+    setClickedShipmentId(null)
     navigate('/import-management')
   }, [navigate])
 
@@ -447,16 +663,16 @@ export default function ImportShipmentsPage() {
   const canApproveImportMismatch = permissions.has(IMPORT_MANAGEMENT_APPROVE_MISMATCH_PERMISSION)
   const canPostSuggestedPrice = permissions.has(PRODUCTS_WRITE_PERMISSION)
 
-  const shipments = useImportShipments({ page, pageSize: 25, status, q })
-  const otbCommitments = useImportOtbCommitments({})
+  const shipments = useImportShipments({ page, pageSize: 25, status, q }, { enabled: !selectedShipmentId })
+  const otbCommitments = useImportOtbCommitments({}, { enabled: !selectedShipmentId })
   const detail = useImportShipment(selectedShipmentId)
-  const readiness = useImportLiquidationReadiness(selectedShipmentId)
-  const payables = useImportPayables(selectedShipmentId)
-  const receivingHandoff = useImportReceivingHandoff(selectedShipmentId)
-  const auditEvents = useImportShipmentAuditEvents(selectedShipmentId)
-  const poLinking = useImportPurchaseOrderLinking(selectedShipmentId)
-  const invoiceMatchSuggestions = useImportInvoiceMatchSuggestions(selectedShipmentId)
-  const poLineCandidates = useImportShipmentLineCandidates(selectedShipmentId, {
+  const readiness = useImportLiquidationReadiness(activeDetailTab === 'verification' ? selectedShipmentId : null)
+  const payables = useImportPayables(activeDetailTab === 'payables' ? selectedShipmentId : null)
+  const receivingHandoff = useImportReceivingHandoff(activeDetailTab === 'receiving' ? selectedShipmentId : null)
+  const auditEvents = useImportShipmentAuditEvents(activeDetailTab === 'audit' ? selectedShipmentId : null)
+  const poLinking = useImportPurchaseOrderLinking(activeDetailTab === 'po-links' ? selectedShipmentId : null)
+  const invoiceMatchSuggestions = useImportInvoiceMatchSuggestions(activeDetailTab === 'expected-pos' ? selectedShipmentId : null)
+  const poLineCandidates = useImportShipmentLineCandidates(activeDetailTab === 'expected-pos' ? selectedShipmentId : null, {
     q: poCandidateQ,
     vendorCode: poCandidateVendorCode,
     buyer: poCandidateBuyer,
@@ -497,7 +713,8 @@ export default function ImportShipmentsPage() {
   const createDraftPo = useCreateImportPurchaseOrderDraft()
   const linkPoLine = useLinkImportInvoiceLineToPurchaseOrderLine()
   const linkSku = useLinkImportInvoiceLineToSku()
-  const buyerOptionsQuery = usePurchaseOrderBuyerOptions()
+  const buyerOptionsQuery = usePurchaseOrderBuyerOptions({ enabled: createOpen || poDraftOpen || activeDetailTab === 'expected-pos' })
+  const vendorsQuery = useVendors(undefined, { enabled: invoiceOpen })
 
   const selectedShipment = detail.data
   const costOverridePermissionTitle = canOverrideImportCost ? undefined : `Missing permission: ${IMPORT_MANAGEMENT_COST_OVERRIDE_PERMISSION}`
@@ -513,6 +730,14 @@ export default function ImportShipmentsPage() {
   useEffect(() => {
     setSelectedReceivingRecordIds([])
   }, [selectedShipmentId])
+
+  useEffect(() => {
+    setActiveDetailTab('overview')
+  }, [selectedShipmentId])
+
+  useEffect(() => {
+    if (!pathShipmentId && !shipmentId) setClickedShipmentId(null)
+  }, [pathShipmentId, shipmentId])
 
   const selectedInvoice = selectedShipment?.supplierInvoices.find((invoice) => invoice.id === lineInvoiceId) ?? null
   const workbookPreview = previewWorkbook.data ?? null
@@ -689,10 +914,28 @@ export default function ImportShipmentsPage() {
       key: 'skuCode',
       render: (value: string | null) => value ? <Tag color="blue">{value}</Tag> : <Tag>UNMAPPED</Tag>,
     },
+    {
+      title: 'Cost role',
+      dataIndex: 'costRole',
+      key: 'costRole',
+      render: (value: ImportInvoiceLineCostRole, row) => (
+        <Space size={0} direction="vertical">
+          <Tag color={row.receiptPolicy === 'RECEIVE_TO_STOCK' ? 'green' : 'gold'}>{value}</Tag>
+          {row.allocationGroupKey ? <Text type="secondary">{row.allocationGroupKey}</Text> : null}
+        </Space>
+      ),
+    },
     { title: 'Description', dataIndex: 'description', key: 'description', render: (value: string | null) => value || '-' },
     { title: 'Qty', dataIndex: 'quantity', key: 'quantity', align: 'right', render: (value: number) => compact(value) },
     { title: 'Source', key: 'source', render: (_: unknown, row) => sourceText(row) },
     { title: 'Base HNL', dataIndex: 'hnlAmount', key: 'hnlAmount', align: 'right', render: (value: number) => money(value) },
+    {
+      title: 'Component HNL',
+      dataIndex: 'componentAllocatedCostHnl',
+      key: 'componentAllocatedCostHnl',
+      align: 'right',
+      render: (value: number) => value ? money(value) : '-',
+    },
     {
       title: 'Landed Unit',
       dataIndex: 'landedUnitCostHnl',
@@ -716,6 +959,217 @@ export default function ImportShipmentsPage() {
       ),
     },
   ], [canOverrideImportCost, costOverridePermissionTitle])
+
+  const costBuildPreviewColumns = useMemo<ColumnsType<ImportCostBuildPreviewRecord>>(() => [
+    {
+      title: 'Group',
+      dataIndex: 'allocationGroupKey',
+      key: 'allocationGroupKey',
+      render: (value: string | null, row) => (
+        <Space size={0} direction="vertical">
+          <Space size="small">
+            <Tag color={row.status === 'PASS' ? 'green' : row.status === 'WARN' ? 'gold' : 'red'}>{row.status}</Tag>
+            <Text strong>{value || 'UNASSIGNED'}</Text>
+          </Space>
+          {row.warnings[0] ? <Text type="secondary">{row.warnings[0]}</Text> : null}
+        </Space>
+      ),
+    },
+    { title: 'Outputs', dataIndex: 'outputLineCount', key: 'outputLineCount', align: 'right' },
+    { title: 'Components', dataIndex: 'componentLineCount', key: 'componentLineCount', align: 'right' },
+    {
+      title: 'Output HNL',
+      dataIndex: 'outputHnlAmount',
+      key: 'outputHnlAmount',
+      align: 'right',
+      render: (value: number) => money(value),
+    },
+    {
+      title: 'Component HNL',
+      dataIndex: 'componentHnlAmount',
+      key: 'componentHnlAmount',
+      align: 'right',
+      render: (value: number) => money(value),
+    },
+    {
+      title: 'Commercial HNL',
+      dataIndex: 'commercialHnlAmount',
+      key: 'commercialHnlAmount',
+      align: 'right',
+      render: (value: number) => money(value),
+    },
+    { title: 'Warnings', dataIndex: 'warningCount', key: 'warningCount', align: 'right' },
+  ], [])
+
+  const costBuildPreviewOutputColumns = useMemo<ColumnsType<ImportCostBuildPreviewOutput>>(() => [
+    { title: 'Invoice', dataIndex: 'invoiceNumber', key: 'invoiceNumber' },
+    {
+      title: 'SKU',
+      dataIndex: 'skuCode',
+      key: 'skuCode',
+      render: (value: string | null) => value ? <Tag color="green">{value}</Tag> : <Tag>UNMAPPED</Tag>,
+    },
+    { title: 'Item', dataIndex: 'itemCode', key: 'itemCode', render: (value: string | null) => value || '-' },
+    { title: 'Style', dataIndex: 'styleCode', key: 'styleCode', render: (value: string | null) => value || '-' },
+    { title: 'Description', dataIndex: 'description', key: 'description', render: (value: string | null) => value || '-' },
+    { title: 'Qty', dataIndex: 'quantity', key: 'quantity', align: 'right', render: (value: number) => compact(value) },
+    { title: 'Base HNL', dataIndex: 'hnlAmount', key: 'hnlAmount', align: 'right', render: (value: number) => money(value) },
+    {
+      title: 'Component HNL',
+      dataIndex: 'componentAllocatedCostHnl',
+      key: 'componentAllocatedCostHnl',
+      align: 'right',
+      render: (value: number) => value ? money(value) : '-',
+    },
+    {
+      title: 'Commercial Unit',
+      dataIndex: 'commercialUnitCostHnl',
+      key: 'commercialUnitCostHnl',
+      align: 'right',
+      render: (value: number) => money(value),
+    },
+  ], [])
+
+  const costBuildPreviewComponentColumns = useMemo<ColumnsType<ImportCostBuildPreviewComponent>>(() => [
+    {
+      title: 'Invoice',
+      dataIndex: 'invoiceNumber',
+      key: 'invoiceNumber',
+      render: (value: string, row) => (
+        <Space size={0} direction="vertical">
+          <Text>{value}</Text>
+          <Text type="secondary">{row.supplierName}</Text>
+        </Space>
+      ),
+    },
+    { title: 'Role', dataIndex: 'costRole', key: 'costRole', render: (value: ImportInvoiceLineCostRole) => <Tag color="gold">{value}</Tag> },
+    { title: 'Item', dataIndex: 'itemCode', key: 'itemCode', render: (value: string | null) => value || '-' },
+    { title: 'Style', dataIndex: 'styleCode', key: 'styleCode', render: (value: string | null) => value || '-' },
+    { title: 'Description', dataIndex: 'description', key: 'description', render: (value: string | null) => value || '-' },
+    {
+      title: 'Qty',
+      key: 'quantity',
+      align: 'right',
+      render: (_: unknown, row) => `${compact(row.quantity)} ${row.unitOfMeasure}`,
+    },
+    { title: 'HNL', dataIndex: 'hnlAmount', key: 'hnlAmount', align: 'right', render: (value: number) => money(value) },
+    { title: 'Warning', dataIndex: 'warning', key: 'warning', render: (value: string | null) => value || '-' },
+  ], [])
+
+  const costBuildColumns = useMemo<ColumnsType<ImportCostBuildRecord>>(() => [
+    {
+      title: 'Build',
+      dataIndex: 'buildCode',
+      key: 'buildCode',
+      render: (value: string, row) => (
+        <Space size={0} direction="vertical">
+          <Text strong>{value}</Text>
+          {row.description ? <Text type="secondary">{row.description}</Text> : null}
+        </Space>
+      ),
+    },
+    {
+      title: 'Output',
+      key: 'output',
+      render: (_: unknown, row) => (
+        <Space size={0} direction="vertical">
+          <Space size="small" wrap>
+            {row.outputSkuCode ? <Tag color="green">{row.outputSkuCode}</Tag> : <Tag>UNMAPPED</Tag>}
+            {row.outputInvoiceLineId ? <Tag>Invoice line</Tag> : null}
+            {row.outputShipmentLineId ? <Tag>PO line</Tag> : null}
+          </Space>
+          <Text>{row.outputDescription || row.outputItemCode || '-'}</Text>
+          {row.outputStyleCode ? <Text type="secondary">{row.outputStyleCode}</Text> : null}
+        </Space>
+      ),
+    },
+    { title: 'Output Qty', dataIndex: 'outputQuantity', key: 'outputQuantity', align: 'right', render: (value: number) => compact(value) },
+    { title: 'Basis', dataIndex: 'allocationBasis', key: 'allocationBasis', render: (value: string) => <Tag>{value}</Tag> },
+    { title: 'Components', dataIndex: 'componentCount', key: 'componentCount', align: 'right' },
+    {
+      title: 'Component HNL',
+      dataIndex: 'componentAllocatedHnlAmount',
+      key: 'componentAllocatedHnlAmount',
+      align: 'right',
+      render: (value: number) => money(value),
+    },
+  ], [])
+
+  const componentAllocationColumns = useMemo<ColumnsType<ImportCostComponentAllocationRecord>>(() => [
+    {
+      title: 'Component invoice',
+      dataIndex: 'componentInvoiceNumber',
+      key: 'componentInvoiceNumber',
+      render: (value: string, row) => (
+        <Space size={0} direction="vertical">
+          <Text>{value}</Text>
+          <Text type="secondary">{row.componentSupplierName}</Text>
+        </Space>
+      ),
+    },
+    {
+      title: 'Role',
+      dataIndex: 'componentCostRole',
+      key: 'componentCostRole',
+      render: (value: ImportInvoiceLineCostRole, row) => (
+        <Space size={0} direction="vertical">
+          <Tag color={row.componentReceiptPolicy === 'ROLL_TO_OUTPUT' ? 'gold' : 'green'}>{value}</Tag>
+          {row.componentAllocationGroupKey ? <Text type="secondary">{row.componentAllocationGroupKey}</Text> : null}
+        </Space>
+      ),
+    },
+    { title: 'Item', dataIndex: 'componentItemCode', key: 'componentItemCode', render: (value: string | null) => value || '-' },
+    { title: 'Style', dataIndex: 'componentStyleCode', key: 'componentStyleCode', render: (value: string | null) => value || '-' },
+    { title: 'Description', dataIndex: 'componentDescription', key: 'componentDescription', render: (value: string | null) => value || '-' },
+    { title: 'Basis', dataIndex: 'allocationBasis', key: 'allocationBasis', render: (value: string) => <Tag>{value}</Tag> },
+    {
+      title: 'Allocated HNL',
+      dataIndex: 'allocatedHnlAmount',
+      key: 'allocatedHnlAmount',
+      align: 'right',
+      render: (value: number) => money(value),
+    },
+    {
+      title: 'Allocated Qty',
+      dataIndex: 'allocatedQuantity',
+      key: 'allocatedQuantity',
+      align: 'right',
+      render: (value: number | null) => (value == null ? '-' : compact(value)),
+    },
+  ], [])
+
+  const expectedShipmentLines = selectedShipment?.shipmentLines ?? []
+  const expectedSkuCodes = useMemo(() => (
+    Array.from(new Set(
+      expectedShipmentLines
+        .map((line) => line.skuCode)
+        .filter((value): value is string => Boolean(value)),
+    )).sort()
+  ), [expectedShipmentLines])
+  const expectedSkuLookupEnabled = activeDetailTab === 'expected-pos' || (
+    Boolean(lineInvoiceId) &&
+    lineEntryMode === 'PO_LINES' &&
+    !editingLineId
+  )
+  const expectedSkuLookup = useQuery({
+    queryKey: ['import-management', 'expected-po-sku-lookup', expectedSkuCodes],
+    queryFn: async () => {
+      const entries = await Promise.all(expectedSkuCodes.map(async (skuCode) => {
+        const result = await searchSkusForLookup({
+          q: skuCode,
+          searchField: 'SKU',
+          skuMatchMode: 'prefix',
+          limit: 20,
+        })
+        const exact = result.rows.find((row) => row.skuCode === skuCode) ?? null
+        return [skuCode, exact] as const
+      }))
+      return Object.fromEntries(entries) as Record<string, SkuLookupRow | null>
+    },
+    enabled: expectedSkuLookupEnabled && expectedSkuCodes.length > 0,
+    staleTime: 10 * 60 * 1000,
+  })
+  const expectedSkuByCode = expectedSkuLookup.data ?? {}
 
   const expectedLineColumns = useMemo<ColumnsType<ImportShipmentLineRecord>>(() => [
     { title: 'PO', dataIndex: 'purchaseOrderNumber', key: 'purchaseOrderNumber' },
@@ -983,7 +1437,230 @@ export default function ImportShipmentsPage() {
   ], [])
 
   const allLines = selectedShipment?.supplierInvoices.flatMap((invoice) => invoice.lines) ?? []
-  const expectedShipmentLines = selectedShipment?.shipmentLines ?? []
+  const costBuildFailurePreviews = selectedShipment?.costBuildPreviews?.filter((preview) => preview.status === 'FAIL') ?? []
+  const allocationBlockedByCostBuilds = costBuildFailurePreviews.length > 0
+  const allocationBlockMessage = costBuildFailurePreviews
+    .flatMap((preview) => preview.warnings)
+    .filter(Boolean)
+    .slice(0, 2)
+    .join(' ')
+  const allocationButtonTitle = !canOverrideImportCost
+    ? costOverridePermissionTitle
+    : allocationBlockedByCostBuilds
+      ? 'Resolve blocking Cost Builds warnings before allocation.'
+      : undefined
+  const expectedVendorOptions = useMemo<VendorSelectOption[]>(() => {
+    const byCode = new Map<string, VendorSelectOption>()
+    for (const line of expectedShipmentLines) {
+      if (!line.vendorCode) continue
+      byCode.set(line.vendorCode, {
+        value: line.vendorCode,
+        label: `${line.vendorCode} - ${line.vendorName ?? line.vendorCode} (expected PO)`,
+        vendorName: line.vendorName ?? line.vendorCode,
+      })
+    }
+    return Array.from(byCode.values())
+  }, [expectedShipmentLines])
+  const vendorOptions = useMemo<VendorSelectOption[]>(() => {
+    const byCode = new Map<string, VendorSelectOption>()
+    const addOption = (option: VendorSelectOption) => {
+      if (!option.value || byCode.has(option.value)) return
+      byCode.set(option.value, option)
+    }
+
+    expectedVendorOptions.forEach(addOption)
+    selectedShipment?.supplierInvoices.forEach((invoice) => {
+      if (!invoice.supplierCode) return
+      addOption({
+        value: invoice.supplierCode,
+        label: `${invoice.supplierCode} - ${invoice.supplierName}`,
+        vendorName: invoice.supplierName,
+      })
+    })
+    vendorsQuery.data?.forEach((vendor) => {
+      addOption({
+        value: vendor.code,
+        label: `${vendor.code} - ${vendor.name}`,
+        vendorName: vendor.name,
+      })
+    })
+
+    return Array.from(byCode.values())
+  }, [expectedVendorOptions, selectedShipment?.supplierInvoices, vendorsQuery.data])
+  const unmatchedExpectedInvoiceLines = useMemo(() => (
+    expectedShipmentLines.filter((line) => !line.invoiceLineId)
+  ), [expectedShipmentLines])
+  const pickerExpectedInvoiceLines = useMemo(() => {
+    const locallyAdded = new Set(locallyAddedExpectedLineIds)
+    return unmatchedExpectedInvoiceLines.filter((line) => !locallyAdded.has(line.id))
+  }, [locallyAddedExpectedLineIds, unmatchedExpectedInvoiceLines])
+  const selectedExpectedLines = useMemo(() => {
+    const selected = new Set(selectedExpectedLineIds)
+    return pickerExpectedInvoiceLines.filter((line) => selected.has(line.id))
+  }, [pickerExpectedInvoiceLines, selectedExpectedLineIds])
+  useEffect(() => {
+    setExpectedLineInvoiceQuantities((previous) => {
+      const next: Record<string, number> = {}
+      for (const line of pickerExpectedInvoiceLines) {
+        const previousValue = previous[line.id]
+        const defaultValue = previousValue == null ? line.expectedQuantity : previousValue
+        next[line.id] = Math.min(Math.max(defaultValue, 0.001), line.expectedQuantity)
+      }
+      return next
+    })
+  }, [pickerExpectedInvoiceLines])
+  const getExpectedLineInvoiceQuantity = useCallback((row: ImportShipmentLineRecord) => {
+    const value = expectedLineInvoiceQuantities[row.id] ?? row.expectedQuantity
+    if (!Number.isFinite(value)) return row.expectedQuantity
+    return Math.min(Math.max(value, 0.001), row.expectedQuantity)
+  }, [expectedLineInvoiceQuantities])
+  useEffect(() => {
+    if (!autoSelectExpectedLines) return
+    setSelectedExpectedLineIds(pickerExpectedInvoiceLines.map((line) => line.id))
+    setAutoSelectExpectedLines(false)
+  }, [autoSelectExpectedLines, pickerExpectedInvoiceLines])
+  const invoiceLinePickerColumns = useMemo<ColumnsType<ImportShipmentLineRecord>>(() => [
+    { title: 'PO', dataIndex: 'purchaseOrderNumber', key: 'purchaseOrderNumber', width: 110 },
+    {
+      title: 'Product',
+      key: 'product',
+      width: 330,
+      render: (_: unknown, row) => {
+        const sku = row.skuCode ? expectedSkuByCode[row.skuCode] : null
+        return (
+          <Space align="start">
+            <div
+              style={{
+                width: 58,
+                minWidth: 58,
+                height: 58,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                border: '1px solid #f0f0f0',
+                borderRadius: 6,
+                background: '#fafafa',
+                overflow: 'hidden',
+              }}
+            >
+              {sku?.pictureUrl
+                ? <ReportThumbnail url={sku.pictureUrl} alt={row.skuCode ?? ''} height={52} maxWidth={56} />
+                : <InboxOutlined style={{ color: 'rgba(0, 0, 0, 0.35)', fontSize: 22 }} />}
+            </div>
+            <Space direction="vertical" size={0}>
+              {row.skuCode ? <Tag color="blue">{row.skuCode}</Tag> : <Tag>UNMAPPED</Tag>}
+              <Text ellipsis style={{ maxWidth: 230 }}>{row.description || sku?.description || '-'}</Text>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                {[sku?.category, sku?.styleColor, sku?.vendor].filter(Boolean).join(' / ') || row.vendorName || '-'}
+              </Text>
+            </Space>
+          </Space>
+        )
+      },
+    },
+    {
+      title: 'Vendor',
+      key: 'vendor',
+      width: 190,
+      render: (_: unknown, row) => (
+        <Space direction="vertical" size={0}>
+          <Text>{row.vendorCode}</Text>
+          <Text type="secondary" ellipsis style={{ maxWidth: 160 }}>{row.vendorName || '-'}</Text>
+        </Space>
+      ),
+    },
+    { title: 'PO qty', dataIndex: 'expectedQuantity', key: 'expectedQuantity', align: 'right', width: 90, render: (value: number) => compact(value) },
+    {
+      title: 'Invoice qty',
+      key: 'invoiceQuantity',
+      align: 'right',
+      width: 130,
+      render: (_: unknown, row) => (
+        <InputNumber
+          min={0.001}
+          max={row.expectedQuantity}
+          step={1}
+          value={expectedLineInvoiceQuantities[row.id] ?? row.expectedQuantity}
+          style={{ width: 112 }}
+          onChange={(value) => {
+            const numericValue = typeof value === 'number' ? value : Number(value)
+            const nextValue = Number.isFinite(numericValue)
+              ? Math.min(Math.max(numericValue, 0.001), row.expectedQuantity)
+              : row.expectedQuantity
+            setExpectedLineInvoiceQuantities((previous) => ({ ...previous, [row.id]: nextValue }))
+          }}
+        />
+      ),
+    },
+    { title: 'Terms', key: 'terms', width: 95, render: (_: unknown, row) => `${row.incotermCode || '-'} / ${row.sourceCurrency}` },
+    {
+      title: 'Unit source',
+      key: 'sourceUnitCost',
+      align: 'right',
+      width: 120,
+      render: (_: unknown, row) => row.sourceUnitCost == null ? '-' : `${compact(row.sourceUnitCost)} ${row.sourceCurrency}`,
+    },
+    {
+      title: 'Source total',
+      key: 'sourceTotal',
+      align: 'right',
+      width: 120,
+      render: (_: unknown, row) => {
+        const unit = row.sourceUnitCost ?? (row.fxRate ? row.commercialUnitCostHnl / row.fxRate : row.commercialUnitCostHnl)
+        return `${compact(unit * getExpectedLineInvoiceQuantity(row))} ${row.sourceCurrency}`
+      },
+    },
+    { title: 'Commercial HNL', dataIndex: 'commercialUnitCostHnl', key: 'commercialUnitCostHnl', align: 'right', width: 130, render: (value: number) => money(value) },
+    { title: 'Landed Unit', dataIndex: 'landedUnitCostHnl', key: 'landedUnitCostHnl', align: 'right', width: 120, render: (value: number | null) => (value == null ? '-' : money(value)) },
+    {
+      title: 'Retail',
+      key: 'retail',
+      align: 'right',
+      width: 95,
+      render: (_: unknown, row) => {
+        const sku = row.skuCode ? expectedSkuByCode[row.skuCode] : null
+        return sku?.currentPrice == null ? '-' : money(sku.currentPrice)
+      },
+    },
+    {
+      title: 'Invoice',
+      key: 'invoice',
+      width: 130,
+      render: (_: unknown, row) => (
+        <Space direction="vertical" size={0}>
+          <Tag>EXPECTED</Tag>
+          {invoiceMatchStatusTag(row.invoiceMatchReviewStatus)}
+        </Space>
+      ),
+    },
+    {
+      title: '',
+      key: 'actions',
+      align: 'right',
+      fixed: 'right',
+      width: 100,
+      render: (_: unknown, row) => (
+        <Button
+          size="small"
+          type="link"
+          loading={addingExpectedLineIds.includes(row.id)}
+          disabled={!canOverrideImportCost || addLine.isPending || matchShipmentLineInvoice.isPending || updateShipmentLine.isPending}
+          onClick={() => void submitExpectedInvoiceLines([row], false)}
+        >
+          Add
+        </Button>
+      ),
+    },
+  ], [
+    addLine.isPending,
+    addingExpectedLineIds,
+    canOverrideImportCost,
+    expectedLineInvoiceQuantities,
+    expectedSkuByCode,
+    getExpectedLineInvoiceQuantity,
+    matchShipmentLineInvoice.isPending,
+    updateShipmentLine.isPending,
+  ])
   const editingExpectedLine = expectedShipmentLines.find((line) => line.id === editingShipmentLineId) ?? null
   const approvalShipmentLine = expectedShipmentLines.find((line) => line.id === approvalShipmentLineId) ?? null
   const highConfidenceInvoiceMatchCount = useMemo(() => {
@@ -1349,15 +2026,15 @@ export default function ImportShipmentsPage() {
     {
       title: 'Line',
       key: 'line',
-      render: (_: unknown, row) => row.itemCode || row.styleCode || row.description || row.invoiceLineId,
+      render: (_: unknown, row) => row.itemCode || row.styleCode || row.description || row.invoiceLineId || row.shipmentLineId,
       ellipsis: true,
     },
     {
-      title: 'Supplier',
+      title: 'Source',
       key: 'supplier',
       render: (_: unknown, row) => (
         <Space direction="vertical" size={0}>
-          <Text>{row.invoiceNumber}</Text>
+          <Text>{row.invoiceNumber ?? 'Expected PO line'}</Text>
           <Text type="secondary">{row.supplierCode ? `${row.supplierCode} - ` : ''}{row.supplierName}</Text>
         </Space>
       ),
@@ -1399,17 +2076,19 @@ export default function ImportShipmentsPage() {
       title: '',
       key: 'actions',
       align: 'right',
-      render: (_: unknown, row) => (
-        <Space.Compact>
-          <Button size="small" onClick={() => setSkuLookupLine(row)}>
+      render: (_: unknown, row) => {
+        const canEditInvoiceLine = row.sourceType === 'INVOICE_LINE' && Boolean(row.invoiceLineId)
+        return (
+          <Space.Compact>
+          <Button size="small" onClick={() => setSkuLookupLine(row)} disabled={!canEditInvoiceLine}>
             SKU
           </Button>
-          <Button size="small" icon={<LinkOutlined />} onClick={() => openPoLineLinkForm(row)}>
+          <Button size="small" icon={<LinkOutlined />} onClick={() => openPoLineLinkForm(row)} disabled={!canEditInvoiceLine}>
             Link
           </Button>
           <Button
             size="small"
-            disabled={!row.purchaseOrderLineId}
+            disabled={!canEditInvoiceLine || !row.purchaseOrderLineId}
             loading={linkPoLine.isPending}
             onClick={() => void unlinkPoLine(row)}
           >
@@ -1417,14 +2096,15 @@ export default function ImportShipmentsPage() {
           </Button>
           <Button
             size="small"
-            disabled={!row.skuId || !!row.purchaseOrderLineId}
+            disabled={!canEditInvoiceLine || !row.skuId || !!row.purchaseOrderLineId}
             loading={linkSku.isPending}
             onClick={() => void clearLineSku(row)}
           >
             Clear
           </Button>
         </Space.Compact>
-      ),
+        )
+      },
     },
   ], [linkPoLine.isPending, linkSku.isPending])
 
@@ -1442,6 +2122,8 @@ export default function ImportShipmentsPage() {
       message.error(`Missing permission: ${IMPORT_MANAGEMENT_COST_OVERRIDE_PERMISSION}`)
       return
     }
+    const defaultVendor = expectedVendorOptions.length === 1 ? expectedVendorOptions[0] : null
+    const defaultExpectedLine = expectedShipmentLines[0]
     setEditingInvoiceId(record?.id ?? null)
     setInvoiceOpen(true)
     setTimeout(() => {
@@ -1449,7 +2131,15 @@ export default function ImportShipmentsPage() {
         ...record,
         invoiceDate: datePickerValue(record.invoiceDate),
         fxDate: datePickerValue(record.fxDate),
-      } : { sourceCurrency: 'USD', invoiceGroup: 'TAXABLE', invoiceKind: 'MERCHANDISE' })
+      } : {
+        supplierCode: defaultVendor?.value,
+        supplierName: defaultVendor?.vendorName,
+        sourceCurrency: defaultExpectedLine?.sourceCurrency ?? 'USD',
+        fxRate: defaultExpectedLine?.fxRate ?? 1,
+        fxDate: datePickerValue(defaultExpectedLine?.fxDate),
+        invoiceGroup: 'TAXABLE',
+        invoiceKind: 'MERCHANDISE',
+      })
     }, 0)
   }
 
@@ -1481,20 +2171,154 @@ export default function ImportShipmentsPage() {
       message.error(`Missing permission: ${IMPORT_MANAGEMENT_COST_OVERRIDE_PERMISSION}`)
       return
     }
+    const invoice = selectedShipment?.supplierInvoices.find((candidate) => candidate.id === invoiceId)
+    const nextLineNumber = invoice?.lines.length
+      ? Math.max(...invoice.lines.map((line) => line.lineNumber)) + 1
+      : 1
     setLineInvoiceId(invoiceId)
     setEditingLineId(record?.id ?? null)
+    setLineEntryMode(record ? 'MANUAL' : 'PO_LINES')
+    setNextInvoiceLineNumber(nextLineNumber)
+    setLocallyAddedExpectedLineIds([])
+    setAddingExpectedLineIds([])
+    setExpectedLineInvoiceQuantities({})
+    setSelectedExpectedLineIds(record ? [] : unmatchedExpectedInvoiceLines.map((line) => line.id))
+    setAutoSelectExpectedLines(!record)
     setTimeout(() => {
-      lineForm.setFieldsValue(record ? {
+      if (!record) return
+      lineForm.setFieldsValue({
         ...record,
         fxDate: datePickerValue(record.fxDate),
-      } : {})
+      })
+    }, 0)
+  }
+
+  function openManualLineEntry() {
+    if (!lineInvoiceId) return
+    const invoice = selectedShipment?.supplierInvoices.find((candidate) => candidate.id === lineInvoiceId)
+    const lineNumber = nextInvoiceLineNumber ?? (
+      invoice?.lines.length ? Math.max(...invoice.lines.map((line) => line.lineNumber)) + 1 : 1
+    )
+    setLineEntryMode('MANUAL')
+    setTimeout(() => {
+      lineForm.setFieldsValue({
+        lineNumber,
+        quantity: 1,
+        unitOfMeasure: 'UNIT',
+        sourceCurrency: invoice?.sourceCurrency ?? 'USD',
+        fxRate: invoice?.fxRate ?? 1,
+        fxDate: datePickerValue(invoice?.fxDate),
+        costRole: 'FINISHED_GOOD',
+        receiptPolicy: 'RECEIVE_TO_STOCK',
+        taxable: true,
+      })
     }, 0)
   }
 
   function closeLineForm() {
     setLineInvoiceId(null)
     setEditingLineId(null)
+    setLineEntryMode('PO_LINES')
+    setSelectedExpectedLineIds([])
+    setExpectedLineInvoiceQuantities({})
+    setAddingExpectedLineIds([])
+    setLocallyAddedExpectedLineIds([])
+    setNextInvoiceLineNumber(null)
+    setAutoSelectExpectedLines(false)
     lineForm.resetFields()
+  }
+
+  function invoiceLinePayloadFromExpectedLine(
+    row: ImportShipmentLineRecord,
+    lineNumber: number,
+    quantity: number,
+  ): CreateImportInvoiceLinePayload {
+    const fallbackUnitCost = row.sourceUnitCost ?? (
+      row.fxRate ? row.commercialUnitCostHnl / row.fxRate : row.commercialUnitCostHnl
+    )
+    const sourceUnitCost = Number(fallbackUnitCost.toFixed(4))
+    return {
+      skuId: row.skuId,
+      purchaseOrderLineId: row.purchaseOrderLineId,
+      lineNumber,
+      itemCode: row.skuCode ?? undefined,
+      description: row.description ?? undefined,
+      quantity,
+      unitOfMeasure: 'UNIT',
+      sourceUnitCost,
+      sourceAmount: Number((quantity * sourceUnitCost).toFixed(4)),
+      sourceCurrency: row.sourceCurrency,
+      fxRate: row.fxRate,
+      fxDate: row.fxDate,
+      costRole: 'FINISHED_GOOD',
+      receiptPolicy: 'RECEIVE_TO_STOCK',
+      taxable: true,
+    }
+  }
+
+  async function createAndMatchExpectedInvoiceLine(row: ImportShipmentLineRecord, lineNumber: number, quantity: number) {
+    if (!lineInvoiceId) return
+    const payload = invoiceLinePayloadFromExpectedLine(row, lineNumber, quantity)
+    const updatedShipment = await addLine.mutateAsync({ invoiceId: lineInvoiceId, payload })
+    const invoice = updatedShipment.supplierInvoices.find((candidate) => candidate.id === lineInvoiceId)
+    const addedLine = (invoice?.lines ?? []).find((line) => (
+      line.lineNumber === lineNumber && line.purchaseOrderLineId === row.purchaseOrderLineId
+    )) ?? (invoice?.lines ?? [])
+      .filter((line) => line.purchaseOrderLineId === row.purchaseOrderLineId)
+      .sort((a, b) => b.lineNumber - a.lineNumber)[0]
+    if (!addedLine) {
+      throw new Error('Invoice line was added, but it could not be matched to the expected PO line.')
+    }
+    if (Math.abs(quantity - row.expectedQuantity) > 0.0001) {
+      await updateShipmentLine.mutateAsync({
+        shipmentLineId: row.id,
+        payload: { expectedQuantity: quantity },
+      })
+    }
+    await matchShipmentLineInvoice.mutateAsync({
+      shipmentLineId: row.id,
+      payload: { invoiceLineId: addedLine.id },
+    })
+  }
+
+  async function submitExpectedInvoiceLines(rows: ImportShipmentLineRecord[], closeAfterAdd: boolean) {
+    if (!lineInvoiceId || rows.length === 0) {
+      message.info('Select at least one expected PO line.')
+      return
+    }
+    if (!canOverrideImportCost) {
+      message.error(`Missing permission: ${IMPORT_MANAGEMENT_COST_OVERRIDE_PERMISSION}`)
+      return
+    }
+    const quantities = new Map(rows.map((row) => [row.id, getExpectedLineInvoiceQuantity(row)]))
+    const invalidQuantityRow = rows.find((row) => {
+      const quantity = quantities.get(row.id)
+      return quantity == null || !Number.isFinite(quantity) || quantity <= 0 || quantity > row.expectedQuantity
+    })
+    if (invalidQuantityRow) {
+      message.error('Invoice quantity must be greater than zero and no more than the PO quantity.')
+      return
+    }
+    const baseLineNumber = nextInvoiceLineNumber ?? 1
+    setAddingExpectedLineIds(rows.map((row) => row.id))
+    try {
+      for (const [index, row] of rows.entries()) {
+        await createAndMatchExpectedInvoiceLine(row, baseLineNumber + index, quantities.get(row.id) ?? row.expectedQuantity)
+      }
+      setNextInvoiceLineNumber(baseLineNumber + rows.length)
+      setLocallyAddedExpectedLineIds((prev) => Array.from(new Set([...prev, ...rows.map((row) => row.id)])))
+      setSelectedExpectedLineIds((prev) => prev.filter((id) => !rows.some((row) => row.id === id)))
+      message.success(`${rows.length} expected PO ${rows.length === 1 ? 'line' : 'lines'} added to invoice`)
+      if (closeAfterAdd) closeLineForm()
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : 'Failed to add expected PO lines to invoice.')
+    } finally {
+      setAddingExpectedLineIds([])
+    }
+  }
+
+  async function submitSelectedExpectedInvoiceLines() {
+    await submitExpectedInvoiceLines(selectedExpectedLines, true)
   }
 
   async function submitLine() {
@@ -1503,15 +2327,52 @@ export default function ImportShipmentsPage() {
       message.error(`Missing permission: ${IMPORT_MANAGEMENT_COST_OVERRIDE_PERMISSION}`)
       return
     }
-    const values = await lineForm.validateFields()
-    if (editingLineId) {
-      await updateLine.mutateAsync({ invoiceLineId: editingLineId, payload: values })
-      message.success('Invoice line updated')
-    } else {
-      await addLine.mutateAsync({ invoiceId: lineInvoiceId, payload: values })
-      message.success('Invoice line added')
+    try {
+      const values = await lineForm.validateFields()
+      const {
+        shipmentLineId,
+        ...linePayload
+      } = values as CreateImportInvoiceLinePayload & { shipmentLineId?: string | null }
+      if (linePayload.sourceAmount == null && linePayload.sourceUnitCost == null) {
+        lineForm.setFields([
+          { name: 'sourceAmount', errors: ['Enter source amount or unit source cost.'] },
+          { name: 'sourceUnitCost', errors: ['Enter unit source cost or source amount.'] },
+        ])
+        message.error('Enter source amount or unit source cost before saving the line.')
+        return
+      }
+      if (editingLineId) {
+        await updateLine.mutateAsync({ invoiceLineId: editingLineId, payload: linePayload })
+        message.success('Invoice line updated')
+      } else {
+        const updatedShipment = await addLine.mutateAsync({ invoiceId: lineInvoiceId, payload: linePayload })
+        if (shipmentLineId) {
+          const invoice = updatedShipment.supplierInvoices.find((candidate) => candidate.id === lineInvoiceId)
+          const matchingLines = (invoice?.lines ?? [])
+            .filter((line) => (
+              !linePayload.purchaseOrderLineId ||
+              line.purchaseOrderLineId === linePayload.purchaseOrderLineId
+            ))
+            .sort((a, b) => b.lineNumber - a.lineNumber)
+          const invoiceLinesByNumber = invoice?.lines.slice().sort((a, b) => b.lineNumber - a.lineNumber) ?? []
+          const addedLine = matchingLines[0] ?? invoiceLinesByNumber[0]
+          if (addedLine) {
+            await matchShipmentLineInvoice.mutateAsync({
+              shipmentLineId,
+              payload: { invoiceLineId: addedLine.id },
+            })
+            message.success('Invoice line added and matched to expected PO line')
+          } else {
+            message.warning('Invoice line added, but the expected PO line could not be matched automatically.')
+          }
+        } else {
+          message.success('Invoice line added')
+        }
+      }
+      closeLineForm()
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : 'Failed to save invoice line.')
     }
-    closeLineForm()
   }
 
   async function submitAddShipmentLine(row: ImportShipmentLineCandidate) {
@@ -1782,6 +2643,10 @@ export default function ImportShipmentsPage() {
     if (!selectedShipmentId) return
     if (!canOverrideImportCost) {
       message.error(`Missing permission: ${IMPORT_MANAGEMENT_COST_OVERRIDE_PERMISSION}`)
+      return
+    }
+    if (allocationBlockedByCostBuilds) {
+      message.error('Resolve blocking Cost Builds warnings before allocation')
       return
     }
     const values = await allocationForm.validateFields()
@@ -2077,6 +2942,10 @@ export default function ImportShipmentsPage() {
   }
 
   function openPoLineLinkForm(row: ImportPurchaseOrderLinkLine) {
+    if (!row.invoiceLineId) {
+      message.info('This row is already represented by an expected PO line. Match a supplier invoice line from Expected POs when the invoice arrives.')
+      return
+    }
     setLinkingInvoiceLineId(row.invoiceLineId)
     setTimeout(() => {
       poLineLinkForm.setFieldsValue({ purchaseOrderLineId: row.purchaseOrderLineId ?? undefined })
@@ -2097,6 +2966,7 @@ export default function ImportShipmentsPage() {
   }
 
   async function unlinkPoLine(row: ImportPurchaseOrderLinkLine) {
+    if (!row.invoiceLineId) return
     await linkPoLine.mutateAsync({ invoiceLineId: row.invoiceLineId, payload: { purchaseOrderLineId: null } })
     message.success('Import line unlinked from purchase-order line')
   }
@@ -2107,7 +2977,7 @@ export default function ImportShipmentsPage() {
   }
 
   async function mapLineSku(picked: { skuId: string; skuCode: string }) {
-    if (!skuLookupLine) return
+    if (!skuLookupLine?.invoiceLineId) return
     await linkSku.mutateAsync({
       invoiceLineId: skuLookupLine.invoiceLineId,
       payload: { skuId: picked.skuId, skuCode: picked.skuCode },
@@ -2117,6 +2987,7 @@ export default function ImportShipmentsPage() {
   }
 
   async function clearLineSku(row: ImportPurchaseOrderLinkLine) {
+    if (!row.invoiceLineId) return
     await linkSku.mutateAsync({ invoiceLineId: row.invoiceLineId, payload: { skuId: null, skuCode: null } })
     message.success('Import line SKU cleared')
   }
@@ -2399,8 +3270,8 @@ export default function ImportShipmentsPage() {
               <Button
                 icon={<CalculatorOutlined />}
                 onClick={() => { setAllocationOpen(true); allocationForm.setFieldsValue({ markupFactor: 2.5 }) }}
-                disabled={!canOverrideImportCost}
-                title={costOverridePermissionTitle}
+                disabled={!canOverrideImportCost || allocationBlockedByCostBuilds}
+                title={allocationButtonTitle}
               >
                 Allocate
               </Button>
@@ -2409,7 +3280,18 @@ export default function ImportShipmentsPage() {
               </Button>
             </Space>
 
+            {allocationBlockedByCostBuilds && (
+              <Alert
+                showIcon
+                type="error"
+                message="Landed-cost allocation is blocked by cost-build warnings"
+                description={allocationBlockMessage || 'Open Cost Builds and resolve blocking allocation groups.'}
+              />
+            )}
+
             <Tabs
+              activeKey={activeDetailTab}
+              onChange={(key) => setActiveDetailTab(key as ImportTabGuideKey)}
               items={[
                 {
                   key: 'overview',
@@ -2435,6 +3317,83 @@ export default function ImportShipmentsPage() {
                     <Space direction="vertical" style={{ width: '100%' }}>
                       <Table rowKey="id" size="small" columns={invoiceColumns} dataSource={selectedShipment.supplierInvoices} pagination={false} />
                       <Table rowKey="id" size="small" columns={lineColumns} dataSource={allLines} pagination={{ pageSize: 8 }} />
+                    </Space>
+                  ),
+                },
+                {
+                  key: 'cost-builds',
+                  label: 'Cost Builds',
+                  children: (
+                    <Space direction="vertical" style={{ width: '100%' }}>
+                      <Alert
+                        showIcon
+                        type={(selectedShipment.costBuildPreviews?.some((row) => row.status === 'FAIL') ?? false) ? 'error' : 'info'}
+                        message={`${selectedShipment.costBuildPreviews?.length ?? 0} live allocation groups`}
+                        description="Review component/output grouping before allocation. Edit invoice line roles or allocation groups to clear warnings."
+                      />
+                      <Table
+                        rowKey="previewKey"
+                        size="small"
+                        columns={costBuildPreviewColumns}
+                        dataSource={selectedShipment.costBuildPreviews ?? []}
+                        pagination={{ pageSize: 8 }}
+                        expandable={{
+                          expandedRowRender: (preview) => (
+                            <Space direction="vertical" size="small" style={{ width: '100%' }}>
+                              {preview.warnings.length > 0 && (
+                                <Alert
+                                  showIcon
+                                  type={preview.status === 'FAIL' ? 'error' : 'warning'}
+                                  message={preview.warnings.join(' ')}
+                                />
+                              )}
+                              <Table
+                                rowKey="invoiceLineId"
+                                size="small"
+                                title={() => `Outputs (${preview.outputs.length})`}
+                                columns={costBuildPreviewOutputColumns}
+                                dataSource={preview.outputs}
+                                pagination={false}
+                              />
+                              <Table
+                                rowKey="invoiceLineId"
+                                size="small"
+                                title={() => `Components (${preview.components.length})`}
+                                columns={costBuildPreviewComponentColumns}
+                                dataSource={preview.components}
+                                pagination={false}
+                              />
+                            </Space>
+                          ),
+                          rowExpandable: (preview) => preview.outputs.length > 0 || preview.components.length > 0 || preview.warnings.length > 0,
+                        }}
+                      />
+                      <Divider style={{ marginBlock: 8 }} />
+                      <Alert
+                        showIcon
+                        type={(selectedShipment.costBuilds?.length ?? 0) > 0 ? 'info' : 'warning'}
+                        message={`${selectedShipment.costBuilds?.length ?? 0} persisted output cost builds`}
+                        description="Persisted builds are written when landed cost allocation runs and are used for audit and export detail."
+                      />
+                      <Table
+                        rowKey="id"
+                        size="small"
+                        columns={costBuildColumns}
+                        dataSource={selectedShipment.costBuilds ?? []}
+                        pagination={{ pageSize: 8 }}
+                        expandable={{
+                          expandedRowRender: (build) => (
+                            <Table
+                              rowKey="id"
+                              size="small"
+                              columns={componentAllocationColumns}
+                              dataSource={build.componentAllocations}
+                              pagination={false}
+                            />
+                          ),
+                          rowExpandable: (build) => build.componentAllocations.length > 0,
+                        }}
+                      />
                     </Space>
                   ),
                 },
@@ -2592,7 +3551,7 @@ export default function ImportShipmentsPage() {
                         </Button>
                       </Space>
                       <Table
-                        rowKey="invoiceLineId"
+                        rowKey={(row) => `${row.sourceType}:${row.invoiceLineId ?? row.shipmentLineId}`}
                         size="small"
                         loading={poLinking.isLoading || poLinking.isFetching}
                         columns={poLinkColumns}
@@ -2958,7 +3917,7 @@ export default function ImportShipmentsPage() {
                     </Space>
                   ),
                 },
-              ]}
+              ].map(addImportTabHelp)}
             />
           </Space>
           )}
@@ -3314,63 +4273,138 @@ export default function ImportShipmentsPage() {
         destroyOnHidden
         forceRender
       >
-        <MoneyAwareInvoiceForm form={invoiceForm} />
+        <MoneyAwareInvoiceForm form={invoiceForm} vendorOptions={vendorOptions} vendorsLoading={vendorsQuery.isFetching} />
       </Modal>
 
       <Modal
-        title={editingLineId ? 'Edit invoice line' : 'Invoice line'}
+        title={editingLineId ? 'Edit invoice line' : lineEntryMode === 'MANUAL' ? 'Manual invoice line' : 'Add expected PO lines'}
         open={!!lineInvoiceId}
         onCancel={closeLineForm}
-        onOk={submitLine}
-        confirmLoading={addLine.isPending || updateLine.isPending}
-        okButtonProps={{ disabled: !canOverrideImportCost }}
+        onOk={editingLineId || lineEntryMode === 'MANUAL' ? submitLine : submitSelectedExpectedInvoiceLines}
+        okText={editingLineId || lineEntryMode === 'MANUAL' ? 'Save line' : `Add selected (${selectedExpectedLineIds.length})`}
+        cancelText="Close"
+        width={editingLineId || lineEntryMode === 'MANUAL' ? 560 : 1440}
+        confirmLoading={addLine.isPending || updateLine.isPending || updateShipmentLine.isPending || matchShipmentLineInvoice.isPending}
+        okButtonProps={{
+          disabled: !canOverrideImportCost || (!editingLineId && lineEntryMode === 'PO_LINES' && selectedExpectedLineIds.length === 0),
+        }}
         destroyOnHidden
         forceRender
       >
-        <Text type="secondary">{selectedInvoice?.invoiceNumber}</Text>
-        <Form form={lineForm} layout="vertical" initialValues={{ quantity: 1, unitOfMeasure: 'UNIT', taxable: true }}>
-          <Form.Item name="skuId" hidden><Input /></Form.Item>
-          <Form.Item name="purchaseOrderLineId" hidden><Input /></Form.Item>
-          <Form.Item name="lineNumber" label="Line #">
-            <InputNumber min={1} step={1} style={{ width: '100%' }} />
-          </Form.Item>
-          <Form.Item name="itemCode" label="Item code"><Input /></Form.Item>
-          <Form.Item name="styleCode" label="Style"><Input /></Form.Item>
-          <Form.Item name="description" label="Description"><Input /></Form.Item>
-          <Space.Compact style={{ width: '100%' }}>
-            <Form.Item name="quantity" label="Qty" rules={[{ required: true }]} style={{ width: '50%' }}>
-              <InputNumber min={0.001} step={1} style={{ width: '100%' }} />
-            </Form.Item>
-            <Form.Item name="unitOfMeasure" label="UOM" style={{ width: '50%' }}>
-              <Input />
-            </Form.Item>
-          </Space.Compact>
-          <Space.Compact style={{ width: '100%' }}>
-            <Form.Item name="sourceUnitCost" label="Unit source cost" style={{ width: '50%' }}>
-              <InputNumber min={0} step={0.01} style={{ width: '100%' }} />
-            </Form.Item>
-            <Form.Item name="sourceAmount" label="Source amount" style={{ width: '50%' }}>
-              <InputNumber min={0} step={0.01} style={{ width: '100%' }} />
-            </Form.Item>
-          </Space.Compact>
-          <Space.Compact style={{ width: '100%' }}>
-            <Form.Item name="sourceCurrency" label="Currency" style={{ width: '33%' }}>
-              <Select allowClear options={SOURCE_CURRENCY_OPTIONS.map((value) => ({ value, label: value }))} />
-            </Form.Item>
-            <Form.Item name="fxRate" label="FX rate" style={{ width: '33%' }}>
-              <InputNumber min={0} step={0.0001} style={{ width: '100%' }} />
-            </Form.Item>
-            <Form.Item name="fxDate" label="FX date" style={{ width: '34%' }}>
-              <DatePicker style={{ width: '100%' }} />
-            </Form.Item>
-          </Space.Compact>
-          <Form.Item name="materialMeters" label="Material meters">
-            <InputNumber min={0} step={0.001} style={{ width: '100%' }} />
-          </Form.Item>
-          <Form.Item name="taxable" label="Taxable" valuePropName="checked">
-            <Switch />
-          </Form.Item>
-        </Form>
+        {editingLineId || lineEntryMode === 'MANUAL' ? (
+          <>
+            <Space direction="vertical" size="small" style={{ width: '100%', marginBottom: 12 }}>
+              <Text type="secondary">{selectedInvoice?.invoiceNumber}</Text>
+              {!editingLineId && (
+                <Button size="small" onClick={() => setLineEntryMode('PO_LINES')}>
+                  Expected PO lines
+                </Button>
+              )}
+            </Space>
+            <Form form={lineForm} layout="vertical" initialValues={{ quantity: 1, unitOfMeasure: 'UNIT', taxable: true }}>
+              <Form.Item name="skuId" hidden><Input /></Form.Item>
+              <Form.Item name="purchaseOrderLineId" hidden><Input /></Form.Item>
+              <Form.Item name="lineNumber" label="Line #">
+                <InputNumber min={1} step={1} style={{ width: '100%' }} />
+              </Form.Item>
+              <Form.Item name="itemCode" label="Item code"><Input /></Form.Item>
+              <Form.Item name="styleCode" label="Style"><Input /></Form.Item>
+              <Form.Item name="description" label="Description"><Input /></Form.Item>
+              <Space.Compact style={{ width: '100%' }}>
+                <Form.Item name="quantity" label="Qty" rules={[{ required: true }]} style={{ width: '50%' }}>
+                  <InputNumber min={0.001} step={1} style={{ width: '100%' }} />
+                </Form.Item>
+                <Form.Item name="unitOfMeasure" label="UOM" style={{ width: '50%' }}>
+                  <Input />
+                </Form.Item>
+              </Space.Compact>
+              <Space.Compact style={{ width: '100%' }}>
+                <Form.Item name="sourceUnitCost" label="Unit source cost" style={{ width: '50%' }}>
+                  <InputNumber min={0} step={0.01} style={{ width: '100%' }} />
+                </Form.Item>
+                <Form.Item name="sourceAmount" label="Source amount" style={{ width: '50%' }}>
+                  <InputNumber min={0} step={0.01} style={{ width: '100%' }} />
+                </Form.Item>
+              </Space.Compact>
+              <Space.Compact style={{ width: '100%' }}>
+                <Form.Item name="sourceCurrency" label="Currency" style={{ width: '33%' }}>
+                  <Select allowClear options={SOURCE_CURRENCY_OPTIONS.map((value) => ({ value, label: value }))} />
+                </Form.Item>
+                <Form.Item name="fxRate" label="FX rate" style={{ width: '33%' }}>
+                  <InputNumber min={0} step={0.0001} style={{ width: '100%' }} />
+                </Form.Item>
+                <Form.Item name="fxDate" label="FX date" style={{ width: '34%' }}>
+                  <DatePicker style={{ width: '100%' }} />
+                </Form.Item>
+              </Space.Compact>
+              <Form.Item name="materialMeters" label="Material meters">
+                <InputNumber min={0} step={0.001} style={{ width: '100%' }} />
+              </Form.Item>
+              <Space.Compact style={{ width: '100%' }}>
+                <Form.Item name="costRole" label="Cost role" style={{ width: '50%' }}>
+                  <Select
+                    allowClear
+                    options={INVOICE_LINE_COST_ROLE_OPTIONS.map((value) => ({ value, label: value }))}
+                  />
+                </Form.Item>
+                <Form.Item name="receiptPolicy" label="Receipt policy" style={{ width: '50%' }}>
+                  <Select
+                    allowClear
+                    options={INVOICE_LINE_RECEIPT_POLICY_OPTIONS.map((value) => ({ value, label: value }))}
+                  />
+                </Form.Item>
+              </Space.Compact>
+              <Form.Item name="allocationGroupKey" label="Allocation group">
+                <Input />
+              </Form.Item>
+              <Form.Item name="taxable" label="Taxable" valuePropName="checked">
+                <Switch />
+              </Form.Item>
+            </Form>
+          </>
+        ) : (
+          <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+            <Alert
+              showIcon
+              type="info"
+              message={`${pickerExpectedInvoiceLines.length} unmatched expected PO lines for ${selectedInvoice?.invoiceNumber ?? 'this invoice'}`}
+              description="Adjust Invoice qty for partial shipments, then add selected rows. Lines are created from those quantities and prices, then matched back to the expected PO rows."
+            />
+            <Space wrap>
+              <Button
+                onClick={() => setSelectedExpectedLineIds(pickerExpectedInvoiceLines.map((line) => line.id))}
+                disabled={pickerExpectedInvoiceLines.length === 0}
+              >
+                Select all
+              </Button>
+              <Button onClick={() => setSelectedExpectedLineIds([])} disabled={selectedExpectedLineIds.length === 0}>
+                Clear selection
+              </Button>
+              <Button onClick={openManualLineEntry}>
+                Manual line
+              </Button>
+              <Text type="secondary">
+                {selectedExpectedLineIds.length} selected
+              </Text>
+            </Space>
+            <Table
+              rowKey="id"
+              size="small"
+              columns={invoiceLinePickerColumns}
+              dataSource={pickerExpectedInvoiceLines}
+              loading={expectedSkuLookup.isFetching}
+              pagination={false}
+              scroll={{ x: 1480, y: 520 }}
+              rowSelection={{
+                selectedRowKeys: selectedExpectedLineIds,
+                onChange: (keys) => setSelectedExpectedLineIds(keys.map(String)),
+                getCheckboxProps: (row) => ({
+                  disabled: addingExpectedLineIds.includes(row.id),
+                }),
+              }}
+            />
+          </Space>
+        )}
       </Modal>
 
       <Modal
@@ -3682,16 +4716,35 @@ export default function ImportShipmentsPage() {
   )
 }
 
-function MoneyAwareInvoiceForm({ form }: { form: ReturnType<typeof Form.useForm>[0] }) {
+function MoneyAwareInvoiceForm({
+  form,
+  vendorOptions,
+  vendorsLoading,
+}: {
+  form: ReturnType<typeof Form.useForm>[0]
+  vendorOptions: VendorSelectOption[]
+  vendorsLoading: boolean
+}) {
   return (
     <Form form={form} layout="vertical" initialValues={{ sourceCurrency: 'HNL', fxRate: 1, invoiceGroup: 'TAXABLE', invoiceKind: 'MERCHANDISE' }}>
       <Form.Item name="invoiceNumber" label="Invoice" rules={[{ required: true }]}>
         <Input />
       </Form.Item>
-      <Form.Item name="supplierName" label="Supplier" rules={[{ required: true }]}>
-        <Input />
+      <Form.Item name="supplierCode" label="Vendor" rules={[{ required: true }]}>
+        <Select
+          allowClear
+          showSearch
+          loading={vendorsLoading}
+          optionFilterProp="label"
+          options={vendorOptions}
+          placeholder="Select vendor"
+          onChange={(value) => {
+            const vendor = vendorOptions.find((option) => option.value === value)
+            form.setFieldsValue({ supplierName: vendor?.vendorName })
+          }}
+        />
       </Form.Item>
-      <Form.Item name="supplierCode" label="Supplier code">
+      <Form.Item name="supplierName" label="Vendor name" rules={[{ required: true }]}>
         <Input />
       </Form.Item>
       <Space.Compact style={{ width: '100%' }}>

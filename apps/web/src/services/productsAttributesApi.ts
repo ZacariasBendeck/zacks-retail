@@ -6,6 +6,7 @@ import type {
   AttributeMacroRuleSet,
   AttributeMacroRuleSummary,
   SetSkuAttributesInput,
+  SkuAttributesBulk,
   SkuAttributes,
 } from '../types/productsAttributes'
 
@@ -97,6 +98,12 @@ export const productsAttributesApi = {
   },
   getForSku(code: string): Promise<SkuAttributes> {
     return request<SkuAttributes>(`${BASE}/skus/${encodeURIComponent(code)}/attributes`)
+  },
+  getForSkus(skuCodes: string[]): Promise<SkuAttributesBulk> {
+    return request<SkuAttributesBulk>(`${BASE}/skus/attributes/bulk`, {
+      method: 'POST',
+      body: JSON.stringify({ skuCodes }),
+    })
   },
   setForSku(code: string, input: SetSkuAttributesInput): Promise<SkuAttributes> {
     return request<SkuAttributes>(`${BASE}/skus/${encodeURIComponent(code)}/attributes`, {

@@ -12,6 +12,7 @@
 jest.mock('../src/services/salesReporting/ricsSalesHistoryByMonthAdapter', () => ({
   queryMonthlyMeasures: jest.fn(),
   queryMonthlyNetSales: jest.fn(),
+  queryMonthlySkuLifecycleCounts: jest.fn().mockResolvedValue([]),
   queryMonthlyInventoryHistory: jest.fn().mockResolvedValue([]),
   queryMonthlyInventoryHistoryRollups: jest.fn().mockResolvedValue([]),
   loadSkuMasterForCriteria: jest.fn().mockResolvedValue([]),
@@ -51,6 +52,22 @@ type MonthlyMeasuresRow = {
   cogs: number;
 };
 
+type MonthlySkuLifecycleCountRow = {
+  storeNumber: number;
+  yearMonth: string;
+  dimKey: string;
+  dimLabel: string;
+  categoryKey: string | null;
+  vendorKey: string | null;
+  pictureFileName?: string | null;
+  newSkuStoreCount: number;
+  carryoverSkuStoreCount: number;
+  newSkuDistinctCount: number;
+  carryoverSkuDistinctCount: number;
+  newSkuUnitsSold: number;
+  carryoverSkuUnitsSold: number;
+};
+
 function measureRow(partial: Partial<MonthlyMeasuresRow>): MonthlyMeasuresRow {
   return {
     storeNumber: 2,
@@ -72,6 +89,34 @@ function setAdapterRows(rows: MonthlyMeasuresRow[]): void {
   const monthlyAdapter = require('../src/services/salesReporting/ricsSalesHistoryByMonthAdapter');
   (monthlyAdapter.queryMonthlyMeasures as jest.Mock).mockReset();
   (monthlyAdapter.queryMonthlyMeasures as jest.Mock).mockResolvedValue(rows);
+  (monthlyAdapter.queryMonthlySkuLifecycleCounts as jest.Mock).mockReset();
+  (monthlyAdapter.queryMonthlySkuLifecycleCounts as jest.Mock).mockResolvedValue([]);
+}
+
+function lifecycleRow(partial: Partial<MonthlySkuLifecycleCountRow>): MonthlySkuLifecycleCountRow {
+  return {
+    storeNumber: 2,
+    yearMonth: '2026-04',
+    dimKey: 'NIKE',
+    dimLabel: 'NIKE',
+    categoryKey: null,
+    vendorKey: 'NIKE',
+    pictureFileName: null,
+    newSkuStoreCount: 0,
+    carryoverSkuStoreCount: 0,
+    newSkuDistinctCount: 0,
+    carryoverSkuDistinctCount: 0,
+    newSkuUnitsSold: 0,
+    carryoverSkuUnitsSold: 0,
+    ...partial,
+  };
+}
+
+function setLifecycleRows(rows: MonthlySkuLifecycleCountRow[]): void {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const monthlyAdapter = require('../src/services/salesReporting/ricsSalesHistoryByMonthAdapter');
+  (monthlyAdapter.queryMonthlySkuLifecycleCounts as jest.Mock).mockReset();
+  (monthlyAdapter.queryMonthlySkuLifecycleCounts as jest.Mock).mockResolvedValue(rows);
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -150,6 +195,41 @@ describe('GET /api/v1/reports/rics-sales-history-by-month (JSON)', () => {
     expect(nike.metrics.quantitySold[11]).toBe(4);
     expect(nike.metrics.profit[11]).toBe(80);
     expect(nike.metrics.grossProfit[11]).toBeCloseTo(40, 1);
+  });
+
+  it('accepts lifecycle count metrics via dataToPrint', async () => {
+    setAdapterRows([]);
+    setLifecycleRows([
+      lifecycleRow({
+        newSkuStoreCount: 3,
+        carryoverSkuStoreCount: 8,
+        newSkuDistinctCount: 2,
+        carryoverSkuDistinctCount: 6,
+        newSkuUnitsSold: 5,
+        carryoverSkuUnitsSold: 15,
+      }),
+    ]);
+
+    const res = await request(app).get(
+      '/api/v1/reports/rics-sales-history-by-month?stores=2&endMonth=2026-04&dataToPrint=newSkuStoreCount,carryoverSkuStoreCount,newSkuDistinctCount,carryoverSkuDistinctCount,newSkuUnitsSold,carryoverSkuUnitsSold,newCarryoverSkuRatio,newCarryoverUnitsSoldRatio',
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.dataToPrint).toEqual([
+      'newSkuStoreCount',
+      'carryoverSkuStoreCount',
+      'newSkuDistinctCount',
+      'carryoverSkuDistinctCount',
+      'newSkuUnitsSold',
+      'carryoverSkuUnitsSold',
+      'newCarryoverSkuRatio',
+      'newCarryoverUnitsSoldRatio',
+    ]);
+    const nike = res.body.blocks[0].rows[0];
+    expect(nike.metrics.newSkuStoreCount[11]).toBe(3);
+    expect(nike.metrics.carryoverSkuDistinctCount[11]).toBe(6);
+    expect(nike.metrics.newSkuUnitsSold[11]).toBe(5);
+    expect(nike.metrics.newCarryoverSkuRatio[11]).toBe(33.3);
+    expect(nike.metrics.newCarryoverUnitsSoldRatio[11]).toBe(33.3);
   });
 
   it('accepts detailLevel=sku and propagates to the adapter', async () => {
@@ -239,6 +319,30 @@ describe('GET /api/v1/reports/rics-sales-history-by-month (CSV)', () => {
     expect(csv).toContain('2 - UNLIMITED C. 2000');
     expect(csv).toContain('13 - TEST STORE 13');
   });
+
+  it('emits lifecycle metric labels and integer cells in CSV', async () => {
+    setAdapterRows([]);
+    setLifecycleRows([
+      lifecycleRow({
+        newSkuStoreCount: 4,
+        carryoverSkuDistinctCount: 9,
+        newSkuUnitsSold: 5,
+        carryoverSkuUnitsSold: 10,
+      }),
+    ]);
+
+    const res = await request(app).get(
+      '/api/v1/reports/rics-sales-history-by-month?stores=2&endMonth=2026-04&dataToPrint=newSkuStoreCount,carryoverSkuDistinctCount,newSkuUnitsSold,newCarryoverUnitsSoldRatio&format=csv',
+    );
+    expect(res.status).toBe(200);
+    const csv = res.text;
+    expect(csv).toContain('New SKU Store Count');
+    expect(csv).toContain('Carryover Distinct SKU Count');
+    expect(csv).toContain('New SKU Units Sold');
+    expect(csv).toContain('New/Carryover Units Sold %');
+    expect(csv).toContain('NIKE,NIKE,0,0,0,0,0,0,0,0,0,0,0,4,0');
+    expect(csv).toContain('50.0%');
+  });
 });
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -286,6 +390,50 @@ describe('GET /api/v1/reports/rics-sales-history-by-month (XLSX)', () => {
     expect(buf.length).toBeGreaterThan(0);
     // PK magic bytes — XLSX is a zip-based format.
     expect(buf.slice(0, 2).toString('hex')).toBe('504b');
+  });
+
+  it('emits lifecycle metric labels and number formats in XLSX', async () => {
+    setAdapterRows([]);
+    setLifecycleRows([
+      lifecycleRow({ newSkuUnitsSold: 4, carryoverSkuUnitsSold: 8 }),
+    ]);
+
+    const res = await request(app)
+      .get(
+        '/api/v1/reports/rics-sales-history-by-month?stores=2&endMonth=2026-04&format=xlsx&dataToPrint=newSkuUnitsSold',
+      )
+      .buffer(true)
+      .parse((res, cb) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+        res.on('end', () => cb(null, Buffer.concat(chunks)));
+      });
+
+    expect(res.status).toBe(200);
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const ExcelJS = require('exceljs');
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(res.body as Buffer);
+    const sheet = workbook.worksheets[0];
+    expect(sheet.getCell('A2').value).toBe('New SKU Units Sold');
+    expect(sheet.getColumn('C').numFmt).toBe('0');
+
+    const ratioRes = await request(app)
+      .get(
+        '/api/v1/reports/rics-sales-history-by-month?stores=2&endMonth=2026-04&format=xlsx&dataToPrint=newCarryoverUnitsSoldRatio',
+      )
+      .buffer(true)
+      .parse((res, cb) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+        res.on('end', () => cb(null, Buffer.concat(chunks)));
+      });
+    expect(ratioRes.status).toBe(200);
+    const ratioWorkbook = new ExcelJS.Workbook();
+    await ratioWorkbook.xlsx.load(ratioRes.body as Buffer);
+    const ratioSheet = ratioWorkbook.worksheets[0];
+    expect(ratioSheet.getCell('A2').value).toBe('New/Carryover Units Sold %');
+    expect(ratioSheet.getColumn('C').numFmt).toBe('0.0"%"');
   });
 });
 

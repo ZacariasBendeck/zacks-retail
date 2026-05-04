@@ -16,6 +16,7 @@
 jest.mock('../src/services/salesReporting/ricsSalesHistoryByMonthAdapter', () => ({
   queryMonthlyMeasures: jest.fn(),
   queryMonthlyNetSales: jest.fn(),
+  queryMonthlySkuLifecycleCounts: jest.fn().mockResolvedValue([]),
   queryMonthlyInventoryHistory: jest.fn().mockResolvedValue([]),
   queryMonthlyInventoryHistoryRollups: jest.fn().mockResolvedValue([]),
   loadSkuMasterForCriteria: jest.fn().mockResolvedValue([]),
@@ -63,6 +64,22 @@ type MonthlyMeasuresRow = {
   cogs: number;
 };
 
+type MonthlySkuLifecycleCountRow = {
+  storeNumber: number;
+  yearMonth: string;
+  dimKey: string;
+  dimLabel: string;
+  categoryKey: string | null;
+  vendorKey: string | null;
+  pictureFileName?: string | null;
+  newSkuStoreCount: number;
+  carryoverSkuStoreCount: number;
+  newSkuDistinctCount: number;
+  carryoverSkuDistinctCount: number;
+  newSkuUnitsSold: number;
+  carryoverSkuUnitsSold: number;
+};
+
 function rowOf(partial: Partial<MonthlyMeasuresRow>): MonthlyMeasuresRow {
   return {
     storeNumber: 2,
@@ -84,6 +101,32 @@ function setAdapterRows(rows: MonthlyMeasuresRow[]): void {
   (monthlyAdapter.queryMonthlyMeasures as jest.Mock).mockResolvedValue(rows);
   (monthlyAdapter.queryMonthlyNetSales as jest.Mock).mockReset();
   (monthlyAdapter.queryMonthlyNetSales as jest.Mock).mockResolvedValue([]);
+  (monthlyAdapter.queryMonthlySkuLifecycleCounts as jest.Mock).mockReset();
+  (monthlyAdapter.queryMonthlySkuLifecycleCounts as jest.Mock).mockResolvedValue([]);
+}
+
+function lifecycleRow(partial: Partial<MonthlySkuLifecycleCountRow>): MonthlySkuLifecycleCountRow {
+  return {
+    storeNumber: 2,
+    yearMonth: '2026-04',
+    dimKey: 'NIKE',
+    dimLabel: 'NIKE',
+    categoryKey: null,
+    vendorKey: 'NIKE',
+    pictureFileName: null,
+    newSkuStoreCount: 0,
+    carryoverSkuStoreCount: 0,
+    newSkuDistinctCount: 0,
+    carryoverSkuDistinctCount: 0,
+    newSkuUnitsSold: 0,
+    carryoverSkuUnitsSold: 0,
+    ...partial,
+  };
+}
+
+function setLifecycleRows(rows: MonthlySkuLifecycleCountRow[]): void {
+  (monthlyAdapter.queryMonthlySkuLifecycleCounts as jest.Mock).mockReset();
+  (monthlyAdapter.queryMonthlySkuLifecycleCounts as jest.Mock).mockResolvedValue(rows);
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -377,6 +420,201 @@ describe('getSalesHistoryByMonth — multi-metric (v2)', () => {
 });
 
 // ══════════════════════════════════════════════════════════════════════════
+describe('getSalesHistoryByMonth - SKU lifecycle count metrics', () => {
+  const ORIGINAL_SOURCE = process.env.SALES_SOURCE;
+  beforeAll(() => { process.env.SALES_SOURCE = 'rics'; });
+  afterAll(() => {
+    if (ORIGINAL_SOURCE === undefined) delete process.env.SALES_SOURCE;
+    else process.env.SALES_SOURCE = ORIGINAL_SOURCE;
+  });
+
+  beforeEach(() => setAdapterRows([]));
+
+  const lifecycleMonths = [
+    '2025-05', '2025-06', '2025-07', '2025-08', '2025-09', '2025-10',
+    '2025-11', '2025-12', '2026-01', '2026-02', '2026-03', '2026-04',
+  ];
+
+  it('creates count-only rows when there are in-stock SKUs but no sales rows', async () => {
+    setLifecycleRows(lifecycleMonths.map((yearMonth) => lifecycleRow({
+      yearMonth,
+      newSkuStoreCount: 4,
+      carryoverSkuStoreCount: 9,
+      newSkuDistinctCount: 3,
+      carryoverSkuDistinctCount: 7,
+    })));
+
+    const report = await facade.getSalesHistoryByMonth({
+      storeNumbers: [2, 13],
+      endYearMonth: '2026-04',
+      sortBy: 'vendor',
+      combineStores: true,
+      dataToPrint: [
+        'newSkuStoreCount',
+        'carryoverSkuStoreCount',
+        'newSkuDistinctCount',
+        'carryoverSkuDistinctCount',
+      ],
+    });
+
+    expect(monthlyAdapter.queryMonthlySkuLifecycleCounts).toHaveBeenCalledWith(
+      expect.objectContaining({
+        storeNumbers: [2, 13],
+        fromYearMonth: '2025-05',
+        toYearMonth: '2026-04',
+        sortBy: 'vendor',
+        detailLevel: 'subtotals',
+        combineStores: true,
+      }),
+    );
+    const row = report.blocks[0].rows[0];
+    expect(row.key).toBe('NIKE');
+    expect(row.metrics.newSkuStoreCount).toEqual(new Array(12).fill(4));
+    expect(row.metrics.carryoverSkuStoreCount).toEqual(new Array(12).fill(9));
+    expect(row.metrics.newSkuDistinctCount).toEqual(new Array(12).fill(3));
+    expect(row.metrics.carryoverSkuDistinctCount).toEqual(new Array(12).fill(7));
+    expect(row.totals.newSkuStoreCount).toBe(4);
+    expect(row.totals.carryoverSkuDistinctCount).toBe(7);
+    expect(report.blocks[0].grandTotals.newSkuStoreCount).toBe(4);
+    expect(report.blocks[0].columnTotals.carryoverSkuStoreCount).toEqual(new Array(12).fill(9));
+    expect(report.chartSeries[0].values).toEqual(new Array(12).fill(0));
+  });
+
+  it('creates units-sold lifecycle rows without sales-measure rows', async () => {
+    setLifecycleRows([
+      lifecycleRow({ yearMonth: '2026-03', newSkuUnitsSold: 5, carryoverSkuUnitsSold: 20 }),
+      lifecycleRow({ yearMonth: '2026-04', newSkuUnitsSold: 7, carryoverSkuUnitsSold: 30 }),
+    ]);
+
+    const report = await facade.getSalesHistoryByMonth({
+      storeNumbers: [2],
+      endYearMonth: '2026-04',
+      sortBy: 'vendor',
+      combineStores: true,
+      dataToPrint: ['newSkuUnitsSold', 'carryoverSkuUnitsSold'],
+    });
+
+    const row = report.blocks[0].rows[0];
+    expect(row.metrics.newSkuUnitsSold[10]).toBe(5);
+    expect(row.metrics.newSkuUnitsSold[11]).toBe(7);
+    expect(row.metrics.carryoverSkuUnitsSold[10]).toBe(20);
+    expect(row.metrics.carryoverSkuUnitsSold[11]).toBe(30);
+    expect(row.totals.newSkuUnitsSold).toBe(12);
+    expect(row.totals.carryoverSkuUnitsSold).toBe(50);
+    expect(report.blocks[0].grandTotals.newSkuUnitsSold).toBe(12);
+    expect(report.blocks[0].grandTotals.carryoverSkuUnitsSold).toBe(50);
+  });
+
+  it('computes new/carryover SKU and units-sold ratios from lifecycle buckets', async () => {
+    setLifecycleRows([
+      lifecycleRow({
+        newSkuDistinctCount: 2,
+        carryoverSkuDistinctCount: 4,
+        newSkuUnitsSold: 6,
+        carryoverSkuUnitsSold: 12,
+      }),
+    ]);
+
+    const report = await facade.getSalesHistoryByMonth({
+      storeNumbers: [2],
+      endYearMonth: '2026-04',
+      sortBy: 'vendor',
+      combineStores: true,
+      dataToPrint: ['newCarryoverSkuRatio', 'newCarryoverUnitsSoldRatio'],
+    });
+
+    const row = report.blocks[0].rows[0];
+    expect(row.metrics.newCarryoverSkuRatio[11]).toBe(50);
+    expect(row.totals.newCarryoverSkuRatio).toBe(50);
+    expect(row.metrics.newCarryoverUnitsSoldRatio[11]).toBe(50);
+    expect(row.totals.newCarryoverUnitsSoldRatio).toBe(50);
+    expect(report.blocks[0].columnTotals.newCarryoverSkuRatio[11]).toBe(50);
+    expect(report.blocks[0].grandTotals.newCarryoverUnitsSoldRatio).toBe(50);
+  });
+
+  it('keeps separate-store lifecycle rows in their own store blocks', async () => {
+    setLifecycleRows([
+      lifecycleRow({ storeNumber: 2, newSkuStoreCount: 2, newSkuDistinctCount: 2 }),
+      lifecycleRow({ storeNumber: 13, newSkuStoreCount: 5, newSkuDistinctCount: 5 }),
+    ]);
+
+    const report = await facade.getSalesHistoryByMonth({
+      storeNumbers: [2, 13],
+      endYearMonth: '2026-04',
+      sortBy: 'vendor',
+      combineStores: false,
+      dataToPrint: ['newSkuStoreCount', 'newSkuDistinctCount'],
+    });
+
+    expect(report.blocks).toHaveLength(2);
+    expect(report.blocks[0].rows[0].metrics.newSkuStoreCount[11]).toBe(2);
+    expect(report.blocks[1].rows[0].metrics.newSkuStoreCount[11]).toBe(5);
+  });
+
+  it('surfaces combined store-count and distinct-count values independently', async () => {
+    setLifecycleRows([
+      lifecycleRow({ storeNumber: 0, newSkuStoreCount: 5, newSkuDistinctCount: 2 }),
+    ]);
+
+    const report = await facade.getSalesHistoryByMonth({
+      storeNumbers: [2, 13],
+      endYearMonth: '2026-04',
+      sortBy: 'vendor',
+      combineStores: true,
+      dataToPrint: ['newSkuStoreCount', 'newSkuDistinctCount'],
+    });
+
+    const row = report.blocks[0].rows[0];
+    expect(row.metrics.newSkuStoreCount[11]).toBe(5);
+    expect(row.metrics.newSkuDistinctCount[11]).toBe(2);
+  });
+
+  it('groups SKU-detail lifecycle rows under vendor parents', async () => {
+    setLifecycleRows([
+      lifecycleRow({
+        dimKey: 'SKU-A',
+        dimLabel: 'SKU-A',
+        vendorKey: 'NIKE',
+        categoryKey: '556',
+        pictureFileName: 'SKU-A.JPG',
+        newSkuStoreCount: 1,
+      }),
+    ]);
+
+    const report = await facade.getSalesHistoryByMonth({
+      storeNumbers: [2],
+      endYearMonth: '2026-04',
+      sortBy: 'vendor',
+      combineStores: true,
+      detailLevel: 'sku',
+      dataToPrint: ['newSkuStoreCount'],
+    });
+
+    expect(report.blocks[0].rows.map((r: any) => r.key)).toEqual(['NIKE']);
+    expect(report.blocks[0].rows[0].metrics.newSkuStoreCount[11]).toBe(1);
+    expect(report.blocks[0].rows[0].children.map((r: any) => r.key)).toEqual(['SKU-A']);
+    expect(report.blocks[0].rows[0].children[0].pictureFileName).toBe('SKU-A.JPG');
+  });
+
+  it('passes resolved criteria filters to the lifecycle adapter', async () => {
+    await facade.getSalesHistoryByMonth({
+      storeNumbers: [2],
+      endYearMonth: '2026-04',
+      sortBy: 'category',
+      combineStores: true,
+      dataToPrint: ['carryoverSkuDistinctCount'],
+      criteria: { vendors: 'NIKE,ADIDAS', categories: '556-557' },
+    });
+
+    expect(monthlyAdapter.queryMonthlySkuLifecycleCounts).toHaveBeenCalledWith(
+      expect.objectContaining({
+        vendorFilter: ['NIKE', 'ADIDAS'],
+        categoryFilter: [556, 557],
+      }),
+    );
+  });
+});
+
 // Detail levels (v2)
 // ══════════════════════════════════════════════════════════════════════════
 

@@ -11,6 +11,7 @@
  *   GET  /attributes/macros/:sourceDimensionCode/:targetDimensionCode
  *   PUT  /attributes/macros/:sourceDimensionCode/:targetDimensionCode
  *   GET  /skus/:code/attributes
+ *   POST /skus/attributes/bulk
  *
  * DIMENSION ADMIN
  *   POST   /attributes/dimensions             (optional familyCode; omitted/null = universal)
@@ -32,6 +33,7 @@
  *
  * PER-SKU ASSIGNMENTS
  *   GET  /skus/:code/attributes
+ *   POST /skus/attributes/bulk
  *   PUT  /skus/:code/attributes
  *
  * Spec: docs/dev/specs/2026-04-22-sku-extended-attributes-foundation-design.md
@@ -91,6 +93,16 @@ router.post('/attributes/dimensions/for-skus', async (req: Request, res: Respons
     : [];
   const withCounts = body.withCounts === true || body.withCounts === 'true' || body.withCounts === 1;
   send(res, await attributesService.listDimensionsForSkus(skuCodes, withCounts));
+});
+
+router.post('/skus/attributes/bulk', async (req: Request, res: Response) => {
+  const body = (req.body ?? {}) as { skuCodes?: unknown };
+  const skuCodes = Array.isArray(body.skuCodes)
+    ? body.skuCodes
+        .filter((sku): sku is string => typeof sku === 'string' && sku.trim().length > 0)
+        .map((sku) => sku.trim())
+    : [];
+  send(res, await attributesService.getForSkus(skuCodes));
 });
 
 router.get('/attributes/coverage', async (_req: Request, res: Response) => {

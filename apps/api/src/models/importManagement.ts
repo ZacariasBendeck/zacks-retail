@@ -14,6 +14,14 @@ export type ImportShipmentStatus =
 export type ImportSourceCurrency = 'CNY' | 'USD' | 'HNL';
 export type ImportInvoiceGroup = 'TAXABLE' | 'NON_TAXABLE' | 'MIXED';
 export type ImportInvoiceKind = 'MERCHANDISE' | 'FABRIC' | 'CMT' | 'ACCESSORY' | 'OTHER';
+export type ImportInvoiceLineCostRole =
+  | 'FINISHED_GOOD'
+  | 'MATERIAL'
+  | 'CONVERSION'
+  | 'ACCESSORY_COMPONENT'
+  | 'RECEIPT_ACCESSORY'
+  | 'EXPENSE';
+export type ImportInvoiceLineReceiptPolicy = 'RECEIVE_TO_STOCK' | 'ROLL_TO_OUTPUT' | 'EXPENSE_ONLY' | 'IGNORE';
 export type ImportChargeType =
   | 'FREIGHT'
   | 'INSURANCE'
@@ -102,6 +110,9 @@ export interface CreateImportInvoiceLineInput extends Partial<ImportMoneyInput> 
   quantity: number;
   unitOfMeasure?: string | null;
   sourceUnitCost?: number | null;
+  costRole?: ImportInvoiceLineCostRole;
+  receiptPolicy?: ImportInvoiceLineReceiptPolicy;
+  allocationGroupKey?: string | null;
   taxable?: boolean;
 }
 
@@ -502,8 +513,13 @@ export interface ImportInvoiceLineRecord {
   fxDate: string;
   hnlAmount: number;
   baseUnitCostHnl: number;
+  commercialUnitCostHnl: number | null;
+  componentAllocatedCostHnl: number;
   allocatedLandedCostHnl: number;
   landedUnitCostHnl: number | null;
+  costRole: ImportInvoiceLineCostRole;
+  receiptPolicy: ImportInvoiceLineReceiptPolicy;
+  allocationGroupKey: string | null;
   taxable: boolean;
 }
 
@@ -534,6 +550,97 @@ export interface ImportLandedCostAllocationRecord {
   shipmentLineId: string | null;
   allocationBasis: ImportAllocationBasis;
   allocatedHnlAmount: number;
+}
+
+export interface ImportCostComponentAllocationRecord {
+  id: string;
+  shipmentId: string;
+  buildId: string;
+  componentInvoiceLineId: string;
+  outputInvoiceLineId: string | null;
+  outputShipmentLineId: string | null;
+  allocationBasis: string;
+  allocatedHnlAmount: number;
+  allocatedQuantity: number | null;
+  componentInvoiceNumber: string;
+  componentSupplierName: string;
+  componentItemCode: string | null;
+  componentStyleCode: string | null;
+  componentDescription: string | null;
+  componentCostRole: ImportInvoiceLineCostRole;
+  componentReceiptPolicy: ImportInvoiceLineReceiptPolicy;
+  componentAllocationGroupKey: string | null;
+  outputInvoiceNumber: string | null;
+  outputPurchaseOrderNumber: string | null;
+  outputSkuCode: string | null;
+  outputItemCode: string | null;
+  outputStyleCode: string | null;
+  outputDescription: string | null;
+}
+
+export interface ImportCostBuildRecord {
+  id: string;
+  shipmentId: string;
+  buildCode: string;
+  description: string | null;
+  outputInvoiceLineId: string | null;
+  outputShipmentLineId: string | null;
+  outputSkuId: string | null;
+  outputSkuCode: string | null;
+  outputItemCode: string | null;
+  outputStyleCode: string | null;
+  outputDescription: string | null;
+  outputQuantity: number;
+  allocationBasis: string;
+  componentAllocatedHnlAmount: number;
+  componentCount: number;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+  componentAllocations: ImportCostComponentAllocationRecord[];
+}
+
+export interface ImportCostBuildPreviewOutput {
+  invoiceLineId: string;
+  invoiceNumber: string;
+  skuCode: string | null;
+  itemCode: string | null;
+  styleCode: string | null;
+  description: string | null;
+  quantity: number;
+  hnlAmount: number;
+  componentAllocatedCostHnl: number;
+  commercialLineCostHnl: number;
+  commercialUnitCostHnl: number;
+}
+
+export interface ImportCostBuildPreviewComponent {
+  invoiceLineId: string;
+  invoiceNumber: string;
+  supplierName: string;
+  costRole: ImportInvoiceLineCostRole;
+  itemCode: string | null;
+  styleCode: string | null;
+  description: string | null;
+  quantity: number;
+  unitOfMeasure: string;
+  hnlAmount: number;
+  warning: string | null;
+}
+
+export interface ImportCostBuildPreviewRecord {
+  previewKey: string;
+  allocationGroupKey: string | null;
+  status: 'PASS' | 'WARN' | 'FAIL';
+  outputLineCount: number;
+  componentLineCount: number;
+  outputHnlAmount: number;
+  componentHnlAmount: number;
+  commercialHnlAmount: number;
+  warningCount: number;
+  warnings: string[];
+  outputs: ImportCostBuildPreviewOutput[];
+  components: ImportCostBuildPreviewComponent[];
 }
 
 export interface GoodsInTransitRecordDto {
@@ -600,6 +707,8 @@ export interface ImportShipmentDetail extends ImportShipmentSummary {
   supplierInvoices: ImportSupplierInvoiceRecord[];
   charges: ImportChargeRecord[];
   allocations: ImportLandedCostAllocationRecord[];
+  costBuilds: ImportCostBuildRecord[];
+  costBuildPreviews: ImportCostBuildPreviewRecord[];
   goodsInTransit: GoodsInTransitRecordDto[];
   verificationChecks: ImportVerificationCheckRecord[];
   suggestedPrices: ImportSuggestedPriceRecord[];
@@ -711,9 +820,18 @@ export interface ImportReceivingHandoffLine {
   description: string | null;
   quantity: number;
   unitOfMeasure: string;
+  sourceUnitCost: number | null;
+  sourceCurrency: ImportSourceCurrency;
+  fxRate: number;
+  fxDate: string;
   baseUnitCostHnl: number;
+  commercialUnitCostHnl: number | null;
+  componentAllocatedCostHnl: number;
   allocatedLandedCostHnl: number;
   landedUnitCostHnl: number | null;
+  costRole: ImportInvoiceLineCostRole;
+  receiptPolicy: ImportInvoiceLineReceiptPolicy;
+  allocationGroupKey: string | null;
   receivingUnitCostHnl: number | null;
   receivingLineCostHnl: number | null;
   receivingCostBasis: ImportReceivingCostBasis | null;
@@ -847,12 +965,14 @@ export interface ImportReceivingActionResult extends ImportReceivingHandoffEnvel
 }
 
 export interface ImportPurchaseOrderLinkLine {
+  sourceType: 'INVOICE_LINE' | 'EXPECTED_PO_LINE';
   shipmentId: string;
-  invoiceId: string;
-  invoiceNumber: string;
+  shipmentLineId: string | null;
+  invoiceId: string | null;
+  invoiceNumber: string | null;
   supplierCode: string | null;
   supplierName: string;
-  invoiceLineId: string;
+  invoiceLineId: string | null;
   purchaseOrderLineId: string | null;
   purchaseOrderId: string | null;
   purchaseOrderNumber: string | null;
@@ -866,8 +986,17 @@ export interface ImportPurchaseOrderLinkLine {
   description: string | null;
   quantity: number;
   unitOfMeasure: string;
+  sourceUnitCost: number | null;
+  sourceCurrency: ImportSourceCurrency;
+  fxRate: number;
+  fxDate: string;
   baseUnitCostHnl: number;
+  commercialUnitCostHnl: number | null;
+  componentAllocatedCostHnl: number;
   landedUnitCostHnl: number | null;
+  costRole: ImportInvoiceLineCostRole;
+  receiptPolicy: ImportInvoiceLineReceiptPolicy;
+  allocationGroupKey: string | null;
   poUnitCostHnl: number | null;
   canCreatePurchaseOrderLine: boolean;
   blockingReason: string | null;
@@ -911,6 +1040,9 @@ export interface ImportWorkbookLinePreview extends ImportWorkbookMoneyPreview {
   quantity: number;
   unitOfMeasure: string;
   sourceUnitCost: number | null;
+  costRole: ImportInvoiceLineCostRole;
+  receiptPolicy: ImportInvoiceLineReceiptPolicy;
+  allocationGroupKey: string | null;
   taxable: boolean;
 }
 

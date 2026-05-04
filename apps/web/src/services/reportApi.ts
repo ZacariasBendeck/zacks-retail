@@ -1455,6 +1455,14 @@ export type SalesHistoryByMonthMetricKey =
   | 'beginningOnHand'
   | 'roiPct'
   | 'turns'
+  | 'newSkuStoreCount'
+  | 'carryoverSkuStoreCount'
+  | 'newSkuDistinctCount'
+  | 'carryoverSkuDistinctCount'
+  | 'newSkuUnitsSold'
+  | 'carryoverSkuUnitsSold'
+  | 'newCarryoverSkuRatio'
+  | 'newCarryoverUnitsSoldRatio'
 
 /** Retained for backward compatibility with callers that passed
  *  `deferredMetrics` on the query string. v2.1 ships every previously

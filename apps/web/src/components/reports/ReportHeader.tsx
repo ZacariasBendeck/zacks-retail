@@ -26,6 +26,8 @@ interface Props {
   // the old full-screen toggle was removed (it was unreliable), so the flag
   // is now a no-op. Safe to drop from callers.
   enableFullscreen?: boolean
+  // Compact report-builder screens can opt into tighter vertical chrome.
+  compact?: boolean
 }
 
 /**
@@ -42,11 +44,12 @@ export default function ReportHeader({
   rightMeta,
   actions,
   showCurrencyNote = true,
+  compact = false,
 }: Props) {
   return (
-    <div style={{ marginBottom: 16 }}>
+    <div style={{ marginBottom: compact ? 8 : 16 }}>
       {breadcrumb && breadcrumb.length > 0 ? (
-        <Breadcrumb style={{ marginBottom: 12 }} items={breadcrumb} />
+        <Breadcrumb style={{ marginBottom: compact ? 4 : 12, fontSize: compact ? 12 : undefined }} items={breadcrumb} />
       ) : null}
       <div
         style={{
@@ -58,11 +61,11 @@ export default function ReportHeader({
         }}
       >
         <div style={{ flex: '1 1 auto', minWidth: 0 }}>
-          <Title level={2} style={{ margin: 0 }}>
+          <Title level={compact ? 3 : 2} style={{ margin: 0 }}>
             {title}
           </Title>
           {description || citation ? (
-            <Paragraph type="secondary" style={{ marginTop: 4, marginBottom: 0 }}>
+            <Paragraph type="secondary" style={{ marginTop: compact ? 2 : 4, marginBottom: 0, fontSize: compact ? 12 : undefined }}>
               {description}
               {description && citation ? ' ' : null}
               {citation ? (
@@ -73,7 +76,7 @@ export default function ReportHeader({
             </Paragraph>
           ) : null}
           {showCurrencyNote ? (
-            <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 4 }}>
+            <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: compact ? 1 : 4 }}>
               Amounts in Lempira (HNL)
             </Text>
           ) : null}

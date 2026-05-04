@@ -18,8 +18,31 @@ describe('CriteriaInput', () => {
     expect(screen.getByText('Categories')).toBeInTheDocument()
     // Ant Select placeholder is rendered inside the combobox
     expect(screen.getByText(/All Categories/i)).toBeInTheDocument()
+    expect(screen.getByTestId('categories-criteria-picker')).toBeInTheDocument()
     // Grammar text box placeholder
     expect(screen.getByPlaceholderText(/556-599/i)).toBeInTheDocument()
+    expect(screen.getByLabelText('Categories grammar criteria')).toBeInTheDocument()
+    expect(screen.getByTestId('categories-criteria-grammar')).toBeInTheDocument()
+  })
+
+  it('keeps grammar help in the tooltip instead of rendering inline text', () => {
+    render(
+      <CriteriaInput
+        label="Categories"
+        mode="numeric"
+        options={[]}
+        selected={[]}
+        onSelectedChange={() => {}}
+        rawText=""
+        onRawTextChange={() => {}}
+      />,
+    )
+
+    expect(screen.queryByText(/Ranges: 556-599/i)).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Categories criteria help')).toHaveAttribute(
+      'title',
+      expect.stringContaining('Ranges: 556-599'),
+    )
   })
 
   it('fires onSelectedChange on dropdown change', async () => {

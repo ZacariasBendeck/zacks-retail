@@ -49,6 +49,15 @@ export function useSkuAttributes(code: string | undefined) {
   })
 }
 
+export function useSkuAttributesForSkus(skuCodes: string[]) {
+  return useQuery({
+    queryKey: ['products-attributes', 'skus', { skuCodes }],
+    queryFn: () => productsAttributesApi.getForSkus(skuCodes),
+    enabled: skuCodes.length > 0,
+    staleTime: CATALOG_STALE_MS,
+  })
+}
+
 export function useSetSkuAttributes() {
   const qc = useQueryClient()
   return useMutation({

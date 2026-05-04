@@ -1272,6 +1272,14 @@ const SUPPORTED_METRIC_KEYS = [
   'beginningOnHand',
   'roiPct',
   'turns',
+  'newSkuStoreCount',
+  'carryoverSkuStoreCount',
+  'newSkuDistinctCount',
+  'carryoverSkuDistinctCount',
+  'newSkuUnitsSold',
+  'carryoverSkuUnitsSold',
+  'newCarryoverSkuRatio',
+  'newCarryoverUnitsSoldRatio',
 ] as const;
 const DEFERRED_METRIC_KEYS = ['beginningOnHand', 'roiPct', 'turns'] as const;
 
@@ -1380,9 +1388,9 @@ const salesHistoryByMonthQuerySchema = z.object({
  *   get:
  *     summary: Sales History by Month — 12-month trailing pivot (RICS Ch. 6 p. 95) — v2
  *     description: >
- *       Full-parity Sales History by Month report. Supports the eight-metric "Data to
- *       Print" checklist including Beginning On-Hand, ROI%, and Turns via the owned
- *       inventory-history tables, all three detail
+ *       Full-parity Sales History by Month report. Supports the Data to
+ *       Print checklist including sales, inventory, and SKU lifecycle count
+ *       metrics via the owned inventory-history tables, all three detail
  *       levels, and seven criteria facets following the RICS criteria grammar
  *       (ranges, lists, exclusions, wildcards).
  *     tags: [Reports]
@@ -1407,7 +1415,7 @@ const salesHistoryByMonthQuerySchema = z.object({
  *       - name: dataToPrint
  *         in: query
  *         schema: { type: string }
- *         description: Comma-separated metric keys. Supported - quantitySold, netSales, pctOfStoreNetSales, profit, grossProfit. Defaults to netSales.
+ *         description: Comma-separated metric keys. Supported - quantitySold, netSales, pctOfStoreNetSales, profit, grossProfit, beginningOnHand, roiPct, turns, newSkuStoreCount, carryoverSkuStoreCount, newSkuDistinctCount, carryoverSkuDistinctCount, newSkuUnitsSold, carryoverSkuUnitsSold, newCarryoverSkuRatio, newCarryoverUnitsSoldRatio. Defaults to netSales.
  *       - name: deferredMetrics
  *         in: query
  *         schema: { type: string }
@@ -1451,6 +1459,14 @@ const METRIC_LABEL: Record<string, string> = {
   beginningOnHand: 'Beginning On-Hand Qty',
   roiPct: 'ROI %',
   turns: 'Turns',
+  newSkuStoreCount: 'New SKU Store Count',
+  carryoverSkuStoreCount: 'Carryover SKU Store Count',
+  newSkuDistinctCount: 'New Distinct SKU Count',
+  carryoverSkuDistinctCount: 'Carryover Distinct SKU Count',
+  newSkuUnitsSold: 'New SKU Units Sold',
+  carryoverSkuUnitsSold: 'Carryover SKU Units Sold',
+  newCarryoverSkuRatio: 'New/Carryover SKU %',
+  newCarryoverUnitsSoldRatio: 'New/Carryover Units Sold %',
 };
 // Excel number format per metric. Quantity = integer; dollar amounts = money;
 // percent-like metrics already expressed as 0-100 → percent1.
@@ -1463,10 +1479,27 @@ const METRIC_NUMFMT: Record<string, string> = {
   beginningOnHand: XLSX_NUMFMT.integer,
   roiPct: XLSX_NUMFMT.percent1,
   turns: XLSX_NUMFMT.decimal2,
+  newSkuStoreCount: XLSX_NUMFMT.integer,
+  carryoverSkuStoreCount: XLSX_NUMFMT.integer,
+  newSkuDistinctCount: XLSX_NUMFMT.integer,
+  carryoverSkuDistinctCount: XLSX_NUMFMT.integer,
+  newSkuUnitsSold: XLSX_NUMFMT.integer,
+  carryoverSkuUnitsSold: XLSX_NUMFMT.integer,
+  newCarryoverSkuRatio: '0.0"%"',
+  newCarryoverUnitsSoldRatio: '0.0"%"',
 };
 function formatMetricCell(key: string, v: number): string {
   if (key === 'quantitySold') return String(Math.round(v));
   if (key === 'beginningOnHand') return String(Math.round(v));
+  if (
+    key === 'newSkuStoreCount' ||
+    key === 'carryoverSkuStoreCount' ||
+    key === 'newSkuDistinctCount' ||
+    key === 'carryoverSkuDistinctCount' ||
+    key === 'newSkuUnitsSold' ||
+    key === 'carryoverSkuUnitsSold'
+  ) return String(Math.round(v));
+  if (key === 'newCarryoverSkuRatio' || key === 'newCarryoverUnitsSoldRatio') return `${v.toFixed(1)}%`;
   if (key === 'grossProfit' || key === 'pctOfStoreNetSales' || key === 'roiPct') return v.toFixed(1);
   if (key === 'turns') return v.toFixed(2);
   return v.toFixed(2);

@@ -645,4 +645,40 @@ describe('SalesHistoryByMonthPage', () => {
     expect(screen.getByTestId('metric-roiPct')).toBeInTheDocument()
     expect(screen.getByTestId('metric-turns')).toBeInTheDocument()
   })
+
+  it('exposes and sends the new/carryover lifecycle metric checkboxes', async () => {
+    const user = userEvent.setup()
+    const hook = vi.mocked(useSalesHistoryByMonth)
+    hook.mockReturnValue({ data: undefined, isFetching: false, error: null } as never)
+
+    renderPage()
+
+    expect(screen.getByText('Original report metrics')).toBeInTheDocument()
+    expect(screen.getByText('New / carryover metrics')).toBeInTheDocument()
+
+    const lifecycleKeys = [
+      'newSkuStoreCount',
+      'carryoverSkuStoreCount',
+      'newSkuDistinctCount',
+      'carryoverSkuDistinctCount',
+      'newSkuUnitsSold',
+      'carryoverSkuUnitsSold',
+      'newCarryoverSkuRatio',
+      'newCarryoverUnitsSoldRatio',
+    ] as const
+
+    for (const key of lifecycleKeys) {
+      const checkbox = screen.getByTestId(`metric-${key}`)
+      expect(checkbox).toBeInTheDocument()
+      await user.click(checkbox)
+    }
+
+    await clickRunReport(user)
+
+    await waitFor(() => {
+      const calls = hook.mock.calls
+      const lastCall = calls[calls.length - 1]
+      expect(lastCall?.[0]?.dataToPrint).toEqual(expect.arrayContaining([...lifecycleKeys]))
+    })
+  })
 })

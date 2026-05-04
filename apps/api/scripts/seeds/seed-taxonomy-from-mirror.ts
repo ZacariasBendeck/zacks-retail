@@ -32,10 +32,11 @@ interface Step {
 
 interface Args {
   manifestPath: string | null;
+  only: Set<TaxonomySourceTable> | null;
 }
 
 function parseArgs(): Args {
-  const args: Args = { manifestPath: null };
+  const args: Args = { manifestPath: null, only: null };
   const argv = process.argv.slice(2);
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -45,6 +46,26 @@ function parseArgs(): Args {
       case '--manifest':
         args.manifestPath = String(argv[++i] ?? '').trim() || null;
         break;
+      case '--only': {
+        const raw = String(argv[++i] ?? '').trim();
+        const requested = raw.split(',').map((part) => part.trim()).filter(Boolean);
+        const valid = new Set<TaxonomySourceTable>([
+          'departments',
+          'categories',
+          'group_codes',
+          'keywords',
+          'sectors',
+          'return_codes',
+          'marketing_code',
+          'size_types',
+        ]);
+        const invalid = requested.filter((part) => !valid.has(part as TaxonomySourceTable));
+        if (requested.length === 0 || invalid.length > 0) {
+          throw new Error(`Invalid --only value: ${raw || '(empty)'}`);
+        }
+        args.only = new Set(requested as TaxonomySourceTable[]);
+        break;
+      }
       case '--help':
       case '-h':
         printHelpAndExit(0);
@@ -63,6 +84,7 @@ function printHelpAndExit(code: number): never {
       '',
       'Without --manifest, copies taxonomy baselines from rics_mirror.* into app.taxonomy_*.',
       'With --manifest, stages the canonical taxonomy CSVs into temp tables and loads from there instead.',
+      'Use --only departments,categories,... to load a subset.',
     ].join('\n'),
   );
   process.exit(code);
@@ -258,6 +280,11 @@ const STEPS: Step[] = [
   },
 ];
 
+function selectedSteps(args: Args): Step[] {
+  if (!args.only) return STEPS;
+  return STEPS.filter((step) => args.only?.has(step.targetTable));
+}
+
 async function main(): Promise<void> {
   const args = parseArgs();
   const client = new Client({ connectionString: process.env.DATABASE_URL });
@@ -266,9 +293,10 @@ async function main(): Promise<void> {
   try {
     const manifestContext = args.manifestPath ? loadManifest(args.manifestPath) : null;
     const stagedTables = new Map<TaxonomySourceTable, string>();
+    const steps = selectedSteps(args);
 
     if (manifestContext) {
-      for (const step of STEPS) {
+      for (const step of steps) {
         const table = requireTable(manifestContext.manifest, step.targetTable);
         const stagedName = await stageTable(client, manifestContext.manifestDir, table);
         stagedTables.set(step.targetTable, stagedName);
@@ -281,7 +309,7 @@ async function main(): Promise<void> {
         : 'taxonomy backfill (rics_mirror -> app.taxonomy_*)',
     );
 
-    for (const step of STEPS) {
+    for (const step of steps) {
       const sourceTable = stagedTables.get(step.targetTable) ?? step.defaultSourceTable;
       if (!manifestContext) {
         const [schema, table] = sourceTable.split('.');

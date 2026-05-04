@@ -569,6 +569,8 @@ exports.Prisma.StoreGroupMemberScalarFieldEnum = {
 exports.Prisma.PurchasePlanScalarFieldEnum = {
   id: 'id',
   storeGroupCode: 'storeGroupCode',
+  planningScope: 'planningScope',
+  scopeLabel: 'scopeLabel',
   label: 'label',
   status: 'status',
   season: 'season',
@@ -630,6 +632,79 @@ exports.Prisma.PurchasePlanAdjustmentScalarFieldEnum = {
 };
 
 exports.Prisma.PurchasePlanAuditScalarFieldEnum = {
+  id: 'id',
+  planId: 'planId',
+  action: 'action',
+  actor: 'actor',
+  at: 'at',
+  beforeJson: 'beforeJson',
+  afterJson: 'afterJson'
+};
+
+exports.Prisma.PurchasePlanV3ScalarFieldEnum = {
+  id: 'id',
+  label: 'label',
+  status: 'status',
+  storeGroupCodes: 'storeGroupCodes',
+  departmentNumber: 'departmentNumber',
+  departmentLabel: 'departmentLabel',
+  year: 'year',
+  forecastMethod: 'forecastMethod',
+  eohMethod: 'eohMethod',
+  coverMonths: 'coverMonths',
+  discountNormalization: 'discountNormalization',
+  historyFromYearMonth: 'historyFromYearMonth',
+  historyToYearMonth: 'historyToYearMonth',
+  warehouseStoreNumbers: 'warehouseStoreNumbers',
+  createdBy: 'createdBy',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt',
+  archivedAt: 'archivedAt'
+};
+
+exports.Prisma.PurchasePlanV3RowScalarFieldEnum = {
+  id: 'id',
+  planId: 'planId',
+  storeGroupCode: 'storeGroupCode',
+  storeGroupLabel: 'storeGroupLabel',
+  season: 'season',
+  seasonYear: 'seasonYear',
+  seasonMonths: 'seasonMonths',
+  projectedBoh: 'projectedBoh',
+  projectedSales: 'projectedSales',
+  eohTarget: 'eohTarget',
+  baselineBuy: 'baselineBuy',
+  chainOnHand: 'chainOnHand',
+  currentOnOrder: 'currentOnOrder',
+  futureOnOrder: 'futureOnOrder',
+  nativeOpenPo: 'nativeOpenPo',
+  stockPosition: 'stockPosition',
+  warehouseEligible: 'warehouseEligible',
+  warehousePlanningCredit: 'warehousePlanningCredit',
+  warehouseUnallocated: 'warehouseUnallocated',
+  totalAvailableForPlan: 'totalAvailableForPlan',
+  recommendedBuy: 'recommendedBuy',
+  projectedEoh: 'projectedEoh',
+  metadata: 'metadata',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+};
+
+exports.Prisma.PurchasePlanV3AdjustmentScalarFieldEnum = {
+  id: 'id',
+  planId: 'planId',
+  storeGroupCode: 'storeGroupCode',
+  season: 'season',
+  kind: 'kind',
+  value: 'value',
+  reason: 'reason',
+  appliedBy: 'appliedBy',
+  appliedAt: 'appliedAt',
+  beforeRowsJson: 'beforeRowsJson',
+  afterRowsJson: 'afterRowsJson'
+};
+
+exports.Prisma.PurchasePlanV3AuditScalarFieldEnum = {
   id: 'id',
   planId: 'planId',
   action: 'action',
@@ -836,6 +911,13 @@ exports.Prisma.PoReceiptLineScalarFieldEnum = {
   discrepancyReason: 'discrepancyReason',
   auditReference: 'auditReference',
   movementId: 'movementId',
+  importShipmentId: 'importShipmentId',
+  importInvoiceLineId: 'importInvoiceLineId',
+  importShipmentLineId: 'importShipmentLineId',
+  landedCostBasis: 'landedCostBasis',
+  commercialUnitCostHnl: 'commercialUnitCostHnl',
+  allocatedLandedCostHnl: 'allocatedLandedCostHnl',
+  landedUnitCostHnl: 'landedUnitCostHnl',
   createdAt: 'createdAt'
 };
 
@@ -1187,6 +1269,31 @@ exports.Prisma.StockMovementScalarFieldEnum = {
   idempotencyKey: 'idempotencyKey'
 };
 
+exports.Prisma.StockCostEventScalarFieldEnum = {
+  id: 'id',
+  stockMovementId: 'stockMovementId',
+  storeId: 'storeId',
+  skuId: 'skuId',
+  quantityDelta: 'quantityDelta',
+  valueDeltaHnl: 'valueDeltaHnl',
+  unitCostHnl: 'unitCostHnl',
+  valuationBasis: 'valuationBasis',
+  sourceDocumentType: 'sourceDocumentType',
+  sourceDocumentId: 'sourceDocumentId',
+  postedBy: 'postedBy',
+  postedAt: 'postedAt',
+  idempotencyKey: 'idempotencyKey'
+};
+
+exports.Prisma.StockCostBalanceScalarFieldEnum = {
+  storeId: 'storeId',
+  skuId: 'skuId',
+  quantityOnHand: 'quantityOnHand',
+  inventoryValueHnl: 'inventoryValueHnl',
+  averageUnitCostHnl: 'averageUnitCostHnl',
+  updatedAt: 'updatedAt'
+};
+
 exports.Prisma.ManualReceiptScalarFieldEnum = {
   id: 'id',
   storeId: 'storeId',
@@ -1326,6 +1433,11 @@ exports.Prisma.ImportInvoiceLineScalarFieldEnum = {
   baseUnitCostHnl: 'baseUnitCostHnl',
   allocatedLandedCostHnl: 'allocatedLandedCostHnl',
   landedUnitCostHnl: 'landedUnitCostHnl',
+  costRole: 'costRole',
+  receiptPolicy: 'receiptPolicy',
+  allocationGroupKey: 'allocationGroupKey',
+  componentAllocatedCostHnl: 'componentAllocatedCostHnl',
+  commercialUnitCostHnl: 'commercialUnitCostHnl',
   taxable: 'taxable',
   createdAt: 'createdAt',
   updatedAt: 'updatedAt'
@@ -1360,6 +1472,34 @@ exports.Prisma.ImportLandedCostAllocationScalarFieldEnum = {
   shipmentLineId: 'shipmentLineId',
   allocationBasis: 'allocationBasis',
   allocatedHnlAmount: 'allocatedHnlAmount',
+  createdAt: 'createdAt'
+};
+
+exports.Prisma.ImportCostBuildScalarFieldEnum = {
+  id: 'id',
+  shipmentId: 'shipmentId',
+  buildCode: 'buildCode',
+  description: 'description',
+  outputInvoiceLineId: 'outputInvoiceLineId',
+  outputShipmentLineId: 'outputShipmentLineId',
+  outputSkuId: 'outputSkuId',
+  outputQuantity: 'outputQuantity',
+  allocationBasis: 'allocationBasis',
+  createdBy: 'createdBy',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+};
+
+exports.Prisma.ImportCostComponentAllocationScalarFieldEnum = {
+  id: 'id',
+  shipmentId: 'shipmentId',
+  buildId: 'buildId',
+  componentInvoiceLineId: 'componentInvoiceLineId',
+  outputInvoiceLineId: 'outputInvoiceLineId',
+  outputShipmentLineId: 'outputShipmentLineId',
+  allocationBasis: 'allocationBasis',
+  allocatedHnlAmount: 'allocatedHnlAmount',
+  allocatedQuantity: 'allocatedQuantity',
   createdAt: 'createdAt'
 };
 
@@ -2855,6 +2995,10 @@ exports.Prisma.ModelName = {
   PurchasePlanRow: 'PurchasePlanRow',
   PurchasePlanAdjustment: 'PurchasePlanAdjustment',
   PurchasePlanAudit: 'PurchasePlanAudit',
+  PurchasePlanV3: 'PurchasePlanV3',
+  PurchasePlanV3Row: 'PurchasePlanV3Row',
+  PurchasePlanV3Adjustment: 'PurchasePlanV3Adjustment',
+  PurchasePlanV3Audit: 'PurchasePlanV3Audit',
   SkuUpc: 'SkuUpc',
   CasePack: 'CasePack',
   CasePackCell: 'CasePackCell',
@@ -2892,6 +3036,8 @@ exports.Prisma.ModelName = {
   InventoryAdjustmentLine: 'InventoryAdjustmentLine',
   StockLevel: 'StockLevel',
   StockMovement: 'StockMovement',
+  StockCostEvent: 'StockCostEvent',
+  StockCostBalance: 'StockCostBalance',
   ManualReceipt: 'ManualReceipt',
   ManualReceiptLine: 'ManualReceiptLine',
   ImportShipment: 'ImportShipment',
@@ -2901,6 +3047,8 @@ exports.Prisma.ModelName = {
   ImportInvoiceLine: 'ImportInvoiceLine',
   ImportCharge: 'ImportCharge',
   ImportLandedCostAllocation: 'ImportLandedCostAllocation',
+  ImportCostBuild: 'ImportCostBuild',
+  ImportCostComponentAllocation: 'ImportCostComponentAllocation',
   GoodsInTransitRecord: 'GoodsInTransitRecord',
   ImportVerificationCheck: 'ImportVerificationCheck',
   ImportSuggestedPrice: 'ImportSuggestedPrice',

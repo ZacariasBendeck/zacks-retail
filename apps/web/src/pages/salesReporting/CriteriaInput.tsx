@@ -1,4 +1,5 @@
-import { Col, Input, Row, Select, Space, Typography } from 'antd'
+import { Input, Select, Space, Tooltip, Typography } from 'antd'
+import { QuestionCircleOutlined } from '@ant-design/icons'
 
 const { Text } = Typography
 
@@ -20,6 +21,7 @@ export interface CriteriaInputProps<V extends OptionValue> {
   onRawTextChange: (value: string) => void
   loading?: boolean
   hideDropdown?: boolean
+  hideGrammar?: boolean
   /** Overrides the default help line under the text box. */
   helpText?: string
   /** Optional data-testid for the multi-select. */
@@ -48,6 +50,7 @@ export default function CriteriaInput<V extends OptionValue>({
   onRawTextChange,
   loading = false,
   hideDropdown = false,
+  hideGrammar = false,
   helpText,
   selectTestId,
   rawTestId,
@@ -56,40 +59,55 @@ export default function CriteriaInput<V extends OptionValue>({
   const effectiveHelp = helpText ?? defaultHelp
   const grammarPlaceholder =
     mode === 'numeric' ? 'e.g. 556-599, <>575' : 'e.g. *FORMAL*, <>NIKE'
+  const testIdSlug = label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+  const classes = [
+    'criteria-input-compact',
+    hideDropdown ? 'criteria-input-compact--grammar-only' : '',
+    hideGrammar ? 'criteria-input-compact--picker-only' : '',
+  ].filter(Boolean).join(' ')
 
   return (
-    <Row gutter={12} align="top" wrap={false}>
-      <Col flex="140px" style={{ textAlign: 'right', paddingTop: 6 }}>
-        <Text strong>{label}</Text>
-      </Col>
-      <Col flex="auto">
-        <Space direction="vertical" size={4} style={{ width: '100%' }}>
-          {!hideDropdown && (
-            <Select<V[]>
-              mode="multiple"
-              allowClear
-              loading={loading}
-              value={selected}
-              onChange={onSelectedChange}
-              placeholder={`All ${label}`}
-              optionFilterProp="label"
-              style={{ width: '100%' }}
-              options={options}
-              data-testid={selectTestId}
-            />
-          )}
-          <Input
-            placeholder={grammarPlaceholder}
-            value={rawText}
-            onChange={(e) => onRawTextChange(e.target.value)}
-            style={{ fontFamily: 'Consolas, Menlo, monospace' }}
-            data-testid={rawTestId}
+    <div className={classes}>
+      <Space size={4} align="center" className="criteria-input-compact__label">
+        <Text strong style={{ fontSize: 12 }}>
+          {label}
+        </Text>
+        <Tooltip title={effectiveHelp} placement="top">
+          <QuestionCircleOutlined
+            aria-label={`${label} criteria help`}
+            className="criteria-input-compact__help"
+            tabIndex={0}
+            title={effectiveHelp}
           />
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            {effectiveHelp}
-          </Text>
-        </Space>
-      </Col>
-    </Row>
+        </Tooltip>
+      </Space>
+      {!hideDropdown && (
+        <Select<V[]>
+          mode="multiple"
+          allowClear
+          loading={loading}
+          value={selected}
+          onChange={onSelectedChange}
+          placeholder={`All ${label}`}
+          optionFilterProp="label"
+          size="small"
+          maxTagCount="responsive"
+          style={{ width: '100%' }}
+          options={options}
+          data-testid={selectTestId ?? `${testIdSlug}-criteria-picker`}
+        />
+      )}
+      {!hideGrammar && (
+        <Input
+          placeholder={grammarPlaceholder}
+          value={rawText}
+          onChange={(e) => onRawTextChange(e.target.value)}
+          size="small"
+          style={{ fontFamily: 'Consolas, Menlo, monospace' }}
+          aria-label={`${label} grammar criteria`}
+          data-testid={rawTestId ?? `${testIdSlug}-criteria-grammar`}
+        />
+      )}
+    </div>
   )
 }

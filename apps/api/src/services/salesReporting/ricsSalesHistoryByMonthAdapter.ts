@@ -57,6 +57,28 @@ export interface MonthlyMeasuresRow {
   cogs: number;
 }
 
+export interface MonthlySkuLifecycleCountRow {
+  storeNumber: number;
+  /** 'YYYY-MM' */
+  yearMonth: string;
+  /** Primary grouping key (vendor / category / sku depending on detailLevel). */
+  dimKey: string;
+  /** Human-facing label. */
+  dimLabel: string;
+  /** For `detailLevel='sku'` only - the parent category code (if known). */
+  categoryKey: string | null;
+  /** For `detailLevel='sku'` only - the parent vendor code (if known). */
+  vendorKey: string | null;
+  /** For `detailLevel='sku'` only - the SKU image filename from app.sku. */
+  pictureFileName?: string | null;
+  newSkuStoreCount: number;
+  carryoverSkuStoreCount: number;
+  newSkuDistinctCount: number;
+  carryoverSkuDistinctCount: number;
+  newSkuUnitsSold: number;
+  carryoverSkuUnitsSold: number;
+}
+
 export interface QueryMonthlyMeasuresParams {
   storeNumbers: number[];
   /** 'YYYY-MM' inclusive */
@@ -75,6 +97,7 @@ export interface QueryMonthlyMeasuresParams {
 }
 
 export interface QueryPriorYearTicketMeasuresParams extends QueryMonthlyMeasuresParams {}
+export interface QueryMonthlySkuLifecycleCountsParams extends QueryMonthlyMeasuresParams {}
 
 // Back-compat shim — some callers only need Net Sales and the v1 shape.
 export interface MonthlyNetSalesRow {
@@ -227,6 +250,22 @@ interface RawMonthlyRow {
   Qty: number | null;
   NetSales: number | null;
   CostTotal: number | null;
+}
+
+interface RawSkuLifecycleCountRow {
+  StoreNumber: number | null;
+  Y: number | null;
+  M: number | null;
+  DimKey: string | null;
+  Vendor: string | null;
+  Category: number | null;
+  PictureFileName: string | null;
+  NewStoreCount: number | null;
+  CarryoverStoreCount: number | null;
+  NewDistinctCount: number | null;
+  CarryoverDistinctCount: number | null;
+  NewUnitsSold: number | null;
+  CarryoverUnitsSold: number | null;
 }
 
 // ─────────────────────────── main entry point ─────────────────────────────
@@ -565,6 +604,334 @@ GROUP BY 1, 2, 3, 4`;
       quantity: Number(r.Qty ?? 0),
       netSales: Number(r.NetSales ?? 0),
       cogs: Number(r.CostTotal ?? 0),
+    });
+  }
+  return rows;
+}
+
+/**
+ * Count in-stock SKU/store presences and units sold by month/lifecycle bucket.
+ *
+ * "New" is based on the earliest date_first_received for the SKU across the
+ * selected store scope. Arrival month plus the next three report months are
+ * new; month 4 and later are carryover. Null first-received dates classify as
+ * carryover when the SKU is in stock.
+ */
+export async function queryMonthlySkuLifecycleCounts(
+  params: QueryMonthlySkuLifecycleCountsParams,
+): Promise<MonthlySkuLifecycleCountRow[]> {
+  assertYearMonth(params.fromYearMonth, 'fromYearMonth');
+  assertYearMonth(params.toYearMonth, 'toYearMonth');
+  if (params.fromYearMonth > params.toYearMonth) {
+    throw new Error('fromYearMonth must be <= toYearMonth');
+  }
+  if (!params.storeNumbers.length) {
+    throw new Error('storeNumbers must have at least one entry');
+  }
+  if (params.sortBy !== 'vendor' && params.sortBy !== 'category') {
+    throw new Error(`sortBy must be 'vendor' or 'category', got: ${params.sortBy}`);
+  }
+  if (params.skuFilter && params.skuFilter.length === 0) {
+    return [];
+  }
+
+  const storeExpr = params.combineStores ? `0` : `c.store_id`;
+  let dimExpr: string;
+  if (params.detailLevel === 'sku') {
+    dimExpr = `c.sku`;
+  } else if (params.detailLevel === 'department') {
+    dimExpr = `c.category`;
+  } else {
+    dimExpr = params.sortBy === 'vendor' ? `c.vendor` : `c.category`;
+  }
+
+  const sqlParams: unknown[] = [
+    params.fromYearMonth,
+    params.toYearMonth,
+    params.storeNumbers.map((n) => Number(n)),
+  ];
+  const wheres: string[] = [
+    `src.year_month >= $1::text`,
+    `src.year_month <= $2::text`,
+    `src.store_id = ANY($3::int[])`,
+  ];
+  if (params.skuFilter && params.skuFilter.length > 0) {
+    sqlParams.push(params.skuFilter.map((s) => s.trim().toUpperCase()).filter(Boolean));
+    wheres.push(`UPPER(src.sku) = ANY($${sqlParams.length}::text[])`);
+  }
+  if (params.vendorFilter && params.vendorFilter.length > 0) {
+    sqlParams.push(params.vendorFilter.map((s) => s.trim().toUpperCase()).filter(Boolean));
+    wheres.push(`UPPER(src.vendor) = ANY($${sqlParams.length}::text[])`);
+  }
+  if (params.categoryFilter && params.categoryFilter.length > 0) {
+    sqlParams.push(params.categoryFilter.map((c) => Number(c)));
+    wheres.push(`src.category = ANY($${sqlParams.length}::int[])`);
+  }
+
+  const sql = `
+WITH chain_first AS (
+  SELECT
+    UPPER(BTRIM(sku_code)) AS sku,
+    MIN(date_first_received) AS first_received
+  FROM app.inventory_history_snapshot
+  WHERE store_id = ANY($3::int[])
+    AND sku_code IS NOT NULL
+    AND BTRIM(sku_code) <> ''
+    AND date_first_received IS NOT NULL
+  GROUP BY 1
+),
+stock_src AS (
+  SELECT
+    s.store_id,
+    UPPER(BTRIM(s.sku_code)) AS sku,
+    COALESCE(NULLIF(BTRIM(k.vendor_id), ''), '(none)') AS vendor,
+    COALESCE(k.category_number, 0) AS category,
+    NULLIF(BTRIM(k.picture_file_name), '') AS picture_file_name,
+    cf.first_received,
+    m.year_month
+  FROM app.inventory_history_snapshot s
+  INNER JOIN app.inventory_history_month m
+    ON m.snapshot_id = s.id
+  LEFT JOIN chain_first cf
+    ON cf.sku = UPPER(BTRIM(s.sku_code))
+  LEFT JOIN app.sku k
+    ON k.id = s.sku_id
+  WHERE m.qty_on_hand > 0
+    AND s.store_id = ANY($3::int[])
+    AND m.year_month >= $1::text
+    AND m.year_month <= $2::text
+    AND s.sku_code IS NOT NULL
+    AND BTRIM(s.sku_code) <> ''
+    AND (
+      s.snapshot_as_of IS NULL OR
+      m.year_month <> to_char(s.snapshot_as_of, 'YYYY-MM')
+    )
+
+  UNION ALL
+
+  SELECT
+    s.store_id,
+    UPPER(BTRIM(s.sku_code)) AS sku,
+    COALESCE(NULLIF(BTRIM(k.vendor_id), ''), '(none)') AS vendor,
+    COALESCE(k.category_number, 0) AS category,
+    NULLIF(BTRIM(k.picture_file_name), '') AS picture_file_name,
+    cf.first_received,
+    to_char(s.snapshot_as_of, 'YYYY-MM') AS year_month
+  FROM app.inventory_history_snapshot s
+  LEFT JOIN chain_first cf
+    ON cf.sku = UPPER(BTRIM(s.sku_code))
+  LEFT JOIN app.sku k
+    ON k.id = s.sku_id
+  WHERE s.on_hand > 0
+    AND s.store_id = ANY($3::int[])
+    AND to_char(s.snapshot_as_of, 'YYYY-MM') >= $1::text
+    AND to_char(s.snapshot_as_of, 'YYYY-MM') <= $2::text
+    AND s.sku_code IS NOT NULL
+    AND BTRIM(s.sku_code) <> ''
+),
+sales_src AS (
+  SELECT
+    s.store_id,
+    UPPER(BTRIM(s.sku_code)) AS sku,
+    COALESCE(NULLIF(BTRIM(k.vendor_id), ''), '(none)') AS vendor,
+    COALESCE(k.category_number, 0) AS category,
+    NULLIF(BTRIM(k.picture_file_name), '') AS picture_file_name,
+    cf.first_received,
+    m.year_month,
+    COALESCE(m.qty_sales, 0)::float8 AS qty_sales
+  FROM app.inventory_history_snapshot s
+  INNER JOIN app.inventory_history_month m
+    ON m.snapshot_id = s.id
+  LEFT JOIN chain_first cf
+    ON cf.sku = UPPER(BTRIM(s.sku_code))
+  LEFT JOIN app.sku k
+    ON k.id = s.sku_id
+  WHERE s.sku_code IS NOT NULL
+    AND s.store_id = ANY($3::int[])
+    AND m.year_month >= $1::text
+    AND m.year_month <= $2::text
+    AND COALESCE(m.qty_sales, 0) <> 0
+    AND BTRIM(s.sku_code) <> ''
+    AND (
+      s.snapshot_as_of IS NULL OR
+      m.year_month <> to_char(s.snapshot_as_of, 'YYYY-MM')
+    )
+
+  UNION ALL
+
+  SELECT
+    s.store_id,
+    UPPER(BTRIM(s.sku_code)) AS sku,
+    COALESCE(NULLIF(BTRIM(k.vendor_id), ''), '(none)') AS vendor,
+    COALESCE(k.category_number, 0) AS category,
+    NULLIF(BTRIM(k.picture_file_name), '') AS picture_file_name,
+    cf.first_received,
+    to_char(s.snapshot_as_of, 'YYYY-MM') AS year_month,
+    COALESCE(s.month_qty_sales, 0)::float8 AS qty_sales
+  FROM app.inventory_history_snapshot s
+  LEFT JOIN chain_first cf
+    ON cf.sku = UPPER(BTRIM(s.sku_code))
+  LEFT JOIN app.sku k
+    ON k.id = s.sku_id
+  WHERE s.sku_code IS NOT NULL
+    AND s.store_id = ANY($3::int[])
+    AND to_char(s.snapshot_as_of, 'YYYY-MM') >= $1::text
+    AND to_char(s.snapshot_as_of, 'YYYY-MM') <= $2::text
+    AND COALESCE(s.month_qty_sales, 0) <> 0
+    AND BTRIM(s.sku_code) <> ''
+),
+stock_active AS (
+  SELECT
+    src.store_id,
+    src.sku,
+    MIN(src.vendor) AS vendor,
+    MIN(src.category) AS category,
+    MIN(src.picture_file_name) AS picture_file_name,
+    MIN(src.first_received) AS first_received,
+    src.year_month
+  FROM stock_src src
+  WHERE ${wheres.join(' AND ')}
+  GROUP BY src.store_id, src.sku, src.year_month
+),
+sales_active AS (
+  SELECT
+    src.store_id,
+    src.sku,
+    MIN(src.vendor) AS vendor,
+    MIN(src.category) AS category,
+    MIN(src.picture_file_name) AS picture_file_name,
+    MIN(src.first_received) AS first_received,
+    src.year_month,
+    SUM(src.qty_sales)::float8 AS qty_sales
+  FROM sales_src src
+  WHERE ${wheres.join(' AND ')}
+    AND src.qty_sales <> 0
+  GROUP BY src.store_id, src.sku, src.year_month
+),
+stock_classified AS (
+  SELECT
+    stock_active.*,
+    CASE
+      WHEN stock_active.first_received IS NULL THEN false
+      ELSE (
+        (
+          (substring(stock_active.year_month from 1 for 4)::int - EXTRACT(YEAR FROM stock_active.first_received)::int) * 12
+          + (substring(stock_active.year_month from 6 for 2)::int - EXTRACT(MONTH FROM stock_active.first_received)::int)
+        ) BETWEEN 0 AND 3
+      )
+    END AS is_new
+  FROM stock_active
+),
+sales_classified AS (
+  SELECT
+    sales_active.*,
+    CASE
+      WHEN sales_active.first_received IS NULL THEN false
+      ELSE (
+        (
+          (substring(sales_active.year_month from 1 for 4)::int - EXTRACT(YEAR FROM sales_active.first_received)::int) * 12
+          + (substring(sales_active.year_month from 6 for 2)::int - EXTRACT(MONTH FROM sales_active.first_received)::int)
+        ) BETWEEN 0 AND 3
+      )
+    END AS is_new
+  FROM sales_active
+),
+stock_agg AS (
+SELECT
+  ${storeExpr} AS "StoreNumber",
+  substring(c.year_month from 1 for 4)::int AS "Y",
+  substring(c.year_month from 6 for 2)::int AS "M",
+  ${dimExpr} AS "DimKey",
+  MIN(c.vendor) AS "Vendor",
+  MIN(c.category) AS "Category",
+  MIN(c.picture_file_name) AS "PictureFileName",
+  SUM(CASE WHEN c.is_new THEN 1 ELSE 0 END)::int AS "NewStoreCount",
+  SUM(CASE WHEN c.is_new THEN 0 ELSE 1 END)::int AS "CarryoverStoreCount",
+  COUNT(DISTINCT CASE WHEN c.is_new THEN c.sku END)::int AS "NewDistinctCount",
+  COUNT(DISTINCT CASE WHEN c.is_new THEN NULL ELSE c.sku END)::int AS "CarryoverDistinctCount"
+FROM stock_classified c
+GROUP BY 1, 2, 3, 4
+),
+sales_agg AS (
+SELECT
+  ${storeExpr} AS "StoreNumber",
+  substring(c.year_month from 1 for 4)::int AS "Y",
+  substring(c.year_month from 6 for 2)::int AS "M",
+  ${dimExpr} AS "DimKey",
+  MIN(c.vendor) AS "Vendor",
+  MIN(c.category) AS "Category",
+  MIN(c.picture_file_name) AS "PictureFileName",
+  SUM(CASE WHEN c.is_new THEN c.qty_sales ELSE 0 END)::float8 AS "NewUnitsSold",
+  SUM(CASE WHEN c.is_new THEN 0 ELSE c.qty_sales END)::float8 AS "CarryoverUnitsSold"
+FROM sales_classified c
+GROUP BY 1, 2, 3, 4
+)
+SELECT
+  COALESCE(st."StoreNumber", sa."StoreNumber") AS "StoreNumber",
+  COALESCE(st."Y", sa."Y") AS "Y",
+  COALESCE(st."M", sa."M") AS "M",
+  COALESCE(st."DimKey", sa."DimKey") AS "DimKey",
+  COALESCE(st."Vendor", sa."Vendor") AS "Vendor",
+  COALESCE(st."Category", sa."Category") AS "Category",
+  COALESCE(st."PictureFileName", sa."PictureFileName") AS "PictureFileName",
+  COALESCE(st."NewStoreCount", 0)::int AS "NewStoreCount",
+  COALESCE(st."CarryoverStoreCount", 0)::int AS "CarryoverStoreCount",
+  COALESCE(st."NewDistinctCount", 0)::int AS "NewDistinctCount",
+  COALESCE(st."CarryoverDistinctCount", 0)::int AS "CarryoverDistinctCount",
+  COALESCE(sa."NewUnitsSold", 0)::float8 AS "NewUnitsSold",
+  COALESCE(sa."CarryoverUnitsSold", 0)::float8 AS "CarryoverUnitsSold"
+FROM stock_agg st
+FULL OUTER JOIN sales_agg sa
+  ON st."StoreNumber" = sa."StoreNumber"
+ AND st."Y" = sa."Y"
+ AND st."M" = sa."M"
+ AND st."DimKey" = sa."DimKey"`;
+
+  const raw = await prisma.$queryRawUnsafe<RawSkuLifecycleCountRow[]>(sql, ...sqlParams);
+  const categoryLabels =
+    params.sortBy === 'category' || params.detailLevel === 'department'
+      ? await loadCategoryLabels()
+      : null;
+
+  const rows: MonthlySkuLifecycleCountRow[] = [];
+  for (const r of raw) {
+    if (r.StoreNumber == null || r.Y == null || r.M == null) continue;
+    const yearMonth = `${String(Number(r.Y)).padStart(4, '0')}-${String(Number(r.M)).padStart(2, '0')}`;
+
+    let dimKey: string;
+    let dimLabel: string;
+    if (params.detailLevel === 'sku') {
+      const s = r.DimKey == null ? '(none)' : String(r.DimKey).trim() || '(none)';
+      dimKey = s;
+      dimLabel = s;
+    } else if (params.detailLevel === 'department') {
+      const n = r.DimKey == null ? 0 : Number(r.DimKey);
+      dimKey = String(n);
+      dimLabel = categoryLabels?.get(n) ?? String(n);
+    } else if (params.sortBy === 'vendor') {
+      const v = r.DimKey == null ? '(none)' : String(r.DimKey).trim() || '(none)';
+      dimKey = v;
+      dimLabel = v;
+    } else {
+      const n = r.DimKey == null ? 0 : Number(r.DimKey);
+      dimKey = String(n);
+      dimLabel = categoryLabels?.get(n) ?? String(n);
+    }
+
+    rows.push({
+      storeNumber: Number(r.StoreNumber),
+      yearMonth,
+      dimKey,
+      dimLabel,
+      categoryKey: r.Category == null ? null : String(Number(r.Category)),
+      vendorKey: r.Vendor == null ? null : String(r.Vendor).trim() || null,
+      pictureFileName: r.PictureFileName?.trim() || null,
+      newSkuStoreCount: Number(r.NewStoreCount ?? 0),
+      carryoverSkuStoreCount: Number(r.CarryoverStoreCount ?? 0),
+      newSkuDistinctCount: Number(r.NewDistinctCount ?? 0),
+      carryoverSkuDistinctCount: Number(r.CarryoverDistinctCount ?? 0),
+      newSkuUnitsSold: Number(r.NewUnitsSold ?? 0),
+      carryoverSkuUnitsSold: Number(r.CarryoverUnitsSold ?? 0),
     });
   }
   return rows;

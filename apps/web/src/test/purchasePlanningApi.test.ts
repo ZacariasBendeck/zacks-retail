@@ -4,6 +4,8 @@ import {
   createSavedPurchasePlan,
   fetchSavedPurchasePlans,
   generateSeasonalPurchaseReport,
+  updateSavedPurchasePlanRow,
+  updateSavedPurchasePlanRows,
 } from '../services/purchasePlanningApi'
 
 function ok(body: unknown): Response {
@@ -61,11 +63,41 @@ describe('purchasePlanningApi saved plans', () => {
     }))
   })
 
-  it('generates a consolidated seasonal report', async () => {
+  it('patches monthly row overrides', async () => {
+    const payload = { currentProjSales: 80, currentEohTarget: 60, currentBuy: 70, reason: 'buyer judgment' }
+    vi.mocked(fetch).mockResolvedValue(ok({ plan: { id: 'plan-1' } }))
+
+    await updateSavedPurchasePlanRow('plan-1', 'row-1', payload)
+
+    expect(fetch).toHaveBeenCalledWith('/api/v1/purchase-planning/plans/plan-1/rows/row-1', expect.objectContaining({
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }))
+  })
+
+  it('patches bulk worksheet row overrides', async () => {
     const payload = {
-      storeGroupCode: 'all-stores',
+      rows: [
+        { rowId: 'row-1', currentProjSales: 80, currentEohTarget: 60, currentBuy: 70 },
+        { rowId: 'row-2', currentProjSales: 77, currentEohTarget: 72, currentBuy: 88 },
+      ],
+      reason: 'worksheet edit',
+      appliedBy: 'buyer',
+    }
+    vi.mocked(fetch).mockResolvedValue(ok({ plan: { id: 'plan-1' } }))
+
+    await updateSavedPurchasePlanRows('plan-1', payload)
+
+    expect(fetch).toHaveBeenCalledWith('/api/v1/purchase-planning/plans/plan-1/rows', expect.objectContaining({
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }))
+  })
+
+  it('generates an enterprise monthly workbook report', async () => {
+    const payload = {
       departmentNumber: 4,
-      year: 2026,
+      asOfYearMonth: '2026-05',
       forecast: { method: 'holtWinters' as const },
     }
     vi.mocked(fetch).mockResolvedValue(ok({ seasons: [] }))

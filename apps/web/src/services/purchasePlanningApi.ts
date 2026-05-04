@@ -17,6 +17,7 @@ export type PurchasePlanForecastMethod =
 export type PurchasePlanEohMethod = 'forward' | 'seasonal';
 export type PurchasePlanningSeason = 'spring' | 'summer' | 'fall' | 'winter';
 export type PurchasePlanAdjustmentKind = 'percent_lift' | 'absolute_total';
+export type PurchasePlanPlanningScope = 'store_group' | 'enterprise';
 
 export interface PurchasePlanRequest {
   dimension: PurchasePlanDimension;
@@ -75,7 +76,8 @@ export interface PurchasePlanResponse {
 }
 
 export interface SavedPurchasePlanCreateRequest {
-  storeGroupCode: string;
+  planningScope?: PurchasePlanPlanningScope;
+  storeGroupCode?: string;
   season: PurchasePlanningSeason;
   seasonYear: number;
   departmentNumbers: number[];
@@ -96,6 +98,8 @@ export interface SavedPurchasePlanHeader {
   id: string;
   label: string;
   status: 'draft' | 'archived';
+  planningScope: PurchasePlanPlanningScope;
+  planningScopeLabel: string;
   storeGroupCode: string;
   storeGroupLabel: string | null;
   season: PurchasePlanningSeason;
@@ -193,6 +197,25 @@ export interface SavedPurchasePlanAdjustmentRequest {
   appliedBy?: string;
 }
 
+export interface SavedPurchasePlanRowUpdateRequest {
+  currentProjSales?: number;
+  currentEohTarget?: number;
+  currentBuy?: number;
+  reason: string;
+  appliedBy?: string;
+}
+
+export interface SavedPurchasePlanRowsUpdateRequest {
+  rows: Array<{
+    rowId: string;
+    currentProjSales?: number;
+    currentEohTarget?: number;
+    currentBuy?: number;
+  }>;
+  reason: string;
+  appliedBy?: string;
+}
+
 export interface SavedPurchasePlanCompare {
   plan: SavedPurchasePlanHeader;
   departments: Array<{
@@ -208,9 +231,8 @@ export interface SavedPurchasePlanCompare {
 }
 
 export interface SeasonalPurchaseReportRequest {
-  storeGroupCode: string;
   departmentNumber: number;
-  year: number;
+  asOfYearMonth?: string;
   forecast?: {
     method?: PurchasePlanForecastMethod;
     trailingMonths?: number;
@@ -228,6 +250,15 @@ export interface SeasonalPurchaseReportValue {
   costHnl: number;
 }
 
+export interface SeasonalPurchaseReportWorksheet {
+  storeGroupCode: string;
+  storeGroupLabel: string | null;
+  planId: string;
+  planLabel: string;
+  autoCreated: boolean;
+  duplicateSourceCount: number;
+}
+
 export interface SeasonalPurchaseReportSeason {
   season: PurchasePlanningSeason;
   seasonYear: number;
@@ -237,6 +268,7 @@ export interface SeasonalPurchaseReportSeason {
   planLabel: string;
   autoCreated: boolean;
   duplicateSourceCount: number;
+  worksheets: SeasonalPurchaseReportWorksheet[];
   projectedBoh: SeasonalPurchaseReportValue;
   projectedSales: SeasonalPurchaseReportValue;
   baselineBuy: SeasonalPurchaseReportValue;
@@ -247,14 +279,142 @@ export interface SeasonalPurchaseReportSeason {
 }
 
 export interface SeasonalPurchaseReportResponse {
+  planningScope: PurchasePlanPlanningScope;
+  planningScopeLabel: string;
   storeGroupCode: string;
   storeGroupLabel: string | null;
+  storeGroupCodes: string[];
+  storeGroupLabels: string[];
+  warehouseStoreNumbers: number[];
   departmentNumber: number;
   departmentLabel: string;
   year: number;
+  asOfYearMonth: string;
+  startSeason: PurchasePlanningSeason;
+  startSeasonYear: number;
+  endSeason: PurchasePlanningSeason;
+  endSeasonYear: number;
+  projectionMonths: string[];
+  workbook: SeasonalPurchaseReportWorksheet;
   seasons: SeasonalPurchaseReportSeason[];
   warnings: string[];
   generatedAt: string;
+}
+
+export interface PurchasePlanV3Value {
+  units: number;
+}
+
+export interface PurchasePlanV3WarehouseDetail {
+  skuCode: string;
+  skuDescription: string | null;
+  startingWarehouseOnHand: number;
+  eligibleStoreGroupCodes: string[];
+  allocatedUnits: number;
+  remainingUnits: number;
+  reason: 'eligible_credit' | 'no_chain_tag' | 'no_selected_chain_need';
+}
+
+export interface PurchasePlanV3SeasonRow {
+  id?: string;
+  planId?: string;
+  storeGroupCode: string;
+  storeGroupLabel: string;
+  season: PurchasePlanningSeason;
+  seasonYear: number;
+  seasonLabel: string;
+  seasonMonths: string[];
+  projectedBoh: PurchasePlanV3Value;
+  projectedSales: PurchasePlanV3Value;
+  eohTarget: PurchasePlanV3Value;
+  baselineBuy: PurchasePlanV3Value;
+  chainOnHand: PurchasePlanV3Value;
+  currentOnOrder: PurchasePlanV3Value;
+  futureOnOrder: PurchasePlanV3Value;
+  nativeOpenPo: PurchasePlanV3Value;
+  stockPosition: PurchasePlanV3Value;
+  warehouseEligible: PurchasePlanV3Value;
+  warehousePlanningCredit: PurchasePlanV3Value;
+  warehouseUnallocated: PurchasePlanV3Value;
+  totalAvailableForPlan: PurchasePlanV3Value;
+  recommendedBuy: PurchasePlanV3Value;
+  projectedEoh: PurchasePlanV3Value;
+  warehouseDetails: PurchasePlanV3WarehouseDetail[];
+}
+
+export interface PurchasePlanV3Header {
+  id: string;
+  label: string;
+  status: 'draft' | 'archived';
+  storeGroupCodes: string[];
+  departmentNumber: number;
+  departmentLabel: string;
+  year: number;
+  forecastMethod: PurchasePlanForecastMethod;
+  eohMethod: PurchasePlanEohMethod;
+  coverMonths: number;
+  discountNormalization: boolean;
+  historyFromYearMonth: string;
+  historyToYearMonth: string;
+  warehouseStoreNumbers: number[];
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+  archivedAt: string | null;
+}
+
+export interface PurchasePlanV3Report {
+  plan?: PurchasePlanV3Header;
+  storeGroups: Array<{ code: string; label: string; storeNumbers: number[] }>;
+  departmentNumber: number;
+  departmentLabel: string;
+  year: number;
+  forecastMethod: PurchasePlanForecastMethod;
+  eohMethod: PurchasePlanEohMethod;
+  coverMonths: number;
+  discountNormalization: boolean;
+  historyFromYearMonth: string;
+  historyToYearMonth: string;
+  warehouseStoreNumbers: number[];
+  seasons: Array<{
+    season: PurchasePlanningSeason;
+    seasonYear: number;
+    seasonLabel: string;
+    months: string[];
+    rows: PurchasePlanV3SeasonRow[];
+  }>;
+  totals: {
+    projectedSales: PurchasePlanV3Value;
+    baselineBuy: PurchasePlanV3Value;
+    warehousePlanningCredit: PurchasePlanV3Value;
+    recommendedBuy: PurchasePlanV3Value;
+    warehouseUnallocated: PurchasePlanV3Value;
+  };
+  warnings: string[];
+  generatedAt: string;
+}
+
+export interface PurchasePlanV3Request {
+  storeGroupCodes?: string[];
+  departmentNumber: number;
+  year: number;
+  label?: string;
+  forecast?: {
+    method?: PurchasePlanForecastMethod;
+    trailingMonths?: number;
+    growthPct?: number;
+    yearsToBlend?: 2 | 3;
+  };
+  eohMethod?: PurchasePlanEohMethod;
+  coverMonths?: number;
+  discountNormalization?: boolean;
+  createdBy?: string;
+}
+
+export interface PurchasePlanV3ListItem extends PurchasePlanV3Header {
+  rowCount: number;
+  recommendedBuy: number;
+  warehousePlanningCredit: number;
 }
 
 async function parseJsonOrThrow<T>(res: Response): Promise<T> {
@@ -322,6 +482,31 @@ export async function addSavedPurchasePlanAdjustment(
   return parseJsonOrThrow<SavedPurchasePlanDetail>(res);
 }
 
+export async function updateSavedPurchasePlanRow(
+  id: string,
+  rowId: string,
+  request: SavedPurchasePlanRowUpdateRequest,
+): Promise<SavedPurchasePlanDetail> {
+  const res = await fetch(`/api/v1/purchase-planning/plans/${encodeURIComponent(id)}/rows/${encodeURIComponent(rowId)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  return parseJsonOrThrow<SavedPurchasePlanDetail>(res);
+}
+
+export async function updateSavedPurchasePlanRows(
+  id: string,
+  request: SavedPurchasePlanRowsUpdateRequest,
+): Promise<SavedPurchasePlanDetail> {
+  const res = await fetch(`/api/v1/purchase-planning/plans/${encodeURIComponent(id)}/rows`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  return parseJsonOrThrow<SavedPurchasePlanDetail>(res);
+}
+
 export async function recalculateSavedPurchasePlan(id: string, actor?: string): Promise<SavedPurchasePlanDetail> {
   const res = await fetch(`/api/v1/purchase-planning/plans/${encodeURIComponent(id)}/recalculate`, {
     method: 'POST',
@@ -354,4 +539,50 @@ export async function generateSeasonalPurchaseReport(
     body: JSON.stringify(request),
   });
   return parseJsonOrThrow<SeasonalPurchaseReportResponse>(res);
+}
+
+export async function generatePurchasePlanV3Report(
+  request: PurchasePlanV3Request,
+): Promise<PurchasePlanV3Report> {
+  const res = await fetch('/api/v1/purchase-planning/v3/seasonal-report', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  return parseJsonOrThrow<PurchasePlanV3Report>(res);
+}
+
+export async function createPurchasePlanV3(
+  request: PurchasePlanV3Request,
+): Promise<PurchasePlanV3Report> {
+  const res = await fetch('/api/v1/purchase-planning/v3/plans', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  return parseJsonOrThrow<PurchasePlanV3Report>(res);
+}
+
+export async function fetchPurchasePlanV3Plans(params: {
+  status?: 'draft' | 'archived' | 'all';
+} = {}): Promise<PurchasePlanV3ListItem[]> {
+  const qs = new URLSearchParams();
+  if (params.status) qs.set('status', params.status);
+  const res = await fetch(`/api/v1/purchase-planning/v3/plans${qs.toString() ? `?${qs}` : ''}`);
+  const body = await parseJsonOrThrow<{ plans: PurchasePlanV3ListItem[] }>(res);
+  return body.plans;
+}
+
+export async function fetchPurchasePlanV3(id: string): Promise<PurchasePlanV3Report> {
+  const res = await fetch(`/api/v1/purchase-planning/v3/plans/${encodeURIComponent(id)}`);
+  return parseJsonOrThrow<PurchasePlanV3Report>(res);
+}
+
+export async function archivePurchasePlanV3(id: string, actor?: string): Promise<PurchasePlanV3Report> {
+  const res = await fetch(`/api/v1/purchase-planning/v3/plans/${encodeURIComponent(id)}/archive`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ actor }),
+  });
+  return parseJsonOrThrow<PurchasePlanV3Report>(res);
 }

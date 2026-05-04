@@ -13,6 +13,122 @@
   background: rgba(0, 0, 0, 0.015);
 }
 
+.criteria-input-compact {
+  display: grid;
+  grid-template-columns: 96px minmax(150px, 0.8fr) minmax(170px, 1fr);
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+}
+
+.criteria-input-compact--grammar-only {
+  grid-template-columns: 96px minmax(180px, 1fr);
+}
+
+.criteria-input-compact--picker-only {
+  grid-template-columns: 96px minmax(180px, 1fr);
+}
+
+.criteria-input-compact__label {
+  min-width: 0;
+  justify-content: flex-end;
+  white-space: nowrap;
+}
+
+.criteria-input-compact__help {
+  color: rgba(0, 0, 0, 0.45);
+  cursor: help;
+  font-size: 12px;
+}
+
+.criteria-input-compact__help:focus-visible {
+  color: #1677ff;
+  outline: 2px solid rgba(22, 119, 255, 0.35);
+  outline-offset: 2px;
+  border-radius: 999px;
+}
+
+.sales-analysis-setup-strip {
+  display: grid;
+  grid-template-columns: minmax(360px, 1.4fr) minmax(300px, 1.15fr) minmax(210px, 0.75fr) minmax(300px, 1fr);
+  gap: 10px 14px;
+  align-items: start;
+}
+
+.sales-analysis-filter-group {
+  min-width: 0;
+}
+
+.sales-analysis-filter-title {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 12px;
+}
+
+.sales-analysis-field-label {
+  font-size: 12px;
+}
+
+.sales-analysis-criteria-panel {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #f0f0f0;
+}
+
+.sales-analysis-criteria-title {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+.sales-analysis-criteria-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(300px, 1fr));
+  gap: 6px 12px;
+}
+
+.sales-analysis-criteria-grid .criteria-input-compact {
+  grid-template-columns: 82px minmax(108px, 1fr) minmax(128px, 1fr);
+  gap: 4px;
+}
+
+.sales-analysis-criteria-grid .criteria-input-compact--grammar-only,
+.sales-analysis-criteria-grid .criteria-input-compact--picker-only {
+  grid-template-columns: 82px minmax(142px, 1fr);
+}
+
+@media (max-width: 1280px) {
+  .sales-analysis-setup-strip {
+    grid-template-columns: repeat(2, minmax(320px, 1fr));
+  }
+
+  .sales-analysis-criteria-grid {
+    grid-template-columns: repeat(2, minmax(320px, 1fr));
+  }
+}
+
+@media (max-width: 1100px) {
+  .sales-analysis-criteria-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 760px) {
+  .criteria-input-compact,
+  .criteria-input-compact--grammar-only {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .criteria-input-compact__label {
+    justify-content: flex-start;
+  }
+
+  .sales-analysis-setup-strip {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 /* Hover and selection still win over zebra so the interaction state reads. */
 .ant-table-tbody > tr.report-zebra-row:hover > .ant-table-cell {
   background: rgba(0, 0, 0, 0.04);

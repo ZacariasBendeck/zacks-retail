@@ -74,6 +74,20 @@ const workbookUpload = multer({
 });
 
 const sourceCurrencySchema = z.enum(['CNY', 'USD', 'HNL']);
+const importInvoiceLineCostRoleSchema = z.enum([
+  'FINISHED_GOOD',
+  'MATERIAL',
+  'CONVERSION',
+  'ACCESSORY_COMPONENT',
+  'RECEIPT_ACCESSORY',
+  'EXPENSE',
+]);
+const importInvoiceLineReceiptPolicySchema = z.enum([
+  'RECEIVE_TO_STOCK',
+  'ROLL_TO_OUTPUT',
+  'EXPENSE_ONLY',
+  'IGNORE',
+]);
 const containerTypeSchema = z.enum(['CONTAINER', 'LOOSE_CARGO', 'CARTON_GROUP']);
 const containerStatusSchema = z.enum(['PLANNED', 'LOADED', 'IN_TRANSIT', 'ARRIVED', 'RECEIVED', 'CANCELLED']);
 const goodsInTransitStatusSchema = z.enum([
@@ -168,6 +182,9 @@ const createInvoiceLineSchema = z.object({
   fxRate: z.coerce.number().positive().optional(),
   fxDate: z.string().optional(),
   hnlAmount: z.coerce.number().nonnegative().optional(),
+  costRole: importInvoiceLineCostRoleSchema.optional(),
+  receiptPolicy: importInvoiceLineReceiptPolicySchema.optional(),
+  allocationGroupKey: z.string().trim().optional().nullable(),
   taxable: z.boolean().optional(),
 });
 const updateInvoiceLineSchema = createInvoiceLineSchema;

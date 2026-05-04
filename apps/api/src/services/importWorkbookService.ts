@@ -7,6 +7,8 @@ import type {
   ImportChargeType,
   ImportInvoiceGroup,
   ImportInvoiceKind,
+  ImportInvoiceLineCostRole,
+  ImportInvoiceLineReceiptPolicy,
   ImportSourceCurrency,
   ImportWorkbookChargePreview,
   ImportWorkbookImportResult,
@@ -184,6 +186,11 @@ function safeCode(value: string): string {
   );
 }
 
+function proformaGroupKey(parts: Array<string | null | undefined>): string | null {
+  const normalized = parts.map((part) => cleanString(part)).filter(Boolean).join(':');
+  return normalized ? safeCode(normalized).slice(0, 96) : null;
+}
+
 function addPreviewLine(invoice: ImportWorkbookSupplierInvoicePreview, line: ImportWorkbookLinePreview): void {
   invoice.lines.push(line);
 }
@@ -244,6 +251,9 @@ function buildLine(input: {
   sourceCurrency: ImportSourceCurrency;
   fxRate: number | null;
   fxDate: string | null;
+  costRole?: ImportInvoiceLineCostRole;
+  receiptPolicy?: ImportInvoiceLineReceiptPolicy;
+  allocationGroupKey?: string | null;
   taxable?: boolean;
 }): ImportWorkbookLinePreview {
   const sourceUnitCost = input.sourceUnitCost ?? (input.quantity > 0 ? round4(input.sourceAmount / input.quantity) : null);
@@ -256,6 +266,9 @@ function buildLine(input: {
     quantity: input.quantity,
     unitOfMeasure: input.unitOfMeasure,
     sourceUnitCost,
+    costRole: input.costRole ?? 'FINISHED_GOOD',
+    receiptPolicy: input.receiptPolicy ?? 'RECEIVE_TO_STOCK',
+    allocationGroupKey: cleanString(input.allocationGroupKey),
     taxable: input.taxable ?? true,
     ...moneyPreview(input.sourceAmount, input.sourceCurrency, input.fxRate, input.fxDate),
   };
@@ -404,6 +417,7 @@ function parseSuitProforma(
       const fabricSupplier = cellText(ws, row, 9) ?? 'Fabric supplier';
       const meters = cellNumber(ws, row, 7);
       const meterPrice = cellNumber(ws, row, 6);
+      const groupKey = proformaGroupKey([piNumber, 'SUITS']);
       if (isPositive(fabricAmount)) {
         addPreviewLine(
           getInvoice(
@@ -426,6 +440,9 @@ function parseSuitProforma(
             sourceCurrency: currency,
             fxRate,
             fxDate,
+            costRole: 'MATERIAL',
+            receiptPolicy: 'ROLL_TO_OUTPUT',
+            allocationGroupKey: groupKey,
           }),
         );
         nextLineNumber += 1;
@@ -452,6 +469,9 @@ function parseSuitProforma(
             sourceCurrency: currency,
             fxRate,
             fxDate,
+            costRole: 'CONVERSION',
+            receiptPolicy: 'ROLL_TO_OUTPUT',
+            allocationGroupKey: groupKey,
           }),
         );
         nextLineNumber += 1;
@@ -469,6 +489,7 @@ function parseSuitProforma(
       ]);
       const fabricReference = cellText(ws, row, 8);
       const supplierReference = cellText(ws, row, 9);
+      const groupKey = proformaGroupKey([piNumber, 'SUITS']);
       addPreviewLine(
         getInvoice(
           'FINISHED-SUITS',
@@ -490,6 +511,9 @@ function parseSuitProforma(
           sourceCurrency: currency,
           fxRate,
           fxDate,
+          costRole: 'FINISHED_GOOD',
+          receiptPolicy: 'RECEIVE_TO_STOCK',
+          allocationGroupKey: groupKey,
         }),
       );
       nextLineNumber += 1;
@@ -518,6 +542,9 @@ function parseSuitProforma(
           sourceCurrency: currency,
           fxRate,
           fxDate,
+          costRole: 'RECEIPT_ACCESSORY',
+          receiptPolicy: 'RECEIVE_TO_STOCK',
+          allocationGroupKey: proformaGroupKey([accessoryLabel]),
         }),
       );
       nextLineNumber += 1;
@@ -896,6 +923,9 @@ export async function importWorkbook(
         sourceCurrency: linePreview.sourceCurrency,
         fxRate: linePreview.fxRate,
         fxDate: linePreview.fxDate,
+        costRole: linePreview.costRole,
+        receiptPolicy: linePreview.receiptPolicy,
+        allocationGroupKey: linePreview.allocationGroupKey,
         taxable: linePreview.taxable,
       };
       shipment = await addImportInvoiceLine(createdInvoice.id, linePayload);

@@ -39,3 +39,28 @@
   padding: 0 5px !important;
   margin-inline-end: 4px !important;
 }
+
+.products-compact-table.change-sku-attributes-result-table .ant-table {
+  table-layout: fixed;
+  width: 100%;
+}
+
+.products-compact-table.change-sku-attributes-result-table .ant-table-cell {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.products-compact-table.change-sku-attributes-result-table .ant-table-cell .ant-space {
+  display: inline-flex;
+  max-width: 100%;
+  overflow: hidden;
+  vertical-align: middle;
+}
+
+.products-compact-table.change-sku-attributes-result-table .ant-table-cell .ant-tag {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+}

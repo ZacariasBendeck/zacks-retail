@@ -5,6 +5,7 @@ import {
   Card,
   Checkbox,
   Empty,
+  Flex,
   Form,
   Input,
   Select,
@@ -23,6 +24,8 @@ import { useStores } from '../../hooks/useStores';
 import type { ChangeDetailRow } from '../../services/ricsInventoryApi';
 import { SkuLookup } from '../../components/sku-lookup';
 import { getErrorMessage } from '../../utils/errors';
+import { InlinePageHelp, useRegisterPageHelp } from '../../components/page-help';
+import { inventoryAuditHelp } from '../../content/help/pageHelp';
 
 // Inventory Audit — one (SKU × Store), full movement history from rics_mirror
 // including SALES (unioned from ticket_detail), with a running on-hand balance
@@ -48,6 +51,8 @@ interface AuditRow extends ChangeDetailRow {
 }
 
 export default function InventoryAuditPage() {
+  useRegisterPageHelp(inventoryAuditHelp);
+
   const [skuCode, setSkuCode] = useState<string>('');
   const [storeId, setStoreId] = useState<number | null>(null);
   const [lookupOpen, setLookupOpen] = useState(false);
@@ -142,15 +147,20 @@ export default function InventoryAuditPage() {
   return (
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
       <Card size="small">
-        <Typography.Title level={4} style={{ marginTop: 0 }}>
-          <AuditOutlined /> Inventory Audit
-        </Typography.Title>
-        <Typography.Text type="secondary">
-          Full movement history for one (SKU × Store) — PO receipts, transfers, returns,
-          physical counts, and POS sales — with a running on-hand balance anchored to
-          today's inventory. Lets you prove exactly how the SKU reached its current
-          on-hand number.
-        </Typography.Text>
+        <Flex align="flex-start" justify="space-between" gap={12} wrap="wrap">
+          <div>
+            <Typography.Title level={4} style={{ marginTop: 0 }}>
+              <AuditOutlined /> Inventory Audit
+            </Typography.Title>
+            <Typography.Text type="secondary">
+              Full movement history for one (SKU × Store) — PO receipts, transfers, returns,
+              physical counts, and POS sales — with a running on-hand balance anchored to
+              today's inventory. Lets you prove exactly how the SKU reached its current
+              on-hand number.
+            </Typography.Text>
+          </div>
+          <InlinePageHelp entry={inventoryAuditHelp} mode="popover" />
+        </Flex>
 
         <Form layout="vertical" style={{ marginTop: 16 }}>
           <Space wrap align="end">

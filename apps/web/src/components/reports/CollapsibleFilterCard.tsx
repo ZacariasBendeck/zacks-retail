@@ -29,6 +29,8 @@ interface Props {
   // Disable the compact Re-run button when the form isn't runnable (e.g.
   // required fields missing).
   canRun?: boolean
+  // Report-builder screens can opt into tighter padding and action spacing.
+  compact?: boolean
 }
 
 /**
@@ -51,11 +53,12 @@ export default function CollapsibleFilterCard({
   persistentActions,
   onRun,
   canRun = true,
+  compact = false,
 }: Props) {
   if (!open) {
     return (
-      <Card style={{ marginBottom: 16 }} styles={{ body: { padding: 12 } }}>
-        <Space wrap>
+      <Card style={{ marginBottom: compact ? 10 : 16 }} styles={{ body: { padding: compact ? 8 : 12 } }}>
+        <Space wrap size={compact ? 6 : 'small'}>
           <Button icon={<EditOutlined />} onClick={() => onOpenChange(true)}>
             Modify filters
           </Button>
@@ -74,10 +77,10 @@ export default function CollapsibleFilterCard({
     )
   }
   return (
-    <Card style={{ marginBottom: 16 }}>
+    <Card style={{ marginBottom: compact ? 10 : 16 }} styles={compact ? { body: { padding: 12 } } : undefined}>
       {children}
-      <div style={{ marginTop: 16, borderTop: '1px solid #f0f0f0', paddingTop: 16 }}>
-        <Space wrap>
+      <div style={{ marginTop: compact ? 10 : 16, borderTop: '1px solid #f0f0f0', paddingTop: compact ? 10 : 16 }}>
+        <Space wrap size={compact ? 6 : 'small'}>
           {actions}
           {persistentActions}
         </Space>

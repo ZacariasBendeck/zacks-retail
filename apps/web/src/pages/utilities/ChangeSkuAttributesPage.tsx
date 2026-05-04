@@ -48,6 +48,7 @@ import {
   useAttributeDimensionsForSkus,
   useAttributeMacroRules,
   useCreateValue,
+  useSkuAttributesForSkus,
 } from '../../hooks/useProductsAttributes'
 import { useApplyBatchChange } from '../../hooks/useUtilities'
 import { buildRicsImageUrl } from '../../services/ricsImageUrl'
@@ -61,6 +62,133 @@ import type {
 
 type CoreActionKind = 'CATEGORY' | 'VENDOR' | 'SEASON' | 'GROUP' | 'KEYWORD_ADD' | 'KEYWORD_REMOVE'
 type AttributeMode = 'REPLACE' | 'ADD' | 'REMOVE'
+type CoreResultColumnKey =
+  | 'thumb'
+  | 'sku'
+  | 'description'
+  | 'vendor'
+  | 'vendorSku'
+  | 'category'
+  | 'department'
+  | 'sector'
+  | 'styleColor'
+  | 'season'
+  | 'groupCode'
+  | 'sizeType'
+  | 'keywords'
+  | 'onHand'
+  | 'location'
+  | 'listPrice'
+  | 'retailPrice'
+  | 'mdPrice1'
+  | 'mdPrice2'
+  | 'currentPriceSlot'
+  | 'currentCost'
+  | 'status'
+  | 'manufacturer'
+  | 'labelCode'
+  | 'colorCode'
+  | 'longColor'
+  | 'dateLastChanged'
+  | 'orderMultiple'
+  | 'orderUom'
+
+const CORE_RESULT_COLUMN_KEYS: CoreResultColumnKey[] = [
+  'thumb',
+  'sku',
+  'description',
+  'vendor',
+  'vendorSku',
+  'category',
+  'department',
+  'sector',
+  'styleColor',
+  'season',
+  'groupCode',
+  'sizeType',
+  'keywords',
+  'onHand',
+  'location',
+  'listPrice',
+  'retailPrice',
+  'mdPrice1',
+  'mdPrice2',
+  'currentPriceSlot',
+  'currentCost',
+  'status',
+  'manufacturer',
+  'labelCode',
+  'colorCode',
+  'longColor',
+  'dateLastChanged',
+  'orderMultiple',
+  'orderUom',
+]
+
+const DEFAULT_RESULT_COLUMN_KEYS: string[] = [
+  'thumb',
+  'sku',
+  'description',
+  'vendor',
+  'category',
+  'department',
+  'styleColor',
+  'season',
+  'groupCode',
+  'sizeType',
+  'keywords',
+  'onHand',
+]
+
+const CORE_RESULT_COLUMN_OPTION_GROUPS = [
+  {
+    label: 'Common SKU columns',
+    options: [
+      { value: 'thumb', label: 'Image' },
+      { value: 'sku', label: 'SKU', disabled: true },
+      { value: 'description', label: 'Description' },
+      { value: 'vendor', label: 'Vendor' },
+      { value: 'vendorSku', label: 'Vendor SKU' },
+      { value: 'category', label: 'Category' },
+      { value: 'department', label: 'Department' },
+      { value: 'sector', label: 'Sector' },
+      { value: 'styleColor', label: 'Style/Color' },
+      { value: 'season', label: 'Season' },
+      { value: 'groupCode', label: 'Group' },
+      { value: 'sizeType', label: 'Size Type' },
+      { value: 'keywords', label: 'Keywords' },
+      { value: 'onHand', label: 'On Hand' },
+    ],
+  },
+  {
+    label: 'Pricing and status',
+    options: [
+      { value: 'listPrice', label: 'List Price' },
+      { value: 'retailPrice', label: 'Retail Price' },
+      { value: 'mdPrice1', label: 'Markdown 1' },
+      { value: 'mdPrice2', label: 'Markdown 2' },
+      { value: 'currentPriceSlot', label: 'Current Price Slot' },
+      { value: 'currentCost', label: 'Current Cost' },
+      { value: 'status', label: 'Status' },
+      { value: 'dateLastChanged', label: 'Date Last Changed' },
+    ],
+  },
+  {
+    label: 'Additional SKU fields',
+    options: [
+      { value: 'location', label: 'Location' },
+      { value: 'manufacturer', label: 'Manufacturer' },
+      { value: 'labelCode', label: 'Label Code' },
+      { value: 'colorCode', label: 'Color Code' },
+      { value: 'longColor', label: 'Long Color' },
+      { value: 'orderMultiple', label: 'Order Multiple' },
+      { value: 'orderUom', label: 'Order UOM' },
+    ],
+  },
+]
+
+const REQUIRED_RESULT_COLUMN_KEYS = ['sku']
+const ATTRIBUTE_COLUMN_PREFIX = 'ATTR_COL:'
 
 const CORE_ACTION_META: Record<CoreActionKind, { label: string; verb: string; opType: BatchOperationType }> = {
   CATEGORY:       { label: 'Category',       verb: 'Move to category',      opType: 'CHANGE_CATEGORY' },
@@ -74,6 +202,24 @@ const CORE_ACTION_META: Record<CoreActionKind, { label: string; verb: string; op
 const ATTRIBUTE_ACTION_PREFIX = 'ATTR:'
 
 const ATTRIBUTE_VALUE_CODE_PATTERN = /^[a-z0-9][a-z0-9_]*$/
+
+const isUniversalAttributeDimension = (dimension: AttributeDimension) =>
+  dimension.familyRules.length === 0
+
+const attributeColumnKey = (dimensionCode: string) => `${ATTRIBUTE_COLUMN_PREFIX}${dimensionCode}`
+
+const formatAmount = (value: number | null | undefined) =>
+  value == null ? '—' : value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+
+const formatPlainValue = (value: number | string | null | undefined) =>
+  value == null || value === '' ? <Typography.Text type="secondary">—</Typography.Text> : value
+
+const orderColumnKeys = (keys: string[], orderedKeys: string[]) => {
+  const requested = new Set(keys)
+  const ordered = orderedKeys.filter((key) => requested.has(key))
+  const unknown = keys.filter((key) => !orderedKeys.includes(key))
+  return Array.from(new Set([...REQUIRED_RESULT_COLUMN_KEYS, ...ordered, ...unknown]))
+}
 
 export default function ChangeSkuAttributesPage() {
   const navigate = useNavigate()
@@ -108,6 +254,7 @@ export default function ChangeSkuAttributesPage() {
   const [newAttributeValueCode, setNewAttributeValueCode] = useState('')
   const [newAttributeValueLabel, setNewAttributeValueLabel] = useState('')
   const [localAttributeValues, setLocalAttributeValues] = useState<Record<string, AttributeDimensionValue[]>>({})
+  const [visibleResultColumnKeys, setVisibleResultColumnKeys] = useState<string[]>(DEFAULT_RESULT_COLUMN_KEYS)
 
   const onActionChange = (next: string) => {
     setAction(next)
@@ -137,6 +284,14 @@ export default function ChangeSkuAttributesPage() {
   const sortedAttributeDimensions = useMemo(
     () => [...(attributeDimensions ?? [])].sort((a, b) => a.sortOrder - b.sortOrder || a.labelEs.localeCompare(b.labelEs)),
     [attributeDimensions],
+  )
+  const universalAttributeDimensions = useMemo(
+    () => sortedAttributeDimensions.filter(isUniversalAttributeDimension),
+    [sortedAttributeDimensions],
+  )
+  const familyAttributeDimensions = useMemo(
+    () => sortedAttributeDimensions.filter((dimension) => !isUniversalAttributeDimension(dimension)),
+    [sortedAttributeDimensions],
   )
 
   const derivedDimensionCodes = useMemo(
@@ -250,6 +405,10 @@ export default function ChangeSkuAttributesPage() {
     staleTime: 5 * 60_000,
   })
   const {
+    data: skuAttributesBulk,
+    isFetching: isFetchingSkuAttributesBulk,
+  } = useSkuAttributesForSkus(hasRun ? skuCodes : [])
+  const {
     data: resultAttributeDimensions,
     isFetching: isFetchingResultAttributeDimensions,
   } = useAttributeDimensionsForSkus(hasRun ? skuCodes : [], true)
@@ -257,6 +416,29 @@ export default function ChangeSkuAttributesPage() {
     if (!hasRun) return sortedAttributeDimensions
     return resultAttributeDimensions ?? []
   }, [hasRun, resultAttributeDimensions, sortedAttributeDimensions])
+  const universalActionAttributeDimensions = useMemo(
+    () => actionAttributeDimensions.filter(isUniversalAttributeDimension),
+    [actionAttributeDimensions],
+  )
+  const familyActionAttributeDimensions = useMemo(
+    () => actionAttributeDimensions.filter((dimension) => !isUniversalAttributeDimension(dimension)),
+    [actionAttributeDimensions],
+  )
+  const resultColumnOrder = useMemo(
+    () => [
+      ...CORE_RESULT_COLUMN_KEYS,
+      ...(resultAttributeDimensions ?? []).map((dimension) => attributeColumnKey(dimension.code)),
+    ],
+    [resultAttributeDimensions],
+  )
+  const availableResultColumnKeys = useMemo(
+    () => new Set(resultColumnOrder),
+    [resultColumnOrder],
+  )
+  const visibleColumnPickerKeys = useMemo(
+    () => visibleResultColumnKeys.filter((key) => availableResultColumnKeys.has(key)),
+    [availableResultColumnKeys, visibleResultColumnKeys],
+  )
 
   useEffect(() => {
     if (!hasRun || !action.startsWith(ATTRIBUTE_ACTION_PREFIX) || isFetchingResultAttributeDimensions) return
@@ -265,6 +447,13 @@ export default function ChangeSkuAttributesPage() {
       onActionChange('CATEGORY')
     }
   }, [action, actionAttributeDimensions, hasRun, isFetchingResultAttributeDimensions])
+
+  useEffect(() => {
+    if (!hasRun || isFetchingResultAttributeDimensions) return
+    setVisibleResultColumnKeys((prev) =>
+      orderColumnKeys(prev.filter((key) => availableResultColumnKeys.has(key)), resultColumnOrder),
+    )
+  }, [availableResultColumnKeys, hasRun, isFetchingResultAttributeDimensions, resultColumnOrder])
 
   // Dept/Sector rollup
   const deptFor = useMemo(() => {
@@ -294,7 +483,7 @@ export default function ChangeSkuAttributesPage() {
 
   type EnrichedSku = (typeof enriched)[number]
 
-  const columns = [
+  const coreColumns = [
     {
       title: '',
       key: 'thumb',
@@ -356,7 +545,7 @@ export default function ChangeSkuAttributesPage() {
     {
       title: 'SKU',
       dataIndex: 'code',
-      key: 'code',
+      key: 'sku',
       width: 140,
       sorter: (a: EnrichedSku, b: EnrichedSku) => a.code.localeCompare(b.code),
       defaultSortOrder: 'ascend' as const,
@@ -374,6 +563,14 @@ export default function ChangeSkuAttributesPage() {
       key: 'vendor',
       width: 90,
       sorter: (a: EnrichedSku, b: EnrichedSku) => (a.vendor ?? '').localeCompare(b.vendor ?? ''),
+    },
+    {
+      title: 'Vendor SKU',
+      dataIndex: 'vendorSku',
+      key: 'vendorSku',
+      width: 130,
+      sorter: (a: EnrichedSku, b: EnrichedSku) => (a.vendorSku ?? '').localeCompare(b.vendorSku ?? ''),
+      render: (v: string | null) => formatPlainValue(v),
     },
     {
       title: 'Category',
@@ -397,6 +594,23 @@ export default function ChangeSkuAttributesPage() {
           </Space>
         ) : r.category != null ? (
           <Typography.Text type="danger">— no dept range</Typography.Text>
+        ) : (
+          <Typography.Text type="secondary">—</Typography.Text>
+        )
+      },
+    },
+    {
+      title: 'Sector',
+      key: 'sector',
+      width: 170,
+      sorter: (a: EnrichedSku, b: EnrichedSku) => (a._sectorNumber ?? 0) - (b._sectorNumber ?? 0),
+      render: (_: unknown, r: EnrichedSku) => {
+        const sector = sectors?.find((s) => s.number === r._sectorNumber)
+        return sector ? (
+          <Space size={4}>
+            <Tag>{sector.number}</Tag>
+            <span>{sector.description}</span>
+          </Space>
         ) : (
           <Typography.Text type="secondary">—</Typography.Text>
         )
@@ -470,7 +684,175 @@ export default function ChangeSkuAttributesPage() {
         )
       },
     },
+    {
+      title: 'Location',
+      dataIndex: 'location',
+      key: 'location',
+      width: 110,
+      sorter: (a: EnrichedSku, b: EnrichedSku) => (a.location ?? '').localeCompare(b.location ?? ''),
+      render: (v: string | null) => formatPlainValue(v),
+    },
+    {
+      title: 'List',
+      dataIndex: 'listPrice',
+      key: 'listPrice',
+      width: 100,
+      align: 'right' as const,
+      sorter: (a: EnrichedSku, b: EnrichedSku) => (a.listPrice ?? 0) - (b.listPrice ?? 0),
+      render: (v: number | null) => formatAmount(v),
+    },
+    {
+      title: 'Retail',
+      dataIndex: 'retailPrice',
+      key: 'retailPrice',
+      width: 100,
+      align: 'right' as const,
+      sorter: (a: EnrichedSku, b: EnrichedSku) => (a.retailPrice ?? 0) - (b.retailPrice ?? 0),
+      render: (v: number | null) => formatAmount(v),
+    },
+    {
+      title: 'MD1',
+      dataIndex: 'mdPrice1',
+      key: 'mdPrice1',
+      width: 100,
+      align: 'right' as const,
+      sorter: (a: EnrichedSku, b: EnrichedSku) => (a.mdPrice1 ?? 0) - (b.mdPrice1 ?? 0),
+      render: (v: number | null) => formatAmount(v),
+    },
+    {
+      title: 'MD2',
+      dataIndex: 'mdPrice2',
+      key: 'mdPrice2',
+      width: 100,
+      align: 'right' as const,
+      sorter: (a: EnrichedSku, b: EnrichedSku) => (a.mdPrice2 ?? 0) - (b.mdPrice2 ?? 0),
+      render: (v: number | null) => formatAmount(v),
+    },
+    {
+      title: 'Price Slot',
+      dataIndex: 'currentPriceSlot',
+      key: 'currentPriceSlot',
+      width: 110,
+      sorter: (a: EnrichedSku, b: EnrichedSku) => a.currentPriceSlot.localeCompare(b.currentPriceSlot),
+    },
+    {
+      title: 'Cost',
+      dataIndex: 'currentCost',
+      key: 'currentCost',
+      width: 100,
+      align: 'right' as const,
+      sorter: (a: EnrichedSku, b: EnrichedSku) => (a.currentCost ?? 0) - (b.currentCost ?? 0),
+      render: (v: number | null) => formatAmount(v),
+    },
+    {
+      title: 'Status',
+      dataIndex: 'status',
+      key: 'status',
+      width: 90,
+      sorter: (a: EnrichedSku, b: EnrichedSku) => (a.status ?? '').localeCompare(b.status ?? ''),
+      render: (v: string | null) => formatPlainValue(v),
+    },
+    {
+      title: 'Manufacturer',
+      dataIndex: 'manufacturer',
+      key: 'manufacturer',
+      width: 140,
+      sorter: (a: EnrichedSku, b: EnrichedSku) => (a.manufacturer ?? '').localeCompare(b.manufacturer ?? ''),
+      render: (v: string | null) => formatPlainValue(v),
+    },
+    {
+      title: 'Label',
+      dataIndex: 'labelCode',
+      key: 'labelCode',
+      width: 100,
+      sorter: (a: EnrichedSku, b: EnrichedSku) => (a.labelCode ?? '').localeCompare(b.labelCode ?? ''),
+      render: (v: string | null) => formatPlainValue(v),
+    },
+    {
+      title: 'Color Code',
+      dataIndex: 'colorCode',
+      key: 'colorCode',
+      width: 110,
+      sorter: (a: EnrichedSku, b: EnrichedSku) => (a.colorCode ?? '').localeCompare(b.colorCode ?? ''),
+      render: (v: string | null) => formatPlainValue(v),
+    },
+    {
+      title: 'Long Color',
+      dataIndex: 'longColor',
+      key: 'longColor',
+      width: 150,
+      sorter: (a: EnrichedSku, b: EnrichedSku) => (a.longColor ?? '').localeCompare(b.longColor ?? ''),
+      render: (v: string | null) => formatPlainValue(v),
+    },
+    {
+      title: 'Changed',
+      dataIndex: 'dateLastChanged',
+      key: 'dateLastChanged',
+      width: 130,
+      sorter: (a: EnrichedSku, b: EnrichedSku) => (a.dateLastChanged ?? '').localeCompare(b.dateLastChanged ?? ''),
+      render: (v: string | null) => formatPlainValue(v ? v.slice(0, 10) : null),
+    },
+    {
+      title: 'Order Mult.',
+      dataIndex: 'orderMultiple',
+      key: 'orderMultiple',
+      width: 110,
+      align: 'right' as const,
+      sorter: (a: EnrichedSku, b: EnrichedSku) => (a.orderMultiple ?? 0) - (b.orderMultiple ?? 0),
+      render: (v: number | null) => formatPlainValue(v),
+    },
+    {
+      title: 'Order UOM',
+      dataIndex: 'orderUom',
+      key: 'orderUom',
+      width: 110,
+      sorter: (a: EnrichedSku, b: EnrichedSku) => (a.orderUom ?? '').localeCompare(b.orderUom ?? ''),
+      render: (v: string | null) => formatPlainValue(v),
+    },
   ]
+
+  const attributeColumns = (resultAttributeDimensions ?? [])
+    .filter((dimension) => visibleResultColumnKeys.includes(attributeColumnKey(dimension.code)))
+    .map((dimension) => ({
+      title: dimension.labelEs,
+      key: attributeColumnKey(dimension.code),
+      width: 180,
+      sorter: (a: EnrichedSku, b: EnrichedSku) => {
+        const aValues = skuAttributesBulk?.bySku[a.code]?.byDimension[dimension.code]?.values ?? []
+        const bValues = skuAttributesBulk?.bySku[b.code]?.byDimension[dimension.code]?.values ?? []
+        return aValues.map((v) => v.code).join(',').localeCompare(bValues.map((v) => v.code).join(','))
+      },
+      render: (_: unknown, r: EnrichedSku) => {
+        const values = skuAttributesBulk?.bySku[r.code]?.byDimension[dimension.code]?.values ?? []
+        if (values.length === 0) {
+          return isFetchingSkuAttributesBulk ? (
+            <Typography.Text type="secondary">…</Typography.Text>
+          ) : (
+            <Typography.Text type="secondary">—</Typography.Text>
+          )
+        }
+        return (
+          <Space size={2} wrap>
+            {values.map((value) => (
+              <Tooltip key={value.code} title={value.labelEs}>
+                <Tag style={{ marginInlineEnd: 0 }}>{value.code}</Tag>
+              </Tooltip>
+            ))}
+          </Space>
+        )
+      },
+    }))
+
+  const columns = [
+    ...coreColumns.filter((column) => visibleResultColumnKeys.includes(String(column.key))),
+    ...attributeColumns,
+  ]
+  const fitToWidthColumns = columns.map((column) => {
+    const key = String(column.key ?? '')
+    if (key === 'thumb') return { ...column, width: 52 }
+    if (key === 'sku') return { ...column, width: 112, ellipsis: true }
+    return { ...column, width: undefined, ellipsis: true }
+  })
 
   const cleanAttributeFilters = (): Record<string, string[]> | undefined => {
     const entries = Object.entries(attributeFilters)
@@ -591,8 +973,8 @@ export default function ChangeSkuAttributesPage() {
       }
     : CORE_ACTION_META[action as CoreActionKind]
       ?? CORE_ACTION_META.CATEGORY
-  const attributeActionOptions = actionAttributeDimensions.length > 0
-    ? actionAttributeDimensions.map((dimension) => {
+  const buildAttributeActionOptions = (dimensions: AttributeDimension[]) =>
+    dimensions.map((dimension) => {
         const disabled = derivedDimensionCodes.has(dimension.code)
         return {
           value: `${ATTRIBUTE_ACTION_PREFIX}${dimension.code}`,
@@ -606,17 +988,70 @@ export default function ChangeSkuAttributesPage() {
           ),
         }
       })
+  const attributeActionOptionGroups = actionAttributeDimensions.length > 0
+    ? [
+        ...(universalActionAttributeDimensions.length > 0
+          ? [{ label: 'Universal dimensions', options: buildAttributeActionOptions(universalActionAttributeDimensions) }]
+          : []),
+        ...(familyActionAttributeDimensions.length > 0
+          ? [{ label: 'Family dimensions', options: buildAttributeActionOptions(familyActionAttributeDimensions) }]
+          : []),
+      ]
     : [
         {
-          value: '__NO_RESULT_ATTRIBUTES__',
-          disabled: true,
-          label: isFetchingResultAttributeDimensions
-            ? 'Loading result attributes...'
-            : hasRun
-              ? 'No attributes on current results'
-              : 'No extended attributes',
+          label: 'Extended attributes',
+          options: [
+            {
+              value: '__NO_RESULT_ATTRIBUTES__',
+              disabled: true,
+              label: isFetchingResultAttributeDimensions
+                ? 'Loading result attributes...'
+                : hasRun
+                  ? 'No attributes on current results'
+                  : 'No extended attributes',
+            },
+          ],
         },
       ]
+
+  const resultAttributeColumnOptionGroups = hasRun
+    ? [
+        ...(universalActionAttributeDimensions.length > 0
+          ? [
+              {
+                label: 'Universal attribute columns',
+                options: universalActionAttributeDimensions.map((dimension) => ({
+                  value: attributeColumnKey(dimension.code),
+                  label: dimension.labelEs,
+                })),
+              },
+            ]
+          : []),
+        ...(familyActionAttributeDimensions.length > 0
+          ? [
+              {
+                label: 'Family attribute columns',
+                options: familyActionAttributeDimensions.map((dimension) => ({
+                  value: attributeColumnKey(dimension.code),
+                  label: dimension.labelEs,
+                })),
+              },
+            ]
+          : []),
+      ]
+    : []
+  const resultColumnOptionGroups = [
+    ...CORE_RESULT_COLUMN_OPTION_GROUPS,
+    ...resultAttributeColumnOptionGroups,
+  ]
+
+  const setVisibleResultColumns = (keys: string[]) => {
+    setVisibleResultColumnKeys(orderColumnKeys(keys, resultColumnOrder))
+  }
+
+  const resetResultColumns = () => {
+    setVisibleResultColumnKeys(orderColumnKeys(DEFAULT_RESULT_COLUMN_KEYS, resultColumnOrder))
+  }
 
   const applyChange = async () => {
     if (selectedCodes.length === 0) {
@@ -1045,30 +1480,67 @@ export default function ChangeSkuAttributesPage() {
     </Space>
   )
 
+  const renderAttributeFilterGroup = (label: string, dimensions: AttributeDimension[]) => {
+    if (dimensions.length === 0) return null
+    return (
+      <Space direction="vertical" size={4} style={{ width: '100%' }}>
+        <Typography.Text type="secondary" strong>{label}</Typography.Text>
+        <Space wrap size={8}>
+          {dimensions.map((dimension) => (
+            <Select
+              key={dimension.code}
+              mode="multiple"
+              placeholder={dimension.labelEs}
+              value={attributeFilters[dimension.code] ?? []}
+              onChange={(values) => setAttributeFilterValues(dimension.code, values)}
+              allowClear
+              showSearch
+              style={{ minWidth: 250 }}
+              maxTagCount={1}
+              options={attributeValueOptions(dimension)}
+              filterOption={(input, option) =>
+                (option?.label as string).toLowerCase().includes(input.toLowerCase())
+              }
+            />
+          ))}
+        </Space>
+      </Space>
+    )
+  }
+
   const renderExtendedFilters = () => (
-    <Space wrap size={8}>
-      {sortedAttributeDimensions.map((dimension) => (
-        <Select
-          key={dimension.code}
-          mode="multiple"
-          placeholder={dimension.labelEs}
-          value={attributeFilters[dimension.code] ?? []}
-          onChange={(values) => setAttributeFilterValues(dimension.code, values)}
-          allowClear
-          showSearch
-          style={{ minWidth: 250 }}
-          maxTagCount={1}
-          options={attributeValueOptions(dimension)}
-          filterOption={(input, option) =>
-            (option?.label as string).toLowerCase().includes(input.toLowerCase())
-          }
-        />
-      ))}
+    <Space direction="vertical" size={12} style={{ width: '100%' }}>
+      {renderAttributeFilterGroup('Universal dimensions', universalAttributeDimensions)}
+      {renderAttributeFilterGroup('Family dimensions', familyAttributeDimensions)}
       {sortedAttributeDimensions.length === 0 ? (
         <Typography.Text type="secondary">No extended attributes are available.</Typography.Text>
       ) : null}
     </Space>
   )
+
+  const renderResultColumnControls = () => {
+    if (!hasRun) return null
+    return (
+      <Space wrap size={8}>
+        <Typography.Text type="secondary">Result columns</Typography.Text>
+        <Select
+          mode="multiple"
+          value={visibleColumnPickerKeys}
+          onChange={setVisibleResultColumns}
+          options={resultColumnOptionGroups}
+          optionFilterProp="label"
+          maxTagCount="responsive"
+          style={{ minWidth: 420, maxWidth: 760 }}
+        />
+        <Button size="small" onClick={resetResultColumns}>
+          Reset columns
+        </Button>
+        {isFetchingSkuAttributesBulk ? (
+          <Typography.Text type="secondary">Loading attribute columns…</Typography.Text>
+        ) : null}
+      </Space>
+    )
+  }
 
   const renderFilterSummary = () => {
     if (!anyFilterSet) return null
@@ -1325,6 +1797,8 @@ export default function ChangeSkuAttributesPage() {
           {anyFilterSet ? <Button onClick={clearFilters}>Clear filters</Button> : null}
         </Space>
 
+        {renderResultColumnControls()}
+
         {/* Apply bar — selection summary, action picker, target field, apply */}
         <Card size="small" style={{ background: '#fafafa' }}>
           <Space direction="vertical" size="small" style={{ width: '100%' }}>
@@ -1363,10 +1837,7 @@ export default function ChangeSkuAttributesPage() {
                       { value: 'KEYWORD_REMOVE', label: 'Keyword remove' },
                     ],
                   },
-                  {
-                    label: 'Extended attributes',
-                    options: attributeActionOptions,
-                  },
+                  ...attributeActionOptionGroups,
                 ]}
               />
               <span style={{ marginLeft: 12 }}>{meta.verb}:</span>
@@ -1402,11 +1873,12 @@ export default function ChangeSkuAttributesPage() {
         ) : (
           <Table<EnrichedSku>
             size="small"
-            className="products-compact-table"
+            className="products-compact-table change-sku-attributes-result-table"
             rowKey="code"
             dataSource={enriched}
-            columns={columns}
+            columns={fitToWidthColumns}
             loading={isRunning}
+            tableLayout="fixed"
             pagination={{
               defaultPageSize: 25,
               showSizeChanger: true,

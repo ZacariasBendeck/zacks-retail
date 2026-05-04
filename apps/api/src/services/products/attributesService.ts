@@ -18,6 +18,7 @@ import {
   type DimensionValueRow,
   type DimensionWithValues,
   type FamilyRuleRow,
+  type SkuAttributesBulkResponse,
   type SkuAttributesResponse,
   type CoverageRow,
   type AttributeMacroRuleSet,
@@ -54,6 +55,10 @@ export function createAttributesService(opts: AttributesServiceOptions = {}) {
 
     getForSku(skuCode: string): Promise<Result<SkuAttributesResponse>> {
       return repo.getSkuAttributes(skuCode);
+    },
+
+    getForSkus(skuCodes: string[]): Promise<Result<SkuAttributesBulkResponse>> {
+      return repo.getSkuAttributesForSkus(skuCodes);
     },
 
     findSkuCodesByAttributeFilters(

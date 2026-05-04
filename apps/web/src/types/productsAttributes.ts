@@ -62,6 +62,10 @@ export interface SkuAttributes {
   byDimension: Record<string, SkuDimensionEntry>
 }
 
+export interface SkuAttributesBulk {
+  bySku: Record<string, SkuAttributes>
+}
+
 export interface AttributeAssignmentInput {
   dimension_code: string
   value_code: string

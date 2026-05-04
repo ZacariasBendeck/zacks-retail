@@ -60,6 +60,19 @@ describe('Import workbook parser', () => {
       materialMeters: 10,
       sourceAmount: 185,
       sourceCurrency: 'CNY',
+      costRole: 'MATERIAL',
+      receiptPolicy: 'ROLL_TO_OUTPUT',
+      allocationGroupKey: 'KSPI2025052305-SUITS',
+    });
+    expect(preview.supplierInvoices.find((invoice) => invoice.invoiceKind === 'CMT')?.lines[0]).toMatchObject({
+      costRole: 'CONVERSION',
+      receiptPolicy: 'ROLL_TO_OUTPUT',
+      allocationGroupKey: 'KSPI2025052305-SUITS',
+    });
+    expect(preview.supplierInvoices.find((invoice) => invoice.invoiceKind === 'MERCHANDISE')?.lines[0]).toMatchObject({
+      costRole: 'FINISHED_GOOD',
+      receiptPolicy: 'RECEIVE_TO_STOCK',
+      allocationGroupKey: 'KSPI2025052305-SUITS',
     });
     expect(preview.verificationChecks[0]).toMatchObject({ checkCode: 'SUIT_PROFORMA_TOTAL', status: 'PASS' });
   });

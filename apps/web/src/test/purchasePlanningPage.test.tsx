@@ -5,23 +5,18 @@ import { ConfigProvider } from 'antd'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import PurchasePlanningPage from '../pages/purchasePlanning/PurchasePlanningPage'
 import { useDepartments } from '../hooks/useProductsTaxonomy'
-import { useStoreChains } from '../hooks/useStores'
 import {
   addSavedPurchasePlanAdjustment,
   archiveSavedPurchasePlan,
-  createSavedPurchasePlan,
   fetchSavedPurchasePlan,
   fetchSavedPurchasePlans,
   generateSeasonalPurchaseReport,
   recalculateSavedPurchasePlan,
+  updateSavedPurchasePlanRows,
   type SavedPurchasePlanDetail,
   type SavedPurchasePlanListItem,
   type SeasonalPurchaseReportResponse,
 } from '../services/purchasePlanningApi'
-
-vi.mock('../hooks/useStores', () => ({
-  useStoreChains: vi.fn(),
-}))
 
 vi.mock('../hooks/useProductsTaxonomy', () => ({
   useDepartments: vi.fn(),
@@ -33,8 +28,8 @@ vi.mock('../services/purchasePlanningApi', async () => {
     ...actual,
     fetchSavedPurchasePlans: vi.fn(),
     fetchSavedPurchasePlan: vi.fn(),
-    createSavedPurchasePlan: vi.fn(),
     addSavedPurchasePlanAdjustment: vi.fn(),
+    updateSavedPurchasePlanRows: vi.fn(),
     recalculateSavedPurchasePlan: vi.fn(),
     archiveSavedPurchasePlan: vi.fn(),
     generateSeasonalPurchaseReport: vi.fn(),
@@ -44,14 +39,22 @@ vi.mock('../services/purchasePlanningApi', async () => {
 const planDetail: SavedPurchasePlanDetail = {
   plan: {
     id: 'plan-1',
-    label: 'Summer 2026 All Stores',
+    label: 'Enterprise-wide 10 - Footwear Summer 2026 to Summer 2027',
     status: 'draft',
-    storeGroupCode: 'all-stores',
-    storeGroupLabel: 'All Stores',
+    planningScope: 'enterprise',
+    planningScopeLabel: 'Enterprise-wide',
+    storeGroupCode: 'enterprise',
+    storeGroupLabel: 'Enterprise-wide',
     season: 'summer',
     seasonYear: 2026,
-    seasonMonths: ['2026-05', '2026-06', '2026-07'],
-    selectedDepartments: [10, 20],
+    seasonMonths: [
+      '2026-05', '2026-06', '2026-07',
+      '2026-08', '2026-09', '2026-10',
+      '2026-11', '2026-12', '2027-01',
+      '2027-02', '2027-03', '2027-04',
+      '2027-05', '2027-06', '2027-07',
+    ],
+    selectedDepartments: [10],
     forecastMethod: 'holtWinters',
     eohMethod: 'forward',
     coverMonths: 3,
@@ -128,22 +131,35 @@ const planDetail: SavedPurchasePlanDetail = {
           normalizationFactor: null,
           rawProjSales: null,
         },
+        ...[
+          '2026-07', '2026-08', '2026-09', '2026-10', '2026-11', '2026-12',
+          '2027-01', '2027-02', '2027-03', '2027-04', '2027-05', '2027-06', '2027-07',
+        ].map((yearMonth, index) => ({
+          id: `row-${index + 3}`,
+          planId: 'plan-1',
+          departmentKey: '10',
+          departmentNumber: 10,
+          departmentLabel: '10 - Footwear',
+          yearMonth,
+          baselineBoh: 65,
+          baselineProjSales: 50,
+          baselineEohTarget: 55,
+          baselineBuy: 40,
+          baselineEohActual: 55,
+          currentBoh: 65,
+          currentProjSales: 50,
+          currentEohTarget: 55,
+          currentBuy: 40,
+          currentEohActual: 55,
+          onHand: 0,
+          currentOnOrder: 0,
+          futureOnOrder: 0,
+          nativeOpenPo: 0,
+          stockPosition: 0,
+          normalizationFactor: null,
+          rawProjSales: null,
+        })),
       ],
-    },
-    {
-      departmentKey: '20',
-      departmentNumber: 20,
-      departmentLabel: '20 - Apparel',
-      baselineTotalBuy: 80,
-      currentTotalBuy: 80,
-      deltaBuy: 0,
-      totalProjSales: 150,
-      currentOnHand: 22,
-      currentOnOrder: 0,
-      futureOnOrder: 0,
-      nativeOpenPo: 0,
-      hasHistory: false,
-      months: [],
     },
   ],
   adjustments: [],
@@ -157,46 +173,82 @@ const planDetail: SavedPurchasePlanDetail = {
 
 const listItem: SavedPurchasePlanListItem = {
   ...planDetail.plan,
-  departmentCount: 2,
+  departmentCount: 1,
   baselineTotalBuy: 180,
   currentTotalBuy: 200,
 }
 
+const footwearDepartment = planDetail.departments[0]!
+
+const twoMonthPlanDetail: SavedPurchasePlanDetail = {
+  ...planDetail,
+  plan: {
+    ...planDetail.plan,
+    seasonMonths: ['2026-05', '2026-06'],
+  },
+  departments: [
+    {
+      ...footwearDepartment,
+      baselineTotalBuy: 75,
+      currentTotalBuy: 125,
+      deltaBuy: 50,
+      totalProjSales: 130,
+      months: [
+        footwearDepartment.months[0]!,
+        {
+          ...footwearDepartment.months[1]!,
+          currentBuy: 80,
+          currentEohActual: 65,
+        },
+      ],
+    },
+  ],
+  totals: {
+    baselineTotalBuy: 75,
+    currentTotalBuy: 125,
+    deltaBuy: 50,
+    totalProjSales: 130,
+  },
+}
+
 const seasonalReport: SeasonalPurchaseReportResponse = {
-  storeGroupCode: 'all-stores',
-  storeGroupLabel: 'All Stores',
+  planningScope: 'enterprise',
+  planningScopeLabel: 'Enterprise-wide',
+  storeGroupCode: 'enterprise',
+  storeGroupLabel: 'Enterprise-wide',
+  storeGroupCodes: ['enterprise'],
+  storeGroupLabels: ['Enterprise-wide'],
+  warehouseStoreNumbers: [99],
   departmentNumber: 10,
   departmentLabel: '10 - Footwear',
   year: 2026,
+  asOfYearMonth: '2026-05',
+  startSeason: 'summer',
+  startSeasonYear: 2026,
+  endSeason: 'summer',
+  endSeasonYear: 2027,
+  projectionMonths: planDetail.plan.seasonMonths,
+  workbook: {
+    storeGroupCode: 'enterprise',
+    storeGroupLabel: 'Enterprise-wide',
+    planId: 'plan-1',
+    planLabel: 'Enterprise-wide 10 - Footwear Summer 2026 to Summer 2027',
+    autoCreated: true,
+    duplicateSourceCount: 1,
+  },
   warnings: [],
   generatedAt: '2026-04-30T10:00:00.000Z',
   seasons: [
-    {
-      season: 'spring',
-      seasonYear: 2026,
-      seasonLabel: 'Spring 2026',
-      months: ['2026-02', '2026-03', '2026-04'],
-      planId: 'plan-spring',
-      planLabel: 'Auto - All Stores Spring 2026',
-      autoCreated: true,
-      duplicateSourceCount: 1,
-      projectedBoh: { units: 70, costHnl: 7000 },
-      projectedSales: { units: 50, costHnl: 5000 },
-      baselineBuy: { units: 80, costHnl: 8000 },
-      draftPos: { units: 10, costHnl: 1000 },
-      confirmedPos: { units: 20, costHnl: 2000 },
-      openToBuy: { units: 50, costHnl: 5000 },
-      projectedEoh: { units: 100, costHnl: 10000 },
-    },
     {
       season: 'summer',
       seasonYear: 2026,
       seasonLabel: 'Summer 2026',
       months: ['2026-05', '2026-06', '2026-07'],
       planId: 'plan-1',
-      planLabel: 'Summer 2026 All Stores',
-      autoCreated: false,
+      planLabel: 'Enterprise-wide 10 - Footwear Summer 2026 to Summer 2027',
+      autoCreated: true,
       duplicateSourceCount: 1,
+      worksheets: [],
       projectedBoh: { units: 100, costHnl: 10000 },
       projectedSales: { units: 210, costHnl: 21000 },
       baselineBuy: { units: 120, costHnl: 12000 },
@@ -204,6 +256,78 @@ const seasonalReport: SeasonalPurchaseReportResponse = {
       confirmedPos: { units: 25, costHnl: 2500 },
       openToBuy: { units: 95, costHnl: 9500 },
       projectedEoh: { units: 10, costHnl: 1000 },
+    },
+    {
+      season: 'fall',
+      seasonYear: 2026,
+      seasonLabel: 'Fall 2026',
+      months: ['2026-08', '2026-09', '2026-10'],
+      planId: 'plan-1',
+      planLabel: 'Enterprise-wide 10 - Footwear Summer 2026 to Summer 2027',
+      autoCreated: true,
+      duplicateSourceCount: 1,
+      worksheets: [],
+      projectedBoh: { units: 10, costHnl: 1000 },
+      projectedSales: { units: 150, costHnl: 15000 },
+      baselineBuy: { units: 120, costHnl: 12000 },
+      draftPos: { units: 0, costHnl: 0 },
+      confirmedPos: { units: 0, costHnl: 0 },
+      openToBuy: { units: 120, costHnl: 12000 },
+      projectedEoh: { units: 0, costHnl: 0 },
+    },
+    {
+      season: 'winter',
+      seasonYear: 2026,
+      seasonLabel: 'Winter 2026',
+      months: ['2026-11', '2026-12', '2027-01'],
+      planId: 'plan-1',
+      planLabel: 'Enterprise-wide 10 - Footwear Summer 2026 to Summer 2027',
+      autoCreated: true,
+      duplicateSourceCount: 1,
+      worksheets: [],
+      projectedBoh: { units: 0, costHnl: 0 },
+      projectedSales: { units: 150, costHnl: 15000 },
+      baselineBuy: { units: 120, costHnl: 12000 },
+      draftPos: { units: 0, costHnl: 0 },
+      confirmedPos: { units: 0, costHnl: 0 },
+      openToBuy: { units: 120, costHnl: 12000 },
+      projectedEoh: { units: 0, costHnl: 0 },
+    },
+    {
+      season: 'spring',
+      seasonYear: 2027,
+      seasonLabel: 'Spring 2027',
+      months: ['2027-02', '2027-03', '2027-04'],
+      planId: 'plan-1',
+      planLabel: 'Enterprise-wide 10 - Footwear Summer 2026 to Summer 2027',
+      autoCreated: true,
+      duplicateSourceCount: 1,
+      worksheets: [],
+      projectedBoh: { units: 0, costHnl: 0 },
+      projectedSales: { units: 150, costHnl: 15000 },
+      baselineBuy: { units: 120, costHnl: 12000 },
+      draftPos: { units: 0, costHnl: 0 },
+      confirmedPos: { units: 0, costHnl: 0 },
+      openToBuy: { units: 120, costHnl: 12000 },
+      projectedEoh: { units: 0, costHnl: 0 },
+    },
+    {
+      season: 'summer',
+      seasonYear: 2027,
+      seasonLabel: 'Summer 2027',
+      months: ['2027-05', '2027-06', '2027-07'],
+      planId: 'plan-1',
+      planLabel: 'Enterprise-wide 10 - Footwear Summer 2026 to Summer 2027',
+      autoCreated: true,
+      duplicateSourceCount: 1,
+      worksheets: [],
+      projectedBoh: { units: 0, costHnl: 0 },
+      projectedSales: { units: 150, costHnl: 15000 },
+      baselineBuy: { units: 120, costHnl: 12000 },
+      draftPos: { units: 0, costHnl: 0 },
+      confirmedPos: { units: 0, costHnl: 0 },
+      openToBuy: { units: 120, costHnl: 12000 },
+      projectedEoh: { units: 0, costHnl: 0 },
     },
   ],
 }
@@ -231,50 +355,62 @@ async function chooseSelectOption(label: string, option: string) {
   await userEvent.click(await within(dropdown).findByTitle(option))
 }
 
+function worksheetMetricCells(label: string, department?: string): string[] {
+  const table = screen.getByLabelText('Worksheet grid')
+  const rows = within(table).getAllByText(label).map((node) => node.closest('tr')).filter(Boolean)
+  const row = department
+    ? rows.find((candidate) => candidate?.textContent?.includes(department))
+    : rows[0]
+  if (!row) throw new Error(`Expected worksheet row ${label}`)
+  return within(row).getAllByRole('cell').map((cell) => cell.textContent?.trim() ?? '')
+}
+
+function numericInputValue(label: string): number {
+  const input = screen.getByLabelText(label) as HTMLInputElement
+  return Number(input.value)
+}
+
 afterEach(() => {
   vi.clearAllMocks()
 })
 
 describe('PurchasePlanningPage saved plans', () => {
-  it('submits a chain department seasonal report request and shows the spreadsheet rows', async () => {
-    vi.mocked(useStoreChains).mockReturnValue({
-      data: [{ id: 'all-stores', label: 'All Stores', storeCount: 30, active: true }],
-      isLoading: false,
-    } as never)
+  it('submits an enterprise monthly workbook report request and shows five season rollups', async () => {
     vi.mocked(useDepartments).mockReturnValue({
       data: [{ number: 10, description: 'Footwear' }],
       isLoading: false,
     } as never)
     vi.mocked(fetchSavedPurchasePlans).mockResolvedValue([])
+    vi.mocked(fetchSavedPurchasePlan).mockResolvedValue(planDetail)
     vi.mocked(generateSeasonalPurchaseReport).mockResolvedValue(seasonalReport)
 
     renderPage()
 
-    await chooseSelectOption('Report chain', 'All Stores (30)')
-    await chooseSelectOption('Report department', '10 - Footwear')
-    await userEvent.click(screen.getByRole('button', { name: 'Generate report' }))
+    expect(screen.queryByLabelText('Report chains')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Year')).not.toBeInTheDocument()
+    await chooseSelectOption('Department', '10 - Footwear')
+    await userEvent.click(screen.getByRole('button', { name: 'Run' }))
 
     await waitFor(() => expect(generateSeasonalPurchaseReport).toHaveBeenCalledTimes(1))
-    expect(vi.mocked(generateSeasonalPurchaseReport).mock.calls[0]?.[0]).toMatchObject({
-      storeGroupCode: 'all-stores',
+    const request = vi.mocked(generateSeasonalPurchaseReport).mock.calls[0]?.[0]
+    expect(request).toMatchObject({
       departmentNumber: 10,
-      year: 2026,
       forecast: { method: 'holtWinters' },
       eohMethod: 'forward',
       coverMonths: 3,
       discountNormalization: true,
       createdBy: 'buyer',
     })
+    expect('storeGroupCodes' in request!).toBe(false)
+    expect('year' in request!).toBe(false)
     expect(await screen.findByText('Projected BOH')).toBeInTheDocument()
     expect(screen.getByText('Open To Buy')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Open Summer 2026 worksheet' })).toBeInTheDocument()
+    expect(screen.getAllByText('Summer 2027').length).toBeGreaterThan(0)
+    expect(screen.getByText('warehouse included')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Open monthly projection worksheet' })).toBeInTheDocument()
   })
 
-  it('submits a chain and department saved-plan payload', async () => {
-    vi.mocked(useStoreChains).mockReturnValue({
-      data: [{ id: 'all-stores', label: 'All Stores', storeCount: 30, active: true }],
-      isLoading: false,
-    } as never)
+  it('shows saved draft plans in the saved plans tab', async () => {
     vi.mocked(useDepartments).mockReturnValue({
       data: [
         { number: 10, description: 'Footwear' },
@@ -282,59 +418,192 @@ describe('PurchasePlanningPage saved plans', () => {
       ],
       isLoading: false,
     } as never)
-    vi.mocked(fetchSavedPurchasePlans).mockResolvedValue([])
-    vi.mocked(fetchSavedPurchasePlan).mockResolvedValue(planDetail)
-    vi.mocked(createSavedPurchasePlan).mockResolvedValue(planDetail)
+    vi.mocked(fetchSavedPurchasePlans).mockResolvedValue([listItem])
 
     renderPage()
 
-    await chooseSelectOption('Chain', 'All Stores (30)')
-    await chooseSelectOption('Departments', '10 - Footwear')
-    await chooseSelectOption('Departments', '20 - Apparel')
-    await userEvent.click(screen.getByRole('button', { name: 'Save plan' }))
+    await userEvent.click(screen.getByRole('tab', { name: 'Saved plans' }))
 
-    await waitFor(() => expect(createSavedPurchasePlan).toHaveBeenCalledTimes(1))
-    expect(vi.mocked(createSavedPurchasePlan).mock.calls[0]?.[0]).toMatchObject({
-      storeGroupCode: 'all-stores',
-      season: 'spring',
-      departmentNumbers: [10, 20],
-      forecast: { method: 'holtWinters' },
-      eohMethod: 'forward',
-      coverMonths: 3,
-      discountNormalization: true,
-      createdBy: 'buyer',
-    })
+    expect(await screen.findByRole('button', { name: 'Enterprise-wide 10 - Footwear Summer 2026 to Summer 2027' })).toBeInTheDocument()
   })
 
-  it('shows department totals first and expands monthly detail', async () => {
-    vi.mocked(useStoreChains).mockReturnValue({ data: [], isLoading: false } as never)
+  it('shows the target policy mockup and recalculates the basis preview', async () => {
+    vi.mocked(useDepartments).mockReturnValue({
+      data: [{ number: 10, description: 'Footwear' }],
+      isLoading: false,
+    } as never)
+    vi.mocked(fetchSavedPurchasePlans).mockResolvedValue([])
+
+    renderPage()
+
+    await userEvent.click(screen.getByRole('tab', { name: 'Target policies' }))
+
+    expect(screen.getByText('Department-season target policies')).toBeInTheDocument()
+    expect(screen.getAllByLabelText('Policy department').length).toBeGreaterThan(0)
+    const targetSkus = screen.getByLabelText('Summer 2026 target SKU count')
+    expect(targetSkus).toHaveValue('180')
+    expect(screen.getAllByText('5,040').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('5,250').length).toBeGreaterThan(0)
+
+    await userEvent.clear(targetSkus)
+    await userEvent.type(targetSkus, '200')
+    expect(await screen.findByText('5,600')).toBeInTheDocument()
+    expect(screen.getByText('5,810')).toBeInTheDocument()
+
+    await userEvent.click(screen.getByLabelText('Summer 2026 override carrying stores'))
+    const carryingStores = screen.getByLabelText('Summer 2026 carrying stores')
+    await userEvent.clear(carryingStores)
+    await userEvent.type(carryingStores, '30')
+
+    expect(await screen.findByText('6,000')).toBeInTheDocument()
+    expect(screen.getByText('6,210')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Save policy' }))
+    await waitFor(() => expect(screen.getAllByText(/staged/).length).toBeGreaterThan(0))
+    expect(generateSeasonalPurchaseReport).not.toHaveBeenCalled()
+    expect(updateSavedPurchasePlanRows).not.toHaveBeenCalled()
+  })
+
+  it('shows monthly worksheet rows immediately after opening a plan', async () => {
     vi.mocked(useDepartments).mockReturnValue({ data: [], isLoading: false } as never)
     vi.mocked(fetchSavedPurchasePlans).mockResolvedValue([listItem])
     vi.mocked(fetchSavedPurchasePlan).mockResolvedValue(planDetail)
 
     renderPage()
 
-    await userEvent.click(await screen.findByRole('button', { name: 'Summer 2026 All Stores' }))
+    await userEvent.click(screen.getByRole('tab', { name: 'Saved plans' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Enterprise-wide 10 - Footwear Summer 2026 to Summer 2027' }))
 
-    expect(await screen.findByText('10 - Footwear')).toBeInTheDocument()
+    expect(await screen.findByRole('columnheader', { name: 'May 2026' })).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: 'Jul 2027' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Recalculate' })).toBeInTheDocument()
-    expect(screen.getByRole('columnheader', { name: 'Department' })).toBeInTheDocument()
-    expect(screen.getByRole('columnheader', { name: 'Current buy' })).toBeInTheDocument()
-    expect(screen.getByText('20 - Apparel')).toBeInTheDocument()
-    expect(screen.getByText('no history')).toBeInTheDocument()
-
-    const expandButtons = screen.getAllByRole('button', { name: /expand row/i })
-    const expandButton = expandButtons[0]
-    if (!expandButton) throw new Error('Expected an expandable department row')
-    await userEvent.click(expandButton)
-
-    expect(await screen.findByText('May 2026')).toBeInTheDocument()
-    expect(screen.getByRole('columnheader', { name: 'Norm' })).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: 'Worksheet row' })).toBeInTheDocument()
+    expect(screen.queryByRole('columnheader', { name: 'Department' })).not.toBeInTheDocument()
+    expect(screen.getByText('15-month workbook')).toBeInTheDocument()
+    expect(within(screen.getByLabelText('Worksheet grid')).getByText('Norm')).toBeInTheDocument()
     expect(screen.getByText('80%')).toBeInTheDocument()
+    expect(screen.getByLabelText('May 2026 current buy')).toHaveValue('45')
+    expect(screen.getByLabelText('Jun 2026 current buy')).toHaveValue('40')
+  })
+
+  it('collapses worksheet month columns into season rollups', async () => {
+    vi.mocked(useDepartments).mockReturnValue({ data: [], isLoading: false } as never)
+    vi.mocked(fetchSavedPurchasePlans).mockResolvedValue([listItem])
+    vi.mocked(fetchSavedPurchasePlan).mockResolvedValue(planDetail)
+
+    renderPage()
+
+    await userEvent.click(screen.getByRole('tab', { name: 'Saved plans' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Enterprise-wide 10 - Footwear Summer 2026 to Summer 2027' }))
+
+    expect(await screen.findByRole('columnheader', { name: 'May 2026' })).toBeInTheDocument()
+    await userEvent.click(screen.getByText('Seasons'))
+
+    expect(await screen.findByRole('columnheader', { name: 'Summer 2026' })).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: 'Fall 2026' })).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: 'Winter 2026' })).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: 'Spring 2027' })).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: 'Summer 2027' })).toBeInTheDocument()
+    expect(screen.queryByRole('columnheader', { name: 'May 2026' })).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Summer 2026 projected sales')).not.toBeInTheDocument()
+    expect(worksheetMetricCells('Current buy')).toEqual(['Current buy', '125', '120', '120', '120', '120'])
+
+    await userEvent.click(screen.getByText('Months'))
+    expect(await screen.findByRole('columnheader', { name: 'May 2026' })).toBeInTheDocument()
+    expect(screen.getByLabelText('May 2026 projected sales')).toBeInTheDocument()
+  })
+
+  it('shows worksheet totals and recalculates them before saving edits', async () => {
+    vi.mocked(useDepartments).mockReturnValue({ data: [], isLoading: false } as never)
+    vi.mocked(fetchSavedPurchasePlans).mockResolvedValue([listItem])
+    vi.mocked(fetchSavedPurchasePlan).mockResolvedValue(twoMonthPlanDetail)
+
+    renderPage()
+
+    await userEvent.click(screen.getByRole('tab', { name: 'Saved plans' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Enterprise-wide 10 - Footwear Summer 2026 to Summer 2027' }))
+
+    await screen.findByRole('columnheader', { name: 'May 2026' })
+    expect(screen.getByLabelText('May 2026 current buy')).toHaveValue('45')
+    expect(screen.getByLabelText('Jun 2026 current buy')).toHaveValue('80')
+
+    await userEvent.clear(screen.getByLabelText('May 2026 projected sales'))
+    await userEvent.type(screen.getByLabelText('May 2026 projected sales'), '80')
+    await userEvent.clear(screen.getByLabelText('May 2026 EOH target'))
+    await userEvent.type(screen.getByLabelText('May 2026 EOH target'), '60')
+    await userEvent.clear(screen.getByLabelText('May 2026 current buy'))
+    await userEvent.type(screen.getByLabelText('May 2026 current buy'), '70')
+
+    await waitFor(() => {
+      expect(numericInputValue('May 2026 current buy')).toBe(70)
+      expect(numericInputValue('Jun 2026 current buy')).toBe(80)
+    })
+    expect(updateSavedPurchasePlanRows).not.toHaveBeenCalled()
+  })
+
+  it('keeps worksheet totals aligned when the department column is visible', async () => {
+    vi.mocked(useDepartments).mockReturnValue({ data: [], isLoading: false } as never)
+    vi.mocked(fetchSavedPurchasePlans).mockResolvedValue([listItem])
+    vi.mocked(fetchSavedPurchasePlan).mockResolvedValue({
+      ...twoMonthPlanDetail,
+      plan: {
+        ...twoMonthPlanDetail.plan,
+        selectedDepartments: [10, 20],
+      },
+      departments: [
+        ...twoMonthPlanDetail.departments,
+        {
+          departmentKey: '20',
+          departmentNumber: 20,
+          departmentLabel: '20 - Apparel',
+          baselineTotalBuy: 20,
+          currentTotalBuy: 15,
+          deltaBuy: -5,
+          totalProjSales: 20,
+          currentOnHand: 5,
+          currentOnOrder: 0,
+          futureOnOrder: 0,
+          nativeOpenPo: 0,
+          hasHistory: true,
+          months: [{
+            id: 'row-20-1',
+            planId: 'plan-1',
+            departmentKey: '20',
+            departmentNumber: 20,
+            departmentLabel: '20 - Apparel',
+            yearMonth: '2026-05',
+            baselineBoh: 5,
+            baselineProjSales: 20,
+            baselineEohTarget: 10,
+            baselineBuy: 20,
+            baselineEohActual: 0,
+            currentBoh: 5,
+            currentProjSales: 20,
+            currentEohTarget: 10,
+            currentBuy: 15,
+            currentEohActual: 0,
+            onHand: 5,
+            currentOnOrder: 0,
+            futureOnOrder: 0,
+            nativeOpenPo: 0,
+            stockPosition: 5,
+            normalizationFactor: null,
+            rawProjSales: null,
+          }],
+        },
+      ],
+    })
+
+    renderPage()
+
+    await userEvent.click(screen.getByRole('tab', { name: 'Saved plans' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Enterprise-wide 10 - Footwear Summer 2026 to Summer 2027' }))
+
+    expect(await screen.findByRole('columnheader', { name: 'Department' })).toBeInTheDocument()
+    expect(within(screen.getByLabelText('Worksheet grid')).getAllByText('20 - Apparel').length).toBeGreaterThan(0)
+    expect(screen.getByLabelText('10 - Footwear May 2026 current buy')).toHaveValue('45')
   })
 
   it('submits an audited department adjustment', async () => {
-    vi.mocked(useStoreChains).mockReturnValue({ data: [], isLoading: false } as never)
     vi.mocked(useDepartments).mockReturnValue({ data: [], isLoading: false } as never)
     vi.mocked(fetchSavedPurchasePlans).mockResolvedValue([listItem])
     vi.mocked(fetchSavedPurchasePlan).mockResolvedValue(planDetail)
@@ -342,14 +611,15 @@ describe('PurchasePlanningPage saved plans', () => {
 
     renderPage()
 
-    await userEvent.click(await screen.findByRole('button', { name: 'Summer 2026 All Stores' }))
-    await screen.findByText('10 - Footwear')
-    const adjustButtons = screen.getAllByRole('button', { name: 'Adjust' })
+    await userEvent.click(screen.getByRole('tab', { name: 'Saved plans' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Enterprise-wide 10 - Footwear Summer 2026 to Summer 2027' }))
+    await screen.findByRole('columnheader', { name: 'May 2026' })
+    const adjustButtons = screen.getAllByRole('button', { name: /Adjust/ })
     const adjustButton = adjustButtons[0]
     if (!adjustButton) throw new Error('Expected an adjustment action')
     await userEvent.click(adjustButton)
     await userEvent.type(screen.getByLabelText('Reason'), 'Promo lift for launch window')
-    await userEvent.click(screen.getByRole('button', { name: 'OK' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Save adjustment' }))
 
     await waitFor(() => expect(addSavedPurchasePlanAdjustment).toHaveBeenCalledTimes(1))
     expect(vi.mocked(addSavedPurchasePlanAdjustment).mock.calls[0]).toEqual([
@@ -364,5 +634,74 @@ describe('PurchasePlanningPage saved plans', () => {
     ])
     expect(archiveSavedPurchasePlan).not.toHaveBeenCalled()
     expect(recalculateSavedPurchasePlan).not.toHaveBeenCalled()
+  })
+
+  it('edits monthly projection, target, and buy cells directly in the worksheet', async () => {
+    vi.mocked(useDepartments).mockReturnValue({ data: [], isLoading: false } as never)
+    vi.mocked(fetchSavedPurchasePlans).mockResolvedValue([listItem])
+    vi.mocked(fetchSavedPurchasePlan).mockResolvedValue(planDetail)
+    vi.mocked(updateSavedPurchasePlanRows).mockResolvedValue(planDetail)
+
+    renderPage()
+
+    await userEvent.click(screen.getByRole('tab', { name: 'Saved plans' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Enterprise-wide 10 - Footwear Summer 2026 to Summer 2027' }))
+
+    const projectedSales = await screen.findByLabelText('May 2026 projected sales')
+    const eohTarget = screen.getByLabelText('May 2026 EOH target')
+    const currentBuy = screen.getByLabelText('May 2026 current buy')
+    await userEvent.clear(projectedSales)
+    await userEvent.type(projectedSales, '80')
+    await userEvent.clear(eohTarget)
+    await userEvent.type(eohTarget, '60')
+    await userEvent.clear(currentBuy)
+    await userEvent.type(currentBuy, '70')
+    await userEvent.clear(screen.getByLabelText('Worksheet reason'))
+    await userEvent.type(screen.getByLabelText('Worksheet reason'), 'Manual monthly plan override')
+    await userEvent.click(screen.getByRole('button', { name: 'Save worksheet' }))
+
+    await waitFor(() => expect(updateSavedPurchasePlanRows).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(updateSavedPurchasePlanRows).mock.calls[0]).toEqual([
+      'plan-1',
+      {
+        rows: [{
+          rowId: 'row-1',
+          currentProjSales: 80,
+          currentEohTarget: 60,
+          currentBuy: 70,
+        }],
+        reason: 'Manual monthly plan override',
+        appliedBy: 'buyer',
+      },
+    ])
+    expect(addSavedPurchasePlanAdjustment).not.toHaveBeenCalled()
+  })
+
+  it('applies a projection percent and recalculates worksheet cells before saving', async () => {
+    vi.mocked(useDepartments).mockReturnValue({ data: [], isLoading: false } as never)
+    vi.mocked(fetchSavedPurchasePlans).mockResolvedValue([listItem])
+    vi.mocked(fetchSavedPurchasePlan).mockResolvedValue(planDetail)
+    vi.mocked(updateSavedPurchasePlanRows).mockResolvedValue(planDetail)
+
+    renderPage()
+
+    await userEvent.click(screen.getByRole('tab', { name: 'Saved plans' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Enterprise-wide 10 - Footwear Summer 2026 to Summer 2027' }))
+    const projectionPercent = await screen.findByLabelText('Projection percent')
+    await userEvent.clear(projectionPercent)
+    await userEvent.type(projectionPercent, '10')
+    await userEvent.click(screen.getByRole('button', { name: 'Apply projection %' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Save worksheet' }))
+
+    await waitFor(() => expect(updateSavedPurchasePlanRows).toHaveBeenCalledTimes(1))
+    const payload = vi.mocked(updateSavedPurchasePlanRows).mock.calls[0]?.[1]
+    expect(vi.mocked(updateSavedPurchasePlanRows).mock.calls[0]?.[0]).toBe('plan-1')
+    expect(payload?.rows).toHaveLength(15)
+    expect(payload?.rows).toEqual(expect.arrayContaining([
+      { rowId: 'row-1', currentProjSales: 66, currentEohTarget: 61, currentBuy: 57 },
+      { rowId: 'row-2', currentProjSales: 77, currentEohTarget: 72, currentBuy: 88 },
+    ]))
+    expect(payload?.reason).toBe('Worksheet edit')
+    expect(payload?.appliedBy).toBe('buyer')
   })
 })

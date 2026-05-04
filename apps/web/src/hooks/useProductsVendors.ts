@@ -11,10 +11,11 @@ import type { VendorInput } from '../types/productsVendor'
 // mutations invalidate immediately.
 const LIST_STALE_MS = 10 * 60 * 1000
 
-export function useVendors(q?: string) {
+export function useVendors(q?: string, options: { enabled?: boolean } = {}) {
   return useQuery({
     queryKey: ['vendors', 'list', q ?? ''],
     queryFn: () => vendorsApi.list(q),
+    enabled: options.enabled ?? true,
     staleTime: LIST_STALE_MS,
   })
 }

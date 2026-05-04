@@ -7,6 +7,7 @@ import {
   Card,
   Checkbox,
   Col,
+  Flex,
   Form,
   Input,
   InputNumber,
@@ -43,6 +44,8 @@ import {
   fetchCasePacks,
   type CasePackSummary,
 } from '../../services/casePackApi'
+import { InlinePageHelp, useRegisterPageHelp } from '../../components/page-help'
+import { purchaseOrderEntryHelp } from '../../content/help/pageHelp'
 
 interface LineItemRow {
   key: string
@@ -120,6 +123,8 @@ function helpTitle(label: string, help: string) {
 }
 
 export default function PurchaseOrderFormPage() {
+  useRegisterPageHelp(purchaseOrderEntryHelp)
+
   const navigate = useNavigate()
   const { poId } = useParams<{ poId: string }>()
   const { message } = App.useApp()
@@ -976,19 +981,22 @@ export default function PurchaseOrderFormPage() {
   return (
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
       <Card size="small">
-        <Space>
-          <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/purchasing/orders')}>
-            Back
-          </Button>
-          <div>
-            <Typography.Title level={4} style={{ margin: 0 }}>
-              {isEditMode ? 'Edit Purchase Order' : 'New Purchase Order'}
-            </Typography.Title>
-            <Typography.Paragraph type="secondary" style={{ marginTop: 4, marginBottom: 0, fontSize: 12 }}>
-              Amounts in Lempira (HNL).
-            </Typography.Paragraph>
-          </div>
-        </Space>
+        <Flex align="flex-start" justify="space-between" gap={12} wrap="wrap">
+          <Space>
+            <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/purchasing/orders')}>
+              Back
+            </Button>
+            <div>
+              <Typography.Title level={4} style={{ margin: 0 }}>
+                {isEditMode ? 'Edit Purchase Order' : 'New Purchase Order'}
+              </Typography.Title>
+              <Typography.Paragraph type="secondary" style={{ marginTop: 4, marginBottom: 0, fontSize: 12 }}>
+                Amounts in Lempira (HNL).
+              </Typography.Paragraph>
+            </div>
+          </Space>
+          <InlinePageHelp entry={purchaseOrderEntryHelp} mode="popover" />
+        </Flex>
       </Card>
 
       <Form

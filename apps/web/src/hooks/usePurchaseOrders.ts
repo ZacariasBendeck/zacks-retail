@@ -67,10 +67,11 @@ export function usePurchaseOrderVendorOptions(q: string) {
   })
 }
 
-export function usePurchaseOrderBuyerOptions() {
+export function usePurchaseOrderBuyerOptions(options: { enabled?: boolean } = {}) {
   return useQuery({
     queryKey: ['purchase-order-buyer-options'],
     queryFn: fetchPurchaseOrderBuyerOptions,
+    enabled: options.enabled ?? true,
     staleTime: 60_000,
   })
 }

@@ -60,6 +60,7 @@ function renderModuleShell(initialEntry = '/inventory/dashboard') {
             <Route path="/inventory/sales-ledger" element={<div data-testid="inventory-sales-ledger">Sales Ledger</div>} />
             <Route path="/inventory/movements" element={<div data-testid="inventory-movements">Movements</div>} />
             <Route path="/purchase-planning" element={<div data-testid="purchase-planning">Purchase Planning</div>} />
+            <Route path="/purchase-planning/v3" element={<div data-testid="purchase-planning-v3">Purchase Planning V3</div>} />
             <Route path="/import-management" element={<div data-testid="import-management">Import Management</div>} />
             <Route path="/customers" element={<div data-testid="customers">Customers</div>} />
             <Route path="/products/vendors" element={<div data-testid="file-setup-vendors">Vendors</div>} />
@@ -151,7 +152,8 @@ describe('Module Shell Navigation', () => {
       { label: 'Transfer - Balancing v2', pageId: 'inventory-balancing-v2', moduleTitle: 'Inventory' },
       { label: 'Sales Ledger', pageId: 'inventory-sales-ledger', moduleTitle: 'Inventory' },
       { label: 'Movements', pageId: 'inventory-movements', moduleTitle: 'Inventory' },
-      { label: 'Plan de Compras', pageId: 'purchase-planning', moduleTitle: 'Plan de Compras' },
+      { label: 'V2 - Actual', pageId: 'purchase-planning', moduleTitle: 'Plan de Compras', openModuleLabel: 'Plan de Compras' },
+      { label: 'V3 - Warehouse Shared', pageId: 'purchase-planning-v3', moduleTitle: 'Plan de Compras', openModuleLabel: 'Plan de Compras' },
       { label: 'Import Management', pageId: 'import-management', moduleTitle: 'Import Management' },
       { label: 'Customer Records', pageId: 'customers', moduleTitle: 'Customer Intelligence', openModuleLabel: 'Customer Intelligence' },
       { label: 'Vendors', pageId: 'file-setup-vendors', moduleTitle: 'File Setup', openModuleLabel: 'File Setup' },

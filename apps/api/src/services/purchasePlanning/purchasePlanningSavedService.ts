@@ -7,7 +7,13 @@ import {
   summarizeNormalizationByDimMonth,
   type NormalizedHistoryPoint,
 } from './normalization';
-import { PURCHASE_PLAN_SEASONS, buildSeasonMonths, defaultPlanLabel, seasonLabel } from './season';
+import {
+  buildSeasonMonths,
+  buildSeasonWindowFromYearMonth,
+  defaultPlanLabel,
+  resolveYearMonth,
+  type PurchasePlanSeasonWindowItem,
+} from './season';
 import type {
   EohMethod,
   ForecastParams,
@@ -23,11 +29,15 @@ import type {
   PurchasePlanDetailResponse,
   PurchasePlanHeader,
   PurchasePlanListItem,
+  PurchasePlanPlanningScope,
+  PurchasePlanRowsUpdateRequest,
+  PurchasePlanRowUpdateRequest,
   PurchasePlanSavedRow,
   PurchasePlanSeason,
   PurchasePlanningSeasonalReportRequest,
   SeasonalPurchaseReportResponse,
   SeasonalPurchaseReportValue,
+  SeasonalPurchaseReportWorksheet,
 } from './types';
 
 interface DbClient {
@@ -39,8 +49,14 @@ const DEFAULT_FORECAST_METHOD: ForecastMethod = 'holtWinters';
 const DEFAULT_EOH_METHOD: EohMethod = 'forward';
 const DEFAULT_COVER_MONTHS = 3;
 const HISTORY_MONTHS = 36;
+const REPORT_QUERY_TRANSACTION_TIMEOUT_MS = 120_000;
 const UNMAPPED_KEY = 'unmapped';
 const UNMAPPED_LABEL = 'Unmapped';
+const ENTERPRISE_SCOPE: PurchasePlanPlanningScope = 'enterprise';
+const STORE_GROUP_SCOPE: PurchasePlanPlanningScope = 'store_group';
+const ENTERPRISE_CODE = 'enterprise';
+const ENTERPRISE_LABEL = 'Enterprise-wide';
+const ENTERPRISE_WORKBOOK_MONTHS = 15;
 
 export class PurchasePlanningServiceError extends Error {
   status: number;
@@ -55,6 +71,13 @@ export class PurchasePlanningServiceError extends Error {
 
 export function isPurchasePlanningServiceError(err: unknown): err is PurchasePlanningServiceError {
   return err instanceof PurchasePlanningServiceError;
+}
+
+async function withPlanningQuerySettings<T>(fn: (db: DbClient) => Promise<T>): Promise<T> {
+  return prisma.$transaction(async (tx) => {
+    await tx.$executeRawUnsafe('SET LOCAL max_parallel_workers_per_gather = 0');
+    return fn(tx);
+  }, { timeout: REPORT_QUERY_TRANSACTION_TIMEOUT_MS });
 }
 
 interface StoreGroupRow {
@@ -100,7 +123,9 @@ interface PlanHeaderRow {
   id: string;
   label: string;
   status: string;
-  storeGroupCode: string;
+  planningScope: string | null;
+  scopeLabel: string | null;
+  storeGroupCode: string | null;
   storeGroupLabel: string | null;
   season: string;
   seasonYear: number;
@@ -196,6 +221,10 @@ function parseIntArray(value: number[] | string[] | null): number[] {
     .sort((a, b) => a - b);
 }
 
+function uniqueSortedNumbers(values: number[]): number[] {
+  return [...new Set(values.filter((value) => Number.isInteger(value)))].sort((a, b) => a - b);
+}
+
 function normalizeDepartmentKey(value: string | number | null | undefined): string {
   const raw = String(value ?? '').trim();
   if (!raw || raw === '0' || raw.toLowerCase() === UNMAPPED_KEY) return UNMAPPED_KEY;
@@ -235,12 +264,21 @@ function departmentLabel(number: number | null, label: string | null | undefined
 }
 
 function normalizeHeader(row: PlanHeaderRow): PurchasePlanHeader {
+  const planningScope: PurchasePlanPlanningScope = row.planningScope === ENTERPRISE_SCOPE
+    ? ENTERPRISE_SCOPE
+    : STORE_GROUP_SCOPE;
+  const planningScopeLabel = row.scopeLabel?.trim()
+    || (planningScope === ENTERPRISE_SCOPE
+      ? ENTERPRISE_LABEL
+      : row.storeGroupLabel ?? row.storeGroupCode ?? 'Chain');
   return {
     id: row.id,
     label: row.label,
     status: row.status as PurchasePlanHeader['status'],
-    storeGroupCode: row.storeGroupCode,
-    storeGroupLabel: row.storeGroupLabel,
+    planningScope,
+    planningScopeLabel,
+    storeGroupCode: row.storeGroupCode ?? (planningScope === ENTERPRISE_SCOPE ? ENTERPRISE_CODE : ''),
+    storeGroupLabel: planningScope === ENTERPRISE_SCOPE ? ENTERPRISE_LABEL : row.storeGroupLabel,
     season: row.season as PurchasePlanSeason,
     seasonYear: Number(row.seasonYear),
     seasonMonths: row.seasonMonths ?? [],
@@ -381,6 +419,62 @@ async function getStoreGroup(code: string, db: DbClient = prisma): Promise<Store
   return row;
 }
 
+function isWarehouseStoreGroup(group: StoreGroupRow): boolean {
+  const code = group.code.toLowerCase();
+  const label = (group.label ?? '').toLowerCase();
+  const storeNumbers = parseIntArray(group.storeNumbers);
+  return storeNumbers.includes(99)
+    || code.includes('bodega')
+    || code.includes('almacen')
+    || code.includes('warehouse')
+    || label.includes('bodega')
+    || label.includes('almacen')
+    || label.includes('almacén')
+    || label.includes('warehouse');
+}
+
+async function loadEnterpriseDemandStoreGroups(db: DbClient = prisma): Promise<StoreGroupRow[]> {
+  const rows = await db.$queryRawUnsafe<StoreGroupRow[]>(
+    `
+      SELECT
+        sg.code,
+        sg.label,
+        ARRAY_AGG(sgm.store_number ORDER BY sgm.store_number)
+          FILTER (WHERE sgm.store_number IS NOT NULL) AS "storeNumbers"
+      FROM app.store_group sg
+      LEFT JOIN app.store_group_member sgm ON sgm.group_code = sg.code
+      WHERE sg.active = true
+      GROUP BY sg.code, sg.label, sg.sort_order
+      ORDER BY sg.sort_order, sg.label
+    `,
+  );
+  const groups = rows
+    .map((row) => ({ ...row, storeNumbers: parseIntArray(row.storeNumbers) }))
+    .filter((row) => parseIntArray(row.storeNumbers).length > 0)
+    .filter((row) => !isWarehouseStoreGroup(row));
+  if (groups.length === 0) {
+    throw new PurchasePlanningServiceError(422, 'NO_ENTERPRISE_STORES', 'No active selling stores were found for enterprise planning.');
+  }
+  return groups;
+}
+
+async function loadWarehouseStoreNumbers(db: DbClient = prisma): Promise<number[]> {
+  const rows = await db.$queryRawUnsafe<Array<{ number: unknown }>>(
+    `
+      SELECT number
+      FROM app.store_master
+      WHERE number = 99
+         OR "desc" ILIKE '%BODEGA%'
+         OR "desc" ILIKE '%ALMACEN%'
+         OR "desc" ILIKE '%ALMAC%'
+         OR "desc" ILIKE '%WAREHOUSE%'
+      ORDER BY number
+    `,
+  );
+  const numbers = rows.map((row) => Number(row.number)).filter((number) => Number.isInteger(number));
+  return numbers.length > 0 ? uniqueSortedNumbers(numbers) : [99];
+}
+
 async function loadDepartments(departmentNumbers: number[], db: DbClient = prisma): Promise<Map<string, { number: number; label: string }>> {
   const rows = await db.$queryRawUnsafe<DepartmentRow[]>(
     `
@@ -403,8 +497,9 @@ async function loadMonthlyFacts(params: {
   departmentNumbers: number[];
   fromYearMonth: string;
   toYearMonth: string;
-}): Promise<{ history: HistoryPoint[]; labelByKey: Map<string, string>; numberByKey: Map<string, number | null> }> {
-  const rows = await prisma.$queryRawUnsafe<MonthlyFactRow[]>(
+  includeUnmapped?: boolean;
+}, db: DbClient = prisma): Promise<{ history: HistoryPoint[]; labelByKey: Map<string, string>; numberByKey: Map<string, number | null> }> {
+  const rows = await db.$queryRawUnsafe<MonthlyFactRow[]>(
     `
 WITH src AS (
   SELECT
@@ -423,7 +518,7 @@ WITH src AS (
   WHERE m.year_month >= $1::text
     AND m.year_month <= $2::text
     AND s.store_id = ANY($3::int[])
-    AND (d.number = ANY($4::int[]) OR d.number IS NULL)
+    AND (d.number = ANY($4::int[]) OR ($5::boolean AND d.number IS NULL))
 
   UNION ALL
 
@@ -442,7 +537,7 @@ WITH src AS (
   WHERE to_char(s.snapshot_as_of, 'YYYY-MM') >= $1::text
     AND to_char(s.snapshot_as_of, 'YYYY-MM') <= $2::text
     AND s.store_id = ANY($3::int[])
-    AND (d.number = ANY($4::int[]) OR d.number IS NULL)
+    AND (d.number = ANY($4::int[]) OR ($5::boolean AND d.number IS NULL))
 )
 SELECT
   department_key AS "departmentKey",
@@ -461,6 +556,7 @@ ORDER BY department_key, year_month
     params.toYearMonth,
     params.storeNumbers,
     params.departmentNumbers,
+    params.includeUnmapped ?? false,
   );
 
   const labelByKey = new Map<string, string>();
@@ -484,9 +580,9 @@ ORDER BY department_key, year_month
 async function loadInventoryPositions(params: {
   storeNumbers: number[];
   departmentNumbers: number[];
-}): Promise<Map<string, InventoryPosition>> {
-  const [inventoryRows, openPoRows] = await Promise.all([
-    prisma.$queryRawUnsafe<PositionRow[]>(
+  includeUnmapped?: boolean;
+}, db: DbClient = prisma): Promise<Map<string, InventoryPosition>> {
+  const inventoryRows = await db.$queryRawUnsafe<PositionRow[]>(
       `
         SELECT
           COALESCE(d.number::text, 'unmapped') AS "departmentKey",
@@ -499,13 +595,14 @@ async function loadInventoryPositions(params: {
         LEFT JOIN app.sku k ON k.id = h.sku_id
         LEFT JOIN app.taxonomy_department d ON k.category_number BETWEEN d.beg_categ AND d.end_categ
         WHERE h.store_id = ANY($1::int[])
-          AND (d.number = ANY($2::int[]) OR d.number IS NULL)
+          AND (d.number = ANY($2::int[]) OR ($3::boolean AND d.number IS NULL))
         GROUP BY COALESCE(d.number::text, 'unmapped'), d.number, d."desc"
       `,
       params.storeNumbers,
       params.departmentNumbers,
-    ),
-    prisma.$queryRawUnsafe<NativeOpenPoRow[]>(
+      params.includeUnmapped ?? false,
+    );
+  const openPoRows = await db.$queryRawUnsafe<NativeOpenPoRow[]>(
       `
         SELECT
           COALESCE(d.number::text, 'unmapped') AS "departmentKey",
@@ -517,13 +614,13 @@ async function loadInventoryPositions(params: {
         WHERE po.status IN ('SUBMITTED','CONFIRMED','PARTIALLY_RECEIVED')
           AND po.ship_to_store_id = ANY($1::int[])
           AND GREATEST(pol.quantity_ordered - pol.quantity_received, 0) > 0
-          AND (d.number = ANY($2::int[]) OR d.number IS NULL)
+          AND (d.number = ANY($2::int[]) OR ($3::boolean AND d.number IS NULL))
         GROUP BY COALESCE(d.number::text, 'unmapped')
       `,
       params.storeNumbers,
       params.departmentNumbers,
-    ),
-  ]);
+      params.includeUnmapped ?? false,
+    );
 
   const positions = new Map<string, InventoryPosition>();
   for (const row of inventoryRows) {
@@ -543,8 +640,8 @@ async function loadInventoryPositions(params: {
   return positions;
 }
 
-async function loadLatestDataYearMonth(storeNumbers: number[], fallbackYearMonth: string): Promise<string> {
-  const rows = await prisma.$queryRawUnsafe<LatestDataMonthRow[]>(
+async function loadLatestDataYearMonth(storeNumbers: number[], fallbackYearMonth: string, db: DbClient = prisma): Promise<string> {
+  const rows = await db.$queryRawUnsafe<LatestDataMonthRow[]>(
     `
       SELECT to_char(MAX(snapshot_as_of), 'YYYY-MM') AS "yearMonth"
       FROM app.inventory_history_snapshot
@@ -597,10 +694,143 @@ function buildNormalizationFactorForHorizon(
   return out;
 }
 
-async function buildCalculatedRows(input: {
-  storeGroupCode: string;
+interface LoadedPlanningData {
+  facts: {
+    history: HistoryPoint[];
+    labelByKey: Map<string, string>;
+    numberByKey: Map<string, number | null>;
+  };
+  positions: Map<string, InventoryPosition>;
+  departments: Map<string, { number: number; label: string }>;
+}
+
+interface PlanningRange {
+  seasonMonths: string[];
+  historyFromYearMonth: string;
+  historyToYearMonth: string;
+  bridgeMonths: string[];
+  projectionMonths: string[];
+}
+
+function planningRangeForSeason(params: {
   season: PurchasePlanSeason;
   seasonYear: number;
+  latestDataYearMonth: string;
+  eohMethod: EohMethod;
+  coverMonths: number;
+}): PlanningRange {
+  return planningRangeForMonths({
+    months: buildSeasonMonths(params.season, params.seasonYear),
+    latestDataYearMonth: params.latestDataYearMonth,
+    eohMethod: params.eohMethod,
+    coverMonths: params.coverMonths,
+  });
+}
+
+function planningRangeForMonths(params: {
+  months: string[];
+  latestDataYearMonth: string;
+  eohMethod: EohMethod;
+  coverMonths: number;
+}): PlanningRange {
+  const seasonMonths = [...params.months];
+  if (seasonMonths.length === 0) {
+    throw new PurchasePlanningServiceError(400, 'NO_PROJECTION_MONTHS', 'At least one projection month is required.');
+  }
+  const monthBeforeSeason = shiftYearMonth(seasonMonths[0], -1);
+  const historyToYearMonth = earlierYearMonth(monthBeforeSeason, params.latestDataYearMonth);
+  const historyFromYearMonth = shiftYearMonth(historyToYearMonth, -HISTORY_MONTHS + 1);
+  const bridgeMonths = monthsBetweenExclusive(historyToYearMonth, seasonMonths[0]);
+  const coverTailMonths = params.eohMethod === 'forward'
+    ? monthsAfter(seasonMonths[seasonMonths.length - 1], params.coverMonths)
+    : [];
+  const projectionMonths = [...new Set([...bridgeMonths, ...seasonMonths, ...coverTailMonths])];
+  return {
+    seasonMonths,
+    historyFromYearMonth,
+    historyToYearMonth,
+    bridgeMonths,
+    projectionMonths,
+  };
+}
+
+function calculateRowsFromLoadedPlanningData(input: {
+  data: LoadedPlanningData;
+  range: PlanningRange;
+  forecastMethod: ForecastMethod;
+  forecastParams: ForecastParams;
+  eohMethod: EohMethod;
+  coverMonths: number;
+  discountNormalization: boolean;
+}): Array<Omit<PurchasePlanSavedRow, 'id' | 'planId'>> {
+  const labelByKey = new Map(input.data.facts.labelByKey);
+  const numberByKey = new Map(input.data.facts.numberByKey);
+  const positions = new Map(input.data.positions);
+
+  for (const [key, dept] of input.data.departments) {
+    labelByKey.set(key, dept.label);
+    numberByKey.set(key, dept.number);
+    if (!positions.has(key)) positions.set(key, { onHand: 0, currentOnOrder: 0, futureOnOrder: 0, nativeOpenPo: 0 });
+  }
+
+  const history = input.data.facts.history.filter((point) =>
+    point.yearMonth >= input.range.historyFromYearMonth &&
+    point.yearMonth <= input.range.historyToYearMonth);
+  const normalized = normalizeDiscountDistortedHistory(history, input.discountNormalization);
+  const dimKeys = [...new Set([...labelByKey.keys(), ...positions.keys()])];
+  const normalizedProjection = ensureProjectedRectangle(
+    forecast(normalized, input.forecastMethod, input.forecastParams, input.range.projectionMonths),
+    dimKeys,
+    input.range.projectionMonths,
+  );
+  const rawProjection = ensureProjectedRectangle(
+    forecast(history, input.forecastMethod, input.forecastParams, input.range.projectionMonths),
+    dimKeys,
+    input.range.projectionMonths,
+  );
+  const rawByKey = new Map(rawProjection.map((point) => [`${point.dimKey}|${point.yearMonth}`, point.projQty]));
+  const normalizationByKey = buildNormalizationFactorForHorizon(normalized, input.range.seasonMonths);
+
+  const computed = computePlanWithInventoryPosition(normalizedProjection, positions, input.range.seasonMonths, {
+    eohMethod: input.eohMethod,
+    coverMonths: input.coverMonths,
+    preHorizonYearMonths: input.range.bridgeMonths,
+  });
+
+  return computed.map((row) => {
+    const departmentKey = normalizeDepartmentKey(row.dimKey);
+    return {
+      departmentKey,
+      departmentNumber: numberByKey.get(departmentKey) ?? null,
+      departmentLabel: labelByKey.get(departmentKey) ?? departmentKey,
+      yearMonth: row.yearMonth,
+      baselineBoh: row.boh,
+      baselineProjSales: row.projSales,
+      baselineEohTarget: row.eohTarget,
+      baselineBuy: row.buy,
+      baselineEohActual: row.eohActual,
+      currentBoh: row.boh,
+      currentProjSales: row.projSales,
+      currentEohTarget: row.eohTarget,
+      currentBuy: row.buy,
+      currentEohActual: row.eohActual,
+      onHand: row.onHand ?? 0,
+      currentOnOrder: row.currentOnOrder ?? 0,
+      futureOnOrder: row.futureOnOrder ?? 0,
+      nativeOpenPo: row.nativeOpenPo ?? 0,
+      stockPosition: row.stockPosition ?? 0,
+      normalizationFactor: normalizationByKey.get(`${departmentKey}|${row.yearMonth}`) ?? 1,
+      rawProjSales: Math.round(rawByKey.get(`${departmentKey}|${row.yearMonth}`) ?? row.projSales),
+    };
+  });
+}
+
+async function buildCalculatedRows(input: {
+  planningScope?: PurchasePlanPlanningScope;
+  storeGroupCode?: string;
+  season: PurchasePlanSeason;
+  seasonYear: number;
+  seasonMonths?: string[];
   departmentNumbers: number[];
   forecastMethod: ForecastMethod;
   forecastParams: ForecastParams;
@@ -608,6 +838,9 @@ async function buildCalculatedRows(input: {
   coverMonths: number;
   discountNormalization: boolean;
 }): Promise<{
+  planningScope: PurchasePlanPlanningScope;
+  scopeLabel: string;
+  storeGroupCode: string | null;
   storeGroup: StoreGroupRow;
   seasonMonths: string[];
   historyFromYearMonth: string;
@@ -615,8 +848,7 @@ async function buildCalculatedRows(input: {
   selectedDepartments: number[];
   rows: Array<Omit<PurchasePlanSavedRow, 'id' | 'planId'>>;
 }> {
-  const storeGroup = await getStoreGroup(input.storeGroupCode);
-  const storeNumbers = parseIntArray(storeGroup.storeNumbers);
+  const planningScope = input.planningScope === ENTERPRISE_SCOPE ? ENTERPRISE_SCOPE : STORE_GROUP_SCOPE;
   const selectedDepartments = [...new Set(input.departmentNumbers.map((n) => Math.trunc(Number(n))).filter((n) => n > 0))].sort((a, b) => a - b);
   if (selectedDepartments.length === 0) {
     throw new PurchasePlanningServiceError(400, 'NO_DEPARTMENTS', 'At least one department is required.');
@@ -627,84 +859,78 @@ async function buildCalculatedRows(input: {
     throw new PurchasePlanningServiceError(404, 'DEPARTMENT_NOT_FOUND', `Department(s) not found: ${missing.join(', ')}`);
   }
 
-  const seasonMonths = buildSeasonMonths(input.season, input.seasonYear);
-  const monthBeforeSeason = shiftYearMonth(seasonMonths[0], -1);
-  const latestDataYearMonth = await loadLatestDataYearMonth(storeNumbers, monthBeforeSeason);
-  const historyToYearMonth = earlierYearMonth(monthBeforeSeason, latestDataYearMonth);
-  const historyFromYearMonth = shiftYearMonth(historyToYearMonth, -HISTORY_MONTHS + 1);
-  const bridgeMonths = monthsBetweenExclusive(historyToYearMonth, seasonMonths[0]);
-  const coverTailMonths = input.eohMethod === 'forward'
-    ? monthsAfter(seasonMonths[seasonMonths.length - 1], input.coverMonths)
-    : [];
-  const projectionMonths = [...new Set([...bridgeMonths, ...seasonMonths, ...coverTailMonths])];
+  const [storeGroup, demandStoreNumbers, planningStoreNumbers] = await (async (): Promise<[StoreGroupRow, number[], number[]]> => {
+    if (planningScope === ENTERPRISE_SCOPE) {
+      const [groups, warehouseStoreNumbers] = await Promise.all([
+        loadEnterpriseDemandStoreGroups(),
+        withPlanningQuerySettings((db) => loadWarehouseStoreNumbers(db)),
+      ]);
+      const demandStores = uniqueSortedNumbers(groups.flatMap((group) => parseIntArray(group.storeNumbers)));
+      const planningStores = uniqueSortedNumbers([...demandStores, ...warehouseStoreNumbers]);
+      return [{
+        code: ENTERPRISE_CODE,
+        label: ENTERPRISE_LABEL,
+        storeNumbers: demandStores,
+      }, demandStores, planningStores];
+    }
 
-  const [facts, positions] = await Promise.all([
-    loadMonthlyFacts({
-      storeNumbers,
+    const code = input.storeGroupCode?.trim();
+    if (!code) throw new PurchasePlanningServiceError(400, 'NO_CHAIN', 'Store chain is required.');
+    const group = await getStoreGroup(code);
+    const storeNumbers = parseIntArray(group.storeNumbers);
+    return [group, storeNumbers, storeNumbers];
+  })();
+
+  const fallbackYearMonth = shiftYearMonth(buildSeasonMonths(input.season, input.seasonYear)[0], -1);
+  const latestDataYearMonth = await withPlanningQuerySettings((db) =>
+    loadLatestDataYearMonth(demandStoreNumbers, fallbackYearMonth, db));
+  const range = input.seasonMonths
+    ? planningRangeForMonths({
+      months: input.seasonMonths,
+      latestDataYearMonth,
+      eohMethod: input.eohMethod,
+      coverMonths: input.coverMonths,
+    })
+    : planningRangeForSeason({
+      season: input.season,
+      seasonYear: input.seasonYear,
+      latestDataYearMonth,
+      eohMethod: input.eohMethod,
+      coverMonths: input.coverMonths,
+    });
+  const [facts, positions] = await withPlanningQuerySettings(async (db) => {
+    const loadedFacts = await loadMonthlyFacts({
+      storeNumbers: demandStoreNumbers,
       departmentNumbers: selectedDepartments,
-      fromYearMonth: historyFromYearMonth,
-      toYearMonth: historyToYearMonth,
-    }),
-    loadInventoryPositions({ storeNumbers, departmentNumbers: selectedDepartments }),
-  ]);
-
-  for (const [key, dept] of departments) {
-    facts.labelByKey.set(key, dept.label);
-    facts.numberByKey.set(key, dept.number);
-    if (!positions.has(key)) positions.set(key, { onHand: 0, currentOnOrder: 0, futureOnOrder: 0, nativeOpenPo: 0 });
-  }
-
-  const normalized = normalizeDiscountDistortedHistory(facts.history, input.discountNormalization);
-  const normalizedProjection = ensureProjectedRectangle(
-    forecast(normalized, input.forecastMethod, input.forecastParams, projectionMonths),
-    [...facts.labelByKey.keys(), ...positions.keys()],
-    projectionMonths,
-  );
-  const rawProjection = ensureProjectedRectangle(
-    forecast(facts.history, input.forecastMethod, input.forecastParams, projectionMonths),
-    [...facts.labelByKey.keys(), ...positions.keys()],
-    projectionMonths,
-  );
-  const rawByKey = new Map(rawProjection.map((point) => [`${point.dimKey}|${point.yearMonth}`, point.projQty]));
-  const normalizationByKey = buildNormalizationFactorForHorizon(normalized, seasonMonths);
-
-  const computed = computePlanWithInventoryPosition(normalizedProjection, positions, seasonMonths, {
-    eohMethod: input.eohMethod,
-    coverMonths: input.coverMonths,
-    preHorizonYearMonths: bridgeMonths,
+      fromYearMonth: range.historyFromYearMonth,
+      toYearMonth: range.historyToYearMonth,
+      includeUnmapped: false,
+    }, db);
+    const loadedPositions = await loadInventoryPositions({
+      storeNumbers: planningStoreNumbers,
+      departmentNumbers: selectedDepartments,
+      includeUnmapped: false,
+    }, db);
+    return [loadedFacts, loadedPositions] as const;
   });
 
   return {
+    planningScope,
+    scopeLabel: planningScope === ENTERPRISE_SCOPE ? ENTERPRISE_LABEL : storeGroup.label ?? storeGroup.code,
+    storeGroupCode: planningScope === ENTERPRISE_SCOPE ? null : storeGroup.code,
     storeGroup,
-    seasonMonths,
-    historyFromYearMonth,
-    historyToYearMonth,
+    seasonMonths: range.seasonMonths,
+    historyFromYearMonth: range.historyFromYearMonth,
+    historyToYearMonth: range.historyToYearMonth,
     selectedDepartments,
-    rows: computed.map((row) => {
-      const departmentKey = normalizeDepartmentKey(row.dimKey);
-      return {
-        departmentKey,
-        departmentNumber: facts.numberByKey.get(departmentKey) ?? null,
-        departmentLabel: facts.labelByKey.get(departmentKey) ?? departmentKey,
-        yearMonth: row.yearMonth,
-        baselineBoh: row.boh,
-        baselineProjSales: row.projSales,
-        baselineEohTarget: row.eohTarget,
-        baselineBuy: row.buy,
-        baselineEohActual: row.eohActual,
-        currentBoh: row.boh,
-        currentProjSales: row.projSales,
-        currentEohTarget: row.eohTarget,
-        currentBuy: row.buy,
-        currentEohActual: row.eohActual,
-        onHand: row.onHand ?? 0,
-        currentOnOrder: row.currentOnOrder ?? 0,
-        futureOnOrder: row.futureOnOrder ?? 0,
-        nativeOpenPo: row.nativeOpenPo ?? 0,
-        stockPosition: row.stockPosition ?? 0,
-        normalizationFactor: normalizationByKey.get(`${departmentKey}|${row.yearMonth}`) ?? 1,
-        rawProjSales: Math.round(rawByKey.get(`${departmentKey}|${row.yearMonth}`) ?? row.projSales),
-      };
+    rows: calculateRowsFromLoadedPlanningData({
+      data: { facts, positions, departments },
+      range,
+      forecastMethod: input.forecastMethod,
+      forecastParams: input.forecastParams,
+      eohMethod: input.eohMethod,
+      coverMonths: input.coverMonths,
+      discountNormalization: input.discountNormalization,
     }),
   };
 }
@@ -761,6 +987,8 @@ async function loadPlanHeader(id: string, db: DbClient = prisma): Promise<Purcha
         p.id::text AS id,
         p.label,
         p.status,
+        COALESCE(p.planning_scope, 'store_group') AS "planningScope",
+        p.scope_label AS "scopeLabel",
         p.store_group_code AS "storeGroupCode",
         sg.label AS "storeGroupLabel",
         p.season,
@@ -793,33 +1021,35 @@ async function loadRows(planId: string, db: DbClient = prisma, departmentKey?: s
   const rows = await db.$queryRawUnsafe<SavedRowDb[]>(
     `
       SELECT
-        id::text AS id,
-        plan_id::text AS "planId",
-        department_key AS "departmentKey",
-        department_number AS "departmentNumber",
-        department_label AS "departmentLabel",
-        year_month AS "yearMonth",
-        baseline_boh AS "baselineBoh",
-        baseline_proj_sales AS "baselineProjSales",
-        baseline_eoh_target AS "baselineEohTarget",
-        baseline_buy AS "baselineBuy",
-        baseline_eoh_actual AS "baselineEohActual",
-        current_boh AS "currentBoh",
-        current_proj_sales AS "currentProjSales",
-        current_eoh_target AS "currentEohTarget",
-        current_buy AS "currentBuy",
-        current_eoh_actual AS "currentEohActual",
-        on_hand AS "onHand",
-        current_on_order AS "currentOnOrder",
-        future_on_order AS "futureOnOrder",
-        native_open_po AS "nativeOpenPo",
-        stock_position AS "stockPosition",
-        normalization_factor AS "normalizationFactor",
-        raw_proj_sales AS "rawProjSales"
-      FROM app.purchase_plan_row
-      WHERE plan_id = $1::uuid
-        AND ($2::text IS NULL OR department_key = $2::text)
-      ORDER BY department_number NULLS LAST, department_key, year_month
+        r.id::text AS id,
+        r.plan_id::text AS "planId",
+        r.department_key AS "departmentKey",
+        r.department_number AS "departmentNumber",
+        r.department_label AS "departmentLabel",
+        r.year_month AS "yearMonth",
+        r.baseline_boh AS "baselineBoh",
+        r.baseline_proj_sales AS "baselineProjSales",
+        r.baseline_eoh_target AS "baselineEohTarget",
+        r.baseline_buy AS "baselineBuy",
+        r.baseline_eoh_actual AS "baselineEohActual",
+        r.current_boh AS "currentBoh",
+        r.current_proj_sales AS "currentProjSales",
+        r.current_eoh_target AS "currentEohTarget",
+        r.current_buy AS "currentBuy",
+        r.current_eoh_actual AS "currentEohActual",
+        r.on_hand AS "onHand",
+        r.current_on_order AS "currentOnOrder",
+        r.future_on_order AS "futureOnOrder",
+        r.native_open_po AS "nativeOpenPo",
+        r.stock_position AS "stockPosition",
+        r.normalization_factor AS "normalizationFactor",
+        r.raw_proj_sales AS "rawProjSales"
+      FROM app.purchase_plan_row r
+      JOIN app.purchase_plan p ON p.id = r.plan_id
+      WHERE r.plan_id = $1::uuid
+        AND ($2::text IS NULL OR r.department_key = $2::text)
+        AND r.department_number = ANY(p.selected_departments)
+      ORDER BY r.department_number NULLS LAST, r.department_key, r.year_month
     `,
     planId,
     departmentKey ?? null,
@@ -855,17 +1085,72 @@ async function updateCurrentRows(rows: PurchasePlanSavedRow[], db: DbClient): Pr
         UPDATE app.purchase_plan_row
         SET
           current_boh = $2,
-          current_buy = $3,
-          current_eoh_actual = $4,
+          current_proj_sales = $3,
+          current_eoh_target = $4,
+          current_buy = $5,
+          current_eoh_actual = $6,
           updated_at = CURRENT_TIMESTAMP
         WHERE id = $1::uuid
       `,
       row.id,
       row.currentBoh,
+      row.currentProjSales,
+      row.currentEohTarget,
       row.currentBuy,
       row.currentEohActual,
     );
   }
+}
+
+type MonthlyRowUpdateValues = {
+  currentProjSales?: number;
+  currentEohTarget?: number;
+  currentBuy?: number;
+};
+
+function hasUnitOverride(input: MonthlyRowUpdateValues, key: keyof MonthlyRowUpdateValues): boolean {
+  return Object.prototype.hasOwnProperty.call(input, key) && input[key] != null;
+}
+
+function normalizedUnitOverride(input: MonthlyRowUpdateValues, key: keyof MonthlyRowUpdateValues): number | undefined {
+  if (!hasUnitOverride(input, key)) return undefined;
+  const value = Number(input[key]);
+  if (!Number.isFinite(value) || value < 0) {
+    throw new PurchasePlanningServiceError(400, 'INVALID_ROW_UPDATE_VALUE', 'Monthly plan values must be non-negative numbers.');
+  }
+  return Math.round(value);
+}
+
+function applyMonthlyRowUpdates(
+  rows: PurchasePlanSavedRow[],
+  updatesByRowId: Map<string, MonthlyRowUpdateValues>,
+): PurchasePlanSavedRow[] {
+  let runningBoh = rows[0]?.currentBoh ?? 0;
+  return rows.map((row, index) => {
+    const next: PurchasePlanSavedRow = {
+      ...row,
+      currentBoh: index === 0 ? row.currentBoh : runningBoh,
+    };
+    const update = updatesByRowId.get(row.id);
+
+    if (update) {
+      const currentProjSales = normalizedUnitOverride(update, 'currentProjSales');
+      const currentEohTarget = normalizedUnitOverride(update, 'currentEohTarget');
+      const currentBuy = normalizedUnitOverride(update, 'currentBuy');
+      const shouldRecalculateBuy = currentBuy == null && (currentProjSales != null || currentEohTarget != null);
+      if (currentProjSales != null) next.currentProjSales = currentProjSales;
+      if (currentEohTarget != null) next.currentEohTarget = currentEohTarget;
+      if (currentBuy != null) {
+        next.currentBuy = currentBuy;
+      } else if (shouldRecalculateBuy) {
+        next.currentBuy = Math.max(0, next.currentProjSales + next.currentEohTarget - next.currentBoh);
+      }
+    }
+
+    next.currentEohActual = next.currentBoh + next.currentBuy - next.currentProjSales;
+    runningBoh = next.currentEohActual;
+    return next;
+  });
 }
 
 async function recordAudit(
@@ -903,10 +1188,13 @@ export async function createPurchasePlan(input: PurchasePlanCreateRequest): Prom
   const forecastMethod = input.forecast?.method ?? DEFAULT_FORECAST_METHOD;
   const eohMethod = input.eohMethod ?? DEFAULT_EOH_METHOD;
   const coverMonths = Math.max(1, Math.round(input.coverMonths ?? DEFAULT_COVER_MONTHS));
+  const planningScope = input.planningScope === ENTERPRISE_SCOPE ? ENTERPRISE_SCOPE : STORE_GROUP_SCOPE;
   const calculation = await buildCalculatedRows({
+    planningScope,
     storeGroupCode: input.storeGroupCode,
     season: input.season,
     seasonYear: input.seasonYear,
+    seasonMonths: input.seasonMonths,
     departmentNumbers: input.departmentNumbers,
     forecastMethod,
     forecastParams: input.forecast ?? {},
@@ -915,20 +1203,22 @@ export async function createPurchasePlan(input: PurchasePlanCreateRequest): Prom
     discountNormalization: input.discountNormalization ?? true,
   });
   const actor = input.createdBy?.trim() || 'system';
-  const label = input.label?.trim() || defaultPlanLabel(calculation.storeGroup.label, input.season, input.seasonYear);
+  const label = input.label?.trim() || defaultPlanLabel(calculation.scopeLabel, input.season, input.seasonYear);
 
   const planId = await prisma.$transaction(async (tx) => {
     const inserted = await tx.$queryRawUnsafe<Array<{ id: string }>>(
       `
         INSERT INTO app.purchase_plan (
-          store_group_code, label, season, season_year, season_months, selected_departments,
+          store_group_code, planning_scope, scope_label, label, season, season_year, season_months, selected_departments,
           forecast_method, eoh_method, cover_months, discount_normalization,
           history_from_year_month, history_to_year_month, created_by
         )
-        VALUES ($1, $2, $3, $4, $5::text[], $6::int[], $7, $8, $9, $10, $11, $12, $13)
+        VALUES ($1, $2, $3, $4, $5, $6, $7::text[], $8::int[], $9, $10, $11, $12, $13, $14, $15)
         RETURNING id::text
       `,
-      input.storeGroupCode,
+      calculation.storeGroupCode,
+      calculation.planningScope,
+      calculation.scopeLabel,
       label,
       input.season,
       input.seasonYear,
@@ -966,6 +1256,8 @@ export async function listPurchasePlans(params: {
         p.id::text AS id,
         p.label,
         p.status,
+        COALESCE(p.planning_scope, 'store_group') AS "planningScope",
+        p.scope_label AS "scopeLabel",
         p.store_group_code AS "storeGroupCode",
         sg.label AS "storeGroupLabel",
         p.season,
@@ -989,12 +1281,14 @@ export async function listPurchasePlans(params: {
       LEFT JOIN app.store_group sg ON sg.code = p.store_group_code
       LEFT JOIN app.purchase_plan_row r ON r.plan_id = p.id
       WHERE ($1::text IS NULL OR p.status = $1::text)
-        AND ($2::text IS NULL OR p.store_group_code = $2::text)
+        AND COALESCE(p.planning_scope, 'store_group') = 'enterprise'
+        AND p.store_group_code IS NULL
+        AND COALESCE(array_length(p.season_months, 1), 0) = $2::int
       GROUP BY p.id, sg.label
       ORDER BY p.updated_at DESC
     `,
     params.status && params.status !== 'all' ? params.status : null,
-    params.storeGroupCode ?? null,
+    ENTERPRISE_WORKBOOK_MONTHS,
   );
   return rows.map((row) => ({
     ...normalizeHeader(row),
@@ -1064,6 +1358,99 @@ export async function addPurchasePlanAdjustment(
   return getPurchasePlan(planId);
 }
 
+export async function updatePurchasePlanRow(
+  planId: string,
+  rowId: string,
+  input: PurchasePlanRowUpdateRequest,
+): Promise<PurchasePlanDetailResponse> {
+  return updatePurchasePlanRows(planId, {
+    rows: [{
+      rowId,
+      currentProjSales: input.currentProjSales,
+      currentEohTarget: input.currentEohTarget,
+      currentBuy: input.currentBuy,
+    }],
+    reason: input.reason,
+    appliedBy: input.appliedBy,
+  });
+}
+
+export async function updatePurchasePlanRows(
+  planId: string,
+  input: PurchasePlanRowsUpdateRequest,
+): Promise<PurchasePlanDetailResponse> {
+  const actor = input.appliedBy?.trim() || 'system';
+  const reason = input.reason.trim();
+  if (!reason) throw new PurchasePlanningServiceError(400, 'REASON_REQUIRED', 'Adjustment reason is required.');
+  if (input.rows.length === 0) {
+    throw new PurchasePlanningServiceError(400, 'NO_ROW_UPDATES', 'At least one monthly plan row is required.');
+  }
+
+  const updatesByRowId = new Map<string, MonthlyRowUpdateValues>();
+  for (const row of input.rows) {
+    const rowId = row.rowId.trim();
+    if (!rowId) {
+      throw new PurchasePlanningServiceError(400, 'INVALID_ROW_UPDATE_VALUE', 'Monthly plan row id is required.');
+    }
+    if (
+      !hasUnitOverride(row, 'currentProjSales')
+      && !hasUnitOverride(row, 'currentEohTarget')
+      && !hasUnitOverride(row, 'currentBuy')
+    ) {
+      throw new PurchasePlanningServiceError(400, 'NO_ROW_UPDATES', 'At least one monthly plan value is required.');
+    }
+    if (updatesByRowId.has(rowId)) {
+      throw new PurchasePlanningServiceError(400, 'DUPLICATE_ROW_UPDATE', 'Each monthly plan row can only be updated once.');
+    }
+    updatesByRowId.set(rowId, {
+      currentProjSales: normalizedUnitOverride(row, 'currentProjSales'),
+      currentEohTarget: normalizedUnitOverride(row, 'currentEohTarget'),
+      currentBuy: normalizedUnitOverride(row, 'currentBuy'),
+    });
+  }
+
+  await prisma.$transaction(async (tx) => {
+    const plan = await loadPlanHeader(planId, tx);
+    if (plan.status === 'archived') {
+      throw new PurchasePlanningServiceError(409, 'PLAN_ARCHIVED', 'Archived plans cannot be adjusted.');
+    }
+
+    const planRows = await loadRows(planId, tx);
+    const rowsById = new Map(planRows.map((row) => [row.id, row]));
+    for (const rowId of updatesByRowId.keys()) {
+      if (!rowsById.has(rowId)) {
+        throw new PurchasePlanningServiceError(404, 'PLAN_ROW_NOT_FOUND', 'Monthly plan row is not in this plan.');
+      }
+    }
+
+    const touchedDepartments = new Set(
+      [...updatesByRowId.keys()].map((rowId) => rowsById.get(rowId)!.departmentKey),
+    );
+    const beforeRows = planRows.filter((row) => touchedDepartments.has(row.departmentKey));
+    const afterRows: PurchasePlanSavedRow[] = [];
+    for (const departmentKey of touchedDepartments) {
+      const departmentRows = beforeRows.filter((row) => row.departmentKey === departmentKey);
+      afterRows.push(...applyMonthlyRowUpdates(departmentRows, updatesByRowId));
+    }
+
+    await updateCurrentRows(afterRows, tx);
+    await tx.$executeRawUnsafe(
+      `UPDATE app.purchase_plan SET updated_at = CURRENT_TIMESTAMP WHERE id = $1::uuid`,
+      planId,
+    );
+    await recordAudit(
+      planId,
+      'worksheet_update',
+      actor,
+      { reason, updates: input.rows, rows: beforeRows },
+      { reason, updates: input.rows, rows: afterRows },
+      tx,
+    );
+  });
+
+  return getPurchasePlan(planId);
+}
+
 export async function recalculatePurchasePlan(planId: string, actor = 'system'): Promise<PurchasePlanDetailResponse> {
   await prisma.$transaction(async (tx) => {
     const plan = await loadPlanHeader(planId, tx);
@@ -1072,9 +1459,11 @@ export async function recalculatePurchasePlan(planId: string, actor = 'system'):
     }
     const beforeRows = await loadRows(planId, tx);
     const calculation = await buildCalculatedRows({
-      storeGroupCode: plan.storeGroupCode,
+      planningScope: plan.planningScope,
+      storeGroupCode: plan.planningScope === ENTERPRISE_SCOPE ? undefined : plan.storeGroupCode,
       season: plan.season,
       seasonYear: plan.seasonYear,
+      seasonMonths: plan.seasonMonths,
       departmentNumbers: plan.selectedDepartments,
       forecastMethod: plan.forecastMethod,
       forecastParams: {},
@@ -1140,18 +1529,20 @@ function valueFromRaw(units: number, costHnl: number): SeasonalPurchaseReportVal
   };
 }
 
-function seasonBucketByYearMonth(year: number): Map<string, PurchasePlanSeason> {
-  const out = new Map<string, PurchasePlanSeason>();
-  for (const season of PURCHASE_PLAN_SEASONS) {
-    for (const yearMonth of buildSeasonMonths(season, year)) {
-      out.set(yearMonth, season);
-    }
-  }
-  return out;
+function workbookLabel(
+  departmentLabelText: string,
+  seasonWindow: PurchasePlanSeasonWindowItem[],
+): string {
+  const first = seasonWindow[0]!;
+  const last = seasonWindow[seasonWindow.length - 1]!;
+  return `${ENTERPRISE_LABEL} ${departmentLabelText} ${first.seasonLabel} to ${last.seasonLabel}`;
 }
 
-async function findReportWorksheet(params: {
-  storeGroupCode: string;
+function projectionMonthsFromWindow(seasonWindow: PurchasePlanSeasonWindowItem[]): string[] {
+  return seasonWindow.flatMap((season) => season.months);
+}
+
+async function findReportWorkbook(params: {
   season: PurchasePlanSeason;
   seasonYear: number;
   departmentNumber: number;
@@ -1164,14 +1555,16 @@ async function findReportWorksheet(params: {
         COUNT(*) OVER() AS "matchCount"
       FROM app.purchase_plan p
       WHERE p.status = 'draft'
-        AND p.store_group_code = $1
+        AND COALESCE(p.planning_scope, 'store_group') = 'enterprise'
+        AND p.store_group_code IS NULL
+        AND COALESCE(array_length(p.season_months, 1), 0) = $1::int
         AND p.season = $2
         AND p.season_year = $3
-        AND $4::int = ANY(p.selected_departments)
+        AND p.selected_departments = ARRAY[$4]::int[]
       ORDER BY p.updated_at DESC, p.created_at DESC
       LIMIT 1
     `,
-    params.storeGroupCode,
+    ENTERPRISE_WORKBOOK_MONTHS,
     params.season,
     params.seasonYear,
     params.departmentNumber,
@@ -1179,12 +1572,10 @@ async function findReportWorksheet(params: {
   return rows[0] ?? null;
 }
 
-async function ensureReportWorksheet(params: {
-  storeGroupCode: string;
-  storeGroupLabel: string | null;
-  season: PurchasePlanSeason;
-  seasonYear: number;
+async function ensureReportWorkbook(params: {
+  seasonWindow: PurchasePlanSeasonWindowItem[];
   departmentNumber: number;
+  departmentLabel: string;
   forecastMethod: ForecastMethod;
   forecastParams: ForecastParams;
   eohMethod: EohMethod;
@@ -1196,7 +1587,12 @@ async function ensureReportWorksheet(params: {
   autoCreated: boolean;
   duplicateSourceCount: number;
 }> {
-  const existing = await findReportWorksheet(params);
+  const first = params.seasonWindow[0]!;
+  const existing = await findReportWorkbook({
+    season: first.season,
+    seasonYear: first.seasonYear,
+    departmentNumber: params.departmentNumber,
+  });
   if (existing) {
     return {
       detail: await getPurchasePlan(existing.id),
@@ -1206,11 +1602,12 @@ async function ensureReportWorksheet(params: {
   }
 
   const detail = await createPurchasePlan({
-    storeGroupCode: params.storeGroupCode,
-    season: params.season,
-    seasonYear: params.seasonYear,
+    planningScope: ENTERPRISE_SCOPE,
+    season: first.season,
+    seasonYear: first.seasonYear,
+    seasonMonths: projectionMonthsFromWindow(params.seasonWindow),
     departmentNumbers: [params.departmentNumber],
-    label: `Auto - ${defaultPlanLabel(params.storeGroupLabel, params.season, params.seasonYear)}`,
+    label: workbookLabel(params.departmentLabel, params.seasonWindow),
     forecast: { method: params.forecastMethod, ...params.forecastParams },
     eohMethod: params.eohMethod,
     coverMonths: params.coverMonths,
@@ -1224,8 +1621,8 @@ async function ensureReportWorksheet(params: {
 async function loadReportUnitCostHnl(params: {
   storeNumbers: number[];
   departmentNumber: number;
-}): Promise<number> {
-  const rows = await prisma.$queryRawUnsafe<ReportUnitCostRow[]>(
+}, db: DbClient = prisma): Promise<number> {
+  const rows = await db.$queryRawUnsafe<ReportUnitCostRow[]>(
     `
       SELECT
         COALESCE(
@@ -1250,11 +1647,12 @@ async function loadReportUnitCostHnl(params: {
 async function loadReportPoBuckets(params: {
   storeNumbers: number[];
   departmentNumber: number;
-  year: number;
-}): Promise<Map<string, SeasonalPurchaseReportValue>> {
-  const firstMonth = buildSeasonMonths('spring', params.year)[0];
-  const lastMonth = buildSeasonMonths('winter', params.year)[2];
-  const rows = await prisma.$queryRawUnsafe<ReportPoBucketRow[]>(
+  seasonWindow: PurchasePlanSeasonWindowItem[];
+}, db: DbClient = prisma): Promise<Map<string, SeasonalPurchaseReportValue>> {
+  const projectionMonths = projectionMonthsFromWindow(params.seasonWindow);
+  const firstMonth = projectionMonths[0]!;
+  const lastMonth = projectionMonths[projectionMonths.length - 1]!;
+  const rows = await db.$queryRawUnsafe<ReportPoBucketRow[]>(
     `
       WITH po_lines AS (
         SELECT
@@ -1291,13 +1689,16 @@ async function loadReportPoBuckets(params: {
     lastMonth,
   );
 
-  const bucketByMonth = seasonBucketByYearMonth(params.year);
+  const bucketByMonth = new Map<string, PurchasePlanSeasonWindowItem>();
+  for (const season of params.seasonWindow) {
+    for (const month of season.months) bucketByMonth.set(month, season);
+  }
   const out = new Map<string, SeasonalPurchaseReportValue>();
   for (const row of rows) {
     const season = bucketByMonth.get(row.yearMonth);
     if (!season) continue;
     const statusBucket = row.status === 'DRAFT' ? 'draftPos' : 'confirmedPos';
-    const key = `${season}|${statusBucket}`;
+    const key = `${season.season}|${season.seasonYear}|${statusBucket}`;
     const current = out.get(key) ?? { units: 0, costHnl: 0 };
     out.set(key, {
       units: current.units + toNumber(row.units),
@@ -1307,6 +1708,62 @@ async function loadReportPoBuckets(params: {
   return out;
 }
 
+function buildWorkbookMetadata(params: {
+  detail: PurchasePlanDetailResponse;
+  autoCreated: boolean;
+  duplicateSourceCount: number;
+}): SeasonalPurchaseReportWorksheet {
+  return {
+    storeGroupCode: ENTERPRISE_CODE,
+    storeGroupLabel: ENTERPRISE_LABEL,
+    planId: params.detail.plan.id,
+    planLabel: params.detail.plan.label,
+    autoCreated: params.autoCreated,
+    duplicateSourceCount: params.duplicateSourceCount,
+  };
+}
+
+function rollupSeasonFromMonthlyRows(params: {
+  season: PurchasePlanSeasonWindowItem;
+  rows: PurchasePlanSavedRow[];
+  unitCostHnl: number;
+  poBuckets: Map<string, SeasonalPurchaseReportValue>;
+  workbook: SeasonalPurchaseReportWorksheet;
+}): SeasonalPurchaseReportResponse['seasons'][number] {
+  const seasonRows = params.rows
+    .filter((row) => params.season.months.includes(row.yearMonth))
+    .sort((a, b) => a.yearMonth.localeCompare(b.yearMonth));
+  const firstRow = seasonRows[0];
+  const lastRow = seasonRows[seasonRows.length - 1];
+  const projectedBohUnits = firstRow?.currentBoh ?? 0;
+  const projectedSalesUnits = seasonRows.reduce((sum, row) => sum + row.currentProjSales, 0);
+  const plannedBuyUnits = seasonRows.reduce((sum, row) => sum + row.currentBuy, 0);
+  const projectedEohUnits = lastRow?.currentEohActual ?? (projectedBohUnits - projectedSalesUnits + plannedBuyUnits);
+  const draftPos = params.poBuckets.get(`${params.season.season}|${params.season.seasonYear}|draftPos`) ?? { units: 0, costHnl: 0 };
+  const confirmedPos = params.poBuckets.get(`${params.season.season}|${params.season.seasonYear}|confirmedPos`) ?? { units: 0, costHnl: 0 };
+  const openToBuyUnits = Math.max(0, plannedBuyUnits - draftPos.units - confirmedPos.units);
+  const openToBuyCost = Math.max(0, (plannedBuyUnits * params.unitCostHnl) - draftPos.costHnl - confirmedPos.costHnl);
+
+  return {
+    season: params.season.season,
+    seasonYear: params.season.seasonYear,
+    seasonLabel: params.season.seasonLabel,
+    months: params.season.months,
+    planId: params.workbook.planId,
+    planLabel: params.workbook.planLabel,
+    autoCreated: params.workbook.autoCreated,
+    duplicateSourceCount: params.workbook.duplicateSourceCount,
+    worksheets: [params.workbook],
+    projectedBoh: valueFromUnits(projectedBohUnits, params.unitCostHnl),
+    projectedSales: valueFromUnits(projectedSalesUnits, params.unitCostHnl),
+    baselineBuy: valueFromUnits(plannedBuyUnits, params.unitCostHnl),
+    draftPos,
+    confirmedPos,
+    openToBuy: valueFromRaw(openToBuyUnits, openToBuyCost),
+    projectedEoh: valueFromUnits(projectedEohUnits, params.unitCostHnl),
+  };
+}
+
 export async function generateSeasonalPurchaseReport(
   input: PurchasePlanningSeasonalReportRequest,
 ): Promise<SeasonalPurchaseReportResponse> {
@@ -1314,11 +1771,12 @@ export async function generateSeasonalPurchaseReport(
   if (!Number.isInteger(departmentNumber) || departmentNumber <= 0) {
     throw new PurchasePlanningServiceError(400, 'INVALID_DEPARTMENT', 'Department number is required.');
   }
-  const year = Math.trunc(Number(input.year));
-  if (!Number.isInteger(year) || year < 2020 || year > 2100) {
-    throw new PurchasePlanningServiceError(400, 'INVALID_YEAR', 'Report year must be between 2020 and 2100.');
-  }
 
+  const asOfYearMonth = resolveYearMonth(input.asOfYearMonth);
+  const seasonWindow = buildSeasonWindowFromYearMonth(asOfYearMonth, 5);
+  const firstSeason = seasonWindow[0]!;
+  const lastSeason = seasonWindow[seasonWindow.length - 1]!;
+  const projectionMonths = projectionMonthsFromWindow(seasonWindow);
   const forecastMethod = input.forecast?.method ?? DEFAULT_FORECAST_METHOD;
   const forecastParams: ForecastParams = input.forecast ?? {};
   const eohMethod = input.eohMethod ?? DEFAULT_EOH_METHOD;
@@ -1326,84 +1784,76 @@ export async function generateSeasonalPurchaseReport(
   const discountNormalization = input.discountNormalization ?? true;
   const createdBy = input.createdBy?.trim() || 'seasonal-report';
 
-  const [storeGroup, departments] = await Promise.all([
-    getStoreGroup(input.storeGroupCode),
+  const [sourceStoreGroups, departments, warehouseStoreNumbers] = await Promise.all([
+    loadEnterpriseDemandStoreGroups(),
     loadDepartments([departmentNumber]),
+    withPlanningQuerySettings((db) => loadWarehouseStoreNumbers(db)),
   ]);
   const department = departments.get(String(departmentNumber));
   if (!department) {
     throw new PurchasePlanningServiceError(404, 'DEPARTMENT_NOT_FOUND', `Department not found: ${departmentNumber}`);
   }
-  const storeNumbers = parseIntArray(storeGroup.storeNumbers);
+  const demandStoreNumbers = uniqueSortedNumbers(sourceStoreGroups.flatMap((group) => parseIntArray(group.storeNumbers)));
+  const planningStoreNumbers = uniqueSortedNumbers([...demandStoreNumbers, ...warehouseStoreNumbers]);
 
-  const [unitCostHnl, poBuckets] = await Promise.all([
-    loadReportUnitCostHnl({ storeNumbers, departmentNumber }),
-    loadReportPoBuckets({ storeNumbers, departmentNumber, year }),
-  ]);
+  const workbookResult = await ensureReportWorkbook({
+    seasonWindow,
+    departmentNumber,
+    departmentLabel: department.label,
+    forecastMethod,
+    forecastParams,
+    eohMethod,
+    coverMonths,
+    discountNormalization,
+    createdBy,
+  });
+  const workbook = buildWorkbookMetadata(workbookResult);
+  const worksheetRows = workbookResult.detail.departments
+    .flatMap((summary) => summary.months)
+    .filter((row) => row.departmentNumber === departmentNumber)
+    .sort((a, b) => a.yearMonth.localeCompare(b.yearMonth));
+
+  const [unitCostHnl, poBuckets] = await withPlanningQuerySettings(async (db) => {
+    const loadedUnitCostHnl = await loadReportUnitCostHnl({ storeNumbers: planningStoreNumbers, departmentNumber }, db);
+    const loadedPoBuckets = await loadReportPoBuckets({ storeNumbers: planningStoreNumbers, departmentNumber, seasonWindow }, db);
+    return [loadedUnitCostHnl, loadedPoBuckets] as const;
+  });
 
   const warnings: string[] = [];
-  const reportSeasons: SeasonalPurchaseReportResponse['seasons'] = [];
-  let nextSeasonProjectedBoh: number | null = null;
-
-  for (const season of PURCHASE_PLAN_SEASONS) {
-    const worksheet = await ensureReportWorksheet({
-      storeGroupCode: storeGroup.code,
-      storeGroupLabel: storeGroup.label,
-      season,
-      seasonYear: year,
-      departmentNumber,
-      forecastMethod,
-      forecastParams,
-      eohMethod,
-      coverMonths,
-      discountNormalization,
-      createdBy,
-    });
-    if (worksheet.duplicateSourceCount > 1) {
-      warnings.push(
-        `${seasonLabel(season)} ${year} has ${worksheet.duplicateSourceCount} active worksheets for department ${departmentNumber}; using the most recently updated one.`,
-      );
-    }
-
-    const detail = worksheet.detail;
-    const departmentSummary = detail.departments.find((item) => item.departmentNumber === departmentNumber);
-    const firstProjectedBoh: number = departmentSummary?.months[0]?.currentBoh ?? 0;
-    const projectedBohUnits: number = nextSeasonProjectedBoh ?? firstProjectedBoh;
-    const projectedSalesUnits: number = departmentSummary?.totalProjSales ?? 0;
-    const baselineBuyUnits: number = departmentSummary?.currentTotalBuy ?? 0;
-    const projectedEohUnits: number = projectedBohUnits - projectedSalesUnits + baselineBuyUnits;
-    const draftPos = poBuckets.get(`${season}|draftPos`) ?? { units: 0, costHnl: 0 };
-    const confirmedPos = poBuckets.get(`${season}|confirmedPos`) ?? { units: 0, costHnl: 0 };
-    const openToBuyUnits = Math.max(0, baselineBuyUnits - draftPos.units - confirmedPos.units);
-    const openToBuyCost = Math.max(0, (baselineBuyUnits * unitCostHnl) - draftPos.costHnl - confirmedPos.costHnl);
-
-    reportSeasons.push({
-      season,
-      seasonYear: year,
-      seasonLabel: `${seasonLabel(season)} ${year}`,
-      months: buildSeasonMonths(season, year),
-      planId: detail.plan.id,
-      planLabel: detail.plan.label,
-      autoCreated: worksheet.autoCreated,
-      duplicateSourceCount: worksheet.duplicateSourceCount,
-      projectedBoh: valueFromUnits(projectedBohUnits, unitCostHnl),
-      projectedSales: valueFromUnits(projectedSalesUnits, unitCostHnl),
-      baselineBuy: valueFromUnits(baselineBuyUnits, unitCostHnl),
-      draftPos,
-      confirmedPos,
-      openToBuy: valueFromRaw(openToBuyUnits, openToBuyCost),
-      projectedEoh: valueFromUnits(projectedEohUnits, unitCostHnl),
-    });
-    nextSeasonProjectedBoh = projectedEohUnits;
+  if (warehouseStoreNumbers.length > 0) {
+    warnings.push(`Warehouse stock and POs included from store(s): ${warehouseStoreNumbers.join(', ')}.`);
+  }
+  if (workbook.duplicateSourceCount > 1) {
+    warnings.push(
+      `${ENTERPRISE_LABEL} ${department.label} ${firstSeason.seasonLabel} has ${workbook.duplicateSourceCount} active monthly workbooks; using the most recently updated one.`,
+    );
   }
 
   return {
-    storeGroupCode: storeGroup.code,
-    storeGroupLabel: storeGroup.label,
+    planningScope: ENTERPRISE_SCOPE,
+    planningScopeLabel: ENTERPRISE_LABEL,
+    storeGroupCode: ENTERPRISE_CODE,
+    storeGroupLabel: ENTERPRISE_LABEL,
+    storeGroupCodes: [ENTERPRISE_CODE],
+    storeGroupLabels: [ENTERPRISE_LABEL],
+    warehouseStoreNumbers,
     departmentNumber,
     departmentLabel: department.label,
-    year,
-    seasons: reportSeasons,
+    year: firstSeason.seasonYear,
+    asOfYearMonth,
+    startSeason: firstSeason.season,
+    startSeasonYear: firstSeason.seasonYear,
+    endSeason: lastSeason.season,
+    endSeasonYear: lastSeason.seasonYear,
+    projectionMonths,
+    workbook,
+    seasons: seasonWindow.map((season) => rollupSeasonFromMonthlyRows({
+      season,
+      rows: worksheetRows,
+      unitCostHnl,
+      poBuckets,
+      workbook,
+    })),
     warnings,
     generatedAt: new Date().toISOString(),
   };

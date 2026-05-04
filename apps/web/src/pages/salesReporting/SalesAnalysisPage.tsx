@@ -1,7 +1,8 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import {
-  Alert, Card, Checkbox, Col, Radio, Row, Select, Space, Table, Tag, Typography, Spin,
+  Alert, Checkbox, Radio, Select, Space, Table, Tag, Tooltip, Typography, Spin,
 } from 'antd'
+import { QuestionCircleOutlined } from '@ant-design/icons'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { useSalesAnalysis, useSalesDimensions, type SalesAnalysisArgs } from '../../hooks/useReports'
@@ -609,6 +610,7 @@ export default function SalesAnalysisPage() {
           { title: 'Sales Analysis' },
         ]}
         rightMeta={data ? `${data.rows.length.toLocaleString()} SKU ${data.rows.length === 1 ? 'row' : 'rows'}` : undefined}
+        compact
       />
 
       <CollapsibleFilterCard
@@ -617,6 +619,7 @@ export default function SalesAnalysisPage() {
         running={running}
         canRun={level1 !== level2}
         onRun={onRun}
+        compact
         actions={
           <RunReportControls running={running} hasRun={query != null} onRun={onRun} onStop={onStop} />
         }
@@ -699,80 +702,76 @@ export default function SalesAnalysisPage() {
           </>
         }
       >
-        <Row gutter={24}>
-          <Col xs={24} md={6}>
-            <Card size="small" title={<Text strong>Hierarchy</Text>} style={{ marginBottom: 16 }}>
-              <Space direction="vertical" size={8} style={{ width: '100%' }}>
-                <Text type="secondary">Level 1</Text>
-                <Select<SalesAnalysisHierarchyDimension>
-                  value={level1}
-                  onChange={setLevel1}
-                  options={HIERARCHY_OPTIONS}
-                  style={{ width: '100%' }}
-                />
-                <Text type="secondary">Level 2</Text>
-                <Select<SalesAnalysisHierarchyDimension>
-                  value={level2}
-                  onChange={setLevel2}
-                  options={HIERARCHY_OPTIONS.map((o) => ({ ...o, disabled: o.value === level1 }))}
-                  style={{ width: '100%' }}
-                />
-                {level1 === level2 ? (
-                  <Text type="danger">Choose two different hierarchy levels.</Text>
-                ) : null}
-              </Space>
-            </Card>
-            <Card size="small" title={<Text strong>Store Options</Text>}>
-              <Radio.Group
-                value={storeOption}
-                onChange={(e) => setStoreOption(e.target.value)}
-                style={{ display: 'flex', flexDirection: 'column', gap: 4 }}
-              >
-                {STORE_OPTIONS.map((o) => (
-                  <Radio key={o.value} value={o.value}>
-                    {o.label}
-                  </Radio>
-                ))}
+        <div className="sales-analysis-setup-strip">
+          <div className="sales-analysis-filter-group">
+            <Text strong className="sales-analysis-filter-title">Hierarchy</Text>
+            <Space size={6} wrap>
+              <Text type="secondary" className="sales-analysis-field-label">Level 1</Text>
+              <Select<SalesAnalysisHierarchyDimension>
+                value={level1}
+                onChange={setLevel1}
+                options={HIERARCHY_OPTIONS}
+                size="small"
+                style={{ width: 148 }}
+              />
+              <Text type="secondary" className="sales-analysis-field-label">Level 2</Text>
+              <Select<SalesAnalysisHierarchyDimension>
+                value={level2}
+                onChange={setLevel2}
+                options={HIERARCHY_OPTIONS.map((o) => ({ ...o, disabled: o.value === level1 }))}
+                size="small"
+                style={{ width: 148 }}
+              />
+            </Space>
+          </div>
+          <div className="sales-analysis-filter-group">
+            <Text strong className="sales-analysis-filter-title">Store Options</Text>
+            <Radio.Group
+              value={storeOption}
+              onChange={(e) => setStoreOption(e.target.value)}
+              optionType="button"
+              buttonStyle="solid"
+              size="small"
+              options={STORE_OPTIONS}
+            />
+          </div>
+          <div className="sales-analysis-filter-group">
+            <Text strong className="sales-analysis-filter-title">Detail</Text>
+            <Space size={10} wrap>
+              <Radio.Group value="SKU_DETAIL" size="small">
+                <Radio value="SKU_DETAIL">SKU Detail</Radio>
               </Radio.Group>
-            </Card>
-          </Col>
-          <Col xs={24} md={10}>
-            <Card size="small" title={<Text strong>Detail</Text>}>
-              <Space direction="vertical" size={8}>
-                <Radio.Group
-                  value="SKU_DETAIL"
-                  style={{ display: 'flex', flexDirection: 'column', gap: 4 }}
-                >
-                  {[{ value: 'SKU_DETAIL', label: 'SKU Detail' }].map((o) => (
-                    <Radio key={o.value} value={o.value} disabled={false}>
-                      {o.label}
-                    </Radio>
-                  ))}
-                </Radio.Group>
-                <Checkbox checked={includeOnOrder} onChange={(e) => setIncludeOnOrder(e.target.checked)}>
-                  Include on order
-                </Checkbox>
-              </Space>
-            </Card>
-          </Col>
-          <Col xs={24} md={8}>
-            <Card size="small" title={<Text strong>Period</Text>}>
-              <Space direction="vertical" size={8} style={{ width: '100%' }}>
-                <DateRangeControl value={dateSpec} onChange={setDateSpec} />
-                <Checkbox checked={priorYear} onChange={(e) => setPriorYear(e.target.checked)}>
-                  Compare to prior year
-                </Checkbox>
-              </Space>
-            </Card>
-          </Col>
-        </Row>
-        <Card size="small" title={<Text strong>Criteria</Text>} style={{ marginTop: 16 }}>
-          <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
-            Leave a row blank to include everything. Type ranges like <code>556-599</code>,
-            exclusions <code>&lt;&gt;575</code>, or wildcards <code>KISS*BK</code> in the
-            grammar box under each dropdown.
+              <Checkbox checked={includeOnOrder} onChange={(e) => setIncludeOnOrder(e.target.checked)}>
+                Include on order
+              </Checkbox>
+            </Space>
+          </div>
+          <div className="sales-analysis-filter-group">
+            <Text strong className="sales-analysis-filter-title">Period</Text>
+            <Space size={10} wrap align="start">
+              <DateRangeControl value={dateSpec} onChange={setDateSpec} />
+              <Checkbox checked={priorYear} onChange={(e) => setPriorYear(e.target.checked)}>
+                Compare to prior year
+              </Checkbox>
+            </Space>
+          </div>
+        </div>
+        {level1 === level2 ? (
+          <Text type="danger" style={{ display: 'block', marginTop: 6 }}>
+            Choose two different hierarchy levels.
           </Text>
-          <Space direction="vertical" size={12} style={{ width: '100%' }}>
+        ) : null}
+        <div className="sales-analysis-criteria-panel">
+          <div className="sales-analysis-criteria-title">
+            <Text strong>Criteria</Text>
+            <Tooltip
+              title="Leave a row blank to include everything. Type ranges, exclusions, or wildcards in the grammar box."
+              placement="top"
+            >
+              <QuestionCircleOutlined aria-label="Criteria help" className="criteria-input-compact__help" tabIndex={0} />
+            </Tooltip>
+          </div>
+          <div className="sales-analysis-criteria-grid">
             <CriteriaInput
               label="Stores"
               mode="numeric"
@@ -868,8 +867,8 @@ export default function SalesAnalysisPage() {
               hideDropdown
               helpText="Wildcard patterns, comma separated. e.g. 01AG25, *SUMMER*  (requires master join — coming soon)"
             />
-          </Space>
-        </Card>
+          </div>
+        </div>
       </CollapsibleFilterCard>
 
       <div ref={resultRef} style={{ scrollMarginTop: 12 }}>

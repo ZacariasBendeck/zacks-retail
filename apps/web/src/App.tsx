@@ -48,6 +48,7 @@ const PoEntryMockPage = lazy(() => import('./pages/purchasing/PoEntryMockPage'))
 const PoReceiveMockPage = lazy(() => import('./pages/purchasing/PoReceiveMockPage'))
 const OtbDashboardPage = lazy(() => import('./pages/otb/OtbDashboardPage'))
 const PurchasePlanningPage = lazy(() => import('./pages/purchasePlanning/PurchasePlanningPage'))
+const PurchasePlanningV3Page = lazy(() => import('./pages/purchasePlanning/PurchasePlanningV3Page'))
 const ImportShipmentsPage = lazy(() => import('./pages/importManagement/ImportShipmentsPage'))
 const OtbMonthlyPlansPage = lazy(() => import('./pages/otb/OtbMonthlyPlansPage'))
 const OtbPlanEntryPage = lazy(() => import('./pages/otb/OtbPlanEntryPage'))
@@ -82,6 +83,7 @@ const CustomerDiscountSensitivePage = lazy(() => import('./pages/customers/Custo
 const LoginPage = lazy(() => import('./pages/auth/LoginPage'))
 const MePage = lazy(() => import('./pages/auth/MePage'))
 const ChangePasswordPage = lazy(() => import('./pages/auth/ChangePasswordPage'))
+const ManualPage = lazy(() => import('./pages/manual/ManualPage'))
 const SalespeoplePage = lazy(() => import('./pages/employees/SalespeoplePage'))
 const UsersListPage = lazy(() => import('./pages/users/UsersListPage'))
 const UserFormPage = lazy(() => import('./pages/users/UserFormPage'))
@@ -252,6 +254,7 @@ export default function App() {
             <Route path="/otb/dashboard" element={gate('otb.view', <OtbDashboardPage />)} />
             <Route path="/otb/plan" element={gate('otb.edit', <OtbPlanEntryPage />)} />
             <Route path="/purchase-planning" element={gate('purchasing.view', <PurchasePlanningPage />)} />
+            <Route path="/purchase-planning/v3" element={gate('purchasing.view', <PurchasePlanningV3Page />)} />
             <Route path="/import-management" element={gate('import_management.view', <ImportShipmentsPage />)} />
             <Route path="/import-management/:shipmentId" element={gate('import_management.view', <ImportShipmentsPage />)} />
             <Route
@@ -363,6 +366,8 @@ export default function App() {
 
             <Route path="/me" element={<MePage />} />
             <Route path="/change-password" element={<ChangePasswordPage />} />
+            <Route path="/manual" element={<ManualPage />} />
+            <Route path="/manual/:chapterSlug" element={<ManualPage />} />
             <Route
               path="/employees/salespeople"
               element={<RequirePermission permission="employees.view"><SalespeoplePage /></RequirePermission>}

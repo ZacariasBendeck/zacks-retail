@@ -81,7 +81,7 @@ interface MetricDef {
   description: string
 }
 
-const METRIC_DEFS: readonly MetricDef[] = [
+const ORIGINAL_METRIC_DEFS: readonly MetricDef[] = [
   { key: 'quantitySold',        label: 'Quantity Sold',        short: 'Qty',         format: 'integer',  description: 'Net units sold (returns subtract).' },
   { key: 'netSales',            label: 'Net Sales',            short: 'Net Sales',   format: 'money',    description: 'Retail sales less markdowns and returns (RICS p. 87).' },
   { key: 'beginningOnHand',     label: 'Beg. of Month On Hand Qty.', short: 'Beg. OH', format: 'integer', description: 'Units on hand at the start of the month (RIINVHIS snapshot). First month of a trailing window may show 0 when the prior slot is outside the rolling history.' },
@@ -90,6 +90,22 @@ const METRIC_DEFS: readonly MetricDef[] = [
   { key: 'grossProfit',         label: 'Gross Profit %',       short: 'GP %',        format: 'percent1', description: 'Profit divided by Net Sales (RICS p. 87 GP-%).' },
   { key: 'roiPct',              label: 'ROI',                  short: 'ROI',         format: 'percent1', description: 'Annualized GMROI — Profit ÷ Average Inventory Value. Per-month cells annualize that month\'s profit flow (RICS p. 87).' },
   { key: 'turns',               label: 'Turns',                short: 'Turns',       format: 'decimal2', description: 'Annualized inventory turnover — COGS ÷ Average Inventory Value (RICS p. 87).' },
+] as const
+
+const LIFECYCLE_METRIC_DEFS: readonly MetricDef[] = [
+  { key: 'newSkuStoreCount',        label: 'New SKUs (Store Count)',        short: 'New Store',   format: 'integer', description: 'In-stock SKU/store presences whose chain-wide first-received month is this month or one of the prior three report months.' },
+  { key: 'carryoverSkuStoreCount',  label: 'Carryover SKUs (Store Count)',  short: 'Carry Store', format: 'integer', description: 'In-stock SKU/store presences that are past the new window, or have no first-received date.' },
+  { key: 'newSkuDistinctCount',     label: 'New SKUs (Distinct)',           short: 'New SKU',     format: 'integer', description: 'Distinct in-stock SKUs across selected stores whose chain-wide first-received month is this month or one of the prior three report months.' },
+  { key: 'carryoverSkuDistinctCount', label: 'Carryover SKUs (Distinct)',   short: 'Carry SKU',   format: 'integer', description: 'Distinct in-stock SKUs across selected stores that are past the new window, or have no first-received date.' },
+  { key: 'newSkuUnitsSold',         label: 'New SKU Units Sold',            short: 'New Units',   format: 'integer',  description: 'Units sold by SKUs still inside the new-style window.' },
+  { key: 'carryoverSkuUnitsSold',   label: 'Carryover SKU Units Sold',      short: 'Carry Units', format: 'integer',  description: 'Units sold by carryover SKUs, including SKUs with no first-received date.' },
+  { key: 'newCarryoverSkuRatio',    label: 'New/Carryover SKU %',           short: 'SKU %',       format: 'percent1', description: 'New distinct in-stock SKUs as a percent of carryover distinct in-stock SKUs.' },
+  { key: 'newCarryoverUnitsSoldRatio', label: 'New/Carryover Units Sold %', short: 'Unit %',      format: 'percent1', description: 'Units sold by new SKUs as a percent of units sold by carryover SKUs.' },
+] as const
+
+const METRIC_DEFS: readonly MetricDef[] = [
+  ...ORIGINAL_METRIC_DEFS,
+  ...LIFECYCLE_METRIC_DEFS,
 ] as const
 
 const METRIC_DEFS_BY_KEY = new Map(METRIC_DEFS.map((m) => [m.key, m]))
@@ -942,18 +958,43 @@ export default function SalesHistoryByMonthPage() {
               <Paragraph type="secondary" style={{ marginTop: 0, marginBottom: 8, fontSize: 12 }}>
                 Select one or more metrics. Multiple metrics print together under each row in the RICS order.
               </Paragraph>
-              <Space wrap>
-                {METRIC_DEFS.map((m) => (
-                  <Tooltip key={m.key} title={m.description}>
-                    <Checkbox
-                      data-testid={`metric-${m.key}`}
-                      checked={dataToPrint.includes(m.key)}
-                      onChange={() => toggleMetric(m.key)}
-                    >
-                      {m.label}
-                    </Checkbox>
-                  </Tooltip>
-                ))}
+              <Space direction="vertical" size={10} style={{ width: '100%' }}>
+                <div>
+                  <Text type="secondary" style={{ display: 'block', marginBottom: 6, fontSize: 12 }}>
+                    Original report metrics
+                  </Text>
+                  <Space wrap>
+                    {ORIGINAL_METRIC_DEFS.map((m) => (
+                      <Tooltip key={m.key} title={m.description}>
+                        <Checkbox
+                          data-testid={`metric-${m.key}`}
+                          checked={dataToPrint.includes(m.key)}
+                          onChange={() => toggleMetric(m.key)}
+                        >
+                          {m.label}
+                        </Checkbox>
+                      </Tooltip>
+                    ))}
+                  </Space>
+                </div>
+                <div>
+                  <Text type="secondary" style={{ display: 'block', marginBottom: 6, fontSize: 12 }}>
+                    New / carryover metrics
+                  </Text>
+                  <Space wrap>
+                    {LIFECYCLE_METRIC_DEFS.map((m) => (
+                      <Tooltip key={m.key} title={m.description}>
+                        <Checkbox
+                          data-testid={`metric-${m.key}`}
+                          checked={dataToPrint.includes(m.key)}
+                          onChange={() => toggleMetric(m.key)}
+                        >
+                          {m.label}
+                        </Checkbox>
+                      </Tooltip>
+                    ))}
+                  </Space>
+                </div>
               </Space>
               {DEFERRED_METRIC_DEFS.length > 0 && (
                 <div style={{ marginTop: 12 }}>

@@ -79,18 +79,23 @@ import type {
   VoidImportPayablePayload,
 } from '../types/importManagement'
 
-export function useImportShipments(params: ImportShipmentListParams) {
+export function useImportShipments(params: ImportShipmentListParams, options: { enabled?: boolean } = {}) {
   return useQuery({
     queryKey: ['import-shipments', params],
     queryFn: ({ signal }) => fetchImportShipments(params, signal),
+    enabled: options.enabled ?? true,
     placeholderData: (prev) => prev,
   })
 }
 
-export function useImportOtbCommitments(params: ImportOtbCommitmentsParams = {}) {
+export function useImportOtbCommitments(
+  params: ImportOtbCommitmentsParams = {},
+  options: { enabled?: boolean } = {},
+) {
   return useQuery({
     queryKey: ['import-otb-commitments', params],
     queryFn: ({ signal }) => fetchImportOtbCommitments(params, signal),
+    enabled: options.enabled ?? true,
     placeholderData: (prev) => prev,
   })
 }

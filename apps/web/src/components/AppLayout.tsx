@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type CSSProperties, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
-import { Avatar, Button, Dropdown, Layout, Menu, Typography } from 'antd'
+import { Avatar, Button, Dropdown, Layout, Menu, Tooltip, Typography } from 'antd'
 import {
   UserOutlined,
   ShopOutlined,
@@ -30,9 +30,11 @@ import {
   ApartmentOutlined,
   CreditCardOutlined,
   ContainerOutlined,
+  QuestionCircleOutlined,
 } from '@ant-design/icons'
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth/useAuth'
+import { PageHelpDrawer, PageHelpProvider, type PageHelpEntry } from './page-help'
 
 const { Header, Sider, Content } = Layout
 
@@ -126,10 +128,14 @@ const appMenuItems = [
     ],
   },
   {
-    key: '/purchase-planning',
+    key: '/purchase-planning-group',
     icon: <FundOutlined />,
     label: 'Plan de Compras',
     requiredPermissions: ['purchasing.view'],
+    children: [
+      { key: '/purchase-planning', icon: <FundOutlined />, label: 'V2 - Actual', requiredPermissions: ['purchasing.view'] },
+      { key: '/purchase-planning/v3', icon: <FundOutlined />, label: 'V3 - Warehouse Shared', requiredPermissions: ['purchasing.view'] },
+    ],
   },
   {
     key: '/import-management',
@@ -410,60 +416,87 @@ export default function AppLayout() {
     ) ??
     visibleAppMenuItems.find((item) => item.children && collectMenuKeys(item.children).includes(selectedMenuKey)) ??
     visibleAppMenuItems[0]
+  const activeModuleLabel = currentPath.startsWith('/manual') ? 'Manual' : activeModule?.label ?? 'Inventory'
 
   const desiredOpenKeys = Array.from(new Set(collectOpenKeysForPath(visibleAppMenuItems, currentPath)))
   const [openKeys, setOpenKeys] = useState<string[]>(() => desiredOpenKeys)
+  const [currentHelp, setCurrentHelp] = useState<PageHelpEntry | null>(null)
+  const [helpDrawerOpen, setHelpDrawerOpen] = useState(false)
 
   useEffect(() => {
     setOpenKeys(desiredOpenKeys)
   }, [currentPath])
 
+  useEffect(() => {
+    if (!currentHelp) setHelpDrawerOpen(false)
+  }, [currentHelp])
+
   return (
-    <Layout style={{ minHeight: '100vh' }}>
-      <Sider breakpoint="lg" collapsedWidth={60}>
-        <div style={{ padding: '16px', textAlign: 'center' }}>
-          <Typography.Text strong style={{ color: '#fff', fontSize: 16 }}>
-            Benlow RICS
-          </Typography.Text>
-        </div>
-        <Menu
-          theme="dark"
-          mode="inline"
-          selectedKeys={[selectedLeaf]}
-          openKeys={openKeys}
-          onOpenChange={(keys) => setOpenKeys(keys as string[])}
-          items={menuItems}
-          onClick={({ key, domEvent }) => {
-            if (isModifiedNavigationEvent(domEvent)) return
-            navigate(routeForMenuKey(String(key)))
-          }}
-        />
-      </Sider>
-      <Layout>
-        <Header
-          style={{
-            background: '#fff',
-            padding: '0 24px',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            borderBottom: '1px solid #f0f0f0',
-          }}
-        >
-          <Typography.Title level={4} style={{ margin: 0 }}>
-            {activeModule?.label ?? 'Inventory'}
-          </Typography.Title>
-          <Dropdown menu={{ items: userMenuItems }} placement="bottomRight">
-            <Button type="text" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <Avatar size="small" icon={<UserOutlined />} />
-              {user?.displayName ?? user?.email ?? 'Account'}
-            </Button>
-          </Dropdown>
-        </Header>
-        <Content style={{ margin: 16 }}>
-          <Outlet />
-        </Content>
+    <PageHelpProvider currentHelp={currentHelp} setCurrentHelp={setCurrentHelp}>
+      <Layout style={{ minHeight: '100vh' }}>
+        <Sider breakpoint="lg" collapsedWidth={60}>
+          <div style={{ padding: '16px', textAlign: 'center' }}>
+            <Typography.Text strong style={{ color: '#fff', fontSize: 16 }}>
+              Benlow RICS
+            </Typography.Text>
+          </div>
+          <Menu
+            theme="dark"
+            mode="inline"
+            selectedKeys={[selectedLeaf]}
+            openKeys={openKeys}
+            onOpenChange={(keys) => setOpenKeys(keys as string[])}
+            items={menuItems}
+            onClick={({ key, domEvent }) => {
+              if (isModifiedNavigationEvent(domEvent)) return
+              navigate(routeForMenuKey(String(key)))
+            }}
+          />
+        </Sider>
+        <Layout>
+          <Header
+            style={{
+              background: '#fff',
+              padding: '0 24px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              borderBottom: '1px solid #f0f0f0',
+            }}
+          >
+            <Typography.Title level={4} style={{ margin: 0 }}>
+              {activeModuleLabel}
+            </Typography.Title>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              {currentHelp ? (
+                <Tooltip title="Ayuda de esta página">
+                  <Button
+                    aria-label="Ayuda de esta página"
+                    icon={<QuestionCircleOutlined />}
+                    onClick={() => setHelpDrawerOpen(true)}
+                  >
+                    Ayuda
+                  </Button>
+                </Tooltip>
+              ) : null}
+              <Dropdown menu={{ items: userMenuItems }} placement="bottomRight">
+                <Button type="text" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <Avatar size="small" icon={<UserOutlined />} />
+                  {user?.displayName ?? user?.email ?? 'Account'}
+                </Button>
+              </Dropdown>
+            </div>
+          </Header>
+          <Content style={{ margin: 16 }}>
+            <Outlet />
+          </Content>
+          <PageHelpDrawer
+            entry={currentHelp}
+            open={helpDrawerOpen}
+            onClose={() => setHelpDrawerOpen(false)}
+          />
+        </Layout>
       </Layout>
-    </Layout>
+    </PageHelpProvider>
   )
 }

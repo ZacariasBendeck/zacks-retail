@@ -261,6 +261,14 @@ export const SUPPORTED_MONTHLY_METRICS = [
   'beginningOnHand',
   'roiPct',
   'turns',
+  'newSkuStoreCount',
+  'carryoverSkuStoreCount',
+  'newSkuDistinctCount',
+  'carryoverSkuDistinctCount',
+  'newSkuUnitsSold',
+  'carryoverSkuUnitsSold',
+  'newCarryoverSkuRatio',
+  'newCarryoverUnitsSoldRatio',
 ] as const;
 export type MonthlyMetricKey = (typeof SUPPORTED_MONTHLY_METRICS)[number];
 
@@ -708,6 +716,12 @@ export async function getSalesHistoryByMonth(
     quantity: number[];
     netSales: number[];
     cogs: number[];
+    newSkuStoreCount: number[];
+    carryoverSkuStoreCount: number[];
+    newSkuDistinctCount: number[];
+    carryoverSkuDistinctCount: number[];
+    newSkuUnitsSold: number[];
+    carryoverSkuUnitsSold: number[];
     priorYearQuantity: number[];
     priorYearNetSales: number[];
     priorYearCogs: number[];
@@ -769,6 +783,12 @@ export async function getSalesHistoryByMonth(
         quantity: new Array<number>(12).fill(0),
         netSales: new Array<number>(12).fill(0),
         cogs: new Array<number>(12).fill(0),
+        newSkuStoreCount: new Array<number>(12).fill(0),
+        carryoverSkuStoreCount: new Array<number>(12).fill(0),
+        newSkuDistinctCount: new Array<number>(12).fill(0),
+        carryoverSkuDistinctCount: new Array<number>(12).fill(0),
+        newSkuUnitsSold: new Array<number>(12).fill(0),
+        carryoverSkuUnitsSold: new Array<number>(12).fill(0),
         priorYearQuantity: new Array<number>(12).fill(0),
         priorYearNetSales: new Array<number>(12).fill(0),
         priorYearCogs: new Array<number>(12).fill(0),
@@ -789,6 +809,12 @@ export async function getSalesHistoryByMonth(
           quantity: new Array<number>(12).fill(0),
           netSales: new Array<number>(12).fill(0),
           cogs: new Array<number>(12).fill(0),
+          newSkuStoreCount: new Array<number>(12).fill(0),
+          carryoverSkuStoreCount: new Array<number>(12).fill(0),
+          newSkuDistinctCount: new Array<number>(12).fill(0),
+          carryoverSkuDistinctCount: new Array<number>(12).fill(0),
+          newSkuUnitsSold: new Array<number>(12).fill(0),
+          carryoverSkuUnitsSold: new Array<number>(12).fill(0),
           priorYearQuantity: new Array<number>(12).fill(0),
           priorYearNetSales: new Array<number>(12).fill(0),
           priorYearCogs: new Array<number>(12).fill(0),
@@ -823,6 +849,12 @@ export async function getSalesHistoryByMonth(
         quantity: new Array<number>(12).fill(0),
         netSales: new Array<number>(12).fill(0),
         cogs: new Array<number>(12).fill(0),
+        newSkuStoreCount: new Array<number>(12).fill(0),
+        carryoverSkuStoreCount: new Array<number>(12).fill(0),
+        newSkuDistinctCount: new Array<number>(12).fill(0),
+        carryoverSkuDistinctCount: new Array<number>(12).fill(0),
+        newSkuUnitsSold: new Array<number>(12).fill(0),
+        carryoverSkuUnitsSold: new Array<number>(12).fill(0),
         priorYearQuantity: new Array<number>(12).fill(0),
         priorYearNetSales: new Array<number>(12).fill(0),
         priorYearCogs: new Array<number>(12).fill(0),
@@ -847,6 +879,12 @@ export async function getSalesHistoryByMonth(
         quantity: new Array<number>(12).fill(0),
         netSales: new Array<number>(12).fill(0),
         cogs: new Array<number>(12).fill(0),
+        newSkuStoreCount: new Array<number>(12).fill(0),
+        carryoverSkuStoreCount: new Array<number>(12).fill(0),
+        newSkuDistinctCount: new Array<number>(12).fill(0),
+        carryoverSkuDistinctCount: new Array<number>(12).fill(0),
+        newSkuUnitsSold: new Array<number>(12).fill(0),
+        carryoverSkuUnitsSold: new Array<number>(12).fill(0),
         priorYearQuantity: new Array<number>(12).fill(0),
         priorYearNetSales: new Array<number>(12).fill(0),
         priorYearCogs: new Array<number>(12).fill(0),
@@ -908,9 +946,80 @@ export async function getSalesHistoryByMonth(
   }
 
   // ─── Inventory history (for Beginning On-Hand / ROI% / Turns) ─────────
-  // Pulled from RIINVHIS.InvHis only when one of the three inventory-backed
-  // metrics is requested, and rolled up through the same dim logic the sales
-  // pivot uses so the two line up 1:1.
+  // SKU lifecycle counts are stock-style monthly counts, so they are fetched
+  // from owned inventory history and merged into the same pivot as sales rows.
+  const needsSkuLifecycleCounts = dataToPrint.some(
+    (k) =>
+      k === 'newSkuStoreCount' ||
+      k === 'carryoverSkuStoreCount' ||
+      k === 'newSkuDistinctCount' ||
+      k === 'carryoverSkuDistinctCount' ||
+      k === 'newSkuUnitsSold' ||
+      k === 'carryoverSkuUnitsSold' ||
+      k === 'newCarryoverSkuRatio' ||
+      k === 'newCarryoverUnitsSoldRatio',
+  );
+  if (needsSkuLifecycleCounts) {
+    const lifecycleRows = await monthlyAdapter.queryMonthlySkuLifecycleCounts({
+      storeNumbers: effectiveStores,
+      fromYearMonth,
+      toYearMonth,
+      sortBy: params.sortBy,
+      detailLevel,
+      combineStores: params.combineStores,
+      skuFilter: resolved.skuFilter,
+      vendorFilter: resolved.vendorFilter,
+      categoryFilter: resolved.categoryFilter,
+    });
+
+    for (const r of lifecycleRows) {
+      const mIdx = monthIndex.get(r.yearMonth);
+      if (mIdx === undefined) continue;
+      const storeBucket: number | 'ALL' = params.combineStores ? 'ALL' : r.storeNumber;
+
+      let dimKey = r.dimKey;
+      let dimLabel = r.dimLabel;
+      if (detailLevel === 'department' && deptMap) {
+        const n = Number(r.dimKey);
+        const d = deptMap(n);
+        dimKey = d.key;
+        dimLabel = d.label;
+      }
+
+      const groupKey = detailLevel === 'sku' && params.sortBy === 'vendor'
+        ? (r.vendorKey?.trim() || '(none)')
+        : undefined;
+      const groupLabel = groupKey;
+
+      const row = ensurePivotRow(
+        storeBucket,
+        dimKey,
+        dimLabel,
+        groupKey,
+        groupLabel,
+        r.pictureFileName ?? null,
+      );
+      row.newSkuStoreCount[mIdx] += r.newSkuStoreCount;
+      row.carryoverSkuStoreCount[mIdx] += r.carryoverSkuStoreCount;
+      row.newSkuDistinctCount[mIdx] += r.newSkuDistinctCount;
+      row.carryoverSkuDistinctCount[mIdx] += r.carryoverSkuDistinctCount;
+      row.newSkuUnitsSold[mIdx] += r.newSkuUnitsSold;
+      row.carryoverSkuUnitsSold[mIdx] += r.carryoverSkuUnitsSold;
+
+      if (groupKey) {
+        const groupRow = ensureGroupPivotRow(storeBucket, groupKey, groupLabel ?? groupKey);
+        groupRow.newSkuStoreCount[mIdx] += r.newSkuStoreCount;
+        groupRow.carryoverSkuStoreCount[mIdx] += r.carryoverSkuStoreCount;
+        groupRow.newSkuDistinctCount[mIdx] += r.newSkuDistinctCount;
+        groupRow.carryoverSkuDistinctCount[mIdx] += r.carryoverSkuDistinctCount;
+        groupRow.newSkuUnitsSold[mIdx] += r.newSkuUnitsSold;
+        groupRow.carryoverSkuUnitsSold[mIdx] += r.carryoverSkuUnitsSold;
+      }
+    }
+  }
+
+  // Inventory-backed BoH/ROI/Turns are rolled up through the same dim logic
+  // the sales pivot uses so the two line up 1:1.
   type InvAgg = {
     monthQtyOH: number[];                 // length 12, indexed by RICS calendar slot (0=Jan, 11=Dec)
     monthValueOH: number[];               // length 12, in dollars
@@ -1173,6 +1282,14 @@ export async function getSalesHistoryByMonth(
       beginningOnHand: new Array(12).fill(0),
       roiPct: new Array(12).fill(0),
       turns: new Array(12).fill(0),
+      newSkuStoreCount: new Array(12).fill(0),
+      carryoverSkuStoreCount: new Array(12).fill(0),
+      newSkuDistinctCount: new Array(12).fill(0),
+      carryoverSkuDistinctCount: new Array(12).fill(0),
+      newSkuUnitsSold: new Array(12).fill(0),
+      carryoverSkuUnitsSold: new Array(12).fill(0),
+      newCarryoverSkuRatio: new Array(12).fill(0),
+      newCarryoverUnitsSoldRatio: new Array(12).fill(0),
     };
     const priorYearColTotals: Record<MonthlyMetricKey, number[]> = {
       quantitySold: new Array(12).fill(0),
@@ -1183,6 +1300,14 @@ export async function getSalesHistoryByMonth(
       beginningOnHand: new Array(12).fill(0),
       roiPct: new Array(12).fill(0),
       turns: new Array(12).fill(0),
+      newSkuStoreCount: new Array(12).fill(0),
+      carryoverSkuStoreCount: new Array(12).fill(0),
+      newSkuDistinctCount: new Array(12).fill(0),
+      carryoverSkuDistinctCount: new Array(12).fill(0),
+      newSkuUnitsSold: new Array(12).fill(0),
+      carryoverSkuUnitsSold: new Array(12).fill(0),
+      newCarryoverSkuRatio: new Array(12).fill(0),
+      newCarryoverUnitsSoldRatio: new Array(12).fill(0),
     };
     // Block-level inventory-value accumulators, indexed by RICS calendar slot.
     // Used to compute column ROI%/Turns as aggregate profit/cogs divided by
@@ -1221,6 +1346,9 @@ export async function getSalesHistoryByMonth(
         const tot = priorStoreTotals.netSales[i];
         return tot !== 0 ? round1((v / tot) * 100) : 0;
       });
+      const averageMonthlyCount = (values: number[]) =>
+        Math.round(values.reduce((s, v) => s + v, 0) / 12);
+      const percent = (num: number, den: number) => (den !== 0 ? round1((num / den) * 100) : 0);
 
       if (dataToPrint.includes('quantitySold')) {
         metrics.quantitySold = qty;
@@ -1316,6 +1444,89 @@ export async function getSalesHistoryByMonth(
       // (monthly flow × 12) / avgInventoryValue, and the row-total as
       // (total flow over window) / avgInventoryValue (window is 12 months
       // so already a year).
+      if (dataToPrint.includes('newSkuStoreCount')) {
+        const values = r.newSkuStoreCount.map((v) => Math.round(v));
+        metrics.newSkuStoreCount = values;
+        totals.newSkuStoreCount = averageMonthlyCount(values);
+        if (accumulateBlockTotals) {
+          for (let i = 0; i < 12; i++) colTotals.newSkuStoreCount[i] += values[i];
+        }
+      }
+      if (dataToPrint.includes('carryoverSkuStoreCount')) {
+        const values = r.carryoverSkuStoreCount.map((v) => Math.round(v));
+        metrics.carryoverSkuStoreCount = values;
+        totals.carryoverSkuStoreCount = averageMonthlyCount(values);
+        if (accumulateBlockTotals) {
+          for (let i = 0; i < 12; i++) colTotals.carryoverSkuStoreCount[i] += values[i];
+        }
+      }
+      if (dataToPrint.includes('newSkuDistinctCount')) {
+        const values = r.newSkuDistinctCount.map((v) => Math.round(v));
+        metrics.newSkuDistinctCount = values;
+        totals.newSkuDistinctCount = averageMonthlyCount(values);
+        if (accumulateBlockTotals) {
+          for (let i = 0; i < 12; i++) colTotals.newSkuDistinctCount[i] += values[i];
+        }
+      }
+      if (dataToPrint.includes('carryoverSkuDistinctCount')) {
+        const values = r.carryoverSkuDistinctCount.map((v) => Math.round(v));
+        metrics.carryoverSkuDistinctCount = values;
+        totals.carryoverSkuDistinctCount = averageMonthlyCount(values);
+        if (accumulateBlockTotals) {
+          for (let i = 0; i < 12; i++) colTotals.carryoverSkuDistinctCount[i] += values[i];
+        }
+      }
+      if (dataToPrint.includes('newSkuUnitsSold')) {
+        const values = r.newSkuUnitsSold.map((v) => Math.round(v));
+        metrics.newSkuUnitsSold = values;
+        totals.newSkuUnitsSold = values.reduce((s, v) => s + v, 0);
+        if (accumulateBlockTotals) {
+          for (let i = 0; i < 12; i++) colTotals.newSkuUnitsSold[i] += values[i];
+        }
+      }
+      if (dataToPrint.includes('carryoverSkuUnitsSold')) {
+        const values = r.carryoverSkuUnitsSold.map((v) => Math.round(v));
+        metrics.carryoverSkuUnitsSold = values;
+        totals.carryoverSkuUnitsSold = values.reduce((s, v) => s + v, 0);
+        if (accumulateBlockTotals) {
+          for (let i = 0; i < 12; i++) colTotals.carryoverSkuUnitsSold[i] += values[i];
+        }
+      }
+      if (dataToPrint.includes('newCarryoverSkuRatio')) {
+        const newValues = r.newSkuDistinctCount.map((v) => Math.round(v));
+        const carryValues = r.carryoverSkuDistinctCount.map((v) => Math.round(v));
+        metrics.newCarryoverSkuRatio = newValues.map((v, i) => percent(v, carryValues[i]));
+        totals.newCarryoverSkuRatio = percent(
+          newValues.reduce((s, v) => s + v, 0),
+          carryValues.reduce((s, v) => s + v, 0),
+        );
+        if (accumulateBlockTotals) {
+          for (let i = 0; i < 12; i++) {
+            if (!dataToPrint.includes('newSkuDistinctCount')) colTotals.newSkuDistinctCount[i] += newValues[i];
+            if (!dataToPrint.includes('carryoverSkuDistinctCount')) {
+              colTotals.carryoverSkuDistinctCount[i] += carryValues[i];
+            }
+          }
+        }
+      }
+      if (dataToPrint.includes('newCarryoverUnitsSoldRatio')) {
+        const newValues = r.newSkuUnitsSold.map((v) => Math.round(v));
+        const carryValues = r.carryoverSkuUnitsSold.map((v) => Math.round(v));
+        metrics.newCarryoverUnitsSoldRatio = newValues.map((v, i) => percent(v, carryValues[i]));
+        totals.newCarryoverUnitsSoldRatio = percent(
+          newValues.reduce((s, v) => s + v, 0),
+          carryValues.reduce((s, v) => s + v, 0),
+        );
+        if (accumulateBlockTotals) {
+          for (let i = 0; i < 12; i++) {
+            if (!dataToPrint.includes('newSkuUnitsSold')) colTotals.newSkuUnitsSold[i] += newValues[i];
+            if (!dataToPrint.includes('carryoverSkuUnitsSold')) {
+              colTotals.carryoverSkuUnitsSold[i] += carryValues[i];
+            }
+          }
+        }
+      }
+
       const needsInvRow =
         dataToPrint.includes('beginningOnHand') ||
         dataToPrint.includes('roiPct') ||
@@ -1497,6 +1708,50 @@ export async function getSalesHistoryByMonth(
         grandTotals.beginningOnHand = Math.round(
           columnTotals.beginningOnHand.reduce((s, v) => s + v, 0) / 12,
         );
+      } else if (k === 'newSkuStoreCount') {
+        columnTotals.newSkuStoreCount = colTotals.newSkuStoreCount.map((v) => Math.round(v));
+        grandTotals.newSkuStoreCount = Math.round(
+          columnTotals.newSkuStoreCount.reduce((s, v) => s + v, 0) / 12,
+        );
+      } else if (k === 'carryoverSkuStoreCount') {
+        columnTotals.carryoverSkuStoreCount = colTotals.carryoverSkuStoreCount.map((v) => Math.round(v));
+        grandTotals.carryoverSkuStoreCount = Math.round(
+          columnTotals.carryoverSkuStoreCount.reduce((s, v) => s + v, 0) / 12,
+        );
+      } else if (k === 'newSkuDistinctCount') {
+        columnTotals.newSkuDistinctCount = colTotals.newSkuDistinctCount.map((v) => Math.round(v));
+        grandTotals.newSkuDistinctCount = Math.round(
+          columnTotals.newSkuDistinctCount.reduce((s, v) => s + v, 0) / 12,
+        );
+      } else if (k === 'carryoverSkuDistinctCount') {
+        columnTotals.carryoverSkuDistinctCount = colTotals.carryoverSkuDistinctCount.map((v) => Math.round(v));
+        grandTotals.carryoverSkuDistinctCount = Math.round(
+          columnTotals.carryoverSkuDistinctCount.reduce((s, v) => s + v, 0) / 12,
+        );
+      } else if (k === 'newSkuUnitsSold') {
+        columnTotals.newSkuUnitsSold = colTotals.newSkuUnitsSold.map((v) => Math.round(v));
+        grandTotals.newSkuUnitsSold = columnTotals.newSkuUnitsSold.reduce((s, v) => s + v, 0);
+      } else if (k === 'carryoverSkuUnitsSold') {
+        columnTotals.carryoverSkuUnitsSold = colTotals.carryoverSkuUnitsSold.map((v) => Math.round(v));
+        grandTotals.carryoverSkuUnitsSold = columnTotals.carryoverSkuUnitsSold.reduce((s, v) => s + v, 0);
+      } else if (k === 'newCarryoverSkuRatio') {
+        columnTotals.newCarryoverSkuRatio = colTotals.newSkuDistinctCount.map((v, i) =>
+          colTotals.carryoverSkuDistinctCount[i] !== 0
+            ? round1((v / colTotals.carryoverSkuDistinctCount[i]) * 100)
+            : 0,
+        );
+        const newTotal = colTotals.newSkuDistinctCount.reduce((s, v) => s + v, 0);
+        const carryTotal = colTotals.carryoverSkuDistinctCount.reduce((s, v) => s + v, 0);
+        grandTotals.newCarryoverSkuRatio = carryTotal !== 0 ? round1((newTotal / carryTotal) * 100) : 0;
+      } else if (k === 'newCarryoverUnitsSoldRatio') {
+        columnTotals.newCarryoverUnitsSoldRatio = colTotals.newSkuUnitsSold.map((v, i) =>
+          colTotals.carryoverSkuUnitsSold[i] !== 0
+            ? round1((v / colTotals.carryoverSkuUnitsSold[i]) * 100)
+            : 0,
+        );
+        const newTotal = colTotals.newSkuUnitsSold.reduce((s, v) => s + v, 0);
+        const carryTotal = colTotals.carryoverSkuUnitsSold.reduce((s, v) => s + v, 0);
+        grandTotals.newCarryoverUnitsSoldRatio = carryTotal !== 0 ? round1((newTotal / carryTotal) * 100) : 0;
       } else if (k === 'roiPct' || k === 'turns') {
         // Column ROI%/Turns at block level = aggregate flow / aggregate avg
         // inv value (avoids Simpson's paradox). Block avg inv value uses the

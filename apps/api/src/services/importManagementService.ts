@@ -27,13 +27,20 @@ import type {
   ImportChargeCostTreatment,
   ImportChargeRecord,
   ImportChargeType,
+  ImportCostBuildRecord,
+  ImportCostBuildPreviewComponent,
+  ImportCostBuildPreviewOutput,
+  ImportCostBuildPreviewRecord,
+  ImportCostComponentAllocationRecord,
   ImportContainerRecord,
   ImportContainerStatus,
   ImportContainerType,
   ImportInvoiceGroup,
   ImportInvoiceKind,
+  ImportInvoiceLineCostRole,
   ImportInvoiceMatchSuggestion,
   ImportInvoiceLineRecord,
+  ImportInvoiceLineReceiptPolicy,
   ImportLandedCostAllocationRecord,
   ImportLiquidationReadiness,
   ImportLiquidationReadinessCheck,
@@ -112,6 +119,20 @@ export function isImportManagementServiceError(err: unknown): err is ImportManag
 }
 
 const SOURCE_CURRENCIES = new Set<ImportSourceCurrency>(['CNY', 'USD', 'HNL']);
+const INVOICE_LINE_COST_ROLES = new Set<ImportInvoiceLineCostRole>([
+  'FINISHED_GOOD',
+  'MATERIAL',
+  'CONVERSION',
+  'ACCESSORY_COMPONENT',
+  'RECEIPT_ACCESSORY',
+  'EXPENSE',
+]);
+const INVOICE_LINE_RECEIPT_POLICIES = new Set<ImportInvoiceLineReceiptPolicy>([
+  'RECEIVE_TO_STOCK',
+  'ROLL_TO_OUTPUT',
+  'EXPENSE_ONLY',
+  'IGNORE',
+]);
 const CHARGE_TYPES = new Set<ImportChargeType>([
   'FREIGHT',
   'INSURANCE',
@@ -358,6 +379,60 @@ function normalizeMoney(input: {
   };
 }
 
+function normalizeImportInvoiceLineCostRole(value?: ImportInvoiceLineCostRole | null): ImportInvoiceLineCostRole {
+  if (value == null) return 'FINISHED_GOOD';
+  if (!INVOICE_LINE_COST_ROLES.has(value)) {
+    throw new ImportManagementServiceError(422, 'INVALID_COST_ROLE', 'Invalid import invoice line costRole.');
+  }
+  return value;
+}
+
+function defaultReceiptPolicyForCostRole(costRole: ImportInvoiceLineCostRole): ImportInvoiceLineReceiptPolicy {
+  if (costRole === 'MATERIAL' || costRole === 'CONVERSION' || costRole === 'ACCESSORY_COMPONENT') {
+    return 'ROLL_TO_OUTPUT';
+  }
+  if (costRole === 'EXPENSE') return 'EXPENSE_ONLY';
+  return 'RECEIVE_TO_STOCK';
+}
+
+function normalizeImportInvoiceLineReceiptPolicy(
+  value: ImportInvoiceLineReceiptPolicy | null | undefined,
+  costRole: ImportInvoiceLineCostRole,
+): ImportInvoiceLineReceiptPolicy {
+  if (value == null) return defaultReceiptPolicyForCostRole(costRole);
+  if (!INVOICE_LINE_RECEIPT_POLICIES.has(value)) {
+    throw new ImportManagementServiceError(422, 'INVALID_RECEIPT_POLICY', 'Invalid import invoice line receiptPolicy.');
+  }
+  return value;
+}
+
+function normalizeImportInvoiceLineRoleState(input: {
+  costRole?: ImportInvoiceLineCostRole | null;
+  receiptPolicy?: ImportInvoiceLineReceiptPolicy | null;
+}): { costRole: ImportInvoiceLineCostRole; receiptPolicy: ImportInvoiceLineReceiptPolicy } {
+  const costRole = normalizeImportInvoiceLineCostRole(input.costRole);
+  return {
+    costRole,
+    receiptPolicy: normalizeImportInvoiceLineReceiptPolicy(input.receiptPolicy, costRole),
+  };
+}
+
+function mapCostRole(value: unknown): ImportInvoiceLineCostRole {
+  return INVOICE_LINE_COST_ROLES.has(value as ImportInvoiceLineCostRole)
+    ? value as ImportInvoiceLineCostRole
+    : 'FINISHED_GOOD';
+}
+
+function mapReceiptPolicy(value: unknown, costRole: ImportInvoiceLineCostRole): ImportInvoiceLineReceiptPolicy {
+  return INVOICE_LINE_RECEIPT_POLICIES.has(value as ImportInvoiceLineReceiptPolicy)
+    ? value as ImportInvoiceLineReceiptPolicy
+    : defaultReceiptPolicyForCostRole(costRole);
+}
+
+function isReceiptablePolicy(value: unknown): boolean {
+  return value === 'RECEIVE_TO_STOCK';
+}
+
 interface ProductCostShareLineInput {
   id: string;
   hnlAmount: number;
@@ -368,6 +443,122 @@ interface ProductCostShareLineInput {
 interface ProductCostShareChargeInput {
   id: string;
   hnlAmount: number;
+}
+
+export interface ComponentCostRollupLineInput {
+  id: string;
+  hnlAmount: number;
+  quantity: number;
+  receiptPolicy: ImportInvoiceLineReceiptPolicy;
+  allocationGroupKey?: string | null;
+}
+
+export interface ComponentCostRollupAllocation {
+  componentLineId: string;
+  outputLineId: string;
+  allocationGroupKey: string;
+  allocatedHnlAmount: number;
+}
+
+export interface ComponentCostRollupLineTotal {
+  outputLineId: string;
+  allocationGroupKey: string | null;
+  componentAllocatedCostHnl: number;
+  commercialLineCostHnl: number;
+  commercialUnitCostHnl: number;
+}
+
+export interface ComponentCostRollupWarning {
+  componentLineId: string;
+  allocationGroupKey: string | null;
+  hnlAmount: number;
+  reason: string;
+}
+
+export function rollupComponentCostsByGroup(
+  lines: ComponentCostRollupLineInput[],
+): {
+  allocations: ComponentCostRollupAllocation[];
+  lineTotals: ComponentCostRollupLineTotal[];
+  warnings: ComponentCostRollupWarning[];
+} {
+  const outputs = lines.filter((line) => isReceiptablePolicy(line.receiptPolicy));
+  const components = lines.filter((line) => line.receiptPolicy === 'ROLL_TO_OUTPUT');
+  const lineTotals = new Map<string, ComponentCostRollupLineTotal>();
+  const warnings: ComponentCostRollupWarning[] = [];
+  const allocations: ComponentCostRollupAllocation[] = [];
+
+  for (const output of outputs) {
+    lineTotals.set(output.id, {
+      outputLineId: output.id,
+      allocationGroupKey: output.allocationGroupKey ?? null,
+      componentAllocatedCostHnl: 0,
+      commercialLineCostHnl: round2(output.hnlAmount),
+      commercialUnitCostHnl: output.quantity > 0 ? round4(output.hnlAmount / output.quantity) : 0,
+    });
+  }
+
+  const outputsByGroup = new Map<string, ComponentCostRollupLineInput[]>();
+  for (const output of outputs) {
+    if (!output.allocationGroupKey) continue;
+    const arr = outputsByGroup.get(output.allocationGroupKey) ?? [];
+    arr.push(output);
+    outputsByGroup.set(output.allocationGroupKey, arr);
+  }
+
+  for (const component of components.filter((line) => line.hnlAmount > 0)) {
+    const groupKey = component.allocationGroupKey ?? null;
+    if (!groupKey) {
+      warnings.push({
+        componentLineId: component.id,
+        allocationGroupKey: null,
+        hnlAmount: round2(component.hnlAmount),
+        reason: 'Component line has no allocation group.',
+      });
+      continue;
+    }
+
+    const groupOutputs = outputsByGroup.get(groupKey) ?? [];
+    const totalOutputBaseCents = groupOutputs.reduce((sum, output) => sum + toCents(output.hnlAmount), 0);
+    if (groupOutputs.length === 0 || totalOutputBaseCents <= 0) {
+      warnings.push({
+        componentLineId: component.id,
+        allocationGroupKey: groupKey,
+        hnlAmount: round2(component.hnlAmount),
+        reason: 'Component line has no receiptable output in the same allocation group.',
+      });
+      continue;
+    }
+
+    const componentCents = toCents(component.hnlAmount);
+    let remainingCents = componentCents;
+    groupOutputs.forEach((output, index) => {
+      const outputBaseCents = toCents(output.hnlAmount);
+      const allocatedCents =
+        index === groupOutputs.length - 1
+          ? remainingCents
+          : Math.round((componentCents * outputBaseCents) / totalOutputBaseCents);
+      remainingCents -= allocatedCents;
+      const allocatedHnlAmount = fromCents(allocatedCents);
+      allocations.push({
+        componentLineId: component.id,
+        outputLineId: output.id,
+        allocationGroupKey: groupKey,
+        allocatedHnlAmount,
+      });
+      const current = lineTotals.get(output.id);
+      if (!current) return;
+      current.componentAllocatedCostHnl = round2(current.componentAllocatedCostHnl + allocatedHnlAmount);
+      current.commercialLineCostHnl = round2(output.hnlAmount + current.componentAllocatedCostHnl);
+      current.commercialUnitCostHnl = output.quantity > 0 ? round4(current.commercialLineCostHnl / output.quantity) : 0;
+    });
+  }
+
+  return {
+    allocations,
+    lineTotals: Array.from(lineTotals.values()),
+    warnings,
+  };
 }
 
 export interface ProductCostShareAllocation {
@@ -457,6 +648,8 @@ function mapShipmentSummary(row: any): ImportShipmentSummary {
 }
 
 function mapInvoiceLine(row: any): ImportInvoiceLineRecord {
+  const costRole = mapCostRole(row.costRole);
+  const receiptPolicy = mapReceiptPolicy(row.receiptPolicy, costRole);
   return {
     id: String(row.id),
     invoiceId: String(row.invoiceId),
@@ -480,8 +673,13 @@ function mapInvoiceLine(row: any): ImportInvoiceLineRecord {
     fxDate: dateOnly(row.fxDate) ?? '',
     hnlAmount: toNumber(row.hnlAmount),
     baseUnitCostHnl: toNumber(row.baseUnitCostHnl),
+    commercialUnitCostHnl: nullableNumber(row.commercialUnitCostHnl),
+    componentAllocatedCostHnl: toNumber(row.componentAllocatedCostHnl),
     allocatedLandedCostHnl: toNumber(row.allocatedLandedCostHnl),
     landedUnitCostHnl: nullableNumber(row.landedUnitCostHnl),
+    costRole,
+    receiptPolicy,
+    allocationGroupKey: row.allocationGroupKey ?? null,
     taxable: Boolean(row.taxable),
   };
 }
@@ -525,6 +723,277 @@ function mapCharge(row: any): ImportChargeRecord {
     final: Boolean(row.final),
     notes: row.notes ?? null,
   };
+}
+
+function mapImportCostComponentAllocation(row: any): ImportCostComponentAllocationRecord {
+  const componentCostRole = mapCostRole(row.componentCostRole);
+  return {
+    id: String(row.id),
+    shipmentId: String(row.shipmentId),
+    buildId: String(row.buildId),
+    componentInvoiceLineId: String(row.componentInvoiceLineId),
+    outputInvoiceLineId: row.outputInvoiceLineId ? String(row.outputInvoiceLineId) : null,
+    outputShipmentLineId: row.outputShipmentLineId ? String(row.outputShipmentLineId) : null,
+    allocationBasis: String(row.allocationBasis),
+    allocatedHnlAmount: toNumber(row.allocatedHnlAmount),
+    allocatedQuantity: nullableNumber(row.allocatedQuantity),
+    componentInvoiceNumber: String(row.componentInvoiceNumber),
+    componentSupplierName: String(row.componentSupplierName),
+    componentItemCode: row.componentItemCode ?? null,
+    componentStyleCode: row.componentStyleCode ?? null,
+    componentDescription: row.componentDescription ?? null,
+    componentCostRole,
+    componentReceiptPolicy: mapReceiptPolicy(row.componentReceiptPolicy, componentCostRole),
+    componentAllocationGroupKey: row.componentAllocationGroupKey ?? null,
+    outputInvoiceNumber: row.outputInvoiceNumber ?? null,
+    outputPurchaseOrderNumber: row.outputPurchaseOrderNumber ?? null,
+    outputSkuCode: row.outputSkuCode ?? null,
+    outputItemCode: row.outputItemCode ?? null,
+    outputStyleCode: row.outputStyleCode ?? null,
+    outputDescription: row.outputDescription ?? null,
+  };
+}
+
+function mapImportCostBuild(
+  row: any,
+  componentAllocations: ImportCostComponentAllocationRecord[],
+): ImportCostBuildRecord {
+  return {
+    id: String(row.id),
+    shipmentId: String(row.shipmentId),
+    buildCode: String(row.buildCode),
+    description: row.description ?? null,
+    outputInvoiceLineId: row.outputInvoiceLineId ? String(row.outputInvoiceLineId) : null,
+    outputShipmentLineId: row.outputShipmentLineId ? String(row.outputShipmentLineId) : null,
+    outputSkuId: row.outputSkuId ? String(row.outputSkuId) : null,
+    outputSkuCode: row.outputSkuCode ?? null,
+    outputItemCode: row.outputItemCode ?? null,
+    outputStyleCode: row.outputStyleCode ?? null,
+    outputDescription: row.outputDescription ?? null,
+    outputQuantity: toNumber(row.outputQuantity),
+    allocationBasis: String(row.allocationBasis),
+    componentAllocatedHnlAmount: toNumber(row.componentAllocatedHnlAmount),
+    componentCount: toNumber(row.componentCount),
+    createdBy: String(row.createdBy),
+    createdAt: dateTime(row.createdAt),
+    updatedAt: dateTime(row.updatedAt),
+    componentAllocations,
+  };
+}
+
+export function buildImportCostBuildPreviews(
+  invoices: ImportSupplierInvoiceRecord[],
+): ImportCostBuildPreviewRecord[] {
+  const lineContext = new Map<string, {
+    line: ImportInvoiceLineRecord;
+    invoiceNumber: string;
+    supplierName: string;
+  }>();
+  const allLines: ImportInvoiceLineRecord[] = [];
+  for (const invoice of invoices) {
+    for (const line of invoice.lines) {
+      allLines.push(line);
+      lineContext.set(line.id, { line, invoiceNumber: invoice.invoiceNumber, supplierName: invoice.supplierName });
+    }
+  }
+
+  const outputLines = allLines.filter((line) => line.receiptPolicy === 'RECEIVE_TO_STOCK');
+  const componentLines = allLines.filter((line) => line.receiptPolicy === 'ROLL_TO_OUTPUT');
+  if (outputLines.length === 0 && componentLines.length === 0) return [];
+
+  const rollup = rollupComponentCostsByGroup(allLines.map((line) => ({
+    id: line.id,
+    hnlAmount: line.hnlAmount,
+    quantity: line.quantity,
+    receiptPolicy: line.receiptPolicy,
+    allocationGroupKey: line.allocationGroupKey,
+  })));
+  const lineTotalsByOutput = new Map(rollup.lineTotals.map((total) => [total.outputLineId, total]));
+  const warningsByComponent = new Map<string, string[]>();
+  for (const warning of rollup.warnings) {
+    const arr = warningsByComponent.get(warning.componentLineId) ?? [];
+    arr.push(warning.reason);
+    warningsByComponent.set(warning.componentLineId, arr);
+  }
+
+  const groupKeys = new Set<string>();
+  for (const line of [...outputLines, ...componentLines]) {
+    if (line.allocationGroupKey) groupKeys.add(line.allocationGroupKey);
+  }
+  const hasGroupedComponent = componentLines.some((line) => line.allocationGroupKey);
+  const hasUngroupedComponent = componentLines.some((line) => !line.allocationGroupKey);
+  const hasUngroupedOutput = outputLines.some((line) => !line.allocationGroupKey);
+  if (hasUngroupedComponent) groupKeys.add('__UNASSIGNED_COMPONENTS__');
+  if (hasGroupedComponent && hasUngroupedOutput) groupKeys.add('__UNGROUPED_OUTPUTS__');
+
+    const previews: ImportCostBuildPreviewRecord[] = [];
+  for (const groupKey of Array.from(groupKeys).sort()) {
+    const isUnassignedComponents = groupKey === '__UNASSIGNED_COMPONENTS__';
+    const isUngroupedOutputs = groupKey === '__UNGROUPED_OUTPUTS__';
+    const allocationGroupKey = isUnassignedComponents || isUngroupedOutputs ? null : groupKey;
+    const groupOutputs = isUngroupedOutputs
+      ? outputLines.filter((line) => !line.allocationGroupKey)
+      : outputLines.filter((line) => line.allocationGroupKey === allocationGroupKey);
+    const groupComponents = isUnassignedComponents
+      ? componentLines.filter((line) => !line.allocationGroupKey)
+      : componentLines.filter((line) => line.allocationGroupKey === allocationGroupKey);
+
+    const outputs: ImportCostBuildPreviewOutput[] = groupOutputs.map((line) => {
+      const context = lineContext.get(line.id);
+      const lineTotal = lineTotalsByOutput.get(line.id);
+      return {
+        invoiceLineId: line.id,
+        invoiceNumber: context?.invoiceNumber ?? '',
+        skuCode: line.skuCode,
+        itemCode: line.itemCode,
+        styleCode: line.styleCode,
+        description: line.description,
+        quantity: line.quantity,
+        hnlAmount: line.hnlAmount,
+        componentAllocatedCostHnl: lineTotal?.componentAllocatedCostHnl ?? 0,
+        commercialLineCostHnl: lineTotal?.commercialLineCostHnl ?? line.hnlAmount,
+        commercialUnitCostHnl: lineTotal?.commercialUnitCostHnl ?? line.baseUnitCostHnl,
+      };
+    });
+    const components: ImportCostBuildPreviewComponent[] = groupComponents.map((line) => {
+      const context = lineContext.get(line.id);
+      return {
+        invoiceLineId: line.id,
+        invoiceNumber: context?.invoiceNumber ?? '',
+        supplierName: context?.supplierName ?? '',
+        costRole: line.costRole,
+        itemCode: line.itemCode,
+        styleCode: line.styleCode,
+        description: line.description,
+        quantity: line.quantity,
+        unitOfMeasure: line.unitOfMeasure,
+        hnlAmount: line.hnlAmount,
+        warning: (warningsByComponent.get(line.id) ?? [])[0] ?? null,
+      };
+    });
+
+    const warnings: string[] = [];
+    if (isUnassignedComponents) {
+      warnings.push('Component lines need an allocation group before they can roll into output lines.');
+    }
+    if (isUngroupedOutputs) {
+      warnings.push('Receiptable output lines have no allocation group while grouped component costs exist.');
+    }
+    if (!isUnassignedComponents && groupComponents.length > 0 && groupOutputs.length === 0) {
+      warnings.push('Component lines have no receiptable output in this allocation group.');
+    }
+    if (!isUngroupedOutputs && groupOutputs.length > 0 && groupComponents.length === 0 && componentLines.length > 0) {
+      warnings.push('Receiptable output lines have no component lines in this allocation group.');
+    }
+    for (const component of components) {
+      if (component.warning && !warnings.includes(component.warning)) warnings.push(component.warning);
+    }
+
+    const status: ImportCostBuildPreviewRecord['status'] = warnings.some((warning) =>
+      warning.includes('need an allocation group') ||
+      warning.includes('no receiptable output') ||
+      warning.includes('no allocation group while grouped component costs exist')
+    )
+      ? 'FAIL'
+      : warnings.length > 0
+        ? 'WARN'
+        : 'PASS';
+    const outputHnlAmount = round2(outputs.reduce((sum, output) => sum + output.hnlAmount, 0));
+    const componentHnlAmount = round2(components.reduce((sum, component) => sum + component.hnlAmount, 0));
+    previews.push({
+      previewKey: groupKey,
+      allocationGroupKey,
+      status,
+      outputLineCount: outputs.length,
+      componentLineCount: components.length,
+      outputHnlAmount,
+      componentHnlAmount,
+      commercialHnlAmount: round2(outputs.reduce((sum, output) => sum + output.commercialLineCostHnl, 0)),
+      warningCount: warnings.length,
+      warnings,
+      outputs,
+      components,
+    });
+  }
+  return previews;
+}
+
+export function assertImportCostBuildPreviewsReady(previews: ImportCostBuildPreviewRecord[]): void {
+  const failures = previews.filter((preview) => preview.status === 'FAIL');
+  if (failures.length === 0) return;
+
+  const reasons = failures
+    .flatMap((preview) => preview.warnings)
+    .filter(Boolean)
+    .slice(0, 3);
+  const suffix = reasons.length > 0 ? ` ${reasons.join(' ')}` : '';
+  throw new ImportManagementServiceError(
+    409,
+    'COST_BUILD_NOT_READY',
+    `Resolve ${failures.length} blocking import cost-build group(s) before landed-cost allocation.${suffix}`,
+  );
+}
+
+async function getImportCostBuildPreviewsForShipment(
+  client: SqlClient,
+  shipmentId: string,
+): Promise<ImportCostBuildPreviewRecord[]> {
+  const [invoices, lines] = await Promise.all([
+    client.$queryRawUnsafe<any[]>(
+      `
+        SELECT
+          id, shipment_id AS "shipmentId", invoice_number AS "invoiceNumber",
+          supplier_code AS "supplierCode", supplier_name AS "supplierName",
+          invoice_date AS "invoiceDate", invoice_group AS "invoiceGroup",
+          invoice_kind AS "invoiceKind", source_amount AS "sourceAmount",
+          source_currency AS "sourceCurrency", fx_rate AS "fxRate", fx_date AS "fxDate",
+          hnl_amount AS "hnlAmount", notes
+        FROM app.import_supplier_invoice
+        WHERE shipment_id = $1::uuid
+        ORDER BY invoice_date NULLS LAST, invoice_number ASC
+      `,
+      shipmentId,
+    ),
+    client.$queryRawUnsafe<any[]>(
+      `
+        SELECT
+          il.id, il.invoice_id AS "invoiceId", il.sku_id AS "skuId",
+          COALESCE(sku.code, sku.provisional_code) AS "skuCode",
+          il.purchase_order_line_id AS "purchaseOrderLineId",
+          il.line_number AS "lineNumber", il.item_code AS "itemCode",
+          il.style_code AS "styleCode", il.description, il.material_meters AS "materialMeters",
+          il.carton_count AS "cartonCount", il.weight_kg AS "weightKg", il.volume_cbm AS "volumeCbm",
+          il.quantity, il.unit_of_measure AS "unitOfMeasure", il.source_unit_cost AS "sourceUnitCost",
+          il.source_amount AS "sourceAmount", il.source_currency AS "sourceCurrency",
+          il.fx_rate AS "fxRate", il.fx_date AS "fxDate", il.hnl_amount AS "hnlAmount",
+          il.base_unit_cost_hnl AS "baseUnitCostHnl",
+          il.commercial_unit_cost_hnl AS "commercialUnitCostHnl",
+          il.component_allocated_cost_hnl AS "componentAllocatedCostHnl",
+          il.allocated_landed_cost_hnl AS "allocatedLandedCostHnl",
+          il.landed_unit_cost_hnl AS "landedUnitCostHnl",
+          il.cost_role AS "costRole",
+          il.receipt_policy AS "receiptPolicy",
+          il.allocation_group_key AS "allocationGroupKey",
+          il.taxable
+        FROM app.import_invoice_line il
+        JOIN app.import_supplier_invoice si ON si.id = il.invoice_id
+        LEFT JOIN app.sku sku ON sku.id = il.sku_id
+        WHERE si.shipment_id = $1::uuid
+        ORDER BY si.invoice_number ASC, il.line_number ASC
+      `,
+      shipmentId,
+    ),
+  ]);
+
+  const linesByInvoice = new Map<string, ImportInvoiceLineRecord[]>();
+  for (const line of lines.map(mapInvoiceLine)) {
+    const arr = linesByInvoice.get(line.invoiceId) ?? [];
+    arr.push(line);
+    linesByInvoice.set(line.invoiceId, arr);
+  }
+  return buildImportCostBuildPreviews(
+    invoices.map((invoice) => mapInvoice(invoice, linesByInvoice.get(String(invoice.id)) ?? [])),
+  );
 }
 
 function mapImportShipmentLine(row: any): ImportShipmentLineRecord {
@@ -860,10 +1329,14 @@ async function assertContainerBelongsToShipment(
 async function getInvoiceLineShipmentAndQuantity(
   client: SqlClient,
   invoiceLineId: string,
-): Promise<{ shipmentId: string; quantity: number } | null> {
-  const rows = await client.$queryRawUnsafe<Array<{ shipmentId: string; quantity: unknown }>>(
+): Promise<{ shipmentId: string; quantity: number; receiptPolicy: ImportInvoiceLineReceiptPolicy } | null> {
+  const rows = await client.$queryRawUnsafe<Array<{ shipmentId: string; quantity: unknown; receiptPolicy: unknown; costRole: unknown }>>(
     `
-      SELECT si.shipment_id AS "shipmentId", il.quantity
+      SELECT
+        si.shipment_id AS "shipmentId",
+        il.quantity,
+        il.receipt_policy AS "receiptPolicy",
+        il.cost_role AS "costRole"
       FROM app.import_invoice_line il
       JOIN app.import_supplier_invoice si ON si.id = il.invoice_id
       WHERE il.id = $1::uuid
@@ -872,7 +1345,13 @@ async function getInvoiceLineShipmentAndQuantity(
     invoiceLineId,
   );
   const row = rows[0];
-  return row ? { shipmentId: String(row.shipmentId), quantity: toNumber(row.quantity) } : null;
+  if (!row) return null;
+  const costRole = mapCostRole(row.costRole);
+  return {
+    shipmentId: String(row.shipmentId),
+    quantity: toNumber(row.quantity),
+    receiptPolicy: mapReceiptPolicy(row.receiptPolicy, costRole),
+  };
 }
 
 async function assertInvoiceLineBelongsToShipment(
@@ -888,6 +1367,13 @@ async function assertInvoiceLineBelongsToShipment(
   }
   if (line.shipmentId !== shipmentId) {
     throw new ImportManagementServiceError(409, 'LINE_SHIPMENT_MISMATCH', 'Invoice line belongs to a different shipment.');
+  }
+  if (line.receiptPolicy !== 'RECEIVE_TO_STOCK') {
+    throw new ImportManagementServiceError(
+      409,
+      'INVOICE_LINE_NOT_RECEIPTABLE',
+      'Goods-in-transit records can only be created for import lines that receive to stock.',
+    );
   }
   return { quantity: line.quantity };
 }
@@ -1083,7 +1569,16 @@ export async function listImportShipments(params: ImportShipmentListParams): Pro
         SELECT
           si.shipment_id,
           SUM(il.hnl_amount) AS invoice_hnl_total,
-          SUM(il.quantity * COALESCE(sl_match.landed_unit_cost_hnl, il.landed_unit_cost_hnl, il.base_unit_cost_hnl)) AS landed_hnl_total,
+          SUM(CASE
+            WHEN il.receipt_policy = 'RECEIVE_TO_STOCK'
+            THEN il.quantity * COALESCE(
+              sl_match.landed_unit_cost_hnl,
+              il.landed_unit_cost_hnl,
+              il.commercial_unit_cost_hnl,
+              il.base_unit_cost_hnl
+            )
+            ELSE 0
+          END) AS landed_hnl_total,
           COUNT(DISTINCT si.id) AS invoice_count,
           COUNT(il.id) AS line_count
         FROM app.import_supplier_invoice si
@@ -1091,6 +1586,7 @@ export async function listImportShipments(params: ImportShipmentListParams): Pro
         LEFT JOIN app.import_shipment_line sl_match
           ON sl_match.invoice_line_id = il.id
          AND sl_match.status <> 'CANCELLED'
+         AND il.receipt_policy = 'RECEIVE_TO_STOCK'
         GROUP BY si.shipment_id
       ) inv ON inv.shipment_id = s.id
       LEFT JOIN (
@@ -1253,9 +1749,17 @@ export async function listImportOtbCommitments(
           COALESCE(s.expected_arrival_at, s.actual_arrival_at) AS commitment_date,
           CASE WHEN s.status IN (${finalStatusesSql}) THEN 'FINAL' ELSE 'ESTIMATED' END AS commitment_basis,
           sl.id AS line_id,
-          COALESCE(il.hnl_amount, sl.expected_quantity * sl.commercial_unit_cost_hnl) AS base_hnl_amount,
+          COALESCE(
+            il.quantity * COALESCE(il.commercial_unit_cost_hnl, il.base_unit_cost_hnl),
+            sl.expected_quantity * sl.commercial_unit_cost_hnl
+          ) AS base_hnl_amount,
           COALESCE(il.quantity, sl.expected_quantity)
-            * COALESCE(sl.landed_unit_cost_hnl, il.landed_unit_cost_hnl, sl.estimated_landed_unit_cost_hnl) AS landed_hnl_amount,
+            * COALESCE(
+              sl.landed_unit_cost_hnl,
+              il.landed_unit_cost_hnl,
+              il.commercial_unit_cost_hnl,
+              sl.estimated_landed_unit_cost_hnl
+            ) AS landed_hnl_amount,
           sku.category_number,
           td.number AS department_number,
           td."desc" AS department_name
@@ -1268,6 +1772,7 @@ export async function listImportOtbCommitments(
           ON sku.category_number BETWEEN td.beg_categ AND td.end_categ
         WHERE ${where.join(' AND ')}
           AND sl.status <> 'CANCELLED'
+          AND (il.id IS NULL OR il.receipt_policy = 'RECEIVE_TO_STOCK')
         UNION ALL
         SELECT
           s.id AS shipment_id,
@@ -1280,8 +1785,8 @@ export async function listImportOtbCommitments(
           COALESCE(s.expected_arrival_at, s.actual_arrival_at) AS commitment_date,
           CASE WHEN s.status IN (${finalStatusesSql}) THEN 'FINAL' ELSE 'ESTIMATED' END AS commitment_basis,
           il.id AS line_id,
-          il.hnl_amount AS base_hnl_amount,
-          il.quantity * COALESCE(il.landed_unit_cost_hnl, il.base_unit_cost_hnl) AS landed_hnl_amount,
+          il.quantity * COALESCE(il.commercial_unit_cost_hnl, il.base_unit_cost_hnl) AS base_hnl_amount,
+          il.quantity * COALESCE(il.landed_unit_cost_hnl, il.commercial_unit_cost_hnl, il.base_unit_cost_hnl) AS landed_hnl_amount,
           sku.category_number,
           td.number AS department_number,
           td."desc" AS department_name
@@ -1293,6 +1798,7 @@ export async function listImportOtbCommitments(
         LEFT JOIN app.taxonomy_department td
           ON sku.category_number BETWEEN td.beg_categ AND td.end_categ
         WHERE ${where.join(' AND ')}
+          AND il.receipt_policy = 'RECEIVE_TO_STOCK'
           AND NOT EXISTS (
             SELECT 1
             FROM app.import_shipment_line sl
@@ -1486,7 +1992,16 @@ export async function getImportShipmentById(shipmentId: string): Promise<ImportS
         SELECT
           si.shipment_id,
           SUM(il.hnl_amount) AS invoice_hnl_total,
-          SUM(il.quantity * COALESCE(sl_match.landed_unit_cost_hnl, il.landed_unit_cost_hnl, il.base_unit_cost_hnl)) AS landed_hnl_total,
+          SUM(CASE
+            WHEN il.receipt_policy = 'RECEIVE_TO_STOCK'
+            THEN il.quantity * COALESCE(
+              sl_match.landed_unit_cost_hnl,
+              il.landed_unit_cost_hnl,
+              il.commercial_unit_cost_hnl,
+              il.base_unit_cost_hnl
+            )
+            ELSE 0
+          END) AS landed_hnl_total,
           COUNT(DISTINCT si.id) AS invoice_count,
           COUNT(il.id) AS line_count
         FROM app.import_supplier_invoice si
@@ -1494,6 +2009,7 @@ export async function getImportShipmentById(shipmentId: string): Promise<ImportS
         LEFT JOIN app.import_shipment_line sl_match
           ON sl_match.invoice_line_id = il.id
          AND sl_match.status <> 'CANCELLED'
+         AND il.receipt_policy = 'RECEIVE_TO_STOCK'
         GROUP BY si.shipment_id
       ) inv ON inv.shipment_id = s.id
       LEFT JOIN (
@@ -1524,7 +2040,19 @@ export async function getImportShipmentById(shipmentId: string): Promise<ImportS
   const row = summaryRows[0];
   if (!row) return null;
 
-  const [containers, shipmentLines, invoices, lines, charges, allocations, gitRecords, checks, suggestedPrices] =
+  const [
+    containers,
+    shipmentLines,
+    invoices,
+    lines,
+    charges,
+    allocations,
+    costBuildRows,
+    componentAllocationRows,
+    gitRecords,
+    checks,
+    suggestedPrices,
+  ] =
     await Promise.all([
       prisma.$queryRawUnsafe<any[]>(
         `
@@ -1619,8 +2147,14 @@ export async function getImportShipmentById(shipmentId: string): Promise<ImportS
             il.source_amount AS "sourceAmount", il.source_currency AS "sourceCurrency",
             il.fx_rate AS "fxRate", il.fx_date AS "fxDate", il.hnl_amount AS "hnlAmount",
             il.base_unit_cost_hnl AS "baseUnitCostHnl",
+            il.commercial_unit_cost_hnl AS "commercialUnitCostHnl",
+            il.component_allocated_cost_hnl AS "componentAllocatedCostHnl",
             il.allocated_landed_cost_hnl AS "allocatedLandedCostHnl",
-            il.landed_unit_cost_hnl AS "landedUnitCostHnl", il.taxable
+            il.landed_unit_cost_hnl AS "landedUnitCostHnl",
+            il.cost_role AS "costRole",
+            il.receipt_policy AS "receiptPolicy",
+            il.allocation_group_key AS "allocationGroupKey",
+            il.taxable
           FROM app.import_invoice_line il
           JOIN app.import_supplier_invoice si ON si.id = il.invoice_id
           LEFT JOIN app.sku sku ON sku.id = il.sku_id
@@ -1654,6 +2188,82 @@ export async function getImportShipmentById(shipmentId: string): Promise<ImportS
           FROM app.import_landed_cost_allocation
           WHERE shipment_id = $1::uuid
           ORDER BY charge_id ASC, invoice_line_id ASC
+        `,
+        shipmentId,
+      ),
+      prisma.$queryRawUnsafe<any[]>(
+        `
+          SELECT
+            cb.id::text AS id,
+            cb.shipment_id::text AS "shipmentId",
+            cb.build_code AS "buildCode",
+            cb.description,
+            cb.output_invoice_line_id::text AS "outputInvoiceLineId",
+            cb.output_shipment_line_id::text AS "outputShipmentLineId",
+            cb.output_sku_id::text AS "outputSkuId",
+            COALESCE(output_sku.code, output_sku.provisional_code, output_line.item_code) AS "outputSkuCode",
+            output_line.item_code AS "outputItemCode",
+            output_line.style_code AS "outputStyleCode",
+            COALESCE(output_line.description, output_sku.description_web, output_sku.description_rics, output_sku.comment) AS "outputDescription",
+            cb.output_quantity AS "outputQuantity",
+            cb.allocation_basis AS "allocationBasis",
+            COALESCE(SUM(ca.allocated_hnl_amount), 0) AS "componentAllocatedHnlAmount",
+            COUNT(ca.id) AS "componentCount",
+            cb.created_by AS "createdBy",
+            cb.created_at AS "createdAt",
+            cb.updated_at AS "updatedAt"
+          FROM app.import_cost_build cb
+          LEFT JOIN app.import_invoice_line output_line ON output_line.id = cb.output_invoice_line_id
+          LEFT JOIN app.import_shipment_line output_shipment_line ON output_shipment_line.id = cb.output_shipment_line_id
+          LEFT JOIN app.purchase_order_line output_pol ON output_pol.id = output_shipment_line.purchase_order_line_id
+          LEFT JOIN app.sku output_sku ON output_sku.id = COALESCE(cb.output_sku_id, output_line.sku_id, output_pol.sku_id)
+          LEFT JOIN app.import_cost_component_allocation ca ON ca.build_id = cb.id
+          WHERE cb.shipment_id = $1::uuid
+          GROUP BY
+            cb.id, output_sku.code, output_sku.provisional_code, output_line.item_code,
+            output_line.style_code, output_line.description, output_sku.description_web,
+            output_sku.description_rics, output_sku.comment
+          ORDER BY cb.build_code ASC
+        `,
+        shipmentId,
+      ),
+      prisma.$queryRawUnsafe<any[]>(
+        `
+          SELECT
+            ca.id::text AS id,
+            ca.shipment_id::text AS "shipmentId",
+            ca.build_id::text AS "buildId",
+            ca.component_invoice_line_id::text AS "componentInvoiceLineId",
+            ca.output_invoice_line_id::text AS "outputInvoiceLineId",
+            ca.output_shipment_line_id::text AS "outputShipmentLineId",
+            ca.allocation_basis AS "allocationBasis",
+            ca.allocated_hnl_amount AS "allocatedHnlAmount",
+            ca.allocated_quantity AS "allocatedQuantity",
+            component_invoice.invoice_number AS "componentInvoiceNumber",
+            component_invoice.supplier_name AS "componentSupplierName",
+            component_line.item_code AS "componentItemCode",
+            component_line.style_code AS "componentStyleCode",
+            component_line.description AS "componentDescription",
+            component_line.cost_role AS "componentCostRole",
+            component_line.receipt_policy AS "componentReceiptPolicy",
+            component_line.allocation_group_key AS "componentAllocationGroupKey",
+            output_invoice.invoice_number AS "outputInvoiceNumber",
+            output_po.po_number AS "outputPurchaseOrderNumber",
+            COALESCE(output_sku.code, output_sku.provisional_code, output_line.item_code) AS "outputSkuCode",
+            output_line.item_code AS "outputItemCode",
+            output_line.style_code AS "outputStyleCode",
+            COALESCE(output_line.description, output_sku.description_web, output_sku.description_rics, output_sku.comment) AS "outputDescription"
+          FROM app.import_cost_component_allocation ca
+          JOIN app.import_invoice_line component_line ON component_line.id = ca.component_invoice_line_id
+          JOIN app.import_supplier_invoice component_invoice ON component_invoice.id = component_line.invoice_id
+          LEFT JOIN app.import_invoice_line output_line ON output_line.id = ca.output_invoice_line_id
+          LEFT JOIN app.import_supplier_invoice output_invoice ON output_invoice.id = output_line.invoice_id
+          LEFT JOIN app.import_shipment_line output_shipment_line ON output_shipment_line.id = ca.output_shipment_line_id
+          LEFT JOIN app.purchase_order_line output_pol ON output_pol.id = output_shipment_line.purchase_order_line_id
+          LEFT JOIN app.purchase_order output_po ON output_po.id = output_pol.po_id
+          LEFT JOIN app.sku output_sku ON output_sku.id = COALESCE(output_line.sku_id, output_pol.sku_id)
+          WHERE ca.shipment_id = $1::uuid
+          ORDER BY component_invoice.invoice_number ASC, component_line.line_number ASC
         `,
         shipmentId,
       ),
@@ -1705,6 +2315,14 @@ export async function getImportShipmentById(shipmentId: string): Promise<ImportS
     arr.push(line);
     linesByInvoice.set(line.invoiceId, arr);
   }
+  const componentAllocationRecords = componentAllocationRows.map(mapImportCostComponentAllocation);
+  const componentAllocationsByBuild = new Map<string, ImportCostComponentAllocationRecord[]>();
+  for (const allocation of componentAllocationRecords) {
+    const arr = componentAllocationsByBuild.get(allocation.buildId) ?? [];
+    arr.push(allocation);
+    componentAllocationsByBuild.set(allocation.buildId, arr);
+  }
+  const supplierInvoices = invoices.map((invoice) => mapInvoice(invoice, linesByInvoice.get(String(invoice.id)) ?? []));
 
   return {
     ...mapShipmentSummary(row),
@@ -1736,7 +2354,7 @@ export async function getImportShipmentById(shipmentId: string): Promise<ImportS
       notes: c.notes ?? null,
     })),
     shipmentLines: shipmentLines.map(mapImportShipmentLine),
-    supplierInvoices: invoices.map((invoice) => mapInvoice(invoice, linesByInvoice.get(String(invoice.id)) ?? [])),
+    supplierInvoices,
     charges: charges.map(mapCharge),
     allocations: allocations.map((a): ImportLandedCostAllocationRecord => ({
       id: String(a.id),
@@ -1747,6 +2365,10 @@ export async function getImportShipmentById(shipmentId: string): Promise<ImportS
       allocationBasis: 'PRODUCT_COST_SHARE',
       allocatedHnlAmount: toNumber(a.allocatedHnlAmount),
     })),
+    costBuilds: costBuildRows.map((build) =>
+      mapImportCostBuild(build, componentAllocationsByBuild.get(String(build.id)) ?? []),
+    ),
+    costBuildPreviews: buildImportCostBuildPreviews(supplierInvoices),
     goodsInTransit: gitRecords.map((g): GoodsInTransitRecordDto => ({
       id: String(g.id),
       shipmentId: String(g.shipmentId),
@@ -2808,6 +3430,9 @@ async function getInvoiceLineContext(invoiceLineId: string): Promise<{
   fxRate: number;
   fxDate: string;
   lineNumber: number;
+  costRole: ImportInvoiceLineCostRole;
+  receiptPolicy: ImportInvoiceLineReceiptPolicy;
+  allocationGroupKey: string | null;
 } | null> {
   const rows = await prisma.$queryRawUnsafe<any[]>(
     `
@@ -2817,7 +3442,10 @@ async function getInvoiceLineContext(invoiceLineId: string): Promise<{
         il.source_currency AS "sourceCurrency",
         il.fx_rate AS "fxRate",
         il.fx_date AS "fxDate",
-        il.line_number AS "lineNumber"
+        il.line_number AS "lineNumber",
+        il.cost_role AS "costRole",
+        il.receipt_policy AS "receiptPolicy",
+        il.allocation_group_key AS "allocationGroupKey"
       FROM app.import_invoice_line il
       JOIN app.import_supplier_invoice si ON si.id = il.invoice_id
       WHERE il.id = $1::uuid
@@ -2834,6 +3462,9 @@ async function getInvoiceLineContext(invoiceLineId: string): Promise<{
     fxRate: toNumber(row.fxRate),
     fxDate: dateOnly(row.fxDate) ?? '',
     lineNumber: toNumber(row.lineNumber),
+    costRole: mapCostRole(row.costRole),
+    receiptPolicy: mapReceiptPolicy(row.receiptPolicy, mapCostRole(row.costRole)),
+    allocationGroupKey: row.allocationGroupKey ?? null,
   };
 }
 
@@ -2883,6 +3514,14 @@ async function assertShipmentLandedCostEditable(client: SqlClient, shipmentId: s
 async function markLandedCostStale(client: SqlClient, shipmentId: string): Promise<void> {
   await assertShipmentLandedCostEditable(client, shipmentId);
   await client.$executeRawUnsafe(
+    `DELETE FROM app.import_cost_component_allocation WHERE shipment_id = $1::uuid`,
+    shipmentId,
+  );
+  await client.$executeRawUnsafe(
+    `DELETE FROM app.import_cost_build WHERE shipment_id = $1::uuid`,
+    shipmentId,
+  );
+  await client.$executeRawUnsafe(
     `DELETE FROM app.import_landed_cost_allocation WHERE shipment_id = $1::uuid`,
     shipmentId,
   );
@@ -2894,7 +3533,12 @@ async function markLandedCostStale(client: SqlClient, shipmentId: string): Promi
     `
       UPDATE app.import_invoice_line il
       SET allocated_landed_cost_hnl = 0,
-          landed_unit_cost_hnl = il.base_unit_cost_hnl,
+          component_allocated_cost_hnl = 0,
+          commercial_unit_cost_hnl = il.base_unit_cost_hnl,
+          landed_unit_cost_hnl = CASE
+            WHEN il.receipt_policy = 'RECEIVE_TO_STOCK' THEN il.base_unit_cost_hnl
+            ELSE NULL
+          END,
           updated_at = CURRENT_TIMESTAMP
       FROM app.import_supplier_invoice si
       WHERE si.id = il.invoice_id
@@ -2947,6 +3591,9 @@ export async function addImportInvoiceLine(
   });
   const lineNumber = input.lineNumber ?? defaults.nextLineNumber;
   const baseUnitCostHnl = round4(money.hnlAmount / input.quantity);
+  const { costRole, receiptPolicy } = normalizeImportInvoiceLineRoleState(input);
+  const allocationGroupKey = cleanString(input.allocationGroupKey);
+  const landedUnitCostHnl = isReceiptablePolicy(receiptPolicy) ? baseUnitCostHnl : null;
 
   await prisma.$executeRawUnsafe(
     `
@@ -2954,13 +3601,17 @@ export async function addImportInvoiceLine(
         invoice_id, sku_id, purchase_order_line_id, line_number, item_code,
         style_code, description, material_meters, carton_count, weight_kg, volume_cbm,
         quantity, unit_of_measure, source_unit_cost, source_amount, source_currency,
-        fx_rate, fx_date, hnl_amount, base_unit_cost_hnl, landed_unit_cost_hnl, taxable
+        fx_rate, fx_date, hnl_amount, base_unit_cost_hnl, commercial_unit_cost_hnl,
+        landed_unit_cost_hnl, cost_role, receipt_policy, allocation_group_key,
+        component_allocated_cost_hnl, taxable
       )
       VALUES (
         $1::uuid, $2::uuid, $3::uuid, $4, $5,
         $6, $7, $8, $9, $10, $11,
         $12, $13, $14, $15, $16,
-        $17, $18::date, $19, $20, $20, $21
+        $17, $18::date, $19, $20, $20,
+        $21, $22, $23, $24,
+        0, $25
       )
     `,
     invoiceId,
@@ -2983,6 +3634,10 @@ export async function addImportInvoiceLine(
     money.fxDate,
     money.hnlAmount,
     baseUnitCostHnl,
+    landedUnitCostHnl,
+    costRole,
+    receiptPolicy,
+    allocationGroupKey,
     input.taxable ?? true,
   );
   await markLandedCostStale(prisma, defaults.shipmentId);
@@ -3004,6 +3659,10 @@ export async function addImportInvoiceLine(
       fxDate: money.fxDate,
       hnlAmount: money.hnlAmount,
       baseUnitCostHnl,
+      commercialUnitCostHnl: baseUnitCostHnl,
+      costRole,
+      receiptPolicy,
+      allocationGroupKey,
     },
     metadataJson: { shipmentId: defaults.shipmentId },
   });
@@ -3037,6 +3696,14 @@ export async function updateImportInvoiceLine(
     hnlAmount: input.hnlAmount,
   });
   const baseUnitCostHnl = round4(money.hnlAmount / input.quantity);
+  const { costRole, receiptPolicy } = normalizeImportInvoiceLineRoleState({
+    costRole: input.costRole ?? context.costRole,
+    receiptPolicy: input.receiptPolicy ?? context.receiptPolicy,
+  });
+  const allocationGroupKey = hasOwn(input, 'allocationGroupKey')
+    ? cleanString(input.allocationGroupKey)
+    : context.allocationGroupKey;
+  const landedUnitCostHnl = isReceiptablePolicy(receiptPolicy) ? baseUnitCostHnl : null;
 
   await prisma.$executeRawUnsafe(
     `
@@ -3060,8 +3727,13 @@ export async function updateImportInvoiceLine(
           fx_date = $18::date,
           hnl_amount = $19,
           base_unit_cost_hnl = $20,
-          landed_unit_cost_hnl = $20,
-          taxable = $21,
+          commercial_unit_cost_hnl = $20,
+          landed_unit_cost_hnl = $21,
+          cost_role = $22,
+          receipt_policy = $23,
+          allocation_group_key = $24,
+          component_allocated_cost_hnl = 0,
+          taxable = $25,
           updated_at = CURRENT_TIMESTAMP
       WHERE id = $1::uuid
     `,
@@ -3085,6 +3757,10 @@ export async function updateImportInvoiceLine(
     money.fxDate,
     money.hnlAmount,
     baseUnitCostHnl,
+    landedUnitCostHnl,
+    costRole,
+    receiptPolicy,
+    allocationGroupKey,
     input.taxable ?? true,
   );
   await markLandedCostStale(prisma, context.shipmentId);
@@ -3106,6 +3782,10 @@ export async function updateImportInvoiceLine(
       fxDate: money.fxDate,
       hnlAmount: money.hnlAmount,
       baseUnitCostHnl,
+      commercialUnitCostHnl: baseUnitCostHnl,
+      costRole,
+      receiptPolicy,
+      allocationGroupKey,
     },
     metadataJson: { shipmentId: context.shipmentId },
   });
@@ -3432,8 +4112,10 @@ export async function createGoodsInTransitForShipment(
       FROM app.import_shipment_line sl
       JOIN app.purchase_order_line pol ON pol.id = sl.purchase_order_line_id
       JOIN app.purchase_order po ON po.id = pol.po_id
+      LEFT JOIN app.import_invoice_line il ON il.id = sl.invoice_line_id
       WHERE sl.shipment_id = $1::uuid
         AND sl.status <> 'CANCELLED'
+        AND (il.id IS NULL OR il.receipt_policy = 'RECEIVE_TO_STOCK')
         AND NOT EXISTS (
           SELECT 1
           FROM app.goods_in_transit_record git
@@ -3451,6 +4133,7 @@ export async function createGoodsInTransitForShipment(
       FROM app.import_invoice_line il
       JOIN app.import_supplier_invoice si ON si.id = il.invoice_id
       WHERE si.shipment_id = $1::uuid
+        AND il.receipt_policy = 'RECEIVE_TO_STOCK'
         AND NOT EXISTS (
           SELECT 1
           FROM app.import_shipment_line sl
@@ -3761,13 +4444,16 @@ export async function getImportLiquidationReadiness(shipmentId: string): Promise
         WITH lines AS (
           SELECT sl.id, sl.landed_unit_cost_hnl
           FROM app.import_shipment_line sl
+          LEFT JOIN app.import_invoice_line il ON il.id = sl.invoice_line_id
           WHERE sl.shipment_id = $1::uuid
             AND sl.status <> 'CANCELLED'
+            AND (il.id IS NULL OR il.receipt_policy = 'RECEIVE_TO_STOCK')
           UNION ALL
           SELECT il.id, il.landed_unit_cost_hnl
           FROM app.import_supplier_invoice si
           JOIN app.import_invoice_line il ON il.invoice_id = si.id
           WHERE si.shipment_id = $1::uuid
+            AND il.receipt_policy = 'RECEIVE_TO_STOCK'
             AND NOT EXISTS (
               SELECT 1
               FROM app.import_shipment_line sl
@@ -4110,6 +4796,9 @@ export async function getImportShipmentReport(
           supplierOrCounterparty: line.supplierName,
           documentNumber: line.invoiceNumber,
           payableKind: line.invoiceKind,
+          costRole: line.costRole,
+          receiptPolicy: line.receiptPolicy,
+          allocationGroupKey: line.allocationGroupKey,
           skuCode: line.skuCode,
           itemCode: line.itemCode,
           styleCode: line.styleCode,
@@ -4122,8 +4811,12 @@ export async function getImportShipmentReport(
           fxRate: line.fxRate,
           fxDate: line.fxDate,
           hnlAmount: line.hnlAmount,
+          commercialUnitCostHnl: line.commercialUnitCostHnl,
+          componentAllocatedCostHnl: line.componentAllocatedCostHnl,
+          commercialLineHnl: line.commercialUnitCostHnl == null ? null : round2(line.quantity * line.commercialUnitCostHnl),
           allocatedLandedCostHnl: line.allocatedLandedCostHnl,
           landedUnitCostHnl: line.landedUnitCostHnl,
+          landedLineHnl: line.landedUnitCostHnl == null ? null : round2(line.quantity * line.landedUnitCostHnl),
           final: true,
           costTreatment: null,
         };
@@ -4134,6 +4827,9 @@ export async function getImportShipmentReport(
         supplierOrCounterparty: charge.counterparty,
         documentNumber: charge.documentNumber,
         payableKind: charge.chargeType,
+        costRole: null,
+        receiptPolicy: null,
+        allocationGroupKey: null,
         skuCode: null,
         itemCode: null,
         styleCode: null,
@@ -4146,8 +4842,12 @@ export async function getImportShipmentReport(
         fxRate: charge.fxRate,
         fxDate: charge.fxDate,
         hnlAmount: charge.hnlAmount,
+        commercialUnitCostHnl: null,
+        componentAllocatedCostHnl: null,
+        commercialLineHnl: null,
         allocatedLandedCostHnl: charge.costTreatment === 'ALLOCATE_TO_LANDED' ? charge.hnlAmount : 0,
         landedUnitCostHnl: null,
+        landedLineHnl: null,
         final: charge.final,
         costTreatment: charge.costTreatment,
       })),
@@ -4158,6 +4858,9 @@ export async function getImportShipmentReport(
       { key: 'supplierOrCounterparty', header: 'Supplier / Counterparty', width: 28 },
       { key: 'documentNumber', header: 'Document', width: 18 },
       { key: 'payableKind', header: 'Kind', width: 16 },
+      { key: 'costRole', header: 'Cost Role', width: 18 },
+      { key: 'receiptPolicy', header: 'Receipt Policy', width: 18 },
+      { key: 'allocationGroupKey', header: 'Allocation Group', width: 24 },
       { key: 'skuCode', header: 'SKU', width: 18 },
       { key: 'itemCode', header: 'Item Code', width: 18 },
       { key: 'styleCode', header: 'Style', width: 16 },
@@ -4170,8 +4873,12 @@ export async function getImportShipmentReport(
       { key: 'fxRate', header: 'FX Rate', width: 12, numFmt: 'decimal2' },
       { key: 'fxDate', header: 'FX Date', width: 12, numFmt: 'date' },
       { key: 'hnlAmount', header: 'HNL Amount', width: 16, numFmt: 'money' },
+      { key: 'commercialUnitCostHnl', header: 'Commercial Unit HNL', width: 20, numFmt: 'money' },
+      { key: 'componentAllocatedCostHnl', header: 'Component Allocated HNL', width: 24, numFmt: 'money' },
+      { key: 'commercialLineHnl', header: 'Commercial Line HNL', width: 20, numFmt: 'money' },
       { key: 'allocatedLandedCostHnl', header: 'Allocated Landed HNL', width: 20, numFmt: 'money' },
       { key: 'landedUnitCostHnl', header: 'Landed Unit HNL', width: 18, numFmt: 'money' },
+      { key: 'landedLineHnl', header: 'Landed Line HNL', width: 18, numFmt: 'money' },
       { key: 'final', header: 'Final', width: 10 },
       { key: 'costTreatment', header: 'Cost Treatment', width: 24 },
     ], rows);
@@ -4189,8 +4896,14 @@ export async function getImportShipmentReport(
         invoiceNumber: invoiceLine?.invoiceNumber ?? null,
         poNumber: shipmentLine?.purchaseOrderNumber ?? null,
         skuCode: invoiceLine?.skuCode ?? shipmentLine?.skuCode ?? null,
+        costRole: invoiceLine?.costRole ?? null,
+        receiptPolicy: invoiceLine?.receiptPolicy ?? null,
+        allocationGroupKey: invoiceLine?.allocationGroupKey ?? null,
         description: invoiceLine?.description ?? shipmentLine?.description ?? null,
         quantityInTransit: record.quantityInTransit,
+        commercialUnitCostHnl: invoiceLine?.commercialUnitCostHnl ?? shipmentLine?.commercialUnitCostHnl ?? null,
+        componentAllocatedCostHnl: invoiceLine?.componentAllocatedCostHnl ?? null,
+        landedUnitCostHnl: invoiceLine?.landedUnitCostHnl ?? shipmentLine?.landedUnitCostHnl ?? null,
         ownershipTransferAt: record.ownershipTransferAt,
         expectedReceiptAt: record.expectedReceiptAt,
         receivedAt: record.receivedAt,
@@ -4204,8 +4917,14 @@ export async function getImportShipmentReport(
       { key: 'invoiceNumber', header: 'Invoice', width: 18 },
       { key: 'poNumber', header: 'PO', width: 18 },
       { key: 'skuCode', header: 'SKU', width: 18 },
+      { key: 'costRole', header: 'Cost Role', width: 18 },
+      { key: 'receiptPolicy', header: 'Receipt Policy', width: 18 },
+      { key: 'allocationGroupKey', header: 'Allocation Group', width: 24 },
       { key: 'description', header: 'Description', width: 36 },
       { key: 'quantityInTransit', header: 'Quantity In Transit', width: 20, numFmt: 'decimal2' },
+      { key: 'commercialUnitCostHnl', header: 'Commercial Unit HNL', width: 20, numFmt: 'money' },
+      { key: 'componentAllocatedCostHnl', header: 'Component Allocated HNL', width: 24, numFmt: 'money' },
+      { key: 'landedUnitCostHnl', header: 'Landed Unit HNL', width: 18, numFmt: 'money' },
       { key: 'ownershipTransferAt', header: 'Ownership Date', width: 16, numFmt: 'date' },
       { key: 'expectedReceiptAt', header: 'Expected Receipt', width: 18, numFmt: 'date' },
       { key: 'receivedAt', header: 'Received At', width: 16, numFmt: 'date' },
@@ -4265,36 +4984,152 @@ export async function getImportShipmentReport(
   }
 
   if (reportKey === 'landed-cost-allocation') {
-    const rows = detail.allocations.map((allocation) => {
+    const componentRows = await prisma.$queryRawUnsafe<Array<{
+      allocationId: string;
+      allocationBasis: string;
+      allocatedHnlAmount: unknown;
+      allocatedQuantity: unknown;
+      buildCode: string;
+      buildDescription: string | null;
+      componentInvoiceLineId: string;
+      componentInvoiceNumber: string;
+      componentSupplierName: string;
+      componentItemCode: string | null;
+      componentStyleCode: string | null;
+      componentDescription: string | null;
+      componentCostRole: string | null;
+      componentReceiptPolicy: string | null;
+      allocationGroupKey: string | null;
+      outputInvoiceLineId: string | null;
+      outputInvoiceNumber: string | null;
+      outputPoNumber: string | null;
+      outputSkuCode: string | null;
+      outputItemCode: string | null;
+      outputStyleCode: string | null;
+      outputDescription: string | null;
+    }>>(
+      `
+        SELECT
+          ca.id::text AS "allocationId",
+          ca.allocation_basis AS "allocationBasis",
+          ca.allocated_hnl_amount AS "allocatedHnlAmount",
+          ca.allocated_quantity AS "allocatedQuantity",
+          cb.build_code AS "buildCode",
+          cb.description AS "buildDescription",
+          component_line.id::text AS "componentInvoiceLineId",
+          component_invoice.invoice_number AS "componentInvoiceNumber",
+          component_invoice.supplier_name AS "componentSupplierName",
+          component_line.item_code AS "componentItemCode",
+          component_line.style_code AS "componentStyleCode",
+          component_line.description AS "componentDescription",
+          component_line.cost_role AS "componentCostRole",
+          component_line.receipt_policy AS "componentReceiptPolicy",
+          COALESCE(output_line.allocation_group_key, component_line.allocation_group_key) AS "allocationGroupKey",
+          output_line.id::text AS "outputInvoiceLineId",
+          output_invoice.invoice_number AS "outputInvoiceNumber",
+          output_po.po_number AS "outputPoNumber",
+          COALESCE(output_sku.code, output_sku.provisional_code, output_line.item_code) AS "outputSkuCode",
+          output_line.item_code AS "outputItemCode",
+          output_line.style_code AS "outputStyleCode",
+          COALESCE(output_line.description, output_pol.description) AS "outputDescription"
+        FROM app.import_cost_component_allocation ca
+        JOIN app.import_cost_build cb ON cb.id = ca.build_id
+        JOIN app.import_invoice_line component_line ON component_line.id = ca.component_invoice_line_id
+        JOIN app.import_supplier_invoice component_invoice ON component_invoice.id = component_line.invoice_id
+        LEFT JOIN app.import_invoice_line output_line ON output_line.id = ca.output_invoice_line_id
+        LEFT JOIN app.import_supplier_invoice output_invoice ON output_invoice.id = output_line.invoice_id
+        LEFT JOIN app.import_shipment_line output_shipment_line ON output_shipment_line.id = ca.output_shipment_line_id
+        LEFT JOIN app.purchase_order_line output_pol ON output_pol.id = output_shipment_line.purchase_order_line_id
+        LEFT JOIN app.purchase_order output_po ON output_po.id = output_pol.purchase_order_id
+        LEFT JOIN app.sku output_sku ON output_sku.id = COALESCE(output_line.sku_id, output_pol.sku_id)
+        WHERE ca.shipment_id = $1::uuid
+        ORDER BY cb.build_code ASC, component_invoice.invoice_number ASC, component_line.line_number ASC
+      `,
+      shipmentId,
+    );
+    const landedRows = detail.allocations.map((allocation) => {
       const charge = chargeById.get(allocation.chargeId);
       const invoiceLine = allocation.invoiceLineId ? invoiceLineById.get(allocation.invoiceLineId) : null;
       const shipmentLine = allocation.shipmentLineId ? shipmentLineById.get(allocation.shipmentLineId) : null;
       return {
+        allocationType: 'LANDED_CHARGE',
         shipmentNumber: detail.shipmentNumber,
+        buildCode: null,
         chargeType: charge?.chargeType ?? null,
         chargeDocument: charge?.documentNumber ?? null,
         counterparty: charge?.counterparty ?? null,
         costTreatment: charge?.costTreatment ?? null,
         allocationBasis: allocation.allocationBasis,
         allocatedHnlAmount: allocation.allocatedHnlAmount,
+        allocatedQuantity: null,
         invoiceNumber: invoiceLine?.invoiceNumber ?? shipmentLine?.invoiceNumber ?? null,
         poNumber: shipmentLine?.purchaseOrderNumber ?? null,
         skuCode: invoiceLine?.skuCode ?? shipmentLine?.skuCode ?? null,
+        itemCode: invoiceLine?.itemCode ?? null,
+        styleCode: invoiceLine?.styleCode ?? null,
         description: invoiceLine?.description ?? shipmentLine?.description ?? null,
+        componentInvoiceNumber: null,
+        componentSupplierName: null,
+        componentItemCode: null,
+        componentStyleCode: null,
+        componentCostRole: null,
+        componentReceiptPolicy: null,
+        componentDescription: null,
+        allocationGroupKey: null,
       };
     });
+    const componentReportRows = componentRows.map((row) => ({
+      allocationType: 'COMPONENT_COST',
+      shipmentNumber: detail.shipmentNumber,
+      buildCode: row.buildCode,
+      chargeType: null,
+      chargeDocument: row.componentInvoiceNumber,
+      counterparty: row.componentSupplierName,
+      costTreatment: 'ROLL_TO_OUTPUT',
+      allocationBasis: row.allocationBasis,
+      allocatedHnlAmount: toNumber(row.allocatedHnlAmount),
+      allocatedQuantity: nullableNumber(row.allocatedQuantity),
+      invoiceNumber: row.outputInvoiceNumber,
+      poNumber: row.outputPoNumber,
+      skuCode: row.outputSkuCode,
+      itemCode: row.outputItemCode,
+      styleCode: row.outputStyleCode,
+      description: row.outputDescription,
+      componentInvoiceNumber: row.componentInvoiceNumber,
+      componentSupplierName: row.componentSupplierName,
+      componentItemCode: row.componentItemCode,
+      componentStyleCode: row.componentStyleCode,
+      componentCostRole: row.componentCostRole,
+      componentReceiptPolicy: row.componentReceiptPolicy,
+      componentDescription: row.componentDescription,
+      allocationGroupKey: row.allocationGroupKey,
+    }));
+    const rows = [...landedRows, ...componentReportRows];
     return buildShipmentReport(detail, reportKey, 'Allocation', [
+      { key: 'allocationType', header: 'Allocation Type', width: 20 },
       { key: 'shipmentNumber', header: 'Shipment', width: 18 },
+      { key: 'buildCode', header: 'Build Code', width: 24 },
       { key: 'chargeType', header: 'Charge Type', width: 18 },
       { key: 'chargeDocument', header: 'Charge Document', width: 20 },
       { key: 'counterparty', header: 'Counterparty', width: 28 },
       { key: 'costTreatment', header: 'Cost Treatment', width: 24 },
       { key: 'allocationBasis', header: 'Allocation Basis', width: 24 },
       { key: 'allocatedHnlAmount', header: 'Allocated HNL', width: 16, numFmt: 'money' },
+      { key: 'allocatedQuantity', header: 'Allocated Qty', width: 14, numFmt: 'decimal2' },
       { key: 'invoiceNumber', header: 'Invoice', width: 18 },
       { key: 'poNumber', header: 'PO', width: 18 },
       { key: 'skuCode', header: 'SKU', width: 18 },
+      { key: 'itemCode', header: 'Item Code', width: 18 },
+      { key: 'styleCode', header: 'Style', width: 16 },
       { key: 'description', header: 'Description', width: 36 },
+      { key: 'componentInvoiceNumber', header: 'Component Invoice', width: 20 },
+      { key: 'componentSupplierName', header: 'Component Supplier', width: 28 },
+      { key: 'componentItemCode', header: 'Component Item', width: 18 },
+      { key: 'componentStyleCode', header: 'Component Style', width: 18 },
+      { key: 'componentCostRole', header: 'Component Role', width: 18 },
+      { key: 'componentReceiptPolicy', header: 'Component Receipt Policy', width: 24 },
+      { key: 'componentDescription', header: 'Component Description', width: 36 },
+      { key: 'allocationGroupKey', header: 'Allocation Group', width: 24 },
     ], rows);
   }
 
@@ -4390,15 +5225,17 @@ interface ImportPurchaseOrderShipmentRow {
 }
 
 interface ImportPurchaseOrderLineRow {
+  sourceType: 'INVOICE_LINE' | 'EXPECTED_PO_LINE';
   shipmentId: string;
   shipmentNumber: string;
   displayName: string;
   status: ImportShipmentStatus;
-  invoiceId: string;
-  invoiceNumber: string;
+  shipmentLineId: string | null;
+  invoiceId: string | null;
+  invoiceNumber: string | null;
   supplierCode: string | null;
   supplierName: string;
-  invoiceLineId: string;
+  invoiceLineId: string | null;
   purchaseOrderLineId: string | null;
   purchaseOrderId: string | null;
   purchaseOrderNumber: string | null;
@@ -4412,8 +5249,17 @@ interface ImportPurchaseOrderLineRow {
   description: string | null;
   quantity: unknown;
   unitOfMeasure: string;
+  sourceUnitCost: unknown;
+  sourceCurrency: ImportSourceCurrency;
+  fxRate: unknown;
+  fxDate: unknown;
   baseUnitCostHnl: unknown;
+  commercialUnitCostHnl: unknown;
+  componentAllocatedCostHnl: unknown;
   landedUnitCostHnl: unknown;
+  costRole: unknown;
+  receiptPolicy: unknown;
+  allocationGroupKey: string | null;
   poUnitCostHnl: unknown;
 }
 
@@ -4424,17 +5270,29 @@ function isWholeUnitQuantity(value: number): boolean {
 function importPoLineBlockingReason(
   line: Pick<
     ImportPurchaseOrderLinkLine,
-    'purchaseOrderLineId' | 'skuId' | 'skuCode' | 'quantity' | 'baseUnitCostHnl' | 'landedUnitCostHnl'
+    | 'purchaseOrderLineId'
+    | 'skuId'
+    | 'skuCode'
+    | 'quantity'
+    | 'baseUnitCostHnl'
+    | 'commercialUnitCostHnl'
+    | 'landedUnitCostHnl'
+    | 'receiptPolicy'
   >,
   unitCostSource: ImportPoUnitCostSource,
 ): string | null {
   if (line.purchaseOrderLineId) return 'Already linked to a purchase-order line.';
+  if (line.receiptPolicy !== 'RECEIVE_TO_STOCK') {
+    return 'Import cost component lines are rolled into receiptable output lines.';
+  }
   if (!line.skuId) return 'Link the import line to an app SKU before creating a PO.';
   if (!line.skuCode) return 'Linked SKU was not found.';
   if (!Number.isFinite(line.quantity) || line.quantity <= 0) return 'Quantity must be greater than zero.';
   if (!isWholeUnitQuantity(line.quantity)) return 'Native purchase-order lines require whole-unit quantities.';
 
-  const unitCost = unitCostSource === 'LANDED' ? line.landedUnitCostHnl : line.baseUnitCostHnl;
+  const unitCost = unitCostSource === 'LANDED'
+    ? line.landedUnitCostHnl
+    : line.commercialUnitCostHnl ?? line.baseUnitCostHnl;
   if (unitCost == null || !Number.isFinite(unitCost) || unitCost <= 0) {
     return unitCostSource === 'LANDED'
       ? 'Allocate landed cost before creating a landed-cost draft PO.'
@@ -4444,13 +5302,17 @@ function importPoLineBlockingReason(
 }
 
 function mapImportPurchaseOrderLinkLine(row: ImportPurchaseOrderLineRow): ImportPurchaseOrderLinkLine {
+  const costRole = mapCostRole(row.costRole);
+  const receiptPolicy = mapReceiptPolicy(row.receiptPolicy, costRole);
   const line: ImportPurchaseOrderLinkLine = {
+    sourceType: row.sourceType,
     shipmentId: String(row.shipmentId),
-    invoiceId: String(row.invoiceId),
-    invoiceNumber: String(row.invoiceNumber),
+    shipmentLineId: row.shipmentLineId ? String(row.shipmentLineId) : null,
+    invoiceId: row.invoiceId ? String(row.invoiceId) : null,
+    invoiceNumber: row.invoiceNumber ?? null,
     supplierCode: row.supplierCode ?? null,
     supplierName: String(row.supplierName),
-    invoiceLineId: String(row.invoiceLineId),
+    invoiceLineId: row.invoiceLineId ? String(row.invoiceLineId) : null,
     purchaseOrderLineId: row.purchaseOrderLineId ? String(row.purchaseOrderLineId) : null,
     purchaseOrderId: row.purchaseOrderId ? String(row.purchaseOrderId) : null,
     purchaseOrderNumber: row.purchaseOrderNumber ?? null,
@@ -4464,8 +5326,17 @@ function mapImportPurchaseOrderLinkLine(row: ImportPurchaseOrderLineRow): Import
     description: row.description ?? null,
     quantity: toNumber(row.quantity),
     unitOfMeasure: String(row.unitOfMeasure),
+    sourceUnitCost: nullableNumber(row.sourceUnitCost),
+    sourceCurrency: row.sourceCurrency,
+    fxRate: toNumber(row.fxRate),
+    fxDate: dateOnly(row.fxDate) ?? '',
     baseUnitCostHnl: toNumber(row.baseUnitCostHnl),
+    commercialUnitCostHnl: nullableNumber(row.commercialUnitCostHnl),
+    componentAllocatedCostHnl: toNumber(row.componentAllocatedCostHnl),
     landedUnitCostHnl: nullableNumber(row.landedUnitCostHnl),
+    costRole,
+    receiptPolicy,
+    allocationGroupKey: row.allocationGroupKey ?? null,
     poUnitCostHnl: nullableNumber(row.poUnitCostHnl),
     canCreatePurchaseOrderLine: false,
     blockingReason: null,
@@ -4501,39 +5372,106 @@ async function readImportPurchaseOrderLinking(
   const rows = await client.$queryRawUnsafe<ImportPurchaseOrderLineRow[]>(
     `
       SELECT
-        si.shipment_id AS "shipmentId",
-        s.shipment_number AS "shipmentNumber",
-        s.display_name AS "displayName",
-        s.status,
-        si.id AS "invoiceId",
-        si.invoice_number AS "invoiceNumber",
-        si.supplier_code AS "supplierCode",
-        si.supplier_name AS "supplierName",
-        il.id AS "invoiceLineId",
-        il.purchase_order_line_id AS "purchaseOrderLineId",
-        po.id AS "purchaseOrderId",
-        po.po_number AS "purchaseOrderNumber",
-        po.status AS "purchaseOrderStatus",
-        po.vendor_code AS "purchaseOrderVendorCode",
-        COALESCE(il.sku_id, pol.sku_id) AS "skuId",
-        pol.sku_id AS "poLineSkuId",
-        COALESCE(sku.code, sku.provisional_code) AS "skuCode",
-        il.item_code AS "itemCode",
-        il.style_code AS "styleCode",
-        il.description,
-        il.quantity,
-        il.unit_of_measure AS "unitOfMeasure",
-        il.base_unit_cost_hnl AS "baseUnitCostHnl",
-        il.landed_unit_cost_hnl AS "landedUnitCostHnl",
-        pol.unit_cost AS "poUnitCostHnl"
-      FROM app.import_supplier_invoice si
-      JOIN app.import_shipment s ON s.id = si.shipment_id
-      JOIN app.import_invoice_line il ON il.invoice_id = si.id
-      LEFT JOIN app.purchase_order_line pol ON pol.id = il.purchase_order_line_id
-      LEFT JOIN app.purchase_order po ON po.id = pol.po_id
-      LEFT JOIN app.sku sku ON sku.id = COALESCE(il.sku_id, pol.sku_id)
-      WHERE si.shipment_id = $1::uuid
-      ORDER BY si.invoice_number ASC, il.line_number ASC
+        *
+      FROM (
+        SELECT
+          'INVOICE_LINE'::text AS "sourceType",
+          si.shipment_id AS "shipmentId",
+          s.shipment_number AS "shipmentNumber",
+          s.display_name AS "displayName",
+          s.status,
+          NULL::uuid AS "shipmentLineId",
+          si.id AS "invoiceId",
+          si.invoice_number AS "invoiceNumber",
+          si.supplier_code AS "supplierCode",
+          si.supplier_name AS "supplierName",
+          il.id AS "invoiceLineId",
+          il.purchase_order_line_id AS "purchaseOrderLineId",
+          po.id AS "purchaseOrderId",
+          po.po_number AS "purchaseOrderNumber",
+          po.status AS "purchaseOrderStatus",
+          po.vendor_code AS "purchaseOrderVendorCode",
+          COALESCE(il.sku_id, pol.sku_id) AS "skuId",
+          pol.sku_id AS "poLineSkuId",
+          COALESCE(sku.code, sku.provisional_code) AS "skuCode",
+          il.item_code AS "itemCode",
+          il.style_code AS "styleCode",
+          il.description,
+          il.quantity,
+          il.unit_of_measure AS "unitOfMeasure",
+          il.source_unit_cost AS "sourceUnitCost",
+          il.source_currency AS "sourceCurrency",
+          il.fx_rate AS "fxRate",
+          il.fx_date AS "fxDate",
+          il.base_unit_cost_hnl AS "baseUnitCostHnl",
+          COALESCE(il.commercial_unit_cost_hnl, il.base_unit_cost_hnl) AS "commercialUnitCostHnl",
+          COALESCE(il.component_allocated_cost_hnl, 0) AS "componentAllocatedCostHnl",
+          il.landed_unit_cost_hnl AS "landedUnitCostHnl",
+          il.cost_role AS "costRole",
+          il.receipt_policy AS "receiptPolicy",
+          il.allocation_group_key AS "allocationGroupKey",
+          pol.unit_cost AS "poUnitCostHnl",
+          si.invoice_number AS "sortDocument",
+          il.line_number AS "sortLine"
+        FROM app.import_supplier_invoice si
+        JOIN app.import_shipment s ON s.id = si.shipment_id
+        JOIN app.import_invoice_line il ON il.invoice_id = si.id
+        LEFT JOIN app.purchase_order_line pol ON pol.id = il.purchase_order_line_id
+        LEFT JOIN app.purchase_order po ON po.id = pol.po_id
+        LEFT JOIN app.sku sku ON sku.id = COALESCE(il.sku_id, pol.sku_id)
+        WHERE si.shipment_id = $1::uuid
+        UNION ALL
+        SELECT
+          'EXPECTED_PO_LINE'::text AS "sourceType",
+          sl.shipment_id AS "shipmentId",
+          s.shipment_number AS "shipmentNumber",
+          s.display_name AS "displayName",
+          s.status,
+          sl.id AS "shipmentLineId",
+          NULL::uuid AS "invoiceId",
+          NULL::text AS "invoiceNumber",
+          po.vendor_code AS "supplierCode",
+          COALESCE(vo.mail_name, v.mail_name, vo.short_name, v.short_name, po.vendor_code) AS "supplierName",
+          NULL::uuid AS "invoiceLineId",
+          sl.purchase_order_line_id AS "purchaseOrderLineId",
+          po.id AS "purchaseOrderId",
+          po.po_number AS "purchaseOrderNumber",
+          po.status AS "purchaseOrderStatus",
+          po.vendor_code AS "purchaseOrderVendorCode",
+          pol.sku_id AS "skuId",
+          pol.sku_id AS "poLineSkuId",
+          COALESCE(sku.code, sku.provisional_code) AS "skuCode",
+          NULL::text AS "itemCode",
+          NULL::text AS "styleCode",
+          COALESCE(sku.description_web, sku.description_rics, sku.comment) AS "description",
+          sl.expected_quantity AS quantity,
+          'EA'::text AS "unitOfMeasure",
+          sl.source_unit_cost AS "sourceUnitCost",
+          sl.source_currency AS "sourceCurrency",
+          sl.fx_rate AS "fxRate",
+          sl.fx_date AS "fxDate",
+          sl.commercial_unit_cost_hnl AS "baseUnitCostHnl",
+          sl.commercial_unit_cost_hnl AS "commercialUnitCostHnl",
+          0::numeric AS "componentAllocatedCostHnl",
+          sl.landed_unit_cost_hnl AS "landedUnitCostHnl",
+          'FINISHED_GOOD'::text AS "costRole",
+          'RECEIVE_TO_STOCK'::text AS "receiptPolicy",
+          NULL::text AS "allocationGroupKey",
+          pol.unit_cost AS "poUnitCostHnl",
+          po.po_number AS "sortDocument",
+          pol.line_sequence AS "sortLine"
+        FROM app.import_shipment_line sl
+        JOIN app.import_shipment s ON s.id = sl.shipment_id
+        JOIN app.purchase_order_line pol ON pol.id = sl.purchase_order_line_id
+        JOIN app.purchase_order po ON po.id = pol.po_id
+        LEFT JOIN app.vendor v ON v.code = po.vendor_code
+        LEFT JOIN app.vendor_overlay vo ON vo.code = po.vendor_code AND (vo.source IS NULL OR vo.source <> 'tombstone')
+        LEFT JOIN app.sku sku ON sku.id = pol.sku_id
+        WHERE sl.shipment_id = $1::uuid
+          AND sl.status <> 'CANCELLED'
+          AND sl.invoice_line_id IS NULL
+      ) link_rows
+      ORDER BY "sortDocument" ASC, "sortLine" ASC
     `,
     shipmentId,
   );
@@ -4639,8 +5577,31 @@ function normalizeImportPoUnitCostSource(value: ImportPoUnitCostSource | undefin
 }
 
 function importPoUnitCost(line: ImportPurchaseOrderLinkLine, unitCostSource: ImportPoUnitCostSource): number {
-  const unitCost = unitCostSource === 'LANDED' ? line.landedUnitCostHnl : line.baseUnitCostHnl;
+  const unitCost = unitCostSource === 'LANDED'
+    ? line.landedUnitCostHnl
+    : line.commercialUnitCostHnl ?? line.baseUnitCostHnl;
   return round2(unitCost ?? 0);
+}
+
+function commonImportPoSourceCurrency(lines: ImportPurchaseOrderLinkLine[]): ImportSourceCurrency {
+  const currencies = new Set(lines.map((line) => line.sourceCurrency));
+  return currencies.size === 1 ? lines[0]?.sourceCurrency ?? 'HNL' : 'HNL';
+}
+
+function commonImportPoFxRate(lines: ImportPurchaseOrderLinkLine[]): number {
+  const first = lines[0];
+  if (!first) return 1;
+  return lines.every((line) => line.sourceCurrency === first.sourceCurrency && Math.abs(line.fxRate - first.fxRate) <= 0.000001)
+    ? first.fxRate
+    : 1;
+}
+
+function commonImportPoFxDate(lines: ImportPurchaseOrderLinkLine[]): string {
+  const first = lines[0];
+  if (!first) return new Date().toISOString().slice(0, 10);
+  return lines.every((line) => line.fxDate === first.fxDate)
+    ? first.fxDate
+    : new Date().toISOString().slice(0, 10);
 }
 
 export async function createImportPurchaseOrderDraft(
@@ -4695,15 +5656,23 @@ export async function createImportPurchaseOrderDraft(
       `Import shipment ${linking.shipmentNumber}`,
       cleanString(input.notes),
     ].filter(Boolean).join(' - ');
+    const poSourceCurrency = commonImportPoSourceCurrency(targetLines);
+    const poFxRate = poSourceCurrency === 'HNL' ? 1 : commonImportPoFxRate(targetLines);
+    const poFxDate = poSourceCurrency === 'HNL'
+      ? new Date().toISOString().slice(0, 10)
+      : commonImportPoFxDate(targetLines);
+    const costBasis = unitCostSource === 'LANDED' ? 'IMPORT_LANDED_ESTIMATE_HNL' : 'IMPORT_COMMERCIAL_HNL';
 
     await tx.$executeRawUnsafe(
       `
         INSERT INTO app.purchase_order (
           id, po_number, bill_to_store_id, ship_to_store_id, vendor_code,
-          order_type, classification, status, origin, buyer, comments, order_date, created_by
+          order_type, classification, status, origin, buyer, comments, order_date, created_by,
+          source_currency, fx_rate, fx_date, cost_basis
         ) VALUES (
           $1::uuid, $2, $3, $4, $5,
-          'RO', 'AT_ONCE', 'DRAFT', 'IMPORT_MANAGEMENT', $6, $7, CURRENT_TIMESTAMP, $8
+          'RO', 'AT_ONCE', 'DRAFT', 'IMPORT_MANAGEMENT', $6, $7, CURRENT_TIMESTAMP, $8,
+          $9, $10, $11::date, $12
         )
       `,
       poId,
@@ -4714,16 +5683,29 @@ export async function createImportPurchaseOrderDraft(
       cleanString(input.buyer) ?? null,
       comments || null,
       createdBy,
+      poSourceCurrency,
+      poFxRate,
+      poFxDate,
+      costBasis,
     );
 
     for (const [index, line] of targetLines.entries()) {
       const poLineId = uuidv4();
       const quantity = Math.round(line.quantity);
+      const commercialUnitCostHnl = round4(line.commercialUnitCostHnl ?? line.baseUnitCostHnl);
+      const estimatedLandedUnitCostHnl = round4(line.landedUnitCostHnl ?? commercialUnitCostHnl);
+      const sourceUnitCost = poSourceCurrency === line.sourceCurrency
+        ? line.sourceUnitCost ?? (line.sourceCurrency === 'HNL' ? commercialUnitCostHnl : null)
+        : null;
       await tx.$executeRawUnsafe(
         `
           INSERT INTO app.purchase_order_line (
-            id, po_id, sku_id, line_sequence, quantity_ordered, quantity_received, unit_cost
-          ) VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, 0, $6::numeric)
+            id, po_id, sku_id, line_sequence, quantity_ordered, quantity_received,
+            unit_cost, source_unit_cost, commercial_unit_cost_hnl, estimated_landed_unit_cost_hnl
+          ) VALUES (
+            $1::uuid, $2::uuid, $3::uuid, $4, $5, 0,
+            $6::numeric, $7::numeric, $8::numeric, $9::numeric
+          )
         `,
         poLineId,
         poId,
@@ -4731,6 +5713,9 @@ export async function createImportPurchaseOrderDraft(
         index + 1,
         quantity,
         importPoUnitCost(line, unitCostSource),
+        sourceUnitCost,
+        commercialUnitCostHnl,
+        estimatedLandedUnitCostHnl,
       );
       await tx.$executeRawUnsafe(
         `
@@ -5012,12 +5997,19 @@ function receivingBlockReason(
   shipmentStatus: ImportShipmentStatus,
   basis: ImportReceivingCostBasis | null,
   row: any,
+  shipmentBlockReason: string | null = null,
 ): string | null {
   if (!basis) {
     return 'Shipment must have an approved estimate, be in transit, or be in final liquidation before receiving.';
   }
   if (shipmentStatus === 'CLOSED') {
     return 'Shipment is closed.';
+  }
+  if (shipmentBlockReason) {
+    return shipmentBlockReason;
+  }
+  if (row.receiptPolicy && row.receiptPolicy !== 'RECEIVE_TO_STOCK') {
+    return 'Import cost component lines are rolled into receiptable output lines.';
   }
   if (!row.skuId) {
     return 'Link the import line to a SKU or purchase-order line before receiving.';
@@ -5068,11 +6060,14 @@ function mapImportReceivingHandoffLine(
   shipmentStatus: ImportShipmentStatus,
   basis: ImportReceivingCostBasis | null,
   row: any,
+  shipmentBlockReason: string | null = null,
 ): ImportReceivingHandoffLine {
-  const blockingReason = receivingBlockReason(shipmentStatus, basis, row);
+  const blockingReason = receivingBlockReason(shipmentStatus, basis, row, shipmentBlockReason);
   const canReceive = blockingReason == null;
   const quantity = toNumber(row.quantity);
   const landedUnitCostHnl = nullableNumber(row.landedUnitCostHnl);
+  const costRole = mapCostRole(row.costRole);
+  const receiptPolicy = mapReceiptPolicy(row.receiptPolicy, costRole);
   const receivingUnitCostHnl = basis && landedUnitCostHnl != null ? landedUnitCostHnl : null;
   const transitStatus = row.transitStatus ? (row.transitStatus as GoodsInTransitStatus) : null;
   return {
@@ -5089,9 +6084,18 @@ function mapImportReceivingHandoffLine(
     description: row.description ?? null,
     quantity,
     unitOfMeasure: String(row.unitOfMeasure),
+    sourceUnitCost: nullableNumber(row.sourceUnitCost),
+    sourceCurrency: (row.sourceCurrency ?? 'HNL') as ImportSourceCurrency,
+    fxRate: toNumber(row.fxRate ?? 1),
+    fxDate: dateOnly(row.fxDate) ?? '',
     baseUnitCostHnl: toNumber(row.baseUnitCostHnl),
+    commercialUnitCostHnl: nullableNumber(row.commercialUnitCostHnl),
+    componentAllocatedCostHnl: toNumber(row.componentAllocatedCostHnl),
     allocatedLandedCostHnl: toNumber(row.allocatedLandedCostHnl),
     landedUnitCostHnl,
+    costRole,
+    receiptPolicy,
+    allocationGroupKey: row.allocationGroupKey ?? null,
     receivingUnitCostHnl,
     receivingLineCostHnl: receivingUnitCostHnl == null ? null : round2(quantity * receivingUnitCostHnl),
     receivingCostBasis: basis,
@@ -5251,6 +6255,106 @@ function parseImportReceiptStoreId(locationId?: string | null): number {
   const match = /^loc-(\d+)$/i.exec(clean);
   if (match) return Number(match[1]);
   throw new ImportManagementServiceError(404, 'LOCATION_NOT_FOUND', `Location ${clean} not found.`);
+}
+
+interface StockCostEventInput {
+  stockMovementId: string | null;
+  storeId: number;
+  skuId: string;
+  quantityDelta: number;
+  valueDeltaHnl: number;
+  unitCostHnl: number | null;
+  valuationBasis: 'IMPORT_ESTIMATED' | 'IMPORT_FINAL' | 'IMPORT_TRUE_UP';
+  sourceDocumentType: string;
+  sourceDocumentId: string;
+  postedBy: string;
+  postedAt: string;
+  idempotencyKey: string;
+}
+
+async function postStockCostEvent(client: SqlClient, input: StockCostEventInput): Promise<void> {
+  const inserted = await client.$queryRawUnsafe<Array<{ id: string }>>(
+    `
+      INSERT INTO app.stock_cost_event (
+        id, stock_movement_id, store_id, sku_id, quantity_delta, value_delta_hnl,
+        unit_cost_hnl, valuation_basis, source_document_type, source_document_id,
+        posted_by, posted_at, idempotency_key
+      )
+      VALUES (
+        $1::uuid, $2::uuid, $3, $4::uuid, $5, $6,
+        $7, $8, $9, $10,
+        $11, $12::timestamptz, $13
+      )
+      ON CONFLICT (idempotency_key) DO NOTHING
+      RETURNING id::text
+    `,
+    uuidv4(),
+    input.stockMovementId,
+    input.storeId,
+    input.skuId,
+    input.quantityDelta,
+    input.valueDeltaHnl,
+    input.unitCostHnl,
+    input.valuationBasis,
+    input.sourceDocumentType,
+    input.sourceDocumentId,
+    input.postedBy,
+    input.postedAt,
+    input.idempotencyKey,
+  );
+  if (inserted.length === 0) return;
+
+  await client.$executeRawUnsafe(
+    `
+      INSERT INTO app.stock_cost_balance (
+        store_id, sku_id, quantity_on_hand, inventory_value_hnl, average_unit_cost_hnl
+      )
+      VALUES (
+        $1, $2::uuid, $3, $4,
+        CASE WHEN $3::numeric > 0 THEN ROUND($4::numeric / $3::numeric, 4) ELSE NULL END
+      )
+      ON CONFLICT (store_id, sku_id)
+      DO UPDATE SET
+        quantity_on_hand = app.stock_cost_balance.quantity_on_hand + EXCLUDED.quantity_on_hand,
+        inventory_value_hnl = app.stock_cost_balance.inventory_value_hnl + EXCLUDED.inventory_value_hnl,
+        average_unit_cost_hnl = CASE
+          WHEN app.stock_cost_balance.quantity_on_hand + EXCLUDED.quantity_on_hand > 0
+          THEN ROUND(
+            (app.stock_cost_balance.inventory_value_hnl + EXCLUDED.inventory_value_hnl)
+            / (app.stock_cost_balance.quantity_on_hand + EXCLUDED.quantity_on_hand),
+            4
+          )
+          ELSE NULL
+        END,
+        updated_at = CURRENT_TIMESTAMP
+    `,
+    input.storeId,
+    input.skuId,
+    input.quantityDelta,
+    input.valueDeltaHnl,
+  );
+
+  await client.$executeRawUnsafe(
+    `
+      UPDATE app.sku s
+      SET current_cost = agg.average_unit_cost_hnl,
+          updated_at = CURRENT_TIMESTAMP
+      FROM (
+        SELECT
+          sku_id,
+          CASE
+            WHEN SUM(quantity_on_hand) > 0
+            THEN ROUND(SUM(inventory_value_hnl) / SUM(quantity_on_hand), 2)
+            ELSE NULL
+          END AS average_unit_cost_hnl
+        FROM app.stock_cost_balance
+        WHERE sku_id = $1::uuid
+        GROUP BY sku_id
+      ) agg
+      WHERE s.id = agg.sku_id
+    `,
+    input.skuId,
+  );
 }
 
 function importPoReceiptLinesToPost(
@@ -5506,15 +6610,34 @@ async function postImportPurchaseOrderReceipts(
         receivedAt,
       );
 
+      await postStockCostEvent(client, {
+        stockMovementId: movementId,
+        storeId,
+        skuId: line.poLine.skuId,
+        quantityDelta: line.quantity,
+        valueDeltaHnl: round2(line.quantity * line.effectiveUnitCost),
+        unitCostHnl: line.effectiveUnitCost,
+        valuationBasis: basis === 'ESTIMATED' ? 'IMPORT_ESTIMATED' : 'IMPORT_FINAL',
+        sourceDocumentType: 'PO_RECEIPT',
+        sourceDocumentId: receiptId,
+        postedBy: changedBy,
+        postedAt: receivedAt,
+        idempotencyKey: `${idempotencyKey}:${line.poLine.lineId}:cost`,
+      });
+
       await client.$executeRawUnsafe(
         `
           INSERT INTO app.po_receipt_line (
             id, receipt_id, po_line_id, sku_id, column_label, row_label,
             quantity_received, effective_unit_cost, discrepancy_reason,
-            audit_reference, movement_id
+            audit_reference, movement_id, import_shipment_id, import_invoice_line_id,
+            import_shipment_line_id, landed_cost_basis, commercial_unit_cost_hnl,
+            allocated_landed_cost_hnl, landed_unit_cost_hnl
           ) VALUES (
             $1::uuid, $2::uuid, $3::uuid, $4::uuid, '', '',
-            $5, $6::numeric, NULL, $7, $8::uuid
+            $5, $6::numeric, NULL, $7, $8::uuid, $9::uuid, $10::uuid,
+            $11::uuid, $12, $13::numeric,
+            $14::numeric, $15::numeric
           )
         `,
         uuidv4(),
@@ -5525,6 +6648,13 @@ async function postImportPurchaseOrderReceipts(
         line.effectiveUnitCost,
         line.handoffLine.shipmentLineId ?? line.handoffLine.invoiceLineId,
         movementId,
+        handoff.shipmentId,
+        line.handoffLine.invoiceLineId,
+        line.handoffLine.shipmentLineId,
+        basis,
+        line.handoffLine.commercialUnitCostHnl,
+        line.handoffLine.allocatedLandedCostHnl,
+        line.handoffLine.landedUnitCostHnl,
       );
       postedQuantity += line.quantity;
       postedHnlAmount = round2(postedHnlAmount + (line.quantity * line.effectiveUnitCost));
@@ -5677,6 +6807,21 @@ async function postDirectImportInventoryReceipts(
       quantity,
       receivedAt,
     );
+
+    await postStockCostEvent(client, {
+      stockMovementId: movementId,
+      storeId,
+      skuId: line.skuId as string,
+      quantityDelta: quantity,
+      valueDeltaHnl: hnlAmount,
+      unitCostHnl,
+      valuationBasis: basis === 'ESTIMATED' ? 'IMPORT_ESTIMATED' : 'IMPORT_FINAL',
+      sourceDocumentType: 'IMPORT_RECEIPT',
+      sourceDocumentId: receiptId,
+      postedBy: changedBy,
+      postedAt: receivedAt,
+      idempotencyKey: `${idempotencyKey}:cost`,
+    });
 
     await client.$executeRawUnsafe(
       `
@@ -5898,6 +7043,21 @@ async function postImportInventoryTrueUps(
       receivedAt,
       `import:true-up:${handoff.shipmentId}:${line.invoiceLineId}`,
     );
+
+    await postStockCostEvent(client, {
+      stockMovementId: movementId,
+      storeId,
+      skuId: line.skuId as string,
+      quantityDelta: 0,
+      valueDeltaHnl: trueUp.deltaHnlAmount,
+      unitCostHnl: finalUnitCostHnl,
+      valuationBasis: 'IMPORT_TRUE_UP',
+      sourceDocumentType: 'IMPORT_COST_TRUE_UP',
+      sourceDocumentId: trueUpId,
+      postedBy: changedBy,
+      postedAt: receivedAt,
+      idempotencyKey: `import:true-up:${handoff.shipmentId}:${line.invoiceLineId}:cost`,
+    });
 
     await client.$executeRawUnsafe(
       `
@@ -6139,102 +7299,151 @@ export async function getImportReceivingHandoff(shipmentId: string): Promise<Imp
   }
 
   const basis = receivingCostBasisForStatus(shipment.status);
-  const rows = await prisma.$queryRawUnsafe<any[]>(
-    `
-      SELECT
-        sl.invoice_line_id AS "invoiceLineId",
-        sl.id AS "shipmentLineId",
-        po.id AS "purchaseOrderId",
-        sl.purchase_order_line_id AS "purchaseOrderLineId",
-        po.po_number AS "purchaseOrderNumber",
-        po.status AS "purchaseOrderStatus",
-        COALESCE(il.sku_id, pol.sku_id) AS "skuId",
-        COALESCE(sku.code, sku.provisional_code, il.item_code) AS "itemCode",
-        il.style_code AS "styleCode",
-        COALESCE(il.description, sku.description_web, sku.description_rics, sku.comment) AS description,
-        COALESCE(il.quantity, sl.expected_quantity) AS quantity,
-        COALESCE(il.unit_of_measure, 'UNIT') AS "unitOfMeasure",
-        COALESCE(il.base_unit_cost_hnl, sl.commercial_unit_cost_hnl) AS "baseUnitCostHnl",
-        sl.allocated_landed_cost_hnl AS "allocatedLandedCostHnl",
-        sl.landed_unit_cost_hnl AS "landedUnitCostHnl",
-        git.id AS "goodsInTransitRecordId",
-        git.container_id AS "containerId",
-        COALESCE(ic.container_number, ic.cargo_group) AS "containerLabel",
-        git.status AS "transitStatus",
-        git.quantity_in_transit AS "quantityInTransit",
-        git.expected_receipt_at AS "expectedReceiptAt",
-        git.received_at AS "receivedAt",
-        po.po_number AS sort_doc,
-        0 AS sort_group,
-        pol.line_sequence AS sort_line
-      FROM app.import_shipment_line sl
-      JOIN app.purchase_order_line pol ON pol.id = sl.purchase_order_line_id
-      JOIN app.purchase_order po ON po.id = pol.po_id
-      LEFT JOIN app.import_invoice_line il ON il.id = sl.invoice_line_id
-      LEFT JOIN app.sku sku ON sku.id = COALESCE(il.sku_id, pol.sku_id)
-      LEFT JOIN LATERAL (
-        SELECT id, container_id, status, quantity_in_transit, expected_receipt_at, received_at
-        FROM app.goods_in_transit_record
-        WHERE shipment_line_id = sl.id
-           OR (sl.invoice_line_id IS NOT NULL AND invoice_line_id = sl.invoice_line_id)
-        ORDER BY created_at DESC
+  const [rows, failedReceivingCheckRows] = await Promise.all([
+    prisma.$queryRawUnsafe<any[]>(
+      `
+        SELECT
+          sl.invoice_line_id AS "invoiceLineId",
+          sl.id AS "shipmentLineId",
+          po.id AS "purchaseOrderId",
+          sl.purchase_order_line_id AS "purchaseOrderLineId",
+          po.po_number AS "purchaseOrderNumber",
+          po.status AS "purchaseOrderStatus",
+          COALESCE(il.sku_id, pol.sku_id) AS "skuId",
+          COALESCE(sku.code, sku.provisional_code, il.item_code) AS "itemCode",
+          il.style_code AS "styleCode",
+          COALESCE(il.description, sku.description_web, sku.description_rics, sku.comment) AS description,
+          COALESCE(il.quantity, sl.expected_quantity) AS quantity,
+          COALESCE(il.unit_of_measure, 'UNIT') AS "unitOfMeasure",
+          COALESCE(il.source_unit_cost, sl.source_unit_cost) AS "sourceUnitCost",
+          COALESCE(il.source_currency, sl.source_currency) AS "sourceCurrency",
+          COALESCE(il.fx_rate, sl.fx_rate) AS "fxRate",
+          COALESCE(il.fx_date, sl.fx_date) AS "fxDate",
+          COALESCE(il.base_unit_cost_hnl, sl.commercial_unit_cost_hnl) AS "baseUnitCostHnl",
+          COALESCE(il.commercial_unit_cost_hnl, il.base_unit_cost_hnl, sl.commercial_unit_cost_hnl) AS "commercialUnitCostHnl",
+          COALESCE(il.component_allocated_cost_hnl, 0) AS "componentAllocatedCostHnl",
+          sl.allocated_landed_cost_hnl AS "allocatedLandedCostHnl",
+          sl.landed_unit_cost_hnl AS "landedUnitCostHnl",
+          COALESCE(il.cost_role, 'FINISHED_GOOD') AS "costRole",
+          COALESCE(il.receipt_policy, 'RECEIVE_TO_STOCK') AS "receiptPolicy",
+          il.allocation_group_key AS "allocationGroupKey",
+          git.id AS "goodsInTransitRecordId",
+          git.container_id AS "containerId",
+          COALESCE(ic.container_number, ic.cargo_group) AS "containerLabel",
+          git.status AS "transitStatus",
+          git.quantity_in_transit AS "quantityInTransit",
+          git.expected_receipt_at AS "expectedReceiptAt",
+          git.received_at AS "receivedAt",
+          po.po_number AS sort_doc,
+          0 AS sort_group,
+          pol.line_sequence AS sort_line
+        FROM app.import_shipment_line sl
+        JOIN app.purchase_order_line pol ON pol.id = sl.purchase_order_line_id
+        JOIN app.purchase_order po ON po.id = pol.po_id
+        LEFT JOIN app.import_invoice_line il ON il.id = sl.invoice_line_id
+        LEFT JOIN app.sku sku ON sku.id = COALESCE(il.sku_id, pol.sku_id)
+        LEFT JOIN LATERAL (
+          SELECT id, container_id, status, quantity_in_transit, expected_receipt_at, received_at
+          FROM app.goods_in_transit_record
+          WHERE shipment_line_id = sl.id
+             OR (sl.invoice_line_id IS NOT NULL AND invoice_line_id = sl.invoice_line_id)
+          ORDER BY created_at DESC
+          LIMIT 1
+        ) git ON true
+        LEFT JOIN app.import_container ic ON ic.id = git.container_id
+        WHERE sl.shipment_id = $1::uuid
+          AND sl.status <> 'CANCELLED'
+          AND (il.id IS NULL OR il.receipt_policy = 'RECEIVE_TO_STOCK')
+        UNION ALL
+        SELECT
+          il.id AS "invoiceLineId",
+          NULL::uuid AS "shipmentLineId",
+          po.id AS "purchaseOrderId",
+          il.purchase_order_line_id AS "purchaseOrderLineId",
+          po.po_number AS "purchaseOrderNumber",
+          po.status AS "purchaseOrderStatus",
+          COALESCE(il.sku_id, pol.sku_id) AS "skuId",
+          il.item_code AS "itemCode",
+          il.style_code AS "styleCode",
+          il.description,
+          il.quantity,
+          il.unit_of_measure AS "unitOfMeasure",
+          il.source_unit_cost AS "sourceUnitCost",
+          il.source_currency AS "sourceCurrency",
+          il.fx_rate AS "fxRate",
+          il.fx_date AS "fxDate",
+          il.base_unit_cost_hnl AS "baseUnitCostHnl",
+          COALESCE(il.commercial_unit_cost_hnl, il.base_unit_cost_hnl) AS "commercialUnitCostHnl",
+          COALESCE(il.component_allocated_cost_hnl, 0) AS "componentAllocatedCostHnl",
+          il.allocated_landed_cost_hnl AS "allocatedLandedCostHnl",
+          il.landed_unit_cost_hnl AS "landedUnitCostHnl",
+          il.cost_role AS "costRole",
+          il.receipt_policy AS "receiptPolicy",
+          il.allocation_group_key AS "allocationGroupKey",
+          git.id AS "goodsInTransitRecordId",
+          git.container_id AS "containerId",
+          COALESCE(ic.container_number, ic.cargo_group) AS "containerLabel",
+          git.status AS "transitStatus",
+          git.quantity_in_transit AS "quantityInTransit",
+          git.expected_receipt_at AS "expectedReceiptAt",
+          git.received_at AS "receivedAt",
+          si.invoice_number AS sort_doc,
+          1 AS sort_group,
+          il.line_number AS sort_line
+        FROM app.import_supplier_invoice si
+        JOIN app.import_invoice_line il ON il.invoice_id = si.id
+        LEFT JOIN app.purchase_order_line pol ON pol.id = il.purchase_order_line_id
+        LEFT JOIN app.purchase_order po ON po.id = pol.po_id
+        LEFT JOIN LATERAL (
+          SELECT id, container_id, status, quantity_in_transit, expected_receipt_at, received_at
+          FROM app.goods_in_transit_record
+          WHERE invoice_line_id = il.id
+          ORDER BY created_at DESC
+          LIMIT 1
+        ) git ON true
+        LEFT JOIN app.import_container ic ON ic.id = git.container_id
+        WHERE si.shipment_id = $1::uuid
+          AND il.receipt_policy = 'RECEIVE_TO_STOCK'
+          AND NOT EXISTS (
+            SELECT 1
+            FROM app.import_shipment_line sl
+            WHERE sl.invoice_line_id = il.id
+              AND sl.status <> 'CANCELLED'
+          )
+        ORDER BY sort_group ASC, sort_doc ASC, sort_line ASC
+      `,
+      shipmentId,
+    ),
+    prisma.$queryRawUnsafe<Array<{ checkCode: string; message: string | null }>>(
+      `
+        SELECT check_code AS "checkCode", message
+        FROM app.import_verification_check
+        WHERE shipment_id = $1::uuid
+          AND check_code IN (
+            'COMPONENT_COST_ROLLUP',
+            'COMPONENT_ROLLUP_RECONCILES',
+            'RECEIPT_TARGET_COST_RECONCILES',
+            'ALLOCATION_RECONCILES'
+          )
+          AND status = 'FAIL'
+        ORDER BY
+          CASE check_code
+            WHEN 'COMPONENT_COST_ROLLUP' THEN 0
+            WHEN 'COMPONENT_ROLLUP_RECONCILES' THEN 1
+            WHEN 'RECEIPT_TARGET_COST_RECONCILES' THEN 2
+            ELSE 3
+          END
         LIMIT 1
-      ) git ON true
-      LEFT JOIN app.import_container ic ON ic.id = git.container_id
-      WHERE sl.shipment_id = $1::uuid
-        AND sl.status <> 'CANCELLED'
-      UNION ALL
-      SELECT
-        il.id AS "invoiceLineId",
-        NULL::uuid AS "shipmentLineId",
-        po.id AS "purchaseOrderId",
-        il.purchase_order_line_id AS "purchaseOrderLineId",
-        po.po_number AS "purchaseOrderNumber",
-        po.status AS "purchaseOrderStatus",
-        COALESCE(il.sku_id, pol.sku_id) AS "skuId",
-        il.item_code AS "itemCode",
-        il.style_code AS "styleCode",
-        il.description,
-        il.quantity,
-        il.unit_of_measure AS "unitOfMeasure",
-        il.base_unit_cost_hnl AS "baseUnitCostHnl",
-        il.allocated_landed_cost_hnl AS "allocatedLandedCostHnl",
-        il.landed_unit_cost_hnl AS "landedUnitCostHnl",
-        git.id AS "goodsInTransitRecordId",
-        git.container_id AS "containerId",
-        COALESCE(ic.container_number, ic.cargo_group) AS "containerLabel",
-        git.status AS "transitStatus",
-        git.quantity_in_transit AS "quantityInTransit",
-        git.expected_receipt_at AS "expectedReceiptAt",
-        git.received_at AS "receivedAt",
-        si.invoice_number AS sort_doc,
-        1 AS sort_group,
-        il.line_number AS sort_line
-      FROM app.import_supplier_invoice si
-      JOIN app.import_invoice_line il ON il.invoice_id = si.id
-      LEFT JOIN app.purchase_order_line pol ON pol.id = il.purchase_order_line_id
-      LEFT JOIN app.purchase_order po ON po.id = pol.po_id
-      LEFT JOIN LATERAL (
-        SELECT id, container_id, status, quantity_in_transit, expected_receipt_at, received_at
-        FROM app.goods_in_transit_record
-        WHERE invoice_line_id = il.id
-        ORDER BY created_at DESC
-        LIMIT 1
-      ) git ON true
-      LEFT JOIN app.import_container ic ON ic.id = git.container_id
-      WHERE si.shipment_id = $1::uuid
-        AND NOT EXISTS (
-          SELECT 1
-          FROM app.import_shipment_line sl
-          WHERE sl.invoice_line_id = il.id
-            AND sl.status <> 'CANCELLED'
-        )
-      ORDER BY sort_group ASC, sort_doc ASC, sort_line ASC
-    `,
-    shipmentId,
-  );
+      `,
+      shipmentId,
+    ),
+  ]);
 
-  const lines = rows.map((row) => mapImportReceivingHandoffLine(shipmentId, shipment.status, basis, row));
+  const failedReceivingCheck = failedReceivingCheckRows[0] ?? null;
+  const shipmentBlockReason = failedReceivingCheck
+    ? failedReceivingCheck.message ?? `${failedReceivingCheck.checkCode} must pass before receiving.`
+    : null;
+  const lines = rows.map((row) => mapImportReceivingHandoffLine(shipmentId, shipment.status, basis, row, shipmentBlockReason));
   const readyLines = lines.filter((line) => line.canReceive);
   const audit = await getImportReceivingAuditSummary(shipmentId);
 
@@ -6882,8 +8091,142 @@ export async function allocateImportLandedCost(
   if (!Number.isFinite(markupFactor) || markupFactor <= 0) {
     throw new ImportManagementServiceError(422, 'INVALID_MARKUP_FACTOR', 'markupFactor must be greater than zero.');
   }
+  assertImportCostBuildPreviewsReady(await getImportCostBuildPreviewsForShipment(prisma, shipmentId));
 
   const result = await prisma.$transaction(async (tx) => {
+    await tx.$executeRawUnsafe(
+      `DELETE FROM app.import_cost_component_allocation WHERE shipment_id = $1::uuid`,
+      shipmentId,
+    );
+    await tx.$executeRawUnsafe(
+      `DELETE FROM app.import_cost_build WHERE shipment_id = $1::uuid`,
+      shipmentId,
+    );
+    await tx.$executeRawUnsafe(
+      `DELETE FROM app.import_landed_cost_allocation WHERE shipment_id = $1::uuid`,
+      shipmentId,
+    );
+    await tx.$executeRawUnsafe(
+      `DELETE FROM app.import_suggested_price WHERE shipment_id = $1::uuid`,
+      shipmentId,
+    );
+    await tx.$executeRawUnsafe(
+      `
+        UPDATE app.import_invoice_line il
+        SET allocated_landed_cost_hnl = 0,
+            component_allocated_cost_hnl = 0,
+            commercial_unit_cost_hnl = il.base_unit_cost_hnl,
+            landed_unit_cost_hnl = CASE
+              WHEN il.receipt_policy = 'RECEIVE_TO_STOCK' THEN il.base_unit_cost_hnl
+              ELSE NULL
+            END,
+            updated_at = CURRENT_TIMESTAMP
+        FROM app.import_supplier_invoice si
+        WHERE si.id = il.invoice_id
+          AND si.shipment_id = $1::uuid
+      `,
+      shipmentId,
+    );
+    await tx.$executeRawUnsafe(
+      `
+        UPDATE app.import_shipment_line
+        SET allocated_landed_cost_hnl = 0,
+            landed_unit_cost_hnl = estimated_landed_unit_cost_hnl,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE shipment_id = $1::uuid
+      `,
+      shipmentId,
+    );
+
+    const componentSourceRows = await tx.$queryRawUnsafe<any[]>(
+      `
+        SELECT
+          il.id,
+          il.hnl_amount AS "hnlAmount",
+          il.quantity,
+          il.cost_role AS "costRole",
+          il.receipt_policy AS "receiptPolicy",
+          il.allocation_group_key AS "allocationGroupKey"
+        FROM app.import_invoice_line il
+        JOIN app.import_supplier_invoice si ON si.id = il.invoice_id
+        WHERE si.shipment_id = $1::uuid
+          AND il.receipt_policy IN ('RECEIVE_TO_STOCK', 'ROLL_TO_OUTPUT')
+        ORDER BY il.line_number ASC, il.id ASC
+      `,
+      shipmentId,
+    );
+    const componentRollup = rollupComponentCostsByGroup(componentSourceRows.map((row) => {
+      const costRole = mapCostRole(row.costRole);
+      return {
+        id: String(row.id),
+        hnlAmount: toNumber(row.hnlAmount),
+        quantity: toNumber(row.quantity),
+        receiptPolicy: mapReceiptPolicy(row.receiptPolicy, costRole),
+        allocationGroupKey: row.allocationGroupKey ?? null,
+      };
+    }));
+
+    for (const lineTotal of componentRollup.lineTotals) {
+      await tx.$executeRawUnsafe(
+        `
+          UPDATE app.import_invoice_line
+          SET component_allocated_cost_hnl = $2,
+              commercial_unit_cost_hnl = $3,
+              landed_unit_cost_hnl = $3,
+              updated_at = CURRENT_TIMESTAMP
+          WHERE id = $1::uuid
+        `,
+        lineTotal.outputLineId,
+        lineTotal.componentAllocatedCostHnl,
+        lineTotal.commercialUnitCostHnl,
+      );
+    }
+
+    const outputLineTotals = new Map(componentRollup.lineTotals.map((lineTotal) => [lineTotal.outputLineId, lineTotal]));
+    const outputBuildIds = new Map<string, string>();
+    for (const allocation of componentRollup.allocations) {
+      const lineTotal = outputLineTotals.get(allocation.outputLineId);
+      if (!lineTotal) continue;
+      let buildId = outputBuildIds.get(allocation.outputLineId);
+      if (!buildId) {
+        buildId = uuidv4();
+        outputBuildIds.set(allocation.outputLineId, buildId);
+        const buildCode = `${(lineTotal.allocationGroupKey ?? 'OUTPUT').slice(0, 48)}:${allocation.outputLineId}`.slice(0, 96);
+        await tx.$executeRawUnsafe(
+          `
+            INSERT INTO app.import_cost_build (
+              id, shipment_id, build_code, description, output_invoice_line_id,
+              output_quantity, allocation_basis, created_by
+            )
+            VALUES (
+              $1::uuid, $2::uuid, $3, $4, $5::uuid,
+              $6, 'OUTPUT_VALUE_SHARE', 'system'
+            )
+          `,
+          buildId,
+          shipmentId,
+          buildCode,
+          lineTotal.allocationGroupKey ? `Auto component rollup for ${lineTotal.allocationGroupKey}` : 'Auto component rollup',
+          allocation.outputLineId,
+          componentSourceRows.find((row) => String(row.id) === allocation.outputLineId)?.quantity ?? 0,
+        );
+      }
+      await tx.$executeRawUnsafe(
+        `
+          INSERT INTO app.import_cost_component_allocation (
+            shipment_id, build_id, component_invoice_line_id, output_invoice_line_id,
+            allocation_basis, allocated_hnl_amount
+          )
+          VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, 'OUTPUT_VALUE_SHARE', $5)
+        `,
+        shipmentId,
+        buildId,
+        allocation.componentLineId,
+        allocation.outputLineId,
+        allocation.allocatedHnlAmount,
+      );
+    }
+
     const lineRows = await tx.$queryRawUnsafe<any[]>(
       `
         SELECT
@@ -6891,24 +8234,29 @@ export async function allocateImportLandedCost(
           'SHIPMENT_LINE'::text AS "targetType",
           sl.invoice_line_id AS "invoiceLineId",
           COALESCE(il.sku_id, pol.sku_id) AS "skuId",
-          COALESCE(il.hnl_amount, sl.expected_quantity * sl.commercial_unit_cost_hnl) AS "hnlAmount",
+          COALESCE(
+            il.quantity * COALESCE(il.commercial_unit_cost_hnl, il.base_unit_cost_hnl),
+            sl.expected_quantity * sl.commercial_unit_cost_hnl
+          ) AS "hnlAmount",
           COALESCE(il.quantity, sl.expected_quantity) AS quantity
         FROM app.import_shipment_line sl
         JOIN app.purchase_order_line pol ON pol.id = sl.purchase_order_line_id
         LEFT JOIN app.import_invoice_line il ON il.id = sl.invoice_line_id
         WHERE sl.shipment_id = $1::uuid
           AND sl.status <> 'CANCELLED'
+          AND (il.id IS NULL OR il.receipt_policy = 'RECEIVE_TO_STOCK')
         UNION ALL
         SELECT
           il.id,
           'INVOICE_LINE'::text AS "targetType",
           il.id AS "invoiceLineId",
           il.sku_id AS "skuId",
-          il.hnl_amount AS "hnlAmount",
+          il.quantity * COALESCE(il.commercial_unit_cost_hnl, il.base_unit_cost_hnl) AS "hnlAmount",
           il.quantity
         FROM app.import_invoice_line il
         JOIN app.import_supplier_invoice si ON si.id = il.invoice_id
         WHERE si.shipment_id = $1::uuid
+          AND il.receipt_policy = 'RECEIVE_TO_STOCK'
           AND NOT EXISTS (
             SELECT 1
             FROM app.import_shipment_line sl
@@ -6936,7 +8284,7 @@ export async function allocateImportLandedCost(
       targetType: String(row.targetType) as 'INVOICE_LINE' | 'SHIPMENT_LINE',
       invoiceLineId: row.invoiceLineId ? String(row.invoiceLineId) : null,
       skuId: row.skuId ?? null,
-      hnlAmount: toNumber(row.hnlAmount),
+      hnlAmount: round2(toNumber(row.hnlAmount)),
       quantity: toNumber(row.quantity),
     }));
     const charges = chargeRows.map((row) => ({
@@ -6945,11 +8293,6 @@ export async function allocateImportLandedCost(
     }));
 
     const { allocations, lineTotals } = allocateByProductCostShare(lines, charges);
-
-    await tx.$executeRawUnsafe(
-      `DELETE FROM app.import_landed_cost_allocation WHERE shipment_id = $1::uuid`,
-      shipmentId,
-    );
 
     for (const allocation of allocations) {
       const target = lines.find((line) => line.id === allocation.invoiceLineId);
@@ -7040,6 +8383,19 @@ export async function allocateImportLandedCost(
         round2(lineTotal.landedUnitCostHnl * markupFactor),
       );
     }
+
+    const unallocatedComponentHnl = round2(componentRollup.warnings.reduce((sum, row) => sum + row.hnlAmount, 0));
+    await upsertVerificationCheck(tx, shipmentId, {
+      checkCode: 'COMPONENT_COST_ROLLUP',
+      status: componentRollup.warnings.length === 0 ? 'PASS' : 'FAIL',
+      expectedHnlAmount: componentRollup.warnings.length === 0 ? null : unallocatedComponentHnl,
+      actualHnlAmount: componentRollup.warnings.length === 0 ? null : 0,
+      varianceHnlAmount: componentRollup.warnings.length === 0 ? null : unallocatedComponentHnl,
+      message:
+        componentRollup.warnings.length === 0
+          ? 'Fabric, conversion, and component costs are rolled into receiptable output lines.'
+          : `${componentRollup.warnings.length} component line(s) could not be rolled into a receiptable output.`,
+    });
 
     const invoiceHnlTotal = round2(lines.reduce((sum, line) => sum + line.hnlAmount, 0));
     const chargeHnlTotal = round2(charges.reduce((sum, charge) => sum + charge.hnlAmount, 0));

@@ -62,6 +62,10 @@ export interface SkuAttributesResponse {
   byDimension: Record<string, SkuDimensionEntry>;
 }
 
+export interface SkuAttributesBulkResponse {
+  bySku: Record<string, SkuAttributesResponse>;
+}
+
 export interface AssignmentInput {
   dimensionCode: string;
   valueCode: string;
@@ -723,6 +727,54 @@ export const AttributesRepository = {
       }
 
       return Ok({ skuCode, byDimension });
+    } catch (err) {
+      return Err(toRepoError(err));
+    }
+  },
+
+  async getSkuAttributesForSkus(skuCodes: string[]): Promise<Result<SkuAttributesBulkResponse>> {
+    try {
+      const uniqueSkuCodes = Array.from(new Set(skuCodes.map((sku) => sku.trim()).filter(Boolean)));
+      if (uniqueSkuCodes.length === 0) return Ok({ bySku: {} });
+
+      const dims = await prisma.attributeDimension.findMany({
+        orderBy: { sortOrder: 'asc' },
+      });
+
+      const bySku: Record<string, SkuAttributesResponse> = {};
+      for (const skuCode of uniqueSkuCodes) {
+        const byDimension: Record<string, SkuDimensionEntry> = {};
+        for (const d of dims) {
+          byDimension[d.code] = { isMultiValue: d.isMultiValue, values: [] };
+        }
+        bySku[skuCode] = { skuCode, byDimension };
+      }
+
+      const assignments = await prisma.skuAttributeAssignment.findMany({
+        where: { skuCode: { in: uniqueSkuCodes } },
+        include: { value: true, dimension: true },
+      });
+
+      for (const a of assignments) {
+        const sku = bySku[a.skuCode];
+        if (!sku) continue;
+        const entry = sku.byDimension[a.dimension.code];
+        if (!entry) continue;
+        entry.values.push({
+          code: a.value.code,
+          labelEs: a.value.labelEs,
+          assignedBy: a.assignedBy,
+          assignedAt: a.assignedAt.toISOString(),
+        });
+      }
+
+      for (const sku of Object.values(bySku)) {
+        for (const entry of Object.values(sku.byDimension)) {
+          entry.values.sort((x, y) => x.code.localeCompare(y.code));
+        }
+      }
+
+      return Ok({ bySku });
     } catch (err) {
       return Err(toRepoError(err));
     }

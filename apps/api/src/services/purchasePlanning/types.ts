@@ -109,6 +109,7 @@ export interface PlanResponse {
 export type PurchasePlanSeason = 'spring' | 'summer' | 'fall' | 'winter';
 export type SavedPlanStatus = 'draft' | 'archived';
 export type PurchasePlanAdjustmentKind = 'percent_lift' | 'absolute_total';
+export type PurchasePlanPlanningScope = 'store_group' | 'enterprise';
 
 export interface InventoryPosition {
   onHand: number;
@@ -118,9 +119,11 @@ export interface InventoryPosition {
 }
 
 export interface PurchasePlanCreateRequest {
-  storeGroupCode: string;
+  planningScope?: PurchasePlanPlanningScope;
+  storeGroupCode?: string;
   season: PurchasePlanSeason;
   seasonYear: number;
+  seasonMonths?: string[];
   departmentNumbers: number[];
   label?: string;
   forecast?: {
@@ -133,9 +136,8 @@ export interface PurchasePlanCreateRequest {
 }
 
 export interface PurchasePlanningSeasonalReportRequest {
-  storeGroupCode: string;
   departmentNumber: number;
-  year: number;
+  asOfYearMonth?: string;
   forecast?: {
     method?: ForecastMethod;
   } & ForecastParams;
@@ -153,10 +155,31 @@ export interface PurchasePlanAdjustmentRequest {
   appliedBy?: string;
 }
 
+export interface PurchasePlanRowUpdateRequest {
+  currentProjSales?: number;
+  currentEohTarget?: number;
+  currentBuy?: number;
+  reason: string;
+  appliedBy?: string;
+}
+
+export interface PurchasePlanRowsUpdateRequest {
+  rows: Array<{
+    rowId: string;
+    currentProjSales?: number;
+    currentEohTarget?: number;
+    currentBuy?: number;
+  }>;
+  reason: string;
+  appliedBy?: string;
+}
+
 export interface PurchasePlanHeader {
   id: string;
   label: string;
   status: SavedPlanStatus;
+  planningScope: PurchasePlanPlanningScope;
+  planningScopeLabel: string;
   storeGroupCode: string;
   storeGroupLabel: string | null;
   season: PurchasePlanSeason;
@@ -265,6 +288,15 @@ export interface SeasonalPurchaseReportValue {
   costHnl: number;
 }
 
+export interface SeasonalPurchaseReportWorksheet {
+  storeGroupCode: string;
+  storeGroupLabel: string | null;
+  planId: string;
+  planLabel: string;
+  autoCreated: boolean;
+  duplicateSourceCount: number;
+}
+
 export interface SeasonalPurchaseReportColumn {
   season: PurchasePlanSeason;
   seasonYear: number;
@@ -274,6 +306,7 @@ export interface SeasonalPurchaseReportColumn {
   planLabel: string;
   autoCreated: boolean;
   duplicateSourceCount: number;
+  worksheets: SeasonalPurchaseReportWorksheet[];
   projectedBoh: SeasonalPurchaseReportValue;
   projectedSales: SeasonalPurchaseReportValue;
   baselineBuy: SeasonalPurchaseReportValue;
@@ -284,11 +317,23 @@ export interface SeasonalPurchaseReportColumn {
 }
 
 export interface SeasonalPurchaseReportResponse {
+  planningScope: PurchasePlanPlanningScope;
+  planningScopeLabel: string;
   storeGroupCode: string;
   storeGroupLabel: string | null;
+  storeGroupCodes: string[];
+  storeGroupLabels: string[];
+  warehouseStoreNumbers: number[];
   departmentNumber: number;
   departmentLabel: string;
   year: number;
+  asOfYearMonth: string;
+  startSeason: PurchasePlanSeason;
+  startSeasonYear: number;
+  endSeason: PurchasePlanSeason;
+  endSeasonYear: number;
+  projectionMonths: string[];
+  workbook: SeasonalPurchaseReportWorksheet;
   seasons: SeasonalPurchaseReportColumn[];
   warnings: string[];
   generatedAt: string;
