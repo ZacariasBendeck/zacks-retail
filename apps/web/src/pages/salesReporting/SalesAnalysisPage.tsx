@@ -347,7 +347,11 @@ export default function SalesAnalysisPage() {
   const [dateSpec, setDateSpec] = useState<DateSpec>(DEFAULT_DATE_SPEC)
   // Criteria state — arrays for the multi-selects, strings for RICS grammar.
   const [selectedStores, setSelectedStores] = useState<number[]>([])
+  const [selectedChains, setSelectedChains] = useState<string[]>([])
+  const [selectedSectors, setSelectedSectors] = useState<number[]>([])
+  const [selectedDepartments, setSelectedDepartments] = useState<number[]>([])
   const [selectedCategories, setSelectedCategories] = useState<number[]>([])
+  const [selectedSeasons, setSelectedSeasons] = useState<string[]>([])
   const [selectedGroups, setSelectedGroups] = useState<string[]>([])
   const [storesRaw, setStoresRaw] = useState('')
   const [categoriesRaw, setCategoriesRaw] = useState('')
@@ -405,7 +409,11 @@ export default function SalesAnalysisPage() {
     if (hierarchy.level2) setLevel2(hierarchy.level2)
     setDateSpec(spec)
     setSelectedStores(Array.isArray(p.stores) ? p.stores : [])
+    setSelectedChains(Array.isArray(p.chains) ? p.chains : [])
+    setSelectedSectors(Array.isArray(p.sectors) ? p.sectors : [])
+    setSelectedDepartments(Array.isArray(p.departments) ? p.departments : [])
     setSelectedCategories(Array.isArray(p.categories) ? p.categories : [])
+    setSelectedSeasons(Array.isArray(p.seasons) ? p.seasons : [])
     setSelectedGroups(Array.isArray(p.groups) ? p.groups : [])
     setStoresRaw(p.storesRaw ?? '')
     setCategoriesRaw(p.categoriesRaw ?? '')
@@ -429,7 +437,11 @@ export default function SalesAnalysisPage() {
       startDate: resolvedStart,
       endDate: resolvedEnd,
       stores: Array.isArray(p.stores) && p.stores.length ? p.stores : undefined,
+      chains: Array.isArray(p.chains) && p.chains.length ? p.chains : undefined,
+      sectors: Array.isArray(p.sectors) && p.sectors.length ? p.sectors : undefined,
+      departments: Array.isArray(p.departments) && p.departments.length ? p.departments : undefined,
       categories: Array.isArray(p.categories) && p.categories.length ? p.categories : undefined,
+      seasons: Array.isArray(p.seasons) && p.seasons.length ? p.seasons : undefined,
       groups: Array.isArray(p.groups) && p.groups.length ? p.groups : undefined,
       storesRaw: p.storesRaw?.trim() || undefined,
       categoriesRaw: p.categoriesRaw?.trim() || undefined,
@@ -467,7 +479,11 @@ export default function SalesAnalysisPage() {
       startDate,
       endDate,
       stores: selectedStores.length ? selectedStores : undefined,
+      chains: selectedChains.length ? selectedChains : undefined,
+      sectors: selectedSectors.length ? selectedSectors : undefined,
+      departments: selectedDepartments.length ? selectedDepartments : undefined,
       categories: selectedCategories.length ? selectedCategories : undefined,
+      seasons: selectedSeasons.length ? selectedSeasons : undefined,
       groups: selectedGroups.length ? selectedGroups : undefined,
       storesRaw: storesRaw.trim() || undefined,
       categoriesRaw: categoriesRaw.trim() || undefined,
@@ -636,7 +652,11 @@ export default function SalesAnalysisPage() {
                 level2,
                 dateSpec,
                 stores: selectedStores.length ? selectedStores : undefined,
+                chains: selectedChains.length ? selectedChains : undefined,
+                sectors: selectedSectors.length ? selectedSectors : undefined,
+                departments: selectedDepartments.length ? selectedDepartments : undefined,
                 categories: selectedCategories.length ? selectedCategories : undefined,
+                seasons: selectedSeasons.length ? selectedSeasons : undefined,
                 groups: selectedGroups.length ? selectedGroups : undefined,
                 storesRaw: storesRaw.trim() || undefined,
                 categoriesRaw: categoriesRaw.trim() || undefined,
@@ -663,7 +683,11 @@ export default function SalesAnalysisPage() {
                 level2,
                 dateSpec,
                 stores: selectedStores.length ? selectedStores : undefined,
+                chains: selectedChains.length ? selectedChains : undefined,
+                sectors: selectedSectors.length ? selectedSectors : undefined,
+                departments: selectedDepartments.length ? selectedDepartments : undefined,
                 categories: selectedCategories.length ? selectedCategories : undefined,
+                seasons: selectedSeasons.length ? selectedSeasons : undefined,
                 groups: selectedGroups.length ? selectedGroups : undefined,
                 storesRaw: storesRaw.trim() || undefined,
                 categoriesRaw: categoriesRaw.trim() || undefined,
@@ -685,10 +709,14 @@ export default function SalesAnalysisPage() {
                 ]
                 const counts: string[] = []
                 if (selectedStores.length) counts.push(`stores ${selectedStores.length}`)
+                if (selectedChains.length) counts.push(`chains ${selectedChains.length}`)
+                if (selectedSectors.length) counts.push(`sectors ${selectedSectors.length}`)
+                if (selectedDepartments.length) counts.push(`depts ${selectedDepartments.length}`)
                 if (selectedCategories.length) counts.push(`cats ${selectedCategories.length}`)
+                if (selectedSeasons.length) counts.push(`seasons ${selectedSeasons.length}`)
                 if (selectedGroups.length) counts.push(`groups ${selectedGroups.length}`)
                 if (vendorsRaw.trim()) counts.push('vendors')
-                if (seasonsRaw.trim()) counts.push('seasons')
+                if (seasonsRaw.trim()) counts.push('season grammar')
                 if (styleColorRaw.trim()) counts.push('style/color')
                 if (skusRaw.trim()) counts.push('skus')
                 if (keywordsRaw.trim()) counts.push('keywords')
