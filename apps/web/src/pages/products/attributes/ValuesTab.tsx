@@ -57,7 +57,7 @@ export default function ValuesTab({ dimension }: Props) {
     },
     { title: 'Etiqueta', dataIndex: 'labelEs', key: 'labelEs' },
     {
-      title: 'DescripciÃ³n',
+      title: 'Descripcion',
       dataIndex: 'descriptionEs',
       key: 'descriptionEs',
       ellipsis: true,
@@ -67,7 +67,7 @@ export default function ValuesTab({ dimension }: Props) {
             <Typography.Text>{value}</Typography.Text>
           </Tooltip>
         ) : (
-          <Typography.Text type="secondary">â€”</Typography.Text>
+          <Typography.Text type="secondary">-</Typography.Text>
         ),
     },
     { title: 'Orden', dataIndex: 'sortOrder', key: 'sortOrder', width: 80, align: 'right' as const },

@@ -54,6 +54,7 @@ const OtbMonthlyPlansPage = lazy(() => import('./pages/otb/OtbMonthlyPlansPage')
 const OtbPlanEntryPage = lazy(() => import('./pages/otb/OtbPlanEntryPage'))
 const SalesReportsHubPage = lazy(() => import('./pages/salesReporting/SalesReportsHubPage'))
 const SalesAnalysisPage = lazy(() => import('./pages/salesReporting/SalesAnalysisPage'))
+const SalesAnalysisPictureReportPage = lazy(() => import('./pages/salesReporting/SalesAnalysisPictureReportPage'))
 const SalesHierarchyDrillDownPage = lazy(() => import('./pages/salesReporting/SalesHierarchyDrillDownPage'))
 const SalesPivotPage = lazy(() => import('./pages/salesReporting/SalesPivotPage'))
 const SalesPivotCustomPage = lazy(() => import('./pages/salesReporting/SalesPivotCustomPage'))
@@ -138,6 +139,7 @@ const ChangeSkuAttributesPage = lazy(() => import('./pages/utilities/ChangeSkuAt
 const BatchHistoryPage = lazy(() => import('./pages/utilities/BatchHistoryPage'))
 const BatchHistoryDetailPage = lazy(() => import('./pages/utilities/BatchHistoryDetailPage'))
 const MigrationDayConsolePage = lazy(() => import('./pages/operations/MigrationDayConsolePage'))
+const InventoryClosePage = lazy(() => import('./pages/operations/InventoryClosePage'))
 
 // products module — Inventory Inquiry (/inventory/inquiry now redirects here)
 const InquiryPage = lazy(() => import('./pages/products/inquiry/InquiryPage').then(m => ({ default: m.InquiryPage })))
@@ -269,6 +271,7 @@ export default function App() {
             <Route path="/reports/sales" element={gate('reports.view', <SalesReportsHubPage />)} />
             <Route path="/reports/sales/performance" element={gate('reports.view', <SalesReportPage />)} />
             <Route path="/reports/sales/analysis" element={gate('reports.view', <SalesAnalysisPage />)} />
+            <Route path="/reports/sales/analysis-picture" element={gate('reports.view', <SalesAnalysisPictureReportPage />)} />
             <Route path="/reports/sales/hierarchy-drill-down" element={gate('reports.view', <SalesHierarchyDrillDownPage />)} />
             <Route path="/reports/sales/pivot" element={gate('reports.view', <SalesPivotPage />)} />
             <Route path="/reports/sales/pivot-custom" element={gate('reports.view', <SalesPivotCustomPage />)} />
@@ -358,7 +361,11 @@ export default function App() {
             <Route path="/utilities/change-group-codes" element={<Navigate to="/utilities/change-sku-attributes" replace />} />
             <Route path="/utilities/batch-history" element={gate('products.write', <BatchHistoryPage />)} />
             <Route path="/utilities/batch-history/:id" element={gate('products.write', <BatchHistoryDetailPage />)} />
-            <Route path="/operations" element={<Navigate to="/operations/migration-day" replace />} />
+            <Route path="/operations" element={<Navigate to="/operations/inventory-close" replace />} />
+            <Route
+              path="/operations/inventory-close"
+              element={<RequirePermission permission="employees.manage"><InventoryClosePage /></RequirePermission>}
+            />
             <Route
               path="/operations/migration-day"
               element={<RequirePermission permission="employees.manage"><MigrationDayConsolePage /></RequirePermission>}

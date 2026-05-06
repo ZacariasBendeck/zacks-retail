@@ -22,6 +22,7 @@ const { Title, Paragraph, Text } = Typography
 // reportTemplatesApi.ts — a missing key falls back to the raw kebab-case id.
 const REPORT_TYPE_LABELS: Record<ReportType, string> = {
   'sales-analysis': 'Sales Analysis',
+  'sales-analysis-picture': 'Sales Analysis Picture Report',
   'sales-hierarchy-drill-down': 'Sales Hierarchy Drill-Down',
   'sales-pivot': 'Sales Pivot',
   'best-sellers': 'Best Sellers',

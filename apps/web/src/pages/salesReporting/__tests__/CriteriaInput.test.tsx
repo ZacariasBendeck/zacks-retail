@@ -45,6 +45,24 @@ describe('CriteriaInput', () => {
     )
   })
 
+  it('allows a blank select placeholder', () => {
+    render(
+      <CriteriaInput
+        label="Stores"
+        mode="numeric"
+        options={[]}
+        selected={[]}
+        onSelectedChange={() => {}}
+        rawText=""
+        onRawTextChange={() => {}}
+        placeholder=""
+      />,
+    )
+
+    expect(screen.queryByText(/All Stores/i)).not.toBeInTheDocument()
+    expect(screen.getByRole('combobox')).toBeInTheDocument()
+  })
+
   it('fires onSelectedChange on dropdown change', async () => {
     const spy = vi.fn()
     render(

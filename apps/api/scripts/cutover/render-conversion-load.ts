@@ -85,11 +85,12 @@ function printHelpAndExit(code: number): never {
       '  - import:native-purchase-orders-from-artifact',
       '  - import:app-replenishment-targets-from-artifact',
       '  - import:app-stock-from-artifact',
-      '  - import:app-inventory-history-from-artifact',
+      '  - import:inventory-history-from-csv-bundle',
       '  - import:employees-from-rics',
-      '  - import:customers (when Customer.csv + MailListNames.csv are bundled)',
+      '  - import:customers:bulk (when mail_list_family + mail_list_names are in the artifact)',
       '  - import:tickets:rics (when RITRNSSV ticket CSVs are bundled)',
       '  - seed:segmentation-defaults',
+      '  - import:app-created-data',
       '',
       'Options:',
       `  --bundle <dir>                Bundle directory (default ${DEFAULT_BUNDLE_DIR})`,
@@ -118,10 +119,7 @@ function fileExists(filePath: string): boolean {
 }
 
 function knownFullResetBlockers(): string[] {
-  return [
-    'No bundle export/import exists yet for ProductContent, SeasonOverlay edits, vendor overlays, SKU override tables, size-type overrides, or custom segment definitions.',
-    'verify:cutover-readiness is still mirror-era and should not be used as the Render cutover gate yet.',
-  ];
+  return [];
 }
 
 async function runCommand(
@@ -132,7 +130,8 @@ async function runCommand(
 ): Promise<void> {
   const started = Date.now();
   console.log(`[cutover:render-load] ${label}`);
-  const child = spawn(command, args, {
+  const isWindowsCmd = process.platform === 'win32' && command.toLowerCase().endsWith('.cmd');
+  const child = spawn(isWindowsCmd ? 'cmd.exe' : command, isWindowsCmd ? ['/d', '/s', '/c', command, ...args] : args, {
     cwd: options?.cwd ?? API_DIR,
     stdio: 'inherit',
     env: process.env,
@@ -190,8 +189,10 @@ async function main(): Promise<void> {
     path.join(bundleDir, 'app', 'attribute-catalog-export.json'),
     'attribute snapshot',
   );
-  const customerCsvPath = path.join(bundleDir, 'crm', 'Customer.csv');
-  const mailListNamesCsvPath = path.join(bundleDir, 'crm', 'MailListNames.csv');
+  const appDataSnapshotPath = requireFile(
+    path.join(bundleDir, 'app', 'app-data-export.json'),
+    'app-created data snapshot',
+  );
   const legacyTicketHeaderCsvPath = path.join(bundleDir, 'legacy', 'ticket_header.csv');
   const legacyTicketDetailCsvPath = path.join(bundleDir, 'legacy', 'ticket_detail.csv');
   const legacyTicketTenderCsvPath = path.join(bundleDir, 'legacy', 'ticket_tender.csv');
@@ -202,6 +203,7 @@ async function main(): Promise<void> {
   console.log(`bundle  : ${bundleDir}`);
   console.log(`legacy  : ${legacyManifestPath}`);
   console.log(`app     : ${attributeSnapshotPath}`);
+  console.log(`app data: ${appDataSnapshotPath}`);
   console.log('----------------------------------------');
 
   await runCommand('prisma migrate deploy', PNPM_CMD, ['exec', 'prisma', 'migrate', 'deploy']);
@@ -232,7 +234,7 @@ async function main(): Promise<void> {
   await runNodeTsScript(
     'seed:sku-attributes',
     path.join(API_DIR, 'scripts', 'seeds', 'seed-sku-attributes.ts'),
-    ['--manifest', legacyManifestPath],
+    ['--manifest', legacyManifestPath, '--allow-catalog-orphans'],
   );
 
   await runNodeTsScript(
@@ -269,18 +271,6 @@ async function main(): Promise<void> {
       path.join(API_DIR, 'scripts', 'rics', 'sync', 'import-app-stock-from-artifact.ts'),
       ['--manifest', legacyManifestPath],
     );
-
-    if (!args.skipInventoryHistory && (await manifestContainsTable(legacyManifestPath, 'inv_his'))) {
-      const historyArgs = ['--manifest', legacyManifestPath];
-      if (args.inventoryHistoryAsOf) {
-        historyArgs.push('--as-of', args.inventoryHistoryAsOf);
-      }
-      await runNodeTsScript(
-        'import:app-inventory-history-from-artifact',
-        path.join(API_DIR, 'scripts', 'rics', 'sync', 'import-app-inventory-history-from-artifact.ts'),
-        historyArgs,
-      );
-    }
   } else {
     warnings.push(
       'app.sku is empty after the SKU artifact import, so stock and inventory-history imports were skipped.',
@@ -298,14 +288,17 @@ async function main(): Promise<void> {
   }
 
   if (!args.skipCustomers) {
-    if (fileExists(customerCsvPath) && fileExists(mailListNamesCsvPath)) {
+    if (
+      (await manifestContainsTable(legacyManifestPath, 'mail_list_family')) &&
+      (await manifestContainsTable(legacyManifestPath, 'mail_list_names'))
+    ) {
       await runNodeTsScript(
-        'import:customers',
-        path.join(API_DIR, 'scripts', 'customers', 'import-customers.ts'),
-        ['--customer', customerCsvPath, '--mail', mailListNamesCsvPath, '--source', 'render_cutover_bundle'],
+        'import:customers:bulk',
+        path.join(API_DIR, 'scripts', 'customers', 'import-customers-bulk.ts'),
+        ['--manifest', legacyManifestPath, '--source', 'render_cutover_bundle', '--replace'],
       );
     } else {
-      warnings.push('Customer.csv and/or MailListNames.csv not present in bundle; customer master import skipped.');
+      warnings.push('mail_list_family and/or mail_list_names not present in the artifact; customer master import skipped.');
     }
   }
 
@@ -339,6 +332,24 @@ async function main(): Promise<void> {
     }
   }
 
+  await runNodeTsScript(
+    'import:app-created-data',
+    path.join(API_DIR, 'scripts', 'cutover', 'import-app-created-data.ts'),
+    ['--in', appDataSnapshotPath],
+  );
+
+  if (appSkuCount > 0 && !args.skipInventoryHistory && (await manifestContainsTable(legacyManifestPath, 'inv_his'))) {
+    const historyArgs = ['--manifest', legacyManifestPath];
+    if (args.inventoryHistoryAsOf) {
+      historyArgs.push('--as-of', args.inventoryHistoryAsOf);
+    }
+    await runNodeTsScript(
+      'import:inventory-history-from-csv-bundle',
+      path.join(API_DIR, 'scripts', 'rics', 'sync', 'import-inventory-history-from-csv-bundle.ts'),
+      historyArgs,
+    );
+  }
+
   const blockers = knownFullResetBlockers();
 
   console.log('----------------------------------------');
@@ -349,14 +360,18 @@ async function main(): Promise<void> {
       console.log(`  - ${warning}`);
     }
   }
-  console.log('known full-reset blockers:');
-  for (const blocker of blockers) {
-    console.log(`  - ${blocker}`);
+  if (blockers.length > 0) {
+    console.log('known full-reset blockers:');
+    for (const blocker of blockers) {
+      console.log(`  - ${blocker}`);
+    }
+  } else {
+    console.log('known full-reset blockers: none');
   }
   console.log(`total   : ${Date.now() - started}ms`);
   console.log('========================================');
 
-  if (args.strictFull) {
+  if (args.strictFull && blockers.length > 0) {
     throw new Error('strict-full requested, but known full-reset blockers still remain');
   }
 }

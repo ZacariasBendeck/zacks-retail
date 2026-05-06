@@ -1756,6 +1756,85 @@ exports.Prisma.InventoryHistoryMovementBucketScalarFieldEnum = {
   beginningValue: 'beginningValue'
 };
 
+exports.Prisma.InventoryMonthCloseRunScalarFieldEnum = {
+  id: 'id',
+  yearMonth: 'yearMonth',
+  targetSlot: 'targetSlot',
+  snapshotAsOf: 'snapshotAsOf',
+  closedBy: 'closedBy',
+  dryRun: 'dryRun',
+  status: 'status',
+  validationStatus: 'validationStatus',
+  snapshotsScanned: 'snapshotsScanned',
+  monthsUpserted: 'monthsUpserted',
+  snapshotsUpdated: 'snapshotsUpdated',
+  nonzeroMtdCellsBefore: 'nonzeroMtdCellsBefore',
+  salesCellsReset: 'salesCellsReset',
+  unpromotedPosTickets: 'unpromotedPosTickets',
+  salesCellMismatchCount: 'salesCellMismatchCount',
+  salesCellMismatchQtyAbs: 'salesCellMismatchQtyAbs',
+  totalQtySales: 'totalQtySales',
+  totalNetSales: 'totalNetSales',
+  totalProfit: 'totalProfit',
+  inventoryValueTotal: 'inventoryValueTotal',
+  errorText: 'errorText',
+  startedAt: 'startedAt',
+  finishedAt: 'finishedAt'
+};
+
+exports.Prisma.InventoryClosedMonthScalarFieldEnum = {
+  yearMonth: 'yearMonth',
+  runId: 'runId',
+  targetSlot: 'targetSlot',
+  snapshotAsOf: 'snapshotAsOf',
+  closedBy: 'closedBy',
+  closedAt: 'closedAt',
+  snapshotsClosed: 'snapshotsClosed',
+  monthRowsClosed: 'monthRowsClosed',
+  salesCellsReset: 'salesCellsReset',
+  totalQtySales: 'totalQtySales',
+  totalNetSales: 'totalNetSales',
+  totalProfit: 'totalProfit',
+  inventoryValueTotal: 'inventoryValueTotal'
+};
+
+exports.Prisma.InventoryWeekCloseRunScalarFieldEnum = {
+  id: 'id',
+  weekEndingDate: 'weekEndingDate',
+  weekStartDate: 'weekStartDate',
+  snapshotAsOf: 'snapshotAsOf',
+  closedBy: 'closedBy',
+  dryRun: 'dryRun',
+  status: 'status',
+  validationStatus: 'validationStatus',
+  snapshotsScanned: 'snapshotsScanned',
+  trendRowsWritten: 'trendRowsWritten',
+  snapshotsUpdated: 'snapshotsUpdated',
+  unpromotedPosTickets: 'unpromotedPosTickets',
+  weekSalesMismatchCount: 'weekSalesMismatchCount',
+  weekSalesMismatchQtyAbs: 'weekSalesMismatchQtyAbs',
+  totalWeekQtySales: 'totalWeekQtySales',
+  totalWeekNetSales: 'totalWeekNetSales',
+  totalWeekProfit: 'totalWeekProfit',
+  errorText: 'errorText',
+  startedAt: 'startedAt',
+  finishedAt: 'finishedAt'
+};
+
+exports.Prisma.InventoryClosedWeekScalarFieldEnum = {
+  weekEndingDate: 'weekEndingDate',
+  runId: 'runId',
+  weekStartDate: 'weekStartDate',
+  snapshotAsOf: 'snapshotAsOf',
+  closedBy: 'closedBy',
+  closedAt: 'closedAt',
+  snapshotsClosed: 'snapshotsClosed',
+  trendRowsClosed: 'trendRowsClosed',
+  totalWeekQtySales: 'totalWeekQtySales',
+  totalWeekNetSales: 'totalWeekNetSales',
+  totalWeekProfit: 'totalWeekProfit'
+};
+
 exports.Prisma.ManualReturnScalarFieldEnum = {
   id: 'id',
   storeId: 'storeId',
@@ -3062,6 +3141,10 @@ exports.Prisma.ModelName = {
   InventoryHistoryMonth: 'InventoryHistoryMonth',
   InventoryHistoryTrendWeek: 'InventoryHistoryTrendWeek',
   InventoryHistoryMovementBucket: 'InventoryHistoryMovementBucket',
+  InventoryMonthCloseRun: 'InventoryMonthCloseRun',
+  InventoryClosedMonth: 'InventoryClosedMonth',
+  InventoryWeekCloseRun: 'InventoryWeekCloseRun',
+  InventoryClosedWeek: 'InventoryClosedWeek',
   ManualReturn: 'ManualReturn',
   ManualReturnLine: 'ManualReturnLine',
   Transfer: 'Transfer',

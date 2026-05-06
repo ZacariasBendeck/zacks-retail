@@ -1,14 +1,13 @@
-import { Suspense, lazy, useCallback, useMemo, useState } from 'react'
-import { Alert, Card, Col, Input, InputNumber, Row, Select, Space, Statistic, Tag, Typography } from 'antd'
+import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from 'react'
+import { Alert, Card, Col, InputNumber, Row, Select, Space, Statistic, Tag, Typography } from 'antd'
 import { WarningOutlined } from '@ant-design/icons'
 import { useSearchParams } from 'react-router-dom'
 import ServerDataTable, { type ServerQueryChange, type ServerTableColumn } from '../../components/ServerDataTable'
-import { useOtbLines, useOtbSummary } from '../../hooks/useOtb'
-import { ALLOWED_DEPARTMENTS, CATEGORY_MAX, CATEGORY_MIN } from '../../constants/domain'
-import { validateDomainFilterContract } from '../../services/domainFilterContract'
+import { useOtbDashboardPlans, useOtbDashboardRows, useOtbDashboardSummary } from '../../hooks/useOtbDashboard'
+import { useDepartments } from '../../hooks/useProductsTaxonomy'
 import { getErrorMessage } from '../../utils/errors'
-import type { Department } from '../../types/sku'
-import type { OtbLine, OtbLineParams } from '../../types/otb'
+import type { OtbTrendPoint } from '../../types/otb'
+import type { OtbDashboardRow, OtbDashboardRowsParams } from '../../types/otbDashboard'
 
 const WeeklyBudgetVsActualChart = lazy(() => import('../../components/charts/WeeklyBudgetVsActualChart'))
 const MONTH_OPTIONS = Array.from({ length: 12 }, (_, index) => ({
@@ -16,155 +15,256 @@ const MONTH_OPTIONS = Array.from({ length: 12 }, (_, index) => ({
   label: new Date(2024, index, 1).toLocaleString('en-US', { month: 'long' }),
 }))
 
+type DashboardTableParams = Omit<OtbDashboardRowsParams, 'planId'>
+
+function parsePositiveInteger(value: string | null): number | undefined {
+  if (!value) return undefined
+  const parsed = Number(value)
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined
+}
+
+function formatUnits(value: number | null | undefined): string {
+  return (value ?? 0).toLocaleString('en-US')
+}
+
+function formatDepartment(row: OtbDashboardRow): string {
+  if (row.departmentNumber == null) return row.departmentLabel || 'Unmapped'
+  const label = row.departmentLabel.trim()
+  if (!label) return String(row.departmentNumber)
+  if (label === String(row.departmentNumber)) return label
+  if (label.startsWith(`${row.departmentNumber} `) || label.startsWith(`${row.departmentNumber} -`)) return label
+  return `${row.departmentNumber} - ${label}`
+}
+
+function currentYearMonth(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
+}
+
 export default function OtbDashboardPage() {
   const [searchParams] = useSearchParams()
-  const preselectedDepartment = searchParams.get('department')
-  const initialDepartment =
-    preselectedDepartment != null && ALLOWED_DEPARTMENTS.includes(preselectedDepartment as Department)
-      ? (preselectedDepartment as Department)
-      : undefined
+  const initialDate = useMemo(() => new Date(), [])
+  const initialPlanId = searchParams.get('planId') ?? undefined
+  const initialDepartmentNumber = parsePositiveInteger(
+    searchParams.get('departmentNumber') ?? searchParams.get('department'),
+  )
 
-  const [params, setParams] = useState<OtbLineParams>({
+  const [selectedPlanId, setSelectedPlanId] = useState<string | undefined>(initialPlanId)
+  const [params, setParams] = useState<DashboardTableParams>({
     page: 1,
     pageSize: 100,
     sort: 'openToBuyUnits',
     order: 'asc',
-    year: new Date().getFullYear(),
-    month: new Date().getMonth() + 1,
-    department: initialDepartment,
+    year: initialDate.getFullYear(),
+    month: initialDate.getMonth() + 1,
+    departmentNumber: initialDepartmentNumber,
   })
+
+  const {
+    data: plansData,
+    isLoading: plansLoading,
+    error: plansError,
+  } = useOtbDashboardPlans({ status: 'all' })
+  const {
+    data: departments = [],
+    isLoading: departmentsLoading,
+    error: departmentsError,
+  } = useDepartments()
+
+  const plans = plansData?.plans ?? []
+  useEffect(() => {
+    if (selectedPlanId || plans.length === 0) return
+    const currentMonth = currentYearMonth(initialDate)
+    const newestDraftCoveringCurrentMonth = plans.find(
+      (plan) => plan.status === 'draft' && plan.seasonMonths.includes(currentMonth),
+    )
+    const newestDraft = plans.find((plan) => plan.status === 'draft')
+    setSelectedPlanId((newestDraftCoveringCurrentMonth ?? newestDraft ?? plans[0])?.id)
+  }, [initialDate, plans, selectedPlanId])
+
+  const summaryParams = useMemo(
+    () =>
+      selectedPlanId
+        ? {
+            planId: selectedPlanId,
+            year: params.year,
+            month: params.month,
+            departmentNumber: params.departmentNumber,
+          }
+        : undefined,
+    [params.departmentNumber, params.month, params.year, selectedPlanId],
+  )
+
+  const rowsParams = useMemo(
+    () => (selectedPlanId ? { ...params, planId: selectedPlanId } : undefined),
+    [params, selectedPlanId],
+  )
 
   const {
     data: summaryData,
     isLoading: summaryLoading,
     error: summaryError,
-  } = useOtbSummary({
-    year: params.year,
-    month: params.month,
-    department: params.department,
-  })
+  } = useOtbDashboardSummary(summaryParams)
   const {
-    data: lineData,
-    isLoading: linesLoading,
-    isFetching: linesFetching,
-    error: linesError,
-  } = useOtbLines(params)
+    data: rowData,
+    isLoading: rowsLoading,
+    isFetching: rowsFetching,
+    error: rowsError,
+  } = useOtbDashboardRows(rowsParams)
 
-  const filterValidation = useMemo(
-    () => validateDomainFilterContract({ department: params.department, category: params.category }),
-    [params.category, params.department],
+  const planOptions = useMemo(
+    () =>
+      plans.map((plan) => ({
+        value: plan.id,
+        label: `${plan.label} (${plan.planningScopeLabel})`,
+      })),
+    [plans],
+  )
+
+  const departmentOptions = useMemo(
+    () =>
+      departments.map((department) => ({
+        value: department.number,
+        label: `${department.number} - ${department.description}`,
+      })),
+    [departments],
   )
 
   const dataErrorMessage =
-    linesError != null
-      ? getErrorMessage(linesError, 'Unable to load OTB line data.')
-      : summaryError != null
-        ? getErrorMessage(summaryError, 'Unable to load OTB summary data.')
-        : null
+    plansError != null
+      ? getErrorMessage(plansError, 'Unable to load saved purchase plans.')
+      : departmentsError != null
+        ? getErrorMessage(departmentsError, 'Unable to load taxonomy departments.')
+        : rowsError != null
+          ? getErrorMessage(rowsError, 'Unable to load OTB dashboard rows.')
+          : summaryError != null
+            ? getErrorMessage(summaryError, 'Unable to load OTB dashboard summary.')
+            : null
 
-  const totals = useMemo(() => {
-    const summary = summaryData?.summary ?? []
-    const budgetAmount = summary.reduce((sum, row) => sum + row.budgetAmount, 0)
-    const actualAmount = summary.reduce((sum, row) => sum + row.actualAmount, 0)
-    const committedAmount = summary.reduce((sum, row) => sum + row.committedAmount, 0)
-    const openToBuyAmount = summary.reduce((sum, row) => sum + row.openToBuyAmount, 0)
-    return { budgetAmount, actualAmount, committedAmount, openToBuyAmount }
-  }, [summaryData])
+  const totals = summaryData?.totals ?? {
+    plannedBuyUnits: 0,
+    projectedSalesUnits: 0,
+    committedUnits: 0,
+    stockPositionUnits: 0,
+    openToBuyUnits: 0,
+    rowCount: 0,
+  }
+
+  const chartPoints: OtbTrendPoint[] = useMemo(
+    () =>
+      (summaryData?.trend ?? []).map((point) => ({
+        weekLabel: point.periodLabel,
+        budgetAmount: point.plannedBuyUnits,
+        actualAmount: point.committedUnits,
+      })),
+    [summaryData],
+  )
 
   const handleQueryChange = useCallback((query: ServerQueryChange) => {
     setParams((prev) => ({
       ...prev,
       page: query.page,
       pageSize: query.pageSize,
-      sort: query.sort ?? prev.sort,
+      sort: (query.sort as DashboardTableParams['sort']) ?? prev.sort,
       order: query.order ?? prev.order,
     }))
   }, [])
 
-  const columns: ServerTableColumn<OtbLine>[] = [
+  const columns: ServerTableColumn<OtbDashboardRow>[] = [
     {
-      title: 'SKU',
-      dataIndex: 'skuCode',
-      key: 'skuCode',
-      width: 180,
-      sorter: true,
-      ellipsis: true,
-    },
-    {
-      title: 'Style',
-      dataIndex: 'style',
-      key: 'style',
-      width: 160,
+      title: 'Month',
+      dataIndex: 'yearMonth',
+      key: 'yearMonth',
+      width: 110,
       sorter: true,
     },
     {
       title: 'Department',
-      dataIndex: 'department',
-      key: 'department',
-      width: 120,
-      render: (value: Department) => <Tag color="blue">{value}</Tag>,
+      dataIndex: 'departmentNumber',
+      key: 'departmentNumber',
+      width: 230,
+      sorter: true,
+      render: (_value, record) => <Tag color="blue">{formatDepartment(record)}</Tag>,
+      exportValue: (record) => formatDepartment(record),
     },
     {
-      title: 'Category',
-      dataIndex: 'category',
-      key: 'category',
-      width: 100,
-      align: 'right',
-      render: (value: number | null) =>
-        value == null ? (
-          <Typography.Text type="secondary">--</Typography.Text>
-        ) : value >= CATEGORY_MIN && value <= CATEGORY_MAX ? (
-          value
-        ) : (
-          <Typography.Text type="danger">{value}</Typography.Text>
-        ),
-    },
-    {
-      title: 'Budget Units',
-      dataIndex: 'budgetUnits',
-      key: 'budgetUnits',
-      width: 120,
+      title: 'Planned Buy Units',
+      dataIndex: 'plannedBuyUnits',
+      key: 'plannedBuyUnits',
+      width: 150,
       align: 'right',
       sorter: true,
+      render: (value: number) => formatUnits(value),
     },
     {
-      title: 'Actual Units',
-      dataIndex: 'actualUnits',
-      key: 'actualUnits',
-      width: 120,
+      title: 'Projected Sales Units',
+      dataIndex: 'projectedSalesUnits',
+      key: 'projectedSalesUnits',
+      width: 165,
       align: 'right',
       sorter: true,
+      render: (value: number) => formatUnits(value),
     },
     {
-      title: 'On Order Units',
-      dataIndex: 'onOrderUnits',
-      key: 'onOrderUnits',
-      width: 130,
+      title: 'Current On Order Units',
+      dataIndex: 'currentOnOrderUnits',
+      key: 'currentOnOrderUnits',
+      width: 180,
       align: 'right',
       sorter: true,
+      render: (value: number) => formatUnits(value),
+    },
+    {
+      title: 'Future On Order Units',
+      dataIndex: 'futureOnOrderUnits',
+      key: 'futureOnOrderUnits',
+      width: 175,
+      align: 'right',
+      sorter: true,
+      render: (value: number) => formatUnits(value),
+    },
+    {
+      title: 'Native Open PO Units',
+      dataIndex: 'nativeOpenPoUnits',
+      key: 'nativeOpenPoUnits',
+      width: 170,
+      align: 'right',
+      sorter: true,
+      render: (value: number) => formatUnits(value),
+    },
+    {
+      title: 'Committed Units',
+      dataIndex: 'committedUnits',
+      key: 'committedUnits',
+      width: 145,
+      align: 'right',
+      sorter: true,
+      render: (value: number) => formatUnits(value),
+    },
+    {
+      title: 'Stock Position Units',
+      dataIndex: 'stockPositionUnits',
+      key: 'stockPositionUnits',
+      width: 165,
+      align: 'right',
+      sorter: true,
+      render: (value: number) => formatUnits(value),
     },
     {
       title: 'Open To Buy Units',
       dataIndex: 'openToBuyUnits',
       key: 'openToBuyUnits',
-      width: 150,
+      width: 155,
       align: 'right',
       sorter: true,
       render: (value: number) =>
-        value < 0 ? <Typography.Text type="danger">{value}</Typography.Text> : value,
+        value < 0 ? <Typography.Text type="danger">{formatUnits(value)}</Typography.Text> : formatUnits(value),
     },
   ]
 
+  const noPlansAvailable = !plansLoading && plans.length === 0
+
   return (
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-      {filterValidation.errors.length > 0 && (
-        <Alert
-          type="error"
-          showIcon
-          message="Invalid filter selection"
-          description={filterValidation.errors.join(' ')}
-        />
-      )}
       {dataErrorMessage && (
         <Alert
           type="error"
@@ -173,18 +273,41 @@ export default function OtbDashboardPage() {
           description={dataErrorMessage}
         />
       )}
+      {noPlansAvailable && (
+        <Alert
+          type="info"
+          showIcon
+          message="No saved purchase plans are available for the dashboard."
+        />
+      )}
       <Card size="small">
         <Row gutter={[12, 12]}>
           <Col span={24}>
             <Typography.Title level={4} style={{ margin: 0 }}>
-              OTB Budget Dashboard
+              OTB Saved Plan Dashboard
             </Typography.Title>
             <Typography.Text type="secondary">
-              Period, department, and category filters share the same contract as backend OTB endpoints.
+              Saved buyer workbook units from purchase planning.
             </Typography.Text>
-            <Typography.Paragraph type="secondary" style={{ marginTop: 4, marginBottom: 0, fontSize: 12 }}>
-              Amounts in Lempira (HNL).
-            </Typography.Paragraph>
+          </Col>
+          <Col xs={24} lg={10}>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              Saved Plan
+            </Typography.Text>
+            <Select
+              showSearch
+              placeholder="Select saved plan"
+              style={{ width: '100%' }}
+              value={selectedPlanId}
+              loading={plansLoading}
+              disabled={plansLoading || plans.length === 0}
+              onChange={(value) => {
+                setSelectedPlanId(value)
+                setParams((prev) => ({ ...prev, page: 1 }))
+              }}
+              optionFilterProp="label"
+              options={planOptions}
+            />
           </Col>
           <Col xs={24} sm={12} md={8} lg={4}>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
@@ -192,7 +315,7 @@ export default function OtbDashboardPage() {
             </Typography.Text>
             <InputNumber
               min={2020}
-              max={2099}
+              max={2100}
               style={{ width: '100%' }}
               value={params.year}
               onChange={(value) =>
@@ -223,79 +346,26 @@ export default function OtbDashboardPage() {
               options={MONTH_OPTIONS}
             />
           </Col>
-          <Col xs={24} sm={12} md={8} lg={4}>
+          <Col xs={24} sm={12} md={8} lg={6}>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
               Department
             </Typography.Text>
             <Select
               allowClear
+              showSearch
               placeholder="All departments"
               style={{ width: '100%' }}
-              value={params.department}
+              value={params.departmentNumber}
+              loading={departmentsLoading}
               onChange={(value) =>
                 setParams((prev) => ({
                   ...prev,
-                  department: value as Department | undefined,
+                  departmentNumber: value as number | undefined,
                   page: 1,
                 }))
               }
-              options={ALLOWED_DEPARTMENTS.map((department) => ({
-                label: department,
-                value: department,
-              }))}
-            />
-          </Col>
-          <Col xs={24} sm={12} md={8} lg={4}>
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              Category
-            </Typography.Text>
-            <InputNumber
-              min={CATEGORY_MIN}
-              max={CATEGORY_MAX}
-              placeholder={`${CATEGORY_MIN}-${CATEGORY_MAX}`}
-              style={{ width: '100%' }}
-              value={params.category}
-              onChange={(value) =>
-                setParams((prev) => ({
-                  ...prev,
-                  category: value == null ? undefined : Number(value),
-                  page: 1,
-                }))
-              }
-            />
-          </Col>
-          <Col xs={24} sm={12} md={8} lg={4}>
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              SKU Contains
-            </Typography.Text>
-            <Input
-              allowClear
-              placeholder="e.g. AB123"
-              value={params.skuCode}
-              onChange={(event) =>
-                setParams((prev) => ({
-                  ...prev,
-                  skuCode: event.target.value || undefined,
-                  page: 1,
-                }))
-              }
-            />
-          </Col>
-          <Col xs={24} sm={12} md={8} lg={4}>
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              Style Contains
-            </Typography.Text>
-            <Input
-              allowClear
-              placeholder="e.g. Sandal"
-              value={params.style}
-              onChange={(event) =>
-                setParams((prev) => ({
-                  ...prev,
-                  style: event.target.value || undefined,
-                  page: 1,
-                }))
-              }
+              optionFilterProp="label"
+              options={departmentOptions}
             />
           </Col>
         </Row>
@@ -305,9 +375,8 @@ export default function OtbDashboardPage() {
         <Col xs={24} sm={12} lg={6}>
           <Card>
             <Statistic
-              title="Budget"
-              value={totals.budgetAmount}
-              precision={2}
+              title="Planned Buy Units"
+              value={totals.plannedBuyUnits}
               loading={summaryLoading}
             />
           </Card>
@@ -315,9 +384,8 @@ export default function OtbDashboardPage() {
         <Col xs={24} sm={12} lg={6}>
           <Card>
             <Statistic
-              title="Actual"
-              value={totals.actualAmount}
-              precision={2}
+              title="Projected Sales Units"
+              value={totals.projectedSalesUnits}
               loading={summaryLoading}
             />
           </Card>
@@ -325,9 +393,8 @@ export default function OtbDashboardPage() {
         <Col xs={24} sm={12} lg={6}>
           <Card>
             <Statistic
-              title="Committed"
-              value={totals.committedAmount}
-              precision={2}
+              title="Committed PO Units"
+              value={totals.committedUnits}
               loading={summaryLoading}
             />
           </Card>
@@ -335,36 +402,39 @@ export default function OtbDashboardPage() {
         <Col xs={24} sm={12} lg={6}>
           <Card>
             <Statistic
-              title="Open To Buy"
-              value={totals.openToBuyAmount}
-              prefix={totals.openToBuyAmount < 0 ? <WarningOutlined /> : undefined}
-              precision={2}
+              title="Open To Buy Units"
+              value={totals.openToBuyUnits}
+              prefix={totals.openToBuyUnits < 0 ? <WarningOutlined /> : undefined}
               loading={summaryLoading}
-              valueStyle={{ color: totals.openToBuyAmount < 0 ? '#cf1322' : '#1677ff' }}
+              valueStyle={{ color: totals.openToBuyUnits < 0 ? '#cf1322' : '#1677ff' }}
             />
           </Card>
         </Col>
       </Row>
 
-      <Card title="Weekly Budget vs Actual">
+      <Card title="Monthly Planned Buy vs Committed Units">
         <Suspense fallback={<Typography.Text type="secondary">Loading chart...</Typography.Text>}>
-          <WeeklyBudgetVsActualChart points={summaryData?.trend ?? []} />
+          <WeeklyBudgetVsActualChart
+            points={chartPoints}
+            budgetLabel="Planned Buy Units"
+            actualLabel="Committed Units"
+          />
         </Suspense>
       </Card>
 
       <Card size="small">
-        <ServerDataTable<OtbLine>
-          title={<Typography.Text strong>OTB SKU Lines</Typography.Text>}
-          data={lineData?.data}
+        <ServerDataTable<OtbDashboardRow>
+          title={<Typography.Text strong>Saved Plan Rows</Typography.Text>}
+          data={rowData?.data}
           columns={columns}
           rowKey="id"
-          loading={linesLoading}
-          fetching={linesFetching}
-          pagination={lineData?.pagination}
+          loading={rowsLoading}
+          fetching={rowsFetching}
+          pagination={rowData?.pagination}
           onQueryChange={handleQueryChange}
-          expectedTotalRows={lineData?.pagination.totalItems}
-          exportFileName={`otb-lines-${new Date().toISOString().slice(0, 10)}`}
-          scrollX={1220}
+          expectedTotalRows={rowData?.pagination.totalItems}
+          exportFileName={`otb-dashboard-${new Date().toISOString().slice(0, 10)}`}
+          scrollX={1710}
         />
       </Card>
     </Space>

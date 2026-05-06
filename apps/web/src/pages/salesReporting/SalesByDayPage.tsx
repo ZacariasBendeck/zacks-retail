@@ -5,6 +5,7 @@ import {
   Button,
   Card,
   Col,
+  Input,
   InputNumber,
   Row,
   Select,
@@ -18,9 +19,12 @@ import {
   type TableColumnsType,
 } from 'antd'
 import {
+  CheckOutlined,
   CopyOutlined,
   DownloadOutlined,
   DownOutlined,
+  EyeInvisibleOutlined,
+  EyeOutlined,
   QuestionCircleOutlined,
   ReloadOutlined,
   SettingOutlined,
@@ -56,7 +60,7 @@ import { useStoreChains } from '../../hooks/useStores'
 const { Text } = Typography
 
 const DEFAULT_DATE_SPEC: DateSpec = { type: 'trailing_days', days: 7 }
-const SALES_BY_DAY_LAYOUT_STORAGE_KEY = 'sales-by-day:layout:v2'
+const SALES_BY_DAY_LAYOUT_STORAGE_KEY = 'sales-by-day:layout:v3'
 
 type SalesByDayColumnKey =
   | 'date'
@@ -86,12 +90,12 @@ const DEFAULT_SALES_BY_DAY_COLUMN_LAYOUT: SalesByDayColumnLayout[] = [
   { key: 'date', label: 'Date', width: 89, visible: true, align: 'right' },
   { key: 'dayName', label: 'Day', width: 90, visible: true, align: 'left' },
   { key: 'netSales', label: 'Net Sales', width: 110, visible: true, align: 'right' },
-  { key: 'profit', label: 'Profit', width: 110, visible: true, align: 'right' },
+  { key: 'profit', label: 'Profit', width: 110, visible: false, align: 'right' },
   { key: 'comparedToDate', label: 'Compared To', width: 170, visible: true, align: 'right' },
   { key: 'comparedNetSales', label: 'Compared Net', width: 110, visible: true, align: 'right' },
-  { key: 'comparedProfit', label: 'Compared Profit', width: 110, visible: true, align: 'right' },
+  { key: 'comparedProfit', label: 'Compared Profit', width: 110, visible: false, align: 'right' },
   { key: 'dollarChange', label: 'Change', width: 110, visible: true, align: 'right' },
-  { key: 'profitChange', label: 'Profit Change', width: 110, visible: true, align: 'right' },
+  { key: 'profitChange', label: 'Profit Change', width: 110, visible: false, align: 'right' },
   { key: 'pctChange', label: '% Change', width: 92, visible: true, align: 'right' },
 ]
 
@@ -100,6 +104,77 @@ const SALES_BY_DAY_ALIGN_OPTIONS: Array<{ value: SalesByDayColumnAlign; label: s
   { value: 'center', label: 'Center' },
   { value: 'right', label: 'Right' },
 ]
+const PROFIT_COLUMN_KEYS: SalesByDayColumnKey[] = ['profit', 'comparedProfit', 'profitChange']
+
+interface StoreRangeParseResult {
+  storeNumbers: number[]
+  error: string | null
+}
+
+export function parseSalesByDayStoreRangeText(
+  value: string,
+  availableStoreNumbers: number[] = [],
+): StoreRangeParseResult {
+  const trimmed = value.trim()
+  if (!trimmed) return { storeNumbers: [], error: null }
+
+  const knownStores = Array.from(
+    new Set(
+      availableStoreNumbers
+        .map((storeNumber) => Number(storeNumber))
+        .filter((storeNumber) => Number.isInteger(storeNumber) && storeNumber > 0),
+    ),
+  ).sort((a, b) => a - b)
+  const knownStoreSet = new Set(knownStores)
+  const hasKnownStores = knownStores.length > 0
+  const selected: number[] = []
+  const seen = new Set<number>()
+
+  for (const token of trimmed.split(',')) {
+    const part = token.trim()
+    if (!part) {
+      return { storeNumbers: [], error: 'Use commas between store numbers and ranges.' }
+    }
+
+    const match = part.match(/^(\d+)(?:\s*-\s*(\d+))?$/)
+    if (!match) {
+      return { storeNumbers: [], error: `Invalid store range "${part}".` }
+    }
+
+    const start = Number(match[1])
+    const end = match[2] == null ? start : Number(match[2])
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start <= 0 || end <= 0) {
+      return { storeNumbers: [], error: `Invalid store range "${part}".` }
+    }
+    if (end < start) {
+      return { storeNumbers: [], error: `Store range "${part}" must run from low to high.` }
+    }
+
+    let expanded: number[]
+    if (match[2] == null) {
+      expanded = !hasKnownStores || knownStoreSet.has(start) ? [start] : []
+    } else if (hasKnownStores) {
+      expanded = knownStores.filter((storeNumber) => storeNumber >= start && storeNumber <= end)
+    } else {
+      expanded = Array.from({ length: end - start + 1 }, (_item, index) => start + index)
+    }
+
+    if (expanded.length === 0) {
+      return { storeNumbers: [], error: `No active stores found for "${part}".` }
+    }
+    if (!hasKnownStores && expanded.length > 500) {
+      return { storeNumbers: [], error: `Store range "${part}" is too large.` }
+    }
+
+    for (const storeNumber of expanded) {
+      if (seen.has(storeNumber)) continue
+      selected.push(storeNumber)
+      seen.add(storeNumber)
+    }
+  }
+
+  return { storeNumbers: selected, error: null }
+}
 
 function cloneDefaultSalesByDayColumnLayout(): SalesByDayColumnLayout[] {
   return DEFAULT_SALES_BY_DAY_COLUMN_LAYOUT.map((column) => ({ ...column }))
@@ -450,6 +525,8 @@ export default function SalesByDayPage() {
   const [searchParams] = useSearchParams()
   const templateId = searchParams.get('templateId') ?? undefined
   const [storeNumbers, setStoreNumbers] = useState<number[]>([])
+  const [storeRangeText, setStoreRangeText] = useState('')
+  const [storeRangeError, setStoreRangeError] = useState<string | null>(null)
   const [chainId, setChainId] = useState<string | undefined>(undefined)
   const [combineStores, setCombineStores] = useState<boolean>(true)
   const [dateSpec, setDateSpec] = useState<DateSpec>(DEFAULT_DATE_SPEC)
@@ -474,6 +551,10 @@ export default function SalesByDayPage() {
       })),
     [dims],
   )
+  const availableStoreNumbers = useMemo(
+    () => storeOptions.map((store) => store.value),
+    [storeOptions],
+  )
 
   useEffect(() => {
     if (query && data && !isFetching) setFilterOpen(false)
@@ -491,11 +572,40 @@ export default function SalesByDayPage() {
     }
   }, [columnLayout])
 
+  useEffect(() => {
+    if (!storeRangeText.trim() || availableStoreNumbers.length === 0) return
+    const parsed = parseSalesByDayStoreRangeText(storeRangeText, availableStoreNumbers)
+    setStoreRangeError(parsed.error)
+    if (!parsed.error) {
+      setChainId(undefined)
+      setStoreNumbers(parsed.storeNumbers)
+    }
+  }, [availableStoreNumbers, storeRangeText])
+
   function onChainChange(next: string | undefined): void {
     setChainId(next)
+    setStoreRangeText('')
+    setStoreRangeError(null)
     if (!next) return
     const chain = storeChains.find((candidate) => candidate.id === next)
     if (chain) setStoreNumbers(chain.storeNumbers)
+  }
+
+  function applyStoreRangeText(value: string, showErrorMessage = false): number[] | null {
+    const parsed = parseSalesByDayStoreRangeText(value, availableStoreNumbers)
+    setStoreRangeError(parsed.error)
+    if (parsed.error) {
+      if (showErrorMessage) message.error(parsed.error)
+      return null
+    }
+    setChainId(undefined)
+    setStoreNumbers(parsed.storeNumbers)
+    return parsed.storeNumbers
+  }
+
+  function onStoreRangeChange(value: string): void {
+    setStoreRangeText(value)
+    applyStoreRangeText(value)
   }
 
   const resolvedDates = useMemo(() => resolveDateSpec(dateSpec), [dateSpec])
@@ -523,6 +633,8 @@ export default function SalesByDayPage() {
         : []
 
     setStoreNumbers(stores)
+    setStoreRangeText('')
+    setStoreRangeError(null)
     if (params.columnLayout) setColumnLayout(normalizeSalesByDayColumnLayout(params.columnLayout))
     setDateSpec(spec)
     if (typeof params.comparisonOffsetDays === 'number') setOffset(params.comparisonOffsetDays)
@@ -540,8 +652,13 @@ export default function SalesByDayPage() {
 
   function onRun(): void {
     const { startDate, endDate } = resolveDateSpec(dateSpec)
+    const selectedStoreNumbers = storeRangeText.trim()
+      ? applyStoreRangeText(storeRangeText, true)
+      : storeNumbers
+    if (!selectedStoreNumbers) return
+
     setQuery({
-      storeNumbers,
+      storeNumbers: selectedStoreNumbers,
       startDate,
       endDate,
       comparisonOffsetDays: offset,
@@ -594,11 +711,27 @@ export default function SalesByDayPage() {
   }
 
   const comparisonOffsetDays = query?.comparisonOffsetDays ?? offset
+  const profitColumnsVisible = useMemo(
+    () => PROFIT_COLUMN_KEYS.every((key) => columnLayout.find((column) => column.key === key)?.visible),
+    [columnLayout],
+  )
   const columns = useMemo(
     () => buildSalesByDayColumns(columnLayout, comparisonOffsetDays),
     [columnLayout, comparisonOffsetDays],
   )
   const tableWidth = useMemo(() => getSalesByDayTableWidth(columnLayout), [columnLayout])
+
+  function toggleProfitColumns(): void {
+    const nextVisible = !profitColumnsVisible
+    setColumnLayout((prev) =>
+      prev.map((column) =>
+        PROFIT_COLUMN_KEYS.includes(column.key)
+          ? { ...column, visible: nextVisible }
+          : column,
+      ),
+    )
+    message.success?.(nextVisible ? 'Profit columns shown.' : 'Profit columns hidden.')
+  }
 
   return (
     <div>
@@ -623,6 +756,12 @@ export default function SalesByDayPage() {
         }
         persistentActions={
           <>
+            <Button
+              icon={profitColumnsVisible ? <EyeInvisibleOutlined /> : <EyeOutlined />}
+              onClick={toggleProfitColumns}
+            >
+              {profitColumnsVisible ? 'Hide profit columns' : 'Show profit columns'}
+            </Button>
             <Button icon={<SettingOutlined />} onClick={() => setLayoutEditorOpen(true)}>
               Table layout
             </Button>
@@ -665,10 +804,13 @@ export default function SalesByDayPage() {
           <Select
             mode="multiple"
             allowClear
-            placeholder={dimsLoading ? 'Loading stores...' : 'Select store(s) or leave blank for all'}
+            placeholder=""
+            loading={dimsLoading}
             value={storeNumbers}
             onChange={(values) => {
               setChainId(undefined)
+              setStoreRangeText('')
+              setStoreRangeError(null)
               setStoreNumbers(values as number[])
             }}
             options={storeOptions}
@@ -676,6 +818,31 @@ export default function SalesByDayPage() {
             style={{ minWidth: 360 }}
             maxTagCount="responsive"
           />
+          <Space direction="vertical" size={4}>
+            <Space.Compact>
+              <Input
+                allowClear
+                aria-label="Store range"
+                placeholder="Store range, e.g. 1-2,5-17,19-26,28-30,32-43"
+                value={storeRangeText}
+                status={storeRangeError ? 'error' : undefined}
+                onChange={(event) => onStoreRangeChange(event.target.value)}
+                onPressEnter={() => void applyStoreRangeText(storeRangeText, true)}
+                style={{ width: 390 }}
+              />
+              <Button
+                icon={<CheckOutlined />}
+                onClick={() => void applyStoreRangeText(storeRangeText, true)}
+              >
+                Apply
+              </Button>
+            </Space.Compact>
+            {storeRangeError && (
+              <Text type="danger" style={{ fontSize: 12 }}>
+                {storeRangeError}
+              </Text>
+            )}
+          </Space>
           <Select
             allowClear
             placeholder="Or pick a chain"
@@ -860,17 +1027,12 @@ function SalesByDayResults({
 function SummaryRow({ totals }: { totals: SalesTotals }) {
   return (
     <Row gutter={16} style={{ marginBottom: 16 }}>
-      <Col xs={24} sm={12} lg={8} xl={4}>
+      <Col xs={24} sm={12} lg={6}>
         <Card>
           <Statistic title="Net Sales" value={totals.netSales} formatter={(value) => fmtMoney(Number(value))} />
         </Card>
       </Col>
-      <Col xs={24} sm={12} lg={8} xl={4}>
-        <Card>
-          <Statistic title="Profit" value={totals.profit} formatter={(value) => fmtMoney(Number(value))} />
-        </Card>
-      </Col>
-      <Col xs={24} sm={12} lg={8} xl={4}>
+      <Col xs={24} sm={12} lg={6}>
         <Card>
           <Statistic
             title="Compared Net"
@@ -879,16 +1041,16 @@ function SummaryRow({ totals }: { totals: SalesTotals }) {
           />
         </Card>
       </Col>
-      <Col xs={24} sm={12} lg={8} xl={4}>
+      <Col xs={24} sm={12} lg={6}>
         <Card>
           <Statistic
-            title="Compared Profit"
-            value={totals.comparedProfit}
+            title="$ Change"
+            value={totals.dollarChange}
             formatter={(value) => fmtMoney(Number(value))}
           />
         </Card>
       </Col>
-      <Col xs={24} sm={12} lg={8} xl={4}>
+      <Col xs={24} sm={12} lg={6}>
         <Card>
           <Statistic
             title="% Change"

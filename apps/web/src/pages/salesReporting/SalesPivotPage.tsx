@@ -723,7 +723,7 @@ export default function SalesPivotPage() {
               <Select
                 mode="multiple"
                 allowClear
-                placeholder="All stores"
+                placeholder=""
                 loading={dimsLoading}
                 value={selectedStores}
                 onChange={setSelectedStores}

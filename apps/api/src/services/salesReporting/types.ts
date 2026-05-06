@@ -217,6 +217,9 @@ export type SalesAnalysisStoreOption = 'SEPARATE' | 'COMPARE' | 'COMBINE';
 export interface SalesAnalysisCriteria {
   // Structured selections — IDs / codes picked from the dropdown.
   stores?: number[];
+  chains?: string[];
+  sectors?: number[];
+  departments?: number[];
   categories?: number[];
   vendors?: string[];
   seasons?: string[];
@@ -287,6 +290,15 @@ export interface SkuAttributeColumns {
   /** Total on-hand units across every store (sum of inventory_quantities.on_hand_01..18). */
   unitsOnHand: number | null;
   pictureUrl: string | null;
+  keywords?: string | null;
+  sizeType?: number | null;
+  labelCode?: string | null;
+  colorCode?: string | null;
+  discountCode?: string | null;
+  dateFirstReceived?: string | null;
+  dateLastReceived?: string | null;
+  ageDays?: number | null;
+  ageDaysByStore?: Record<string, number | null>;
   extended: Record<string, string>;
 }
 

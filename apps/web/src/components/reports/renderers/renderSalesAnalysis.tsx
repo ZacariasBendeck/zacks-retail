@@ -149,6 +149,11 @@ function addAnalysisMeasures(into: SalesAnalysisMeasures, row: SalesAnalysisMeas
   into.priorYearNetSales = (into.priorYearNetSales ?? 0) + (row.priorYearNetSales ?? 0)
 }
 
+function percentOfTotal(value: number, total: number | null | undefined): number | null {
+  if (total == null || total === 0) return null
+  return Math.round((value / total) * 1000) / 10
+}
+
 function aggregateChainLeaves(leaves: SalesAnalysisRow[], periodDays: number): SalesAnalysisRow[] {
   const bySku = new Map<string, SalesAnalysisRow & SalesAnalysisMeasures>()
   for (const leaf of leaves) {
@@ -313,6 +318,55 @@ function renderRoi(v: number | null): JSX.Element | string {
   return v == null ? DASH : <Tag color={v >= 5 ? 'green' : v >= 2 ? 'gold' : 'red'}>{fmtPctBare1(v)}x</Tag>
 }
 
+function buildSalesAnalysisSummaryCells(
+  t: SalesAnalysisReport['totals'],
+  options: {
+    startIndex?: number
+    priorYear: boolean
+    includeOnOrder: boolean
+    showPercentOfTotal: boolean
+  },
+): JSX.Element[] {
+  const cells: JSX.Element[] = []
+  let index = options.startIndex ?? 1
+  const addCell = (content: JSX.Element | string) => {
+    cells.push(
+      <SummaryNumericCell key={index} index={index} variant="grand">
+        {content}
+      </SummaryNumericCell>,
+    )
+    index += 1
+  }
+  const addTotalPctCell = (value: number, total: number | null | undefined) => {
+    addCell(fmtPct1(percentOfTotal(value, total)))
+  }
+
+  addCell(fmtQty(t.unitsOnHand))
+  addCell(fmtMoney(t.inventoryUnitCost))
+  addCell(fmtMoney(t.onHandAtCost))
+  if (options.showPercentOfTotal) addTotalPctCell(t.onHandAtCost, t.onHandAtCost)
+  addCell(fmtQty(t.qty))
+  if (options.showPercentOfTotal) addTotalPctCell(t.qty, t.qty)
+  addCell(fmtMoney(t.netSales))
+  if (options.showPercentOfTotal) addTotalPctCell(t.netSales, t.netSales)
+  addCell(fmtMoney(t.cogs))
+  addCell(fmtMoney(t.grossProfit))
+  if (options.showPercentOfTotal) addTotalPctCell(t.grossProfit, t.grossProfit)
+  addCell(fmtPct1(t.gpPct))
+  addCell(fmtPctBare1(t.turns))
+  addCell(t.roiPct == null ? DASH : `${fmtPctBare1(t.roiPct)}x`)
+  if (options.priorYear) {
+    addCell(fmtMoney(t.priorYearNetSales))
+    addCell(DASH)
+  }
+  if (options.includeOnOrder) {
+    addCell(fmtQty(t.onOrderQty ?? 0))
+    addCell(fmtMoney(t.onOrderUnitCost ?? null))
+    addCell(fmtMoney(t.onOrderCost ?? 0))
+  }
+  return cells
+}
+
 /**
  * Read-only renderer for a captured Sales Analysis snapshot.
  * Rebuilds the saved hierarchy from paramsJson + frozen resultJson only.
@@ -326,6 +380,7 @@ export default function RenderSalesAnalysis({
 }) {
   const priorYear = result.rows.some((r) => r.priorYearNetSales != null)
   const includeOnOrder = params?.includeOnOrder === true || result.rows.some((r) => r.onOrderQty != null || r.onOrderCost != null)
+  const showPercentOfTotal = params?.showPercentOfTotal === true
   const hierarchyLevels = readHierarchyLevels(params ?? {})
 
   if (result.reportType === 'SKU_DETAIL') {
@@ -350,10 +405,22 @@ export default function RenderSalesAnalysis({
       { title: 'On Hand Qty', dataIndex: 'unitsOnHand', key: 'unitsOnHand', width: 110, align: 'right' as const, render: (v: number) => fmtQty(v) },
       { title: 'Avg Cost', dataIndex: 'inventoryUnitCost', key: 'inventoryUnitCost', width: 100, align: 'right' as const, render: (v: number | null) => fmtMoney(v) },
       { title: 'Total Inv Cost', dataIndex: 'onHandAtCost', key: 'onHandAtCost', width: 130, align: 'right' as const, render: (v: number) => fmtMoney(v) },
+      ...(showPercentOfTotal
+        ? [{ title: '% of Total', dataIndex: 'onHandAtCost', key: 'onHandAtCostPctOfTotal', width: 100, align: 'right' as const, render: (v: number) => fmtPct1(percentOfTotal(v, result.totals.onHandAtCost)) }]
+        : []),
       { title: 'Qty Sold', dataIndex: 'qty', key: 'qty', width: 90, align: 'right' as const, render: (v: number) => fmtQty(v) },
+      ...(showPercentOfTotal
+        ? [{ title: '% of Total', dataIndex: 'qty', key: 'qtyPctOfTotal', width: 100, align: 'right' as const, render: (v: number) => fmtPct1(percentOfTotal(v, result.totals.qty)) }]
+        : []),
       { title: 'Net Sales', dataIndex: 'netSales', key: 'netSales', width: 130, align: 'right' as const, render: (v: number) => fmtMoney(v) },
+      ...(showPercentOfTotal
+        ? [{ title: '% of Total', dataIndex: 'netSales', key: 'netSalesPctOfTotal', width: 100, align: 'right' as const, render: (v: number) => fmtPct1(percentOfTotal(v, result.totals.netSales)) }]
+        : []),
       { title: 'COGS', dataIndex: 'cogs', key: 'cogs', width: 130, align: 'right' as const, render: (v: number) => fmtMoney(v) },
       { title: 'Gross Profit', dataIndex: 'grossProfit', key: 'grossProfit', width: 130, align: 'right' as const, render: (v: number) => fmtMoney(v) },
+      ...(showPercentOfTotal
+        ? [{ title: '% of Total', dataIndex: 'grossProfit', key: 'grossProfitPctOfTotal', width: 100, align: 'right' as const, render: (v: number) => fmtPct1(percentOfTotal(v, result.totals.grossProfit)) }]
+        : []),
       { title: 'GP %', dataIndex: 'gpPct', key: 'gpPct', width: 90, align: 'right' as const, render: (v: number | null) => <GpBadge value={v} /> },
       { title: 'Turns', dataIndex: 'turns', key: 'turns', width: 80, align: 'right' as const, render: (v: number | null) => fmtPctBare1(v) },
       { title: 'ROI', dataIndex: 'roiPct', key: 'roiPct', width: 90, align: 'right' as const, render: renderRoi },
@@ -373,6 +440,7 @@ export default function RenderSalesAnalysis({
     ]
 
     const t = result.totals
+    const numericCells = buildSalesAnalysisSummaryCells(t, { priorYear, includeOnOrder, showPercentOfTotal })
     const onOrderStartIndex = priorYear ? 13 : 11
     return (
       <Table<SalesAnalysisTreeNode>
@@ -382,11 +450,14 @@ export default function RenderSalesAnalysis({
         size="small"
         pagination={{ pageSize: 50 }}
         expandable={{ defaultExpandAllRows: false }}
-        scroll={{ x: (priorYear ? 1620 : 1380) + (includeOnOrder ? 400 : 0) }}
+        scroll={{ x: (priorYear ? 1620 : 1380) + (showPercentOfTotal ? 400 : 0) + (includeOnOrder ? 400 : 0) }}
         summary={() => (
           <Table.Summary fixed>
             <Table.Summary.Row>
               <SummaryLabelCell index={0} colSpan={1} variant="grand">Totals</SummaryLabelCell>
+              {numericCells}
+              {false ? (
+                <>
               <SummaryNumericCell index={1} variant="grand">{fmtQty(t.unitsOnHand)}</SummaryNumericCell>
               <SummaryNumericCell index={2} variant="grand">{fmtMoney(t.inventoryUnitCost)}</SummaryNumericCell>
               <SummaryNumericCell index={3} variant="grand">{fmtMoney(t.onHandAtCost)}</SummaryNumericCell>
@@ -410,6 +481,8 @@ export default function RenderSalesAnalysis({
                   <SummaryNumericCell index={onOrderStartIndex} variant="grand">{fmtQty(t.onOrderQty ?? 0)}</SummaryNumericCell>
                   <SummaryNumericCell index={onOrderStartIndex + 1} variant="grand">{fmtMoney(t.onOrderUnitCost ?? null)}</SummaryNumericCell>
                   <SummaryNumericCell index={onOrderStartIndex + 2} variant="grand">{fmtMoney(t.onOrderCost ?? 0)}</SummaryNumericCell>
+                </>
+              ) : null}
                 </>
               ) : null}
             </Table.Summary.Row>
@@ -439,10 +512,22 @@ export default function RenderSalesAnalysis({
     { title: 'On Hand Qty', dataIndex: 'unitsOnHand', key: 'unitsOnHand', width: 110, align: 'right' as const, render: (v: number) => fmtQty(v) },
     { title: 'Avg Cost', dataIndex: 'inventoryUnitCost', key: 'inventoryUnitCost', width: 100, align: 'right' as const, render: (v: number | null) => fmtMoney(v) },
     { title: 'Total Inv Cost', dataIndex: 'onHandAtCost', key: 'onHandAtCost', width: 130, align: 'right' as const, render: (v: number) => fmtMoney(v) },
+    ...(showPercentOfTotal
+      ? [{ title: '% of Total', dataIndex: 'onHandAtCost', key: 'onHandAtCostPctOfTotal', width: 100, align: 'right' as const, render: (v: number) => fmtPct1(percentOfTotal(v, result.totals.onHandAtCost)) }]
+      : []),
     { title: 'Qty Sold', dataIndex: 'qty', key: 'qty', width: 90, align: 'right' as const, render: (v: number) => fmtQty(v) },
+    ...(showPercentOfTotal
+      ? [{ title: '% of Total', dataIndex: 'qty', key: 'qtyPctOfTotal', width: 100, align: 'right' as const, render: (v: number) => fmtPct1(percentOfTotal(v, result.totals.qty)) }]
+      : []),
     { title: 'Net Sales', dataIndex: 'netSales', key: 'netSales', width: 130, align: 'right' as const, render: (v: number) => fmtMoney(v) },
+    ...(showPercentOfTotal
+      ? [{ title: '% of Total', dataIndex: 'netSales', key: 'netSalesPctOfTotal', width: 100, align: 'right' as const, render: (v: number) => fmtPct1(percentOfTotal(v, result.totals.netSales)) }]
+      : []),
     { title: 'COGS', dataIndex: 'cogs', key: 'cogs', width: 130, align: 'right' as const, render: (v: number) => fmtMoney(v) },
     { title: 'Gross Profit', dataIndex: 'grossProfit', key: 'grossProfit', width: 130, align: 'right' as const, render: (v: number) => fmtMoney(v) },
+    ...(showPercentOfTotal
+      ? [{ title: '% of Total', dataIndex: 'grossProfit', key: 'grossProfitPctOfTotal', width: 100, align: 'right' as const, render: (v: number) => fmtPct1(percentOfTotal(v, result.totals.grossProfit)) }]
+      : []),
     { title: 'GP %', dataIndex: 'gpPct', key: 'gpPct', width: 90, align: 'right' as const, render: (v: number | null) => <GpBadge value={v} /> },
     { title: 'Turns', dataIndex: 'turns', key: 'turns', width: 80, align: 'right' as const, render: (v: number | null) => fmtPctBare1(v) },
     { title: 'ROI', dataIndex: 'roiPct', key: 'roiPct', width: 90, align: 'right' as const, render: renderRoi },
@@ -464,6 +549,7 @@ export default function RenderSalesAnalysis({
   const t = result.totals
   const deptCol = result.reportType === 'DEPT_SUMMARY' ? 1 : 0
   const labelSpan = 2 + deptCol
+  const flatNumericCells = buildSalesAnalysisSummaryCells(t, { startIndex: labelSpan, priorYear, includeOnOrder, showPercentOfTotal })
   const flatOnOrderStartIndex = 11 + (priorYear ? 2 : 0)
   return (
     <Table
@@ -476,6 +562,9 @@ export default function RenderSalesAnalysis({
         <Table.Summary fixed>
           <Table.Summary.Row>
             <SummaryLabelCell index={0} colSpan={labelSpan} variant="grand">Totals</SummaryLabelCell>
+            {flatNumericCells}
+            {false ? (
+              <>
             <SummaryNumericCell index={1} variant="grand">{fmtQty(t.unitsOnHand)}</SummaryNumericCell>
             <SummaryNumericCell index={2} variant="grand">{fmtMoney(t.inventoryUnitCost)}</SummaryNumericCell>
             <SummaryNumericCell index={3} variant="grand">{fmtMoney(t.onHandAtCost)}</SummaryNumericCell>
@@ -499,6 +588,8 @@ export default function RenderSalesAnalysis({
                 <SummaryNumericCell index={flatOnOrderStartIndex} variant="grand">{fmtQty(t.onOrderQty ?? 0)}</SummaryNumericCell>
                 <SummaryNumericCell index={flatOnOrderStartIndex + 1} variant="grand">{fmtMoney(t.onOrderUnitCost ?? null)}</SummaryNumericCell>
                 <SummaryNumericCell index={flatOnOrderStartIndex + 2} variant="grand">{fmtMoney(t.onOrderCost ?? 0)}</SummaryNumericCell>
+              </>
+            ) : null}
               </>
             ) : null}
           </Table.Summary.Row>

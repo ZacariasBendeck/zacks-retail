@@ -389,6 +389,7 @@ export default function SalesHierarchyDrillDownPage() {
             <CriteriaInput
               label="Stores"
               mode="numeric"
+              placeholder=""
               loading={dimsLoading}
               options={(dims?.stores ?? []).map((s) => ({
                 value: s.number,

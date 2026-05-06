@@ -22,6 +22,8 @@ export interface CriteriaInputProps<V extends OptionValue> {
   loading?: boolean
   hideDropdown?: boolean
   hideGrammar?: boolean
+  /** Placeholder for the multi-select; defaults to "All {label}". */
+  placeholder?: string
   /** Overrides the default help line under the text box. */
   helpText?: string
   /** Optional data-testid for the multi-select. */
@@ -51,6 +53,7 @@ export default function CriteriaInput<V extends OptionValue>({
   loading = false,
   hideDropdown = false,
   hideGrammar = false,
+  placeholder,
   helpText,
   selectTestId,
   rawTestId,
@@ -88,7 +91,7 @@ export default function CriteriaInput<V extends OptionValue>({
           loading={loading}
           value={selected}
           onChange={onSelectedChange}
-          placeholder={`All ${label}`}
+          placeholder={placeholder ?? `All ${label}`}
           optionFilterProp="label"
           size="small"
           maxTagCount="responsive"

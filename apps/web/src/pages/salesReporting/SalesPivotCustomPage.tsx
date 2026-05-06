@@ -287,7 +287,7 @@ function buildTree(
             return a.sku.localeCompare(z.sku)
           })
           .map<TreeNode>((leaf) => {
-            const skuLabel = leaf.skuDescription ? `${leaf.sku} â€” ${leaf.skuDescription}` : leaf.sku
+            const skuLabel = leaf.skuDescription ? `${leaf.sku} - ${leaf.skuDescription}` : leaf.sku
             const leafNode: TreeNode = {
               rowKey: `${path}/${levels[1]}:${bucket.keyPart}/sku:${leaf.sku}`,
               label: skuLabel,
@@ -710,7 +710,7 @@ export default function SalesPivotCustomPage() {
                   <Select
                     mode="multiple"
                     allowClear
-                    placeholder="All stores"
+                    placeholder=""
                     loading={dimsLoading}
                     value={selectedStores}
                     onChange={setSelectedStores}

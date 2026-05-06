@@ -353,7 +353,8 @@ export interface SalesHistoryByMonthResult {
 }
 
 export interface GetSalesHistoryByMonthParams {
-  storeNumbers: number[];
+  /** Empty or omitted means all sales-dimension stores, including warehouses. */
+  storeNumbers?: number[];
   endYearMonth: string;
   sortBy: 'vendor' | 'category';
   combineStores: boolean;
@@ -645,12 +646,16 @@ export async function getSalesHistoryByMonth(
 ): Promise<SalesHistoryByMonthResult> {
   if (!sourceIsRics()) throw new SalesSourceNotImplementedError(source());
 
-  if (!Array.isArray(params.storeNumbers) || params.storeNumbers.length === 0) {
-    throw new Error('storeNumbers must have at least one entry');
-  }
   assertYearMonth(params.endYearMonth, 'endYearMonth');
   if (params.sortBy !== 'vendor' && params.sortBy !== 'category') {
     throw new Error(`sortBy must be 'vendor' or 'category', got: ${params.sortBy}`);
+  }
+  const requestedStoreNumbers = Array.isArray(params.storeNumbers) ? params.storeNumbers : [];
+  const baseStoreNumbers = requestedStoreNumbers.length > 0
+    ? requestedStoreNumbers
+    : (await ricsAdapter.listSalesDimensions()).stores.map((s) => s.number);
+  if (baseStoreNumbers.length === 0) {
+    throw new Error('No stores are available for Sales History by Month');
   }
 
   const detailLevel: MonthlyDetailLevel = params.detailLevel ?? 'subtotals';
@@ -671,10 +676,10 @@ export async function getSalesHistoryByMonth(
   priorYearMonths.forEach((m, i) => priorYearMonthIndex.set(m, i));
 
   // Resolve criteria → SQL filters + optional SKU set.
-  const resolved = await resolveCriteria(criteria, params.storeNumbers);
+  const resolved = await resolveCriteria(criteria, baseStoreNumbers);
   const effectiveStores = resolved.storeFilter && resolved.storeFilter.length > 0
     ? resolved.storeFilter
-    : params.storeNumbers;
+    : baseStoreNumbers;
 
   // Single adapter call with the filter pushdowns.
   const longRows = await monthlyAdapter.queryMonthlyMeasures({

@@ -9,6 +9,7 @@ import {
   TableOutlined,
   ApartmentOutlined,
   FundProjectionScreenOutlined,
+  FileImageOutlined,
 } from '@ant-design/icons'
 import { Link } from 'react-router-dom'
 import ReportHeader from '../../components/reports/ReportHeader'
@@ -75,6 +76,15 @@ const REPORTS: ReportCard[] = [
     citation: 'RICS Ch. 6 p. 95',
     to: '/reports/sales/history-by-month',
     icon: <CalendarOutlined />,
+    status: 'live',
+  },
+  {
+    title: 'Sales Analysis Picture Report',
+    description:
+      'Flat SKU-detail picture report with larger product photos and Excel-style column filters. Same criteria as Sales Analysis.',
+    citation: 'App-native',
+    to: '/reports/sales/analysis-picture',
+    icon: <FileImageOutlined />,
     status: 'live',
   },
   {

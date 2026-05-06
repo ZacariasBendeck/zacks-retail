@@ -228,6 +228,28 @@ async function rebuildVendors(
       FROM ${vendorMasterRef}
       WHERE code IS NOT NULL
         AND btrim(code) <> ''
+      ON CONFLICT (code) DO UPDATE SET
+        short_name = EXCLUDED.short_name,
+        mail_name = EXCLUDED.mail_name,
+        addr1 = EXCLUDED.addr1,
+        addr2 = EXCLUDED.addr2,
+        city = EXCLUDED.city,
+        state = EXCLUDED.state,
+        zip = EXCLUDED.zip,
+        phone = EXCLUDED.phone,
+        fax = EXCLUDED.fax,
+        contact = EXCLUDED.contact,
+        terms = EXCLUDED.terms,
+        ship_inst = EXCLUDED.ship_inst,
+        comment = EXCLUDED.comment,
+        manu_code = EXCLUDED.manu_code,
+        manu_name = EXCLUDED.manu_name,
+        qualifier_id = EXCLUDED.qualifier_id,
+        qualifier_code = EXCLUDED.qualifier_code,
+        color_code = EXCLUDED.color_code,
+        long_comment = EXCLUDED.long_comment,
+        e_mail = EXCLUDED.e_mail,
+        date_last_changed = EXCLUDED.date_last_changed
     `,
   );
 
@@ -337,6 +359,28 @@ async function rebuildStores(
         to_jsonb(store_master.*) AS raw_json
       FROM ${storeMasterRef} store_master
       WHERE number IS NOT NULL
+      ON CONFLICT (number) DO UPDATE SET
+        "desc" = EXCLUDED."desc",
+        mail_name = EXCLUDED.mail_name,
+        addr1 = EXCLUDED.addr1,
+        addr2 = EXCLUDED.addr2,
+        city = EXCLUDED.city,
+        state = EXCLUDED.state,
+        zip = EXCLUDED.zip,
+        e_mail = EXCLUDED.e_mail,
+        phone = EXCLUDED.phone,
+        fax = EXCLUDED.fax,
+        last_ticket = EXCLUDED.last_ticket,
+        bill_mail_name = EXCLUDED.bill_mail_name,
+        bill_addr1 = EXCLUDED.bill_addr1,
+        bill_addr2 = EXCLUDED.bill_addr2,
+        bill_city = EXCLUDED.bill_city,
+        bill_state = EXCLUDED.bill_state,
+        bill_zip = EXCLUDED.bill_zip,
+        other_charge_desc = EXCLUDED.other_charge_desc,
+        region = EXCLUDED.region,
+        date_last_changed = EXCLUDED.date_last_changed,
+        raw_json = EXCLUDED.raw_json
     `,
   );
 
@@ -1212,8 +1256,6 @@ async function truncateImportedTables(c: Client): Promise<void> {
   await c.query(`
     TRUNCATE TABLE
       app.vendor_store_account,
-      app.vendor,
-      app.store_master,
       app.sku_upc,
       app.case_pack_cell,
       app.case_pack,

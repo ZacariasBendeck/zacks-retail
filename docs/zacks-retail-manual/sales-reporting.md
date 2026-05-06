@@ -57,6 +57,12 @@ _TODO — this module IS reports. Full list will enumerate below as UI ships._
 | 8-Week Trending | — | SKU, category, store | CSV / PDF |
 | Best Sellers | Reports → Sales → Best Sellers | Period, store, category | CSV / PDF |
 
+### 8-Week Trending Data Maintenance
+
+8-week trending reads the inventory-history trend slots. During the import stage those slots come from RICS history imports. The app-owned weekly close now rotates those slots after each completed week.
+
+Run weekly close after the final posted sales batch for the week, using the same week-ending day consistently. If weekly close is not run, the current week remains in the live weekly counters and the closed-week trend strip will lag.
+
 ### Sales Hierarchy Drill-Down
 
 A three-level tree view — **Department → Category → SKU** — with subtotals at every level. Departments are collapsed by default; click a department to see its category subtotals, click a category to see the SKUs under it. Turn on **Separate Stores** in Store Options to wrap the tree in an outer Store level (one tree per store). **Combine Stores** (default) produces a single tree aggregated across every store.

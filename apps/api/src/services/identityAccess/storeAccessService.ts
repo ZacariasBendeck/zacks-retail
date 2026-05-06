@@ -12,7 +12,7 @@ export function storeScopeAllowsStore(scope: Pick<StoreScope, 'scopeType' | 'sco
   const scopeType = scope.scopeType.toUpperCase();
 
   if (scopeType === 'ALL_STORES') return true;
-  if (scopeType === 'STORE') return scope.scopeId === normalizedStoreId;
+  if (scopeType === 'STORE' || scopeType === 'WAREHOUSE') return scope.scopeId === normalizedStoreId;
   return false;
 }
 
@@ -40,7 +40,7 @@ export async function getStoreAccessSummary(
   const scopes = await listActiveStoreScopes(prisma, userId);
   const allStores = scopes.some((scope) => scope.scopeType.toUpperCase() === 'ALL_STORES');
   const storeIds = scopes
-    .filter((scope) => scope.scopeType.toUpperCase() === 'STORE' && scope.scopeId)
+    .filter((scope) => ['STORE', 'WAREHOUSE'].includes(scope.scopeType.toUpperCase()) && scope.scopeId)
     .map((scope) => String(scope.scopeId));
   return {
     allStores,

@@ -101,12 +101,12 @@ export default function ValueFormModal({ open, dimension, editing, onClose }: Pr
           <Input placeholder="Nombre visible" />
         </Form.Item>
         <Form.Item
-          label="DescripciÃ³n"
+          label="Descripcion"
           name="descriptionEs"
-          extra="SinÃ³nimos, notas o criterios para escoger este valor."
+          extra="Sinonimos, notas o criterios para escoger este valor."
         >
           <Input.TextArea
-            placeholder="p. ej. usar cuando el forro del tacÃ³n sea yute/espadrille"
+            placeholder="p. ej. usar cuando el forro del tacon sea yute/espadrille"
             autoSize={{ minRows: 3, maxRows: 5 }}
             maxLength={1000}
             showCount

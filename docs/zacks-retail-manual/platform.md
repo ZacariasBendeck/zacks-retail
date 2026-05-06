@@ -24,6 +24,7 @@ Platform is the administrative spine that makes everything else work. Background
 
 _TODO. Intended screens:_
 - _Scheduled tasks — list, run history, manual trigger_
+- **Inventory Close** — dry run, validation, run history, month close, and week close under **Operations -> Inventory Close**
 - _Audit log search + filter (entity / actor / date)_
 - _Notifications drafting + delivery status_
 - _In-app broadcasts (send to all stores / selected stores)_
@@ -41,6 +42,8 @@ _TODO. Intended screens:_
 _TODO. Expected flows:_
 - _Schedule a recurring background task_
 - _Trigger the `rics:sync` ETL manually and watch progress_
+- _Dry-run and execute Inventory Month Close after the last posted sales batch for the month_
+- _Dry-run and execute Inventory Week Close after the last posted sales batch for the week_
 - _Investigate who last changed a specific SKU (audit-log query)_
 - _Flip a feature flag for a pilot store_
 - _Broadcast a same-day notice to all cashiers_

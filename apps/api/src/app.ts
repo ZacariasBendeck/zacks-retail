@@ -24,6 +24,7 @@ import locationRoutes from './routes/locationRoutes';
 import transferOrderRoutes from './routes/transferOrderRoutes';
 import salesLedgerRoutes from './routes/salesLedgerRoutes';
 import salesReportRoutes from './routes/salesReportRoutes';
+import otbDashboardRoutes from './routes/otbDashboardRoutes';
 import otbLinesRoutes from './routes/otbLinesRoutes';
 import otbMonthlyPlanRoutes from './routes/otbMonthlyPlanRoutes';
 import otbPlanRowRoutes from './routes/otbPlanRowRoutes';
@@ -53,6 +54,7 @@ import productsSkuDraftRoutes from './routes/products/skuDraftRoutes';
 import productsMatchingSetRoutes from './routes/products/matchingSetRoutes';
 import utilitiesBatchRoutes from './routes/utilities/batchRoutes';
 import migrationDayRoutes from './routes/operations/migrationDayRoutes';
+import inventoryCloseRoutes from './routes/operations/inventoryCloseRoutes';
 import { createAuthRoutes } from './routes/authRoutes';
 import { createEmployeeRoutes } from './routes/employeeRoutes';
 import { createTimeClockRoutes } from './routes/timeClockRoutes';
@@ -129,6 +131,7 @@ app.use('/api/v1/inventory', ricsInventoryRoutes);
 app.use('/api/v1/locations', locationRoutes);
 app.use('/api/v1/transfer-orders', transferOrderRoutes);
 app.use('/api/v1/sales', salesLedgerRoutes);
+app.use('/api/v1/otb/dashboard', otbDashboardRoutes);
 app.use('/api/v1/otb', otbLinesRoutes);
 app.use('/api/v1/otb/monthly-plans', otbMonthlyPlanRoutes);
 app.use('/api/v1/otb/plan-rows', otbPlanRowRoutes);
@@ -174,6 +177,7 @@ app.use('/api/v1/products/skus', productsSkuRoutes);
 // utilities module — batch-change primitives (spec: docs/modules/utilities.md)
 app.use('/api/v1/utilities', utilitiesBatchRoutes);
 app.use('/api/v1/operations/migration-day', migrationDayRoutes);
+app.use('/api/v1/operations/inventory-close', inventoryCloseRoutes);
 
 // identity-access module
 app.use('/api/v1/auth', createAuthRoutes(prisma));

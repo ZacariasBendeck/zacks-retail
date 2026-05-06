@@ -1,6 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import {
+  extractRicsArtifact,
+  formatArtifactScopeSummary,
+} from '../../src/services/sync/ricsArtifact';
 
 const API_DIR = path.resolve(__dirname, '../..');
 const DEFAULT_OUT_DIR = path.resolve(API_DIR, '.tmp', 'render-conversion-bundle');
@@ -11,8 +14,6 @@ interface Args {
   scope: string | null;
   includeTables: string[];
   withSeedAssignments: boolean;
-  customerCsvPath: string | null;
-  mailListNamesCsvPath: string | null;
 }
 
 interface BundleManifest {
@@ -21,13 +22,13 @@ interface BundleManifest {
   bundleDir: string;
   scope: string;
   legacyManifestPath: string;
-  attributeSnapshotPath: string;
+  attributeSnapshotPath: string | null;
+  appDataSnapshotPath: string | null;
   optionalFiles: Record<string, string>;
   warnings: string[];
   knownFullResetBlockers: string[];
   durationsMs: {
     extractLegacyArtifact: number;
-    exportAttributeSnapshot: number;
     total: number;
   };
 }
@@ -39,8 +40,6 @@ function parseArgs(): Args {
     scope: 'all-canonical',
     includeTables: [],
     withSeedAssignments: false,
-    customerCsvPath: null,
-    mailListNamesCsvPath: null,
   };
 
   const argv = process.argv.slice(2);
@@ -67,12 +66,6 @@ function parseArgs(): Args {
       case '--with-seed-assignments':
         args.withSeedAssignments = true;
         break;
-      case '--customer':
-        args.customerCsvPath = path.resolve(String(argv[++i] ?? ''));
-        break;
-      case '--mail':
-        args.mailListNamesCsvPath = path.resolve(String(argv[++i] ?? ''));
-        break;
       case '--help':
       case '-h':
         printHelpAndExit(0);
@@ -92,8 +85,11 @@ function printHelpAndExit(code: number): never {
       '',
       'Creates a Render cutover bundle with:',
       '  - legacy/manifest.json + canonical RICS CSV artifact pack',
+      '  - customer data from the RIMAIL MDB tables in the canonical artifact',
+      '',
+      'Run cutover:render-export-app-data after this step to add:',
       '  - app/attribute-catalog-export.json',
-      '  - optional customer CRM CSVs copied into the bundle when supplied',
+      '  - app/app-data-export.json',
       '',
       'Options:',
       `  --out <dir>                 Bundle output directory (default ${DEFAULT_OUT_DIR})`,
@@ -101,8 +97,6 @@ function printHelpAndExit(code: number): never {
       '  --scope <name>              Artifact scope (default all-canonical)',
       '  --include <a,b,c>           Extra canonical target tables to include',
       '  --with-seed-assignments     Include seed:* attribute assignments in snapshot',
-      '  --customer <path>           Optional Customer.csv path',
-      '  --mail <path>               Optional MailListNames.csv path',
       '  --help                      Show this help',
     ].join('\n'),
   );
@@ -113,62 +107,27 @@ function ensureDir(dirPath: string): void {
   fs.mkdirSync(dirPath, { recursive: true });
 }
 
+function resetBundleOutput(bundleDir: string): void {
+  const absoluteBundleDir = path.resolve(bundleDir);
+  for (const childName of ['legacy', 'app']) {
+    const childPath = path.resolve(absoluteBundleDir, childName);
+    if (path.dirname(childPath) !== absoluteBundleDir) {
+      throw new Error(`Refusing to clear unexpected output path: ${childPath}`);
+    }
+    fs.rmSync(childPath, { recursive: true, force: true });
+  }
+  fs.rmSync(path.join(absoluteBundleDir, 'bundle-manifest.json'), { force: true });
+}
+
 function rel(basePath: string, targetPath: string): string {
   return path.relative(basePath, targetPath).replace(/\\/g, '/');
 }
 
 function knownFullResetBlockers(): string[] {
   return [
-    'No export/import bundle exists yet for ProductContent, SeasonOverlay edits, vendor overlays, SKU override tables, size-type overrides, custom segment definitions, or non-owner users.',
+    'Run cutover:render-export-app-data after CSV extraction to add app-owned Postgres data to the bundle.',
     'verify:cutover-readiness still expects rics_mirror and is not Render-safe yet.',
   ];
-}
-
-async function runNodeTsScript(label: string, scriptPath: string, args: string[]): Promise<void> {
-  const started = Date.now();
-  console.log(`[cutover:render-export] ${label}`);
-  const child = spawn(
-    process.execPath,
-    ['--env-file-if-exists=.env', '-r', 'tsx/cjs', scriptPath, ...args],
-    {
-      cwd: API_DIR,
-      stdio: 'inherit',
-      env: process.env,
-    },
-  );
-
-  const code = await new Promise<number>((resolve, reject) => {
-    child.on('error', reject);
-    child.on('close', (value) => resolve(value ?? 1));
-  });
-
-  if (code !== 0) {
-    throw new Error(`${label} failed with exit ${code}`);
-  }
-
-  console.log(`[cutover:render-export] ${label} done in ${Date.now() - started}ms`);
-}
-
-function copyIfPresent(
-  label: string,
-  sourcePath: string | null,
-  destPath: string,
-  warnings: string[],
-  outFiles: Record<string, string>,
-  bundleDir: string,
-): void {
-  if (!sourcePath) {
-    warnings.push(`${label} not supplied`);
-    return;
-  }
-  if (!fs.existsSync(sourcePath)) {
-    warnings.push(`${label} missing: ${sourcePath}`);
-    return;
-  }
-
-  ensureDir(path.dirname(destPath));
-  fs.copyFileSync(sourcePath, destPath);
-  outFiles[label] = rel(bundleDir, destPath);
 }
 
 async function main(): Promise<void> {
@@ -176,20 +135,15 @@ async function main(): Promise<void> {
   if (args.mdbDir) {
     process.env.RICS_DB_DIR = args.mdbDir;
   }
-  const {
-    extractRicsArtifact,
-    formatArtifactScopeSummary,
-  } = await import('../../src/services/sync/ricsArtifact');
 
   const started = Date.now();
   const bundleDir = path.resolve(args.outDir);
   const legacyDir = path.join(bundleDir, 'legacy');
   const appDir = path.join(bundleDir, 'app');
-  const crmDir = path.join(bundleDir, 'crm');
+  resetBundleOutput(bundleDir);
   ensureDir(bundleDir);
   ensureDir(legacyDir);
   ensureDir(appDir);
-  ensureDir(crmDir);
 
   console.log('========================================');
   console.log('  cutover:render-export');
@@ -210,30 +164,8 @@ async function main(): Promise<void> {
   });
   const extractMs = Date.now() - extractStarted;
 
-  const attributeSnapshotPath = path.join(appDir, 'attribute-catalog-export.json');
-  const exportArgs = ['--out', attributeSnapshotPath];
-  if (args.withSeedAssignments) {
-    exportArgs.push('--with-seed-assignments');
-  }
-  const attributeStarted = Date.now();
-  await runNodeTsScript(
-    'export:attributes',
-    path.join(API_DIR, 'scripts', 'catalog', 'export-attribute-catalog.ts'),
-    exportArgs,
-  );
-  const attributeMs = Date.now() - attributeStarted;
-
   const warnings: string[] = [];
   const optionalFiles: Record<string, string> = {};
-  copyIfPresent('Customer.csv', args.customerCsvPath, path.join(crmDir, 'Customer.csv'), warnings, optionalFiles, bundleDir);
-  copyIfPresent(
-    'MailListNames.csv',
-    args.mailListNamesCsvPath,
-    path.join(crmDir, 'MailListNames.csv'),
-    warnings,
-    optionalFiles,
-    bundleDir,
-  );
 
   const manifest: BundleManifest = {
     version: 1,
@@ -241,13 +173,13 @@ async function main(): Promise<void> {
     bundleDir,
     scope: (args.scope ?? '').trim() || 'custom',
     legacyManifestPath: rel(bundleDir, extractResult.manifestPath),
-    attributeSnapshotPath: rel(bundleDir, attributeSnapshotPath),
+    attributeSnapshotPath: null,
+    appDataSnapshotPath: null,
     optionalFiles,
     warnings,
     knownFullResetBlockers: knownFullResetBlockers(),
     durationsMs: {
       extractLegacyArtifact: extractMs,
-      exportAttributeSnapshot: attributeMs,
       total: Date.now() - started,
     },
   };
@@ -258,7 +190,6 @@ async function main(): Promise<void> {
   console.log('----------------------------------------');
   console.log(`legacy  : ${extractResult.manifest.tables.length} table CSVs`);
   console.log(`manifest: ${extractResult.manifestPath}`);
-  console.log(`app     : ${attributeSnapshotPath}`);
   if (Object.keys(optionalFiles).length > 0) {
     console.log(`crm     : ${Object.values(optionalFiles).join(', ')}`);
   }

@@ -21,6 +21,7 @@ const { Title, Paragraph, Text } = Typography
 // Friendly labels for list rendering.
 const REPORT_TYPE_LABELS: Record<ReportType, string> = {
   'sales-analysis': 'Sales Analysis',
+  'sales-analysis-picture': 'Sales Analysis Picture Report',
   'sales-hierarchy-drill-down': 'Sales Hierarchy Drill-Down',
   'sales-pivot': 'Sales Pivot',
   'best-sellers': 'Best Sellers',
@@ -35,6 +36,7 @@ const REPORT_TYPE_LABELS: Record<ReportType, string> = {
 // Where each report's builder lives.
 const REPORT_TYPE_PATHS: Record<ReportType, string> = {
   'sales-analysis': '/reports/sales/analysis',
+  'sales-analysis-picture': '/reports/sales/analysis-picture',
   'sales-hierarchy-drill-down': '/reports/sales/hierarchy-drill-down',
   'sales-pivot': '/reports/sales/pivot',
   'best-sellers': '/reports/sales/best-sellers',

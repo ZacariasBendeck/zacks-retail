@@ -10,7 +10,7 @@ import {
   runPowerShellJson,
 } from '../accessOleDb';
 
-export type MigrationJobStatus = 'queued' | 'running' | 'succeeded' | 'failed';
+export type MigrationJobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'stale';
 export type MigrationLogStream = 'stdout' | 'stderr' | 'system';
 
 export interface MigrationLogLine {
@@ -36,8 +36,6 @@ export interface MigrationJobSnapshot {
 export interface MigrationActionConfig {
   mdbDir?: string;
   bundleDir?: string;
-  customerCsvPath?: string;
-  mailListNamesCsvPath?: string;
   inventoryHistoryAsOf?: string;
   skipInventoryHistory?: boolean;
   skipCustomers?: boolean;
@@ -81,6 +79,7 @@ interface MigrationJob extends MigrationJobSnapshot {
 const API_DIR = path.resolve(__dirname, '../../..');
 const MAX_LOG_LINES = 2_000;
 const MAX_JOBS = 80;
+const JOB_STORE_DIR = path.join(API_DIR, '.tmp', 'migration-day-jobs');
 
 const jobs = new Map<string, MigrationJob>();
 
@@ -122,8 +121,6 @@ function normalizeConfig(raw: unknown): MigrationActionConfig {
   return {
     bundleDir: cleanString(body.bundleDir) ?? undefined,
     mdbDir: cleanString(body.mdbDir) ?? undefined,
-    customerCsvPath: cleanString(body.customerCsvPath) ?? undefined,
-    mailListNamesCsvPath: cleanString(body.mailListNamesCsvPath) ?? undefined,
     inventoryHistoryAsOf: cleanString(body.inventoryHistoryAsOf) ?? undefined,
     skipInventoryHistory: bool(body.skipInventoryHistory),
     skipCustomers: bool(body.skipCustomers),
@@ -153,21 +150,12 @@ function attributeSnapshotPath(config: MigrationActionConfig): string {
   return path.join(requireBundleDir(config), 'app', 'attribute-catalog-export.json');
 }
 
-function bundleCustomerPath(config: MigrationActionConfig, fileName: string): string {
-  return path.join(requireBundleDir(config), 'crm', fileName);
+function appDataSnapshotPath(config: MigrationActionConfig): string {
+  return path.join(requireBundleDir(config), 'app', 'app-data-export.json');
 }
 
 function bundleLegacyPath(config: MigrationActionConfig, fileName: string): string {
   return path.join(requireBundleDir(config), 'legacy', fileName);
-}
-
-function optionalPathArgs(pairs: Array<[string, string | undefined]>): string[] {
-  const out: string[] = [];
-  for (const [flag, value] of pairs) {
-    const cleaned = cleanString(value);
-    if (cleaned) out.push(flag, path.resolve(cleaned));
-  }
-  return out;
 }
 
 function loadBundleArgs(config: MigrationActionConfig): string[] {
@@ -193,9 +181,9 @@ const actions: ActionRegistration[] = [
   },
   {
     id: 'check-mdb-table-coverage',
-    label: 'Check MDB table coverage',
+    label: 'Deep MDB table coverage audit',
     group: 'check',
-    description: 'Enumerates MDB tables and columns, then reports which tables are included in extraction and which remain pending.',
+    description: 'Optional deep diagnostic. Opens MDB files and enumerates tables/columns to show which sources are included in extraction and which remain pending.',
     requiresMdbDir: true,
     requiresBundle: false,
     runner: { type: 'internal', run: runMdbTableCoverageCheck },
@@ -210,9 +198,9 @@ const actions: ActionRegistration[] = [
   },
   {
     id: 'export-bundle',
-    label: 'Export conversion bundle',
+    label: 'Extract CSV files',
     group: 'sequence',
-    description: 'Creates the canonical RICS CSV artifact pack, attribute snapshot, optional customer files, and bundle manifest.',
+    description: 'Extracts canonical CSV files from the RICS MDB folder and writes the legacy bundle manifest.',
     requiresMdbDir: true,
     requiresBundle: true,
     runner: {
@@ -222,10 +210,20 @@ const actions: ActionRegistration[] = [
         requireBundleDir(config),
         '--mdb-dir',
         requireMdbDir(config),
-        ...optionalPathArgs([
-          ['--customer', config.customerCsvPath],
-          ['--mail', config.mailListNamesCsvPath],
-        ]),
+      ]),
+    },
+  },
+  {
+    id: 'export-app-data',
+    label: 'Export app-created Postgres data',
+    group: 'sequence',
+    description: 'Exports app-owned Postgres data into app/attribute-catalog-export.json and app/app-data-export.json.',
+    requiresBundle: true,
+    runner: {
+      type: 'command',
+      build: (config) => nodeScript('scripts/cutover/render-conversion-export-app-data.ts', [
+        '--bundle',
+        requireBundleDir(config),
       ]),
     },
   },
@@ -233,15 +231,15 @@ const actions: ActionRegistration[] = [
     id: 'check-bundle',
     label: 'Check bundle files',
     group: 'check',
-    description: 'Validates the bundle manifest, legacy manifest, attribute snapshot, and optional CRM files.',
+    description: 'Validates the bundle manifest, legacy manifest, attribute snapshot, app-created data snapshot, and optional files.',
     requiresBundle: true,
     runner: { type: 'internal', run: runBundleCheck },
   },
   {
     id: 'load-bundle',
-    label: 'Load full bundle',
+    label: 'Import mapped CSVs into Postgres',
     group: 'sequence',
-    description: 'Runs the full Render load wrapper in the approved order.',
+    description: 'Loads the extracted CSV bundle into the mapped app tables in Postgres.',
     requiresBundle: true,
     runner: {
       type: 'command',
@@ -250,9 +248,9 @@ const actions: ActionRegistration[] = [
   },
   {
     id: 'post-load-checks',
-    label: 'Run post-load checks',
+    label: 'Verify data is up to date',
     group: 'check',
-    description: 'Checks the key imported table counts after a bundle load.',
+    description: 'Checks key imported table counts, bundle metadata, and table freshness after the load.',
     requiresBundle: false,
     runner: { type: 'internal', run: runPostLoadChecks },
   },
@@ -274,6 +272,17 @@ const actions: ActionRegistration[] = [
     runner: {
       type: 'command',
       build: (config) => nodeScript('scripts/catalog/import-attribute-catalog.ts', ['--in', attributeSnapshotPath(config)]),
+    },
+  },
+  {
+    id: 'import-app-data',
+    label: 'Import app-created data',
+    group: 'individual',
+    description: 'Loads app/app-data-export.json into app-created Postgres tables.',
+    requiresBundle: true,
+    runner: {
+      type: 'command',
+      build: (config) => nodeScript('scripts/cutover/import-app-created-data.ts', ['--in', appDataSnapshotPath(config)]),
     },
   },
   {
@@ -396,7 +405,7 @@ const actions: ActionRegistration[] = [
       build: (config) => {
         const args = ['--manifest', legacyManifestPath(config)];
         if (config.inventoryHistoryAsOf) args.push('--as-of', config.inventoryHistoryAsOf);
-        return nodeScript('scripts/rics/sync/import-app-inventory-history-from-artifact.ts', args);
+        return nodeScript('scripts/rics/sync/import-inventory-history-from-csv-bundle.ts', args);
       },
     },
   },
@@ -404,18 +413,17 @@ const actions: ActionRegistration[] = [
     id: 'import-customers',
     label: 'Import customers',
     group: 'individual',
-    description: 'Loads Customer.csv and MailListNames.csv into customer tables.',
+    description: 'Loads customer master data from the RIMAIL MDB artifact tables into customer tables.',
     requiresBundle: true,
-    requiresCustomerFiles: true,
+    requiresLegacyManifest: true,
     runner: {
       type: 'command',
-      build: (config) => nodeScript('scripts/customers/import-customers.ts', [
-        '--customer',
-        bundleCustomerPath(config, 'Customer.csv'),
-        '--mail',
-        bundleCustomerPath(config, 'MailListNames.csv'),
+      build: (config) => nodeScript('scripts/customers/import-customers-bulk.ts', [
+        '--manifest',
+        legacyManifestPath(config),
         '--source',
         'render_cutover_bundle',
+        '--replace',
       ]),
     },
   },
@@ -451,6 +459,7 @@ const actions: ActionRegistration[] = [
 ];
 
 const actionMap = new Map(actions.map((action) => [action.id, action]));
+loadPersistedJobs();
 
 export function listMigrationActions(): MigrationActionDefinition[] {
   return actions.map(({ runner: _runner, ...action }) => action);
@@ -459,6 +468,52 @@ export function listMigrationActions(): MigrationActionDefinition[] {
 export function getMigrationJob(jobId: string): MigrationJobSnapshot | null {
   const job = jobs.get(jobId);
   return job ? snapshotJob(job) : null;
+}
+
+export function listMigrationJobs(): MigrationJobSnapshot[] {
+  return [...jobs.values()]
+    .map((job) => snapshotJob(job))
+    .sort((a, b) => Date.parse(a.startedAt) - Date.parse(b.startedAt));
+}
+
+export async function recoverMigrationState(rawConfig: unknown): Promise<MigrationJobSnapshot[]> {
+  const config = normalizeConfig(rawConfig);
+  const recovered: MigrationJobSnapshot[] = [];
+
+  try {
+    const mdbDir = requireMdbDir(config);
+    const folderReport = inspectMdbFolder(mdbDir);
+    if (folderReport.missingCount === 0) {
+      recovered.push(recoveredJob('check-mdb-folder', 'Recovered from current MDB folder.', folderReport));
+    }
+  } catch {
+    // Recovery is best-effort; a missing source folder should not hide bundle/db progress.
+  }
+
+  const bundleReport = inspectBundle(config);
+  if (bundleReport?.legacyOk) {
+    recovered.push(recoveredJob('export-bundle', 'Recovered from existing legacy CSV bundle files.', bundleReport.legacy));
+  }
+  if (bundleReport?.appDataOk) {
+    recovered.push(recoveredJob('export-app-data', 'Recovered from existing app-created data snapshot files.', bundleReport.app));
+  }
+  if (bundleReport?.bundleOk) {
+    recovered.push(recoveredJob('check-bundle', 'Recovered from complete bundle files.', bundleReport));
+  }
+
+  if (process.env.DATABASE_URL) {
+    try {
+      recovered.push(recoveredJob('check-preflight', 'Recovered from successful Postgres connection.', { databaseUrl: 'present' }));
+      const hasLoadedData = await targetDatabaseLooksLoaded(bundleReport);
+      if (hasLoadedData) {
+        recovered.push(recoveredJob('load-bundle', 'Recovered from non-empty required import tables in Postgres.', { requiredTablesHaveRows: true }));
+      }
+    } catch {
+      // Leave database-backed steps unrecovered if the target cannot be reached.
+    }
+  }
+
+  return recovered;
 }
 
 export function startMigrationJob(actionId: string, rawConfig: unknown): MigrationJobSnapshot {
@@ -494,9 +549,11 @@ export function startMigrationJob(actionId: string, rawConfig: unknown): Migrati
       if (this.logs.length > MAX_LOG_LINES) {
         this.logs.splice(0, this.logs.length - MAX_LOG_LINES);
       }
+      persistJob(this);
     },
   };
   jobs.set(job.id, job);
+  persistJob(job);
 
   void runJob(job, action, config);
   return snapshotJob(job);
@@ -505,6 +562,7 @@ export function startMigrationJob(actionId: string, rawConfig: unknown): Migrati
 async function runJob(job: MigrationJob, action: ActionRegistration, config: MigrationActionConfig): Promise<void> {
   const started = Date.now();
   job.status = 'running';
+  persistJob(job);
   job.append('system', `Starting ${action.label}`);
   try {
     if (action.runner.type === 'command') {
@@ -531,6 +589,7 @@ async function runJob(job: MigrationJob, action: ActionRegistration, config: Mig
     job.finishedAt = new Date().toISOString();
     job.durationMs = Date.now() - started;
     job.append('system', `Finished ${action.label} with ${job.status}`);
+    persistJob(job);
   }
 }
 
@@ -581,14 +640,217 @@ function snapshotJob(job: MigrationJob): MigrationJobSnapshot {
   };
 }
 
+function jobFromSnapshot(snapshot: MigrationJobSnapshot): MigrationJob {
+  return {
+    ...snapshot,
+    logs: [...snapshot.logs],
+    append(stream, text) {
+      for (const line of splitLogText(text)) {
+        this.logs.push({ at: new Date().toISOString(), stream, text: line });
+      }
+      if (this.logs.length > MAX_LOG_LINES) {
+        this.logs.splice(0, this.logs.length - MAX_LOG_LINES);
+      }
+      persistJob(this);
+    },
+  };
+}
+
+function jobStorePath(jobId: string): string {
+  if (!/^[A-Za-z0-9_-]+$/.test(jobId)) {
+    throw new Error(`Invalid migration job id: ${jobId}`);
+  }
+  return path.join(JOB_STORE_DIR, `${jobId}.json`);
+}
+
+function persistJob(job: MigrationJob): void {
+  try {
+    fs.mkdirSync(JOB_STORE_DIR, { recursive: true });
+    const filePath = jobStorePath(job.id);
+    const tempPath = `${filePath}.${process.pid}.tmp`;
+    fs.writeFileSync(tempPath, JSON.stringify(snapshotJob(job), null, 2));
+    fs.renameSync(tempPath, filePath);
+  } catch (error) {
+    console.warn(
+      `[migration-day] failed to persist job ${job.id}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+function loadPersistedJobs(): void {
+  if (!fs.existsSync(JOB_STORE_DIR)) return;
+  const files = fs.readdirSync(JOB_STORE_DIR, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
+    .map((entry) => path.join(JOB_STORE_DIR, entry.name));
+
+  for (const file of files) {
+    try {
+      const snapshot = JSON.parse(fs.readFileSync(file, 'utf8')) as MigrationJobSnapshot;
+      if (!snapshot?.id || typeof snapshot.actionId !== 'string') continue;
+      const job = jobFromSnapshot(snapshot);
+      if (job.status === 'queued' || job.status === 'running') {
+        const now = new Date().toISOString();
+        job.status = 'stale';
+        job.finishedAt = now;
+        job.durationMs = job.durationMs ?? Math.max(0, Date.parse(now) - Date.parse(job.startedAt));
+        job.error = 'API restarted while this job was running, so live process tracking was lost. Run verification or rerun this step if recovery does not mark it complete.';
+        job.append('system', 'Marked stale: API restarted while this job was running, so live process tracking was lost.');
+      }
+      jobs.set(job.id, job);
+    } catch (error) {
+      console.warn(
+        `[migration-day] failed to load persisted job ${file}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  pruneJobs();
+}
+
 function pruneJobs(): void {
   if (jobs.size < MAX_JOBS) return;
   const finished = [...jobs.values()]
-    .filter((job) => job.status === 'succeeded' || job.status === 'failed')
+    .filter((job) => job.status === 'succeeded' || job.status === 'failed' || job.status === 'stale')
     .sort((a, b) => a.startedAt.localeCompare(b.startedAt));
   for (const job of finished.slice(0, jobs.size - MAX_JOBS + 1)) {
     jobs.delete(job.id);
+    try {
+      fs.unlinkSync(jobStorePath(job.id));
+    } catch {
+      // Pruning is best-effort; stale files do not affect active jobs.
+    }
   }
+}
+
+function recoveredJob(actionId: string, message: string, result: unknown): MigrationJobSnapshot {
+  const action = actionMap.get(actionId);
+  const now = new Date().toISOString();
+  return {
+    id: `recovered:${actionId}`,
+    actionId,
+    actionLabel: action?.label ?? actionId,
+    status: 'succeeded',
+    startedAt: now,
+    finishedAt: now,
+    exitCode: 0,
+    durationMs: 0,
+    logs: [{ at: now, stream: 'system', text: message }],
+    result,
+    error: null,
+  };
+}
+
+function inspectMdbFolder(mdbDir: string) {
+  const required = canonicalMdbRequirements();
+  const report: {
+    mdbDir: string;
+    requiredCount: number;
+    foundCount: number;
+    missingCount: number;
+    found: Array<{ file: string; actualFile: string; path: string; sizeBytes: number; modifiedAt: string; tables: string[] }>;
+    missing: Array<{ file: string; tables: string[] }>;
+  } = {
+    mdbDir,
+    requiredCount: required.length,
+    foundCount: 0,
+    missingCount: 0,
+    found: [],
+    missing: [],
+  };
+
+  if (!fs.existsSync(mdbDir) || !fs.statSync(mdbDir).isDirectory()) return report;
+
+  const mdbFiles = fs.readdirSync(mdbDir, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && /\.mdb$/i.test(entry.name))
+    .map((entry) => entry.name);
+  const actualByLower = new Map(mdbFiles.map((file) => [file.toLowerCase(), file]));
+
+  for (const item of required) {
+    const actualFile = actualByLower.get(item.file.toLowerCase());
+    if (!actualFile) {
+      report.missing.push({ file: item.file, tables: item.tables });
+      continue;
+    }
+    const filePath = path.join(mdbDir, actualFile);
+    const stat = fs.statSync(filePath);
+    report.found.push({
+      file: item.file,
+      actualFile,
+      path: filePath,
+      sizeBytes: stat.size,
+      modifiedAt: stat.mtime.toISOString(),
+      tables: item.tables,
+    });
+  }
+
+  report.foundCount = report.found.length;
+  report.missingCount = report.missing.length;
+  return report;
+}
+
+function inspectBundle(config: MigrationActionConfig): {
+  bundleOk: boolean;
+  legacyOk: boolean;
+  appDataOk: boolean;
+  createdAt: string | null;
+  legacyExtractedAt: string | null;
+  targetRowCounts: Record<string, number>;
+  legacy: unknown;
+  app: unknown;
+  missing: string[];
+} | null {
+  const bundleDir = cleanString(config.bundleDir);
+  if (!bundleDir) return null;
+  const absoluteBundleDir = path.resolve(bundleDir);
+  const bundleManifestPath = path.join(absoluteBundleDir, 'bundle-manifest.json');
+  const legacyManifestPath = path.join(absoluteBundleDir, 'legacy', 'manifest.json');
+  const attributePath = path.join(absoluteBundleDir, 'app', 'attribute-catalog-export.json');
+  const appDataPath = path.join(absoluteBundleDir, 'app', 'app-data-export.json');
+  const requiredFiles = [bundleManifestPath, legacyManifestPath, attributePath, appDataPath];
+  const missing = requiredFiles.filter((file) => !fs.existsSync(file));
+
+  let createdAt: string | null = null;
+  if (fs.existsSync(bundleManifestPath)) {
+    const bundleManifest = JSON.parse(fs.readFileSync(bundleManifestPath, 'utf8')) as { createdAt?: string };
+    createdAt = typeof bundleManifest.createdAt === 'string' ? bundleManifest.createdAt : null;
+  }
+
+  let legacyExtractedAt: string | null = null;
+  let tableCount = 0;
+  let rowCount = 0;
+  let targetRowCounts: Record<string, number> = {};
+  let missingCsvs: string[] = [];
+  if (fs.existsSync(legacyManifestPath)) {
+    const legacyManifest = JSON.parse(fs.readFileSync(legacyManifestPath, 'utf8')) as {
+      extractedAt?: string;
+      tables?: Array<{ targetTable?: string; csvFile?: string; rowCount?: number }>;
+    };
+    legacyExtractedAt = typeof legacyManifest.extractedAt === 'string' ? legacyManifest.extractedAt : null;
+    const tables = Array.isArray(legacyManifest.tables) ? legacyManifest.tables : [];
+    tableCount = tables.length;
+    rowCount = tables.reduce((sum, table) => sum + Number(table.rowCount ?? 0), 0);
+    targetRowCounts = {};
+    for (const table of tables) {
+      if (table.targetTable) targetRowCounts[table.targetTable] = Number(table.rowCount ?? 0);
+    }
+    missingCsvs = tables
+      .map((table) => table.csvFile ? path.join(absoluteBundleDir, 'legacy', table.csvFile) : null)
+      .filter((file): file is string => file != null && !fs.existsSync(file));
+  }
+
+  const legacyOk = fs.existsSync(legacyManifestPath) && tableCount > 0 && missingCsvs.length === 0;
+  const appDataOk = fs.existsSync(attributePath) && fs.existsSync(appDataPath);
+  return {
+    bundleOk: missing.length === 0 && legacyOk && appDataOk,
+    legacyOk,
+    appDataOk,
+    createdAt,
+    legacyExtractedAt,
+    targetRowCounts,
+    legacy: { bundleDir: absoluteBundleDir, tableCount, rowCount, missingCsvs },
+    app: { attributePath, appDataPath },
+    missing: [...missing, ...missingCsvs],
+  };
 }
 
 async function withPg<T>(fn: (client: Client) => Promise<T>): Promise<T> {
@@ -601,6 +863,66 @@ async function withPg<T>(fn: (client: Client) => Promise<T>): Promise<T> {
   } finally {
     await client.end();
   }
+}
+
+async function targetDatabaseLooksLoaded(bundleReport: ReturnType<typeof inspectBundle>): Promise<boolean> {
+  const requiredTables = [
+    'app.sku',
+    'app.vendor',
+    'app.store_master',
+    'app.stock_level',
+    'app.stock_movement',
+    'app.replenishment_target',
+    'app.taxonomy_category',
+    'app.product_family',
+    'app.category_product_family',
+  ];
+  return withPg(async (client) => {
+    for (const tableRef of requiredTables) {
+      if (!await tableExists(client, tableRef)) return false;
+      const result = await client.query<{ has_rows: boolean }>(
+        `SELECT EXISTS (SELECT 1 FROM ${quoteQualifiedRef(tableRef)} LIMIT 1) AS has_rows`,
+      );
+      if (result.rows[0]?.has_rows !== true) return false;
+    }
+
+    const loadedAfter = bundleReport?.createdAt ?? bundleReport?.legacyExtractedAt ?? null;
+    const targetRowCounts = bundleReport?.targetRowCounts ?? {};
+    if (loadedAfter && targetRowCounts.mail_list_names > 0) {
+      const customersFresh = await tableHasTimestampAtOrAfter(client, 'app.customer', ['updated_at', 'created_at'], loadedAfter);
+      if (!customersFresh) return false;
+    }
+    if (loadedAfter && targetRowCounts.ticket_header > 0 && targetRowCounts.ticket_detail > 0) {
+      const ticketsFresh = await tableHasTimestampAtOrAfter(
+        client,
+        'app.sales_history_ticket',
+        ['updated_at', 'created_at'],
+        loadedAfter,
+      );
+      if (!ticketsFresh) return false;
+    }
+
+    return true;
+  });
+}
+
+async function tableHasTimestampAtOrAfter(
+  client: Client,
+  tableRef: string,
+  candidateColumns: string[],
+  isoTimestamp: string,
+): Promise<boolean> {
+  const [schema, table] = tableRef.split('.');
+  if (!await tableExists(client, tableRef)) return false;
+  const columns = await existingColumns(client, schema, table, candidateColumns);
+  for (const column of columns) {
+    const result = await client.query<{ ok: boolean }>(
+      `SELECT COALESCE(MAX(${quoteIdent(column)}) >= $1::timestamptz, false) AS ok FROM ${quoteQualifiedRef(tableRef)}`,
+      [isoTimestamp],
+    );
+    if (result.rows[0]?.ok === true) return true;
+  }
+  return false;
 }
 
 async function runMdbFolderCheck(config: MigrationActionConfig, job: MigrationJob): Promise<unknown> {
@@ -916,6 +1238,12 @@ async function runPreflightCheck(config: MigrationActionConfig, job: MigrationJo
       ['app.ticket_tender', 'ticketTender'],
       ['app.purchase_order', 'purchaseOrder'],
       ['app.purchase_order_line', 'purchaseOrderLine'],
+      ['app.store_group', 'storeGroup'],
+      ['app.store_group_member', 'storeGroupMember'],
+      ['app.purchase_plan', 'purchasePlan'],
+      ['app.matching_set', 'matchingSet'],
+      ['app.import_shipment', 'importShipment'],
+      ['app.vendor_overlay', 'vendorOverlay'],
     ]);
     checks.push({ name: 'Postgres connection', status: 'pass', detail: 'connected and count queries completed' });
     job.append('stdout', `Current data counts: ${JSON.stringify(counts)}`);
@@ -933,6 +1261,7 @@ async function runBundleCheck(config: MigrationActionConfig, job: MigrationJob):
     path.join(bundleDir, 'bundle-manifest.json'),
     path.join(bundleDir, 'legacy', 'manifest.json'),
     path.join(bundleDir, 'app', 'attribute-catalog-export.json'),
+    path.join(bundleDir, 'app', 'app-data-export.json'),
   ];
   const missing = requiredFiles.filter((file) => !fs.existsSync(file));
   if (missing.length > 0) {
@@ -958,8 +1287,9 @@ async function runBundleCheck(config: MigrationActionConfig, job: MigrationJob):
   }
 
   const optional = {
-    customer: fs.existsSync(path.join(bundleDir, 'crm', 'Customer.csv')),
-    mail: fs.existsSync(path.join(bundleDir, 'crm', 'MailListNames.csv')),
+    appDataSnapshot: fs.existsSync(path.join(bundleDir, 'app', 'app-data-export.json')),
+    customerArtifact: tables.some((table) => table.targetTable === 'mail_list_family')
+      && tables.some((table) => table.targetTable === 'mail_list_names'),
     ticketHeader: fs.existsSync(path.join(bundleDir, 'legacy', 'ticket_header.csv')),
     ticketDetail: fs.existsSync(path.join(bundleDir, 'legacy', 'ticket_detail.csv')),
     ticketTender: fs.existsSync(path.join(bundleDir, 'legacy', 'ticket_tender.csv')),
@@ -968,7 +1298,7 @@ async function runBundleCheck(config: MigrationActionConfig, job: MigrationJob):
   return { bundleDir, tableCount: tables.length, optional };
 }
 
-async function runPostLoadChecks(_config: MigrationActionConfig, job: MigrationJob): Promise<unknown> {
+async function runPostLoadChecks(config: MigrationActionConfig, job: MigrationJob): Promise<unknown> {
   const counts = await queryCounts([
     ['app.sku', 'sku'],
     ['app.vendor', 'vendor'],
@@ -991,6 +1321,12 @@ async function runPostLoadChecks(_config: MigrationActionConfig, job: MigrationJ
     ['app.ticket_tender', 'ticketTender'],
     ['app.purchase_order', 'purchaseOrder'],
     ['app.purchase_order_line', 'purchaseOrderLine'],
+    ['app.store_group', 'storeGroup'],
+    ['app.store_group_member', 'storeGroupMember'],
+    ['app.purchase_plan', 'purchasePlan'],
+    ['app.matching_set', 'matchingSet'],
+    ['app.import_shipment', 'importShipment'],
+    ['app.vendor_overlay', 'vendorOverlay'],
   ]);
 
   const required = [
@@ -1005,11 +1341,32 @@ async function runPostLoadChecks(_config: MigrationActionConfig, job: MigrationJ
     'categoryProductFamily',
   ];
   const zeroRequired = required.filter((key) => (counts[key] ?? 0) <= 0);
+  const freshness = await queryFreshness([
+    ['app.sku', 'sku', ['rics_last_synced_at', 'updated_at', 'created_at']],
+    ['app.vendor', 'vendor', ['updated_at', 'created_at']],
+    ['app.store_master', 'storeMaster', ['updated_at', 'created_at']],
+    ['app.stock_level', 'stockLevel', ['updated_at', 'created_at']],
+    ['app.stock_movement', 'stockMovement', ['created_at', 'movement_at']],
+    ['app.replenishment_target', 'replenishmentTarget', ['updated_at', 'created_at']],
+    ['app.customer', 'customer', ['updated_at', 'created_at']],
+    ['app.sales_history_ticket', 'salesHistoryTicket', ['updated_at', 'created_at', 'purchased_at']],
+    ['app.ticket_header', 'ticketHeader', ['imported_at']],
+    ['app.purchase_order', 'purchaseOrder', ['updated_at', 'created_at']],
+  ]);
+  const bundle = readBundleSummary(config);
+
   job.append('stdout', `Post-load counts: ${JSON.stringify(counts)}`);
+  if (bundle) {
+    job.append(
+      'stdout',
+      `Bundle summary: extractedAt=${bundle.legacyExtractedAt ?? 'n/a'} createdAt=${bundle.createdAt ?? 'n/a'} tables=${bundle.legacyTableCount ?? 'n/a'} rows=${bundle.legacyRowCount ?? 'n/a'}`,
+    );
+  }
+  job.append('stdout', `Freshness summary: ${JSON.stringify(freshness)}`);
   if (zeroRequired.length > 0) {
     throw new Error(`Post-load checks failed. Required tables with zero rows: ${zeroRequired.join(', ')}`);
   }
-  return { counts, zeroRequired };
+  return { counts, zeroRequired, freshness, bundle };
 }
 
 async function queryCounts(pairs: Array<[string, string]>): Promise<Record<string, number>> {
@@ -1028,6 +1385,100 @@ async function queryCounts(pairs: Array<[string, string]>): Promise<Record<strin
   });
 }
 
+interface BundleSummary {
+  bundleDir: string;
+  createdAt: string | null;
+  legacyExtractedAt: string | null;
+  legacyTableCount: number | null;
+  legacyRowCount: number | null;
+  manifestPath: string | null;
+}
+
+function readBundleSummary(config: MigrationActionConfig): BundleSummary | null {
+  const bundleDir = cleanString(config.bundleDir);
+  if (!bundleDir) return null;
+  const absoluteBundleDir = path.resolve(bundleDir);
+  const bundleManifestPath = path.join(absoluteBundleDir, 'bundle-manifest.json');
+  const legacyManifestPath = path.join(absoluteBundleDir, 'legacy', 'manifest.json');
+
+  let createdAt: string | null = null;
+  if (fs.existsSync(bundleManifestPath)) {
+    const bundleManifest = JSON.parse(fs.readFileSync(bundleManifestPath, 'utf8')) as { createdAt?: string };
+    createdAt = typeof bundleManifest.createdAt === 'string' ? bundleManifest.createdAt : null;
+  }
+
+  let legacyExtractedAt: string | null = null;
+  let legacyTableCount: number | null = null;
+  let legacyRowCount: number | null = null;
+  if (fs.existsSync(legacyManifestPath)) {
+    const legacyManifest = JSON.parse(fs.readFileSync(legacyManifestPath, 'utf8')) as {
+      extractedAt?: string;
+      tables?: Array<{ rowCount?: number }>;
+    };
+    legacyExtractedAt = typeof legacyManifest.extractedAt === 'string' ? legacyManifest.extractedAt : null;
+    const tables = Array.isArray(legacyManifest.tables) ? legacyManifest.tables : [];
+    legacyTableCount = tables.length;
+    legacyRowCount = tables.reduce((sum, table) => sum + Number(table.rowCount ?? 0), 0);
+  }
+
+  return {
+    bundleDir: absoluteBundleDir,
+    createdAt,
+    legacyExtractedAt,
+    legacyTableCount,
+    legacyRowCount,
+    manifestPath: fs.existsSync(legacyManifestPath) ? legacyManifestPath : null,
+  };
+}
+
+async function queryFreshness(
+  pairs: Array<[string, string, string[]]>,
+): Promise<Record<string, { maxTimestamp: string | null; sourceColumn: string | null }>> {
+  return withPg(async (client) => {
+    const out: Record<string, { maxTimestamp: string | null; sourceColumn: string | null }> = {};
+    for (const [tableRef, key, candidateColumns] of pairs) {
+      const [schema, table] = tableRef.split('.');
+      const exists = await tableExists(client, tableRef);
+      if (!exists) {
+        out[key] = { maxTimestamp: null, sourceColumn: null };
+        continue;
+      }
+
+      const columns = await existingColumns(client, schema, table, candidateColumns);
+      let best: { value: string | null; column: string | null } = { value: null, column: null };
+      for (const column of columns) {
+        const result = await client.query<{ max_value: string | null }>(
+          `SELECT MAX(${quoteIdent(column)})::text AS max_value FROM ${quoteQualifiedRef(tableRef)}`,
+        );
+        const value = result.rows[0]?.max_value ?? null;
+        if (value && (!best.value || Date.parse(value) > Date.parse(best.value))) {
+          best = { value, column };
+        }
+      }
+      out[key] = { maxTimestamp: best.value, sourceColumn: best.column };
+    }
+    return out;
+  });
+}
+
+async function existingColumns(
+  client: Client,
+  schema: string,
+  table: string,
+  candidateColumns: string[],
+): Promise<string[]> {
+  const result = await client.query<{ column_name: string }>(
+    `SELECT column_name
+       FROM information_schema.columns
+      WHERE table_schema = $1
+        AND table_name = $2
+        AND column_name = ANY($3::text[])`,
+    [schema, table, candidateColumns],
+  );
+  const present = new Set(result.rows.map((row) => row.column_name));
+  return candidateColumns.filter((column) => present.has(column));
+}
+
 async function tableExists(client: Client, tableRef: string): Promise<boolean> {
   const [schema, table] = tableRef.split('.');
   const result = await client.query<{ exists: boolean }>(
@@ -1040,6 +1491,13 @@ async function tableExists(client: Client, tableRef: string): Promise<boolean> {
     [schema, table],
   );
   return result.rows[0]?.exists === true;
+}
+
+function quoteIdent(value: string): string {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) {
+    throw new Error(`Invalid identifier: ${value}`);
+  }
+  return `"${value}"`;
 }
 
 function quoteQualifiedRef(ref: string): string {

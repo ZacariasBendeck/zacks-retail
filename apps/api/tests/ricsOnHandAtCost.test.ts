@@ -45,6 +45,27 @@ describe('getOnHandAtCostByDimension', () => {
     expect(map.get('556')).toBeCloseTo(1650, 2);
   });
 
+  it('treats blank store criteria as all stores including warehouses and negative balances', async () => {
+    setMockRows([
+      { SKU: 'A', Store: 2, TotalOnHand: 10, Category: 556, CurrentCost: 100, Vendor: 'V1', Season: null },
+      { SKU: 'A', Store: 99, TotalOnHand: 5, Category: 556, CurrentCost: 100, Vendor: 'V1', Season: null },
+      { SKU: 'A', Store: 90, TotalOnHand: -2, Category: 556, CurrentCost: 100, Vendor: 'V1', Season: null },
+    ]);
+
+    const map = await getOnHandInventoryByDimension({
+      reportType: 'CATEGORY_SUMMARY',
+      storeOption: 'COMBINE',
+      criteria: {},
+    });
+
+    expect(map.get('556')).toMatchObject({
+      unitsOnHand: 13,
+      onHandAtCost: 1300,
+    });
+    expect(map.get('556')?.inventoryUnitCost).toBeCloseTo(100, 2);
+    expect((prisma.$queryRawUnsafe as jest.Mock).mock.calls[0][0]).toContain('h.on_hand <> 0');
+  });
+
   it('groups by store when storeOption !== COMBINE', async () => {
     setMockRows([
       { SKU: 'A', Store: 2, TotalOnHand: 10, Category: 556, CurrentCost: 100, Vendor: 'V1', Season: null },

@@ -1,4 +1,4 @@
-export type MigrationJobStatus = 'queued' | 'running' | 'succeeded' | 'failed'
+export type MigrationJobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'stale'
 export type MigrationLogStream = 'stdout' | 'stderr' | 'system'
 export type MigrationActionGroup = 'sequence' | 'individual' | 'check'
 
@@ -25,8 +25,6 @@ export interface MigrationJobSnapshot {
 export interface MigrationActionConfig {
   mdbDir?: string
   bundleDir?: string
-  customerCsvPath?: string
-  mailListNamesCsvPath?: string
   inventoryHistoryAsOf?: string
   skipInventoryHistory?: boolean
   skipCustomers?: boolean
@@ -89,6 +87,15 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 
 export const migrationDayApi = {
   getDefinition: () => request<MigrationDefinition>('/api/v1/operations/migration-day/definition'),
+
+  listJobs: () =>
+    request<MigrationJobSnapshot[]>('/api/v1/operations/migration-day/jobs'),
+
+  recoverState: (config: MigrationActionConfig) =>
+    request<MigrationJobSnapshot[]>('/api/v1/operations/migration-day/state', {
+      method: 'POST',
+      body: JSON.stringify({ config }),
+    }),
 
   startJob: (actionId: string, config: MigrationActionConfig) =>
     request<MigrationJobSnapshot>('/api/v1/operations/migration-day/jobs', {

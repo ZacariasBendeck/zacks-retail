@@ -104,12 +104,66 @@ _TODO. Intended screens:_
 
 ## Common tasks
 
-_TODO. Expected flows:_
 - _Look up an item's on-hand across all stores_
 - _Enter a manual transfer between stores_
 - _Run and print a recommended-transfers report_
 - _Audit why a SKU's on-hand changed in a given date range_
 - _Set or adjust reorder points for a category_
+
+### Run inventory month close
+
+Month close is the step that makes the completed month available to RICS-compatible inventory reports and Inventory Inquiry history. It should be run once after every store has closed and posted the final sales batch for the month.
+
+The close:
+
+- writes the completed month into the 12-month inventory history used by Sales History by Month, Inventory Inquiry `[Info]`, ROI, and Turns
+- moves current MTD sales, net sales, and profit into the matching calendar-month slot
+- advances the last-month on-hand boundary used by inventory-value calculations
+- resets inventory-history MTD counters and size-grid MTD sales cells for the new month
+- records an audit row so the same month cannot be closed twice
+
+Before running month close:
+
+1. Confirm all POS shifts for the completed month are closed.
+2. Confirm completed POS tickets are posted into sales history.
+3. Run the dry-run close and resolve any validation failures.
+4. Run the real close.
+5. Verify the audit row and spot-check the next day's Inventory Inquiry and Sales History by Month totals.
+
+Operator path: **Operations -> Inventory Close -> Month Close**. Run **Dry Run** first, then run **Run Close** only after validation passes. The backend command remains available as an administrator fallback from the API server.
+
+Detailed operator checks and SQL verification are in [Inventory Month Close Runbook](../operations/inventory-month-close.md).
+
+Current command pattern:
+
+```powershell
+node --env-file-if-exists=.env -r tsx/cjs scripts/inventory/close-month.ts --month 2026-04 --closed-by zbendeck --dry-run
+node --env-file-if-exists=.env -r tsx/cjs scripts/inventory/close-month.ts --month 2026-04 --closed-by zbendeck
+```
+
+The dry run must pass before the real close is run. If validation fails, the close does not update inventory history.
+
+### Run weekly close for 8-week trend
+
+Weekly close maintains the app-owned 8-week trend slots used by Inventory Inquiry `[Trend]`. It should be run once after every store has posted the final sales batch for the week.
+
+The close:
+
+- rotates the prior seven closed week slots
+- writes the just-finished week into the newest closed-week slot
+- resets weekly sales, profit, and markdown counters for the next week
+- records an audit row so the same week cannot be closed twice
+
+Operator path: **Operations -> Inventory Close -> Week Close**. Run **Dry Run** first, then run **Run Close** only after validation passes. The backend command remains available as an administrator fallback from the API server.
+
+Current command pattern:
+
+```powershell
+node --env-file-if-exists=.env -r tsx/cjs scripts/inventory/close-week.ts --week-ending 2026-05-03 --closed-by zbendeck --dry-run
+node --env-file-if-exists=.env -r tsx/cjs scripts/inventory/close-week.ts --week-ending 2026-05-03 --closed-by zbendeck
+```
+
+Detailed operator checks and SQL verification are in [Inventory Week Close Runbook](../operations/inventory-week-close.md).
 
 ## Reports
 

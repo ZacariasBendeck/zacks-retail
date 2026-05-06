@@ -8,6 +8,7 @@ const API_BASE = '/api/v1/reports/templates'
 // Kept in sync by convention — both sides are one line each.
 export const REPORT_TYPES = [
   'sales-analysis',
+  'sales-analysis-picture',
   'sales-hierarchy-drill-down',
   'sales-pivot',
   'best-sellers',

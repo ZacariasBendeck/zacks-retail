@@ -3,7 +3,9 @@ import { requirePermission } from '../../middleware/authMiddleware';
 import { PERMISSIONS } from '../../services/employees/permissions';
 import {
   getMigrationJob,
+  listMigrationJobs,
   listMigrationActions,
+  recoverMigrationState,
   startMigrationJob,
 } from '../../services/operations/migrationDayService';
 
@@ -19,6 +21,7 @@ router.get('/definition', (_req: Request, res: Response) => {
       'check-mdb-table-coverage',
       'check-preflight',
       'export-bundle',
+      'export-app-data',
       'check-bundle',
       'manual-upload',
       'load-bundle',
@@ -26,6 +29,23 @@ router.get('/definition', (_req: Request, res: Response) => {
       'manual-operator-spot-checks',
     ],
   });
+});
+
+router.get('/jobs', (_req: Request, res: Response) => {
+  res.json(listMigrationJobs());
+});
+
+router.post('/state', async (req: Request, res: Response) => {
+  try {
+    res.json(await recoverMigrationState(req.body?.config ?? {}));
+  } catch (error) {
+    res.status(400).json({
+      error: {
+        code: 'STATE_RECOVERY_FAILED',
+        message: error instanceof Error ? error.message : String(error),
+      },
+    });
+  }
 });
 
 router.post('/jobs', (req: Request, res: Response) => {

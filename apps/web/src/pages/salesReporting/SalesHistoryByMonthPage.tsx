@@ -680,9 +680,9 @@ export default function SalesHistoryByMonthPage() {
     if (p.styleColorsRaw !== undefined) setStyleColorsRaw(p.styleColorsRaw)
     if (p.groupsRaw !== undefined) setGroupsRaw(p.groupsRaw)
     if (p.keywordsRaw !== undefined) setKeywordsRaw(p.keywordsRaw)
-    if (Array.isArray(p.stores) && p.stores.length && p.endMonth && Array.isArray(p.dataToPrint) && p.dataToPrint.length) {
+    if (p.endMonth && Array.isArray(p.dataToPrint) && p.dataToPrint.length) {
       setQuery({
-        stores: p.stores,
+        stores: Array.isArray(p.stores) && p.stores.length ? p.stores : undefined,
         endMonth: p.endMonth,
         sortBy: p.sortBy ?? 'vendor',
         combineStores: p.combineStores ?? true,
@@ -697,14 +697,9 @@ export default function SalesHistoryByMonthPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [templateId, templateData])
 
-  const allStoreNumbers = useMemo(
-    () => (dims?.stores ?? []).map((s) => s.number),
-    [dims?.stores],
-  )
-  const queryStores = selectedStores.length > 0 ? selectedStores : allStoreNumbers
-  const hasStores = queryStores.length > 0
+  const queryStores = selectedStores.length > 0 ? selectedStores : undefined
   const hasAnyMetric = dataToPrint.length > 0
-  const canRun = hasStores && hasAnyMetric
+  const canRun = hasAnyMetric
 
   function buildCriteria(): SalesHistoryByMonthCriteria {
     const c: SalesHistoryByMonthCriteria = {}
@@ -832,12 +827,7 @@ export default function SalesHistoryByMonthPage() {
               onStop={onStop}
               disabled={!canRun}
             />
-            {!hasStores && (
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                Store list is still loading; Run Report will include all stores when ready.
-              </Text>
-            )}
-            {hasStores && !hasAnyMetric && (
+            {!hasAnyMetric && (
               <Text type="secondary" style={{ fontSize: 12 }}>
                 Select at least one metric under Data to Print.
               </Text>
@@ -1061,6 +1051,7 @@ export default function SalesHistoryByMonthPage() {
             <CriteriaInput
               label="Stores"
               mode="numeric"
+              placeholder=""
               loading={dimsLoading}
               options={(dims?.stores ?? []).map((s) => ({
                 value: s.number,

@@ -22,6 +22,7 @@ export interface InventoryHistoryBackfillOptions {
   runId: string;
   sourceTable?: string;
   snapshotAsOf?: Date;
+  optimizeBulkReplace?: boolean;
 }
 
 interface CountRow {
@@ -70,6 +71,27 @@ function currentPriceSlotCase(expression: string): string {
 async function loadScalarCount(c: Client, sql: string, values: unknown[] = []): Promise<number> {
   const result = await c.query<CountRow>(sql, values);
   return Number(result.rows[0]?.count ?? 0);
+}
+
+function fmtNum(value: number): string {
+  return value.toLocaleString('en-US');
+}
+
+function fmtDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  const seconds = ms / 1000;
+  if (seconds < 60) return `${seconds.toFixed(1)}s`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}m ${Math.round(seconds - minutes * 60)}s`;
+}
+
+async function runPhase<T>(label: string, fn: () => Promise<T>, summarize?: (result: T) => string): Promise<T> {
+  const startedAt = Date.now();
+  console.log(`[inventory-history] ${label}...`);
+  const result = await fn();
+  const summary = summarize ? ` ${summarize(result)}` : '';
+  console.log(`[inventory-history] ${label} done in ${fmtDuration(Date.now() - startedAt)}${summary}`);
+  return result;
 }
 
 async function loadSourceRowsRead(c: Client, sourceTable: string): Promise<number> {
@@ -209,6 +231,7 @@ async function createSourceTempTable(c: Client, sourceTable: string): Promise<vo
 
   await c.query(`CREATE INDEX ON tmp_inventory_history_source (store_id, sku_code)`);
   await c.query(`CREATE INDEX ON tmp_inventory_history_source (sku_id)`);
+  await c.query(`ANALYZE tmp_inventory_history_source`);
 }
 
 async function loadUnresolvedSkuSummary(
@@ -239,7 +262,30 @@ async function loadUnresolvedSkuSummary(
   };
 }
 
-async function deleteImportedSnapshots(c: Client): Promise<number> {
+async function replaceImportedSnapshots(c: Client): Promise<number> {
+  const counts = await c.query<{ total: string; imported: string }>(
+    `
+      SELECT
+        COUNT(*)::text AS total,
+        COUNT(*) FILTER (WHERE source = $1)::text AS imported
+      FROM app.inventory_history_snapshot
+    `,
+    [IMPORT_SOURCE],
+  );
+  const total = Number(counts.rows[0]?.total ?? 0);
+  const imported = Number(counts.rows[0]?.imported ?? 0);
+
+  if (total === imported) {
+    await c.query(`
+      TRUNCATE TABLE
+        app.inventory_history_movement_bucket,
+        app.inventory_history_trend_week,
+        app.inventory_history_month,
+        app.inventory_history_snapshot
+    `);
+    return imported;
+  }
+
   return loadScalarCount(
     c,
     `
@@ -253,6 +299,77 @@ async function deleteImportedSnapshots(c: Client): Promise<number> {
     `,
     [IMPORT_SOURCE],
   );
+}
+
+const BULK_REBUILD_INDEXES = [
+  {
+    name: 'inventory_history_snapshot_sku_store_idx',
+    createSql: 'CREATE INDEX inventory_history_snapshot_sku_store_idx ON app.inventory_history_snapshot (sku_id, store_id)',
+  },
+  {
+    name: 'inventory_history_snapshot_store_idx',
+    createSql: 'CREATE INDEX inventory_history_snapshot_store_idx ON app.inventory_history_snapshot (store_id)',
+  },
+  {
+    name: 'inventory_history_snapshot_source_run_idx',
+    createSql: 'CREATE INDEX inventory_history_snapshot_source_run_idx ON app.inventory_history_snapshot (source_run_id)',
+  },
+  {
+    name: 'inventory_history_snapshot_snapshot_as_of_idx',
+    createSql: 'CREATE INDEX inventory_history_snapshot_snapshot_as_of_idx ON app.inventory_history_snapshot (snapshot_as_of)',
+  },
+  {
+    name: 'inventory_history_month_year_month_idx',
+    createSql: 'CREATE INDEX inventory_history_month_year_month_idx ON app.inventory_history_month (year_month)',
+  },
+  {
+    name: 'inventory_history_month_snapshot_year_month_idx',
+    createSql: 'CREATE INDEX inventory_history_month_snapshot_year_month_idx ON app.inventory_history_month (snapshot_id, year_month)',
+  },
+  {
+    name: 'inventory_history_month_sales_activity_idx',
+    createSql: `
+      CREATE INDEX inventory_history_month_sales_activity_idx
+      ON app.inventory_history_month (year_month, snapshot_id)
+      WHERE qty_sales <> 0
+         OR COALESCE(net_sales, 0) <> 0
+         OR COALESCE(profit, 0) <> 0
+    `,
+  },
+  {
+    name: 'inventory_history_trend_week_snapshot_idx',
+    createSql: 'CREATE INDEX inventory_history_trend_week_snapshot_idx ON app.inventory_history_trend_week (snapshot_id)',
+  },
+  {
+    name: 'inventory_history_bucket_snapshot_idx',
+    createSql: 'CREATE INDEX inventory_history_bucket_snapshot_idx ON app.inventory_history_movement_bucket (snapshot_id)',
+  },
+] as const;
+
+async function configureBulkImportSession(c: Client): Promise<void> {
+  await c.query(`SET LOCAL statement_timeout = 0`);
+  await c.query(`SET LOCAL synchronous_commit = off`);
+  await c.query(`SET LOCAL work_mem = '128MB'`);
+  await c.query(`SET LOCAL maintenance_work_mem = '512MB'`);
+}
+
+async function dropBulkRebuildIndexes(c: Client): Promise<void> {
+  for (const index of BULK_REBUILD_INDEXES) {
+    await c.query(`DROP INDEX IF EXISTS app.${index.name}`);
+  }
+}
+
+async function recreateBulkRebuildIndexes(c: Client): Promise<void> {
+  for (const index of BULK_REBUILD_INDEXES) {
+    await c.query(index.createSql);
+  }
+}
+
+async function analyzeInventoryHistoryTables(c: Client): Promise<void> {
+  await c.query('ANALYZE app.inventory_history_snapshot');
+  await c.query('ANALYZE app.inventory_history_month');
+  await c.query('ANALYZE app.inventory_history_trend_week');
+  await c.query('ANALYZE app.inventory_history_movement_bucket');
 }
 
 async function insertSnapshots(c: Client, runId: string, snapshotAsOf: Date): Promise<number> {
@@ -590,25 +707,59 @@ export async function inventoryHistoryBackfill(
   const startedAt = Date.now();
   const sourceTable = options.sourceTable ?? DEFAULT_SOURCE_TABLE;
   const snapshotAsOf = options.snapshotAsOf ?? new Date();
+  const optimizeBulkReplace = options.optimizeBulkReplace !== false;
   const c = options.pgClient;
 
   const sourceRowsRead = await loadSourceRowsRead(c, sourceTable);
 
   await c.query('BEGIN');
   try {
-    await createSkuMapTempTable(c);
-    await createSourceTempTable(c, sourceTable);
+    await runPhase('configure bulk import session', () => configureBulkImportSession(c));
+    await runPhase('create SKU map', () => createSkuMapTempTable(c));
+    await runPhase('normalize source rows', () => createSourceTempTable(c, sourceTable));
 
-    const eligibleRows = await loadScalarCount(
-      c,
-      `SELECT COUNT(*)::text AS count FROM tmp_inventory_history_source`,
+    const eligibleRows = await runPhase(
+      'count eligible source rows',
+      () => loadScalarCount(c, `SELECT COUNT(*)::text AS count FROM tmp_inventory_history_source`),
+      (count) => `rows=${fmtNum(count)}`,
     );
-    const unresolved = await loadUnresolvedSkuSummary(c);
-    const replacedSnapshots = await deleteImportedSnapshots(c);
-    const importedSnapshots = await insertSnapshots(c, options.runId, snapshotAsOf);
-    const importedMonths = await insertMonths(c, snapshotAsOf);
-    const importedTrendWeeks = await insertTrendWeeks(c);
-    const importedMovementBuckets = await insertMovementBuckets(c);
+    const unresolved = await runPhase(
+      'summarize unresolved SKU links',
+      () => loadUnresolvedSkuSummary(c),
+      (result) => `unresolved=${fmtNum(result.unresolvedSkuRows)}`,
+    );
+    const replacedSnapshots = await runPhase(
+      'replace prior imported snapshots',
+      () => replaceImportedSnapshots(c),
+      (count) => `replaced=${fmtNum(count)}`,
+    );
+    if (optimizeBulkReplace) {
+      await runPhase('drop secondary inventory-history indexes', () => dropBulkRebuildIndexes(c));
+    }
+    const importedSnapshots = await runPhase(
+      'insert inventory history snapshots',
+      () => insertSnapshots(c, options.runId, snapshotAsOf),
+      (count) => `inserted=${fmtNum(count)}`,
+    );
+    const importedMonths = await runPhase(
+      'insert monthly history rows',
+      () => insertMonths(c, snapshotAsOf),
+      (count) => `inserted=${fmtNum(count)}`,
+    );
+    const importedTrendWeeks = await runPhase(
+      'insert trend-week rows',
+      () => insertTrendWeeks(c),
+      (count) => `inserted=${fmtNum(count)}`,
+    );
+    const importedMovementBuckets = await runPhase(
+      'insert movement-bucket rows',
+      () => insertMovementBuckets(c),
+      (count) => `inserted=${fmtNum(count)}`,
+    );
+    if (optimizeBulkReplace) {
+      await runPhase('recreate secondary inventory-history indexes', () => recreateBulkRebuildIndexes(c));
+    }
+    await runPhase('analyze inventory-history tables', () => analyzeInventoryHistoryTables(c));
 
     await c.query('COMMIT');
 

@@ -38,14 +38,17 @@ const INIT_KEY = Uint8Array.from([
 ]);
 
 const REPO_ROOT = path.resolve(__dirname, '../../../..');
-const DEFAULT_RICS_DIR = process.env.RICS_DB_DIR
-  ? path.resolve(process.env.RICS_DB_DIR)
-  : path.resolve(REPO_ROOT, 'Rics Databases');
+
+function defaultRicsDir(): string {
+  return process.env.RICS_DB_DIR
+    ? path.resolve(process.env.RICS_DB_DIR)
+    : path.resolve(REPO_ROOT, 'Rics Databases');
+}
 
 let cachedPassword: string | null = null;
 
 export function ricsDbPath(fileName: string): string {
-  return path.resolve(DEFAULT_RICS_DIR, fileName);
+  return path.resolve(defaultRicsDir(), fileName);
 }
 
 export function getOrRecoverPassword(dbPath: string): string {

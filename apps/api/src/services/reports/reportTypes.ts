@@ -7,6 +7,7 @@ import { z } from 'zod';
 // /reports/... on the web app.
 export const REPORT_TYPES = [
   'sales-analysis',
+  'sales-analysis-picture',
   'sales-hierarchy-drill-down',
   'sales-pivot',
   'best-sellers',

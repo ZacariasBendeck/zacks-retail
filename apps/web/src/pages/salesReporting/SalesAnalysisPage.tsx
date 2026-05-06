@@ -9,6 +9,7 @@ import { useSalesAnalysis, useSalesDimensions, type SalesAnalysisArgs } from '..
 import type {
   SalesAnalysisStoreOption,
   SalesAnalysisRow,
+  SalesAnalysisReport,
 } from '../../services/reportApi'
 import { getErrorMessage } from '../../utils/errors'
 import RunReportControls from './RunReportControls'
@@ -174,6 +175,11 @@ function addAnalysisMeasures(into: SalesAnalysisMeasures, row: SalesAnalysisMeas
   into.onOrderQty += row.onOrderQty
   into.onOrderCost += row.onOrderCost
   into.priorYearNetSales = (into.priorYearNetSales ?? 0) + (row.priorYearNetSales ?? 0)
+}
+
+function percentOfTotal(value: number, total: number | null | undefined): number | null {
+  if (total == null || total === 0) return null
+  return Math.round((value / total) * 1000) / 10
 }
 
 function aggregateChainLeaves(leaves: SalesAnalysisRow[], periodDays: number): SalesAnalysisRow[] {
@@ -363,6 +369,7 @@ export default function SalesAnalysisPage() {
   const [keywordsRaw, setKeywordsRaw] = useState('')
   const [priorYear, setPriorYear] = useState(false)
   const [includeOnOrder, setIncludeOnOrder] = useState(false)
+  const [showPercentOfTotal, setShowPercentOfTotal] = useState(false)
   const [query, setQuery] = useState<SalesAnalysisArgs | null>(null)
   // Auto-collapses after a successful report run so results get the
   // vertical real-estate instead of the tall filter form. Operators expand
@@ -425,6 +432,7 @@ export default function SalesAnalysisPage() {
     setKeywordsRaw(p.keywordsRaw ?? '')
     setPriorYear(!!p.priorYear)
     setIncludeOnOrder(!!p.includeOnOrder)
+    setShowPercentOfTotal(!!p.showPercentOfTotal)
     // Use the full hydrated params as the query directly — don't rely on the
     // state setters above having flushed before this setQuery call.
     setQuery({
@@ -454,6 +462,7 @@ export default function SalesAnalysisPage() {
       priorYear: !!p.priorYear,
       includeAttributes: true,
       includeOnOrder: !!p.includeOnOrder,
+      showPercentOfTotal: !!p.showPercentOfTotal,
     })
     touchTemplate.mutate(templateId)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -496,6 +505,7 @@ export default function SalesAnalysisPage() {
       priorYear,
       includeAttributes: true,
       includeOnOrder,
+      showPercentOfTotal,
     })
   }
   function onStop(): void {
@@ -540,14 +550,38 @@ export default function SalesAnalysisPage() {
       title: 'Total Inv Cost', dataIndex: 'onHandAtCost', key: 'onHandAtCost', width: 130,
       align: 'right' as const, render: (v: number) => fmtMoney(v),
     },
+    ...(query?.showPercentOfTotal
+      ? [
+          {
+            title: '% of Total', dataIndex: 'onHandAtCost', key: 'onHandAtCostPctOfTotal', width: 100,
+            align: 'right' as const, render: (v: number) => fmtPct1(percentOfTotal(v, data?.totals.onHandAtCost)),
+          },
+        ]
+      : []),
     {
       title: 'Qty Sold', dataIndex: 'qty', key: 'qty', width: 90, align: 'right' as const,
       render: (v: number) => fmtQty(v),
     },
+    ...(query?.showPercentOfTotal
+      ? [
+          {
+            title: '% of Total', dataIndex: 'qty', key: 'qtyPctOfTotal', width: 100,
+            align: 'right' as const, render: (v: number) => fmtPct1(percentOfTotal(v, data?.totals.qty)),
+          },
+        ]
+      : []),
     {
       title: 'Net Sales', dataIndex: 'netSales', key: 'netSales', width: 130,
       align: 'right' as const, render: (v: number) => fmtMoney(v),
     },
+    ...(query?.showPercentOfTotal
+      ? [
+          {
+            title: '% of Total', dataIndex: 'netSales', key: 'netSalesPctOfTotal', width: 100,
+            align: 'right' as const, render: (v: number) => fmtPct1(percentOfTotal(v, data?.totals.netSales)),
+          },
+        ]
+      : []),
     {
       title: 'COGS', dataIndex: 'cogs', key: 'cogs', width: 130,
       align: 'right' as const, render: (v: number) => fmtMoney(v),
@@ -556,6 +590,14 @@ export default function SalesAnalysisPage() {
       title: 'Gross Profit', dataIndex: 'grossProfit', key: 'grossProfit', width: 130,
       align: 'right' as const, render: (v: number) => fmtMoney(v),
     },
+    ...(query?.showPercentOfTotal
+      ? [
+          {
+            title: '% of Total', dataIndex: 'grossProfit', key: 'grossProfitPctOfTotal', width: 100,
+            align: 'right' as const, render: (v: number) => fmtPct1(percentOfTotal(v, data?.totals.grossProfit)),
+          },
+        ]
+      : []),
     {
       title: 'GP %', dataIndex: 'gpPct', key: 'gpPct', width: 90,
       align: 'right' as const,
@@ -669,6 +711,7 @@ export default function SalesAnalysisPage() {
                 priorYear,
                 includeAttributes: true,
                 includeOnOrder,
+                showPercentOfTotal,
               })}
             />
             <SaveSnapshotButton
@@ -700,6 +743,7 @@ export default function SalesAnalysisPage() {
                 priorYear,
                 includeAttributes: true,
                 includeOnOrder,
+                showPercentOfTotal,
               })}
               getResultJson={() => data}
               getDescriptor={() => {
@@ -724,6 +768,7 @@ export default function SalesAnalysisPage() {
                 parts.push(briefDateSpec(dateSpec))
                 if (priorYear) parts.push('vs PY')
                 if (includeOnOrder) parts.push('on order')
+                if (showPercentOfTotal) parts.push('% of total')
                 return parts.join(' · ')
               }}
             />
@@ -772,6 +817,9 @@ export default function SalesAnalysisPage() {
               <Checkbox checked={includeOnOrder} onChange={(e) => setIncludeOnOrder(e.target.checked)}>
                 Include on order
               </Checkbox>
+              <Checkbox checked={showPercentOfTotal} onChange={(e) => setShowPercentOfTotal(e.target.checked)}>
+                Show % of total
+              </Checkbox>
             </Space>
           </div>
           <div className="sales-analysis-filter-group">
@@ -803,10 +851,11 @@ export default function SalesAnalysisPage() {
             <CriteriaInput
               label="Stores"
               mode="numeric"
+              placeholder=""
               loading={dimsLoading}
               options={(dims?.stores ?? []).map((s) => ({
                 value: s.number,
-                label: s.name ? `${s.number} — ${s.name}` : String(s.number),
+                label: s.name ? `${s.number} - ${s.name}` : String(s.number),
               }))}
               selected={selectedStores}
               onSelectedChange={setSelectedStores}
@@ -814,17 +863,73 @@ export default function SalesAnalysisPage() {
               onRawTextChange={setStoresRaw}
             />
             <CriteriaInput
+              label="Store Chain"
+              mode="string"
+              loading={dimsLoading}
+              options={(dims?.chains ?? []).map((c) => ({
+                value: c.code,
+                label: `${c.label} (${c.storeNumbers.length} stores)`,
+              }))}
+              selected={selectedChains}
+              onSelectedChange={setSelectedChains}
+              rawText=""
+              onRawTextChange={() => {}}
+              hideGrammar
+              helpText="Limit to one or more retail chains."
+            />
+            <CriteriaInput
               label="Categories"
               mode="numeric"
               loading={dimsLoading}
               options={(dims?.categories ?? []).map((c) => ({
                 value: c.number,
-                label: c.desc ? `${c.number} — ${c.desc}` : String(c.number),
+                label: c.desc ? `${c.number} - ${c.desc}` : String(c.number),
               }))}
               selected={selectedCategories}
               onSelectedChange={setSelectedCategories}
               rawText={categoriesRaw}
               onRawTextChange={setCategoriesRaw}
+            />
+            <CriteriaInput
+              label="Sector"
+              mode="numeric"
+              loading={dimsLoading}
+              options={(dims?.sectors ?? []).map((s) => ({
+                value: s.number,
+                label: s.name ? `${s.number} - ${s.name}` : String(s.number),
+              }))}
+              selected={selectedSectors}
+              onSelectedChange={setSelectedSectors}
+              rawText=""
+              onRawTextChange={() => {}}
+              hideGrammar
+              helpText="Limit to departments inside the selected sector range."
+            />
+            <CriteriaInput
+              label="Departments"
+              mode="numeric"
+              loading={dimsLoading}
+              options={(dims?.departments ?? []).map((d) => ({
+                value: d.number,
+                label: d.name ? `${d.number} - ${d.name}` : String(d.number),
+              }))}
+              selected={selectedDepartments}
+              onSelectedChange={setSelectedDepartments}
+              rawText=""
+              onRawTextChange={() => {}}
+              hideGrammar
+              helpText="Limit to categories inside the selected department range."
+            />
+            <CriteriaInput
+              label="Style/Color"
+              mode="string"
+              options={[]}
+              selected={[]}
+              onSelectedChange={() => {}}
+              rawText={styleColorRaw}
+              onRawTextChange={setStyleColorRaw}
+              hideDropdown
+              helpText="Wildcard pattern, e.g. KISS*BK or *FORMAL*  (requires master join - coming soon)"
             />
             <CriteriaInput
               label="Vendors"
@@ -840,24 +945,16 @@ export default function SalesAnalysisPage() {
             <CriteriaInput
               label="Seasons"
               mode="string"
-              options={[]}
-              selected={[]}
-              onSelectedChange={() => {}}
+              loading={dimsLoading}
+              options={(dims?.seasons ?? []).map((s) => ({
+                value: s.code,
+                label: s.description ? `${s.code} - ${s.description}` : s.code,
+              }))}
+              selected={selectedSeasons}
+              onSelectedChange={setSelectedSeasons}
               rawText={seasonsRaw}
               onRawTextChange={setSeasonsRaw}
-              hideDropdown
-              helpText="e.g. A, B, <>C"
-            />
-            <CriteriaInput
-              label="Style/Colors"
-              mode="string"
-              options={[]}
-              selected={[]}
-              onSelectedChange={() => {}}
-              rawText={styleColorRaw}
-              onRawTextChange={setStyleColorRaw}
-              hideDropdown
-              helpText="Wildcard pattern, e.g. KISS*BK or *FORMAL*  (requires master join — coming soon)"
+              helpText="Dropdown or grammar, e.g. A, B, <>C"
             />
             <CriteriaInput
               label="SKUs"
@@ -932,8 +1029,13 @@ export default function SalesAnalysisPage() {
             query.startDate && query.endDate ? { label: 'Period', value: `${query.startDate} → ${query.endDate}` } : null,
             query.priorYear ? { label: 'Compare', value: 'Prior year' } : null,
             query.includeOnOrder ? { label: 'On order', value: 'Included' } : null,
+            query.showPercentOfTotal ? { label: 'Percentages', value: 'Shown' } : null,
             query.stores?.length ? { label: 'Stores in', value: `${query.stores.length} selected` } : null,
+            query.chains?.length ? { label: 'Chains in', value: `${query.chains.length} selected` } : null,
+            query.sectors?.length ? { label: 'Sectors in', value: `${query.sectors.length} selected` } : null,
+            query.departments?.length ? { label: 'Departments in', value: `${query.departments.length} selected` } : null,
             query.categories?.length ? { label: 'Categories in', value: `${query.categories.length} selected` } : null,
+            query.seasons?.length ? { label: 'Seasons in', value: `${query.seasons.length} selected` } : null,
             query.groups?.length ? { label: 'Groups in', value: `${query.groups.length} selected` } : null,
             chipFromRaw('Stores', query.storesRaw),
             chipFromRaw('Categories', query.categoriesRaw),
@@ -952,9 +1054,14 @@ export default function SalesAnalysisPage() {
           size="small"
           pagination={{ pageSize: 50 }}
           expandable={{ defaultExpandAllRows: false }}
-          scroll={{ x: (query.priorYear ? 1620 : 1380) + (query.includeOnOrder ? 400 : 0) }}
+          scroll={{ x: (query.priorYear ? 1620 : 1380) + (query.showPercentOfTotal ? 400 : 0) + (query.includeOnOrder ? 400 : 0) }}
           summary={() => {
             const t = data.totals
+            const numericCells = buildSalesAnalysisSummaryCells(t, {
+              priorYear: !!query.priorYear,
+              includeOnOrder: !!query.includeOnOrder,
+              showPercentOfTotal: !!query.showPercentOfTotal,
+            })
             const onOrderStartIndex = query.priorYear ? 13 : 11
             return (
               <Table.Summary fixed>
@@ -962,6 +1069,9 @@ export default function SalesAnalysisPage() {
                   <SummaryLabelCell index={0} colSpan={1} variant="grand">
                     Totals
                   </SummaryLabelCell>
+                  {numericCells}
+                  {false ? (
+                    <>
                   <SummaryNumericCell index={1} variant="grand">{fmtQty(t.unitsOnHand)}</SummaryNumericCell>
                   <SummaryNumericCell index={2} variant="grand">{fmtMoney(t.inventoryUnitCost)}</SummaryNumericCell>
                   <SummaryNumericCell index={3} variant="grand">{fmtMoney(t.onHandAtCost)}</SummaryNumericCell>
@@ -974,13 +1084,13 @@ export default function SalesAnalysisPage() {
                   <SummaryNumericCell index={10} variant="grand">
                     {t.roiPct == null ? DASH : `${fmtPctBare1(t.roiPct)}×`}
                   </SummaryNumericCell>
-                  {query.priorYear ? (
+                  {query?.priorYear ? (
                     <>
                       <SummaryNumericCell index={11} variant="grand">{fmtMoney(t.priorYearNetSales)}</SummaryNumericCell>
                       <SummaryNumericCell index={12} variant="grand">{DASH}</SummaryNumericCell>
                     </>
                   ) : null}
-                  {query.includeOnOrder ? (
+                  {query?.includeOnOrder ? (
                     <>
                       <SummaryNumericCell index={onOrderStartIndex} variant="grand">
                         {fmtQty(t.onOrderQty ?? 0)}
@@ -993,6 +1103,8 @@ export default function SalesAnalysisPage() {
                       </SummaryNumericCell>
                     </>
                   ) : null}
+                    </>
+                  ) : null}
                 </Table.Summary.Row>
               </Table.Summary>
             )
@@ -1003,6 +1115,55 @@ export default function SalesAnalysisPage() {
       </div>
     </div>
   )
+}
+
+function buildSalesAnalysisSummaryCells(
+  t: SalesAnalysisReport['totals'],
+  options: {
+    startIndex?: number
+    priorYear: boolean
+    includeOnOrder: boolean
+    showPercentOfTotal: boolean
+  },
+): JSX.Element[] {
+  const cells: JSX.Element[] = []
+  let index = options.startIndex ?? 1
+  const addCell = (content: JSX.Element | string) => {
+    cells.push(
+      <SummaryNumericCell key={index} index={index} variant="grand">
+        {content}
+      </SummaryNumericCell>,
+    )
+    index += 1
+  }
+  const addTotalPctCell = (value: number, total: number | null | undefined) => {
+    addCell(fmtPct1(percentOfTotal(value, total)))
+  }
+
+  addCell(fmtQty(t.unitsOnHand))
+  addCell(fmtMoney(t.inventoryUnitCost))
+  addCell(fmtMoney(t.onHandAtCost))
+  if (options.showPercentOfTotal) addTotalPctCell(t.onHandAtCost, t.onHandAtCost)
+  addCell(fmtQty(t.qty))
+  if (options.showPercentOfTotal) addTotalPctCell(t.qty, t.qty)
+  addCell(fmtMoney(t.netSales))
+  if (options.showPercentOfTotal) addTotalPctCell(t.netSales, t.netSales)
+  addCell(fmtMoney(t.cogs))
+  addCell(fmtMoney(t.grossProfit))
+  if (options.showPercentOfTotal) addTotalPctCell(t.grossProfit, t.grossProfit)
+  addCell(fmtPct1(t.gpPct))
+  addCell(fmtPctBare1(t.turns))
+  addCell(t.roiPct == null ? DASH : `${fmtPctBare1(t.roiPct)}Ã—`)
+  if (options.priorYear) {
+    addCell(fmtMoney(t.priorYearNetSales))
+    addCell(DASH)
+  }
+  if (options.includeOnOrder) {
+    addCell(fmtQty(t.onOrderQty ?? 0))
+    addCell(fmtMoney(t.onOrderUnitCost ?? null))
+    addCell(fmtMoney(t.onOrderCost ?? 0))
+  }
+  return cells
 }
 
 function chipFromRaw(label: string, raw: string | undefined): FilterChip | null {

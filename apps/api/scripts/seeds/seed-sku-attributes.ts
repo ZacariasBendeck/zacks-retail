@@ -52,6 +52,7 @@ interface KeywordRule {
 interface Args {
   manifestPath: string | null;
   sourceTable: string | null;
+  allowCatalogOrphans: boolean;
 }
 
 const DEFAULT_SOURCE_TABLE = 'rics_mirror.inventory_master';
@@ -60,6 +61,7 @@ function parseArgs(): Args {
   const args: Args = {
     manifestPath: null,
     sourceTable: null,
+    allowCatalogOrphans: false,
   };
   const argv = process.argv.slice(2);
   for (let i = 0; i < argv.length; i++) {
@@ -72,6 +74,9 @@ function parseArgs(): Args {
         break;
       case '--source-table':
         args.sourceTable = String(argv[++i] ?? '').trim() || null;
+        break;
+      case '--allow-catalog-orphans':
+        args.allowCatalogOrphans = true;
         break;
       case '--help':
       case '-h':
@@ -94,6 +99,7 @@ function printHelpAndExit(code: number): never {
       '',
       'Defaults to reading keyword derivation input from rics_mirror.inventory_master.',
       'Use --manifest to stage inventory_master.csv from a cutover artifact bundle instead.',
+      'Use --allow-catalog-orphans when a richer app attribute snapshot already exists.',
     ].join('\n'),
   );
   process.exit(code);
@@ -447,11 +453,17 @@ async function main(): Promise<void> {
   const ms = Date.now() - start;
   const s = (ms / 1000).toFixed(1);
   console.log('\n============================================');
-  if (orphansDetected) {
+  if (orphansDetected && !args.allowCatalogOrphans) {
     console.log(`  FINISHED WITH WARNINGS — catalog orphans detected (${s}s)`);
     console.log('  remove orphans deliberately via SQL before the next seed run.');
     console.log('============================================');
     process.exit(1);
+  }
+  if (orphansDetected) {
+    console.log(`  OK WITH WARNINGS - catalog orphans preserved (${s}s)`);
+    console.log('  richer app-owned attribute catalog was already present; no deletions were performed.');
+    console.log('============================================');
+    return;
   }
   console.log(`  OK — seeded in ${s}s`);
   console.log('============================================');

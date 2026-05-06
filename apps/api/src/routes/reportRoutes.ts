@@ -1314,15 +1314,13 @@ router.get(
 const salesHistoryByMonthQuerySchema = z.object({
   stores: z
     .string()
+    .optional()
     .transform((s, ctx) => {
+      if (!s?.trim()) return [] as number[];
       const parts = s.split(',').map((n) => n.trim()).filter(Boolean);
       const nums = parts.map((p) => Number(p));
       if (nums.some((n) => !Number.isInteger(n) || n <= 0)) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'stores must be a comma-separated list of positive integers' });
-        return z.NEVER;
-      }
-      if (nums.length === 0) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'stores is required' });
         return z.NEVER;
       }
       return nums;
@@ -1397,9 +1395,9 @@ const salesHistoryByMonthQuerySchema = z.object({
  *     parameters:
  *       - name: stores
  *         in: query
- *         required: true
+ *         required: false
  *         schema: { type: string }
- *         description: Comma-separated list of store numbers (>=1 required).
+ *         description: Comma-separated list of store numbers; omit for all stores.
  *       - name: endMonth
  *         in: query
  *         schema: { type: string, pattern: '^\\d{4}-(0[1-9]|1[0-2])$' }

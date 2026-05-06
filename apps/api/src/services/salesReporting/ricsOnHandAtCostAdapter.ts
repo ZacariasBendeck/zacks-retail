@@ -64,6 +64,18 @@ interface OnHandSnapshotRow {
   CurrentCost: number | null;
 }
 
+interface DepartmentRangeRow {
+  number: number;
+  begCateg: number;
+  endCateg: number;
+}
+
+interface SectorRangeRow {
+  number: number;
+  begDept: number;
+  endDept: number;
+}
+
 async function loadOnHandSnapshot(): Promise<OnHandSnapshotRow[]> {
   return cached('onhand:app-snapshot', () =>
     prisma.$queryRawUnsafe<OnHandSnapshotRow[]>(`
@@ -79,10 +91,73 @@ async function loadOnHandSnapshot(): Promise<OnHandSnapshotRow[]> {
         FROM app.inventory_history_snapshot h
         LEFT JOIN app.sku s
           ON s.id = h.sku_id
-       WHERE h.on_hand > 0
+       WHERE h.on_hand <> 0
          AND COALESCE(s.rics_status, '') <> 'D'
     `),
   );
+}
+
+async function loadDepartmentRanges(): Promise<DepartmentRangeRow[]> {
+  return cached('onhand:department-ranges', async () => {
+    const rows = await prisma.$queryRawUnsafe<Array<{
+      number: number | null;
+      beg_categ: number | null;
+      end_categ: number | null;
+    }>>(
+      `SELECT number, beg_categ, end_categ FROM app.taxonomy_department`,
+    );
+    return rows
+      .filter((row): row is { number: number; beg_categ: number; end_categ: number } =>
+        row.number != null && row.beg_categ != null && row.end_categ != null)
+      .map((row) => ({
+        number: Number(row.number),
+        begCateg: Number(row.beg_categ),
+        endCateg: Number(row.end_categ),
+      }));
+  });
+}
+
+async function loadSectorRanges(): Promise<SectorRangeRow[]> {
+  return cached('onhand:sector-ranges', async () => {
+    const rows = await prisma.$queryRawUnsafe<Array<{
+      number: number | null;
+      beg_dept: number | null;
+      end_dept: number | null;
+    }>>(
+      `SELECT number, beg_dept, end_dept FROM app.taxonomy_sector`,
+    );
+    return rows
+      .filter((row): row is { number: number; beg_dept: number; end_dept: number } =>
+        row.number != null && row.beg_dept != null && row.end_dept != null)
+      .map((row) => ({
+        number: Number(row.number),
+        begDept: Number(row.beg_dept),
+        endDept: Number(row.end_dept),
+      }));
+  });
+}
+
+async function loadStoreChainByStore(): Promise<Map<number, string>> {
+  return cached('onhand:store-chain-by-store', async () => {
+    const rows = await prisma.$queryRawUnsafe<Array<{
+      store_number: number | null;
+      chain_code: string | null;
+    }>>(
+      `
+        SELECT sgm.store_number, sg.code AS chain_code
+          FROM app.store_group_member sgm
+         INNER JOIN app.store_group sg ON sg.code = sgm.group_code
+         WHERE sg.active = true
+      `,
+    );
+    const out = new Map<number, string>();
+    for (const row of rows) {
+      const storeNumber = Number(row.store_number);
+      const code = row.chain_code?.trim();
+      if (Number.isInteger(storeNumber) && storeNumber > 0 && code) out.set(storeNumber, code);
+    }
+    return out;
+  });
 }
 
 /**
@@ -123,6 +198,35 @@ function facetKeeps(
   return matchesCriteria(expr, candidate);
 }
 
+function selectedStringKeeps(selected: string[] | undefined, value: string | null | undefined): boolean {
+  if (!selected?.length) return true;
+  const normalizedValue = value?.trim().toUpperCase();
+  if (!normalizedValue) return false;
+  return selected.some((candidate) => candidate.trim().toUpperCase() === normalizedValue);
+}
+
+function selectedNumberKeeps(selected: number[] | undefined, value: number | null | undefined): boolean {
+  if (!selected?.length) return true;
+  if (value == null) return false;
+  return selected.some((candidate) => Number(candidate) === value);
+}
+
+function departmentForCategory(category: number | null, departments: DepartmentRangeRow[]): number | null {
+  if (category == null) return null;
+  for (const department of departments) {
+    if (category >= department.begCateg && category <= department.endCateg) return department.number;
+  }
+  return null;
+}
+
+function sectorForDepartment(departmentNumber: number | null, sectors: SectorRangeRow[]): number | null {
+  if (departmentNumber == null) return null;
+  for (const sector of sectors) {
+    if (departmentNumber >= sector.begDept && departmentNumber <= sector.endDept) return sector.number;
+  }
+  return null;
+}
+
 export async function getOnHandAtCostByDimension(params: {
   reportType: SalesAnalysisReportType;
   storeOption: SalesAnalysisStoreOption;
@@ -139,12 +243,21 @@ export async function getOnHandInventoryByDimension(params: {
   storeOption: SalesAnalysisStoreOption;
   criteria: SalesAnalysisCriteria;
 }): Promise<Map<string, OnHandInventoryMetrics>> {
-  const rows = await loadOnHandSnapshot();
+  const needsDepartmentCriteria = !!params.criteria.departments?.length || !!params.criteria.sectors?.length;
+  const [rows, storeChainByStore, departmentRanges, sectorRanges] = await Promise.all([
+    loadOnHandSnapshot(),
+    params.criteria.chains?.length ? loadStoreChainByStore() : Promise.resolve(null),
+    needsDepartmentCriteria ? loadDepartmentRanges() : Promise.resolve([]),
+    params.criteria.sectors?.length ? loadSectorRanges() : Promise.resolve([]),
+  ]);
 
   const categoryExpr = parseCriteria(params.criteria.categoriesRaw);
   const vendorExpr = parseCriteria(params.criteria.vendorsRaw);
   const skuExpr = parseCriteria(params.criteria.skusRaw);
   const storeExpr = parseCriteria(params.criteria.storesRaw);
+  const seasonExpr = parseCriteria(params.criteria.seasonsRaw);
+  const groupExpr = parseCriteria(params.criteria.groupsRaw);
+  const styleColorExpr = parseCriteria(params.criteria.styleColorRaw || params.criteria.styleColor);
 
   const combine = params.storeOption === 'COMBINE';
   const out = new Map<string, OnHandInventoryMetrics>();
@@ -155,13 +268,22 @@ export async function getOnHandInventoryByDimension(params: {
     if (!facetKeeps(params.criteria.categories, categoryExpr, row.Category ?? null)) continue;
     if (!facetKeeps(params.criteria.vendors, vendorExpr, row.Vendor?.trim() ?? null)) continue;
     if (!facetKeeps(params.criteria.skus, skuExpr, sku)) continue;
+    if (!facetKeeps(params.criteria.seasons, seasonExpr, row.Season?.trim() ?? null)) continue;
+    if (!facetKeeps(params.criteria.groups, groupExpr, row.GroupCode?.trim() ?? null)) continue;
+    if (!matchesCriteria(styleColorExpr, row.StyleColor?.trim() ?? null)) continue;
 
     const store = Number(row.Store ?? 0);
     if (!facetKeeps(params.criteria.stores, storeExpr, store)) continue;
+    if (!selectedStringKeeps(params.criteria.chains, storeChainByStore?.get(store) ?? null)) continue;
+    const departmentNumber = needsDepartmentCriteria
+      ? departmentForCategory(row.Category ?? null, departmentRanges)
+      : null;
+    if (!selectedNumberKeeps(params.criteria.departments, departmentNumber)) continue;
+    if (!selectedNumberKeeps(params.criteria.sectors, sectorForDepartment(departmentNumber, sectorRanges))) continue;
 
     const onHand = Number(row.TotalOnHand ?? 0);
     const cost = Number(row.CurrentCost ?? 0);
-    if (onHand <= 0) continue;
+    if (onHand === 0) continue;
     const value = onHand * Math.max(0, cost);
 
     const dimKey = dimensionKeyFor(params.reportType, sku, row);

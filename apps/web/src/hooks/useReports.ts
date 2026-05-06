@@ -261,6 +261,9 @@ export type SalesAnalysisArgs = {
   startDate?: string
   endDate?: string
   stores?: number[]
+  chains?: string[]
+  sectors?: number[]
+  departments?: number[]
   categories?: number[]
   vendors?: string[]
   seasons?: string[]
@@ -285,6 +288,7 @@ export type SalesAnalysisArgs = {
    *  inline builder preview does not, to keep payloads small. */
   includeAttributes?: boolean
   includeOnOrder?: boolean
+  showPercentOfTotal?: boolean
 }
 export function useSalesAnalysis(args: SalesAnalysisArgs | null) {
   return useQuery({
@@ -367,15 +371,14 @@ export function useStockStatus(args: StockStatusArgs | null) {
 // `staleTime` for 5 min too so tab-switching doesn't re-hit the API.
 export function useSalesDimensions() {
   return useQuery({
-    queryKey: ['sales-dimensions'] as const,
+    queryKey: ['sales-dimensions', 'sector-department-names'] as const,
     queryFn: ({ signal }) => fetchSalesDimensions(signal),
     staleTime: 5 * 60 * 1000,
   })
 }
 
-// Sales History by Month (RICS Ch. 6 p. 95). Fires only when ≥1 store is
-// selected — the page guards the empty state locally, but we also guard
-// here so a mis-wired caller can't blow up the backend with `stores=`.
+// Sales History by Month (RICS Ch. 6 p. 95). A blank store selection means
+// all stores, matching the other sales-reporting screens.
 // `placeholderData: keepPreviousData` gives the chart/table a stable frame
 // while re-fetching on filter tweaks (matches the pattern the other sales
 // reporting pages rely on for perceived responsiveness).
@@ -383,7 +386,7 @@ export function useSalesHistoryByMonth(params: SalesHistoryByMonthParams | null)
   return useQuery({
     queryKey: ['sales-history-by-month', params] as const,
     queryFn: ({ signal }) => fetchSalesHistoryByMonth(params!, signal),
-    enabled: !!params && params.stores.length > 0,
+    enabled: !!params,
     staleTime: 60 * 1000,
     placeholderData: keepPreviousData,
   })

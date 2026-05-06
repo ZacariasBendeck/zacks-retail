@@ -48,6 +48,7 @@ The column families are:
 - The monthly sales arrays are already proven to line up with the Sales History by Month report. See [2026-04-18-sales-history-by-month-design.md](./2026-04-18-sales-history-by-month-design.md).
 - `CurrentPrice` is a price-slot code, not an amount. Current customer data uses values `1`, `2`, and `3`.
 - `LYMonthQtyOH_*` and `LYMonthOnHand_*` are not a trivial `qty x current AverageCost` recomputation. A 2026-04-25 probe found `110,027` rows where at least one `LYMonthQtyOH_* <> 0` while the matching `LYMonthOnHand_* = 0`.
+- A May 1 before/after month-close comparison refined the close rule for the newly closed month slot: `LYMonthQtySales_MM`, `LYMonthDolSales_MM`, and `LYMonthProfit_MM` receive the current month counters and those current month counters reset to zero; `LastMonthOnHand` advances to current `OnHand`; the new `LYMonthQtyOH_MM` value follows the pre-close `LastMonthOnHand`; the new `LYMonthOnHand_MM` value follows ending `OnHand x AverageCost` in the sampled rows.
 
 Implication:
 
@@ -217,9 +218,15 @@ Required close jobs:
 1. week close
    - rotate `TrendBeginOH_*`, `TrendOHConstant_*`, `TrendSales_*`
    - set `TrendWk8BegOH`
+   - implemented in `apps/api/src/services/inventoryWeekCloseService.ts`
+   - writes the just-finished week into slot 7, shifts old slots 2..7 into 1..6, and resets only the weekly counters
 2. month close
-   - write the completed month into the matching `inventory_history_month` slot
-   - update `LastMonthOnHand`
+   - write the completed month into the matching `inventory_history_month` calendar slot
+   - move current month quantity, dollar sales, and profit into that slot
+   - set slot `qty_on_hand` from the pre-close `last_month_on_hand`
+   - set slot `inventory_value` from ending `on_hand x average_cost` when cost exists
+   - update `last_month_on_hand` to current `on_hand`
+   - reset only the current month counters; week, season, and year counters are separate closes
    - preserve the exact `stored_year` and `year_month` mapping used by RICS
 3. season close
    - update `LYSeason*`
@@ -310,12 +317,12 @@ Defer until the next pass:
 
 - event-driven projector from owned facts
 - week / month / season / year close jobs
-- exact reverse-engineering of `LYMonthOnHand_*`
+- broader reverse-engineering of historical `LYMonthOnHand_*` exceptions
 - request paths beyond Sales History by Month that still need inventory-history parity
 
 ## Open questions
 
-1. exact generation rule for `LYMonthOnHand_*` when `LYMonthQtyOH_* > 0` but value is zero
+1. exact generation rule for older imported `LYMonthOnHand_*` values when `LYMonthQtyOH_* > 0` but value is zero
 2. exact semantic meaning of `TrendOHConstant_*`
 3. exact business labeling of the three `RMSA` buckets
 4. whether season rollover uses a store-level or global season calendar in practice

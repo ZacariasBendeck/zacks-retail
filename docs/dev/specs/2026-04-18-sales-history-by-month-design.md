@@ -382,10 +382,14 @@ Key columns on `InvHis` (one row per `(SKU, Store)`):
 - `AverageCost` (Currency) — 99.99% populated (1,918,274 / 1,918,492 on a
   real customer DB).
 - `OnHand`, `LastMonthOnHand` — current scalars.
-- `LYMonthQtyOH_01` … `LYMonthQtyOH_12` — **units on hand at month-end**,
-  indexed by **calendar month** (NN=01 → January … NN=12 → December).
-- `LYMonthOnHand_01` … `LYMonthOnHand_12` — **dollar value on hand at
-  month-end** (qty × avg cost at snapshot time).
+- `LYMonthQtyOH_01` … `LYMonthQtyOH_12` — RICS close-cycle quantity slots,
+  indexed by **calendar month** (NN=01 → January … NN=12 → December). A May
+  1, 2026 close comparison found the newly closed slot follows pre-close
+  `LastMonthOnHand`, while `LastMonthOnHand` advances to current `OnHand`.
+- `LYMonthOnHand_01` … `LYMonthOnHand_12` — matching dollar value. The same
+  close comparison found the newly closed slot follows ending `OnHand x
+  AverageCost` in sampled rows, but historical imported slots have known
+  exceptions and should not be recomputed blindly.
 - `LYMonthQtySales_NN` / `LYMonthDolSales_NN` — sibling sales arrays; cross-
   checked against `RITRNSSV.TicketDetail.Extension` for store 16 as an
   alignment proof. `_NN` is calendar-month indexed.

@@ -59,3 +59,23 @@ export const purchaseOrderEntryHelp: PageHelpEntry = {
     },
   ],
 }
+
+export const inventoryCloseHelp: PageHelpEntry = {
+  id: 'inventory-close',
+  title: 'Inventory close',
+  module: 'Operations',
+  processSteps: [
+    'Run the weekly dry run after the last sale of the week has posted.',
+    'Run the weekly close only when validation passes.',
+    'Run the monthly dry run after the last sale of the month has posted.',
+    'Run the monthly close only when validation passes and management is ready to freeze the period.',
+    'Review the run history after each close.',
+  ],
+  philosophy:
+    'The close freezes RICS-compatible inventory history projections used by reports and inquiry. ROI and turns stay as calculated report metrics, so this process closes the source counters without storing those ratios.',
+  manualLinks: [
+    { label: 'Inventory manual', to: '/manual/inventory#inventory-close' },
+    { label: 'Sales reporting manual', to: '/manual/sales-reporting' },
+    { label: 'Platform manual', to: '/manual/platform#inventory-close' },
+  ],
+}

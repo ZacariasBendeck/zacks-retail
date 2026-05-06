@@ -2655,6 +2655,109 @@ model InventoryHistoryMovementBucket {
   @@schema("app")
 }
 
+/// Audit row for every inventory month-close attempt.
+model InventoryMonthCloseRun {
+  id                      String                @id @db.Uuid
+  yearMonth               String                @map("year_month") @db.VarChar(7)
+  targetSlot              Int                   @map("target_slot") @db.SmallInt
+  snapshotAsOf            DateTime              @map("snapshot_as_of") @db.Timestamptz(6)
+  closedBy                String                @map("closed_by") @db.VarChar(120)
+  dryRun                  Boolean               @default(false) @map("dry_run")
+  status                  String                @db.VarChar(24)
+  validationStatus        String?               @map("validation_status") @db.VarChar(24)
+  snapshotsScanned        Int                   @default(0) @map("snapshots_scanned")
+  monthsUpserted          Int                   @default(0) @map("months_upserted")
+  snapshotsUpdated        Int                   @default(0) @map("snapshots_updated")
+  nonzeroMtdCellsBefore   Int                   @default(0) @map("nonzero_mtd_cells_before")
+  salesCellsReset         Int                   @default(0) @map("sales_cells_reset")
+  unpromotedPosTickets    Int                   @default(0) @map("unpromoted_pos_tickets")
+  salesCellMismatchCount  Int                   @default(0) @map("sales_cell_mismatch_count")
+  salesCellMismatchQtyAbs Int                   @default(0) @map("sales_cell_mismatch_qty_abs")
+  totalQtySales           Int                   @default(0) @map("total_qty_sales")
+  totalNetSales           Decimal?              @map("total_net_sales") @db.Decimal(14, 2)
+  totalProfit             Decimal?              @map("total_profit") @db.Decimal(14, 2)
+  inventoryValueTotal     Decimal?              @map("inventory_value_total") @db.Decimal(14, 2)
+  errorText               String?               @map("error_text")
+  startedAt               DateTime              @default(now()) @map("started_at") @db.Timestamptz(6)
+  finishedAt              DateTime?             @map("finished_at") @db.Timestamptz(6)
+  closedMonth             InventoryClosedMonth?
+
+  @@index([yearMonth, startedAt], map: "inventory_month_close_run_month_started_idx")
+  @@index([status, startedAt], map: "inventory_month_close_run_status_started_idx")
+  @@map("inventory_month_close_run")
+  @@schema("app")
+}
+
+/// One successful inventory month close per closed calendar month.
+model InventoryClosedMonth {
+  yearMonth           String                 @id @map("year_month") @db.VarChar(7)
+  runId               String                 @unique(map: "inventory_closed_month_run_id_key") @map("run_id") @db.Uuid
+  run                 InventoryMonthCloseRun @relation(fields: [runId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  targetSlot          Int                    @map("target_slot") @db.SmallInt
+  snapshotAsOf        DateTime               @map("snapshot_as_of") @db.Timestamptz(6)
+  closedBy            String                 @map("closed_by") @db.VarChar(120)
+  closedAt            DateTime               @default(now()) @map("closed_at") @db.Timestamptz(6)
+  snapshotsClosed     Int                    @default(0) @map("snapshots_closed")
+  monthRowsClosed     Int                    @default(0) @map("month_rows_closed")
+  salesCellsReset     Int                    @default(0) @map("sales_cells_reset")
+  totalQtySales       Int                    @default(0) @map("total_qty_sales")
+  totalNetSales       Decimal?               @map("total_net_sales") @db.Decimal(14, 2)
+  totalProfit         Decimal?               @map("total_profit") @db.Decimal(14, 2)
+  inventoryValueTotal Decimal?               @map("inventory_value_total") @db.Decimal(14, 2)
+
+  @@map("inventory_closed_month")
+  @@schema("app")
+}
+
+/// Audit row for every inventory week-close attempt.
+model InventoryWeekCloseRun {
+  id                       String               @id @db.Uuid
+  weekEndingDate           DateTime             @map("week_ending_date") @db.Date
+  weekStartDate            DateTime             @map("week_start_date") @db.Date
+  snapshotAsOf             DateTime             @map("snapshot_as_of") @db.Timestamptz(6)
+  closedBy                 String               @map("closed_by") @db.VarChar(120)
+  dryRun                   Boolean              @default(false) @map("dry_run")
+  status                   String               @db.VarChar(24)
+  validationStatus         String?              @map("validation_status") @db.VarChar(24)
+  snapshotsScanned         Int                  @default(0) @map("snapshots_scanned")
+  trendRowsWritten         Int                  @default(0) @map("trend_rows_written")
+  snapshotsUpdated         Int                  @default(0) @map("snapshots_updated")
+  unpromotedPosTickets     Int                  @default(0) @map("unpromoted_pos_tickets")
+  weekSalesMismatchCount   Int                  @default(0) @map("week_sales_mismatch_count")
+  weekSalesMismatchQtyAbs  Int                  @default(0) @map("week_sales_mismatch_qty_abs")
+  totalWeekQtySales        Int                  @default(0) @map("total_week_qty_sales")
+  totalWeekNetSales        Decimal?             @map("total_week_net_sales") @db.Decimal(14, 2)
+  totalWeekProfit          Decimal?             @map("total_week_profit") @db.Decimal(14, 2)
+  errorText                String?              @map("error_text")
+  startedAt                DateTime             @default(now()) @map("started_at") @db.Timestamptz(6)
+  finishedAt               DateTime?            @map("finished_at") @db.Timestamptz(6)
+  closedWeek               InventoryClosedWeek?
+
+  @@index([weekEndingDate, startedAt], map: "inventory_week_close_run_week_started_idx")
+  @@index([status, startedAt], map: "inventory_week_close_run_status_started_idx")
+  @@map("inventory_week_close_run")
+  @@schema("app")
+}
+
+/// One successful inventory week close per closed week-ending date.
+model InventoryClosedWeek {
+  weekEndingDate    DateTime              @id @map("week_ending_date") @db.Date
+  runId             String                @unique(map: "inventory_closed_week_run_id_key") @map("run_id") @db.Uuid
+  run               InventoryWeekCloseRun @relation(fields: [runId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  weekStartDate     DateTime              @map("week_start_date") @db.Date
+  snapshotAsOf      DateTime              @map("snapshot_as_of") @db.Timestamptz(6)
+  closedBy          String                @map("closed_by") @db.VarChar(120)
+  closedAt          DateTime              @default(now()) @map("closed_at") @db.Timestamptz(6)
+  snapshotsClosed   Int                   @default(0) @map("snapshots_closed")
+  trendRowsClosed   Int                   @default(0) @map("trend_rows_closed")
+  totalWeekQtySales Int                   @default(0) @map("total_week_qty_sales")
+  totalWeekNetSales Decimal?              @map("total_week_net_sales") @db.Decimal(14, 2)
+  totalWeekProfit   Decimal?              @map("total_week_profit") @db.Decimal(14, 2)
+
+  @@map("inventory_closed_week")
+  @@schema("app")
+}
+
 /// One saved "Enter Manual Returns" document in the inventory module.
 /// Mirrors Manual Receipt but produces negative stock movements.
 model ManualReturn {

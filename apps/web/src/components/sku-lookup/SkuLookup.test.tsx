@@ -81,7 +81,7 @@ describe('SkuLookup', () => {
             { code: '24S1', name: 'Spring 2024', label: '24S1 - Spring 2024' },
             { code: '24F1', name: 'Fall 2024', label: '24F1 - Fall 2024' },
           ],
-          vendors: [{ code: 'ACME', label: 'ACME â€” Acme Co' }],
+          vendors: [{ code: 'ACME', label: 'ACME - Acme Co' }],
           departments: [{ number: 1, name: 'FORMAL' }],
         };
       }
@@ -91,8 +91,8 @@ describe('SkuLookup', () => {
           { code: '24F1', name: 'Fall 2024', label: '24F1 - Fall 2024' },
         ],
         vendors: [
-          { code: 'ACME', label: 'ACME â€” Acme Co' },
-          { code: 'BETA', label: 'BETA â€” Beta Co' },
+          { code: 'ACME', label: 'ACME - Acme Co' },
+          { code: 'BETA', label: 'BETA - Beta Co' },
         ],
         departments: [
           { number: 1, name: 'FORMAL' },

@@ -51,6 +51,15 @@ const csvStringList = z
     const out = v.split(',').map((s) => s.trim()).filter(Boolean);
     return out.length ? out : undefined;
   });
+const queryBoolean = z.preprocess((value) => {
+  if (typeof value === 'boolean') return value;
+  if (typeof value !== 'string') return value;
+
+  const normalized = value.trim().toLowerCase();
+  if (['true', '1', 'yes', 'on'].includes(normalized)) return true;
+  if (['false', '0', 'no', 'off'].includes(normalized)) return false;
+  return value;
+}, z.boolean());
 
 function escapeCsv(value: string | number | null | undefined): string {
   if (value == null) return '';
@@ -108,7 +117,7 @@ const byDaySchema = z.object({
   startDate: dateField,
   endDate: dateField,
   comparisonOffsetDays: z.coerce.number().int().positive().max(366 * 2).default(364),
-  combineStores: z.coerce.boolean().default(false),
+  combineStores: queryBoolean.default(false),
   format: z.enum(['json', 'csv', 'xlsx']).default('json'),
 });
 
@@ -254,7 +263,7 @@ const byTimeSchema = z.object({
   compareStartDate: dateField.optional(),
   compareEndDate: dateField.optional(),
   stores: csvIntList,
-  pctOfTotal: z.coerce.boolean().default(false),
+  pctOfTotal: queryBoolean.default(false),
   format: z.enum(['json', 'csv']).default('json'),
 });
 
@@ -290,7 +299,7 @@ const bySkuSchema = z.object({
   endDate: dateField,
   stores: csvIntList,
   sortBy: z.enum(['SKU', 'CATEGORY_SKU', 'VENDOR_SKU']).default('SKU'),
-  includeReturns: z.coerce.boolean().default(true),
+  includeReturns: queryBoolean.default(true),
   skus: csvStringList,
   format: z.enum(['json', 'csv']).default('json'),
 });
@@ -327,8 +336,8 @@ const salespersonSchema = z.object({
   endDate: dateField,
   stores: csvIntList,
   subtotalBy: z.enum(['DEPARTMENT', 'VENDOR']).optional(),
-  combineStores: z.coerce.boolean().default(false),
-  cashierSummary: z.coerce.boolean().default(false),
+  combineStores: queryBoolean.default(false),
+  cashierSummary: queryBoolean.default(false),
   format: z.enum(['json', 'csv']).default('json'),
 });
 
@@ -365,7 +374,7 @@ const bestSellersSchema = z.object({
   period: z.enum(['WTD', 'MTD', 'STD', 'YTD']).optional(),
   lastNMonths: z.coerce.number().int().min(1).max(24).optional(),
   stores: csvIntList,
-  combineStores: z.coerce.boolean().default(false),
+  combineStores: queryBoolean.default(false),
   topN: z.coerce.number().int().min(1).max(1000).default(50),
   format: z.enum(['json', 'csv']).default('json'),
 });
@@ -419,6 +428,9 @@ const salesAnalysisSchema = z.object({
   startDate: dateField.optional(),
   endDate: dateField.optional(),
   stores: csvIntList,
+  chains: csvStringList,
+  sectors: csvIntList,
+  departments: csvIntList,
   categories: csvIntList,
   vendors: csvStringList,
   seasons: csvStringList,
@@ -437,15 +449,15 @@ const salesAnalysisSchema = z.object({
   groupsRaw: z.string().optional(),
   keywordsRaw: z.string().optional(),
   styleColorRaw: z.string().optional(),
-  wtd: z.coerce.boolean().default(false),
-  mtd: z.coerce.boolean().default(false),
-  std: z.coerce.boolean().default(false),
-  ytd: z.coerce.boolean().default(false),
-  priorYear: z.coerce.boolean().default(false),
+  wtd: queryBoolean.default(false),
+  mtd: queryBoolean.default(false),
+  std: queryBoolean.default(false),
+  ytd: queryBoolean.default(false),
+  priorYear: queryBoolean.default(false),
   // Opt-in per-SKU enrichment. Defaults to false so the preview endpoint
   // stays fast — only the full-screen viewer asks for these columns.
-  includeAttributes: z.coerce.boolean().default(false),
-  includeOnOrder: z.coerce.boolean().default(false),
+  includeAttributes: queryBoolean.default(false),
+  includeOnOrder: queryBoolean.default(false),
   format: z.enum(['json', 'csv']).default('json'),
 });
 
@@ -471,6 +483,9 @@ router.get('/sales-analysis', validateQuery(salesAnalysisSchema), async (req: Re
       storeOption: q.storeOption,
       criteria: {
         stores: scopedStores,
+        chains: q.chains,
+        sectors: q.sectors,
+        departments: q.departments,
         categories: q.categories,
         vendors: q.vendors,
         seasons: q.seasons,
@@ -775,8 +790,8 @@ const hierarchyDrillDownSchema = z.object({
   groupsRaw: z.string().optional(),
   keywordsRaw: z.string().optional(),
   styleColorRaw: z.string().optional(),
-  priorYear: z.coerce.boolean().default(false),
-  includeAttributes: z.coerce.boolean().default(false),
+  priorYear: queryBoolean.default(false),
+  includeAttributes: queryBoolean.default(false),
 });
 
 router.get('/hierarchy-drill-down', validateQuery(hierarchyDrillDownSchema), async (req: Request, res: Response, next: NextFunction) => {

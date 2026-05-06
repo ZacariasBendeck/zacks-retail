@@ -1,0 +1,45 @@
+source_mdb_file,source_table,target_table
+RIINVMAS.MDB,InventoryMaster,inventory_master
+RIINVMAS.MDB,InvCatalog,inv_catalog
+RICATEG.MDB,Categories,categories
+RIDEPT.MDB,Departments,departments
+RIDEPT.MDB,Sectors,sectors
+RIVENDOR.MDB,Vendor Master,vendor_master
+RIVENDOR.MDB,Vendor Accounts,vendor_accounts
+RISIZE.MDB,SizeTypes,size_types
+RISIZE.MDB,NRMACodes,nrma_codes
+RIGROUP.MDB,GroupCodes,group_codes
+RIGROUP.MDB,Keywords,keywords
+RIGROUP.MDB,MarketingCode,marketing_code
+RISTORE.MDB,StoreMaster,store_master
+RISLSPSN.MDB,Salespeople,salespeople
+RISLSPSN.MDB,DeptOverride,dept_override
+RISLSPSN.MDB,SalespeopleSales,salespeople_sales
+RIINVHIS.MDB,InvHis,inv_his
+RIINVQUA.MDB,Inventory Quantities,inventory_quantities
+RIINVCHG.MDB,InvChanges,inv_changes
+RITRNSSV.MDB,Payouts,payouts
+RITRNSSV.MDB,SalesBatches,sales_batches
+RITRNSSV.MDB,TicketDetail,ticket_detail
+RITRNSSV.MDB,TicketHeader,ticket_header
+RITRNSSV.MDB,TicketTender,ticket_tender
+RITRNSSV.MDB,Transmitted,transmitted
+RIRETURN.MDB,ReturnCodes,return_codes
+RIUPC.MDB,UPC Cross Reference,upc_cross_reference
+RIPOMAS.MDB,Purchase Master,purchase_master
+RIPODET.MDB,Purchase Detail,purchase_detail
+RIPODET.MDB,AsnCartonDet,asn_carton_det
+RIPODET.MDB,AsnCartonHead,asn_carton_head
+RIOTB.MDB,Open To Buy,open_to_buy
+RICASEPK.MDB,Case_Packs,case_packs
+RICASEPK.MDB,Case_Pack_Qtys,case_pack_qtys
+RITAX.MDB,Tax OverRide,tax_over_ride
+RITRANSF.MDB,InvTransfers,inv_transfers
+RITRNSTC.MDB,TimeClock,time_clock
+RIFUTURE.MDB,Future Price Changes,future_price_changes
+RIMAIL.MDB,MailListFamily,mail_list_family
+RIMAIL.MDB,MailListNames,mail_list_names
+RIMAILED.MDB,Mail Comment Detail,mail_comment_detail
+RIMAILED.MDB,Mail Purch Detail,mail_purch_detail
+RIMAILED.MDB,Mail Tender Detail,mail_tender_detail
+RIMAILED.MDB,Mail Ticket Detail,mail_ticket_detail

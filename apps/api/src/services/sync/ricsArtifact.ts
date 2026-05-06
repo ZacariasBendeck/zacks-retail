@@ -185,6 +185,22 @@ function sourceRootPath(): string {
   return path.dirname(sample);
 }
 
+function fmtBytes(value: number): string {
+  if (value < 1024) return `${value} B`;
+  const kb = value / 1024;
+  if (kb < 1024) return `${kb.toFixed(1)} KB`;
+  const mb = kb / 1024;
+  if (mb < 1024) return `${mb.toFixed(1)} MB`;
+  return `${(mb / 1024).toFixed(2)} GB`;
+}
+
+function fmtDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  const seconds = Math.round(ms / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
+
 export async function extractRicsArtifact(args: {
   outDir: string;
   scope?: string | null;
@@ -199,8 +215,13 @@ export async function extractRicsArtifact(args: {
   ensureStagingDir(outDir);
 
   const tables: ArtifactTable[] = [];
-  for (const source of sources) {
+  for (let i = 0; i < sources.length; i += 1) {
+    const source = sources[i];
+    const tableStarted = Date.now();
     const mdbPath = ricsDbPath(source.sourceMdbFile);
+    console.log(
+      `[extract:rics-artifact] ${i + 1}/${sources.length} ${source.sourceMdbFile} / ${source.sourceTable} -> ${source.targetTable}.csv`,
+    );
     const password = getOrRecoverPassword(mdbPath);
     const columns = await listTableColumns({
       mdbPath,
@@ -217,6 +238,9 @@ export async function extractRicsArtifact(args: {
     });
     const stat = fs.statSync(csvPath);
     const sha256 = await sha256File(csvPath);
+    console.log(
+      `[extract:rics-artifact] ${i + 1}/${sources.length} done ${source.targetTable}.csv rows=${extract.rowCount.toLocaleString('en-US')} size=${fmtBytes(stat.size)} duration=${fmtDuration(Date.now() - tableStarted)}`,
+    );
     tables.push({
       sourceMdbFile: source.sourceMdbFile,
       sourceTable: source.sourceTable,

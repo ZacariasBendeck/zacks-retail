@@ -174,29 +174,90 @@ function fmtDuration(ms: number): string {
   return `${minutes}m ${Math.round(seconds - minutes * 60)}s`;
 }
 
-const STOCK_MOVEMENT_SECONDARY_INDEX_DEFS = [
-  `CREATE UNIQUE INDEX stock_movement_idempotency_key ON app.stock_movement USING btree (idempotency_key)`,
-  `CREATE INDEX stock_movement_sku_store_movement_at_idx ON app.stock_movement USING btree (sku_id, store_id, movement_at DESC)`,
-  `CREATE INDEX stock_movement_source_document_idx ON app.stock_movement USING btree (source_document_type, source_document_id)`,
-  `CREATE INDEX stock_movement_store_movement_at_idx ON app.stock_movement USING btree (store_id, movement_at DESC)`,
-  `CREATE INDEX stock_movement_type_movement_at_idx ON app.stock_movement USING btree (movement_type, movement_at DESC)`,
+const STOCK_MOVEMENT_SECONDARY_INDEXES = [
+  {
+    name: 'stock_movement_idempotency_key',
+    createSql: `CREATE UNIQUE INDEX IF NOT EXISTS stock_movement_idempotency_key ON app.stock_movement USING btree (idempotency_key)`,
+  },
+  {
+    name: 'stock_movement_sku_store_movement_at_idx',
+    createSql: `CREATE INDEX IF NOT EXISTS stock_movement_sku_store_movement_at_idx ON app.stock_movement USING btree (sku_id, store_id, movement_at DESC)`,
+  },
+  {
+    name: 'stock_movement_source_document_idx',
+    createSql: `CREATE INDEX IF NOT EXISTS stock_movement_source_document_idx ON app.stock_movement USING btree (source_document_type, source_document_id)`,
+  },
+  {
+    name: 'stock_movement_store_movement_at_idx',
+    createSql: `CREATE INDEX IF NOT EXISTS stock_movement_store_movement_at_idx ON app.stock_movement USING btree (store_id, movement_at DESC)`,
+  },
+  {
+    name: 'stock_movement_type_movement_at_idx',
+    createSql: `CREATE INDEX IF NOT EXISTS stock_movement_type_movement_at_idx ON app.stock_movement USING btree (movement_type, movement_at DESC)`,
+  },
 ] as const;
 
-const STOCK_LEVEL_SECONDARY_INDEX_DEFS = [
-  `CREATE INDEX stock_level_sku_store_idx ON app.stock_level USING btree (sku_id, store_id)`,
-  `CREATE INDEX stock_level_store_on_hand_idx ON app.stock_level USING btree (store_id, on_hand)`,
-  `CREATE UNIQUE INDEX stock_level_store_sku_cell_key ON app.stock_level USING btree (store_id, sku_id, column_label, row_label)`,
+const STOCK_LEVEL_SECONDARY_INDEXES = [
+  {
+    name: 'stock_level_sku_store_idx',
+    createSql: `CREATE INDEX IF NOT EXISTS stock_level_sku_store_idx ON app.stock_level USING btree (sku_id, store_id)`,
+  },
+  {
+    name: 'stock_level_store_on_hand_idx',
+    createSql: `CREATE INDEX IF NOT EXISTS stock_level_store_on_hand_idx ON app.stock_level USING btree (store_id, on_hand)`,
+  },
+  {
+    name: 'stock_level_store_sku_cell_key',
+    createSql: `CREATE UNIQUE INDEX IF NOT EXISTS stock_level_store_sku_cell_key ON app.stock_level USING btree (store_id, sku_id, column_label, row_label)`,
+  },
 ] as const;
 
-async function dropIndexes(client: Client, schema: string, indexNames: readonly string[]): Promise<void> {
-  for (const indexName of indexNames) {
-    await client.query(`DROP INDEX IF EXISTS ${quoteIdent(schema)}.${quoteIdent(indexName)}`);
+interface IndexDefinition {
+  name: string;
+  createSql: string;
+}
+
+function isLockTimeout(error: unknown): boolean {
+  const candidate = error as { code?: string; message?: string };
+  return candidate.code === '55P03' || /lock timeout|canceling statement due to lock timeout/i.test(candidate.message ?? '');
+}
+
+async function dropIndexesForBulkLoad(
+  client: Client,
+  schema: string,
+  indexes: readonly IndexDefinition[],
+): Promise<boolean> {
+  await client.query(`SET lock_timeout = '15s'`);
+  try {
+    for (const index of indexes) {
+      const started = Date.now();
+      console.log(`        dropping ${index.name}...`);
+      try {
+        await client.query(`DROP INDEX IF EXISTS ${quoteIdent(schema)}.${quoteIdent(index.name)}`);
+      } catch (error) {
+        if (isLockTimeout(error)) {
+          console.warn(
+            `        could not lock ${index.name} in 15s; keeping remaining indexes and continuing without the full drop-index optimization.`,
+          );
+          return false;
+        }
+        throw error;
+      }
+      console.log(`        dropped ${index.name} in ${fmtDuration(Date.now() - started)}`);
+    }
+    return true;
+  } finally {
+    await client.query(`SET lock_timeout = 0`);
   }
 }
 
-async function createIndexes(client: Client, definitions: readonly string[]): Promise<void> {
-  for (const definition of definitions) {
-    await client.query(definition);
+async function createIndexes(client: Client, indexes: readonly IndexDefinition[]): Promise<void> {
+  await client.query(`SET maintenance_work_mem = '512MB'`);
+  for (const index of indexes) {
+    const started = Date.now();
+    console.log(`        ensuring ${index.name}...`);
+    await client.query(index.createSql);
+    console.log(`        ensured ${index.name} in ${fmtDuration(Date.now() - started)}`);
   }
 }
 
@@ -209,10 +270,14 @@ async function importStockMovementsBulk(client: Client, sourceTableName: string)
   await client.query('BEGIN');
   try {
     await client.query(`SET LOCAL synchronous_commit = OFF`);
+    await client.query(`SET LOCAL statement_timeout = 0`);
+    console.log('      deleting existing RICS stock movements...');
     const replaced = await client.query(
       `DELETE FROM app.stock_movement WHERE source_document_type = 'RICS_INV_CHANGE'`,
     );
+    console.log(`      deleted ${fmtNum(Number(replaced.rowCount ?? 0))} existing RICS stock movements`);
 
+    console.log('      building SKU lookup...');
     await client.query(`
       CREATE TEMP TABLE tmp_sku_map ON COMMIT DROP AS
       SELECT DISTINCT ON (sku_code)
@@ -233,6 +298,7 @@ async function importStockMovementsBulk(client: Client, sourceTableName: string)
     `);
     await client.query(`CREATE INDEX ON tmp_sku_map (sku_code)`);
 
+    console.log('      inserting stock movement ledger rows...');
     const insertResult = await client.query(
       `
       INSERT INTO app.stock_movement (
@@ -591,20 +657,19 @@ async function main(): Promise<void> {
     await client.query(`ANALYZE ${quoteIdent(invChangesTable)}`);
 
     console.log('[2/4] rebuilding app.stock_movement...');
-    console.log('      dropping stock_movement secondary indexes...');
-    await dropIndexes(client, 'app', [
-      'stock_movement_idempotency_key',
-      'stock_movement_sku_store_movement_at_idx',
-      'stock_movement_source_document_idx',
-      'stock_movement_store_movement_at_idx',
-      'stock_movement_type_movement_at_idx',
-    ]);
+    console.log('      ensuring stock_movement secondary indexes exist...');
+    await createIndexes(client, STOCK_MOVEMENT_SECONDARY_INDEXES);
+    console.log('      dropping stock_movement secondary indexes for bulk load...');
+    const stockMovementIndexesDropped = await dropIndexesForBulkLoad(client, 'app', STOCK_MOVEMENT_SECONDARY_INDEXES);
+    if (!stockMovementIndexesDropped) {
+      console.log('      stock_movement import will continue with some indexes still in place.');
+    }
     let movementResult: Awaited<ReturnType<typeof importStockMovementsBulk>>;
     try {
       movementResult = await importStockMovementsBulk(client, invChangesTable);
     } finally {
       console.log('      recreating stock_movement secondary indexes...');
-      await createIndexes(client, STOCK_MOVEMENT_SECONDARY_INDEX_DEFS);
+      await createIndexes(client, STOCK_MOVEMENT_SECONDARY_INDEXES);
     }
     console.log(
       `      imported ${fmtNum(movementResult.importedRows)} rows ` +
@@ -623,18 +688,19 @@ async function main(): Promise<void> {
     await client.query(`ANALYZE ${quoteIdent(inventoryQuantitiesTable)}`);
 
     console.log('[4/4] rebuilding app.stock_level + app.inventory_sales_cell...');
-    console.log('      dropping stock_level secondary indexes...');
-    await dropIndexes(client, 'app', [
-      'stock_level_sku_store_idx',
-      'stock_level_store_on_hand_idx',
-      'stock_level_store_sku_cell_key',
-    ]);
+    console.log('      ensuring stock_level secondary indexes exist...');
+    await createIndexes(client, STOCK_LEVEL_SECONDARY_INDEXES);
+    console.log('      dropping stock_level secondary indexes for bulk load...');
+    const stockLevelIndexesDropped = await dropIndexesForBulkLoad(client, 'app', STOCK_LEVEL_SECONDARY_INDEXES);
+    if (!stockLevelIndexesDropped) {
+      console.log('      stock_level import will continue with some indexes still in place.');
+    }
     let stockLevelResult: Awaited<ReturnType<typeof rebuildStockLevelsBulk>>;
     try {
       stockLevelResult = await rebuildStockLevelsBulk(client, inventoryQuantitiesTable, sizeTypeTable);
     } finally {
       console.log('      recreating stock_level secondary indexes...');
-      await createIndexes(client, STOCK_LEVEL_SECONDARY_INDEX_DEFS);
+      await createIndexes(client, STOCK_LEVEL_SECONDARY_INDEXES);
     }
     console.log(
       `      wrote ${fmtNum(stockLevelResult.projectionRowsWritten)} projection rows ` +

@@ -659,8 +659,18 @@ export interface SalesGroupDim {
   desc: string | null
 }
 export interface SalesStoreChainDim { code: string; label: string; storeNumbers: number[] }
-export interface SalesSectorDim { number: number; name: string | null }
-export interface SalesDepartmentDim { number: number; name: string | null }
+export interface SalesSectorDim {
+  number: number
+  name: string | null
+  desc?: string | null
+  description?: string | null
+}
+export interface SalesDepartmentDim {
+  number: number
+  name: string | null
+  desc?: string | null
+  description?: string | null
+}
 export interface SalesSeasonDim { code: string; description: string | null }
 export interface SalesBuyerDim { code: string; label: string | null }
 export interface SalesDimensionsResponse {
@@ -677,7 +687,15 @@ export interface SalesDimensionsResponse {
 export async function fetchSalesDimensions(signal?: AbortSignal): Promise<SalesDimensionsResponse> {
   const res = await fetch('/api/v1/reports/sales/dimensions', { signal })
   if (!res.ok) await throwReportApiError(res, `Failed to fetch sales dimensions: ${res.status}`)
-  return res.json()
+  const dims = await res.json() as SalesDimensionsResponse
+  return {
+    ...dims,
+    sectors: (dims.sectors ?? []).map((s) => ({ ...s, name: s.name ?? s.desc ?? s.description ?? null })),
+    departments: (dims.departments ?? []).map((d) => ({
+      ...d,
+      name: d.name ?? d.desc ?? d.description ?? null,
+    })),
+  }
 }
 
 // ── Sales by Day ─────────────────────────────────────────────────────────
@@ -1026,6 +1044,15 @@ export interface SkuAttributeColumns {
   currentCost: number | null
   unitsOnHand: number | null
   pictureUrl: string | null
+  keywords?: string | null
+  sizeType?: number | null
+  labelCode?: string | null
+  colorCode?: string | null
+  discountCode?: string | null
+  dateFirstReceived?: string | null
+  dateLastReceived?: string | null
+  ageDays?: number | null
+  ageDaysByStore?: Record<string, number | null>
   /** Operator-assigned extended attributes keyed by dimension code. */
   extended: Record<string, string>
 }
@@ -1086,6 +1113,9 @@ export async function fetchSalesAnalysis(args: {
   startDate?: string
   endDate?: string
   stores?: number[]
+  chains?: string[]
+  sectors?: number[]
+  departments?: number[]
   categories?: number[]
   vendors?: string[]
   seasons?: string[]
@@ -1110,6 +1140,8 @@ export async function fetchSalesAnalysis(args: {
   includeAttributes?: boolean
   /** Request open purchase-order quantities and landed cost columns. SKU_DETAIL only. */
   includeOnOrder?: boolean
+  /** UI-only column toggle; not sent to the API. */
+  showPercentOfTotal?: boolean
   signal?: AbortSignal
 }): Promise<SalesAnalysisReport> {
   const params = new URLSearchParams({
@@ -1120,6 +1152,9 @@ export async function fetchSalesAnalysis(args: {
   if (args.startDate) params.set('startDate', args.startDate)
   if (args.endDate) params.set('endDate', args.endDate)
   if (args.stores?.length) params.set('stores', args.stores.join(','))
+  if (args.chains?.length) params.set('chains', args.chains.join(','))
+  if (args.sectors?.length) params.set('sectors', args.sectors.join(','))
+  if (args.departments?.length) params.set('departments', args.departments.join(','))
   if (args.categories?.length) params.set('categories', args.categories.join(','))
   if (args.vendors?.length) params.set('vendors', args.vendors.join(','))
   if (args.seasons?.length) params.set('seasons', args.seasons.join(','))
@@ -1537,7 +1572,8 @@ export interface SalesHistoryByMonthReport {
 }
 
 export interface SalesHistoryByMonthParams {
-  stores: number[]
+  /** Omit or leave empty for all stores, including warehouses. */
+  stores?: number[]
   endMonth: string
   sortBy?: SalesHistoryByMonthSortBy
   combineStores?: boolean
@@ -1553,12 +1589,14 @@ function buildSalesHistoryByMonthParams(
   format?: 'csv' | 'xlsx',
 ): URLSearchParams {
   const qs = new URLSearchParams({
-    stores: params.stores.join(','),
     endMonth: params.endMonth,
     sortBy: params.sortBy ?? 'vendor',
     combineStores: String(params.combineStores ?? true),
     detailLevel: params.detailLevel ?? 'subtotals',
   })
+  if (params.stores && params.stores.length > 0) {
+    qs.set('stores', params.stores.join(','))
+  }
   if (params.dataToPrint && params.dataToPrint.length > 0) {
     qs.set('dataToPrint', params.dataToPrint.join(','))
   }

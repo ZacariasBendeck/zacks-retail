@@ -575,6 +575,14 @@ function addDays(date: string, days: number): string {
   return toIsoDate(d);
 }
 
+function addYears(date: string, years: number): string {
+  const d = toUtcDate(date);
+  const month = d.getUTCMonth();
+  d.setUTCFullYear(d.getUTCFullYear() + years);
+  if (d.getUTCMonth() !== month) d.setUTCDate(0);
+  return toIsoDate(d);
+}
+
 function listDatesInclusive(startDate: string, endDate: string): string[] {
   const out: string[] = [];
   const cursor = toUtcDate(startDate);
@@ -677,6 +685,7 @@ function parseMsDateToHour(raw: string | null): number {
  * PowerShell → Node (~500ms cold + ~10MB per 100k rows).
  */
 const MAX_TICKET_ROWS = 250_000;
+const REPORT_TIME_ZONE = 'America/Tegucigalpa';
 
 async function loadTicketLines(params: {
   startDate: string;
@@ -713,10 +722,12 @@ async function loadTicketLines(params: {
     //   - category      ← category_key parsed as int (RICS used 3-digit numeric codes)
     //   - vendor        ← brand_key (the new app-owned vendor surface)
     //   - returnCode    ← return_code parsed as int with default 0
+    const startBoundary = `($1::date::timestamp AT TIME ZONE '${REPORT_TIME_ZONE}')`;
+    const endBoundary = `($2::date::timestamp AT TIME ZONE '${REPORT_TIME_ZONE}')`;
     const sql = `SELECT
   h.store_id     AS "H_Store",
   h.ticket_number AS "H_Ticket",
-  to_char(h.purchased_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS') AS "H_RealDate",
+  to_char(h.purchased_at AT TIME ZONE '${REPORT_TIME_ZONE}', 'YYYY-MM-DD"T"HH24:MI:SS') AS "H_RealDate",
   h.cashier_code AS "H_Cashier",
   CASE WHEN h.status = 'completed' THEN 'Y' ELSE 'N' END AS "H_Posted",
   COALESCE(NULLIF(BTRIM(d.sku_code), ''), s.code, s.provisional_code) AS "D_SKU",
@@ -738,8 +749,8 @@ FROM app.sales_history_ticket h
 INNER JOIN app.sales_history_ticket_line d ON d.ticket_id = h.id
 LEFT JOIN app.sku s ON s.id = d.sku_id
 WHERE
-  h.purchased_at >= $1::date
-  AND h.purchased_at <  $2::date
+  h.purchased_at >= ${startBoundary}
+  AND h.purchased_at <  ${endBoundary}
   AND h.status = 'completed'${extraClause}
 LIMIT ${MAX_TICKET_ROWS}`;
 
@@ -803,17 +814,19 @@ async function loadTicketHeaders(params: {
     // Migrated 2026-04-25 from rics_mirror.ticket_header to app.sales_history_ticket.
     // The 6-column composite identity (user_id|batch_date|terminal|store|ticket|real_date)
     // collapses to the app surface's UUID primary key.
+    const startBoundary = `($1::date::timestamp AT TIME ZONE '${REPORT_TIME_ZONE}')`;
+    const endBoundary = `($2::date::timestamp AT TIME ZONE '${REPORT_TIME_ZONE}')`;
     const sql = `SELECT
   h.id        AS "TicketId",
   h.store_id  AS "Store",
   h.ticket_number AS "Ticket",
-  to_char(h.purchased_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS') AS "RealDate",
+  to_char(h.purchased_at AT TIME ZONE '${REPORT_TIME_ZONE}', 'YYYY-MM-DD"T"HH24:MI:SS') AS "RealDate",
   h.cashier_code AS "Cashier",
   CASE WHEN h.status = 'completed' THEN 'Y' ELSE 'N' END AS "Posted"
 FROM app.sales_history_ticket h
 WHERE
-  h.purchased_at >= $1::date
-  AND h.purchased_at <  $2::date
+  h.purchased_at >= ${startBoundary}
+  AND h.purchased_at <  ${endBoundary}
   AND h.status = 'completed'${extraClause}`;
     const raw = await prisma.$queryRawUnsafe<RawTicketHeaderFlag[]>(sql, ...sqlParams);
     return raw.map<TicketHeaderFlag>((r) => ({
@@ -840,9 +853,10 @@ interface DailyStoreSales {
 
 /**
  * Aggregate net sales + profit by local-day and store, sourced from the
- * app-owned imported sales history (`app.sales_history_ticket*`). Replaces a
- * loadTicketLines + JS sumByDate fold against the dropped `rics_mirror.ticket_*`
- * pair (schema retired 2026-04-25).
+ * app-owned imported sales history ticket header totals. Sales by Day is a
+ * ticket-level RICS report: header `net_amount` includes return-only tickets
+ * plus discount/coupon effects that are intentionally not present as normal
+ * merchandise rows in `sales_history_ticket_line`.
  *
  * Day boundaries are bucketed in store-local time (`America/Tegucigalpa`) to
  * match the rest of the new sales adapters. `includeUnposted=false` mirrors the
@@ -850,8 +864,8 @@ interface DailyStoreSales {
  * only `cancelled` rows.
  *
  * Returns a nested map: date (YYYY-MM-DD) → store_id → { netSales, profit }.
- * Empty `storeNumbers` returns no data — callers must always pass an explicit
- * store list (the page guards against empty selection).
+ * Callers resolve "all stores" before reaching this loader so the SQL always
+ * receives an explicit store list.
  */
 async function loadDailySalesByStores(params: {
   storeNumbers: number[];
@@ -868,7 +882,7 @@ async function loadDailySalesByStores(params: {
   const includeUnposted = params.includeUnposted !== false;
   const storeKey = [...params.storeNumbers].map((n) => Number(n)).sort((a, b) => a - b).join(',');
 
-  const cacheKey = `sr:dailyNet:v2:${storeKey}:${startDate}:${endDate}:${includeUnposted}`;
+  const cacheKey = `sr:dailyNet:v3:${storeKey}:${startDate}:${endDate}:${includeUnposted}`;
   return cachedAsync(cacheKey, 600_000, async () => {
     const startBoundary = `($1::date::timestamp AT TIME ZONE 'America/Tegucigalpa')`;
     const endBoundary = `($2::date::timestamp AT TIME ZONE 'America/Tegucigalpa')`;
@@ -879,15 +893,13 @@ async function loadDailySalesByStores(params: {
       SELECT
         to_char(t.purchased_at AT TIME ZONE 'America/Tegucigalpa', 'YYYY-MM-DD') AS d,
         t.store_id::int AS store,
-        SUM(COALESCE(l.net_amount, 0))::float8 AS net_sales,
-        SUM(COALESCE(l.net_amount, 0) - COALESCE(l.cost_amount, 0))::float8 AS profit
+        SUM(COALESCE(t.net_amount, 0))::float8 AS net_sales,
+        SUM(COALESCE(t.net_amount, 0) - COALESCE(t.cost_amount, 0))::float8 AS profit
       FROM app.sales_history_ticket t
-      INNER JOIN app.sales_history_ticket_line l ON t.id = l.ticket_id
       WHERE
         t.purchased_at >= ${startBoundary}
         AND t.purchased_at <  ${endBoundary}
         AND t.store_id = ANY($3::int[])
-        AND t.transaction_kind = 'purchase'
         ${statusClause}
       GROUP BY
         to_char(t.purchased_at AT TIME ZONE 'America/Tegucigalpa', 'YYYY-MM-DD'),
@@ -920,9 +932,10 @@ async function loadDailySalesByStores(params: {
 
 /**
  * RICS Sales by Day by Store report. Multi-store-aware: pass an explicit
- * `storeNumbers` list and `combineStores` flag. Output always carries per-store
- * breakdowns; when `combineStores=true`, an additional summed `combined` block
- * is included so the UI can render either layout off one payload.
+ * `storeNumbers` list, or an empty list for all stores, and `combineStores`
+ * flag. Output always carries per-store breakdowns; when `combineStores=true`,
+ * an additional summed `combined` block is included so the UI can render either
+ * layout off one payload.
  *
  * Note: this report keeps the `Posted='Y'` filter (unlike the other reports,
  * which default to Live mode including unposted) because it historically
@@ -943,7 +956,7 @@ export async function getSalesByDay(params: {
     throw new Error('startDate must be <= endDate');
   }
 
-  const storeNumbers = (params.storeNumbers ?? [])
+  let storeNumbers = (params.storeNumbers ?? [])
     .map((n) => Number(n))
     .filter((n) => Number.isFinite(n) && n > 0);
 
@@ -953,17 +966,7 @@ export async function getSalesByDay(params: {
   const storeMap = await loadStoreMap();
 
   if (storeNumbers.length === 0) {
-    return {
-      storeNumbers: [],
-      combineStores,
-      startDate,
-      endDate,
-      comparisonOffsetDays,
-      comparisonStartDate,
-      comparisonEndDate,
-      storeBreakdowns: [],
-      combined: null,
-    };
+    storeNumbers = [...storeMap.keys()].sort((a, b) => a - b);
   }
 
   const [current, compare] = await Promise.all([
@@ -1651,9 +1654,20 @@ export async function getSalesAnalysis(params: {
     const master = line.sku ? masterBySku.get(line.sku.trim().toUpperCase()) ?? null : null;
     return { ...line, master };
   });
+  const needsDepartmentCriteria = !!params.criteria.departments?.length || !!params.criteria.sectors?.length;
+  const [criteriaStoreChainByStore, criteriaDeptMap, criteriaSectorMap] = await Promise.all([
+    params.criteria.chains?.length ? loadStoreChainByStore() : Promise.resolve(null),
+    needsDepartmentCriteria ? loadDepartmentMap() : Promise.resolve(null),
+    params.criteria.sectors?.length ? loadSectorMap() : Promise.resolve(null),
+  ]);
+  const criteriaContext: AnalysisCriteriaContext = {
+    storeChainByStore: criteriaStoreChainByStore,
+    departments: criteriaDeptMap,
+    sectors: criteriaSectorMap,
+  };
 
   // Apply criteria filters.
-  const filtered = analysisLines.filter((l) => applyAnalysisCriteria(l, params.criteria, parsed));
+  const filtered = analysisLines.filter((l) => applyAnalysisCriteria(l, params.criteria, parsed, criteriaContext));
 
   // Row grain is driven by `reportType`:
   //   SKU_DETAIL           → one row per SKU
@@ -1704,8 +1718,8 @@ export async function getSalesAnalysis(params: {
   // Prior year netSales (optional).
   let priorYearByDimStore: Map<string, number> | null = null;
   if (params.printing.priorYear) {
-    const pyStart = addDays(startDate, -364);
-    const pyEnd = addDays(endDate, -364);
+    const pyStart = addYears(startDate, -1);
+    const pyEnd = addYears(endDate, -1);
     const pyLines = await loadTicketLines({
       startDate: pyStart,
       endDate: pyEnd,
@@ -1720,7 +1734,7 @@ export async function getSalesAnalysis(params: {
         ...l,
         master: l.sku ? pyMasterBySku.get(l.sku.trim().toUpperCase()) ?? null : null,
       };
-      if (!applyAnalysisCriteria(pyLine, params.criteria, parsed)) continue;
+      if (!applyAnalysisCriteria(pyLine, params.criteria, parsed, criteriaContext)) continue;
       const dimKey = rowGrainKey(pyLine, params.reportType, deptMap, sectorMap);
       if (!dimKey) continue;
       const storeKey = combine ? null : pyLine.store;
@@ -1895,7 +1909,13 @@ export async function getSalesAnalysis(params: {
   // builder preview does not, to keep payloads small).
   if (params.includeAttributes && params.reportType === 'SKU_DETAIL' && rows.length > 0) {
     const skuCodes = rows.map((r) => r.dimensionKey);
-    const attrsBySku = await loadSkuAttributesBySku(skuCodes);
+    const ageStoreNumbers = params.storeOption === 'COMBINE'
+      ? filteredStores
+      : Array.from(new Set(rows.map((r) => r.storeNumber).filter((n): n is number => n != null)));
+    const attrsBySku = await loadSkuAttributesBySku(skuCodes, {
+      storeNumbers: ageStoreNumbers,
+      reportEndDate: endDate,
+    });
     for (const row of rows) {
       const attrs = attrsBySku.get(row.dimensionKey.trim().toUpperCase());
       if (attrs) row.attributes = attrs;
@@ -1920,7 +1940,7 @@ export async function getSalesAnalysis(params: {
 // tree (Store? → Department → Category → SKU) instead of a flat row list.
 // Ticket lines feed all three row grains at once — one pass, one cache hit.
 // On-hand at cost is loaded at SKU grain and rolled up; prior-year uses the
-// same bucketing on a 364-day-shifted window.
+// same calendar window one year earlier.
 
 export async function getSalesHierarchy(params: {
   storeOption: SalesHierarchyStoreOption;
@@ -1972,6 +1992,15 @@ export async function getSalesHierarchy(params: {
   for (const c of categoryList) {
     if (c.desc) categoryDescByNumber.set(c.number, c.desc);
   }
+  const [criteriaStoreChainByStore, criteriaSectorMap] = await Promise.all([
+    params.criteria.chains?.length ? loadStoreChainByStore() : Promise.resolve(null),
+    params.criteria.sectors?.length ? loadSectorMap() : Promise.resolve(null),
+  ]);
+  const criteriaContext: AnalysisCriteriaContext = {
+    storeChainByStore: criteriaStoreChainByStore,
+    departments: deptMap,
+    sectors: criteriaSectorMap,
+  };
 
   // Bucket ticket lines at SKU grain, tagging each SKU with its (dept, cat)
   // so rollup is a single walk later. Lines with no category map to a
@@ -1989,7 +2018,7 @@ export async function getSalesHierarchy(params: {
   const skuBuckets = new Map<string, SkuBucket>();
 
   for (const l of lines) {
-    if (!applyAnalysisCriteria(l, params.criteria, parsed)) continue;
+    if (!applyAnalysisCriteria(l, params.criteria, parsed, criteriaContext)) continue;
     if (!l.sku) continue;
     const storeNumber = combine ? null : l.store;
     const catNum = l.category ?? null;
@@ -2015,12 +2044,12 @@ export async function getSalesHierarchy(params: {
     b.cogs += l.cost * l.qty;
   }
 
-  // Prior-year netSales at the same SKU grain. 364-day shift matches the
-  // Sales Analysis adapter so weekday alignment is preserved.
+  // Prior-year netSales at the same SKU grain, using the same calendar
+  // window one year earlier to match RICS Sales Analysis.
   let priorYearBySku: Map<string, number> | null = null;
   if (params.priorYear) {
-    const pyStart = addDays(startDate, -364);
-    const pyEnd = addDays(endDate, -364);
+    const pyStart = addYears(startDate, -1);
+    const pyEnd = addYears(endDate, -1);
     const pyLines = await loadTicketLines({
       startDate: pyStart,
       endDate: pyEnd,
@@ -2028,7 +2057,7 @@ export async function getSalesHierarchy(params: {
     });
     priorYearBySku = new Map();
     for (const l of pyLines) {
-      if (!applyAnalysisCriteria(l, params.criteria, parsed)) continue;
+      if (!applyAnalysisCriteria(l, params.criteria, parsed, criteriaContext)) continue;
       if (!l.sku) continue;
       const storeNumber = combine ? null : l.store;
       const catNum = l.category ?? null;
@@ -2363,12 +2392,42 @@ interface ParsedAnalysisCriteria {
   keywords: CriteriaExpression;
 }
 
+interface AnalysisCriteriaContext {
+  storeChainByStore: Map<number, { code: string; label: string }> | null;
+  departments: DeptRow[] | null;
+  sectors: SectorRow[] | null;
+}
+
+function selectedStringKeeps(selected: string[] | undefined, value: string | null | undefined): boolean {
+  if (!selected?.length) return true;
+  const normalizedValue = value?.trim().toUpperCase();
+  if (!normalizedValue) return false;
+  return selected.some((candidate) => candidate.trim().toUpperCase() === normalizedValue);
+}
+
+function selectedNumberKeeps(selected: number[] | undefined, value: number | null | undefined): boolean {
+  if (!selected?.length) return true;
+  if (value == null) return false;
+  return selected.some((candidate) => Number(candidate) === value);
+}
+
+function analysisCategory(l: AnalysisLine): number | null {
+  return l.master?.category ?? l.category;
+}
+
 function applyAnalysisCriteria(
   l: AnalysisLine,
   c: SalesAnalysisCriteria,
   parsed: ParsedAnalysisCriteria,
+  context: AnalysisCriteriaContext,
 ): boolean {
   if (!facetKeeps(c.stores, parsed.stores, l.store)) return false;
+  if (!selectedStringKeeps(c.chains, context.storeChainByStore?.get(l.store)?.code ?? null)) return false;
+  const deptNumber = c.departments?.length || c.sectors?.length
+    ? deptNumberForCategory(analysisCategory(l), context.departments)
+    : null;
+  if (!selectedNumberKeeps(c.departments, deptNumber)) return false;
+  if (!selectedNumberKeeps(c.sectors, sectorNumberForDepartment(deptNumber, context.sectors))) return false;
   if (!facetKeeps(c.categories, parsed.categories, l.category ?? null)) return false;
   if (!facetKeeps(c.vendors, parsed.vendors, l.vendor ?? null)) return false;
   if (!facetKeeps(c.skus, parsed.skus, l.sku)) return false;
@@ -2405,7 +2464,7 @@ interface SectorRow {
 }
 
 async function loadDepartmentMap(): Promise<DeptRow[]> {
-  return cachedAsync('sr:dim:departments', 300_000, async () => {
+  return cachedAsync('sr:dim:department-ranges', 300_000, async () => {
     const rows = await prisma.$queryRawUnsafe<
       { Number: number; Desc: string | null; BegCateg: number; EndCateg: number }[]
     >(
@@ -2426,7 +2485,7 @@ async function loadDepartmentMap(): Promise<DeptRow[]> {
 }
 
 async function loadSectorMap(): Promise<SectorRow[]> {
-  return cachedAsync('sr:dim:sectors', 300_000, async () => {
+  return cachedAsync('sr:dim:sector-ranges', 300_000, async () => {
     const rows = await prisma.$queryRawUnsafe<
       { Number: number; Desc: string | null; BegDept: number; EndDept: number }[]
     >(
@@ -2472,9 +2531,13 @@ function needsSkuMaster(params: {
   includeAttributes?: boolean;
 }): boolean {
   return (
+    params.reportType === 'DEPT_SUMMARY' ||
+    params.reportType === 'SECTOR_SUMMARY' ||
     params.reportType === 'SEASON_SUMMARY' ||
     params.reportType === 'GROUP_SUMMARY' ||
     params.reportType === 'STYLE_COLOR_SUMMARY' ||
+    !!params.criteria.departments?.length ||
+    !!params.criteria.sectors?.length ||
     !!params.criteria.seasons?.length ||
     !!params.criteria.groups?.length ||
     !!params.criteria.styleColor ||
@@ -2554,7 +2617,7 @@ function rowGrainKey(
     case 'CATEGORY_SUMMARY':
       return l.category != null ? String(l.category) : '(none)';
     case 'DEPT_SUMMARY': {
-      const d = deptNumberForCategory(l.category, depts);
+      const d = deptNumberForCategory(analysisCategory(l), depts);
       return d != null ? String(d) : '(none)';
     }
     case 'VENDOR_SUMMARY':
@@ -2568,7 +2631,7 @@ function rowGrainKey(
     case 'STYLE_COLOR_SUMMARY':
       return l.master?.styleColor || '(none)';
     case 'SECTOR_SUMMARY': {
-      const d = deptNumberForCategory(l.category, depts);
+      const d = deptNumberForCategory(analysisCategory(l), depts);
       const s = sectorNumberForDepartment(d, sectors);
       return s != null ? String(s) : '(none)';
     }

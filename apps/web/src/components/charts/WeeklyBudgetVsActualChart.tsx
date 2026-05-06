@@ -10,11 +10,15 @@ echarts.use([BarChart, GridComponent, TooltipComponent, LegendComponent, CanvasR
 interface WeeklyBudgetVsActualChartProps {
   points: OtbTrendPoint[]
   height?: number
+  budgetLabel?: string
+  actualLabel?: string
 }
 
 export default function WeeklyBudgetVsActualChart({
   points,
   height = 320,
+  budgetLabel = 'Budget',
+  actualLabel = 'Actual',
 }: WeeklyBudgetVsActualChartProps) {
   const containerRef = useRef<HTMLDivElement | null>(null)
 
@@ -48,21 +52,21 @@ export default function WeeklyBudgetVsActualChart({
       },
       series: [
         {
-          name: 'Budget',
+          name: budgetLabel,
           type: 'bar',
           barGap: 0,
           data: points.map((point) => point.budgetAmount),
           itemStyle: { color: '#2f54eb' },
         },
         {
-          name: 'Actual',
+          name: actualLabel,
           type: 'bar',
           data: points.map((point) => point.actualAmount),
           itemStyle: { color: '#13c2c2' },
         },
       ],
     }),
-    [points],
+    [actualLabel, budgetLabel, points],
   )
 
   useEffect(() => {

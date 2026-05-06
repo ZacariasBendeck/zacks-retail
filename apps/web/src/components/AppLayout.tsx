@@ -190,6 +190,7 @@ const appMenuItems = [
     icon: <AuditOutlined />,
     label: 'Operations',
     children: [
+      { key: '/operations/inventory-close', icon: <CalendarOutlined />, label: 'Inventory Close', requiredPermissions: ['employees.manage'] },
       { key: '/operations/migration-day', icon: <SyncOutlined />, label: 'Migration Day', requiredPermissions: ['employees.manage'] },
     ],
   },

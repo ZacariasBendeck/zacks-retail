@@ -51,7 +51,7 @@ function printHelpAndExit(code: number): never {
       '  - app.inventory_history_trend_week',
       '  - app.inventory_history_movement_bucket',
       '',
-      'Preferred rehearsal path: import-app-inventory-history-from-artifact.',
+      'Preferred rehearsal path: import:inventory-history-from-csv-bundle.',
     ].join('\n'),
   );
   process.exit(code);

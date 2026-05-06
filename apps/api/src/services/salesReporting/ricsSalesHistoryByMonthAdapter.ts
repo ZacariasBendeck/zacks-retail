@@ -977,22 +977,25 @@ export async function queryMonthlyNetSales(
 // RIINVHIS.MDB contains one row per (SKU, Store) in the `InvHis` table.
 // Each row carries RICS's rolling 12-month trailing inventory history:
 //
-//   - `LYMonthQtyOH_01` … `LYMonthQtyOH_12`   — units on hand at month-end,
-//                                               indexed by **calendar month**
-//                                               (NN=01 → January, NN=12 →
-//                                               December). These are rolling:
-//                                               at any given time the 12 slots
-//                                               hold the trailing 12 months of
-//                                               snapshots, with the current
-//                                               month's slot still pointing at
-//                                               last year. RICS advances the
-//                                               array on month-end close.
-//   - `LYMonthOnHand_01` … `LYMonthOnHand_12` — same, expressed in dollars
-//                                               (qty × average cost as of the
-//                                               month-end snapshot). Verified
-//                                               empirically on a known SKU:
-//                                               LYMonthOnHand_NN equals
-//                                               LYMonthQtyOH_NN × AverageCost.
+//   - `LYMonthQtyOH_01` … `LYMonthQtyOH_12`   — rolling inventory quantity
+//                                               slots indexed by **calendar
+//                                               month** (NN=01 → January,
+//                                               NN=12 → December). These are
+//                                               close-cycle values, not raw
+//                                               ticket replay. A May 1, 2026
+//                                               before/after close probe found
+//                                               the newly closed slot receives
+//                                               the prior `LastMonthOnHand`
+//                                               value, while `LastMonthOnHand`
+//                                               itself advances to current
+//                                               `OnHand`.
+//   - `LYMonthOnHand_01` … `LYMonthOnHand_12` — the matching dollar value.
+//                                               The same May 1 probe found the
+//                                               newly closed slot follows
+//                                               ending `OnHand × AverageCost`,
+//                                               but historical imported slots
+//                                               have known exceptions and must
+//                                               not be blindly recomputed.
 //   - `AverageCost`                            — current per-SKU-per-Store
 //                                               average cost (Currency). Fed
 //                                               by receipts + physical
@@ -1075,7 +1078,7 @@ interface RawInventoryHistoryRow {
  * does not change.
  *
  * If `skuFilter` is omitted, the scan returns every SKU that has at least
- * **some** historical activity (non-zero OnHand, month-end qty, or
+ * **some** historical activity (non-zero OnHand, close-cycle qty, or
  * AverageCost). Callers that want subtotal or department rollups should
  * prefer to pre-resolve the SKU set via `loadSkuMasterForCriteria`.
  */

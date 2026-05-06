@@ -22,6 +22,10 @@ import type { SkuAttributeColumns } from './types';
  */
 export async function loadSkuAttributesBySku(
   skuCodes: string[],
+  options: {
+    storeNumbers?: number[];
+    reportEndDate?: string;
+  } = {},
 ): Promise<Map<string, SkuAttributeColumns>> {
   const result = new Map<string, SkuAttributeColumns>();
   if (skuCodes.length === 0) return result;
@@ -58,6 +62,11 @@ export async function loadSkuAttributesBySku(
     current_price: number | null;
     current_cost: number | null;
     picture_file_name: string | null;
+    keywords: string | null;
+    size_type: number | null;
+    label_code: string | null;
+    color_code: string | null;
+    discount_code: string | null;
   }
   const tier1 = await prisma.$queryRawUnsafe<Tier1Row[]>(
     `
@@ -75,7 +84,12 @@ export async function loadSkuAttributesBySku(
       s.style_color                                AS style_color,
       s.retail_price::float8                       AS current_price,
       s.current_cost::float8                       AS current_cost,
-      s.picture_file_name                          AS picture_file_name
+      s.picture_file_name                          AS picture_file_name,
+      s.keywords                                   AS keywords,
+      s.size_type                                  AS size_type,
+      s.label_code                                 AS label_code,
+      s.color_code                                 AS color_code,
+      s.discount_code                              AS discount_code
     FROM app.sku s
     LEFT JOIN app.sku_attribute_override o ON s.code = o.rics_sku_code
     LEFT JOIN app.taxonomy_category c ON c.number = COALESCE(o.category, s.category_number)
@@ -105,6 +119,15 @@ export async function loadSkuAttributesBySku(
       currentCost: r.current_cost ?? null,
       unitsOnHand: null, // filled below
       pictureUrl: picture,
+      keywords: r.keywords?.trim() || null,
+      sizeType: r.size_type ?? null,
+      labelCode: r.label_code?.trim() || null,
+      colorCode: r.color_code?.trim() || null,
+      discountCode: r.discount_code?.trim() || null,
+      dateFirstReceived: null,
+      dateLastReceived: null,
+      ageDays: null,
+      ageDaysByStore: {},
       extended: {},
     });
   }
@@ -128,6 +151,15 @@ export async function loadSkuAttributesBySku(
         currentCost: null,
         unitsOnHand: null,
         pictureUrl: null,
+        keywords: null,
+        sizeType: null,
+        labelCode: null,
+        colorCode: null,
+        discountCode: null,
+        dateFirstReceived: null,
+        dateLastReceived: null,
+        ageDays: null,
+        ageDaysByStore: {},
         extended: {},
       });
     }
@@ -140,6 +172,73 @@ export async function loadSkuAttributesBySku(
   for (const [code, units] of unitsBySku) {
     const entry = result.get(code);
     if (entry) entry.unitsOnHand = units;
+  }
+
+  // ─────────────────────── Inventory age / receive dates ─────────────────
+  // The picture report needs SKU age relative to the report end date. Keep
+  // this behind includeAttributes so ordinary Sales Analysis responses stay
+  // lean, and compute per-store age as an optional lookup for separate-store
+  // rows.
+  interface HistoryRow {
+    sku_code: string;
+    store_id: number;
+    date_first_received: Date | string | null;
+    date_last_received: Date | string | null;
+  }
+  const storeNumbers = (options.storeNumbers ?? [])
+    .map((n) => Number(n))
+    .filter((n) => Number.isFinite(n));
+  const historySqlParams: unknown[] = [unique];
+  const historyWhere: string[] = ['UPPER(TRIM(sku_code)) = ANY($1::text[])'];
+  if (storeNumbers.length > 0) {
+    historySqlParams.push(storeNumbers);
+    historyWhere.push(`store_id = ANY($${historySqlParams.length}::int[])`);
+  }
+  const historyRows = await prisma.$queryRawUnsafe<HistoryRow[]>(
+    `
+    SELECT
+      UPPER(TRIM(sku_code))       AS sku_code,
+      store_id                    AS store_id,
+      MIN(date_first_received)    AS date_first_received,
+      MAX(date_last_received)     AS date_last_received
+    FROM app.inventory_history_snapshot
+    WHERE ${historyWhere.join(' AND ')}
+    GROUP BY UPPER(TRIM(sku_code)), store_id
+    `,
+    ...historySqlParams,
+  );
+  const reportEnd = parseIsoDate(options.reportEndDate) ?? new Date();
+  const bySkuHistory = new Map<string, {
+    first: string | null;
+    last: string | null;
+    ageDays: number | null;
+    ageDaysByStore: Record<string, number | null>;
+  }>();
+  for (const r of historyRows) {
+    const first = toDateOnly(r.date_first_received);
+    const last = toDateOnly(r.date_last_received);
+    const ageDays = first ? daysBetween(first, reportEnd) : null;
+    const current = bySkuHistory.get(r.sku_code) ?? {
+      first: null,
+      last: null,
+      ageDays: null,
+      ageDaysByStore: {},
+    };
+    if (first && (!current.first || first < current.first)) {
+      current.first = first;
+      current.ageDays = ageDays;
+    }
+    if (last && (!current.last || last > current.last)) current.last = last;
+    current.ageDaysByStore[String(r.store_id)] = ageDays;
+    bySkuHistory.set(r.sku_code, current);
+  }
+  for (const [code, history] of bySkuHistory) {
+    const entry = result.get(code);
+    if (!entry) continue;
+    entry.dateFirstReceived = history.first;
+    entry.dateLastReceived = history.last;
+    entry.ageDays = history.ageDays;
+    entry.ageDaysByStore = history.ageDaysByStore;
   }
 
   // ─────────────────────── Tier 2 ─────────────────────────
@@ -176,6 +275,26 @@ export async function loadSkuAttributesBySku(
   }
 
   return result;
+}
+
+function parseIsoDate(value: string | undefined): Date | null {
+  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const date = new Date(`${value}T00:00:00.000Z`);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function toDateOnly(value: Date | string | null): string | null {
+  if (!value) return null;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value.toISOString().slice(0, 10);
+  if (/^\d{4}-\d{2}-\d{2}/.test(value)) return value.slice(0, 10);
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString().slice(0, 10);
+}
+
+function daysBetween(dateOnly: string, end: Date): number | null {
+  const start = parseIsoDate(dateOnly);
+  if (!start) return null;
+  return Math.max(0, Math.floor((end.getTime() - start.getTime()) / 86_400_000));
 }
 
 /**

@@ -16,6 +16,7 @@ const { Title, Paragraph, Text } = Typography
 
 const REPORT_TYPE_LABELS: Record<ReportType, string> = {
   'sales-analysis': 'Sales Analysis',
+  'sales-analysis-picture': 'Sales Analysis Picture Report',
   'sales-hierarchy-drill-down': 'Sales Hierarchy Drill-Down',
   'sales-pivot': 'Sales Pivot',
   'best-sellers': 'Best Sellers',
@@ -32,6 +33,7 @@ const REPORT_TYPE_LABELS: Record<ReportType, string> = {
 // adds the rest).
 const REPORT_TYPE_PATHS: Record<ReportType, string> = {
   'sales-analysis': '/reports/sales/analysis',
+  'sales-analysis-picture': '/reports/sales/analysis-picture',
   'sales-hierarchy-drill-down': '/reports/sales/hierarchy-drill-down',
   'sales-pivot': '/reports/sales/pivot',
   'best-sellers': '/reports/sales/best-sellers',
@@ -61,6 +63,7 @@ function RendererFor(props: { reportType: ReportType; result: unknown; params: R
   const { reportType, result, params } = props
   switch (reportType) {
     case 'sales-analysis':
+    case 'sales-analysis-picture':
       return <RenderSalesAnalysis result={result as SalesAnalysisReport} params={params} />
     case 'sales-hierarchy-drill-down':
       return <RenderSalesHierarchyDrillDown result={result as SalesHierarchyReport} />
