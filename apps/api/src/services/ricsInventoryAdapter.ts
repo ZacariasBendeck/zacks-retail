@@ -2425,6 +2425,74 @@ function round1(n: number): number {
   return Math.round((n + Number.EPSILON) * 10) / 10;
 }
 
+function buildInquiryTrendColumns(
+  scopedHistory: InventoryHistorySnapshotRow[],
+  trendByStore: Map<number, InventoryHistoryTrendWeekRow[]>,
+): InquiryTrendColumn[] {
+  const aggregates = Array.from({ length: 8 }, (_, index) => ({
+    label: index < 7 ? String(7 - index) : 'Current',
+    availWeek: 0,
+    availPeriod: 0,
+    sales: 0,
+    recTranAdj: 0,
+  }));
+
+  for (const snapshot of scopedHistory) {
+    const weeks = trendByStore.get(snapshot.storeId) ?? [];
+    let previousAvailWeek: number | null = null;
+    let previousSales = 0;
+
+    for (let index = 0; index < 7; index += 1) {
+      const week = weeks[index];
+      if (!week) continue;
+
+      const availWeek = week.beginOnHand;
+      const recTranAdj = previousAvailWeek == null
+        ? 0
+        : availWeek - (previousAvailWeek - previousSales);
+
+      aggregates[index].availWeek += availWeek;
+      aggregates[index].availPeriod += week.onHandConstant;
+      aggregates[index].sales += week.sales;
+      aggregates[index].recTranAdj += recTranAdj;
+
+      previousAvailWeek = availWeek;
+      previousSales = week.sales;
+    }
+
+    const lastWeek = weeks[weeks.length - 1];
+    const currentBegin = lastWeek
+      ? lastWeek.beginOnHand - lastWeek.sales
+      : snapshot.trendWeek8BegOnHand;
+    const currentAvailWeek = snapshot.onHand + snapshot.weekQtySales;
+    const currentAvailPeriod = lastWeek && lastWeek.onHandConstant !== 0
+      ? lastWeek.onHandConstant - snapshot.weekQtySales
+      : currentAvailWeek;
+
+    aggregates[7].availWeek += currentAvailWeek;
+    aggregates[7].availPeriod += currentAvailPeriod;
+    aggregates[7].sales += snapshot.weekQtySales;
+    aggregates[7].recTranAdj += currentAvailWeek - currentBegin;
+  }
+
+  return aggregates.map((aggregate, index) => {
+    const availWeek = aggregate.availWeek === 0 ? null : aggregate.availWeek;
+    const availPeriod = aggregate.availPeriod === 0 ? null : aggregate.availPeriod;
+    const sales = aggregate.sales === 0 ? null : aggregate.sales;
+
+    return {
+      label: aggregate.label,
+      availWeek,
+      availPeriod,
+      recTranAdj: aggregate.recTranAdj === 0 ? null : aggregate.recTranAdj,
+      sales,
+      stWeekly: availWeek && sales != null ? round1((sales / availWeek) * 100) : null,
+      stPeriod: availPeriod && sales != null ? round1((sales / availPeriod) * 100) : null,
+      periodReset: index > 0 && aggregate.recTranAdj !== 0,
+    };
+  });
+}
+
 export async function getInquiryTrend(sku: string, storeId?: number): Promise<InquiryTrend | null> {
   const trimmed = (sku ?? '').trim();
   if (!trimmed) return null;
@@ -2456,54 +2524,7 @@ export async function getInquiryTrend(sku: string, storeId?: number): Promise<In
   for (const list of trendByStore.values()) {
     list.sort((a, b) => a.slotNumber - b.slotNumber);
   }
-
-  const aggregates = Array.from({ length: 8 }, (_, index) => ({
-    label: index < 7 ? String(7 - index) : 'Current',
-    availWeek: 0,
-    sales: 0,
-    recTranAdj: 0,
-  }));
-
-  for (const snapshot of scopedHistory) {
-    const weeks = trendByStore.get(snapshot.storeId) ?? [];
-    for (let index = 0; index < 7; index += 1) {
-      const week = weeks[index];
-      if (!week) continue;
-      const availWeek = week.onHandConstant !== 0 ? week.onHandConstant : week.beginOnHand;
-      aggregates[index].availWeek += availWeek;
-      aggregates[index].sales += week.sales;
-      aggregates[index].recTranAdj += availWeek - week.beginOnHand;
-    }
-
-    const lastWeek = weeks[weeks.length - 1];
-    const currentBegin = lastWeek
-      ? ((lastWeek.onHandConstant !== 0 ? lastWeek.onHandConstant : lastWeek.beginOnHand) - lastWeek.sales)
-      : snapshot.trendWeek8BegOnHand;
-    const currentAvailWeek = snapshot.onHand + snapshot.weekQtySales;
-    aggregates[7].availWeek += currentAvailWeek;
-    aggregates[7].sales += snapshot.weekQtySales;
-    aggregates[7].recTranAdj += currentAvailWeek - currentBegin;
-  }
-
-  let runningPeriod: number | null = null;
-  const columns: InquiryTrendColumn[] = aggregates.map((aggregate, index) => {
-    if (runningPeriod == null || aggregate.recTranAdj !== 0) {
-      runningPeriod = aggregate.availWeek === 0 ? null : aggregate.availWeek;
-    }
-    const availWeek = aggregate.availWeek === 0 ? null : aggregate.availWeek;
-    const availPeriod = runningPeriod == null || runningPeriod === 0 ? null : runningPeriod;
-    const sales = aggregate.sales === 0 ? null : aggregate.sales;
-    return {
-      label: aggregate.label,
-      availWeek,
-      availPeriod,
-      recTranAdj: aggregate.recTranAdj === 0 ? null : aggregate.recTranAdj,
-      sales,
-      stWeekly: availWeek && sales != null ? round1((sales / availWeek) * 100) : null,
-      stPeriod: availPeriod && sales != null ? round1((sales / availPeriod) * 100) : null,
-      periodReset: index > 0 && aggregate.recTranAdj !== 0,
-    };
-  });
+  const columns = buildInquiryTrendColumns(scopedHistory, trendByStore);
 
   return {
     scopeLabel: effectiveStoreId != null
@@ -4014,4 +4035,5 @@ export const __test = {
   buildSummaryMetricsByStoreFromHistory,
   buildLegacyLastYearSalesByStore,
   buildInquiryRollupFromHistory,
+  buildInquiryTrendColumns,
 };

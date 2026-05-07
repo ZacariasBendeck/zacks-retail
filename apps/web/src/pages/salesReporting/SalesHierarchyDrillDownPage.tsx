@@ -27,6 +27,10 @@ import {
   fmtMoney, fmtQty, fmtPct1, fmtPctBare1, DASH,
 } from '../../utils/reportFormatters'
 import { useReportTemplate, useTouchReportTemplate } from '../../hooks/useReportTemplates'
+import {
+  ReportCriteriaPanel,
+  type ReportCriteriaState,
+} from '../../components/reports/ReportCriteriaPanel'
 
 const { Text } = Typography
 
@@ -77,8 +81,13 @@ export default function SalesHierarchyDrillDownPage() {
   const [storeOption, setStoreOption] = useState<SalesHierarchyStoreOption>('COMBINE')
   const [dateSpec, setDateSpec] = useState<DateSpec>(DEFAULT_DATE_SPEC)
   const [selectedStores, setSelectedStores] = useState<number[]>([])
+  const [selectedChains, setSelectedChains] = useState<string[]>([])
+  const [selectedSectors, setSelectedSectors] = useState<number[]>([])
+  const [selectedDepartments, setSelectedDepartments] = useState<number[]>([])
   const [selectedCategories, setSelectedCategories] = useState<number[]>([])
+  const [selectedSeasons, setSelectedSeasons] = useState<string[]>([])
   const [selectedGroups, setSelectedGroups] = useState<string[]>([])
+  const [selectedBuyers, setSelectedBuyers] = useState<string[]>([])
   const [storesRaw, setStoresRaw] = useState('')
   const [categoriesRaw, setCategoriesRaw] = useState('')
   const [vendorsRaw, setVendorsRaw] = useState('')
@@ -118,8 +127,13 @@ export default function SalesHierarchyDrillDownPage() {
     if (p.storeOption) setStoreOption(p.storeOption)
     setDateSpec(spec)
     setSelectedStores(Array.isArray(p.stores) ? p.stores : [])
+    setSelectedChains(Array.isArray(p.chains) ? p.chains : [])
+    setSelectedSectors(Array.isArray(p.sectors) ? p.sectors : [])
+    setSelectedDepartments(Array.isArray(p.departments) ? p.departments : [])
     setSelectedCategories(Array.isArray(p.categories) ? p.categories : [])
+    setSelectedSeasons(Array.isArray(p.seasons) ? p.seasons : [])
     setSelectedGroups(Array.isArray(p.groups) ? p.groups : [])
+    setSelectedBuyers(Array.isArray(p.buyers) ? p.buyers : [])
     setStoresRaw(p.storesRaw ?? '')
     setCategoriesRaw(p.categoriesRaw ?? '')
     setVendorsRaw(p.vendorsRaw ?? '')
@@ -134,8 +148,13 @@ export default function SalesHierarchyDrillDownPage() {
       startDate: resolvedStart,
       endDate: resolvedEnd,
       stores: Array.isArray(p.stores) && p.stores.length ? p.stores : undefined,
+      chains: Array.isArray(p.chains) && p.chains.length ? p.chains : undefined,
+      sectors: Array.isArray(p.sectors) && p.sectors.length ? p.sectors : undefined,
+      departments: Array.isArray(p.departments) && p.departments.length ? p.departments : undefined,
       categories: Array.isArray(p.categories) && p.categories.length ? p.categories : undefined,
+      seasons: Array.isArray(p.seasons) && p.seasons.length ? p.seasons : undefined,
       groups: Array.isArray(p.groups) && p.groups.length ? p.groups : undefined,
+      buyers: Array.isArray(p.buyers) && p.buyers.length ? p.buyers : undefined,
       storesRaw: p.storesRaw?.trim() || undefined,
       categoriesRaw: p.categoriesRaw?.trim() || undefined,
       vendorsRaw: p.vendorsRaw?.trim() || undefined,
@@ -164,8 +183,13 @@ export default function SalesHierarchyDrillDownPage() {
       startDate,
       endDate,
       stores: selectedStores.length ? selectedStores : undefined,
+      chains: selectedChains.length ? selectedChains : undefined,
+      sectors: selectedSectors.length ? selectedSectors : undefined,
+      departments: selectedDepartments.length ? selectedDepartments : undefined,
       categories: selectedCategories.length ? selectedCategories : undefined,
+      seasons: selectedSeasons.length ? selectedSeasons : undefined,
       groups: selectedGroups.length ? selectedGroups : undefined,
+      buyers: selectedBuyers.length ? selectedBuyers : undefined,
       storesRaw: storesRaw.trim() || undefined,
       categoriesRaw: categoriesRaw.trim() || undefined,
       vendorsRaw: vendorsRaw.trim() || undefined,
@@ -259,6 +283,56 @@ export default function SalesHierarchyDrillDownPage() {
   ]
 
   const skuCount = data ? countSkuRows(data.roots) : 0
+  const sharedCriteria: ReportCriteriaState = {
+    stores: selectedStores,
+    chains: selectedChains,
+    sectors: selectedSectors,
+    departments: selectedDepartments,
+    categories: selectedCategories,
+    vendors: [],
+    seasons: selectedSeasons,
+    skus: [],
+    groups: selectedGroups,
+    keywords: [],
+    buyers: selectedBuyers,
+    styleColor: '',
+    storesRaw,
+    categoriesRaw,
+    vendorsRaw,
+    seasonsRaw,
+    skusRaw,
+    groupsRaw,
+    keywordsRaw,
+    styleColorRaw,
+  }
+  const updateSharedCriteria = <K extends keyof ReportCriteriaState>(
+    key: K,
+    value: ReportCriteriaState[K],
+  ) => {
+    switch (key) {
+      case 'stores': setSelectedStores(value as number[]); break
+      case 'chains': setSelectedChains(value as string[]); break
+      case 'sectors': setSelectedSectors(value as number[]); break
+      case 'departments': setSelectedDepartments(value as number[]); break
+      case 'categories': setSelectedCategories(value as number[]); break
+      case 'seasons': setSelectedSeasons(value as string[]); break
+      case 'groups': setSelectedGroups(value as string[]); break
+      case 'buyers': setSelectedBuyers(value as string[]); break
+      case 'storesRaw': setStoresRaw(value as string); break
+      case 'categoriesRaw': setCategoriesRaw(value as string); break
+      case 'vendorsRaw': setVendorsRaw(value as string); break
+      case 'seasonsRaw': setSeasonsRaw(value as string); break
+      case 'skusRaw': setSkusRaw(value as string); break
+      case 'groupsRaw': setGroupsRaw(value as string); break
+      case 'keywordsRaw': setKeywordsRaw(value as string); break
+      case 'styleColor':
+      case 'styleColorRaw':
+        setStyleColorRaw(value as string)
+        break
+      default:
+        break
+    }
+  }
 
   return (
     <div>
@@ -297,8 +371,13 @@ export default function SalesHierarchyDrillDownPage() {
                 storeOption,
                 dateSpec,
                 stores: selectedStores.length ? selectedStores : undefined,
+                chains: selectedChains.length ? selectedChains : undefined,
+                sectors: selectedSectors.length ? selectedSectors : undefined,
+                departments: selectedDepartments.length ? selectedDepartments : undefined,
                 categories: selectedCategories.length ? selectedCategories : undefined,
+                seasons: selectedSeasons.length ? selectedSeasons : undefined,
                 groups: selectedGroups.length ? selectedGroups : undefined,
+                buyers: selectedBuyers.length ? selectedBuyers : undefined,
                 storesRaw: storesRaw.trim() || undefined,
                 categoriesRaw: categoriesRaw.trim() || undefined,
                 vendorsRaw: vendorsRaw.trim() || undefined,
@@ -318,8 +397,13 @@ export default function SalesHierarchyDrillDownPage() {
                 storeOption,
                 dateSpec,
                 stores: selectedStores.length ? selectedStores : undefined,
+                chains: selectedChains.length ? selectedChains : undefined,
+                sectors: selectedSectors.length ? selectedSectors : undefined,
+                departments: selectedDepartments.length ? selectedDepartments : undefined,
                 categories: selectedCategories.length ? selectedCategories : undefined,
+                seasons: selectedSeasons.length ? selectedSeasons : undefined,
                 groups: selectedGroups.length ? selectedGroups : undefined,
+                buyers: selectedBuyers.length ? selectedBuyers : undefined,
                 storesRaw: storesRaw.trim() || undefined,
                 categoriesRaw: categoriesRaw.trim() || undefined,
                 vendorsRaw: vendorsRaw.trim() || undefined,
@@ -335,8 +419,12 @@ export default function SalesHierarchyDrillDownPage() {
                 const parts: string[] = [STORE_OPTION_LABELS[storeOption]]
                 const counts: string[] = []
                 if (selectedStores.length) counts.push(`stores ${selectedStores.length}`)
+                if (selectedChains.length) counts.push(`chains ${selectedChains.length}`)
+                if (selectedSectors.length) counts.push(`sectors ${selectedSectors.length}`)
+                if (selectedDepartments.length) counts.push(`depts ${selectedDepartments.length}`)
                 if (selectedCategories.length) counts.push(`cats ${selectedCategories.length}`)
                 if (selectedGroups.length) counts.push(`groups ${selectedGroups.length}`)
+                if (selectedBuyers.length) counts.push(`buyers ${selectedBuyers.length}`)
                 if (vendorsRaw.trim()) counts.push('vendors')
                 if (seasonsRaw.trim()) counts.push('seasons')
                 if (styleColorRaw.trim()) counts.push('style/color')
@@ -379,6 +467,14 @@ export default function SalesHierarchyDrillDownPage() {
             </Card>
           </Col>
         </Row>
+        <ReportCriteriaPanel
+          value={sharedCriteria}
+          onChange={updateSharedCriteria}
+          dimensions={dims}
+          loading={dimsLoading}
+          title="Criteria"
+        />
+        {false && (
         <Card size="small" title={<Text strong>Criteria</Text>} style={{ marginTop: 16 }}>
           <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
             Leave a row blank to include everything. Type ranges like <code>556-599</code>,
@@ -484,6 +580,7 @@ export default function SalesHierarchyDrillDownPage() {
             />
           </Space>
         </Card>
+        )}
       </CollapsibleFilterCard>
 
       <div ref={resultRef} style={{ scrollMarginTop: 12 }}>
@@ -518,8 +615,13 @@ export default function SalesHierarchyDrillDownPage() {
             query.startDate && query.endDate ? { label: 'Period', value: `${query.startDate} → ${query.endDate}` } : null,
             query.priorYear ? { label: 'Compare', value: 'Prior year' } : null,
             query.stores?.length ? { label: 'Stores in', value: `${query.stores.length} selected` } : null,
+            query.chains?.length ? { label: 'Chains in', value: `${query.chains.length} selected` } : null,
+            query.sectors?.length ? { label: 'Sectors in', value: `${query.sectors.length} selected` } : null,
+            query.departments?.length ? { label: 'Departments in', value: `${query.departments.length} selected` } : null,
             query.categories?.length ? { label: 'Categories in', value: `${query.categories.length} selected` } : null,
+            query.seasons?.length ? { label: 'Seasons in', value: `${query.seasons.length} selected` } : null,
             query.groups?.length ? { label: 'Groups in', value: `${query.groups.length} selected` } : null,
+            query.buyers?.length ? { label: 'Buyers in', value: `${query.buyers.length} selected` } : null,
             chipFromRaw('Stores', query.storesRaw),
             chipFromRaw('Categories', query.categoriesRaw),
             chipFromRaw('Vendors', query.vendorsRaw),

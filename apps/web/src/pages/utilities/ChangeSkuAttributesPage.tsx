@@ -54,7 +54,7 @@ import { useApplyBatchChange } from '../../hooks/useUtilities'
 import { buildRicsImageUrl } from '../../services/ricsImageUrl'
 import type { SkuListFilters } from '../../types/productsSku'
 import type { AttributeDimension, AttributeDimensionValue } from '../../types/productsAttributes'
-import type { Department, Sector } from '../../types/productsTaxonomy'
+import type { Category, Department, Sector } from '../../types/productsTaxonomy'
 import type {
   AttributeChange,
   BatchOperationType,
@@ -214,6 +214,63 @@ const formatAmount = (value: number | null | undefined) =>
 const formatPlainValue = (value: number | string | null | undefined) =>
   value == null || value === '' ? <Typography.Text type="secondary">—</Typography.Text> : value
 
+export interface ResultFamilyScope {
+  familyCodes: string[]
+  hasUnknownFamily: boolean
+}
+
+export function getResultFamilyScope(
+  skuCategories: Array<number | null | undefined>,
+  categories: Array<Pick<Category, 'number' | 'productFamilyCode'>> | undefined,
+): ResultFamilyScope {
+  const familyByCategory = new Map((categories ?? []).map((category) => [
+    category.number,
+    category.productFamilyCode ?? null,
+  ]))
+  const familyCodes = new Set<string>()
+  let hasUnknownFamily = false
+
+  for (const categoryNumber of skuCategories) {
+    if (categoryNumber == null) {
+      hasUnknownFamily = true
+      continue
+    }
+    const familyCode = familyByCategory.get(categoryNumber) ?? null
+    if (familyCode) familyCodes.add(familyCode)
+    else hasUnknownFamily = true
+  }
+
+  return {
+    familyCodes: Array.from(familyCodes).sort(),
+    hasUnknownFamily,
+  }
+}
+
+export function familyScopedDimensionAppliesToAllFamilies(
+  dimension: Pick<AttributeDimension, 'familyRules'>,
+  familyScope: ResultFamilyScope,
+): boolean {
+  if (familyScope.hasUnknownFamily || familyScope.familyCodes.length === 0) return false
+  const enabledFamilies = new Set(
+    dimension.familyRules
+      .filter((rule) => rule.enabled)
+      .map((rule) => rule.familyCode),
+  )
+  return familyScope.familyCodes.every((familyCode) => enabledFamilies.has(familyCode))
+}
+
+export function getVisibleActionDimensions(
+  dimensions: AttributeDimension[],
+  hasRun: boolean,
+  familyScope: ResultFamilyScope,
+): AttributeDimension[] {
+  return dimensions.filter((dimension) => {
+    if (isUniversalAttributeDimension(dimension)) return true
+    if (!hasRun) return true
+    return familyScopedDimensionAppliesToAllFamilies(dimension, familyScope)
+  })
+}
+
 const orderColumnKeys = (keys: string[], orderedKeys: string[]) => {
   const requested = new Set(keys)
   const ordered = orderedKeys.filter((key) => requested.has(key))
@@ -272,7 +329,7 @@ export default function ChangeSkuAttributesPage() {
   // Taxonomy data
   const { data: departments } = useDepartments()
   const { data: sectors } = useSectors()
-  const { data: categories } = useCategories()
+  const { data: categories, isLoading: categoriesLoading } = useCategories()
   const { data: groups } = useGroups()
   const { data: keywords } = useKeywords()
   const { data: seasons } = useSeasons()
@@ -412,10 +469,14 @@ export default function ChangeSkuAttributesPage() {
     data: resultAttributeDimensions,
     isFetching: isFetchingResultAttributeDimensions,
   } = useAttributeDimensionsForSkus(hasRun ? skuCodes : [], true)
-  const actionAttributeDimensions = useMemo(() => {
-    if (!hasRun) return sortedAttributeDimensions
-    return resultAttributeDimensions ?? []
-  }, [hasRun, resultAttributeDimensions, sortedAttributeDimensions])
+  const resultFamilyScope = useMemo(
+    () => getResultFamilyScope((skus ?? []).map((sku) => sku.category), categories),
+    [categories, skus],
+  )
+  const actionAttributeDimensions = useMemo(
+    () => getVisibleActionDimensions(sortedAttributeDimensions, hasRun, resultFamilyScope),
+    [hasRun, resultFamilyScope, sortedAttributeDimensions],
+  )
   const universalActionAttributeDimensions = useMemo(
     () => actionAttributeDimensions.filter(isUniversalAttributeDimension),
     [actionAttributeDimensions],
@@ -423,6 +484,14 @@ export default function ChangeSkuAttributesPage() {
   const familyActionAttributeDimensions = useMemo(
     () => actionAttributeDimensions.filter((dimension) => !isUniversalAttributeDimension(dimension)),
     [actionAttributeDimensions],
+  )
+  const resultUniversalAttributeDimensions = useMemo(
+    () => (resultAttributeDimensions ?? []).filter(isUniversalAttributeDimension),
+    [resultAttributeDimensions],
+  )
+  const resultFamilyAttributeDimensions = useMemo(
+    () => (resultAttributeDimensions ?? []).filter((dimension) => !isUniversalAttributeDimension(dimension)),
+    [resultAttributeDimensions],
   )
   const resultColumnOrder = useMemo(
     () => [
@@ -441,12 +510,18 @@ export default function ChangeSkuAttributesPage() {
   )
 
   useEffect(() => {
-    if (!hasRun || !action.startsWith(ATTRIBUTE_ACTION_PREFIX) || isFetchingResultAttributeDimensions) return
+    if (!action.startsWith(ATTRIBUTE_ACTION_PREFIX)) return
+    if (hasRun && (skus ?? []).length > 0 && categoriesLoading) return
     const dimensionCode = action.slice(ATTRIBUTE_ACTION_PREFIX.length)
-    if (!actionAttributeDimensions.some((dimension) => dimension.code === dimensionCode)) {
+    const dimension = actionAttributeDimensions.find((row) => row.code === dimensionCode)
+    if (
+      !dimension ||
+      derivedDimensionCodes.has(dimensionCode) ||
+      (!hasRun && !isUniversalAttributeDimension(dimension))
+    ) {
       onActionChange('CATEGORY')
     }
-  }, [action, actionAttributeDimensions, hasRun, isFetchingResultAttributeDimensions])
+  }, [action, actionAttributeDimensions, categoriesLoading, derivedDimensionCodes, hasRun, skus])
 
   useEffect(() => {
     if (!hasRun || isFetchingResultAttributeDimensions) return
@@ -973,19 +1048,24 @@ export default function ChangeSkuAttributesPage() {
       }
     : CORE_ACTION_META[action as CoreActionKind]
       ?? CORE_ACTION_META.CATEGORY
+  const attributeActionDisabledReason = (dimension: AttributeDimension) => {
+    if (derivedDimensionCodes.has(dimension.code)) {
+      return 'Derived from another attribute; query is allowed but manual bulk change is disabled.'
+    }
+    if (!hasRun && !isUniversalAttributeDimension(dimension)) {
+      return 'Run a SKU query to determine which product families are in scope.'
+    }
+    return null
+  }
+
   const buildAttributeActionOptions = (dimensions: AttributeDimension[]) =>
     dimensions.map((dimension) => {
-        const disabled = derivedDimensionCodes.has(dimension.code)
+        const disabledReason = attributeActionDisabledReason(dimension)
         return {
           value: `${ATTRIBUTE_ACTION_PREFIX}${dimension.code}`,
-          disabled,
-          label: disabled ? (
-            <Tooltip title="Derived from another attribute; query is allowed but manual bulk change is disabled.">
-              <span>{dimension.labelEs}</span>
-            </Tooltip>
-          ) : (
-            dimension.labelEs
-          ),
+          disabled: Boolean(disabledReason),
+          label: dimension.labelEs,
+          title: disabledReason ?? undefined,
         }
       })
   const attributeActionOptionGroups = actionAttributeDimensions.length > 0
@@ -1004,11 +1084,9 @@ export default function ChangeSkuAttributesPage() {
             {
               value: '__NO_RESULT_ATTRIBUTES__',
               disabled: true,
-              label: isFetchingResultAttributeDimensions
-                ? 'Loading result attributes...'
-                : hasRun
-                  ? 'No attributes on current results'
-                  : 'No extended attributes',
+              label: sortedAttributeDimensions.length === 0
+                ? 'No extended attributes'
+                : 'No assignable attributes for current result families',
             },
           ],
         },
@@ -1016,22 +1094,22 @@ export default function ChangeSkuAttributesPage() {
 
   const resultAttributeColumnOptionGroups = hasRun
     ? [
-        ...(universalActionAttributeDimensions.length > 0
+        ...(resultUniversalAttributeDimensions.length > 0
           ? [
               {
                 label: 'Universal attribute columns',
-                options: universalActionAttributeDimensions.map((dimension) => ({
+                options: resultUniversalAttributeDimensions.map((dimension) => ({
                   value: attributeColumnKey(dimension.code),
                   label: dimension.labelEs,
                 })),
               },
             ]
           : []),
-        ...(familyActionAttributeDimensions.length > 0
+        ...(resultFamilyAttributeDimensions.length > 0
           ? [
               {
                 label: 'Family attribute columns',
-                options: familyActionAttributeDimensions.map((dimension) => ({
+                options: resultFamilyAttributeDimensions.map((dimension) => ({
                   value: attributeColumnKey(dimension.code),
                   label: dimension.labelEs,
                 })),
@@ -1824,6 +1902,8 @@ export default function ChangeSkuAttributesPage() {
               <Select
                 value={action}
                 onChange={onActionChange}
+                showSearch
+                optionFilterProp="label"
                 style={{ minWidth: 260 }}
                 options={[
                   {

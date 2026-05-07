@@ -28,9 +28,12 @@ import {
 import {
   useAgingByDepartment,
   useAgingDrillDown,
-  useAgingDimensions,
+  useSalesDimensions,
 } from '../../hooks/useReports'
-import { useStoreChains } from '../../hooks/useStores'
+import {
+  ReportCriteriaPanel,
+  useReportCriteria,
+} from '../../components/reports/ReportCriteriaPanel'
 import {
   getAgingCsvUrl,
   getAgingXlsxUrl,
@@ -90,41 +93,21 @@ export default function InventoryAgingReportPage() {
   const [selectedCategory, setSelectedCategory] = useState<number | null>(null)
   const [bucketScheme, setBucketScheme] = useState<AgingBucketScheme>('30_60_90')
   const [groupBy, setGroupBy] = useState<AgingGroupBy>('department')
-  const [selectedStores, setSelectedStores] = useState<number[]>([])
-  const [selectedChains, setSelectedChains] = useState<string[]>([])
-  const [selectedBuyers, setSelectedBuyers] = useState<string[]>([])
-  const [selectedSectors, setSelectedSectors] = useState<number[]>([])
-  const [selectedDepartments, setSelectedDepartments] = useState<number[]>([])
+  const { criteria, updateCriteria, compactCriteria } = useReportCriteria()
   const [showPercentages, setShowPercentages] = useState<boolean>(false)
   const schemeLabels = AGING_BUCKET_SCHEMES[bucketScheme].labels
   const flagThreshold = AGING_BUCKET_SCHEMES[bucketScheme].flagThreshold
   const groupByLabel = AGING_GROUP_BY_LABELS[groupBy]
 
-  const { data: dimensionsData } = useAgingDimensions()
-  const { data: storeChains = [] } = useStoreChains()
-
-  // Selecting one or more configured Store Chains expands to the union of
-  // stores assigned to those chains. The expanded list combines with
-  // explicitly selected stores before being sent to the API as `stores=...`.
-  const effectiveStores = useMemo(() => {
-    if (selectedChains.length === 0) return selectedStores
-    const chainStores = storeChains
-      .filter((chain) => selectedChains.includes(chain.id))
-      .flatMap((chain) => chain.storeNumbers ?? [])
-    const union = new Set<number>([...selectedStores, ...chainStores])
-    return Array.from(union)
-  }, [selectedStores, selectedChains, storeChains])
+  const { data: dimensionsData, isLoading: dimensionsLoading } = useSalesDimensions()
 
   const queryArgs = useMemo(
     () => ({
       groupBy,
       bucketScheme,
-      stores: effectiveStores,
-      buyers: selectedBuyers,
-      sectors: selectedSectors,
-      departments: selectedDepartments,
+      ...compactCriteria,
     }),
-    [groupBy, bucketScheme, effectiveStores, selectedBuyers, selectedSectors, selectedDepartments],
+    [groupBy, bucketScheme, compactCriteria],
   )
 
   const { data: deptData, isLoading: deptLoading, error: deptError } = useAgingByDepartment(queryArgs)
@@ -601,8 +584,8 @@ export default function InventoryAgingReportPage() {
         <Alert
           type="warning"
           showIcon
-          message="Buyer field is not populated in the legacy data"
-          description="Aging by Buyer will roll up everything into a single &quot;Unmapped&quot; bucket until the buyer column on `purchase_order_legacy` is backfilled. Pick a different dimension above (Department / Sector / Vendor / Store) to see meaningful groupings."
+          message="No buyer attribute values are configured"
+          description="Aging by Buyer uses the SKU buyer attribute. Add buyer attribute assignments or pick another dimension above."
         />
       )}
       {reportErrorMessage && (
@@ -657,101 +640,17 @@ export default function InventoryAgingReportPage() {
               ]}
             />
           </Col>
-          <Col>
-            <Typography.Text strong>Stores:</Typography.Text>
-          </Col>
-          <Col flex="auto">
-            <Select<number[]>
-              mode="multiple"
-              allowClear
-              value={selectedStores}
-              onChange={(values) => setSelectedStores(values)}
-              placeholder="All stores"
-              style={{ minWidth: 240, width: '100%' }}
-              maxTagCount="responsive"
-              optionFilterProp="label"
-              options={(dimensionsData?.stores ?? []).map((s) => ({
-                value: s.number,
-                label: `${s.number} — ${s.name ?? '(no name)'}`,
-              }))}
-            />
-          </Col>
         </Row>
 
-        {/* Toolbar row 2: criteria multi-selects (chain / buyer / sector / department) */}
-        <Row align="middle" style={{ marginTop: 12 }} gutter={[12, 8]}>
-          <Col>
-            <Typography.Text strong>Criteria:</Typography.Text>
-          </Col>
-          <Col flex="1 1 200px">
-            <Select<string[]>
-              mode="multiple"
-              allowClear
-              value={selectedChains}
-              onChange={setSelectedChains}
-              placeholder="Store Chain"
-              style={{ width: '100%' }}
-              maxTagCount="responsive"
-              optionFilterProp="label"
-              notFoundContent="No store chains configured"
-              options={storeChains.map((c) => ({
-                value: c.id,
-                label: `${c.label} (${c.storeCount} stores)`,
-              }))}
-            />
-          </Col>
-          <Col flex="1 1 200px">
-            <Select<string[]>
-              mode="multiple"
-              allowClear
-              value={selectedBuyers}
-              onChange={setSelectedBuyers}
-              placeholder="Buyer"
-              style={{ width: '100%' }}
-              maxTagCount="responsive"
-              optionFilterProp="label"
-              notFoundContent="No buyers (legacy field is unpopulated)"
-              options={(dimensionsData?.buyers ?? []).map((b) => ({
-                value: b.code,
-                label: b.label,
-              }))}
-            />
-          </Col>
-          <Col flex="1 1 200px">
-            <Select<number[]>
-              mode="multiple"
-              allowClear
-              value={selectedSectors}
-              onChange={setSelectedSectors}
-              placeholder="Sector"
-              style={{ width: '100%' }}
-              maxTagCount="responsive"
-              optionFilterProp="label"
-              options={(dimensionsData?.sectors ?? []).map((s) => ({
-                value: s.number,
-                label: `${s.number} — ${s.name}`,
-              }))}
-            />
-          </Col>
-          <Col flex="1 1 200px">
-            <Select<number[]>
-              mode="multiple"
-              allowClear
-              value={selectedDepartments}
-              onChange={setSelectedDepartments}
-              placeholder="Department"
-              style={{ width: '100%' }}
-              maxTagCount="responsive"
-              optionFilterProp="label"
-              options={(dimensionsData?.departments ?? []).map((d) => ({
-                value: d.number,
-                label: `${d.number} — ${d.name}`,
-              }))}
-            />
-          </Col>
-        </Row>
+        <ReportCriteriaPanel
+          value={criteria}
+          onChange={updateCriteria}
+          dimensions={dimensionsData}
+          loading={dimensionsLoading}
+          title="Inventory Criteria"
+        />
 
-        {/* Toolbar row 3: bucket scheme + show-percentages toggle */}
+        {/* Toolbar row 2: bucket scheme + show-percentages toggle */}
         <Row align="middle" style={{ marginTop: 12 }} gutter={[12, 8]}>
           <Col>
             <Typography.Text strong>Aging buckets:</Typography.Text>

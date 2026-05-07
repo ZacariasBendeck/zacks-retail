@@ -111,6 +111,7 @@ function report(): SalesAnalysisReport {
       turns: 0.3,
       roiPct: 52,
       priorYearNetSales: null,
+      pyPctChange: null,
     },
   }
 }

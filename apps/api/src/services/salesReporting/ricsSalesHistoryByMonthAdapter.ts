@@ -85,6 +85,13 @@ export interface QueryMonthlyMeasuresParams {
   fromYearMonth: string;
   /** 'YYYY-MM' inclusive */
   toYearMonth: string;
+  /**
+   * RICS active sales period for the report. InvHis LYMonth* slots are keyed
+   * by calendar month and the current-period Month* counters live on the
+   * snapshot row, so the concrete year for a slot is relative to this period.
+   * Defaults to `toYearMonth`.
+   */
+  currentYearMonth?: string;
   sortBy: MonthlyNetSalesSortBy;
   detailLevel: MonthlyDetailLevel;
   combineStores?: boolean;
@@ -112,6 +119,7 @@ export interface QueryMonthlyNetSalesParams {
   storeNumbers: number[];
   fromYearMonth: string;
   toYearMonth: string;
+  currentYearMonth?: string;
   sortBy: MonthlyNetSalesSortBy;
 }
 
@@ -288,6 +296,8 @@ export async function queryMonthlyMeasures(
 ): Promise<MonthlyMeasuresRow[]> {
   assertYearMonth(params.fromYearMonth, 'fromYearMonth');
   assertYearMonth(params.toYearMonth, 'toYearMonth');
+  const currentYearMonth = params.currentYearMonth ?? params.toYearMonth;
+  assertYearMonth(currentYearMonth, 'currentYearMonth');
   if (params.fromYearMonth > params.toYearMonth) {
     throw new Error('fromYearMonth must be <= toYearMonth');
   }
@@ -303,6 +313,8 @@ export async function queryMonthlyMeasures(
 
   const startIso = params.fromYearMonth;
   const endExclusiveIso = params.toYearMonth;
+  const currentYear = Number(currentYearMonth.slice(0, 4));
+  const currentMonth = Number(currentYearMonth.slice(5, 7));
   const storeExpr = params.combineStores ? `0` : `src.store_id`;
 
   // Pick the grouping dim. The CTE normalizes SKU/vendor/category once so
@@ -324,6 +336,9 @@ export async function queryMonthlyMeasures(
     startIso,
     endExclusiveIso,
     params.storeNumbers.map((n) => Number(n)),
+    currentYear,
+    currentMonth,
+    currentYearMonth,
   ];
   const wheres: string[] = [
     `src.year_month >= $1::text`,
@@ -352,7 +367,14 @@ WITH src AS (
     COALESCE(NULLIF(BTRIM(k.vendor_id), ''), '(none)') AS vendor,
     COALESCE(k.category_number, 0) AS category,
     NULLIF(BTRIM(k.picture_file_name), '') AS picture_file_name,
-    m.year_month,
+    CONCAT(
+      CASE
+        WHEN m.slot_number < $5::int THEN $4::int
+        ELSE $4::int - 1
+      END,
+      '-',
+      LPAD(m.slot_number::text, 2, '0')
+    ) AS year_month,
     COALESCE(m.qty_sales, 0)::float8 AS qty_sales,
     COALESCE(m.net_sales, 0)::float8 AS net_sales,
     COALESCE(m.profit, 0)::float8 AS profit
@@ -361,9 +383,7 @@ WITH src AS (
     ON m.snapshot_id = s.id
   LEFT JOIN app.sku k
     ON k.id = s.sku_id
-  WHERE m.year_month >= $1::text
-    AND m.year_month <= $2::text
-    AND s.store_id = ANY($3::int[])
+  WHERE s.store_id = ANY($3::int[])
     AND (
       m.qty_sales <> 0 OR
       COALESCE(m.net_sales, 0) <> 0 OR
@@ -378,7 +398,7 @@ WITH src AS (
     COALESCE(NULLIF(BTRIM(k.vendor_id), ''), '(none)') AS vendor,
     COALESCE(k.category_number, 0) AS category,
     NULLIF(BTRIM(k.picture_file_name), '') AS picture_file_name,
-    to_char(s.snapshot_as_of, 'YYYY-MM') AS year_month,
+    $6::text AS year_month,
     COALESCE(s.month_qty_sales, 0)::float8 AS qty_sales,
     COALESCE(s.month_dol_sales, 0)::float8 AS net_sales,
     COALESCE(s.month_profit, 0)::float8 AS profit
@@ -390,8 +410,6 @@ WITH src AS (
       COALESCE(s.month_dol_sales, 0) <> 0 OR
       COALESCE(s.month_profit, 0) <> 0
     )
-    AND to_char(s.snapshot_as_of, 'YYYY-MM') >= $1::text
-    AND to_char(s.snapshot_as_of, 'YYYY-MM') <= $2::text
     AND s.store_id = ANY($3::int[])
 )
 SELECT
@@ -622,6 +640,8 @@ export async function queryMonthlySkuLifecycleCounts(
 ): Promise<MonthlySkuLifecycleCountRow[]> {
   assertYearMonth(params.fromYearMonth, 'fromYearMonth');
   assertYearMonth(params.toYearMonth, 'toYearMonth');
+  const currentYearMonth = params.currentYearMonth ?? params.toYearMonth;
+  assertYearMonth(currentYearMonth, 'currentYearMonth');
   if (params.fromYearMonth > params.toYearMonth) {
     throw new Error('fromYearMonth must be <= toYearMonth');
   }
@@ -645,10 +665,15 @@ export async function queryMonthlySkuLifecycleCounts(
     dimExpr = params.sortBy === 'vendor' ? `c.vendor` : `c.category`;
   }
 
+  const currentYear = Number(currentYearMonth.slice(0, 4));
+  const currentMonth = Number(currentYearMonth.slice(5, 7));
   const sqlParams: unknown[] = [
     params.fromYearMonth,
     params.toYearMonth,
     params.storeNumbers.map((n) => Number(n)),
+    currentYear,
+    currentMonth,
+    currentYearMonth,
   ];
   const wheres: string[] = [
     `src.year_month >= $1::text`,
@@ -688,7 +713,14 @@ stock_src AS (
     COALESCE(k.category_number, 0) AS category,
     NULLIF(BTRIM(k.picture_file_name), '') AS picture_file_name,
     cf.first_received,
-    m.year_month
+    CONCAT(
+      CASE
+        WHEN m.slot_number < $5::int THEN $4::int
+        ELSE $4::int - 1
+      END,
+      '-',
+      LPAD(m.slot_number::text, 2, '0')
+    ) AS year_month
   FROM app.inventory_history_snapshot s
   INNER JOIN app.inventory_history_month m
     ON m.snapshot_id = s.id
@@ -698,14 +730,8 @@ stock_src AS (
     ON k.id = s.sku_id
   WHERE m.qty_on_hand > 0
     AND s.store_id = ANY($3::int[])
-    AND m.year_month >= $1::text
-    AND m.year_month <= $2::text
     AND s.sku_code IS NOT NULL
     AND BTRIM(s.sku_code) <> ''
-    AND (
-      s.snapshot_as_of IS NULL OR
-      m.year_month <> to_char(s.snapshot_as_of, 'YYYY-MM')
-    )
 
   UNION ALL
 
@@ -716,7 +742,7 @@ stock_src AS (
     COALESCE(k.category_number, 0) AS category,
     NULLIF(BTRIM(k.picture_file_name), '') AS picture_file_name,
     cf.first_received,
-    to_char(s.snapshot_as_of, 'YYYY-MM') AS year_month
+    $6::text AS year_month
   FROM app.inventory_history_snapshot s
   LEFT JOIN chain_first cf
     ON cf.sku = UPPER(BTRIM(s.sku_code))
@@ -724,8 +750,6 @@ stock_src AS (
     ON k.id = s.sku_id
   WHERE s.on_hand > 0
     AND s.store_id = ANY($3::int[])
-    AND to_char(s.snapshot_as_of, 'YYYY-MM') >= $1::text
-    AND to_char(s.snapshot_as_of, 'YYYY-MM') <= $2::text
     AND s.sku_code IS NOT NULL
     AND BTRIM(s.sku_code) <> ''
 ),
@@ -737,7 +761,14 @@ sales_src AS (
     COALESCE(k.category_number, 0) AS category,
     NULLIF(BTRIM(k.picture_file_name), '') AS picture_file_name,
     cf.first_received,
-    m.year_month,
+    CONCAT(
+      CASE
+        WHEN m.slot_number < $5::int THEN $4::int
+        ELSE $4::int - 1
+      END,
+      '-',
+      LPAD(m.slot_number::text, 2, '0')
+    ) AS year_month,
     COALESCE(m.qty_sales, 0)::float8 AS qty_sales
   FROM app.inventory_history_snapshot s
   INNER JOIN app.inventory_history_month m
@@ -748,14 +779,8 @@ sales_src AS (
     ON k.id = s.sku_id
   WHERE s.sku_code IS NOT NULL
     AND s.store_id = ANY($3::int[])
-    AND m.year_month >= $1::text
-    AND m.year_month <= $2::text
     AND COALESCE(m.qty_sales, 0) <> 0
     AND BTRIM(s.sku_code) <> ''
-    AND (
-      s.snapshot_as_of IS NULL OR
-      m.year_month <> to_char(s.snapshot_as_of, 'YYYY-MM')
-    )
 
   UNION ALL
 
@@ -766,7 +791,7 @@ sales_src AS (
     COALESCE(k.category_number, 0) AS category,
     NULLIF(BTRIM(k.picture_file_name), '') AS picture_file_name,
     cf.first_received,
-    to_char(s.snapshot_as_of, 'YYYY-MM') AS year_month,
+    $6::text AS year_month,
     COALESCE(s.month_qty_sales, 0)::float8 AS qty_sales
   FROM app.inventory_history_snapshot s
   LEFT JOIN chain_first cf
@@ -775,8 +800,6 @@ sales_src AS (
     ON k.id = s.sku_id
   WHERE s.sku_code IS NOT NULL
     AND s.store_id = ANY($3::int[])
-    AND to_char(s.snapshot_as_of, 'YYYY-MM') >= $1::text
-    AND to_char(s.snapshot_as_of, 'YYYY-MM') <= $2::text
     AND COALESCE(s.month_qty_sales, 0) <> 0
     AND BTRIM(s.sku_code) <> ''
 ),
@@ -949,6 +972,7 @@ export async function queryMonthlyNetSales(
     storeNumbers: params.storeNumbers,
     fromYearMonth: params.fromYearMonth,
     toYearMonth: params.toYearMonth,
+    currentYearMonth: params.currentYearMonth,
     sortBy: params.sortBy,
     detailLevel: 'subtotals',
   });
@@ -1027,6 +1051,10 @@ export interface MonthlyInventoryHistoryRow {
   snapshotAsOf?: Date | string;
   /** Current on-hand qty (end of the most recent closed month). */
   onHand: number;
+  /** Beginning quantity for the current RICS sales period. */
+  lastMonthOnHand: number;
+  /** Beginning inventory value for the current RICS sales period. */
+  lastMonthInvValue: number;
   /** Per-calendar-month snapshots, index 0 = Jan (NN=01), index 11 = Dec (NN=12). */
   monthQtyOH: number[];
   /** Per-calendar-month on-hand value in dollars (qty × cost at snapshot time). */
@@ -1046,6 +1074,8 @@ export interface MonthlyInventoryHistoryRollupRow {
   storeNumber: number;
   dimKey: string;
   snapshotAsOf?: Date | string;
+  lastMonthOnHand: number;
+  lastMonthInvValue: number;
   monthQtyOH: number[];
   monthValueOH: number[];
 }
@@ -1064,6 +1094,8 @@ interface RawInventoryHistoryRow {
   AverageCost: number | null;
   SnapshotAsOf: Date | string | null;
   OnHand: number | null;
+  LastMonthOnHand: number | null;
+  LastMonthInvValue: number | null;
   SlotNumber: number | null;
   QtyOnHand: number | null;
   InventoryValue: number | null;
@@ -1110,6 +1142,8 @@ export async function queryMonthlyInventoryHistory(
         WHERE m2.snapshot_id = s.id
           AND (m2.qty_on_hand <> 0 OR COALESCE(m2.inventory_value, 0) <> 0)
       )
+      OR COALESCE(s.last_month_on_hand, 0) <> 0
+      OR COALESCE(s.last_month_inv_value, 0) <> 0
     )`);
   }
 
@@ -1120,6 +1154,8 @@ export async function queryMonthlyInventoryHistory(
       s.average_cost::float8 AS "AverageCost",
       s.snapshot_as_of AS "SnapshotAsOf",
       s.on_hand AS "OnHand",
+      s.last_month_on_hand AS "LastMonthOnHand",
+      s.last_month_inv_value::float8 AS "LastMonthInvValue",
       m.slot_number AS "SlotNumber",
       m.qty_on_hand AS "QtyOnHand",
       m.inventory_value::float8 AS "InventoryValue"
@@ -1143,6 +1179,8 @@ export async function queryMonthlyInventoryHistory(
         averageCost: Number(r.AverageCost ?? 0),
         snapshotAsOf: r.SnapshotAsOf ?? undefined,
         onHand: Number(r.OnHand ?? 0),
+        lastMonthOnHand: Number(r.LastMonthOnHand ?? 0),
+        lastMonthInvValue: Number(r.LastMonthInvValue ?? 0),
         monthQtyOH: new Array<number>(12).fill(0),
         monthValueOH: new Array<number>(12).fill(0),
       };
@@ -1162,6 +1200,8 @@ interface RawInventoryHistoryRollupRow {
   Store: number | null;
   DimKey: string | null;
   SnapshotAsOf: Date | string | null;
+  LastMonthOnHand: number | null;
+  LastMonthInvValue: number | null;
   SlotNumber: number | null;
   QtyOnHand: number | null;
   InventoryValue: number | null;
@@ -1212,7 +1252,12 @@ export async function queryMonthlyInventoryHistoryRollups(
     wheres.push(`COALESCE(k.category_number, 0) = ANY($${sqlParams.length}::int[])`);
   }
   if (params.nonZeroOnly !== false) {
-    wheres.push(`(m.qty_on_hand <> 0 OR COALESCE(m.inventory_value, 0) <> 0)`);
+    wheres.push(`(
+      m.qty_on_hand <> 0 OR
+      COALESCE(m.inventory_value, 0) <> 0 OR
+      COALESCE(s.last_month_on_hand, 0) <> 0 OR
+      COALESCE(s.last_month_inv_value, 0) <> 0
+    )`);
   }
 
   const sql = `
@@ -1222,6 +1267,8 @@ WITH src AS (
     COALESCE(NULLIF(BTRIM(k.vendor_id), ''), '(none)') AS vendor,
     COALESCE(k.category_number, 0) AS category,
     s.snapshot_as_of,
+    s.last_month_on_hand,
+    s.last_month_inv_value,
     m.slot_number,
     m.qty_on_hand,
     m.inventory_value
@@ -1236,11 +1283,13 @@ SELECT
   src.store_id AS "Store",
   ${dimExpr} AS "DimKey",
   MAX(src.snapshot_as_of) AS "SnapshotAsOf",
+  SUM(src.last_month_on_hand)::float8 AS "LastMonthOnHand",
+  SUM(src.last_month_inv_value)::float8 AS "LastMonthInvValue",
   src.slot_number AS "SlotNumber",
   SUM(src.qty_on_hand)::float8 AS "QtyOnHand",
   SUM(src.inventory_value)::float8 AS "InventoryValue"
 FROM src
-GROUP BY 1, 2, 4
+GROUP BY 1, 2, 6
   `;
 
   const raw = await prisma.$queryRawUnsafe<RawInventoryHistoryRollupRow[]>(sql, ...sqlParams);
@@ -1255,6 +1304,8 @@ GROUP BY 1, 2, 4
         storeNumber: Number(r.Store),
         dimKey,
         snapshotAsOf: r.SnapshotAsOf ?? undefined,
+        lastMonthOnHand: Number(r.LastMonthOnHand ?? 0),
+        lastMonthInvValue: Number(r.LastMonthInvValue ?? 0),
         monthQtyOH: new Array<number>(12).fill(0),
         monthValueOH: new Array<number>(12).fill(0),
       };

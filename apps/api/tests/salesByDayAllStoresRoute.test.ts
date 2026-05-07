@@ -104,6 +104,19 @@ describe('GET /api/v1/reports/sales/by-day all stores', () => {
     expect(res.body.storeBreakdowns.map((store: { storeNumber: number }) => store.storeNumber)).toEqual([2, 13]);
   });
 
+  it('expands store ranges before querying sales history', async () => {
+    const res = await request(app).get(
+      '/api/v1/reports/sales/by-day?stores=2-3,13&startDate=2024-11-04&endDate=2024-11-10&comparisonOffsetDays=364&combineStores=true',
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body.storeNumbers).toEqual([2, 3, 13]);
+    const salesCalls = mockQueryRawUnsafe.mock.calls.filter(([sql]) =>
+      String(sql).includes('FROM app.sales_history_ticket'),
+    );
+    expect(salesCalls[0][3]).toEqual([2, 3, 13]);
+  });
+
   it('aggregates ticket header totals instead of merchandise lines for RICS parity', async () => {
     const res = await request(app).get(
       '/api/v1/reports/sales/by-day?stores=2,13&startDate=2024-11-04&endDate=2024-11-10&comparisonOffsetDays=364&combineStores=true',

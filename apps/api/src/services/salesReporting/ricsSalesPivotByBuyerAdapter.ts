@@ -14,7 +14,11 @@
  */
 
 import { prisma } from '../../db/prisma';
-import type { SalesPivotLeafRow, SalesPivotReport, SalesPivotTotals, SalesPivotVariant } from './types';
+import type { SalesAnalysisCriteria, SalesPivotLeafRow, SalesPivotReport, SalesPivotTotals, SalesPivotVariant } from './types';
+import {
+  resolveSharedProductCriteriaSkuWhitelist,
+  resolveSharedStoreNumbers,
+} from './sharedReportCriteria';
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const REPORT_TIME_ZONE = 'America/Tegucigalpa';
@@ -83,10 +87,21 @@ async function loadSalesAgg(params: {
   lyStart: string; lyEndExcl: string;
   separateStore: boolean;
   storeNumbers?: number[];
+  skuFilter?: string[];
 }): Promise<SalesAggRow[]> {
-  const storeClause = params.storeNumbers && params.storeNumbers.length > 0
-    ? ` AND t.store_id = ANY($5::int[])`
-    : '';
+  if (params.storeNumbers && params.storeNumbers.length === 0) return [];
+  if (params.skuFilter && params.skuFilter.length === 0) return [];
+  const args: unknown[] = [params.tyStart, params.tyEndExcl, params.lyStart, params.lyEndExcl];
+  let storeClause = '';
+  if (params.storeNumbers && params.storeNumbers.length > 0) {
+    args.push(params.storeNumbers.map((n) => Number(n)));
+    storeClause = ` AND t.store_id = ANY($${args.length}::int[])`;
+  }
+  let skuClause = '';
+  if (params.skuFilter) {
+    args.push(params.skuFilter);
+    skuClause = ` AND UPPER(TRIM(s.code)) = ANY($${args.length}::text[])`;
+  }
   const storeSelect = params.separateStore ? 't.store_id' : 'NULL::int';
   const storeGroupBy = params.separateStore ? 't.store_id,' : '';
   const tyStartExpr = `($1::date::timestamp AT TIME ZONE '${REPORT_TIME_ZONE}')`;
@@ -114,7 +129,7 @@ async function loadSalesAgg(params: {
       AND (
         (t.purchased_at >= ${tyStartExpr} AND t.purchased_at < ${tyEndExpr}) OR
         (t.purchased_at >= ${lyStartExpr} AND t.purchased_at < ${lyEndExpr})
-      )${storeClause}
+      )${storeClause}${skuClause}
     GROUP BY ${storeGroupBy} UPPER(TRIM(s.code)),
       CASE
         WHEN t.purchased_at >= ${tyStartExpr} AND t.purchased_at < ${tyEndExpr} THEN 'TY'
@@ -122,20 +137,27 @@ async function loadSalesAgg(params: {
         ELSE NULL
       END
   `;
-  const args: unknown[] = [params.tyStart, params.tyEndExcl, params.lyStart, params.lyEndExcl];
-  if (params.storeNumbers && params.storeNumbers.length > 0) {
-    args.push(params.storeNumbers.map((n) => Number(n)));
-  }
   return prisma.$queryRawUnsafe<SalesAggRow[]>(sql, ...args);
 }
 
 async function loadOnHandAgg(params: {
   separateStore: boolean;
   storeNumbers?: number[];
+  skuFilter?: string[];
 }): Promise<OnHandAggRow[]> {
-  const storeClause = params.storeNumbers && params.storeNumbers.length > 0
-    ? ` WHERE sl.store_id = ANY($1::int[])`
-    : '';
+  if (params.storeNumbers && params.storeNumbers.length === 0) return [];
+  if (params.skuFilter && params.skuFilter.length === 0) return [];
+  const args: unknown[] = [];
+  const where: string[] = [];
+  if (params.storeNumbers && params.storeNumbers.length > 0) {
+    args.push(params.storeNumbers.map((n) => Number(n)));
+    where.push(`sl.store_id = ANY($${args.length}::int[])`);
+  }
+  if (params.skuFilter) {
+    args.push(params.skuFilter);
+    where.push(`UPPER(TRIM(s.code)) = ANY($${args.length}::text[])`);
+  }
+  const storeClause = where.length ? ` WHERE ${where.join(' AND ')}` : '';
   const storeSelect = params.separateStore ? 'sl.store_id' : 'NULL::int';
   const storeGroupBy = params.separateStore ? 'sl.store_id,' : '';
   const sql = `
@@ -150,10 +172,6 @@ async function loadOnHandAgg(params: {
     GROUP BY ${storeGroupBy} UPPER(TRIM(s.code))
     HAVING SUM(COALESCE(sl.on_hand, 0)) <> 0
   `;
-  const args: unknown[] = [];
-  if (params.storeNumbers && params.storeNumbers.length > 0) {
-    args.push(params.storeNumbers.map((n) => Number(n)));
-  }
   return prisma.$queryRawUnsafe<OnHandAggRow[]>(sql, ...args);
 }
 
@@ -222,6 +240,7 @@ export async function getSalesPivotByBuyer(params: {
   endDate: string;
   storeNumbers?: number[];
   variant: SalesPivotVariant;   // one of the buyer* variants
+  criteria?: SalesAnalysisCriteria;
 }): Promise<SalesPivotReport> {
   assertDate(params.startDate, 'startDate');
   assertDate(params.endDate, 'endDate');
@@ -235,14 +254,17 @@ export async function getSalesPivotByBuyer(params: {
   const tyEndExcl = exclusiveEnd(params.endDate);
   const lyStart = shiftYear(tyStart, -1);
   const lyEndExcl = shiftYear(tyEndExcl, -1);
+  const effectiveStoreNumbers = await resolveSharedStoreNumbers(params.criteria, params.storeNumbers);
+  const skuFilter = await resolveSharedProductCriteriaSkuWhitelist(params.criteria);
 
   const [salesRows, onHandRows, deptMap, storeRows] = await Promise.all([
     loadSalesAgg({
       tyStart, tyEndExcl, lyStart, lyEndExcl,
       separateStore,
-      storeNumbers: params.storeNumbers,
+      storeNumbers: effectiveStoreNumbers,
+      skuFilter: skuFilter ?? undefined,
     }),
-    loadOnHandAgg({ separateStore, storeNumbers: params.storeNumbers }),
+    loadOnHandAgg({ separateStore, storeNumbers: effectiveStoreNumbers, skuFilter: skuFilter ?? undefined }),
     loadDeptMap(),
     separateStore ? loadStores() : Promise.resolve([] as StoreRow[]),
   ]);

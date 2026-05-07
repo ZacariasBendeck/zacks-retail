@@ -2,7 +2,7 @@
  * One-shot seed: add the 5 attribute dimensions that `seed-legacy-ref-dimensions`
  * doesn't cover but which skuService historically wrote via SQLite `*_id`
  * FKs (`color_family_id`, `shoe_type_id`, `closure_type_id`, `occasion_id`,
- * `target_audience_id`, `label_type_id`).
+ * `label_type_id`).
  *
  * Usage:
  *   pnpm --filter @benlow-rics/api tsx scripts/seeds/seed-missing-attribute-dimensions.ts
@@ -24,7 +24,7 @@ interface DimensionSpec {
   sortOrder: number;
 }
 
-// Six new dimensions. Sort orders start at 610 so they slot after the
+// Five dimensions. Sort orders start at 610 so they slot after the
 // legacy-ref block (500–600) populated by `seed-legacy-ref-dimensions`.
 // The `label_type` dimension is the RICS "size label" slot (adult / kid /
 // infant / etc.) — kept as a dimension rather than a boolean so future
@@ -34,7 +34,6 @@ const DIMENSIONS: DimensionSpec[] = [
   { code: 'shoe_type',       labelEs: 'Tipo de Zapato',       descriptionEs: 'Clasificación general del zapato (sandalia, botín, …)',  sortOrder: 620 },
   { code: 'closure_type',    labelEs: 'Tipo de Cierre',       descriptionEs: 'Mecanismo de cierre (cordones, velcro, sin cierre, …)',  sortOrder: 630 },
   { code: 'occasion',        labelEs: 'Ocasión',              descriptionEs: 'Ocasión de uso (formal, casual, deportivo, …)',           sortOrder: 640 },
-  { code: 'target_audience', labelEs: 'Público Objetivo',     descriptionEs: 'Segmento al que va dirigido el zapato',                   sortOrder: 650 },
   { code: 'label_type',      labelEs: 'Tipo de Etiqueta',     descriptionEs: 'Slot de etiqueta RICS (adulto, infantil, …)',             sortOrder: 660 },
 ];
 

@@ -41,6 +41,7 @@ import {
   type StockStatusItemFilter,
   type SalesHistoryByMonthParams,
   type AgingQueryArgs,
+  type SharedReportCriteriaParams,
   type PurchaseOrderReportQuery,
   type OpenPoByMonthQuery,
 } from '../services/reportApi'
@@ -172,7 +173,7 @@ export type SalesByDayArgs = {
   endDate: string
   comparisonOffsetDays?: number
   combineStores?: boolean
-}
+} & SharedReportCriteriaParams
 export function useSalesByDay(args: SalesByDayArgs | null) {
   return useQuery({
     queryKey: ['sales-by-day', args] as const,
@@ -184,6 +185,7 @@ export function useSalesByDay(args: SalesByDayArgs | null) {
         args!.comparisonOffsetDays ?? 364,
         args!.combineStores ?? false,
         signal,
+        args!,
       ),
     enabled: !!args,
   })
@@ -196,7 +198,7 @@ export type SalesByTimeArgs = {
   compareEndDate?: string
   stores?: number[]
   pctOfTotal?: boolean
-}
+} & SharedReportCriteriaParams
 export function useSalesByTime(args: SalesByTimeArgs | null) {
   return useQuery({
     queryKey: ['sales-by-time', args] as const,
@@ -212,7 +214,7 @@ export type SalesBySkuArgs = {
   sortBy?: SalesBySkuSortBy
   includeReturns?: boolean
   skus?: string[]
-}
+} & SharedReportCriteriaParams
 export function useSalesBySku(args: SalesBySkuArgs | null) {
   return useQuery({
     queryKey: ['sales-by-sku', args] as const,
@@ -228,7 +230,7 @@ export type SalespersonSummaryArgs = {
   subtotalBy?: SalespersonSubtotalBy
   combineStores?: boolean
   cashierSummary?: boolean
-}
+} & SharedReportCriteriaParams
 export function useSalespersonSummary(args: SalespersonSummaryArgs | null) {
   return useQuery({
     queryKey: ['salesperson-summary', args] as const,
@@ -245,7 +247,7 @@ export type BestSellersArgs = {
   stores?: number[]
   combineStores?: boolean
   topN?: number
-}
+} & SharedReportCriteriaParams
 export function useBestSellers(args: BestSellersArgs | null) {
   return useQuery({
     queryKey: ['best-sellers', args] as const,
@@ -271,6 +273,7 @@ export type SalesAnalysisArgs = {
   styleColor?: string
   groups?: string[]
   keywords?: string[]
+  buyers?: string[]
   storesRaw?: string
   categoriesRaw?: string
   vendorsRaw?: string
@@ -320,7 +323,7 @@ export type SalesHierarchyArgs = {
   styleColorRaw?: string
   priorYear?: boolean
   includeAttributes?: boolean
-}
+} & SharedReportCriteriaParams
 export function useSalesHierarchy(args: SalesHierarchyArgs | null) {
   return useQuery({
     queryKey: ['sales-hierarchy', args] as const,
@@ -335,12 +338,7 @@ export type SalesPivotArgs = {
   stores?: number[]
   variant: import('../services/reportApi').SalesPivotVariant
   levels?: import('../services/reportApi').SalesPivotLevels
-  chains?: string[]
-  sectors?: number[]
-  departments?: number[]
-  seasons?: string[]
-  buyers?: string[]
-}
+} & SharedReportCriteriaParams
 export function useSalesPivot(args: SalesPivotArgs | null) {
   return useQuery({
     queryKey: ['sales-pivot', args] as const,

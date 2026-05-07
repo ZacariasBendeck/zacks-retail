@@ -230,6 +230,8 @@ export interface SalesAnalysisCriteria {
   groups?: string[];
   /** Keyword pattern(s). Requires RIINVMAS join. */
   keywords?: string[];
+  /** Buyer code(s) from the SKU extended attribute dimension `buyer`. */
+  buyers?: string[];
 
   // Raw RICS-grammar text per facet (see apps/api/src/utils/criteriaGrammar.ts).
   // Merge semantics: a facet matches if (structured selection matches) OR
@@ -316,13 +318,19 @@ export interface SalesAnalysisRow {
   unitsOnHand: number;          // on-hand inventory units for the row grain
   inventoryUnitCost: number | null; // weighted avg current/average cost; null when unitsOnHand=0
   onHandAtCost: number;         // Σ(OnHand × CurrentCost) for the dimension; 0 when unknown
+  turnsRoiInventoryValue: number; // denominator used for Turns/ROI; average inventory for RICS MTD
   turns: number | null;         // annualized; null when onHandAtCost=0
   roiPct: number | null;        // GMROI, annualized; null when onHandAtCost=0
   onOrderQty?: number;
   onOrderUnitCost?: number | null;
   onOrderCost?: number;
+  priorYearQty: number | null;
   priorYearNetSales: number | null;
   pyPctChange: number | null;
+  priorYearGrossProfit: number | null;
+  pyGrossProfitPctChange: number | null;
+  priorYearOnHandAtCost: number | null;
+  pyOnHandPctChange: number | null;
   /**
    * Populated only for SKU_DETAIL rows when `includeAttributes=true` was
    * passed to the endpoint. Left undefined otherwise so the default payload
@@ -352,9 +360,16 @@ export interface SalesAnalysisReport {
     onOrderQty?: number;
     onOrderUnitCost?: number | null;
     onOrderCost?: number;
+    priorYearQty: number | null;
     priorYearNetSales: number | null;
+    pyPctChange: number | null;
+    priorYearGrossProfit: number | null;
+    pyGrossProfitPctChange: number | null;
+    priorYearOnHandAtCost: number | null;
+    pyOnHandPctChange: number | null;
   };
   periodDays: number;
+  turnsRoiAnnualizer: number;
 }
 
 // ─────────────────────────── Sales Hierarchy Drill-Down (Dept → Cat → SKU) ──

@@ -15,6 +15,7 @@
  * Writes never touch rics_mirror or MDBs — CLAUDE.md hard rule.
  */
 
+import { randomUUID } from 'node:crypto';
 import { Prisma, type PrismaClient } from '../../prismaClient';
 import { prisma } from '../../db/prisma';
 import { auditLog } from '../products/auditLog';
@@ -44,6 +45,8 @@ export interface ApplyBatchChangeResult {
 }
 
 const PREVIEW_LIMIT = 20;
+const BATCH_CHANGE_TRANSACTION_TIMEOUT_MS = 120_000;
+const CREATE_MANY_CHUNK_SIZE = 1_000;
 
 interface AttributeAssignmentSnapshot {
   dimensionId: number;
@@ -77,10 +80,26 @@ export async function applyBatchChange(input: ApplyBatchChangeInput): Promise<Ap
     ? await getAttributeAssignmentSnapshots(skus, input.change.dimensionCode)
     : new Map<string, AttributeAssignmentSnapshot[]>();
 
+  const batchId = randomUUID();
+  const items: Prisma.ProductsBatchOperationItemCreateManyInput[] = skus.map((sku) => {
+    const before = beforeMap.get(sku) ?? null;
+    return {
+      batchId,
+      ricsSkuCode: sku,
+      beforeJson: input.change.type === 'CHANGE_SKU_ATTRIBUTE'
+        ? ({ assignments: beforeAttributeMap.get(sku) ?? [] } as unknown as Prisma.InputJsonValue)
+        : before
+          ? (beforeSnapshot(before, input.change) as Prisma.InputJsonValue)
+          : Prisma.JsonNull,
+      afterJson: afterSnapshot(input.change) as Prisma.InputJsonValue,
+    };
+  });
+
   // 3. One transaction — op header + items + overlay writes + completion.
-  const batchId = await prisma.$transaction(async (tx) => {
-    const op = await tx.productsBatchOperation.create({
+  await prisma.$transaction(async (tx) => {
+    await tx.productsBatchOperation.create({
       data: {
+        id: batchId,
         actor: input.actor,
         operationType: input.operationType,
         criteriaJson: input.criteria as unknown as Prisma.InputJsonValue,
@@ -89,33 +108,15 @@ export async function applyBatchChange(input: ApplyBatchChangeInput): Promise<Ap
       },
     });
 
-    const items: Prisma.ProductsBatchOperationItemCreateManyInput[] = skus.map((sku) => {
-      const before = beforeMap.get(sku) ?? null;
-      return {
-        batchId: op.id,
-        ricsSkuCode: sku,
-        beforeJson: input.change.type === 'CHANGE_SKU_ATTRIBUTE'
-          ? ({ assignments: beforeAttributeMap.get(sku) ?? [] } as unknown as Prisma.InputJsonValue)
-          : before
-            ? (beforeSnapshot(before, input.change) as Prisma.InputJsonValue)
-            : Prisma.JsonNull,
-        afterJson: afterSnapshot(input.change) as Prisma.InputJsonValue,
-      };
-    });
-
-    if (items.length > 0) {
-      await tx.productsBatchOperationItem.createMany({ data: items });
-    }
+    await createBatchOperationItems(tx as unknown as TxClient, items);
 
     await applyOverlayWrites(tx as unknown as TxClient, input.change, skus, input.actor);
 
     await tx.productsBatchOperation.update({
-      where: { id: op.id },
+      where: { id: batchId },
       data: { completedAt: new Date() },
     });
-
-    return op.id;
-  });
+  }, { timeout: BATCH_CHANGE_TRANSACTION_TIMEOUT_MS });
 
   // 4. Post-commit side-effects.
   //    a. Targeted warmup re-invalidation so the SKU Lookup modal reflects the change.
@@ -155,7 +156,7 @@ export async function undoBatch(batchId: string, actor: string): Promise<{ rever
       where: { id: batchId },
       data: { undoneAt: new Date() },
     });
-  });
+  }, { timeout: BATCH_CHANGE_TRANSACTION_TIMEOUT_MS });
 
   await invalidateWarmupForSkus(op.items.map(i => i.ricsSkuCode));
   await auditLog.record({
@@ -167,6 +168,17 @@ export async function undoBatch(batchId: string, actor: string): Promise<{ rever
   });
 
   return { reversed: op.items.length };
+}
+
+async function createBatchOperationItems(
+  tx: TxClient,
+  items: Prisma.ProductsBatchOperationItemCreateManyInput[],
+): Promise<void> {
+  for (let i = 0; i < items.length; i += CREATE_MANY_CHUNK_SIZE) {
+    await tx.productsBatchOperationItem.createMany({
+      data: items.slice(i, i + CREATE_MANY_CHUNK_SIZE),
+    });
+  }
 }
 
 // ─────────── per-op write & reverse ───────────
@@ -422,7 +434,7 @@ async function applyExtendedAttributeWrite(
   skus: string[],
   actor: string,
 ): Promise<void> {
-  const target = await validateExtendedAttributeChange(tx, change);
+  const target = await validateExtendedAttributeChange(tx, change, skus);
 
   if (change.mode === 'REPLACE') {
     await tx.$executeRawUnsafe(
@@ -454,6 +466,7 @@ async function applyExtendedAttributeWrite(
 async function validateExtendedAttributeChange(
   tx: TxClient,
   change: Extract<AttributeChange, { type: 'CHANGE_SKU_ATTRIBUTE' }>,
+  skus: string[],
 ): Promise<{ dimensionId: number; valueIds: number[] }> {
   const dimensionCode = change.dimensionCode.trim();
   const valueCodes = Array.from(new Set(change.valueCodes.map((v) => v.trim()).filter(Boolean)));
@@ -476,7 +489,7 @@ async function validateExtendedAttributeChange(
 
   const dim = await tx.attributeDimension.findUnique({
     where: { code: dimensionCode },
-    include: { values: true },
+    include: { values: true, familyRules: true },
   });
   if (!dim) {
     throw new BatchChangeValidationError(`Unknown dimension '${dimensionCode}'.`);
@@ -508,7 +521,78 @@ async function validateExtendedAttributeChange(
     valueIds.push(value.id);
   }
 
+  if (dim.familyRules.length > 0) {
+    await validateFamilyScopedAttributeSkus(tx, dimensionCode, dim.familyRules, skus);
+  }
+
   return { dimensionId: dim.id, valueIds };
+}
+
+async function validateFamilyScopedAttributeSkus(
+  tx: TxClient,
+  dimensionCode: string,
+  familyRules: { familyCode: string; enabled: boolean }[],
+  skus: string[],
+): Promise<void> {
+  const rows = await tx.$queryRawUnsafe<{
+    sku_code: string;
+    family_code: string | null;
+  }[]>(
+    `SELECT s.code AS sku_code,
+            cpf.family_code
+     FROM app.sku s
+     LEFT JOIN app.sku_attribute_override o ON o.rics_sku_code = s.code
+     LEFT JOIN app.category_product_family cpf
+       ON cpf.category_number = COALESCE(o.category, s.category_number)
+     WHERE s.code = ANY($1::varchar[])`,
+    skus,
+  );
+
+  assertFamilyScopedAttributeSkusInScope(dimensionCode, familyRules, rows, skus);
+}
+
+export function assertFamilyScopedAttributeSkusInScope(
+  dimensionCode: string,
+  familyRules: { familyCode: string; enabled: boolean }[],
+  rows: { sku_code: string; family_code: string | null }[],
+  skus: string[],
+): void {
+  const enabledFamilyCodes = new Set(
+    familyRules
+      .filter((rule) => rule.enabled)
+      .map((rule) => rule.familyCode),
+  );
+
+  if (enabledFamilyCodes.size === 0) {
+    throw new BatchChangeValidationError(
+      `Dimension '${dimensionCode}' is not enabled for any product family.`,
+    );
+  }
+
+  const seen = new Set(rows.map((row) => row.sku_code));
+  const missing = skus.filter((sku) => !seen.has(sku));
+  const unknownFamily = rows
+    .filter((row) => row.family_code == null)
+    .map((row) => row.sku_code);
+  const outsideFamily = rows
+    .filter((row) => row.family_code != null && !enabledFamilyCodes.has(row.family_code))
+    .map((row) => `${row.sku_code} (${row.family_code})`);
+
+  if (missing.length > 0) {
+    throw new BatchChangeValidationError(
+      `Dimension '${dimensionCode}' cannot be assigned because some selected SKUs were not found: ${missing.slice(0, 10).join(', ')}.`,
+    );
+  }
+  if (unknownFamily.length > 0) {
+    throw new BatchChangeValidationError(
+      `Dimension '${dimensionCode}' is family-scoped and cannot be assigned to SKUs without a product family: ${unknownFamily.slice(0, 10).join(', ')}.`,
+    );
+  }
+  if (outsideFamily.length > 0) {
+    throw new BatchChangeValidationError(
+      `Dimension '${dimensionCode}' does not apply to every selected SKU family. Outside scope: ${outsideFamily.slice(0, 10).join(', ')}.`,
+    );
+  }
 }
 
 async function insertExtendedAttributeRows(
@@ -524,8 +608,11 @@ async function insertExtendedAttributeRows(
       rows.push({ skuCode, dimensionId, valueId, assignedBy: actor });
     }
   }
-  if (rows.length > 0) {
-    await tx.skuAttributeAssignment.createMany({ data: rows, skipDuplicates: true });
+  for (let i = 0; i < rows.length; i += CREATE_MANY_CHUNK_SIZE) {
+    await tx.skuAttributeAssignment.createMany({
+      data: rows.slice(i, i + CREATE_MANY_CHUNK_SIZE),
+      skipDuplicates: true,
+    });
   }
 }
 

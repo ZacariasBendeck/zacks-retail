@@ -16,6 +16,7 @@ import type {
   SalesAnalysisStoreOption,
   SalesAnalysisRow,
 } from '../../services/reportApi'
+import { getSalesAnalysisCsvUrl, getSalesAnalysisXlsxUrl } from '../../services/reportApi'
 import { getErrorMessage } from '../../utils/errors'
 import FilterChips from '../../components/reports/FilterChips'
 import { GpBadge, ChangePctBadge } from '../../components/reports/gpBadge'
@@ -513,6 +514,8 @@ export default function ReportViewerPage() {
     return base.reportType === 'SKU_DETAIL' ? { ...base, includeAttributes: true } : base
   }, [searchParams])
   const { data, isFetching, error } = useSalesAnalysis(args)
+  const csvUrl = getSalesAnalysisCsvUrl(args)
+  const xlsxUrl = getSalesAnalysisXlsxUrl(args)
 
   const keyColumnTitle =
     args.reportType === 'SKU_DETAIL' ? 'SKU'
@@ -749,10 +752,10 @@ export default function ReportViewerPage() {
           >
             <Button icon={<SettingOutlined />}>Columns</Button>
           </Dropdown>
-          <Button icon={<DownloadOutlined />} disabled title="CSV export — coming soon">
+          <Button icon={<DownloadOutlined />} href={csvUrl}>
             CSV
           </Button>
-          <Button icon={<FileExcelOutlined />} disabled title="XLSX export — coming soon">
+          <Button icon={<FileExcelOutlined />} href={xlsxUrl}>
             XLSX
           </Button>
         </Space>

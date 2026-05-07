@@ -163,9 +163,7 @@ function buildBucketCaseSql(scheme: BucketScheme): string {
  * `(groupKey, groupLabel)` — `groupKey` is the join/filter value
  * round-tripped through the API; `groupLabel` is what renders in the UI.
  *
- * Buyer is taken off the most-recently-receiving PO; that column is currently
- * always NULL in the imported data so buyer groupings render a single
- * `Unmapped` bucket until the legacy backfill populates it.
+ * Buyer is taken from the SKU extended attribute dimension `buyer`.
  *
  * Store relies on `oh.store_id` being present in the rows CTE — i.e. the
  * `on_hand` aggregate must keep `store_id` rather than rolling it up. See
@@ -185,8 +183,8 @@ function buildGroupExpr(groupBy: GroupBy): { keyExpr: string; labelExpr: string 
       };
     case 'buyer':
       return {
-        keyExpr: `COALESCE(NULLIF(buyer_pol.buyer, ''), '${UNMAPPED_LABEL}')`,
-        labelExpr: `COALESCE(NULLIF(buyer_pol.buyer, ''), '${UNMAPPED_LABEL}')`,
+        keyExpr: `COALESCE(NULLIF(buyer_attr.buyer_code, ''), '${UNMAPPED_LABEL}')`,
+        labelExpr: `COALESCE(NULLIF(buyer_attr.buyer_label, ''), NULLIF(buyer_attr.buyer_code, ''), '${UNMAPPED_LABEL}')`,
       };
     case 'store':
       return {
@@ -221,7 +219,7 @@ function buildExtraJoins(groupBy: GroupBy): string {
     joins.push(`LEFT JOIN app.vendor v ON v.code = s.vendor_id`);
   }
   if (groupBy === 'buyer') {
-    joins.push(`LEFT JOIN buyer_pol ON buyer_pol.sku_id = s.id`);
+    joins.push(`LEFT JOIN buyer_attr ON buyer_attr.sku_key = UPPER(BTRIM(s.code))`);
   }
   if (groupBy === 'store') {
     joins.push(`LEFT JOIN app.store_master sm ON sm.number = oh.store_id`);
@@ -262,14 +260,18 @@ function buildBaseCtes(
 
   const buyerCte = groupBy === 'buyer'
     ? `,
-    buyer_pol AS (
-      SELECT DISTINCT ON (pol.sku_id)
-        pol.sku_id,
-        po.buyer
-      FROM app.purchase_order_legacy_line pol
-      JOIN app.purchase_order_legacy po ON po.po_number = pol.po_number
-      WHERE pol.sku_id IS NOT NULL AND po.last_received_at IS NOT NULL
-      ORDER BY pol.sku_id, po.last_received_at DESC
+    buyer_attr AS (
+      SELECT DISTINCT ON (UPPER(BTRIM(saa.sku_code)))
+        UPPER(BTRIM(saa.sku_code)) AS sku_key,
+        av.code AS buyer_code,
+        COALESCE(NULLIF(av.label_es, ''), av.code) AS buyer_label
+      FROM app.sku_attribute_assignment saa
+      JOIN app.attribute_dimension ad
+        ON ad.id = saa.dimension_id
+       AND ad.code = 'buyer'
+      JOIN app.attribute_value av ON av.id = saa.value_id
+      WHERE COALESCE(BTRIM(saa.sku_code), '') <> ''
+      ORDER BY UPPER(BTRIM(saa.sku_code)), av.sort_order NULLS LAST, av.code
     )`
     : '';
 
@@ -294,6 +296,7 @@ interface CriteriaFilters {
   buyers?: string[];
   sectors?: number[];
   departments?: number[];
+  skuFilter?: string[];
 }
 
 function applyCriteriaFilters(
@@ -325,19 +328,30 @@ function applyCriteriaFilters(
   }
   if (filters.buyers && filters.buyers.length > 0) {
     params.push(filters.buyers);
-    // Buyer filter requires the buyer_pol CTE join. We force it on whenever
-    // the filter is provided.
     if (groupBy !== 'buyer') {
       conditions.push(`
-        s.id IN (
-          SELECT pol2.sku_id FROM app.purchase_order_legacy_line pol2
-          JOIN app.purchase_order_legacy po2 ON po2.po_number = pol2.po_number
-          WHERE pol2.sku_id IS NOT NULL
-            AND po2.buyer = ANY($${params.length}::text[])
+        EXISTS (
+          SELECT 1
+          FROM app.sku_attribute_assignment saa_buyer
+          JOIN app.attribute_dimension ad_buyer
+            ON ad_buyer.id = saa_buyer.dimension_id
+           AND ad_buyer.code = 'buyer'
+          JOIN app.attribute_value av_buyer
+            ON av_buyer.id = saa_buyer.value_id
+          WHERE UPPER(BTRIM(saa_buyer.sku_code)) = UPPER(BTRIM(s.code))
+            AND av_buyer.code = ANY($${params.length}::text[])
         )
       `);
     } else {
-      conditions.push(`buyer_pol.buyer = ANY($${params.length}::text[])`);
+      conditions.push(`buyer_attr.buyer_code = ANY($${params.length}::text[])`);
+    }
+  }
+  if (filters.skuFilter) {
+    if (filters.skuFilter.length === 0) {
+      conditions.push('FALSE');
+    } else {
+      params.push(filters.skuFilter);
+      conditions.push(`UPPER(BTRIM(COALESCE(s.code, s.provisional_code))) = ANY($${params.length}::text[])`);
     }
   }
 }
@@ -348,6 +362,7 @@ export interface AgingGroupOptions {
   buyers?: string[];
   sectors?: number[];
   departments?: number[];
+  skuFilter?: string[];
   scheme?: BucketScheme;
 }
 
@@ -665,10 +680,8 @@ export interface AgingDimensionsResult {
 export async function getAgingDimensions(): Promise<AgingDimensionsResult> {
   const [stores, chains, buyers, sectors, departments] = await Promise.all([
     prisma.$queryRawUnsafe<{ number: number; name: string | null }[]>(`
-      SELECT DISTINCT sm.number AS number, sm."desc" AS name
-      FROM app.stock_level sl
-      JOIN app.store_master sm ON sm.number = sl.store_id
-      WHERE sl.on_hand > 0
+      SELECT sm.number AS number, sm."desc" AS name
+      FROM app.store_master sm
       ORDER BY sm.number
     `),
     prisma.$queryRawUnsafe<{ code: string; label: string; storeNumbers: number[] }[]>(`

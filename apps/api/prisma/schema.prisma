@@ -939,6 +939,124 @@ model PurchasePlanV3Audit {
   @@schema("app")
 }
 
+model AssortmentColorAlias {
+  rawKey         String   @id @map("raw_key")
+  canonicalColor String   @map("canonical_color")
+  colorFamily    String   @map("color_family")
+  updatedAt      DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy      String   @default("seed") @map("updated_by")
+
+  @@map("assortment_color_alias")
+  @@schema("app")
+}
+
+model AssortmentPlan {
+  id                   String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  label                String
+  status               String    @default("DRAFT")
+  categoryNumber       Int       @map("category_number") @db.SmallInt
+  categoryLabel        String    @map("category_label")
+  warehouseStoreId     Int       @map("warehouse_store_id")
+  warehouseStoreLabel  String    @map("warehouse_store_label")
+  targetStoreIds       Int[]     @map("target_store_ids")
+  startDate            DateTime  @map("start_date") @db.Date
+  horizonMonths        Int       @default(12) @map("horizon_months") @db.SmallInt
+  highSeasonMonths     Int[]     @map("high_season_months") @db.SmallInt
+  historyFromYearMonth String    @map("history_from_year_month") @db.VarChar(7)
+  historyToYearMonth   String    @map("history_to_year_month") @db.VarChar(7)
+  metadata             Json?
+  createdBy            String    @default("system") @map("created_by")
+  createdAt            DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  archivedAt           DateTime? @map("archived_at") @db.Timestamptz(6)
+
+  @@index([status, updatedAt(sort: Desc)], map: "assortment_plan_status_updated_idx")
+  @@index([categoryNumber, createdAt(sort: Desc)], map: "assortment_plan_category_idx")
+  @@map("assortment_plan")
+  @@schema("app")
+}
+
+model AssortmentPlanPoolItem {
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  planId          String   @map("plan_id") @db.Uuid
+  skuId           String   @map("sku_id") @db.Uuid
+  skuCode         String   @map("sku_code") @db.VarChar(32)
+  skuDescription  String?  @map("sku_description")
+  rawColorKey     String   @map("raw_color_key")
+  canonicalColor  String   @map("canonical_color")
+  colorFamily     String   @map("color_family")
+  inclusionReason String   @map("inclusion_reason")
+  warehouseUnits  Int      @map("warehouse_units")
+  keywords        String?
+  assignedWaveId  String?  @map("assigned_wave_id") @db.Uuid
+  metadata        Json?
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([planId, skuId], map: "assortment_plan_pool_item_plan_sku_key")
+  @@index([planId, canonicalColor], map: "assortment_plan_pool_item_plan_color_idx")
+  @@map("assortment_plan_pool_item")
+  @@schema("app")
+}
+
+model AssortmentPlanWave {
+  id                   String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  planId               String    @map("plan_id") @db.Uuid
+  sequence             Int       @db.SmallInt
+  releaseDate          DateTime  @map("release_date") @db.Date
+  status               String    @default("DRAFT")
+  generatedTransferIds String[]  @default([]) @map("generated_transfer_ids") @db.Uuid
+  createdAt            DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  committedAt          DateTime? @map("committed_at") @db.Timestamptz(6)
+
+  @@unique([planId, sequence], map: "assortment_plan_wave_plan_sequence_key")
+  @@index([planId, status, releaseDate], map: "assortment_plan_wave_plan_status_idx")
+  @@map("assortment_plan_wave")
+  @@schema("app")
+}
+
+model AssortmentPlanWaveLine {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  waveId         String   @map("wave_id") @db.Uuid
+  poolItemId     String   @unique(map: "assortment_plan_wave_line_pool_item_key") @map("pool_item_id") @db.Uuid
+  skuId          String   @map("sku_id") @db.Uuid
+  skuCode        String   @map("sku_code") @db.VarChar(32)
+  rawColorKey    String   @map("raw_color_key")
+  canonicalColor String   @map("canonical_color")
+  warehouseUnits Int      @map("warehouse_units")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([waveId, canonicalColor], map: "assortment_plan_wave_line_wave_idx")
+  @@map("assortment_plan_wave_line")
+  @@schema("app")
+}
+
+model AssortmentPlanStoreAllocation {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  waveLineId  String   @map("wave_line_id") @db.Uuid
+  storeId     Int      @map("store_id")
+  storeLabel  String   @map("store_label")
+  quantity    Int
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([waveLineId, storeId], map: "assortment_plan_store_allocation_line_store_key")
+  @@index([storeId], map: "assortment_plan_store_allocation_store_idx")
+  @@map("assortment_plan_store_allocation")
+  @@schema("app")
+}
+
+model AssortmentPlanTransferLink {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  planId     String   @map("plan_id") @db.Uuid
+  waveId     String   @map("wave_id") @db.Uuid
+  transferId String   @unique(map: "assortment_plan_transfer_link_transfer_key") @map("transfer_id") @db.Uuid
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([waveId], map: "assortment_plan_transfer_link_wave_idx")
+  @@map("assortment_plan_transfer_link")
+  @@schema("app")
+}
+
 /// App-owned UPC cross-reference. Imported legacy rows use source=RICS_IMPORT;
 /// future manual/generated UPCs can coexist without a raw legacy landing schema.
 model SkuUpc {
@@ -2938,6 +3056,7 @@ enum TransferOrigin {
   TRANSFER_ALL
   AUTO
   BALANCING
+  ASSORTMENT
 
   @@schema("app")
 }

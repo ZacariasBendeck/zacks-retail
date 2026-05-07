@@ -3,6 +3,10 @@ import * as reportService from '../services/reportService';
 import * as purchaseOrderService from '../services/purchaseOrderService';
 import * as inventoryAgingPg from '../services/reports/inventoryAgingPg';
 import * as salesReportFacade from '../services/salesReporting/salesReportFacade';
+import {
+  resolveSharedProductCriteriaSkuWhitelist,
+  resolveSharedStoreNumbers,
+} from '../services/salesReporting/sharedReportCriteria';
 import { getSeasonalityIndexReport } from '../services/seasonalityIndexService';
 import { validateQuery } from '../middleware/validation';
 import { getRequestStoreScopeConstraintIfAuthenticated } from '../middleware/storeScopeMiddleware';
@@ -10,7 +14,10 @@ import { prisma } from '../db/prisma';
 import { getDb } from '../db/database';
 import { ALLOWED_DEPARTMENTS, CATEGORY_CODE_MIN, CATEGORY_CODE_MAX } from '../constants/domain';
 import { sendXlsx, XLSX_NUMFMT } from '../utils/xlsxExport';
+import { parsePositiveIntegerSelection } from '../utils/numberSelection';
+import { buildReportFilename, type ReportFilenameCriterion } from '../utils/reportFilename';
 import { z } from 'zod';
+import type { SalesAnalysisCriteria } from '../services/salesReporting/types';
 
 const router: IRouter = Router();
 
@@ -103,6 +110,25 @@ function mapCategoryField<T extends { categoryId: number | null }>(
       category: toCategoryCode(categoryId, idToCode),
     };
   });
+}
+
+function reportExportFilename(
+  baseStem: string,
+  extension: 'csv' | 'xlsx',
+  criteria: ReportFilenameCriterion[],
+): string {
+  return buildReportFilename(baseStem, extension, criteria);
+}
+
+function dateRangeFilenameParts(startDate?: string, endDate?: string): ReportFilenameCriterion[] {
+  return [{ value: startDate && endDate ? `${startDate}_${endDate}` : undefined }];
+}
+
+function effectiveStoresFilenamePart(stores: number[] | undefined): ReportFilenameCriterion {
+  return {
+    value: stores && stores.length > 0 ? `S${stores.join('_')}` : 'all',
+    includeIfDefault: true,
+  };
 }
 
 const onHandQuerySchema = z.object({
@@ -342,6 +368,11 @@ router.get('/sales-performance', validateQuery(salesPerformanceQuerySchema), asy
   const endStr = endDateExclusive.toISOString().split('T')[0];
   const categoryLookup = getCategoryLookup();
   const categoryIdFilter = toCategoryFilterId(query.category, categoryLookup.codeToId);
+  const filenameCriteria = [
+    ...dateRangeFilenameParts(query.startDate, query.endDate),
+    { key: 'dep', value: query.department },
+    { key: 'cat', value: query.category },
+  ];
 
   if (query.format === 'csv' || query.format === 'xlsx') {
     const detailsResult = reportService.getSalesPerformanceDetails(query.startDate, endStr, {
@@ -354,7 +385,7 @@ router.get('/sales-performance', validateQuery(salesPerformanceQuerySchema), asy
       // Even when empty we still return a well-formed XLSX with just the
       // header row, so clients don't have to special-case an empty buffer.
       await sendXlsx(res, {
-        filename: 'sales-performance.xlsx',
+        filename: reportExportFilename('SPERF', 'xlsx', filenameCriteria),
         sheets: [
           {
             name: 'Sales Performance',
@@ -388,7 +419,10 @@ router.get('/sales-performance', validateQuery(salesPerformanceQuerySchema), asy
 
     if (details.length === 0) {
       res.setHeader('Content-Type', 'text/csv');
-      res.setHeader('Content-Disposition', 'attachment; filename="sales-performance.csv"');
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="${reportExportFilename('SPERF', 'csv', filenameCriteria)}"`,
+      );
       res.send('No sales data found for the selected period.');
       return;
     }
@@ -410,7 +444,10 @@ router.get('/sales-performance', validateQuery(salesPerformanceQuerySchema), asy
 
     const csv = [header, ...rows].join('\n');
     res.setHeader('Content-Type', 'text/csv');
-    res.setHeader('Content-Disposition', 'attachment; filename="sales-performance.csv"');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${reportExportFilename('SPERF', 'csv', filenameCriteria)}"`,
+    );
     res.send(csv);
     return;
   }
@@ -534,6 +571,11 @@ router.get('/rics-sales-by-day-store', validateQuery(ricsSalesByDayStoreQuerySch
       netSales: 0, profit: 0, comparedNetSales: 0, comparedProfit: 0, dollarChange: 0, profitChange: 0, pctChange: null,
     },
   };
+  const filenameCriteria = [
+    { value: `S${query.store}`, includeIfDefault: true },
+    ...dateRangeFilenameParts(query.startDate, query.endDate),
+    { key: 'cmp', value: query.comparisonOffsetDays, defaultValue: 364 },
+  ];
 
   if (query.format === 'xlsx') {
     // Trailing "Weekly Totals" row mirrors the CSV output — keeps parity so
@@ -563,7 +605,7 @@ router.get('/rics-sales-by-day-store', validateQuery(ricsSalesByDayStoreQuerySch
       },
     ];
     await sendXlsx(res, {
-      filename: `rics-sales-by-day-store-${query.store}-${query.startDate}-to-${query.endDate}.xlsx`,
+      filename: reportExportFilename('SBD', 'xlsx', filenameCriteria),
       sheets: [
         {
           name: 'Sales by Day',
@@ -614,7 +656,7 @@ router.get('/rics-sales-by-day-store', validateQuery(ricsSalesByDayStoreQuerySch
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader(
       'Content-Disposition',
-      `attachment; filename="rics-sales-by-day-store-${query.store}-${query.startDate}-to-${query.endDate}.csv"`,
+      `attachment; filename="${reportExportFilename('SBD', 'csv', filenameCriteria)}"`,
     );
     res.send(csv);
     return;
@@ -1004,15 +1046,14 @@ function csvIntList() {
   return z
     .string()
     .optional()
-    .transform((raw) => {
+    .transform((raw, ctx) => {
       if (!raw) return undefined;
-      const parsed = raw
-        .split(',')
-        .map((s) => s.trim())
-        .filter(Boolean)
-        .map((s) => Number(s))
-        .filter((n) => Number.isInteger(n) && n > 0);
-      return parsed.length > 0 ? parsed : undefined;
+      const parsed = parsePositiveIntegerSelection(raw);
+      if (parsed.error) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: parsed.error });
+        return z.NEVER;
+      }
+      return parsed.values.length > 0 ? parsed.values : undefined;
     });
 }
 function csvStringList() {
@@ -1029,6 +1070,19 @@ function csvStringList() {
     });
 }
 
+function joinCriteriaText(
+  selected: Array<string | number> | undefined,
+  raw?: string,
+  single?: string,
+): string | undefined {
+  const parts = [
+    selected?.map((value) => String(value).trim()).filter(Boolean).join(','),
+    single?.trim(),
+    raw?.trim(),
+  ].filter((value): value is string => !!value);
+  return parts.length ? parts.join(',') : undefined;
+}
+
 const inventoryAgingQuerySchema = z.object({
   // `groupKey` is the value of whichever group dimension the operator drilled
   // into (department description, sector number, vendor code, buyer code,
@@ -1040,9 +1094,25 @@ const inventoryAgingQuerySchema = z.object({
   category: z.coerce.number().int().min(1).max(999).optional(),
   stores: csvIntList(),
   // Criteria multi-selects.
+  chains: csvStringList(),
   buyers: csvStringList(),
   sectors: csvIntList(),
   departments: csvIntList(),
+  categories: csvIntList(),
+  vendors: csvStringList(),
+  seasons: csvStringList(),
+  skus: csvStringList(),
+  groups: csvStringList(),
+  keywords: csvStringList(),
+  styleColor: z.string().optional(),
+  storesRaw: z.string().optional(),
+  categoriesRaw: z.string().optional(),
+  vendorsRaw: z.string().optional(),
+  seasonsRaw: z.string().optional(),
+  skusRaw: z.string().optional(),
+  groupsRaw: z.string().optional(),
+  keywordsRaw: z.string().optional(),
+  styleColorRaw: z.string().optional(),
   bucketScheme: z.enum(['30_60_90', '60_120_180', '90_180_270']).default('30_60_90'),
   format: z.enum(['json', 'csv', 'xlsx']).default('json'),
   ...reportPaginationFields,
@@ -1098,9 +1168,25 @@ router.get('/inventory-aging', validateQuery(inventoryAgingQuerySchema), async (
     department?: string;
     category?: number;
     stores?: number[];
+    chains?: string[];
     buyers?: string[];
     sectors?: number[];
     departments?: number[];
+    categories?: number[];
+    vendors?: string[];
+    seasons?: string[];
+    skus?: string[];
+    groups?: string[];
+    keywords?: string[];
+    styleColor?: string;
+    storesRaw?: string;
+    categoriesRaw?: string;
+    vendorsRaw?: string;
+    seasonsRaw?: string;
+    skusRaw?: string;
+    groupsRaw?: string;
+    keywordsRaw?: string;
+    styleColorRaw?: string;
     bucketScheme: inventoryAgingPg.BucketScheme;
     format: 'json' | 'csv' | 'xlsx';
     page: number;
@@ -1109,13 +1195,36 @@ router.get('/inventory-aging', validateQuery(inventoryAgingQuerySchema), async (
     order?: 'asc' | 'desc';
   };
   const effectiveGroupKey = query.groupKey ?? query.department;
+  const sharedCriteria: SalesAnalysisCriteria = {
+    stores: query.stores,
+    chains: query.chains,
+    sectors: query.sectors,
+    departments: query.departments,
+    categories: query.categories,
+    vendors: query.vendors,
+    seasons: query.seasons,
+    skus: query.skus,
+    groups: query.groups,
+    keywords: query.keywords,
+    buyers: query.buyers,
+    styleColor: query.styleColor?.trim() || undefined,
+    storesRaw: query.storesRaw?.trim() || undefined,
+    categoriesRaw: query.categoriesRaw?.trim() || undefined,
+    vendorsRaw: query.vendorsRaw?.trim() || undefined,
+    seasonsRaw: query.seasonsRaw?.trim() || undefined,
+    skusRaw: query.skusRaw?.trim() || undefined,
+    groupsRaw: query.groupsRaw?.trim() || undefined,
+    keywordsRaw: query.keywordsRaw?.trim() || undefined,
+    styleColorRaw: query.styleColorRaw?.trim() || undefined,
+  };
+  const effectiveStores = await resolveSharedStoreNumbers(sharedCriteria, query.stores);
+  const skuFilter = await resolveSharedProductCriteriaSkuWhitelist(sharedCriteria);
+  const agingSkuFilter = effectiveStores && effectiveStores.length === 0 ? [] : skuFilter ?? undefined;
   const detailFilters = {
     groupKey: effectiveGroupKey,
     category: query.category,
-    stores: query.stores,
-    buyers: query.buyers,
-    sectors: query.sectors,
-    departments: query.departments,
+    stores: effectiveStores ?? query.stores,
+    skuFilter: agingSkuFilter,
   };
 
   if (query.format === 'csv' || query.format === 'xlsx') {
@@ -1222,10 +1331,8 @@ router.get('/inventory-aging', validateQuery(inventoryAgingQuerySchema), async (
   // Top-level: group summary with aging buckets
   const groups = await inventoryAgingPg.getAgingByGroup({
     groupBy: query.groupBy,
-    stores: query.stores,
-    buyers: query.buyers,
-    sectors: query.sectors,
-    departments: query.departments,
+    stores: effectiveStores ?? query.stores,
+    skuFilter: agingSkuFilter,
     scheme: query.bucketScheme,
   });
   res.json({
@@ -1259,8 +1366,20 @@ function escapeCsv(value: string | null): string {
 
 function currentYearMonth(): string {
   const d = new Date();
+  d.setUTCMonth(d.getUTCMonth() - 1);
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
 }
+
+const queryBoolean = z.preprocess((value) => {
+  if (typeof value === 'boolean') return value;
+  if (typeof value !== 'string') return value;
+
+  const normalized = value.trim().toLowerCase();
+  if (normalized === '') return undefined;
+  if (['true', '1', 'yes', 'on'].includes(normalized)) return true;
+  if (['false', '0', 'no', 'off'].includes(normalized)) return false;
+  return value;
+}, z.boolean());
 
 const SUPPORTED_METRIC_KEYS = [
   'quantitySold',
@@ -1317,13 +1436,12 @@ const salesHistoryByMonthQuerySchema = z.object({
     .optional()
     .transform((s, ctx) => {
       if (!s?.trim()) return [] as number[];
-      const parts = s.split(',').map((n) => n.trim()).filter(Boolean);
-      const nums = parts.map((p) => Number(p));
-      if (nums.some((n) => !Number.isInteger(n) || n <= 0)) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'stores must be a comma-separated list of positive integers' });
+      const parsed = parsePositiveIntegerSelection(s);
+      if (parsed.error) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: `stores must be a comma-separated list of positive integers or ranges: ${parsed.error}` });
         return z.NEVER;
       }
-      return nums;
+      return parsed.values;
     }),
   endMonth: z
     .string()
@@ -1331,15 +1449,7 @@ const salesHistoryByMonthQuerySchema = z.object({
     .optional()
     .default(currentYearMonth()),
   sortBy: z.enum(['vendor', 'category']).default('vendor'),
-  combineStores: z
-    .string()
-    .optional()
-    .transform((v) => {
-      if (v === undefined || v === '') return true;         // default ON
-      if (v === 'true' || v === '1') return true;
-      if (v === 'false' || v === '0') return false;
-      return Boolean(v);
-    }),
+  combineStores: queryBoolean.default(true),
   // v2: which metrics to emit. Comma-separated list; any unknown key is
   // dropped. Empty string / missing → defaults to just `netSales` (v1 parity).
   dataToPrint: z
@@ -1367,7 +1477,7 @@ const salesHistoryByMonthQuerySchema = z.object({
       );
     }),
   detailLevel: z.enum(['sku', 'subtotals', 'department']).default('subtotals'),
-  includePriorYear: z.coerce.boolean().default(false),
+  includePriorYear: queryBoolean.default(false),
   // Seven criteria facets — every facet is a raw RICS-grammar string and
   // optional. An empty / missing string means "no filter on this facet".
   critStores: z.string().optional(),
@@ -1377,6 +1487,25 @@ const salesHistoryByMonthQuerySchema = z.object({
   critStyleColors: z.string().optional(),
   critGroups: z.string().optional(),
   critKeywords: z.string().optional(),
+  chains: csvStringList(),
+  sectors: csvIntList(),
+  departments: csvIntList(),
+  categories: csvIntList(),
+  vendors: csvStringList(),
+  seasons: csvStringList(),
+  skus: csvStringList(),
+  groups: csvStringList(),
+  keywords: csvStringList(),
+  buyers: csvStringList(),
+  styleColor: z.string().optional(),
+  storesRaw: z.string().optional(),
+  categoriesRaw: z.string().optional(),
+  vendorsRaw: z.string().optional(),
+  seasonsRaw: z.string().optional(),
+  skusRaw: z.string().optional(),
+  groupsRaw: z.string().optional(),
+  keywordsRaw: z.string().optional(),
+  styleColorRaw: z.string().optional(),
   format: z.enum(['json', 'csv', 'xlsx']).default('json'),
 });
 
@@ -1454,7 +1583,7 @@ const METRIC_LABEL: Record<string, string> = {
   pctOfStoreNetSales: '% of Store Net Sales',
   profit: 'Profit',
   grossProfit: 'Gross Profit %',
-  beginningOnHand: 'Beginning On-Hand Qty',
+  beginningOnHand: 'Beg. of Month On Hand Qty.',
   roiPct: 'ROI %',
   turns: 'Turns',
   newSkuStoreCount: 'New SKU Store Count',
@@ -1500,7 +1629,13 @@ function formatMetricCell(key: string, v: number): string {
   if (key === 'newCarryoverSkuRatio' || key === 'newCarryoverUnitsSoldRatio') return `${v.toFixed(1)}%`;
   if (key === 'grossProfit' || key === 'pctOfStoreNetSales' || key === 'roiPct') return v.toFixed(1);
   if (key === 'turns') return v.toFixed(2);
+  if (key === 'netSales' || key === 'profit') return String(Math.round(v));
   return v.toFixed(2);
+}
+
+function formatMetricTotalCell(key: string, v: number): string {
+  if (key === 'beginningOnHand') return '';
+  return formatMetricCell(key, v);
 }
 
 router.get(
@@ -1524,6 +1659,25 @@ router.get(
         critStyleColors?: string;
         critGroups?: string;
         critKeywords?: string;
+        chains?: string[];
+        sectors?: number[];
+        departments?: number[];
+        categories?: number[];
+        vendors?: string[];
+        seasons?: string[];
+        skus?: string[];
+        groups?: string[];
+        keywords?: string[];
+        buyers?: string[];
+        styleColor?: string;
+        storesRaw?: string;
+        categoriesRaw?: string;
+        vendorsRaw?: string;
+        seasonsRaw?: string;
+        skusRaw?: string;
+        groupsRaw?: string;
+        keywordsRaw?: string;
+        styleColorRaw?: string;
         format: 'json' | 'csv' | 'xlsx';
       };
 
@@ -1539,13 +1693,18 @@ router.get(
           'beginningOnHand' | 'roiPct' | 'turns'
         )[],
         criteria: {
-          stores: query.critStores,
-          categories: query.critCategories,
-          vendors: query.critVendors,
-          seasons: query.critSeasons,
-          styleColors: query.critStyleColors,
-          groups: query.critGroups,
-          keywords: query.critKeywords,
+          stores: joinCriteriaText(undefined, query.storesRaw ?? query.critStores),
+          categories: joinCriteriaText(query.categories, query.categoriesRaw ?? query.critCategories),
+          vendors: joinCriteriaText(query.vendors, query.vendorsRaw ?? query.critVendors),
+          seasons: joinCriteriaText(query.seasons, query.seasonsRaw ?? query.critSeasons),
+          skus: joinCriteriaText(query.skus, query.skusRaw),
+          styleColors: joinCriteriaText(undefined, query.styleColorRaw ?? query.critStyleColors, query.styleColor),
+          groups: joinCriteriaText(query.groups, query.groupsRaw ?? query.critGroups),
+          keywords: joinCriteriaText(query.keywords, query.keywordsRaw ?? query.critKeywords),
+          chains: query.chains,
+          sectors: query.sectors,
+          departments: query.departments,
+          buyers: query.buyers,
         },
       });
 
@@ -1554,6 +1713,42 @@ router.get(
       // by the metric's display name so the output self-describes even when
       // the caller selects an arbitrary combination of metrics.
       const metrics = report.dataToPrint as string[];
+      const filenameCriteria = [
+        effectiveStoresFilenamePart(query.stores),
+        { value: report.endMonth, includeIfDefault: true },
+        { value: query.sortBy, includeIfDefault: true },
+        { value: query.detailLevel, includeIfDefault: true },
+        { value: query.combineStores ? undefined : 'split' },
+        { key: 'm', value: metrics, includeIfDefault: true },
+        { key: 'defer', value: query.deferredMetrics },
+        { value: query.includePriorYear ? 'py' : undefined },
+        { key: 'scrit', value: query.critStores },
+        { key: 'catcrit', value: query.critCategories },
+        { key: 'vcrit', value: query.critVendors },
+        { key: 'seacrit', value: query.critSeasons },
+        { key: 'stylecrit', value: query.critStyleColors },
+        { key: 'grpcrit', value: query.critGroups },
+        { key: 'kwcrit', value: query.critKeywords },
+        { key: 'ch', value: query.chains },
+        { key: 'sec', value: query.sectors },
+        { key: 'dep', value: query.departments },
+        { key: 'cat', value: query.categories },
+        { key: 'v', value: query.vendors },
+        { key: 'sea', value: query.seasons },
+        { key: 'sku', value: query.skus },
+        { key: 'grp', value: query.groups },
+        { key: 'kw', value: query.keywords },
+        { key: 'buyer', value: query.buyers },
+        { key: 'style', value: query.styleColor },
+        { key: 'sraw', value: query.storesRaw },
+        { key: 'catraw', value: query.categoriesRaw },
+        { key: 'vraw', value: query.vendorsRaw },
+        { key: 'searaw', value: query.seasonsRaw },
+        { key: 'skuraw', value: query.skusRaw },
+        { key: 'grpraw', value: query.groupsRaw },
+        { key: 'kwraw', value: query.keywordsRaw },
+        { key: 'styleraw', value: query.styleColorRaw },
+      ];
 
       if (query.format === 'csv') {
         const sortKeyLabel =
@@ -1577,25 +1772,25 @@ router.get(
             const header = ['Key', 'Label', ...report.months, 'Total'];
             lines.push(header.map((h) => escapeCsv(h)).join(','));
             for (const row of block.rows) {
-              const series = row.metrics[metric as salesReportFacade.MonthlyMetricKey] ?? new Array(12).fill(0);
+              const series = row.metrics[metric as salesReportFacade.MonthlyMetricKey] ?? new Array(report.months.length).fill(0);
               const total = row.totals[metric as salesReportFacade.MonthlyMetricKey] ?? 0;
               lines.push(
                 [
                   escapeCsv(row.key),
                   escapeCsv(row.label),
                   ...series.map((v) => formatMetricCell(metric, v)),
-                  formatMetricCell(metric, total),
+                  formatMetricTotalCell(metric, total),
                 ].join(','),
               );
             }
-            const colTotals = block.columnTotals[metric as salesReportFacade.MonthlyMetricKey] ?? new Array(12).fill(0);
+            const colTotals = block.columnTotals[metric as salesReportFacade.MonthlyMetricKey] ?? new Array(report.months.length).fill(0);
             const grandTotal = block.grandTotals[metric as salesReportFacade.MonthlyMetricKey] ?? 0;
             lines.push(
               [
                 escapeCsv('Totals'),
                 '',
                 ...colTotals.map((v) => formatMetricCell(metric, v)),
-                formatMetricCell(metric, grandTotal),
+                formatMetricTotalCell(metric, grandTotal),
               ].join(','),
             );
             if (report.priorYearMonths?.length) {
@@ -1611,7 +1806,7 @@ router.get(
                     escapeCsv(row.key),
                     escapeCsv(row.label),
                     ...series.map((v) => formatMetricCell(metric, v)),
-                    formatMetricCell(metric, total),
+                    formatMetricTotalCell(metric, total),
                   ].join(','),
                 );
               }
@@ -1623,7 +1818,7 @@ router.get(
                     escapeCsv('Totals'),
                     '',
                     ...colTotals.map((v) => formatMetricCell(metric, v)),
-                    formatMetricCell(metric, grandTotal),
+                    formatMetricTotalCell(metric, grandTotal),
                   ].join(','),
                 );
               }
@@ -1636,7 +1831,7 @@ router.get(
         res.setHeader('Content-Type', 'text/csv');
         res.setHeader(
           'Content-Disposition',
-          `attachment; filename="rics-sales-history-by-month-${report.endMonth}.csv"`,
+          `attachment; filename="${reportExportFilename('SHBM', 'csv', filenameCriteria)}"`,
         );
         res.send(csv);
         return;
@@ -1664,22 +1859,22 @@ router.get(
               label: '',
             });
             for (const row of block.rows) {
-              const series = row.metrics[metric as salesReportFacade.MonthlyMetricKey] ?? new Array(12).fill(0);
+              const series = row.metrics[metric as salesReportFacade.MonthlyMetricKey] ?? new Array(months.length).fill(0);
               const total = row.totals[metric as salesReportFacade.MonthlyMetricKey] ?? 0;
               const rec: Record<string, unknown> = { key: row.key, label: row.label };
               months.forEach((m, i) => {
                 rec[`m_${m}`] = series[i];
               });
-              rec.total = total;
+              rec.total = metric === 'beginningOnHand' ? '' : total;
               rows.push(rec);
             }
-            const colTotals = block.columnTotals[metric as salesReportFacade.MonthlyMetricKey] ?? new Array(12).fill(0);
+            const colTotals = block.columnTotals[metric as salesReportFacade.MonthlyMetricKey] ?? new Array(months.length).fill(0);
             const grandTotal = block.grandTotals[metric as salesReportFacade.MonthlyMetricKey] ?? 0;
             const totalsRec: Record<string, unknown> = { key: 'Totals', label: '' };
             months.forEach((m, i) => {
               totalsRec[`m_${m}`] = colTotals[i];
             });
-            totalsRec.total = grandTotal;
+            totalsRec.total = metric === 'beginningOnHand' ? '' : grandTotal;
             rows.push(totalsRec);
             if (report.priorYearMonths?.length) {
               rows.push({
@@ -1694,7 +1889,7 @@ router.get(
                 months.forEach((m, i) => {
                   rec[`m_${m}`] = series[i];
                 });
-                rec.total = total;
+                rec.total = metric === 'beginningOnHand' ? '' : total;
                 rows.push(rec);
               }
               const priorTotals = block.priorYearColumnTotals?.[metric as salesReportFacade.MonthlyMetricKey];
@@ -1703,7 +1898,9 @@ router.get(
                 months.forEach((m, i) => {
                   priorTotalsRec[`m_${m}`] = priorTotals[i];
                 });
-                priorTotalsRec.total = block.priorYearGrandTotals?.[metric as salesReportFacade.MonthlyMetricKey] ?? 0;
+                priorTotalsRec.total = metric === 'beginningOnHand'
+                  ? ''
+                  : block.priorYearGrandTotals?.[metric as salesReportFacade.MonthlyMetricKey] ?? 0;
                 rows.push(priorTotalsRec);
               }
             }
@@ -1730,7 +1927,7 @@ router.get(
           };
         });
         await sendXlsx(res, {
-          filename: `rics-sales-history-by-month-${report.endMonth}.xlsx`,
+          filename: reportExportFilename('SHBM', 'xlsx', filenameCriteria),
           sheets,
         });
         return;

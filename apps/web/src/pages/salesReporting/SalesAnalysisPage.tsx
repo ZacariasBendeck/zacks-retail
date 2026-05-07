@@ -1,8 +1,8 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import {
-  Alert, Checkbox, Radio, Select, Space, Table, Tag, Tooltip, Typography, Spin,
+  Alert, Button, Checkbox, Radio, Select, Space, Table, Tag, Tooltip, Typography, Spin,
 } from 'antd'
-import { QuestionCircleOutlined } from '@ant-design/icons'
+import { DownloadOutlined, FileExcelOutlined, QuestionCircleOutlined } from '@ant-design/icons'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { useSalesAnalysis, useSalesDimensions, type SalesAnalysisArgs } from '../../hooks/useReports'
@@ -11,6 +11,7 @@ import type {
   SalesAnalysisRow,
   SalesAnalysisReport,
 } from '../../services/reportApi'
+import { getSalesAnalysisCsvUrl, getSalesAnalysisXlsxUrl } from '../../services/reportApi'
 import { getErrorMessage } from '../../utils/errors'
 import RunReportControls from './RunReportControls'
 import CriteriaInput from './CriteriaInput'
@@ -30,6 +31,16 @@ import {
 import { useReportTemplate, useTouchReportTemplate } from '../../hooks/useReportTemplates'
 import ReportThumbnail from '../../components/reports/ReportThumbnail'
 import { SkuLink } from '../../components/sku-link'
+import {
+  ReportCriteriaPanel,
+  type ReportCriteriaState,
+} from '../../components/reports/ReportCriteriaPanel'
+import {
+  SALES_ANALYSIS_NUMERIC_SORT_DIRECTIONS,
+  SALES_ANALYSIS_TEXT_SORT_DIRECTIONS,
+  salesAnalysisNumberSorter,
+  salesAnalysisTextSorter,
+} from '../../components/reports/salesAnalysisSorters'
 
 const { Text } = Typography
 
@@ -96,13 +107,19 @@ interface SalesAnalysisTreeNode {
   unitsOnHand: number
   inventoryUnitCost: number | null
   onHandAtCost: number
+  turnsRoiInventoryValue: number
   turns: number | null
   roiPct: number | null
   onOrderQty: number
   onOrderUnitCost: number | null
   onOrderCost: number
+  priorYearQty: number | null
   priorYearNetSales: number | null
   pyPctChange: number | null
+  priorYearGrossProfit: number | null
+  pyGrossProfitPctChange: number | null
+  priorYearOnHandAtCost: number | null
+  pyOnHandPctChange: number | null
   children?: SalesAnalysisTreeNode[]
 }
 
@@ -116,13 +133,19 @@ type SalesAnalysisMeasures = Pick<
   | 'unitsOnHand'
   | 'inventoryUnitCost'
   | 'onHandAtCost'
+  | 'turnsRoiInventoryValue'
   | 'turns'
   | 'roiPct'
   | 'onOrderQty'
   | 'onOrderUnitCost'
   | 'onOrderCost'
+  | 'priorYearQty'
   | 'priorYearNetSales'
   | 'pyPctChange'
+  | 'priorYearGrossProfit'
+  | 'pyGrossProfitPctChange'
+  | 'priorYearOnHandAtCost'
+  | 'pyOnHandPctChange'
 >
 
 function emptyAnalysisMeasures(): SalesAnalysisMeasures {
@@ -135,34 +158,49 @@ function emptyAnalysisMeasures(): SalesAnalysisMeasures {
     unitsOnHand: 0,
     inventoryUnitCost: null,
     onHandAtCost: 0,
+    turnsRoiInventoryValue: 0,
     turns: null,
     roiPct: null,
     onOrderQty: 0,
     onOrderUnitCost: null,
     onOrderCost: 0,
+    priorYearQty: null,
     priorYearNetSales: null,
     pyPctChange: null,
+    priorYearGrossProfit: null,
+    pyGrossProfitPctChange: null,
+    priorYearOnHandAtCost: null,
+    pyOnHandPctChange: null,
   }
 }
 
-function recomputeAnalysisRatios(node: SalesAnalysisMeasures, periodDays: number): void {
+function priorYearPctChange(current: number, prior: number | null): number | null {
+  if (prior == null) return null
+  if (prior === 0) return 0
+  return Math.round(((current - prior) / prior) * 1000) / 10
+}
+
+function recomputeAnalysisRatios(
+  node: SalesAnalysisMeasures,
+  periodDays: number,
+  turnsRoiAnnualizer: number,
+): void {
   node.gpPct = node.netSales === 0 ? null : Math.round((node.grossProfit / node.netSales) * 1000) / 10
   node.inventoryUnitCost =
     node.unitsOnHand === 0 ? null : Math.round((node.onHandAtCost / node.unitsOnHand) * 100) / 100
-  if (node.onHandAtCost === 0 || periodDays <= 0) {
+  const turnsRoiInventoryValue = node.turnsRoiInventoryValue || node.onHandAtCost
+  if (turnsRoiInventoryValue <= 0 || periodDays <= 0 || turnsRoiAnnualizer <= 0) {
     node.turns = null
     node.roiPct = null
   } else {
-    const annualFactor = 365 / periodDays
-    node.turns = Math.round(((node.cogs / node.onHandAtCost) * annualFactor) * 10) / 10
-    node.roiPct = Math.round(((node.grossProfit / node.onHandAtCost) * annualFactor) * 10) / 10
+    node.turns = Math.round(((node.cogs / turnsRoiInventoryValue) * turnsRoiAnnualizer) * 10) / 10
+    node.roiPct = Math.round(((node.grossProfit / turnsRoiInventoryValue) * turnsRoiAnnualizer) * 10) / 10
   }
   node.onOrderUnitCost =
     node.onOrderQty === 0 ? null : Math.round((node.onOrderCost / node.onOrderQty) * 100) / 100
-  node.pyPctChange =
-    node.priorYearNetSales == null || node.priorYearNetSales === 0
-      ? null
-      : Math.round(((node.netSales - node.priorYearNetSales) / node.priorYearNetSales) * 1000) / 10
+  node.pyPctChange = priorYearPctChange(node.netSales, node.priorYearNetSales)
+  node.pyGrossProfitPctChange = priorYearPctChange(node.grossProfit, node.priorYearGrossProfit)
+  node.pyOnHandPctChange = priorYearPctChange(node.onHandAtCost, node.priorYearOnHandAtCost)
 }
 
 function addAnalysisMeasures(into: SalesAnalysisMeasures, row: SalesAnalysisMeasures): void {
@@ -172,9 +210,13 @@ function addAnalysisMeasures(into: SalesAnalysisMeasures, row: SalesAnalysisMeas
   into.grossProfit += row.grossProfit
   into.unitsOnHand += row.unitsOnHand
   into.onHandAtCost += row.onHandAtCost
+  into.turnsRoiInventoryValue += row.turnsRoiInventoryValue
   into.onOrderQty += row.onOrderQty
   into.onOrderCost += row.onOrderCost
+  into.priorYearQty = (into.priorYearQty ?? 0) + (row.priorYearQty ?? 0)
   into.priorYearNetSales = (into.priorYearNetSales ?? 0) + (row.priorYearNetSales ?? 0)
+  into.priorYearGrossProfit = (into.priorYearGrossProfit ?? 0) + (row.priorYearGrossProfit ?? 0)
+  into.priorYearOnHandAtCost = (into.priorYearOnHandAtCost ?? 0) + (row.priorYearOnHandAtCost ?? 0)
 }
 
 function percentOfTotal(value: number, total: number | null | undefined): number | null {
@@ -182,7 +224,11 @@ function percentOfTotal(value: number, total: number | null | undefined): number
   return Math.round((value / total) * 1000) / 10
 }
 
-function aggregateChainLeaves(leaves: SalesAnalysisRow[], periodDays: number): SalesAnalysisRow[] {
+function aggregateChainLeaves(
+  leaves: SalesAnalysisRow[],
+  periodDays: number,
+  turnsRoiAnnualizer: number,
+): SalesAnalysisRow[] {
   const bySku = new Map<string, SalesAnalysisRow & SalesAnalysisMeasures>()
   for (const leaf of leaves) {
     const existing = bySku.get(leaf.dimensionKey)
@@ -190,9 +236,17 @@ function aggregateChainLeaves(leaves: SalesAnalysisRow[], periodDays: number): S
       bySku.set(leaf.dimensionKey, {
         ...leaf,
         storeNumber: null,
+        turnsRoiInventoryValue: leaf.turnsRoiInventoryValue ?? leaf.onHandAtCost,
         onOrderQty: leaf.onOrderQty ?? 0,
         onOrderUnitCost: leaf.onOrderUnitCost ?? null,
         onOrderCost: leaf.onOrderCost ?? 0,
+        priorYearQty: leaf.priorYearQty ?? null,
+        priorYearNetSales: leaf.priorYearNetSales ?? null,
+        pyPctChange: leaf.pyPctChange ?? null,
+        priorYearGrossProfit: leaf.priorYearGrossProfit ?? null,
+        pyGrossProfitPctChange: leaf.pyGrossProfitPctChange ?? null,
+        priorYearOnHandAtCost: leaf.priorYearOnHandAtCost ?? null,
+        pyOnHandPctChange: leaf.pyOnHandPctChange ?? null,
       })
       continue
     }
@@ -202,12 +256,16 @@ function aggregateChainLeaves(leaves: SalesAnalysisRow[], periodDays: number): S
     existing.grossProfit += leaf.grossProfit
     existing.unitsOnHand += leaf.unitsOnHand
     existing.onHandAtCost += leaf.onHandAtCost
+    existing.turnsRoiInventoryValue += leaf.turnsRoiInventoryValue ?? leaf.onHandAtCost
     existing.onOrderQty = (existing.onOrderQty ?? 0) + (leaf.onOrderQty ?? 0)
     existing.onOrderCost = (existing.onOrderCost ?? 0) + (leaf.onOrderCost ?? 0)
+    existing.priorYearQty = (existing.priorYearQty ?? 0) + (leaf.priorYearQty ?? 0)
     existing.priorYearNetSales = (existing.priorYearNetSales ?? 0) + (leaf.priorYearNetSales ?? 0)
+    existing.priorYearGrossProfit = (existing.priorYearGrossProfit ?? 0) + (leaf.priorYearGrossProfit ?? 0)
+    existing.priorYearOnHandAtCost = (existing.priorYearOnHandAtCost ?? 0) + (leaf.priorYearOnHandAtCost ?? 0)
   }
   for (const row of bySku.values()) {
-    recomputeAnalysisRatios(row, periodDays)
+    recomputeAnalysisRatios(row, periodDays, turnsRoiAnnualizer)
   }
   return [...bySku.values()]
 }
@@ -254,6 +312,7 @@ function buildSalesAnalysisTree(
   rows: SalesAnalysisRow[],
   levels: [SalesAnalysisHierarchyDimension, SalesAnalysisHierarchyDimension],
   periodDays: number,
+  turnsRoiAnnualizer: number,
 ): SalesAnalysisTreeNode[] {
   interface Bucket {
     key: string
@@ -304,13 +363,19 @@ function buildSalesAnalysisTree(
       unitsOnHand: row.unitsOnHand,
       inventoryUnitCost: row.inventoryUnitCost,
       onHandAtCost: row.onHandAtCost,
+      turnsRoiInventoryValue: row.turnsRoiInventoryValue ?? row.onHandAtCost,
       turns: row.turns,
       roiPct: row.roiPct,
       onOrderQty: row.onOrderQty ?? 0,
       onOrderUnitCost: row.onOrderUnitCost ?? null,
       onOrderCost: row.onOrderCost ?? 0,
+      priorYearQty: row.priorYearQty ?? null,
       priorYearNetSales: row.priorYearNetSales,
       pyPctChange: row.pyPctChange,
+      priorYearGrossProfit: row.priorYearGrossProfit ?? null,
+      pyGrossProfitPctChange: row.pyGrossProfitPctChange ?? null,
+      priorYearOnHandAtCost: row.priorYearOnHandAtCost ?? null,
+      pyOnHandPctChange: row.pyOnHandPctChange ?? null,
     }
   }
   const buildLevel2 = (bucket: Bucket, path: string): SalesAnalysisTreeNode => {
@@ -318,12 +383,16 @@ function buildSalesAnalysisTree(
       rowKey: `${path}/${levels[1]}:${bucket.key}`,
       label: bucket.label,
       ...emptyAnalysisMeasures(),
-      children: (shouldAggregateChainLeaves ? aggregateChainLeaves(bucket.leaves, periodDays) : bucket.leaves)
+      children: (
+        shouldAggregateChainLeaves
+          ? aggregateChainLeaves(bucket.leaves, periodDays, turnsRoiAnnualizer)
+          : bucket.leaves
+      )
         .sort((a, b) => b.netSales - a.netSales || a.dimensionKey.localeCompare(b.dimensionKey))
         .map((leaf) => buildLeaf(leaf, `${path}/${levels[1]}:${bucket.key}`)),
     }
     for (const child of row.children!) addAnalysisMeasures(row, child)
-    recomputeAnalysisRatios(row, periodDays)
+    recomputeAnalysisRatios(row, periodDays, turnsRoiAnnualizer)
     return row
   }
   const top = [...root.values()].sort(cmp).map<SalesAnalysisTreeNode>((bucket) => {
@@ -335,7 +404,7 @@ function buildSalesAnalysisTree(
     }
     row.children!.sort((a, b) => b.netSales - a.netSales)
     for (const child of row.children!) addAnalysisMeasures(row, child)
-    recomputeAnalysisRatios(row, periodDays)
+    recomputeAnalysisRatios(row, periodDays, turnsRoiAnnualizer)
     return row
   })
   top.sort((a, b) => b.netSales - a.netSales)
@@ -359,6 +428,7 @@ export default function SalesAnalysisPage() {
   const [selectedCategories, setSelectedCategories] = useState<number[]>([])
   const [selectedSeasons, setSelectedSeasons] = useState<string[]>([])
   const [selectedGroups, setSelectedGroups] = useState<string[]>([])
+  const [selectedBuyers, setSelectedBuyers] = useState<string[]>([])
   const [storesRaw, setStoresRaw] = useState('')
   const [categoriesRaw, setCategoriesRaw] = useState('')
   const [vendorsRaw, setVendorsRaw] = useState('')
@@ -422,6 +492,7 @@ export default function SalesAnalysisPage() {
     setSelectedCategories(Array.isArray(p.categories) ? p.categories : [])
     setSelectedSeasons(Array.isArray(p.seasons) ? p.seasons : [])
     setSelectedGroups(Array.isArray(p.groups) ? p.groups : [])
+    setSelectedBuyers(Array.isArray(p.buyers) ? p.buyers : [])
     setStoresRaw(p.storesRaw ?? '')
     setCategoriesRaw(p.categoriesRaw ?? '')
     setVendorsRaw(p.vendorsRaw ?? '')
@@ -451,6 +522,7 @@ export default function SalesAnalysisPage() {
       categories: Array.isArray(p.categories) && p.categories.length ? p.categories : undefined,
       seasons: Array.isArray(p.seasons) && p.seasons.length ? p.seasons : undefined,
       groups: Array.isArray(p.groups) && p.groups.length ? p.groups : undefined,
+      buyers: Array.isArray(p.buyers) && p.buyers.length ? p.buyers : undefined,
       storesRaw: p.storesRaw?.trim() || undefined,
       categoriesRaw: p.categoriesRaw?.trim() || undefined,
       vendorsRaw: p.vendorsRaw?.trim() || undefined,
@@ -494,6 +566,7 @@ export default function SalesAnalysisPage() {
       categories: selectedCategories.length ? selectedCategories : undefined,
       seasons: selectedSeasons.length ? selectedSeasons : undefined,
       groups: selectedGroups.length ? selectedGroups : undefined,
+      buyers: selectedBuyers.length ? selectedBuyers : undefined,
       storesRaw: storesRaw.trim() || undefined,
       categoriesRaw: categoriesRaw.trim() || undefined,
       vendorsRaw: vendorsRaw.trim() || undefined,
@@ -517,7 +590,12 @@ export default function SalesAnalysisPage() {
     [level1, level2],
   )
   const tree = useMemo(
-    () => (data ? buildSalesAnalysisTree(data.rows, hierarchyLevels, data.periodDays) : []),
+    () => (data ? buildSalesAnalysisTree(
+      data.rows,
+      hierarchyLevels,
+      data.periodDays,
+      data.turnsRoiAnnualizer ?? (data.periodDays > 0 ? 365 / data.periodDays : 0),
+    ) : []),
     [data, hierarchyLevels],
   )
 
@@ -528,6 +606,8 @@ export default function SalesAnalysisPage() {
       key: 'label',
       width: 420,
       fixed: 'left' as const,
+      sorter: salesAnalysisTextSorter<SalesAnalysisTreeNode>('label'),
+      sortDirections: SALES_ANALYSIS_TEXT_SORT_DIRECTIONS,
       render: (_v: string, record: SalesAnalysisTreeNode) => {
         if (!record.skuCode) return record.label
         return (
@@ -540,77 +620,115 @@ export default function SalesAnalysisPage() {
     },
     {
       title: 'On Hand Qty', dataIndex: 'unitsOnHand', key: 'unitsOnHand', width: 110, align: 'right' as const,
+      sorter: salesAnalysisNumberSorter<SalesAnalysisTreeNode>('unitsOnHand'),
+      sortDirections: SALES_ANALYSIS_NUMERIC_SORT_DIRECTIONS,
       render: (v: number) => fmtQty(v),
     },
     {
       title: 'Avg Cost', dataIndex: 'inventoryUnitCost', key: 'inventoryUnitCost', width: 100,
-      align: 'right' as const, render: (v: number | null) => fmtMoney(v),
+      align: 'right' as const,
+      sorter: salesAnalysisNumberSorter<SalesAnalysisTreeNode>('inventoryUnitCost'),
+      sortDirections: SALES_ANALYSIS_NUMERIC_SORT_DIRECTIONS,
+      render: (v: number | null) => fmtMoney(v),
     },
     {
       title: 'Total Inv Cost', dataIndex: 'onHandAtCost', key: 'onHandAtCost', width: 130,
-      align: 'right' as const, render: (v: number) => fmtMoney(v),
+      align: 'right' as const,
+      sorter: salesAnalysisNumberSorter<SalesAnalysisTreeNode>('onHandAtCost'),
+      sortDirections: SALES_ANALYSIS_NUMERIC_SORT_DIRECTIONS,
+      render: (v: number) => fmtMoney(v),
     },
     ...(query?.showPercentOfTotal
       ? [
           {
             title: '% of Total', dataIndex: 'onHandAtCost', key: 'onHandAtCostPctOfTotal', width: 100,
-            align: 'right' as const, render: (v: number) => fmtPct1(percentOfTotal(v, data?.totals.onHandAtCost)),
+            align: 'right' as const,
+            sorter: salesAnalysisNumberSorter<SalesAnalysisTreeNode>('onHandAtCost'),
+            sortDirections: SALES_ANALYSIS_NUMERIC_SORT_DIRECTIONS,
+            render: (v: number) => fmtPct1(percentOfTotal(v, data?.totals.onHandAtCost)),
           },
         ]
       : []),
     {
       title: 'Qty Sold', dataIndex: 'qty', key: 'qty', width: 90, align: 'right' as const,
+      sorter: salesAnalysisNumberSorter<SalesAnalysisTreeNode>('qty'),
+      sortDirections: SALES_ANALYSIS_NUMERIC_SORT_DIRECTIONS,
       render: (v: number) => fmtQty(v),
     },
     ...(query?.showPercentOfTotal
       ? [
           {
             title: '% of Total', dataIndex: 'qty', key: 'qtyPctOfTotal', width: 100,
-            align: 'right' as const, render: (v: number) => fmtPct1(percentOfTotal(v, data?.totals.qty)),
+            align: 'right' as const,
+            sorter: salesAnalysisNumberSorter<SalesAnalysisTreeNode>('qty'),
+            sortDirections: SALES_ANALYSIS_NUMERIC_SORT_DIRECTIONS,
+            render: (v: number) => fmtPct1(percentOfTotal(v, data?.totals.qty)),
           },
         ]
       : []),
     {
       title: 'Net Sales', dataIndex: 'netSales', key: 'netSales', width: 130,
-      align: 'right' as const, render: (v: number) => fmtMoney(v),
+      align: 'right' as const,
+      sorter: salesAnalysisNumberSorter<SalesAnalysisTreeNode>('netSales'),
+      sortDirections: SALES_ANALYSIS_NUMERIC_SORT_DIRECTIONS,
+      defaultSortOrder: 'descend' as const,
+      render: (v: number) => fmtMoney(v),
     },
     ...(query?.showPercentOfTotal
       ? [
           {
             title: '% of Total', dataIndex: 'netSales', key: 'netSalesPctOfTotal', width: 100,
-            align: 'right' as const, render: (v: number) => fmtPct1(percentOfTotal(v, data?.totals.netSales)),
+            align: 'right' as const,
+            sorter: salesAnalysisNumberSorter<SalesAnalysisTreeNode>('netSales'),
+            sortDirections: SALES_ANALYSIS_NUMERIC_SORT_DIRECTIONS,
+            render: (v: number) => fmtPct1(percentOfTotal(v, data?.totals.netSales)),
           },
         ]
       : []),
     {
       title: 'COGS', dataIndex: 'cogs', key: 'cogs', width: 130,
-      align: 'right' as const, render: (v: number) => fmtMoney(v),
+      align: 'right' as const,
+      sorter: salesAnalysisNumberSorter<SalesAnalysisTreeNode>('cogs'),
+      sortDirections: SALES_ANALYSIS_NUMERIC_SORT_DIRECTIONS,
+      render: (v: number) => fmtMoney(v),
     },
     {
       title: 'Gross Profit', dataIndex: 'grossProfit', key: 'grossProfit', width: 130,
-      align: 'right' as const, render: (v: number) => fmtMoney(v),
+      align: 'right' as const,
+      sorter: salesAnalysisNumberSorter<SalesAnalysisTreeNode>('grossProfit'),
+      sortDirections: SALES_ANALYSIS_NUMERIC_SORT_DIRECTIONS,
+      render: (v: number) => fmtMoney(v),
     },
     ...(query?.showPercentOfTotal
       ? [
           {
             title: '% of Total', dataIndex: 'grossProfit', key: 'grossProfitPctOfTotal', width: 100,
-            align: 'right' as const, render: (v: number) => fmtPct1(percentOfTotal(v, data?.totals.grossProfit)),
+            align: 'right' as const,
+            sorter: salesAnalysisNumberSorter<SalesAnalysisTreeNode>('grossProfit'),
+            sortDirections: SALES_ANALYSIS_NUMERIC_SORT_DIRECTIONS,
+            render: (v: number) => fmtPct1(percentOfTotal(v, data?.totals.grossProfit)),
           },
         ]
       : []),
     {
       title: 'GP %', dataIndex: 'gpPct', key: 'gpPct', width: 90,
       align: 'right' as const,
+      sorter: salesAnalysisNumberSorter<SalesAnalysisTreeNode>('gpPct'),
+      sortDirections: SALES_ANALYSIS_NUMERIC_SORT_DIRECTIONS,
       render: (v: number | null) => <GpBadge value={v} />,
     },
     {
       title: 'Turns', dataIndex: 'turns', key: 'turns', width: 80,
       align: 'right' as const,
+      sorter: salesAnalysisNumberSorter<SalesAnalysisTreeNode>('turns'),
+      sortDirections: SALES_ANALYSIS_NUMERIC_SORT_DIRECTIONS,
       render: (v: number | null) => fmtPctBare1(v),
     },
     {
       title: 'ROI', dataIndex: 'roiPct', key: 'roiPct', width: 90,
       align: 'right' as const,
+      sorter: salesAnalysisNumberSorter<SalesAnalysisTreeNode>('roiPct'),
+      sortDirections: SALES_ANALYSIS_NUMERIC_SORT_DIRECTIONS,
       // ROI thresholds differ from GP% (5× / 2×) — custom inline Tag stays
       // because the shared badge maps to GP-style percent thresholds.
       render: (v: number | null) =>
@@ -619,13 +737,52 @@ export default function SalesAnalysisPage() {
     ...(query?.priorYear
       ? [
           {
-            title: 'Prior Yr Net', dataIndex: 'priorYearNetSales', key: 'priorYearNetSales', width: 130,
+            title: 'PY Qty', dataIndex: 'priorYearQty', key: 'priorYearQty', width: 90,
             align: 'right' as const,
+            sorter: salesAnalysisNumberSorter<SalesAnalysisTreeNode>('priorYearQty'),
+            sortDirections: SALES_ANALYSIS_NUMERIC_SORT_DIRECTIONS,
+            render: (v: number | null) => fmtQty(v ?? 0),
+          },
+          {
+            title: 'PY Sales', dataIndex: 'priorYearNetSales', key: 'priorYearNetSales', width: 130,
+            align: 'right' as const,
+            sorter: salesAnalysisNumberSorter<SalesAnalysisTreeNode>('priorYearNetSales'),
+            sortDirections: SALES_ANALYSIS_NUMERIC_SORT_DIRECTIONS,
             render: (v: number | null) => fmtMoney(v),
           },
           {
-            title: 'PY % Δ', dataIndex: 'pyPctChange', key: 'pyPctChange', width: 90,
+            title: 'PY Sales % Δ', dataIndex: 'pyPctChange', key: 'pyPctChange', width: 120,
             align: 'right' as const,
+            sorter: salesAnalysisNumberSorter<SalesAnalysisTreeNode>('pyPctChange'),
+            sortDirections: SALES_ANALYSIS_NUMERIC_SORT_DIRECTIONS,
+            render: (v: number | null) => <ChangePctBadge value={v} />,
+          },
+          {
+            title: 'PY Profit', dataIndex: 'priorYearGrossProfit', key: 'priorYearGrossProfit', width: 130,
+            align: 'right' as const,
+            sorter: salesAnalysisNumberSorter<SalesAnalysisTreeNode>('priorYearGrossProfit'),
+            sortDirections: SALES_ANALYSIS_NUMERIC_SORT_DIRECTIONS,
+            render: (v: number | null) => fmtMoney(v),
+          },
+          {
+            title: 'PY Profit % Δ', dataIndex: 'pyGrossProfitPctChange', key: 'pyGrossProfitPctChange', width: 120,
+            align: 'right' as const,
+            sorter: salesAnalysisNumberSorter<SalesAnalysisTreeNode>('pyGrossProfitPctChange'),
+            sortDirections: SALES_ANALYSIS_NUMERIC_SORT_DIRECTIONS,
+            render: (v: number | null) => <ChangePctBadge value={v} />,
+          },
+          {
+            title: 'PY On Hand', dataIndex: 'priorYearOnHandAtCost', key: 'priorYearOnHandAtCost', width: 130,
+            align: 'right' as const,
+            sorter: salesAnalysisNumberSorter<SalesAnalysisTreeNode>('priorYearOnHandAtCost'),
+            sortDirections: SALES_ANALYSIS_NUMERIC_SORT_DIRECTIONS,
+            render: (v: number | null) => fmtMoney(v),
+          },
+          {
+            title: 'PY On Hand % Δ', dataIndex: 'pyOnHandPctChange', key: 'pyOnHandPctChange', width: 130,
+            align: 'right' as const,
+            sorter: salesAnalysisNumberSorter<SalesAnalysisTreeNode>('pyOnHandPctChange'),
+            sortDirections: SALES_ANALYSIS_NUMERIC_SORT_DIRECTIONS,
             render: (v: number | null) => <ChangePctBadge value={v} />,
           },
         ]
@@ -635,16 +792,22 @@ export default function SalesAnalysisPage() {
           {
             title: 'On Order Qty', dataIndex: 'onOrderQty', key: 'onOrderQty', width: 120,
             align: 'right' as const,
+            sorter: salesAnalysisNumberSorter<SalesAnalysisTreeNode>('onOrderQty'),
+            sortDirections: SALES_ANALYSIS_NUMERIC_SORT_DIRECTIONS,
             render: (v: number) => fmtQty(v),
           },
           {
             title: 'Landed Cost/Unit', dataIndex: 'onOrderUnitCost', key: 'onOrderUnitCost', width: 140,
             align: 'right' as const,
+            sorter: salesAnalysisNumberSorter<SalesAnalysisTreeNode>('onOrderUnitCost'),
+            sortDirections: SALES_ANALYSIS_NUMERIC_SORT_DIRECTIONS,
             render: (v: number | null) => fmtMoney(v),
           },
           {
             title: 'Total Order Cost', dataIndex: 'onOrderCost', key: 'onOrderCost', width: 140,
             align: 'right' as const,
+            sorter: salesAnalysisNumberSorter<SalesAnalysisTreeNode>('onOrderCost'),
+            sortDirections: SALES_ANALYSIS_NUMERIC_SORT_DIRECTIONS,
             render: (v: number) => fmtMoney(v),
           },
         ]
@@ -656,6 +819,58 @@ export default function SalesAnalysisPage() {
       ? 'SEPARATE'
       : storeOption
   const currentHierarchyDescriptor = hierarchyDescriptor(level1, level2)
+  const csvUrl = query ? getSalesAnalysisCsvUrl(query) : undefined
+  const xlsxUrl = query ? getSalesAnalysisXlsxUrl(query) : undefined
+  const sharedCriteria: ReportCriteriaState = {
+    stores: selectedStores,
+    chains: selectedChains,
+    sectors: selectedSectors,
+    departments: selectedDepartments,
+    categories: selectedCategories,
+    vendors: [],
+    seasons: selectedSeasons,
+    skus: [],
+    groups: selectedGroups,
+    keywords: [],
+    buyers: selectedBuyers,
+    styleColor: '',
+    storesRaw,
+    categoriesRaw,
+    vendorsRaw,
+    seasonsRaw,
+    skusRaw,
+    groupsRaw,
+    keywordsRaw,
+    styleColorRaw,
+  }
+  const updateSharedCriteria = <K extends keyof ReportCriteriaState>(
+    key: K,
+    value: ReportCriteriaState[K],
+  ) => {
+    switch (key) {
+      case 'stores': setSelectedStores(value as number[]); break
+      case 'chains': setSelectedChains(value as string[]); break
+      case 'sectors': setSelectedSectors(value as number[]); break
+      case 'departments': setSelectedDepartments(value as number[]); break
+      case 'categories': setSelectedCategories(value as number[]); break
+      case 'seasons': setSelectedSeasons(value as string[]); break
+      case 'groups': setSelectedGroups(value as string[]); break
+      case 'buyers': setSelectedBuyers(value as string[]); break
+      case 'storesRaw': setStoresRaw(value as string); break
+      case 'categoriesRaw': setCategoriesRaw(value as string); break
+      case 'vendorsRaw': setVendorsRaw(value as string); break
+      case 'seasonsRaw': setSeasonsRaw(value as string); break
+      case 'skusRaw': setSkusRaw(value as string); break
+      case 'groupsRaw': setGroupsRaw(value as string); break
+      case 'keywordsRaw': setKeywordsRaw(value as string); break
+      case 'styleColor':
+      case 'styleColorRaw':
+        setStyleColorRaw(value as string)
+        break
+      default:
+        break
+    }
+  }
 
   return (
     <div>
@@ -668,6 +883,16 @@ export default function SalesAnalysisPage() {
           { title: 'Sales Analysis' },
         ]}
         rightMeta={data ? `${data.rows.length.toLocaleString()} SKU ${data.rows.length === 1 ? 'row' : 'rows'}` : undefined}
+        actions={(
+          <Space>
+            <Button icon={<DownloadOutlined />} disabled={!csvUrl} href={csvUrl}>
+              Export CSV
+            </Button>
+            <Button icon={<FileExcelOutlined />} disabled={!xlsxUrl} href={xlsxUrl} data-testid="export-xlsx">
+              Export XLSX
+            </Button>
+          </Space>
+        )}
         compact
       />
 
@@ -700,6 +925,7 @@ export default function SalesAnalysisPage() {
                 categories: selectedCategories.length ? selectedCategories : undefined,
                 seasons: selectedSeasons.length ? selectedSeasons : undefined,
                 groups: selectedGroups.length ? selectedGroups : undefined,
+                buyers: selectedBuyers.length ? selectedBuyers : undefined,
                 storesRaw: storesRaw.trim() || undefined,
                 categoriesRaw: categoriesRaw.trim() || undefined,
                 vendorsRaw: vendorsRaw.trim() || undefined,
@@ -732,6 +958,7 @@ export default function SalesAnalysisPage() {
                 categories: selectedCategories.length ? selectedCategories : undefined,
                 seasons: selectedSeasons.length ? selectedSeasons : undefined,
                 groups: selectedGroups.length ? selectedGroups : undefined,
+                buyers: selectedBuyers.length ? selectedBuyers : undefined,
                 storesRaw: storesRaw.trim() || undefined,
                 categoriesRaw: categoriesRaw.trim() || undefined,
                 vendorsRaw: vendorsRaw.trim() || undefined,
@@ -759,6 +986,7 @@ export default function SalesAnalysisPage() {
                 if (selectedCategories.length) counts.push(`cats ${selectedCategories.length}`)
                 if (selectedSeasons.length) counts.push(`seasons ${selectedSeasons.length}`)
                 if (selectedGroups.length) counts.push(`groups ${selectedGroups.length}`)
+                if (selectedBuyers.length) counts.push(`buyers ${selectedBuyers.length}`)
                 if (vendorsRaw.trim()) counts.push('vendors')
                 if (seasonsRaw.trim()) counts.push('season grammar')
                 if (styleColorRaw.trim()) counts.push('style/color')
@@ -837,6 +1065,14 @@ export default function SalesAnalysisPage() {
             Choose two different hierarchy levels.
           </Text>
         ) : null}
+        <ReportCriteriaPanel
+          value={sharedCriteria}
+          onChange={updateSharedCriteria}
+          dimensions={dims}
+          loading={dimsLoading}
+          title="Criteria"
+        />
+        {false && (
         <div className="sales-analysis-criteria-panel">
           <div className="sales-analysis-criteria-title">
             <Text strong>Criteria</Text>
@@ -992,8 +1228,24 @@ export default function SalesAnalysisPage() {
               hideDropdown
               helpText="Wildcard patterns, comma separated. e.g. 01AG25, *SUMMER*  (requires master join — coming soon)"
             />
+            <CriteriaInput
+              label="Buyers"
+              mode="string"
+              loading={dimsLoading}
+              options={(dims?.buyers ?? []).map((b) => ({
+                value: b.code,
+                label: b.label ? `${b.code} - ${b.label}` : b.code,
+              }))}
+              selected={selectedBuyers}
+              onSelectedChange={setSelectedBuyers}
+              rawText=""
+              onRawTextChange={() => {}}
+              hideGrammar
+              helpText="Buyer uses the SKU extended attribute dimension."
+            />
           </div>
         </div>
+        )}
       </CollapsibleFilterCard>
 
       <div ref={resultRef} style={{ scrollMarginTop: 12 }}>
@@ -1037,6 +1289,7 @@ export default function SalesAnalysisPage() {
             query.categories?.length ? { label: 'Categories in', value: `${query.categories.length} selected` } : null,
             query.seasons?.length ? { label: 'Seasons in', value: `${query.seasons.length} selected` } : null,
             query.groups?.length ? { label: 'Groups in', value: `${query.groups.length} selected` } : null,
+            query.buyers?.length ? { label: 'Buyers in', value: `${query.buyers.length} selected` } : null,
             chipFromRaw('Stores', query.storesRaw),
             chipFromRaw('Categories', query.categoriesRaw),
             chipFromRaw('Vendors', query.vendorsRaw),
@@ -1054,7 +1307,7 @@ export default function SalesAnalysisPage() {
           size="small"
           pagination={{ pageSize: 50 }}
           expandable={{ defaultExpandAllRows: false }}
-          scroll={{ x: (query.priorYear ? 1620 : 1380) + (query.showPercentOfTotal ? 400 : 0) + (query.includeOnOrder ? 400 : 0) }}
+          scroll={{ x: (query.priorYear ? 2220 : 1380) + (query.showPercentOfTotal ? 400 : 0) + (query.includeOnOrder ? 400 : 0) }}
           summary={() => {
             const t = data.totals
             const numericCells = buildSalesAnalysisSummaryCells(t, {
@@ -1062,7 +1315,7 @@ export default function SalesAnalysisPage() {
               includeOnOrder: !!query.includeOnOrder,
               showPercentOfTotal: !!query.showPercentOfTotal,
             })
-            const onOrderStartIndex = query.priorYear ? 13 : 11
+            const onOrderStartIndex = query.priorYear ? 18 : 11
             return (
               <Table.Summary fixed>
                 <Table.Summary.Row>
@@ -1155,8 +1408,13 @@ function buildSalesAnalysisSummaryCells(
   addCell(fmtPctBare1(t.turns))
   addCell(t.roiPct == null ? DASH : `${fmtPctBare1(t.roiPct)}Ã—`)
   if (options.priorYear) {
+    addCell(fmtQty(t.priorYearQty ?? 0))
     addCell(fmtMoney(t.priorYearNetSales))
-    addCell(DASH)
+    addCell(<ChangePctBadge value={t.pyPctChange ?? null} />)
+    addCell(fmtMoney(t.priorYearGrossProfit))
+    addCell(<ChangePctBadge value={t.pyGrossProfitPctChange ?? null} />)
+    addCell(fmtMoney(t.priorYearOnHandAtCost))
+    addCell(<ChangePctBadge value={t.pyOnHandPctChange ?? null} />)
   }
   if (options.includeOnOrder) {
     addCell(fmtQty(t.onOrderQty ?? 0))

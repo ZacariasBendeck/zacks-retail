@@ -130,10 +130,10 @@ function setLifecycleRows(rows: MonthlySkuLifecycleCountRow[]): void {
 }
 
 // ══════════════════════════════════════════════════════════════════════════
-// 12-month window math
+// RICS 13-column window math (comparison month + trailing 12-month total window)
 // ══════════════════════════════════════════════════════════════════════════
 
-describe('getSalesHistoryByMonth — 12-month window', () => {
+describe('getSalesHistoryByMonth - RICS month window', () => {
   const ORIGINAL_SOURCE = process.env.SALES_SOURCE;
   beforeAll(() => { process.env.SALES_SOURCE = 'rics'; });
   afterAll(() => {
@@ -143,42 +143,42 @@ describe('getSalesHistoryByMonth — 12-month window', () => {
 
   beforeEach(() => setAdapterRows([]));
 
-  it('computes a trailing 12-month window ending at a mid-year month', async () => {
+  it('computes a comparison month plus trailing 12-month window ending at a mid-year month', async () => {
     const report = await facade.getSalesHistoryByMonth({
       storeNumbers: [2],
       endYearMonth: '2026-07',
       sortBy: 'vendor',
       combineStores: true,
     });
-    expect(report.months).toHaveLength(12);
-    expect(report.months[0]).toBe('2025-08');
-    expect(report.months[11]).toBe('2026-07');
+    expect(report.months).toHaveLength(13);
+    expect(report.months[0]).toBe('2025-07');
+    expect(report.months[12]).toBe('2026-07');
     expect(report.endMonth).toBe('2026-07');
     expect(monthlyAdapter.queryMonthlyMeasures).toHaveBeenCalledWith(
-      expect.objectContaining({ fromYearMonth: '2025-08', toYearMonth: '2026-07', sortBy: 'vendor' }),
+      expect.objectContaining({ fromYearMonth: '2025-07', toYearMonth: '2026-07', sortBy: 'vendor' }),
     );
   });
 
-  it('computes a trailing 12-month window ending in December (same-year span)', async () => {
+  it('computes a comparison month plus trailing window ending in December', async () => {
     const report = await facade.getSalesHistoryByMonth({
       storeNumbers: [2],
       endYearMonth: '2026-12',
       sortBy: 'vendor',
       combineStores: true,
     });
-    expect(report.months[0]).toBe('2026-01');
-    expect(report.months[11]).toBe('2026-12');
+    expect(report.months[0]).toBe('2025-12');
+    expect(report.months[12]).toBe('2026-12');
   });
 
-  it('computes a trailing 12-month window ending in January (prior-year Feb start)', async () => {
+  it('computes a comparison month plus trailing window ending in January', async () => {
     const report = await facade.getSalesHistoryByMonth({
       storeNumbers: [2],
       endYearMonth: '2026-01',
       sortBy: 'vendor',
       combineStores: true,
     });
-    expect(report.months[0]).toBe('2025-02');
-    expect(report.months[11]).toBe('2026-01');
+    expect(report.months[0]).toBe('2025-01');
+    expect(report.months[12]).toBe('2026-01');
   });
 });
 
@@ -216,16 +216,16 @@ describe('getSalesHistoryByMonth — pivot (netSales default)', () => {
 
     expect(report.blocks[0].rows.map((r: any) => r.key)).toEqual(['ADIDAS', 'NIKE']);
     const nike = report.blocks[0].rows.find((r: any) => r.key === 'NIKE');
-    expect(nike.metrics.netSales[11]).toBe(150);            // 100 + 50 April
-    expect(nike.metrics.netSales[10]).toBe(40);             // March
+    expect(nike.metrics.netSales[12]).toBe(150);            // 100 + 50 April
+    expect(nike.metrics.netSales[11]).toBe(40);             // March
     expect(nike.totals.netSales).toBe(190);
 
     const adidas = report.blocks[0].rows.find((r: any) => r.key === 'ADIDAS');
-    expect(adidas.metrics.netSales[11]).toBe(25);
+    expect(adidas.metrics.netSales[12]).toBe(25);
     expect(adidas.totals.netSales).toBe(25);
 
-    expect(report.blocks[0].columnTotals.netSales[11]).toBe(175);
-    expect(report.blocks[0].columnTotals.netSales[10]).toBe(40);
+    expect(report.blocks[0].columnTotals.netSales[12]).toBe(175);
+    expect(report.blocks[0].columnTotals.netSales[11]).toBe(40);
     expect(report.blocks[0].grandTotals.netSales).toBe(215);
 
     expect(report.chartSeries[0].values).toEqual(report.blocks[0].columnTotals.netSales);
@@ -250,9 +250,9 @@ describe('getSalesHistoryByMonth — pivot (netSales default)', () => {
     expect(report.blocks[1].storeNumber).toBe(13);
     expect(report.blocks[1].storeLabel).toBe('13 - TEST STORE 13');
 
-    expect(report.blocks[0].rows[0].metrics.netSales[11]).toBe(100);
+    expect(report.blocks[0].rows[0].metrics.netSales[12]).toBe(100);
     expect(report.blocks[0].grandTotals.netSales).toBe(100);
-    expect(report.blocks[1].rows[0].metrics.netSales[11]).toBe(50);
+    expect(report.blocks[1].rows[0].metrics.netSales[12]).toBe(50);
     expect(report.blocks[1].grandTotals.netSales).toBe(50);
   });
 
@@ -282,15 +282,15 @@ describe('getSalesHistoryByMonth — pivot (netSales default)', () => {
     expect(report.blocks).toHaveLength(2);
     for (const b of report.blocks) {
       expect(b.rows).toHaveLength(0);
-      expect(b.columnTotals.netSales).toHaveLength(12);
+      expect(b.columnTotals.netSales).toHaveLength(13);
       expect(b.columnTotals.netSales.every((v: number) => v === 0)).toBe(true);
       expect(b.grandTotals.netSales).toBe(0);
     }
     expect(report.chartSeries).toHaveLength(2);
-    expect(report.chartSeries[0].values).toEqual(new Array(12).fill(0));
+    expect(report.chartSeries[0].values).toEqual(new Array(13).fill(0));
   });
 
-  it('drops adapter rows outside the computed 12-month window', async () => {
+  it('drops adapter rows outside the computed RICS month window', async () => {
     setAdapterRows([
       rowOf({ yearMonth: '2024-01', netSales: 9999 }),       // outside
       rowOf({ yearMonth: '2026-04', netSales: 100  }),       // inside
@@ -331,15 +331,15 @@ describe('getSalesHistoryByMonth — multi-metric (v2)', () => {
     });
 
     const row = report.blocks[0].rows.find((r: any) => r.key === 'NIKE');
-    expect(row.metrics.quantitySold[11]).toBe(4);
-    expect(row.metrics.netSales[11]).toBe(200);
-    expect(row.metrics.profit[11]).toBe(80);                // 200 - 120
+    expect(row.metrics.quantitySold[12]).toBe(4);
+    expect(row.metrics.netSales[12]).toBe(200);
+    expect(row.metrics.profit[12]).toBe(80);                // 200 - 120
     // April GP% = (200-120)/200 = 40.0
-    expect(row.metrics.grossProfit[11]).toBeCloseTo(40, 1);
+    expect(row.metrics.grossProfit[12]).toBeCloseTo(40, 1);
     // March GP% = (100-60)/100 = 40.0
-    expect(row.metrics.grossProfit[10]).toBeCloseTo(40, 1);
+    expect(row.metrics.grossProfit[11]).toBeCloseTo(40, 1);
     // % of store in April — NIKE is the only row so it's 100.0.
-    expect(row.metrics.pctOfStoreNetSales[11]).toBeCloseTo(100, 1);
+    expect(row.metrics.pctOfStoreNetSales[12]).toBeCloseTo(100, 1);
 
     // Totals row is aggregated — grossProfit total computed from aggregated num/denom.
     expect(row.totals.netSales).toBe(300);
@@ -361,7 +361,7 @@ describe('getSalesHistoryByMonth — multi-metric (v2)', () => {
     // netSales is not projected onto the table rows…
     expect(report.blocks[0].rows[0].metrics.netSales).toBeUndefined();
     // …but the chart anchor still shows the April net sales total.
-    expect(report.chartSeries[0].values[11]).toBe(200);
+    expect(report.chartSeries[0].values[12]).toBe(200);
   });
 
   it('% of Store across two rows sums to ~100 in each month where sales exist', async () => {
@@ -378,8 +378,8 @@ describe('getSalesHistoryByMonth — multi-metric (v2)', () => {
     });
     const nike = report.blocks[0].rows.find((r: any) => r.key === 'NIKE');
     const adidas = report.blocks[0].rows.find((r: any) => r.key === 'ADIDAS');
-    expect(nike.metrics.pctOfStoreNetSales[11]).toBeCloseTo(75, 1);
-    expect(adidas.metrics.pctOfStoreNetSales[11]).toBeCloseTo(25, 1);
+    expect(nike.metrics.pctOfStoreNetSales[12]).toBeCloseTo(75, 1);
+    expect(adidas.metrics.pctOfStoreNetSales[12]).toBeCloseTo(25, 1);
   });
 
   it('uses the Postgres inventory rollup path for subtotal inventory-backed metrics', async () => {
@@ -431,8 +431,8 @@ describe('getSalesHistoryByMonth - SKU lifecycle count metrics', () => {
   beforeEach(() => setAdapterRows([]));
 
   const lifecycleMonths = [
-    '2025-05', '2025-06', '2025-07', '2025-08', '2025-09', '2025-10',
-    '2025-11', '2025-12', '2026-01', '2026-02', '2026-03', '2026-04',
+    '2025-04', '2025-05', '2025-06', '2025-07', '2025-08', '2025-09',
+    '2025-10', '2025-11', '2025-12', '2026-01', '2026-02', '2026-03', '2026-04',
   ];
 
   it('creates count-only rows when there are in-stock SKUs but no sales rows', async () => {
@@ -460,8 +460,9 @@ describe('getSalesHistoryByMonth - SKU lifecycle count metrics', () => {
     expect(monthlyAdapter.queryMonthlySkuLifecycleCounts).toHaveBeenCalledWith(
       expect.objectContaining({
         storeNumbers: [2, 13],
-        fromYearMonth: '2025-05',
+        fromYearMonth: '2025-04',
         toYearMonth: '2026-04',
+        currentYearMonth: '2026-04',
         sortBy: 'vendor',
         detailLevel: 'subtotals',
         combineStores: true,
@@ -469,15 +470,15 @@ describe('getSalesHistoryByMonth - SKU lifecycle count metrics', () => {
     );
     const row = report.blocks[0].rows[0];
     expect(row.key).toBe('NIKE');
-    expect(row.metrics.newSkuStoreCount).toEqual(new Array(12).fill(4));
-    expect(row.metrics.carryoverSkuStoreCount).toEqual(new Array(12).fill(9));
-    expect(row.metrics.newSkuDistinctCount).toEqual(new Array(12).fill(3));
-    expect(row.metrics.carryoverSkuDistinctCount).toEqual(new Array(12).fill(7));
+    expect(row.metrics.newSkuStoreCount).toEqual(new Array(13).fill(4));
+    expect(row.metrics.carryoverSkuStoreCount).toEqual(new Array(13).fill(9));
+    expect(row.metrics.newSkuDistinctCount).toEqual(new Array(13).fill(3));
+    expect(row.metrics.carryoverSkuDistinctCount).toEqual(new Array(13).fill(7));
     expect(row.totals.newSkuStoreCount).toBe(4);
     expect(row.totals.carryoverSkuDistinctCount).toBe(7);
     expect(report.blocks[0].grandTotals.newSkuStoreCount).toBe(4);
-    expect(report.blocks[0].columnTotals.carryoverSkuStoreCount).toEqual(new Array(12).fill(9));
-    expect(report.chartSeries[0].values).toEqual(new Array(12).fill(0));
+    expect(report.blocks[0].columnTotals.carryoverSkuStoreCount).toEqual(new Array(13).fill(9));
+    expect(report.chartSeries[0].values).toEqual(new Array(13).fill(0));
   });
 
   it('creates units-sold lifecycle rows without sales-measure rows', async () => {
@@ -495,10 +496,10 @@ describe('getSalesHistoryByMonth - SKU lifecycle count metrics', () => {
     });
 
     const row = report.blocks[0].rows[0];
-    expect(row.metrics.newSkuUnitsSold[10]).toBe(5);
-    expect(row.metrics.newSkuUnitsSold[11]).toBe(7);
-    expect(row.metrics.carryoverSkuUnitsSold[10]).toBe(20);
-    expect(row.metrics.carryoverSkuUnitsSold[11]).toBe(30);
+    expect(row.metrics.newSkuUnitsSold[11]).toBe(5);
+    expect(row.metrics.newSkuUnitsSold[12]).toBe(7);
+    expect(row.metrics.carryoverSkuUnitsSold[11]).toBe(20);
+    expect(row.metrics.carryoverSkuUnitsSold[12]).toBe(30);
     expect(row.totals.newSkuUnitsSold).toBe(12);
     expect(row.totals.carryoverSkuUnitsSold).toBe(50);
     expect(report.blocks[0].grandTotals.newSkuUnitsSold).toBe(12);
@@ -524,11 +525,11 @@ describe('getSalesHistoryByMonth - SKU lifecycle count metrics', () => {
     });
 
     const row = report.blocks[0].rows[0];
-    expect(row.metrics.newCarryoverSkuRatio[11]).toBe(50);
+    expect(row.metrics.newCarryoverSkuRatio[12]).toBe(50);
     expect(row.totals.newCarryoverSkuRatio).toBe(50);
-    expect(row.metrics.newCarryoverUnitsSoldRatio[11]).toBe(50);
+    expect(row.metrics.newCarryoverUnitsSoldRatio[12]).toBe(50);
     expect(row.totals.newCarryoverUnitsSoldRatio).toBe(50);
-    expect(report.blocks[0].columnTotals.newCarryoverSkuRatio[11]).toBe(50);
+    expect(report.blocks[0].columnTotals.newCarryoverSkuRatio[12]).toBe(50);
     expect(report.blocks[0].grandTotals.newCarryoverUnitsSoldRatio).toBe(50);
   });
 
@@ -547,8 +548,8 @@ describe('getSalesHistoryByMonth - SKU lifecycle count metrics', () => {
     });
 
     expect(report.blocks).toHaveLength(2);
-    expect(report.blocks[0].rows[0].metrics.newSkuStoreCount[11]).toBe(2);
-    expect(report.blocks[1].rows[0].metrics.newSkuStoreCount[11]).toBe(5);
+    expect(report.blocks[0].rows[0].metrics.newSkuStoreCount[12]).toBe(2);
+    expect(report.blocks[1].rows[0].metrics.newSkuStoreCount[12]).toBe(5);
   });
 
   it('surfaces combined store-count and distinct-count values independently', async () => {
@@ -565,8 +566,8 @@ describe('getSalesHistoryByMonth - SKU lifecycle count metrics', () => {
     });
 
     const row = report.blocks[0].rows[0];
-    expect(row.metrics.newSkuStoreCount[11]).toBe(5);
-    expect(row.metrics.newSkuDistinctCount[11]).toBe(2);
+    expect(row.metrics.newSkuStoreCount[12]).toBe(5);
+    expect(row.metrics.newSkuDistinctCount[12]).toBe(2);
   });
 
   it('groups SKU-detail lifecycle rows under vendor parents', async () => {
@@ -591,7 +592,7 @@ describe('getSalesHistoryByMonth - SKU lifecycle count metrics', () => {
     });
 
     expect(report.blocks[0].rows.map((r: any) => r.key)).toEqual(['NIKE']);
-    expect(report.blocks[0].rows[0].metrics.newSkuStoreCount[11]).toBe(1);
+    expect(report.blocks[0].rows[0].metrics.newSkuStoreCount[12]).toBe(1);
     expect(report.blocks[0].rows[0].children.map((r: any) => r.key)).toEqual(['SKU-A']);
     expect(report.blocks[0].rows[0].children[0].pictureFileName).toBe('SKU-A.JPG');
   });
@@ -788,15 +789,18 @@ describe('getSalesHistoryByMonth — input validation', () => {
     else process.env.SALES_SOURCE = ORIGINAL_SOURCE;
   });
 
-  it('throws when storeNumbers is empty', async () => {
-    await expect(
-      facade.getSalesHistoryByMonth({
-        storeNumbers: [],
-        endYearMonth: '2026-04',
-        sortBy: 'vendor',
-        combineStores: true,
-      }),
-    ).rejects.toThrow(/storeNumbers/);
+  it('defaults to all available stores when storeNumbers is empty', async () => {
+    const report = await facade.getSalesHistoryByMonth({
+      storeNumbers: [],
+      endYearMonth: '2026-04',
+      sortBy: 'vendor',
+      combineStores: true,
+    });
+
+    expect(report.stores.map((store: any) => store.number)).toEqual([2, 13]);
+    expect(monthlyAdapter.queryMonthlyMeasures).toHaveBeenCalledWith(
+      expect.objectContaining({ storeNumbers: [2, 13] }),
+    );
   });
 
   it('throws when endYearMonth is malformed', async () => {
@@ -816,7 +820,7 @@ describe('getSalesHistoryByMonth — input validation', () => {
 //
 // RIINVHIS.InvHis stores rolling 12-month snapshots keyed by calendar month.
 // These tests pin today to 2026-04-15 so window-to-slot mapping is deterministic.
-// endMonth=2026-03 (last completed) is the "all 12 months map" case.
+  // endMonth=2026-03 shows 2025-03 as the comparison month plus the 12-month total window.
 // ══════════════════════════════════════════════════════════════════════════
 
 describe('getSalesHistoryByMonth — inventory-backed metrics', () => {
@@ -848,6 +852,8 @@ describe('getSalesHistoryByMonth — inventory-backed metrics', () => {
     onHand: number;
     monthQtyOH: number[];
     monthValueOH: number[];
+    lastMonthOnHand?: number;
+    lastMonthInvValue?: number;
   }>): void {
     (monthlyAdapter.queryMonthlyInventoryHistory as jest.Mock).mockResolvedValue(rows);
     (monthlyAdapter.queryMonthlyInventoryHistoryRollups as jest.Mock).mockResolvedValue(
@@ -856,6 +862,8 @@ describe('getSalesHistoryByMonth — inventory-backed metrics', () => {
         dimKey: 'NIKE',
         monthQtyOH: r.monthQtyOH,
         monthValueOH: r.monthValueOH,
+        lastMonthOnHand: r.lastMonthOnHand ?? 0,
+        lastMonthInvValue: r.lastMonthInvValue ?? 0,
       })),
     );
   }
@@ -878,14 +886,14 @@ describe('getSalesHistoryByMonth — inventory-backed metrics', () => {
     (monthlyAdapter.loadSkuMasterForCriteria as jest.Mock).mockResolvedValue([
       { sku: 'N1', vendor: 'NIKE', category: 100, season: null, styleColor: null, groupCode: null, keywords: null },
     ]);
-    // Calendar-slot indexed (0=Jan..11=Dec). With today=2026-04-15:
-    //   _01..._03 = 2026-01..2026-03 ; _04..._12 = 2025-04..2025-12
-    // endMonth=2026-03 window = [2025-04..2026-03].
+    // Calendar-slot indexed (0=Jan..11=Dec). Relative to report end 2026-03:
+    //   _01..._02 = 2026-01..2026-02 ; _03..._12 = 2025-03..2025-12
+    // endMonth=2026-03 visible window = [2025-03..2026-03].
     // LYMonthQtyOH values: set _04 = 10 (2025-04), _05 = 20 (2025-05), ..., arbitrary unique numbers
     // Beginning OH for window month W = end-of-month qty of (W-1).
-    //   BoH[window=2025-04] = end of 2025-03 -> slot _03 = 2026-03 (wrong year) -> 0
-    //   BoH[window=2025-05] = end of 2025-04 -> slot _04 = 10
-    //   BoH[window=2025-06] = end of 2025-05 -> slot _05 = 20
+    //   BoH[visible=2025-03] = _03
+    //   BoH[visible=2025-04] = _04
+    //   BoH[visible=2026-03] = snapshot lastMonthOnHand
     //   ... etc
     const qty = [
       /*_01=2026-01*/ 100, /*_02=2026-02*/ 200, /*_03=2026-03*/ 300,
@@ -894,7 +902,15 @@ describe('getSalesHistoryByMonth — inventory-backed metrics', () => {
       /*_10=2025-10*/  70, /*_11=2025-11*/  80, /*_12=2025-12*/  90,
     ];
     setInvRows([
-      { storeNumber: 2, sku: 'N1', averageCost: 5, onHand: 100, monthQtyOH: qty, monthValueOH: qty.map((q) => q * 5) },
+      {
+        storeNumber: 2,
+        sku: 'N1',
+        averageCost: 5,
+        onHand: 100,
+        monthQtyOH: qty,
+        monthValueOH: qty.map((q) => q * 5),
+        lastMonthOnHand: 200,
+      },
     ]);
 
     const report = await facade.getSalesHistoryByMonth({
@@ -907,20 +923,21 @@ describe('getSalesHistoryByMonth — inventory-backed metrics', () => {
 
     const row = report.blocks[0].rows[0];
     expect(row.label).toBe('NIKE');
-    // Window order: 2025-04 ... 2026-03
+    // Visible order: 2025-03 ... 2026-03
     expect(row.metrics.beginningOnHand).toEqual([
-      0,    // BoH 2025-04 = end 2025-03 (unavailable — _03 holds 2026-03)
-      10,   // BoH 2025-05 = end 2025-04 = _04
-      20,   // BoH 2025-06 = end 2025-05 = _05
+      300,  // BoH 2025-03 = _03
+      10,   // BoH 2025-04 = _04
+      20,   // BoH 2025-05 = _05
       30,   // _06
       40,   // _07
       50,   // _08
       60,   // _09
       70,   // _10
       80,   // _11
-      90,   // BoH 2026-01 = end 2025-12 = _12
-      100,  // BoH 2026-02 = end 2026-01 = _01
-      200,  // BoH 2026-03 = end 2026-02 = _02
+      90,   // BoH 2025-12 = _12
+      100,  // BoH 2026-01 = _01
+      200,  // BoH 2026-02 = _02
+      200,  // BoH 2026-03 = snapshot lastMonthOnHand
     ]);
   });
 
@@ -942,7 +959,16 @@ describe('getSalesHistoryByMonth — inventory-backed metrics', () => {
     const monthQty = new Array<number>(12).fill(10);
     const monthValue = new Array<number>(12).fill(100);
     setInvRows([
-      { storeNumber: 2, sku: 'N1', averageCost: 10, onHand: 10, monthQtyOH: monthQty, monthValueOH: monthValue },
+      {
+        storeNumber: 2,
+        sku: 'N1',
+        averageCost: 10,
+        onHand: 10,
+        monthQtyOH: monthQty,
+        monthValueOH: monthValue,
+        lastMonthOnHand: 10,
+        lastMonthInvValue: 100,
+      },
     ]);
 
     const report = await facade.getSalesHistoryByMonth({
@@ -954,9 +980,9 @@ describe('getSalesHistoryByMonth — inventory-backed metrics', () => {
     });
 
     const row = report.blocks[0].rows[0];
-    // Window index for 2026-03 = 11 (last column).
-    expect(row.metrics.roiPct![11]).toBeCloseTo(3600, 0);
-    expect(row.metrics.turns![11]).toBeCloseTo(108, 1);
+    // Window index for 2026-03 = 12 (last column).
+    expect(row.metrics.roiPct![12]).toBeCloseTo(3600, 0);
+    expect(row.metrics.turns![12]).toBeCloseTo(108, 1);
     // Months with no sales → flow=0 → ratio=0
     expect(row.metrics.roiPct![0]).toBe(0);
     expect(row.metrics.turns![0]).toBe(0);
@@ -979,9 +1005,9 @@ describe('getSalesHistoryByMonth — inventory-backed metrics', () => {
       dataToPrint: ['beginningOnHand', 'roiPct', 'turns'],
     });
     const row = report.blocks[0].rows[0];
-    expect(row.metrics.beginningOnHand).toEqual(new Array(12).fill(0));
-    expect(row.metrics.roiPct).toEqual(new Array(12).fill(0));
-    expect(row.metrics.turns).toEqual(new Array(12).fill(0));
+    expect(row.metrics.beginningOnHand).toEqual(new Array(13).fill(0));
+    expect(row.metrics.roiPct).toEqual(new Array(13).fill(0));
+    expect(row.metrics.turns).toEqual(new Array(13).fill(0));
     expect(row.totals.beginningOnHand).toBe(0);
     expect(row.totals.roiPct).toBe(0);
     expect(row.totals.turns).toBe(0);

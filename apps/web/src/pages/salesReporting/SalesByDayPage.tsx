@@ -5,7 +5,6 @@ import {
   Button,
   Card,
   Col,
-  Input,
   InputNumber,
   Row,
   Select,
@@ -19,7 +18,6 @@ import {
   type TableColumnsType,
 } from 'antd'
 import {
-  CheckOutlined,
   CopyOutlined,
   DownloadOutlined,
   DownOutlined,
@@ -55,7 +53,13 @@ import { DraggableModal } from '../../components/draggable-modal'
 import { fmtChangeMoney, fmtMoney } from '../../utils/reportFormatters'
 import { useReportTemplate, useTouchReportTemplate } from '../../hooks/useReportTemplates'
 import { briefDateSpec, readDateSpecFromParams, resolveDateSpec, type DateSpec } from '../../utils/dateSpec'
-import { useStoreChains } from '../../hooks/useStores'
+import { parseStoreNumberSelectionText } from '../../utils/storeNumberSelection'
+import {
+  ReportCriteriaPanel,
+  compactReportCriteria,
+  hydrateReportCriteria,
+  useReportCriteria,
+} from '../../components/reports/ReportCriteriaPanel'
 
 const { Text } = Typography
 
@@ -106,75 +110,7 @@ const SALES_BY_DAY_ALIGN_OPTIONS: Array<{ value: SalesByDayColumnAlign; label: s
 ]
 const PROFIT_COLUMN_KEYS: SalesByDayColumnKey[] = ['profit', 'comparedProfit', 'profitChange']
 
-interface StoreRangeParseResult {
-  storeNumbers: number[]
-  error: string | null
-}
-
-export function parseSalesByDayStoreRangeText(
-  value: string,
-  availableStoreNumbers: number[] = [],
-): StoreRangeParseResult {
-  const trimmed = value.trim()
-  if (!trimmed) return { storeNumbers: [], error: null }
-
-  const knownStores = Array.from(
-    new Set(
-      availableStoreNumbers
-        .map((storeNumber) => Number(storeNumber))
-        .filter((storeNumber) => Number.isInteger(storeNumber) && storeNumber > 0),
-    ),
-  ).sort((a, b) => a - b)
-  const knownStoreSet = new Set(knownStores)
-  const hasKnownStores = knownStores.length > 0
-  const selected: number[] = []
-  const seen = new Set<number>()
-
-  for (const token of trimmed.split(',')) {
-    const part = token.trim()
-    if (!part) {
-      return { storeNumbers: [], error: 'Use commas between store numbers and ranges.' }
-    }
-
-    const match = part.match(/^(\d+)(?:\s*-\s*(\d+))?$/)
-    if (!match) {
-      return { storeNumbers: [], error: `Invalid store range "${part}".` }
-    }
-
-    const start = Number(match[1])
-    const end = match[2] == null ? start : Number(match[2])
-    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start <= 0 || end <= 0) {
-      return { storeNumbers: [], error: `Invalid store range "${part}".` }
-    }
-    if (end < start) {
-      return { storeNumbers: [], error: `Store range "${part}" must run from low to high.` }
-    }
-
-    let expanded: number[]
-    if (match[2] == null) {
-      expanded = !hasKnownStores || knownStoreSet.has(start) ? [start] : []
-    } else if (hasKnownStores) {
-      expanded = knownStores.filter((storeNumber) => storeNumber >= start && storeNumber <= end)
-    } else {
-      expanded = Array.from({ length: end - start + 1 }, (_item, index) => start + index)
-    }
-
-    if (expanded.length === 0) {
-      return { storeNumbers: [], error: `No active stores found for "${part}".` }
-    }
-    if (!hasKnownStores && expanded.length > 500) {
-      return { storeNumbers: [], error: `Store range "${part}" is too large.` }
-    }
-
-    for (const storeNumber of expanded) {
-      if (seen.has(storeNumber)) continue
-      selected.push(storeNumber)
-      seen.add(storeNumber)
-    }
-  }
-
-  return { storeNumbers: selected, error: null }
-}
+export const parseSalesByDayStoreRangeText = parseStoreNumberSelectionText
 
 function cloneDefaultSalesByDayColumnLayout(): SalesByDayColumnLayout[] {
   return DEFAULT_SALES_BY_DAY_COLUMN_LAYOUT.map((column) => ({ ...column }))
@@ -524,10 +460,7 @@ export default function SalesByDayPage() {
   const { message } = App.useApp()
   const [searchParams] = useSearchParams()
   const templateId = searchParams.get('templateId') ?? undefined
-  const [storeNumbers, setStoreNumbers] = useState<number[]>([])
-  const [storeRangeText, setStoreRangeText] = useState('')
-  const [storeRangeError, setStoreRangeError] = useState<string | null>(null)
-  const [chainId, setChainId] = useState<string | undefined>(undefined)
+  const { criteria, setCriteria, updateCriteria, compactCriteria } = useReportCriteria()
   const [combineStores, setCombineStores] = useState<boolean>(true)
   const [dateSpec, setDateSpec] = useState<DateSpec>(DEFAULT_DATE_SPEC)
   const [offset, setOffset] = useState<number>(364)
@@ -542,18 +475,9 @@ export default function SalesByDayPage() {
   const running = query != null && isFetching
 
   const { data: dims, isLoading: dimsLoading } = useSalesDimensions()
-  const { data: storeChains = [] } = useStoreChains()
-  const storeOptions = useMemo(
-    () =>
-      (dims?.stores ?? []).map((store) => ({
-        value: store.number,
-        label: store.name ? `${store.number} - ${store.name}` : String(store.number),
-      })),
-    [dims],
-  )
   const availableStoreNumbers = useMemo(
-    () => storeOptions.map((store) => store.value),
-    [storeOptions],
+    () => (dims?.stores ?? []).map((store) => store.number),
+    [dims],
   )
 
   useEffect(() => {
@@ -572,42 +496,6 @@ export default function SalesByDayPage() {
     }
   }, [columnLayout])
 
-  useEffect(() => {
-    if (!storeRangeText.trim() || availableStoreNumbers.length === 0) return
-    const parsed = parseSalesByDayStoreRangeText(storeRangeText, availableStoreNumbers)
-    setStoreRangeError(parsed.error)
-    if (!parsed.error) {
-      setChainId(undefined)
-      setStoreNumbers(parsed.storeNumbers)
-    }
-  }, [availableStoreNumbers, storeRangeText])
-
-  function onChainChange(next: string | undefined): void {
-    setChainId(next)
-    setStoreRangeText('')
-    setStoreRangeError(null)
-    if (!next) return
-    const chain = storeChains.find((candidate) => candidate.id === next)
-    if (chain) setStoreNumbers(chain.storeNumbers)
-  }
-
-  function applyStoreRangeText(value: string, showErrorMessage = false): number[] | null {
-    const parsed = parseSalesByDayStoreRangeText(value, availableStoreNumbers)
-    setStoreRangeError(parsed.error)
-    if (parsed.error) {
-      if (showErrorMessage) message.error(parsed.error)
-      return null
-    }
-    setChainId(undefined)
-    setStoreNumbers(parsed.storeNumbers)
-    return parsed.storeNumbers
-  }
-
-  function onStoreRangeChange(value: string): void {
-    setStoreRangeText(value)
-    applyStoreRangeText(value)
-  }
-
   const resolvedDates = useMemo(() => resolveDateSpec(dateSpec), [dateSpec])
 
   const { data: templateData } = useReportTemplate(templateId)
@@ -622,6 +510,8 @@ export default function SalesByDayPage() {
 
     const params = template.paramsJson as Partial<SalesByDayArgs> & {
       storeNumber?: number
+      storesText?: string
+      storeRangeText?: string
       columnLayout?: unknown
     }
     const spec = readDateSpecFromParams(template.paramsJson) ?? DEFAULT_DATE_SPEC
@@ -631,20 +521,25 @@ export default function SalesByDayPage() {
       : typeof params.storeNumber === 'number'
         ? [params.storeNumber]
         : []
+    const nextCriteria = hydrateReportCriteria({
+      ...params,
+      stores: Array.isArray(params.stores) && params.stores.length ? params.stores : stores,
+      storesRaw: params.storesRaw ?? params.storesText ?? params.storeRangeText,
+    })
+    const runCriteria = compactReportCriteria(nextCriteria)
 
-    setStoreNumbers(stores)
-    setStoreRangeText('')
-    setStoreRangeError(null)
+    setCriteria(nextCriteria)
     if (params.columnLayout) setColumnLayout(normalizeSalesByDayColumnLayout(params.columnLayout))
     setDateSpec(spec)
     if (typeof params.comparisonOffsetDays === 'number') setOffset(params.comparisonOffsetDays)
     if (typeof params.combineStores === 'boolean') setCombineStores(params.combineStores)
     setQuery({
-      storeNumbers: stores,
+      storeNumbers: runCriteria.stores ?? stores,
       startDate,
       endDate,
       comparisonOffsetDays: params.comparisonOffsetDays ?? 364,
       combineStores: params.combineStores ?? true,
+      ...runCriteria,
     })
     touchTemplate.mutate(templateId)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -652,17 +547,23 @@ export default function SalesByDayPage() {
 
   function onRun(): void {
     const { startDate, endDate } = resolveDateSpec(dateSpec)
-    const selectedStoreNumbers = storeRangeText.trim()
-      ? applyStoreRangeText(storeRangeText, true)
-      : storeNumbers
-    if (!selectedStoreNumbers) return
+    const runCriteria = { ...compactCriteria }
+    if (criteria.storesRaw.trim()) {
+      const parsed = parseSalesByDayStoreRangeText(criteria.storesRaw, availableStoreNumbers)
+      if (parsed.error) {
+        message.error(parsed.error)
+        return
+      }
+      runCriteria.stores = parsed.storeNumbers
+    }
 
     setQuery({
-      storeNumbers: selectedStoreNumbers,
+      storeNumbers: runCriteria.stores ?? [],
       startDate,
       endDate,
       comparisonOffsetDays: offset,
       combineStores,
+      ...runCriteria,
     })
   }
 
@@ -769,7 +670,8 @@ export default function SalesByDayPage() {
               reportType="sales-by-day"
               disabled={query == null}
               getParamsJson={() => ({
-                storeNumbers,
+                ...compactCriteria,
+                storeNumbers: compactCriteria.stores ?? [],
                 dateSpec,
                 comparisonOffsetDays: offset,
                 combineStores,
@@ -781,7 +683,8 @@ export default function SalesByDayPage() {
               disabled={query == null || !data}
               sourceTemplateId={templateId}
               getParamsJson={() => ({
-                storeNumbers,
+                ...compactCriteria,
+                storeNumbers: compactCriteria.stores ?? [],
                 dateSpec,
                 comparisonOffsetDays: offset,
                 combineStores,
@@ -790,7 +693,9 @@ export default function SalesByDayPage() {
               getResultJson={() => data}
               getDescriptor={() => {
                 const parts: string[] = []
-                parts.push(describeSalesByDayStoreScope(storeNumbers))
+                parts.push(describeSalesByDayStoreScope(compactCriteria.stores ?? []))
+                if (compactCriteria.storesRaw) parts.push(`stores ${compactCriteria.storesRaw}`)
+                if (compactCriteria.chains?.length) parts.push(`${compactCriteria.chains.length} chains`)
                 if (combineStores) parts.push('combined')
                 parts.push(briefDateSpec(dateSpec))
                 parts.push(`vs ${offset}d ago`)
@@ -800,60 +705,14 @@ export default function SalesByDayPage() {
           </>
         }
       >
+        <ReportCriteriaPanel
+          value={criteria}
+          onChange={updateCriteria}
+          dimensions={dims}
+          loading={dimsLoading}
+          title="Criteria"
+        />
         <Space wrap size={[12, 12]} style={{ width: '100%' }}>
-          <Select
-            mode="multiple"
-            allowClear
-            placeholder=""
-            loading={dimsLoading}
-            value={storeNumbers}
-            onChange={(values) => {
-              setChainId(undefined)
-              setStoreRangeText('')
-              setStoreRangeError(null)
-              setStoreNumbers(values as number[])
-            }}
-            options={storeOptions}
-            optionFilterProp="label"
-            style={{ minWidth: 360 }}
-            maxTagCount="responsive"
-          />
-          <Space direction="vertical" size={4}>
-            <Space.Compact>
-              <Input
-                allowClear
-                aria-label="Store range"
-                placeholder="Store range, e.g. 1-2,5-17,19-26,28-30,32-43"
-                value={storeRangeText}
-                status={storeRangeError ? 'error' : undefined}
-                onChange={(event) => onStoreRangeChange(event.target.value)}
-                onPressEnter={() => void applyStoreRangeText(storeRangeText, true)}
-                style={{ width: 390 }}
-              />
-              <Button
-                icon={<CheckOutlined />}
-                onClick={() => void applyStoreRangeText(storeRangeText, true)}
-              >
-                Apply
-              </Button>
-            </Space.Compact>
-            {storeRangeError && (
-              <Text type="danger" style={{ fontSize: 12 }}>
-                {storeRangeError}
-              </Text>
-            )}
-          </Space>
-          <Select
-            allowClear
-            placeholder="Or pick a chain"
-            value={chainId}
-            onChange={onChainChange}
-            options={storeChains.map((chain) => ({
-              value: chain.id,
-              label: `${chain.label} (${chain.storeCount})`,
-            }))}
-            style={{ minWidth: 220 }}
-          />
           <Space>
             <Text>Combine stores</Text>
             <Switch
@@ -878,11 +737,12 @@ export default function SalesByDayPage() {
           <Button
             icon={<DownloadOutlined />}
             href={getSalesByDayCsvUrl(
-              storeNumbers,
+              compactCriteria.stores ?? [],
               resolvedDates.startDate,
               resolvedDates.endDate,
               offset,
               combineStores,
+              compactCriteria,
             )}
           >
             CSV
@@ -890,11 +750,12 @@ export default function SalesByDayPage() {
           <Button
             icon={<DownloadOutlined />}
             href={getSalesByDayXlsxUrl(
-              storeNumbers,
+              compactCriteria.stores ?? [],
               resolvedDates.startDate,
               resolvedDates.endDate,
               offset,
               combineStores,
+              compactCriteria,
             )}
           >
             XLSX

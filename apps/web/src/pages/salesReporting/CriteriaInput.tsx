@@ -30,6 +30,8 @@ export interface CriteriaInputProps<V extends OptionValue> {
   selectTestId?: string
   /** Optional data-testid for the grammar text Input. */
   rawTestId?: string
+  /** Optional aria-label for the grammar text Input. */
+  rawAriaLabel?: string
 }
 
 const NUMERIC_HELP =
@@ -57,6 +59,7 @@ export default function CriteriaInput<V extends OptionValue>({
   helpText,
   selectTestId,
   rawTestId,
+  rawAriaLabel,
 }: CriteriaInputProps<V>) {
   const defaultHelp = mode === 'numeric' ? NUMERIC_HELP : STRING_HELP
   const effectiveHelp = helpText ?? defaultHelp
@@ -107,7 +110,7 @@ export default function CriteriaInput<V extends OptionValue>({
           onChange={(e) => onRawTextChange(e.target.value)}
           size="small"
           style={{ fontFamily: 'Consolas, Menlo, monospace' }}
-          aria-label={`${label} grammar criteria`}
+          aria-label={rawAriaLabel ?? `${label} grammar criteria`}
           data-testid={rawTestId ?? `${testIdSlug}-criteria-grammar`}
         />
       )}

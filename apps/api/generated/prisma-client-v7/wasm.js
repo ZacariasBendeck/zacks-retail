@@ -714,6 +714,93 @@ exports.Prisma.PurchasePlanV3AuditScalarFieldEnum = {
   afterJson: 'afterJson'
 };
 
+exports.Prisma.AssortmentColorAliasScalarFieldEnum = {
+  rawKey: 'rawKey',
+  canonicalColor: 'canonicalColor',
+  colorFamily: 'colorFamily',
+  updatedAt: 'updatedAt',
+  updatedBy: 'updatedBy'
+};
+
+exports.Prisma.AssortmentPlanScalarFieldEnum = {
+  id: 'id',
+  label: 'label',
+  status: 'status',
+  categoryNumber: 'categoryNumber',
+  categoryLabel: 'categoryLabel',
+  warehouseStoreId: 'warehouseStoreId',
+  warehouseStoreLabel: 'warehouseStoreLabel',
+  targetStoreIds: 'targetStoreIds',
+  startDate: 'startDate',
+  horizonMonths: 'horizonMonths',
+  highSeasonMonths: 'highSeasonMonths',
+  historyFromYearMonth: 'historyFromYearMonth',
+  historyToYearMonth: 'historyToYearMonth',
+  metadata: 'metadata',
+  createdBy: 'createdBy',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt',
+  archivedAt: 'archivedAt'
+};
+
+exports.Prisma.AssortmentPlanPoolItemScalarFieldEnum = {
+  id: 'id',
+  planId: 'planId',
+  skuId: 'skuId',
+  skuCode: 'skuCode',
+  skuDescription: 'skuDescription',
+  rawColorKey: 'rawColorKey',
+  canonicalColor: 'canonicalColor',
+  colorFamily: 'colorFamily',
+  inclusionReason: 'inclusionReason',
+  warehouseUnits: 'warehouseUnits',
+  keywords: 'keywords',
+  assignedWaveId: 'assignedWaveId',
+  metadata: 'metadata',
+  createdAt: 'createdAt'
+};
+
+exports.Prisma.AssortmentPlanWaveScalarFieldEnum = {
+  id: 'id',
+  planId: 'planId',
+  sequence: 'sequence',
+  releaseDate: 'releaseDate',
+  status: 'status',
+  generatedTransferIds: 'generatedTransferIds',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt',
+  committedAt: 'committedAt'
+};
+
+exports.Prisma.AssortmentPlanWaveLineScalarFieldEnum = {
+  id: 'id',
+  waveId: 'waveId',
+  poolItemId: 'poolItemId',
+  skuId: 'skuId',
+  skuCode: 'skuCode',
+  rawColorKey: 'rawColorKey',
+  canonicalColor: 'canonicalColor',
+  warehouseUnits: 'warehouseUnits',
+  createdAt: 'createdAt'
+};
+
+exports.Prisma.AssortmentPlanStoreAllocationScalarFieldEnum = {
+  id: 'id',
+  waveLineId: 'waveLineId',
+  storeId: 'storeId',
+  storeLabel: 'storeLabel',
+  quantity: 'quantity',
+  createdAt: 'createdAt'
+};
+
+exports.Prisma.AssortmentPlanTransferLinkScalarFieldEnum = {
+  id: 'id',
+  planId: 'planId',
+  waveId: 'waveId',
+  transferId: 'transferId',
+  createdAt: 'createdAt'
+};
+
 exports.Prisma.SkuUpcScalarFieldEnum = {
   upc: 'upc',
   skuCode: 'skuCode',
@@ -2990,7 +3077,8 @@ exports.TransferOrigin = exports.$Enums.TransferOrigin = {
   MANUAL: 'MANUAL',
   TRANSFER_ALL: 'TRANSFER_ALL',
   AUTO: 'AUTO',
-  BALANCING: 'BALANCING'
+  BALANCING: 'BALANCING',
+  ASSORTMENT: 'ASSORTMENT'
 };
 
 exports.RunStatus = exports.$Enums.RunStatus = {
@@ -3078,6 +3166,13 @@ exports.Prisma.ModelName = {
   PurchasePlanV3Row: 'PurchasePlanV3Row',
   PurchasePlanV3Adjustment: 'PurchasePlanV3Adjustment',
   PurchasePlanV3Audit: 'PurchasePlanV3Audit',
+  AssortmentColorAlias: 'AssortmentColorAlias',
+  AssortmentPlan: 'AssortmentPlan',
+  AssortmentPlanPoolItem: 'AssortmentPlanPoolItem',
+  AssortmentPlanWave: 'AssortmentPlanWave',
+  AssortmentPlanWaveLine: 'AssortmentPlanWaveLine',
+  AssortmentPlanStoreAllocation: 'AssortmentPlanStoreAllocation',
+  AssortmentPlanTransferLink: 'AssortmentPlanTransferLink',
   SkuUpc: 'SkuUpc',
   CasePack: 'CasePack',
   CasePackCell: 'CasePackCell',

@@ -5,6 +5,7 @@ import {
   fetchSalesPerformanceDrillDown,
   fetchTurnoverDrillDown,
   fetchSellThroughDrillDown,
+  getSalesAnalysisXlsxUrl,
   ReportApiError,
 } from '../services/reportApi'
 
@@ -132,5 +133,44 @@ describe('reportApi drill-down query mapping', () => {
       status: 400,
       code: 'VALIDATION_ERROR',
     } as Partial<ReportApiError>)
+  })
+
+  it('builds Sales Analysis XLSX export URLs with the full query surface', () => {
+    const url = new URL(getSalesAnalysisXlsxUrl({
+      dimension: 'CATEGORY',
+      reportType: 'SKU_DETAIL',
+      storeOption: 'COMBINE',
+      startDate: '2026-04-01',
+      endDate: '2026-04-30',
+      stores: [1, 2],
+      chains: ['NORTH'],
+      sectors: [5],
+      departments: [50],
+      categories: [216],
+      seasons: ['A'],
+      groups: ['IBL'],
+      vendorsRaw: 'AGO',
+      skusRaw: '6608*',
+      priorYear: true,
+      includeAttributes: true,
+      includeOnOrder: true,
+      showPercentOfTotal: true,
+    }), 'http://localhost')
+
+    expect(url.pathname).toBe('/api/v1/reports/sales/sales-analysis')
+    expect(url.searchParams.get('format')).toBe('xlsx')
+    expect(url.searchParams.get('stores')).toBe('1,2')
+    expect(url.searchParams.get('chains')).toBe('NORTH')
+    expect(url.searchParams.get('sectors')).toBe('5')
+    expect(url.searchParams.get('departments')).toBe('50')
+    expect(url.searchParams.get('categories')).toBe('216')
+    expect(url.searchParams.get('seasons')).toBe('A')
+    expect(url.searchParams.get('groups')).toBe('IBL')
+    expect(url.searchParams.get('vendorsRaw')).toBe('AGO')
+    expect(url.searchParams.get('skusRaw')).toBe('6608*')
+    expect(url.searchParams.get('priorYear')).toBe('true')
+    expect(url.searchParams.get('includeAttributes')).toBe('true')
+    expect(url.searchParams.get('includeOnOrder')).toBe('true')
+    expect(url.searchParams.has('showPercentOfTotal')).toBe(false)
   })
 })

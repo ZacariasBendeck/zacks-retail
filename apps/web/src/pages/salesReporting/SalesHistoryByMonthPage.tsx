@@ -44,6 +44,7 @@ import {
   type SalesHistoryByMonthReport,
   type SalesHistoryByMonthRow,
   type SalesHistoryByMonthSortBy,
+  type SharedReportCriteriaParams,
 } from '../../services/reportApi'
 import { getErrorMessage } from '../../utils/errors'
 import RunReportControls from './RunReportControls'
@@ -66,10 +67,48 @@ import CriteriaInput from './CriteriaInput'
 import ReportThumbnail from '../../components/reports/ReportThumbnail'
 import { SkuLink } from '../../components/sku-link/SkuLink'
 import { buildRicsImageUrl } from '../../services/ricsImageUrl'
+import {
+  ReportCriteriaPanel,
+  compactReportCriteria,
+  hydrateReportCriteria,
+  useReportCriteria,
+} from '../../components/reports/ReportCriteriaPanel'
 
 echarts.use([LineChart, GridComponent, TooltipComponent, LegendComponent, TitleComponent, CanvasRenderer])
 
 const { Paragraph, Text } = Typography
+
+function joinCriteriaParts(parts: Array<string | number | undefined>): string | undefined {
+  const joined = parts
+    .map((value) => (value == null ? '' : String(value).trim()))
+    .filter(Boolean)
+    .join(',')
+  return joined || undefined
+}
+
+function buildSalesHistoryCriteria(shared: SharedReportCriteriaParams): SalesHistoryByMonthCriteria {
+  const criteria: SalesHistoryByMonthCriteria = {}
+  if (shared.storesRaw?.trim()) criteria.stores = shared.storesRaw.trim()
+  const categories = joinCriteriaParts([...(shared.categories ?? []), shared.categoriesRaw])
+  if (categories) criteria.categories = categories
+  const vendors = joinCriteriaParts([...(shared.vendors ?? []), shared.vendorsRaw])
+  if (vendors) criteria.vendors = vendors
+  const seasons = joinCriteriaParts([...(shared.seasons ?? []), shared.seasonsRaw])
+  if (seasons) criteria.seasons = seasons
+  const skus = joinCriteriaParts([...(shared.skus ?? []), shared.skusRaw])
+  if (skus) criteria.skus = skus
+  const styleColors = shared.styleColorRaw?.trim() || shared.styleColor?.trim()
+  if (styleColors) criteria.styleColors = styleColors
+  const groups = joinCriteriaParts([...(shared.groups ?? []), shared.groupsRaw])
+  if (groups) criteria.groups = groups
+  const keywords = joinCriteriaParts([...(shared.keywords ?? []), shared.keywordsRaw])
+  if (keywords) criteria.keywords = keywords
+  if (shared.chains?.length) criteria.chains = shared.chains
+  if (shared.sectors?.length) criteria.sectors = shared.sectors
+  if (shared.departments?.length) criteria.departments = shared.departments
+  if (shared.buyers?.length) criteria.buyers = shared.buyers
+  return criteria
+}
 
 // ─────────────────────────── Metric definitions ─────────────────────────
 
@@ -136,7 +175,8 @@ function formatMetricValue(def: MetricDef | undefined, value: number | undefined
 
 function formatMetricValuePrecise(def: MetricDef | undefined, value: number | undefined): string {
   if (value == null || Number.isNaN(value)) return DASH
-  if (!def || def.format === 'money') return fmtMoney(value)
+  if (def?.key === 'beginningOnHand') return ''
+  if (!def || def.format === 'money') return fmtMoneyInt(value)
   if (def.format === 'integer') return fmtInt(value)
   if (def.format === 'decimal2') return fmtMoney(value)
   if (def.key === 'grossProfit' || def.key === 'roiPct') return fmtPctBare1(value)
@@ -594,23 +634,34 @@ export default function SalesHistoryByMonthPage() {
   // Form state
   const [sortBy, setSortBy] = useState<SalesHistoryByMonthSortBy>('vendor')
   const [combineStores, setCombineStores] = useState(true)
-  const [endMonth, setEndMonth] = useState<Dayjs>(() => dayjs().startOf('month'))
+  const [endMonth, setEndMonth] = useState<Dayjs>(() => dayjs().subtract(1, 'month').startOf('month'))
   const [detailLevel, setDetailLevel] = useState<SalesHistoryByMonthDetailLevel>('subtotals')
   const [dataToPrint, setDataToPrint] = useState<SalesHistoryByMonthMetricKey[]>(['netSales'])
   const [includePriorYear, setIncludePriorYear] = useState(false)
   const [deferredChecked, setDeferredChecked] = useState<SalesHistoryByMonthDeferredMetricKey[]>([])
 
   // Criteria — mirrors SalesAnalysisPage: separate selected[] and rawText per facet.
-  const [selectedStores, setSelectedStores] = useState<number[]>([])
-  const [selectedCategories, setSelectedCategories] = useState<number[]>([])
-  const [selectedGroups, setSelectedGroups] = useState<string[]>([])
-  const [storesRaw, setStoresRaw] = useState('')
-  const [categoriesRaw, setCategoriesRaw] = useState('')
-  const [vendorsRaw, setVendorsRaw] = useState('')
-  const [seasonsRaw, setSeasonsRaw] = useState('')
-  const [styleColorsRaw, setStyleColorsRaw] = useState('')
-  const [groupsRaw, setGroupsRaw] = useState('')
-  const [keywordsRaw, setKeywordsRaw] = useState('')
+  const { criteria, setCriteria, updateCriteria, compactCriteria } = useReportCriteria()
+  const selectedStores = criteria.stores
+  const selectedCategories = criteria.categories
+  const selectedGroups = criteria.groups
+  const storesRaw = criteria.storesRaw
+  const categoriesRaw = criteria.categoriesRaw
+  const vendorsRaw = criteria.vendorsRaw
+  const seasonsRaw = criteria.seasonsRaw
+  const styleColorsRaw = criteria.styleColorRaw || criteria.styleColor
+  const groupsRaw = criteria.groupsRaw
+  const keywordsRaw = criteria.keywordsRaw
+  const setSelectedStores = (next: number[]) => updateCriteria('stores', next)
+  const setSelectedCategories = (next: number[]) => updateCriteria('categories', next)
+  const setSelectedGroups = (next: string[]) => updateCriteria('groups', next)
+  const setStoresRaw = (next: string) => updateCriteria('storesRaw', next)
+  const setCategoriesRaw = (next: string) => updateCriteria('categoriesRaw', next)
+  const setVendorsRaw = (next: string) => updateCriteria('vendorsRaw', next)
+  const setSeasonsRaw = (next: string) => updateCriteria('seasonsRaw', next)
+  const setStyleColorsRaw = (next: string) => updateCriteria('styleColorRaw', next)
+  const setGroupsRaw = (next: string) => updateCriteria('groupsRaw', next)
+  const setKeywordsRaw = (next: string) => updateCriteria('keywordsRaw', next)
 
   // Committed params — null until Run Report is clicked. Mirrors the pattern
   // used by SalesAnalysisPage so the query only fires on user intent.
@@ -663,6 +714,25 @@ export default function SalesHistoryByMonthPage() {
       storesRaw?: string; categoriesRaw?: string; vendorsRaw?: string;
       seasonsRaw?: string; styleColorsRaw?: string; groupsRaw?: string; keywordsRaw?: string;
     }
+    const savedCriteria = p.criteria as SalesHistoryByMonthCriteria | undefined
+    const nextCriteria = hydrateReportCriteria({
+      ...p,
+      categories: Array.isArray(p.categories) ? p.categories : p.selectedCategories,
+      groups: Array.isArray(p.groups) ? p.groups : p.selectedGroups,
+      storesRaw: p.storesRaw ?? savedCriteria?.stores,
+      categoriesRaw: p.categoriesRaw ?? savedCriteria?.categories,
+      vendorsRaw: p.vendorsRaw ?? savedCriteria?.vendors,
+      seasonsRaw: p.seasonsRaw ?? savedCriteria?.seasons,
+      skusRaw: p.skusRaw ?? savedCriteria?.skus,
+      styleColorRaw: p.styleColorRaw ?? p.styleColorsRaw ?? savedCriteria?.styleColors,
+      groupsRaw: p.groupsRaw ?? savedCriteria?.groups,
+      keywordsRaw: p.keywordsRaw ?? savedCriteria?.keywords,
+      chains: p.chains ?? savedCriteria?.chains,
+      sectors: p.sectors ?? savedCriteria?.sectors,
+      departments: p.departments ?? savedCriteria?.departments,
+      buyers: p.buyers ?? savedCriteria?.buyers,
+    })
+    const runCriteria = compactReportCriteria(nextCriteria)
     if (p.sortBy) setSortBy(p.sortBy)
     if (p.combineStores !== undefined) setCombineStores(!!p.combineStores)
     if (p.includePriorYear !== undefined) setIncludePriorYear(!!p.includePriorYear)
@@ -670,19 +740,10 @@ export default function SalesHistoryByMonthPage() {
     if (p.detailLevel) setDetailLevel(p.detailLevel)
     if (Array.isArray(p.dataToPrint)) setDataToPrint(p.dataToPrint)
     if (Array.isArray(p.deferredMetrics)) setDeferredChecked(p.deferredMetrics)
-    if (Array.isArray(p.stores)) setSelectedStores(p.stores)
-    if (Array.isArray(p.selectedCategories)) setSelectedCategories(p.selectedCategories)
-    if (Array.isArray(p.selectedGroups)) setSelectedGroups(p.selectedGroups)
-    if (p.storesRaw !== undefined) setStoresRaw(p.storesRaw)
-    if (p.categoriesRaw !== undefined) setCategoriesRaw(p.categoriesRaw)
-    if (p.vendorsRaw !== undefined) setVendorsRaw(p.vendorsRaw)
-    if (p.seasonsRaw !== undefined) setSeasonsRaw(p.seasonsRaw)
-    if (p.styleColorsRaw !== undefined) setStyleColorsRaw(p.styleColorsRaw)
-    if (p.groupsRaw !== undefined) setGroupsRaw(p.groupsRaw)
-    if (p.keywordsRaw !== undefined) setKeywordsRaw(p.keywordsRaw)
+    setCriteria(nextCriteria)
     if (p.endMonth && Array.isArray(p.dataToPrint) && p.dataToPrint.length) {
       setQuery({
-        stores: Array.isArray(p.stores) && p.stores.length ? p.stores : undefined,
+        ...runCriteria,
         endMonth: p.endMonth,
         sortBy: p.sortBy ?? 'vendor',
         combineStores: p.combineStores ?? true,
@@ -690,42 +751,29 @@ export default function SalesHistoryByMonthPage() {
         detailLevel: p.detailLevel ?? 'subtotals',
         dataToPrint: p.dataToPrint,
         deferredMetrics: Array.isArray(p.deferredMetrics) ? p.deferredMetrics : [],
-        criteria: (p.criteria as SalesHistoryByMonthCriteria | undefined) ?? {},
+        criteria: buildSalesHistoryCriteria(runCriteria),
       })
     }
     touchTemplate.mutate(templateId)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [templateId, templateData])
 
-  const queryStores = selectedStores.length > 0 ? selectedStores : undefined
   const hasAnyMetric = dataToPrint.length > 0
   const canRun = hasAnyMetric
 
   function buildCriteria(): SalesHistoryByMonthCriteria {
-    const c: SalesHistoryByMonthCriteria = {}
-    const storesStr = storesRaw.trim()
-    if (storesStr) c.stores = storesStr
-    const catsStr = [
-      ...selectedCategories.map(String),
-      ...(categoriesRaw.trim() ? [categoriesRaw.trim()] : []),
-    ].join(',')
-    if (catsStr) c.categories = catsStr
-    if (vendorsRaw.trim()) c.vendors = vendorsRaw.trim()
-    if (seasonsRaw.trim()) c.seasons = seasonsRaw.trim()
-    if (styleColorsRaw.trim()) c.styleColors = styleColorsRaw.trim()
-    const groupsStr = [
-      ...selectedGroups,
-      ...(groupsRaw.trim() ? [groupsRaw.trim()] : []),
-    ].join(',')
-    if (groupsStr) c.groups = groupsStr
-    if (keywordsRaw.trim()) c.keywords = keywordsRaw.trim()
-    return c
+    return buildSalesHistoryCriteria(compactCriteria)
   }
 
   function onRun(): void {
     if (!canRun) return
+    const runCriteria = { ...compactCriteria }
+    if (!runCriteria.stores?.length && !runCriteria.storesRaw && !runCriteria.chains?.length) {
+      const allLoadedStores = (dims?.stores ?? []).map((store) => store.number)
+      if (allLoadedStores.length) runCriteria.stores = allLoadedStores
+    }
     setQuery({
-      stores: queryStores,
+      ...runCriteria,
       endMonth: endMonth.format('YYYY-MM'),
       sortBy,
       combineStores,
@@ -733,7 +781,7 @@ export default function SalesHistoryByMonthPage() {
       detailLevel,
       dataToPrint,
       deferredMetrics: deferredChecked,
-      criteria: buildCriteria(),
+      criteria: buildSalesHistoryCriteria(runCriteria),
     })
   }
   function onStop(): void {
@@ -846,7 +894,7 @@ export default function SalesHistoryByMonthPage() {
               reportType="sales-history-by-month"
               disabled={query == null}
               getParamsJson={() => ({
-                stores: query?.stores ?? queryStores,
+                ...compactCriteria,
                 endMonth: endMonth.format('YYYY-MM'),
                 sortBy,
                 combineStores,
@@ -855,15 +903,6 @@ export default function SalesHistoryByMonthPage() {
                 dataToPrint,
                 deferredMetrics: deferredChecked,
                 criteria: buildCriteria(),
-                selectedCategories,
-                selectedGroups,
-                storesRaw,
-                categoriesRaw,
-                vendorsRaw,
-                seasonsRaw,
-                styleColorsRaw,
-                groupsRaw,
-                keywordsRaw,
               })}
             />
             <SaveSnapshotButton
@@ -871,7 +910,7 @@ export default function SalesHistoryByMonthPage() {
               disabled={query == null || !data}
               sourceTemplateId={templateId}
               getParamsJson={() => ({
-                stores: query?.stores ?? queryStores,
+                ...compactCriteria,
                 endMonth: endMonth.format('YYYY-MM'),
                 sortBy,
                 combineStores,
@@ -880,15 +919,6 @@ export default function SalesHistoryByMonthPage() {
                 dataToPrint,
                 deferredMetrics: deferredChecked,
                 criteria: buildCriteria(),
-                selectedCategories,
-                selectedGroups,
-                storesRaw,
-                categoriesRaw,
-                vendorsRaw,
-                seasonsRaw,
-                styleColorsRaw,
-                groupsRaw,
-                keywordsRaw,
               })}
               getResultJson={() => data}
               getDescriptor={() => {
@@ -903,13 +933,15 @@ export default function SalesHistoryByMonthPage() {
                   `end ${endMonth.format('MMM YYYY')}`,
                 ]
                 const counts: string[] = []
-                if (selectedStores.length) counts.push(`stores ${selectedStores.length}`)
-                if (selectedCategories.length) counts.push(`cats ${selectedCategories.length}`)
-                if (selectedGroups.length) counts.push(`groups ${selectedGroups.length}`)
-                if (vendorsRaw.trim()) counts.push('vendors')
-                if (seasonsRaw.trim()) counts.push('seasons')
-                if (styleColorsRaw.trim()) counts.push('style/color')
-                if (keywordsRaw.trim()) counts.push('keywords')
+                if (compactCriteria.stores?.length) counts.push(`stores ${compactCriteria.stores.length}`)
+                if (compactCriteria.chains?.length) counts.push(`chains ${compactCriteria.chains.length}`)
+                if (compactCriteria.categories?.length) counts.push(`cats ${compactCriteria.categories.length}`)
+                if (compactCriteria.groups?.length) counts.push(`groups ${compactCriteria.groups.length}`)
+                if (compactCriteria.buyers?.length) counts.push(`buyers ${compactCriteria.buyers.length}`)
+                if (compactCriteria.vendorsRaw) counts.push('vendors')
+                if (compactCriteria.seasonsRaw) counts.push('seasons')
+                if (compactCriteria.styleColorRaw || compactCriteria.styleColor) counts.push('style/color')
+                if (compactCriteria.keywordsRaw) counts.push('keywords')
                 if (counts.length) parts.push(counts.join(', '))
                 if (combineStores) parts.push('combined')
                 return parts.join(' · ')
@@ -1041,6 +1073,14 @@ export default function SalesHistoryByMonthPage() {
           </Col>
         </Row>
 
+        <ReportCriteriaPanel
+          value={criteria}
+          onChange={updateCriteria}
+          dimensions={dims}
+          loading={dimsLoading}
+          title="Criteria"
+        />
+        {false && (
         <Card size="small" title={<Text strong>Criteria</Text>} style={{ marginTop: 16 }}>
           <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
             Leave a row blank to include everything. Type ranges like <code>556-599</code>,
@@ -1143,6 +1183,7 @@ export default function SalesHistoryByMonthPage() {
             />
           </Space>
         </Card>
+        )}
 
       </CollapsibleFilterCard>
 

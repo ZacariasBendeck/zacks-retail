@@ -68,6 +68,21 @@ describe('computeRoiTurnsGp', () => {
     expect(m.roiPct).toBeCloseTo(1.217, 2);
   });
 
+  it('can use average inventory value and a monthly annualizer for RICS MTD columns', () => {
+    const m = computeRoiTurnsGp({
+      netSales: 6226.08,
+      cogs: 2425.68,
+      grossProfit: 3800.4,
+      onHandAtCost: 1886.64,
+      inventoryValueForTurnsRoi: (2156.16 + 1886.64) / 2,
+      annualizer: 12,
+      periodDays: 30,
+    });
+
+    expect(m.turns).toBe(14.4);
+    expect(m.roiPct).toBe(22.56);
+  });
+
   it('matches the screenshot reference row (Sector 5 MTD)', () => {
     // From the user's RICS screenshot, Sector 5 ZAPATO MUJER MTD:
     //   Sales=1,075,817.11  Profit=603,482.36  GP=56.1%  onHand value=62,805,409.97

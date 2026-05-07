@@ -135,6 +135,7 @@ const appMenuItems = [
     children: [
       { key: '/purchase-planning', icon: <FundOutlined />, label: 'V2 - Actual', requiredPermissions: ['purchasing.view'] },
       { key: '/purchase-planning/v3', icon: <FundOutlined />, label: 'V3 - Warehouse Shared', requiredPermissions: ['purchasing.view'] },
+      { key: '/purchase-planning/assortment', icon: <SwapOutlined />, label: 'Assortment Releases', requiredPermissions: ['purchasing.view'] },
     ],
   },
   {

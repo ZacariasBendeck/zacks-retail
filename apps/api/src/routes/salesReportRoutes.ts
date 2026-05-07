@@ -27,7 +27,10 @@ import { validateQuery } from '../middleware/validation';
 import { getRequestStoreScopeConstraintIfAuthenticated, sendStoreScopeForbidden } from '../middleware/storeScopeMiddleware';
 import { prisma } from '../db/prisma';
 import { sendXlsx, XLSX_NUMFMT } from '../utils/xlsxExport';
-import type { PivotDimension, SalesPivotLevels } from '../services/salesReporting/types';
+import { parsePositiveIntegerSelection } from '../utils/numberSelection';
+import { buildReportFilename, type ReportFilenameCriterion } from '../utils/reportFilename';
+import type { PivotDimension, SalesAnalysisCriteria, SalesPivotLevels } from '../services/salesReporting/types';
+import { resolveSharedStoreNumbers } from '../services/salesReporting/sharedReportCriteria';
 
 const router: IRouter = Router();
 
@@ -38,10 +41,14 @@ const dateField = z.string().regex(dateRegex, 'Must be YYYY-MM-DD');
 const csvIntList = z
   .string()
   .optional()
-  .transform((v): number[] | undefined => {
+  .transform((v, ctx): number[] | undefined => {
     if (!v) return undefined;
-    const nums = v.split(',').map((s) => Number(s.trim())).filter((n) => Number.isFinite(n));
-    return nums.length ? nums : undefined;
+    const parsed = parsePositiveIntegerSelection(v);
+    if (parsed.error) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: parsed.error });
+      return z.NEVER;
+    }
+    return parsed.values.length ? parsed.values : undefined;
   });
 const csvStringList = z
   .string()
@@ -61,6 +68,82 @@ const queryBoolean = z.preprocess((value) => {
   return value;
 }, z.boolean());
 
+const sharedCriteriaShape = {
+  stores: csvIntList,
+  chains: csvStringList,
+  sectors: csvIntList,
+  departments: csvIntList,
+  categories: csvIntList,
+  vendors: csvStringList,
+  seasons: csvStringList,
+  skus: csvStringList,
+  groups: csvStringList,
+  keywords: csvStringList,
+  buyers: csvStringList,
+  styleColor: z.string().optional(),
+  storesRaw: z.string().optional(),
+  categoriesRaw: z.string().optional(),
+  vendorsRaw: z.string().optional(),
+  seasonsRaw: z.string().optional(),
+  skusRaw: z.string().optional(),
+  groupsRaw: z.string().optional(),
+  keywordsRaw: z.string().optional(),
+  styleColorRaw: z.string().optional(),
+};
+
+type SharedCriteriaQuery = Partial<{
+  stores: number[];
+  chains: string[];
+  sectors: number[];
+  departments: number[];
+  categories: number[];
+  vendors: string[];
+  seasons: string[];
+  skus: string[];
+  groups: string[];
+  keywords: string[];
+  buyers: string[];
+  styleColor: string;
+  storesRaw: string;
+  categoriesRaw: string;
+  vendorsRaw: string;
+  seasonsRaw: string;
+  skusRaw: string;
+  groupsRaw: string;
+  keywordsRaw: string;
+  styleColorRaw: string;
+}>;
+
+function cleanText(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed || undefined;
+}
+
+function buildSalesCriteria(q: SharedCriteriaQuery, stores?: number[]): SalesAnalysisCriteria {
+  return {
+    stores: stores ?? q.stores,
+    chains: q.chains,
+    sectors: q.sectors,
+    departments: q.departments,
+    categories: q.categories,
+    vendors: q.vendors,
+    seasons: q.seasons,
+    skus: q.skus,
+    groups: q.groups,
+    keywords: q.keywords,
+    buyers: q.buyers,
+    styleColor: cleanText(q.styleColor),
+    storesRaw: cleanText(q.storesRaw),
+    categoriesRaw: cleanText(q.categoriesRaw),
+    vendorsRaw: cleanText(q.vendorsRaw),
+    seasonsRaw: cleanText(q.seasonsRaw),
+    skusRaw: cleanText(q.skusRaw),
+    groupsRaw: cleanText(q.groupsRaw),
+    keywordsRaw: cleanText(q.keywordsRaw),
+    styleColorRaw: cleanText(q.styleColorRaw),
+  };
+}
+
 function escapeCsv(value: string | number | null | undefined): string {
   if (value == null) return '';
   const s = String(value);
@@ -77,23 +160,93 @@ function sendCsv(res: Response, header: string[], rows: (string | number | null 
   res.send(body);
 }
 
+function effectiveStoresFilenamePart(stores: number[] | undefined): ReportFilenameCriterion {
+  return {
+    value: stores && stores.length > 0 ? `S${stores.join('_')}` : 'all',
+    includeIfDefault: true,
+  };
+}
+
+function dateRangeFilenameParts(startDate?: string, endDate?: string): ReportFilenameCriterion[] {
+  return [{ value: startDate && endDate ? `${startDate}_${endDate}` : undefined }];
+}
+
+function sharedCriteriaFilenameParts(
+  q: SharedCriteriaQuery,
+  options: { omitStores?: boolean } = {},
+): ReportFilenameCriterion[] {
+  return [
+    ...(options.omitStores ? [] : [{ key: 's', value: q.stores }]),
+    { key: 'ch', value: q.chains },
+    { key: 'sec', value: q.sectors },
+    { key: 'dep', value: q.departments },
+    { key: 'cat', value: q.categories },
+    { key: 'v', value: q.vendors },
+    { key: 'sea', value: q.seasons },
+    { key: 'sku', value: q.skus },
+    { key: 'grp', value: q.groups },
+    { key: 'kw', value: q.keywords },
+    { key: 'buyer', value: q.buyers },
+    { key: 'style', value: cleanText(q.styleColor) },
+    { key: 'scrit', value: cleanText(q.storesRaw) },
+    { key: 'catcrit', value: cleanText(q.categoriesRaw) },
+    { key: 'vcrit', value: cleanText(q.vendorsRaw) },
+    { key: 'seacrit', value: cleanText(q.seasonsRaw) },
+    { key: 'skucrit', value: cleanText(q.skusRaw) },
+    { key: 'grpcrit', value: cleanText(q.groupsRaw) },
+    { key: 'kwcrit', value: cleanText(q.keywordsRaw) },
+    { key: 'stylecrit', value: cleanText(q.styleColorRaw) },
+  ];
+}
+
+function salesExportFilename(
+  baseStem: string,
+  extension: 'csv' | 'xlsx',
+  criteria: ReportFilenameCriterion[],
+): string {
+  return buildReportFilename(baseStem, extension, criteria);
+}
+
 async function scopedStoreNumbersForRequest(
   req: Request,
   res: Response,
-  requestedStores: number[] | undefined,
-  rawStoreCriteria?: string,
+  q: SharedCriteriaQuery,
 ): Promise<number[] | undefined | null> {
-  const explicitStores = requestedStores ?? [];
-  const constraint = await getRequestStoreScopeConstraintIfAuthenticated(prisma, req, res, explicitStores);
-  if (constraint === undefined) return requestedStores;
+  const hasRawOrChainStoreCriteria = !!q.chains?.length || !!q.storesRaw?.trim();
+  const hasStoreCriteria = !!q.stores?.length || hasRawOrChainStoreCriteria;
+  const requestedStores = q.stores ?? [];
+  const resolvedRequestedStores = hasStoreCriteria
+    ? await resolveSharedStoreNumbers(buildSalesCriteria(q), requestedStores)
+    : requestedStores.length > 0
+      ? requestedStores
+      : undefined;
+
+  const constraint = await getRequestStoreScopeConstraintIfAuthenticated(
+    prisma,
+    req,
+    res,
+    hasRawOrChainStoreCriteria ? [] : requestedStores,
+  );
+  if (constraint === undefined) return resolvedRequestedStores;
   if (constraint === null) return null;
 
-  if (rawStoreCriteria?.trim() && !constraint.allStores) {
+  if (constraint.allStores) return resolvedRequestedStores;
+
+  if (resolvedRequestedStores && resolvedRequestedStores.length > 0) {
+    const allowedStores = new Set(constraint.storeIds);
+    const scoped = resolvedRequestedStores.filter((storeNumber) => allowedStores.has(storeNumber));
+    if (scoped.length === 0) {
+      sendStoreScopeForbidden(res, null);
+      return null;
+    }
+    return scoped;
+  }
+
+  if (hasStoreCriteria) {
     sendStoreScopeForbidden(res, null);
     return null;
   }
 
-  if (explicitStores.length > 0 || constraint.allStores) return requestedStores;
   return constraint.storeIds;
 }
 
@@ -113,8 +266,8 @@ router.get('/dimensions', async (_req: Request, res: Response, next: NextFunctio
 
 const byDaySchema = z.object({
   /** Comma-separated store numbers. Required (no default) — UI defaults to empty. */
-  stores: csvIntList,
   startDate: dateField,
+  ...sharedCriteriaShape,
   endDate: dateField,
   comparisonOffsetDays: z.coerce.number().int().positive().max(366 * 2).default(364),
   combineStores: queryBoolean.default(false),
@@ -142,7 +295,7 @@ router.get('/by-day', validateQuery(byDaySchema), async (req: Request, res: Resp
       res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'startDate must be <= endDate' } });
       return;
     }
-    const scopedStores = await scopedStoreNumbersForRequest(req, res, q.stores);
+    const scopedStores = await scopedStoreNumbersForRequest(req, res, q);
     if (scopedStores === null) return;
     const stores = scopedStores ?? [];
     const report = await getSalesByDay({
@@ -151,6 +304,7 @@ router.get('/by-day', validateQuery(byDaySchema), async (req: Request, res: Resp
       endDate: q.endDate,
       comparisonOffsetDays: q.comparisonOffsetDays,
       combineStores: q.combineStores,
+      criteria: buildSalesCriteria(q, scopedStores ?? undefined),
     });
 
     // Flat row list for CSV/XLSX. Combined mode emits a single block;
@@ -158,6 +312,13 @@ router.get('/by-day', validateQuery(byDaySchema), async (req: Request, res: Resp
     const exportBlocks = report.combineStores && report.combined
       ? [{ label: report.combined.storeLabel, rows: report.combined.rows, totals: report.combined.totals }]
       : report.storeBreakdowns.map((b) => ({ label: b.storeLabel, rows: b.rows, totals: b.totals }));
+    const filenameCriteria = [
+      effectiveStoresFilenamePart(stores),
+      ...dateRangeFilenameParts(q.startDate, q.endDate),
+      { key: 'cmp', value: q.comparisonOffsetDays, defaultValue: 364 },
+      { key: 'comb', value: q.combineStores, defaultValue: false },
+      ...sharedCriteriaFilenameParts(q, { omitStores: true }),
+    ];
 
     if (q.format === 'xlsx') {
       const xlsxRows: Array<Record<string, unknown>> = [];
@@ -191,9 +352,8 @@ router.get('/by-day', validateQuery(byDaySchema), async (req: Request, res: Resp
           pctChange: block.totals.pctChange,
         });
       }
-      const fileStem = stores.length ? stores.join('_') : 'all-stores';
       await sendXlsx(res, {
-        filename: `sales-by-day-${fileStem}-${q.startDate}-to-${q.endDate}.xlsx`,
+        filename: salesExportFilename('SBD', 'xlsx', filenameCriteria),
         sheets: [
           {
             name: 'Sales by Day',
@@ -247,8 +407,7 @@ router.get('/by-day', validateQuery(byDaySchema), async (req: Request, res: Resp
           block.totals.pctChange == null ? '' : block.totals.pctChange.toFixed(1),
         ]);
       }
-      const fileStem = stores.length ? stores.join('_') : 'all-stores';
-      sendCsv(res, header, rows, `sales-by-day-${fileStem}-${q.startDate}-to-${q.endDate}.csv`);
+      sendCsv(res, header, rows, salesExportFilename('SBD', 'csv', filenameCriteria));
       return;
     }
     res.json(report);
@@ -262,7 +421,7 @@ const byTimeSchema = z.object({
   endDate: dateField,
   compareStartDate: dateField.optional(),
   compareEndDate: dateField.optional(),
-  stores: csvIntList,
+  ...sharedCriteriaShape,
   pctOfTotal: queryBoolean.default(false),
   format: z.enum(['json', 'csv']).default('json'),
 });
@@ -270,7 +429,7 @@ const byTimeSchema = z.object({
 router.get('/by-time', validateQuery(byTimeSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const q = (req as any).validatedQuery as z.infer<typeof byTimeSchema>;
-    const scopedStores = await scopedStoreNumbersForRequest(req, res, q.stores);
+    const scopedStores = await scopedStoreNumbersForRequest(req, res, q);
     if (scopedStores === null) return;
     const report = await getSalesByTime({
       startDate: q.startDate,
@@ -279,13 +438,22 @@ router.get('/by-time', validateQuery(byTimeSchema), async (req: Request, res: Re
       compareEndDate: q.compareEndDate,
       storeNumbers: scopedStores,
       printPctOfTotal: q.pctOfTotal,
+      criteria: buildSalesCriteria(q, scopedStores ?? undefined),
     });
+    const filenameCriteria = [
+      effectiveStoresFilenamePart(scopedStores),
+      ...dateRangeFilenameParts(q.startDate, q.endDate),
+      { key: 'cf', value: q.compareStartDate },
+      { key: 'ct', value: q.compareEndDate },
+      { key: 'pct', value: q.pctOfTotal, defaultValue: false },
+      ...sharedCriteriaFilenameParts(q, { omitStores: true }),
+    ];
     if (q.format === 'csv') {
       const header = ['Hour', 'Tickets', 'Qty', 'Dollars', '% of Total'];
       const rows = report.rangeA.map((b) => [
         b.hour, b.tickets, b.qty, b.dollars.toFixed(2), b.pctOfTotal == null ? '' : b.pctOfTotal.toFixed(1),
       ]);
-      sendCsv(res, header, rows, `sales-by-time-${q.startDate}-to-${q.endDate}.csv`);
+      sendCsv(res, header, rows, salesExportFilename('SBT', 'csv', filenameCriteria));
       return;
     }
     res.json(report);
@@ -297,17 +465,16 @@ router.get('/by-time', validateQuery(byTimeSchema), async (req: Request, res: Re
 const bySkuSchema = z.object({
   startDate: dateField,
   endDate: dateField,
-  stores: csvIntList,
+  ...sharedCriteriaShape,
   sortBy: z.enum(['SKU', 'CATEGORY_SKU', 'VENDOR_SKU']).default('SKU'),
   includeReturns: queryBoolean.default(true),
-  skus: csvStringList,
   format: z.enum(['json', 'csv']).default('json'),
 });
 
 router.get('/by-sku', validateQuery(bySkuSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const q = (req as any).validatedQuery as z.infer<typeof bySkuSchema>;
-    const scopedStores = await scopedStoreNumbersForRequest(req, res, q.stores);
+    const scopedStores = await scopedStoreNumbersForRequest(req, res, q);
     if (scopedStores === null) return;
     const report = await getSalesBySku({
       startDate: q.startDate,
@@ -316,13 +483,21 @@ router.get('/by-sku', validateQuery(bySkuSchema), async (req: Request, res: Resp
       sortBy: q.sortBy,
       includeReturns: q.includeReturns,
       skus: q.skus,
+      criteria: buildSalesCriteria(q, scopedStores ?? undefined),
     });
+    const filenameCriteria = [
+      effectiveStoresFilenamePart(scopedStores),
+      ...dateRangeFilenameParts(q.startDate, q.endDate),
+      { key: 'sort', value: q.sortBy, includeIfDefault: true },
+      { key: 'ret', value: q.includeReturns, defaultValue: true },
+      ...sharedCriteriaFilenameParts(q, { omitStores: true }),
+    ];
     if (q.format === 'csv') {
       const header = ['SKU', 'Category', 'Vendor', 'Qty', 'Dollars', 'Returns Qty', 'Returns Dollars'];
       const rows = report.rows.map((r) => [
         r.sku, r.category ?? '', r.vendor ?? '', r.qty, r.dollars.toFixed(2), r.returnsQty, r.returnsDollars.toFixed(2),
       ]);
-      sendCsv(res, header, rows, `sales-by-sku-${q.startDate}-to-${q.endDate}.csv`);
+      sendCsv(res, header, rows, salesExportFilename('SBSKU', 'csv', filenameCriteria));
       return;
     }
     res.json(report);
@@ -334,7 +509,7 @@ router.get('/by-sku', validateQuery(bySkuSchema), async (req: Request, res: Resp
 const salespersonSchema = z.object({
   startDate: dateField,
   endDate: dateField,
-  stores: csvIntList,
+  ...sharedCriteriaShape,
   subtotalBy: z.enum(['DEPARTMENT', 'VENDOR']).optional(),
   combineStores: queryBoolean.default(false),
   cashierSummary: queryBoolean.default(false),
@@ -344,7 +519,7 @@ const salespersonSchema = z.object({
 router.get('/salesperson-summary', validateQuery(salespersonSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const q = (req as any).validatedQuery as z.infer<typeof salespersonSchema>;
-    const scopedStores = await scopedStoreNumbersForRequest(req, res, q.stores);
+    const scopedStores = await scopedStoreNumbersForRequest(req, res, q);
     if (scopedStores === null) return;
     const report = await getSalespersonSummary({
       startDate: q.startDate,
@@ -353,13 +528,22 @@ router.get('/salesperson-summary', validateQuery(salespersonSchema), async (req:
       subtotalBy: q.subtotalBy,
       combineStores: q.combineStores,
       cashierSummary: q.cashierSummary,
+      criteria: buildSalesCriteria(q, scopedStores ?? undefined),
     });
+    const filenameCriteria = [
+      effectiveStoresFilenamePart(scopedStores),
+      ...dateRangeFilenameParts(q.startDate, q.endDate),
+      { key: 'sub', value: q.subtotalBy },
+      { key: 'comb', value: q.combineStores, defaultValue: false },
+      { key: 'cash', value: q.cashierSummary, defaultValue: false },
+      ...sharedCriteriaFilenameParts(q, { omitStores: true }),
+    ];
     if (q.format === 'csv') {
       const header = ['Salesperson', 'Name', 'Store', 'Qty', 'Dollars', 'Perks'];
       const rows = report.salespeople.map((s) => [
         s.salespersonCode, s.salespersonName ?? '', s.storeNumber, s.qty, s.dollars.toFixed(2), s.perks.toFixed(2),
       ]);
-      sendCsv(res, header, rows, `salesperson-summary-${q.startDate}-to-${q.endDate}.csv`);
+      sendCsv(res, header, rows, salesExportFilename('SPSUM', 'csv', filenameCriteria));
       return;
     }
     res.json(report);
@@ -373,7 +557,7 @@ const bestSellersSchema = z.object({
   metric: z.enum(['QTY', 'NET_SALES', 'PROFIT']),
   period: z.enum(['WTD', 'MTD', 'STD', 'YTD']).optional(),
   lastNMonths: z.coerce.number().int().min(1).max(24).optional(),
-  stores: csvIntList,
+  ...sharedCriteriaShape,
   combineStores: queryBoolean.default(false),
   topN: z.coerce.number().int().min(1).max(1000).default(50),
   format: z.enum(['json', 'csv']).default('json'),
@@ -386,7 +570,7 @@ router.get('/best-sellers', validateQuery(bestSellersSchema), async (req: Reques
       res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'Either period or lastNMonths is required' } });
       return;
     }
-    const scopedStores = await scopedStoreNumbersForRequest(req, res, q.stores);
+    const scopedStores = await scopedStoreNumbersForRequest(req, res, q);
     if (scopedStores === null) return;
     const report = await getBestSellers({
       dimension: q.dimension,
@@ -395,14 +579,24 @@ router.get('/best-sellers', validateQuery(bestSellersSchema), async (req: Reques
       storeNumbers: scopedStores,
       combineStores: q.combineStores,
       topN: q.topN,
+      criteria: buildSalesCriteria(q, scopedStores ?? undefined),
     });
+    const filenameCriteria = [
+      { value: q.dimension, includeIfDefault: true },
+      { value: q.metric, includeIfDefault: true },
+      { value: q.lastNMonths ? `${q.lastNMonths}mo` : q.period, includeIfDefault: true },
+      effectiveStoresFilenamePart(scopedStores),
+      { key: 'top', value: q.topN, includeIfDefault: true },
+      { key: 'comb', value: q.combineStores, defaultValue: false },
+      ...sharedCriteriaFilenameParts(q, { omitStores: true }),
+    ];
     if (q.format === 'csv') {
       const header = ['Rank', 'Key', 'Label', 'Qty', 'Net Sales', 'Profit', 'Profit %'];
       const rows = report.rows.map((r) => [
         r.rank, r.key, r.label ?? '', r.qty, r.netSales.toFixed(2), r.profit.toFixed(2),
         r.profitPct == null ? '' : r.profitPct.toFixed(1),
       ]);
-      sendCsv(res, header, rows, `best-sellers-${q.dimension}-${q.metric}.csv`);
+      sendCsv(res, header, rows, salesExportFilename('BS', 'csv', filenameCriteria));
       return;
     }
     res.json(report);
@@ -438,6 +632,7 @@ const salesAnalysisSchema = z.object({
   styleColor: z.string().optional(),
   groups: csvStringList,
   keywords: csvStringList,
+  buyers: csvStringList,
   // RICS-grammar raw strings per facet — ranges like "556-599", exclusions
   // "<>575", wildcards "5?0". Merged with the structured lists above by the
   // adapter (see ricsSalesReportAdapter.applyAnalysisCriteria).
@@ -458,7 +653,7 @@ const salesAnalysisSchema = z.object({
   // stays fast — only the full-screen viewer asks for these columns.
   includeAttributes: queryBoolean.default(false),
   includeOnOrder: queryBoolean.default(false),
-  format: z.enum(['json', 'csv']).default('json'),
+  format: z.enum(['json', 'csv', 'xlsx']).default('json'),
 });
 
 router.get('/sales-analysis', validateQuery(salesAnalysisSchema), async (req: Request, res: Response, next: NextFunction) => {
@@ -475,39 +670,114 @@ router.get('/sales-analysis', validateQuery(salesAnalysisSchema), async (req: Re
       });
       return;
     }
-    const scopedStores = await scopedStoreNumbersForRequest(req, res, q.stores, q.storesRaw);
+    const scopedStores = await scopedStoreNumbersForRequest(req, res, q);
     if (scopedStores === null) return;
     const report = await getSalesAnalysis({
       dimension: q.dimension,
       reportType: q.reportType,
       storeOption: q.storeOption,
-      criteria: {
-        stores: scopedStores,
-        chains: q.chains,
-        sectors: q.sectors,
-        departments: q.departments,
-        categories: q.categories,
-        vendors: q.vendors,
-        seasons: q.seasons,
-        skus: q.skus,
-        styleColor: q.styleColor || undefined,
-        groups: q.groups,
-        keywords: q.keywords,
-        storesRaw: q.storesRaw?.trim() || undefined,
-        categoriesRaw: q.categoriesRaw?.trim() || undefined,
-        vendorsRaw: q.vendorsRaw?.trim() || undefined,
-        seasonsRaw: q.seasonsRaw?.trim() || undefined,
-        skusRaw: q.skusRaw?.trim() || undefined,
-        groupsRaw: q.groupsRaw?.trim() || undefined,
-        keywordsRaw: q.keywordsRaw?.trim() || undefined,
-        styleColorRaw: q.styleColorRaw?.trim() || undefined,
-      },
+      criteria: buildSalesCriteria(q, scopedStores ?? undefined),
       printing: { wtd: q.wtd, mtd: q.mtd, std: q.std, ytd: q.ytd, priorYear: q.priorYear },
       startDate: q.startDate,
       endDate: q.endDate,
       includeAttributes: q.includeAttributes,
       includeOnOrder: q.includeOnOrder,
     });
+    const printingOptions = [
+      q.wtd ? 'wtd' : undefined,
+      q.mtd ? 'mtd' : undefined,
+      q.std ? 'std' : undefined,
+      q.ytd ? 'ytd' : undefined,
+      q.priorYear ? 'prior-year' : undefined,
+    ].filter((value): value is string => !!value);
+    const filenameCriteria = [
+      { value: q.dimension, includeIfDefault: true },
+      { value: q.reportType, includeIfDefault: true },
+      { value: q.storeOption, includeIfDefault: true },
+      effectiveStoresFilenamePart(scopedStores),
+      ...dateRangeFilenameParts(q.startDate, q.endDate),
+      { key: 'p', value: printingOptions },
+      { key: 'attr', value: q.includeAttributes, defaultValue: false },
+      { key: 'oo', value: q.includeOnOrder, defaultValue: false },
+      ...sharedCriteriaFilenameParts(q, { omitStores: true }),
+    ];
+    if (q.format === 'xlsx') {
+      await sendXlsx(res, {
+        filename: salesExportFilename('SAR', 'xlsx', filenameCriteria),
+        sheets: [
+          {
+            name: 'Sales Analysis',
+            columns: [
+              { header: 'Dimension', key: 'dimension', width: 18 },
+              { header: 'Label', key: 'label', width: 32 },
+              { header: 'Store', key: 'store', width: 10 },
+              { header: 'On Hand Qty', key: 'unitsOnHand', width: 14, numFmt: XLSX_NUMFMT.integer },
+              { header: 'Avg Cost', key: 'inventoryUnitCost', width: 12, numFmt: XLSX_NUMFMT.money },
+              { header: 'Total Inventory Cost', key: 'onHandAtCost', width: 20, numFmt: XLSX_NUMFMT.money },
+              { header: 'Qty Sold', key: 'qty', width: 10, numFmt: XLSX_NUMFMT.integer },
+              { header: 'Net Sales', key: 'netSales', width: 14, numFmt: XLSX_NUMFMT.money },
+              { header: 'COGS', key: 'cogs', width: 14, numFmt: XLSX_NUMFMT.money },
+              { header: 'Gross Profit', key: 'grossProfit', width: 14, numFmt: XLSX_NUMFMT.money },
+              { header: 'GP %', key: 'gpPct', width: 10, numFmt: XLSX_NUMFMT.percent1 },
+              { header: 'Turns', key: 'turns', width: 10, numFmt: XLSX_NUMFMT.decimal2 },
+              { header: 'ROI', key: 'roiPct', width: 10, numFmt: XLSX_NUMFMT.percent1 },
+              ...(q.priorYear
+                ? [
+                    { header: 'Prior Yr Qty', key: 'priorYearQty', width: 12, numFmt: XLSX_NUMFMT.integer },
+                    { header: 'Prior Yr Sales', key: 'priorYearNetSales', width: 14, numFmt: XLSX_NUMFMT.money },
+                    { header: 'Prior Yr Sales % Change', key: 'pyPctChange', width: 20, numFmt: XLSX_NUMFMT.percent1 },
+                    { header: 'Prior Yr Profit', key: 'priorYearGrossProfit', width: 14, numFmt: XLSX_NUMFMT.money },
+                    { header: 'Prior Yr Profit % Change', key: 'pyGrossProfitPctChange', width: 20, numFmt: XLSX_NUMFMT.percent1 },
+                    { header: 'Prior Yr On Hand Cost', key: 'priorYearOnHandAtCost', width: 20, numFmt: XLSX_NUMFMT.money },
+                    { header: 'Prior Yr On Hand % Change', key: 'pyOnHandPctChange', width: 22, numFmt: XLSX_NUMFMT.percent1 },
+                  ]
+                : []),
+              ...(q.includeOnOrder
+                ? [
+                    { header: 'On Order Qty', key: 'onOrderQty', width: 14, numFmt: XLSX_NUMFMT.integer },
+                    { header: 'Landed Cost/Unit', key: 'onOrderUnitCost', width: 18, numFmt: XLSX_NUMFMT.money },
+                    { header: 'Total Order Cost', key: 'onOrderCost', width: 18, numFmt: XLSX_NUMFMT.money },
+                  ]
+                : []),
+            ],
+            rows: report.rows.map((r) => ({
+              dimension: r.dimensionKey,
+              label: r.dimensionLabel ?? '',
+              store: r.storeNumber ?? '',
+              unitsOnHand: r.unitsOnHand,
+              inventoryUnitCost: r.inventoryUnitCost,
+              onHandAtCost: r.onHandAtCost,
+              qty: r.qty,
+              netSales: r.netSales,
+              cogs: r.cogs,
+              grossProfit: r.grossProfit,
+              gpPct: r.gpPct,
+              turns: r.turns,
+              roiPct: r.roiPct,
+              ...(q.priorYear
+                ? {
+                    priorYearQty: r.priorYearQty,
+                    priorYearNetSales: r.priorYearNetSales,
+                    pyPctChange: r.pyPctChange,
+                    priorYearGrossProfit: r.priorYearGrossProfit,
+                    pyGrossProfitPctChange: r.pyGrossProfitPctChange,
+                    priorYearOnHandAtCost: r.priorYearOnHandAtCost,
+                    pyOnHandPctChange: r.pyOnHandPctChange,
+                  }
+                : {}),
+              ...(q.includeOnOrder
+                ? {
+                    onOrderQty: r.onOrderQty ?? 0,
+                    onOrderUnitCost: r.onOrderUnitCost ?? null,
+                    onOrderCost: r.onOrderCost ?? null,
+                  }
+                : {}),
+            })),
+          },
+        ],
+      });
+      return;
+    }
     if (q.format === 'csv') {
       const header = [
         'Dimension',
@@ -521,9 +791,18 @@ router.get('/sales-analysis', validateQuery(salesAnalysisSchema), async (req: Re
         'COGS',
         'Gross Profit',
         'GP %',
+        ...(q.priorYear
+          ? [
+              'Prior Yr Qty',
+              'Prior Yr Sales',
+              'Prior Yr Sales % Change',
+              'Prior Yr Profit',
+              'Prior Yr Profit % Change',
+              'Prior Yr On Hand Cost',
+              'Prior Yr On Hand % Change',
+            ]
+          : []),
         ...(q.includeOnOrder ? ['On Order Qty', 'Landed Cost/Unit', 'Total Order Cost'] : []),
-        'Prior Yr Net',
-        'PY % Change',
       ];
       const rows = report.rows.map((r) => [
         r.dimensionKey, r.dimensionLabel ?? '', r.storeNumber ?? '',
@@ -533,6 +812,17 @@ router.get('/sales-analysis', validateQuery(salesAnalysisSchema), async (req: Re
         r.qty,
         r.netSales.toFixed(2), r.cogs.toFixed(2), r.grossProfit.toFixed(2),
         r.gpPct == null ? '' : r.gpPct.toFixed(1),
+        ...(q.priorYear
+          ? [
+              r.priorYearQty == null ? '' : r.priorYearQty,
+              r.priorYearNetSales == null ? '' : r.priorYearNetSales.toFixed(2),
+              r.pyPctChange == null ? '' : r.pyPctChange.toFixed(1),
+              r.priorYearGrossProfit == null ? '' : r.priorYearGrossProfit.toFixed(2),
+              r.pyGrossProfitPctChange == null ? '' : r.pyGrossProfitPctChange.toFixed(1),
+              r.priorYearOnHandAtCost == null ? '' : r.priorYearOnHandAtCost.toFixed(2),
+              r.pyOnHandPctChange == null ? '' : r.pyOnHandPctChange.toFixed(1),
+            ]
+          : []),
         ...(q.includeOnOrder
           ? [
               r.onOrderQty ?? 0,
@@ -540,10 +830,8 @@ router.get('/sales-analysis', validateQuery(salesAnalysisSchema), async (req: Re
               r.onOrderCost == null ? '' : r.onOrderCost.toFixed(2),
             ]
           : []),
-        r.priorYearNetSales == null ? '' : r.priorYearNetSales.toFixed(2),
-        r.pyPctChange == null ? '' : r.pyPctChange.toFixed(1),
       ]);
-      sendCsv(res, header, rows, `sales-analysis-${q.dimension}.csv`);
+      sendCsv(res, header, rows, salesExportFilename('SAR', 'csv', filenameCriteria));
       return;
     }
     res.json(report);
@@ -564,7 +852,7 @@ router.get('/sales-analysis', validateQuery(salesAnalysisSchema), async (req: Re
 const salesPivotSchema = z.object({
   startDate: dateField,
   endDate: dateField,
-  stores: csvIntList,
+  ...sharedCriteriaShape,
   variant: z.enum([
     'department',
     'department-separate-store',
@@ -578,13 +866,6 @@ const salesPivotSchema = z.object({
   level1: z.enum(['buyer', 'sector', 'department', 'season', 'group', 'vendor', 'store']).optional(),
   level2: z.enum(['buyer', 'sector', 'department', 'season', 'group', 'vendor', 'store', 'category']).optional(),
   level3: z.enum(['buyer', 'sector', 'department', 'season', 'group', 'vendor', 'store', 'category']).optional(),
-  // Criteria filters (variant='custom'). CSV lists. Chains narrow stores;
-  // the remaining selectors narrow the SKU universe before aggregation.
-  chains: csvStringList,
-  sectors: csvIntList,
-  departments: csvIntList,
-  seasons: csvStringList,
-  buyers: csvStringList,
   format: z.enum(['json', 'csv']).default('json'),
 });
 
@@ -624,7 +905,7 @@ router.get('/sales-pivot', validateQuery(salesPivotSchema), async (req: Request,
       }
       levels = candidateLevels;
     }
-    const scopedStores = await scopedStoreNumbersForRequest(req, res, q.stores);
+    const scopedStores = await scopedStoreNumbersForRequest(req, res, q);
     if (scopedStores === null) return;
     const report = await getSalesPivot({
       startDate: q.startDate,
@@ -632,12 +913,15 @@ router.get('/sales-pivot', validateQuery(salesPivotSchema), async (req: Request,
       storeNumbers: scopedStores,
       variant: q.variant,
       levels,
-      chains: q.chains,
-      sectors: q.sectors,
-      departments: q.departments,
-      seasons: q.seasons,
-      buyers: q.buyers,
+      criteria: buildSalesCriteria(q, scopedStores ?? undefined),
     });
+    const filenameCriteria = [
+      { value: q.variant, includeIfDefault: true },
+      { key: 'lvl', value: levels },
+      effectiveStoresFilenamePart(scopedStores),
+      ...dateRangeFilenameParts(q.startDate, q.endDate),
+      ...sharedCriteriaFilenameParts(q, { omitStores: true }),
+    ];
     if (q.format === 'csv') {
       const yr = (label: string) => `${label} ${report.currentYear}`;
       const py = (label: string) => `${label} ${report.priorYear}`;
@@ -666,7 +950,7 @@ router.get('/sales-pivot', validateQuery(salesPivotSchema), async (req: Request,
           r.sku, r.skuDescription ?? '',
           ...measureCells(r),
         ]);
-        sendCsv(res, header, rows, `sales-pivot-buyer-${q.startDate}-to-${q.endDate}.csv`);
+        sendCsv(res, header, rows, salesExportFilename('SPV', 'csv', filenameCriteria));
         return;
       }
 
@@ -708,12 +992,7 @@ router.get('/sales-pivot', validateQuery(salesPivotSchema), async (req: Request,
           r.sku, r.skuDescription ?? '',
           ...measureCells(r),
         ]);
-        sendCsv(
-          res,
-          header,
-          rows,
-          `sales-pivot-${levels.join('-')}-${q.startDate}-to-${q.endDate}.csv`,
-        );
+        sendCsv(res, header, rows, salesExportFilename('SPV', 'csv', filenameCriteria));
         return;
       }
 
@@ -733,8 +1012,7 @@ router.get('/sales-pivot', validateQuery(salesPivotSchema), async (req: Request,
           r.sku, r.skuDescription ?? '',
           ...measureCells(r),
         ]);
-        const base = separate ? 'sales-pivot-store-buyer-vendor' : 'sales-pivot-buyer-vendor';
-        sendCsv(res, header, rows, `${base}-${q.startDate}-to-${q.endDate}.csv`);
+        sendCsv(res, header, rows, salesExportFilename('SPV', 'csv', filenameCriteria));
         return;
       }
 
@@ -755,8 +1033,7 @@ router.get('/sales-pivot', validateQuery(salesPivotSchema), async (req: Request,
         r.sku, r.skuDescription ?? '',
         ...measureCells(r),
       ]);
-      const base = separate ? 'sales-pivot-store-department' : 'sales-pivot-department';
-      sendCsv(res, header, rows, `${base}-${q.startDate}-to-${q.endDate}.csv`);
+      sendCsv(res, header, rows, salesExportFilename('SPV', 'csv', filenameCriteria));
       return;
     }
     res.json(report);
@@ -774,22 +1051,7 @@ const hierarchyDrillDownSchema = z.object({
   storeOption: z.enum(['SEPARATE', 'COMBINE']).default('COMBINE'),
   startDate: dateField,
   endDate: dateField,
-  stores: csvIntList,
-  categories: csvIntList,
-  vendors: csvStringList,
-  seasons: csvStringList,
-  skus: csvStringList,
-  styleColor: z.string().optional(),
-  groups: csvStringList,
-  keywords: csvStringList,
-  storesRaw: z.string().optional(),
-  categoriesRaw: z.string().optional(),
-  vendorsRaw: z.string().optional(),
-  seasonsRaw: z.string().optional(),
-  skusRaw: z.string().optional(),
-  groupsRaw: z.string().optional(),
-  keywordsRaw: z.string().optional(),
-  styleColorRaw: z.string().optional(),
+  ...sharedCriteriaShape,
   priorYear: queryBoolean.default(false),
   includeAttributes: queryBoolean.default(false),
 });
@@ -801,28 +1063,11 @@ router.get('/hierarchy-drill-down', validateQuery(hierarchyDrillDownSchema), asy
       res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'startDate must be <= endDate' } });
       return;
     }
-    const scopedStores = await scopedStoreNumbersForRequest(req, res, q.stores, q.storesRaw);
+    const scopedStores = await scopedStoreNumbersForRequest(req, res, q);
     if (scopedStores === null) return;
     const report = await getSalesHierarchy({
       storeOption: q.storeOption,
-      criteria: {
-        stores: scopedStores,
-        categories: q.categories,
-        vendors: q.vendors,
-        seasons: q.seasons,
-        skus: q.skus,
-        styleColor: q.styleColor || undefined,
-        groups: q.groups,
-        keywords: q.keywords,
-        storesRaw: q.storesRaw?.trim() || undefined,
-        categoriesRaw: q.categoriesRaw?.trim() || undefined,
-        vendorsRaw: q.vendorsRaw?.trim() || undefined,
-        seasonsRaw: q.seasonsRaw?.trim() || undefined,
-        skusRaw: q.skusRaw?.trim() || undefined,
-        groupsRaw: q.groupsRaw?.trim() || undefined,
-        keywordsRaw: q.keywordsRaw?.trim() || undefined,
-        styleColorRaw: q.styleColorRaw?.trim() || undefined,
-      },
+      criteria: buildSalesCriteria(q, scopedStores ?? undefined),
       startDate: q.startDate,
       endDate: q.endDate,
       priorYear: q.priorYear,
@@ -861,6 +1106,15 @@ router.get('/stock-status', validateQuery(stockStatusSchema), async (req: Reques
         skus: q.skus,
       },
     });
+    const filenameCriteria = [
+      { value: q.sortBy, includeIfDefault: true },
+      { value: q.storeOption, includeIfDefault: true },
+      { value: q.itemFilter, includeIfDefault: true },
+      { key: 'v', value: q.vendors },
+      { key: 'cat', value: q.categories },
+      { key: 'sea', value: q.seasons },
+      { key: 'sku', value: q.skus },
+    ];
     if (q.format === 'csv') {
       const header = ['SKU', 'Description', 'Vendor', 'Category', 'Store', 'On Hand', 'On Order', 'Model', 'Short', 'Critical', 'Retail Value', 'Cost Value'];
       const rows = report.rows.map((r) => [
@@ -868,7 +1122,7 @@ router.get('/stock-status', validateQuery(stockStatusSchema), async (req: Reques
         r.onHand, r.onOrder, r.model, r.short, r.critical,
         r.retailValue.toFixed(2), r.costValue.toFixed(2),
       ]);
-      sendCsv(res, header, rows, `stock-status.csv`);
+      sendCsv(res, header, rows, salesExportFilename('SS', 'csv', filenameCriteria));
       return;
     }
     res.json(report);

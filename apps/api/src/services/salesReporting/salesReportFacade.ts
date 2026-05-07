@@ -18,6 +18,10 @@ import {
   matchesKeywords,
   type CriteriaExpression,
 } from '../../utils/criteriaGrammar';
+import {
+  resolveSharedProductCriteriaSkuWhitelist,
+  resolveSharedStoreNumbers,
+} from './sharedReportCriteria';
 import { prisma } from '../../db/prisma';
 export { ReportTypeNotImplementedError } from './ricsSalesReportAdapter';
 export type { SalesDimensionsResponse } from './ricsSalesReportAdapter';
@@ -80,6 +84,7 @@ export async function getSalesByDay(params: {
   endDate: string;
   comparisonOffsetDays?: number;
   combineStores?: boolean;
+  criteria?: SalesAnalysisCriteria;
 }): Promise<RicsSalesByDayByStoreReport> {
   if (!sourceIsRics()) throw new SalesSourceNotImplementedError(source());
   return ricsAdapter.getSalesByDay(params);
@@ -92,6 +97,7 @@ export async function getSalesByTime(params: {
   compareEndDate?: string;
   storeNumbers?: number[];
   printPctOfTotal?: boolean;
+  criteria?: SalesAnalysisCriteria;
 }): Promise<SalesByTimeReport> {
   if (!sourceIsRics()) throw new SalesSourceNotImplementedError(source());
   return ricsAdapter.getSalesByTime(params);
@@ -104,6 +110,7 @@ export async function getSalesBySku(params: {
   sortBy?: SalesBySkuSortBy;
   includeReturns?: boolean;
   skus?: string[];
+  criteria?: SalesAnalysisCriteria;
 }): Promise<SalesBySkuReport> {
   if (!sourceIsRics()) throw new SalesSourceNotImplementedError(source());
   return ricsAdapter.getSalesBySku(params);
@@ -116,6 +123,7 @@ export async function getSalespersonSummary(params: {
   subtotalBy?: SalespersonSubtotalBy;
   combineStores?: boolean;
   cashierSummary?: boolean;
+  criteria?: SalesAnalysisCriteria;
 }): Promise<SalespersonSummaryReport> {
   if (!sourceIsRics()) throw new SalesSourceNotImplementedError(source());
   return ricsAdapter.getSalespersonSummary(params);
@@ -130,6 +138,7 @@ export async function getBestSellers(params: {
   storeNumbers?: number[];
   combineStores?: boolean;
   topN?: number;
+  criteria?: SalesAnalysisCriteria;
 }): Promise<BestSellersReport> {
   if (!sourceIsRics()) throw new SalesSourceNotImplementedError(source());
   return ricsAdapter.getBestSellers(params);
@@ -165,13 +174,10 @@ export async function getSalesPivot(params: {
   /** Required when variant === 'custom'; ignored otherwise. */
   levels?: SalesPivotLevels;
   /** Criteria filters — variant='custom' only. Empty/undefined = no filter. */
-  chains?: string[];
-  sectors?: number[];
-  departments?: number[];
-  seasons?: string[];
-  buyers?: string[];
+  criteria?: SalesAnalysisCriteria;
 }): Promise<SalesPivotReport> {
   if (!sourceIsRics()) throw new SalesSourceNotImplementedError(source());
+  const criteria = params.criteria ?? {};
   if (params.variant === 'custom') {
     if (!params.levels) {
       throw new Error('levels are required when variant=custom');
@@ -181,11 +187,12 @@ export async function getSalesPivot(params: {
       endDate: params.endDate,
       storeNumbers: params.storeNumbers,
       levels: params.levels,
-      chains: params.chains,
-      sectors: params.sectors,
-      departments: params.departments,
-      seasons: params.seasons,
-      buyers: params.buyers,
+      criteria,
+      chains: criteria.chains,
+      sectors: criteria.sectors,
+      departments: criteria.departments,
+      seasons: criteria.seasons,
+      buyers: criteria.buyers,
     });
   }
   if (params.variant === 'buyer' ||
@@ -196,6 +203,7 @@ export async function getSalesPivot(params: {
       endDate: params.endDate,
       storeNumbers: params.storeNumbers,
       variant: params.variant,
+      criteria,
     });
   }
   return pivotAdapter.getSalesPivotByDepartment({
@@ -203,6 +211,7 @@ export async function getSalesPivot(params: {
     endDate: params.endDate,
     storeNumbers: params.storeNumbers,
     separateStore: params.variant === 'department-separate-store',
+    criteria,
   });
 }
 
@@ -294,9 +303,14 @@ export interface SalesHistoryByMonthCriteria {
   categories?: string;    // "556-599" ranges work here
   vendors?: string;
   seasons?: string;
+  skus?: string;
   styleColors?: string;
   groups?: string;
   keywords?: string;
+  chains?: string[];
+  sectors?: number[];
+  departments?: number[];
+  buyers?: string[];
 }
 
 export interface SalesHistoryByMonthBlockRow {
@@ -309,7 +323,7 @@ export interface SalesHistoryByMonthBlockRow {
   pictureFileName?: string | null;
   /** Child SKU rows for grouped SKU-detail reports. */
   children?: SalesHistoryByMonthBlockRow[];
-  /** Per-metric 12-month values keyed by MonthlyMetricKey. */
+  /** Per-metric month values keyed by MonthlyMetricKey. */
   metrics: Partial<Record<MonthlyMetricKey, number[]>>;
   /** Optional ticket-backed same-calendar-month values from the prior year. */
   priorYearMetrics?: Partial<Record<MonthlyMetricKey, number[]>>;
@@ -323,7 +337,7 @@ export interface SalesHistoryByMonthBlock {
   storeNumber: number | 'ALL';
   storeLabel: string;
   rows: SalesHistoryByMonthBlockRow[];
-  /** Per-metric column totals (length 12). */
+  /** Per-metric column totals, aligned to `months`. */
   columnTotals: Partial<Record<MonthlyMetricKey, number[]>>;
   priorYearColumnTotals?: Partial<Record<MonthlyMetricKey, number[]>>;
   /** Per-metric grand total (sum of columnTotals). */
@@ -333,13 +347,13 @@ export interface SalesHistoryByMonthBlock {
 
 export interface SalesHistoryByMonthChartSeries {
   name: string;
-  values: number[];                       // length 12, always Net Sales (anchor metric)
+  values: number[];                       // aligned to `months`, always Net Sales (anchor metric)
 }
 
 export interface SalesHistoryByMonthResult {
   sortBy: 'vendor' | 'category';
   endMonth: string;
-  months: string[];                       // length 12, ascending
+  months: string[];                       // trailing 12 report months, ending at endMonth
   priorYearMonths?: string[];             // same calendar months, one year earlier
   combineStores: boolean;
   stores: Array<{ number: number; label: string }>;
@@ -376,16 +390,16 @@ function assertYearMonth(ym: string, fieldName: string): void {
   }
 }
 
-/** Return the 12-month window ending inclusively at `endYearMonth`, oldest first. */
-function trailing12Months(endYearMonth: string): string[] {
+/** Return RICS' visible month columns: comparison month + trailing 12 report months. */
+function salesHistoryReportMonths(endYearMonth: string): string[] {
   assertYearMonth(endYearMonth, 'endYearMonth');
   const endYear = Number(endYearMonth.slice(0, 4));
   const endMonth = Number(endYearMonth.slice(5, 7));
   const out: string[] = [];
   let y = endYear;
-  let m = endMonth - 11;
+  let m = endMonth - 12;
   while (m <= 0) { m += 12; y -= 1; }
-  for (let i = 0; i < 12; i++) {
+  for (let i = 0; i < 13; i++) {
     out.push(`${String(y).padStart(4, '0')}-${String(m).padStart(2, '0')}`);
     m += 1;
     if (m === 13) { m = 1; y += 1; }
@@ -509,6 +523,23 @@ interface ResolvedCriteria {
   warning?: string;
 }
 
+function toSharedSalesCriteria(criteria: SalesHistoryByMonthCriteria): SalesAnalysisCriteria {
+  return {
+    chains: criteria.chains,
+    sectors: criteria.sectors,
+    departments: criteria.departments,
+    buyers: criteria.buyers,
+    storesRaw: criteria.stores,
+    categoriesRaw: criteria.categories,
+    vendorsRaw: criteria.vendors,
+    seasonsRaw: criteria.seasons,
+    skusRaw: criteria.skus,
+    groupsRaw: criteria.groups,
+    styleColorRaw: criteria.styleColors,
+    keywordsRaw: criteria.keywords,
+  };
+}
+
 /**
  * Resolve a raw criteria payload into SQL-ready filter lists.
  *
@@ -523,6 +554,21 @@ async function resolveCriteria(
 ): Promise<ResolvedCriteria> {
   const criteria: SalesHistoryByMonthCriteria = raw ?? {};
   const out: ResolvedCriteria = {};
+  const hasNewSharedCriteria =
+    !!criteria.chains?.length ||
+    !!criteria.sectors?.length ||
+    !!criteria.departments?.length ||
+    !!criteria.buyers?.length ||
+    !!criteria.skus?.trim();
+  if (hasNewSharedCriteria) {
+    const sharedCriteria = toSharedSalesCriteria(criteria);
+    out.storeFilter = await resolveSharedStoreNumbers(sharedCriteria, callerStoreNumbers) ?? callerStoreNumbers.slice();
+    const sharedSkuFilter = await resolveSharedProductCriteriaSkuWhitelist(sharedCriteria);
+    if (sharedSkuFilter !== null) {
+      out.skuFilter = sharedSkuFilter;
+    }
+    return out;
+  }
 
   // Stores — always an intersection of the caller list and the `stores` facet.
   const storesExpr = parseCriteria(criteria.stores);
@@ -542,6 +588,8 @@ async function resolveCriteria(
   // Simple path: only vendors/categories provided, and each is literal-only.
   const simpleVendors = simpleLiteralList(vendorsExpr);
   const simpleCategories = simpleNumericLiteralList(categoriesExpr);
+  const literalVendorFilter = simpleVendors ?? [];
+  const literalCategoryFilter = simpleCategories ?? [];
 
   const needsMasterResolve =
     !seasonsExpr.empty ||
@@ -552,8 +600,8 @@ async function resolveCriteria(
     (categoriesExpr.empty ? false : simpleCategories == null);
 
   if (!needsMasterResolve) {
-    if (simpleVendors && simpleVendors.length > 0) out.vendorFilter = simpleVendors;
-    if (simpleCategories && simpleCategories.length > 0) out.categoryFilter = simpleCategories;
+    if (literalVendorFilter.length > 0) out.vendorFilter = literalVendorFilter;
+    if (literalCategoryFilter.length > 0) out.categoryFilter = literalCategoryFilter;
     return out;
   }
 
@@ -561,8 +609,8 @@ async function resolveCriteria(
   const masterRows = await monthlyAdapter.loadSkuMasterForCriteria();
   if (masterRows.length === 0) {
     out.warning = 'InventoryMaster not readable; complex criteria ignored';
-    if (simpleVendors && simpleVendors.length > 0) out.vendorFilter = simpleVendors;
-    if (simpleCategories && simpleCategories.length > 0) out.categoryFilter = simpleCategories;
+    if (literalVendorFilter.length > 0) out.vendorFilter = literalVendorFilter;
+    if (literalCategoryFilter.length > 0) out.categoryFilter = literalCategoryFilter;
     return out;
   }
 
@@ -628,9 +676,9 @@ function simpleNumericLiteralList(expr: CriteriaExpression): number[] | null {
 /**
  * Sales History by Month (RICS Ch. 6 p. 95) — v2.
  *
- * Returns a 12-month trailing window of sales measures pivoted by vendor /
+ * Returns RICS's 13-column Sales History by Month window pivoted by vendor /
  * category / department / SKU (per `detailLevel`), optionally combined across
- * stores, with per-metric 12-month grids for each metric in `dataToPrint`.
+ * stores, with per-metric grids for each metric in `dataToPrint`.
  *
  * Metric formulas (per RICS p. 87):
  *   - Net Sales       = SUM(TicketDetail.Extension)          — reconciles with
@@ -665,11 +713,20 @@ export async function getSalesHistoryByMonth(
   const criteria = params.criteria ?? {};
   const deferredMetrics = params.deferredMetrics ?? [];
 
-  const months = trailing12Months(params.endYearMonth);
+  const months = salesHistoryReportMonths(params.endYearMonth);
+  const monthCount = months.length;
+  const totalStartIndex = Math.max(0, monthCount - 12);
+  const zeroSeries = () => new Array<number>(monthCount).fill(0);
+  const sumReportWindow = (values: number[]) =>
+    values.slice(totalStartIndex).reduce((s, v) => s + v, 0);
+  const averageReportWindow = (values: number[]) => {
+    const count = Math.max(1, values.length - totalStartIndex);
+    return Math.round(sumReportWindow(values) / count);
+  };
   const includePriorYear = params.includePriorYear === true;
   const priorYearMonths = months.map((m) => shiftYearMonth(m, -12));
   const fromYearMonth = months[0];
-  const toYearMonth = months[11];
+  const toYearMonth = months[months.length - 1];
   const monthIndex = new Map<string, number>();
   months.forEach((m, i) => monthIndex.set(m, i));
   const priorYearMonthIndex = new Map<string, number>();
@@ -686,6 +743,7 @@ export async function getSalesHistoryByMonth(
     storeNumbers: effectiveStores,
     fromYearMonth,
     toYearMonth,
+    currentYearMonth: params.endYearMonth,
     sortBy: params.sortBy,
     detailLevel,
     combineStores: params.combineStores,
@@ -741,20 +799,20 @@ export async function getSalesHistoryByMonth(
   function bumpStoreTotals(bucket: number | 'ALL', mIdx: number, v: number): void {
     let s = storeNetSales.get(bucket);
     if (!s) {
-      s = { netSales: new Array<number>(12).fill(0), total: 0 };
+      s = { netSales: zeroSeries(), total: 0 };
       storeNetSales.set(bucket, s);
     }
     s.netSales[mIdx] += v;
-    s.total += v;
+    if (mIdx >= totalStartIndex) s.total += v;
   }
   function bumpPriorYearStoreTotals(bucket: number | 'ALL', mIdx: number, v: number): void {
     let s = priorYearStoreNetSales.get(bucket);
     if (!s) {
-      s = { netSales: new Array<number>(12).fill(0), total: 0 };
+      s = { netSales: zeroSeries(), total: 0 };
       priorYearStoreNetSales.set(bucket, s);
     }
     s.netSales[mIdx] += v;
-    s.total += v;
+    if (mIdx >= totalStartIndex) s.total += v;
   }
 
   for (const r of longRows) {
@@ -785,18 +843,18 @@ export async function getSalesHistoryByMonth(
         groupKey,
         groupLabel,
         pictureFileName: detailLevel === 'sku' ? r.pictureFileName ?? null : null,
-        quantity: new Array<number>(12).fill(0),
-        netSales: new Array<number>(12).fill(0),
-        cogs: new Array<number>(12).fill(0),
-        newSkuStoreCount: new Array<number>(12).fill(0),
-        carryoverSkuStoreCount: new Array<number>(12).fill(0),
-        newSkuDistinctCount: new Array<number>(12).fill(0),
-        carryoverSkuDistinctCount: new Array<number>(12).fill(0),
-        newSkuUnitsSold: new Array<number>(12).fill(0),
-        carryoverSkuUnitsSold: new Array<number>(12).fill(0),
-        priorYearQuantity: new Array<number>(12).fill(0),
-        priorYearNetSales: new Array<number>(12).fill(0),
-        priorYearCogs: new Array<number>(12).fill(0),
+        quantity: zeroSeries(),
+        netSales: zeroSeries(),
+        cogs: zeroSeries(),
+        newSkuStoreCount: zeroSeries(),
+        carryoverSkuStoreCount: zeroSeries(),
+        newSkuDistinctCount: zeroSeries(),
+        carryoverSkuDistinctCount: zeroSeries(),
+        newSkuUnitsSold: zeroSeries(),
+        carryoverSkuUnitsSold: zeroSeries(),
+        priorYearQuantity: zeroSeries(),
+        priorYearNetSales: zeroSeries(),
+        priorYearCogs: zeroSeries(),
       };
       pivotMap.set(mapKey, row);
     }
@@ -811,18 +869,18 @@ export async function getSalesHistoryByMonth(
           storeBucket,
           dimKey: groupKey,
           dimLabel: groupLabel ?? groupKey,
-          quantity: new Array<number>(12).fill(0),
-          netSales: new Array<number>(12).fill(0),
-          cogs: new Array<number>(12).fill(0),
-          newSkuStoreCount: new Array<number>(12).fill(0),
-          carryoverSkuStoreCount: new Array<number>(12).fill(0),
-          newSkuDistinctCount: new Array<number>(12).fill(0),
-          carryoverSkuDistinctCount: new Array<number>(12).fill(0),
-          newSkuUnitsSold: new Array<number>(12).fill(0),
-          carryoverSkuUnitsSold: new Array<number>(12).fill(0),
-          priorYearQuantity: new Array<number>(12).fill(0),
-          priorYearNetSales: new Array<number>(12).fill(0),
-          priorYearCogs: new Array<number>(12).fill(0),
+          quantity: zeroSeries(),
+          netSales: zeroSeries(),
+          cogs: zeroSeries(),
+          newSkuStoreCount: zeroSeries(),
+          carryoverSkuStoreCount: zeroSeries(),
+          newSkuDistinctCount: zeroSeries(),
+          carryoverSkuDistinctCount: zeroSeries(),
+          newSkuUnitsSold: zeroSeries(),
+          carryoverSkuUnitsSold: zeroSeries(),
+          priorYearQuantity: zeroSeries(),
+          priorYearNetSales: zeroSeries(),
+          priorYearCogs: zeroSeries(),
         };
         groupPivotMap.set(groupMapKey, groupRow);
       }
@@ -851,18 +909,18 @@ export async function getSalesHistoryByMonth(
         groupKey,
         groupLabel,
         pictureFileName: detailLevel === 'sku' ? pictureFileName ?? null : null,
-        quantity: new Array<number>(12).fill(0),
-        netSales: new Array<number>(12).fill(0),
-        cogs: new Array<number>(12).fill(0),
-        newSkuStoreCount: new Array<number>(12).fill(0),
-        carryoverSkuStoreCount: new Array<number>(12).fill(0),
-        newSkuDistinctCount: new Array<number>(12).fill(0),
-        carryoverSkuDistinctCount: new Array<number>(12).fill(0),
-        newSkuUnitsSold: new Array<number>(12).fill(0),
-        carryoverSkuUnitsSold: new Array<number>(12).fill(0),
-        priorYearQuantity: new Array<number>(12).fill(0),
-        priorYearNetSales: new Array<number>(12).fill(0),
-        priorYearCogs: new Array<number>(12).fill(0),
+        quantity: zeroSeries(),
+        netSales: zeroSeries(),
+        cogs: zeroSeries(),
+        newSkuStoreCount: zeroSeries(),
+        carryoverSkuStoreCount: zeroSeries(),
+        newSkuDistinctCount: zeroSeries(),
+        carryoverSkuDistinctCount: zeroSeries(),
+        newSkuUnitsSold: zeroSeries(),
+        carryoverSkuUnitsSold: zeroSeries(),
+        priorYearQuantity: zeroSeries(),
+        priorYearNetSales: zeroSeries(),
+        priorYearCogs: zeroSeries(),
       };
       pivotMap.set(mapKey, row);
     }
@@ -881,18 +939,18 @@ export async function getSalesHistoryByMonth(
         storeBucket,
         dimKey: groupKey,
         dimLabel: groupLabel,
-        quantity: new Array<number>(12).fill(0),
-        netSales: new Array<number>(12).fill(0),
-        cogs: new Array<number>(12).fill(0),
-        newSkuStoreCount: new Array<number>(12).fill(0),
-        carryoverSkuStoreCount: new Array<number>(12).fill(0),
-        newSkuDistinctCount: new Array<number>(12).fill(0),
-        carryoverSkuDistinctCount: new Array<number>(12).fill(0),
-        newSkuUnitsSold: new Array<number>(12).fill(0),
-        carryoverSkuUnitsSold: new Array<number>(12).fill(0),
-        priorYearQuantity: new Array<number>(12).fill(0),
-        priorYearNetSales: new Array<number>(12).fill(0),
-        priorYearCogs: new Array<number>(12).fill(0),
+        quantity: zeroSeries(),
+        netSales: zeroSeries(),
+        cogs: zeroSeries(),
+        newSkuStoreCount: zeroSeries(),
+        carryoverSkuStoreCount: zeroSeries(),
+        newSkuDistinctCount: zeroSeries(),
+        carryoverSkuDistinctCount: zeroSeries(),
+        newSkuUnitsSold: zeroSeries(),
+        carryoverSkuUnitsSold: zeroSeries(),
+        priorYearQuantity: zeroSeries(),
+        priorYearNetSales: zeroSeries(),
+        priorYearCogs: zeroSeries(),
       };
       groupPivotMap.set(groupMapKey, row);
     }
@@ -903,7 +961,8 @@ export async function getSalesHistoryByMonth(
     const priorRows = await monthlyAdapter.queryPriorYearTicketMeasures({
       storeNumbers: effectiveStores,
       fromYearMonth: priorYearMonths[0],
-      toYearMonth: priorYearMonths[11],
+      toYearMonth: priorYearMonths[priorYearMonths.length - 1],
+      currentYearMonth: priorYearMonths[priorYearMonths.length - 1],
       sortBy: params.sortBy,
       detailLevel,
       combineStores: params.combineStores,
@@ -969,6 +1028,7 @@ export async function getSalesHistoryByMonth(
       storeNumbers: effectiveStores,
       fromYearMonth,
       toYearMonth,
+      currentYearMonth: params.endYearMonth,
       sortBy: params.sortBy,
       detailLevel,
       combineStores: params.combineStores,
@@ -1028,15 +1088,18 @@ export async function getSalesHistoryByMonth(
   type InvAgg = {
     monthQtyOH: number[];                 // length 12, indexed by RICS calendar slot (0=Jan, 11=Dec)
     monthValueOH: number[];               // length 12, in dollars
+    lastMonthOnHand: number;
+    lastMonthInvValue: number;
   };
   const needsInventory = dataToPrint.some(
     (k) => k === 'beginningOnHand' || k === 'roiPct' || k === 'turns',
   );
   const invByRow = new Map<string, InvAgg>();
-  const today = new Date();
-  const todayInfo = { year: today.getFullYear(), month: today.getMonth() + 1 };
-  let currentSlotMap = mapWindowToInvHisSlot(months, todayInfo);
-  let prevSlotMap = mapWindowToPrevMonthInvHisSlot(months, todayInfo);
+  const reportInfo = {
+    year: Number(params.endYearMonth.slice(0, 4)),
+    month: Number(params.endYearMonth.slice(5, 7)),
+  };
+  const currentSlotMap = mapWindowToInvHisSlot(months, reportInfo);
 
   if (needsInventory && detailLevel === 'sku') {
     // Reuse the SKU master projection that resolveCriteria already loads.
@@ -1076,21 +1139,6 @@ export async function getSalesHistoryByMonth(
         skuFilter: invSkuFilter,
         nonZeroOnly: true,
       });
-
-      const snapshotValue = invRows.find((row) => row.snapshotAsOf)?.snapshotAsOf;
-      if (snapshotValue) {
-        const snapshotDate = snapshotValue instanceof Date
-          ? snapshotValue
-          : new Date(snapshotValue);
-        if (!Number.isNaN(snapshotDate.getTime())) {
-          const snapshotInfo = {
-            year: snapshotDate.getFullYear(),
-            month: snapshotDate.getMonth() + 1,
-          };
-          currentSlotMap = mapWindowToInvHisSlot(months, snapshotInfo);
-          prevSlotMap = mapWindowToPrevMonthInvHisSlot(months, snapshotInfo);
-        }
-      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       console.warn(`[salesReportFacade] InvHis fetch failed: ${msg}`);
@@ -1119,12 +1167,18 @@ export async function getSalesHistoryByMonth(
       }
 
       const storeBucket: number | 'ALL' = params.combineStores ? 'ALL' : inv.storeNumber;
+      const groupKey = detailLevel === 'sku' && params.sortBy === 'vendor'
+        ? (dim.vendor || '(none)')
+        : undefined;
+      ensurePivotRow(storeBucket, dimKey, dimLabel, groupKey, groupKey);
       const mapKey = `${storeBucket}|${dimKey}`;
       let acc = invByRow.get(mapKey);
       if (!acc) {
         acc = {
           monthQtyOH: new Array<number>(12).fill(0),
           monthValueOH: new Array<number>(12).fill(0),
+          lastMonthOnHand: 0,
+          lastMonthInvValue: 0,
         };
         invByRow.set(mapKey, acc);
       }
@@ -1132,14 +1186,19 @@ export async function getSalesHistoryByMonth(
         acc.monthQtyOH[i] += inv.monthQtyOH[i];
         acc.monthValueOH[i] += inv.monthValueOH[i];
       }
+      acc.lastMonthOnHand += inv.lastMonthOnHand ?? 0;
+      acc.lastMonthInvValue += inv.lastMonthInvValue ?? 0;
       if (params.sortBy === 'vendor') {
         const groupKey = dim.vendor || '(none)';
+        ensureGroupPivotRow(storeBucket, groupKey, groupKey);
         const groupMapKey = `${storeBucket}|${groupKey}`;
         let groupAcc = invByRow.get(groupMapKey);
         if (!groupAcc) {
           groupAcc = {
             monthQtyOH: new Array<number>(12).fill(0),
             monthValueOH: new Array<number>(12).fill(0),
+            lastMonthOnHand: 0,
+            lastMonthInvValue: 0,
           };
           invByRow.set(groupMapKey, groupAcc);
         }
@@ -1147,6 +1206,8 @@ export async function getSalesHistoryByMonth(
           groupAcc.monthQtyOH[i] += inv.monthQtyOH[i];
           groupAcc.monthValueOH[i] += inv.monthValueOH[i];
         }
+        groupAcc.lastMonthOnHand += inv.lastMonthOnHand ?? 0;
+        groupAcc.lastMonthInvValue += inv.lastMonthInvValue ?? 0;
       }
       // dimLabel is intentionally unused in the aggregation (pivotMap owns labels),
       // but the block key must match pivotMap's key so lookups join correctly.
@@ -1164,21 +1225,6 @@ export async function getSalesHistoryByMonth(
         nonZeroOnly: true,
       });
 
-      const snapshotValue = invRows.find((row) => row.snapshotAsOf)?.snapshotAsOf;
-      if (snapshotValue) {
-        const snapshotDate = snapshotValue instanceof Date
-          ? snapshotValue
-          : new Date(snapshotValue);
-        if (!Number.isNaN(snapshotDate.getTime())) {
-          const snapshotInfo = {
-            year: snapshotDate.getFullYear(),
-            month: snapshotDate.getMonth() + 1,
-          };
-          currentSlotMap = mapWindowToInvHisSlot(months, snapshotInfo);
-          prevSlotMap = mapWindowToPrevMonthInvHisSlot(months, snapshotInfo);
-        }
-      }
-
       for (const inv of invRows) {
         let dimKey = inv.dimKey;
         if (detailLevel === 'department' && deptMap) {
@@ -1187,12 +1233,18 @@ export async function getSalesHistoryByMonth(
         }
 
         const storeBucket: number | 'ALL' = params.combineStores ? 'ALL' : inv.storeNumber;
+        const dimLabel = detailLevel === 'department' && deptMap
+          ? deptMap(Number(inv.dimKey)).label
+          : inv.dimKey;
+        ensurePivotRow(storeBucket, dimKey, dimLabel);
         const mapKey = `${storeBucket}|${dimKey}`;
         let acc = invByRow.get(mapKey);
         if (!acc) {
           acc = {
             monthQtyOH: new Array<number>(12).fill(0),
             monthValueOH: new Array<number>(12).fill(0),
+            lastMonthOnHand: 0,
+            lastMonthInvValue: 0,
           };
           invByRow.set(mapKey, acc);
         }
@@ -1200,6 +1252,8 @@ export async function getSalesHistoryByMonth(
           acc.monthQtyOH[i] += inv.monthQtyOH[i];
           acc.monthValueOH[i] += inv.monthValueOH[i];
         }
+        acc.lastMonthOnHand += inv.lastMonthOnHand ?? 0;
+        acc.lastMonthInvValue += inv.lastMonthInvValue ?? 0;
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -1211,6 +1265,8 @@ export async function getSalesHistoryByMonth(
   const zeroInv: InvAgg = {
     monthQtyOH: new Array<number>(12).fill(0),
     monthValueOH: new Array<number>(12).fill(0),
+    lastMonthOnHand: 0,
+    lastMonthInvValue: 0,
   };
   function invFor(bucket: number | 'ALL', dimKey: string): InvAgg {
     return invByRow.get(`${bucket}|${dimKey}`) ?? zeroInv;
@@ -1273,46 +1329,46 @@ export async function getSalesHistoryByMonth(
   const blocks: SalesHistoryByMonthBlock[] = buckets.map((b) => {
     const sortedRows = sortRows(b.rows);
     const storeTotals = storeNetSales.get(b.storeNumber) ?? {
-      netSales: new Array<number>(12).fill(0),
+      netSales: zeroSeries(),
       total: 0,
     };
 
     // Accumulators for block-level totals across all metrics.
     const colTotals: Record<MonthlyMetricKey, number[]> = {
-      quantitySold: new Array(12).fill(0),
-      netSales: new Array(12).fill(0),
-      pctOfStoreNetSales: new Array(12).fill(0),
-      profit: new Array(12).fill(0),
-      grossProfit: new Array(12).fill(0),
-      beginningOnHand: new Array(12).fill(0),
-      roiPct: new Array(12).fill(0),
-      turns: new Array(12).fill(0),
-      newSkuStoreCount: new Array(12).fill(0),
-      carryoverSkuStoreCount: new Array(12).fill(0),
-      newSkuDistinctCount: new Array(12).fill(0),
-      carryoverSkuDistinctCount: new Array(12).fill(0),
-      newSkuUnitsSold: new Array(12).fill(0),
-      carryoverSkuUnitsSold: new Array(12).fill(0),
-      newCarryoverSkuRatio: new Array(12).fill(0),
-      newCarryoverUnitsSoldRatio: new Array(12).fill(0),
+      quantitySold: zeroSeries(),
+      netSales: zeroSeries(),
+      pctOfStoreNetSales: zeroSeries(),
+      profit: zeroSeries(),
+      grossProfit: zeroSeries(),
+      beginningOnHand: zeroSeries(),
+      roiPct: zeroSeries(),
+      turns: zeroSeries(),
+      newSkuStoreCount: zeroSeries(),
+      carryoverSkuStoreCount: zeroSeries(),
+      newSkuDistinctCount: zeroSeries(),
+      carryoverSkuDistinctCount: zeroSeries(),
+      newSkuUnitsSold: zeroSeries(),
+      carryoverSkuUnitsSold: zeroSeries(),
+      newCarryoverSkuRatio: zeroSeries(),
+      newCarryoverUnitsSoldRatio: zeroSeries(),
     };
     const priorYearColTotals: Record<MonthlyMetricKey, number[]> = {
-      quantitySold: new Array(12).fill(0),
-      netSales: new Array(12).fill(0),
-      pctOfStoreNetSales: new Array(12).fill(0),
-      profit: new Array(12).fill(0),
-      grossProfit: new Array(12).fill(0),
-      beginningOnHand: new Array(12).fill(0),
-      roiPct: new Array(12).fill(0),
-      turns: new Array(12).fill(0),
-      newSkuStoreCount: new Array(12).fill(0),
-      carryoverSkuStoreCount: new Array(12).fill(0),
-      newSkuDistinctCount: new Array(12).fill(0),
-      carryoverSkuDistinctCount: new Array(12).fill(0),
-      newSkuUnitsSold: new Array(12).fill(0),
-      carryoverSkuUnitsSold: new Array(12).fill(0),
-      newCarryoverSkuRatio: new Array(12).fill(0),
-      newCarryoverUnitsSoldRatio: new Array(12).fill(0),
+      quantitySold: zeroSeries(),
+      netSales: zeroSeries(),
+      pctOfStoreNetSales: zeroSeries(),
+      profit: zeroSeries(),
+      grossProfit: zeroSeries(),
+      beginningOnHand: zeroSeries(),
+      roiPct: zeroSeries(),
+      turns: zeroSeries(),
+      newSkuStoreCount: zeroSeries(),
+      carryoverSkuStoreCount: zeroSeries(),
+      newSkuDistinctCount: zeroSeries(),
+      carryoverSkuDistinctCount: zeroSeries(),
+      newSkuUnitsSold: zeroSeries(),
+      carryoverSkuUnitsSold: zeroSeries(),
+      newCarryoverSkuRatio: zeroSeries(),
+      newCarryoverUnitsSoldRatio: zeroSeries(),
     };
     // Block-level inventory-value accumulators, indexed by RICS calendar slot.
     // Used to compute column ROI%/Turns as aggregate profit/cogs divided by
@@ -1338,7 +1394,7 @@ export async function getSalesHistoryByMonth(
         return tot !== 0 ? round1((v / tot) * 100) : 0;
       });
       const priorStoreTotals = priorYearStoreNetSales.get(b.storeNumber) ?? {
-        netSales: new Array<number>(12).fill(0),
+        netSales: zeroSeries(),
         total: 0,
       };
       const priorQty = r.priorYearQuantity.map((v) => Math.round(v));
@@ -1351,72 +1407,71 @@ export async function getSalesHistoryByMonth(
         const tot = priorStoreTotals.netSales[i];
         return tot !== 0 ? round1((v / tot) * 100) : 0;
       });
-      const averageMonthlyCount = (values: number[]) =>
-        Math.round(values.reduce((s, v) => s + v, 0) / 12);
+      const averageMonthlyCount = (values: number[]) => averageReportWindow(values);
       const percent = (num: number, den: number) => (den !== 0 ? round1((num / den) * 100) : 0);
 
       if (dataToPrint.includes('quantitySold')) {
         metrics.quantitySold = qty;
-        totals.quantitySold = qty.reduce((s, v) => s + v, 0);
+        totals.quantitySold = sumReportWindow(qty);
         if (includePriorYear) {
           priorYearMetrics.quantitySold = priorQty;
-          priorYearTotals.quantitySold = priorQty.reduce((s, v) => s + v, 0);
+          priorYearTotals.quantitySold = sumReportWindow(priorQty);
         }
         if (accumulateBlockTotals) {
-          for (let i = 0; i < 12; i++) colTotals.quantitySold[i] += qty[i];
+          for (let i = 0; i < monthCount; i++) colTotals.quantitySold[i] += qty[i];
           if (includePriorYear) {
-            for (let i = 0; i < 12; i++) priorYearColTotals.quantitySold[i] += priorQty[i];
+            for (let i = 0; i < monthCount; i++) priorYearColTotals.quantitySold[i] += priorQty[i];
           }
         }
       }
       if (dataToPrint.includes('netSales')) {
         metrics.netSales = netSales;
-        totals.netSales = round2(netSales.reduce((s, v) => s + v, 0));
+        totals.netSales = Math.round(sumReportWindow(netSales));
         if (includePriorYear) {
           priorYearMetrics.netSales = priorNetSales;
-          priorYearTotals.netSales = round2(priorNetSales.reduce((s, v) => s + v, 0));
+          priorYearTotals.netSales = Math.round(sumReportWindow(priorNetSales));
         }
         if (accumulateBlockTotals) {
-          for (let i = 0; i < 12; i++) colTotals.netSales[i] += netSales[i];
+          for (let i = 0; i < monthCount; i++) colTotals.netSales[i] += Math.round(netSales[i]);
           if (includePriorYear) {
-            for (let i = 0; i < 12; i++) priorYearColTotals.netSales[i] += priorNetSales[i];
+            for (let i = 0; i < monthCount; i++) priorYearColTotals.netSales[i] += Math.round(priorNetSales[i]);
           }
         }
       }
       if (dataToPrint.includes('profit')) {
         metrics.profit = profit;
-        totals.profit = round2(profit.reduce((s, v) => s + v, 0));
+        totals.profit = Math.round(sumReportWindow(profit));
         if (includePriorYear) {
           priorYearMetrics.profit = priorProfit;
-          priorYearTotals.profit = round2(priorProfit.reduce((s, v) => s + v, 0));
+          priorYearTotals.profit = Math.round(sumReportWindow(priorProfit));
         }
         if (accumulateBlockTotals) {
-          for (let i = 0; i < 12; i++) colTotals.profit[i] += profit[i];
+          for (let i = 0; i < monthCount; i++) colTotals.profit[i] += Math.round(profit[i]);
           if (includePriorYear) {
-            for (let i = 0; i < 12; i++) priorYearColTotals.profit[i] += priorProfit[i];
+            for (let i = 0; i < monthCount; i++) priorYearColTotals.profit[i] += Math.round(priorProfit[i]);
           }
         }
       }
       if (dataToPrint.includes('grossProfit')) {
         metrics.grossProfit = gpPct;
         // Row-total GP% uses aggregated numerator/denominator, not avg-of-months.
-        const rowNet = r.netSales.reduce((s, v) => s + v, 0);
-        const rowCogs = r.cogs.reduce((s, v) => s + v, 0);
+        const rowNet = sumReportWindow(r.netSales);
+        const rowCogs = sumReportWindow(r.cogs);
         totals.grossProfit = rowNet !== 0 ? round1(((rowNet - rowCogs) / rowNet) * 100) : 0;
         if (accumulateBlockTotals) {
-          for (let i = 0; i < 12; i++) {
-            if (!dataToPrint.includes('netSales')) colTotals.netSales[i] += netSales[i];
-            if (!dataToPrint.includes('profit')) colTotals.profit[i] += profit[i];
+          for (let i = 0; i < monthCount; i++) {
+            if (!dataToPrint.includes('netSales')) colTotals.netSales[i] += Math.round(netSales[i]);
+            if (!dataToPrint.includes('profit')) colTotals.profit[i] += Math.round(profit[i]);
             if (includePriorYear) {
-              if (!dataToPrint.includes('netSales')) priorYearColTotals.netSales[i] += priorNetSales[i];
-              if (!dataToPrint.includes('profit')) priorYearColTotals.profit[i] += priorProfit[i];
+              if (!dataToPrint.includes('netSales')) priorYearColTotals.netSales[i] += Math.round(priorNetSales[i]);
+              if (!dataToPrint.includes('profit')) priorYearColTotals.profit[i] += Math.round(priorProfit[i]);
             }
           }
         }
         if (includePriorYear) {
           priorYearMetrics.grossProfit = priorGpPct;
-          const priorRowNet = r.priorYearNetSales.reduce((s, v) => s + v, 0);
-          const priorRowCogs = r.priorYearCogs.reduce((s, v) => s + v, 0);
+          const priorRowNet = sumReportWindow(r.priorYearNetSales);
+          const priorRowCogs = sumReportWindow(r.priorYearCogs);
           priorYearTotals.grossProfit = priorRowNet !== 0
             ? round1(((priorRowNet - priorRowCogs) / priorRowNet) * 100)
             : 0;
@@ -1424,19 +1479,19 @@ export async function getSalesHistoryByMonth(
       }
       if (dataToPrint.includes('pctOfStoreNetSales')) {
         metrics.pctOfStoreNetSales = pctStore;
-        const rowNet = r.netSales.reduce((s, v) => s + v, 0);
+        const rowNet = sumReportWindow(r.netSales);
         totals.pctOfStoreNetSales = storeTotals.total !== 0
           ? round1((rowNet / storeTotals.total) * 100)
           : 0;
         if (accumulateBlockTotals && !dataToPrint.includes('netSales') && !dataToPrint.includes('grossProfit')) {
-          for (let i = 0; i < 12; i++) {
-            colTotals.netSales[i] += netSales[i];
-            if (includePriorYear) priorYearColTotals.netSales[i] += priorNetSales[i];
+          for (let i = 0; i < monthCount; i++) {
+            colTotals.netSales[i] += Math.round(netSales[i]);
+            if (includePriorYear) priorYearColTotals.netSales[i] += Math.round(priorNetSales[i]);
           }
         }
         if (includePriorYear) {
           priorYearMetrics.pctOfStoreNetSales = priorPctStore;
-          const priorRowNet = r.priorYearNetSales.reduce((s, v) => s + v, 0);
+          const priorRowNet = sumReportWindow(r.priorYearNetSales);
           priorYearTotals.pctOfStoreNetSales = priorStoreTotals.total !== 0
             ? round1((priorRowNet / priorStoreTotals.total) * 100)
             : 0;
@@ -1454,7 +1509,7 @@ export async function getSalesHistoryByMonth(
         metrics.newSkuStoreCount = values;
         totals.newSkuStoreCount = averageMonthlyCount(values);
         if (accumulateBlockTotals) {
-          for (let i = 0; i < 12; i++) colTotals.newSkuStoreCount[i] += values[i];
+          for (let i = 0; i < monthCount; i++) colTotals.newSkuStoreCount[i] += values[i];
         }
       }
       if (dataToPrint.includes('carryoverSkuStoreCount')) {
@@ -1462,7 +1517,7 @@ export async function getSalesHistoryByMonth(
         metrics.carryoverSkuStoreCount = values;
         totals.carryoverSkuStoreCount = averageMonthlyCount(values);
         if (accumulateBlockTotals) {
-          for (let i = 0; i < 12; i++) colTotals.carryoverSkuStoreCount[i] += values[i];
+          for (let i = 0; i < monthCount; i++) colTotals.carryoverSkuStoreCount[i] += values[i];
         }
       }
       if (dataToPrint.includes('newSkuDistinctCount')) {
@@ -1470,7 +1525,7 @@ export async function getSalesHistoryByMonth(
         metrics.newSkuDistinctCount = values;
         totals.newSkuDistinctCount = averageMonthlyCount(values);
         if (accumulateBlockTotals) {
-          for (let i = 0; i < 12; i++) colTotals.newSkuDistinctCount[i] += values[i];
+          for (let i = 0; i < monthCount; i++) colTotals.newSkuDistinctCount[i] += values[i];
         }
       }
       if (dataToPrint.includes('carryoverSkuDistinctCount')) {
@@ -1478,23 +1533,23 @@ export async function getSalesHistoryByMonth(
         metrics.carryoverSkuDistinctCount = values;
         totals.carryoverSkuDistinctCount = averageMonthlyCount(values);
         if (accumulateBlockTotals) {
-          for (let i = 0; i < 12; i++) colTotals.carryoverSkuDistinctCount[i] += values[i];
+          for (let i = 0; i < monthCount; i++) colTotals.carryoverSkuDistinctCount[i] += values[i];
         }
       }
       if (dataToPrint.includes('newSkuUnitsSold')) {
         const values = r.newSkuUnitsSold.map((v) => Math.round(v));
         metrics.newSkuUnitsSold = values;
-        totals.newSkuUnitsSold = values.reduce((s, v) => s + v, 0);
+        totals.newSkuUnitsSold = sumReportWindow(values);
         if (accumulateBlockTotals) {
-          for (let i = 0; i < 12; i++) colTotals.newSkuUnitsSold[i] += values[i];
+          for (let i = 0; i < monthCount; i++) colTotals.newSkuUnitsSold[i] += values[i];
         }
       }
       if (dataToPrint.includes('carryoverSkuUnitsSold')) {
         const values = r.carryoverSkuUnitsSold.map((v) => Math.round(v));
         metrics.carryoverSkuUnitsSold = values;
-        totals.carryoverSkuUnitsSold = values.reduce((s, v) => s + v, 0);
+        totals.carryoverSkuUnitsSold = sumReportWindow(values);
         if (accumulateBlockTotals) {
-          for (let i = 0; i < 12; i++) colTotals.carryoverSkuUnitsSold[i] += values[i];
+          for (let i = 0; i < monthCount; i++) colTotals.carryoverSkuUnitsSold[i] += values[i];
         }
       }
       if (dataToPrint.includes('newCarryoverSkuRatio')) {
@@ -1502,11 +1557,11 @@ export async function getSalesHistoryByMonth(
         const carryValues = r.carryoverSkuDistinctCount.map((v) => Math.round(v));
         metrics.newCarryoverSkuRatio = newValues.map((v, i) => percent(v, carryValues[i]));
         totals.newCarryoverSkuRatio = percent(
-          newValues.reduce((s, v) => s + v, 0),
-          carryValues.reduce((s, v) => s + v, 0),
+          sumReportWindow(newValues),
+          sumReportWindow(carryValues),
         );
         if (accumulateBlockTotals) {
-          for (let i = 0; i < 12; i++) {
+          for (let i = 0; i < monthCount; i++) {
             if (!dataToPrint.includes('newSkuDistinctCount')) colTotals.newSkuDistinctCount[i] += newValues[i];
             if (!dataToPrint.includes('carryoverSkuDistinctCount')) {
               colTotals.carryoverSkuDistinctCount[i] += carryValues[i];
@@ -1519,11 +1574,11 @@ export async function getSalesHistoryByMonth(
         const carryValues = r.carryoverSkuUnitsSold.map((v) => Math.round(v));
         metrics.newCarryoverUnitsSoldRatio = newValues.map((v, i) => percent(v, carryValues[i]));
         totals.newCarryoverUnitsSoldRatio = percent(
-          newValues.reduce((s, v) => s + v, 0),
-          carryValues.reduce((s, v) => s + v, 0),
+          sumReportWindow(newValues),
+          sumReportWindow(carryValues),
         );
         if (accumulateBlockTotals) {
-          for (let i = 0; i < 12; i++) {
+          for (let i = 0; i < monthCount; i++) {
             if (!dataToPrint.includes('newSkuUnitsSold')) colTotals.newSkuUnitsSold[i] += newValues[i];
             if (!dataToPrint.includes('carryoverSkuUnitsSold')) {
               colTotals.carryoverSkuUnitsSold[i] += carryValues[i];
@@ -1548,10 +1603,13 @@ export async function getSalesHistoryByMonth(
         // Row-level avg inventory value: mean of mapped window months only.
         let rowAvgInvValue = 0;
         let mappedCount = 0;
-        for (let i = 0; i < 12; i++) {
+        for (let i = totalStartIndex; i < monthCount; i++) {
           const slot = currentSlotMap[i];
           if (slot !== null) {
             rowAvgInvValue += inv.monthValueOH[slot];
+            mappedCount += 1;
+          } else if (months[i] === params.endYearMonth) {
+            rowAvgInvValue += inv.lastMonthInvValue;
             mappedCount += 1;
           }
         }
@@ -1559,15 +1617,16 @@ export async function getSalesHistoryByMonth(
 
         if (dataToPrint.includes('beginningOnHand')) {
           const boh = months.map((_m, i) => {
-            const slot = prevSlotMap[i];
-            return slot === null ? 0 : Math.round(inv.monthQtyOH[slot]);
+            const slot = currentSlotMap[i];
+            if (slot !== null) return Math.round(inv.monthQtyOH[slot]);
+            return _m === params.endYearMonth ? Math.round(inv.lastMonthOnHand) : 0;
           });
           metrics.beginningOnHand = boh;
           // Row total = average BoH across the window (BoH is a stock, not a
           // flow — summing 12 snapshots isn't meaningful, averaging is).
-          totals.beginningOnHand = Math.round(boh.reduce((s, v) => s + v, 0) / 12);
+          totals.beginningOnHand = 0;
           if (accumulateBlockTotals) {
-            for (let i = 0; i < 12; i++) colTotals.beginningOnHand[i] += boh[i];
+            for (let i = 0; i < monthCount; i++) colTotals.beginningOnHand[i] += boh[i];
           }
         }
 
@@ -1578,7 +1637,7 @@ export async function getSalesHistoryByMonth(
           );
           metrics.roiPct = roi;
           // Row-total ROI% over the window (already 12 months, no ×12 needed).
-          const rowProfit = profit.reduce((s, v) => s + v, 0);
+          const rowProfit = sumReportWindow(profit);
           totals.roiPct = rowAvgInvValue > 0
             ? round1((rowProfit / rowAvgInvValue) * 100)
             : 0;
@@ -1589,7 +1648,7 @@ export async function getSalesHistoryByMonth(
             rowAvgInvValue > 0 ? round2((c * 12) / rowAvgInvValue) : 0,
           );
           metrics.turns = turns;
-          const rowCogs = r.cogs.reduce((s, v) => s + v, 0);
+          const rowCogs = sumReportWindow(r.cogs);
           totals.turns = rowAvgInvValue > 0
             ? round2(rowCogs / rowAvgInvValue)
             : 0;
@@ -1636,47 +1695,47 @@ export async function getSalesHistoryByMonth(
     for (const k of dataToPrint) {
       if (k === 'quantitySold') {
         columnTotals.quantitySold = colTotals.quantitySold.map((v) => Math.round(v));
-        grandTotals.quantitySold = columnTotals.quantitySold!.reduce((s, v) => s + v, 0);
+        grandTotals.quantitySold = sumReportWindow(columnTotals.quantitySold);
         if (includePriorYear) {
           priorYearColumnTotals.quantitySold = priorYearColTotals.quantitySold.map((v) => Math.round(v));
-          priorYearGrandTotals.quantitySold = priorYearColumnTotals.quantitySold.reduce((s, v) => s + v, 0);
+          priorYearGrandTotals.quantitySold = sumReportWindow(priorYearColumnTotals.quantitySold);
         }
       } else if (k === 'netSales') {
         columnTotals.netSales = colTotals.netSales.map((v) => round2(v));
-        grandTotals.netSales = round2(columnTotals.netSales!.reduce((s, v) => s + v, 0));
+        grandTotals.netSales = round2(sumReportWindow(columnTotals.netSales));
         if (includePriorYear) {
           priorYearColumnTotals.netSales = priorYearColTotals.netSales.map((v) => round2(v));
-          priorYearGrandTotals.netSales = round2(priorYearColumnTotals.netSales.reduce((s, v) => s + v, 0));
+          priorYearGrandTotals.netSales = round2(sumReportWindow(priorYearColumnTotals.netSales));
         }
       } else if (k === 'profit') {
         columnTotals.profit = colTotals.profit.map((v) => round2(v));
-        grandTotals.profit = round2(columnTotals.profit!.reduce((s, v) => s + v, 0));
+        grandTotals.profit = round2(sumReportWindow(columnTotals.profit));
         if (includePriorYear) {
           priorYearColumnTotals.profit = priorYearColTotals.profit.map((v) => round2(v));
-          priorYearGrandTotals.profit = round2(priorYearColumnTotals.profit.reduce((s, v) => s + v, 0));
+          priorYearGrandTotals.profit = round2(sumReportWindow(priorYearColumnTotals.profit));
         }
       } else if (k === 'grossProfit') {
         // Column GP% = column Profit / column NetSales (aggregated).
         const perMonth: number[] = [];
-        for (let i = 0; i < 12; i++) {
+        for (let i = totalStartIndex; i < monthCount; i++) {
           const net = colTotals.netSales[i];
           const prof = colTotals.profit[i];
           perMonth.push(net !== 0 ? round1((prof / net) * 100) : 0);
         }
         columnTotals.grossProfit = perMonth;
-        const totNet = colTotals.netSales.reduce((s, v) => s + v, 0);
-        const totProf = colTotals.profit.reduce((s, v) => s + v, 0);
+        const totNet = sumReportWindow(colTotals.netSales);
+        const totProf = sumReportWindow(colTotals.profit);
         grandTotals.grossProfit = totNet !== 0 ? round1((totProf / totNet) * 100) : 0;
         if (includePriorYear) {
           const priorPerMonth: number[] = [];
-          for (let i = 0; i < 12; i++) {
+          for (let i = 0; i < monthCount; i++) {
             const net = priorYearColTotals.netSales[i];
             const prof = priorYearColTotals.profit[i];
             priorPerMonth.push(net !== 0 ? round1((prof / net) * 100) : 0);
           }
           priorYearColumnTotals.grossProfit = priorPerMonth;
-          const priorTotNet = priorYearColTotals.netSales.reduce((s, v) => s + v, 0);
-          const priorTotProf = priorYearColTotals.profit.reduce((s, v) => s + v, 0);
+          const priorTotNet = sumReportWindow(priorYearColTotals.netSales);
+          const priorTotProf = sumReportWindow(priorYearColTotals.profit);
           priorYearGrandTotals.grossProfit = priorTotNet !== 0
             ? round1((priorTotProf / priorTotNet) * 100)
             : 0;
@@ -1690,12 +1749,12 @@ export async function getSalesHistoryByMonth(
         });
         grandTotals.pctOfStoreNetSales = storeTotals.total !== 0
           ? round1(
-              (colTotals.netSales.reduce((s, v) => s + v, 0) / storeTotals.total) * 100,
+              (sumReportWindow(colTotals.netSales) / storeTotals.total) * 100,
             )
           : 0;
         if (includePriorYear) {
           const priorStoreTotals = priorYearStoreNetSales.get(b.storeNumber) ?? {
-            netSales: new Array<number>(12).fill(0),
+            netSales: zeroSeries(),
             total: 0,
           };
           priorYearColumnTotals.pctOfStoreNetSales = priorYearColTotals.netSales.map((v, i) => {
@@ -1704,49 +1763,39 @@ export async function getSalesHistoryByMonth(
           });
           priorYearGrandTotals.pctOfStoreNetSales = priorStoreTotals.total !== 0
             ? round1(
-                (priorYearColTotals.netSales.reduce((s, v) => s + v, 0) / priorStoreTotals.total) * 100,
+                (sumReportWindow(priorYearColTotals.netSales) / priorStoreTotals.total) * 100,
               )
             : 0;
         }
       } else if (k === 'beginningOnHand') {
         columnTotals.beginningOnHand = colTotals.beginningOnHand.map((v) => Math.round(v));
-        grandTotals.beginningOnHand = Math.round(
-          columnTotals.beginningOnHand.reduce((s, v) => s + v, 0) / 12,
-        );
+        grandTotals.beginningOnHand = 0;
       } else if (k === 'newSkuStoreCount') {
         columnTotals.newSkuStoreCount = colTotals.newSkuStoreCount.map((v) => Math.round(v));
-        grandTotals.newSkuStoreCount = Math.round(
-          columnTotals.newSkuStoreCount.reduce((s, v) => s + v, 0) / 12,
-        );
+        grandTotals.newSkuStoreCount = averageReportWindow(columnTotals.newSkuStoreCount);
       } else if (k === 'carryoverSkuStoreCount') {
         columnTotals.carryoverSkuStoreCount = colTotals.carryoverSkuStoreCount.map((v) => Math.round(v));
-        grandTotals.carryoverSkuStoreCount = Math.round(
-          columnTotals.carryoverSkuStoreCount.reduce((s, v) => s + v, 0) / 12,
-        );
+        grandTotals.carryoverSkuStoreCount = averageReportWindow(columnTotals.carryoverSkuStoreCount);
       } else if (k === 'newSkuDistinctCount') {
         columnTotals.newSkuDistinctCount = colTotals.newSkuDistinctCount.map((v) => Math.round(v));
-        grandTotals.newSkuDistinctCount = Math.round(
-          columnTotals.newSkuDistinctCount.reduce((s, v) => s + v, 0) / 12,
-        );
+        grandTotals.newSkuDistinctCount = averageReportWindow(columnTotals.newSkuDistinctCount);
       } else if (k === 'carryoverSkuDistinctCount') {
         columnTotals.carryoverSkuDistinctCount = colTotals.carryoverSkuDistinctCount.map((v) => Math.round(v));
-        grandTotals.carryoverSkuDistinctCount = Math.round(
-          columnTotals.carryoverSkuDistinctCount.reduce((s, v) => s + v, 0) / 12,
-        );
+        grandTotals.carryoverSkuDistinctCount = averageReportWindow(columnTotals.carryoverSkuDistinctCount);
       } else if (k === 'newSkuUnitsSold') {
         columnTotals.newSkuUnitsSold = colTotals.newSkuUnitsSold.map((v) => Math.round(v));
-        grandTotals.newSkuUnitsSold = columnTotals.newSkuUnitsSold.reduce((s, v) => s + v, 0);
+        grandTotals.newSkuUnitsSold = sumReportWindow(columnTotals.newSkuUnitsSold);
       } else if (k === 'carryoverSkuUnitsSold') {
         columnTotals.carryoverSkuUnitsSold = colTotals.carryoverSkuUnitsSold.map((v) => Math.round(v));
-        grandTotals.carryoverSkuUnitsSold = columnTotals.carryoverSkuUnitsSold.reduce((s, v) => s + v, 0);
+        grandTotals.carryoverSkuUnitsSold = sumReportWindow(columnTotals.carryoverSkuUnitsSold);
       } else if (k === 'newCarryoverSkuRatio') {
         columnTotals.newCarryoverSkuRatio = colTotals.newSkuDistinctCount.map((v, i) =>
           colTotals.carryoverSkuDistinctCount[i] !== 0
             ? round1((v / colTotals.carryoverSkuDistinctCount[i]) * 100)
             : 0,
         );
-        const newTotal = colTotals.newSkuDistinctCount.reduce((s, v) => s + v, 0);
-        const carryTotal = colTotals.carryoverSkuDistinctCount.reduce((s, v) => s + v, 0);
+        const newTotal = sumReportWindow(colTotals.newSkuDistinctCount);
+        const carryTotal = sumReportWindow(colTotals.carryoverSkuDistinctCount);
         grandTotals.newCarryoverSkuRatio = carryTotal !== 0 ? round1((newTotal / carryTotal) * 100) : 0;
       } else if (k === 'newCarryoverUnitsSoldRatio') {
         columnTotals.newCarryoverUnitsSoldRatio = colTotals.newSkuUnitsSold.map((v, i) =>
@@ -1754,8 +1803,8 @@ export async function getSalesHistoryByMonth(
             ? round1((v / colTotals.carryoverSkuUnitsSold[i]) * 100)
             : 0,
         );
-        const newTotal = colTotals.newSkuUnitsSold.reduce((s, v) => s + v, 0);
-        const carryTotal = colTotals.carryoverSkuUnitsSold.reduce((s, v) => s + v, 0);
+        const newTotal = sumReportWindow(colTotals.newSkuUnitsSold);
+        const carryTotal = sumReportWindow(colTotals.carryoverSkuUnitsSold);
         grandTotals.newCarryoverUnitsSoldRatio = carryTotal !== 0 ? round1((newTotal / carryTotal) * 100) : 0;
       } else if (k === 'roiPct' || k === 'turns') {
         // Column ROI%/Turns at block level = aggregate flow / aggregate avg
@@ -1763,10 +1812,17 @@ export async function getSalesHistoryByMonth(
         // block-level per-slot accumulator mapped through the window.
         let blockAvgInvValue = 0;
         let mappedCount = 0;
-        for (let i = 0; i < 12; i++) {
+        for (let i = 0; i < monthCount; i++) {
           const slot = currentSlotMap[i];
           if (slot !== null) {
             blockAvgInvValue += colMonthValueBySlot[slot];
+            mappedCount += 1;
+          } else if (months[i] === params.endYearMonth) {
+            let currentValue = 0;
+            for (const row of sortedRows) {
+              currentValue += invFor(b.storeNumber, row.dimKey).lastMonthInvValue;
+            }
+            blockAvgInvValue += currentValue;
             mappedCount += 1;
           }
         }
@@ -1777,7 +1833,7 @@ export async function getSalesHistoryByMonth(
             blockAvgInvValue > 0 ? round1(((p * 12) / blockAvgInvValue) * 100) : 0,
           );
           columnTotals.roiPct = perMonth;
-          const totalProfit = colTotals.profit.reduce((s, v) => s + v, 0);
+          const totalProfit = sumReportWindow(colTotals.profit);
           grandTotals.roiPct = blockAvgInvValue > 0
             ? round1((totalProfit / blockAvgInvValue) * 100)
             : 0;
@@ -1790,7 +1846,7 @@ export async function getSalesHistoryByMonth(
             blockAvgInvValue > 0 ? round2((c * 12) / blockAvgInvValue) : 0,
           );
           columnTotals.turns = perMonth;
-          const totalCogs = colCogs.reduce((s, v) => s + v, 0);
+          const totalCogs = sumReportWindow(colCogs);
           grandTotals.turns = blockAvgInvValue > 0
             ? round2(totalCogs / blockAvgInvValue)
             : 0;
@@ -1814,13 +1870,13 @@ export async function getSalesHistoryByMonth(
   // not in `dataToPrint` we still emit it for the chart so the x-axis has
   // a stable shape; the table just won't show the Net Sales columns.
   const chartSeries: SalesHistoryByMonthChartSeries[] = blocks.map((b) => {
-    const values = b.columnTotals.netSales ?? (storeNetSales.get(b.storeNumber)?.netSales ?? new Array(12).fill(0));
+    const values = b.columnTotals.netSales ?? (storeNetSales.get(b.storeNumber)?.netSales ?? zeroSeries());
     return { name: b.storeLabel, values: values.slice() };
   });
   const priorYearChartSeries: SalesHistoryByMonthChartSeries[] | undefined = includePriorYear
     ? blocks.map((b) => {
         const values = b.priorYearColumnTotals?.netSales
-          ?? (priorYearStoreNetSales.get(b.storeNumber)?.netSales ?? new Array(12).fill(0));
+          ?? (priorYearStoreNetSales.get(b.storeNumber)?.netSales ?? zeroSeries());
         return { name: `${b.storeLabel} PY`, values: values.slice() };
       })
     : undefined;

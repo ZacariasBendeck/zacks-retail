@@ -19,6 +19,7 @@ import { SkuLink } from '../../components/sku-link'
 import SaveSnapshotButton from '../../components/reports/SaveSnapshotButton'
 import ReportThumbnail from '../../components/reports/ReportThumbnail'
 import { buildRicsImageUrl } from '../../services/ricsImageUrl'
+import { ReportCriteriaPanel, useReportCriteria } from '../../components/reports/ReportCriteriaPanel'
 
 const { Text } = Typography
 
@@ -394,12 +395,19 @@ export default function SalesPivotCustomPage() {
   const qc = useQueryClient()
 
   const [dateSpec, setDateSpec] = useState<DateSpec>(DEFAULT_DATE_SPEC)
-  const [selectedStores, setSelectedStores] = useState<number[]>([])
-  const [selectedChains, setSelectedChains] = useState<string[]>([])
-  const [selectedSectors, setSelectedSectors] = useState<number[]>([])
-  const [selectedDepartments, setSelectedDepartments] = useState<number[]>([])
-  const [selectedSeasons, setSelectedSeasons] = useState<string[]>([])
-  const [selectedBuyers, setSelectedBuyers] = useState<string[]>([])
+  const { criteria, updateCriteria, compactCriteria } = useReportCriteria()
+  const selectedStores = criteria.stores
+  const selectedChains = criteria.chains
+  const selectedSectors = criteria.sectors
+  const selectedDepartments = criteria.departments
+  const selectedSeasons = criteria.seasons
+  const selectedBuyers = criteria.buyers
+  const setSelectedStores = (next: number[]) => updateCriteria('stores', next)
+  const setSelectedChains = (next: string[]) => updateCriteria('chains', next)
+  const setSelectedSectors = (next: number[]) => updateCriteria('sectors', next)
+  const setSelectedDepartments = (next: number[]) => updateCriteria('departments', next)
+  const setSelectedSeasons = (next: string[]) => updateCriteria('seasons', next)
+  const setSelectedBuyers = (next: string[]) => updateCriteria('buyers', next)
   const [hierarchyDepth, setHierarchyDepth] = useState<2 | 3>(3)
   const [level1, setLevel1] = useState<PivotDimension>('buyer')
   const [level2, setLevel2] = useState<PivotDimension>('vendor')
@@ -448,14 +456,9 @@ export default function SalesPivotCustomPage() {
     setQuery({
       startDate,
       endDate,
-      stores: selectedStores.length ? selectedStores : undefined,
-      chains: selectedChains.length ? selectedChains : undefined,
       variant: 'custom',
       levels: selectedLevels,
-      sectors: selectedSectors.length ? selectedSectors : undefined,
-      departments: selectedDepartments.length ? selectedDepartments : undefined,
-      seasons: selectedSeasons.length ? selectedSeasons : undefined,
-      buyers: selectedBuyers.length ? selectedBuyers : undefined,
+      ...compactCriteria,
     })
   }
   function onStop(): void {
@@ -570,12 +573,7 @@ export default function SalesPivotCustomPage() {
               levels: query?.levels,
               startDate: query?.startDate,
               endDate: query?.endDate,
-              stores: query?.stores,
-              chains: query?.chains,
-              sectors: query?.sectors,
-              departments: query?.departments,
-              seasons: query?.seasons,
-              buyers: query?.buyers,
+              ...compactCriteria,
               dateSpec,
               hierarchyDepth, level1, level2, level3,
             })}
@@ -586,12 +584,12 @@ export default function SalesPivotCustomPage() {
                 `Custom: ${lvls.map(dimLabel).join(' → ')}`,
               ]
               const counts: string[] = []
-              if (query?.stores?.length) counts.push(`stores ${query.stores.length}`)
-              if (query?.chains?.length) counts.push(`chains ${query.chains.length}`)
-              if (query?.sectors?.length) counts.push(`sectors ${query.sectors.length}`)
-              if (query?.departments?.length) counts.push(`depts ${query.departments.length}`)
-              if (query?.seasons?.length) counts.push(`seasons ${query.seasons.length}`)
-              if (query?.buyers?.length) counts.push(`buyers ${query.buyers.length}`)
+              if (compactCriteria.stores?.length) counts.push(`stores ${compactCriteria.stores.length}`)
+              if (compactCriteria.chains?.length) counts.push(`chains ${compactCriteria.chains.length}`)
+              if (compactCriteria.sectors?.length) counts.push(`sectors ${compactCriteria.sectors.length}`)
+              if (compactCriteria.departments?.length) counts.push(`depts ${compactCriteria.departments.length}`)
+              if (compactCriteria.seasons?.length) counts.push(`seasons ${compactCriteria.seasons.length}`)
+              if (compactCriteria.buyers?.length) counts.push(`buyers ${compactCriteria.buyers.length}`)
               if (counts.length) parts.push(counts.join(', '))
               parts.push(briefDateSpec(dateSpec))
               return parts.join(' · ')
@@ -685,6 +683,14 @@ export default function SalesPivotCustomPage() {
                 Prior-year columns cover the same window one year earlier.
               </Text>
             </Card>
+            <ReportCriteriaPanel
+              value={criteria}
+              onChange={updateCriteria}
+              dimensions={dims}
+              loading={dimsLoading}
+              title="Criteria"
+            />
+            {false && (
             <Card size="small" title={<Text strong>Criteria</Text>} style={{ marginTop: 16 }}>
               <Space direction="vertical" size={8} style={{ width: '100%' }}>
                 <div>
@@ -795,6 +801,7 @@ export default function SalesPivotCustomPage() {
                 </Text>
               </Space>
             </Card>
+            )}
           </Col>
         </Row>
       </CollapsibleFilterCard>

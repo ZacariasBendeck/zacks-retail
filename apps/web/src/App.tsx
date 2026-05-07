@@ -49,6 +49,7 @@ const PoReceiveMockPage = lazy(() => import('./pages/purchasing/PoReceiveMockPag
 const OtbDashboardPage = lazy(() => import('./pages/otb/OtbDashboardPage'))
 const PurchasePlanningPage = lazy(() => import('./pages/purchasePlanning/PurchasePlanningPage'))
 const PurchasePlanningV3Page = lazy(() => import('./pages/purchasePlanning/PurchasePlanningV3Page'))
+const AssortmentPlanningPage = lazy(() => import('./pages/purchasePlanning/AssortmentPlanningPage'))
 const ImportShipmentsPage = lazy(() => import('./pages/importManagement/ImportShipmentsPage'))
 const OtbMonthlyPlansPage = lazy(() => import('./pages/otb/OtbMonthlyPlansPage'))
 const OtbPlanEntryPage = lazy(() => import('./pages/otb/OtbPlanEntryPage'))
@@ -257,6 +258,7 @@ export default function App() {
             <Route path="/otb/plan" element={gate('otb.edit', <OtbPlanEntryPage />)} />
             <Route path="/purchase-planning" element={gate('purchasing.view', <PurchasePlanningPage />)} />
             <Route path="/purchase-planning/v3" element={gate('purchasing.view', <PurchasePlanningV3Page />)} />
+            <Route path="/purchase-planning/assortment" element={gate('purchasing.view', <AssortmentPlanningPage />)} />
             <Route path="/import-management" element={gate('import_management.view', <ImportShipmentsPage />)} />
             <Route path="/import-management/:shipmentId" element={gate('import_management.view', <ImportShipmentsPage />)} />
             <Route

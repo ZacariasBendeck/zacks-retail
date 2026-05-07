@@ -31,6 +31,10 @@ import ExcelColumnFilter, {
 import CriteriaInput from './CriteriaInput'
 import RunReportControls from './RunReportControls'
 import { useReportTemplate, useTouchReportTemplate } from '../../hooks/useReportTemplates'
+import {
+  ReportCriteriaPanel,
+  type ReportCriteriaState,
+} from '../../components/reports/ReportCriteriaPanel'
 
 const { Text } = Typography
 
@@ -297,6 +301,7 @@ export default function SalesAnalysisPictureReportPage(): JSX.Element {
   const [selectedCategories, setSelectedCategories] = useState<number[]>([])
   const [selectedSeasons, setSelectedSeasons] = useState<string[]>([])
   const [selectedGroups, setSelectedGroups] = useState<string[]>([])
+  const [selectedBuyers, setSelectedBuyers] = useState<string[]>([])
   const [storesRaw, setStoresRaw] = useState('')
   const [categoriesRaw, setCategoriesRaw] = useState('')
   const [vendorsRaw, setVendorsRaw] = useState('')
@@ -360,6 +365,7 @@ export default function SalesAnalysisPictureReportPage(): JSX.Element {
     setSelectedCategories(Array.isArray(p.categories) ? p.categories : [])
     setSelectedSeasons(Array.isArray(p.seasons) ? p.seasons : [])
     setSelectedGroups(Array.isArray(p.groups) ? p.groups : [])
+    setSelectedBuyers(Array.isArray(p.buyers) ? p.buyers : [])
     setStoresRaw(p.storesRaw ?? '')
     setCategoriesRaw(p.categoriesRaw ?? '')
     setVendorsRaw(p.vendorsRaw ?? '')
@@ -384,6 +390,7 @@ export default function SalesAnalysisPictureReportPage(): JSX.Element {
       categories: Array.isArray(p.categories) && p.categories.length ? p.categories : undefined,
       seasons: Array.isArray(p.seasons) && p.seasons.length ? p.seasons : undefined,
       groups: Array.isArray(p.groups) && p.groups.length ? p.groups : undefined,
+      buyers: Array.isArray(p.buyers) && p.buyers.length ? p.buyers : undefined,
       storesRaw: p.storesRaw?.trim() || undefined,
       categoriesRaw: p.categoriesRaw?.trim() || undefined,
       vendorsRaw: p.vendorsRaw?.trim() || undefined,
@@ -422,6 +429,7 @@ export default function SalesAnalysisPictureReportPage(): JSX.Element {
       categories: selectedCategories.length ? selectedCategories : undefined,
       seasons: selectedSeasons.length ? selectedSeasons : undefined,
       groups: selectedGroups.length ? selectedGroups : undefined,
+      buyers: selectedBuyers.length ? selectedBuyers : undefined,
       storesRaw: storesRaw.trim() || undefined,
       categoriesRaw: categoriesRaw.trim() || undefined,
       vendorsRaw: vendorsRaw.trim() || undefined,
@@ -518,6 +526,57 @@ export default function SalesAnalysisPictureReportPage(): JSX.Element {
     ),
   }))
 
+  const sharedCriteria: ReportCriteriaState = {
+    stores: selectedStores,
+    chains: selectedChains,
+    sectors: selectedSectors,
+    departments: selectedDepartments,
+    categories: selectedCategories,
+    vendors: [],
+    seasons: selectedSeasons,
+    skus: [],
+    groups: selectedGroups,
+    keywords: [],
+    buyers: selectedBuyers,
+    styleColor: '',
+    storesRaw,
+    categoriesRaw,
+    vendorsRaw,
+    seasonsRaw,
+    skusRaw,
+    groupsRaw,
+    keywordsRaw,
+    styleColorRaw,
+  }
+  const updateSharedCriteria = <K extends keyof ReportCriteriaState>(
+    key: K,
+    value: ReportCriteriaState[K],
+  ) => {
+    switch (key) {
+      case 'stores': setSelectedStores(value as number[]); break
+      case 'chains': setSelectedChains(value as string[]); break
+      case 'sectors': setSelectedSectors(value as number[]); break
+      case 'departments': setSelectedDepartments(value as number[]); break
+      case 'categories': setSelectedCategories(value as number[]); break
+      case 'seasons': setSelectedSeasons(value as string[]); break
+      case 'groups': setSelectedGroups(value as string[]); break
+      case 'buyers': setSelectedBuyers(value as string[]); break
+      case 'storesRaw': setStoresRaw(value as string); break
+      case 'categoriesRaw': setCategoriesRaw(value as string); break
+      case 'vendorsRaw': setVendorsRaw(value as string); break
+      case 'seasonsRaw': setSeasonsRaw(value as string); break
+      case 'skusRaw': setSkusRaw(value as string); break
+      case 'groupsRaw': setGroupsRaw(value as string); break
+      case 'keywordsRaw': setKeywordsRaw(value as string); break
+      case 'styleColor':
+      case 'styleColorRaw':
+        setStyleColorRaw(value as string)
+        break
+      default:
+        break
+    }
+  }
+
   const paramsJson = (): Record<string, unknown> => ({
     ...buildQuery(),
     dateSpec,
@@ -604,6 +663,14 @@ export default function SalesAnalysisPictureReportPage(): JSX.Element {
           </div>
         </div>
 
+        <ReportCriteriaPanel
+          value={sharedCriteria}
+          onChange={updateSharedCriteria}
+          dimensions={dims}
+          loading={dimsLoading}
+          title="Criteria"
+        />
+        {false && (
         <div className="sales-analysis-criteria-panel">
           <div className="sales-analysis-criteria-title">
             <Text strong>Criteria</Text>
@@ -746,6 +813,7 @@ export default function SalesAnalysisPictureReportPage(): JSX.Element {
             />
           </div>
         </div>
+        )}
       </CollapsibleFilterCard>
 
       <div ref={resultRef} style={{ scrollMarginTop: 12 }}>
@@ -783,6 +851,7 @@ export default function SalesAnalysisPictureReportPage(): JSX.Element {
                 query.categories?.length ? { label: 'Categories in', value: `${query.categories.length} selected` } : null,
                 query.seasons?.length ? { label: 'Seasons in', value: `${query.seasons.length} selected` } : null,
                 query.groups?.length ? { label: 'Groups in', value: `${query.groups.length} selected` } : null,
+                query.buyers?.length ? { label: 'Buyers in', value: `${query.buyers.length} selected` } : null,
                 chipFromRaw('Stores', query.storesRaw),
                 chipFromRaw('Categories', query.categoriesRaw),
                 chipFromRaw('Vendors', query.vendorsRaw),

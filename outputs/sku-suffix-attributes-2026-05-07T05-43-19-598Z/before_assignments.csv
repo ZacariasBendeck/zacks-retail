@@ -1,0 +1,9 @@
+sku_code,dimension_code,value_code,value_label_es,assigned_by,assigned_at
+25604-BKPT,color,1,Negro,zbendeck@gmail.com,2026-04-27 21:09:01.971
+25604-BKPT,upper_material,4,Charol,zbendeck@gmail.com,2026-04-27 21:09:01.971
+25604-BKPT,color_family,black,black,seed:derived:color_family,2026-04-28 05:48:18.013
+25605-BEPT,color,4,Nude,zbendeck@gmail.com,2026-04-27 21:15:41.862
+25605-BEPT,color_family,neutral,neutral,seed:derived:color_family,2026-04-28 05:48:18.013
+25605-NDPT,color,4,Nude,zbendeck@gmail.com,2026-04-28 19:47:40.259
+25605-NDPT,upper_material,4,Charol,zbendeck@gmail.com,2026-04-28 19:47:40.259
+25605-NDPT,color_family,neutral,neutral,seed:derived:color_family,2026-04-28 19:47:40.258

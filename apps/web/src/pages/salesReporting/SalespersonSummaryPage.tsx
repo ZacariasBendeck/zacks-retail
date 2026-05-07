@@ -4,7 +4,7 @@ import {
 } from 'antd'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
-import { useSalespersonSummary, type SalespersonSummaryArgs } from '../../hooks/useReports'
+import { useSalesDimensions, useSalespersonSummary, type SalespersonSummaryArgs } from '../../hooks/useReports'
 import type {
   SalespersonSummaryRow,
   SalespersonSubtotalBy,
@@ -24,15 +24,15 @@ import { fmtMoney, fmtInt } from '../../utils/reportFormatters'
 import { useReportTemplate, useTouchReportTemplate } from '../../hooks/useReportTemplates'
 import { briefDateSpec, readDateSpecFromParams, resolveDateSpec, type DateSpec } from '../../utils/dateSpec'
 import {
+  ReportCriteriaPanel,
+  hydrateReportCriteria,
+  useReportCriteria,
+} from '../../components/reports/ReportCriteriaPanel'
+import {
   fetchRicsSalesperson,
   updateRicsSalesperson,
   type RicsSalesperson,
 } from '../../services/employeeApi'
-
-function parseStores(s: string): number[] | undefined {
-  const arr = s.split(',').map((x) => Number(x.trim())).filter((n) => Number.isFinite(n) && n > 0)
-  return arr.length ? arr : undefined
-}
 
 // Salesperson summary defaults to a 30-day trailing window (matches the
 // pre-DateSpec default); templates saved with this default replay a fresh
@@ -45,7 +45,7 @@ export default function SalespersonSummaryPage() {
   const [searchParams] = useSearchParams()
   const templateId = searchParams.get('templateId') ?? undefined
   const [dateSpec, setDateSpec] = useState<DateSpec>(DEFAULT_DATE_SPEC)
-  const [storesText, setStoresText] = useState('')
+  const { criteria, setCriteria, updateCriteria, compactCriteria } = useReportCriteria()
   const [subtotalBy, setSubtotalBy] = useState<SalespersonSubtotalBy | undefined>(undefined)
   const [combineStores, setCombineStores] = useState(true)
   const [cashierSummary, setCashierSummary] = useState(false)
@@ -59,6 +59,7 @@ export default function SalespersonSummaryPage() {
   const [employeeForm] = Form.useForm()
 
   const { data, isFetching, error } = useSalespersonSummary(query)
+  const { data: dimensions, isLoading: dimensionsLoading } = useSalesDimensions()
   const running = query != null && isFetching
 
   useEffect(() => {
@@ -79,15 +80,18 @@ export default function SalespersonSummaryPage() {
     const spec = readDateSpecFromParams(t.paramsJson) ?? DEFAULT_DATE_SPEC
     const { startDate, endDate } = resolveDateSpec(spec)
     setDateSpec(spec)
-    if (p.storesText !== undefined) setStoresText(p.storesText)
-    else if (Array.isArray(p.stores)) setStoresText(p.stores.join(','))
+    setCriteria(hydrateReportCriteria({
+      ...p,
+      storesRaw: p.storesText ?? p.storesRaw,
+      stores: Array.isArray(p.stores) ? p.stores : undefined,
+    }))
     setSubtotalBy(p.subtotalBy)
     if (p.combineStores !== undefined) setCombineStores(!!p.combineStores)
     if (p.cashierSummary !== undefined) setCashierSummary(!!p.cashierSummary)
     setQuery({
       startDate,
       endDate,
-      stores: Array.isArray(p.stores) && p.stores.length ? p.stores : undefined,
+      ...p,
       subtotalBy: p.subtotalBy,
       combineStores: p.combineStores ?? true,
       cashierSummary: !!p.cashierSummary,
@@ -101,7 +105,7 @@ export default function SalespersonSummaryPage() {
     setQuery({
       startDate,
       endDate,
-      stores: parseStores(storesText),
+      ...compactCriteria,
       subtotalBy,
       combineStores,
       cashierSummary,
@@ -255,8 +259,7 @@ export default function SalespersonSummaryPage() {
               disabled={query == null}
               getParamsJson={() => ({
                 dateSpec,
-                stores: parseStores(storesText),
-                storesText,
+                ...compactCriteria,
                 subtotalBy,
                 combineStores,
                 cashierSummary,
@@ -268,8 +271,7 @@ export default function SalespersonSummaryPage() {
               sourceTemplateId={templateId}
               getParamsJson={() => ({
                 dateSpec,
-                stores: parseStores(storesText),
-                storesText,
+                ...compactCriteria,
                 subtotalBy,
                 combineStores,
                 cashierSummary,
@@ -282,7 +284,7 @@ export default function SalespersonSummaryPage() {
                 if (subtotalBy) {
                   parts.push(`subtotal: ${subtotalBy === 'DEPARTMENT' ? 'Department' : 'Vendor'}`)
                 }
-                const stores = parseStores(storesText)
+                const stores = compactCriteria.stores
                 if (stores && stores.length) {
                   parts.push(
                     stores.length <= 3
@@ -300,12 +302,6 @@ export default function SalespersonSummaryPage() {
       >
         <Space wrap>
           <DateRangeControl value={dateSpec} onChange={setDateSpec} />
-          <Input
-            placeholder="Stores (csv, blank=all)"
-            value={storesText}
-            onChange={(e) => setStoresText(e.target.value)}
-            style={{ width: 200 }}
-          />
           <Select
             allowClear
             value={subtotalBy}
@@ -324,6 +320,12 @@ export default function SalespersonSummaryPage() {
             Cashier summary
           </Checkbox>
         </Space>
+        <ReportCriteriaPanel
+          value={criteria}
+          onChange={updateCriteria}
+          dimensions={dimensions}
+          loading={dimensionsLoading}
+        />
       </CollapsibleFilterCard>
 
       {error && (
@@ -351,7 +353,7 @@ export default function SalespersonSummaryPage() {
               { label: 'Period', value: `${query.startDate} → ${query.endDate}` },
               query.stores?.length
                 ? { label: 'Stores', value: query.stores.join(', ') }
-                : { label: 'Stores', value: 'All' },
+                : { label: 'Stores', value: query.storesRaw ?? 'All' },
               query.combineStores === false ? { label: 'Separate', value: 'per store' } : null,
               query.subtotalBy
                 ? { label: 'Subtotal', value: query.subtotalBy === 'VENDOR' ? 'by vendor' : 'by category' }

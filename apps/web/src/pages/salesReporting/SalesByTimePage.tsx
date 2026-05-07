@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import {
-  Alert, Card, Checkbox, Input, Segmented, Space, Table, Tooltip, Typography, Spin,
+  Alert, Card, Checkbox, Segmented, Space, Table, Tooltip, Typography, Spin,
 } from 'antd'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
-import { useSalesByTime, type SalesByTimeArgs } from '../../hooks/useReports'
+import { useSalesByTime, useSalesDimensions, type SalesByTimeArgs } from '../../hooks/useReports'
 import type { SalesHourlyBucket } from '../../services/reportApi'
 import { getErrorMessage } from '../../utils/errors'
 import RunReportControls from './RunReportControls'
@@ -22,15 +22,15 @@ import {
 import { fmtMoney, fmtInt, fmtPct1 } from '../../utils/reportFormatters'
 import { useReportTemplate, useTouchReportTemplate } from '../../hooks/useReportTemplates'
 import { briefDateSpec, readDateSpecFromParams, resolveDateSpec, type DateSpec } from '../../utils/dateSpec'
+import {
+  ReportCriteriaPanel,
+  hydrateReportCriteria,
+  useReportCriteria,
+} from '../../components/reports/ReportCriteriaPanel'
 
 const { Text } = Typography
 
 const DEFAULT_DATE_SPEC: DateSpec = { type: 'trailing_days', days: 7 }
-
-function parseStores(s: string): number[] | undefined {
-  const arr = s.split(',').map((x) => Number(x.trim())).filter((n) => Number.isFinite(n) && n > 0)
-  return arr.length ? arr : undefined
-}
 
 type ChartMetric = 'dollars' | 'qty' | 'tickets'
 
@@ -39,13 +39,14 @@ export default function SalesByTimePage() {
   const [searchParams] = useSearchParams()
   const templateId = searchParams.get('templateId') ?? undefined
   const [dateSpec, setDateSpec] = useState<DateSpec>(DEFAULT_DATE_SPEC)
-  const [storesText, setStoresText] = useState('')
+  const { criteria, setCriteria, updateCriteria, compactCriteria } = useReportCriteria()
   const [pctOfTotal, setPctOfTotal] = useState(false)
   const [chartMetric, setChartMetric] = useState<ChartMetric>('dollars')
   const [query, setQuery] = useState<SalesByTimeArgs | null>(null)
   const [filterOpen, setFilterOpen] = useState(true)
 
   const { data, isFetching, error } = useSalesByTime(query)
+  const { data: dimensions, isLoading: dimensionsLoading } = useSalesDimensions()
   const running = query != null && isFetching
 
   useEffect(() => {
@@ -66,13 +67,16 @@ export default function SalesByTimePage() {
     const spec = readDateSpecFromParams(t.paramsJson) ?? DEFAULT_DATE_SPEC
     const { startDate, endDate } = resolveDateSpec(spec)
     setDateSpec(spec)
-    if (p.storesText !== undefined) setStoresText(p.storesText)
-    else if (Array.isArray(p.stores)) setStoresText(p.stores.join(','))
+    setCriteria(hydrateReportCriteria({
+      ...p,
+      storesRaw: p.storesText ?? p.storesRaw,
+      stores: Array.isArray(p.stores) ? p.stores : undefined,
+    }))
     if (p.pctOfTotal !== undefined) setPctOfTotal(!!p.pctOfTotal)
     setQuery({
       startDate,
       endDate,
-      stores: Array.isArray(p.stores) && p.stores.length ? p.stores : undefined,
+      ...p,
       pctOfTotal: !!p.pctOfTotal,
     })
     touchTemplate.mutate(templateId)
@@ -84,7 +88,7 @@ export default function SalesByTimePage() {
     setQuery({
       startDate,
       endDate,
-      stores: parseStores(storesText),
+      ...compactCriteria,
       pctOfTotal,
     })
   }
@@ -146,8 +150,7 @@ export default function SalesByTimePage() {
               disabled={query == null}
               getParamsJson={() => ({
                 dateSpec,
-                stores: parseStores(storesText),
-                storesText,
+                ...compactCriteria,
                 pctOfTotal,
               })}
             />
@@ -157,14 +160,13 @@ export default function SalesByTimePage() {
               sourceTemplateId={templateId}
               getParamsJson={() => ({
                 dateSpec,
-                stores: parseStores(storesText),
-                storesText,
+                ...compactCriteria,
                 pctOfTotal,
               })}
               getResultJson={() => data}
               getDescriptor={() => {
                 const parts: string[] = []
-                const stores = parseStores(storesText)
+                const stores = compactCriteria.stores
                 if (stores && stores.length) {
                   parts.push(
                     stores.length <= 3
@@ -183,16 +185,16 @@ export default function SalesByTimePage() {
       >
         <Space wrap>
           <DateRangeControl value={dateSpec} onChange={setDateSpec} />
-          <Input
-            placeholder="Stores (csv, blank=all)"
-            value={storesText}
-            onChange={(e) => setStoresText(e.target.value)}
-            style={{ width: 200 }}
-          />
           <Checkbox checked={pctOfTotal} onChange={(e) => setPctOfTotal(e.target.checked)}>
             Show % of total
           </Checkbox>
         </Space>
+        <ReportCriteriaPanel
+          value={criteria}
+          onChange={updateCriteria}
+          dimensions={dimensions}
+          loading={dimensionsLoading}
+        />
       </CollapsibleFilterCard>
 
       {error && (
@@ -220,7 +222,7 @@ export default function SalesByTimePage() {
               { label: 'Period', value: `${query.startDate} → ${query.endDate}` },
               query.stores?.length
                 ? { label: 'Stores', value: query.stores.join(', ') }
-                : { label: 'Stores', value: 'All' },
+                : { label: 'Stores', value: query.storesRaw ?? 'All' },
               showPct ? { label: 'Columns', value: 'incl. % of total' } : null,
             ]}
           />

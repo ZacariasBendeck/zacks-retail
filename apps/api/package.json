@@ -42,6 +42,7 @@
     "verify:cutover-readiness": "node --env-file-if-exists=.env -r tsx/cjs scripts/rics/verify/verify-cutover-readiness.ts",
     "export:attributes": "node --env-file-if-exists=.env -r tsx/cjs scripts/catalog/export-attribute-catalog.ts",
     "import:attributes": "node --env-file-if-exists=.env -r tsx/cjs scripts/catalog/import-attribute-catalog.ts",
+    "assign:sku-suffix-attributes": "node --env-file-if-exists=.env -r tsx/cjs scripts/catalog/assign-sku-suffix-attributes.ts",
     "import:customers": "node --env-file-if-exists=.env -r tsx/cjs scripts/customers/import-customers.ts",
     "import:customers:bulk": "node --env-file-if-exists=.env -r tsx/cjs scripts/customers/import-customers-bulk.ts",
     "import:employees-from-rics": "node --env-file-if-exists=.env -r tsx/cjs scripts/employees/import-rics-salespeople.ts",

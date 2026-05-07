@@ -63,7 +63,6 @@ const DIMENSIONS: DimensionSpec[] = [
   { code: 'outsole_material', labelEs: 'Material de Suela', descriptionEs: 'Material de la suela exterior',             sortOrder: 590, refTable: 'outsole-materials' },
   { code: 'heel_material',    labelEs: 'Material del Tacón', descriptionEs: 'Material del tacón',                       sortOrder: 600, refTable: 'heel-materials' },
   { code: 'occasion',         labelEs: 'Ocasión',            descriptionEs: 'Ocasión de uso',                            sortOrder: 640, refTable: 'occasions' },
-  { code: 'target_audience',  labelEs: 'Público Objetivo',   descriptionEs: 'Segmento objetivo',                         sortOrder: 650, refTable: 'target-audiences' },
   { code: 'label_type',       labelEs: 'Tipo de Etiqueta',   descriptionEs: 'Tipo de etiqueta RICS',                     sortOrder: 660, refTable: 'label-types' },
 ];
 

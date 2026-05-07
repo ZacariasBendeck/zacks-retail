@@ -541,15 +541,9 @@ export interface AgingDimensionsResponse {
   departments: { number: number; name: string }[]
 }
 
-export interface AgingQueryArgs {
+export interface AgingQueryArgs extends SharedReportCriteriaParams {
   groupBy?: AgingGroupBy
   bucketScheme?: AgingBucketScheme
-  /** Stores selected directly OR derived from a chain selection on the page. */
-  stores?: number[]
-  /** Criteria multi-select filters. */
-  buyers?: string[]
-  sectors?: number[]
-  departments?: number[]
 }
 
 function appendAgingArgs(params: URLSearchParams, args: AgingQueryArgs = {}): void {
@@ -558,15 +552,7 @@ function appendAgingArgs(params: URLSearchParams, args: AgingQueryArgs = {}): vo
   if (args.stores && args.stores.length > 0) {
     params.set('stores', args.stores.join(','))
   }
-  if (args.buyers && args.buyers.length > 0) {
-    params.set('buyers', args.buyers.join(','))
-  }
-  if (args.sectors && args.sectors.length > 0) {
-    params.set('sectors', args.sectors.join(','))
-  }
-  if (args.departments && args.departments.length > 0) {
-    params.set('departments', args.departments.join(','))
-  }
+  appendSharedReportCriteria(params, args)
 }
 
 export async function fetchAgingByDepartment(
@@ -684,6 +670,55 @@ export interface SalesDimensionsResponse {
   buyers: SalesBuyerDim[]
 }
 
+export interface SharedReportCriteriaParams {
+  stores?: number[]
+  chains?: string[]
+  sectors?: number[]
+  departments?: number[]
+  categories?: number[]
+  vendors?: string[]
+  seasons?: string[]
+  skus?: string[]
+  groups?: string[]
+  keywords?: string[]
+  buyers?: string[]
+  styleColor?: string
+  storesRaw?: string
+  categoriesRaw?: string
+  vendorsRaw?: string
+  seasonsRaw?: string
+  skusRaw?: string
+  groupsRaw?: string
+  keywordsRaw?: string
+  styleColorRaw?: string
+}
+
+export function appendSharedReportCriteria(
+  params: URLSearchParams,
+  criteria: SharedReportCriteriaParams = {},
+): void {
+  if (criteria.stores?.length) params.set('stores', criteria.stores.join(','))
+  if (criteria.chains?.length) params.set('chains', criteria.chains.join(','))
+  if (criteria.sectors?.length) params.set('sectors', criteria.sectors.join(','))
+  if (criteria.departments?.length) params.set('departments', criteria.departments.join(','))
+  if (criteria.categories?.length) params.set('categories', criteria.categories.join(','))
+  if (criteria.vendors?.length) params.set('vendors', criteria.vendors.join(','))
+  if (criteria.seasons?.length) params.set('seasons', criteria.seasons.join(','))
+  if (criteria.skus?.length) params.set('skus', criteria.skus.join(','))
+  if (criteria.groups?.length) params.set('groups', criteria.groups.join(','))
+  if (criteria.keywords?.length) params.set('keywords', criteria.keywords.join(','))
+  if (criteria.buyers?.length) params.set('buyers', criteria.buyers.join(','))
+  if (criteria.styleColor?.trim()) params.set('styleColor', criteria.styleColor.trim())
+  if (criteria.storesRaw?.trim()) params.set('storesRaw', criteria.storesRaw.trim())
+  if (criteria.categoriesRaw?.trim()) params.set('categoriesRaw', criteria.categoriesRaw.trim())
+  if (criteria.vendorsRaw?.trim()) params.set('vendorsRaw', criteria.vendorsRaw.trim())
+  if (criteria.seasonsRaw?.trim()) params.set('seasonsRaw', criteria.seasonsRaw.trim())
+  if (criteria.skusRaw?.trim()) params.set('skusRaw', criteria.skusRaw.trim())
+  if (criteria.groupsRaw?.trim()) params.set('groupsRaw', criteria.groupsRaw.trim())
+  if (criteria.keywordsRaw?.trim()) params.set('keywordsRaw', criteria.keywordsRaw.trim())
+  if (criteria.styleColorRaw?.trim()) params.set('styleColorRaw', criteria.styleColorRaw.trim())
+}
+
 export async function fetchSalesDimensions(signal?: AbortSignal): Promise<SalesDimensionsResponse> {
   const res = await fetch('/api/v1/reports/sales/dimensions', { signal })
   if (!res.ok) await throwReportApiError(res, `Failed to fetch sales dimensions: ${res.status}`)
@@ -755,6 +790,7 @@ function buildSalesByDayParams(
   endDate: string,
   comparisonOffsetDays: number,
   combineStores: boolean,
+  criteria: SharedReportCriteriaParams = {},
   format?: 'csv' | 'xlsx',
 ): URLSearchParams {
   const params = new URLSearchParams({
@@ -764,6 +800,7 @@ function buildSalesByDayParams(
     combineStores: String(combineStores),
   })
   if (storeNumbers.length) params.set('stores', storeNumbers.join(','))
+  appendSharedReportCriteria(params, criteria)
   if (format) params.set('format', format)
   return params
 }
@@ -775,8 +812,9 @@ export async function fetchSalesByDay(
   comparisonOffsetDays = 364,
   combineStores = false,
   signal?: AbortSignal,
+  criteria: SharedReportCriteriaParams = {},
 ): Promise<SalesByDayReport> {
-  const params = buildSalesByDayParams(storeNumbers, startDate, endDate, comparisonOffsetDays, combineStores)
+  const params = buildSalesByDayParams(storeNumbers, startDate, endDate, comparisonOffsetDays, combineStores, criteria)
   const res = await fetch(`/api/v1/reports/sales/by-day?${params}`, { signal })
   if (!res.ok) await throwReportApiError(res, `Failed to fetch sales by day: ${res.status}`)
   return res.json()
@@ -788,8 +826,9 @@ export function getSalesByDayCsvUrl(
   endDate: string,
   comparisonOffsetDays = 364,
   combineStores = false,
+  criteria: SharedReportCriteriaParams = {},
 ): string {
-  const params = buildSalesByDayParams(storeNumbers, startDate, endDate, comparisonOffsetDays, combineStores, 'csv')
+  const params = buildSalesByDayParams(storeNumbers, startDate, endDate, comparisonOffsetDays, combineStores, criteria, 'csv')
   return `/api/v1/reports/sales/by-day?${params}`
 }
 
@@ -799,8 +838,9 @@ export function getSalesByDayXlsxUrl(
   endDate: string,
   comparisonOffsetDays = 364,
   combineStores = false,
+  criteria: SharedReportCriteriaParams = {},
 ): string {
-  const params = buildSalesByDayParams(storeNumbers, startDate, endDate, comparisonOffsetDays, combineStores, 'xlsx')
+  const params = buildSalesByDayParams(storeNumbers, startDate, endDate, comparisonOffsetDays, combineStores, criteria, 'xlsx')
   return `/api/v1/reports/sales/by-day?${params}`
 }
 
@@ -834,11 +874,11 @@ export async function fetchSalesByTime(args: {
   stores?: number[]
   pctOfTotal?: boolean
   signal?: AbortSignal
-}): Promise<SalesByTimeReport> {
+} & SharedReportCriteriaParams): Promise<SalesByTimeReport> {
   const params = new URLSearchParams({ startDate: args.startDate, endDate: args.endDate })
   if (args.compareStartDate) params.set('compareStartDate', args.compareStartDate)
   if (args.compareEndDate) params.set('compareEndDate', args.compareEndDate)
-  if (args.stores?.length) params.set('stores', args.stores.join(','))
+  appendSharedReportCriteria(params, args)
   if (args.pctOfTotal) params.set('pctOfTotal', 'true')
   const res = await fetch(`/api/v1/reports/sales/by-time?${params}`, { signal: args.signal })
   if (!res.ok) await throwReportApiError(res, `Failed to fetch sales by time: ${res.status}`)
@@ -885,12 +925,11 @@ export async function fetchSalesBySku(args: {
   includeReturns?: boolean
   skus?: string[]
   signal?: AbortSignal
-}): Promise<SalesBySkuReport> {
+} & SharedReportCriteriaParams): Promise<SalesBySkuReport> {
   const params = new URLSearchParams({ startDate: args.startDate, endDate: args.endDate })
-  if (args.stores?.length) params.set('stores', args.stores.join(','))
+  appendSharedReportCriteria(params, args)
   if (args.sortBy) params.set('sortBy', args.sortBy)
   if (args.includeReturns !== undefined) params.set('includeReturns', String(args.includeReturns))
-  if (args.skus?.length) params.set('skus', args.skus.join(','))
   const res = await fetch(`/api/v1/reports/sales/by-sku?${params}`, { signal: args.signal })
   if (!res.ok) await throwReportApiError(res, `Failed to fetch sales by SKU: ${res.status}`)
   return res.json()
@@ -945,9 +984,9 @@ export async function fetchSalespersonSummary(args: {
   combineStores?: boolean
   cashierSummary?: boolean
   signal?: AbortSignal
-}): Promise<SalespersonSummaryReport> {
+} & SharedReportCriteriaParams): Promise<SalespersonSummaryReport> {
   const params = new URLSearchParams({ startDate: args.startDate, endDate: args.endDate })
-  if (args.stores?.length) params.set('stores', args.stores.join(','))
+  appendSharedReportCriteria(params, args)
   if (args.subtotalBy) params.set('subtotalBy', args.subtotalBy)
   if (args.combineStores) params.set('combineStores', 'true')
   if (args.cashierSummary) params.set('cashierSummary', 'true')
@@ -993,11 +1032,11 @@ export async function fetchBestSellers(args: {
   combineStores?: boolean
   topN?: number
   signal?: AbortSignal
-}): Promise<BestSellersReport> {
+} & SharedReportCriteriaParams): Promise<BestSellersReport> {
   const params = new URLSearchParams({ dimension: args.dimension, metric: args.metric })
   if (args.period) params.set('period', args.period)
   if (args.lastNMonths) params.set('lastNMonths', String(args.lastNMonths))
-  if (args.stores?.length) params.set('stores', args.stores.join(','))
+  appendSharedReportCriteria(params, args)
   if (args.combineStores) params.set('combineStores', 'true')
   if (args.topN) params.set('topN', String(args.topN))
   const res = await fetch(`/api/v1/reports/sales/best-sellers?${params}`, { signal: args.signal })
@@ -1071,13 +1110,19 @@ export interface SalesAnalysisRow {
   unitsOnHand: number
   inventoryUnitCost: number | null
   onHandAtCost: number
+  turnsRoiInventoryValue?: number
   turns: number | null
   roiPct: number | null
   onOrderQty?: number
   onOrderUnitCost?: number | null
   onOrderCost?: number
+  priorYearQty?: number | null
   priorYearNetSales: number | null
   pyPctChange: number | null
+  priorYearGrossProfit?: number | null
+  pyGrossProfitPctChange?: number | null
+  priorYearOnHandAtCost?: number | null
+  pyOnHandPctChange?: number | null
   /** Present only when the endpoint was called with includeAttributes=true. */
   attributes?: SkuAttributeColumns
 }
@@ -1101,12 +1146,19 @@ export interface SalesAnalysisReport {
     onOrderQty?: number
     onOrderUnitCost?: number | null
     onOrderCost?: number
+    priorYearQty?: number | null
     priorYearNetSales: number | null
+    pyPctChange: number | null
+    priorYearGrossProfit?: number | null
+    pyGrossProfitPctChange?: number | null
+    priorYearOnHandAtCost?: number | null
+    pyOnHandPctChange?: number | null
   }
   periodDays: number
+  turnsRoiAnnualizer?: number
 }
 
-export async function fetchSalesAnalysis(args: {
+export interface SalesAnalysisRequestArgs {
   dimension: SalesAnalysisDimension
   reportType: SalesAnalysisReportType
   storeOption?: SalesAnalysisStoreOption
@@ -1123,6 +1175,7 @@ export async function fetchSalesAnalysis(args: {
   styleColor?: string
   groups?: string[]
   keywords?: string[]
+  buyers?: string[]
   storesRaw?: string
   categoriesRaw?: string
   vendorsRaw?: string
@@ -1143,7 +1196,12 @@ export async function fetchSalesAnalysis(args: {
   /** UI-only column toggle; not sent to the API. */
   showPercentOfTotal?: boolean
   signal?: AbortSignal
-}): Promise<SalesAnalysisReport> {
+}
+
+function buildSalesAnalysisParams(
+  args: Omit<SalesAnalysisRequestArgs, 'signal'>,
+  format?: 'csv' | 'xlsx',
+): URLSearchParams {
   const params = new URLSearchParams({
     dimension: args.dimension,
     reportType: args.reportType,
@@ -1162,6 +1220,7 @@ export async function fetchSalesAnalysis(args: {
   if (args.styleColor) params.set('styleColor', args.styleColor)
   if (args.groups?.length) params.set('groups', args.groups.join(','))
   if (args.keywords?.length) params.set('keywords', args.keywords.join(','))
+  if (args.buyers?.length) params.set('buyers', args.buyers.join(','))
   if (args.storesRaw) params.set('storesRaw', args.storesRaw)
   if (args.categoriesRaw) params.set('categoriesRaw', args.categoriesRaw)
   if (args.vendorsRaw) params.set('vendorsRaw', args.vendorsRaw)
@@ -1177,9 +1236,23 @@ export async function fetchSalesAnalysis(args: {
   if (args.priorYear) params.set('priorYear', 'true')
   if (args.includeAttributes) params.set('includeAttributes', 'true')
   if (args.includeOnOrder) params.set('includeOnOrder', 'true')
+  if (format) params.set('format', format)
+  return params
+}
+
+export async function fetchSalesAnalysis(args: SalesAnalysisRequestArgs): Promise<SalesAnalysisReport> {
+  const params = buildSalesAnalysisParams(args)
   const res = await fetch(`/api/v1/reports/sales/sales-analysis?${params}`, { signal: args.signal })
   if (!res.ok) await throwReportApiError(res, `Failed to fetch sales analysis: ${res.status}`)
   return res.json()
+}
+
+export function getSalesAnalysisCsvUrl(params: Omit<SalesAnalysisRequestArgs, 'signal'>): string {
+  return `/api/v1/reports/sales/sales-analysis?${buildSalesAnalysisParams(params, 'csv')}`
+}
+
+export function getSalesAnalysisXlsxUrl(params: Omit<SalesAnalysisRequestArgs, 'signal'>): string {
+  return `/api/v1/reports/sales/sales-analysis?${buildSalesAnalysisParams(params, 'xlsx')}`
 }
 
 // ── Sales Hierarchy Drill-Down (Dept → Cat → SKU) ────────────────────────
@@ -1248,12 +1321,13 @@ export async function fetchSalesHierarchy(args: {
   priorYear?: boolean
   includeAttributes?: boolean
   signal?: AbortSignal
-}): Promise<SalesHierarchyReport> {
+} & SharedReportCriteriaParams): Promise<SalesHierarchyReport> {
   const params = new URLSearchParams({
     storeOption: args.storeOption ?? 'COMBINE',
     startDate: args.startDate,
     endDate: args.endDate,
   })
+  appendSharedReportCriteria(params, args)
   if (args.stores?.length) params.set('stores', args.stores.join(','))
   if (args.categories?.length) params.set('categories', args.categories.join(','))
   if (args.vendors?.length) params.set('vendors', args.vendors.join(','))
@@ -1440,28 +1514,18 @@ export async function fetchSalesPivot(args: {
   /** Required when variant === 'custom'. */
   levels?: SalesPivotLevels
   /** Criteria filters — variant='custom' only. */
-  chains?: string[]
-  sectors?: number[]
-  departments?: number[]
-  seasons?: string[]
-  buyers?: string[]
   signal?: AbortSignal
-}): Promise<SalesPivotReport> {
+} & SharedReportCriteriaParams): Promise<SalesPivotReport> {
   const params = new URLSearchParams({
     startDate: args.startDate,
     endDate: args.endDate,
     variant: args.variant,
   })
-  if (args.stores?.length) params.set('stores', args.stores.join(','))
+  appendSharedReportCriteria(params, args)
   if (args.variant === 'custom' && args.levels) {
     params.set('level1', args.levels[0])
     params.set('level2', args.levels[1])
     if (args.levels[2]) params.set('level3', args.levels[2])
-    if (args.chains?.length) params.set('chains', args.chains.join(','))
-    if (args.sectors?.length) params.set('sectors', args.sectors.join(','))
-    if (args.departments?.length) params.set('departments', args.departments.join(','))
-    if (args.seasons?.length) params.set('seasons', args.seasons.join(','))
-    if (args.buyers?.length) params.set('buyers', args.buyers.join(','))
   }
   const res = await fetch(`/api/v1/reports/sales/sales-pivot?${params}`, { signal: args.signal })
   if (!res.ok) await throwReportApiError(res, `Failed to fetch sales pivot: ${res.status}`)
@@ -1513,9 +1577,14 @@ export interface SalesHistoryByMonthCriteria {
   categories?: string
   vendors?: string
   seasons?: string
+  skus?: string
   styleColors?: string
   groups?: string
   keywords?: string
+  chains?: string[]
+  sectors?: number[]
+  departments?: number[]
+  buyers?: string[]
 }
 
 export interface SalesHistoryByMonthRow {
@@ -1571,7 +1640,7 @@ export interface SalesHistoryByMonthReport {
   priorYearChartSeries?: SalesHistoryByMonthChartSeries[]
 }
 
-export interface SalesHistoryByMonthParams {
+export interface SalesHistoryByMonthParams extends SharedReportCriteriaParams {
   /** Omit or leave empty for all stores, including warehouses. */
   stores?: number[]
   endMonth: string
@@ -1604,14 +1673,20 @@ function buildSalesHistoryByMonthParams(
     qs.set('deferredMetrics', params.deferredMetrics.join(','))
   }
   if (params.includePriorYear) qs.set('includePriorYear', 'true')
+  appendSharedReportCriteria(qs, params)
   const c = params.criteria ?? {}
   if (c.stores)       qs.set('critStores', c.stores)
   if (c.categories)   qs.set('critCategories', c.categories)
   if (c.vendors)      qs.set('critVendors', c.vendors)
   if (c.seasons)      qs.set('critSeasons', c.seasons)
+  if (c.skus)         qs.set('skusRaw', c.skus)
   if (c.styleColors)  qs.set('critStyleColors', c.styleColors)
   if (c.groups)       qs.set('critGroups', c.groups)
   if (c.keywords)     qs.set('critKeywords', c.keywords)
+  if (c.chains?.length) qs.set('chains', c.chains.join(','))
+  if (c.sectors?.length) qs.set('sectors', c.sectors.join(','))
+  if (c.departments?.length) qs.set('departments', c.departments.join(','))
+  if (c.buyers?.length) qs.set('buyers', c.buyers.join(','))
   if (format) qs.set('format', format)
   return qs
 }

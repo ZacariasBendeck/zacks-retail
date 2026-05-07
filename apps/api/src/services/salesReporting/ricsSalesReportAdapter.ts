@@ -35,7 +35,6 @@
 import { prisma } from '../../db/prisma';
 import {
   getOnHandAtCostByDimension,
-  getOnHandInventoryByDimension,
   type OnHandInventoryMetrics,
 } from './ricsOnHandAtCostAdapter';
 import { computeRoiTurnsGp } from './metrics';
@@ -47,6 +46,7 @@ import {
   type CriteriaExpression,
   sqlNumericBounds,
 } from '../../utils/criteriaGrammar';
+import { parseStoreCriteriaExpression } from './sharedReportCriteria';
 import type {
   RicsSalesByDayByStoreReport,
   RicsSalesByDayRow,
@@ -529,6 +529,7 @@ interface SkuMasterFields {
   keywords: string | null;
   category: number | null;
   vendor: string | null;
+  buyerCode: string | null;
 }
 
 interface AnalysisLine extends TicketLine {
@@ -615,6 +616,30 @@ const EMPTY_INVENTORY_METRICS: OnHandInventoryMetrics = {
   inventoryUnitCost: null,
 };
 
+interface SalesAnalysisInventoryMetrics extends OnHandInventoryMetrics {
+  beginningInventoryValue: number;
+  averageInventoryValue: number;
+  priorYearOnHandAtCost: number;
+}
+
+const EMPTY_SALES_ANALYSIS_INVENTORY_METRICS: SalesAnalysisInventoryMetrics = {
+  ...EMPTY_INVENTORY_METRICS,
+  beginningInventoryValue: 0,
+  averageInventoryValue: 0,
+  priorYearOnHandAtCost: 0,
+};
+
+interface SalesAnalysisInventoryScopeRow {
+  dimensionKey: string;
+  storeNumber: number | null;
+  master: SkuMasterFields;
+}
+
+interface SalesAnalysisInventoryScope {
+  metricsByKey: Map<string, SalesAnalysisInventoryMetrics>;
+  skuScopeRows: SalesAnalysisInventoryScopeRow[];
+}
+
 interface OnOrderMetrics {
   qty: number;
   cost: number;
@@ -627,17 +652,55 @@ const EMPTY_ON_ORDER_METRICS: OnOrderMetrics = {
   unitCost: null,
 };
 
-function addInventoryMetrics(
-  out: Map<string, OnHandInventoryMetrics>,
+interface PriorYearSalesMetrics {
+  qty: number;
+  netSales: number;
+  grossProfit: number;
+}
+
+const EMPTY_PRIOR_YEAR_SALES_METRICS: PriorYearSalesMetrics = {
+  qty: 0,
+  netSales: 0,
+  grossProfit: 0,
+};
+
+function addSalesAnalysisInventoryMetrics(
+  out: Map<string, SalesAnalysisInventoryMetrics>,
   key: string,
-  value: OnHandInventoryMetrics,
+  unitsOnHand: number,
+  onHandAtCost: number,
+  beginningInventoryValue: number,
+  priorYearOnHandAtCost: number,
 ): void {
-  const current = out.get(key) ?? { ...EMPTY_INVENTORY_METRICS };
-  current.unitsOnHand += value.unitsOnHand;
-  current.onHandAtCost += value.onHandAtCost;
+  const current = out.get(key) ?? { ...EMPTY_SALES_ANALYSIS_INVENTORY_METRICS };
+  current.unitsOnHand += unitsOnHand;
+  current.onHandAtCost += onHandAtCost;
+  current.beginningInventoryValue += beginningInventoryValue;
+  current.priorYearOnHandAtCost += priorYearOnHandAtCost;
+  current.averageInventoryValue = (current.beginningInventoryValue + current.onHandAtCost) / 2;
   current.inventoryUnitCost =
     current.unitsOnHand > 0 ? current.onHandAtCost / current.unitsOnHand : null;
   out.set(key, current);
+}
+
+function addPriorYearSalesMetrics(
+  out: Map<string, PriorYearSalesMetrics>,
+  key: string,
+  qty: number,
+  netSales: number,
+  grossProfit: number,
+): void {
+  const current = out.get(key) ?? { ...EMPTY_PRIOR_YEAR_SALES_METRICS };
+  current.qty += qty;
+  current.netSales += netSales;
+  current.grossProfit += grossProfit;
+  out.set(key, current);
+}
+
+function priorYearPctChange(current: number, prior: number | null): number | null {
+  if (prior == null) return null;
+  if (prior === 0) return 0;
+  return round1(((current - prior) / prior) * 100);
 }
 
 function addOnOrderMetrics(
@@ -947,6 +1010,7 @@ export async function getSalesByDay(params: {
   endDate: string;
   comparisonOffsetDays?: number;
   combineStores?: boolean;
+  criteria?: SalesAnalysisCriteria;
 }): Promise<RicsSalesByDayByStoreReport> {
   const comparisonOffsetDays = params.comparisonOffsetDays ?? 364;
   const combineStores = params.combineStores === true;
@@ -956,33 +1020,54 @@ export async function getSalesByDay(params: {
     throw new Error('startDate must be <= endDate');
   }
 
-  let storeNumbers = (params.storeNumbers ?? [])
-    .map((n) => Number(n))
-    .filter((n) => Number.isFinite(n) && n > 0);
+  const resolvedStoreNumbers = await resolveStoreNumbersForCriteria(
+    (params.storeNumbers ?? [])
+      .map((n) => Number(n))
+      .filter((n) => Number.isFinite(n) && n > 0),
+    params.criteria,
+  );
+  const storeFilterActive = resolvedStoreNumbers !== undefined;
+  let storeNumbers = resolvedStoreNumbers ?? [];
 
   const comparisonStartDate = addDays(startDate, -comparisonOffsetDays);
   const comparisonEndDate = addDays(endDate, -comparisonOffsetDays);
 
   const storeMap = await loadStoreMap();
 
-  if (storeNumbers.length === 0) {
+  if (storeNumbers.length === 0 && !storeFilterActive) {
     storeNumbers = [...storeMap.keys()].sort((a, b) => a - b);
   }
 
-  const [current, compare] = await Promise.all([
-    loadDailySalesByStores({
-      storeNumbers,
-      startDate,
-      endDate,
-      includeUnposted: false,       // legacy contract: Posted='Y' only
-    }),
-    loadDailySalesByStores({
-      storeNumbers,
-      startDate: comparisonStartDate,
-      endDate: comparisonEndDate,
-      includeUnposted: false,
-    }),
-  ]);
+  const productCriteriaActive = hasProductCriteria(params.criteria);
+  const [current, compare] = productCriteriaActive
+    ? await Promise.all([
+        loadTicketLines({
+          storeNumbers,
+          startDate,
+          endDate,
+          includeUnposted: false,
+        }).then((lines) => filterTicketLinesByCriteria(lines, params.criteria)).then(aggregateDailySalesFromLines),
+        loadTicketLines({
+          storeNumbers,
+          startDate: comparisonStartDate,
+          endDate: comparisonEndDate,
+          includeUnposted: false,
+        }).then((lines) => filterTicketLinesByCriteria(lines, params.criteria)).then(aggregateDailySalesFromLines),
+      ])
+    : await Promise.all([
+        loadDailySalesByStores({
+          storeNumbers,
+          startDate,
+          endDate,
+          includeUnposted: false,       // legacy contract: Posted='Y' only
+        }),
+        loadDailySalesByStores({
+          storeNumbers,
+          startDate: comparisonStartDate,
+          endDate: comparisonEndDate,
+          includeUnposted: false,
+        }),
+      ]);
 
   const days = listDatesInclusive(startDate, endDate);
 
@@ -1102,16 +1187,21 @@ export async function getSalesByTime(params: {
   compareEndDate?: string;
   storeNumbers?: number[];
   printPctOfTotal?: boolean;
+  criteria?: SalesAnalysisCriteria;
 }): Promise<SalesByTimeReport> {
   const startDate = normalizeDate(params.startDate);
   const endDate = normalizeDate(params.endDate);
-  const storeNumbers = params.storeNumbers ?? [];
+  const resolvedStoreNumbers = await resolveStoreNumbersForCriteria(params.storeNumbers ?? [], params.criteria);
+  const storeNumbers = resolvedStoreNumbers ?? [];
+  const storeFilterActive = resolvedStoreNumbers !== undefined;
 
-  const rangeALines = await loadTicketLines({
-    startDate,
-    endDate,
-    storeNumbers: storeNumbers.length ? storeNumbers : undefined,
-  });
+  const rangeALines = storeFilterActive && storeNumbers.length === 0
+    ? []
+    : await loadTicketLines({
+        startDate,
+        endDate,
+        storeNumbers: storeFilterActive ? storeNumbers : undefined,
+      }).then((lines) => filterTicketLinesByCriteria(lines, params.criteria));
   const rangeA = bucketByHour(rangeALines, params.printPctOfTotal ?? false);
   const totalsA = sumHourlyTotals(rangeA);
 
@@ -1120,11 +1210,13 @@ export async function getSalesByTime(params: {
   if (params.compareStartDate && params.compareEndDate) {
     const bStart = normalizeDate(params.compareStartDate);
     const bEnd = normalizeDate(params.compareEndDate);
-    const lines = await loadTicketLines({
-      startDate: bStart,
-      endDate: bEnd,
-      storeNumbers: storeNumbers.length ? storeNumbers : undefined,
-    });
+    const lines = storeFilterActive && storeNumbers.length === 0
+      ? []
+      : await loadTicketLines({
+          startDate: bStart,
+          endDate: bEnd,
+          storeNumbers: storeFilterActive ? storeNumbers : undefined,
+        }).then((rows) => filterTicketLinesByCriteria(rows, params.criteria));
     rangeB = bucketByHour(lines, params.printPctOfTotal ?? false);
     totalsB = sumHourlyTotals(rangeB);
   }
@@ -1189,18 +1281,23 @@ export async function getSalesBySku(params: {
   sortBy?: SalesBySkuSortBy;
   includeReturns?: boolean;
   skus?: string[];              // optional filter
+  criteria?: SalesAnalysisCriteria;
 }): Promise<SalesBySkuReport> {
   const startDate = normalizeDate(params.startDate);
   const endDate = normalizeDate(params.endDate);
-  const storeNumbers = params.storeNumbers ?? [];
+  const resolvedStoreNumbers = await resolveStoreNumbersForCriteria(params.storeNumbers ?? [], params.criteria);
+  const storeNumbers = resolvedStoreNumbers ?? [];
+  const storeFilterActive = resolvedStoreNumbers !== undefined;
   const sortBy: SalesBySkuSortBy = params.sortBy ?? 'SKU';
   const includeReturns = params.includeReturns !== false;
 
-  const lines = await loadTicketLines({
-    startDate,
-    endDate,
-    storeNumbers: storeNumbers.length ? storeNumbers : undefined,
-  });
+  const lines = storeFilterActive && storeNumbers.length === 0
+    ? []
+    : await loadTicketLines({
+        startDate,
+        endDate,
+        storeNumbers: storeFilterActive ? storeNumbers : undefined,
+      }).then((rows) => filterTicketLinesByCriteria(rows, params.criteria));
 
   const skuFilter = params.skus && params.skus.length ? new Set(params.skus.map((s) => s.trim())) : null;
 
@@ -1310,31 +1407,44 @@ export async function getSalespersonSummary(params: {
   subtotalBy?: SalespersonSubtotalBy;
   combineStores?: boolean;
   cashierSummary?: boolean;
+  criteria?: SalesAnalysisCriteria;
 }): Promise<SalespersonSummaryReport> {
   const startDate = normalizeDate(params.startDate);
   const endDate = normalizeDate(params.endDate);
-  const storeNumbers = params.storeNumbers ?? [];
+  const resolvedStoreNumbers = await resolveStoreNumbersForCriteria(params.storeNumbers ?? [], params.criteria);
+  const storeNumbers = resolvedStoreNumbers ?? [];
+  const storeFilterActive = resolvedStoreNumbers !== undefined;
   const combineStores = params.combineStores === true;
   const subtotalBy = params.subtotalBy ?? null;
   const wantCashiers = params.cashierSummary === true;
 
-  const [lines, headers, salespeople, categoryMap, vendorMap] = await Promise.all([
-    loadTicketLines({
-      startDate,
-      endDate,
-      storeNumbers: storeNumbers.length ? storeNumbers : undefined,
-    }),
-    wantCashiers
-      ? loadTicketHeaders({
+  const [lines, rawHeaders, salespeople, categoryMap, vendorMap] = await Promise.all([
+    storeFilterActive && storeNumbers.length === 0
+      ? Promise.resolve([] as AnalysisLine[])
+      : loadTicketLines({
           startDate,
           endDate,
-          storeNumbers: storeNumbers.length ? storeNumbers : undefined,
-        })
+          storeNumbers: storeFilterActive ? storeNumbers : undefined,
+        }).then((rows) => filterTicketLinesByCriteria(rows, params.criteria)),
+    wantCashiers
+      ? storeFilterActive && storeNumbers.length === 0
+        ? Promise.resolve([] as TicketHeaderFlag[])
+        : loadTicketHeaders({
+            startDate,
+            endDate,
+            storeNumbers: storeFilterActive ? storeNumbers : undefined,
+          })
       : Promise.resolve([] as TicketHeaderFlag[]),
     loadSalespersonMap(),
     subtotalBy === 'DEPARTMENT' ? loadCategoryMap() : Promise.resolve(new Map<number, string>()),
     subtotalBy === 'VENDOR' ? loadVendorMap() : Promise.resolve(new Map<string, string>()),
   ]);
+  const headerKeys = hasProductCriteria(params.criteria)
+    ? new Set(lines.map((line) => `${line.date}|${line.store}|${line.ticket}`))
+    : null;
+  const headers = headerKeys
+    ? rawHeaders.filter((header) => headerKeys.has(`${header.date}|${header.store}|${header.ticket}`))
+    : rawHeaders;
 
   // Group lines by (salesperson, store).
   type Bucket = {
@@ -1473,17 +1583,22 @@ export async function getBestSellers(params: {
   storeNumbers?: number[];
   combineStores?: boolean;
   topN?: number;
+  criteria?: SalesAnalysisCriteria;
 }): Promise<BestSellersReport> {
-  const storeNumbers = params.storeNumbers ?? [];
+  const resolvedStoreNumbers = await resolveStoreNumbersForCriteria(params.storeNumbers ?? [], params.criteria);
+  const storeNumbers = resolvedStoreNumbers ?? [];
+  const storeFilterActive = resolvedStoreNumbers !== undefined;
   const combineStores = params.combineStores === true;
   const topN = Math.max(1, Math.min(params.topN ?? 50, 1000));
   const { startDate, endDate } = resolvePeriod(params.period);
 
-  const lines = await loadTicketLines({
-    startDate,
-    endDate,
-    storeNumbers: storeNumbers.length ? storeNumbers : undefined,
-  });
+  const lines = storeFilterActive && storeNumbers.length === 0
+    ? []
+    : await loadTicketLines({
+        startDate,
+        endDate,
+        storeNumbers: storeFilterActive ? storeNumbers : undefined,
+      }).then((rows) => filterTicketLinesByCriteria(rows, params.criteria));
 
   type Bucket = { key: string; label: string | null; qty: number; netSales: number; profit: number };
   const buckets = new Map<string, Bucket>();
@@ -1715,8 +1830,9 @@ export async function getSalesAnalysis(params: {
     b.cogs += l.cost * l.qty;
   }
 
-  // Prior year netSales (optional).
-  let priorYearByDimStore: Map<string, number> | null = null;
+  // Prior year sales (optional). RICS prints Qty, Sales, Sales % Chg,
+  // Profit, and Profit % Chg for the matching prior-year window.
+  let priorYearByDimStore: Map<string, PriorYearSalesMetrics> | null = null;
   if (params.printing.priorYear) {
     const pyStart = addYears(startDate, -1);
     const pyEnd = addYears(endDate, -1);
@@ -1739,60 +1855,61 @@ export async function getSalesAnalysis(params: {
       if (!dimKey) continue;
       const storeKey = combine ? null : pyLine.store;
       const mapKey = `${dimKey}|${storeKey ?? '*'}`;
-      priorYearByDimStore.set(mapKey, (priorYearByDimStore.get(mapKey) ?? 0) + pyLine.extension);
+      addPriorYearSalesMetrics(
+        priorYearByDimStore,
+        mapKey,
+        pyLine.qty,
+        pyLine.extension,
+        pyLine.extension - pyLine.cost * pyLine.qty,
+      );
     }
-  }
-
-  // On-hand inventory lookup. Cost is the Turns/ROI denominator; units and
-  // weighted unit cost are displayed beside it in the report.
-  const rawInventoryMap = await getOnHandInventoryByDimension({
-    reportType: params.reportType,
-    storeOption: params.storeOption,
-    criteria: params.criteria,
-  });
-
-  // DEPT_SUMMARY comes back keyed as `CAT:<category>[|<store>]` — the
-  // on-hand adapter doesn't have the dept map. Re-bucket here using the
-  // existing deptNumberForCategory helper.
-  let inventoryLookup = rawInventoryMap;
-  if (params.reportType === 'DEPT_SUMMARY' && deptMap) {
-    inventoryLookup = new Map<string, OnHandInventoryMetrics>();
-    for (const [k, v] of rawInventoryMap) {
-      const pipeIdx = k.indexOf('|');
-      const head = pipeIdx === -1 ? k : k.slice(0, pipeIdx);
-      const tail = pipeIdx === -1 ? '' : k.slice(pipeIdx);
-      const catNum = Number(head.replace(/^CAT:/, ''));
-      const dept = deptNumberForCategory(catNum, deptMap);
-      if (dept == null) continue;
-      const newKey = `${dept}${tail}`;
-      addInventoryMetrics(inventoryLookup, newKey, v);
-    }
-  } else if (params.reportType === 'SECTOR_SUMMARY' && deptMap && sectorMap) {
-    inventoryLookup = new Map<string, OnHandInventoryMetrics>();
-    for (const [k, v] of rawInventoryMap) {
-      const pipeIdx = k.indexOf('|');
-      const head = pipeIdx === -1 ? k : k.slice(0, pipeIdx);
-      const tail = pipeIdx === -1 ? '' : k.slice(pipeIdx);
-      const catNum = Number(head.replace(/^CAT:/, ''));
-      const dept = deptNumberForCategory(catNum, deptMap);
-      const sector = sectorNumberForDepartment(dept, sectorMap);
-      if (sector == null) continue;
-      const newKey = `${sector}${tail}`;
-      addInventoryMetrics(inventoryLookup, newKey, v);
-    }
-  } else if (params.reportType === 'PRICE_POINT_SUMMARY') {
-    // PP bucketing requires SKU → bucket mapping from the sales adapter's
-    // own bucketization, which is not currently exposed. Until that's
-    // refactored, leave onHandLookup empty so ROI/Turns render as null
-    // on price-point rows. Documented as spec Open Question 2.
-    inventoryLookup = new Map();
   }
 
   const periodDays =
     Math.round(
       (new Date(endDate).getTime() - new Date(startDate).getTime()) / 86_400_000,
     ) + 1;
+  const inventoryActivityMonthSlot = salesAnalysisActivityMonthSlot(startDate, endDate);
+  const useAverageInventoryForTurnsRoi =
+    useMonthlyAverageInventoryForSalesAnalysis(params.printing, startDate, endDate);
+  const turnsRoiAnnualizer =
+    salesAnalysisTurnsRoiAnnualizer(params.printing, startDate, endDate, periodDays);
+  const effectiveTurnsRoiAnnualizer = turnsRoiAnnualizer ?? (periodDays > 0 ? 365 / periodDays : 0);
+  const shouldSeedSkuRows = params.reportType === 'SKU_DETAIL' && shouldSeedSkuMasterRows(params.criteria);
+  const skuInventoryFilter = params.reportType === 'SKU_DETAIL' && !shouldSeedSkuRows
+    ? Array.from(new Set([...buckets.values()].map((bucket) => bucket.dimensionKey)))
+    : undefined;
+  const inventoryScope = await loadSalesAnalysisInventoryScope({
+    reportType: params.reportType,
+    storeOption: params.storeOption,
+    criteria: params.criteria,
+    parsed,
+    context: criteriaContext,
+    filteredStores,
+    deptMap,
+    sectorMap,
+    activityMonthSlot: inventoryActivityMonthSlot,
+    skuFilter: skuInventoryFilter,
+  });
+  const inventoryLookup = inventoryScope.metricsByKey;
   const storeChainByStore = combine ? new Map<number, { code: string; label: string }>() : await loadStoreChainByStore();
+
+  if (shouldSeedSkuRows) {
+    for (const scopeRow of inventoryScope.skuScopeRows) {
+      const mapKey = `${scopeRow.dimensionKey}|${scopeRow.storeNumber ?? '*'}`;
+      if (!buckets.has(mapKey)) {
+        buckets.set(mapKey, {
+          dimensionKey: scopeRow.dimensionKey,
+          dimensionLabel: null,
+          storeNumber: scopeRow.storeNumber,
+          qty: 0,
+          netSales: 0,
+          cogs: 0,
+        });
+      }
+    }
+  }
+
   const onOrderLookup = params.includeOnOrder && params.reportType === 'SKU_DETAIL'
     ? await loadOpenPurchaseOrdersBySku([...buckets.values()].map((b) => b.dimensionKey))
     : new Map<string, OnOrderMetrics>();
@@ -1806,13 +1923,21 @@ export async function getSalesAnalysis(params: {
       const grossProfit = b.netSales - b.cogs;
       const mapKey = `${b.dimensionKey}|${b.storeNumber ?? '*'}`;
       const priorYear = priorYearByDimStore?.get(mapKey) ?? null;
+      const priorYearQty = params.printing.priorYear ? priorYear?.qty ?? 0 : null;
+      const priorYearNetSales = params.printing.priorYear ? priorYear?.netSales ?? 0 : null;
+      const priorYearGrossProfit = params.printing.priorYear ? priorYear?.grossProfit ?? 0 : null;
 
       const onHandKey =
         params.storeOption === 'COMBINE'
           ? b.dimensionKey
           : `${b.dimensionKey}|${b.storeNumber}`;
-      const inventory = inventoryLookup.get(onHandKey) ?? EMPTY_INVENTORY_METRICS;
+      const inventory = inventoryLookup.get(onHandKey) ?? EMPTY_SALES_ANALYSIS_INVENTORY_METRICS;
       const onHandAtCost = inventory.onHandAtCost;
+      const priorYearOnHandAtCost = params.printing.priorYear ? inventory.priorYearOnHandAtCost : null;
+      const inventoryValueForTurnsRoi = inventoryValueForSalesAnalysisTurnsRoi(
+        inventory,
+        useAverageInventoryForTurnsRoi,
+      );
       const storeChain = b.storeNumber != null ? storeChainByStore.get(b.storeNumber) ?? null : null;
       const onOrderKey =
         params.storeOption === 'COMBINE'
@@ -1826,6 +1951,8 @@ export async function getSalesAnalysis(params: {
         grossProfit,
         onHandAtCost,
         periodDays,
+        inventoryValueForTurnsRoi,
+        annualizer: effectiveTurnsRoiAnnualizer,
       });
 
       return {
@@ -1844,6 +1971,7 @@ export async function getSalesAnalysis(params: {
           ? round2(inventory.inventoryUnitCost)
           : null,
         onHandAtCost: round2(onHandAtCost),
+        turnsRoiInventoryValue: round2(inventoryValueForTurnsRoi),
         turns: metrics.turns,
         roiPct: metrics.roiPct,
         ...(params.includeOnOrder
@@ -1853,10 +1981,13 @@ export async function getSalesAnalysis(params: {
               onOrderCost: round2(onOrder.cost),
             }
           : {}),
-        priorYearNetSales: priorYear != null ? round2(priorYear) : null,
-        pyPctChange: priorYear == null || priorYear === 0
-          ? null
-          : round1(((b.netSales - priorYear) / priorYear) * 100),
+        priorYearQty,
+        priorYearNetSales: priorYearNetSales != null ? round2(priorYearNetSales) : null,
+        pyPctChange: priorYearPctChange(b.netSales, priorYearNetSales),
+        priorYearGrossProfit: priorYearGrossProfit != null ? round2(priorYearGrossProfit) : null,
+        pyGrossProfitPctChange: priorYearPctChange(grossProfit, priorYearGrossProfit),
+        priorYearOnHandAtCost: priorYearOnHandAtCost != null ? round2(priorYearOnHandAtCost) : null,
+        pyOnHandPctChange: priorYearPctChange(onHandAtCost, priorYearOnHandAtCost),
       };
     })
     .sort((a, b) =>
@@ -1870,14 +2001,35 @@ export async function getSalesAnalysis(params: {
   const totalGrossProfit = rows.reduce((s, r) => s + r.grossProfit, 0);
   const totalUnitsOnHand = rows.reduce((s, r) => s + r.unitsOnHand, 0);
   const totalOnHandAtCost = rows.reduce((s, r) => s + r.onHandAtCost, 0);
+  const totalInventoryValueForTurnsRoi = rows.reduce((sum, row) => {
+    const key = params.storeOption === 'COMBINE'
+      ? row.dimensionKey
+      : `${row.dimensionKey}|${row.storeNumber}`;
+    const inventory = inventoryLookup.get(key) ?? EMPTY_SALES_ANALYSIS_INVENTORY_METRICS;
+    return sum + inventoryValueForSalesAnalysisTurnsRoi(inventory, useAverageInventoryForTurnsRoi);
+  }, 0);
   const totalOnOrderQty = rows.reduce((s, r) => s + (r.onOrderQty ?? 0), 0);
   const totalOnOrderCost = rows.reduce((s, r) => s + (r.onOrderCost ?? 0), 0);
+  const totalPriorYearQty = params.printing.priorYear
+    ? rows.reduce((s, r) => s + (r.priorYearQty ?? 0), 0)
+    : null;
+  const totalPriorYearNetSales = params.printing.priorYear
+    ? rows.reduce((s, r) => s + (r.priorYearNetSales ?? 0), 0)
+    : null;
+  const totalPriorYearGrossProfit = params.printing.priorYear
+    ? rows.reduce((s, r) => s + (r.priorYearGrossProfit ?? 0), 0)
+    : null;
+  const totalPriorYearOnHandAtCost = params.printing.priorYear
+    ? rows.reduce((s, r) => s + (r.priorYearOnHandAtCost ?? 0), 0)
+    : null;
   const totalsMetrics = computeRoiTurnsGp({
     netSales: totalNetSales,
     cogs: totalCogs,
     grossProfit: totalGrossProfit,
     onHandAtCost: totalOnHandAtCost,
     periodDays,
+    inventoryValueForTurnsRoi: totalInventoryValueForTurnsRoi,
+    annualizer: effectiveTurnsRoiAnnualizer,
   });
   const totals = {
     qty: rows.reduce((s, r) => s + r.qty, 0),
@@ -1899,9 +2051,13 @@ export async function getSalesAnalysis(params: {
           onOrderCost: round2(totalOnOrderCost),
         }
       : {}),
-    priorYearNetSales: priorYearByDimStore
-      ? round2(rows.reduce((s, r) => s + (r.priorYearNetSales ?? 0), 0))
-      : null,
+    priorYearQty: totalPriorYearQty,
+    priorYearNetSales: totalPriorYearNetSales != null ? round2(totalPriorYearNetSales) : null,
+    pyPctChange: priorYearPctChange(totalNetSales, totalPriorYearNetSales),
+    priorYearGrossProfit: totalPriorYearGrossProfit != null ? round2(totalPriorYearGrossProfit) : null,
+    pyGrossProfitPctChange: priorYearPctChange(totalGrossProfit, totalPriorYearGrossProfit),
+    priorYearOnHandAtCost: totalPriorYearOnHandAtCost != null ? round2(totalPriorYearOnHandAtCost) : null,
+    pyOnHandPctChange: priorYearPctChange(totalOnHandAtCost, totalPriorYearOnHandAtCost),
   };
 
   // Optional per-SKU enrichment for SKU_DETAIL runs — only attached when the
@@ -1931,6 +2087,7 @@ export async function getSalesAnalysis(params: {
     rows,
     totals,
     periodDays,
+    turnsRoiAnnualizer: round2(effectiveTurnsRoiAnnualizer),
   };
 }
 
@@ -2381,6 +2538,45 @@ function facetKeeps(
   return matchesCriteria(expr, candidate);
 }
 
+function structuredKeywordExpression(structured: string[] | undefined): CriteriaExpression {
+  const values = (structured ?? []).map((value) => value.trim()).filter(Boolean);
+  return {
+    raw: values.join(','),
+    tokens: values.map((value) => ({ kind: 'literal' as const, value, excluded: false })),
+    andMode: false,
+    empty: values.length === 0,
+  };
+}
+
+function keywordFacetKeeps(
+  structured: string[] | undefined,
+  expr: CriteriaExpression,
+  keywords: string | null | undefined,
+): boolean {
+  const structuredExpr = structuredKeywordExpression(structured);
+  const hasStructured = !structuredExpr.empty;
+  const grammarIncluded = expr.tokens.some((t) => !t.excluded);
+  const grammarExcluded = expr.tokens.some((t) => t.excluded);
+
+  if (!hasStructured && expr.empty) return true;
+  if (expr.empty) return matchesKeywords(structuredExpr, keywords);
+  if (!hasStructured) return matchesKeywords(expr, keywords);
+
+  const structuredHit = matchesKeywords(structuredExpr, keywords);
+  if (grammarIncluded) {
+    if (!(structuredHit || matchesKeywords(expr, keywords))) return false;
+    if (!grammarExcluded) return true;
+    const exOnly: CriteriaExpression = {
+      ...expr,
+      tokens: expr.tokens.filter((t) => t.excluded),
+    };
+    return matchesKeywords(exOnly, keywords);
+  }
+
+  if (!structuredHit) return false;
+  return matchesKeywords(expr, keywords);
+}
+
 interface ParsedAnalysisCriteria {
   stores: CriteriaExpression;
   categories: CriteriaExpression;
@@ -2390,6 +2586,19 @@ interface ParsedAnalysisCriteria {
   groups: CriteriaExpression;
   styleColor: CriteriaExpression;
   keywords: CriteriaExpression;
+}
+
+function parseAnalysisCriteria(criteria: SalesAnalysisCriteria): ParsedAnalysisCriteria {
+  return {
+    stores: parseStoreCriteriaExpression(criteria.storesRaw),
+    categories: parseCriteria(criteria.categoriesRaw),
+    vendors: parseCriteria(criteria.vendorsRaw),
+    skus: parseCriteria(criteria.skusRaw),
+    seasons: parseCriteria(criteria.seasonsRaw),
+    groups: parseCriteria(criteria.groupsRaw),
+    styleColor: parseCriteria(criteria.styleColorRaw || criteria.styleColor),
+    keywords: parseCriteria(criteria.keywordsRaw),
+  };
 }
 
 interface AnalysisCriteriaContext {
@@ -2433,9 +2642,117 @@ function applyAnalysisCriteria(
   if (!facetKeeps(c.skus, parsed.skus, l.sku)) return false;
   if (!facetKeeps(c.seasons, parsed.seasons, l.master?.season ?? null)) return false;
   if (!facetKeeps(c.groups, parsed.groups, l.master?.groupCode ?? null)) return false;
+  if (!selectedStringKeeps(c.buyers, l.master?.buyerCode ?? null)) return false;
   if (!matchesCriteria(parsed.styleColor, l.master?.styleColor ?? null)) return false;
-  if (!matchesKeywords(parsed.keywords, l.master?.keywords ?? null)) return false;
+  if (!keywordFacetKeeps(c.keywords, parsed.keywords, l.master?.keywords ?? null)) return false;
   return true;
+}
+
+function hasList<T>(values: T[] | undefined): boolean {
+  return Array.isArray(values) && values.length > 0;
+}
+
+function hasText(value: string | undefined): boolean {
+  return !!value?.trim();
+}
+
+function hasStoreCriteria(criteria: SalesAnalysisCriteria | undefined): boolean {
+  if (!criteria) return false;
+  return hasList(criteria.stores) || hasList(criteria.chains) || hasText(criteria.storesRaw);
+}
+
+function hasProductCriteria(criteria: SalesAnalysisCriteria | undefined): boolean {
+  if (!criteria) return false;
+  return (
+    hasList(criteria.sectors) ||
+    hasList(criteria.departments) ||
+    hasList(criteria.categories) ||
+    hasList(criteria.vendors) ||
+    hasList(criteria.seasons) ||
+    hasList(criteria.skus) ||
+    hasList(criteria.groups) ||
+    hasList(criteria.keywords) ||
+    hasList(criteria.buyers) ||
+    hasText(criteria.categoriesRaw) ||
+    hasText(criteria.vendorsRaw) ||
+    hasText(criteria.seasonsRaw) ||
+    hasText(criteria.skusRaw) ||
+    hasText(criteria.groupsRaw) ||
+    hasText(criteria.keywordsRaw) ||
+    hasText(criteria.styleColorRaw) ||
+    hasText(criteria.styleColor)
+  );
+}
+
+function hasAnyCriteria(criteria: SalesAnalysisCriteria | undefined): boolean {
+  return hasStoreCriteria(criteria) || hasProductCriteria(criteria);
+}
+
+async function buildAnalysisCriteriaContext(criteria: SalesAnalysisCriteria): Promise<AnalysisCriteriaContext> {
+  const needsDepartmentCriteria = hasList(criteria.departments) || hasList(criteria.sectors);
+  const [storeChainByStore, departments, sectors] = await Promise.all([
+    hasList(criteria.chains) ? loadStoreChainByStore() : Promise.resolve(null),
+    needsDepartmentCriteria ? loadDepartmentMap() : Promise.resolve(null),
+    hasList(criteria.sectors) ? loadSectorMap() : Promise.resolve(null),
+  ]);
+  return { storeChainByStore, departments, sectors };
+}
+
+async function resolveStoreNumbersForCriteria(
+  requestedStores: number[] | undefined,
+  criteria: SalesAnalysisCriteria | undefined,
+): Promise<number[] | undefined> {
+  const c = criteria ?? {};
+  if (!requestedStores?.length && !hasStoreCriteria(c)) return undefined;
+
+  const storeMap = await loadStoreMap();
+  const parsed = parseAnalysisCriteria(c);
+  const context = await buildAnalysisCriteriaContext(c);
+  const base = requestedStores?.length
+    ? requestedStores.map((store) => Number(store)).filter((store) => Number.isInteger(store) && store > 0)
+    : [...storeMap.keys()];
+
+  return Array.from(new Set(base))
+    .filter((store) => facetKeeps(c.stores, parsed.stores, store))
+    .filter((store) => selectedStringKeeps(c.chains, context.storeChainByStore?.get(store)?.code ?? null))
+    .sort((a, b) => a - b);
+}
+
+async function filterTicketLinesByCriteria(
+  lines: TicketLine[],
+  criteria: SalesAnalysisCriteria | undefined,
+): Promise<AnalysisLine[]> {
+  const c = criteria ?? {};
+  if (!hasAnyCriteria(c)) return lines.map((line) => ({ ...line, master: null }));
+
+  const parsed = parseAnalysisCriteria(c);
+  const [context, masterBySku] = await Promise.all([
+    buildAnalysisCriteriaContext(c),
+    hasProductCriteria(c) ? loadSkuMasterFields(lines.map((line) => line.sku)) : Promise.resolve(new Map<string, SkuMasterFields>()),
+  ]);
+  return lines
+    .map<AnalysisLine>((line) => ({
+      ...line,
+      master: line.sku ? masterBySku.get(line.sku.trim().toUpperCase()) ?? null : null,
+    }))
+    .filter((line) => applyAnalysisCriteria(line, c, parsed, context));
+}
+
+function aggregateDailySalesFromLines(lines: AnalysisLine[]): Map<string, Map<number, DailyStoreSales>> {
+  const map = new Map<string, Map<number, DailyStoreSales>>();
+  for (const line of lines) {
+    if (!line.date || !line.store) continue;
+    let perStore = map.get(line.date);
+    if (!perStore) {
+      perStore = new Map<number, DailyStoreSales>();
+      map.set(line.date, perStore);
+    }
+    const current = perStore.get(line.store) ?? { netSales: 0, profit: 0 };
+    current.netSales += line.extension;
+    current.profit += line.extension - line.cost * line.qty;
+    perStore.set(line.store, current);
+  }
+  return map;
 }
 
 // Row-grain helpers ─────────────────────────────────────────────────────────
@@ -2542,11 +2859,626 @@ function needsSkuMaster(params: {
     !!params.criteria.groups?.length ||
     !!params.criteria.styleColor ||
     !!params.criteria.keywords?.length ||
+    !!params.criteria.buyers?.length ||
     !!params.criteria.seasonsRaw ||
     !!params.criteria.groupsRaw ||
     !!params.criteria.styleColorRaw ||
     !!params.criteria.keywordsRaw
   );
+}
+
+function shouldSeedSkuMasterRows(criteria: SalesAnalysisCriteria): boolean {
+  return (
+    !!criteria.categories?.length ||
+    !!criteria.vendors?.length ||
+    !!criteria.seasons?.length ||
+    !!criteria.skus?.length ||
+    !!criteria.groups?.length ||
+    !!criteria.departments?.length ||
+    !!criteria.sectors?.length ||
+    !!criteria.styleColor ||
+    !!criteria.keywords?.length ||
+    !!criteria.buyers?.length ||
+    !!criteria.categoriesRaw ||
+    !!criteria.vendorsRaw ||
+    !!criteria.seasonsRaw ||
+    !!criteria.skusRaw ||
+    !!criteria.groupsRaw ||
+    !!criteria.styleColorRaw ||
+    !!criteria.keywordsRaw
+  );
+}
+
+function zeroSalesAnalysisLine(master: SkuMasterFields, store: number): AnalysisLine {
+  return {
+    store,
+    ticket: 0,
+    date: '',
+    hour: 0,
+    sku: master.sku,
+    column: '',
+    row: '',
+    qty: 0,
+    extension: 0,
+    perks: 0,
+    salesperson: '',
+    category: master.category,
+    vendor: master.vendor,
+    cost: 0,
+    returnCode: 0,
+    posted: true,
+    master,
+  };
+}
+
+function hasStoreFacetCriteria(criteria: SalesAnalysisCriteria, parsed: ParsedAnalysisCriteria): boolean {
+  return !!criteria.stores?.length || !parsed.stores.empty || !!criteria.chains?.length;
+}
+
+async function resolveSkuDetailSeedStores(
+  criteria: SalesAnalysisCriteria,
+  parsed: ParsedAnalysisCriteria,
+  context: AnalysisCriteriaContext,
+  filteredStores: number[] | undefined,
+  combine: boolean,
+): Promise<Array<number | null>> {
+  if (combine && !hasStoreFacetCriteria(criteria, parsed)) return [null];
+
+  const candidates = new Set<number>();
+  for (const store of filteredStores ?? []) {
+    const n = Number(store);
+    if (Number.isInteger(n) && n > 0) candidates.add(n);
+  }
+
+  if (candidates.size === 0 || !filteredStores?.length) {
+    const stores = await loadStoreMap();
+    for (const store of stores.keys()) candidates.add(store);
+  }
+
+  for (const store of criteria.stores ?? []) {
+    const n = Number(store);
+    if (Number.isInteger(n) && n > 0) candidates.add(n);
+  }
+
+  const stores = [...candidates]
+    .filter((store) => facetKeeps(criteria.stores, parsed.stores, store))
+    .filter((store) => selectedStringKeeps(criteria.chains, context.storeChainByStore?.get(store)?.code ?? null))
+    .sort((a, b) => a - b);
+
+  if (combine) return stores.length ? [stores[0]] : [];
+  return stores;
+}
+
+function normalizedStringList(values: string[] | undefined): string[] {
+  return Array.from(new Set((values ?? [])
+    .map((value) => value.trim())
+    .filter(Boolean)))
+    .sort((a, b) => a.localeCompare(b));
+}
+
+function normalizedNumberList(values: number[] | undefined): number[] {
+  return Array.from(new Set((values ?? [])
+    .map((value) => Number(value))
+    .filter((value) => Number.isInteger(value))))
+    .sort((a, b) => a - b);
+}
+
+function salesAnalysisActivityMonthSlot(_startDate: string, endDate: string): number {
+  const month = Number(endDate.slice(5, 7));
+  return Number.isInteger(month) && month >= 1 && month <= 12 ? month : 1;
+}
+
+function isFullCalendarMonth(startDate: string, endDate: string): boolean {
+  const start = toUtcDate(startDate);
+  const end = toUtcDate(endDate);
+  if (start.getUTCDate() !== 1) return false;
+  if (
+    start.getUTCFullYear() !== end.getUTCFullYear() ||
+    start.getUTCMonth() !== end.getUTCMonth()
+  ) {
+    return false;
+  }
+  const lastDay = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + 1, 0));
+  return toIsoDate(lastDay) === endDate;
+}
+
+function useMonthlyAverageInventoryForSalesAnalysis(
+  printing: SalesAnalysisPrinting,
+  startDate: string,
+  endDate: string,
+): boolean {
+  return !!printing.mtd || isFullCalendarMonth(startDate, endDate);
+}
+
+function salesAnalysisTurnsRoiAnnualizer(
+  printing: SalesAnalysisPrinting,
+  startDate: string,
+  endDate: string,
+  _periodDays: number,
+): number | undefined {
+  if (useMonthlyAverageInventoryForSalesAnalysis(printing, startDate, endDate)) return 12;
+  if (printing.wtd) return 52;
+  return undefined;
+}
+
+function inventoryValueForSalesAnalysisTurnsRoi(
+  inventory: SalesAnalysisInventoryMetrics,
+  useAverageInventory: boolean,
+): number {
+  return useAverageInventory ? inventory.averageInventoryValue : inventory.onHandAtCost;
+}
+
+function salesAnalysisSnapshotScopeSql(snapshotAlias: string, monthAlias: string): string {
+  return `(
+    COALESCE(${snapshotAlias}.on_hand, 0) <> 0
+    OR COALESCE(${snapshotAlias}.month_qty_sales, 0) <> 0
+    OR COALESCE(${snapshotAlias}.month_dol_sales, 0) <> 0
+    OR COALESCE(${snapshotAlias}.month_profit, 0) <> 0
+    OR COALESCE(${snapshotAlias}.last_month_on_hand, 0) <> 0
+    OR COALESCE(${snapshotAlias}.last_month_inv_value, 0) <> 0
+    OR COALESCE(${monthAlias}.qty_sales, 0) <> 0
+    OR COALESCE(${monthAlias}.net_sales, 0) <> 0
+    OR COALESCE(${monthAlias}.profit, 0) <> 0
+    OR COALESCE(${monthAlias}.qty_on_hand, 0) <> 0
+    OR COALESCE(${monthAlias}.inventory_value, 0) <> 0
+  )`;
+}
+
+function salesAnalysisInventoryScopeCacheKey(params: {
+  reportType: SalesAnalysisReportType;
+  storeOption: SalesAnalysisStoreOption;
+  criteria: SalesAnalysisCriteria;
+  filteredStores: number[] | undefined;
+  activityMonthSlot: number;
+  skuFilter?: string[];
+}): string {
+  const c = params.criteria;
+  return JSON.stringify({
+    reportType: params.reportType,
+    storeOption: params.storeOption,
+    activityMonthSlot: params.activityMonthSlot,
+    filteredStores: normalizedNumberList(params.filteredStores),
+    skuFilter: normalizedStringList(params.skuFilter).map((sku) => sku.toUpperCase()),
+    stores: normalizedNumberList(c.stores),
+    chains: normalizedStringList(c.chains),
+    departments: normalizedNumberList(c.departments),
+    sectors: normalizedNumberList(c.sectors),
+    categories: normalizedNumberList(c.categories),
+    vendors: normalizedStringList(c.vendors),
+    seasons: normalizedStringList(c.seasons),
+    skus: normalizedStringList(c.skus),
+    groups: normalizedStringList(c.groups),
+    keywords: normalizedStringList(c.keywords),
+    buyers: normalizedStringList(c.buyers),
+    styleColor: c.styleColor?.trim() ?? '',
+    storesRaw: c.storesRaw?.trim() ?? '',
+    categoriesRaw: c.categoriesRaw?.trim() ?? '',
+    vendorsRaw: c.vendorsRaw?.trim() ?? '',
+    seasonsRaw: c.seasonsRaw?.trim() ?? '',
+    skusRaw: c.skusRaw?.trim() ?? '',
+    groupsRaw: c.groupsRaw?.trim() ?? '',
+    keywordsRaw: c.keywordsRaw?.trim() ?? '',
+    styleColorRaw: c.styleColorRaw?.trim() ?? '',
+  });
+}
+
+interface RawSalesAnalysisInventoryRow {
+  SKU: string | null;
+  Store: number | null;
+  TotalOnHand: number | null;
+  CurrentCost: number | null;
+  BeginningInventoryValue: number | null;
+  PriorYearOnHandAtCost: number | null;
+  ScopeIncluded: boolean | string | number | null;
+  Season: string | null;
+  GroupCode: string | null;
+  StyleColor: string | null;
+  Keywords: string | null;
+  Category: number | null;
+  Vendor: string | null;
+  BuyerCode: string | null;
+}
+
+function truthyDbBoolean(value: boolean | string | number | null | undefined): boolean {
+  return value === true || value === 1 || value === '1' || String(value).toLowerCase() === 'true';
+}
+
+async function loadSalesAnalysisInventoryScope(params: {
+  reportType: SalesAnalysisReportType;
+  storeOption: SalesAnalysisStoreOption;
+  criteria: SalesAnalysisCriteria;
+  parsed: ParsedAnalysisCriteria;
+  context: AnalysisCriteriaContext;
+  filteredStores: number[] | undefined;
+  deptMap: DeptRow[] | null;
+  sectorMap: SectorRow[] | null;
+  activityMonthSlot: number;
+  skuFilter?: string[];
+}): Promise<SalesAnalysisInventoryScope> {
+  if (params.reportType === 'PRICE_POINT_SUMMARY') {
+    return { metricsByKey: new Map(), skuScopeRows: [] };
+  }
+  if (params.skuFilter && params.skuFilter.length === 0) {
+    return { metricsByKey: new Map(), skuScopeRows: [] };
+  }
+
+  const cacheKey = `sr:salesAnalysisInventoryScope:${salesAnalysisInventoryScopeCacheKey(params)}`;
+  return cachedAsync(cacheKey, 300_000, async () => {
+    const sqlParams: unknown[] = [params.activityMonthSlot];
+    const wheres = [
+      `h.sku_code IS NOT NULL`,
+      `COALESCE(s.rics_status, '') <> 'D'`,
+    ];
+    const filteredStores = normalizedNumberList(params.filteredStores);
+    if (filteredStores.length > 0) {
+      sqlParams.push(filteredStores);
+      wheres.push(`h.store_id = ANY($${sqlParams.length}::int[])`);
+    }
+    if (params.skuFilter?.length) {
+      sqlParams.push(normalizedStringList(params.skuFilter).map((sku) => sku.toUpperCase()));
+      wheres.push(`UPPER(BTRIM(h.sku_code)) = ANY($${sqlParams.length}::text[])`);
+    }
+    if (params.criteria.categories?.length && !params.criteria.categoriesRaw?.trim()) {
+      sqlParams.push(normalizedNumberList(params.criteria.categories));
+      wheres.push(`s.category_number = ANY($${sqlParams.length}::int[])`);
+    }
+    if (params.criteria.vendors?.length && !params.criteria.vendorsRaw?.trim()) {
+      sqlParams.push(normalizedStringList(params.criteria.vendors).map((value) => value.toUpperCase()));
+      wheres.push(`UPPER(BTRIM(s.vendor_id)) = ANY($${sqlParams.length}::text[])`);
+    }
+    if (params.criteria.seasons?.length && !params.criteria.seasonsRaw?.trim()) {
+      sqlParams.push(normalizedStringList(params.criteria.seasons).map((value) => value.toUpperCase()));
+      wheres.push(`UPPER(BTRIM(s.season)) = ANY($${sqlParams.length}::text[])`);
+    }
+    if (params.criteria.skus?.length && !params.criteria.skusRaw?.trim()) {
+      sqlParams.push(normalizedStringList(params.criteria.skus).map((sku) => sku.toUpperCase()));
+      wheres.push(`UPPER(BTRIM(s.code)) = ANY($${sqlParams.length}::text[])`);
+    }
+    if (params.criteria.groups?.length && !params.criteria.groupsRaw?.trim()) {
+      sqlParams.push(normalizedStringList(params.criteria.groups).map((value) => value.toUpperCase()));
+      wheres.push(`UPPER(BTRIM(s.group_code)) = ANY($${sqlParams.length}::text[])`);
+    }
+    if (params.criteria.styleColor?.trim() && !params.criteria.styleColorRaw?.trim()) {
+      sqlParams.push(params.criteria.styleColor.trim().toUpperCase());
+      wheres.push(`UPPER(BTRIM(s.style_color)) = $${sqlParams.length}::text`);
+    }
+    if (params.criteria.buyers?.length) {
+      sqlParams.push(normalizedStringList(params.criteria.buyers).map((value) => value.toUpperCase()));
+      wheres.push(`
+        EXISTS (
+          SELECT 1
+            FROM app.sku_attribute_assignment saa_buyer
+            JOIN app.attribute_dimension ad_buyer
+              ON ad_buyer.id = saa_buyer.dimension_id
+             AND ad_buyer.code = 'buyer'
+            JOIN app.attribute_value av_buyer
+              ON av_buyer.id = saa_buyer.value_id
+           WHERE UPPER(BTRIM(saa_buyer.sku_code)) = UPPER(BTRIM(s.code))
+             AND UPPER(BTRIM(av_buyer.code)) = ANY($${sqlParams.length}::text[])
+        )
+      `);
+    }
+
+    const rows = await prisma.$queryRawUnsafe<RawSalesAnalysisInventoryRow[]>(
+      `
+      WITH inventory_scope AS (
+        SELECT
+          h.id AS snapshot_id,
+          UPPER(BTRIM(h.sku_code)) AS sku_key,
+          h.store_id,
+             h.on_hand::float8 AS total_on_hand,
+             COALESCE(s.current_cost, h.average_cost)::float8 AS current_cost,
+             COALESCE(h.last_month_inv_value, 0)::float8 AS beginning_inventory_value,
+             COALESCE(hm_scope.inventory_value, 0)::float8 AS prior_year_on_hand_at_cost,
+             s.season,
+          s.group_code,
+          s.style_color,
+          s.keywords,
+          s.category_number,
+          s.vendor_id,
+          ${salesAnalysisSnapshotScopeSql('h', 'hm_scope')} AS scope_included
+        FROM app.inventory_history_snapshot h
+        LEFT JOIN app.sku s
+          ON s.id = h.sku_id
+        LEFT JOIN app.inventory_history_month hm_scope
+          ON hm_scope.snapshot_id = h.id
+         AND hm_scope.slot_number = $1::int
+        WHERE ${wheres.join(' AND ')}
+      ),
+      base_keywords AS (
+        SELECT i.sku_key, UPPER(BTRIM(kw.keyword)) AS keyword
+        FROM inventory_scope i,
+             UNNEST(string_to_array(COALESCE(i.keywords, ''), ' ')) AS kw(keyword)
+        WHERE BTRIM(kw.keyword) <> ''
+      ),
+      combined_keywords AS (
+        SELECT sku_key, keyword FROM base_keywords
+        UNION
+        SELECT i.sku_key, UPPER(BTRIM(o.keyword)) AS keyword
+        FROM inventory_scope i
+        JOIN app.sku_keyword_override o
+          ON UPPER(BTRIM(o.rics_sku_code)) = i.sku_key
+        WHERE o.action = 'ADD'
+      ),
+      effective_keywords AS (
+        SELECT sku_key, keyword FROM combined_keywords
+        EXCEPT
+        SELECT i.sku_key, UPPER(BTRIM(o.keyword)) AS keyword
+        FROM inventory_scope i
+        JOIN app.sku_keyword_override o
+          ON UPPER(BTRIM(o.rics_sku_code)) = i.sku_key
+        WHERE o.action = 'REMOVE'
+      ),
+      buyer_assignment AS (
+        SELECT DISTINCT ON (UPPER(BTRIM(saa.sku_code)))
+               UPPER(BTRIM(saa.sku_code)) AS sku_key,
+               av.code AS buyer_code
+          FROM app.sku_attribute_assignment saa
+          JOIN app.attribute_dimension ad
+            ON ad.id = saa.dimension_id
+           AND ad.code = 'buyer'
+          JOIN app.attribute_value av ON av.id = saa.value_id
+         WHERE COALESCE(BTRIM(saa.sku_code), '') <> ''
+         ORDER BY UPPER(BTRIM(saa.sku_code)), av.sort_order NULLS LAST, av.code
+      )
+      SELECT i.sku_key AS "SKU",
+             i.store_id AS "Store",
+             i.total_on_hand AS "TotalOnHand",
+             i.current_cost AS "CurrentCost",
+             i.beginning_inventory_value AS "BeginningInventoryValue",
+             i.prior_year_on_hand_at_cost AS "PriorYearOnHandAtCost",
+             i.scope_included AS "ScopeIncluded",
+             i.season AS "Season",
+             i.group_code AS "GroupCode",
+             i.style_color AS "StyleColor",
+             NULLIF(STRING_AGG(ek.keyword, ' ' ORDER BY ek.keyword), '') AS "Keywords",
+             i.category_number AS "Category",
+             i.vendor_id AS "Vendor",
+             ba.buyer_code AS "BuyerCode"
+        FROM inventory_scope i
+        LEFT JOIN effective_keywords ek ON ek.sku_key = i.sku_key
+        LEFT JOIN buyer_assignment ba ON ba.sku_key = i.sku_key
+       GROUP BY i.snapshot_id, i.sku_key, i.store_id, i.total_on_hand, i.current_cost,
+                i.beginning_inventory_value, i.prior_year_on_hand_at_cost, i.scope_included, i.season, i.group_code,
+                i.style_color, i.category_number, i.vendor_id, ba.buyer_code
+      `,
+      ...sqlParams,
+    );
+
+    const metricsByKey = new Map<string, SalesAnalysisInventoryMetrics>();
+    const skuScopeByBucketKey = new Map<string, SalesAnalysisInventoryScopeRow>();
+    const combine = params.storeOption === 'COMBINE';
+    for (const row of rows) {
+      const sku = row.SKU?.trim().toUpperCase();
+      const store = Number(row.Store ?? 0);
+      if (!sku || !Number.isInteger(store) || store <= 0) continue;
+      const master: SkuMasterFields = {
+        sku,
+        season: row.Season?.trim() || null,
+        groupCode: row.GroupCode?.trim() || null,
+        styleColor: row.StyleColor?.trim() || null,
+        keywords: row.Keywords?.trim() || null,
+        category: row.Category != null ? Number(row.Category) : null,
+        vendor: row.Vendor?.trim() || null,
+        buyerCode: row.BuyerCode?.trim() || null,
+      };
+      const seedLine = zeroSalesAnalysisLine(master, store);
+      if (!applyAnalysisCriteria(seedLine, params.criteria, params.parsed, params.context)) continue;
+      const dimKey = rowGrainKey(seedLine, params.reportType, params.deptMap, params.sectorMap);
+      if (!dimKey) continue;
+
+      const onHand = Number(row.TotalOnHand ?? 0);
+      const cost = Number(row.CurrentCost ?? 0);
+      const onHandAtCost = onHand * Math.max(0, cost);
+      const beginningInventoryValue = Number(row.BeginningInventoryValue ?? 0);
+      const priorYearOnHandAtCost = Number(row.PriorYearOnHandAtCost ?? 0);
+      const key = combine ? dimKey : `${dimKey}|${store}`;
+      addSalesAnalysisInventoryMetrics(
+        metricsByKey,
+        key,
+        onHand,
+        onHandAtCost,
+        beginningInventoryValue,
+        priorYearOnHandAtCost,
+      );
+
+      const scopeIncluded = row.ScopeIncluded == null
+        ? onHand !== 0 || beginningInventoryValue !== 0
+        : truthyDbBoolean(row.ScopeIncluded);
+      if (params.reportType === 'SKU_DETAIL' && scopeIncluded) {
+        const scopeStore = combine ? null : store;
+        const scopeKey = `${dimKey}|${scopeStore ?? '*'}`;
+        if (!skuScopeByBucketKey.has(scopeKey)) {
+          skuScopeByBucketKey.set(scopeKey, { dimensionKey: dimKey, storeNumber: scopeStore, master });
+        }
+      }
+    }
+
+    return {
+      metricsByKey,
+      skuScopeRows: [...skuScopeByBucketKey.values()],
+    };
+  });
+}
+
+function skuMasterScopeCacheKey(criteria: SalesAnalysisCriteria, seedStores: Array<number | null>): string {
+  return JSON.stringify({
+    stores: normalizedNumberList(seedStores.filter((store): store is number => store != null)),
+    categories: normalizedNumberList(criteria.categories),
+    vendors: normalizedStringList(criteria.vendors),
+    seasons: normalizedStringList(criteria.seasons),
+    skus: normalizedStringList(criteria.skus),
+    groups: normalizedStringList(criteria.groups),
+    styleColor: criteria.styleColor?.trim() ?? '',
+    keywords: normalizedStringList(criteria.keywords),
+    buyers: normalizedStringList(criteria.buyers),
+    categoriesRaw: criteria.categoriesRaw?.trim() ?? '',
+    vendorsRaw: criteria.vendorsRaw?.trim() ?? '',
+    seasonsRaw: criteria.seasonsRaw?.trim() ?? '',
+    skusRaw: criteria.skusRaw?.trim() ?? '',
+    groupsRaw: criteria.groupsRaw?.trim() ?? '',
+    styleColorRaw: criteria.styleColorRaw?.trim() ?? '',
+    keywordsRaw: criteria.keywordsRaw?.trim() ?? '',
+  });
+}
+
+async function loadSkuMasterScope(
+  criteria: SalesAnalysisCriteria,
+  seedStores: Array<number | null>,
+): Promise<SkuMasterFields[]> {
+  const concreteSeedStores = normalizedNumberList(seedStores.filter((store): store is number => store != null));
+  const cacheKey = `sr:skuMasterScope:${skuMasterScopeCacheKey(criteria, seedStores)}`;
+  return cachedAsync(cacheKey, 300_000, async () => {
+    const params: unknown[] = [];
+    const wheres = [
+      `s.code IS NOT NULL`,
+      `COALESCE(s.rics_status, '') <> 'D'`,
+    ];
+
+    if (criteria.categories?.length && !criteria.categoriesRaw?.trim()) {
+      params.push(normalizedNumberList(criteria.categories));
+      wheres.push(`s.category_number = ANY($${params.length}::int[])`);
+    }
+    if (criteria.vendors?.length && !criteria.vendorsRaw?.trim()) {
+      params.push(normalizedStringList(criteria.vendors));
+      wheres.push(`s.vendor_id = ANY($${params.length}::text[])`);
+    }
+    if (criteria.seasons?.length && !criteria.seasonsRaw?.trim()) {
+      params.push(normalizedStringList(criteria.seasons));
+      wheres.push(`s.season = ANY($${params.length}::text[])`);
+    }
+    if (criteria.skus?.length && !criteria.skusRaw?.trim()) {
+      params.push(normalizedStringList(criteria.skus).map((sku) => sku.toUpperCase()));
+      wheres.push(`UPPER(BTRIM(s.code)) = ANY($${params.length}::text[])`);
+    }
+    if (criteria.groups?.length && !criteria.groupsRaw?.trim()) {
+      params.push(normalizedStringList(criteria.groups));
+      wheres.push(`s.group_code = ANY($${params.length}::text[])`);
+    }
+    if (criteria.styleColor?.trim() && !criteria.styleColorRaw?.trim()) {
+      params.push(criteria.styleColor.trim());
+      wheres.push(`s.style_color = $${params.length}::text`);
+    }
+    if (criteria.buyers?.length) {
+      params.push(normalizedStringList(criteria.buyers));
+      wheres.push(`
+        EXISTS (
+          SELECT 1
+            FROM app.sku_attribute_assignment saa_buyer
+            JOIN app.attribute_dimension ad_buyer
+              ON ad_buyer.id = saa_buyer.dimension_id
+             AND ad_buyer.code = 'buyer'
+            JOIN app.attribute_value av_buyer
+              ON av_buyer.id = saa_buyer.value_id
+           WHERE UPPER(BTRIM(saa_buyer.sku_code)) = UPPER(BTRIM(s.code))
+             AND av_buyer.code = ANY($${params.length}::text[])
+        )
+      `);
+    }
+    if (concreteSeedStores.length) {
+      params.push(concreteSeedStores);
+      wheres.push(`
+        EXISTS (
+          SELECT 1
+            FROM app.inventory_history_snapshot h
+           WHERE h.sku_id = s.id
+             AND h.store_id = ANY($${params.length}::int[])
+        )
+      `);
+    }
+
+    const rows = await prisma.$queryRawUnsafe<Array<{
+      SKU: string | null;
+      Season: string | null;
+      GroupCode: string | null;
+      StyleColor: string | null;
+      Keywords: string | null;
+      Category: number | null;
+      Vendor: string | null;
+      BuyerCode: string | null;
+    }>>(
+      `
+      WITH sku_scope AS (
+        SELECT
+          UPPER(BTRIM(s.code)) AS sku_key,
+          s.season,
+          s.group_code,
+          s.style_color,
+          s.keywords,
+          s.category_number,
+          s.vendor_id
+        FROM app.sku s
+        WHERE ${wheres.join(' AND ')}
+      ),
+      base_keywords AS (
+        SELECT s.sku_key, UPPER(BTRIM(kw.keyword)) AS keyword
+        FROM sku_scope s,
+             UNNEST(string_to_array(COALESCE(s.keywords, ''), ' ')) AS kw(keyword)
+        WHERE BTRIM(kw.keyword) <> ''
+      ),
+      combined_keywords AS (
+        SELECT sku_key, keyword FROM base_keywords
+        UNION
+        SELECT s.sku_key, UPPER(BTRIM(o.keyword)) AS keyword
+        FROM sku_scope s
+        JOIN app.sku_keyword_override o
+          ON UPPER(BTRIM(o.rics_sku_code)) = s.sku_key
+        WHERE o.action = 'ADD'
+      ),
+      effective_keywords AS (
+        SELECT sku_key, keyword FROM combined_keywords
+        EXCEPT
+        SELECT s.sku_key, UPPER(BTRIM(o.keyword)) AS keyword
+        FROM sku_scope s
+        JOIN app.sku_keyword_override o
+          ON UPPER(BTRIM(o.rics_sku_code)) = s.sku_key
+        WHERE o.action = 'REMOVE'
+      ),
+      buyer_assignment AS (
+        SELECT DISTINCT ON (UPPER(BTRIM(saa.sku_code)))
+               UPPER(BTRIM(saa.sku_code)) AS sku_key,
+               av.code AS buyer_code
+          FROM app.sku_attribute_assignment saa
+          JOIN app.attribute_dimension ad
+            ON ad.id = saa.dimension_id
+           AND ad.code = 'buyer'
+          JOIN app.attribute_value av ON av.id = saa.value_id
+         WHERE COALESCE(BTRIM(saa.sku_code), '') <> ''
+         ORDER BY UPPER(BTRIM(saa.sku_code)), av.sort_order NULLS LAST, av.code
+      )
+      SELECT s.sku_key AS "SKU",
+             s.season AS "Season",
+             s.group_code AS "GroupCode",
+             s.style_color AS "StyleColor",
+             NULLIF(STRING_AGG(ek.keyword, ' ' ORDER BY ek.keyword), '') AS "Keywords",
+             s.category_number AS "Category",
+             s.vendor_id AS "Vendor",
+             ba.buyer_code AS "BuyerCode"
+        FROM sku_scope s
+        LEFT JOIN effective_keywords ek ON ek.sku_key = s.sku_key
+        LEFT JOIN buyer_assignment ba ON ba.sku_key = s.sku_key
+       GROUP BY s.sku_key, s.season, s.group_code, s.style_color, s.category_number, s.vendor_id, ba.buyer_code
+      `,
+      ...params,
+    );
+
+    return rows
+      .map<SkuMasterFields | null>((row) => {
+        const sku = row.SKU?.trim().toUpperCase();
+        if (!sku) return null;
+        return {
+          sku,
+          season: row.Season?.trim() || null,
+          groupCode: row.GroupCode?.trim() || null,
+          styleColor: row.StyleColor?.trim() || null,
+          keywords: row.Keywords?.trim() || null,
+          category: row.Category != null ? Number(row.Category) : null,
+          vendor: row.Vendor?.trim() || null,
+          buyerCode: row.BuyerCode?.trim() || null,
+        };
+      })
+      .filter((row): row is SkuMasterFields => row != null);
+  });
 }
 
 async function loadSkuMasterFields(skuCodes: string[]): Promise<Map<string, SkuMasterFields>> {
@@ -2565,18 +3497,72 @@ async function loadSkuMasterFields(skuCodes: string[]): Promise<Map<string, SkuM
       Keywords: string | null;
       Category: number | null;
       Vendor: string | null;
+      BuyerCode: string | null;
     }>>(
-      `SELECT UPPER(BTRIM(code)) AS "SKU",
-              season AS "Season",
-              group_code AS "GroupCode",
-              style_color AS "StyleColor",
-              keywords AS "Keywords",
-              category_number AS "Category",
-              vendor_id AS "Vendor"
-         FROM app.sku
+      `
+      WITH sku_scope AS (
+        SELECT
+          UPPER(BTRIM(code)) AS sku_key,
+          season,
+          group_code,
+          style_color,
+          keywords,
+          category_number,
+          vendor_id
+        FROM app.sku
         WHERE code IS NOT NULL
           AND UPPER(BTRIM(code)) = ANY($1::text[])
-          AND COALESCE(rics_status, '') <> 'D'`,
+          AND COALESCE(rics_status, '') <> 'D'
+      ),
+      base_keywords AS (
+        SELECT s.sku_key, UPPER(BTRIM(kw.keyword)) AS keyword
+        FROM sku_scope s,
+             UNNEST(string_to_array(COALESCE(s.keywords, ''), ' ')) AS kw(keyword)
+        WHERE BTRIM(kw.keyword) <> ''
+      ),
+      combined_keywords AS (
+        SELECT sku_key, keyword FROM base_keywords
+        UNION
+        SELECT s.sku_key, UPPER(BTRIM(o.keyword)) AS keyword
+        FROM sku_scope s
+        JOIN app.sku_keyword_override o
+          ON UPPER(BTRIM(o.rics_sku_code)) = s.sku_key
+        WHERE o.action = 'ADD'
+      ),
+      effective_keywords AS (
+        SELECT sku_key, keyword FROM combined_keywords
+        EXCEPT
+        SELECT s.sku_key, UPPER(BTRIM(o.keyword)) AS keyword
+        FROM sku_scope s
+        JOIN app.sku_keyword_override o
+          ON UPPER(BTRIM(o.rics_sku_code)) = s.sku_key
+        WHERE o.action = 'REMOVE'
+      ),
+      buyer_assignment AS (
+        SELECT DISTINCT ON (UPPER(BTRIM(saa.sku_code)))
+               UPPER(BTRIM(saa.sku_code)) AS sku_key,
+               av.code AS buyer_code
+          FROM app.sku_attribute_assignment saa
+          JOIN app.attribute_dimension ad
+            ON ad.id = saa.dimension_id
+           AND ad.code = 'buyer'
+          JOIN app.attribute_value av ON av.id = saa.value_id
+         WHERE COALESCE(BTRIM(saa.sku_code), '') <> ''
+         ORDER BY UPPER(BTRIM(saa.sku_code)), av.sort_order NULLS LAST, av.code
+      )
+      SELECT s.sku_key AS "SKU",
+             s.season AS "Season",
+             s.group_code AS "GroupCode",
+             s.style_color AS "StyleColor",
+             NULLIF(STRING_AGG(ek.keyword, ' ' ORDER BY ek.keyword), '') AS "Keywords",
+             s.category_number AS "Category",
+             s.vendor_id AS "Vendor",
+             ba.buyer_code AS "BuyerCode"
+        FROM sku_scope s
+        LEFT JOIN effective_keywords ek ON ek.sku_key = s.sku_key
+        LEFT JOIN buyer_assignment ba ON ba.sku_key = s.sku_key
+       GROUP BY s.sku_key, s.season, s.group_code, s.style_color, s.category_number, s.vendor_id, ba.buyer_code
+      `,
       unique,
     );
     const out = new Map<string, SkuMasterFields>();
@@ -2591,6 +3577,7 @@ async function loadSkuMasterFields(skuCodes: string[]): Promise<Map<string, SkuM
         keywords: row.Keywords?.trim() || null,
         category: row.Category != null ? Number(row.Category) : null,
         vendor: row.Vendor?.trim() || null,
+        buyerCode: row.BuyerCode?.trim() || null,
       });
     }
     return out;

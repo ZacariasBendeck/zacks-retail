@@ -18,11 +18,16 @@
 import { prisma } from '../../db/prisma';
 import type {
   PivotDimension,
+  SalesAnalysisCriteria,
   SalesPivotLevels,
   SalesPivotLeafRow,
   SalesPivotReport,
   SalesPivotTotals,
 } from './types';
+import {
+  resolveSharedProductCriteriaSkuWhitelist,
+  resolveSharedStoreNumbers,
+} from './sharedReportCriteria';
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const REPORT_TIME_ZONE = 'America/Tegucigalpa';
@@ -416,8 +421,7 @@ export async function getSalesPivotCustom(params: {
   endDate: string;
   storeNumbers?: number[];
   levels: SalesPivotLevels;
-  /** Criteria filters. Chains narrow the store universe; the rest narrow
-   *  the SKU universe before aggregation. */
+  criteria?: SalesAnalysisCriteria;
   chains?: string[];
   sectors?: number[];
   departments?: number[];
@@ -451,20 +455,12 @@ export async function getSalesPivotCustom(params: {
   const tyEndExcl = exclusiveEnd(params.endDate);
   const lyStart = shiftYear(tyStart, -1);
   const lyEndExcl = shiftYear(tyEndExcl, -1);
-  const effectiveStoreNumbers = await resolveStoreNumbersForChains({
-    storeNumbers: params.storeNumbers,
-    chains: params.chains,
-  });
+  const effectiveStoreNumbers = await resolveSharedStoreNumbers(params.criteria, params.storeNumbers);
 
   // Resolve the SKU whitelist from sector/department/season/buyer criteria
   // before we run the expensive sales + on-hand aggregations. `null` means
   // "no filter" and the adapter runs over every SKU.
-  const skuFilter = await resolveCriteriaSkuWhitelist({
-    sectors: params.sectors,
-    departments: params.departments,
-    seasons: params.seasons,
-    buyers: params.buyers,
-  });
+  const skuFilter = await resolveSharedProductCriteriaSkuWhitelist(params.criteria);
 
   const [salesRows, onHandRows, taxonomy, storeRows, seasonRows, groupRows] = await Promise.all([
     loadSalesAgg({

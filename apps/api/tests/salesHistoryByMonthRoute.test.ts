@@ -89,6 +89,8 @@ function setAdapterRows(rows: MonthlyMeasuresRow[]): void {
   const monthlyAdapter = require('../src/services/salesReporting/ricsSalesHistoryByMonthAdapter');
   (monthlyAdapter.queryMonthlyMeasures as jest.Mock).mockReset();
   (monthlyAdapter.queryMonthlyMeasures as jest.Mock).mockResolvedValue(rows);
+  (monthlyAdapter.queryMonthlyNetSales as jest.Mock).mockReset();
+  (monthlyAdapter.queryMonthlyNetSales as jest.Mock).mockResolvedValue([]);
   (monthlyAdapter.queryMonthlySkuLifecycleCounts as jest.Mock).mockReset();
   (monthlyAdapter.queryMonthlySkuLifecycleCounts as jest.Mock).mockResolvedValue([]);
 }
@@ -152,9 +154,9 @@ describe('GET /api/v1/reports/rics-sales-history-by-month (JSON)', () => {
     expect(res.body.sortBy).toBe('vendor');
     expect(res.body.endMonth).toBe('2026-04');
     expect(res.body.combineStores).toBe(true);
-    expect(res.body.months).toHaveLength(12);
-    expect(res.body.months[0]).toBe('2025-05');
-    expect(res.body.months[11]).toBe('2026-04');
+    expect(res.body.months).toHaveLength(13);
+    expect(res.body.months[0]).toBe('2025-04');
+    expect(res.body.months[12]).toBe('2026-04');
     expect(res.body.detailLevel).toBe('subtotals');
     expect(res.body.dataToPrint).toEqual(['netSales']);
     expect(res.body.blocks).toHaveLength(1);
@@ -162,7 +164,7 @@ describe('GET /api/v1/reports/rics-sales-history-by-month (JSON)', () => {
     expect(res.body.blocks[0].storeLabel).toBe('All Stores');
 
     const nike = res.body.blocks[0].rows.find((r: any) => r.key === 'NIKE');
-    expect(nike.metrics.netSales[11]).toBe(150);
+    expect(nike.metrics.netSales[12]).toBe(150);
     expect(nike.totals.netSales).toBe(150);
   });
 
@@ -182,6 +184,40 @@ describe('GET /api/v1/reports/rics-sales-history-by-month (JSON)', () => {
     expect(res.body.blocks[1].storeNumber).toBe(13);
   });
 
+  it('accepts store ranges in the stores query parameter', async () => {
+    setAdapterRows([
+      measureRow({ storeNumber: 2, yearMonth: '2026-04', dimKey: 'NIKE', dimLabel: 'NIKE', netSales: 100 }),
+      measureRow({ storeNumber: 13, yearMonth: '2026-04', dimKey: 'NIKE', dimLabel: 'NIKE', netSales: 50 }),
+    ]);
+
+    const res = await request(app).get(
+      '/api/v1/reports/rics-sales-history-by-month?stores=2-4,13&endMonth=2026-04',
+    );
+
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const monthlyAdapter = require('../src/services/salesReporting/ricsSalesHistoryByMonthAdapter');
+    expect(res.status).toBe(200);
+    expect(monthlyAdapter.queryMonthlyMeasures).toHaveBeenCalledWith(
+      expect.objectContaining({ storeNumbers: [2, 3, 4, 13] }),
+    );
+  });
+
+  it('honors includePriorYear=false as a query string value', async () => {
+    setAdapterRows([
+      measureRow({ storeNumber: 2, yearMonth: '2026-04', dimKey: 'NIKE', dimLabel: 'NIKE', netSales: 100 }),
+    ]);
+
+    const res = await request(app).get(
+      '/api/v1/reports/rics-sales-history-by-month?stores=2&endMonth=2026-04&includePriorYear=false',
+    );
+
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const monthlyAdapter = require('../src/services/salesReporting/ricsSalesHistoryByMonthAdapter');
+    expect(res.status).toBe(200);
+    expect(res.body.priorYearMonths).toBeUndefined();
+    expect(monthlyAdapter.queryMonthlyNetSales).not.toHaveBeenCalled();
+  });
+
   it('accepts multiple metrics via dataToPrint and returns each as a metric block', async () => {
     setAdapterRows([
       measureRow({ yearMonth: '2026-04', dimKey: 'NIKE', dimLabel: 'NIKE', quantity: 4, netSales: 200, cogs: 120 }),
@@ -192,9 +228,9 @@ describe('GET /api/v1/reports/rics-sales-history-by-month (JSON)', () => {
     expect(res.status).toBe(200);
     expect(res.body.dataToPrint).toEqual(['netSales', 'profit', 'grossProfit', 'quantitySold']);
     const nike = res.body.blocks[0].rows[0];
-    expect(nike.metrics.quantitySold[11]).toBe(4);
-    expect(nike.metrics.profit[11]).toBe(80);
-    expect(nike.metrics.grossProfit[11]).toBeCloseTo(40, 1);
+    expect(nike.metrics.quantitySold[12]).toBe(4);
+    expect(nike.metrics.profit[12]).toBe(80);
+    expect(nike.metrics.grossProfit[12]).toBeCloseTo(40, 1);
   });
 
   it('accepts lifecycle count metrics via dataToPrint', async () => {
@@ -225,11 +261,11 @@ describe('GET /api/v1/reports/rics-sales-history-by-month (JSON)', () => {
       'newCarryoverUnitsSoldRatio',
     ]);
     const nike = res.body.blocks[0].rows[0];
-    expect(nike.metrics.newSkuStoreCount[11]).toBe(3);
-    expect(nike.metrics.carryoverSkuDistinctCount[11]).toBe(6);
-    expect(nike.metrics.newSkuUnitsSold[11]).toBe(5);
-    expect(nike.metrics.newCarryoverSkuRatio[11]).toBe(33.3);
-    expect(nike.metrics.newCarryoverUnitsSoldRatio[11]).toBe(33.3);
+    expect(nike.metrics.newSkuStoreCount[12]).toBe(3);
+    expect(nike.metrics.carryoverSkuDistinctCount[12]).toBe(6);
+    expect(nike.metrics.newSkuUnitsSold[12]).toBe(5);
+    expect(nike.metrics.newCarryoverSkuRatio[12]).toBe(33.3);
+    expect(nike.metrics.newCarryoverUnitsSoldRatio[12]).toBe(33.3);
   });
 
   it('accepts detailLevel=sku and propagates to the adapter', async () => {
@@ -295,15 +331,17 @@ describe('GET /api/v1/reports/rics-sales-history-by-month (CSV)', () => {
     );
     expect(res.status).toBe(200);
     expect(res.headers['content-type']).toMatch(/text\/csv/);
-    expect(res.headers['content-disposition']).toMatch(/rics-sales-history-by-month-2026-04\.csv/);
+    expect(res.headers['content-disposition']).toContain(
+      'SHBM-S2-13-2026-04-vendor-subtotals-m-netSales-profit.csv',
+    );
     const csv = res.text;
     expect(csv).toContain('Sales History by Month');
     expect(csv).toContain('All Stores');
     expect(csv).toContain('Net Sales');
     expect(csv).toContain('Profit');
     expect(csv).toContain('NIKE');
-    expect(csv).toContain('200.00');
-    expect(csv).toContain('80.00');                        // profit
+    expect(csv).toContain('200');
+    expect(csv).toContain('80');                        // profit
   });
 
   it('emits per-store sections when combineStores=false', async () => {
@@ -340,7 +378,7 @@ describe('GET /api/v1/reports/rics-sales-history-by-month (CSV)', () => {
     expect(csv).toContain('Carryover Distinct SKU Count');
     expect(csv).toContain('New SKU Units Sold');
     expect(csv).toContain('New/Carryover Units Sold %');
-    expect(csv).toContain('NIKE,NIKE,0,0,0,0,0,0,0,0,0,0,0,4,0');
+    expect(csv).toContain('NIKE,NIKE,0,0,0,0,0,0,0,0,0,0,0,0,4,0');
     expect(csv).toContain('50.0%');
   });
 });
@@ -384,7 +422,9 @@ describe('GET /api/v1/reports/rics-sales-history-by-month (XLSX)', () => {
     expect(res.headers['content-type']).toMatch(
       /openxmlformats-officedocument\.spreadsheetml\.sheet/,
     );
-    expect(res.headers['content-disposition']).toMatch(/rics-sales-history-by-month-2026-04\.xlsx/);
+    expect(res.headers['content-disposition']).toContain(
+      'SHBM-S2-2026-04-vendor-subtotals-m-netSales-profit.xlsx',
+    );
     const buf = res.body as Buffer;
     expect(Buffer.isBuffer(buf)).toBe(true);
     expect(buf.length).toBeGreaterThan(0);
@@ -456,10 +496,20 @@ describe('GET /api/v1/reports/rics-sales-history-by-month (validation)', () => {
     else process.env.SALES_SOURCE = ORIGINAL_SOURCE;
   });
 
-  it('returns 400 when stores is missing', async () => {
+  it('treats omitted stores as all sales-dimension stores', async () => {
+    setAdapterRows([
+      measureRow({ storeNumber: 2, yearMonth: '2026-04', dimKey: 'NIKE', dimLabel: 'NIKE', netSales: 100 }),
+      measureRow({ storeNumber: 13, yearMonth: '2026-04', dimKey: 'NIKE', dimLabel: 'NIKE', netSales: 50 }),
+    ]);
+
     const res = await request(app).get('/api/v1/reports/rics-sales-history-by-month?endMonth=2026-04');
-    expect(res.status).toBe(400);
-    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const monthlyAdapter = require('../src/services/salesReporting/ricsSalesHistoryByMonthAdapter');
+
+    expect(res.status).toBe(200);
+    expect(monthlyAdapter.queryMonthlyMeasures).toHaveBeenCalledWith(
+      expect.objectContaining({ storeNumbers: [2, 13] }),
+    );
   });
 
   it('returns 400 when endMonth has the wrong format', async () => {

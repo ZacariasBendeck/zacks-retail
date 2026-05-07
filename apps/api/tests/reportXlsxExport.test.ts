@@ -22,9 +22,15 @@ import { randomUUID } from 'node:crypto';
 import ExcelJS from 'exceljs';
 
 // ─────────────────────────── RICS adapter mocks (for sales-by-day) ────────
-// Same pattern the existing ricsSalesReport.test.ts uses: force fs.existsSync
-// to true and stub the PowerShell entry point so no MDB is needed.
-jest.spyOn(fs, 'existsSync').mockImplementation(() => true);
+// Same pattern the existing ricsSalesReport.test.ts uses: force fake RICS MDB
+// paths to exist and stub the PowerShell entry point so no MDB is needed.
+// Keep real filesystem semantics elsewhere; app boot checks .tmp job folders.
+const realExistsSync = fs.existsSync.bind(fs);
+jest.spyOn(fs, 'existsSync').mockImplementation((target) => {
+  const normalized = String(target).replace(/\//g, '\\');
+  if (normalized.startsWith('\\fake\\') || normalized.includes('\\fake\\')) return true;
+  return realExistsSync(target);
+});
 
 type Rowset = unknown[];
 type MockSpec = { match: (sql: string) => boolean; rows: Rowset };
@@ -125,7 +131,7 @@ describe('reportRoutes XLSX export', () => {
       .get('/api/v1/reports/sales-performance?format=xlsx&startDate=2026-01-01&endDate=2026-01-31')
       .buffer(true)
       .parse(binaryParser);
-    expectXlsxHeaders(res, 'sales-performance.xlsx');
+    expectXlsxHeaders(res, 'SPERF-2026-01-01-2026-01-31.xlsx');
     const wb = await assertValidXlsxBuffer(res.body);
     const ws = wb.worksheets[0];
     const headerCells = ws.getRow(1).values as Array<string | undefined>;
@@ -238,7 +244,7 @@ describe('sales-by-day XLSX export', () => {
       .get('/api/v1/reports/rics-sales-by-day-store?store=2&startDate=2024-11-04&endDate=2024-11-10&format=xlsx')
       .buffer(true)
       .parse(binaryParser);
-    expectXlsxHeaders(res, 'rics-sales-by-day-store-2-2024-11-04-to-2024-11-10.xlsx');
+    expectXlsxHeaders(res, 'SBD-S2-2024-11-04-2024-11-10.xlsx');
     const wb = await assertValidXlsxBuffer(res.body);
     const ws = wb.worksheets[0];
     const headerCells = ws.getRow(1).values as Array<string | undefined>;
@@ -255,7 +261,7 @@ describe('sales-by-day XLSX export', () => {
       .get('/api/v1/reports/sales/by-day?stores=2&startDate=2024-11-04&endDate=2024-11-10&format=xlsx')
       .buffer(true)
       .parse(binaryParser);
-    expectXlsxHeaders(res, 'sales-by-day-2-2024-11-04-to-2024-11-10.xlsx');
+    expectXlsxHeaders(res, 'SBD-S2-2024-11-04-2024-11-10.xlsx');
     const wb = await assertValidXlsxBuffer(res.body);
     const ws = wb.worksheets[0];
     const headerCells = ws.getRow(1).values as Array<string | undefined>;
@@ -269,13 +275,30 @@ describe('sales-by-day XLSX export', () => {
       .get('/api/v1/reports/sales/by-day?startDate=2024-11-04&endDate=2024-11-10&format=xlsx')
       .buffer(true)
       .parse(binaryParser);
-    expectXlsxHeaders(res, 'sales-by-day-all-stores-2024-11-04-to-2024-11-10.xlsx');
+    expectXlsxHeaders(res, 'SBD-all-2024-11-04-2024-11-10.xlsx');
     const wb = await assertValidXlsxBuffer(res.body);
     const ws = wb.worksheets[0];
     const headerCells = ws.getRow(1).values as Array<string | undefined>;
     expect(headerCells).toContain('Compared Profit');
     expect(headerCells).toContain('Profit Change');
   });
+
+  it('GET /sales/sales-analysis?format=xlsx returns a valid XLSX workbook', async () => {
+    const res = await request(app)
+      .get('/api/v1/reports/sales/sales-analysis?dimension=CATEGORY&reportType=SKU_DETAIL&storeOption=COMBINE&startDate=2024-11-04&endDate=2024-11-10&format=xlsx')
+      .buffer(true)
+      .parse(binaryParser);
+    expectXlsxHeaders(
+      res,
+      'SAR-CATEGORY-SKU-DETAIL-COMBINE-all-2024-11-04-2024-11-10.xlsx',
+    );
+    const wb = await assertValidXlsxBuffer(res.body);
+    const ws = wb.worksheets[0];
+    const headerCells = ws.getRow(1).values as Array<string | undefined>;
+    expect(headerCells).toContain('Gross Profit');
+    expect(headerCells).toContain('Turns');
+    expect(headerCells).toContain('ROI');
+  }, 15_000);
 });
 
 // ─────────────────────────── supertest binary parser ──────────────────────

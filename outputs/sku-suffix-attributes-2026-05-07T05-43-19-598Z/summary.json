@@ -1,0 +1,55 @@
+{
+  "generatedAt": "2026-05-07T05:43:19.686Z",
+  "mode": "dry-run",
+  "actor": "script:sku-suffix-attributes",
+  "scope": {
+    "categoryMin": 556,
+    "categoryMax": 599,
+    "seasons": [
+      "1",
+      "2",
+      "3",
+      "4",
+      "5",
+      "6",
+      "7",
+      "8",
+      "9",
+      "A",
+      "B",
+      "C"
+    ]
+  },
+  "aliases": {
+    "colors": {
+      "TA": "tp"
+    },
+    "materials": {
+      "NB": "nu",
+      "SD": "su",
+      "MT": "me",
+      "GT": "gl"
+    }
+  },
+  "counts": {
+    "scopedSkus": 5767,
+    "parseableSuffix": 5578,
+    "nonstandardSuffix": 189,
+    "colorResolvable": 4734,
+    "materialResolvable": 4727,
+    "bothResolvable": 4475,
+    "unknownColor": 844,
+    "unknownMaterial": 851,
+    "colorAssignmentRows": 4734,
+    "materialAssignmentRows": 4727,
+    "assignmentRowsPlanned": 9461,
+    "rejectRows": 1292,
+    "beforeAssignmentRows": 8
+  },
+  "outputFiles": {
+    "assignments": "E:\\dev\\zacks-retail\\outputs\\sku-suffix-attributes-2026-05-07T05-43-19-598Z\\assignments.csv",
+    "rejects": "E:\\dev\\zacks-retail\\outputs\\sku-suffix-attributes-2026-05-07T05-43-19-598Z\\rejects.csv",
+    "beforeAssignments": "E:\\dev\\zacks-retail\\outputs\\sku-suffix-attributes-2026-05-07T05-43-19-598Z\\before_assignments.csv",
+    "summary": "E:\\dev\\zacks-retail\\outputs\\sku-suffix-attributes-2026-05-07T05-43-19-598Z\\summary.json"
+  }
+}

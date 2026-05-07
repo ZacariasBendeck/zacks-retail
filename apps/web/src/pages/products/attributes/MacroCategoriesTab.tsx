@@ -15,6 +15,7 @@ import {
   Tag,
   Typography,
 } from 'antd'
+import type { ColumnsType } from 'antd/es/table'
 import { PlusOutlined, SaveOutlined } from '@ant-design/icons'
 import {
   useAttributeMacroRules,
@@ -54,6 +55,21 @@ function formatDate(value: string | null): string {
   const d = new Date(value)
   if (Number.isNaN(d.getTime())) return value
   return d.toLocaleString()
+}
+
+function compareText(left: string | null | undefined, right: string | null | undefined): number {
+  return (left ?? '').localeCompare(right ?? '', undefined, {
+    numeric: true,
+    sensitivity: 'base',
+  })
+}
+
+function compareDate(left: string | null, right: string | null): number {
+  const leftTime = left ? new Date(left).getTime() : 0
+  const rightTime = right ? new Date(right).getTime() : 0
+  const safeLeftTime = Number.isNaN(leftTime) ? 0 : leftTime
+  const safeRightTime = Number.isNaN(rightTime) ? 0 : rightTime
+  return safeLeftTime - safeRightTime
 }
 
 export default function MacroCategoriesTab({ dimensions, onCreateMacroCategory }: Props) {
@@ -126,6 +142,10 @@ export default function MacroCategoriesTab({ dimensions, onCreateMacroCategory }
 
   const selectedSource = dimensions.find((d) => d.code === pair?.sourceDimensionCode) ?? null
   const selectedTarget = dimensions.find((d) => d.code === pair?.targetDimensionCode) ?? null
+  const targetValueLabelByCode = useMemo(
+    () => new Map((selectedTarget?.values ?? []).map((value) => [value.code, value.labelEs])),
+    [selectedTarget?.values],
+  )
 
   const targetValueOptions = (selectedTarget?.values ?? []).map((value) => ({
     value: value.code,
@@ -180,10 +200,21 @@ export default function MacroCategoriesTab({ dimensions, onCreateMacroCategory }
     }
   }
 
-  const summaryColumns = [
+  const targetSortValue = (row: AttributeMacroRuleRow): string => {
+    const valueCode = draft[row.sourceValueCode] ?? row.targetValueCode
+    if (!valueCode) return ''
+    return targetValueLabelByCode.get(valueCode) ?? valueCode
+  }
+
+  const summaryColumns: ColumnsType<AttributeMacroRuleSummary> = [
     {
       title: 'Macro',
       key: 'macro',
+      sorter: (a, b) =>
+        compareText(a.sourceDimensionLabelEs, b.sourceDimensionLabelEs) ||
+        compareText(a.sourceDimensionCode, b.sourceDimensionCode) ||
+        compareText(a.targetDimensionLabelEs, b.targetDimensionLabelEs) ||
+        compareText(a.targetDimensionCode, b.targetDimensionCode),
       render: (_: unknown, row: AttributeMacroRuleSummary) => (
         <Space size={6}>
           <Tag>{row.sourceDimensionCode}</Tag>
@@ -196,6 +227,10 @@ export default function MacroCategoriesTab({ dimensions, onCreateMacroCategory }
       title: 'Mapped',
       key: 'mapped',
       width: 120,
+      sorter: (a, b) =>
+        a.mappedCount - b.mappedCount ||
+        a.sourceValueCount - b.sourceValueCount ||
+        compareText(a.sourceDimensionCode, b.sourceDimensionCode),
       render: (_: unknown, row: AttributeMacroRuleSummary) =>
         `${row.mappedCount.toLocaleString()} / ${row.sourceValueCount.toLocaleString()}`,
     },
@@ -204,15 +239,19 @@ export default function MacroCategoriesTab({ dimensions, onCreateMacroCategory }
       dataIndex: 'updatedAt',
       key: 'updatedAt',
       width: 190,
-      render: formatDate,
+      sorter: (a, b) => compareDate(a.updatedAt, b.updatedAt),
+      render: (value: AttributeMacroRuleSummary['updatedAt']) => formatDate(value),
     },
   ]
 
-  const ruleColumns = [
+  const ruleColumns: ColumnsType<AttributeMacroRuleRow> = [
     {
       title: selectedSource ? selectedSource.labelEs : 'Source value',
       key: 'source',
       width: 260,
+      sorter: (a, b) =>
+        compareText(a.sourceLabelEs, b.sourceLabelEs) ||
+        compareText(a.sourceValueCode, b.sourceValueCode),
       render: (_: unknown, row: AttributeMacroRuleRow) => (
         <Space size={6}>
           <Typography.Text strong>{row.sourceLabelEs}</Typography.Text>
@@ -223,6 +262,9 @@ export default function MacroCategoriesTab({ dimensions, onCreateMacroCategory }
     {
       title: selectedTarget ? selectedTarget.labelEs : 'Macro value',
       key: 'target',
+      sorter: (a, b) =>
+        compareText(targetSortValue(a), targetSortValue(b)) ||
+        compareText(a.sourceLabelEs, b.sourceLabelEs),
       render: (_: unknown, row: AttributeMacroRuleRow) => (
         <Select
           allowClear
@@ -245,6 +287,10 @@ export default function MacroCategoriesTab({ dimensions, onCreateMacroCategory }
       title: 'Last saved',
       key: 'updated',
       width: 230,
+      sorter: (a, b) =>
+        compareDate(a.updatedAt, b.updatedAt) ||
+        compareText(a.updatedBy, b.updatedBy) ||
+        compareText(a.sourceLabelEs, b.sourceLabelEs),
       render: (_: unknown, row: AttributeMacroRuleRow) => (
         <Space size={4} direction="vertical">
           <Typography.Text>{formatDate(row.updatedAt)}</Typography.Text>

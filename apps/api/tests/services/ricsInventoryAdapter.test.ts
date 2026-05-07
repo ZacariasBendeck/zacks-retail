@@ -20,6 +20,7 @@ const {
   buildSummaryMetricsByStore,
   buildLegacyLastYearSalesByStore,
   buildInquiryRollupFromHistory,
+  buildInquiryTrendColumns,
 } = __test;
 
 describe('ricsInventoryAdapter inquiry grids', () => {
@@ -498,6 +499,59 @@ describe('ricsInventoryAdapter inquiry grids', () => {
       month: { qty: 5, net: 45, markdown: 3, profit: 17 },
       season: { qty: 7, net: 65, markdown: 5, profit: 25 },
       year: { qty: 9, net: 85, markdown: 7, profit: 33 },
+    });
+  });
+
+  it('builds trend rows from RICS begin and period fields without treating period as movement', () => {
+    const columns = buildInquiryTrendColumns(
+      [
+        {
+          storeId: 10,
+          onHand: 7,
+          weekQtySales: 0,
+          trendWeek8BegOnHand: 0,
+        },
+        {
+          storeId: 99,
+          onHand: 18,
+          weekQtySales: 0,
+          trendWeek8BegOnHand: 0,
+        },
+      ] as any,
+      new Map([
+        [10, [
+          { storeId: 10, slotNumber: 1, beginOnHand: 10, onHandConstant: 10, sales: 2 },
+          { storeId: 10, slotNumber: 2, beginOnHand: 8, onHandConstant: 12, sales: 1 },
+        ]],
+        [99, [
+          { storeId: 99, slotNumber: 1, beginOnHand: 20, onHandConstant: 20, sales: 0 },
+          { storeId: 99, slotNumber: 2, beginOnHand: 20, onHandConstant: 20, sales: 2 },
+        ]],
+      ] as any),
+    );
+
+    expect(columns[0]).toMatchObject({
+      label: '7',
+      availWeek: 30,
+      availPeriod: 30,
+      recTranAdj: null,
+      sales: 2,
+      stWeekly: 6.7,
+      stPeriod: 6.7,
+    });
+    expect(columns[1]).toMatchObject({
+      label: '6',
+      availWeek: 28,
+      availPeriod: 32,
+      recTranAdj: null,
+      sales: 3,
+      stWeekly: 10.7,
+      stPeriod: 9.4,
+    });
+    expect(columns[7]).toMatchObject({
+      label: 'Current',
+      availWeek: 25,
+      recTranAdj: null,
     });
   });
 });

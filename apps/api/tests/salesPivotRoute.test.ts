@@ -219,6 +219,19 @@ describe('GET /api/v1/reports/sales/sales-pivot', () => {
     });
   });
 
+  it('expands store ranges before forwarding the stores filter', async () => {
+    setDeptAdapterReport(emptyReport('department'));
+    await request(app).get(
+      '/api/v1/reports/sales/sales-pivot?startDate=2026-04-01&endDate=2026-04-22&stores=2-4,13',
+    );
+    const call = getDeptAdapterMock().mock.calls.at(-1)?.[0];
+    expect(call).toMatchObject({
+      startDate: '2026-04-01',
+      endDate: '2026-04-22',
+      storeNumbers: [2, 3, 4, 13],
+    });
+  });
+
   it('rejects authenticated scoped users requesting an unauthorized store', async () => {
     const cookie = await createScopedUserCookie(2);
     setDeptAdapterReport(emptyReport('department'));

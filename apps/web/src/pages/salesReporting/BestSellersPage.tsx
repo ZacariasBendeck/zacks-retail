@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState, useMemo } from 'react'
 import {
-  Alert, Button, Checkbox, Input, InputNumber, Select, Space, Table, Spin, Tag,
+  Alert, Button, Checkbox, InputNumber, Select, Space, Table, Spin, Tag,
 } from 'antd'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
-import { useBestSellers, type BestSellersArgs } from '../../hooks/useReports'
+import { useBestSellers, useSalesDimensions, type BestSellersArgs } from '../../hooks/useReports'
 import type {
   BestSellerRow,
   BestSellersDimension,
@@ -23,11 +23,12 @@ import { GpBadge } from '../../components/reports/gpBadge'
 import ShareBar from '../../components/reports/ShareBar'
 import { fmtMoney, fmtInt } from '../../utils/reportFormatters'
 import { useReportTemplate, useTouchReportTemplate } from '../../hooks/useReportTemplates'
-
-function parseStores(s: string): number[] | undefined {
-  const arr = s.split(',').map((x) => Number(x.trim())).filter((n) => Number.isFinite(n) && n > 0)
-  return arr.length ? arr : undefined
-}
+import {
+  ReportCriteriaPanel,
+  compactReportCriteria,
+  hydrateReportCriteria,
+  useReportCriteria,
+} from '../../components/reports/ReportCriteriaPanel'
 
 const DIMENSION_LABELS: Record<BestSellersDimension, string> = {
   SKU: 'SKUs',
@@ -50,12 +51,13 @@ export default function BestSellersPage() {
   const [metric, setMetric] = useState<BestSellersMetric>('NET_SALES')
   const [period, setPeriod] = useState<BestSellersPeriodFlag>('YTD')
   const [topN, setTopN] = useState<number>(25)
-  const [storesText, setStoresText] = useState('')
+  const { criteria, setCriteria, updateCriteria, compactCriteria } = useReportCriteria()
   const [combineStores, setCombineStores] = useState(true)
   const [query, setQuery] = useState<BestSellersArgs | null>(null)
   const [filterOpen, setFilterOpen] = useState(true)
 
   const { data, isFetching, error } = useBestSellers(query)
+  const { data: dims, isLoading: dimsLoading } = useSalesDimensions()
   const running = query != null && isFetching
 
   useEffect(() => {
@@ -74,20 +76,23 @@ export default function BestSellersPage() {
     if (t.reportType !== 'best-sellers') return
     hydratedFor.current = templateId
     const p = t.paramsJson as Partial<BestSellersArgs> & { storesText?: string }
+    const nextCriteria = hydrateReportCriteria({
+      ...p,
+      storesRaw: p.storesRaw ?? p.storesText,
+    })
     if (p.dimension) setDimension(p.dimension)
     if (p.metric) setMetric(p.metric)
     if (p.period) setPeriod(p.period)
     if (p.topN) setTopN(p.topN)
     if (p.combineStores !== undefined) setCombineStores(p.combineStores)
-    if (p.storesText !== undefined) setStoresText(p.storesText)
-    else if (Array.isArray(p.stores)) setStoresText(p.stores.join(','))
+    setCriteria(nextCriteria)
     setQuery({
       dimension: p.dimension ?? 'SKU',
       metric: p.metric ?? 'NET_SALES',
       period: p.period ?? 'YTD',
       topN: p.topN ?? 25,
-      stores: Array.isArray(p.stores) && p.stores.length ? p.stores : undefined,
       combineStores: p.combineStores ?? true,
+      ...compactReportCriteria(nextCriteria),
     })
     touchTemplate.mutate(templateId)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -99,8 +104,8 @@ export default function BestSellersPage() {
       metric,
       period,
       topN,
-      stores: parseStores(storesText),
       combineStores,
+      ...compactCriteria,
     })
   }
   function onStop(): void {
@@ -185,9 +190,8 @@ export default function BestSellersPage() {
                 metric,
                 period,
                 topN,
-                stores: parseStores(storesText),
-                storesText,
                 combineStores,
+                ...compactCriteria,
               })}
             />
             <SaveSnapshotButton
@@ -199,9 +203,8 @@ export default function BestSellersPage() {
                 metric,
                 period,
                 topN,
-                stores: parseStores(storesText),
-                storesText,
                 combineStores,
+                ...compactCriteria,
               })}
               getResultJson={() => data}
               getDescriptor={() => {
@@ -210,14 +213,16 @@ export default function BestSellersPage() {
                   `by ${METRIC_LABELS[metric]}`,
                   period,
                 ]
-                const stores = parseStores(storesText)
-                if (stores && stores.length) {
+                const stores = compactCriteria.stores
+                if (stores?.length) {
                   parts.push(
                     stores.length <= 3
                       ? `stores ${stores.join(',')}`
                       : `${stores.length} stores`,
                   )
                 }
+                if (compactCriteria.storesRaw) parts.push(`stores ${compactCriteria.storesRaw}`)
+                if (compactCriteria.chains?.length) parts.push(`${compactCriteria.chains.length} chains`)
                 if (combineStores) parts.push('combined')
                 return parts.join(' · ')
               }}
@@ -268,16 +273,17 @@ export default function BestSellersPage() {
               style={{ width: 160 }}
             />
           </Space.Compact>
-          <Input
-            placeholder="Stores (csv, blank=all)"
-            value={storesText}
-            onChange={(e) => setStoresText(e.target.value)}
-            style={{ width: 200 }}
-          />
           <Checkbox checked={combineStores} onChange={(e) => setCombineStores(e.target.checked)}>
             Combine stores
           </Checkbox>
         </Space>
+        <ReportCriteriaPanel
+          value={criteria}
+          onChange={updateCriteria}
+          dimensions={dims}
+          loading={dimsLoading}
+          title="Criteria"
+        />
       </CollapsibleFilterCard>
 
       {error && (
@@ -313,7 +319,12 @@ export default function BestSellersPage() {
               { label: 'Top', value: `N=${query.topN ?? 25}` },
               query.stores?.length
                 ? { label: 'Stores', value: query.stores.join(', ') }
-                : { label: 'Stores', value: 'All' },
+                : query.storesRaw
+                  ? { label: 'Stores', value: query.storesRaw }
+                  : { label: 'Stores', value: 'All' },
+              query.chains?.length ? { label: 'Chains', value: `${query.chains.length} selected` } : null,
+              query.categories?.length ? { label: 'Categories', value: `${query.categories.length} selected` } : null,
+              query.buyers?.length ? { label: 'Buyers', value: `${query.buyers.length} selected` } : null,
               query.combineStores === false ? { label: 'Separate', value: 'per store' } : null,
             ]}
           />

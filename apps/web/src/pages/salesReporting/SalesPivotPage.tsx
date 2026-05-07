@@ -22,6 +22,7 @@ import { SkuLink } from '../../components/sku-link'
 import SaveSnapshotButton from '../../components/reports/SaveSnapshotButton'
 import ReportThumbnail from '../../components/reports/ReportThumbnail'
 import { buildRicsImageUrl } from '../../services/ricsImageUrl'
+import { ReportCriteriaPanel, useReportCriteria } from '../../components/reports/ReportCriteriaPanel'
 
 const { Text } = Typography
 
@@ -514,7 +515,9 @@ export default function SalesPivotPage() {
   const qc = useQueryClient()
 
   const [dateSpec, setDateSpec] = useState<DateSpec>(DEFAULT_DATE_SPEC)
-  const [selectedStores, setSelectedStores] = useState<number[]>([])
+  const { criteria, updateCriteria, compactCriteria } = useReportCriteria()
+  const selectedStores = criteria.stores
+  const setSelectedStores = (next: number[]) => updateCriteria('stores', next)
   const [choice, setChoice] = useState<ReportChoice>('department')
   const [separateStore, setSeparateStore] = useState(false)
   const [query, setQuery] = useState<SalesPivotArgs | null>(null)
@@ -540,8 +543,8 @@ export default function SalesPivotPage() {
     setQuery({
       startDate,
       endDate,
-      stores: selectedStores.length ? selectedStores : undefined,
       variant: effectiveVariant(choice, separateStore),
+      ...compactCriteria,
     })
   }
   function onStop(): void {
@@ -652,7 +655,7 @@ export default function SalesPivotPage() {
               variant: query?.variant ?? effectiveVariant(choice, separateStore),
               startDate: query?.startDate,
               endDate: query?.endDate,
-              stores: query?.stores,
+              ...compactCriteria,
               dateSpec,
               choice,
               separateStore,
@@ -661,7 +664,7 @@ export default function SalesPivotPage() {
             getDescriptor={() => {
               const v = query?.variant ?? effectiveVariant(choice, separateStore)
               const parts: string[] = [variantDescriptor(v)]
-              const storesArr = query?.stores
+              const storesArr = compactCriteria.stores
               if (storesArr && storesArr.length > 0) {
                 parts.push(
                   storesArr.length <= 3
@@ -719,6 +722,14 @@ export default function SalesPivotPage() {
             </Card>
           </Col>
           <Col xs={24} md={8}>
+            <ReportCriteriaPanel
+              value={criteria}
+              onChange={updateCriteria}
+              dimensions={dims}
+              loading={dimsLoading}
+              title="Criteria"
+            />
+            {false && (
             <Card size="small" title={<Text strong>Stores</Text>}>
               <Select
                 mode="multiple"
@@ -735,6 +746,7 @@ export default function SalesPivotPage() {
                 optionFilterProp="label"
               />
             </Card>
+            )}
           </Col>
         </Row>
       </CollapsibleFilterCard>
@@ -772,7 +784,12 @@ export default function SalesPivotPage() {
                 { label: 'Compare', value: `${data.currentYear} vs ${data.priorYear}` },
                 query.stores?.length
                   ? { label: 'Stores', value: `${query.stores.length} selected` }
-                  : { label: 'Stores', value: 'All' },
+                  : query.storesRaw
+                    ? { label: 'Stores', value: query.storesRaw }
+                    : { label: 'Stores', value: 'All' },
+                query.chains?.length ? { label: 'Chains', value: `${query.chains.length} selected` } : null,
+                query.categories?.length ? { label: 'Categories', value: `${query.categories.length} selected` } : null,
+                query.buyers?.length ? { label: 'Buyers', value: `${query.buyers.length} selected` } : null,
               ]}
             />
             <Space direction="vertical" size={8} style={{ width: '100%' }}>
