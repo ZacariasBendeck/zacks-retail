@@ -1,6 +1,7 @@
 import { prisma } from '../../db/prisma';
 import {
   type CriteriaExpression,
+  type CriteriaToken,
   matchesCriteria,
   matchesKeywords,
   parseCriteria,
@@ -57,16 +58,62 @@ function selectedNumberKeeps(selected: number[] | undefined, value: number | nul
   return selected.some((candidate) => Number(candidate) === Number(value));
 }
 
+function emptyExpression(raw = ''): CriteriaExpression {
+  return { raw, tokens: [], andMode: false, empty: true };
+}
+
 function structuredExpression(values: Array<string | number> | undefined): CriteriaExpression {
   return parseCriteria(values?.map((value) => String(value)).join(','));
 }
 
+export function parseIntegerCriteriaExpression(raw: string | undefined): CriteriaExpression {
+  const text = raw?.trim() ?? '';
+  if (!text) return emptyExpression();
+
+  const tokens: CriteriaToken[] = [];
+  for (const piece of text.split(',')) {
+    const part = piece.trim();
+    if (!part) return parseCriteria(raw);
+
+    const excluded = part.startsWith('<>');
+    const body = excluded ? part.slice(2).trim() : part;
+    if (/[?*!]/.test(body)) return parseCriteria(raw);
+
+    const match = body.match(/^(\d+)(?:\s*-\s*(\d+))?$/);
+    if (!match) return parseCriteria(raw);
+
+    const from = match[1]!;
+    const to = match[2];
+    if (to == null) {
+      tokens.push({ kind: 'literal', value: from, excluded });
+      continue;
+    }
+
+    const start = Number(from);
+    const end = Number(to);
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start <= 0 || end <= 0 || end < start) {
+      return parseCriteria(raw);
+    }
+    tokens.push({ kind: 'range', from, to, numeric: true, excluded });
+  }
+
+  return {
+    raw: text,
+    tokens,
+    andMode: false,
+    empty: tokens.length === 0,
+  };
+}
+
 export function parseStoreCriteriaExpression(raw: string | undefined): CriteriaExpression {
   const parsedRange = parsePositiveIntegerSelection(raw);
-  if (!parsedRange.error && parsedRange.values.length > 0) {
-    return structuredExpression(parsedRange.values);
-  }
-  return parseCriteria(raw);
+  if (!parsedRange.error && parsedRange.values.length > 0) return structuredExpression(parsedRange.values);
+  if (!parsedRange.error) return emptyExpression();
+  return parseIntegerCriteriaExpression(raw);
+}
+
+function parseCategoryCriteriaExpression(raw: string | undefined): CriteriaExpression {
+  return parseIntegerCriteriaExpression(raw);
 }
 
 export function facetKeeps<T extends string | number>(
@@ -175,7 +222,7 @@ export async function resolveSharedProductCriteriaSkuWhitelist(
   if (!hasSharedProductCriteria(c)) return null;
 
   const parsed = {
-    categories: parseCriteria(c.categoriesRaw),
+    categories: parseCategoryCriteriaExpression(c.categoriesRaw),
     vendors: parseCriteria(c.vendorsRaw),
     seasons: parseCriteria(c.seasonsRaw),
     skus: parseCriteria(c.skusRaw),
