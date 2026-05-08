@@ -415,6 +415,47 @@ export function clearCache(): void {
   cache.clear();
 }
 
+interface InquiryTimingEntry {
+  name: string;
+  ms: number;
+}
+
+function inquirySlowThresholdMs(): number {
+  const raw = Number(process.env.INQUIRY_SLOW_MS ?? 1_000);
+  return Number.isFinite(raw) && raw >= 0 ? raw : 1_000;
+}
+
+async function timeInquiryStep<T>(
+  timings: InquiryTimingEntry[],
+  name: string,
+  loader: () => Promise<T>,
+): Promise<T> {
+  const startedAt = Date.now();
+  try {
+    return await loader();
+  } finally {
+    timings.push({ name, ms: Date.now() - startedAt });
+  }
+}
+
+function logSlowInquiry(
+  sku: string,
+  totalMs: number,
+  timings: InquiryTimingEntry[],
+  error?: unknown,
+): void {
+  const thresholdMs = inquirySlowThresholdMs();
+  if (totalMs < thresholdMs) return;
+
+  console.warn('[ricsInventoryAdapter] slow inventory inquiry', {
+    sku,
+    totalMs,
+    thresholdMs,
+    steps: timings.map((entry) => ({ name: entry.name, ms: entry.ms })),
+    error: error instanceof Error ? error.message : undefined,
+  });
+}
+
 // ─────────────────────────── data source ──────────────────────────────────
 // Phase A: reads come from `rics_mirror.*` Postgres tables, populated by
 // `pnpm sync:rics` from the legacy MDBs. Projections alias snake_case columns
@@ -817,11 +858,11 @@ async function loadInventorySalesCellRowsForSkuId(skuId: string): Promise<SalesH
   }));
 }
 
-async function loadInventoryHistorySnapshotsForSkuCode(
-  skuCode: string,
+async function loadInventoryHistorySnapshotsForSkuId(
+  skuId: string,
 ): Promise<InventoryHistorySnapshotRow[]> {
   const rows = await prisma.inventoryHistorySnapshot.findMany({
-    where: { skuCode },
+    where: { skuId },
     select: {
       snapshotAsOf: true,
       storeId: true,
@@ -894,12 +935,12 @@ async function loadInventoryHistorySnapshotsForSkuCode(
   }));
 }
 
-async function loadInventoryHistoryTrendWeeksForSkuCode(
-  skuCode: string,
+async function loadInventoryHistoryTrendWeeksForSkuId(
+  skuId: string,
 ): Promise<InventoryHistoryTrendWeekRow[]> {
   const rows = await prisma.inventoryHistoryTrendWeek.findMany({
     where: {
-      snapshot: { skuCode },
+      snapshot: { skuId },
     },
     select: {
       slotNumber: true,
@@ -1750,13 +1791,15 @@ export async function getInventoryInquiry(
   const trimmed = (sku ?? '').trim();
   if (!trimmed) return null;
 
-  const skuRow = await loadAppInventorySkuByCode(trimmed);
+  const totalStartedAt = Date.now();
+  const timings: InquiryTimingEntry[] = [];
+  const skuRow = await timeInquiryStep(timings, 'skuLookup', () => loadAppInventorySkuByCode(trimmed));
   if (!skuRow) return null;
 
   const [stores, sizeTypes, categories] = await Promise.all([
-    loadStoreMap(),
-    loadSizeTypeMap(),
-    loadCategoryMap(),
+    timeInquiryStep(timings, 'stores', () => loadStoreMap()),
+    timeInquiryStep(timings, 'sizeTypes', () => loadSizeTypeMap()),
+    timeInquiryStep(timings, 'categories', () => loadCategoryMap()),
   ]);
   const sizeType = skuRow.sizeType != null ? sizeTypes.get(Number(skuRow.sizeType)) ?? null : null;
   const category =
@@ -1764,6 +1807,14 @@ export async function getInventoryInquiry(
   const effectiveStoreId =
     storeId != null && Number.isFinite(Number(storeId)) ? Math.trunc(Number(storeId)) : undefined;
   const skuCode = skuRow.code ?? skuRow.provisionalCode;
+  type InquiryLoadRows = [
+    StockLevelCellRow[],
+    ReplenishmentTargetCellRow[],
+    InventoryHistorySnapshotRow[],
+    Map<number, InquiryHistoryMonthAggregate[]>,
+    PurchaseOrderOpenCellRow[],
+    SalesHistorySizeRow[],
+  ];
 
   const [
     stockRows,
@@ -1772,14 +1823,23 @@ export async function getInventoryInquiry(
     historyMonthsByStore,
     openPoRows,
     salesCellRows,
-  ] = await Promise.all([
-    loadStockLevelRowsForSkuId(skuRow.id),
-    loadReplenishmentTargetRowsForSkuId(skuRow.id),
-    loadInventoryHistorySnapshotsForSkuCode(skuCode),
-    loadInquiryMonthlySalesByStore(skuCode),
-    loadOpenPurchaseOrderCellRowsForSku(skuRow.id, skuCode, sizeType),
-    loadInventorySalesCellRowsForSkuId(skuRow.id),
-  ]);
+  ] = await (async (): Promise<InquiryLoadRows> => {
+    try {
+      return await Promise.all([
+        timeInquiryStep(timings, 'stock', () => loadStockLevelRowsForSkuId(skuRow.id)),
+        timeInquiryStep(timings, 'replenishmentTargets', () => loadReplenishmentTargetRowsForSkuId(skuRow.id)),
+        timeInquiryStep(timings, 'historySnapshots', () => loadInventoryHistorySnapshotsForSkuId(skuRow.id)),
+        timeInquiryStep(timings, 'monthlyHistoryByStore', () => loadInquiryMonthlySalesByStore(skuRow.id)),
+        timeInquiryStep(timings, 'openPurchaseOrders', () =>
+          loadOpenPurchaseOrderCellRowsForSku(skuRow.id, skuCode, sizeType),
+        ),
+        timeInquiryStep(timings, 'salesCells', () => loadInventorySalesCellRowsForSkuId(skuRow.id)),
+      ]) as InquiryLoadRows;
+    } catch (err) {
+      logSlowInquiry(skuCode, Date.now() - totalStartedAt, timings, err);
+      throw err;
+    }
+  })();
 
   const cellsByStore = new Map<number, Map<string, InventoryCell>>();
   const ensureCell = (storeNumber: number, rowLabel: string, columnLabel: string): InventoryCell => {
@@ -1898,7 +1958,7 @@ export async function getInventoryInquiry(
     }
   }
 
-  return {
+  const inquiry: InventoryInquiry = {
     sku: skuCode,
     master: {
       description: skuRow.descriptionRics?.trim() || null,
@@ -1944,6 +2004,9 @@ export async function getInventoryInquiry(
       comment: skuRow.comment?.trim() || null,
     },
   };
+
+  logSlowInquiry(skuCode, Date.now() - totalStartedAt, timings);
+  return inquiry;
 }
 
 interface InquiryInventoryHistoryMonthAggregateRow {
@@ -1999,7 +2062,7 @@ function parseYearMonth(value: string): Date | null {
 }
 
 async function loadInquiryMonthlySales(
-  skuCode: string,
+  skuId: string,
   storeId: number | undefined,
 ): Promise<InquiryMonthlySalesResult> {
   const storeFilter = storeId != null ? 'AND s.store_id = $2::int' : '';
@@ -2011,13 +2074,13 @@ async function loadInquiryMonthlySales(
     FROM app.inventory_history_month m
     INNER JOIN app.inventory_history_snapshot s ON s.id = m.snapshot_id
     WHERE
-      UPPER(BTRIM(s.sku_code)) = UPPER(BTRIM($1))
+      s.sku_id = $1::uuid
       ${storeFilter}
     GROUP BY 1
     ORDER BY 1
   `;
 
-  const params: unknown[] = [skuCode];
+  const params: unknown[] = [skuId];
   if (storeId != null) params.push(storeId);
   const rows = await prisma.$queryRawUnsafe<InquiryInventoryHistoryMonthAggregateRow[]>(sql, ...params);
 
@@ -2044,7 +2107,7 @@ async function loadInquiryMonthlySales(
 }
 
 async function loadInquiryMonthlySalesByStore(
-  skuCode: string,
+  skuId: string,
 ): Promise<Map<number, InquiryHistoryMonthAggregate[]>> {
   const rows = await prisma.$queryRawUnsafe<InquiryInventoryHistoryMonthStoreAggregateRow[]>(
     `
@@ -2055,11 +2118,11 @@ async function loadInquiryMonthlySalesByStore(
         SUM(COALESCE(m.net_sales, 0))::float8 AS "NetSales"
       FROM app.inventory_history_month m
       INNER JOIN app.inventory_history_snapshot s ON s.id = m.snapshot_id
-      WHERE UPPER(BTRIM(s.sku_code)) = UPPER(BTRIM($1))
+      WHERE s.sku_id = $1::uuid
       GROUP BY 1, 2
       ORDER BY 1, 2
     `,
-    skuCode,
+    skuId,
   );
 
   const out = new Map<number, InquiryHistoryMonthAggregate[]>();
@@ -2351,13 +2414,12 @@ export async function getInquiryInfo(
   const skuRow = await loadAppInventorySkuByCode(trimmed);
   if (!skuRow) return null;
 
-  const skuCode = skuRow.code ?? skuRow.provisionalCode;
   const effectiveStoreId =
     storeId != null && Number.isFinite(Number(storeId)) ? Math.trunc(Number(storeId)) : undefined;
 
   const [stores, historyRows, seasonRow, groupRow] = await Promise.all([
     loadStoreMap(),
-    loadInventoryHistorySnapshotsForSkuCode(skuCode),
+    loadInventoryHistorySnapshotsForSkuId(skuRow.id),
     skuRow.season
       ? prisma.seasonOverlay.findUnique({
           where: { code: skuRow.season.trim().toUpperCase() },
@@ -2381,7 +2443,7 @@ export async function getInquiryInfo(
       ? `Store ${effectiveStoreId} - ${stores.get(effectiveStoreId)?.name}`
       : `Store ${effectiveStoreId}`);
 
-  const { months: prior12Months, history } = await loadInquiryMonthlySales(skuCode, effectiveStoreId);
+  const { months: prior12Months, history } = await loadInquiryMonthlySales(skuRow.id, effectiveStoreId);
   const metrics = loadInquiryMetrics(scopedHistory, history);
 
   return {
@@ -2502,8 +2564,8 @@ export async function getInquiryTrend(sku: string, storeId?: number): Promise<In
 
   const [stores, historyRows, trendRows] = await Promise.all([
     loadStoreMap(),
-    loadInventoryHistorySnapshotsForSkuCode(skuRow.code ?? skuRow.provisionalCode),
-    loadInventoryHistoryTrendWeeksForSkuCode(skuRow.code ?? skuRow.provisionalCode),
+    loadInventoryHistorySnapshotsForSkuId(skuRow.id),
+    loadInventoryHistoryTrendWeeksForSkuId(skuRow.id),
   ]);
 
   const effectiveStoreId =
@@ -4036,4 +4098,6 @@ export const __test = {
   buildLegacyLastYearSalesByStore,
   buildInquiryRollupFromHistory,
   buildInquiryTrendColumns,
+  loadInquiryMonthlySales,
+  loadInquiryMonthlySalesByStore,
 };

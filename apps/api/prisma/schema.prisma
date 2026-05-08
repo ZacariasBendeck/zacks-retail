@@ -2719,6 +2719,7 @@ model InventoryHistorySnapshot {
   movementBuckets       InventoryHistoryMovementBucket[]
 
   @@unique([storeId, skuCode], map: "inventory_history_snapshot_store_sku_code_key")
+  @@index([skuCode], map: "inventory_history_snapshot_sku_code_idx")
   @@index([skuId, storeId], map: "inventory_history_snapshot_sku_store_idx")
   @@index([storeId], map: "inventory_history_snapshot_store_idx")
   @@index([sourceRunId], map: "inventory_history_snapshot_source_run_idx")

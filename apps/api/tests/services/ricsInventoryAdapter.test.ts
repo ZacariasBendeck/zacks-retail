@@ -21,7 +21,61 @@ const {
   buildLegacyLastYearSalesByStore,
   buildInquiryRollupFromHistory,
   buildInquiryTrendColumns,
+  loadInquiryMonthlySales,
+  loadInquiryMonthlySalesByStore,
 } = __test;
+
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { prisma } = require('../../src/db/prisma');
+
+describe('ricsInventoryAdapter inquiry history queries', () => {
+  const skuId = '11111111-1111-1111-1111-111111111111';
+
+  beforeEach(() => {
+    (prisma.$queryRawUnsafe as jest.Mock).mockReset();
+  });
+
+  it('queries monthly sales through indexed sku_id instead of normalized sku_code', async () => {
+    (prisma.$queryRawUnsafe as jest.Mock).mockResolvedValueOnce([
+      { YearMonth: '2026-04', QtySales: 2, NetSales: 30 },
+    ]);
+
+    const result = await loadInquiryMonthlySales(skuId, undefined);
+    const [sql, ...params] = (prisma.$queryRawUnsafe as jest.Mock).mock.calls[0];
+
+    expect(sql).toContain('s.sku_id = $1::uuid');
+    expect(sql).not.toContain('UPPER(BTRIM');
+    expect(sql).not.toContain('s.sku_code');
+    expect(params).toEqual([skuId]);
+    expect(result.history).toEqual([{ yearMonth: '2026-04', qty: 2, sales: 30 }]);
+  });
+
+  it('keeps store-scoped monthly sales as the second SQL parameter', async () => {
+    (prisma.$queryRawUnsafe as jest.Mock).mockResolvedValueOnce([]);
+
+    await loadInquiryMonthlySales(skuId, 21);
+    const [sql, ...params] = (prisma.$queryRawUnsafe as jest.Mock).mock.calls[0];
+
+    expect(sql).toContain('s.sku_id = $1::uuid');
+    expect(sql).toContain('AND s.store_id = $2::int');
+    expect(params).toEqual([skuId, 21]);
+  });
+
+  it('queries all-store monthly sales through indexed sku_id', async () => {
+    (prisma.$queryRawUnsafe as jest.Mock).mockResolvedValueOnce([
+      { StoreId: 21, YearMonth: '2026-04', QtySales: 4, NetSales: 120 },
+    ]);
+
+    const result = await loadInquiryMonthlySalesByStore(skuId);
+    const [sql, ...params] = (prisma.$queryRawUnsafe as jest.Mock).mock.calls[0];
+
+    expect(sql).toContain('s.sku_id = $1::uuid');
+    expect(sql).not.toContain('UPPER(BTRIM');
+    expect(sql).not.toContain('s.sku_code');
+    expect(params).toEqual([skuId]);
+    expect(result.get(21)).toEqual([{ yearMonth: '2026-04', qty: 4, sales: 120 }]);
+  });
+});
 
 describe('ricsInventoryAdapter inquiry grids', () => {
   const stores: InventoryInquiryStore[] = [
