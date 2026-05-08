@@ -38,6 +38,7 @@ function buildParams(f?: SkuListFilters): string {
   if (!f) return ''
   const p = new URLSearchParams()
   if (f.q) p.set('q', f.q)
+  if (f.sku) p.set('sku', f.sku)
   if (f.vendor) p.set('vendor', f.vendor)
   if (f.category != null) p.set('category', String(f.category))
   if (f.season) p.set('season', f.season)

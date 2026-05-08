@@ -12,6 +12,7 @@ const CATALOG_STALE_MS = 10 * 60 * 1000
 
 function invalidateAllFamilies(qc: ReturnType<typeof useQueryClient>) {
   qc.invalidateQueries({ queryKey: ['product-families'] })
+  qc.invalidateQueries({ queryKey: ['product-categories'] })
   qc.invalidateQueries({ queryKey: ['products-attributes'] })
   qc.invalidateQueries({ queryKey: ['taxonomy', 'categories'] })
 }

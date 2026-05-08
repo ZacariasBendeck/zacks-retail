@@ -946,7 +946,7 @@ export default function ChangeSkuAttributesPage() {
   }
 
   const buildFilters = (): SkuListFilters => ({
-    q: q.trim() || undefined,
+    sku: q.trim() || undefined,
     vendors: vendorCodes.length > 0 ? vendorCodes : undefined,
     sectors: sectorNumber != null ? [sectorNumber] : undefined,
     departments: departmentNumber != null ? [departmentNumber] : undefined,
@@ -1408,7 +1408,7 @@ export default function ChangeSkuAttributesPage() {
   const renderMerchandiseFilters = () => (
     <Space wrap size={8}>
       <Input
-        placeholder="Search code, desc, style..."
+        placeholder="SKU (ABC*, *123, AB*12)"
         prefix={<SearchOutlined />}
         value={q}
         onChange={(e) => setQ(e.target.value)}
@@ -1626,7 +1626,7 @@ export default function ChangeSkuAttributesPage() {
       <Space direction="vertical" size={4} style={{ width: '100%' }}>
         <Space wrap size={4}>
           <Typography.Text type="secondary">Merchandise</Typography.Text>
-          {q.trim() ? <Tag closable onClose={() => setQ('')}>Search: {q.trim()}</Tag> : null}
+          {q.trim() ? <Tag closable onClose={() => setQ('')}>SKU: {q.trim()}</Tag> : null}
           {sectorNumber != null ? <Tag closable onClose={() => setSectorNumber(null)}>Sector: {sectorNumber}</Tag> : null}
           {departmentNumber != null ? <Tag closable onClose={() => setDepartmentNumber(null)}>Department: {departmentNumber}</Tag> : null}
           {categoryNumbers.map((n) => (
@@ -1717,7 +1717,7 @@ export default function ChangeSkuAttributesPage() {
         {/* Legacy filter bar kept hidden while the grouped controls own the UI. */}
         <Space wrap size={8} style={{ display: 'none' }}>
           <Input
-            placeholder="Search code, desc, style…"
+            placeholder="SKU (ABC*, *123, AB*12)"
             prefix={<SearchOutlined />}
             value={q}
             onChange={(e) => setQ(e.target.value)}

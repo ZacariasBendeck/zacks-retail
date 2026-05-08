@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { ConfigProvider } from 'antd'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import SalesAnalysisPage from '../pages/salesReporting/SalesAnalysisPage'
 import { useSalesAnalysis, useSalesDimensions } from '../hooks/useReports'
 import { useReportTemplate, useTouchReportTemplate } from '../hooks/useReportTemplates'
@@ -142,12 +142,12 @@ function report(): SalesAnalysisReport {
   }
 }
 
-function renderPage(): void {
+function renderPage(initialEntry = '/reports/sales/analysis'): void {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   render(
     <ConfigProvider>
       <QueryClientProvider client={qc}>
-        <MemoryRouter>
+        <MemoryRouter initialEntries={[initialEntry]}>
           <SalesAnalysisPage />
         </MemoryRouter>
       </QueryClientProvider>
@@ -168,6 +168,10 @@ describe('SalesAnalysisPage', () => {
     })
     mockUseReportTemplate.mockReturnValue({ data: undefined } as unknown as ReturnType<typeof useReportTemplate>)
     mockUseTouchReportTemplate.mockReturnValue({ mutate: vi.fn() } as unknown as ReturnType<typeof useTouchReportTemplate>)
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
   })
 
   it('enables CSV and XLSX export links after a report run', async () => {
@@ -218,6 +222,33 @@ describe('SalesAnalysisPage', () => {
         screen.getByText('5 - Zapato Mujer').compareDocumentPosition(screen.getByText('8 - Low Stock Dept')) &
           Node.DOCUMENT_POSITION_FOLLOWING,
       ).toBeTruthy()
+    })
+  })
+
+  it('runs trailing month templates as closed calendar months', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    vi.setSystemTime(new Date('2026-05-07T12:00:00Z'))
+    mockUseReportTemplate.mockReturnValue({
+      data: {
+        template: {
+          reportType: 'sales-analysis',
+          paramsJson: {
+            dateSpec: { type: 'trailing_months', months: 12 },
+            level1: 'department',
+            level2: 'category',
+            storeOption: 'COMBINE',
+          },
+        },
+      },
+    } as unknown as ReturnType<typeof useReportTemplate>)
+
+    renderPage('/reports/sales/analysis?templateId=last12')
+
+    await waitFor(() => {
+      expect(lastArgs).toMatchObject({
+        startDate: '2025-05-01',
+        endDate: '2026-04-30',
+      })
     })
   })
 })

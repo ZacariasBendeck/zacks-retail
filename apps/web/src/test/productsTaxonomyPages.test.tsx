@@ -11,6 +11,7 @@ vi.mock('../hooks/useProductsTaxonomy', () => ({
   useDeleteDepartment: vi.fn(),
   useCategories: vi.fn(),
   useCategory: vi.fn(),
+  useCategoryBuyerOptions: vi.fn(),
   useCreateCategory: vi.fn(),
   useUpdateCategory: vi.fn(),
   useDeleteCategory: vi.fn(),
@@ -55,6 +56,14 @@ vi.mock('../hooks/useProductsTaxonomy', () => ({
   useResolveTaxonomy: vi.fn(),
 }))
 
+vi.mock('../hooks/useProductFamilies', () => ({
+  useProductFamilies: vi.fn(() => ({ data: [], isLoading: false })),
+}))
+
+vi.mock('../hooks/useStores', () => ({
+  useStores: vi.fn(() => ({ data: [], isLoading: false })),
+}))
+
 import DepartmentListPage from '../pages/products/DepartmentListPage'
 import DepartmentFormPage from '../pages/products/DepartmentFormPage'
 import CategoryListPage from '../pages/products/CategoryListPage'
@@ -85,6 +94,8 @@ describe('Products taxonomy pages', () => {
     const noopMutation = { mutateAsync: vi.fn(), isPending: false } as never
     vi.mocked(hooks.useDeleteDepartment).mockReturnValue(noopMutation)
     vi.mocked(hooks.useDeleteCategory).mockReturnValue(noopMutation)
+    vi.mocked(hooks.useUpdateCategory).mockReturnValue(noopMutation)
+    vi.mocked(hooks.useCategoryBuyerOptions).mockReturnValue({ data: [], isLoading: false } as never)
     vi.mocked(hooks.useDeleteGroup).mockReturnValue(noopMutation)
     vi.mocked(hooks.useDeleteKeyword).mockReturnValue(noopMutation)
     vi.mocked(hooks.useDeleteSector).mockReturnValue(noopMutation)

@@ -42,6 +42,19 @@ type ImportSummary = {
   importedLegacyCashierPins: number;
 };
 
+type PreparedEmployeeRow = {
+  salesperson_code: string;
+  display_name: string;
+  active: boolean;
+  other_information: string | null;
+  commission_rate: number | null;
+  commission_base: string;
+  rics_commission_method: string | null;
+  time_clock_admin: boolean;
+  time_clock_full_user: boolean;
+  rics_salesperson_changed_at: string | null;
+};
+
 function parseArgs(argv: string[]): Args {
   const args: Args = {
     manifestPath: null,
@@ -218,6 +231,115 @@ export async function importRicsSalespeople(argv: string[] = process.argv.slice(
     const rows = args.manifestPath
       ? await loadRowsFromManifest(client, args.manifestPath)
       : await loadRowsFromMdb(args.mdbPath);
+
+    if (!args.importLegacyPins) {
+      const preparedRows: PreparedEmployeeRow[] = rows
+        .map((row) => {
+          const salespersonCode = cleanCode(row.code);
+          if (!salespersonCode) return null;
+          const changedAt = parseRicsDate(row.dateLastChanged);
+          return {
+            salesperson_code: salespersonCode,
+            display_name: cleanText(row.name) ?? salespersonCode,
+            active: args.active,
+            other_information: cleanText(row.otherInfo),
+            commission_rate: parseNumber(row.commission),
+            commission_base: commissionBaseFor(cleanText(row.commMethod)),
+            rics_commission_method: cleanText(row.commMethod),
+            time_clock_admin: parseBoolean(row.tcAdmin),
+            time_clock_full_user: parseBoolean(row.tcFullUser),
+            rics_salesperson_changed_at: changedAt ? changedAt.toISOString() : null,
+          };
+        })
+        .filter((row): row is PreparedEmployeeRow => row !== null);
+
+      const result = await client.query<{ inserted_employees: string; updated_employees: string }>(
+        `
+        WITH incoming AS (
+          SELECT *
+          FROM jsonb_to_recordset($1::jsonb) AS row (
+            salesperson_code text,
+            display_name text,
+            active boolean,
+            other_information text,
+            commission_rate numeric,
+            commission_base text,
+            rics_commission_method text,
+            time_clock_admin boolean,
+            time_clock_full_user boolean,
+            rics_salesperson_changed_at timestamp
+          )
+        ),
+        upserted AS (
+          INSERT INTO app.employee (
+            salesperson_code,
+            display_name,
+            active,
+            other_information,
+            commission_rate,
+            commission_base,
+            rics_commission_method,
+            time_clock_enabled,
+            time_clock_pin_hash,
+            time_clock_admin,
+            time_clock_full_user,
+            legacy_cashier_pin_hash,
+            rics_salesperson_changed_at,
+            rics_salesperson_imported_at,
+            updated_at
+          )
+          SELECT
+            salesperson_code,
+            display_name,
+            active,
+            other_information,
+            commission_rate,
+            commission_base,
+            rics_commission_method,
+            true,
+            NULL,
+            time_clock_admin,
+            time_clock_full_user,
+            NULL,
+            rics_salesperson_changed_at,
+            CURRENT_TIMESTAMP,
+            CURRENT_TIMESTAMP
+          FROM incoming
+          ON CONFLICT (salesperson_code) DO UPDATE SET
+            display_name = EXCLUDED.display_name,
+            active = EXCLUDED.active,
+            other_information = EXCLUDED.other_information,
+            commission_rate = EXCLUDED.commission_rate,
+            commission_base = EXCLUDED.commission_base,
+            rics_commission_method = EXCLUDED.rics_commission_method,
+            time_clock_enabled = EXCLUDED.time_clock_enabled,
+            time_clock_admin = EXCLUDED.time_clock_admin,
+            time_clock_full_user = EXCLUDED.time_clock_full_user,
+            rics_salesperson_changed_at = EXCLUDED.rics_salesperson_changed_at,
+            rics_salesperson_imported_at = CURRENT_TIMESTAMP,
+            updated_at = CURRENT_TIMESTAMP
+          RETURNING (xmax = 0) AS inserted
+        )
+        SELECT
+          COUNT(*) FILTER (WHERE inserted)::text AS inserted_employees,
+          COUNT(*) FILTER (WHERE NOT inserted)::text AS updated_employees
+        FROM upserted
+        `,
+        [JSON.stringify(preparedRows)],
+      );
+
+      await client.query('COMMIT');
+      const summary = {
+        sourceRows: rows.length,
+        eligibleRows: preparedRows.length,
+        insertedEmployees: Number(result.rows[0]?.inserted_employees ?? 0),
+        updatedEmployees: Number(result.rows[0]?.updated_employees ?? 0),
+        importedTimeClockPins: 0,
+        importedLegacyCashierPins: 0,
+      };
+      console.info('[employees] Imported RICS salespeople', summary);
+      return summary;
+    }
 
     let insertedEmployees = 0;
     let updatedEmployees = 0;

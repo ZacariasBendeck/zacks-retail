@@ -5,6 +5,7 @@ import {
 import { DownloadOutlined, FileExcelOutlined, QuestionCircleOutlined } from '@ant-design/icons'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
+import dayjs, { type Dayjs } from 'dayjs'
 import { useSalesAnalysis, useSalesDimensions, type SalesAnalysisArgs } from '../../hooks/useReports'
 import type {
   SalesAnalysisStoreOption,
@@ -18,7 +19,14 @@ import CriteriaInput from './CriteriaInput'
 import SaveAsTemplateButton from '../../components/reports/SaveAsTemplateButton'
 import SaveSnapshotButton from '../../components/reports/SaveSnapshotButton'
 import DateRangeControl from '../../components/reports/DateRangeControl'
-import { briefDateSpec, readDateSpecFromParams, resolveDateSpec, type DateSpec } from '../../utils/dateSpec'
+import {
+  briefDateSpec,
+  describeDateSpec,
+  readDateSpecFromParams,
+  resolveDateSpec,
+  type DateSpec,
+  type ResolvedDateRange,
+} from '../../utils/dateSpec'
 import ReportHeader from '../../components/reports/ReportHeader'
 import FilterChips, { type FilterChip } from '../../components/reports/FilterChips'
 import ReportEmptyState from '../../components/reports/ReportEmptyState'
@@ -48,6 +56,28 @@ const { Text } = Typography
 // saved with the default replays a fresh 7-day window every time. Users can
 // flip to "Fixed range" via DateRangeControl if they need pinned dates.
 const DEFAULT_DATE_SPEC: DateSpec = { type: 'trailing_days', days: 7 }
+
+function resolveSalesAnalysisDateSpec(
+  spec: DateSpec,
+  today: Dayjs = dayjs(),
+): ResolvedDateRange {
+  if (spec.type !== 'trailing_months') return resolveDateSpec(spec, today)
+  const months = Math.max(1, spec.months)
+  const end = today.startOf('month').subtract(1, 'day')
+  const start = end.startOf('month').subtract(months - 1, 'month')
+  return {
+    startDate: start.format('YYYY-MM-DD'),
+    endDate: end.format('YYYY-MM-DD'),
+  }
+}
+
+function describeSalesAnalysisDateSpec(spec: DateSpec): string {
+  if (spec.type !== 'trailing_months') {
+    return describeDateSpec(spec)
+  }
+  const { startDate, endDate } = resolveSalesAnalysisDateSpec(spec)
+  return `Trailing ${spec.months} months (${startDate} -> ${endDate})`
+}
 
 const STORE_OPTIONS: { value: SalesAnalysisStoreOption; label: string }[] = [
   { value: 'SEPARATE', label: 'Separate Stores' },
@@ -476,7 +506,7 @@ export default function SalesAnalysisPage() {
     // readDateSpecFromParams handles both — returns null when neither is usable,
     // so we fall back to the page default in that case.
     const spec = readDateSpecFromParams(t.paramsJson) ?? DEFAULT_DATE_SPEC
-    const { startDate: resolvedStart, endDate: resolvedEnd } = resolveDateSpec(spec)
+    const { startDate: resolvedStart, endDate: resolvedEnd } = resolveSalesAnalysisDateSpec(spec)
     if (p.storeOption) setStoreOption(p.storeOption)
     const hierarchy = p as Partial<SalesAnalysisArgs> & {
       level1?: SalesAnalysisHierarchyDimension
@@ -552,7 +582,7 @@ export default function SalesAnalysisPage() {
 
   function onRun(): void {
     if (level1 === level2) return
-    const { startDate, endDate } = resolveDateSpec(dateSpec)
+    const { startDate, endDate } = resolveSalesAnalysisDateSpec(dateSpec)
     setQuery({
       dimension: 'CATEGORY',
       reportType: 'SKU_DETAIL',
@@ -729,10 +759,10 @@ export default function SalesAnalysisPage() {
       align: 'right' as const,
       sorter: salesAnalysisNumberSorter<SalesAnalysisTreeNode>('roiPct'),
       sortDirections: SALES_ANALYSIS_NUMERIC_SORT_DIRECTIONS,
-      // ROI thresholds differ from GP% (5× / 2×) — custom inline Tag stays
+      // ROI thresholds differ from GP% (5x / 2x) — custom inline Tag stays
       // because the shared badge maps to GP-style percent thresholds.
       render: (v: number | null) =>
-        v == null ? DASH : <Tag color={v >= 5 ? 'green' : v >= 2 ? 'gold' : 'red'}>{fmtPctBare1(v)}×</Tag>,
+        v == null ? DASH : <Tag color={v >= 5 ? 'green' : v >= 2 ? 'gold' : 'red'}>{fmtPctBare1(v)}x</Tag>,
     },
     ...(query?.priorYear
       ? [
@@ -1053,7 +1083,12 @@ export default function SalesAnalysisPage() {
           <div className="sales-analysis-filter-group">
             <Text strong className="sales-analysis-filter-title">Period</Text>
             <Space size={10} wrap align="start">
-              <DateRangeControl value={dateSpec} onChange={setDateSpec} />
+              <DateRangeControl
+                value={dateSpec}
+                onChange={setDateSpec}
+                resolve={resolveSalesAnalysisDateSpec}
+                describe={describeSalesAnalysisDateSpec}
+              />
               <Checkbox checked={priorYear} onChange={(e) => setPriorYear(e.target.checked)}>
                 Compare to prior year
               </Checkbox>
@@ -1335,7 +1370,7 @@ export default function SalesAnalysisPage() {
                   <SummaryNumericCell index={8} variant="grand">{fmtPct1(t.gpPct)}</SummaryNumericCell>
                   <SummaryNumericCell index={9} variant="grand">{fmtPctBare1(t.turns)}</SummaryNumericCell>
                   <SummaryNumericCell index={10} variant="grand">
-                    {t.roiPct == null ? DASH : `${fmtPctBare1(t.roiPct)}×`}
+                    {t.roiPct == null ? DASH : `${fmtPctBare1(t.roiPct)}x`}
                   </SummaryNumericCell>
                   {query?.priorYear ? (
                     <>
@@ -1406,7 +1441,7 @@ function buildSalesAnalysisSummaryCells(
   if (options.showPercentOfTotal) addTotalPctCell(t.grossProfit, t.grossProfit)
   addCell(fmtPct1(t.gpPct))
   addCell(fmtPctBare1(t.turns))
-  addCell(t.roiPct == null ? DASH : `${fmtPctBare1(t.roiPct)}Ã—`)
+  addCell(t.roiPct == null ? DASH : `${fmtPctBare1(t.roiPct)}x`)
   if (options.priorYear) {
     addCell(fmtQty(t.priorYearQty ?? 0))
     addCell(fmtMoney(t.priorYearNetSales))

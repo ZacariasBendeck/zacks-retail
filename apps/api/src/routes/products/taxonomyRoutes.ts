@@ -127,6 +127,10 @@ router.delete('/departments/:number', async (req: Request, res: Response) => {
 
 // ────────────────── Categories ─────────────────────────────────────────────
 
+router.get('/category-buyers/options', async (_req: Request, res: Response) => {
+  send(res, await taxonomyService.categories.listBuyerOptions());
+});
+
 router.get('/categories', async (_req: Request, res: Response) => {
   send(res, await taxonomyService.categories.list());
 });

@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   departmentsApi,
   categoriesApi,
+  categoryBuyerOptionsApi,
   groupsApi,
   keywordsApi,
   sectorsApi,
@@ -83,6 +84,33 @@ describe('productsTaxonomyApi', () => {
     expect(result).toBeUndefined()
     expect(initOf()?.method).toBe('DELETE')
     expect(urlOf()).toBe('/api/v1/taxonomy/categories/5')
+  })
+
+  it('lists category buyer options from taxonomy', async () => {
+    vi.mocked(fetch).mockResolvedValue(ok([]))
+    await categoryBuyerOptionsApi.list()
+    expect(urlOf()).toBe('/api/v1/taxonomy/category-buyers/options')
+  })
+
+  it('PATCHes category buyer and store assignments', async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      ok({
+        number: 5,
+        description: 'test',
+        dateLastChanged: null,
+        skuCount: 0,
+        productFamilyCode: null,
+        productFamilyLabelEs: null,
+        buyers: [],
+        buyerCodes: ['zb'],
+        stores: [],
+        storeIds: [1, 2],
+      }),
+    )
+    await categoriesApi.update(5, { buyerCodes: ['zb'], storeIds: [1, 2] })
+    expect(urlOf()).toBe('/api/v1/taxonomy/categories/5')
+    expect(initOf()?.method).toBe('PATCH')
+    expect(JSON.parse(String(initOf()?.body))).toEqual({ buyerCodes: ['zb'], storeIds: [1, 2] })
   })
 
   it('URL-encodes string keys for groups/keywords/promotion codes', async () => {

@@ -26,6 +26,7 @@ import {
 import type { FamilyCreateInput } from '../../../services/productFamiliesApi'
 import FamilyAttributesTab from './FamilyAttributesTab'
 import FamilyCategoriesTab from './FamilyCategoriesTab'
+import FamilyCategoryListTab from './FamilyCategoryListTab'
 import FamilyMetadataTab from './FamilyMetadataTab'
 
 /**
@@ -185,6 +186,11 @@ export default function FamiliesPage() {
                     key: 'metadatos',
                     label: 'Metadatos',
                     children: <FamilyMetadataTab family={selectedFamily} />,
+                  },
+                  {
+                    key: 'category-list',
+                    label: 'Lista de Categorias',
+                    children: <FamilyCategoryListTab family={selectedFamily} />,
                   },
                 ]}
               />

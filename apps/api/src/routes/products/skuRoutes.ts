@@ -98,6 +98,7 @@ function parseAttrFilters(query: Record<string, unknown>): { dimensionCode: stri
 
 router.get('/', async (req: Request, res: Response) => {
   const q = typeof req.query.q === 'string' ? req.query.q : undefined;
+  const sku = typeof req.query.sku === 'string' ? req.query.sku : undefined;
   // Single-value aliases kept for back-compat; the admin workbench sends arrays.
   const vendor = typeof req.query.vendor === 'string' ? req.query.vendor : undefined;
   const category = parseInt32(req.query.category) ?? undefined;
@@ -138,6 +139,7 @@ router.get('/', async (req: Request, res: Response) => {
     res,
     await skuService.list({
       q,
+      sku,
       vendor,
       category,
       season,

@@ -73,7 +73,7 @@ CREATE TEMP TABLE stage_rics_ticket_header_raw (
   voided text,
   printed text,
   posted text
-) ON COMMIT DROP;
+) ON COMMIT PRESERVE ROWS;
 `;
 
 const CREATE_DETAIL_STAGE_SQL = `
@@ -125,7 +125,7 @@ CREATE TEMP TABLE stage_rics_ticket_detail_raw (
   gift_acct text,
   cost text,
   comment text
-) ON COMMIT DROP;
+) ON COMMIT PRESERVE ROWS;
 `;
 
 const CREATE_TENDER_STAGE_SQL = `
@@ -145,7 +145,7 @@ CREATE TEMP TABLE stage_rics_ticket_tender_raw (
   gift_cert text,
   gift_seq text,
   gift_new text
-) ON COMMIT DROP;
+) ON COMMIT PRESERVE ROWS;
 `;
 
 const COPY_HEADER_SQL = `
@@ -1054,6 +1054,11 @@ async function copyCsvFile(client: Client, copySql: string, filePath: string): P
   await pipeline(fs.createReadStream(filePath), copyStream);
 }
 
+async function beginImportTransaction(client: Client): Promise<void> {
+  await client.query('BEGIN');
+  await client.query('SET LOCAL statement_timeout = 0');
+}
+
 function copySqlForHeaderMode(copySql: string, csvHasHeader: boolean): string {
   const options = csvHasHeader
     ? "WITH (FORMAT csv, HEADER true, NULL '\\N')"
@@ -1212,28 +1217,36 @@ export async function importRicsTickets(argv: string[] = process.argv.slice(2)):
 
   try {
     await client.connect();
-    await client.query('BEGIN');
-    await client.query('SET LOCAL statement_timeout = 0');
+    await client.query(`SET temp_buffers = '256MB'`);
+    await client.query(`SET maintenance_work_mem = '64MB'`);
+    await beginImportTransaction(client);
 
+    console.info('[tickets] creating raw staging tables');
     await client.query(CREATE_HEADER_STAGE_SQL);
     await client.query(CREATE_DETAIL_STAGE_SQL);
     await client.query(CREATE_TENDER_STAGE_SQL);
 
     let manifestTenderLoaded = false;
     if (args.manifestPath) {
+      console.info('[tickets] loading ticket stages from manifest');
       ({ tenderLoaded: manifestTenderLoaded } = await loadTicketStagesFromManifest(client, args.manifestPath));
     } else {
+      console.info('[tickets] copying ticket header CSV');
       await copyCsvFile(client, copySqlForHeaderMode(COPY_HEADER_SQL, args.csvHasHeader), args.headerPath);
+      console.info('[tickets] copying ticket detail CSV');
       await copyCsvFile(client, copySqlForHeaderMode(COPY_DETAIL_SQL, args.csvHasHeader), args.detailPath);
       if (args.tenderPath) {
+        console.info('[tickets] copying ticket tender CSV');
         await copyCsvFile(client, copySqlForHeaderMode(COPY_TENDER_SQL, args.tenderCsvHasHeader), args.tenderPath);
       }
     }
 
+    console.info('[tickets] indexing raw stages');
     await client.query('CREATE INDEX ON stage_rics_ticket_header_raw (account)');
     await client.query('CREATE INDEX ON stage_rics_ticket_detail_raw (user_id, batch_date, terminal, store, ticket, real_date)');
     await client.query('CREATE INDEX ON stage_rics_ticket_tender_raw (user_id, batch_date, terminal, store, ticket, real_date)');
 
+    console.info('[tickets] building customer and header lookup stages');
     await client.query(CREATE_CUSTOMER_LOOKUP_SQL);
     await client.query('CREATE INDEX ON stage_customer_lookup (account_key)');
 
@@ -1246,21 +1259,38 @@ export async function importRicsTickets(argv: string[] = process.argv.slice(2)):
     await client.query('CREATE INDEX ON stage_rics_ticket_header_clean (external_transaction_id)');
     await client.query('CREATE INDEX ON stage_rics_ticket_header_clean (user_id, batch_date, terminal, store_id, ticket_number, real_date_raw)');
 
+    console.info('[tickets] building line and fact stages');
     await client.query(CREATE_LINE_ENRICHED_SQL);
     await client.query(CREATE_LINE_READY_SQL);
     await client.query(CREATE_FACT_SOURCE_SQL);
+    await client.query('COMMIT');
 
+    await beginImportTransaction(client);
     if (args.replace) {
+      console.info('[tickets] clearing existing ticket rows for source');
       await client.query('DELETE FROM app.ticket_tender WHERE source = $1', [args.source]);
       await client.query('DELETE FROM app.ticket_detail WHERE source = $1', [args.source]);
       await client.query('DELETE FROM app.ticket_header WHERE source = $1', [args.source]);
       await client.query('DELETE FROM app.sales_history_ticket WHERE source = $1', [args.source]);
     }
 
+    console.info('[tickets] inserting sales history tables');
     await client.query(INSERT_FACTS_SQL, [args.source]);
     await client.query(INSERT_ITEMS_SQL, [args.source]);
+    await client.query('COMMIT');
+
+    await beginImportTransaction(client);
+    console.info('[tickets] inserting raw ticket headers');
     await client.query(INSERT_RAW_HEADERS_SQL, [args.source]);
+    await client.query('COMMIT');
+
+    await beginImportTransaction(client);
+    console.info('[tickets] inserting raw ticket details');
     await client.query(INSERT_RAW_DETAILS_SQL, [args.source]);
+    await client.query('COMMIT');
+
+    await beginImportTransaction(client);
+    console.info('[tickets] inserting raw ticket tenders');
     await client.query(INSERT_RAW_TENDERS_SQL, [args.source]);
 
     const summaryResult = await client.query<ImportSummaryRow>(IMPORT_SUMMARY_SQL, [args.source]);

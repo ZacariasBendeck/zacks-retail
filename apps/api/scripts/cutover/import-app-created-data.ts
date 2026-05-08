@@ -36,6 +36,7 @@ interface ImportContext {
   userIdBySnapshotId: Map<string, string | null>;
   poNumberBySnapshotId: Map<string, string>;
   poIdBySnapshotId: Map<string, string | null>;
+  importRowExistsByKey: Map<string, boolean>;
 }
 
 const API_DIR = path.resolve(__dirname, '../..');
@@ -86,13 +87,13 @@ const IMPORT_ORDER: TableImport[] = [
   { schema: 'app', table: 'import_invoice_line', transform: remapSkuAndOptionalPoLine },
   { schema: 'app', table: 'import_shipment_line', transform: remapRequiredPoLine },
   { schema: 'app', table: 'import_charge' },
-  { schema: 'app', table: 'import_landed_cost_allocation' },
-  { schema: 'app', table: 'goods_in_transit_record' },
-  { schema: 'app', table: 'import_verification_check' },
-  { schema: 'app', table: 'import_suggested_price' },
-  { schema: 'app', table: 'import_cost_build' },
-  { schema: 'app', table: 'import_cost_component_allocation' },
-  { schema: 'app', table: 'import_payable_handoff' },
+  { schema: 'app', table: 'import_landed_cost_allocation', transform: skipMissingImportReferences },
+  { schema: 'app', table: 'goods_in_transit_record', transform: skipMissingImportReferences },
+  { schema: 'app', table: 'import_verification_check', transform: skipMissingImportReferences },
+  { schema: 'app', table: 'import_suggested_price', transform: skipMissingImportReferences },
+  { schema: 'app', table: 'import_cost_build', transform: skipMissingImportReferences },
+  { schema: 'app', table: 'import_cost_component_allocation', transform: skipMissingImportReferences },
+  { schema: 'app', table: 'import_payable_handoff', transform: skipMissingImportReferences },
 
   { schema: 'app', table: 'customer_segments' },
   { schema: 'app', table: 'customer_segment_versions' },
@@ -355,6 +356,44 @@ async function remapRequiredPoLine(
   return out;
 }
 
+const IMPORT_REFERENCE_COLUMNS: Record<string, string> = {
+  shipment_id: 'import_shipment',
+  container_id: 'import_container',
+  invoice_line_id: 'import_invoice_line',
+  shipment_line_id: 'import_shipment_line',
+  charge_id: 'import_charge',
+  output_invoice_line_id: 'import_invoice_line',
+  output_shipment_line_id: 'import_shipment_line',
+  component_invoice_line_id: 'import_invoice_line',
+};
+
+async function importRowExists(ctx: ImportContext, table: string, id: unknown): Promise<boolean> {
+  if (typeof id !== 'string' || id.trim() === '') return true;
+  const key = `${table}:${id}`;
+  if (ctx.importRowExistsByKey.has(key)) {
+    return ctx.importRowExistsByKey.get(key) ?? false;
+  }
+  const result = await ctx.client.query<{ exists: boolean }>(
+    `SELECT EXISTS (SELECT 1 FROM app.${qident(table)} WHERE id = $1::uuid) AS exists`,
+    [id],
+  );
+  const exists = Boolean(result.rows[0]?.exists);
+  ctx.importRowExistsByKey.set(key, exists);
+  return exists;
+}
+
+async function skipMissingImportReferences(
+  row: Record<string, unknown>,
+  ctx: ImportContext,
+): Promise<Record<string, unknown> | null> {
+  const out = stripMeta(row);
+  for (const [column, referencedTable] of Object.entries(IMPORT_REFERENCE_COLUMNS)) {
+    if (!(column in out) || out[column] == null) continue;
+    if (!(await importRowExists(ctx, referencedTable, out[column]))) return null;
+  }
+  return out;
+}
+
 async function clearGeneratedPoIfUnmapped(row: Record<string, unknown>): Promise<Record<string, unknown> | null> {
   const out = stripMeta(row);
   if ('generated_po_id' in out) out.generated_po_id = null;
@@ -463,6 +502,7 @@ async function main(): Promise<void> {
         .map((row) => [String(row.id), String(row.po_number)]),
     ),
     poIdBySnapshotId: new Map(),
+    importRowExistsByKey: new Map(),
   };
 
   try {

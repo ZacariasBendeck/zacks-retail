@@ -208,9 +208,9 @@ async function main(): Promise<void> {
 
   await runCommand('prisma migrate deploy', PNPM_CMD, ['exec', 'prisma', 'migrate', 'deploy']);
   await runNodeTsScript(
-    'import:attributes',
+    'import:attributes catalog',
     path.join(API_DIR, 'scripts', 'catalog', 'import-attribute-catalog.ts'),
-    ['--in', attributeSnapshotPath],
+    ['--in', attributeSnapshotPath, '--skip-assignments'],
   );
 
   await runNodeTsScript(
@@ -235,6 +235,12 @@ async function main(): Promise<void> {
     'seed:sku-attributes',
     path.join(API_DIR, 'scripts', 'seeds', 'seed-sku-attributes.ts'),
     ['--manifest', legacyManifestPath, '--allow-catalog-orphans'],
+  );
+
+  await runNodeTsScript(
+    'import:attributes operator assignments',
+    path.join(API_DIR, 'scripts', 'catalog', 'import-attribute-catalog.ts'),
+    ['--in', attributeSnapshotPath],
   );
 
   await runNodeTsScript(

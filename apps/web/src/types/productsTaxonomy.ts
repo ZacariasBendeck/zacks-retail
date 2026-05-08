@@ -27,12 +27,37 @@ export interface Category {
   skuCount: number
   productFamilyCode: string | null
   productFamilyLabelEs: string | null
+  buyers: CategoryBuyer[]
+  buyerCodes: string[]
+  stores: CategoryStore[]
+  storeIds: number[]
 }
 
 export interface CategoryInput {
   number: number
   description: string
   productFamilyCode?: string | null
+  buyerCodes?: string[] | null
+  storeIds?: number[] | null
+}
+
+export interface CategoryBuyer {
+  valueId: number
+  code: string
+  labelEs: string
+  isActive: boolean
+}
+
+export interface CategoryBuyerOption extends CategoryBuyer {
+  sortOrder: number
+}
+
+export interface CategoryStore {
+  storeId: number
+  storeCode: string
+  storeLabel: string
+  chainId: string | null
+  chainLabel: string | null
 }
 
 export interface Group {

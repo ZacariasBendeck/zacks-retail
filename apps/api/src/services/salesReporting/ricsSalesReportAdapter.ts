@@ -517,6 +517,8 @@ interface TicketLine {
   category: number | null;
   vendor: string | null;
   cost: number;
+  cogsAmount?: number;
+  priceBucket?: string | null;
   returnCode: number;
   posted: boolean;
 }
@@ -671,13 +673,18 @@ function addSalesAnalysisInventoryMetrics(
   onHandAtCost: number,
   beginningInventoryValue: number,
   priorYearOnHandAtCost: number,
+  averageInventoryValue?: number | null,
 ): void {
   const current = out.get(key) ?? { ...EMPTY_SALES_ANALYSIS_INVENTORY_METRICS };
   current.unitsOnHand += unitsOnHand;
   current.onHandAtCost += onHandAtCost;
   current.beginningInventoryValue += beginningInventoryValue;
   current.priorYearOnHandAtCost += priorYearOnHandAtCost;
-  current.averageInventoryValue = (current.beginningInventoryValue + current.onHandAtCost) / 2;
+  if (averageInventoryValue != null) {
+    current.averageInventoryValue += averageInventoryValue;
+  } else {
+    current.averageInventoryValue = (current.beginningInventoryValue + current.onHandAtCost) / 2;
+  }
   current.inventoryUnitCost =
     current.unitsOnHand > 0 ? current.onHandAtCost / current.unitsOnHand : null;
   out.set(key, current);
@@ -695,6 +702,10 @@ function addPriorYearSalesMetrics(
   current.netSales += netSales;
   current.grossProfit += grossProfit;
   out.set(key, current);
+}
+
+function lineCogs(line: Pick<TicketLine, 'cost' | 'qty' | 'cogsAmount'>): number {
+  return line.cogsAmount ?? line.cost * line.qty;
 }
 
 function priorYearPctChange(current: number, prior: number | null): number | null {
@@ -842,9 +853,149 @@ LIMIT ${MAX_TICKET_ROWS}`;
       category: r.D_Category == null ? null : Number(r.D_Category),
       vendor: r.D_Vendor?.trim() || null,
       cost: Number(r.D_Cost ?? 0),
+      cogsAmount: Number(r.D_Cost ?? 0) * Number(r.D_Qty ?? 0),
       returnCode: Number(r.D_ReturnCode ?? 0),
       posted: (r.H_Posted ?? '').trim().toUpperCase() === 'Y',
     }));
+  });
+}
+
+interface RawSalesAnalysisAggregateRow {
+  H_Store: number | null;
+  D_SKU: string | null;
+  D_Category: number | null;
+  D_Vendor: string | null;
+  D_PriceBucket: string | null;
+  D_Qty: number | null;
+  D_Extension: number | null;
+  D_Cogs: number | null;
+}
+
+/**
+ * Sales Analysis can scan more than a million imported ticket lines for a
+ * 12-month run. Aggregate in Postgres first so the report is not affected by
+ * the defensive MAX_TICKET_ROWS cap used by detail-style report loaders.
+ */
+async function loadSalesAnalysisAggregateLines(params: {
+  startDate: string;
+  endDate: string;
+  storeNumbers?: number[];
+  categoryNumbers?: number[];
+  vendorCodes?: string[];
+  skuCodes?: string[];
+}): Promise<TicketLine[]> {
+  const startDate = normalizeDate(params.startDate);
+  const endDate = normalizeDate(params.endDate);
+  const endExclusive = addDays(endDate, 1);
+  const cacheKey = `sr:salesAnalysisAggregateLines:${JSON.stringify({
+    startDate,
+    endDate,
+    stores: normalizedNumberList(params.storeNumbers),
+    categories: normalizedNumberList(params.categoryNumbers),
+    vendors: normalizedStringList(params.vendorCodes),
+    skus: normalizedStringList(params.skuCodes),
+  })}`;
+
+  return cachedAsync(cacheKey, 600_000, async () => {
+    const sqlParams: unknown[] = [startDate, endExclusive];
+    const extraWheres: string[] = [];
+    if (params.storeNumbers && params.storeNumbers.length > 0) {
+      sqlParams.push(params.storeNumbers.map((n) => Number(n)));
+      extraWheres.push(`h.store_id = ANY($${sqlParams.length}::int[])`);
+    }
+    if (params.categoryNumbers && params.categoryNumbers.length > 0) {
+      sqlParams.push(params.categoryNumbers.map((n) => Number(n)));
+      extraWheres.push(`COALESCE(
+        CASE WHEN d.category_key ~ '^[0-9]+$' THEN d.category_key::int ELSE NULL END,
+        s.category_number
+      ) = ANY($${sqlParams.length}::int[])`);
+    }
+    if (params.vendorCodes && params.vendorCodes.length > 0) {
+      sqlParams.push(params.vendorCodes.map((code) => code.trim().toUpperCase()).filter(Boolean));
+      extraWheres.push(`UPPER(BTRIM(COALESCE(NULLIF(BTRIM(d.brand_key), ''), s.vendor_id))) = ANY($${sqlParams.length}::text[])`);
+    }
+    if (params.skuCodes && params.skuCodes.length > 0) {
+      sqlParams.push(params.skuCodes.map((sku) => sku.trim().toUpperCase()).filter(Boolean));
+      extraWheres.push(`UPPER(BTRIM(COALESCE(NULLIF(BTRIM(d.sku_code), ''), s.code, s.provisional_code))) = ANY($${sqlParams.length}::text[])`);
+    }
+    const extraClause = extraWheres.length ? ' AND ' + extraWheres.join(' AND ') : '';
+    const startBoundary = `($1::date::timestamp AT TIME ZONE '${REPORT_TIME_ZONE}')`;
+    const endBoundary = `($2::date::timestamp AT TIME ZONE '${REPORT_TIME_ZONE}')`;
+    const unitPriceBucket = `
+      CASE
+        WHEN COALESCE(d.quantity, 0) = 0 THEN '(zero-qty)'
+        ELSE CONCAT(
+          (FLOOR(ABS(COALESCE(d.net_amount, 0) / NULLIF(d.quantity, 0)) / 25) * 25)::int,
+          '-',
+          ((FLOOR(ABS(COALESCE(d.net_amount, 0) / NULLIF(d.quantity, 0)) / 25) + 1) * 25)::int
+        )
+      END`;
+
+    const sql = `
+WITH line_scope AS (
+  SELECT
+    h.store_id AS store_id,
+    COALESCE(NULLIF(BTRIM(d.sku_code), ''), s.code, s.provisional_code) AS sku,
+    COALESCE(
+      CASE WHEN d.category_key ~ '^[0-9]+$' THEN d.category_key::int ELSE NULL END,
+      s.category_number
+    ) AS category,
+    COALESCE(NULLIF(BTRIM(d.brand_key), ''), s.vendor_id) AS vendor,
+    ${unitPriceBucket} AS price_bucket,
+    COALESCE(d.quantity, 0)::float8 AS qty,
+    COALESCE(d.net_amount, 0)::float8 AS extension,
+    COALESCE(
+      d.cost_amount,
+      COALESCE(d.unit_cost, s.current_cost, 0) * COALESCE(d.quantity, 0)
+    )::float8 AS cogs
+  FROM app.sales_history_ticket h
+  INNER JOIN app.sales_history_ticket_line d ON d.ticket_id = h.id
+  LEFT JOIN app.sku s ON s.id = d.sku_id
+  WHERE
+    h.purchased_at >= ${startBoundary}
+    AND h.purchased_at < ${endBoundary}
+    AND h.status = 'completed'${extraClause}
+)
+SELECT
+  store_id AS "H_Store",
+  sku AS "D_SKU",
+  category AS "D_Category",
+  vendor AS "D_Vendor",
+  price_bucket AS "D_PriceBucket",
+  SUM(qty)::float8 AS "D_Qty",
+  SUM(extension)::float8 AS "D_Extension",
+  SUM(cogs)::float8 AS "D_Cogs"
+FROM line_scope
+GROUP BY 1, 2, 3, 4, 5`;
+
+    const [, raw] = await prisma.$transaction([
+      prisma.$executeRawUnsafe(`SET LOCAL max_parallel_workers_per_gather = 0`),
+      prisma.$queryRawUnsafe<RawSalesAnalysisAggregateRow[]>(sql, ...sqlParams),
+    ]);
+    return raw.map<TicketLine>((r) => {
+      const qty = Number(r.D_Qty ?? 0);
+      const cogs = Number(r.D_Cogs ?? 0);
+      return {
+        store: Number(r.H_Store ?? 0),
+        ticket: 0,
+        date: startDate,
+        hour: 0,
+        sku: (r.D_SKU ?? '').trim(),
+        column: '',
+        row: '',
+        qty,
+        extension: Number(r.D_Extension ?? 0),
+        perks: 0,
+        salesperson: '',
+        category: r.D_Category == null ? null : Number(r.D_Category),
+        vendor: r.D_Vendor?.trim() || null,
+        cost: qty === 0 ? 0 : cogs / qty,
+        cogsAmount: cogs,
+        priceBucket: r.D_PriceBucket?.trim() || null,
+        returnCode: 0,
+        posted: true,
+      };
+    });
   });
 }
 
@@ -1612,7 +1763,7 @@ export async function getBestSellers(params: {
     }
     b.qty += l.qty;
     b.netSales += l.extension;
-    b.profit += l.extension - l.cost * l.qty;
+    b.profit += l.extension - lineCogs(l);
   }
 
   // Hydrate labels.
@@ -1757,18 +1908,6 @@ export async function getSalesAnalysis(params: {
     return Array.from(new Set([...structuredStoresList, ...expandedStoresFromGrammar]));
   })();
 
-  const lines = await loadTicketLines({
-    startDate,
-    endDate,
-    storeNumbers: filteredStores,
-  });
-  const masterBySku = needsSkuMaster(params)
-    ? await loadSkuMasterFields(lines.map((l) => l.sku))
-    : new Map<string, SkuMasterFields>();
-  const analysisLines: AnalysisLine[] = lines.map((line) => {
-    const master = line.sku ? masterBySku.get(line.sku.trim().toUpperCase()) ?? null : null;
-    return { ...line, master };
-  });
   const needsDepartmentCriteria = !!params.criteria.departments?.length || !!params.criteria.sectors?.length;
   const [criteriaStoreChainByStore, criteriaDeptMap, criteriaSectorMap] = await Promise.all([
     params.criteria.chains?.length ? loadStoreChainByStore() : Promise.resolve(null),
@@ -1780,6 +1919,28 @@ export async function getSalesAnalysis(params: {
     departments: criteriaDeptMap,
     sectors: criteriaSectorMap,
   };
+  const categorySqlPrefilter = salesAnalysisCategorySqlPrefilter(
+    params.criteria,
+    parsed,
+    criteriaDeptMap,
+    criteriaSectorMap,
+  );
+
+  const lines = await loadSalesAnalysisAggregateLines({
+    startDate,
+    endDate,
+    storeNumbers: filteredStores,
+    categoryNumbers: categorySqlPrefilter,
+    vendorCodes: params.criteria.vendorsRaw?.trim() ? undefined : params.criteria.vendors,
+    skuCodes: params.criteria.skusRaw?.trim() ? undefined : params.criteria.skus,
+  });
+  const masterBySku = needsSkuMaster(params)
+    ? await loadSkuMasterFields(lines.map((l) => l.sku))
+    : new Map<string, SkuMasterFields>();
+  const analysisLines: AnalysisLine[] = lines.map((line) => {
+    const master = line.sku ? masterBySku.get(line.sku.trim().toUpperCase()) ?? null : null;
+    return { ...line, master };
+  });
 
   // Apply criteria filters.
   const filtered = analysisLines.filter((l) => applyAnalysisCriteria(l, params.criteria, parsed, criteriaContext));
@@ -1827,7 +1988,7 @@ export async function getSalesAnalysis(params: {
     }
     b.qty += l.qty;
     b.netSales += l.extension;
-    b.cogs += l.cost * l.qty;
+    b.cogs += lineCogs(l);
   }
 
   // Prior year sales (optional). RICS prints Qty, Sales, Sales % Chg,
@@ -1836,10 +1997,13 @@ export async function getSalesAnalysis(params: {
   if (params.printing.priorYear) {
     const pyStart = addYears(startDate, -1);
     const pyEnd = addYears(endDate, -1);
-    const pyLines = await loadTicketLines({
+    const pyLines = await loadSalesAnalysisAggregateLines({
       startDate: pyStart,
       endDate: pyEnd,
       storeNumbers: filteredStores,
+      categoryNumbers: categorySqlPrefilter,
+      vendorCodes: params.criteria.vendorsRaw?.trim() ? undefined : params.criteria.vendors,
+      skuCodes: params.criteria.skusRaw?.trim() ? undefined : params.criteria.skus,
     });
     const pyMasterBySku = needsSkuMaster(params)
       ? await loadSkuMasterFields(pyLines.map((l) => l.sku))
@@ -1860,7 +2024,7 @@ export async function getSalesAnalysis(params: {
         mapKey,
         pyLine.qty,
         pyLine.extension,
-        pyLine.extension - pyLine.cost * pyLine.qty,
+        pyLine.extension - lineCogs(pyLine),
       );
     }
   }
@@ -1870,10 +2034,13 @@ export async function getSalesAnalysis(params: {
       (new Date(endDate).getTime() - new Date(startDate).getTime()) / 86_400_000,
     ) + 1;
   const inventoryActivityMonthSlot = salesAnalysisActivityMonthSlot(startDate, endDate);
+  const fullMonthWindow = salesAnalysisFullMonthWindow(startDate, endDate);
   const useAverageInventoryForTurnsRoi =
-    useMonthlyAverageInventoryForSalesAnalysis(params.printing, startDate, endDate);
+    !!fullMonthWindow || useMonthlyAverageInventoryForSalesAnalysis(params.printing, startDate, endDate);
   const turnsRoiAnnualizer =
-    salesAnalysisTurnsRoiAnnualizer(params.printing, startDate, endDate, periodDays);
+    fullMonthWindow
+      ? 12 / fullMonthWindow.monthCount
+      : salesAnalysisTurnsRoiAnnualizer(params.printing, startDate, endDate, periodDays);
   const effectiveTurnsRoiAnnualizer = turnsRoiAnnualizer ?? (periodDays > 0 ? 365 / periodDays : 0);
   const shouldSeedSkuRows = params.reportType === 'SKU_DETAIL' && shouldSeedSkuMasterRows(params.criteria);
   const skuInventoryFilter = params.reportType === 'SKU_DETAIL' && !shouldSeedSkuRows
@@ -1889,6 +2056,8 @@ export async function getSalesAnalysis(params: {
     deptMap,
     sectorMap,
     activityMonthSlot: inventoryActivityMonthSlot,
+    averageInventoryMonths: fullMonthWindow,
+    categoryPrefilter: categorySqlPrefilter,
     skuFilter: skuInventoryFilter,
   });
   const inventoryLookup = inventoryScope.metricsByKey;
@@ -2198,7 +2367,7 @@ export async function getSalesHierarchy(params: {
     }
     b.qty += l.qty;
     b.netSales += l.extension;
-    b.cogs += l.cost * l.qty;
+    b.cogs += lineCogs(l);
   }
 
   // Prior-year netSales at the same SKU grain, using the same calendar
@@ -2749,7 +2918,7 @@ function aggregateDailySalesFromLines(lines: AnalysisLine[]): Map<string, Map<nu
     }
     const current = perStore.get(line.store) ?? { netSales: 0, profit: 0 };
     current.netSales += line.extension;
-    current.profit += line.extension - line.cost * line.qty;
+    current.profit += line.extension - lineCogs(line);
     perStore.set(line.store, current);
   }
   return map;
@@ -2963,6 +3132,45 @@ function normalizedNumberList(values: number[] | undefined): number[] {
     .sort((a, b) => a - b);
 }
 
+function addCategoryRange(out: Set<number>, beg: number, end: number): void {
+  const lo = Math.min(beg, end);
+  const hi = Math.max(beg, end);
+  for (let n = lo; n <= hi; n++) out.add(n);
+}
+
+function salesAnalysisCategorySqlPrefilter(
+  criteria: SalesAnalysisCriteria,
+  parsed: ParsedAnalysisCriteria,
+  departments: DeptRow[] | null,
+  sectors: SectorRow[] | null,
+): number[] | undefined {
+  const categories = new Set<number>();
+  for (const value of normalizedNumberList(criteria.categories)) categories.add(value);
+
+  const categoryBounds = sqlNumericBounds(parsed.categories);
+  if (categoryBounds) addCategoryRange(categories, categoryBounds.min, categoryBounds.max);
+
+  for (const deptNumber of normalizedNumberList(criteria.departments)) {
+    const dept = departments?.find((row) => row.number === deptNumber);
+    if (dept) addCategoryRange(categories, dept.begCateg, dept.endCateg);
+  }
+
+  const selectedSectors = normalizedNumberList(criteria.sectors);
+  if (selectedSectors.length && departments && sectors) {
+    const selected = new Set(selectedSectors);
+    for (const sector of sectors) {
+      if (!selected.has(sector.number)) continue;
+      for (const dept of departments) {
+        if (dept.number >= sector.begDept && dept.number <= sector.endDept) {
+          addCategoryRange(categories, dept.begCateg, dept.endCateg);
+        }
+      }
+    }
+  }
+
+  return categories.size ? [...categories].sort((a, b) => a - b) : undefined;
+}
+
 function salesAnalysisActivityMonthSlot(_startDate: string, endDate: string): number {
   const month = Number(endDate.slice(5, 7));
   return Number.isInteger(month) && month >= 1 && month <= 12 ? month : 1;
@@ -2980,6 +3188,27 @@ function isFullCalendarMonth(startDate: string, endDate: string): boolean {
   }
   const lastDay = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + 1, 0));
   return toIsoDate(lastDay) === endDate;
+}
+
+function salesAnalysisFullMonthWindow(
+  startDate: string,
+  endDate: string,
+): { fromYearMonth: string; toYearMonth: string; monthCount: number } | null {
+  const start = toUtcDate(startDate);
+  const end = toUtcDate(endDate);
+  if (start.getUTCDate() !== 1) return null;
+  const lastDay = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth() + 1, 0));
+  if (toIsoDate(lastDay) !== endDate) return null;
+  const monthCount =
+    (end.getUTCFullYear() - start.getUTCFullYear()) * 12 +
+    (end.getUTCMonth() - start.getUTCMonth()) +
+    1;
+  if (monthCount <= 0) return null;
+  return {
+    fromYearMonth: `${startDate.slice(0, 7)}`,
+    toYearMonth: `${endDate.slice(0, 7)}`,
+    monthCount,
+  };
 }
 
 function useMonthlyAverageInventoryForSalesAnalysis(
@@ -3030,6 +3259,8 @@ function salesAnalysisInventoryScopeCacheKey(params: {
   criteria: SalesAnalysisCriteria;
   filteredStores: number[] | undefined;
   activityMonthSlot: number;
+  averageInventoryMonths?: { fromYearMonth: string; toYearMonth: string; monthCount: number } | null;
+  categoryPrefilter?: number[];
   skuFilter?: string[];
 }): string {
   const c = params.criteria;
@@ -3037,6 +3268,8 @@ function salesAnalysisInventoryScopeCacheKey(params: {
     reportType: params.reportType,
     storeOption: params.storeOption,
     activityMonthSlot: params.activityMonthSlot,
+    averageInventoryMonths: params.averageInventoryMonths ?? null,
+    categoryPrefilter: normalizedNumberList(params.categoryPrefilter),
     filteredStores: normalizedNumberList(params.filteredStores),
     skuFilter: normalizedStringList(params.skuFilter).map((sku) => sku.toUpperCase()),
     stores: normalizedNumberList(c.stores),
@@ -3068,6 +3301,8 @@ interface RawSalesAnalysisInventoryRow {
   TotalOnHand: number | null;
   CurrentCost: number | null;
   BeginningInventoryValue: number | null;
+  AverageInventoryValueSum: number | null;
+  AverageInventoryMonthCount: number | null;
   PriorYearOnHandAtCost: number | null;
   ScopeIncluded: boolean | string | number | null;
   Season: string | null;
@@ -3093,6 +3328,8 @@ async function loadSalesAnalysisInventoryScope(params: {
   deptMap: DeptRow[] | null;
   sectorMap: SectorRow[] | null;
   activityMonthSlot: number;
+  averageInventoryMonths?: { fromYearMonth: string; toYearMonth: string; monthCount: number } | null;
+  categoryPrefilter?: number[];
   skuFilter?: string[];
 }): Promise<SalesAnalysisInventoryScope> {
   if (params.reportType === 'PRICE_POINT_SUMMARY') {
@@ -3104,7 +3341,12 @@ async function loadSalesAnalysisInventoryScope(params: {
 
   const cacheKey = `sr:salesAnalysisInventoryScope:${salesAnalysisInventoryScopeCacheKey(params)}`;
   return cachedAsync(cacheKey, 300_000, async () => {
-    const sqlParams: unknown[] = [params.activityMonthSlot];
+    const averageInventoryMonths = params.averageInventoryMonths ?? null;
+    const sqlParams: unknown[] = [
+      params.activityMonthSlot,
+      averageInventoryMonths?.fromYearMonth ?? '',
+      averageInventoryMonths?.toYearMonth ?? '',
+    ];
     const wheres = [
       `h.sku_code IS NOT NULL`,
       `COALESCE(s.rics_status, '') <> 'D'`,
@@ -3117,6 +3359,10 @@ async function loadSalesAnalysisInventoryScope(params: {
     if (params.skuFilter?.length) {
       sqlParams.push(normalizedStringList(params.skuFilter).map((sku) => sku.toUpperCase()));
       wheres.push(`UPPER(BTRIM(h.sku_code)) = ANY($${sqlParams.length}::text[])`);
+    }
+    if (params.categoryPrefilter?.length) {
+      sqlParams.push(normalizedNumberList(params.categoryPrefilter));
+      wheres.push(`s.category_number = ANY($${sqlParams.length}::int[])`);
     }
     if (params.criteria.categories?.length && !params.criteria.categoriesRaw?.trim()) {
       sqlParams.push(normalizedNumberList(params.criteria.categories));
@@ -3161,7 +3407,18 @@ async function loadSalesAnalysisInventoryScope(params: {
 
     const rows = await prisma.$queryRawUnsafe<RawSalesAnalysisInventoryRow[]>(
       `
-      WITH inventory_scope AS (
+      WITH monthly_average AS (
+        SELECT
+          m_avg.snapshot_id,
+          SUM(COALESCE(m_avg.inventory_value, 0))::float8 AS average_inventory_value_sum,
+          COUNT(*)::int AS average_inventory_month_count
+        FROM app.inventory_history_month m_avg
+        WHERE $2::text <> ''
+          AND m_avg.year_month >= $2::text
+          AND m_avg.year_month <= $3::text
+        GROUP BY m_avg.snapshot_id
+      ),
+      inventory_scope AS (
         SELECT
           h.id AS snapshot_id,
           UPPER(BTRIM(h.sku_code)) AS sku_key,
@@ -3169,6 +3426,8 @@ async function loadSalesAnalysisInventoryScope(params: {
              h.on_hand::float8 AS total_on_hand,
              COALESCE(s.current_cost, h.average_cost)::float8 AS current_cost,
              COALESCE(h.last_month_inv_value, 0)::float8 AS beginning_inventory_value,
+             ma.average_inventory_value_sum,
+             ma.average_inventory_month_count,
              COALESCE(hm_scope.inventory_value, 0)::float8 AS prior_year_on_hand_at_cost,
              s.season,
           s.group_code,
@@ -3183,6 +3442,8 @@ async function loadSalesAnalysisInventoryScope(params: {
         LEFT JOIN app.inventory_history_month hm_scope
           ON hm_scope.snapshot_id = h.id
          AND hm_scope.slot_number = $1::int
+        LEFT JOIN monthly_average ma
+          ON ma.snapshot_id = h.id
         WHERE ${wheres.join(' AND ')}
       ),
       base_keywords AS (
@@ -3226,6 +3487,8 @@ async function loadSalesAnalysisInventoryScope(params: {
              i.total_on_hand AS "TotalOnHand",
              i.current_cost AS "CurrentCost",
              i.beginning_inventory_value AS "BeginningInventoryValue",
+             i.average_inventory_value_sum AS "AverageInventoryValueSum",
+             i.average_inventory_month_count AS "AverageInventoryMonthCount",
              i.prior_year_on_hand_at_cost AS "PriorYearOnHandAtCost",
              i.scope_included AS "ScopeIncluded",
              i.season AS "Season",
@@ -3239,7 +3502,8 @@ async function loadSalesAnalysisInventoryScope(params: {
         LEFT JOIN effective_keywords ek ON ek.sku_key = i.sku_key
         LEFT JOIN buyer_assignment ba ON ba.sku_key = i.sku_key
        GROUP BY i.snapshot_id, i.sku_key, i.store_id, i.total_on_hand, i.current_cost,
-                i.beginning_inventory_value, i.prior_year_on_hand_at_cost, i.scope_included, i.season, i.group_code,
+                i.beginning_inventory_value, i.average_inventory_value_sum, i.average_inventory_month_count,
+                i.prior_year_on_hand_at_cost, i.scope_included, i.season, i.group_code,
                 i.style_color, i.category_number, i.vendor_id, ba.buyer_code
       `,
       ...sqlParams,
@@ -3271,6 +3535,12 @@ async function loadSalesAnalysisInventoryScope(params: {
       const cost = Number(row.CurrentCost ?? 0);
       const onHandAtCost = onHand * Math.max(0, cost);
       const beginningInventoryValue = Number(row.BeginningInventoryValue ?? 0);
+      const averageInventoryValueSum = Number(row.AverageInventoryValueSum ?? 0);
+      const averageInventoryMonthCount = Number(row.AverageInventoryMonthCount ?? 0);
+      const averageInventoryValue =
+        averageInventoryMonthCount > 0
+          ? (averageInventoryValueSum + onHandAtCost) / (averageInventoryMonthCount + 1)
+          : null;
       const priorYearOnHandAtCost = Number(row.PriorYearOnHandAtCost ?? 0);
       const key = combine ? dimKey : `${dimKey}|${store}`;
       addSalesAnalysisInventoryMetrics(
@@ -3280,6 +3550,7 @@ async function loadSalesAnalysisInventoryScope(params: {
         onHandAtCost,
         beginningInventoryValue,
         priorYearOnHandAtCost,
+        averageInventoryValue,
       );
 
       const scopeIncluded = row.ScopeIncluded == null
@@ -3610,7 +3881,7 @@ function rowGrainKey(
     case 'VENDOR_SUMMARY':
       return l.vendor ?? '(none)';
     case 'PRICE_POINT_SUMMARY':
-      return priceBucketFor(l.extension, l.qty);
+      return l.priceBucket || priceBucketFor(l.extension, l.qty);
     case 'SEASON_SUMMARY':
       return l.master?.season || '(none)';
     case 'GROUP_SUMMARY':

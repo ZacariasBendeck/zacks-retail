@@ -102,6 +102,7 @@ export interface SkuInput {
 
 export interface FindAllOptions {
   q?: string;
+  sku?: string;
   vendor?: string;
   category?: number;
   season?: string;
@@ -325,6 +326,15 @@ function buildWhere(opts: FindAllOptions): { clauses: string[]; params: unknown[
         OR UPPER(COALESCE(c."desc", '')) LIKE ${ref}
         OR UPPER(COALESCE(d."desc", '')) LIKE ${ref}
       )`,
+    );
+  }
+
+  if (opts.sku && opts.sku.trim().length > 0) {
+    pushClause(
+      clauses,
+      params,
+      `UPPER(s.code) LIKE ?`,
+      sqlLikePattern(opts.sku.trim()),
     );
   }
 

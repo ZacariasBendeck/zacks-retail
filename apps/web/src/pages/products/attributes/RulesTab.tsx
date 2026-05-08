@@ -258,6 +258,7 @@ export default function RulesTab({ dimension }: Props) {
           sortOrder: number
           isMultiValue: boolean
         }>
+          key={dimension.code}
           layout="vertical"
           onFinish={handleMetadataSave}
           initialValues={{

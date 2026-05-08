@@ -7,6 +7,7 @@
 
 import type {
   Category,
+  CategoryBuyerOption,
   CategoryInput,
   Department,
   DepartmentInput,
@@ -105,6 +106,10 @@ export const categoriesApi = {
   update: (n: number, patch: Partial<Omit<CategoryInput, 'number'>>) =>
     request<Category>(`${BASE}/categories/${n}`, { method: 'PATCH', body: JSON.stringify(patch) }),
   remove: (n: number) => request<void>(`${BASE}/categories/${n}`, { method: 'DELETE' }),
+}
+
+export const categoryBuyerOptionsApi = {
+  list: () => request<CategoryBuyerOption[]>(`${BASE}/category-buyers/options`),
 }
 
 // Groups

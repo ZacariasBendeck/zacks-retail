@@ -6,6 +6,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   categoriesApi,
+  categoryBuyerOptionsApi,
   departmentsApi,
   groupsApi,
   keywordsApi,
@@ -101,6 +102,13 @@ export function useCategory(n: number | undefined) {
     queryKey: ['taxonomy', 'categories', n],
     queryFn: () => categoriesApi.get(n!),
     enabled: n != null,
+  })
+}
+export function useCategoryBuyerOptions() {
+  return useQuery({
+    queryKey: ['taxonomy', 'category-buyers', 'options'],
+    queryFn: categoryBuyerOptionsApi.list,
+    staleTime: LIST_STALE_MS,
   })
 }
 export function useCreateCategory() {

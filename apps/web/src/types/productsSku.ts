@@ -86,6 +86,14 @@ export interface SkuInput {
 
 export interface SkuListFilters {
   q?: string
+  /**
+   * SKU-code filter with asterisk wildcards.
+   *   "ABC"        -> substring
+   *   "ABC*"       -> starts-with
+   *   "*123"       -> ends-with
+   *   "AB*12"      -> starts AB, ends 12
+   */
+  sku?: string
   /** Legacy single-value filters. */
   vendor?: string
   category?: number

@@ -31,6 +31,7 @@ import {
   CreditCardOutlined,
   ContainerOutlined,
   QuestionCircleOutlined,
+  CheckCircleOutlined,
 } from '@ant-design/icons'
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth/useAuth'
@@ -136,6 +137,7 @@ const appMenuItems = [
       { key: '/purchase-planning', icon: <FundOutlined />, label: 'V2 - Actual', requiredPermissions: ['purchasing.view'] },
       { key: '/purchase-planning/v3', icon: <FundOutlined />, label: 'V3 - Warehouse Shared', requiredPermissions: ['purchasing.view'] },
       { key: '/purchase-planning/assortment', icon: <SwapOutlined />, label: 'Assortment Releases', requiredPermissions: ['purchasing.view'] },
+      { key: '/purchase-planning/buyer-checklist', icon: <CheckCircleOutlined />, label: 'Buyer Checklist', requiredPermissions: ['purchasing.view'] },
     ],
   },
   {
@@ -427,7 +429,7 @@ export default function AppLayout() {
 
   useEffect(() => {
     setOpenKeys(desiredOpenKeys)
-  }, [currentPath])
+  }, [currentPath, desiredOpenKeys.join('|')])
 
   useEffect(() => {
     if (!currentHelp) setHelpDrawerOpen(false)

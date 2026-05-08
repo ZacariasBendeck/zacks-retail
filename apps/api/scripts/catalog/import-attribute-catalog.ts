@@ -165,6 +165,7 @@ interface ImportCounts {
   macroRulesSkippedMissingValue: number;
   assignmentsInserted: number;
   assignmentsUpdated: number;
+  assignmentsSkippedMissingValue: number;
 }
 
 async function upsertDimensions(
@@ -323,35 +324,65 @@ async function upsertAssignments(
   assignments: AssignmentIn[],
   counts: ImportCounts,
 ): Promise<void> {
-  // One statement per row keeps the code simple and matches how
-  // seed:sku-assignments writes. Still wrapped in a transaction by main().
-  for (const a of assignments) {
-    const r = await client.query<{ inserted: boolean }>(
-      `INSERT INTO app.sku_attribute_assignment (sku_code, dimension_id, value_id, assigned_by, assigned_at)
-       SELECT $1,
-              dim.id,
-              val.id,
-              $4,
-              $5::timestamptz
-       FROM app.attribute_dimension dim
-       JOIN app.attribute_value val ON val.dimension_id = dim.id AND val.code = $3
-       WHERE dim.code = $2
-       ON CONFLICT (sku_code, dimension_id, value_id) DO UPDATE SET
-         assigned_by = EXCLUDED.assigned_by,
-         assigned_at = EXCLUDED.assigned_at
-       RETURNING (xmax = 0) AS inserted`,
-      [a.skuCode, a.dimensionCode, a.valueCode, a.assignedBy, a.assignedAt],
+  const chunkSize = 1_000;
+  for (let offset = 0; offset < assignments.length; offset += chunkSize) {
+    const chunk = assignments.slice(offset, offset + chunkSize);
+    const valuesSql: string[] = [];
+    const params: Array<string | null> = [];
+
+    chunk.forEach((a, index) => {
+      const base = index * 5;
+      valuesSql.push(`($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}::timestamptz)`);
+      params.push(a.skuCode, a.dimensionCode, a.valueCode, a.assignedBy, a.assignedAt);
+    });
+
+    const r = await client.query<{
+      input_count: number;
+      resolved_count: number;
+      inserted_count: number;
+      updated_count: number;
+    }>(
+      `WITH input (sku_code, dimension_code, value_code, assigned_by, assigned_at) AS (
+         VALUES ${valuesSql.join(',\n                ')}
+       ),
+       resolved AS (
+         SELECT DISTINCT ON (i.sku_code, dim.id, val.id)
+                i.sku_code,
+                dim.id AS dimension_id,
+                val.id AS value_id,
+                i.assigned_by,
+                i.assigned_at
+           FROM input i
+           JOIN app.sku sku ON sku.code = i.sku_code
+           JOIN app.attribute_dimension dim ON dim.code = i.dimension_code
+           JOIN app.attribute_value val ON val.dimension_id = dim.id AND val.code = i.value_code
+          ORDER BY i.sku_code, dim.id, val.id
+       ),
+       upserted AS (
+         INSERT INTO app.sku_attribute_assignment (sku_code, dimension_id, value_id, assigned_by, assigned_at)
+         SELECT sku_code, dimension_id, value_id, assigned_by, assigned_at
+           FROM resolved
+         ON CONFLICT (sku_code, dimension_id, value_id) DO UPDATE SET
+           assigned_by = EXCLUDED.assigned_by,
+           assigned_at = EXCLUDED.assigned_at
+         RETURNING (xmax = 0) AS inserted
+       )
+       SELECT
+         (SELECT COUNT(*)::int FROM input) AS input_count,
+         (SELECT COUNT(*)::int FROM resolved) AS resolved_count,
+         COUNT(*) FILTER (WHERE inserted)::int AS inserted_count,
+         COUNT(*) FILTER (WHERE NOT inserted)::int AS updated_count
+       FROM upserted`,
+      params,
     );
-    if (r.rowCount === 0) {
-      // Dimension or value missing from target DB (shouldn't happen since we
-      // just upserted them, but defense-in-depth for partial imports).
-      console.warn(
-        `  skipped assignment: sku=${a.skuCode} dim=${a.dimensionCode} value=${a.valueCode} (dimension or value not present after upsert)`,
-      );
-      continue;
-    }
-    if (r.rows[0]?.inserted) counts.assignmentsInserted += 1;
-    else counts.assignmentsUpdated += 1;
+
+    const row = r.rows[0];
+    counts.assignmentsInserted += row?.inserted_count ?? 0;
+    counts.assignmentsUpdated += row?.updated_count ?? 0;
+    counts.assignmentsSkippedMissingValue += Math.max(
+      0,
+      (row?.input_count ?? chunk.length) - (row?.resolved_count ?? 0),
+    );
   }
 }
 
@@ -404,6 +435,7 @@ async function main(): Promise<void> {
     macroRulesSkippedMissingValue: 0,
     assignmentsInserted: 0,
     assignmentsUpdated: 0,
+    assignmentsSkippedMissingValue: 0,
   };
 
   try {
@@ -439,7 +471,7 @@ async function main(): Promise<void> {
     console.log(`  family rules  : ${counts.rulesInserted} inserted, ${counts.rulesUpdated} updated, ${counts.rulesSkippedMissingFamily} skipped (missing family)`);
     console.log(`  macro rules   : ${counts.macroRulesInserted} inserted, ${counts.macroRulesUpdated} updated, ${counts.macroRulesSkippedMissingValue} skipped (missing value)`);
     if (!args.skipAssignments) {
-      console.log(`  assignments   : ${counts.assignmentsInserted} inserted, ${counts.assignmentsUpdated} updated`);
+      console.log(`  assignments   : ${counts.assignmentsInserted} inserted, ${counts.assignmentsUpdated} updated, ${counts.assignmentsSkippedMissingValue} skipped (missing SKU/dimension/value)`);
     }
   } catch (err) {
     await client.query('ROLLBACK');

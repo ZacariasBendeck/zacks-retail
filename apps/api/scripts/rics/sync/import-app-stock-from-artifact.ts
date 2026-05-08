@@ -27,10 +27,18 @@ interface ArtifactManifest {
 
 interface Args {
   manifestPath: string | null;
+  resumeAfterStockMovements: boolean;
+  deferStockMovementIndexes: boolean;
+  baselineOnlyStockLevels: boolean;
 }
 
 function parseArgs(): Args {
-  const args: Args = { manifestPath: null };
+  const args: Args = {
+    manifestPath: null,
+    resumeAfterStockMovements: false,
+    deferStockMovementIndexes: false,
+    baselineOnlyStockLevels: false,
+  };
   const argv = process.argv.slice(2);
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -39,6 +47,15 @@ function parseArgs(): Args {
         break;
       case '--manifest':
         args.manifestPath = String(argv[++i] ?? '').trim() || null;
+        break;
+      case '--resume-after-stock-movements':
+        args.resumeAfterStockMovements = true;
+        break;
+      case '--defer-stock-movement-indexes':
+        args.deferStockMovementIndexes = true;
+        break;
+      case '--baseline-only-stock-levels':
+        args.baselineOnlyStockLevels = true;
         break;
       case '--help':
       case '-h':
@@ -64,6 +81,11 @@ function printHelpAndExit(code: number): never {
       '  - app.stock_movement',
       '  - app.stock_level',
       '  - app.inventory_sales_cell',
+      '',
+      'Resume flags:',
+      '  --resume-after-stock-movements   skip inv_changes staging and stock_movement import',
+      '  --defer-stock-movement-indexes   resume without recreating stock_movement secondary indexes',
+      '  --baseline-only-stock-levels     rebuild stock_level from inventory_quantities only',
       '',
       'No persistent writes land in rics_mirror.',
     ].join('\n'),
@@ -252,7 +274,8 @@ async function dropIndexesForBulkLoad(
 }
 
 async function createIndexes(client: Client, indexes: readonly IndexDefinition[]): Promise<void> {
-  await client.query(`SET maintenance_work_mem = '512MB'`);
+  await client.query(`SET statement_timeout = 0`);
+  await client.query(`SET maintenance_work_mem = '64MB'`);
   for (const index of indexes) {
     const started = Date.now();
     console.log(`        ensuring ${index.name}...`);
@@ -261,25 +284,103 @@ async function createIndexes(client: Client, indexes: readonly IndexDefinition[]
   }
 }
 
-async function importStockMovementsBulk(client: Client, sourceTableName: string): Promise<{
+interface StockMovementResetPlan {
+  mode: 'truncate' | 'delete-rics';
+  estimatedRows: number;
+}
+
+const STOCK_MOVEMENT_DEPENDENT_TABLES = [
+  'app.manual_receipt_line',
+  'app.manual_return_line',
+  'app.transfer_line',
+  'app.po_receipt_line',
+  'app.import_inventory_true_up',
+  'app.import_inventory_receipt',
+  'app.stock_cost_event',
+] as const;
+
+const STOCK_MOVEMENT_SOURCE_BATCH_SIZE = 250_000;
+
+async function tableHasAnyRows(client: Client, tableName: string): Promise<boolean> {
+  const result = await client.query<{ exists: boolean }>(
+    `SELECT EXISTS (SELECT 1 FROM ${tableName} LIMIT 1) AS exists`,
+  );
+  return Boolean(result.rows[0]?.exists);
+}
+
+async function getTableRowEstimate(client: Client, tableName: string): Promise<number> {
+  const result = await client.query<{ estimate: string }>(
+    `SELECT GREATEST(0, COALESCE(reltuples, 0))::bigint::text AS estimate
+       FROM pg_class
+      WHERE oid = $1::regclass`,
+    [tableName],
+  );
+  return Number(result.rows[0]?.estimate ?? 0);
+}
+
+async function planStockMovementReset(client: Client): Promise<StockMovementResetPlan> {
+  const hasNonRicsRows = await client.query<{ exists: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1
+         FROM app.stock_movement
+        WHERE source_document_type IS DISTINCT FROM 'RICS_INV_CHANGE'
+        LIMIT 1
+     ) AS exists`,
+  );
+
+  if (hasNonRicsRows.rows[0]?.exists) {
+    return { mode: 'delete-rics', estimatedRows: 0 };
+  }
+
+  for (const tableName of STOCK_MOVEMENT_DEPENDENT_TABLES) {
+    if (await tableHasAnyRows(client, tableName)) {
+      return { mode: 'delete-rics', estimatedRows: 0 };
+    }
+  }
+
+  return {
+    mode: 'truncate',
+    estimatedRows: await getTableRowEstimate(client, 'app.stock_movement'),
+  };
+}
+
+async function importStockMovementsBulk(
+  client: Client,
+  sourceTableName: string,
+  resetPlan: StockMovementResetPlan,
+): Promise<{
   importedRows: number;
   replacedRows: number;
   durationMs: number;
 }> {
   const started = Date.now();
-  await client.query('BEGIN');
+  let importedRows = 0;
+  let replacedRows = 0;
   try {
+    await client.query('BEGIN');
     await client.query(`SET LOCAL synchronous_commit = OFF`);
     await client.query(`SET LOCAL statement_timeout = 0`);
-    console.log('      deleting existing RICS stock movements...');
-    const replaced = await client.query(
-      `DELETE FROM app.stock_movement WHERE source_document_type = 'RICS_INV_CHANGE'`,
-    );
-    console.log(`      deleted ${fmtNum(Number(replaced.rowCount ?? 0))} existing RICS stock movements`);
+    if (resetPlan.mode === 'truncate') {
+      console.log(
+        `      truncating app.stock_movement; only RICS rows are present ` +
+          `(~${fmtNum(resetPlan.estimatedRows)} rows)`,
+      );
+      await client.query(`TRUNCATE TABLE app.stock_movement CASCADE`);
+      replacedRows = resetPlan.estimatedRows;
+    } else {
+      console.log('      deleting existing RICS stock movements...');
+      const replaced = await client.query(
+        `DELETE FROM app.stock_movement WHERE source_document_type = 'RICS_INV_CHANGE'`,
+      );
+      replacedRows = Number(replaced.rowCount ?? 0);
+      console.log(`      deleted ${fmtNum(replacedRows)} existing RICS stock movements`);
+    }
+    await client.query('COMMIT');
 
     console.log('      building SKU lookup...');
+    await client.query(`DROP TABLE IF EXISTS tmp_sku_map`);
     await client.query(`
-      CREATE TEMP TABLE tmp_sku_map ON COMMIT DROP AS
+      CREATE TEMP TABLE tmp_sku_map AS
       SELECT DISTINCT ON (sku_code)
         sku_code,
         id
@@ -297,9 +398,24 @@ async function importStockMovementsBulk(client: Client, sourceTableName: string)
       ORDER BY sku_code, priority, id
     `);
     await client.query(`CREATE INDEX ON tmp_sku_map (sku_code)`);
+    await client.query(`ANALYZE tmp_sku_map`);
 
-    console.log('      inserting stock movement ledger rows...');
-    const insertResult = await client.query(
+    const maxSeqResult = await client.query<{ max_seq: string }>(
+      `SELECT COALESCE(MAX(import_seq), 0)::bigint::text AS max_seq FROM ${quoteIdent(sourceTableName)}`,
+    );
+    const maxSeq = Number(maxSeqResult.rows[0]?.max_seq ?? 0);
+
+    console.log(
+      `      inserting stock movement ledger rows in ` +
+        `${fmtNum(STOCK_MOVEMENT_SOURCE_BATCH_SIZE)}-source-row batches...`,
+    );
+    for (let startSeq = 1; startSeq <= maxSeq; startSeq += STOCK_MOVEMENT_SOURCE_BATCH_SIZE) {
+      const endSeqExclusive = startSeq + STOCK_MOVEMENT_SOURCE_BATCH_SIZE;
+      await client.query('BEGIN');
+      try {
+        await client.query(`SET LOCAL synchronous_commit = OFF`);
+        await client.query(`SET LOCAL statement_timeout = 0`);
+        const insertResult = await client.query(
       `
       INSERT INTO app.stock_movement (
         id,
@@ -408,7 +524,9 @@ async function importStockMovementsBulk(client: Client, sourceTableName: string)
       FROM ${quoteIdent(sourceTableName)} src
       INNER JOIN tmp_sku_map sku_map
         ON sku_map.sku_code = btrim(src.sku)
-      WHERE COALESCE(src.qty, 0) <> 0
+      WHERE src.import_seq >= $1
+        AND src.import_seq < $2
+        AND COALESCE(src.qty, 0) <> 0
         AND src.store IS NOT NULL
         AND src.store > 0
         AND src.sku IS NOT NULL
@@ -416,12 +534,29 @@ async function importStockMovementsBulk(client: Client, sourceTableName: string)
         AND src.chg_type IS NOT NULL
         AND btrim(src.chg_type) IN ('TIN', 'TOU', 'POR', 'RET', 'PHY', 'REC')
       `,
+          [startSeq, endSeqExclusive],
     );
 
-    await client.query('COMMIT');
+        await client.query('COMMIT');
+        importedRows += Number(insertResult.rowCount ?? 0);
+        console.log(
+          `        source ${fmtNum(startSeq)}-${fmtNum(Math.min(endSeqExclusive - 1, maxSeq))}: ` +
+            `${fmtNum(Number(insertResult.rowCount ?? 0))} inserted ` +
+            `(${fmtNum(importedRows)} total)`,
+        );
+      } catch (error) {
+        try {
+          await client.query('ROLLBACK');
+        } catch {
+          // ignore rollback failure
+        }
+        throw error;
+      }
+    }
+
     return {
-      importedRows: Number(insertResult.rowCount ?? 0),
-      replacedRows: Number(replaced.rowCount ?? 0),
+      importedRows,
+      replacedRows,
       durationMs: Date.now() - started,
     };
   } catch (error) {
@@ -438,6 +573,7 @@ async function rebuildStockLevelsBulk(
   client: Client,
   inventoryQuantitiesTable: string,
   sizeTypesTable: string,
+  opts?: { baselineOnly?: boolean },
 ): Promise<{ projectionRowsWritten: number; durationMs: number }> {
   const started = Date.now();
   await client.query('BEGIN');
@@ -552,7 +688,19 @@ async function rebuildStockLevelsBulk(
         GROUP BY sku_id, store_id, column_label, row_label
       ),
       movement_replay AS (
-        SELECT
+        ${
+          opts?.baselineOnly
+            ? `SELECT
+          NULL::uuid AS sku_id,
+          NULL::integer AS store_id,
+          NULL::text AS column_label,
+          NULL::text AS row_label,
+          NULL::integer AS quantity_delta,
+          NULL::timestamp AS last_movement_at,
+          NULL::timestamp AS last_received_at,
+          NULL::integer AS movement_count
+        WHERE false`
+            : `SELECT
           sku_id,
           store_id,
           COALESCE(column_label, '') AS column_label,
@@ -563,7 +711,8 @@ async function rebuildStockLevelsBulk(
           COUNT(*)::integer AS movement_count
         FROM app.stock_movement
         WHERE source_document_type <> 'RICS_INV_CHANGE'
-        GROUP BY sku_id, store_id, COALESCE(column_label, ''), COALESCE(row_label, '')
+        GROUP BY sku_id, store_id, COALESCE(column_label, ''), COALESCE(row_label, '')`
+        }
       ),
       projection AS (
         SELECT
@@ -637,12 +786,13 @@ async function main(): Promise<void> {
   }
 
   const { manifest, manifestDir } = loadManifest(args.manifestPath!);
-  const invChanges = requireTable(manifest, 'inv_changes');
+  const invChanges = args.resumeAfterStockMovements ? null : requireTable(manifest, 'inv_changes');
   const inventoryQuantities = requireTable(manifest, 'inventory_quantities');
   const sizeTypes = requireTable(manifest, 'size_types');
 
   const client = new Client({ connectionString: databaseUrl });
   await client.connect();
+  await client.query(`SET temp_buffers = '256MB'`);
 
   try {
     console.log('========================================');
@@ -651,31 +801,53 @@ async function main(): Promise<void> {
     console.log(`manifest : ${args.manifestPath}`);
     console.log('----------------------------------------');
 
-    console.log(`[1/4] staging ${invChanges.targetTable}...`);
-    const invChangesTable = await stageTable(client, manifestDir, invChanges, { addIdentity: true });
-    console.log(`      loaded ${fmtNum(invChanges.rowCount)} rows into ${invChangesTable}`);
-    await client.query(`ANALYZE ${quoteIdent(invChangesTable)}`);
-
-    console.log('[2/4] rebuilding app.stock_movement...');
-    console.log('      ensuring stock_movement secondary indexes exist...');
-    await createIndexes(client, STOCK_MOVEMENT_SECONDARY_INDEXES);
-    console.log('      dropping stock_movement secondary indexes for bulk load...');
-    const stockMovementIndexesDropped = await dropIndexesForBulkLoad(client, 'app', STOCK_MOVEMENT_SECONDARY_INDEXES);
-    if (!stockMovementIndexesDropped) {
-      console.log('      stock_movement import will continue with some indexes still in place.');
-    }
     let movementResult: Awaited<ReturnType<typeof importStockMovementsBulk>>;
-    try {
-      movementResult = await importStockMovementsBulk(client, invChangesTable);
-    } finally {
-      console.log('      recreating stock_movement secondary indexes...');
-      await createIndexes(client, STOCK_MOVEMENT_SECONDARY_INDEXES);
+    if (args.resumeAfterStockMovements) {
+      console.log('[1/4] skipping inv_changes staging; resuming after stock_movement import.');
+      console.log('[2/4] verifying app.stock_movement resume point...');
+      const estimate = await getTableRowEstimate(client, 'app.stock_movement');
+      movementResult = { importedRows: estimate, replacedRows: 0, durationMs: 0 };
+      console.log(`      existing app.stock_movement estimate: ~${fmtNum(estimate)} rows`);
+      if (args.deferStockMovementIndexes) {
+        console.log('      stock_movement secondary indexes deferred for this resume run.');
+      } else {
+        console.log('      ensuring stock_movement secondary indexes exist...');
+        await createIndexes(client, STOCK_MOVEMENT_SECONDARY_INDEXES);
+      }
+    } else {
+      console.log(`[1/4] staging ${invChanges!.targetTable}...`);
+      const invChangesTable = await stageTable(client, manifestDir, invChanges!, { addIdentity: true });
+      console.log(`      loaded ${fmtNum(invChanges!.rowCount)} rows into ${invChangesTable}`);
+      await client.query(`ANALYZE ${quoteIdent(invChangesTable)}`);
+      console.log('      indexing staged inv_changes import_seq...');
+      await client.query(`CREATE INDEX ON ${quoteIdent(invChangesTable)} (import_seq)`);
+
+      console.log('[2/4] rebuilding app.stock_movement...');
+      console.log('      planning existing RICS stock movement reset...');
+      const stockMovementResetPlan = await planStockMovementReset(client);
+      if (stockMovementResetPlan.mode === 'delete-rics') {
+        console.log('      ensuring stock_movement secondary indexes exist...');
+        await createIndexes(client, STOCK_MOVEMENT_SECONDARY_INDEXES);
+      } else {
+        console.log('      reset will truncate stock_movement; skipping pre-load index ensure.');
+      }
+      console.log('      dropping stock_movement secondary indexes for bulk load...');
+      const stockMovementIndexesDropped = await dropIndexesForBulkLoad(client, 'app', STOCK_MOVEMENT_SECONDARY_INDEXES);
+      if (!stockMovementIndexesDropped) {
+        console.log('      stock_movement import will continue with some indexes still in place.');
+      }
+      try {
+        movementResult = await importStockMovementsBulk(client, invChangesTable, stockMovementResetPlan);
+      } finally {
+        console.log('      recreating stock_movement secondary indexes...');
+        await createIndexes(client, STOCK_MOVEMENT_SECONDARY_INDEXES);
+      }
+      await client.query(`DROP TABLE IF EXISTS ${quoteIdent(invChangesTable)}`);
     }
     console.log(
       `      imported ${fmtNum(movementResult.importedRows)} rows ` +
         `(${fmtDuration(movementResult.durationMs)})`,
     );
-    await client.query(`DROP TABLE IF EXISTS ${quoteIdent(invChangesTable)}`);
 
     console.log(`[3/4] staging ${sizeTypes.targetTable} + ${inventoryQuantities.targetTable}...`);
     const sizeTypeTable = await stageTable(client, manifestDir, sizeTypes);
@@ -697,7 +869,12 @@ async function main(): Promise<void> {
     }
     let stockLevelResult: Awaited<ReturnType<typeof rebuildStockLevelsBulk>>;
     try {
-      stockLevelResult = await rebuildStockLevelsBulk(client, inventoryQuantitiesTable, sizeTypeTable);
+      if (args.baselineOnlyStockLevels) {
+        console.log('      movement replay skipped; rebuilding from inventory_quantities baseline only.');
+      }
+      stockLevelResult = await rebuildStockLevelsBulk(client, inventoryQuantitiesTable, sizeTypeTable, {
+        baselineOnly: args.baselineOnlyStockLevels,
+      });
     } finally {
       console.log('      recreating stock_level secondary indexes...');
       await createIndexes(client, STOCK_LEVEL_SECONDARY_INDEXES);

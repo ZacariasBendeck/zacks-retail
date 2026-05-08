@@ -8,6 +8,7 @@ import {
   specFromPreset,
   type DateSpec,
   type DateSpecPreset,
+  type ResolvedDateRange,
 } from '../../utils/dateSpec'
 
 const { Text } = Typography
@@ -20,6 +21,8 @@ interface Props {
   // RangePicker already shows the literal dates). Defaults to false — the
   // preview is helpful for relative specs but harmless for fixed.
   suppressPreviewWhenFixed?: boolean
+  resolve?: (value: DateSpec) => ResolvedDateRange
+  describe?: (value: DateSpec) => string
 }
 
 /**
@@ -36,9 +39,11 @@ export default function DateRangeControl({
   value,
   onChange,
   suppressPreviewWhenFixed = false,
+  resolve = resolveDateSpec,
+  describe = describeDateSpec,
 }: Props): JSX.Element {
   const preset = presetFromSpec(value)
-  const resolved = resolveDateSpec(value)
+  const resolved = resolve(value)
 
   const onPresetChange = (next: DateSpecPreset): void => {
     // When switching preset → fixed, preserve the currently-resolved window
@@ -78,7 +83,7 @@ export default function DateRangeControl({
         <Text type="secondary" style={{ fontSize: 12 }}>
           {value.type === 'fixed'
             ? `${resolved.startDate} → ${resolved.endDate}`
-            : describeDateSpec(value)}
+            : describe(value)}
         </Text>
       )}
     </Space>

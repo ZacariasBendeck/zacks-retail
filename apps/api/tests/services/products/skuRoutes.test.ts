@@ -75,6 +75,11 @@ jest.mock('../../../src/services/products/auditLog', () => ({
 }));
 
 import app from '../../../src/app';
+import { SkuRepository } from '../../../src/repositories/rics/SkuRepository';
+
+beforeEach(() => {
+  jest.clearAllMocks();
+});
 
 describe('GET /api/v1/products/skus', () => {
   it('returns an array', async () => {
@@ -87,6 +92,15 @@ describe('GET /api/v1/products/skus', () => {
   it('accepts filter query params without error', async () => {
     const res = await request(app).get('/api/v1/products/skus?vendor=ACME&category=100');
     expect(res.status).toBe(200);
+  });
+
+  it('passes SKU-only pattern search separately from broad q search', async () => {
+    const res = await request(app).get('/api/v1/products/skus?sku=AB*01&q=widget');
+    expect(res.status).toBe(200);
+    expect(SkuRepository.findAll).toHaveBeenCalledWith(expect.objectContaining({
+      sku: 'AB*01',
+      q: 'widget',
+    }));
   });
 });
 

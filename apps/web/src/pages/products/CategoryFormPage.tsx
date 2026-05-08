@@ -3,10 +3,12 @@ import { useEffect } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
   useCategory,
+  useCategoryBuyerOptions,
   useCreateCategory,
   useUpdateCategory,
 } from '../../hooks/useProductsTaxonomy'
 import { useProductFamilies } from '../../hooks/useProductFamilies'
+import { useStores } from '../../hooks/useStores'
 import type { CategoryInput } from '../../types/productsTaxonomy'
 
 export default function CategoryFormPage() {
@@ -17,6 +19,8 @@ export default function CategoryFormPage() {
   const editing = number != null && number !== 'new'
   const n = editing ? Number(number) : undefined
   const { data } = useCategory(n)
+  const { data: categoryBuyerOptions, isLoading: buyersLoading } = useCategoryBuyerOptions()
+  const { data: stores, isLoading: storesLoading } = useStores()
   const { data: families, isLoading: familiesLoading } = useProductFamilies()
   const create = useCreateCategory()
   const update = useUpdateCategory()
@@ -27,6 +31,8 @@ export default function CategoryFormPage() {
         number: data.number,
         description: data.description,
         productFamilyCode: data.productFamilyCode,
+        buyerCodes: data.buyerCodes ?? data.buyers?.map((buyer) => buyer.code) ?? [],
+        storeIds: data.storeIds ?? data.stores?.map((store) => store.storeId) ?? [],
       })
     }
   }, [editing, data, form])
@@ -39,6 +45,8 @@ export default function CategoryFormPage() {
           patch: {
             description: values.description,
             productFamilyCode: values.productFamilyCode ?? null,
+            buyerCodes: values.buyerCodes ?? [],
+            storeIds: values.storeIds ?? [],
           },
         })
         message.success('Category updated')
@@ -46,6 +54,8 @@ export default function CategoryFormPage() {
         await create.mutateAsync({
           ...values,
           productFamilyCode: values.productFamilyCode ?? null,
+          buyerCodes: values.buyerCodes ?? [],
+          storeIds: values.storeIds ?? [],
         })
         message.success('Category created')
       }
@@ -91,6 +101,32 @@ export default function CategoryFormPage() {
             options={(families ?? []).map((family) => ({
               value: family.code,
               label: `${family.labelEs} (${family.code})`,
+            }))}
+          />
+        </Form.Item>
+        <Form.Item name="buyerCodes" label="Buyers">
+          <Select
+            mode="multiple"
+            loading={buyersLoading}
+            optionFilterProp="label"
+            placeholder="Assign buyers"
+            options={(categoryBuyerOptions ?? []).map((buyer) => ({
+              value: buyer.code,
+              label: `${buyer.labelEs} (${buyer.code})`,
+              disabled: !buyer.isActive,
+            }))}
+          />
+        </Form.Item>
+        <Form.Item name="storeIds" label="Stores">
+          <Select
+            mode="multiple"
+            loading={storesLoading}
+            optionFilterProp="label"
+            placeholder="Select stores"
+            options={(stores ?? []).map((store) => ({
+              value: store.id,
+              label: `${store.code} - ${store.name}`,
+              disabled: !store.active,
             }))}
           />
         </Form.Item>

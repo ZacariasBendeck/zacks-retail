@@ -137,6 +137,7 @@ export default function CatalogPage() {
               <Button
                 type="text"
                 size="small"
+                aria-label={`Editar dimensión ${dimension.labelEs}`}
                 icon={<EditOutlined />}
                 onClick={() => editDimension(dimension)}
               />
@@ -146,7 +147,13 @@ export default function CatalogPage() {
               description="Esta accion se bloquea si hay SKUs con asignaciones activas."
               onConfirm={() => void deleteDimension(dimension)}
             >
-              <Button type="text" size="small" danger icon={<DeleteOutlined />} />
+              <Button
+                type="text"
+                size="small"
+                danger
+                aria-label={`Eliminar dimensión ${dimension.labelEs}`}
+                icon={<DeleteOutlined />}
+              />
             </Popconfirm>
           </Space>
         </div>
@@ -302,9 +309,19 @@ export default function CatalogPage() {
                         </Space>
                       }
                       extra={
-                        selectedDim.descriptionEs ? (
-                          <Typography.Text type="secondary">{selectedDim.descriptionEs}</Typography.Text>
-                        ) : null
+                        <Space wrap style={{ justifyContent: 'flex-end' }}>
+                          {selectedDim.descriptionEs ? (
+                            <Typography.Text type="secondary">{selectedDim.descriptionEs}</Typography.Text>
+                          ) : null}
+                          <Button
+                            size="small"
+                            icon={<EditOutlined />}
+                            aria-label={`Editar dimensión seleccionada ${selectedDim.labelEs}`}
+                            onClick={() => editDimension(selectedDim)}
+                          >
+                            Editar dimensión
+                          </Button>
+                        </Space>
                       }
                     >
                       <Tabs

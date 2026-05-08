@@ -1544,6 +1544,22 @@ model CategoryProductFamily {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
+/// Buyer ownership for taxonomy categories. A category can have multiple buyers;
+/// buyers reuse the `buyer` AttributeValue catalog.
+model CategoryBuyerAssignment {
+  categoryNumber Int              @map("category_number") @db.SmallInt
+  category       TaxonomyCategory @relation(fields: [categoryNumber], references: [number], onDelete: Cascade, onUpdate: Cascade)
+  buyerValueId   Int              @map("buyer_value_id") @db.SmallInt
+  buyerValue     AttributeValue   @relation(fields: [buyerValueId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  updatedBy      String           @default("system") @map("updated_by")
+  updatedAt      DateTime         @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@id([categoryNumber, buyerValueId])
+  @@index([buyerValueId, categoryNumber], map: "category_buyer_assignment_buyer_idx")
+  @@map("category_buyer_assignment")
+  @@schema("app")
+}
+
 // SKU lifecycle — net-new SKUs created in Zack's Retail.
 //
 // Spec: docs/dev/plans/http-localhost-3000-inventory-skus-new-i-piped-galaxy.md
@@ -3204,6 +3220,7 @@ model AttributeValue {
   isActive      Boolean                  @default(true) @map("is_active")
   createdAt     DateTime                 @default(now()) @map("created_at")
   assignments   SkuAttributeAssignment[]
+  categoryBuyerAssignments CategoryBuyerAssignment[]
 
   @@unique([dimensionId, code])
   @@map("attribute_value")
@@ -4273,6 +4290,7 @@ model TaxonomyCategory {
   number          Int      @id @map("number") @db.SmallInt
   description     String   @map("desc")
   dateLastChanged DateTime @default(now()) @updatedAt @map("date_last_changed")
+  buyerAssignments CategoryBuyerAssignment[]
 
   @@map("taxonomy_category")
   @@schema("app")

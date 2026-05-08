@@ -30,6 +30,32 @@ import {
   isPurchasePlanningV3ServiceError,
   listPurchasePlansV3,
 } from '../services/purchasePlanning/purchasePlanningV3Service';
+import {
+  addCarryoverLine,
+  addPlannedStyle,
+  archiveBuyerWorkbook,
+  bulkUpdateStoreCategoryCarrying,
+  createModelLineFromCandidate,
+  copySeedModel,
+  createBuyerWorkbook,
+  deletePlannedStyle,
+  flagCandidateUnavailable,
+  flagCarryoverUnavailable,
+  getBuyerWorkbook,
+  isBuyerWorkbookServiceError,
+  linkPurchaseOrder,
+  listBuyerChecklistCategories,
+  listCarryoverCandidates,
+  listBuyerWorkbooks,
+  listStoreCategoryCarrying,
+  unlinkPurchaseOrder,
+  updateAttributePlan,
+  updateBuyerCategoryCard,
+  updateCarryoverCandidate,
+  updateCarryoverLine,
+  updateNewStyleTargets,
+  updatePlannedStyle,
+} from '../services/purchasePlanning/buyerWorkbookService';
 
 const router: IRouter = Router();
 
@@ -194,9 +220,518 @@ function sendV3ServiceError(res: Response, err: unknown): boolean {
   return true;
 }
 
+function sendBuyerWorkbookServiceError(res: Response, err: unknown): boolean {
+  if (!isBuyerWorkbookServiceError(err)) return false;
+  res.status(err.status).json({ error: { code: err.code, message: err.message } });
+  return true;
+}
+
 function routeParam(value: string | string[] | undefined): string {
   return Array.isArray(value) ? value[0] ?? '' : value ?? '';
 }
+
+const buyerSeasonSchema = z.enum(['SPRING_SUMMER', 'FALL_WINTER']);
+const buyerWorkbookStatusSchema = z.enum(['DRAFT', 'ARCHIVED']);
+const buyerCategoryStatusSchema = z.enum([
+  'NOT_STARTED',
+  'HISTORY_REVIEWED',
+  'CARRYOVER_REVIEW',
+  'CARRYOVERS',
+  'NEW_STYLES',
+  'PO_LINKED',
+  'COMPLETE',
+]);
+const plannedStyleStatusSchema = z.enum(['PLANNED', 'SELECTED', 'LINKED', 'CANCELLED']);
+const buyerCarryoverDecisionSchema = z.enum(['UNREVIEWED', 'WINNER', 'MAYBE', 'DROP']);
+const buyerCarryoverAvailabilitySchema = z.enum(['UNKNOWN', 'AVAILABLE', 'UNAVAILABLE']);
+
+const buyerWorkbookCreateSchema = z.object({
+  label: z.string().trim().min(1).max(200).optional(),
+  buyingSeason: buyerSeasonSchema,
+  seasonYear: z.number().int().min(2020).max(2100),
+  seedStoreId: z.number().int().positive(),
+  targetStoreIds: z.array(z.number().int().positive()).max(500).optional(),
+  categoryNumbers: z.array(z.number().int().positive()).max(500).optional(),
+  departmentNumbers: z.array(z.number().int().positive()).max(100).optional(),
+  buyer: z.string().trim().max(120).optional(),
+  createdBy: z.string().trim().max(120).optional(),
+}).strict().superRefine((value, ctx) => {
+  if (!(value.categoryNumbers?.length) && !(value.departmentNumbers?.length)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['categoryNumbers'],
+      message: 'Select at least one category or department',
+    });
+  }
+});
+
+const buyerCardUpdateSchema = z.object({
+  status: buyerCategoryStatusSchema.optional(),
+  targetNewSkuCount: z.number().int().min(0).max(10_000).optional(),
+  targetCarryoverSkuCount: z.number().int().min(0).max(10_000).optional(),
+  notes: z.string().max(4000).nullable().optional(),
+  actor: z.string().trim().max(120).optional(),
+}).strict();
+
+const buyerCarryoverSizeCellSchema = z.object({
+  rowLabel: z.string().max(64).nullable().optional(),
+  columnLabel: z.string().max(64).nullable().optional(),
+  quantity: z.number().int().min(0).max(100_000),
+}).strict();
+
+const buyerCarryoverCreateSchema = z.object({
+  storeId: z.number().int().positive().nullable().optional(),
+  skuCode: z.string().trim().min(1).max(32),
+  skuDescription: z.string().trim().max(500).nullable().optional(),
+  color: z.string().trim().max(120).nullable().optional(),
+  sizeCells: z.array(buyerCarryoverSizeCellSchema).max(500).optional(),
+  totalQuantity: z.number().int().min(0).max(1_000_000).nullable().optional(),
+  notes: z.string().max(4000).nullable().optional(),
+  actor: z.string().trim().max(120).optional(),
+}).strict();
+
+const buyerCarryoverUpdateSchema = z.object({
+  sizeCells: z.array(buyerCarryoverSizeCellSchema.extend({
+    sizeLabel: z.string().max(120).nullable().optional(),
+    plannedQty: z.number().int().min(0).max(100_000).optional(),
+    recommendedQty: z.number().int().min(0).max(100_000).optional(),
+    onHand: z.number().int().min(0).max(100_000).optional(),
+    currentOnOrder: z.number().int().min(0).max(100_000).optional(),
+    futureOnOrder: z.number().int().min(0).max(100_000).optional(),
+    modelQty: z.number().int().min(0).max(100_000).optional(),
+    modelShort: z.number().int().min(0).max(100_000).optional(),
+    skuSalesQty: z.number().int().min(0).max(1_000_000).optional(),
+    forecastDemandQty: z.number().int().min(0).max(1_000_000).optional(),
+  })).max(500).optional(),
+  totalQuantity: z.number().int().min(0).max(1_000_000).nullable().optional(),
+  notes: z.string().max(4000).nullable().optional(),
+  actor: z.string().trim().max(120).optional(),
+}).strict();
+
+const buyerCopyModelSchema = z.object({
+  targetStoreIds: z.array(z.number().int().positive()).max(500).optional(),
+  actor: z.string().trim().max(120).optional(),
+}).strict();
+
+const buyerCarryoverUnavailableSchema = z.object({
+  reason: z.string().trim().min(1).max(1000),
+  actor: z.string().trim().max(120).optional(),
+}).strict();
+
+const buyerCarryoverCandidateUpdateSchema = z.object({
+  decision: buyerCarryoverDecisionSchema.optional(),
+  availability: buyerCarryoverAvailabilitySchema.optional(),
+  notes: z.string().max(4000).nullable().optional(),
+  actor: z.string().trim().max(120).optional(),
+}).strict();
+
+const buyerNewStyleTargetsSchema = z.object({
+  replacementStyleTargetCount: z.number().int().min(0).max(10_000).optional(),
+  additionalNewStyleTargetCount: z.number().int().min(0).max(10_000).optional(),
+  totalNewStyleTargetCount: z.number().int().min(0).max(10_000).optional(),
+  actor: z.string().trim().max(120).optional(),
+}).strict();
+
+const buyerAttributePlanSchema = z.object({
+  rows: z.array(z.object({
+    dimensionCode: z.string().trim().min(1).max(120),
+    dimensionLabel: z.string().trim().min(1).max(200),
+    valueCode: z.string().trim().min(1).max(120),
+    valueLabel: z.string().trim().min(1).max(200),
+    plannedStyleCount: z.number().int().min(0).max(10_000).nullable().optional(),
+    plannedUnits: z.number().int().min(0).max(1_000_000).nullable().optional(),
+    notes: z.string().max(4000).nullable().optional(),
+  }).strict()).min(1).max(1000),
+  actor: z.string().trim().max(120).optional(),
+}).strict();
+
+const buyerPlannedStyleCreateSchema = z.object({
+  replacementForCarryoverLineId: z.string().trim().min(1).nullable().optional(),
+  replacementForCarryoverCandidateId: z.string().trim().min(1).nullable().optional(),
+  vendorCode: z.string().trim().max(32).nullable().optional(),
+  vendorName: z.string().trim().max(200).nullable().optional(),
+  workingStyle: z.string().trim().max(200).nullable().optional(),
+  description: z.string().trim().max(500).nullable().optional(),
+  color: z.string().trim().max(120).nullable().optional(),
+  colorFamily: z.string().trim().max(120).nullable().optional(),
+  attributes: z.record(z.string(), z.unknown()).optional(),
+  quotedUnitCost: z.number().min(0).max(1_000_000).nullable().optional(),
+  targetNewSkuCount: z.number().int().min(0).max(10_000).nullable().optional(),
+  targetUnits: z.number().int().min(0).max(1_000_000).nullable().optional(),
+  notes: z.string().max(4000).nullable().optional(),
+  actor: z.string().trim().max(120).optional(),
+}).strict();
+
+const buyerPlannedStyleUpdateSchema = buyerPlannedStyleCreateSchema
+  .omit({ replacementForCarryoverLineId: true })
+  .extend({
+    status: plannedStyleStatusSchema.optional(),
+    linkedSkuId: z.string().trim().min(1).nullable().optional(),
+    linkedSkuCode: z.string().trim().max(32).nullable().optional(),
+  })
+  .strict();
+
+const buyerPoLinkSchema = z.object({
+  cardId: z.string().trim().min(1),
+  carryoverLineId: z.string().trim().min(1).nullable().optional(),
+  plannedStyleId: z.string().trim().min(1).nullable().optional(),
+  poId: z.string().trim().min(1),
+  poLineId: z.string().trim().min(1).nullable().optional(),
+  quantity: z.number().int().min(0).max(1_000_000).nullable().optional(),
+  notes: z.string().max(4000).nullable().optional(),
+  linkedBy: z.string().trim().max(120).optional(),
+}).strict();
+
+const buyerStoreCarryingBulkSchema = z.object({
+  categoryNumber: z.number().int().positive(),
+  storeIds: z.array(z.number().int().positive()).max(500).optional(),
+  chainCode: z.string().trim().max(64).nullable().optional(),
+  carries: z.boolean(),
+  exceptions: z.array(z.object({
+    storeId: z.number().int().positive(),
+    carries: z.boolean(),
+    note: z.string().max(1000).nullable().optional(),
+  }).strict()).max(500).optional(),
+  note: z.string().max(1000).nullable().optional(),
+  updatedBy: z.string().trim().max(120).optional(),
+}).strict();
+
+router.get('/store-category-carrying', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const categoryNumber = Number(req.query.categoryNumber);
+    if (!Number.isInteger(categoryNumber) || categoryNumber <= 0) {
+      sendZodError(res, [{ code: z.ZodIssueCode.custom, path: ['categoryNumber'], message: 'categoryNumber is required' }]);
+      return;
+    }
+    const rows = await listStoreCategoryCarrying(categoryNumber);
+    res.json({ rows });
+  } catch (err) {
+    if (sendBuyerWorkbookServiceError(res, err)) return;
+    next(err);
+  }
+});
+
+router.put('/store-category-carrying/bulk', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const parsed = buyerStoreCarryingBulkSchema.safeParse(req.body);
+    if (!parsed.success) {
+      sendZodError(res, parsed.error.issues);
+      return;
+    }
+    const rows = await bulkUpdateStoreCategoryCarrying(parsed.data);
+    res.json({ rows });
+  } catch (err) {
+    if (sendBuyerWorkbookServiceError(res, err)) return;
+    next(err);
+  }
+});
+
+router.get('/buyer-checklist/categories', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const buyer = typeof req.query.buyer === 'string' ? req.query.buyer : undefined;
+    const buyingSeason = typeof req.query.buyingSeason === 'string' ? req.query.buyingSeason : undefined;
+    const seasonYear = typeof req.query.seasonYear === 'string' ? Number(req.query.seasonYear) : undefined;
+    if (buyingSeason && !['SPRING_SUMMER', 'FALL_WINTER'].includes(buyingSeason)) {
+      sendZodError(res, [{ code: z.ZodIssueCode.custom, path: ['buyingSeason'], message: 'Invalid buying season' }]);
+      return;
+    }
+    if (seasonYear != null && (!Number.isInteger(seasonYear) || seasonYear < 2020 || seasonYear > 2100)) {
+      sendZodError(res, [{ code: z.ZodIssueCode.custom, path: ['seasonYear'], message: 'Invalid season year' }]);
+      return;
+    }
+    const rows = await listBuyerChecklistCategories({
+      buyer,
+      buyingSeason: buyingSeason as z.infer<typeof buyerSeasonSchema> | undefined,
+      seasonYear,
+    });
+    res.json({ rows });
+  } catch (err) {
+    if (sendBuyerWorkbookServiceError(res, err)) return;
+    next(err);
+  }
+});
+
+router.get('/buyer-workbooks', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const status = typeof req.query.status === 'string' ? req.query.status : undefined;
+    if (status && !['DRAFT', 'ARCHIVED', 'all'].includes(status)) {
+      sendZodError(res, [{ code: z.ZodIssueCode.custom, path: ['status'], message: 'Invalid status' }]);
+      return;
+    }
+    const workbooks = await listBuyerWorkbooks({ status: status as z.infer<typeof buyerWorkbookStatusSchema> | 'all' | undefined });
+    res.json({ workbooks });
+  } catch (err) {
+    if (sendBuyerWorkbookServiceError(res, err)) return;
+    next(err);
+  }
+});
+
+router.post('/buyer-workbooks', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const parsed = buyerWorkbookCreateSchema.safeParse(req.body);
+    if (!parsed.success) {
+      sendZodError(res, parsed.error.issues);
+      return;
+    }
+    const workbook = await createBuyerWorkbook(parsed.data);
+    res.status(201).json(workbook);
+  } catch (err) {
+    if (sendBuyerWorkbookServiceError(res, err)) return;
+    next(err);
+  }
+});
+
+router.get('/buyer-workbooks/:id', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const workbook = await getBuyerWorkbook(routeParam(req.params.id));
+    res.json(workbook);
+  } catch (err) {
+    if (sendBuyerWorkbookServiceError(res, err)) return;
+    next(err);
+  }
+});
+
+router.post('/buyer-workbooks/:id/archive', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const parsed = actorSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      sendZodError(res, parsed.error.issues);
+      return;
+    }
+    const workbook = await archiveBuyerWorkbook(routeParam(req.params.id), parsed.data.actor ?? 'system');
+    res.json(workbook);
+  } catch (err) {
+    if (sendBuyerWorkbookServiceError(res, err)) return;
+    next(err);
+  }
+});
+
+router.patch('/buyer-workbooks/:id/cards/:cardId', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const parsed = buyerCardUpdateSchema.safeParse(req.body);
+    if (!parsed.success) {
+      sendZodError(res, parsed.error.issues);
+      return;
+    }
+    const workbook = await updateBuyerCategoryCard(routeParam(req.params.id), routeParam(req.params.cardId), parsed.data);
+    res.json(workbook);
+  } catch (err) {
+    if (sendBuyerWorkbookServiceError(res, err)) return;
+    next(err);
+  }
+});
+
+router.post('/buyer-workbooks/:id/cards/:cardId/carryovers', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const parsed = buyerCarryoverCreateSchema.safeParse(req.body);
+    if (!parsed.success) {
+      sendZodError(res, parsed.error.issues);
+      return;
+    }
+    const workbook = await addCarryoverLine(routeParam(req.params.id), routeParam(req.params.cardId), parsed.data);
+    res.status(201).json(workbook);
+  } catch (err) {
+    if (sendBuyerWorkbookServiceError(res, err)) return;
+    next(err);
+  }
+});
+
+router.patch('/buyer-workbooks/:id/carryovers/:lineId', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const parsed = buyerCarryoverUpdateSchema.safeParse(req.body);
+    if (!parsed.success) {
+      sendZodError(res, parsed.error.issues);
+      return;
+    }
+    const workbook = await updateCarryoverLine(routeParam(req.params.id), routeParam(req.params.lineId), parsed.data);
+    res.json(workbook);
+  } catch (err) {
+    if (sendBuyerWorkbookServiceError(res, err)) return;
+    next(err);
+  }
+});
+
+router.get('/buyer-workbooks/:id/cards/:cardId/carryover-candidates', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const candidates = await listCarryoverCandidates(routeParam(req.params.id), routeParam(req.params.cardId));
+    res.json({ candidates });
+  } catch (err) {
+    if (sendBuyerWorkbookServiceError(res, err)) return;
+    next(err);
+  }
+});
+
+router.patch('/buyer-workbooks/:id/carryover-candidates/:candidateId', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const parsed = buyerCarryoverCandidateUpdateSchema.safeParse(req.body);
+    if (!parsed.success) {
+      sendZodError(res, parsed.error.issues);
+      return;
+    }
+    const workbook = await updateCarryoverCandidate(routeParam(req.params.id), routeParam(req.params.candidateId), parsed.data);
+    res.json(workbook);
+  } catch (err) {
+    if (sendBuyerWorkbookServiceError(res, err)) return;
+    next(err);
+  }
+});
+
+router.post('/buyer-workbooks/:id/carryover-candidates/:candidateId/create-model-line', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const parsed = actorSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      sendZodError(res, parsed.error.issues);
+      return;
+    }
+    const workbook = await createModelLineFromCandidate(routeParam(req.params.id), routeParam(req.params.candidateId), parsed.data);
+    res.status(201).json(workbook);
+  } catch (err) {
+    if (sendBuyerWorkbookServiceError(res, err)) return;
+    next(err);
+  }
+});
+
+router.post('/buyer-workbooks/:id/carryover-candidates/:candidateId/unavailable', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const parsed = buyerCarryoverUnavailableSchema.safeParse(req.body);
+    if (!parsed.success) {
+      sendZodError(res, parsed.error.issues);
+      return;
+    }
+    const workbook = await flagCandidateUnavailable(routeParam(req.params.id), routeParam(req.params.candidateId), parsed.data);
+    res.json(workbook);
+  } catch (err) {
+    if (sendBuyerWorkbookServiceError(res, err)) return;
+    next(err);
+  }
+});
+
+router.post('/buyer-workbooks/:id/cards/:cardId/copy-model', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const parsed = buyerCopyModelSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      sendZodError(res, parsed.error.issues);
+      return;
+    }
+    const workbook = await copySeedModel(routeParam(req.params.id), routeParam(req.params.cardId), parsed.data);
+    res.json(workbook);
+  } catch (err) {
+    if (sendBuyerWorkbookServiceError(res, err)) return;
+    next(err);
+  }
+});
+
+router.post('/buyer-workbooks/:id/carryovers/:lineId/unavailable', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const parsed = buyerCarryoverUnavailableSchema.safeParse(req.body);
+    if (!parsed.success) {
+      sendZodError(res, parsed.error.issues);
+      return;
+    }
+    const workbook = await flagCarryoverUnavailable(routeParam(req.params.id), routeParam(req.params.lineId), parsed.data);
+    res.json(workbook);
+  } catch (err) {
+    if (sendBuyerWorkbookServiceError(res, err)) return;
+    next(err);
+  }
+});
+
+router.patch('/buyer-workbooks/:id/cards/:cardId/new-style-targets', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const parsed = buyerNewStyleTargetsSchema.safeParse(req.body);
+    if (!parsed.success) {
+      sendZodError(res, parsed.error.issues);
+      return;
+    }
+    const workbook = await updateNewStyleTargets(routeParam(req.params.id), routeParam(req.params.cardId), parsed.data);
+    res.json(workbook);
+  } catch (err) {
+    if (sendBuyerWorkbookServiceError(res, err)) return;
+    next(err);
+  }
+});
+
+router.patch('/buyer-workbooks/:id/cards/:cardId/attribute-plan', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const parsed = buyerAttributePlanSchema.safeParse(req.body);
+    if (!parsed.success) {
+      sendZodError(res, parsed.error.issues);
+      return;
+    }
+    const workbook = await updateAttributePlan(routeParam(req.params.id), routeParam(req.params.cardId), parsed.data);
+    res.json(workbook);
+  } catch (err) {
+    if (sendBuyerWorkbookServiceError(res, err)) return;
+    next(err);
+  }
+});
+
+router.post('/buyer-workbooks/:id/cards/:cardId/planned-styles', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const parsed = buyerPlannedStyleCreateSchema.safeParse(req.body);
+    if (!parsed.success) {
+      sendZodError(res, parsed.error.issues);
+      return;
+    }
+    const workbook = await addPlannedStyle(routeParam(req.params.id), routeParam(req.params.cardId), parsed.data);
+    res.status(201).json(workbook);
+  } catch (err) {
+    if (sendBuyerWorkbookServiceError(res, err)) return;
+    next(err);
+  }
+});
+
+router.patch('/buyer-workbooks/:id/planned-styles/:styleId', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const parsed = buyerPlannedStyleUpdateSchema.safeParse(req.body);
+    if (!parsed.success) {
+      sendZodError(res, parsed.error.issues);
+      return;
+    }
+    const workbook = await updatePlannedStyle(routeParam(req.params.id), routeParam(req.params.styleId), parsed.data);
+    res.json(workbook);
+  } catch (err) {
+    if (sendBuyerWorkbookServiceError(res, err)) return;
+    next(err);
+  }
+});
+
+router.delete('/buyer-workbooks/:id/planned-styles/:styleId', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const actor = typeof req.query.actor === 'string' ? req.query.actor : undefined;
+    const workbook = await deletePlannedStyle(routeParam(req.params.id), routeParam(req.params.styleId), actor);
+    res.json(workbook);
+  } catch (err) {
+    if (sendBuyerWorkbookServiceError(res, err)) return;
+    next(err);
+  }
+});
+
+router.post('/buyer-workbooks/:id/po-links', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const parsed = buyerPoLinkSchema.safeParse(req.body);
+    if (!parsed.success) {
+      sendZodError(res, parsed.error.issues);
+      return;
+    }
+    const workbook = await linkPurchaseOrder(routeParam(req.params.id), parsed.data);
+    res.status(201).json(workbook);
+  } catch (err) {
+    if (sendBuyerWorkbookServiceError(res, err)) return;
+    next(err);
+  }
+});
+
+router.delete('/buyer-workbooks/:id/po-links/:linkId', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const actor = typeof req.query.actor === 'string' ? req.query.actor : undefined;
+    const workbook = await unlinkPurchaseOrder(routeParam(req.params.id), routeParam(req.params.linkId), actor);
+    res.json(workbook);
+  } catch (err) {
+    if (sendBuyerWorkbookServiceError(res, err)) return;
+    next(err);
+  }
+});
 
 const projectionsSchema = z
   .object({
