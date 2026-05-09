@@ -40,6 +40,13 @@ interface DepartmentMonthlySalesRow {
   qty: unknown;
 }
 
+interface CacheEntry<T> {
+  value: T;
+  expiresAt: number;
+}
+
+const departmentSeasonalityCache = new Map<string, CacheEntry<DepartmentSeasonalityRow>>();
+
 export function shiftYearMonth(ym: string, deltaMonths: number): string {
   const year = Number(ym.slice(0, 4));
   const month = Number(ym.slice(5, 7));
@@ -207,6 +214,66 @@ export async function resolveDepartmentForCategory(categoryNumber: number | null
   };
 }
 
+function seasonalityCacheTtlMs(): number {
+  const raw = Number(process.env.SEASONALITY_INDEX_CACHE_MS ?? 15 * 60 * 1_000);
+  return Number.isFinite(raw) && raw >= 0 ? raw : 15 * 60 * 1_000;
+}
+
+export function clearSeasonalityIndexCache(): void {
+  departmentSeasonalityCache.clear();
+}
+
+function normalizeMonthlySalesRows(rows: DepartmentMonthlySalesRow[]): Array<{
+  departmentNumber: number;
+  departmentLabel: string;
+  yearMonth: string;
+  quantity: number;
+}> {
+  return rows
+    .filter((row): row is DepartmentMonthlySalesRow & { department_number: number; department_label: string; year_month: string } =>
+      row.department_number != null && row.department_label != null && row.year_month != null)
+    .map((row) => ({
+      departmentNumber: Number(row.department_number),
+      departmentLabel: row.department_label,
+      yearMonth: row.year_month,
+      quantity: Number(row.qty ?? 0),
+    }));
+}
+
+async function loadDepartmentMonthlySalesRowsBySkuId(
+  historyStartMonth: string,
+  historyEndMonth: string,
+  departmentNumber: number,
+): Promise<DepartmentMonthlySalesRow[]> {
+  return prisma.$queryRawUnsafe<DepartmentMonthlySalesRow[]>(
+    `
+      WITH target_department AS (
+        SELECT number, "desc", beg_categ, end_categ
+        FROM app.taxonomy_department
+        WHERE number = $3::int
+        LIMIT 1
+      )
+      SELECT
+        d.number AS department_number,
+        COALESCE(d.number::text || ' - ' || NULLIF(BTRIM(d."desc"), ''), d.number::text) AS department_label,
+        to_char(t.purchased_at AT TIME ZONE 'America/Tegucigalpa', 'YYYY-MM') AS year_month,
+        COALESCE(SUM(l.quantity), 0)::float8 AS qty
+      FROM target_department d
+      JOIN app.sku s ON s.category_number BETWEEN d.beg_categ AND d.end_categ
+      JOIN app.sales_history_ticket_line l ON l.sku_id = s.id
+      JOIN app.sales_history_ticket t ON t.id = l.ticket_id
+      WHERE t.status = 'completed'
+        AND t.purchased_at >= (($1::text || '-01')::date::timestamp AT TIME ZONE 'America/Tegucigalpa')
+        AND t.purchased_at < ((($2::text || '-01')::date + INTERVAL '1 month')::timestamp AT TIME ZONE 'America/Tegucigalpa')
+      GROUP BY d.number, d."desc", to_char(t.purchased_at AT TIME ZONE 'America/Tegucigalpa', 'YYYY-MM')
+      ORDER BY d.number, year_month
+    `,
+    historyStartMonth,
+    historyEndMonth,
+    departmentNumber,
+  );
+}
+
 export async function getSeasonalityIndexReport(options: {
   endMonth?: string | null;
   departmentNumber?: number | null;
@@ -249,15 +316,7 @@ export async function getSeasonalityIndexReport(options: {
     hasDepartment ? options.departmentNumber : null,
   );
 
-  const normalizedRows = rows
-    .filter((row): row is DepartmentMonthlySalesRow & { department_number: number; department_label: string; year_month: string } =>
-      row.department_number != null && row.department_label != null && row.year_month != null)
-    .map((row) => ({
-      departmentNumber: Number(row.department_number),
-      departmentLabel: row.department_label,
-      yearMonth: row.year_month,
-      quantity: Number(row.qty ?? 0),
-    }));
+  const normalizedRows = normalizeMonthlySalesRows(rows);
 
   return {
     basis: 'DEPARTMENT_ALL_STORES',
@@ -273,8 +332,21 @@ export async function getDepartmentSeasonalityRow(
   endMonth?: string | null,
 ): Promise<DepartmentSeasonalityRow> {
   if (departmentNumber == null) return buildNeutralSeasonalityRow(null);
-  const report = await getSeasonalityIndexReport({ departmentNumber, endMonth });
-  return report.rows[0] ?? buildNeutralSeasonalityRow(departmentNumber);
+  const historyEndMonth = endMonth ?? lastCompletedYearMonth();
+  const historyStartMonth = shiftYearMonth(historyEndMonth, -11);
+  const cacheKey = `${departmentNumber}:${historyStartMonth}:${historyEndMonth}`;
+  const now = Date.now();
+  const cached = departmentSeasonalityCache.get(cacheKey);
+  if (cached && cached.expiresAt > now) return cached.value;
+
+  const rows = await loadDepartmentMonthlySalesRowsBySkuId(historyStartMonth, historyEndMonth, departmentNumber);
+  const seasonalityRow = buildDepartmentSeasonalityRows(normalizeMonthlySalesRows(rows))[0]
+    ?? buildNeutralSeasonalityRow(departmentNumber);
+  departmentSeasonalityCache.set(cacheKey, {
+    value: seasonalityRow,
+    expiresAt: now + seasonalityCacheTtlMs(),
+  });
+  return seasonalityRow;
 }
 
 function monthsBetween(startYearMonth: string, endYearMonth: string): string[] {

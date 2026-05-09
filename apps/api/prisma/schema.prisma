@@ -3664,6 +3664,8 @@ model SalesHistoryTicketLine {
   @@index([ticketId], map: "idx_sales_history_ticket_line_ticket")
   @@index([ticketId, lineNumber], map: "idx_sales_history_ticket_line_ticket_line")
   @@index([skuId], map: "idx_sales_history_ticket_line_sku")
+  @@index([skuId, ticketId], map: "idx_sales_history_ticket_line_sku_ticket")
+  @@index([skuCode], map: "idx_sales_history_ticket_line_sku_code")
   @@index([sizeType, sizeValue], map: "idx_sales_history_ticket_line_size")
   @@map("sales_history_ticket_line")
   @@schema("app")

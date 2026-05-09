@@ -23,7 +23,7 @@ const REORDER_PLAN_MAX_CONCURRENT = Math.max(1, Math.trunc(Number(process.env.RE
 type CurveSource = 'SKU_SALES' | 'CATEGORY_SALES' | 'MODEL' | 'PREVIOUS_ORDER' | 'NONE';
 type DefaultsScope = 'SKU' | 'VENDOR' | 'DEFAULT';
 
-interface SkuRow {
+export interface SkuRow {
   id: string;
   sku_code: string;
   vendor_id: string | null;
@@ -65,11 +65,15 @@ interface MutableSizeLine {
   recommendedQty: number;
 }
 
-interface MonthlySizeSalesRow {
+export interface MonthlySizeSalesRow {
   year_month: string;
   column_label: string;
   row_label: string;
   qty: unknown;
+}
+
+export interface MonthlyStoreSizeSalesRow extends MonthlySizeSalesRow {
+  store_id: unknown;
 }
 
 interface CasePackRow {
@@ -95,6 +99,11 @@ interface CasePackSupplierUsage {
 
 let activeReorderPlanBuilds = 0;
 const reorderPlanWaiters: Array<() => void> = [];
+
+interface ReorderPlanTimingEntry {
+  name: string;
+  ms: number;
+}
 
 export interface ReorderCasePackCell {
   rowLabel: string;
@@ -282,6 +291,42 @@ function cleanText(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function reorderPlanSlowThresholdMs(): number {
+  const raw = Number(process.env.REORDER_PLAN_SLOW_MS ?? 1_000);
+  return Number.isFinite(raw) && raw >= 0 ? raw : 1_000;
+}
+
+async function timeReorderPlanStep<T>(
+  timings: ReorderPlanTimingEntry[],
+  name: string,
+  loader: () => Promise<T>,
+): Promise<T> {
+  const startedAt = Date.now();
+  try {
+    return await loader();
+  } finally {
+    timings.push({ name, ms: Date.now() - startedAt });
+  }
+}
+
+function logSlowReorderPlan(
+  sku: string,
+  totalMs: number,
+  timings: ReorderPlanTimingEntry[],
+  error?: unknown,
+): void {
+  const thresholdMs = reorderPlanSlowThresholdMs();
+  if (totalMs < thresholdMs) return;
+
+  console.warn('[reorderPlannerService] slow reorder plan', {
+    sku,
+    totalMs,
+    thresholdMs,
+    steps: timings.map((entry) => ({ name: entry.name, ms: entry.ms })),
+    error: error instanceof Error ? error.message : undefined,
+  });
 }
 
 function asNumber(value: unknown): number {
@@ -1000,23 +1045,77 @@ async function loadSkuMonthlySalesBySize(
   sku: SkuRow,
   storeNumbers: number[],
 ): Promise<MonthlySizeSalesRow[]> {
+  return aggregateSkuMonthlySalesBySize(await loadSkuMonthlySalesByStoreAndSize(sku, storeNumbers), storeNumbers);
+}
+
+function aggregateSkuMonthlySalesBySize(
+  rows: MonthlyStoreSizeSalesRow[],
+  storeNumbers: number[],
+): MonthlySizeSalesRow[] {
+  const storeSet = new Set(storeNumbers);
+  const hasStores = storeSet.size > 0;
+  const byKey = new Map<string, MonthlySizeSalesRow>();
+  for (const row of rows) {
+    const storeId = Number(row.store_id);
+    if (hasStores && !storeSet.has(storeId)) continue;
+    const key = `${row.year_month}|${row.column_label}|${row.row_label}`;
+    const existing = byKey.get(key);
+    if (existing) {
+      existing.qty = asNumber(existing.qty) + asNumber(row.qty);
+    } else {
+      byKey.set(key, {
+        year_month: row.year_month,
+        column_label: row.column_label,
+        row_label: row.row_label,
+        qty: asNumber(row.qty),
+      });
+    }
+  }
+  return [...byKey.values()];
+}
+
+async function loadSkuMonthlySalesByStoreAndSize(
+  sku: SkuRow,
+  storeNumbers: number[],
+): Promise<MonthlyStoreSizeSalesRow[]> {
   const hasStores = storeNumbers.length > 0;
-  return prisma.$queryRawUnsafe<MonthlySizeSalesRow[]>(
+  const byIdRows = await prisma.$queryRawUnsafe<MonthlyStoreSizeSalesRow[]>(
     `
       SELECT
+        t.store_id AS store_id,
         to_char(date_trunc('month', t.purchased_at), 'YYYY-MM') AS year_month,
         COALESCE(l.column_label, '') AS column_label,
         COALESCE(l.row_label, l.size_value, '') AS row_label,
         COALESCE(SUM(l.quantity), 0)::int AS qty
       FROM app.sales_history_ticket t
       JOIN app.sales_history_ticket_line l ON l.ticket_id = t.id
-      WHERE (l.sku_id = $1::uuid OR UPPER(l.sku_code) = UPPER($2))
+      WHERE l.sku_id = $1::uuid
         AND t.status = 'completed'
         AND t.purchased_at >= now() - interval '12 months'
-        ${hasStores ? 'AND t.store_id = ANY($3::int[])' : ''}
-      GROUP BY to_char(date_trunc('month', t.purchased_at), 'YYYY-MM'), COALESCE(l.column_label, ''), COALESCE(l.row_label, l.size_value, '')
+        ${hasStores ? 'AND t.store_id = ANY($2::int[])' : ''}
+      GROUP BY t.store_id, to_char(date_trunc('month', t.purchased_at), 'YYYY-MM'), COALESCE(l.column_label, ''), COALESCE(l.row_label, l.size_value, '')
     `,
     sku.id,
+    ...(hasStores ? [storeNumbers] : []),
+  );
+  if (byIdRows.length > 0) return byIdRows;
+
+  return prisma.$queryRawUnsafe<MonthlyStoreSizeSalesRow[]>(
+    `
+      SELECT
+        t.store_id AS store_id,
+        to_char(date_trunc('month', t.purchased_at), 'YYYY-MM') AS year_month,
+        COALESCE(l.column_label, '') AS column_label,
+        COALESCE(l.row_label, l.size_value, '') AS row_label,
+        COALESCE(SUM(l.quantity), 0)::int AS qty
+      FROM app.sales_history_ticket t
+      JOIN app.sales_history_ticket_line l ON l.ticket_id = t.id
+      WHERE l.sku_code = $1
+        AND t.status = 'completed'
+        AND t.purchased_at >= now() - interval '12 months'
+        ${hasStores ? 'AND t.store_id = ANY($2::int[])' : ''}
+      GROUP BY t.store_id, to_char(date_trunc('month', t.purchased_at), 'YYYY-MM'), COALESCE(l.column_label, ''), COALESCE(l.row_label, l.size_value, '')
+    `,
     sku.sku_code,
     ...(hasStores ? [storeNumbers] : []),
   );
@@ -1149,7 +1248,7 @@ async function loadLegacyPreviousOrder(
   sku: SkuRow,
   columnLabels: string[],
 ): Promise<PreviousOrder | null> {
-  const candidates = await prisma.$queryRawUnsafe<Array<{
+  const candidatesById = await prisma.$queryRawUnsafe<Array<{
     po_number: string;
     order_date: Date | string | null;
     last_received_at: Date | string | null;
@@ -1165,17 +1264,41 @@ async function loadLegacyPreviousOrder(
         MAX(l.case_multiplier) AS case_multiplier
       FROM app.purchase_order_legacy po
       JOIN app.purchase_order_legacy_line l ON l.po_number = po.po_number
-      WHERE (l.sku_id = $1::uuid OR UPPER(l.sku_code) = UPPER($2))
+      WHERE l.sku_id = $1::uuid
       GROUP BY po.po_number, po.order_date, po.last_received_at
       ORDER BY COALESCE(po.last_received_at, po.order_date) DESC NULLS LAST, po.po_number DESC
       LIMIT 1
     `,
     sku.id,
-    sku.sku_code,
   );
+  const candidates = candidatesById.length > 0
+    ? candidatesById
+    : await prisma.$queryRawUnsafe<Array<{
+      po_number: string;
+      order_date: Date | string | null;
+      last_received_at: Date | string | null;
+      case_pack_code: string | null;
+      case_multiplier: unknown;
+    }>>(
+      `
+        SELECT
+          po.po_number,
+          po.order_date,
+          po.last_received_at,
+          MAX(NULLIF(BTRIM(l.case_pack_code), '')) AS case_pack_code,
+          MAX(l.case_multiplier) AS case_multiplier
+        FROM app.purchase_order_legacy po
+        JOIN app.purchase_order_legacy_line l ON l.po_number = po.po_number
+        WHERE l.sku_code = $1
+        GROUP BY po.po_number, po.order_date, po.last_received_at
+        ORDER BY COALESCE(po.last_received_at, po.order_date) DESC NULLS LAST, po.po_number DESC
+        LIMIT 1
+      `,
+      sku.sku_code,
+    );
   const candidate = candidates[0];
   if (!candidate) return null;
-  const rows = await prisma.$queryRawUnsafe<Array<{
+  const rowsById = await prisma.$queryRawUnsafe<Array<{
     row_label: string;
     segment: number;
     ordered_qtys: number[];
@@ -1184,13 +1307,29 @@ async function loadLegacyPreviousOrder(
       SELECT row_label, segment, ordered_qtys
       FROM app.purchase_order_legacy_line
       WHERE po_number = $1
-        AND (sku_id = $2::uuid OR UPPER(sku_code) = UPPER($3))
+        AND sku_id = $2::uuid
       ORDER BY row_label, segment
     `,
     candidate.po_number,
     sku.id,
-    sku.sku_code,
   );
+  const rows = rowsById.length > 0
+    ? rowsById
+    : await prisma.$queryRawUnsafe<Array<{
+      row_label: string;
+      segment: number;
+      ordered_qtys: number[];
+    }>>(
+      `
+        SELECT row_label, segment, ordered_qtys
+        FROM app.purchase_order_legacy_line
+        WHERE po_number = $1
+          AND sku_code = $2
+        ORDER BY row_label, segment
+      `,
+      candidate.po_number,
+      sku.sku_code,
+    );
   const cells = new Map<string, number>();
   for (const row of rows) {
     const offset = Math.max(0, Number(row.segment) - 1) * 18;
@@ -1304,15 +1443,24 @@ function ensureLine(map: Map<string, MutableSizeLine>, columnLabel: string, rowL
 }
 
 async function buildReorderPlan(skuCode: string, options: ReorderPlanOptions = {}): Promise<ReorderPlan | null> {
-  const sku = await loadSku(skuCode);
-  if (!sku) return null;
-  const inquiry = await getInventoryInquiry(sku.sku_code);
-  if (!inquiry) return null;
+  const totalStartedAt = Date.now();
+  const timings: ReorderPlanTimingEntry[] = [];
+  try {
+  const sku = await timeReorderPlanStep(timings, 'sku', () => loadSku(skuCode));
+  if (!sku) {
+    logSlowReorderPlan(skuCode, Date.now() - totalStartedAt, timings);
+    return null;
+  }
+  const inquiry = await timeReorderPlanStep(timings, 'inventoryInquiry', () => getInventoryInquiry(sku.sku_code));
+  if (!inquiry) {
+    logSlowReorderPlan(sku.sku_code, Date.now() - totalStartedAt, timings);
+    return null;
+  }
 
   const [defaults, department, vendorDraftPo] = await Promise.all([
-    loadDefaults(sku),
-    resolveDepartmentForCategory(sku.category_number),
-    findVendorDraftPurchaseOrder(sku.vendor_id),
+    timeReorderPlanStep(timings, 'defaults', () => loadDefaults(sku)),
+    timeReorderPlanStep(timings, 'department', () => resolveDepartmentForCategory(sku.category_number)),
+    timeReorderPlanStep(timings, 'vendorDraftPo', () => findVendorDraftPurchaseOrder(sku.vendor_id)),
   ]);
   const leadTimeDays = clampPositiveInt(options.leadTimeDays, defaults.leadTimeDays);
   const orderCycleDays = clampPositiveInt(options.orderCycleDays, defaults.orderCycleDays);
@@ -1330,7 +1478,7 @@ async function buildReorderPlan(skuCode: string, options: ReorderPlanOptions = {
   const fallbackStoreNumbers = modeledStoreNumbers.length > 0
     ? modeledStoreNumbers
     : inquiry.stores.map((store) => store.storeNumber);
-  const detectedChains = await loadPlanningChains(sku.id, fallbackStoreNumbers);
+  const detectedChains = await timeReorderPlanStep(timings, 'planningChains', () => loadPlanningChains(sku.id, fallbackStoreNumbers));
   const chains: ChainCandidate[] = [
     {
       chainId: null,
@@ -1340,19 +1488,31 @@ async function buildReorderPlan(skuCode: string, options: ReorderPlanOptions = {
     },
     ...detectedChains.filter((chain) => chain.storeNumbers.length > 0),
   ];
+  const allChainStoreNumbers = [...new Set(chains.flatMap((chain) =>
+    chain.storeNumbers.length > 0 ? chain.storeNumbers : fallbackStoreNumbers,
+  ))].sort((a, b) => a - b);
   const warnings: string[] = [];
   if (!sku.vendor_id) warnings.push('SKU has no vendor; draft PO creation will be blocked until a vendor is assigned.');
   if (detectedChains.length === 0) warnings.push('No planning chains were detected for this SKU.');
   if (department.departmentNumber == null) {
     warnings.push('SKU category is not mapped to a department; reorder demand uses neutral seasonality.');
   }
-  const [previousOrder, warehouseStoreNumbers, seasonalityRow, casePacks, supplierCasePackUsage, nativeOpenPoBySize] = await Promise.all([
-    loadPreviousOrder(sku, columnLabels),
-    loadWarehouseStoreNumbers(),
-    getDepartmentSeasonalityRow(department.departmentNumber, seasonalityHistoryEndMonth),
-    loadActiveCasePackCandidates(sku.size_type, columnLabels, rowLabels),
-    loadSupplierCasePackUsage(sku.vendor_id, sku.size_type),
-    loadNativeOpenPurchaseOrdersBySize(sku.id),
+  const [
+    previousOrder,
+    warehouseStoreNumbers,
+    seasonalityRow,
+    casePacks,
+    supplierCasePackUsage,
+    nativeOpenPoBySize,
+    skuMonthlySalesRows,
+  ] = await Promise.all([
+    timeReorderPlanStep(timings, 'previousOrder', () => loadPreviousOrder(sku, columnLabels)),
+    timeReorderPlanStep(timings, 'warehouseStores', () => loadWarehouseStoreNumbers()),
+    timeReorderPlanStep(timings, 'seasonality', () => getDepartmentSeasonalityRow(department.departmentNumber, seasonalityHistoryEndMonth)),
+    timeReorderPlanStep(timings, 'casePacks', () => loadActiveCasePackCandidates(sku.size_type, columnLabels, rowLabels)),
+    timeReorderPlanStep(timings, 'supplierCasePackUsage', () => loadSupplierCasePackUsage(sku.vendor_id, sku.size_type)),
+    timeReorderPlanStep(timings, 'nativeOpenPoBySize', () => loadNativeOpenPurchaseOrdersBySize(sku.id)),
+    timeReorderPlanStep(timings, 'skuMonthlySales', () => loadSkuMonthlySalesByStoreAndSize(sku, allChainStoreNumbers)),
   ]);
   const previousCasePackCode = normalizeCasePackCode(previousOrder.casePackId);
   const casePacksForSuggestion = casePacks.map((pack) => {
@@ -1370,7 +1530,7 @@ async function buildReorderPlan(skuCode: string, options: ReorderPlanOptions = {
   if (seasonalityRow.sampleMonths === 0) {
     warnings.push('Department seasonality history is empty; every month is treated as a neutral 1.00 index.');
   }
-  const warehouseStockByStore = await loadWarehouseStockBySize(sku.id, warehouseStoreNumbers);
+  const warehouseStockByStore = await timeReorderPlanStep(timings, 'warehouseStock', () => loadWarehouseStockBySize(sku.id, warehouseStoreNumbers));
   const totalWarehouseOnHand = [...warehouseStockByStore.values()]
     .flatMap((bySize) => [...bySize.values()])
     .reduce((sum, qty) => sum + qty, 0);
@@ -1384,6 +1544,7 @@ async function buildReorderPlan(skuCode: string, options: ReorderPlanOptions = {
   const planChains: ReorderPlanChain[] = [];
   let categorySalesFallbackWarningAdded = false;
   for (const chain of chains) {
+    const chainStartedAt = Date.now();
     const chainStores = chain.storeNumbers.length > 0 ? chain.storeNumbers : fallbackStoreNumbers;
     const storeSet = new Set(chainStores);
     const lineMap = new Map<string, MutableSizeLine>();
@@ -1432,7 +1593,7 @@ async function buildReorderPlan(skuCode: string, options: ReorderPlanOptions = {
       warnings.push(`Open native purchase orders add ${nativeOnOrderSupplementQty} units to on-order availability before calculating the reorder suggestion.`);
     }
 
-    const skuSalesRows = await loadSkuMonthlySalesBySize(sku, chainStores);
+    const skuSalesRows = aggregateSkuMonthlySalesBySize(skuMonthlySalesRows, chainStores);
 
     for (const row of skuSalesRows) {
       const resolved = resolveSizeGridCell(row.column_label, row.row_label, columnLabels, rowLabels);
@@ -1445,7 +1606,11 @@ async function buildReorderPlan(skuCode: string, options: ReorderPlanOptions = {
     const chainSkuSalesQty = [...lineMap.values()].reduce((sum, line) => sum + line.skuSalesQty, 0);
     if (chainSkuSalesQty <= 0) {
       try {
-        const categorySales = await loadCategorySalesBySize(sku, chainStores);
+        const categorySales = await timeReorderPlanStep(
+          timings,
+          `chain:${chain.chainLabel}:categorySales`,
+          () => loadCategorySalesBySize(sku, chainStores),
+        );
         for (const [key, qty] of categorySales) {
           const [rowLabel, columnLabel] = key.split('|');
           const resolved = resolveSizeGridCell(columnLabel, rowLabel, columnLabels, rowLabels);
@@ -1557,9 +1722,10 @@ async function buildReorderPlan(skuCode: string, options: ReorderPlanOptions = {
         recommendedQty: sumLine(constrained, (line) => line.recommendedQty),
       },
     });
+    timings.push({ name: `chain:${chain.chainLabel}:build`, ms: Date.now() - chainStartedAt });
   }
 
-  return {
+  const plan: ReorderPlan = {
     sku: {
       id: sku.id,
       code: sku.sku_code,
@@ -1600,6 +1766,12 @@ async function buildReorderPlan(skuCode: string, options: ReorderPlanOptions = {
     chains: planChains,
     warnings,
   };
+  logSlowReorderPlan(sku.sku_code, Date.now() - totalStartedAt, timings);
+  return plan;
+  } catch (err) {
+    logSlowReorderPlan(skuCode, Date.now() - totalStartedAt, timings, err);
+    throw err;
+  }
 }
 
 export async function getReorderPlan(skuCode: string, options: ReorderPlanOptions = {}): Promise<ReorderPlan | null> {
@@ -1753,3 +1925,9 @@ export async function createReorderDraftPurchaseOrder(
     purchaseOrder: result,
   };
 }
+
+export const __test = {
+  aggregateSkuMonthlySalesBySize,
+  loadSkuMonthlySalesByStoreAndSize,
+  loadSkuMonthlySalesBySize,
+};
