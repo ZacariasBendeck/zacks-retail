@@ -6,6 +6,7 @@ import {
 import { Link } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { useSalesPivot, useSalesDimensions, type SalesPivotArgs } from '../../hooks/useReports'
+import { manualReportQueryKey, useManualReportRun } from '../../hooks/useManualReportRun'
 import type {
   SalesPivotLeafRow,
   SalesPivotVariant,
@@ -66,6 +67,12 @@ function effectiveVariant(choice: ReportChoice, separateStore: boolean): SalesPi
     return separateStore ? 'buyer-vendor-separate-store' : 'buyer-vendor'
   }
   return separateStore ? 'department-separate-store' : 'department'
+}
+
+function choiceFromVariant(variant: SalesPivotVariant): ReportChoice {
+  if (variant === 'buyer') return 'buyer'
+  if (variant === 'buyer-vendor' || variant === 'buyer-vendor-separate-store') return 'buyer-vendor'
+  return 'department'
 }
 
 /** Compact label for the variant — used as the dimensions portion of the
@@ -528,11 +535,15 @@ export default function SalesPivotPage() {
   const [choice, setChoice] = useState<ReportChoice>('department')
   const [separateStore, setSeparateStore] = useState(false)
   const [showPercentOfParent, setShowPercentOfParent] = useState(false)
-  const [query, setQuery] = useState<SalesPivotArgs | null>(null)
   const [filterOpen, setFilterOpen] = useState(true)
+  const { run: reportRun, query, commitRun } = useManualReportRun<SalesPivotArgs>({
+    storageKey: 'manual-report-run:/reports/sales/pivot:v1',
+    queryKeyBase: 'sales-pivot',
+    hydrateArgs: hydrateRunArgs,
+  })
 
   const { data: dims, isLoading: dimsLoading } = useSalesDimensions()
-  const { data, isFetching, error } = useSalesPivot(query)
+  const { data, isFetching, error } = useSalesPivot(reportRun)
   const running = query != null && isFetching
 
   useEffect(() => {
@@ -548,7 +559,7 @@ export default function SalesPivotPage() {
 
   function onRun(): void {
     const { startDate, endDate } = resolveDateSpec(dateSpec)
-    setQuery({
+    commitRun({
       startDate,
       endDate,
       variant: effectiveVariant(choice, separateStore),
@@ -556,7 +567,14 @@ export default function SalesPivotPage() {
     })
   }
   function onStop(): void {
-    qc.cancelQueries({ queryKey: ['sales-pivot', query] })
+    qc.cancelQueries({ queryKey: manualReportQueryKey('sales-pivot', reportRun) })
+  }
+
+  function hydrateRunArgs(args: SalesPivotArgs): void {
+    setDateSpec({ type: 'fixed', startDate: args.startDate, endDate: args.endDate })
+    updateCriteria('stores', Array.isArray(args.stores) ? args.stores : [])
+    setChoice(choiceFromVariant(args.variant))
+    setSeparateStore(args.variant.endsWith('-separate-store'))
   }
 
   const tree = useMemo(

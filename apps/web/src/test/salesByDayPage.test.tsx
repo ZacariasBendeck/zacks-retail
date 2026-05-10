@@ -175,10 +175,10 @@ describe('SalesByDayPage', () => {
     } as never)
     vi.mocked(useReportTemplate).mockReturnValue({ data: undefined } as never)
     vi.mocked(useTouchReportTemplate).mockReturnValue({ mutate: vi.fn() } as never)
-    vi.mocked(useSalesByDay).mockImplementation((query) => (
-      query
+    vi.mocked(useSalesByDay).mockImplementation((run) => (
+      run
         ? {
-            data: query.storeNumbers.length === 0 ? buildAllStoresReport() : buildReport(),
+            data: run.args.storeNumbers.length === 0 ? buildAllStoresReport() : buildReport(),
             isFetching: false,
             error: null,
           }
@@ -197,7 +197,7 @@ describe('SalesByDayPage', () => {
 
     await waitFor(() => {
       expect(vi.mocked(useSalesByDay)).toHaveBeenLastCalledWith(
-        expect.objectContaining({ storeNumbers: [] }),
+        expect.objectContaining({ args: expect.objectContaining({ storeNumbers: [] }) }),
       )
     })
 
@@ -214,7 +214,7 @@ describe('SalesByDayPage', () => {
 
     await waitFor(() => {
       expect(vi.mocked(useSalesByDay)).toHaveBeenLastCalledWith(
-        expect.objectContaining({ storeNumbers: [1, 2, 5, 6, 7] }),
+        expect.objectContaining({ args: expect.objectContaining({ storeNumbers: [1, 2, 5, 6, 7] }) }),
       )
     })
   })

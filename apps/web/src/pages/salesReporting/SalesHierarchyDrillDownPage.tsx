@@ -6,6 +6,7 @@ import type { ColumnsType } from 'antd/es/table'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { useSalesHierarchy, useSalesDimensions, type SalesHierarchyArgs } from '../../hooks/useReports'
+import { manualReportQueryKey, useManualReportRun } from '../../hooks/useManualReportRun'
 import type {
   SalesHierarchyNode,
   SalesHierarchyStoreOption,
@@ -97,11 +98,15 @@ export default function SalesHierarchyDrillDownPage() {
   const [groupsRaw, setGroupsRaw] = useState('')
   const [keywordsRaw, setKeywordsRaw] = useState('')
   const [priorYear, setPriorYear] = useState(false)
-  const [query, setQuery] = useState<SalesHierarchyArgs | null>(null)
   const [filterOpen, setFilterOpen] = useState(true)
+  const { run: reportRun, query, commitRun } = useManualReportRun<SalesHierarchyArgs>({
+    storageKey: 'manual-report-run:/reports/sales/hierarchy-drill-down:v1',
+    queryKeyBase: 'sales-hierarchy',
+    hydrateArgs: hydrateRunArgs,
+  })
 
   const { data: dims, isLoading: dimsLoading } = useSalesDimensions()
-  const { data, isFetching, error } = useSalesHierarchy(query)
+  const { data, isFetching, error } = useSalesHierarchy(reportRun)
   const running = query != null && isFetching
 
   useEffect(() => {
@@ -116,6 +121,7 @@ export default function SalesHierarchyDrillDownPage() {
   const touchTemplate = useTouchReportTemplate()
   const hydratedFor = useRef<string | null>(null)
   useEffect(() => {
+    if (reportRun) return
     if (!templateId || !templateData) return
     if (hydratedFor.current === templateId) return
     const t = templateData.template
@@ -143,7 +149,7 @@ export default function SalesHierarchyDrillDownPage() {
     setGroupsRaw(p.groupsRaw ?? '')
     setKeywordsRaw(p.keywordsRaw ?? '')
     setPriorYear(!!p.priorYear)
-    setQuery({
+    commitRun({
       storeOption: p.storeOption ?? 'COMBINE',
       startDate: resolvedStart,
       endDate: resolvedEnd,
@@ -167,7 +173,29 @@ export default function SalesHierarchyDrillDownPage() {
     })
     touchTemplate.mutate(templateId)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [templateId, templateData])
+  }, [templateId, templateData, reportRun])
+
+  function hydrateRunArgs(args: SalesHierarchyArgs): void {
+    if (args.storeOption) setStoreOption(args.storeOption)
+    setDateSpec({ type: 'fixed', startDate: args.startDate, endDate: args.endDate })
+    setSelectedStores(Array.isArray(args.stores) ? args.stores : [])
+    setSelectedChains(Array.isArray(args.chains) ? args.chains : [])
+    setSelectedSectors(Array.isArray(args.sectors) ? args.sectors : [])
+    setSelectedDepartments(Array.isArray(args.departments) ? args.departments : [])
+    setSelectedCategories(Array.isArray(args.categories) ? args.categories : [])
+    setSelectedSeasons(Array.isArray(args.seasons) ? args.seasons : [])
+    setSelectedGroups(Array.isArray(args.groups) ? args.groups : [])
+    setSelectedBuyers(Array.isArray(args.buyers) ? args.buyers : [])
+    setStoresRaw(args.storesRaw ?? '')
+    setCategoriesRaw(args.categoriesRaw ?? '')
+    setVendorsRaw(args.vendorsRaw ?? '')
+    setSeasonsRaw(args.seasonsRaw ?? '')
+    setStyleColorRaw(args.styleColorRaw ?? '')
+    setSkusRaw(args.skusRaw ?? '')
+    setGroupsRaw(args.groupsRaw ?? '')
+    setKeywordsRaw(args.keywordsRaw ?? '')
+    setPriorYear(!!args.priorYear)
+  }
 
   const resultRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -178,7 +206,7 @@ export default function SalesHierarchyDrillDownPage() {
 
   function onRun(): void {
     const { startDate, endDate } = resolveDateSpec(dateSpec)
-    setQuery({
+    commitRun({
       storeOption,
       startDate,
       endDate,
@@ -202,7 +230,7 @@ export default function SalesHierarchyDrillDownPage() {
     })
   }
   function onStop(): void {
-    qc.cancelQueries({ queryKey: ['sales-hierarchy', query] })
+    qc.cancelQueries({ queryKey: manualReportQueryKey('sales-hierarchy', reportRun) })
   }
 
   const treeRows = useMemo(

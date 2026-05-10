@@ -276,7 +276,8 @@ describe('Sales Pivot parent percentages', () => {
       data: dimensions(),
       isLoading: false,
     } as unknown as ReturnType<typeof useSalesDimensions>)
-    mockUseSalesPivot.mockImplementation((args: SalesPivotArgs | null) => {
+    mockUseSalesPivot.mockImplementation((run) => {
+      const args = run?.args ?? null
       lastArgs = args
       return {
         data: args ? (args.variant === 'custom' ? custom : fixed) : undefined,

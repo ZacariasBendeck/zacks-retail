@@ -1,5 +1,5 @@
 /**
- * Batch History Detail — per-SKU before/after view of one batch operation + undo.
+ * Batch History Detail - per-SKU before/after view of one batch operation + undo.
  */
 
 import { App, Button, Card, Descriptions, Popconfirm, Space, Table, Tag, Typography } from 'antd'
@@ -7,6 +7,11 @@ import type { ColumnsType } from 'antd/es/table'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useBatchOperation, useUndoBatch } from '../../hooks/useUtilities'
 import type { BatchOperationItem } from '../../services/utilitiesApi'
+import {
+  describeBatchOperationChange,
+  describeBatchSkuQuery,
+  humanizeBatchOperation,
+} from './batchHistoryFormatters'
 
 export default function BatchHistoryDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -30,12 +35,12 @@ export default function BatchHistoryDetailPage() {
     {
       title: 'Before',
       render: (_: unknown, r: BatchOperationItem) =>
-        r.beforeJson ? <pre style={{ margin: 0 }}>{JSON.stringify(r.beforeJson, null, 0)}</pre> : '—',
+        r.beforeJson ? <pre style={{ margin: 0 }}>{JSON.stringify(r.beforeJson, null, 0)}</pre> : '-',
     },
     {
       title: 'After',
       render: (_: unknown, r: BatchOperationItem) =>
-        r.afterJson ? <pre style={{ margin: 0 }}>{JSON.stringify(r.afterJson, null, 0)}</pre> : '—',
+        r.afterJson ? <pre style={{ margin: 0 }}>{JSON.stringify(r.afterJson, null, 0)}</pre> : '-',
     },
   ]
 
@@ -63,11 +68,11 @@ export default function BatchHistoryDetailPage() {
             <Descriptions size="small" column={2}>
               <Descriptions.Item label="ID">{data.id}</Descriptions.Item>
               <Descriptions.Item label="Operator">{data.actor}</Descriptions.Item>
-              <Descriptions.Item label="Operation">{data.operationType}</Descriptions.Item>
+              <Descriptions.Item label="Operation">{humanizeBatchOperation(data.operationType)}</Descriptions.Item>
               <Descriptions.Item label="Affected">{data.affectedCount}</Descriptions.Item>
               <Descriptions.Item label="Started">{new Date(data.startedAt).toLocaleString()}</Descriptions.Item>
               <Descriptions.Item label="Completed">
-                {data.completedAt ? new Date(data.completedAt).toLocaleString() : '—'}
+                {data.completedAt ? new Date(data.completedAt).toLocaleString() : '-'}
               </Descriptions.Item>
               <Descriptions.Item label="Status">
                 {data.undoneAt
@@ -76,10 +81,16 @@ export default function BatchHistoryDetailPage() {
                     ? <Tag color="green">Applied</Tag>
                     : <Tag color="orange">In flight</Tag>}
               </Descriptions.Item>
-              <Descriptions.Item label="Criteria" span={2}>
+              <Descriptions.Item label="Change summary" span={2}>
+                {describeBatchOperationChange(data)}
+              </Descriptions.Item>
+              <Descriptions.Item label="SKU query" span={2}>
+                {describeBatchSkuQuery(data.criteriaJson)}
+              </Descriptions.Item>
+              <Descriptions.Item label="Criteria JSON" span={2}>
                 <pre style={{ margin: 0 }}>{JSON.stringify(data.criteriaJson, null, 2)}</pre>
               </Descriptions.Item>
-              <Descriptions.Item label="Change" span={2}>
+              <Descriptions.Item label="Change JSON" span={2}>
                 <pre style={{ margin: 0 }}>{JSON.stringify(data.changeJson, null, 2)}</pre>
               </Descriptions.Item>
             </Descriptions>

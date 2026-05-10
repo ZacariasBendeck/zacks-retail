@@ -32,6 +32,7 @@ import {
 } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
 import { useSalesDimensions, useSalesHistoryByMonth } from '../../hooks/useReports'
+import { manualReportQueryKey, useManualReportRun } from '../../hooks/useManualReportRun'
 import {
   getSalesHistoryByMonthCsvUrl,
   getSalesHistoryByMonthXlsxUrl,
@@ -665,13 +666,17 @@ export default function SalesHistoryByMonthPage() {
 
   // Committed params — null until Run Report is clicked. Mirrors the pattern
   // used by SalesAnalysisPage so the query only fires on user intent.
-  const [query, setQuery] = useState<SalesHistoryByMonthParams | null>(null)
   const [filterOpen, setFilterOpen] = useState(true)
   const [stickyHeaders, setStickyHeaders] = useState(true)
   const [isFullscreen, setIsFullscreen] = useState(false)
+  const { run: reportRun, query, commitRun } = useManualReportRun<SalesHistoryByMonthParams>({
+    storageKey: 'manual-report-run:/reports/sales/history-by-month:v1',
+    queryKeyBase: 'sales-history-by-month',
+    hydrateArgs: hydrateRunArgs,
+  })
 
   const { data: dims, isLoading: dimsLoading } = useSalesDimensions()
-  const { data, isFetching, error } = useSalesHistoryByMonth(query)
+  const { data, isFetching, error } = useSalesHistoryByMonth(reportRun)
   const running = query != null && isFetching
 
   useEffect(() => {
@@ -704,6 +709,7 @@ export default function SalesHistoryByMonthPage() {
   const touchTemplate = useTouchReportTemplate()
   const hydratedFor = useRef<string | null>(null)
   useEffect(() => {
+    if (reportRun) return
     if (!templateId || !templateData) return
     if (hydratedFor.current === templateId) return
     const t = templateData.template
@@ -742,7 +748,7 @@ export default function SalesHistoryByMonthPage() {
     if (Array.isArray(p.deferredMetrics)) setDeferredChecked(p.deferredMetrics)
     setCriteria(nextCriteria)
     if (p.endMonth && Array.isArray(p.dataToPrint) && p.dataToPrint.length) {
-      setQuery({
+      commitRun({
         ...runCriteria,
         endMonth: p.endMonth,
         sortBy: p.sortBy ?? 'vendor',
@@ -756,7 +762,18 @@ export default function SalesHistoryByMonthPage() {
     }
     touchTemplate.mutate(templateId)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [templateId, templateData])
+  }, [templateId, templateData, reportRun])
+
+  function hydrateRunArgs(args: SalesHistoryByMonthParams): void {
+    setSortBy(args.sortBy ?? 'vendor')
+    setCombineStores(!!args.combineStores)
+    setIncludePriorYear(!!args.includePriorYear)
+    setEndMonth(dayjs(`${args.endMonth}-01`))
+    setDetailLevel(args.detailLevel ?? 'subtotals')
+    setDataToPrint(args.dataToPrint ?? ['netSales'])
+    setDeferredChecked(args.deferredMetrics ?? [])
+    setCriteria(hydrateReportCriteria(args))
+  }
 
   const hasAnyMetric = dataToPrint.length > 0
   const canRun = hasAnyMetric
@@ -772,7 +789,7 @@ export default function SalesHistoryByMonthPage() {
       const allLoadedStores = (dims?.stores ?? []).map((store) => store.number)
       if (allLoadedStores.length) runCriteria.stores = allLoadedStores
     }
-    setQuery({
+    commitRun({
       ...runCriteria,
       endMonth: endMonth.format('YYYY-MM'),
       sortBy,
@@ -785,7 +802,7 @@ export default function SalesHistoryByMonthPage() {
     })
   }
   function onStop(): void {
-    qc.cancelQueries({ queryKey: ['sales-history-by-month', query] })
+    qc.cancelQueries({ queryKey: manualReportQueryKey('sales-history-by-month', reportRun) })
   }
 
   async function toggleFullscreen(): Promise<void> {

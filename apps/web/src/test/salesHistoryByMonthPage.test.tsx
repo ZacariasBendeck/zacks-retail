@@ -388,7 +388,7 @@ describe('SalesHistoryByMonthPage', () => {
     await waitFor(() => {
       const calls = hook.mock.calls
       const lastCall = calls[calls.length - 1]
-      expect(lastCall?.[0]?.stores).toEqual([1, 2])
+      expect(lastCall?.[0]?.args.stores).toEqual([1, 2])
     })
   })
 
@@ -606,7 +606,7 @@ describe('SalesHistoryByMonthPage', () => {
     await waitFor(() => {
       const calls = hook.mock.calls
       const lastCall = calls[calls.length - 1]
-      expect(lastCall?.[0]?.criteria?.vendors).toBe('NIKE,ADIDAS')
+      expect(lastCall?.[0]?.args.criteria?.vendors).toBe('NIKE,ADIDAS')
     })
   })
 
@@ -678,7 +678,7 @@ describe('SalesHistoryByMonthPage', () => {
     await waitFor(() => {
       const calls = hook.mock.calls
       const lastCall = calls[calls.length - 1]
-      expect(lastCall?.[0]?.dataToPrint).toEqual(expect.arrayContaining([...lifecycleKeys]))
+      expect(lastCall?.[0]?.args.dataToPrint).toEqual(expect.arrayContaining([...lifecycleKeys]))
     })
   })
 })

@@ -4,6 +4,8 @@
  * Mirrors the backend contract in docs/dev/specs/2026-04-21-utilities-batch-change-design.md.
  */
 
+import type { SkuListFilters } from '../types/productsSku'
+
 export class UtilitiesApiError extends Error {
   status: number
   code?: string
@@ -48,6 +50,11 @@ export interface SkuCriteria {
   groups?: string[]
   keywords?: string[]
   attributes?: Record<string, string[]>
+  /**
+   * UI-only audit context for batches applied from the Change SKU Attributes
+   * workbench. The backend still uses `skus` as the exact write scope.
+   */
+  sourceQuery?: SkuListFilters
   onlyFuturePriceChanges?: boolean
   onlyWtdSales?: boolean
 }

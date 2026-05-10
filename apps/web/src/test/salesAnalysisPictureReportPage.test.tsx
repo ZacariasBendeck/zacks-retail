@@ -149,9 +149,9 @@ describe('SalesAnalysisPictureReportPage', () => {
     lastArgs = null
     window.localStorage.clear()
     mockUseSalesDimensions.mockReturnValue({ data: dims(), isLoading: false } as unknown as ReturnType<typeof useSalesDimensions>)
-    mockUseSalesAnalysis.mockImplementation((args: SalesAnalysisArgs | null) => {
-      lastArgs = args
-      return { data: args ? report() : undefined, isFetching: false, error: null } as unknown as ReturnType<
+    mockUseSalesAnalysis.mockImplementation((run) => {
+      lastArgs = run?.args ?? null
+      return { data: run ? report() : undefined, isFetching: false, error: null } as unknown as ReturnType<
         typeof useSalesAnalysis
       >
     })

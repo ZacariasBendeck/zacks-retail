@@ -7,6 +7,7 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import dayjs, { type Dayjs } from 'dayjs'
 import { useSalesAnalysis, useSalesDimensions, type SalesAnalysisArgs } from '../../hooks/useReports'
+import { manualReportQueryKey, useManualReportRun } from '../../hooks/useManualReportRun'
 import type {
   SalesAnalysisAttributeDimension,
   SalesAnalysisStoreOption,
@@ -527,14 +528,18 @@ export default function SalesAnalysisPage() {
   const [priorYear, setPriorYear] = useState(false)
   const [includeOnOrder, setIncludeOnOrder] = useState(false)
   const [showPercentOfTotal, setShowPercentOfTotal] = useState(false)
-  const [query, setQuery] = useState<SalesAnalysisArgs | null>(null)
   // Auto-collapses after a successful report run so results get the
   // vertical real-estate instead of the tall filter form. Operators expand
   // again via the "Modify filters" button.
   const [filterOpen, setFilterOpen] = useState(true)
+  const { run: reportRun, query, commitRun } = useManualReportRun<SalesAnalysisArgs>({
+    storageKey: 'manual-report-run:/reports/sales/analysis:v1',
+    queryKeyBase: 'sales-analysis',
+    hydrateArgs: hydrateRunArgs,
+  })
 
   const { data: dims, isLoading: dimsLoading } = useSalesDimensions()
-  const { data, isFetching, error } = useSalesAnalysis(query)
+  const { data, isFetching, error } = useSalesAnalysis(reportRun)
   const running = query != null && isFetching
 
   useEffect(() => {
@@ -548,6 +553,7 @@ export default function SalesAnalysisPage() {
   const touchTemplate = useTouchReportTemplate()
   const hydratedFor = useRef<string | null>(null)
   useEffect(() => {
+    if (reportRun) return
     if (!templateId || !templateData) return
     if (hydratedFor.current === templateId) return
     const t = templateData.template
@@ -613,7 +619,7 @@ export default function SalesAnalysisPage() {
     setShowPercentOfTotal(!!p.showPercentOfTotal)
     // Use the full hydrated params as the query directly — don't rely on the
     // state setters above having flushed before this setQuery call.
-    setQuery({
+    commitRun({
       dimension: 'CATEGORY',
       reportType: 'SKU_DETAIL',
       storeOption: hierarchyUsesStoreLevel(nextLevels) ? 'SEPARATE' : p.storeOption ?? 'COMBINE',
@@ -642,7 +648,33 @@ export default function SalesAnalysisPage() {
     })
     touchTemplate.mutate(templateId)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [templateId, templateData])
+  }, [templateId, templateData, reportRun])
+
+  function hydrateRunArgs(args: SalesAnalysisArgs): void {
+    if (args.storeOption) setStoreOption(args.storeOption)
+    if (args.startDate && args.endDate) {
+      setDateSpec({ type: 'fixed', startDate: args.startDate, endDate: args.endDate })
+    }
+    setSelectedStores(Array.isArray(args.stores) ? args.stores : [])
+    setSelectedChains(Array.isArray(args.chains) ? args.chains : [])
+    setSelectedSectors(Array.isArray(args.sectors) ? args.sectors : [])
+    setSelectedDepartments(Array.isArray(args.departments) ? args.departments : [])
+    setSelectedCategories(Array.isArray(args.categories) ? args.categories : [])
+    setSelectedSeasons(Array.isArray(args.seasons) ? args.seasons : [])
+    setSelectedGroups(Array.isArray(args.groups) ? args.groups : [])
+    setSelectedBuyers(Array.isArray(args.buyers) ? args.buyers : [])
+    setStoresRaw(args.storesRaw ?? '')
+    setCategoriesRaw(args.categoriesRaw ?? '')
+    setVendorsRaw(args.vendorsRaw ?? '')
+    setSeasonsRaw(args.seasonsRaw ?? '')
+    setStyleColorRaw(args.styleColorRaw ?? '')
+    setSkusRaw(args.skusRaw ?? '')
+    setGroupsRaw(args.groupsRaw ?? '')
+    setKeywordsRaw(args.keywordsRaw ?? '')
+    setPriorYear(!!args.priorYear)
+    setIncludeOnOrder(!!args.includeOnOrder)
+    setShowPercentOfTotal(!!args.showPercentOfTotal)
+  }
 
   // The report renders below the (tall) form card. Scroll to it whenever a
   // run starts so the user sees the spinner → results transition without
@@ -657,7 +689,7 @@ export default function SalesAnalysisPage() {
   function onRun(): void {
     if (!hierarchyIsValid(hierarchyLevels)) return
     const { startDate, endDate } = resolveSalesAnalysisDateSpec(dateSpec)
-    setQuery({
+    commitRun({
       dimension: 'CATEGORY',
       reportType: 'SKU_DETAIL',
       storeOption: effectiveStoreOption,
@@ -686,7 +718,7 @@ export default function SalesAnalysisPage() {
     })
   }
   function onStop(): void {
-    qc.cancelQueries({ queryKey: ['sales-analysis', query] })
+    qc.cancelQueries({ queryKey: manualReportQueryKey('sales-analysis', reportRun) })
   }
 
   const hierarchyLevels = useMemo<SalesAnalysisHierarchyLevels>(

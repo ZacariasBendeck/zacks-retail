@@ -1,5 +1,5 @@
 /**
- * Batch History — list every batch operation (most recent first) with undo action.
+ * Batch History - list every batch operation (most recent first) with undo action.
  */
 
 import { App, Button, Popconfirm, Space, Table, Tag, Typography } from 'antd'
@@ -7,6 +7,11 @@ import type { ColumnsType } from 'antd/es/table'
 import { Link, useNavigate } from 'react-router-dom'
 import { useBatchOperations, useUndoBatch } from '../../hooks/useUtilities'
 import type { BatchOperation } from '../../services/utilitiesApi'
+import {
+  describeBatchOperationChange,
+  describeBatchSkuQuery,
+  humanizeBatchOperation,
+} from './batchHistoryFormatters'
 
 export default function BatchHistoryPage() {
   const navigate = useNavigate()
@@ -34,11 +39,32 @@ export default function BatchHistoryPage() {
     {
       title: 'Operation',
       dataIndex: 'operationType',
-      render: (v: string) => <Tag>{humanizeOp(v)}</Tag>,
+      render: (v: string) => <Tag>{humanizeBatchOperation(v)}</Tag>,
+      width: 180,
     },
     {
       title: 'Change',
-      render: (_: unknown, r: BatchOperation) => describeChange(r),
+      render: (_: unknown, r: BatchOperation) => {
+        const text = describeBatchOperationChange(r)
+        return (
+          <Typography.Text ellipsis={{ tooltip: text }} style={{ display: 'inline-block', maxWidth: 280 }}>
+            {text}
+          </Typography.Text>
+        )
+      },
+      width: 300,
+    },
+    {
+      title: 'SKU Query',
+      render: (_: unknown, r: BatchOperation) => {
+        const text = describeBatchSkuQuery(r.criteriaJson)
+        return (
+          <Typography.Text ellipsis={{ tooltip: text }} style={{ display: 'inline-block', maxWidth: 360 }}>
+            {text}
+          </Typography.Text>
+        )
+      },
+      width: 380,
     },
     {
       title: 'SKUs',
@@ -94,35 +120,8 @@ export default function BatchHistoryPage() {
         loading={isLoading}
         size="small"
         pagination={{ pageSize: 20 }}
+        scroll={{ x: 1400 }}
       />
     </div>
   )
-}
-
-function humanizeOp(op: string): string {
-  switch (op) {
-    case 'CHANGE_KEYWORDS_ADD': return 'Add keyword'
-    case 'CHANGE_KEYWORDS_REMOVE': return 'Remove keyword'
-    case 'CHANGE_CATEGORY': return 'Category'
-    case 'CHANGE_VENDOR': return 'Vendor'
-    case 'CHANGE_SEASON': return 'Season'
-    case 'CHANGE_GROUP_CODE': return 'Group code'
-    case 'CHANGE_SIZE_COLUMN': return 'Size column rename'
-    case 'CHANGE_SIZE_TYPE_STRUCTURE': return 'Size type structure'
-    default: return op
-  }
-}
-
-function describeChange(r: BatchOperation): string {
-  const c = r.changeJson as Record<string, unknown>
-  switch (r.operationType) {
-    case 'CHANGE_KEYWORDS_ADD':
-    case 'CHANGE_KEYWORDS_REMOVE':
-      return `keyword "${String(c.keyword ?? '')}"`
-    case 'CHANGE_CATEGORY':   return `category → ${c.category}`
-    case 'CHANGE_VENDOR':     return `vendor → ${String(c.vendor ?? '')}`
-    case 'CHANGE_SEASON':     return `season → ${String(c.season ?? '')}`
-    case 'CHANGE_GROUP_CODE': return `group → ${String(c.groupCode ?? '')}`
-    default:                  return ''
-  }
 }

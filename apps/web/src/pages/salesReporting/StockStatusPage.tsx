@@ -5,6 +5,7 @@ import {
 import { Link, useSearchParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { useStockStatus, type StockStatusArgs } from '../../hooks/useReports'
+import { manualReportQueryKey, useManualReportRun } from '../../hooks/useManualReportRun'
 import type {
   StockStatusRow,
   StockStatusSortBy,
@@ -52,10 +53,14 @@ export default function StockStatusPage() {
   const [categoriesText, setCategoriesText] = useState('')
   const [seasonsText, setSeasonsText] = useState('')
   const [skusText, setSkusText] = useState('')
-  const [query, setQuery] = useState<StockStatusArgs | null>(null)
   const [filterOpen, setFilterOpen] = useState(true)
+  const { run: reportRun, query, commitRun } = useManualReportRun<StockStatusArgs>({
+    storageKey: 'manual-report-run:/reports/sales/stock-status:v1',
+    queryKeyBase: 'stock-status',
+    hydrateArgs: hydrateRunArgs,
+  })
 
-  const { data, isFetching, error } = useStockStatus(query)
+  const { data, isFetching, error } = useStockStatus(reportRun)
   const running = query != null && isFetching
 
   useEffect(() => {
@@ -67,6 +72,7 @@ export default function StockStatusPage() {
   const touchTemplate = useTouchReportTemplate()
   const hydratedFor = useRef<string | null>(null)
   useEffect(() => {
+    if (reportRun) return
     if (!templateId || !templateData) return
     if (hydratedFor.current === templateId) return
     const t = templateData.template
@@ -82,7 +88,7 @@ export default function StockStatusPage() {
     setCategoriesText(p.categoriesText ?? (Array.isArray(p.categories) ? p.categories.join(',') : ''))
     setSeasonsText(p.seasonsText ?? (Array.isArray(p.seasons) ? p.seasons.join(',') : ''))
     setSkusText(p.skusText ?? (Array.isArray(p.skus) ? p.skus.join(',') : ''))
-    setQuery({
+    commitRun({
       sortBy: p.sortBy ?? 'CATEGORY',
       storeOption: p.storeOption ?? 'SEPARATE',
       itemFilter: p.itemFilter ?? 'ALL',
@@ -93,10 +99,20 @@ export default function StockStatusPage() {
     })
     touchTemplate.mutate(templateId)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [templateId, templateData])
+  }, [templateId, templateData, reportRun])
+
+  function hydrateRunArgs(args: StockStatusArgs): void {
+    if (args.sortBy) setSortBy(args.sortBy)
+    if (args.storeOption) setStoreOption(args.storeOption)
+    if (args.itemFilter) setItemFilter(args.itemFilter)
+    setVendorsText(Array.isArray(args.vendors) ? args.vendors.join(',') : '')
+    setCategoriesText(Array.isArray(args.categories) ? args.categories.join(',') : '')
+    setSeasonsText(Array.isArray(args.seasons) ? args.seasons.join(',') : '')
+    setSkusText(Array.isArray(args.skus) ? args.skus.join(',') : '')
+  }
 
   function onRun(): void {
-    setQuery({
+    commitRun({
       sortBy,
       storeOption,
       itemFilter,
@@ -107,7 +123,7 @@ export default function StockStatusPage() {
     })
   }
   function onStop(): void {
-    qc.cancelQueries({ queryKey: ['stock-status', query] })
+    qc.cancelQueries({ queryKey: manualReportQueryKey('stock-status', reportRun) })
   }
 
   const columns = [

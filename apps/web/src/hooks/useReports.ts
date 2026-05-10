@@ -1,5 +1,10 @@
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import {
+  manualReportQueryKey,
+  manualReportQueryOptions,
+  type ManualReportRun,
+} from './useManualReportRun'
+import {
   fetchOnHandByDepartment,
   fetchOnHandDrillDown,
   fetchSalesPerformanceByDepartment,
@@ -174,20 +179,21 @@ export type SalesByDayArgs = {
   comparisonOffsetDays?: number
   combineStores?: boolean
 } & SharedReportCriteriaParams
-export function useSalesByDay(args: SalesByDayArgs | null) {
+export function useSalesByDay(run: ManualReportRun<SalesByDayArgs> | null) {
   return useQuery({
-    queryKey: ['sales-by-day', args] as const,
+    queryKey: manualReportQueryKey('sales-by-day', run),
     queryFn: ({ signal }) =>
       fetchSalesByDay(
-        args!.storeNumbers,
-        args!.startDate,
-        args!.endDate,
-        args!.comparisonOffsetDays ?? 364,
-        args!.combineStores ?? false,
+        run!.args.storeNumbers,
+        run!.args.startDate,
+        run!.args.endDate,
+        run!.args.comparisonOffsetDays ?? 364,
+        run!.args.combineStores ?? false,
         signal,
-        args!,
+        run!.args,
       ),
-    enabled: !!args,
+    enabled: !!run,
+    ...manualReportQueryOptions,
   })
 }
 
@@ -199,11 +205,12 @@ export type SalesByTimeArgs = {
   stores?: number[]
   pctOfTotal?: boolean
 } & SharedReportCriteriaParams
-export function useSalesByTime(args: SalesByTimeArgs | null) {
+export function useSalesByTime(run: ManualReportRun<SalesByTimeArgs> | null) {
   return useQuery({
-    queryKey: ['sales-by-time', args] as const,
-    queryFn: ({ signal }) => fetchSalesByTime({ ...args!, signal }),
-    enabled: !!args,
+    queryKey: manualReportQueryKey('sales-by-time', run),
+    queryFn: ({ signal }) => fetchSalesByTime({ ...run!.args, signal }),
+    enabled: !!run,
+    ...manualReportQueryOptions,
   })
 }
 
@@ -231,11 +238,12 @@ export type SalespersonSummaryArgs = {
   combineStores?: boolean
   cashierSummary?: boolean
 } & SharedReportCriteriaParams
-export function useSalespersonSummary(args: SalespersonSummaryArgs | null) {
+export function useSalespersonSummary(run: ManualReportRun<SalespersonSummaryArgs> | null) {
   return useQuery({
-    queryKey: ['salesperson-summary', args] as const,
-    queryFn: ({ signal }) => fetchSalespersonSummary({ ...args!, signal }),
-    enabled: !!args,
+    queryKey: manualReportQueryKey('salesperson-summary', run),
+    queryFn: ({ signal }) => fetchSalespersonSummary({ ...run!.args, signal }),
+    enabled: !!run,
+    ...manualReportQueryOptions,
   })
 }
 
@@ -248,11 +256,12 @@ export type BestSellersArgs = {
   combineStores?: boolean
   topN?: number
 } & SharedReportCriteriaParams
-export function useBestSellers(args: BestSellersArgs | null) {
+export function useBestSellers(run: ManualReportRun<BestSellersArgs> | null) {
   return useQuery({
-    queryKey: ['best-sellers', args] as const,
-    queryFn: ({ signal }) => fetchBestSellers({ ...args!, signal }),
-    enabled: !!args,
+    queryKey: manualReportQueryKey('best-sellers', run),
+    queryFn: ({ signal }) => fetchBestSellers({ ...run!.args, signal }),
+    enabled: !!run,
+    ...manualReportQueryOptions,
   })
 }
 
@@ -293,11 +302,12 @@ export type SalesAnalysisArgs = {
   includeOnOrder?: boolean
   showPercentOfTotal?: boolean
 }
-export function useSalesAnalysis(args: SalesAnalysisArgs | null) {
+export function useSalesAnalysis(run: ManualReportRun<SalesAnalysisArgs> | null) {
   return useQuery({
-    queryKey: ['sales-analysis', args] as const,
-    queryFn: ({ signal }) => fetchSalesAnalysis({ ...args!, signal }),
-    enabled: !!args,
+    queryKey: manualReportQueryKey('sales-analysis', run),
+    queryFn: ({ signal }) => fetchSalesAnalysis({ ...run!.args, signal }),
+    enabled: !!run,
+    ...manualReportQueryOptions,
   })
 }
 
@@ -324,11 +334,12 @@ export type SalesHierarchyArgs = {
   priorYear?: boolean
   includeAttributes?: boolean
 } & SharedReportCriteriaParams
-export function useSalesHierarchy(args: SalesHierarchyArgs | null) {
+export function useSalesHierarchy(run: ManualReportRun<SalesHierarchyArgs> | null) {
   return useQuery({
-    queryKey: ['sales-hierarchy', args] as const,
-    queryFn: ({ signal }) => fetchSalesHierarchy({ ...args!, signal }),
-    enabled: !!args,
+    queryKey: manualReportQueryKey('sales-hierarchy', run),
+    queryFn: ({ signal }) => fetchSalesHierarchy({ ...run!.args, signal }),
+    enabled: !!run,
+    ...manualReportQueryOptions,
   })
 }
 
@@ -339,11 +350,12 @@ export type SalesPivotArgs = {
   variant: import('../services/reportApi').SalesPivotVariant
   levels?: import('../services/reportApi').SalesPivotLevels
 } & SharedReportCriteriaParams
-export function useSalesPivot(args: SalesPivotArgs | null) {
+export function useSalesPivot(run: ManualReportRun<SalesPivotArgs> | null) {
   return useQuery({
-    queryKey: ['sales-pivot', args] as const,
-    queryFn: ({ signal }) => fetchSalesPivot({ ...args!, signal }),
-    enabled: !!args,
+    queryKey: manualReportQueryKey('sales-pivot', run),
+    queryFn: ({ signal }) => fetchSalesPivot({ ...run!.args, signal }),
+    enabled: !!run,
+    ...manualReportQueryOptions,
   })
 }
 
@@ -356,11 +368,12 @@ export type StockStatusArgs = {
   seasons?: string[]
   skus?: string[]
 }
-export function useStockStatus(args: StockStatusArgs | null) {
+export function useStockStatus(run: ManualReportRun<StockStatusArgs> | null) {
   return useQuery({
-    queryKey: ['stock-status', args] as const,
-    queryFn: ({ signal }) => fetchStockStatus({ ...args!, signal }),
-    enabled: !!args,
+    queryKey: manualReportQueryKey('stock-status', run),
+    queryFn: ({ signal }) => fetchStockStatus({ ...run!.args, signal }),
+    enabled: !!run,
+    ...manualReportQueryOptions,
   })
 }
 
@@ -380,13 +393,12 @@ export function useSalesDimensions() {
 // `placeholderData: keepPreviousData` gives the chart/table a stable frame
 // while re-fetching on filter tweaks (matches the pattern the other sales
 // reporting pages rely on for perceived responsiveness).
-export function useSalesHistoryByMonth(params: SalesHistoryByMonthParams | null) {
+export function useSalesHistoryByMonth(run: ManualReportRun<SalesHistoryByMonthParams> | null) {
   return useQuery({
-    queryKey: ['sales-history-by-month', params] as const,
-    queryFn: ({ signal }) => fetchSalesHistoryByMonth(params!, signal),
-    enabled: !!params,
-    staleTime: 60 * 1000,
-    placeholderData: keepPreviousData,
+    queryKey: manualReportQueryKey('sales-history-by-month', run),
+    queryFn: ({ signal }) => fetchSalesHistoryByMonth(run!.args, signal),
+    enabled: !!run,
+    ...manualReportQueryOptions,
   })
 }
 

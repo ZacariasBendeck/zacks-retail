@@ -5,6 +5,7 @@ import {
 import { Link, useSearchParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { useBestSellers, useSalesDimensions, type BestSellersArgs } from '../../hooks/useReports'
+import { manualReportQueryKey, useManualReportRun } from '../../hooks/useManualReportRun'
 import type {
   BestSellerRow,
   BestSellersDimension,
@@ -53,10 +54,14 @@ export default function BestSellersPage() {
   const [topN, setTopN] = useState<number>(25)
   const { criteria, setCriteria, updateCriteria, compactCriteria } = useReportCriteria()
   const [combineStores, setCombineStores] = useState(true)
-  const [query, setQuery] = useState<BestSellersArgs | null>(null)
   const [filterOpen, setFilterOpen] = useState(true)
+  const { run: reportRun, query, commitRun } = useManualReportRun<BestSellersArgs>({
+    storageKey: 'manual-report-run:/reports/sales/best-sellers:v1',
+    queryKeyBase: 'best-sellers',
+    hydrateArgs: hydrateRunArgs,
+  })
 
-  const { data, isFetching, error } = useBestSellers(query)
+  const { data, isFetching, error } = useBestSellers(reportRun)
   const { data: dims, isLoading: dimsLoading } = useSalesDimensions()
   const running = query != null && isFetching
 
@@ -70,6 +75,7 @@ export default function BestSellersPage() {
   const touchTemplate = useTouchReportTemplate()
   const hydratedFor = useRef<string | null>(null)
   useEffect(() => {
+    if (reportRun) return
     if (!templateId || !templateData) return
     if (hydratedFor.current === templateId) return
     const t = templateData.template
@@ -86,7 +92,7 @@ export default function BestSellersPage() {
     if (p.topN) setTopN(p.topN)
     if (p.combineStores !== undefined) setCombineStores(p.combineStores)
     setCriteria(nextCriteria)
-    setQuery({
+    commitRun({
       dimension: p.dimension ?? 'SKU',
       metric: p.metric ?? 'NET_SALES',
       period: p.period ?? 'YTD',
@@ -96,10 +102,19 @@ export default function BestSellersPage() {
     })
     touchTemplate.mutate(templateId)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [templateId, templateData])
+  }, [templateId, templateData, reportRun])
+
+  function hydrateRunArgs(args: BestSellersArgs): void {
+    setDimension(args.dimension)
+    setMetric(args.metric)
+    if (args.period) setPeriod(args.period)
+    if (args.topN) setTopN(args.topN)
+    if (args.combineStores !== undefined) setCombineStores(args.combineStores)
+    setCriteria(hydrateReportCriteria(args))
+  }
 
   function onRun(): void {
-    setQuery({
+    commitRun({
       dimension,
       metric,
       period,
@@ -109,7 +124,7 @@ export default function BestSellersPage() {
     })
   }
   function onStop(): void {
-    qc.cancelQueries({ queryKey: ['best-sellers', query] })
+    qc.cancelQueries({ queryKey: manualReportQueryKey('best-sellers', reportRun) })
   }
 
   // Max of the ranking metric across the rendered set; powers the share bar.

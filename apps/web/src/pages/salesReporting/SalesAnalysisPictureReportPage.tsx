@@ -13,6 +13,7 @@ import {
 import { Link, useSearchParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { useSalesAnalysis, useSalesDimensions, type SalesAnalysisArgs } from '../../hooks/useReports'
+import { manualReportQueryKey, useManualReportRun } from '../../hooks/useManualReportRun'
 import type { SalesAnalysisAttributeDimension, SalesAnalysisRow, SalesAnalysisStoreOption } from '../../services/reportApi'
 import { getErrorMessage } from '../../utils/errors'
 import { fmtMoney, fmtPct1, fmtPctBare1, fmtQty, DASH } from '../../utils/reportFormatters'
@@ -342,11 +343,15 @@ export default function SalesAnalysisPictureReportPage(): JSX.Element {
   const [keywordsRaw, setKeywordsRaw] = useState('')
   const [priorYear, setPriorYear] = useState(false)
   const [includeOnOrder, setIncludeOnOrder] = useState(false)
-  const [query, setQuery] = useState<SalesAnalysisArgs | null>(null)
   const [filterOpen, setFilterOpen] = useState(true)
   const [columnFilters, setColumnFilters] = useState<Record<string, ExcelColumnFilterState | undefined>>({})
   const [fullScreen, setFullScreen] = useState(false)
   const [preview, setPreview] = useState<PicturePreview | null>(null)
+  const { run: reportRun, query, commitRun } = useManualReportRun<SalesAnalysisArgs>({
+    storageKey: 'manual-report-run:/reports/sales/analysis-picture:v1',
+    queryKeyBase: 'sales-analysis',
+    hydrateArgs: hydrateRunArgs,
+  })
 
   const [visibleKeys, setVisibleKeys] = useState<Set<string>>(() => {
     if (typeof window === 'undefined') return new Set(DEFAULT_VISIBLE_KEYS)
@@ -368,7 +373,7 @@ export default function SalesAnalysisPictureReportPage(): JSX.Element {
   }, [visibleKeys])
 
   const { data: dims, isLoading: dimsLoading } = useSalesDimensions()
-  const { data, isFetching, error } = useSalesAnalysis(query)
+  const { data, isFetching, error } = useSalesAnalysis(reportRun)
   const running = query != null && isFetching
 
   useEffect(() => {
@@ -379,6 +384,7 @@ export default function SalesAnalysisPictureReportPage(): JSX.Element {
   const touchTemplate = useTouchReportTemplate()
   const hydratedFor = useRef<string | null>(null)
   useEffect(() => {
+    if (reportRun) return
     if (!templateId || !templateData || hydratedFor.current === templateId) return
     const t = templateData.template
     if (t.reportType !== 'sales-analysis-picture') return
@@ -434,7 +440,7 @@ export default function SalesAnalysisPictureReportPage(): JSX.Element {
     setPriorYear(!!p.priorYear)
     setIncludeOnOrder(!!p.includeOnOrder)
     if (Array.isArray(p.visibleColumns)) setVisibleKeys(new Set(p.visibleColumns))
-    setQuery({
+    commitRun({
       dimension: 'CATEGORY',
       reportType: 'SKU_DETAIL',
       storeOption: hierarchyUsesStoreLevel(nextLevels) ? 'SEPARATE' : p.storeOption ?? 'COMBINE',
@@ -462,7 +468,32 @@ export default function SalesAnalysisPictureReportPage(): JSX.Element {
     })
     touchTemplate.mutate(templateId)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [templateId, templateData])
+  }, [templateId, templateData, reportRun])
+
+  function hydrateRunArgs(args: SalesAnalysisArgs): void {
+    if (args.storeOption) setStoreOption(args.storeOption)
+    if (args.startDate && args.endDate) {
+      setDateSpec({ type: 'fixed', startDate: args.startDate, endDate: args.endDate })
+    }
+    setSelectedStores(Array.isArray(args.stores) ? args.stores : [])
+    setSelectedChains(Array.isArray(args.chains) ? args.chains : [])
+    setSelectedSectors(Array.isArray(args.sectors) ? args.sectors : [])
+    setSelectedDepartments(Array.isArray(args.departments) ? args.departments : [])
+    setSelectedCategories(Array.isArray(args.categories) ? args.categories : [])
+    setSelectedSeasons(Array.isArray(args.seasons) ? args.seasons : [])
+    setSelectedGroups(Array.isArray(args.groups) ? args.groups : [])
+    setSelectedBuyers(Array.isArray(args.buyers) ? args.buyers : [])
+    setStoresRaw(args.storesRaw ?? '')
+    setCategoriesRaw(args.categoriesRaw ?? '')
+    setVendorsRaw(args.vendorsRaw ?? '')
+    setSeasonsRaw(args.seasonsRaw ?? '')
+    setStyleColorRaw(args.styleColorRaw ?? '')
+    setSkusRaw(args.skusRaw ?? '')
+    setGroupsRaw(args.groupsRaw ?? '')
+    setKeywordsRaw(args.keywordsRaw ?? '')
+    setPriorYear(!!args.priorYear)
+    setIncludeOnOrder(!!args.includeOnOrder)
+  }
 
   const resultRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -504,10 +535,10 @@ export default function SalesAnalysisPictureReportPage(): JSX.Element {
   const onRun = (): void => {
     if (pictureMode === 'tree' && !hierarchyIsValid(hierarchyLevels)) return
     setColumnFilters({})
-    setQuery(buildQuery())
+    commitRun(buildQuery())
   }
   const onStop = (): void => {
-    qc.cancelQueries({ queryKey: ['sales-analysis', query] })
+    qc.cancelQueries({ queryKey: manualReportQueryKey('sales-analysis', reportRun) })
   }
 
   const extendedDimensions = useMemo(() => {

@@ -10,6 +10,7 @@ import {
 } from '@ant-design/icons'
 import { Link, useSearchParams, useNavigate } from 'react-router-dom'
 import { useSalesAnalysis, type SalesAnalysisArgs } from '../../hooks/useReports'
+import type { ManualReportRun } from '../../hooks/useManualReportRun'
 import type {
   SalesAnalysisDimension,
   SalesAnalysisReportType,
@@ -513,7 +514,11 @@ export default function ReportViewerPage() {
     const base = readSalesAnalysisArgs(searchParams)
     return base.reportType === 'SKU_DETAIL' ? { ...base, includeAttributes: true } : base
   }, [searchParams])
-  const { data, isFetching, error } = useSalesAnalysis(args)
+  const reportRun = useMemo<ManualReportRun<SalesAnalysisArgs>>(
+    () => ({ args, runId: searchParams.toString() || 'direct' }),
+    [args, searchParams],
+  )
+  const { data, isFetching, error } = useSalesAnalysis(reportRun)
   const csvUrl = getSalesAnalysisCsvUrl(args)
   const xlsxUrl = getSalesAnalysisXlsxUrl(args)
 

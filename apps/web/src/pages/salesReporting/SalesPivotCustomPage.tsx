@@ -6,6 +6,7 @@ import {
 import { Link } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { useSalesPivot, useSalesDimensions, type SalesPivotArgs } from '../../hooks/useReports'
+import { manualReportQueryKey, useManualReportRun } from '../../hooks/useManualReportRun'
 import type {
   PivotDimension,
   SalesPivotAttributeDimension,
@@ -25,7 +26,7 @@ import { SkuLink } from '../../components/sku-link'
 import SaveSnapshotButton from '../../components/reports/SaveSnapshotButton'
 import ReportThumbnail from '../../components/reports/ReportThumbnail'
 import { buildRicsImageUrl } from '../../services/ricsImageUrl'
-import { ReportCriteriaPanel, useReportCriteria } from '../../components/reports/ReportCriteriaPanel'
+import { ReportCriteriaPanel, hydrateReportCriteria, useReportCriteria } from '../../components/reports/ReportCriteriaPanel'
 import {
   buildParentTotalsByRowKey,
   formatParentPercent,
@@ -436,7 +437,7 @@ export default function SalesPivotCustomPage() {
   const qc = useQueryClient()
 
   const [dateSpec, setDateSpec] = useState<DateSpec>(DEFAULT_DATE_SPEC)
-  const { criteria, updateCriteria, compactCriteria } = useReportCriteria()
+  const { criteria, setCriteria, updateCriteria, compactCriteria } = useReportCriteria()
   const selectedStores = criteria.stores
   const selectedChains = criteria.chains
   const selectedSectors = criteria.sectors
@@ -455,11 +456,15 @@ export default function SalesPivotCustomPage() {
   const [level3, setLevel3] = useState<PivotDimension>('category')
   const [attributeDimensionCode, setAttributeDimensionCode] = useState<string | null>(null)
   const [showPercentOfParent, setShowPercentOfParent] = useState(false)
-  const [query, setQuery] = useState<SalesPivotArgs | null>(null)
   const [filterOpen, setFilterOpen] = useState(true)
+  const { run: reportRun, query, commitRun } = useManualReportRun<SalesPivotArgs>({
+    storageKey: 'manual-report-run:/reports/sales/pivot-custom:v1',
+    queryKeyBase: 'sales-pivot',
+    hydrateArgs: hydrateRunArgs,
+  })
 
   const { data: dims, isLoading: dimsLoading } = useSalesDimensions()
-  const { data, isFetching, error } = useSalesPivot(query)
+  const { data, isFetching, error } = useSalesPivot(reportRun)
   const running = query != null && isFetching
 
   useEffect(() => {
@@ -500,7 +505,7 @@ export default function SalesPivotCustomPage() {
   function onRun(): void {
     if (!isValid) return
     const { startDate, endDate } = resolveDateSpec(dateSpec)
-    setQuery({
+    commitRun({
       startDate,
       endDate,
       variant: 'custom',
@@ -509,7 +514,18 @@ export default function SalesPivotCustomPage() {
     })
   }
   function onStop(): void {
-    qc.cancelQueries({ queryKey: ['sales-pivot', query] })
+    qc.cancelQueries({ queryKey: manualReportQueryKey('sales-pivot', reportRun) })
+  }
+
+  function hydrateRunArgs(args: SalesPivotArgs): void {
+    setDateSpec({ type: 'fixed', startDate: args.startDate, endDate: args.endDate })
+    setCriteria(hydrateReportCriteria(args))
+    if (args.levels?.length === 2 || args.levels?.length === 3) {
+      setHierarchyDepth(args.levels.length)
+      setLevel1(args.levels[0]!)
+      setLevel2(args.levels[1]!)
+      if (args.levels.length === 3) setLevel3(args.levels[2]!)
+    }
   }
 
   const reportLevels = data?.levels ?? null

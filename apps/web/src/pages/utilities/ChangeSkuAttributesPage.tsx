@@ -1202,9 +1202,12 @@ export default function ChangeSkuAttributesPage() {
       return
     }
     try {
+      const criteria = activeFilters
+        ? { skus: selectedCodes, sourceQuery: activeFilters }
+        : { skus: selectedCodes }
       const result = await apply.mutateAsync({
         operationType: meta.opType,
-        criteria: { skus: selectedCodes },
+        criteria,
         change,
       })
       if (result.affectedCount === 0) {

@@ -5,6 +5,7 @@ import {
 import { Link, useSearchParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { useSalesDimensions, useSalespersonSummary, type SalespersonSummaryArgs } from '../../hooks/useReports'
+import { manualReportQueryKey, useManualReportRun } from '../../hooks/useManualReportRun'
 import type {
   SalespersonSummaryRow,
   SalespersonSubtotalBy,
@@ -49,8 +50,12 @@ export default function SalespersonSummaryPage() {
   const [subtotalBy, setSubtotalBy] = useState<SalespersonSubtotalBy | undefined>(undefined)
   const [combineStores, setCombineStores] = useState(true)
   const [cashierSummary, setCashierSummary] = useState(false)
-  const [query, setQuery] = useState<SalespersonSummaryArgs | null>(null)
   const [filterOpen, setFilterOpen] = useState(true)
+  const { run: reportRun, query, commitRun } = useManualReportRun<SalespersonSummaryArgs>({
+    storageKey: 'manual-report-run:/reports/others/salesperson-summary:v1',
+    queryKeyBase: 'salesperson-summary',
+    hydrateArgs: hydrateRunArgs,
+  })
   const [employeeDrawerOpen, setEmployeeDrawerOpen] = useState(false)
   const [employeeLoading, setEmployeeLoading] = useState(false)
   const [employeeSaving, setEmployeeSaving] = useState(false)
@@ -58,7 +63,7 @@ export default function SalespersonSummaryPage() {
   const [selectedEmployee, setSelectedEmployee] = useState<RicsSalesperson | null>(null)
   const [employeeForm] = Form.useForm()
 
-  const { data, isFetching, error } = useSalespersonSummary(query)
+  const { data, isFetching, error } = useSalespersonSummary(reportRun)
   const { data: dimensions, isLoading: dimensionsLoading } = useSalesDimensions()
   const running = query != null && isFetching
 
@@ -71,6 +76,7 @@ export default function SalespersonSummaryPage() {
   const touchTemplate = useTouchReportTemplate()
   const hydratedFor = useRef<string | null>(null)
   useEffect(() => {
+    if (reportRun) return
     if (!templateId || !templateData) return
     if (hydratedFor.current === templateId) return
     const t = templateData.template
@@ -88,7 +94,7 @@ export default function SalespersonSummaryPage() {
     setSubtotalBy(p.subtotalBy)
     if (p.combineStores !== undefined) setCombineStores(!!p.combineStores)
     if (p.cashierSummary !== undefined) setCashierSummary(!!p.cashierSummary)
-    setQuery({
+    commitRun({
       startDate,
       endDate,
       ...p,
@@ -98,11 +104,19 @@ export default function SalespersonSummaryPage() {
     })
     touchTemplate.mutate(templateId)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [templateId, templateData])
+  }, [templateId, templateData, reportRun])
+
+  function hydrateRunArgs(args: SalespersonSummaryArgs): void {
+    setDateSpec({ type: 'fixed', startDate: args.startDate, endDate: args.endDate })
+    setCriteria(hydrateReportCriteria(args))
+    setSubtotalBy(args.subtotalBy)
+    if (args.combineStores !== undefined) setCombineStores(!!args.combineStores)
+    setCashierSummary(!!args.cashierSummary)
+  }
 
   function onRun(): void {
     const { startDate, endDate } = resolveDateSpec(dateSpec)
-    setQuery({
+    commitRun({
       startDate,
       endDate,
       ...compactCriteria,
@@ -112,7 +126,7 @@ export default function SalespersonSummaryPage() {
     })
   }
   function onStop(): void {
-    qc.cancelQueries({ queryKey: ['salesperson-summary', query] })
+    qc.cancelQueries({ queryKey: manualReportQueryKey('salesperson-summary', reportRun) })
   }
 
   async function openEmployee(code: string): Promise<void> {

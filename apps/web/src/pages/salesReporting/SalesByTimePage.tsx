@@ -5,6 +5,7 @@ import {
 import { Link, useSearchParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { useSalesByTime, useSalesDimensions, type SalesByTimeArgs } from '../../hooks/useReports'
+import { manualReportQueryKey, useManualReportRun } from '../../hooks/useManualReportRun'
 import type { SalesHourlyBucket } from '../../services/reportApi'
 import { getErrorMessage } from '../../utils/errors'
 import RunReportControls from './RunReportControls'
@@ -42,10 +43,14 @@ export default function SalesByTimePage() {
   const { criteria, setCriteria, updateCriteria, compactCriteria } = useReportCriteria()
   const [pctOfTotal, setPctOfTotal] = useState(false)
   const [chartMetric, setChartMetric] = useState<ChartMetric>('dollars')
-  const [query, setQuery] = useState<SalesByTimeArgs | null>(null)
   const [filterOpen, setFilterOpen] = useState(true)
+  const { run: reportRun, query, commitRun } = useManualReportRun<SalesByTimeArgs>({
+    storageKey: 'manual-report-run:/reports/others/sales-by-time:v1',
+    queryKeyBase: 'sales-by-time',
+    hydrateArgs: hydrateRunArgs,
+  })
 
-  const { data, isFetching, error } = useSalesByTime(query)
+  const { data, isFetching, error } = useSalesByTime(reportRun)
   const { data: dimensions, isLoading: dimensionsLoading } = useSalesDimensions()
   const running = query != null && isFetching
 
@@ -58,6 +63,7 @@ export default function SalesByTimePage() {
   const touchTemplate = useTouchReportTemplate()
   const hydratedFor = useRef<string | null>(null)
   useEffect(() => {
+    if (reportRun) return
     if (!templateId || !templateData) return
     if (hydratedFor.current === templateId) return
     const t = templateData.template
@@ -73,7 +79,7 @@ export default function SalesByTimePage() {
       stores: Array.isArray(p.stores) ? p.stores : undefined,
     }))
     if (p.pctOfTotal !== undefined) setPctOfTotal(!!p.pctOfTotal)
-    setQuery({
+    commitRun({
       startDate,
       endDate,
       ...p,
@@ -81,11 +87,17 @@ export default function SalesByTimePage() {
     })
     touchTemplate.mutate(templateId)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [templateId, templateData])
+  }, [templateId, templateData, reportRun])
+
+  function hydrateRunArgs(args: SalesByTimeArgs): void {
+    setDateSpec({ type: 'fixed', startDate: args.startDate, endDate: args.endDate })
+    setCriteria(hydrateReportCriteria(args))
+    setPctOfTotal(!!args.pctOfTotal)
+  }
 
   function onRun(): void {
     const { startDate, endDate } = resolveDateSpec(dateSpec)
-    setQuery({
+    commitRun({
       startDate,
       endDate,
       ...compactCriteria,
@@ -93,7 +105,7 @@ export default function SalesByTimePage() {
     })
   }
   function onStop(): void {
-    qc.cancelQueries({ queryKey: ['sales-by-time', query] })
+    qc.cancelQueries({ queryKey: manualReportQueryKey('sales-by-time', reportRun) })
   }
 
   const showPct = query?.pctOfTotal ?? false

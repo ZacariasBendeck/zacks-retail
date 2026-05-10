@@ -31,6 +31,7 @@ import {
 import { Link, useSearchParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { useSalesByDay, useSalesDimensions, type SalesByDayArgs } from '../../hooks/useReports'
+import { manualReportQueryKey, useManualReportRun } from '../../hooks/useManualReportRun'
 import {
   getSalesByDayCsvUrl,
   getSalesByDayXlsxUrl,
@@ -464,14 +465,18 @@ export default function SalesByDayPage() {
   const [combineStores, setCombineStores] = useState<boolean>(true)
   const [dateSpec, setDateSpec] = useState<DateSpec>(DEFAULT_DATE_SPEC)
   const [offset, setOffset] = useState<number>(364)
-  const [query, setQuery] = useState<SalesByDayArgs | null>(null)
   const [filterOpen, setFilterOpen] = useState(true)
   const [layoutEditorOpen, setLayoutEditorOpen] = useState(false)
   const [columnLayout, setColumnLayout] = useState<SalesByDayColumnLayout[]>(() =>
     readPersistedSalesByDayColumnLayout(),
   )
+  const { run: reportRun, query, commitRun } = useManualReportRun<SalesByDayArgs>({
+    storageKey: 'manual-report-run:/reports/others/sales-by-day:v1',
+    queryKeyBase: 'sales-by-day',
+    hydrateArgs: hydrateRunArgs,
+  })
 
-  const { data, isFetching, error } = useSalesByDay(query)
+  const { data, isFetching, error } = useSalesByDay(reportRun)
   const running = query != null && isFetching
 
   const { data: dims, isLoading: dimsLoading } = useSalesDimensions()
@@ -502,6 +507,7 @@ export default function SalesByDayPage() {
   const touchTemplate = useTouchReportTemplate()
   const hydratedFor = useRef<string | null>(null)
   useEffect(() => {
+    if (reportRun) return
     if (!templateId || !templateData) return
     if (hydratedFor.current === templateId) return
     const template = templateData.template
@@ -533,7 +539,7 @@ export default function SalesByDayPage() {
     setDateSpec(spec)
     if (typeof params.comparisonOffsetDays === 'number') setOffset(params.comparisonOffsetDays)
     if (typeof params.combineStores === 'boolean') setCombineStores(params.combineStores)
-    setQuery({
+    commitRun({
       storeNumbers: runCriteria.stores ?? stores,
       startDate,
       endDate,
@@ -543,7 +549,17 @@ export default function SalesByDayPage() {
     })
     touchTemplate.mutate(templateId)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [templateData, templateId])
+  }, [templateData, templateId, reportRun])
+
+  function hydrateRunArgs(args: SalesByDayArgs): void {
+    setDateSpec({ type: 'fixed', startDate: args.startDate, endDate: args.endDate })
+    setCriteria(hydrateReportCriteria({
+      ...args,
+      stores: Array.isArray(args.stores) && args.stores.length ? args.stores : args.storeNumbers,
+    }))
+    if (typeof args.comparisonOffsetDays === 'number') setOffset(args.comparisonOffsetDays)
+    if (typeof args.combineStores === 'boolean') setCombineStores(args.combineStores)
+  }
 
   function onRun(): void {
     const { startDate, endDate } = resolveDateSpec(dateSpec)
@@ -557,7 +573,7 @@ export default function SalesByDayPage() {
       runCriteria.stores = parsed.storeNumbers
     }
 
-    setQuery({
+    commitRun({
       storeNumbers: runCriteria.stores ?? [],
       startDate,
       endDate,
@@ -568,7 +584,7 @@ export default function SalesByDayPage() {
   }
 
   function onStop(): void {
-    qc.cancelQueries({ queryKey: ['sales-by-day', query] })
+    qc.cancelQueries({ queryKey: manualReportQueryKey('sales-by-day', reportRun) })
   }
 
   function patchColumnLayout(
