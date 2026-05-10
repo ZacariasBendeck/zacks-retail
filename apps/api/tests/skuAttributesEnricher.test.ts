@@ -14,7 +14,10 @@ jest.mock('../src/services/ricsImageUrl', () => ({
 
 import { prisma } from '../src/db/prisma';
 import { getOnHandTotals } from '../src/services/products/onHandTotalsService';
-import { loadSkuAttributesBySku } from '../src/services/salesReporting/skuAttributesEnricher';
+import {
+  loadSkuAttributeAssignmentsBySku,
+  loadSkuAttributesBySku,
+} from '../src/services/salesReporting/skuAttributesEnricher';
 
 const mockQuery = prisma.$queryRawUnsafe as jest.Mock;
 const mockGetOnHandTotals = getOnHandTotals as jest.Mock;
@@ -89,5 +92,59 @@ describe('loadSkuAttributesBySku', () => {
       ageDays: 90,
     });
     expect(row?.ageDaysByStore).toEqual({ '2': 90, '13': 59 });
+  });
+});
+
+describe('loadSkuAttributeAssignmentsBySku', () => {
+  beforeEach(() => {
+    mockQuery.mockReset();
+    mockGetOnHandTotals.mockReset();
+  });
+
+  it('returns available dimensions and compact assignments keyed by SKU and dimension', async () => {
+    mockQuery.mockResolvedValueOnce([
+      {
+        sku_code: '6608-BKPU',
+        dimension_code: 'color',
+        dimension_label: 'Color',
+        is_multi_value: false,
+        dimension_sort_order: 10,
+        value_code: 'black',
+        value_label: 'Black',
+      },
+      {
+        sku_code: '6608-BKPU',
+        dimension_code: 'heel_height',
+        dimension_label: 'Altura del Tacon',
+        is_multi_value: true,
+        dimension_sort_order: 20,
+        value_code: 'mid',
+        value_label: 'Mid',
+      },
+      {
+        sku_code: '6608-BKPU',
+        dimension_code: 'heel_height',
+        dimension_label: 'Altura del Tacon',
+        is_multi_value: true,
+        dimension_sort_order: 20,
+        value_code: 'high',
+        value_label: 'High',
+      },
+    ]);
+
+    const loaded = await loadSkuAttributeAssignmentsBySku(['6608-BKPU']);
+
+    expect(loaded.dimensions).toEqual([
+      { code: 'color', label: 'Color', isMultiValue: false, sortOrder: 10 },
+      { code: 'heel_height', label: 'Altura del Tacon', isMultiValue: true, sortOrder: 20 },
+    ]);
+    expect(loaded.assignmentsBySku.get('6608-BKPU')).toEqual({
+      color: { valueCodes: ['black'], valueLabels: ['Black'], label: 'Black' },
+      heel_height: {
+        valueCodes: ['mid', 'high'],
+        valueLabels: ['Mid', 'High'],
+        label: 'Mid, High',
+      },
+    });
   });
 });

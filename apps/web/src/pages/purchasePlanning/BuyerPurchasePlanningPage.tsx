@@ -47,6 +47,9 @@ import {
   flagBuyerCarryoverCandidateUnavailable,
   flagBuyerCarryoverUnavailable,
   linkBuyerPurchaseOrder,
+  markBuyerCategoriesNoBudget,
+  markBuyerCategoryNoBudget,
+  reopenBuyerCategoryBudget,
   updateBuyerAttributePlan,
   updateBuyerCategoryCard,
   updateBuyerCarryoverCandidate,
@@ -79,6 +82,7 @@ const statusColumns: Array<{ key: BuyerCategoryStatus; label: string; color: str
   { key: 'NEW_STYLES', label: 'New Styles', color: 'purple' },
   { key: 'PO_LINKED', label: 'PO Linked', color: 'geekblue' },
   { key: 'COMPLETE', label: 'Complete', color: 'green' },
+  { key: 'NO_BUDGET', label: 'No Budget', color: 'default' },
 ]
 
 const statusOptions = statusColumns.map((column) => ({ value: column.key, label: column.label }))
@@ -107,6 +111,10 @@ function formatMoney(value: number | null | undefined): string {
 
 function formatPct(value: number | null | undefined): string {
   return value == null ? 'n/a' : `${pctFmt.format(value)}%`
+}
+
+function seasonLabel(value: BuyerWorkbookSeason): string {
+  return seasonOptions.find((option) => option.value === value)?.label ?? value
 }
 
 function compareNumber(left: number | null | undefined, right: number | null | undefined): number {
@@ -139,6 +147,10 @@ function cardCount(detail: BuyerWorkbookDetail | undefined, cardId: string, kind
 
 function workbookProgress(workbook: BuyerWorkbookListItem): string {
   return `${formatInt(workbook.completeCount)} / ${formatInt(workbook.cardCount)} complete`
+}
+
+function landingRowKey(row: BuyerChecklistCategoryRow): string {
+  return `${row.categoryNumber}-${row.departmentNumber ?? 'none'}`
 }
 
 export default function BuyerPurchasePlanningPage() {
@@ -183,6 +195,9 @@ export default function BuyerPurchasePlanningPage() {
   const [landingYear, setLandingYear] = useState(new Date().getFullYear())
   const [buyerFilter, setBuyerFilter] = useState('')
   const [landingSearch, setLandingSearch] = useState('')
+  const [showNoBudget, setShowNoBudget] = useState(false)
+  const [selectedLandingRowKeys, setSelectedLandingRowKeys] = useState<string[]>([])
+  const [selectedLandingRows, setSelectedLandingRows] = useState<BuyerChecklistCategoryRow[]>([])
   const [reviewSetupVisible, setReviewSetupVisible] = useState(false)
   const [selectedWorkbookId, setSelectedWorkbookId] = useState<string | null>(null)
   const [drawerCardId, setDrawerCardId] = useState<string | null>(null)
@@ -205,12 +220,14 @@ export default function BuyerPurchasePlanningPage() {
     staleTime: 60_000,
   })
 
+  const checklistCategoryQueryKey = ['buyer-checklist-categories', buyerFilter, landingSeason, landingYear, showNoBudget] as const
   const checklistCategories = useQuery({
-    queryKey: ['buyer-checklist-categories', buyerFilter, landingSeason, landingYear],
+    queryKey: checklistCategoryQueryKey,
     queryFn: () => fetchBuyerChecklistCategories({
       buyer: buyerFilter.trim() || undefined,
       buyingSeason: landingSeason,
       seasonYear: landingYear,
+      includeNoBudget: showNoBudget,
     }),
     staleTime: 60_000,
   })
@@ -339,6 +356,53 @@ export default function BuyerPurchasePlanningPage() {
     void queryClient.invalidateQueries({ queryKey: ['buyer-checklist-categories'] })
   }
 
+  function clearLandingSelection() {
+    setSelectedLandingRowKeys([])
+    setSelectedLandingRows([])
+  }
+
+  function applyNoBudgetToLanding(rows: BuyerChecklistCategoryRow[]) {
+    const categoryNumbers = new Set(rows.map((row) => row.categoryNumber))
+    const now = new Date().toISOString()
+    queryClient.setQueryData<BuyerChecklistCategoryRow[]>(checklistCategoryQueryKey, (previous = []) => {
+      const next = previous.map((row) => {
+        if (!categoryNumbers.has(row.categoryNumber)) return row
+        return {
+          ...row,
+          currentSeason: {
+            ...row.currentSeason,
+            status: 'NO_BUDGET' as BuyerCategoryStatus,
+            updatedAt: now,
+            noBudgetMarkedBy: 'buyer',
+            noBudgetMarkedAt: now,
+          },
+          action: 'NO_BUDGET' as const,
+        }
+      })
+      return showNoBudget ? next : next.filter((row) => !categoryNumbers.has(row.categoryNumber))
+    })
+    clearLandingSelection()
+  }
+
+  function applyReopenToLanding(row: BuyerChecklistCategoryRow) {
+    queryClient.setQueryData<BuyerChecklistCategoryRow[]>(checklistCategoryQueryKey, (previous = []) => previous.map((candidate) => {
+      if (candidate.categoryNumber !== row.categoryNumber) return candidate
+      const reopenedStatus: BuyerCategoryStatus | null = candidate.currentSeason.cardId ? 'NOT_STARTED' : null
+      return {
+        ...candidate,
+        currentSeason: {
+          ...candidate.currentSeason,
+          status: reopenedStatus,
+          noBudgetId: null,
+          noBudgetNote: null,
+          noBudgetMarkedBy: null,
+          noBudgetMarkedAt: null,
+        },
+        action: candidate.currentSeason.cardId ? 'CONTINUE' as const : 'START_REVIEW' as const,
+      }
+    }))
+  }
+
   const createWorkbookMutation = useMutation({
     mutationFn: createBuyerWorkbook,
     onSuccess: (next) => {
@@ -368,6 +432,54 @@ export default function BuyerPurchasePlanningPage() {
     onSuccess: (next) => {
       putDetail(next)
       messageApi.success('Category updated')
+    },
+    onError: (error) => messageApi.error((error as Error).message),
+  })
+
+  const markNoBudgetMutation = useMutation({
+    mutationFn: (row: BuyerChecklistCategoryRow) => markBuyerCategoryNoBudget({
+      categoryNumber: row.categoryNumber,
+      buyingSeason: landingSeason,
+      seasonYear: landingYear,
+      buyer: (row.buyerCode ?? buyerFilter.trim()) || undefined,
+      actor: 'buyer',
+    }),
+    onSuccess: (_, row) => {
+      applyNoBudgetToLanding([row])
+      void queryClient.invalidateQueries({ queryKey: ['buyer-purchase-workbooks'] })
+      messageApi.success('Category marked No Budget')
+    },
+    onError: (error) => messageApi.error((error as Error).message),
+  })
+
+  const markSelectedNoBudgetMutation = useMutation({
+    mutationFn: (rows: BuyerChecklistCategoryRow[]) => markBuyerCategoriesNoBudget({
+      categoryNumbers: rows.map((row) => row.categoryNumber),
+      buyingSeason: landingSeason,
+      seasonYear: landingYear,
+      buyer: buyerFilter.trim() || undefined,
+      actor: 'buyer',
+    }),
+    onSuccess: (_, rows) => {
+      applyNoBudgetToLanding(rows)
+      void queryClient.invalidateQueries({ queryKey: ['buyer-purchase-workbooks'] })
+      messageApi.success(`${formatInt(rows.length)} categories marked No Budget`)
+    },
+    onError: (error) => messageApi.error((error as Error).message),
+  })
+
+  const reopenNoBudgetMutation = useMutation({
+    mutationFn: (row: BuyerChecklistCategoryRow) => reopenBuyerCategoryBudget({
+      categoryNumber: row.categoryNumber,
+      buyingSeason: landingSeason,
+      seasonYear: landingYear,
+      buyer: (row.buyerCode ?? buyerFilter.trim()) || undefined,
+      actor: 'buyer',
+    }),
+    onSuccess: (_, row) => {
+      applyReopenToLanding(row)
+      void queryClient.invalidateQueries({ queryKey: ['buyer-purchase-workbooks'] })
+      messageApi.success('Category reopened')
     },
     onError: (error) => messageApi.error((error as Error).message),
   })
@@ -601,16 +713,36 @@ export default function BuyerPurchasePlanningPage() {
     },
     {
       title: '',
-      width: 130,
+      width: 220,
       fixed: 'right',
       render: (_, row) => (
-        <Button
-          type={row.action === 'CONTINUE' ? 'default' : 'primary'}
-          size="small"
-          onClick={() => row.action === 'CONTINUE' ? continueCategory(row) : startCategoryReview(row)}
-        >
-          {row.action === 'CONTINUE' ? 'Continue' : 'Start Review'}
-        </Button>
+        row.action === 'NO_BUDGET' ? (
+          <Button
+            size="small"
+            onClick={() => reopenNoBudgetMutation.mutate(row)}
+            loading={reopenNoBudgetMutation.isPending}
+          >
+            Reopen
+          </Button>
+        ) : (
+          <Space>
+            <Button
+              type={row.action === 'CONTINUE' ? 'default' : 'primary'}
+              size="small"
+              onClick={() => row.action === 'CONTINUE' ? continueCategory(row) : startCategoryReview(row)}
+            >
+              {row.action === 'CONTINUE' ? 'Continue' : 'Start Review'}
+            </Button>
+            <Button
+              size="small"
+              danger
+              onClick={() => confirmNoBudget(row)}
+              loading={markNoBudgetMutation.isPending}
+            >
+              No Budget
+            </Button>
+          </Space>
+        )
       ),
     },
   ]
@@ -910,6 +1042,30 @@ export default function BuyerPurchasePlanningPage() {
     carryingForm.setFieldsValue({ categoryNumber: row.categoryNumber })
   }
 
+  function confirmNoBudget(row: BuyerChecklistCategoryRow) {
+    Modal.confirm({
+      title: 'Mark category as No Budget?',
+      content: `Mark this category as No Budget for ${seasonLabel(landingSeason)} ${landingYear}?`,
+      okText: 'No Budget',
+      okButtonProps: { danger: true },
+      cancelText: 'Cancel',
+      onOk: () => markNoBudgetMutation.mutateAsync(row),
+    })
+  }
+
+  function confirmSelectedNoBudget() {
+    const rows = selectedLandingRows.filter((row) => row.action !== 'NO_BUDGET')
+    if (rows.length === 0) return
+    Modal.confirm({
+      title: 'Mark selected categories as No Budget?',
+      content: `Mark ${formatInt(rows.length)} selected categories as No Budget for ${seasonLabel(landingSeason)} ${landingYear}?`,
+      okText: 'No Budget',
+      okButtonProps: { danger: true },
+      cancelText: 'Cancel',
+      onOk: () => markSelectedNoBudgetMutation.mutateAsync(rows),
+    })
+  }
+
   function continueCategory(row: BuyerChecklistCategoryRow) {
     if (!row.currentSeason.workbookId || !row.currentSeason.cardId) {
       startCategoryReview(row)
@@ -979,6 +1135,27 @@ export default function BuyerPurchasePlanningPage() {
                 onChange={(value) => setLandingYear(Number(value ?? new Date().getFullYear()))}
               />
             </Col>
+            <Col xs={12} md={4} xl={2}>
+              <Space>
+                <Switch
+                  aria-label="Show No Budget"
+                  checked={showNoBudget}
+                  onChange={setShowNoBudget}
+                />
+                <Text>Show No Budget</Text>
+              </Space>
+            </Col>
+            <Col xs={24} md={5} xl={3}>
+              <Button
+                block
+                danger
+                disabled={selectedLandingRows.filter((row) => row.action !== 'NO_BUDGET').length === 0}
+                loading={markSelectedNoBudgetMutation.isPending}
+                onClick={confirmSelectedNoBudget}
+              >
+                No Budget Selected
+              </Button>
+            </Col>
             <Col xs={24} md={5} xl={3}>
               <Button block icon={<FileSearchOutlined />} onClick={() => setReviewSetupVisible(true)}>
                 Manual Review Setup
@@ -987,7 +1164,17 @@ export default function BuyerPurchasePlanningPage() {
           </Row>
           <Table<BuyerChecklistCategoryRow>
             size="small"
-            rowKey={(row) => `${row.categoryNumber}-${row.departmentNumber ?? 'none'}`}
+            rowKey={landingRowKey}
+            rowSelection={{
+              selectedRowKeys: selectedLandingRowKeys,
+              onChange: (keys, rows) => {
+                setSelectedLandingRowKeys(keys.map(String))
+                setSelectedLandingRows(rows)
+              },
+              getCheckboxProps: (row) => ({
+                disabled: row.action === 'NO_BUDGET',
+              }),
+            }}
             loading={checklistCategories.isLoading}
             columns={landingColumns}
             dataSource={filteredChecklistRows}

@@ -5,6 +5,7 @@ import {
   fetchSalesPerformanceDrillDown,
   fetchTurnoverDrillDown,
   fetchSellThroughDrillDown,
+  fetchSalesPivot,
   getSalesAnalysisXlsxUrl,
   ReportApiError,
 } from '../services/reportApi'
@@ -133,6 +134,26 @@ describe('reportApi drill-down query mapping', () => {
       status: 400,
       code: 'VALIDATION_ERROR',
     } as Partial<ReportApiError>)
+  })
+
+  it('maps custom sales pivot attribute levels', async () => {
+    await fetchSalesPivot({
+      startDate: '2026-04-01',
+      endDate: '2026-04-30',
+      variant: 'custom',
+      levels: ['department', 'category', 'attribute'],
+      chains: ['unlimited'],
+      departments: [10],
+    })
+
+    const url = getCalledUrl()
+    expect(url.pathname).toBe('/api/v1/reports/sales/sales-pivot')
+    expect(url.searchParams.get('variant')).toBe('custom')
+    expect(url.searchParams.get('level1')).toBe('department')
+    expect(url.searchParams.get('level2')).toBe('category')
+    expect(url.searchParams.get('level3')).toBe('attribute')
+    expect(url.searchParams.get('chains')).toBe('unlimited')
+    expect(url.searchParams.get('departments')).toBe('10')
   })
 
   it('builds Sales Analysis XLSX export URLs with the full query surface', () => {

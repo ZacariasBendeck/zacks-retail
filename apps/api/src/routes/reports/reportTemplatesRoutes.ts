@@ -19,6 +19,7 @@ import {
   listTemplatesQuerySchema,
   updateTemplateSchema,
 } from './schemas';
+import { recordPlatformAuditEvent } from '../../services/platformAuditService';
 
 // Map service errors → HTTP responses. Kept in one place so every route uses
 // the same shape.
@@ -43,6 +44,47 @@ function viewerFrom(req: Request): ViewerContext {
     id: req.user!.id,
     isAdmin: req.permissions?.has(PERMISSIONS.REPORTS_ADMIN) ?? false,
   };
+}
+
+function templateAuditSnapshot(template: {
+  id: string;
+  reportType: string;
+  title: string;
+  visibility: string;
+  lastUsedAt: Date | null;
+}) {
+  return {
+    id: template.id,
+    reportType: template.reportType,
+    title: template.title,
+    visibility: template.visibility,
+    lastUsedAt: template.lastUsedAt?.toISOString() ?? null,
+  };
+}
+
+async function recordReportTemplateAudit(
+  prisma: PrismaClient,
+  req: Request,
+  input: {
+    eventType: string;
+    action: string;
+    resourceId: string;
+    beforeJson?: unknown;
+    afterJson?: unknown;
+  },
+): Promise<void> {
+  await recordPlatformAuditEvent(prisma, {
+    eventType: input.eventType,
+    action: input.action,
+    resourceType: 'report.template',
+    resourceId: input.resourceId,
+    actorUserId: req.user!.id,
+    ipAddress: req.ip,
+    userAgent: req.get('user-agent') ?? null,
+    beforeJson: input.beforeJson,
+    afterJson: input.afterJson,
+    metadataJson: { module: 'reports' },
+  });
 }
 
 export function createReportTemplatesRoutes(prisma: PrismaClient): Router {
@@ -82,6 +124,12 @@ export function createReportTemplatesRoutes(prisma: PrismaClient): Router {
         paramsJson: parsed.data.paramsJson,
         visibility: parsed.data.visibility,
       });
+      await recordReportTemplateAudit(prisma, req, {
+        eventType: 'reports.template_created',
+        action: 'CREATE_REPORT_TEMPLATE',
+        resourceId: template.id,
+        afterJson: templateAuditSnapshot(template),
+      });
       res.status(201).json({ template });
     } catch (err) {
       handleServiceError(err, res, next);
@@ -106,7 +154,15 @@ export function createReportTemplatesRoutes(prisma: PrismaClient): Router {
         res.status(400).json({ error: { code: 'INVALID_BODY', message: parsed.error.message } });
         return;
       }
+      const before = await getTemplate(prisma, viewerFrom(req), req.params.id);
       const template = await updateTemplate(prisma, viewerFrom(req), req.params.id, parsed.data);
+      await recordReportTemplateAudit(prisma, req, {
+        eventType: 'reports.template_updated',
+        action: 'UPDATE_REPORT_TEMPLATE',
+        resourceId: template.id,
+        beforeJson: templateAuditSnapshot(before),
+        afterJson: templateAuditSnapshot(template),
+      });
       res.json({ template });
     } catch (err) {
       handleServiceError(err, res, next);
@@ -116,7 +172,14 @@ export function createReportTemplatesRoutes(prisma: PrismaClient): Router {
   // DELETE /:id  — owner OR REPORTS_ADMIN
   router.delete('/:id', async (req, res, next) => {
     try {
+      const before = await getTemplate(prisma, viewerFrom(req), req.params.id);
       await deleteTemplate(prisma, viewerFrom(req), req.params.id);
+      await recordReportTemplateAudit(prisma, req, {
+        eventType: 'reports.template_deleted',
+        action: 'DELETE_REPORT_TEMPLATE',
+        resourceId: req.params.id,
+        beforeJson: templateAuditSnapshot(before),
+      });
       res.status(204).end();
     } catch (err) {
       handleServiceError(err, res, next);
@@ -126,7 +189,16 @@ export function createReportTemplatesRoutes(prisma: PrismaClient): Router {
   // POST /:id/touch  — bumps lastUsedAt; visibility-checked
   router.post('/:id/touch', async (req, res, next) => {
     try {
+      const before = await getTemplate(prisma, viewerFrom(req), req.params.id);
       await touchTemplate(prisma, viewerFrom(req), req.params.id);
+      const template = await getTemplate(prisma, viewerFrom(req), req.params.id);
+      await recordReportTemplateAudit(prisma, req, {
+        eventType: 'reports.template_used',
+        action: 'TOUCH_REPORT_TEMPLATE',
+        resourceId: req.params.id,
+        beforeJson: templateAuditSnapshot(before),
+        afterJson: templateAuditSnapshot(template),
+      });
       res.status(204).end();
     } catch (err) {
       handleServiceError(err, res, next);

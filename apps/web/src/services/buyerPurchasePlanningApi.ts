@@ -8,6 +8,7 @@ export type BuyerCategoryStatus =
   | 'NEW_STYLES'
   | 'PO_LINKED'
   | 'COMPLETE'
+  | 'NO_BUDGET'
 export type PlannedStyleStatus = 'PLANNED' | 'SELECTED' | 'LINKED' | 'CANCELLED'
 export type CarryoverDecision = 'UNREVIEWED' | 'WINNER' | 'MAYBE' | 'DROP'
 export type CarryoverAvailability = 'UNKNOWN' | 'AVAILABLE' | 'UNAVAILABLE'
@@ -116,6 +117,10 @@ export interface BuyerChecklistSeasonPlan {
   cardId: string | null
   status: BuyerCategoryStatus | null
   updatedAt: string | null
+  noBudgetId: string | null
+  noBudgetNote: string | null
+  noBudgetMarkedBy: string | null
+  noBudgetMarkedAt: string | null
 }
 
 export interface BuyerChecklistCategoryRow {
@@ -133,7 +138,7 @@ export interface BuyerChecklistCategoryRow {
   currentSeason: BuyerChecklistSeasonPlan
   nextSeason: BuyerChecklistSeasonPlan
   followingSeason: BuyerChecklistSeasonPlan
-  action: 'START_REVIEW' | 'CONTINUE'
+  action: 'START_REVIEW' | 'CONTINUE' | 'NO_BUDGET'
 }
 
 export interface BuyerWorkbookListItem {
@@ -352,6 +357,32 @@ export interface BuyerAttributePlanRequest {
   actor?: string
 }
 
+export interface BuyerNoBudgetCategoryRequest {
+  categoryNumber: number
+  buyingSeason: BuyerWorkbookSeason
+  seasonYear: number
+  buyer?: string | null
+  note?: string | null
+  actor?: string
+}
+
+export interface BuyerBulkNoBudgetCategoryRequest {
+  categoryNumbers: number[]
+  buyingSeason: BuyerWorkbookSeason
+  seasonYear: number
+  buyer?: string | null
+  note?: string | null
+  actor?: string
+}
+
+export interface BuyerNoBudgetCategoryResult {
+  categoryNumber: number
+  buyingSeason: BuyerWorkbookSeason
+  seasonYear: number
+  status: 'NO_BUDGET' | 'REOPENED'
+  noBudgetId: string | null
+}
+
 async function parseJsonOrThrow<T>(res: Response): Promise<T> {
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
@@ -362,7 +393,7 @@ async function parseJsonOrThrow<T>(res: Response): Promise<T> {
   return res.json() as Promise<T>
 }
 
-function qs(params: Record<string, string | number | undefined>): string {
+function qs(params: Record<string, string | number | boolean | undefined>): string {
   const search = new URLSearchParams()
   Object.entries(params).forEach(([key, value]) => {
     if (value !== undefined) search.set(key, String(value))
@@ -383,10 +414,51 @@ export async function fetchBuyerChecklistCategories(params: {
   buyer?: string
   buyingSeason?: BuyerWorkbookSeason
   seasonYear?: number
+  includeNoBudget?: boolean
 } = {}): Promise<BuyerChecklistCategoryRow[]> {
   const res = await fetch(`/api/v1/purchase-planning/buyer-checklist/categories${qs(params)}`)
   const body = await parseJsonOrThrow<{ rows: BuyerChecklistCategoryRow[] }>(res)
   return body.rows
+}
+
+export async function markBuyerCategoryNoBudget(input: BuyerNoBudgetCategoryRequest): Promise<BuyerNoBudgetCategoryResult> {
+  const res = await fetch('/api/v1/purchase-planning/buyer-checklist/categories/no-budget', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+  const body = await parseJsonOrThrow<{ result: BuyerNoBudgetCategoryResult }>(res)
+  return body.result
+}
+
+export async function markBuyerCategoriesNoBudget(input: BuyerBulkNoBudgetCategoryRequest): Promise<BuyerNoBudgetCategoryResult[]> {
+  const res = await fetch('/api/v1/purchase-planning/buyer-checklist/categories/no-budget/bulk', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+  const body = await parseJsonOrThrow<{ results: BuyerNoBudgetCategoryResult[] }>(res)
+  return body.results
+}
+
+export async function reopenBuyerCategoryBudget(input: Omit<BuyerNoBudgetCategoryRequest, 'note'>): Promise<BuyerNoBudgetCategoryResult> {
+  const res = await fetch('/api/v1/purchase-planning/buyer-checklist/categories/reopen', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+  const body = await parseJsonOrThrow<{ result: BuyerNoBudgetCategoryResult }>(res)
+  return body.result
+}
+
+export async function reopenBuyerCategoriesBudget(input: Omit<BuyerBulkNoBudgetCategoryRequest, 'note'>): Promise<BuyerNoBudgetCategoryResult[]> {
+  const res = await fetch('/api/v1/purchase-planning/buyer-checklist/categories/reopen/bulk', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+  const body = await parseJsonOrThrow<{ results: BuyerNoBudgetCategoryResult[] }>(res)
+  return body.results
 }
 
 export async function createBuyerWorkbook(input: BuyerWorkbookCreateRequest): Promise<BuyerWorkbookDetail> {

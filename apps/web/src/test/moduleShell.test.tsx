@@ -14,6 +14,7 @@ vi.mock('../auth/useAuth', () => ({
       role: { id: 'role-1', name: 'Admin' },
     },
     permissions: new Set<string>([
+      'activity_review.view',
       'employees.manage',
       'employees.view',
       'identity_access.manage',
@@ -73,6 +74,7 @@ function renderModuleShell(initialEntry = '/inventory/dashboard') {
             <Route path="/utilities" element={<Navigate to="/utilities/stores" replace />} />
             <Route path="/utilities/stores" element={<div data-testid="utilities-stores">Stores</div>} />
             <Route path="/utilities/store-chains" element={<div data-testid="utilities-store-chains">Store Chains</div>} />
+            <Route path="/operations/activity-review" element={<div data-testid="operations-activity-review">Activity Review</div>} />
             <Route path="/purchasing" element={<Navigate to="/purchasing/orders" replace />} />
             <Route path="/purchasing/orders" element={<div data-testid="purchasing-orders">Purchasing Orders</div>} />
             <Route path="/purchasing/receive" element={<div data-testid="purchasing-receive">Receive POs</div>} />
@@ -107,6 +109,7 @@ describe('Module Shell Navigation', () => {
     expect(screen.getByRole('menuitem', { name: /Import Management/i })).toBeInTheDocument()
     expect(screen.getByRole('menuitem', { name: /OTB/i })).toBeInTheDocument()
     expect(screen.getByRole('menuitem', { name: /Reports/i })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: /Operations/i })).toBeInTheDocument()
   })
 
   it('redirects the default route to the inventory dashboard', () => {
@@ -166,6 +169,7 @@ describe('Module Shell Navigation', () => {
       { label: 'Stores', pageId: 'utilities-stores', moduleTitle: 'File Setup', openModuleLabel: 'File Setup' },
       { label: 'Store Chains', pageId: 'utilities-store-chains', moduleTitle: 'File Setup', openModuleLabel: 'File Setup' },
       { label: 'Users', pageId: 'file-setup-users', moduleTitle: 'File Setup', openModuleLabel: 'File Setup' },
+      { label: 'Activity Review', pageId: 'operations-activity-review', moduleTitle: 'Operations', openModuleLabel: 'Operations' },
       { label: 'Purchase Orders', pageId: 'purchasing-orders', moduleTitle: 'Purchasing', openModuleLabel: 'Purchasing' },
       { label: 'Receive POs', pageId: 'purchasing-receive', moduleTitle: 'Purchasing', openModuleLabel: 'Purchasing' },
       { label: 'Monthly Plans', pageId: 'otb-monthly-plans', moduleTitle: 'OTB - no en uso', openModuleLabel: 'OTB' },

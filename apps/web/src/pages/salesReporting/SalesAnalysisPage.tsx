@@ -8,6 +8,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import dayjs, { type Dayjs } from 'dayjs'
 import { useSalesAnalysis, useSalesDimensions, type SalesAnalysisArgs } from '../../hooks/useReports'
 import type {
+  SalesAnalysisAttributeDimension,
   SalesAnalysisStoreOption,
   SalesAnalysisRow,
   SalesAnalysisReport,
@@ -91,6 +92,8 @@ const STORE_OPTION_LABELS = Object.fromEntries(
   STORE_OPTIONS.map((o) => [o.value, o.label.replace(/ Stores$/, '')]),
 ) as Record<SalesAnalysisStoreOption, string>
 
+const EMPTY_ATTRIBUTE_DIMENSIONS: SalesAnalysisAttributeDimension[] = []
+
 type SalesAnalysisHierarchyDimension =
   | 'department'
   | 'category'
@@ -100,6 +103,11 @@ type SalesAnalysisHierarchyDimension =
   | 'season'
   | 'group'
   | 'buyer'
+  | 'attribute'
+
+type SalesAnalysisHierarchyLevels =
+  | [SalesAnalysisHierarchyDimension, SalesAnalysisHierarchyDimension]
+  | [SalesAnalysisHierarchyDimension, SalesAnalysisHierarchyDimension, SalesAnalysisHierarchyDimension]
 
 const HIERARCHY_OPTIONS: Array<{ value: SalesAnalysisHierarchyDimension; label: string }> = [
   { value: 'department', label: 'Department' },
@@ -111,17 +119,44 @@ const HIERARCHY_OPTIONS: Array<{ value: SalesAnalysisHierarchyDimension; label: 
   { value: 'group', label: 'Group' },
   { value: 'buyer', label: 'Buyer' },
 ]
+const ATTRIBUTE_HIERARCHY_OPTION: { value: SalesAnalysisHierarchyDimension; label: string } = {
+  value: 'attribute',
+  label: 'Attribute',
+}
+const DEEPEST_HIERARCHY_OPTIONS: Array<{ value: SalesAnalysisHierarchyDimension; label: string }> = [
+  ...HIERARCHY_OPTIONS,
+  ATTRIBUTE_HIERARCHY_OPTION,
+]
 
 const HIERARCHY_LABELS = Object.fromEntries(
-  HIERARCHY_OPTIONS.map((o) => [o.value, o.label]),
+  DEEPEST_HIERARCHY_OPTIONS.map((o) => [o.value, o.label]),
 ) as Record<SalesAnalysisHierarchyDimension, string>
 
-function hierarchyLabel(dim: SalesAnalysisHierarchyDimension): string {
-  return HIERARCHY_LABELS[dim]
+function hierarchyLabel(dim: SalesAnalysisHierarchyDimension, attributeLabel?: string): string {
+  return dim === 'attribute' ? (attributeLabel || 'Attribute') : HIERARCHY_LABELS[dim]
 }
 
-function hierarchyDescriptor(level1: SalesAnalysisHierarchyDimension, level2: SalesAnalysisHierarchyDimension): string {
-  return `${hierarchyLabel(level1)} -> ${hierarchyLabel(level2)} -> SKU`
+function hierarchyDescriptor(
+  levels: SalesAnalysisHierarchyLevels,
+  attributeDimension?: SalesAnalysisAttributeDimension | null,
+): string {
+  return `${levels.map((level) => hierarchyLabel(level, attributeDimension?.label)).join(' -> ')} -> SKU`
+}
+
+function hierarchyUsesStoreLevel(levels: SalesAnalysisHierarchyLevels): boolean {
+  return levels.includes('store') || levels.includes('store_chain')
+}
+
+function hierarchyIsValid(levels: SalesAnalysisHierarchyLevels): boolean {
+  if (levels[0] === 'attribute') return false
+  const attributeIndex = levels.indexOf('attribute')
+  if (attributeIndex >= 0 && attributeIndex !== levels.length - 1) return false
+  const concrete = levels.filter((level) => level !== 'attribute')
+  return new Set(concrete).size === concrete.length
+}
+
+function fallbackHierarchyLevel(used: SalesAnalysisHierarchyDimension[]): SalesAnalysisHierarchyDimension {
+  return HIERARCHY_OPTIONS.find((option) => !used.includes(option.value))?.value ?? 'category'
 }
 
 interface SalesAnalysisTreeNode {
@@ -303,6 +338,7 @@ function aggregateChainLeaves(
 function analysisDimKeyLabel(
   row: SalesAnalysisRow,
   dim: SalesAnalysisHierarchyDimension,
+  attributeDimension?: SalesAnalysisAttributeDimension | null,
 ): { key: string; label: string; sortNumeric: number | null; unassigned: boolean } {
   const attrs = row.attributes
   const value = (key: string, label: string | null | undefined, numeric: number | null = null) => ({
@@ -335,14 +371,23 @@ function analysisDimKeyLabel(
       return attrs?.groupCode ? value(attrs.groupCode, null) : missing('(No group)')
     case 'buyer':
       return attrs?.extended?.buyer ? value(attrs.extended.buyer, null) : missing('(No buyer)')
+    case 'attribute': {
+      const attributeLabel = attributeDimension?.label || 'attribute'
+      if (!attributeDimension) return missing(`(No ${attributeLabel})`)
+      const assignment = row.attributeAssignments?.[attributeDimension.code]
+      if (!assignment?.label) return missing(`(No ${attributeLabel})`)
+      const key = assignment.valueCodes.length ? assignment.valueCodes.join('|') : assignment.label
+      return { key, label: assignment.label, sortNumeric: null, unassigned: false }
+    }
   }
 }
 
 function buildSalesAnalysisTree(
   rows: SalesAnalysisRow[],
-  levels: [SalesAnalysisHierarchyDimension, SalesAnalysisHierarchyDimension],
+  levels: SalesAnalysisHierarchyLevels,
   periodDays: number,
   turnsRoiAnnualizer: number,
+  attributeDimension?: SalesAnalysisAttributeDimension | null,
 ): SalesAnalysisTreeNode[] {
   interface Bucket {
     key: string
@@ -362,9 +407,15 @@ function buildSalesAnalysisTree(
     return bucket
   }
   for (const row of rows) {
-    const level1 = ensure(root, analysisDimKeyLabel(row, levels[0]))
-    const level2 = ensure(level1.children, analysisDimKeyLabel(row, levels[1]))
-    level2.leaves.push(row)
+    let current = root
+    levels.forEach((level, index) => {
+      const bucket = ensure(current, analysisDimKeyLabel(row, level, attributeDimension))
+      if (index === levels.length - 1) {
+        bucket.leaves.push(row)
+      } else {
+        current = bucket.children
+      }
+    })
   }
   const cmp = (a: Bucket, b: Bucket) => {
     if (a.unassigned && !b.unassigned) return 1
@@ -373,6 +424,8 @@ function buildSalesAnalysisTree(
     return a.label.localeCompare(b.label)
   }
   const shouldAggregateChainLeaves = levels.includes('store_chain') && !levels.includes('store')
+  const pathFor = (parentPath: string, level: SalesAnalysisHierarchyDimension, key: string): string =>
+    parentPath ? `${parentPath}/${level}:${key}` : `${level}:${key}`
   const buildLeaf = (row: SalesAnalysisRow, path: string): SalesAnalysisTreeNode => {
     const skuLabel = row.attributes?.description
       ? `${row.dimensionKey} - ${row.attributes.description}`
@@ -408,35 +461,36 @@ function buildSalesAnalysisTree(
       pyOnHandPctChange: row.pyOnHandPctChange ?? null,
     }
   }
-  const buildLevel2 = (bucket: Bucket, path: string): SalesAnalysisTreeNode => {
+  const buildBucket = (
+    bucket: Bucket,
+    levelIndex: number,
+    parentPath: string,
+  ): SalesAnalysisTreeNode => {
+    const level = levels[levelIndex] ?? levels[levels.length - 1]!
+    const path = pathFor(parentPath, level, bucket.key)
+    const isDeepest = levelIndex === levels.length - 1
     const row: SalesAnalysisTreeNode = {
-      rowKey: `${path}/${levels[1]}:${bucket.key}`,
+      rowKey: path,
       label: bucket.label,
       ...emptyAnalysisMeasures(),
-      children: (
-        shouldAggregateChainLeaves
-          ? aggregateChainLeaves(bucket.leaves, periodDays, turnsRoiAnnualizer)
-          : bucket.leaves
-      )
-        .sort((a, b) => b.netSales - a.netSales || a.dimensionKey.localeCompare(b.dimensionKey))
-        .map((leaf) => buildLeaf(leaf, `${path}/${levels[1]}:${bucket.key}`)),
-    }
-    for (const child of row.children!) addAnalysisMeasures(row, child)
-    recomputeAnalysisRatios(row, periodDays, turnsRoiAnnualizer)
-    return row
-  }
-  const top = [...root.values()].sort(cmp).map<SalesAnalysisTreeNode>((bucket) => {
-    const row: SalesAnalysisTreeNode = {
-      rowKey: `${levels[0]}:${bucket.key}`,
-      label: bucket.label,
-      ...emptyAnalysisMeasures(),
-      children: [...bucket.children.values()].sort(cmp).map((child) => buildLevel2(child, `${levels[0]}:${bucket.key}`)),
+      children: isDeepest
+        ? (
+            shouldAggregateChainLeaves
+              ? aggregateChainLeaves(bucket.leaves, periodDays, turnsRoiAnnualizer)
+              : bucket.leaves
+          )
+            .sort((a, b) => b.netSales - a.netSales || a.dimensionKey.localeCompare(b.dimensionKey))
+            .map((leaf) => buildLeaf(leaf, path))
+        : [...bucket.children.values()]
+            .sort(cmp)
+            .map((child) => buildBucket(child, levelIndex + 1, path)),
     }
     row.children!.sort((a, b) => b.netSales - a.netSales)
     for (const child of row.children!) addAnalysisMeasures(row, child)
     recomputeAnalysisRatios(row, periodDays, turnsRoiAnnualizer)
     return row
-  })
+  }
+  const top = [...root.values()].sort(cmp).map((bucket) => buildBucket(bucket, 0, ''))
   top.sort((a, b) => b.netSales - a.netSales)
   return top
 }
@@ -447,8 +501,11 @@ export default function SalesAnalysisPage() {
   const templateId = searchParams.get('templateId') ?? undefined
 
   const [storeOption, setStoreOption] = useState<SalesAnalysisStoreOption>('COMBINE')
+  const [hierarchyDepth, setHierarchyDepth] = useState<2 | 3>(2)
   const [level1, setLevel1] = useState<SalesAnalysisHierarchyDimension>('department')
   const [level2, setLevel2] = useState<SalesAnalysisHierarchyDimension>('category')
+  const [level3, setLevel3] = useState<SalesAnalysisHierarchyDimension>('attribute')
+  const [attributeDimensionCode, setAttributeDimensionCode] = useState<string | null>(null)
   const [dateSpec, setDateSpec] = useState<DateSpec>(DEFAULT_DATE_SPEC)
   // Criteria state — arrays for the multi-selects, strings for RICS grammar.
   const [selectedStores, setSelectedStores] = useState<number[]>([])
@@ -501,19 +558,39 @@ export default function SalesAnalysisPage() {
       return
     }
     hydratedFor.current = templateId
-    const p = t.paramsJson as Partial<SalesAnalysisArgs> & { startDate?: string; endDate?: string }
+    const p = t.paramsJson as Partial<SalesAnalysisArgs> & {
+      startDate?: string
+      endDate?: string
+      hierarchyDepth?: 2 | 3
+      level1?: SalesAnalysisHierarchyDimension
+      level2?: SalesAnalysisHierarchyDimension
+      level3?: SalesAnalysisHierarchyDimension
+      attributeDimensionCode?: string | null
+    }
     // New templates save a dateSpec; legacy ones only have startDate/endDate.
     // readDateSpecFromParams handles both — returns null when neither is usable,
     // so we fall back to the page default in that case.
     const spec = readDateSpecFromParams(t.paramsJson) ?? DEFAULT_DATE_SPEC
     const { startDate: resolvedStart, endDate: resolvedEnd } = resolveSalesAnalysisDateSpec(spec)
-    if (p.storeOption) setStoreOption(p.storeOption)
-    const hierarchy = p as Partial<SalesAnalysisArgs> & {
-      level1?: SalesAnalysisHierarchyDimension
-      level2?: SalesAnalysisHierarchyDimension
+    const nextDepth: 2 | 3 = p.hierarchyDepth === 3 ? 3 : 2
+    const nextLevel1 = p.level1 && p.level1 !== 'attribute' ? p.level1 : 'department'
+    let nextLevel2 = p.level2 ?? 'category'
+    if (nextLevel2 === nextLevel1 || (nextDepth === 3 && nextLevel2 === 'attribute')) {
+      nextLevel2 = fallbackHierarchyLevel([nextLevel1])
     }
-    if (hierarchy.level1) setLevel1(hierarchy.level1)
-    if (hierarchy.level2) setLevel2(hierarchy.level2)
+    let nextLevel3 = p.level3 ?? 'attribute'
+    if (nextDepth === 3 && nextLevel3 !== 'attribute' && [nextLevel1, nextLevel2].includes(nextLevel3)) {
+      nextLevel3 = 'attribute'
+    }
+    const nextLevels: SalesAnalysisHierarchyLevels = nextDepth === 3
+      ? [nextLevel1, nextLevel2, nextLevel3]
+      : [nextLevel1, nextLevel2]
+    if (p.storeOption) setStoreOption(p.storeOption)
+    setHierarchyDepth(nextDepth)
+    setLevel1(nextLevel1)
+    setLevel2(nextLevel2)
+    setLevel3(nextLevel3)
+    setAttributeDimensionCode(p.attributeDimensionCode ?? null)
     setDateSpec(spec)
     setSelectedStores(Array.isArray(p.stores) ? p.stores : [])
     setSelectedChains(Array.isArray(p.chains) ? p.chains : [])
@@ -539,10 +616,7 @@ export default function SalesAnalysisPage() {
     setQuery({
       dimension: 'CATEGORY',
       reportType: 'SKU_DETAIL',
-      storeOption: hierarchy.level1 === 'store' || hierarchy.level2 === 'store'
-        || hierarchy.level1 === 'store_chain' || hierarchy.level2 === 'store_chain'
-        ? 'SEPARATE'
-        : p.storeOption ?? 'COMBINE',
+      storeOption: hierarchyUsesStoreLevel(nextLevels) ? 'SEPARATE' : p.storeOption ?? 'COMBINE',
       startDate: resolvedStart,
       endDate: resolvedEnd,
       stores: Array.isArray(p.stores) && p.stores.length ? p.stores : undefined,
@@ -581,7 +655,7 @@ export default function SalesAnalysisPage() {
   }, [query])
 
   function onRun(): void {
-    if (level1 === level2) return
+    if (!hierarchyIsValid(hierarchyLevels)) return
     const { startDate, endDate } = resolveSalesAnalysisDateSpec(dateSpec)
     setQuery({
       dimension: 'CATEGORY',
@@ -615,23 +689,56 @@ export default function SalesAnalysisPage() {
     qc.cancelQueries({ queryKey: ['sales-analysis', query] })
   }
 
-  const hierarchyLevels = useMemo<[SalesAnalysisHierarchyDimension, SalesAnalysisHierarchyDimension]>(
-    () => [level1, level2],
-    [level1, level2],
+  const hierarchyLevels = useMemo<SalesAnalysisHierarchyLevels>(
+    () => (hierarchyDepth === 3 ? [level1, level2, level3] : [level1, level2]),
+    [hierarchyDepth, level1, level2, level3],
   )
+  const hierarchyHasAttribute = hierarchyLevels.includes('attribute')
+  const attributeDimensions = data?.attributeDimensions ?? EMPTY_ATTRIBUTE_DIMENSIONS
+  const selectedAttributeDimension = useMemo(
+    () => attributeDimensions.find((dimension) => dimension.code === attributeDimensionCode) ?? attributeDimensions[0] ?? null,
+    [attributeDimensionCode, attributeDimensions],
+  )
+
+  useEffect(() => {
+    if (level1 === 'attribute') {
+      setLevel1('department')
+      return
+    }
+    if (level1 === level2 || (hierarchyDepth === 3 && level2 === 'attribute')) {
+      setLevel2(fallbackHierarchyLevel([level1]))
+      return
+    }
+    if (hierarchyDepth === 3 && level3 !== 'attribute' && [level1, level2].includes(level3)) {
+      setLevel3('attribute')
+    }
+  }, [hierarchyDepth, level1, level2, level3])
+
+  useEffect(() => {
+    if (!hierarchyHasAttribute) return
+    if (!attributeDimensions.length) {
+      setAttributeDimensionCode(null)
+      return
+    }
+    if (!attributeDimensionCode || !attributeDimensions.some((dimension) => dimension.code === attributeDimensionCode)) {
+      setAttributeDimensionCode(attributeDimensions[0]!.code)
+    }
+  }, [attributeDimensionCode, attributeDimensions, hierarchyHasAttribute])
+
   const tree = useMemo(
     () => (data ? buildSalesAnalysisTree(
       data.rows,
       hierarchyLevels,
       data.periodDays,
       data.turnsRoiAnnualizer ?? (data.periodDays > 0 ? 365 / data.periodDays : 0),
+      selectedAttributeDimension,
     ) : []),
-    [data, hierarchyLevels],
+    [data, hierarchyLevels, selectedAttributeDimension],
   )
 
   const columns = [
     {
-      title: `${hierarchyLabel(level1)} / ${hierarchyLabel(level2)} / SKU`,
+      title: `${hierarchyLevels.map((level) => hierarchyLabel(level, selectedAttributeDimension?.label)).join(' / ')} / SKU`,
       dataIndex: 'label',
       key: 'label',
       width: 420,
@@ -845,10 +952,8 @@ export default function SalesAnalysisPage() {
   ]
 
   const effectiveStoreOption: SalesAnalysisStoreOption =
-    level1 === 'store' || level2 === 'store' || level1 === 'store_chain' || level2 === 'store_chain'
-      ? 'SEPARATE'
-      : storeOption
-  const currentHierarchyDescriptor = hierarchyDescriptor(level1, level2)
+    hierarchyUsesStoreLevel(hierarchyLevels) ? 'SEPARATE' : storeOption
+  const currentHierarchyDescriptor = hierarchyDescriptor(hierarchyLevels, selectedAttributeDimension)
   const csvUrl = query ? getSalesAnalysisCsvUrl(query) : undefined
   const xlsxUrl = query ? getSalesAnalysisXlsxUrl(query) : undefined
   const sharedCriteria: ReportCriteriaState = {
@@ -906,7 +1011,7 @@ export default function SalesAnalysisPage() {
     <div>
       <ReportHeader
         title="Sales Analysis"
-        description="Two-level hierarchical sales analysis with SKU detail under each grouping."
+        description="Hierarchical sales analysis with SKU detail under each grouping."
         citation="RICS Ch. 6 p. 88"
         breadcrumb={[
           { title: <Link to="/reports/sales">Sales Reports</Link> },
@@ -915,6 +1020,21 @@ export default function SalesAnalysisPage() {
         rightMeta={data ? `${data.rows.length.toLocaleString()} SKU ${data.rows.length === 1 ? 'row' : 'rows'}` : undefined}
         actions={(
           <Space>
+            {hierarchyHasAttribute && data ? (
+              <Select
+                size="small"
+                aria-label="Attribute dimension"
+                value={selectedAttributeDimension?.code}
+                placeholder="Attribute"
+                options={attributeDimensions.map((dimension) => ({
+                  value: dimension.code,
+                  label: dimension.label,
+                }))}
+                onChange={setAttributeDimensionCode}
+                disabled={!attributeDimensions.length}
+                style={{ width: 210 }}
+              />
+            ) : null}
             <Button icon={<DownloadOutlined />} disabled={!csvUrl} href={csvUrl}>
               Export CSV
             </Button>
@@ -930,7 +1050,7 @@ export default function SalesAnalysisPage() {
         open={filterOpen}
         onOpenChange={setFilterOpen}
         running={running}
-        canRun={level1 !== level2}
+        canRun={hierarchyIsValid(hierarchyLevels)}
         onRun={onRun}
         compact
         actions={
@@ -945,8 +1065,11 @@ export default function SalesAnalysisPage() {
                 dimension: 'CATEGORY',
                 reportType: 'SKU_DETAIL',
                 storeOption: effectiveStoreOption,
+                hierarchyDepth,
                 level1,
                 level2,
+                ...(hierarchyDepth === 3 ? { level3 } : {}),
+                attributeDimensionCode: selectedAttributeDimension?.code ?? attributeDimensionCode ?? undefined,
                 dateSpec,
                 stores: selectedStores.length ? selectedStores : undefined,
                 chains: selectedChains.length ? selectedChains : undefined,
@@ -978,8 +1101,11 @@ export default function SalesAnalysisPage() {
                 dimension: 'CATEGORY',
                 reportType: 'SKU_DETAIL',
                 storeOption: effectiveStoreOption,
+                hierarchyDepth,
                 level1,
                 level2,
+                ...(hierarchyDepth === 3 ? { level3 } : {}),
+                attributeDimensionCode: selectedAttributeDimension?.code ?? attributeDimensionCode ?? undefined,
                 dateSpec,
                 stores: selectedStores.length ? selectedStores : undefined,
                 chains: selectedChains.length ? selectedChains : undefined,
@@ -1037,6 +1163,18 @@ export default function SalesAnalysisPage() {
           <div className="sales-analysis-filter-group">
             <Text strong className="sales-analysis-filter-title">Hierarchy</Text>
             <Space size={6} wrap>
+              <Text type="secondary" className="sales-analysis-field-label">Levels</Text>
+              <Radio.Group
+                value={hierarchyDepth}
+                onChange={(e) => setHierarchyDepth(e.target.value)}
+                optionType="button"
+                buttonStyle="solid"
+                size="small"
+                options={[
+                  { value: 2, label: '2' },
+                  { value: 3, label: '3' },
+                ]}
+              />
               <Text type="secondary" className="sales-analysis-field-label">Level 1</Text>
               <Select<SalesAnalysisHierarchyDimension>
                 value={level1}
@@ -1049,10 +1187,44 @@ export default function SalesAnalysisPage() {
               <Select<SalesAnalysisHierarchyDimension>
                 value={level2}
                 onChange={setLevel2}
-                options={HIERARCHY_OPTIONS.map((o) => ({ ...o, disabled: o.value === level1 }))}
+                options={(hierarchyDepth === 2 ? DEEPEST_HIERARCHY_OPTIONS : HIERARCHY_OPTIONS)
+                  .map((o) => ({ ...o, disabled: o.value === level1 }))}
                 size="small"
                 style={{ width: 148 }}
               />
+              {hierarchyDepth === 3 ? (
+                <>
+                  <Text type="secondary" className="sales-analysis-field-label">Level 3</Text>
+                  <Select<SalesAnalysisHierarchyDimension>
+                    value={level3}
+                    onChange={setLevel3}
+                    options={DEEPEST_HIERARCHY_OPTIONS.map((o) => ({
+                      ...o,
+                      disabled: o.value !== 'attribute' && (o.value === level1 || o.value === level2),
+                    }))}
+                    size="small"
+                    style={{ width: 148 }}
+                  />
+                </>
+              ) : null}
+              {hierarchyHasAttribute ? (
+                <>
+                  <Text type="secondary" className="sales-analysis-field-label">Attribute</Text>
+                  <Select
+                    size="small"
+                    aria-label="Attribute dimension"
+                    value={selectedAttributeDimension?.code}
+                    placeholder={data ? 'No attributes' : 'Run report first'}
+                    options={attributeDimensions.map((dimension) => ({
+                      value: dimension.code,
+                      label: dimension.label,
+                    }))}
+                    onChange={setAttributeDimensionCode}
+                    disabled={!data || !attributeDimensions.length}
+                    style={{ width: 210 }}
+                  />
+                </>
+              ) : null}
             </Space>
           </div>
           <div className="sales-analysis-filter-group">
@@ -1095,9 +1267,9 @@ export default function SalesAnalysisPage() {
             </Space>
           </div>
         </div>
-        {level1 === level2 ? (
+        {!hierarchyIsValid(hierarchyLevels) ? (
           <Text type="danger" style={{ display: 'block', marginTop: 6 }}>
-            Choose two different hierarchy levels.
+            Choose valid hierarchy levels. Attribute can only be the deepest level.
           </Text>
         ) : null}
         <ReportCriteriaPanel
@@ -1312,6 +1484,9 @@ export default function SalesAnalysisPage() {
         <FilterChips
           chips={[
             { label: 'Hierarchy', value: currentHierarchyDescriptor },
+            hierarchyHasAttribute && selectedAttributeDimension
+              ? { label: 'Attribute', value: selectedAttributeDimension.label }
+              : null,
             query.storeOption ? { label: 'Stores', value: STORE_OPTION_LABELS[query.storeOption] } : null,
             query.startDate && query.endDate ? { label: 'Period', value: `${query.startDate} → ${query.endDate}` } : null,
             query.priorYear ? { label: 'Compare', value: 'Prior year' } : null,

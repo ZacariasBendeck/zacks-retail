@@ -11,6 +11,7 @@
 
 import type { PrismaClient } from '../../prismaClient';
 import { prisma as defaultPrisma } from '../../db/prisma';
+import { recordPlatformAuditEvent } from '../platformAuditService';
 
 export interface AuditRecordInput {
   actor: string;
@@ -22,6 +23,21 @@ export interface AuditRecordInput {
 
 export interface AuditLogger {
   record(input: AuditRecordInput): Promise<void>;
+}
+
+async function resolveActorUserId(client: PrismaClient, actor: string): Promise<string | null> {
+  const normalized = actor.toLowerCase().trim();
+  if (!normalized || normalized === 'system') return null;
+  const user = await client.user.findFirst({
+    where: {
+      OR: [
+        { id: actor },
+        { email: normalized },
+      ],
+    },
+    select: { id: true },
+  });
+  return user?.id ?? null;
 }
 
 /** Creates a logger bound to a Prisma client. Default export uses the shared singleton. */
@@ -36,6 +52,20 @@ export function createAuditLogger(client: PrismaClient = defaultPrisma): AuditLo
             targetTable: input.targetTable,
             targetPk: String(input.targetPk),
             payloadJson: input.payload as any, // Prisma JSON column accepts unknown
+          },
+        });
+        const actorUserId = await resolveActorUserId(client, input.actor);
+        await recordPlatformAuditEvent(client, {
+          eventType: `products.${input.action.replace(/_/g, '.')}`,
+          action: input.action.toUpperCase(),
+          resourceType: `products.${input.targetTable}`,
+          resourceId: String(input.targetPk),
+          actorUserId,
+          afterJson: input.payload,
+          metadataJson: {
+            module: 'products',
+            legacyActor: input.actor,
+            targetTable: input.targetTable,
           },
         });
       } catch (err) {

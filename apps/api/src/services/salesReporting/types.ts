@@ -304,6 +304,19 @@ export interface SkuAttributeColumns {
   extended: Record<string, string>;
 }
 
+export interface SalesAnalysisAttributeDimension {
+  code: string;
+  label: string;
+  isMultiValue: boolean;
+  sortOrder: number | null;
+}
+
+export interface SalesAnalysisAttributeAssignment {
+  valueCodes: string[];
+  valueLabels: string[];
+  label: string;
+}
+
 export interface SalesAnalysisRow {
   dimensionKey: string;
   dimensionLabel: string | null;
@@ -337,6 +350,12 @@ export interface SalesAnalysisRow {
    * stays lean for large runs and non-viewer callers.
    */
   attributes?: SkuAttributeColumns;
+  /**
+   * Compact assignment index used by browser-side attribute drilldowns.
+   * Keyed by attribute dimension code and only populated for SKU_DETAIL
+   * rows when `includeAttributes=true`.
+   */
+  attributeAssignments?: Record<string, SalesAnalysisAttributeAssignment>;
 }
 
 export interface SalesAnalysisReport {
@@ -370,6 +389,12 @@ export interface SalesAnalysisReport {
   };
   periodDays: number;
   turnsRoiAnnualizer: number;
+  /**
+   * Attribute dimensions represented by the SKU set in this response.
+   * Only attached for SKU_DETAIL responses that requested attribute
+   * enrichment.
+   */
+  attributeDimensions?: SalesAnalysisAttributeDimension[];
 }
 
 // ─────────────────────────── Sales Hierarchy Drill-Down (Dept → Cat → SKU) ──
@@ -457,9 +482,9 @@ export type SalesPivotVariant =
   | 'custom';
 
 /** Dimensions selectable in the custom pivot builder. Store rows split the
- *  leaf grain; every other dimension is a per-SKU attribute. `category` is
- *  only valid at level 3 (deepest rollup) since it's the narrowest grouping
- *  just above the SKU leaves. */
+ *  leaf grain; every other core dimension is a per-SKU attribute. `category`
+ *  is allowed below a broader level, and `attribute` is a dynamic deepest
+ *  level chosen from app.attribute_dimension values in the result set. */
 export type PivotDimension =
   | 'buyer'
   | 'sector'
@@ -468,11 +493,26 @@ export type PivotDimension =
   | 'group'
   | 'vendor'
   | 'store'
-  | 'category';
+  | 'category'
+  | 'attribute';
 
 export type SalesPivotLevels =
   | [PivotDimension, PivotDimension]
   | [PivotDimension, PivotDimension, PivotDimension];
+
+export interface SalesPivotAttributeDimension {
+  code: string;
+  label: string;
+  isMultiValue: boolean;
+  sortOrder: number;
+}
+
+export interface SalesPivotAttributeAssignment {
+  valueCodes: string[];
+  valueLabels: string[];
+  /** Display label for this SKU in the selected attribute bucket. */
+  label: string;
+}
 
 export interface SalesPivotLeafRow {
   /** Set for `department-separate-store` only. Null otherwise. */
@@ -509,6 +549,8 @@ export interface SalesPivotLeafRow {
   sku: string;
   skuDescription: string | null;
   pictureFileName?: string | null;
+  /** Present on custom pivots that include the dynamic `attribute` level. */
+  attributeAssignments?: Record<string, SalesPivotAttributeAssignment>;
 
   onHandQty: number;
   onHandCostVal: number;
@@ -543,6 +585,8 @@ export interface SalesPivotReport {
   currentYear: number;    // derived from startDate.getFullYear()
   priorYear: number;      // currentYear - 1
   storeNumbers: number[]; // echoed filter; empty array = all stores
+  /** Present on custom pivots that include the dynamic `attribute` level. */
+  attributeDimensions?: SalesPivotAttributeDimension[];
   rows: SalesPivotLeafRow[];
   totals: SalesPivotTotals;
 }

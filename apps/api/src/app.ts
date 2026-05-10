@@ -61,6 +61,7 @@ import { createEmployeeRoutes } from './routes/employeeRoutes';
 import { createTimeClockRoutes } from './routes/timeClockRoutes';
 import { createUserRoutes } from './routes/userRoutes';
 import { createPlatformAuditRoutes } from './routes/platformAuditRoutes';
+import { createActivityReviewRoutes } from './routes/activityReviewRoutes';
 import { createReportTemplatesRoutes } from './routes/reports/reportTemplatesRoutes';
 import { createReportRunsRoutes } from './routes/reports/reportRunsRoutes';
 import { attachUser } from './middleware/authMiddleware';
@@ -187,6 +188,7 @@ app.use('/api/v1/users', createUserRoutes(prisma));
 
 // platform shared audit log
 app.use('/api/v1/platform/audit', createPlatformAuditRoutes(prisma));
+app.use('/api/v1/activity-review', createActivityReviewRoutes(prisma));
 
 // employees module
 app.use('/api/v1/employees', createEmployeeRoutes(prisma));

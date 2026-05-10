@@ -454,6 +454,15 @@ exports.Prisma.PlatformAuditLogScalarFieldEnum = {
   createdAt: 'createdAt'
 };
 
+exports.Prisma.ActivityReviewEventReviewScalarFieldEnum = {
+  auditEventId: 'auditEventId',
+  status: 'status',
+  reviewedByUserId: 'reviewedByUserId',
+  reviewNote: 'reviewNote',
+  reviewedAt: 'reviewedAt',
+  updatedAt: 'updatedAt'
+};
+
 exports.Prisma.SkuAttributeOverrideScalarFieldEnum = {
   ricsSkuCode: 'ricsSkuCode',
   category: 'category',
@@ -1097,6 +1106,13 @@ exports.Prisma.CategoryProductFamilyScalarFieldEnum = {
   familyCode: 'familyCode',
   updatedAt: 'updatedAt',
   updatedBy: 'updatedBy'
+};
+
+exports.Prisma.CategoryBuyerAssignmentScalarFieldEnum = {
+  categoryNumber: 'categoryNumber',
+  buyerValueId: 'buyerValueId',
+  updatedBy: 'updatedBy',
+  updatedAt: 'updatedAt'
 };
 
 exports.Prisma.SkuScalarFieldEnum = {
@@ -3151,6 +3167,7 @@ exports.Prisma.ModelName = {
   SeasonOverlay: 'SeasonOverlay',
   EtlRun: 'EtlRun',
   PlatformAuditLog: 'PlatformAuditLog',
+  ActivityReviewEventReview: 'ActivityReviewEventReview',
   SkuAttributeOverride: 'SkuAttributeOverride',
   VendorOverlay: 'VendorOverlay',
   Vendor: 'Vendor',
@@ -3194,6 +3211,7 @@ exports.Prisma.ModelName = {
   ProductsBatchOperationItem: 'ProductsBatchOperationItem',
   ProductFamily: 'ProductFamily',
   CategoryProductFamily: 'CategoryProductFamily',
+  CategoryBuyerAssignment: 'CategoryBuyerAssignment',
   Sku: 'Sku',
   MatchingSetType: 'MatchingSetType',
   MatchingSetRole: 'MatchingSetRole',

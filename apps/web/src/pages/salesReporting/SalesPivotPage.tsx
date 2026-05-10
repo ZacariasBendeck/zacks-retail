@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
 import {
   Alert, Card, Checkbox, Col, Radio, Row, Select, Space, Spin, Table, Typography,
 } from 'antd'
@@ -23,6 +24,12 @@ import SaveSnapshotButton from '../../components/reports/SaveSnapshotButton'
 import ReportThumbnail from '../../components/reports/ReportThumbnail'
 import { buildRicsImageUrl } from '../../services/ricsImageUrl'
 import { ReportCriteriaPanel, useReportCriteria } from '../../components/reports/ReportCriteriaPanel'
+import {
+  buildParentTotalsByRowKey,
+  formatParentPercent,
+  type SalesPivotMeasureKey,
+  type SalesPivotMeasureRecord,
+} from './salesPivotParentPercentages'
 
 const { Text } = Typography
 
@@ -520,6 +527,7 @@ export default function SalesPivotPage() {
   const setSelectedStores = (next: number[]) => updateCriteria('stores', next)
   const [choice, setChoice] = useState<ReportChoice>('department')
   const [separateStore, setSeparateStore] = useState(false)
+  const [showPercentOfParent, setShowPercentOfParent] = useState(false)
   const [query, setQuery] = useState<SalesPivotArgs | null>(null)
   const [filterOpen, setFilterOpen] = useState(true)
 
@@ -563,15 +571,44 @@ export default function SalesPivotPage() {
     }
     return skus.size
   }, [data])
+  const parentTotalsByRowKey = useMemo(() => {
+    if (!data) return new Map<string, SalesPivotMeasureRecord>()
+    return buildParentTotalsByRowKey(tree, {
+      onHandQty: data.totals.onHandQty,
+      onHandCostVal: data.totals.onHandCostVal,
+      onHandSkuCount: totalOnHandSkuCount,
+      qtyTY: data.totals.qtyTY,
+      netSalesTY: data.totals.netSalesTY,
+      profitTY: data.totals.profitTY,
+      qtyLY: data.totals.qtyLY,
+      netSalesLY: data.totals.netSalesLY,
+      profitLY: data.totals.profitLY,
+    })
+  }, [data, totalOnHandSkuCount, tree])
 
   const currentYear = data?.currentYear
   const priorYear = data?.priorYear
   const variantTitle = data ? titleFor(data.variant) : 'Sales Pivot'
+  const tableScrollX = showPercentOfParent ? 2125 : 1270
 
   const columns = useMemo(() => {
     const moneyCell = (v: number) => (v === 0 ? DASH : fmtMoney(v))
     const qtyCell = (v: number) => (v === 0 ? DASH : fmtQty(v))
     const rightAlign = { align: 'right' as const }
+    const percentColumn = (metricKey: SalesPivotMeasureKey, background: string) => (
+      showPercentOfParent
+        ? [{
+            title: '% Parent',
+            dataIndex: metricKey,
+            key: `${metricKey}PctParent`,
+            width: 95,
+            ...rightAlign,
+            onCell: () => ({ style: { background } }),
+            render: (_v: number, record: TreeNode) =>
+              formatParentPercent(record[metricKey], parentTotalsByRowKey.get(record.rowKey)?.[metricKey]),
+          }]
+        : []
+    )
 
     return [
       {
@@ -602,10 +639,13 @@ export default function SalesPivotPage() {
         children: [
           { title: 'Qty', dataIndex: 'onHandQty', key: 'onHandQty', width: 100, ...rightAlign,
             onCell: () => ({ style: { background: ZONE_BG.onHand } }), render: qtyCell },
+          ...percentColumn('onHandQty', ZONE_BG.onHand),
           { title: 'Cost Val', dataIndex: 'onHandCostVal', key: 'onHandCostVal', width: 140, ...rightAlign,
             onCell: () => ({ style: { background: ZONE_BG.onHand } }), render: moneyCell },
+          ...percentColumn('onHandCostVal', ZONE_BG.onHand),
           { title: 'SKU Count', dataIndex: 'onHandSkuCount', key: 'onHandSkuCount', width: 110, ...rightAlign,
             onCell: () => ({ style: { background: ZONE_BG.onHand } }), render: qtyCell },
+          ...percentColumn('onHandSkuCount', ZONE_BG.onHand),
         ],
       },
       {
@@ -615,10 +655,13 @@ export default function SalesPivotPage() {
         children: [
           { title: 'Qty', dataIndex: 'qtyTY', key: 'qtyTY', width: 100, ...rightAlign,
             onCell: () => ({ style: { background: ZONE_BG.ty } }), render: qtyCell },
+          ...percentColumn('qtyTY', ZONE_BG.ty),
           { title: 'Net Sales', dataIndex: 'netSalesTY', key: 'netSalesTY', width: 140, ...rightAlign,
             onCell: () => ({ style: { background: ZONE_BG.ty } }), render: moneyCell },
+          ...percentColumn('netSalesTY', ZONE_BG.ty),
           { title: 'Profit', dataIndex: 'profitTY', key: 'profitTY', width: 140, ...rightAlign,
             onCell: () => ({ style: { background: ZONE_BG.ty } }), render: moneyCell },
+          ...percentColumn('profitTY', ZONE_BG.ty),
         ],
       },
       {
@@ -628,14 +671,17 @@ export default function SalesPivotPage() {
         children: [
           { title: 'Qty', dataIndex: 'qtyLY', key: 'qtyLY', width: 100, ...rightAlign,
             onCell: () => ({ style: { background: ZONE_BG.ly } }), render: qtyCell },
+          ...percentColumn('qtyLY', ZONE_BG.ly),
           { title: 'Net Sales', dataIndex: 'netSalesLY', key: 'netSalesLY', width: 140, ...rightAlign,
             onCell: () => ({ style: { background: ZONE_BG.ly } }), render: moneyCell },
+          ...percentColumn('netSalesLY', ZONE_BG.ly),
           { title: 'Profit', dataIndex: 'profitLY', key: 'profitLY', width: 140, ...rightAlign,
             onCell: () => ({ style: { background: ZONE_BG.ly } }), render: moneyCell },
+          ...percentColumn('profitLY', ZONE_BG.ly),
         ],
       },
     ]
-  }, [currentYear, priorYear])
+  }, [currentYear, parentTotalsByRowKey, priorYear, showPercentOfParent])
 
   return (
     <div>
@@ -659,6 +705,7 @@ export default function SalesPivotPage() {
               dateSpec,
               choice,
               separateStore,
+              showPercentOfParent,
             })}
             getResultJson={() => data}
             getDescriptor={() => {
@@ -711,6 +758,14 @@ export default function SalesPivotPage() {
                   </Text>
                 </div>
               )}
+              <div style={{ marginTop: 12 }}>
+                <Checkbox
+                  checked={showPercentOfParent}
+                  onChange={(e) => setShowPercentOfParent(e.target.checked)}
+                >
+                  Show % of parent
+                </Checkbox>
+              </div>
             </Card>
           </Col>
           <Col xs={24} md={8}>
@@ -782,6 +837,7 @@ export default function SalesPivotPage() {
                 { label: 'Report', value: titleFor(data.variant) },
                 { label: 'Period', value: `${query.startDate} → ${query.endDate}` },
                 { label: 'Compare', value: `${data.currentYear} vs ${data.priorYear}` },
+                showPercentOfParent ? { label: 'Percentages', value: '% of parent' } : null,
                 query.stores?.length
                   ? { label: 'Stores', value: `${query.stores.length} selected` }
                   : query.storesRaw
@@ -799,26 +855,45 @@ export default function SalesPivotPage() {
                 rowKey="rowKey"
                 size="small"
                 pagination={false}
-                scroll={{ x: 1270 }}
+                scroll={{ x: tableScrollX }}
                 bordered
                 expandable={{ defaultExpandAllRows: false }}
                 summary={() => {
                   const t = data.totals
+                  let index = 1
+                  const measureCells: ReactNode[] = []
+                  const addMeasureCell = (key: SalesPivotMeasureKey, content: ReactNode, value: number) => {
+                    measureCells.push(
+                      <Table.Summary.Cell key={`${key}-value`} index={index} align="right">
+                        {content}
+                      </Table.Summary.Cell>,
+                    )
+                    index += 1
+                    if (showPercentOfParent) {
+                      measureCells.push(
+                        <Table.Summary.Cell key={`${key}-pct`} index={index} align="right">
+                          {formatParentPercent(value, value)}
+                        </Table.Summary.Cell>,
+                      )
+                      index += 1
+                    }
+                  }
+                  addMeasureCell('onHandQty', fmtQty(t.onHandQty), t.onHandQty)
+                  addMeasureCell('onHandCostVal', fmtMoney(t.onHandCostVal), t.onHandCostVal)
+                  addMeasureCell('onHandSkuCount', fmtQty(totalOnHandSkuCount), totalOnHandSkuCount)
+                  addMeasureCell('qtyTY', fmtQty(t.qtyTY), t.qtyTY)
+                  addMeasureCell('netSalesTY', fmtMoney(t.netSalesTY), t.netSalesTY)
+                  addMeasureCell('profitTY', fmtMoney(t.profitTY), t.profitTY)
+                  addMeasureCell('qtyLY', fmtQty(t.qtyLY), t.qtyLY)
+                  addMeasureCell('netSalesLY', fmtMoney(t.netSalesLY), t.netSalesLY)
+                  addMeasureCell('profitLY', fmtMoney(t.profitLY), t.profitLY)
                   return (
                     <Table.Summary fixed>
                       <Table.Summary.Row>
                         <Table.Summary.Cell index={0}>
                           <strong>Totals</strong>
                         </Table.Summary.Cell>
-                        <Table.Summary.Cell index={1} align="right">{fmtQty(t.onHandQty)}</Table.Summary.Cell>
-                        <Table.Summary.Cell index={2} align="right">{fmtMoney(t.onHandCostVal)}</Table.Summary.Cell>
-                        <Table.Summary.Cell index={3} align="right">{fmtQty(totalOnHandSkuCount)}</Table.Summary.Cell>
-                        <Table.Summary.Cell index={4} align="right">{fmtQty(t.qtyTY)}</Table.Summary.Cell>
-                        <Table.Summary.Cell index={5} align="right">{fmtMoney(t.netSalesTY)}</Table.Summary.Cell>
-                        <Table.Summary.Cell index={6} align="right">{fmtMoney(t.profitTY)}</Table.Summary.Cell>
-                        <Table.Summary.Cell index={7} align="right">{fmtQty(t.qtyLY)}</Table.Summary.Cell>
-                        <Table.Summary.Cell index={8} align="right">{fmtMoney(t.netSalesLY)}</Table.Summary.Cell>
-                        <Table.Summary.Cell index={9} align="right">{fmtMoney(t.profitLY)}</Table.Summary.Cell>
+                        {measureCells}
                       </Table.Summary.Row>
                     </Table.Summary>
                   )

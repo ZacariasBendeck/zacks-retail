@@ -1,4 +1,5 @@
 import { prisma } from '../../db/prisma';
+import { recordPlatformAuditEvent } from '../platformAuditService';
 
 export async function writeSegmentationAuditEvent(input: {
   actorUserId?: string | null;
@@ -17,5 +18,15 @@ export async function writeSegmentationAuditEvent(input: {
       beforeJson: (input.before as any) ?? undefined,
       afterJson: (input.after as any) ?? undefined,
     },
+  });
+  await recordPlatformAuditEvent(prisma, {
+    eventType: `segmentation.${input.eventType}`,
+    action: input.eventType.toUpperCase(),
+    resourceType: `segmentation.${input.entityType}`,
+    resourceId: input.entityId,
+    actorUserId: input.actorUserId ?? null,
+    beforeJson: input.before ?? null,
+    afterJson: input.after ?? null,
+    metadataJson: { module: 'customer_intelligence' },
   });
 }

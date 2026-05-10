@@ -1,11 +1,17 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
 import {
-  Alert, Card, Col, Row, Select, Space, Spin, Table, Typography,
+  Alert, Card, Checkbox, Col, Row, Select, Space, Spin, Table, Typography,
 } from 'antd'
 import { Link } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { useSalesPivot, useSalesDimensions, type SalesPivotArgs } from '../../hooks/useReports'
-import type { PivotDimension, SalesPivotLeafRow, SalesPivotLevels } from '../../services/reportApi'
+import type {
+  PivotDimension,
+  SalesPivotAttributeDimension,
+  SalesPivotLeafRow,
+  SalesPivotLevels,
+} from '../../services/reportApi'
 import { getErrorMessage } from '../../utils/errors'
 import RunReportControls from './RunReportControls'
 import DateRangeControl from '../../components/reports/DateRangeControl'
@@ -20,13 +26,19 @@ import SaveSnapshotButton from '../../components/reports/SaveSnapshotButton'
 import ReportThumbnail from '../../components/reports/ReportThumbnail'
 import { buildRicsImageUrl } from '../../services/ricsImageUrl'
 import { ReportCriteriaPanel, useReportCriteria } from '../../components/reports/ReportCriteriaPanel'
+import {
+  buildParentTotalsByRowKey,
+  formatParentPercent,
+  type SalesPivotMeasureKey,
+  type SalesPivotMeasureRecord,
+} from './salesPivotParentPercentages'
 
 const { Text } = Typography
 
 const DEFAULT_DATE_SPEC: DateSpec = { type: 'this_month' }
 
-// Every dimension that can appear at level 1 or level 2.
-const L1_L2_OPTIONS: Array<{ value: PivotDimension; label: string }> = [
+// Broad dimensions that can appear at the top of a custom hierarchy.
+const L1_OPTIONS: Array<{ value: PivotDimension; label: string }> = [
   { value: 'buyer',      label: 'Buyer' },
   { value: 'sector',     label: 'Sector' },
   { value: 'department', label: 'Department' },
@@ -36,13 +48,19 @@ const L1_L2_OPTIONS: Array<{ value: PivotDimension; label: string }> = [
   { value: 'store',      label: 'Store' },
 ]
 
-// The deepest level adds Category to the list.
-const L3_OPTIONS: Array<{ value: PivotDimension; label: string }> = [
-  ...L1_L2_OPTIONS,
+// Level 2 can include Category so operators can build Department -> Category -> Attribute.
+const L2_OPTIONS: Array<{ value: PivotDimension; label: string }> = [
+  ...L1_OPTIONS,
   { value: 'category', label: 'Category' },
 ]
 
-function dimLabel(dim: PivotDimension | undefined): string {
+// The deepest selected level can be a normal dimension, Category, or a dynamic SKU attribute.
+const DEEPEST_OPTIONS: Array<{ value: PivotDimension; label: string }> = [
+  ...L2_OPTIONS,
+  { value: 'attribute', label: 'Attribute' },
+]
+
+function dimLabel(dim: PivotDimension | undefined, attributeLabel?: string | null): string {
   switch (dim) {
     case 'buyer':      return 'Buyer'
     case 'sector':     return 'Sector'
@@ -52,6 +70,7 @@ function dimLabel(dim: PivotDimension | undefined): string {
     case 'vendor':     return 'Vendor'
     case 'store':      return 'Store'
     case 'category':   return 'Category'
+    case 'attribute':  return attributeLabel || 'Attribute'
     default:           return ''
   }
 }
@@ -62,7 +81,11 @@ function dimLabel(dim: PivotDimension | undefined): string {
  * single `__unassigned__` bucket per dimension so no leaf goes silently
  * missing; those buckets sort last in the tree.
  */
-function dimKeyLabel(leaf: SalesPivotLeafRow, dim: PivotDimension): {
+function dimKeyLabel(
+  leaf: SalesPivotLeafRow,
+  dim: PivotDimension,
+  attributeDimension?: SalesPivotAttributeDimension | null,
+): {
   keyPart: string
   label: string
   isUnassigned: boolean
@@ -153,6 +176,23 @@ function dimKeyLabel(leaf: SalesPivotLeafRow, dim: PivotDimension): {
             sortNumeric: Number(leaf.categ),
           }
         : unassigned('(No category)')
+    case 'attribute': {
+      const attributeLabel = attributeDimension?.label ?? 'attribute'
+      const assignment = attributeDimension?.code
+        ? leaf.attributeAssignments?.[attributeDimension.code]
+        : null
+      if (!assignment || assignment.valueLabels.length === 0) {
+        return unassigned(`(No ${attributeLabel})`)
+      }
+      return {
+        keyPart: assignment.valueCodes.length > 0
+          ? assignment.valueCodes.join('|')
+          : assignment.label,
+        label: assignment.label,
+        isUnassigned: false,
+        sortNumeric: null,
+      }
+    }
   }
 }
 
@@ -222,6 +262,7 @@ function addMeasures(into: Measures, r: Measures | SalesPivotLeafRow): void {
 function buildTree(
   rows: SalesPivotLeafRow[],
   levels: SalesPivotLevels,
+  attributeDimension?: SalesPivotAttributeDimension | null,
 ): TreeNode[] {
   interface Bucket {
     keyPart: string
@@ -254,7 +295,7 @@ function buildTree(
   for (const leaf of rows) {
     let into = root
     for (let index = 0; index < levels.length; index += 1) {
-      const bucket = ensure(into, dimKeyLabel(leaf, levels[index]!))
+      const bucket = ensure(into, dimKeyLabel(leaf, levels[index]!, attributeDimension))
       if (index === levels.length - 1) {
         bucket.leaves.push(leaf)
       } else {
@@ -412,6 +453,8 @@ export default function SalesPivotCustomPage() {
   const [level1, setLevel1] = useState<PivotDimension>('buyer')
   const [level2, setLevel2] = useState<PivotDimension>('vendor')
   const [level3, setLevel3] = useState<PivotDimension>('category')
+  const [attributeDimensionCode, setAttributeDimensionCode] = useState<string | null>(null)
+  const [showPercentOfParent, setShowPercentOfParent] = useState(false)
   const [query, setQuery] = useState<SalesPivotArgs | null>(null)
   const [filterOpen, setFilterOpen] = useState(true)
 
@@ -435,17 +478,21 @@ export default function SalesPivotCustomPage() {
   // just greyed out for the ones that would collide.
   const disabledAt2 = new Set<PivotDimension>([level1])
   const disabledAt3 = new Set<PivotDimension>([level1, level2])
-  const level2Options = hierarchyDepth === 2 ? L3_OPTIONS : L1_L2_OPTIONS
+  const level2Options = hierarchyDepth === 2 ? DEEPEST_OPTIONS : L2_OPTIONS
   const selectedLevels = (hierarchyDepth === 2
     ? [level1, level2]
     : [level1, level2, level3]) as SalesPivotLevels
+  const deepestLevelIndex = selectedLevels.length - 1
   const isValid =
     new Set<PivotDimension>(selectedLevels).size === selectedLevels.length &&
-    level1 !== 'category' &&
-    (hierarchyDepth === 2 || level2 !== 'category')
+    selectedLevels.every((level, index) => {
+      if (index === 0 && (level === 'category' || level === 'attribute')) return false
+      if (level === 'attribute') return index === deepestLevelIndex
+      return true
+    })
 
   useEffect(() => {
-    if (hierarchyDepth === 3 && level2 === 'category') {
+    if (hierarchyDepth === 3 && level2 === 'attribute') {
       setLevel2(level1 === 'vendor' ? 'buyer' : 'vendor')
     }
   }, [hierarchyDepth, level1, level2])
@@ -466,9 +513,29 @@ export default function SalesPivotCustomPage() {
   }
 
   const reportLevels = data?.levels ?? null
+  const attributeDimensions = data?.attributeDimensions ?? []
+  const selectedAttributeDimension = useMemo<SalesPivotAttributeDimension | null>(() => {
+    if (!reportLevels?.includes('attribute')) return null
+    return attributeDimensions.find((dimension) => dimension.code === attributeDimensionCode)
+      ?? attributeDimensions[0]
+      ?? null
+  }, [attributeDimensionCode, attributeDimensions, reportLevels])
+
+  useEffect(() => {
+    if (!reportLevels?.includes('attribute')) return
+    if (attributeDimensions.length === 0) {
+      if (attributeDimensionCode !== null) setAttributeDimensionCode(null)
+      return
+    }
+    if (!selectedAttributeDimension) return
+    if (attributeDimensionCode !== selectedAttributeDimension.code) {
+      setAttributeDimensionCode(selectedAttributeDimension.code)
+    }
+  }, [attributeDimensionCode, attributeDimensions, reportLevels, selectedAttributeDimension])
+
   const tree = useMemo(
-    () => (data && reportLevels ? buildTree(data.rows, reportLevels) : []),
-    [data, reportLevels],
+    () => (data && reportLevels ? buildTree(data.rows, reportLevels, selectedAttributeDimension) : []),
+    [data, reportLevels, selectedAttributeDimension],
   )
   const totalOnHandSkuCount = useMemo(() => {
     if (!data) return 0
@@ -478,19 +545,51 @@ export default function SalesPivotCustomPage() {
     }
     return skus.size
   }, [data])
+  const parentTotalsByRowKey = useMemo(() => {
+    if (!data) return new Map<string, SalesPivotMeasureRecord>()
+    return buildParentTotalsByRowKey(tree, {
+      onHandQty: data.totals.onHandQty,
+      onHandCostVal: data.totals.onHandCostVal,
+      onHandSkuCount: totalOnHandSkuCount,
+      qtyTY: data.totals.qtyTY,
+      netSalesTY: data.totals.netSalesTY,
+      profitTY: data.totals.profitTY,
+      qtyLY: data.totals.qtyLY,
+      netSalesLY: data.totals.netSalesLY,
+      profitLY: data.totals.profitLY,
+    })
+  }, [data, totalOnHandSkuCount, tree])
 
   const currentYear = data?.currentYear
   const priorYear = data?.priorYear
+  const reportDimLabel = (dim: PivotDimension | undefined) =>
+    dimLabel(dim, dim === 'attribute' ? selectedAttributeDimension?.label : null)
+  const showAttributeSelector =
+    selectedLevels.includes('attribute') || reportLevels?.includes('attribute') === true
 
-  const title = reportLevels
-    ? `${dimLabel(reportLevels[0])} → ${dimLabel(reportLevels[1])} → ${dimLabel(reportLevels[2])} → SKU`
+  const displayTitle = reportLevels
+    ? [...reportLevels.map(reportDimLabel), 'SKU'].join(' -> ')
     : 'Custom Pivot Report'
-  const displayTitle = reportLevels ? [...reportLevels.map(dimLabel), 'SKU'].join(' -> ') : title
+  const tableScrollX = showPercentOfParent ? 2125 : 1270
 
   const columns = useMemo(() => {
     const moneyCell = (v: number) => (v === 0 ? DASH : fmtMoney(v))
     const qtyCell = (v: number) => (v === 0 ? DASH : fmtQty(v))
     const rightAlign = { align: 'right' as const }
+    const percentColumn = (metricKey: SalesPivotMeasureKey, background: string) => (
+      showPercentOfParent
+        ? [{
+            title: '% Parent',
+            dataIndex: metricKey,
+            key: `${metricKey}PctParent`,
+            width: 95,
+            ...rightAlign,
+            onCell: () => ({ style: { background } }),
+            render: (_v: number, record: TreeNode) =>
+              formatParentPercent(record[metricKey], parentTotalsByRowKey.get(record.rowKey)?.[metricKey]),
+          }]
+        : []
+    )
     return [
       {
         title: 'Group',
@@ -519,10 +618,13 @@ export default function SalesPivotCustomPage() {
         children: [
           { title: 'Qty', dataIndex: 'onHandQty', key: 'onHandQty', width: 100, ...rightAlign,
             onCell: () => ({ style: { background: ZONE_BG.onHand } }), render: qtyCell },
+          ...percentColumn('onHandQty', ZONE_BG.onHand),
           { title: 'Cost Val', dataIndex: 'onHandCostVal', key: 'onHandCostVal', width: 140, ...rightAlign,
             onCell: () => ({ style: { background: ZONE_BG.onHand } }), render: moneyCell },
+          ...percentColumn('onHandCostVal', ZONE_BG.onHand),
           { title: 'SKU Count', dataIndex: 'onHandSkuCount', key: 'onHandSkuCount', width: 110, ...rightAlign,
             onCell: () => ({ style: { background: ZONE_BG.onHand } }), render: qtyCell },
+          ...percentColumn('onHandSkuCount', ZONE_BG.onHand),
         ],
       },
       {
@@ -532,10 +634,13 @@ export default function SalesPivotCustomPage() {
         children: [
           { title: 'Qty', dataIndex: 'qtyTY', key: 'qtyTY', width: 100, ...rightAlign,
             onCell: () => ({ style: { background: ZONE_BG.ty } }), render: qtyCell },
+          ...percentColumn('qtyTY', ZONE_BG.ty),
           { title: 'Net Sales', dataIndex: 'netSalesTY', key: 'netSalesTY', width: 140, ...rightAlign,
             onCell: () => ({ style: { background: ZONE_BG.ty } }), render: moneyCell },
+          ...percentColumn('netSalesTY', ZONE_BG.ty),
           { title: 'Profit', dataIndex: 'profitTY', key: 'profitTY', width: 140, ...rightAlign,
             onCell: () => ({ style: { background: ZONE_BG.ty } }), render: moneyCell },
+          ...percentColumn('profitTY', ZONE_BG.ty),
         ],
       },
       {
@@ -545,14 +650,17 @@ export default function SalesPivotCustomPage() {
         children: [
           { title: 'Qty', dataIndex: 'qtyLY', key: 'qtyLY', width: 100, ...rightAlign,
             onCell: () => ({ style: { background: ZONE_BG.ly } }), render: qtyCell },
+          ...percentColumn('qtyLY', ZONE_BG.ly),
           { title: 'Net Sales', dataIndex: 'netSalesLY', key: 'netSalesLY', width: 140, ...rightAlign,
             onCell: () => ({ style: { background: ZONE_BG.ly } }), render: moneyCell },
+          ...percentColumn('netSalesLY', ZONE_BG.ly),
           { title: 'Profit', dataIndex: 'profitLY', key: 'profitLY', width: 140, ...rightAlign,
             onCell: () => ({ style: { background: ZONE_BG.ly } }), render: moneyCell },
+          ...percentColumn('profitLY', ZONE_BG.ly),
         ],
       },
     ]
-  }, [currentYear, priorYear])
+  }, [currentYear, parentTotalsByRowKey, priorYear, showPercentOfParent])
 
   return (
     <div>
@@ -565,36 +673,56 @@ export default function SalesPivotCustomPage() {
         ]}
         rightMeta={data ? `${data.rows.length.toLocaleString()} leaf ${data.rows.length === 1 ? 'row' : 'rows'}` : undefined}
         actions={
-          <SaveSnapshotButton
-            reportType="sales-pivot"
-            disabled={!data}
-            getParamsJson={() => ({
-              variant: 'custom',
-              levels: query?.levels,
-              startDate: query?.startDate,
-              endDate: query?.endDate,
-              ...compactCriteria,
-              dateSpec,
-              hierarchyDepth, level1, level2, level3,
-            })}
-            getResultJson={() => data}
-            getDescriptor={() => {
-              const lvls = query?.levels ?? selectedLevels
-              const parts: string[] = [
-                `Custom: ${lvls.map(dimLabel).join(' → ')}`,
-              ]
-              const counts: string[] = []
-              if (compactCriteria.stores?.length) counts.push(`stores ${compactCriteria.stores.length}`)
-              if (compactCriteria.chains?.length) counts.push(`chains ${compactCriteria.chains.length}`)
-              if (compactCriteria.sectors?.length) counts.push(`sectors ${compactCriteria.sectors.length}`)
-              if (compactCriteria.departments?.length) counts.push(`depts ${compactCriteria.departments.length}`)
-              if (compactCriteria.seasons?.length) counts.push(`seasons ${compactCriteria.seasons.length}`)
-              if (compactCriteria.buyers?.length) counts.push(`buyers ${compactCriteria.buyers.length}`)
-              if (counts.length) parts.push(counts.join(', '))
-              parts.push(briefDateSpec(dateSpec))
-              return parts.join(' · ')
-            }}
-          />
+          <Space wrap>
+            {reportLevels?.includes('attribute') && (
+              <Space size={6}>
+                <Text type="secondary">Attribute</Text>
+                <Select<string>
+                  value={selectedAttributeDimension?.code}
+                  onChange={setAttributeDimensionCode}
+                  style={{ width: 220 }}
+                  disabled={!data || attributeDimensions.length === 0}
+                  placeholder={data ? 'No attributes in result' : 'Run report to load attributes'}
+                  options={attributeDimensions.map((dimension) => ({
+                    value: dimension.code,
+                    label: dimension.label,
+                  }))}
+                />
+              </Space>
+            )}
+            <SaveSnapshotButton
+              reportType="sales-pivot"
+              disabled={!data}
+              getParamsJson={() => ({
+                variant: 'custom',
+                levels: query?.levels,
+                startDate: query?.startDate,
+                endDate: query?.endDate,
+                ...compactCriteria,
+                dateSpec,
+                hierarchyDepth, level1, level2, level3,
+                attributeDimensionCode: selectedAttributeDimension?.code ?? attributeDimensionCode,
+                showPercentOfParent,
+              })}
+              getResultJson={() => data}
+              getDescriptor={() => {
+                const lvls = query?.levels ?? selectedLevels
+                const parts: string[] = [
+                  `Custom: ${lvls.map(reportDimLabel).join(' → ')}`,
+                ]
+                const counts: string[] = []
+                if (compactCriteria.stores?.length) counts.push(`stores ${compactCriteria.stores.length}`)
+                if (compactCriteria.chains?.length) counts.push(`chains ${compactCriteria.chains.length}`)
+                if (compactCriteria.sectors?.length) counts.push(`sectors ${compactCriteria.sectors.length}`)
+                if (compactCriteria.departments?.length) counts.push(`depts ${compactCriteria.departments.length}`)
+                if (compactCriteria.seasons?.length) counts.push(`seasons ${compactCriteria.seasons.length}`)
+                if (compactCriteria.buyers?.length) counts.push(`buyers ${compactCriteria.buyers.length}`)
+                if (counts.length) parts.push(counts.join(', '))
+                parts.push(briefDateSpec(dateSpec))
+                return parts.join(' · ')
+              }}
+            />
+          </Space>
         }
       />
 
@@ -631,7 +759,7 @@ export default function SalesPivotCustomPage() {
                       value={level1}
                       onChange={setLevel1}
                       style={{ width: '100%' }}
-                      options={L1_L2_OPTIONS}
+                      options={L1_OPTIONS}
                     />
                   </Col>
                 </Row>
@@ -657,9 +785,27 @@ export default function SalesPivotCustomPage() {
                         value={level3}
                         onChange={setLevel3}
                         style={{ width: '100%' }}
-                        options={L3_OPTIONS.map((o) => ({
+                        options={DEEPEST_OPTIONS.map((o) => ({
                           ...o,
                           disabled: disabledAt3.has(o.value),
+                        }))}
+                      />
+                    </Col>
+                  </Row>
+                )}
+                {showAttributeSelector && (
+                  <Row gutter={8} align="middle">
+                    <Col style={{ width: 72 }}><Text>Attribute</Text></Col>
+                    <Col flex="auto">
+                      <Select<string>
+                        value={selectedAttributeDimension?.code}
+                        onChange={setAttributeDimensionCode}
+                        style={{ width: '100%' }}
+                        disabled={!data || attributeDimensions.length === 0}
+                        placeholder={data ? 'No attributes in result' : 'Run report to load attributes'}
+                        options={attributeDimensions.map((dimension) => ({
+                          value: dimension.code,
+                          label: dimension.label,
                         }))}
                       />
                     </Col>
@@ -671,8 +817,14 @@ export default function SalesPivotCustomPage() {
                   </Text>
                 )}
                 <Text type="secondary" style={{ fontSize: 12 }}>
-                  SKUs always sit at the bottom of the tree. Category is available only at the deepest level.
+                  SKUs always sit at the bottom of the tree. Category can be level 2; Attribute is only a deepest level.
                 </Text>
+                <Checkbox
+                  checked={showPercentOfParent}
+                  onChange={(e) => setShowPercentOfParent(e.target.checked)}
+                >
+                  Show % of parent
+                </Checkbox>
               </Space>
             </Card>
           </Col>
@@ -834,9 +986,13 @@ export default function SalesPivotCustomPage() {
           <>
             <FilterChips
               chips={[
-                reportLevels ? { label: 'Levels', value: reportLevels.map(dimLabel).join(' → ') } : null,
+                reportLevels ? { label: 'Levels', value: reportLevels.map(reportDimLabel).join(' → ') } : null,
+                reportLevels?.includes('attribute') && selectedAttributeDimension
+                  ? { label: 'Attribute', value: selectedAttributeDimension.label }
+                  : null,
                 { label: 'Period', value: `${query.startDate} → ${query.endDate}` },
                 { label: 'Compare', value: `${data.currentYear} vs ${data.priorYear}` },
+                showPercentOfParent ? { label: 'Percentages', value: '% of parent' } : null,
                 query.chains?.length ? { label: 'Retail Chains', value: `${query.chains.length} selected` } : null,
                 query.stores?.length
                   ? { label: 'Stores', value: `${query.stores.length} selected` }
@@ -854,24 +1010,43 @@ export default function SalesPivotCustomPage() {
                 rowKey="rowKey"
                 size="small"
                 pagination={false}
-                scroll={{ x: 1270 }}
+                scroll={{ x: tableScrollX }}
                 bordered
                 expandable={{ defaultExpandAllRows: false }}
                 summary={() => {
                   const t = data.totals
+                  let index = 1
+                  const measureCells: ReactNode[] = []
+                  const addMeasureCell = (key: SalesPivotMeasureKey, content: ReactNode, value: number) => {
+                    measureCells.push(
+                      <Table.Summary.Cell key={`${key}-value`} index={index} align="right">
+                        {content}
+                      </Table.Summary.Cell>,
+                    )
+                    index += 1
+                    if (showPercentOfParent) {
+                      measureCells.push(
+                        <Table.Summary.Cell key={`${key}-pct`} index={index} align="right">
+                          {formatParentPercent(value, value)}
+                        </Table.Summary.Cell>,
+                      )
+                      index += 1
+                    }
+                  }
+                  addMeasureCell('onHandQty', fmtQty(t.onHandQty), t.onHandQty)
+                  addMeasureCell('onHandCostVal', fmtMoney(t.onHandCostVal), t.onHandCostVal)
+                  addMeasureCell('onHandSkuCount', fmtQty(totalOnHandSkuCount), totalOnHandSkuCount)
+                  addMeasureCell('qtyTY', fmtQty(t.qtyTY), t.qtyTY)
+                  addMeasureCell('netSalesTY', fmtMoney(t.netSalesTY), t.netSalesTY)
+                  addMeasureCell('profitTY', fmtMoney(t.profitTY), t.profitTY)
+                  addMeasureCell('qtyLY', fmtQty(t.qtyLY), t.qtyLY)
+                  addMeasureCell('netSalesLY', fmtMoney(t.netSalesLY), t.netSalesLY)
+                  addMeasureCell('profitLY', fmtMoney(t.profitLY), t.profitLY)
                   return (
                     <Table.Summary fixed>
                       <Table.Summary.Row>
                         <Table.Summary.Cell index={0}><strong>Totals</strong></Table.Summary.Cell>
-                        <Table.Summary.Cell index={1} align="right">{fmtQty(t.onHandQty)}</Table.Summary.Cell>
-                        <Table.Summary.Cell index={2} align="right">{fmtMoney(t.onHandCostVal)}</Table.Summary.Cell>
-                        <Table.Summary.Cell index={3} align="right">{fmtQty(totalOnHandSkuCount)}</Table.Summary.Cell>
-                        <Table.Summary.Cell index={4} align="right">{fmtQty(t.qtyTY)}</Table.Summary.Cell>
-                        <Table.Summary.Cell index={5} align="right">{fmtMoney(t.netSalesTY)}</Table.Summary.Cell>
-                        <Table.Summary.Cell index={6} align="right">{fmtMoney(t.profitTY)}</Table.Summary.Cell>
-                        <Table.Summary.Cell index={7} align="right">{fmtQty(t.qtyLY)}</Table.Summary.Cell>
-                        <Table.Summary.Cell index={8} align="right">{fmtMoney(t.netSalesLY)}</Table.Summary.Cell>
-                        <Table.Summary.Cell index={9} align="right">{fmtMoney(t.profitLY)}</Table.Summary.Cell>
+                        {measureCells}
                       </Table.Summary.Row>
                     </Table.Summary>
                   )

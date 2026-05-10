@@ -17,6 +17,9 @@ import {
   fetchBuyerWorkbooks,
   fetchStoreCategoryCarrying,
   flagBuyerCarryoverUnavailable,
+  markBuyerCategoriesNoBudget,
+  markBuyerCategoryNoBudget,
+  reopenBuyerCategoryBudget,
   updateBuyerCategoryCard,
   type BuyerWorkbookDetail,
 } from '../services/buyerPurchasePlanningApi'
@@ -52,6 +55,9 @@ vi.mock('../services/buyerPurchasePlanningApi', async () => {
     flagBuyerCarryoverCandidateUnavailable: vi.fn(),
     flagBuyerCarryoverUnavailable: vi.fn(),
     linkBuyerPurchaseOrder: vi.fn(),
+    markBuyerCategoriesNoBudget: vi.fn(),
+    markBuyerCategoryNoBudget: vi.fn(),
+    reopenBuyerCategoryBudget: vi.fn(),
     updateBuyerAttributePlan: vi.fn(),
     updateBuyerCategoryCard: vi.fn(),
     updateBuyerCarryoverCandidate: vi.fn(),
@@ -312,6 +318,10 @@ describe('BuyerPurchasePlanningPage', () => {
           cardId: 'card-1',
           status: 'NOT_STARTED',
           updatedAt: '2026-05-07T00:00:00.000Z',
+          noBudgetId: null,
+          noBudgetNote: null,
+          noBudgetMarkedBy: null,
+          noBudgetMarkedAt: null,
         },
         nextSeason: {
           buyingSeason: 'SPRING_SUMMER',
@@ -320,6 +330,10 @@ describe('BuyerPurchasePlanningPage', () => {
           cardId: null,
           status: null,
           updatedAt: null,
+          noBudgetId: null,
+          noBudgetNote: null,
+          noBudgetMarkedBy: null,
+          noBudgetMarkedAt: null,
         },
         followingSeason: {
           buyingSeason: 'FALL_WINTER',
@@ -328,6 +342,10 @@ describe('BuyerPurchasePlanningPage', () => {
           cardId: null,
           status: null,
           updatedAt: null,
+          noBudgetId: null,
+          noBudgetNote: null,
+          noBudgetMarkedBy: null,
+          noBudgetMarkedAt: null,
         },
         action: 'CONTINUE',
       },
@@ -352,6 +370,27 @@ describe('BuyerPurchasePlanningPage', () => {
     vi.mocked(updateBuyerCategoryCard).mockResolvedValue(detail)
     vi.mocked(copyBuyerSeedModel).mockResolvedValue(detail)
     vi.mocked(flagBuyerCarryoverUnavailable).mockResolvedValue(detail)
+    vi.mocked(markBuyerCategoryNoBudget).mockResolvedValue({
+      categoryNumber: 11,
+      buyingSeason: 'FALL_WINTER',
+      seasonYear: 2026,
+      status: 'NO_BUDGET',
+      noBudgetId: 'no-budget-1',
+    })
+    vi.mocked(markBuyerCategoriesNoBudget).mockResolvedValue([{
+      categoryNumber: 11,
+      buyingSeason: 'FALL_WINTER',
+      seasonYear: 2026,
+      status: 'NO_BUDGET',
+      noBudgetId: 'no-budget-1',
+    }])
+    vi.mocked(reopenBuyerCategoryBudget).mockResolvedValue({
+      categoryNumber: 11,
+      buyingSeason: 'FALL_WINTER',
+      seasonYear: 2026,
+      status: 'REOPENED',
+      noBudgetId: null,
+    })
     vi.mocked(bulkUpdateStoreCategoryCarrying).mockResolvedValue([])
   })
 
@@ -376,6 +415,10 @@ describe('BuyerPurchasePlanningPage', () => {
           cardId: null,
           status: null,
           updatedAt: null,
+          noBudgetId: null,
+          noBudgetNote: null,
+          noBudgetMarkedBy: null,
+          noBudgetMarkedAt: null,
         },
         nextSeason: {
           buyingSeason: 'SPRING_SUMMER',
@@ -384,6 +427,10 @@ describe('BuyerPurchasePlanningPage', () => {
           cardId: null,
           status: null,
           updatedAt: null,
+          noBudgetId: null,
+          noBudgetNote: null,
+          noBudgetMarkedBy: null,
+          noBudgetMarkedAt: null,
         },
         followingSeason: {
           buyingSeason: 'FALL_WINTER',
@@ -392,6 +439,10 @@ describe('BuyerPurchasePlanningPage', () => {
           cardId: null,
           status: null,
           updatedAt: null,
+          noBudgetId: null,
+          noBudgetNote: null,
+          noBudgetMarkedBy: null,
+          noBudgetMarkedAt: null,
         },
         action: 'START_REVIEW',
       },
@@ -409,6 +460,128 @@ describe('BuyerPurchasePlanningPage', () => {
       categoryNumbers: [11],
       buyer: 'buyer',
     })
+  }, 15_000)
+
+  it('marks a landing category no-budget and can show and reopen it', async () => {
+    const regularRow = {
+      buyerCode: 'buyer',
+      buyerLabel: 'Buyer',
+      categoryNumber: 11,
+      categoryLabel: '11 - Traje Smoking Hombre',
+      departmentNumber: 1,
+      departmentLabel: '1 - Menswear',
+      last12MonthsSales: 948496,
+      last12MonthsUnits: 440,
+      currentInventoryUnits: 123,
+      currentInventoryValue: 10000,
+      departmentOtbUnits: 250,
+      currentSeason: {
+        buyingSeason: 'FALL_WINTER' as const,
+        seasonYear: 2026,
+        workbookId: 'workbook-1',
+        cardId: 'card-1',
+        status: 'NOT_STARTED' as const,
+        updatedAt: '2026-05-07T00:00:00.000Z',
+        noBudgetId: null,
+        noBudgetNote: null,
+        noBudgetMarkedBy: null,
+        noBudgetMarkedAt: null,
+      },
+      nextSeason: {
+        buyingSeason: 'SPRING_SUMMER' as const,
+        seasonYear: 2027,
+        workbookId: null,
+        cardId: null,
+        status: null,
+        updatedAt: null,
+        noBudgetId: null,
+        noBudgetNote: null,
+        noBudgetMarkedBy: null,
+        noBudgetMarkedAt: null,
+      },
+      followingSeason: {
+        buyingSeason: 'FALL_WINTER' as const,
+        seasonYear: 2027,
+        workbookId: null,
+        cardId: null,
+        status: null,
+        updatedAt: null,
+        noBudgetId: null,
+        noBudgetNote: null,
+        noBudgetMarkedBy: null,
+        noBudgetMarkedAt: null,
+      },
+      action: 'CONTINUE' as const,
+    }
+    const noBudgetRow = {
+      ...regularRow,
+      currentSeason: {
+        ...regularRow.currentSeason,
+        status: 'NO_BUDGET' as const,
+        noBudgetId: 'no-budget-1',
+        noBudgetMarkedBy: 'buyer',
+        noBudgetMarkedAt: '2026-05-07T00:00:00.000Z',
+      },
+      action: 'NO_BUDGET' as const,
+    }
+    let hiddenByDefault = false
+    vi.mocked(fetchBuyerChecklistCategories).mockImplementation(async (params = {}) => {
+      if (params.includeNoBudget) return [noBudgetRow]
+      return hiddenByDefault ? [] : [regularRow]
+    })
+    vi.mocked(markBuyerCategoryNoBudget).mockImplementation(async () => {
+      hiddenByDefault = true
+      return {
+        categoryNumber: 11,
+        buyingSeason: 'FALL_WINTER',
+        seasonYear: 2026,
+        status: 'NO_BUDGET',
+        noBudgetId: 'no-budget-1',
+      }
+    })
+
+    renderPage()
+
+    await screen.findByText('11 - Traje Smoking Hombre')
+    await userEvent.click(screen.getByRole('button', { name: /^No Budget$/i }))
+    const confirmButtons = await screen.findAllByRole('button', { name: /^No Budget$/i })
+    await userEvent.click(confirmButtons[confirmButtons.length - 1]!)
+
+    await waitFor(() => expect(markBuyerCategoryNoBudget).toHaveBeenCalledWith(expect.objectContaining({
+      categoryNumber: 11,
+      buyingSeason: 'FALL_WINTER',
+      actor: 'buyer',
+    })))
+    await waitFor(() => expect(screen.queryByText('11 - Traje Smoking Hombre')).not.toBeInTheDocument())
+
+    await userEvent.click(screen.getByRole('switch', { name: /Show No Budget/i }))
+    await screen.findByRole('button', { name: /Reopen/i })
+    await userEvent.click(screen.getByRole('button', { name: /Reopen/i }))
+
+    await waitFor(() => expect(reopenBuyerCategoryBudget).toHaveBeenCalledWith(expect.objectContaining({
+      categoryNumber: 11,
+      buyingSeason: 'FALL_WINTER',
+      actor: 'buyer',
+    })))
+  }, 15_000)
+
+  it('marks selected landing categories no-budget in one action', async () => {
+    const { container } = renderPage()
+
+    await screen.findByText('11 - Traje Smoking Hombre')
+    const rowCheckbox = container.querySelector('.ant-table-tbody .ant-checkbox-input')
+    expect(rowCheckbox).toBeTruthy()
+    fireEvent.click(rowCheckbox as HTMLElement)
+    await userEvent.click(screen.getByRole('button', { name: /No Budget Selected/i }))
+    const confirmButtons = await screen.findAllByRole('button', { name: /^No Budget$/i })
+    await userEvent.click(confirmButtons[confirmButtons.length - 1]!)
+
+    await waitFor(() => expect(markBuyerCategoriesNoBudget).toHaveBeenCalledWith(expect.objectContaining({
+      categoryNumbers: [11],
+      buyingSeason: 'FALL_WINTER',
+      actor: 'buyer',
+    })))
+    await waitFor(() => expect(screen.queryByText('11 - Traje Smoking Hombre')).not.toBeInTheDocument())
   }, 15_000)
 
   it('renders the kanban board and marks a category complete', async () => {

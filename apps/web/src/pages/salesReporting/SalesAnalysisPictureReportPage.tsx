@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type React from 'react'
 import {
-  Alert, Button, Checkbox, Dropdown, Modal, Space, Spin, Table, Typography,
+  Alert, Button, Checkbox, Dropdown, Modal, Radio, Select, Space, Spin, Table, Typography,
 } from 'antd'
 import {
   ArrowDownOutlined,
@@ -13,7 +13,7 @@ import {
 import { Link, useSearchParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { useSalesAnalysis, useSalesDimensions, type SalesAnalysisArgs } from '../../hooks/useReports'
-import type { SalesAnalysisRow, SalesAnalysisStoreOption } from '../../services/reportApi'
+import type { SalesAnalysisAttributeDimension, SalesAnalysisRow, SalesAnalysisStoreOption } from '../../services/reportApi'
 import { getErrorMessage } from '../../utils/errors'
 import { fmtMoney, fmtPct1, fmtPctBare1, fmtQty, DASH } from '../../utils/reportFormatters'
 import { briefDateSpec, readDateSpecFromParams, resolveDateSpec, type DateSpec } from '../../utils/dateSpec'
@@ -35,11 +35,35 @@ import {
   ReportCriteriaPanel,
   type ReportCriteriaState,
 } from '../../components/reports/ReportCriteriaPanel'
+import ReportThumbnail from '../../components/reports/ReportThumbnail'
+import { SkuLink } from '../../components/sku-link'
+import {
+  BASE_HIERARCHY_OPTIONS,
+  DEEPEST_HIERARCHY_OPTIONS,
+  buildSalesAnalysisTree,
+  fallbackHierarchyLevel,
+  hierarchyDescriptor,
+  hierarchyIsValid,
+  hierarchyLabel,
+  hierarchyUsesStoreLevel,
+  type SalesAnalysisHierarchyDimension,
+  type SalesAnalysisHierarchyLevels,
+  type SalesAnalysisTreeNode,
+} from './salesAnalysisHierarchy'
+import {
+  SALES_ANALYSIS_NUMERIC_SORT_DIRECTIONS,
+  SALES_ANALYSIS_TEXT_SORT_DIRECTIONS,
+  salesAnalysisNumberSorter,
+  salesAnalysisTextSorter,
+} from '../../components/reports/salesAnalysisSorters'
 
 const { Text } = Typography
 
 const DEFAULT_DATE_SPEC: DateSpec = { type: 'trailing_days', days: 7 }
 const COLUMN_STORAGE_KEY = 'sales-analysis-picture:columns:v1'
+const EMPTY_ATTRIBUTE_DIMENSIONS: SalesAnalysisAttributeDimension[] = []
+
+type PictureMode = 'flat' | 'tree'
 
 const STORE_OPTIONS: { value: SalesAnalysisStoreOption; label: string }[] = [
   { value: 'SEPARATE', label: 'Separate Stores' },
@@ -293,6 +317,12 @@ export default function SalesAnalysisPictureReportPage(): JSX.Element {
   const templateId = searchParams.get('templateId') ?? undefined
 
   const [storeOption, setStoreOption] = useState<SalesAnalysisStoreOption>('COMBINE')
+  const [pictureMode, setPictureMode] = useState<PictureMode>('flat')
+  const [hierarchyDepth, setHierarchyDepth] = useState<2 | 3>(2)
+  const [level1, setLevel1] = useState<SalesAnalysisHierarchyDimension>('department')
+  const [level2, setLevel2] = useState<SalesAnalysisHierarchyDimension>('category')
+  const [level3, setLevel3] = useState<SalesAnalysisHierarchyDimension>('attribute')
+  const [attributeDimensionCode, setAttributeDimensionCode] = useState<string | null>(null)
   const [dateSpec, setDateSpec] = useState<DateSpec>(DEFAULT_DATE_SPEC)
   const [selectedStores, setSelectedStores] = useState<number[]>([])
   const [selectedChains, setSelectedChains] = useState<string[]>([])
@@ -353,9 +383,36 @@ export default function SalesAnalysisPictureReportPage(): JSX.Element {
     const t = templateData.template
     if (t.reportType !== 'sales-analysis-picture') return
     hydratedFor.current = templateId
-    const p = t.paramsJson as Partial<SalesAnalysisArgs> & { visibleColumns?: string[] }
+    const p = t.paramsJson as Partial<SalesAnalysisArgs> & {
+      visibleColumns?: string[]
+      pictureMode?: PictureMode
+      hierarchyDepth?: 2 | 3
+      level1?: SalesAnalysisHierarchyDimension
+      level2?: SalesAnalysisHierarchyDimension
+      level3?: SalesAnalysisHierarchyDimension
+      attributeDimensionCode?: string | null
+    }
     const spec = readDateSpecFromParams(t.paramsJson) ?? DEFAULT_DATE_SPEC
     const { startDate, endDate } = resolveDateSpec(spec)
+    const nextDepth: 2 | 3 = p.hierarchyDepth === 3 ? 3 : 2
+    const nextLevel1 = p.level1 && p.level1 !== 'attribute' ? p.level1 : 'department'
+    let nextLevel2 = p.level2 ?? 'category'
+    if (nextLevel2 === nextLevel1 || (nextDepth === 3 && nextLevel2 === 'attribute')) {
+      nextLevel2 = fallbackHierarchyLevel([nextLevel1])
+    }
+    let nextLevel3 = p.level3 ?? 'attribute'
+    if (nextDepth === 3 && nextLevel3 !== 'attribute' && [nextLevel1, nextLevel2].includes(nextLevel3)) {
+      nextLevel3 = 'attribute'
+    }
+    const nextLevels: SalesAnalysisHierarchyLevels = nextDepth === 3
+      ? [nextLevel1, nextLevel2, nextLevel3]
+      : [nextLevel1, nextLevel2]
+    setPictureMode(p.pictureMode === 'tree' ? 'tree' : 'flat')
+    setHierarchyDepth(nextDepth)
+    setLevel1(nextLevel1)
+    setLevel2(nextLevel2)
+    setLevel3(nextLevel3)
+    setAttributeDimensionCode(p.attributeDimensionCode ?? null)
     setStoreOption(p.storeOption ?? 'COMBINE')
     setDateSpec(spec)
     setSelectedStores(Array.isArray(p.stores) ? p.stores : [])
@@ -380,7 +437,7 @@ export default function SalesAnalysisPictureReportPage(): JSX.Element {
     setQuery({
       dimension: 'CATEGORY',
       reportType: 'SKU_DETAIL',
-      storeOption: p.storeOption ?? 'COMBINE',
+      storeOption: hierarchyUsesStoreLevel(nextLevels) ? 'SEPARATE' : p.storeOption ?? 'COMBINE',
       startDate,
       endDate,
       stores: Array.isArray(p.stores) && p.stores.length ? p.stores : undefined,
@@ -419,7 +476,7 @@ export default function SalesAnalysisPictureReportPage(): JSX.Element {
     return {
       dimension: 'CATEGORY',
       reportType: 'SKU_DETAIL',
-      storeOption,
+      storeOption: pictureMode === 'tree' ? effectiveStoreOption : storeOption,
       startDate,
       endDate,
       stores: selectedStores.length ? selectedStores : undefined,
@@ -445,6 +502,7 @@ export default function SalesAnalysisPictureReportPage(): JSX.Element {
   }
 
   const onRun = (): void => {
+    if (pictureMode === 'tree' && !hierarchyIsValid(hierarchyLevels)) return
     setColumnFilters({})
     setQuery(buildQuery())
   }
@@ -470,6 +528,55 @@ export default function SalesAnalysisPictureReportPage(): JSX.Element {
     () => applyColumnFilters(data?.rows ?? [], visibleColumns, columnFilters),
     [columnFilters, data?.rows, visibleColumns],
   )
+  const hierarchyLevels = useMemo<SalesAnalysisHierarchyLevels>(
+    () => (hierarchyDepth === 3 ? [level1, level2, level3] : [level1, level2]),
+    [hierarchyDepth, level1, level2, level3],
+  )
+  const hierarchyHasAttribute = pictureMode === 'tree' && hierarchyLevels.includes('attribute')
+  const attributeDimensions = data?.attributeDimensions ?? EMPTY_ATTRIBUTE_DIMENSIONS
+  const selectedAttributeDimension = useMemo(
+    () => attributeDimensions.find((dimension) => dimension.code === attributeDimensionCode) ?? attributeDimensions[0] ?? null,
+    [attributeDimensionCode, attributeDimensions],
+  )
+  const effectiveStoreOption: SalesAnalysisStoreOption =
+    pictureMode === 'tree' && hierarchyUsesStoreLevel(hierarchyLevels) ? 'SEPARATE' : storeOption
+  const currentHierarchyDescriptor = hierarchyDescriptor(hierarchyLevels, selectedAttributeDimension)
+  const canRun = pictureMode === 'flat' || hierarchyIsValid(hierarchyLevels)
+  const tree = useMemo(
+    () => (data ? buildSalesAnalysisTree(
+      data.rows,
+      hierarchyLevels,
+      data.periodDays,
+      data.turnsRoiAnnualizer ?? (data.periodDays > 0 ? 365 / data.periodDays : 0),
+      selectedAttributeDimension,
+    ) : []),
+    [data, hierarchyLevels, selectedAttributeDimension],
+  )
+
+  useEffect(() => {
+    if (level1 === 'attribute') {
+      setLevel1('department')
+      return
+    }
+    if (level1 === level2 || (hierarchyDepth === 3 && level2 === 'attribute')) {
+      setLevel2(fallbackHierarchyLevel([level1]))
+      return
+    }
+    if (hierarchyDepth === 3 && level3 !== 'attribute' && [level1, level2].includes(level3)) {
+      setLevel3('attribute')
+    }
+  }, [hierarchyDepth, level1, level2, level3])
+
+  useEffect(() => {
+    if (!hierarchyHasAttribute) return
+    if (!attributeDimensions.length) {
+      setAttributeDimensionCode(null)
+      return
+    }
+    if (!attributeDimensionCode || !attributeDimensions.some((dimension) => dimension.code === attributeDimensionCode)) {
+      setAttributeDimensionCode(attributeDimensions[0]!.code)
+    }
+  }, [attributeDimensionCode, attributeDimensions, hierarchyHasAttribute])
 
   const setColumnSort = (columnKey: string): void => {
     setColumnFilters((prev) => {
@@ -526,6 +633,74 @@ export default function SalesAnalysisPictureReportPage(): JSX.Element {
     ),
   }))
 
+  const treeColumns = [
+    {
+      title: `${hierarchyLevels.map((level) => hierarchyLabel(level, selectedAttributeDimension?.label)).join(' / ')} / SKU`,
+      dataIndex: 'label',
+      key: 'label',
+      width: 440,
+      fixed: 'left' as const,
+      sorter: salesAnalysisTextSorter<SalesAnalysisTreeNode>('label'),
+      sortDirections: SALES_ANALYSIS_TEXT_SORT_DIRECTIONS,
+      render: (_value: string, record: SalesAnalysisTreeNode) => {
+        if (!record.skuCode) return record.label
+        return (
+          <Space size={8}>
+            <ReportThumbnail url={record.pictureUrl} alt={record.skuCode} height={34} maxWidth={58} />
+            <SkuLink skuCode={record.skuCode}>{record.label}</SkuLink>
+          </Space>
+        )
+      },
+    },
+    {
+      title: 'On Hand', dataIndex: 'unitsOnHand', key: 'unitsOnHand', width: 90, align: 'right' as const,
+      sorter: salesAnalysisNumberSorter<SalesAnalysisTreeNode>('unitsOnHand'),
+      sortDirections: SALES_ANALYSIS_NUMERIC_SORT_DIRECTIONS,
+      render: (value: number) => fmtQty(value),
+    },
+    {
+      title: 'Sales', dataIndex: 'netSales', key: 'netSales', width: 110, align: 'right' as const,
+      sorter: salesAnalysisNumberSorter<SalesAnalysisTreeNode>('netSales'),
+      sortDirections: SALES_ANALYSIS_NUMERIC_SORT_DIRECTIONS,
+      defaultSortOrder: 'descend' as const,
+      render: (value: number) => fmtMoney(value),
+    },
+    {
+      title: 'Profit', dataIndex: 'grossProfit', key: 'grossProfit', width: 110, align: 'right' as const,
+      sorter: salesAnalysisNumberSorter<SalesAnalysisTreeNode>('grossProfit'),
+      sortDirections: SALES_ANALYSIS_NUMERIC_SORT_DIRECTIONS,
+      render: (value: number) => fmtMoney(value),
+    },
+    {
+      title: 'GP %', dataIndex: 'gpPct', key: 'gpPct', width: 78, align: 'right' as const,
+      sorter: salesAnalysisNumberSorter<SalesAnalysisTreeNode>('gpPct'),
+      sortDirections: SALES_ANALYSIS_NUMERIC_SORT_DIRECTIONS,
+      render: (value: number | null) => fmtPct1(value),
+    },
+    {
+      title: 'ROI', dataIndex: 'roiPct', key: 'roiPct', width: 78, align: 'right' as const,
+      sorter: salesAnalysisNumberSorter<SalesAnalysisTreeNode>('roiPct'),
+      sortDirections: SALES_ANALYSIS_NUMERIC_SORT_DIRECTIONS,
+      render: (value: number | null) => fmtPctBare1(value),
+    },
+    {
+      title: 'Turns', dataIndex: 'turns', key: 'turns', width: 78, align: 'right' as const,
+      sorter: salesAnalysisNumberSorter<SalesAnalysisTreeNode>('turns'),
+      sortDirections: SALES_ANALYSIS_NUMERIC_SORT_DIRECTIONS,
+      render: (value: number | null) => fmtPctBare1(value),
+    },
+    ...(query?.includeOnOrder
+      ? [
+          {
+            title: 'On Order', dataIndex: 'onOrderQty', key: 'onOrderQty', width: 100, align: 'right' as const,
+            sorter: salesAnalysisNumberSorter<SalesAnalysisTreeNode>('onOrderQty'),
+            sortDirections: SALES_ANALYSIS_NUMERIC_SORT_DIRECTIONS,
+            render: (value: number) => fmtQty(value),
+          },
+        ]
+      : []),
+  ]
+
   const sharedCriteria: ReportCriteriaState = {
     stores: selectedStores,
     chains: selectedChains,
@@ -580,6 +755,12 @@ export default function SalesAnalysisPictureReportPage(): JSX.Element {
   const paramsJson = (): Record<string, unknown> => ({
     ...buildQuery(),
     dateSpec,
+    pictureMode,
+    hierarchyDepth,
+    level1,
+    level2,
+    ...(hierarchyDepth === 3 ? { level3 } : {}),
+    attributeDimensionCode: selectedAttributeDimension?.code ?? attributeDimensionCode ?? undefined,
     visibleColumns: [...visibleKeys],
   })
 
@@ -587,13 +768,17 @@ export default function SalesAnalysisPictureReportPage(): JSX.Element {
     <div>
       <ReportHeader
         title="Sales Analysis Picture Report"
-        description="Flat SKU picture report using the same criteria as Sales Analysis."
+        description="SKU picture report with optional grouped hierarchy view."
         citation="App-native"
         breadcrumb={[
           { title: <Link to="/reports/sales">Sales Reports</Link> },
           { title: 'Sales Analysis Picture Report' },
         ]}
-        rightMeta={data ? `${filteredRows.length.toLocaleString()} of ${data.rows.length.toLocaleString()} rows` : undefined}
+        rightMeta={data ? (
+          pictureMode === 'tree'
+            ? `${data.rows.length.toLocaleString()} SKU ${data.rows.length === 1 ? 'row' : 'rows'}`
+            : `${filteredRows.length.toLocaleString()} of ${data.rows.length.toLocaleString()} rows`
+        ) : undefined}
         compact
       />
 
@@ -601,7 +786,7 @@ export default function SalesAnalysisPictureReportPage(): JSX.Element {
         open={filterOpen}
         onOpenChange={setFilterOpen}
         running={running}
-        canRun
+        canRun={canRun}
         onRun={onRun}
         compact
         actions={<RunReportControls running={running} hasRun={query != null} onRun={onRun} onStop={onStop} />}
@@ -619,7 +804,11 @@ export default function SalesAnalysisPictureReportPage(): JSX.Element {
               getParamsJson={paramsJson}
               getResultJson={() => data}
               getDescriptor={() => {
-                const parts = [STORE_OPTION_LABELS[storeOption], briefDateSpec(dateSpec)]
+                const parts = [
+                  pictureMode === 'tree' ? currentHierarchyDescriptor : 'Flat',
+                  STORE_OPTION_LABELS[effectiveStoreOption],
+                  briefDateSpec(dateSpec),
+                ]
                 if (priorYear) parts.push('vs PY')
                 if (includeOnOrder) parts.push('on order')
                 return parts.join(' · ')
@@ -629,6 +818,89 @@ export default function SalesAnalysisPictureReportPage(): JSX.Element {
         )}
       >
         <div className="sales-analysis-setup-strip">
+          <div className="sales-analysis-filter-group">
+            <Text strong className="sales-analysis-filter-title">View</Text>
+            <Radio.Group
+              value={pictureMode}
+              onChange={(event) => setPictureMode(event.target.value)}
+              optionType="button"
+              buttonStyle="solid"
+              size="small"
+              options={[
+                { value: 'flat', label: 'Flat' },
+                { value: 'tree', label: 'Tree' },
+              ]}
+            />
+          </div>
+          {pictureMode === 'tree' ? (
+            <div className="sales-analysis-filter-group">
+              <Text strong className="sales-analysis-filter-title">Hierarchy</Text>
+              <Space size={6} wrap>
+                <Text type="secondary" className="sales-analysis-field-label">Levels</Text>
+                <Radio.Group
+                  value={hierarchyDepth}
+                  onChange={(event) => setHierarchyDepth(event.target.value)}
+                  optionType="button"
+                  buttonStyle="solid"
+                  size="small"
+                  options={[
+                    { value: 2, label: '2' },
+                    { value: 3, label: '3' },
+                  ]}
+                />
+                <Text type="secondary" className="sales-analysis-field-label">Level 1</Text>
+                <Select<SalesAnalysisHierarchyDimension>
+                  value={level1}
+                  onChange={setLevel1}
+                  options={BASE_HIERARCHY_OPTIONS}
+                  size="small"
+                  style={{ width: 148 }}
+                />
+                <Text type="secondary" className="sales-analysis-field-label">Level 2</Text>
+                <Select<SalesAnalysisHierarchyDimension>
+                  value={level2}
+                  onChange={setLevel2}
+                  options={(hierarchyDepth === 2 ? DEEPEST_HIERARCHY_OPTIONS : BASE_HIERARCHY_OPTIONS)
+                    .map((option) => ({ ...option, disabled: option.value === level1 }))}
+                  size="small"
+                  style={{ width: 148 }}
+                />
+                {hierarchyDepth === 3 ? (
+                  <>
+                    <Text type="secondary" className="sales-analysis-field-label">Level 3</Text>
+                    <Select<SalesAnalysisHierarchyDimension>
+                      value={level3}
+                      onChange={setLevel3}
+                      options={DEEPEST_HIERARCHY_OPTIONS.map((option) => ({
+                        ...option,
+                        disabled: option.value !== 'attribute' && (option.value === level1 || option.value === level2),
+                      }))}
+                      size="small"
+                      style={{ width: 148 }}
+                    />
+                  </>
+                ) : null}
+                {hierarchyHasAttribute ? (
+                  <>
+                    <Text type="secondary" className="sales-analysis-field-label">Attribute</Text>
+                    <Select
+                      size="small"
+                      aria-label="Attribute dimension"
+                      value={selectedAttributeDimension?.code}
+                      placeholder={data ? 'No attributes' : 'Run report first'}
+                      options={attributeDimensions.map((dimension) => ({
+                        value: dimension.code,
+                        label: dimension.label,
+                      }))}
+                      onChange={setAttributeDimensionCode}
+                      disabled={!data || !attributeDimensions.length}
+                      style={{ width: 210 }}
+                    />
+                  </>
+                ) : null}
+              </Space>
+            </div>
+          ) : null}
           <div className="sales-analysis-filter-group">
             <Text strong className="sales-analysis-filter-title">Store Options</Text>
             <Space size={10} wrap>
@@ -662,6 +934,11 @@ export default function SalesAnalysisPictureReportPage(): JSX.Element {
             </Space>
           </div>
         </div>
+        {pictureMode === 'tree' && !hierarchyIsValid(hierarchyLevels) ? (
+          <Text type="danger" style={{ display: 'block', marginTop: 6 }}>
+            Choose valid hierarchy levels. Attribute can only be the deepest level.
+          </Text>
+        ) : null}
 
         <ReportCriteriaPanel
           value={sharedCriteria}
@@ -841,6 +1118,11 @@ export default function SalesAnalysisPictureReportPage(): JSX.Element {
           <div className={fullScreen ? 'sales-analysis-picture-report sales-analysis-picture-report--fullscreen' : 'sales-analysis-picture-report'}>
             <FilterChips
               chips={[
+                { label: 'View', value: pictureMode === 'tree' ? 'Tree' : 'Flat' },
+                pictureMode === 'tree' ? { label: 'Hierarchy', value: currentHierarchyDescriptor } : null,
+                pictureMode === 'tree' && hierarchyHasAttribute && selectedAttributeDimension
+                  ? { label: 'Attribute', value: selectedAttributeDimension.label }
+                  : null,
                 { label: 'Stores', value: STORE_OPTION_LABELS[query.storeOption ?? 'COMBINE'] },
                 query.startDate && query.endDate ? { label: 'Period', value: `${query.startDate} -> ${query.endDate}` } : null,
                 query.priorYear ? { label: 'Compare', value: 'Prior year' } : null,
@@ -864,56 +1146,92 @@ export default function SalesAnalysisPictureReportPage(): JSX.Element {
             />
             <div className="sales-analysis-picture-toolbar">
               <Text type="secondary">
-                {filteredRows.length.toLocaleString()} rows shown
+                {pictureMode === 'tree'
+                  ? `${data.rows.length.toLocaleString()} SKU rows grouped`
+                  : `${filteredRows.length.toLocaleString()} rows shown`}
               </Text>
               <Space size={8}>
+                {pictureMode === 'tree' && hierarchyHasAttribute && data ? (
+                  <Select
+                    size="small"
+                    aria-label="Attribute dimension"
+                    value={selectedAttributeDimension?.code}
+                    placeholder="Attribute"
+                    options={attributeDimensions.map((dimension) => ({
+                      value: dimension.code,
+                      label: dimension.label,
+                    }))}
+                    onChange={setAttributeDimensionCode}
+                    disabled={!attributeDimensions.length}
+                    style={{ width: 210 }}
+                  />
+                ) : null}
                 <Button
                   icon={fullScreen ? <FullscreenExitOutlined /> : <FullscreenOutlined />}
                   onClick={() => setFullScreen((value) => !value)}
                 >
                   {fullScreen ? 'Exit full screen' : 'Full screen'}
                 </Button>
-                <Dropdown
-                  trigger={['click']}
-                  overlayClassName={fullScreen ? 'sales-analysis-picture-popup' : undefined}
-                  menu={{
-                    items: allColumns.map((column) => ({
-                      key: column.key,
-                      label: (
-                        <Checkbox
-                          checked={visibleKeys.has(column.key)}
-                          onChange={(event) => {
-                            setVisibleKeys((prev) => {
-                              const next = new Set(prev)
-                              if (event.target.checked) next.add(column.key)
-                              else next.delete(column.key)
-                              return next
-                            })
-                          }}
-                        >
-                          {column.title}
-                        </Checkbox>
-                      ),
-                    })),
-                  }}
-                >
-                  <Button icon={<SettingOutlined />}>Columns</Button>
-                </Dropdown>
+                {pictureMode === 'flat' ? (
+                  <Dropdown
+                    trigger={['click']}
+                    overlayClassName={fullScreen ? 'sales-analysis-picture-popup' : undefined}
+                    menu={{
+                      items: allColumns.map((column) => ({
+                        key: column.key,
+                        label: (
+                          <Checkbox
+                            checked={visibleKeys.has(column.key)}
+                            onChange={(event) => {
+                              setVisibleKeys((prev) => {
+                                const next = new Set(prev)
+                                if (event.target.checked) next.add(column.key)
+                                else next.delete(column.key)
+                                return next
+                              })
+                            }}
+                          >
+                            {column.title}
+                          </Checkbox>
+                        ),
+                      })),
+                    }}
+                  >
+                    <Button icon={<SettingOutlined />}>Columns</Button>
+                  </Dropdown>
+                ) : null}
               </Space>
             </div>
-            <Table<SalesAnalysisRow>
-              className="sales-analysis-picture-table"
-              dataSource={filteredRows}
-              columns={tableColumns}
-              rowKey={(row) => `${row.dimensionKey}|${row.storeNumber ?? '*'}`}
-              size="small"
-              pagination={{ pageSize: 50, showSizeChanger: true }}
-              sticky
-              scroll={{
-                x: visibleColumns.reduce((sum, column) => sum + column.width, 0),
-                y: fullScreen ? 'calc(100vh - 152px)' : 'calc(100vh - 260px)',
-              }}
-            />
+            {pictureMode === 'tree' ? (
+              <Table<SalesAnalysisTreeNode>
+                className="sales-analysis-picture-table"
+                dataSource={tree}
+                columns={treeColumns}
+                rowKey="rowKey"
+                size="small"
+                pagination={{ pageSize: 50, showSizeChanger: true }}
+                expandable={{ defaultExpandAllRows: false }}
+                sticky
+                scroll={{
+                  x: query.includeOnOrder ? 1084 : 984,
+                  y: fullScreen ? 'calc(100vh - 152px)' : 'calc(100vh - 260px)',
+                }}
+              />
+            ) : (
+              <Table<SalesAnalysisRow>
+                className="sales-analysis-picture-table"
+                dataSource={filteredRows}
+                columns={tableColumns}
+                rowKey={(row) => `${row.dimensionKey}|${row.storeNumber ?? '*'}`}
+                size="small"
+                pagination={{ pageSize: 50, showSizeChanger: true }}
+                sticky
+                scroll={{
+                  x: visibleColumns.reduce((sum, column) => sum + column.width, 0),
+                  y: fullScreen ? 'calc(100vh - 152px)' : 'calc(100vh - 260px)',
+                }}
+              />
+            )}
           </div>
         ) : null}
       </div>

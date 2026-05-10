@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import type { AttributeDimension } from '../types/productsAttributes'
+import type { AttributeDimension, SkuAttributesBulk } from '../types/productsAttributes'
 import {
   familyScopedDimensionAppliesToAllFamilies,
+  getColorLabelSortText,
   getResultFamilyScope,
+  getVisibleColorLabels,
   getVisibleActionDimensions,
 } from '../pages/utilities/ChangeSkuAttributesPage'
 
@@ -72,5 +74,40 @@ describe('ChangeSkuAttributesPage attribute action scope', () => {
     ).map((row) => row.code)
 
     expect(visible).toEqual(['marca', 'suit_detail'])
+  })
+})
+
+describe('ChangeSkuAttributesPage color labels', () => {
+  const bulk: SkuAttributesBulk = {
+    bySku: {
+      ABC123: {
+        skuCode: 'ABC123',
+        byDimension: {
+          color: {
+            isMultiValue: false,
+            values: [
+              {
+                code: '1',
+                labelEs: 'Negro',
+                assignedBy: null,
+                assignedAt: '2026-05-09T00:00:00.000Z',
+              },
+            ],
+          },
+        },
+      },
+    },
+  }
+
+  it('uses the visible color attribute label when present', () => {
+    expect(getVisibleColorLabels(bulk, 'ABC123', 'Glossy Black')).toEqual(['Negro'])
+  })
+
+  it('falls back to legacy long color when the SKU has no color attribute label', () => {
+    expect(getVisibleColorLabels(bulk, 'NOATTR', 'Glossy Black')).toEqual(['Glossy Black'])
+  })
+
+  it('uses the same label source for sorting', () => {
+    expect(getColorLabelSortText(bulk, 'ABC123', null)).toBe('Negro')
   })
 })

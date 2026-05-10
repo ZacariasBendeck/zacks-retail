@@ -18,6 +18,7 @@ import {
   listRunsQuerySchema,
   updateRunSchema,
 } from './schemas';
+import { recordPlatformAuditEvent } from '../../services/platformAuditService';
 
 // Matches the templates pattern — one error mapper keeps every handler
 // consistent and lets the service throw rich errors instead of leaking
@@ -43,6 +44,53 @@ function viewerFrom(req: Request): ViewerContext {
     id: req.user!.id,
     isAdmin: req.permissions?.has(PERMISSIONS.REPORTS_ADMIN) ?? false,
   };
+}
+
+function runAuditSnapshot(run: {
+  id: string;
+  reportType: string;
+  sourceTemplateId: string | null;
+  title: string | null;
+  visibility: string;
+  rowCount: number;
+  resultSizeBytes: number;
+  reportTypeVersion: number;
+}) {
+  return {
+    id: run.id,
+    reportType: run.reportType,
+    sourceTemplateId: run.sourceTemplateId,
+    title: run.title,
+    visibility: run.visibility,
+    rowCount: run.rowCount,
+    resultSizeBytes: run.resultSizeBytes,
+    reportTypeVersion: run.reportTypeVersion,
+  };
+}
+
+async function recordReportRunAudit(
+  prisma: PrismaClient,
+  req: Request,
+  input: {
+    eventType: string;
+    action: string;
+    resourceId: string;
+    beforeJson?: unknown;
+    afterJson?: unknown;
+  },
+): Promise<void> {
+  await recordPlatformAuditEvent(prisma, {
+    eventType: input.eventType,
+    action: input.action,
+    resourceType: 'report.run',
+    resourceId: input.resourceId,
+    actorUserId: req.user!.id,
+    ipAddress: req.ip,
+    userAgent: req.get('user-agent') ?? null,
+    beforeJson: input.beforeJson,
+    afterJson: input.afterJson,
+    metadataJson: { module: 'reports' },
+  });
 }
 
 export function createReportRunsRoutes(prisma: PrismaClient): Router {
@@ -88,6 +136,12 @@ export function createReportRunsRoutes(prisma: PrismaClient): Router {
         visibility: parsed.data.visibility,
         sourceTemplateId: parsed.data.sourceTemplateId,
       });
+      await recordReportRunAudit(prisma, req, {
+        eventType: 'reports.run_created',
+        action: 'CREATE_REPORT_RUN',
+        resourceId: run.id,
+        afterJson: runAuditSnapshot(run),
+      });
       res.status(201).json({ run });
     } catch (err) {
       handleServiceError(err, res, next);
@@ -112,7 +166,15 @@ export function createReportRunsRoutes(prisma: PrismaClient): Router {
         res.status(400).json({ error: { code: 'INVALID_BODY', message: parsed.error.message } });
         return;
       }
+      const before = await getRun(prisma, viewerFrom(req), req.params.id);
       const run = await updateRun(prisma, viewerFrom(req), req.params.id, parsed.data);
+      await recordReportRunAudit(prisma, req, {
+        eventType: 'reports.run_updated',
+        action: 'UPDATE_REPORT_RUN',
+        resourceId: run.id,
+        beforeJson: runAuditSnapshot(before),
+        afterJson: runAuditSnapshot(run),
+      });
       res.json({ run });
     } catch (err) {
       handleServiceError(err, res, next);
@@ -122,7 +184,14 @@ export function createReportRunsRoutes(prisma: PrismaClient): Router {
   // DELETE /:id  — owner OR REPORTS_ADMIN
   router.delete('/:id', async (req, res, next) => {
     try {
+      const before = await getRun(prisma, viewerFrom(req), req.params.id);
       await deleteRun(prisma, viewerFrom(req), req.params.id);
+      await recordReportRunAudit(prisma, req, {
+        eventType: 'reports.run_deleted',
+        action: 'DELETE_REPORT_RUN',
+        resourceId: req.params.id,
+        beforeJson: runAuditSnapshot(before),
+      });
       res.status(204).end();
     } catch (err) {
       handleServiceError(err, res, next);

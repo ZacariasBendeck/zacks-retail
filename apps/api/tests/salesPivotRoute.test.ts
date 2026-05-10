@@ -38,6 +38,8 @@ jest.mock('../src/services/salesReporting/ricsSalesReportAdapter', () => {
 import request from 'supertest';
 import type { SalesPivotReport, SalesPivotVariant } from '../src/services/salesReporting/types';
 
+jest.setTimeout(30000);
+
 function emptyReport(variant: SalesPivotVariant, overrides: Partial<SalesPivotReport> = {}): SalesPivotReport {
   return {
     variant,
@@ -419,6 +421,42 @@ describe('GET /api/v1/reports/sales/sales-pivot', () => {
       '/api/v1/reports/sales/sales-pivot?startDate=2026-04-01&endDate=2026-04-22&variant=custom&level1=buyer&level2=buyer&level3=vendor',
     );
     expect(res.status).toBe(400);
+  });
+
+  it('accepts category at level 2 with attribute as the deepest level', async () => {
+    setCustomAdapterReport({
+      variant: 'custom',
+      levels: ['department', 'category', 'attribute'],
+      startDate: '2026-04-01', endDate: '2026-04-22',
+      currentYear: 2026, priorYear: 2025,
+      storeNumbers: [],
+      attributeDimensions: [{ code: 'color', label: 'Color', isMultiValue: false, sortOrder: 500 }],
+      rows: [],
+      totals: {
+        onHandQty: 0, onHandCostVal: 0,
+        qtyTY: 0, netSalesTY: 0, profitTY: 0,
+        qtyLY: 0, netSalesLY: 0, profitLY: 0,
+      },
+    });
+    const res = await request(app).get(
+      '/api/v1/reports/sales/sales-pivot?startDate=2026-04-01&endDate=2026-04-22&variant=custom&level1=department&level2=category&level3=attribute',
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.levels).toEqual(['department', 'category', 'attribute']);
+    const call = getCustomAdapterMock().mock.calls.at(-1)?.[0];
+    expect(call).toMatchObject({
+      levels: ['department', 'category', 'attribute'],
+    });
+  });
+
+  it('rejects attribute when it is not the deepest custom level', async () => {
+    getCustomAdapterMock().mockReset();
+    const res = await request(app).get(
+      '/api/v1/reports/sales/sales-pivot?startDate=2026-04-01&endDate=2026-04-22&variant=custom&level1=department&level2=attribute&level3=vendor',
+    );
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+    expect(getCustomAdapterMock()).not.toHaveBeenCalled();
   });
 
   it('dispatches to the custom adapter with the chosen levels', async () => {

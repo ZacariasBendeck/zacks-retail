@@ -1687,9 +1687,8 @@ export const AttributesRepository = {
 
   /**
    * Bulk assign: for each SKU in `skuCodes`, apply the same dim+value_codes.
-   * Same atomic-replace semantics as `replaceSkuAttributes` per-SKU (keyword
-   * rows preserved, operator + excel rows for the named dim replaced with the
-   * new set tagged with `actor`). Used by the utilities batch-change pipeline.
+   * Single-value dims are true replaces, including keyword-seeded rows, so
+   * the old value cannot remain beside the operator value.
    */
   async bulkAssign(input: {
     skuCodes: string[];
@@ -1741,12 +1740,15 @@ export const AttributesRepository = {
 
       let affected = 0;
       await prisma.$transaction(async (tx) => {
-        // Replace operator + excel rows for this dim, for each SKU.
+        // Replace operator + excel rows for multi-value dims. Single-value
+        // dims must clear keyword rows too, otherwise the read path exposes
+        // both old and new values for dimensions like buyer/gender.
+        const preserveSeedKeywordRows = dim.isMultiValue;
         const deleted = await tx.$executeRawUnsafe(
           `DELETE FROM app.sku_attribute_assignment
            WHERE dimension_id = $1
              AND sku_code = ANY($2::varchar[])
-             AND (assigned_by IS NULL OR assigned_by NOT LIKE 'seed:keyword:%')`,
+             ${preserveSeedKeywordRows ? `AND (assigned_by IS NULL OR assigned_by NOT LIKE 'seed:keyword:%')` : ''}`,
           dim.id,
           skuCodes
         );

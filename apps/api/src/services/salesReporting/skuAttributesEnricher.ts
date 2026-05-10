@@ -1,7 +1,11 @@
 import { prisma } from '../../db/prisma';
 import { getOnHandTotals } from '../products/onHandTotalsService';
 import { buildRicsImageUrl } from '../ricsImageUrl';
-import type { SkuAttributeColumns } from './types';
+import type {
+  SalesAnalysisAttributeAssignment,
+  SalesAnalysisAttributeDimension,
+  SkuAttributeColumns,
+} from './types';
 
 /**
  * Build a SKU → attributes map for the SKUs in a SKU_DETAIL sales-analysis
@@ -275,6 +279,104 @@ export async function loadSkuAttributesBySku(
   }
 
   return result;
+}
+
+interface AttributeAssignmentRow {
+  sku_code: string | null;
+  dimension_code: string | null;
+  dimension_label: string | null;
+  is_multi_value: boolean | null;
+  dimension_sort_order: number | null;
+  value_code: string | null;
+  value_label: string | null;
+}
+
+export interface SkuAttributeAssignmentLoad {
+  dimensions: SalesAnalysisAttributeDimension[];
+  assignmentsBySku: Map<string, Record<string, SalesAnalysisAttributeAssignment>>;
+}
+
+/**
+ * Load compact SKU attribute assignments for browser-side dynamic grouping.
+ * Multi-value dimensions stay attached to one SKU bucket by returning one
+ * combined display label per dimension rather than duplicating the SKU row.
+ */
+export async function loadSkuAttributeAssignmentsBySku(
+  skuCodes: string[],
+): Promise<SkuAttributeAssignmentLoad> {
+  const empty: SkuAttributeAssignmentLoad = {
+    dimensions: [],
+    assignmentsBySku: new Map<string, Record<string, SalesAnalysisAttributeAssignment>>(),
+  };
+  if (skuCodes.length === 0) return empty;
+
+  const unique = Array.from(
+    new Set(
+      skuCodes
+        .map((s) => (typeof s === 'string' ? s.trim().toUpperCase() : ''))
+        .filter(Boolean),
+    ),
+  );
+  if (unique.length === 0) return empty;
+
+  const rows = await prisma.$queryRawUnsafe<AttributeAssignmentRow[]>(
+    `
+    SELECT
+      UPPER(TRIM(saa.sku_code)) AS sku_code,
+      ad.code                   AS dimension_code,
+      ad.label_es               AS dimension_label,
+      ad.is_multi_value         AS is_multi_value,
+      ad.sort_order             AS dimension_sort_order,
+      av.code                   AS value_code,
+      av.label_es               AS value_label
+    FROM app.sku_attribute_assignment saa
+    JOIN app.attribute_dimension ad ON ad.id = saa.dimension_id
+    JOIN app.attribute_value av ON av.id = saa.value_id
+    WHERE UPPER(TRIM(saa.sku_code)) = ANY($1::text[])
+    ORDER BY ad.sort_order, ad.label_es, av.sort_order, av.label_es
+    `,
+    unique,
+  );
+
+  const dimensionsByCode = new Map<string, SalesAnalysisAttributeDimension>();
+  const assignmentsBySku = new Map<string, Record<string, SalesAnalysisAttributeAssignment>>();
+
+  for (const row of rows) {
+    const sku = row.sku_code?.trim().toUpperCase();
+    const dimensionCode = row.dimension_code?.trim();
+    const valueCode = row.value_code?.trim();
+    const valueLabel = row.value_label?.trim();
+    if (!sku || !dimensionCode || !valueCode || !valueLabel) continue;
+
+    if (!dimensionsByCode.has(dimensionCode)) {
+      dimensionsByCode.set(dimensionCode, {
+        code: dimensionCode,
+        label: row.dimension_label?.trim() || dimensionCode,
+        isMultiValue: row.is_multi_value === true,
+        sortOrder: row.dimension_sort_order == null ? null : Number(row.dimension_sort_order),
+      });
+    }
+
+    const skuAssignments = assignmentsBySku.get(sku) ?? {};
+    const current = skuAssignments[dimensionCode] ?? {
+      valueCodes: [],
+      valueLabels: [],
+      label: '',
+    };
+    current.valueCodes.push(valueCode);
+    current.valueLabels.push(valueLabel);
+    current.label = current.valueLabels.join(', ');
+    skuAssignments[dimensionCode] = current;
+    assignmentsBySku.set(sku, skuAssignments);
+  }
+
+  const dimensions = [...dimensionsByCode.values()].sort((a, b) => {
+    const aSort = a.sortOrder ?? Number.MAX_SAFE_INTEGER;
+    const bSort = b.sortOrder ?? Number.MAX_SAFE_INTEGER;
+    return aSort - bSort || a.label.localeCompare(b.label);
+  });
+
+  return { dimensions, assignmentsBySku };
 }
 
 function parseIsoDate(value: string | undefined): Date | null {

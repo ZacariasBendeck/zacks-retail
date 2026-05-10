@@ -569,6 +569,22 @@ model PlatformAuditLog {
   @@schema("platform")
 }
 
+/// Manager review state for Activity Review. This intentionally lives outside
+/// the append-only audit log so review workflow updates do not rewrite events.
+model ActivityReviewEventReview {
+  auditEventId     String   @id @map("audit_event_id")
+  status           String
+  reviewedByUserId String?  @map("reviewed_by_user_id")
+  reviewNote       String?  @map("review_note")
+  reviewedAt       DateTime @default(now()) @map("reviewed_at")
+  updatedAt        DateTime @default(now()) @map("updated_at")
+
+  @@index([status, reviewedAt(sort: Desc)], map: "activity_review_event_review_status_idx")
+  @@index([reviewedByUserId, reviewedAt(sort: Desc)], map: "activity_review_event_review_reviewer_idx")
+  @@map("activity_review_event_review")
+  @@schema("platform")
+}
+
 /// Replace-style overlay for singular SKU attributes.
 model SkuAttributeOverride {
   ricsSkuCode String   @id @map("rics_sku_code") @db.VarChar(15)

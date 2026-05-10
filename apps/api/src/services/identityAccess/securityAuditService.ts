@@ -68,6 +68,7 @@ export async function recordLoginEvent(
     req?: Request;
   },
 ): Promise<void> {
+  const normalizedEmail = input.email.toLowerCase().trim();
   try {
     await prisma.$executeRawUnsafe(
       `
@@ -79,7 +80,7 @@ export async function recordLoginEvent(
       randomUUID(),
       input.userId ?? null,
       input.roleId ?? null,
-      input.email.toLowerCase().trim(),
+      normalizedEmail,
       input.outcome,
       input.reason ?? null,
       input.req?.ip ?? null,
@@ -88,6 +89,21 @@ export async function recordLoginEvent(
   } catch {
     // Best-effort until the identity event migration is present everywhere.
   }
+
+  await recordIdentityAudit(prisma, {
+    actorUserId: input.userId ?? null,
+    eventType: input.outcome === 'SUCCESS' ? 'identity.login.success' : 'identity.login.failure',
+    action: 'LOGIN',
+    resourceType: input.userId ? 'identity.user' : 'identity.login',
+    resourceId: input.userId ?? null,
+    outcome: input.outcome,
+    reason: input.reason ?? null,
+    metadataJson: {
+      email: normalizedEmail,
+      roleId: input.roleId ?? null,
+    },
+    req: input.req,
+  });
 }
 
 export async function recordSessionEvent(

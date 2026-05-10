@@ -1,6 +1,7 @@
 import {
   assertFamilyScopedAttributeSkusInScope,
   BatchChangeValidationError,
+  shouldPreserveSeedKeywordRowsOnAttributeReplace,
 } from '../src/services/utilities/batchChangeService';
 
 const rules = [
@@ -40,5 +41,15 @@ describe('batchChangeService family-scoped attribute validation', () => {
         ['A'],
       ),
     ).toThrow(/does not apply/);
+  });
+});
+
+describe('batchChangeService attribute replace semantics', () => {
+  it('does not preserve keyword-seeded rows for single-value dimensions', () => {
+    expect(shouldPreserveSeedKeywordRowsOnAttributeReplace(false)).toBe(false);
+  });
+
+  it('preserves keyword-seeded rows for multi-value dimensions', () => {
+    expect(shouldPreserveSeedKeywordRowsOnAttributeReplace(true)).toBe(true);
   });
 });

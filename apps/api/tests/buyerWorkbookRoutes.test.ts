@@ -16,6 +16,10 @@ import {
   listCarryoverCandidates,
   listBuyerWorkbooks,
   listStoreCategoryCarrying,
+  markBuyerChecklistCategoriesNoBudget,
+  markBuyerChecklistCategoryNoBudget,
+  reopenBuyerChecklistCategoriesBudget,
+  reopenBuyerChecklistCategoryBudget,
   updateAttributePlan,
   updateBuyerCategoryCard,
   updateCarryoverCandidate,
@@ -42,6 +46,10 @@ jest.mock('../src/services/purchasePlanning/buyerWorkbookService', () => ({
   listCarryoverCandidates: jest.fn(),
   listBuyerWorkbooks: jest.fn(),
   listStoreCategoryCarrying: jest.fn(),
+  markBuyerChecklistCategoriesNoBudget: jest.fn(),
+  markBuyerChecklistCategoryNoBudget: jest.fn(),
+  reopenBuyerChecklistCategoriesBudget: jest.fn(),
+  reopenBuyerChecklistCategoryBudget: jest.fn(),
   unlinkPurchaseOrder: jest.fn(),
   updateAttributePlan: jest.fn(),
   updateBuyerCategoryCard: jest.fn(),
@@ -66,6 +74,10 @@ const service = {
   listCarryoverCandidates: listCarryoverCandidates as jest.Mock,
   listBuyerWorkbooks: listBuyerWorkbooks as jest.Mock,
   listStoreCategoryCarrying: listStoreCategoryCarrying as jest.Mock,
+  markBuyerChecklistCategoriesNoBudget: markBuyerChecklistCategoriesNoBudget as jest.Mock,
+  markBuyerChecklistCategoryNoBudget: markBuyerChecklistCategoryNoBudget as jest.Mock,
+  reopenBuyerChecklistCategoriesBudget: reopenBuyerChecklistCategoriesBudget as jest.Mock,
+  reopenBuyerChecklistCategoryBudget: reopenBuyerChecklistCategoryBudget as jest.Mock,
   updateAttributePlan: updateAttributePlan as jest.Mock,
   updateBuyerCategoryCard: updateBuyerCategoryCard as jest.Mock,
   updateCarryoverCandidate: updateCarryoverCandidate as jest.Mock,
@@ -164,6 +176,115 @@ describe('buyer workbook purchase-planning routes', () => {
       buyer: undefined,
       buyingSeason: 'FALL_WINTER',
       seasonYear: 2026,
+      includeNoBudget: false,
+    });
+  });
+
+  it('marks and reopens no-budget buyer checklist categories', async () => {
+    service.markBuyerChecklistCategoryNoBudget.mockResolvedValue({
+      categoryNumber: 262,
+      buyingSeason: 'FALL_WINTER',
+      seasonYear: 2026,
+      status: 'NO_BUDGET',
+      noBudgetId: 'no-budget-1',
+    });
+    service.reopenBuyerChecklistCategoryBudget.mockResolvedValue({
+      categoryNumber: 262,
+      buyingSeason: 'FALL_WINTER',
+      seasonYear: 2026,
+      status: 'REOPENED',
+      noBudgetId: null,
+    });
+
+    const noBudget = await request(app())
+      .post('/api/v1/purchase-planning/buyer-checklist/categories/no-budget')
+      .send({
+        categoryNumber: 262,
+        buyingSeason: 'FALL_WINTER',
+        seasonYear: 2026,
+        buyer: 'buyer',
+        actor: 'buyer',
+      });
+    const reopen = await request(app())
+      .post('/api/v1/purchase-planning/buyer-checklist/categories/reopen')
+      .send({
+        categoryNumber: 262,
+        buyingSeason: 'FALL_WINTER',
+        seasonYear: 2026,
+        buyer: 'buyer',
+        actor: 'buyer',
+      });
+
+    expect(noBudget.status).toBe(200);
+    expect(noBudget.body.result.status).toBe('NO_BUDGET');
+    expect(service.markBuyerChecklistCategoryNoBudget).toHaveBeenCalledWith(expect.objectContaining({
+      categoryNumber: 262,
+      buyingSeason: 'FALL_WINTER',
+      seasonYear: 2026,
+      buyer: 'buyer',
+      actor: 'buyer',
+    }));
+    expect(reopen.status).toBe(200);
+    expect(reopen.body.result.status).toBe('REOPENED');
+    expect(service.reopenBuyerChecklistCategoryBudget).toHaveBeenCalledWith(expect.objectContaining({
+      categoryNumber: 262,
+      buyingSeason: 'FALL_WINTER',
+      seasonYear: 2026,
+    }));
+  });
+
+  it('marks no-budget categories in bulk', async () => {
+    service.markBuyerChecklistCategoriesNoBudget.mockResolvedValue([
+      { categoryNumber: 262, buyingSeason: 'FALL_WINTER', seasonYear: 2026, status: 'NO_BUDGET', noBudgetId: 'no-budget-1' },
+      { categoryNumber: 560, buyingSeason: 'FALL_WINTER', seasonYear: 2026, status: 'NO_BUDGET', noBudgetId: 'no-budget-2' },
+    ]);
+    service.reopenBuyerChecklistCategoriesBudget.mockResolvedValue([
+      { categoryNumber: 262, buyingSeason: 'FALL_WINTER', seasonYear: 2026, status: 'REOPENED', noBudgetId: null },
+      { categoryNumber: 560, buyingSeason: 'FALL_WINTER', seasonYear: 2026, status: 'REOPENED', noBudgetId: null },
+    ]);
+
+    const noBudget = await request(app())
+      .post('/api/v1/purchase-planning/buyer-checklist/categories/no-budget/bulk')
+      .send({
+        categoryNumbers: [262, 560],
+        buyingSeason: 'FALL_WINTER',
+        seasonYear: 2026,
+        actor: 'buyer',
+      });
+    const reopen = await request(app())
+      .post('/api/v1/purchase-planning/buyer-checklist/categories/reopen/bulk')
+      .send({
+        categoryNumbers: [262, 560],
+        buyingSeason: 'FALL_WINTER',
+        seasonYear: 2026,
+        actor: 'buyer',
+      });
+
+    expect(noBudget.status).toBe(200);
+    expect(noBudget.body.results).toHaveLength(2);
+    expect(service.markBuyerChecklistCategoriesNoBudget).toHaveBeenCalledWith(expect.objectContaining({
+      categoryNumbers: [262, 560],
+      buyingSeason: 'FALL_WINTER',
+      seasonYear: 2026,
+    }));
+    expect(reopen.status).toBe(200);
+    expect(reopen.body.results).toHaveLength(2);
+    expect(service.reopenBuyerChecklistCategoriesBudget).toHaveBeenCalledWith(expect.objectContaining({
+      categoryNumbers: [262, 560],
+    }));
+  });
+
+  it('can include no-budget rows in the landing dashboard', async () => {
+    service.listBuyerChecklistCategories.mockResolvedValue([]);
+
+    const res = await request(app()).get('/api/v1/purchase-planning/buyer-checklist/categories?buyingSeason=FALL_WINTER&seasonYear=2026&includeNoBudget=true');
+
+    expect(res.status).toBe(200);
+    expect(service.listBuyerChecklistCategories).toHaveBeenCalledWith({
+      buyer: undefined,
+      buyingSeason: 'FALL_WINTER',
+      seasonYear: 2026,
+      includeNoBudget: true,
     });
   });
 

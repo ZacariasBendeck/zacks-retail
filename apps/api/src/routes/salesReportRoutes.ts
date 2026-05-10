@@ -864,8 +864,9 @@ const salesPivotSchema = z.object({
   // Two or three hierarchy dimensions, required when variant='custom'. Zod leaves
   // them optional so the fixed variants don't have to pass them.
   level1: z.enum(['buyer', 'sector', 'department', 'season', 'group', 'vendor', 'store']).optional(),
-  level2: z.enum(['buyer', 'sector', 'department', 'season', 'group', 'vendor', 'store', 'category']).optional(),
-  level3: z.enum(['buyer', 'sector', 'department', 'season', 'group', 'vendor', 'store', 'category']).optional(),
+  level2: z.enum(['buyer', 'sector', 'department', 'season', 'group', 'vendor', 'store', 'category', 'attribute']).optional(),
+  level3: z.enum(['buyer', 'sector', 'department', 'season', 'group', 'vendor', 'store', 'category', 'attribute']).optional(),
+  attributeDimension: z.string().trim().optional(),
   format: z.enum(['json', 'csv']).default('json'),
 });
 
@@ -896,10 +897,11 @@ router.get('/sales-pivot', validateQuery(salesPivotSchema), async (req: Request,
         } });
         return;
       }
-      if (q.level3 && q.level2 === 'category') {
+      const attributeIndex = candidateLevels.findIndex((level) => level === 'attribute');
+      if (attributeIndex !== -1 && attributeIndex !== candidateLevels.length - 1) {
         res.status(400).json({ error: {
           code: 'VALIDATION_ERROR',
-          message: 'category is only allowed as the deepest custom pivot level',
+          message: 'attribute is only allowed as the deepest custom pivot level',
         } });
         return;
       }
@@ -968,6 +970,12 @@ router.get('/sales-pivot', validateQuery(salesPivotSchema), async (req: Request,
             case 'vendor':     return [r.vendorCode ?? '', r.vendorLabel ?? ''];
             case 'store':      return [r.storeNumber ?? '', r.storeName ?? ''];
             case 'category':   return [r.categ ?? '', r.categDesc ?? ''];
+            case 'attribute': {
+              const attr = q.attributeDimension
+                ? r.attributeAssignments?.[q.attributeDimension]
+                : null;
+              return [attr?.valueCodes.join(', ') ?? '', attr?.label ?? ''];
+            }
           }
         };
         const dimHeader = (dim: PivotDimension): [string, string] => {
@@ -980,6 +988,12 @@ router.get('/sales-pivot', validateQuery(salesPivotSchema), async (req: Request,
             case 'vendor':     return ['Vendor Code', 'Vendor'];
             case 'store':      return ['Store #', 'Store'];
             case 'category':   return ['Category #', 'Category'];
+            case 'attribute': {
+              const label = report.attributeDimensions
+                ?.find((dimension) => dimension.code === q.attributeDimension)
+                ?.label ?? 'Attribute';
+              return [`${label} Code`, label];
+            }
           }
         };
         const header = [

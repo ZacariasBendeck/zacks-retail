@@ -53,7 +53,7 @@ import {
 import { useApplyBatchChange } from '../../hooks/useUtilities'
 import { buildRicsImageUrl } from '../../services/ricsImageUrl'
 import type { SkuListFilters } from '../../types/productsSku'
-import type { AttributeDimension, AttributeDimensionValue } from '../../types/productsAttributes'
+import type { AttributeDimension, AttributeDimensionValue, SkuAttributesBulk } from '../../types/productsAttributes'
 import type { Category, Department, Sector } from '../../types/productsTaxonomy'
 import type {
   AttributeChange,
@@ -88,6 +88,7 @@ type CoreResultColumnKey =
   | 'manufacturer'
   | 'labelCode'
   | 'colorCode'
+  | 'colorLabel'
   | 'longColor'
   | 'dateLastChanged'
   | 'orderMultiple'
@@ -119,6 +120,7 @@ const CORE_RESULT_COLUMN_KEYS: CoreResultColumnKey[] = [
   'manufacturer',
   'labelCode',
   'colorCode',
+  'colorLabel',
   'longColor',
   'dateLastChanged',
   'orderMultiple',
@@ -180,6 +182,7 @@ const CORE_RESULT_COLUMN_OPTION_GROUPS = [
       { value: 'manufacturer', label: 'Manufacturer' },
       { value: 'labelCode', label: 'Label Code' },
       { value: 'colorCode', label: 'Color Code' },
+      { value: 'colorLabel', label: 'Color Label' },
       { value: 'longColor', label: 'Long Color' },
       { value: 'orderMultiple', label: 'Order Multiple' },
       { value: 'orderUom', label: 'Order UOM' },
@@ -189,6 +192,7 @@ const CORE_RESULT_COLUMN_OPTION_GROUPS = [
 
 const REQUIRED_RESULT_COLUMN_KEYS = ['sku']
 const ATTRIBUTE_COLUMN_PREFIX = 'ATTR_COL:'
+const COLOR_ATTRIBUTE_DIMENSION_CODE = 'color'
 
 const CORE_ACTION_META: Record<CoreActionKind, { label: string; verb: string; opType: BatchOperationType }> = {
   CATEGORY:       { label: 'Category',       verb: 'Move to category',      opType: 'CHANGE_CATEGORY' },
@@ -213,6 +217,31 @@ const formatAmount = (value: number | null | undefined) =>
 
 const formatPlainValue = (value: number | string | null | undefined) =>
   value == null || value === '' ? <Typography.Text type="secondary">—</Typography.Text> : value
+
+const uniqueNonBlank = (values: Array<string | null | undefined>) =>
+  Array.from(new Set(values.map((value) => value?.trim() ?? '').filter(Boolean)))
+
+export function getVisibleColorLabels(
+  skuAttributesBulk: SkuAttributesBulk | undefined,
+  skuCode: string,
+  legacyLongColor: string | null | undefined,
+): string[] {
+  const colorValues =
+    skuAttributesBulk?.bySku[skuCode]?.byDimension[COLOR_ATTRIBUTE_DIMENSION_CODE]?.values ?? []
+  const attributeLabels = uniqueNonBlank(
+    colorValues.map((value) => value.labelEs || value.code),
+  )
+  if (attributeLabels.length > 0) return attributeLabels
+  return uniqueNonBlank([legacyLongColor])
+}
+
+export function getColorLabelSortText(
+  skuAttributesBulk: SkuAttributesBulk | undefined,
+  skuCode: string,
+  legacyLongColor: string | null | undefined,
+): string {
+  return getVisibleColorLabels(skuAttributesBulk, skuCode, legacyLongColor).join(' ')
+}
 
 export interface ResultFamilyScope {
   familyCodes: string[]
@@ -850,6 +879,37 @@ export default function ChangeSkuAttributesPage() {
       width: 110,
       sorter: (a: EnrichedSku, b: EnrichedSku) => (a.colorCode ?? '').localeCompare(b.colorCode ?? ''),
       render: (v: string | null) => formatPlainValue(v),
+    },
+    {
+      title: 'Color Label',
+      key: 'colorLabel',
+      width: 160,
+      sorter: (a: EnrichedSku, b: EnrichedSku) =>
+        getColorLabelSortText(skuAttributesBulk, a.code, a.longColor).localeCompare(
+          getColorLabelSortText(skuAttributesBulk, b.code, b.longColor),
+        ),
+      render: (_: unknown, r: EnrichedSku) => {
+        const colorValues =
+          skuAttributesBulk?.bySku[r.code]?.byDimension[COLOR_ATTRIBUTE_DIMENSION_CODE]?.values ?? []
+        if (colorValues.length > 0) {
+          return (
+            <Space size={2} wrap>
+              {colorValues.map((value) => (
+                <Tooltip key={value.code} title={`Code: ${value.code}`}>
+                  <Tag style={{ marginInlineEnd: 0 }}>{value.labelEs || value.code}</Tag>
+                </Tooltip>
+              ))}
+            </Space>
+          )
+        }
+        const labels = getVisibleColorLabels(skuAttributesBulk, r.code, r.longColor)
+        if (labels.length > 0) return labels.join(', ')
+        return isFetchingSkuAttributesBulk ? (
+          <Typography.Text type="secondary">…</Typography.Text>
+        ) : (
+          <Typography.Text type="secondary">—</Typography.Text>
+        )
+      },
     },
     {
       title: 'Long Color',

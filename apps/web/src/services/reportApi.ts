@@ -1096,6 +1096,19 @@ export interface SkuAttributeColumns {
   extended: Record<string, string>
 }
 
+export interface SalesAnalysisAttributeDimension {
+  code: string
+  label: string
+  isMultiValue: boolean
+  sortOrder: number | null
+}
+
+export interface SalesAnalysisAttributeAssignment {
+  valueCodes: string[]
+  valueLabels: string[]
+  label: string
+}
+
 export interface SalesAnalysisRow {
   dimensionKey: string
   dimensionLabel: string | null
@@ -1125,6 +1138,8 @@ export interface SalesAnalysisRow {
   pyOnHandPctChange?: number | null
   /** Present only when the endpoint was called with includeAttributes=true. */
   attributes?: SkuAttributeColumns
+  /** Present only when SKU_DETAIL rows were enriched with attribute assignments. */
+  attributeAssignments?: Record<string, SalesAnalysisAttributeAssignment>
 }
 
 export interface SalesAnalysisReport {
@@ -1156,6 +1171,7 @@ export interface SalesAnalysisReport {
   }
   periodDays: number
   turnsRoiAnnualizer?: number
+  attributeDimensions?: SalesAnalysisAttributeDimension[]
 }
 
 export interface SalesAnalysisRequestArgs {
@@ -1436,8 +1452,8 @@ export type SalesPivotVariant =
   | 'custom'
 
 /** Dimensions selectable in the Custom Pivot builder. `category` is valid
- *  only at level 3 (narrowest grouping above SKU); level 1 and 2 take the
- *  other seven. */
+ *  below a broader level. `attribute` is a dynamic deepest level backed by
+ *  app.attribute_dimension values returned for the current report rows. */
 export type PivotDimension =
   | 'buyer'
   | 'sector'
@@ -1447,10 +1463,24 @@ export type PivotDimension =
   | 'vendor'
   | 'store'
   | 'category'
+  | 'attribute'
 
 export type SalesPivotLevels =
   | [PivotDimension, PivotDimension]
   | [PivotDimension, PivotDimension, PivotDimension]
+
+export interface SalesPivotAttributeDimension {
+  code: string
+  label: string
+  isMultiValue: boolean
+  sortOrder: number
+}
+
+export interface SalesPivotAttributeAssignment {
+  valueCodes: string[]
+  valueLabels: string[]
+  label: string
+}
 
 export interface SalesPivotLeafRow {
   storeNumber: number | null
@@ -1472,6 +1502,7 @@ export interface SalesPivotLeafRow {
   sku: string
   skuDescription: string | null
   pictureFileName?: string | null
+  attributeAssignments?: Record<string, SalesPivotAttributeAssignment>
   onHandQty: number
   onHandCostVal: number
   qtyTY: number
@@ -1502,6 +1533,7 @@ export interface SalesPivotReport {
   currentYear: number
   priorYear: number
   storeNumbers: number[]
+  attributeDimensions?: SalesPivotAttributeDimension[]
   rows: SalesPivotLeafRow[]
   totals: SalesPivotTotals
 }

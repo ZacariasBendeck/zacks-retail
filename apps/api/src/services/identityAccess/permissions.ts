@@ -1,6 +1,9 @@
 // Alphabetized by module prefix. Use string constants because Role.permissions
 // is stored as String[] and string comparison is simplest.
 export const PERMISSIONS = {
+  // activity-review
+  ACTIVITY_REVIEW_VIEW:  'activity_review.view',
+
   // accounts-receivable (future module)
   AR_POST_PAYMENT:        'accounts_receivable.post_payment',
   AR_VIEW:                'accounts_receivable.view',
@@ -71,6 +74,13 @@ export interface PermissionDefinition {
 }
 
 export const PERMISSION_CATALOG: readonly PermissionDefinition[] = [
+  {
+    key: PERMISSIONS.ACTIVITY_REVIEW_VIEW,
+    module: 'activity_review',
+    moduleLabel: 'Activity Review',
+    label: 'View activity review',
+    description: 'Review meaningful work, user actions, operational changes, and manager review status across modules.',
+  },
   {
     key: PERMISSIONS.IDENTITY_ACCESS_VIEW,
     module: 'identity_access',

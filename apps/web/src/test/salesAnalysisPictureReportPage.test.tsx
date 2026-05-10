@@ -1,9 +1,10 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { ConfigProvider } from 'antd'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import type React from 'react'
 import SalesAnalysisPictureReportPage from '../pages/salesReporting/SalesAnalysisPictureReportPage'
 import { useSalesAnalysis, useSalesDimensions } from '../hooks/useReports'
 import { useReportTemplate, useTouchReportTemplate } from '../hooks/useReportTemplates'
@@ -27,6 +28,12 @@ vi.mock('../hooks/useReportTemplates', async () => {
 
 vi.mock('../hooks/useReportRuns', () => ({
   useCreateReportRun: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
+}))
+
+vi.mock('../components/sku-link', () => ({
+  SkuLink: ({ children, skuCode }: { children: React.ReactNode; skuCode: string }) => (
+    <a href={`/products/sku/${skuCode}`}>{children}</a>
+  ),
 }))
 
 const mockUseSalesAnalysis = vi.mocked(useSalesAnalysis)
@@ -97,6 +104,10 @@ function report(): SalesAnalysisReport {
           ageDays: 90,
           extended: { material: 'PU', style: 'PLAN', color: 'N/BK', temp: 'A' },
         },
+        attributeAssignments: {
+          color: { valueCodes: ['black'], valueLabels: ['Black'], label: 'Black' },
+          heel_height: { valueCodes: ['mid'], valueLabels: ['Mid'], label: 'Mid' },
+        },
       },
     ],
     totals: {
@@ -113,12 +124,16 @@ function report(): SalesAnalysisReport {
       priorYearNetSales: null,
       pyPctChange: null,
     },
+    attributeDimensions: [
+      { code: 'color', label: 'Color', isMultiValue: false, sortOrder: 10 },
+      { code: 'heel_height', label: 'Altura del Tacon', isMultiValue: false, sortOrder: 20 },
+    ],
   }
 }
 
-function renderPage(): void {
+function renderPage(): ReturnType<typeof render> {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  render(
+  return render(
     <ConfigProvider>
       <QueryClientProvider client={qc}>
         <MemoryRouter>
@@ -179,5 +194,49 @@ describe('SalesAnalysisPictureReportPage', () => {
 
     expect(screen.queryByText('6608-BKPU')).not.toBeInTheDocument()
     expect(lastArgs).toBe(argsAfterRun)
+  })
+
+  it('keeps flat mode as default and renders attribute buckets in tree mode', async () => {
+    const user = userEvent.setup()
+    const { container } = renderPage()
+
+    expect(screen.getByRole('radio', { name: 'Flat' })).toBeChecked()
+    await user.click(screen.getByText('Tree'))
+    await user.click(screen.getByText('3'))
+    await user.click(screen.getByRole('button', { name: /Run Report/i }))
+
+    await waitFor(() => {
+      expect(lastArgs).toMatchObject({
+        dimension: 'CATEGORY',
+        reportType: 'SKU_DETAIL',
+        includeAttributes: true,
+      })
+    })
+    const argsJsonAfterRun = JSON.stringify(lastArgs)
+    expect(argsJsonAfterRun).not.toContain('attributeDimension')
+    expect(argsJsonAfterRun).not.toContain('pictureMode')
+
+    const expandButtons = () => Array.from(
+      container.querySelectorAll<HTMLButtonElement>('button.ant-table-row-expand-icon'),
+    )
+    await waitFor(() => expect(expandButtons().length).toBeGreaterThan(0))
+    for (let i = 0; i < 4 && !screen.queryByText('Black'); i += 1) {
+      const next = expandButtons().find((button) => button.className.includes('collapsed'))
+      if (!next) break
+      await user.click(next)
+    }
+
+    await waitFor(() => {
+      expect(screen.getByText('Black')).toBeInTheDocument()
+    })
+
+    const selector = screen.getAllByLabelText('Attribute dimension')[0]!.closest('.ant-select')!
+    fireEvent.mouseDown(selector.querySelector('.ant-select-selector')!)
+    await user.click(await screen.findByText('Altura del Tacon'))
+
+    await waitFor(() => {
+      expect(screen.getByText('Mid')).toBeInTheDocument()
+    })
+    expect(JSON.stringify(lastArgs)).toBe(argsJsonAfterRun)
   })
 })

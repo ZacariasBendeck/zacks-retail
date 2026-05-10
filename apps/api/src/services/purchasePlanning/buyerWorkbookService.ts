@@ -15,7 +15,8 @@ export type BuyerCategoryStatus =
   | 'CARRYOVERS'
   | 'NEW_STYLES'
   | 'PO_LINKED'
-  | 'COMPLETE';
+  | 'COMPLETE'
+  | 'NO_BUDGET';
 
 export type PlannedStyleStatus = 'PLANNED' | 'SELECTED' | 'LINKED' | 'CANCELLED';
 export type CarryoverDecision = 'UNREVIEWED' | 'WINNER' | 'MAYBE' | 'DROP';
@@ -140,6 +141,10 @@ export interface BuyerChecklistSeasonPlan {
   cardId: string | null;
   status: BuyerCategoryStatus | null;
   updatedAt: string | null;
+  noBudgetId: string | null;
+  noBudgetNote: string | null;
+  noBudgetMarkedBy: string | null;
+  noBudgetMarkedAt: string | null;
 }
 
 export interface BuyerChecklistCategoryRow {
@@ -157,7 +162,15 @@ export interface BuyerChecklistCategoryRow {
   currentSeason: BuyerChecklistSeasonPlan;
   nextSeason: BuyerChecklistSeasonPlan;
   followingSeason: BuyerChecklistSeasonPlan;
-  action: 'START_REVIEW' | 'CONTINUE';
+  action: 'START_REVIEW' | 'CONTINUE' | 'NO_BUDGET';
+}
+
+export interface BuyerNoBudgetCategoryResult {
+  categoryNumber: number;
+  buyingSeason: BuyerWorkbookSeason;
+  seasonYear: number;
+  status: 'NO_BUDGET' | 'REOPENED';
+  noBudgetId: string | null;
 }
 
 export interface BuyerWorkbookListItem {
@@ -983,6 +996,17 @@ async function resolveCategories(input: {
   return rows;
 }
 
+async function ensureCategoryNumbers(categoryNumbers: number[], db: DbClient = prisma): Promise<void> {
+  const uniqueCategoryNumbers = uniqueSorted(categoryNumbers);
+  if (uniqueCategoryNumbers.length === 0) {
+    throw new BuyerWorkbookServiceError(400, 'CATEGORY_REQUIRED', 'Select at least one category.');
+  }
+  const rows = await resolveCategories({ categoryNumbers: uniqueCategoryNumbers }, db);
+  if (rows.length !== uniqueCategoryNumbers.length) {
+    throw new BuyerWorkbookServiceError(404, 'CATEGORY_NOT_FOUND', 'One or more selected categories were not found.');
+  }
+}
+
 async function resolveTargetStoreIds(input: {
   explicitStoreIds?: number[];
   categoryNumbers: number[];
@@ -1011,10 +1035,12 @@ export async function listBuyerChecklistCategories(input: {
   buyer?: string | null;
   buyingSeason?: BuyerWorkbookSeason;
   seasonYear?: number;
+  includeNoBudget?: boolean;
 } = {}): Promise<BuyerChecklistCategoryRow[]> {
   const buyer = cleanText(input.buyer);
   const buyingSeason = input.buyingSeason ?? 'FALL_WINTER';
   const seasonYear = input.seasonYear ?? new Date().getFullYear();
+  const includeNoBudget = input.includeNoBudget === true;
   const seasonSeries = buyerSeasonSeries(buyingSeason, seasonYear);
   const latestMonth = await latestYearMonth();
   const fromYearMonth = shiftYearMonth(latestMonth, -11);
@@ -1142,6 +1168,39 @@ LIMIT 1000
     seasonSeries.map((season) => season.seasonYear),
   );
 
+  const noBudgetRows = categoryNumbers.length === 0 ? [] : await prisma.$queryRawUnsafe<Array<{
+    id: string;
+    categoryNumber: number;
+    buyingSeason: BuyerWorkbookSeason;
+    seasonYear: number;
+    buyerCode: string | null;
+    note: string | null;
+    markedBy: string | null;
+    markedAt: Date | string;
+    updatedAt: Date | string;
+  }>>(
+    `
+      SELECT
+        id::text,
+        category_number AS "categoryNumber",
+        buying_season AS "buyingSeason",
+        season_year AS "seasonYear",
+        buyer_code AS "buyerCode",
+        note,
+        marked_by AS "markedBy",
+        marked_at AS "markedAt",
+        updated_at AS "updatedAt"
+      FROM app.buyer_purchase_no_budget_category
+      WHERE status = 'ACTIVE'
+        AND category_number = ANY($1::int[])
+        AND buying_season = ANY($2::text[])
+        AND season_year = ANY($3::int[])
+    `,
+    categoryNumbers,
+    seasonSeries.map((season) => season.buyingSeason),
+    seasonSeries.map((season) => season.seasonYear),
+  );
+
   const otbRows = departmentNumbers.length === 0 ? [] : await prisma.$queryRawUnsafe<Array<{
     departmentNumber: number;
     openToBuyUnits: unknown;
@@ -1171,16 +1230,32 @@ LIMIT 1000
       cardId: row.cardId,
       status: row.status,
       updatedAt: toIso(row.updatedAt),
+      noBudgetId: null,
+      noBudgetNote: null,
+      noBudgetMarkedBy: null,
+      noBudgetMarkedAt: null,
     });
   }
+  const noBudgetMap = new Map(noBudgetRows.map((row) => [
+    `${row.categoryNumber}:${row.buyingSeason}:${row.seasonYear}`,
+    row,
+  ]));
   const otbMap = new Map(otbRows.map((row) => [Number(row.departmentNumber), Math.round(toNumber(row.openToBuyUnits))]));
 
-  return categoryRows.map((row) => {
+  const rows: BuyerChecklistCategoryRow[] = categoryRows.map((row) => {
     const plans = Object.fromEntries(seasonSeries.map((season) => [
       season.key,
-      planMap.get(`${row.categoryNumber}:${season.buyingSeason}:${season.seasonYear}`)
-        ?? emptySeasonPlan(season.buyingSeason, season.seasonYear),
+      mergeNoBudgetPlan(
+        planMap.get(`${row.categoryNumber}:${season.buyingSeason}:${season.seasonYear}`)
+          ?? emptySeasonPlan(season.buyingSeason, season.seasonYear),
+        noBudgetMap.get(`${row.categoryNumber}:${season.buyingSeason}:${season.seasonYear}`),
+      ),
     ])) as Pick<BuyerChecklistCategoryRow, 'currentSeason' | 'nextSeason' | 'followingSeason'>;
+    const action: BuyerChecklistCategoryRow['action'] = plans.currentSeason.status === 'NO_BUDGET'
+      ? 'NO_BUDGET'
+      : plans.currentSeason.cardId
+        ? 'CONTINUE'
+        : 'START_REVIEW';
     return {
       buyerCode: row.buyerCode,
       buyerLabel: row.buyerLabel,
@@ -1194,9 +1269,288 @@ LIMIT 1000
       currentInventoryValue: Math.round(toNumber(row.currentInventoryValue) * 100) / 100,
       departmentOtbUnits: row.departmentNumber == null ? null : otbMap.get(Number(row.departmentNumber)) ?? null,
       ...plans,
-      action: plans.currentSeason.cardId ? 'CONTINUE' : 'START_REVIEW',
+      action,
     };
   });
+  return includeNoBudget ? rows : rows.filter((row) => row.currentSeason.status !== 'NO_BUDGET');
+}
+
+export async function markBuyerChecklistCategoryNoBudget(input: {
+  categoryNumber: number;
+  buyingSeason: BuyerWorkbookSeason;
+  seasonYear: number;
+  buyer?: string | null;
+  note?: string | null;
+  actor?: string | null;
+}): Promise<BuyerNoBudgetCategoryResult> {
+  const results = await markBuyerChecklistCategoriesNoBudget({
+    categoryNumbers: [input.categoryNumber],
+    buyingSeason: input.buyingSeason,
+    seasonYear: input.seasonYear,
+    buyer: input.buyer,
+    note: input.note,
+    actor: input.actor,
+  });
+  return results[0];
+}
+
+export async function markBuyerChecklistCategoriesNoBudget(input: {
+  categoryNumbers: number[];
+  buyingSeason: BuyerWorkbookSeason;
+  seasonYear: number;
+  buyer?: string | null;
+  note?: string | null;
+  actor?: string | null;
+}): Promise<BuyerNoBudgetCategoryResult[]> {
+  const categoryNumbers = uniqueSorted(input.categoryNumbers.map((value) => Math.trunc(Number(value))));
+  const seasonYear = Math.trunc(Number(input.seasonYear));
+  const actor = cleanText(input.actor) ?? 'system';
+  const note = cleanText(input.note) ?? null;
+  if (categoryNumbers.some((categoryNumber) => !Number.isInteger(categoryNumber) || categoryNumber <= 0)) {
+    throw new BuyerWorkbookServiceError(400, 'INVALID_CATEGORY', 'categoryNumbers must be positive integers.');
+  }
+  if (!Number.isInteger(seasonYear) || seasonYear < 2020 || seasonYear > 2100) {
+    throw new BuyerWorkbookServiceError(400, 'INVALID_SEASON_YEAR', 'seasonYear must be between 2020 and 2100.');
+  }
+  await ensureCategoryNumbers(categoryNumbers);
+  const buyerCode = cleanText(input.buyer);
+  let results: BuyerNoBudgetCategoryResult[] = [];
+
+  await prisma.$transaction(async (tx) => {
+    const upserted = await tx.$queryRawUnsafe<Array<{ id: string; categoryNumber: number }>>(
+      `
+        INSERT INTO app.buyer_purchase_no_budget_category
+          (category_number, buying_season, season_year, buyer_code, note, marked_by)
+        SELECT
+          DISTINCT category_number::int,
+          $2::text,
+          $3::int,
+          $4::text,
+          $5::text,
+          $6::text
+        FROM unnest($1::int[]) AS input(category_number)
+        ON CONFLICT (category_number, buying_season, season_year)
+          WHERE status = 'ACTIVE'
+        DO UPDATE SET
+          buyer_code = COALESCE(EXCLUDED.buyer_code, app.buyer_purchase_no_budget_category.buyer_code),
+          note = CASE WHEN $7::boolean THEN EXCLUDED.note ELSE app.buyer_purchase_no_budget_category.note END,
+          marked_by = EXCLUDED.marked_by,
+          marked_at = CURRENT_TIMESTAMP,
+          updated_at = CURRENT_TIMESTAMP
+        RETURNING id::text, category_number AS "categoryNumber"
+      `,
+      categoryNumbers,
+      input.buyingSeason,
+      seasonYear,
+      buyerCode,
+      note,
+      actor,
+      input.note !== undefined,
+    );
+    results = upserted.map((row) => ({
+      categoryNumber: Number(row.categoryNumber),
+      buyingSeason: input.buyingSeason,
+      seasonYear,
+      status: 'NO_BUDGET',
+      noBudgetId: row.id,
+    }));
+
+    const beforeCards = await tx.$queryRawUnsafe<Array<{
+      workbookId: string;
+      cardId: string;
+      categoryNumber: number;
+      status: BuyerCategoryStatus;
+    }>>(
+      `
+        SELECT
+          w.id::text AS "workbookId",
+          c.id::text AS "cardId",
+          c.category_number AS "categoryNumber",
+          c.status
+        FROM app.buyer_purchase_category_card c
+        JOIN app.buyer_purchase_workbook w ON w.id = c.workbook_id
+        WHERE c.category_number = ANY($1::int[])
+          AND w.buying_season = $2::text
+          AND w.season_year = $3::int
+          AND w.status <> 'ARCHIVED'
+      `,
+      categoryNumbers,
+      input.buyingSeason,
+      seasonYear,
+    );
+
+    if (beforeCards.length > 0) {
+      await tx.$executeRawUnsafe(
+        `
+          UPDATE app.buyer_purchase_category_card c
+          SET
+            status = 'NO_BUDGET',
+            notes = CASE WHEN $4::text IS NULL THEN notes ELSE $4::text END,
+            updated_at = CURRENT_TIMESTAMP
+          FROM app.buyer_purchase_workbook w
+          WHERE c.workbook_id = w.id
+            AND c.category_number = ANY($1::int[])
+            AND w.buying_season = $2::text
+            AND w.season_year = $3::int
+            AND w.status <> 'ARCHIVED'
+        `,
+        categoryNumbers,
+        input.buyingSeason,
+        seasonYear,
+        note,
+      );
+      const workbookIds = [...new Set(beforeCards.map((row) => row.workbookId))];
+      await tx.$executeRawUnsafe(
+        `
+          UPDATE app.buyer_purchase_workbook
+          SET updated_at = CURRENT_TIMESTAMP
+          WHERE id = ANY($1::uuid[])
+        `,
+        workbookIds,
+      );
+      for (const workbookId of workbookIds) {
+        await audit(
+          tx,
+          workbookId,
+          'category_no_budget',
+          actor,
+          beforeCards.filter((row) => row.workbookId === workbookId),
+          { categoryNumbers, buyingSeason: input.buyingSeason, seasonYear, note },
+        );
+      }
+    }
+  });
+  return results;
+}
+
+export async function reopenBuyerChecklistCategoryBudget(input: {
+  categoryNumber: number;
+  buyingSeason: BuyerWorkbookSeason;
+  seasonYear: number;
+  buyer?: string | null;
+  actor?: string | null;
+}): Promise<BuyerNoBudgetCategoryResult> {
+  const results = await reopenBuyerChecklistCategoriesBudget({
+    categoryNumbers: [input.categoryNumber],
+    buyingSeason: input.buyingSeason,
+    seasonYear: input.seasonYear,
+    buyer: input.buyer,
+    actor: input.actor,
+  });
+  return results[0];
+}
+
+export async function reopenBuyerChecklistCategoriesBudget(input: {
+  categoryNumbers: number[];
+  buyingSeason: BuyerWorkbookSeason;
+  seasonYear: number;
+  buyer?: string | null;
+  actor?: string | null;
+}): Promise<BuyerNoBudgetCategoryResult[]> {
+  const categoryNumbers = uniqueSorted(input.categoryNumbers.map((value) => Math.trunc(Number(value))));
+  const seasonYear = Math.trunc(Number(input.seasonYear));
+  const actor = cleanText(input.actor) ?? 'system';
+  if (categoryNumbers.some((categoryNumber) => !Number.isInteger(categoryNumber) || categoryNumber <= 0)) {
+    throw new BuyerWorkbookServiceError(400, 'INVALID_CATEGORY', 'categoryNumbers must be positive integers.');
+  }
+  if (!Number.isInteger(seasonYear) || seasonYear < 2020 || seasonYear > 2100) {
+    throw new BuyerWorkbookServiceError(400, 'INVALID_SEASON_YEAR', 'seasonYear must be between 2020 and 2100.');
+  }
+  await ensureCategoryNumbers(categoryNumbers);
+
+  await prisma.$transaction(async (tx) => {
+    await tx.$executeRawUnsafe(
+      `
+        UPDATE app.buyer_purchase_no_budget_category
+        SET
+          status = 'REOPENED',
+          reopened_by = $4::text,
+          reopened_at = CURRENT_TIMESTAMP,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE status = 'ACTIVE'
+          AND category_number = ANY($1::int[])
+          AND buying_season = $2::text
+          AND season_year = $3::int
+      `,
+      categoryNumbers,
+      input.buyingSeason,
+      seasonYear,
+      actor,
+    );
+
+    const beforeCards = await tx.$queryRawUnsafe<Array<{
+      workbookId: string;
+      cardId: string;
+      status: BuyerCategoryStatus;
+      categoryNumber: number;
+    }>>(
+      `
+        SELECT
+          w.id::text AS "workbookId",
+          c.id::text AS "cardId",
+          c.status,
+          c.category_number AS "categoryNumber"
+        FROM app.buyer_purchase_category_card c
+        JOIN app.buyer_purchase_workbook w ON w.id = c.workbook_id
+        WHERE c.category_number = ANY($1::int[])
+          AND w.buying_season = $2::text
+          AND w.season_year = $3::int
+          AND w.status <> 'ARCHIVED'
+          AND c.status = 'NO_BUDGET'
+      `,
+      categoryNumbers,
+      input.buyingSeason,
+      seasonYear,
+    );
+
+    if (beforeCards.length > 0) {
+      await tx.$executeRawUnsafe(
+        `
+          UPDATE app.buyer_purchase_category_card c
+          SET
+            status = 'NOT_STARTED',
+            updated_at = CURRENT_TIMESTAMP
+          FROM app.buyer_purchase_workbook w
+          WHERE c.workbook_id = w.id
+            AND c.category_number = ANY($1::int[])
+            AND w.buying_season = $2::text
+            AND w.season_year = $3::int
+            AND w.status <> 'ARCHIVED'
+            AND c.status = 'NO_BUDGET'
+        `,
+        categoryNumbers,
+        input.buyingSeason,
+        seasonYear,
+      );
+      const workbookIds = [...new Set(beforeCards.map((row) => row.workbookId))];
+      await tx.$executeRawUnsafe(
+        `
+          UPDATE app.buyer_purchase_workbook
+          SET updated_at = CURRENT_TIMESTAMP
+          WHERE id = ANY($1::uuid[])
+        `,
+        workbookIds,
+      );
+      for (const workbookId of workbookIds) {
+        await audit(
+          tx,
+          workbookId,
+          'category_reopen_budget',
+          actor,
+          beforeCards.filter((row) => row.workbookId === workbookId),
+          { categoryNumbers, buyingSeason: input.buyingSeason, seasonYear, status: 'NOT_STARTED' },
+        );
+      }
+    }
+  });
+
+  return categoryNumbers.map((categoryNumber) => ({
+    categoryNumber,
+    buyingSeason: input.buyingSeason,
+    seasonYear,
+    status: 'REOPENED',
+    noBudgetId: null,
+  }));
 }
 
 async function loadHistoricalMetrics(input: {
@@ -1438,8 +1792,61 @@ function buyerSeasonSeries(buyingSeason: BuyerWorkbookSeason, seasonYear: number
   ];
 }
 
+async function findBuyerChecklistCategoryRow(input: {
+  categoryNumber: number;
+  buyingSeason: BuyerWorkbookSeason;
+  seasonYear: number;
+  buyer?: string | null;
+  includeNoBudget?: boolean;
+}): Promise<BuyerChecklistCategoryRow> {
+  const rows = await listBuyerChecklistCategories({
+    buyer: input.buyer,
+    buyingSeason: input.buyingSeason,
+    seasonYear: input.seasonYear,
+    includeNoBudget: input.includeNoBudget,
+  });
+  const row = rows.find((candidate) => candidate.categoryNumber === input.categoryNumber);
+  if (!row) {
+    throw new BuyerWorkbookServiceError(404, 'CATEGORY_NOT_FOUND', 'Category was not found in the buyer checklist.');
+  }
+  return row;
+}
+
 function emptySeasonPlan(buyingSeason: BuyerWorkbookSeason, seasonYear: number): BuyerChecklistSeasonPlan {
-  return { buyingSeason, seasonYear, workbookId: null, cardId: null, status: null, updatedAt: null };
+  return {
+    buyingSeason,
+    seasonYear,
+    workbookId: null,
+    cardId: null,
+    status: null,
+    updatedAt: null,
+    noBudgetId: null,
+    noBudgetNote: null,
+    noBudgetMarkedBy: null,
+    noBudgetMarkedAt: null,
+  };
+}
+
+function mergeNoBudgetPlan(
+  plan: BuyerChecklistSeasonPlan,
+  noBudget: {
+    id: string;
+    note: string | null;
+    markedBy: string | null;
+    markedAt: Date | string;
+    updatedAt: Date | string;
+  } | undefined,
+): BuyerChecklistSeasonPlan {
+  if (!noBudget) return plan;
+  return {
+    ...plan,
+    status: 'NO_BUDGET',
+    updatedAt: toIso(noBudget.updatedAt) ?? toIso(noBudget.markedAt),
+    noBudgetId: noBudget.id,
+    noBudgetNote: noBudget.note,
+    noBudgetMarkedBy: noBudget.markedBy,
+    noBudgetMarkedAt: toIso(noBudget.markedAt),
+  };
 }
 
 async function latestYearMonth(db: DbClient = prisma): Promise<string> {

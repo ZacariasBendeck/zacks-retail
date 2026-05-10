@@ -437,11 +437,12 @@ async function applyExtendedAttributeWrite(
   const target = await validateExtendedAttributeChange(tx, change, skus);
 
   if (change.mode === 'REPLACE') {
+    const preserveSeedKeywordRows = shouldPreserveSeedKeywordRowsOnAttributeReplace(target.isMultiValue);
     await tx.$executeRawUnsafe(
       `DELETE FROM app.sku_attribute_assignment
        WHERE dimension_id = $1
          AND sku_code = ANY($2::varchar[])
-         AND (assigned_by IS NULL OR assigned_by NOT LIKE 'seed:keyword:%')`,
+         ${preserveSeedKeywordRows ? `AND (assigned_by IS NULL OR assigned_by NOT LIKE 'seed:keyword:%')` : ''}`,
       target.dimensionId,
       skus,
     );
@@ -467,7 +468,7 @@ async function validateExtendedAttributeChange(
   tx: TxClient,
   change: Extract<AttributeChange, { type: 'CHANGE_SKU_ATTRIBUTE' }>,
   skus: string[],
-): Promise<{ dimensionId: number; valueIds: number[] }> {
+): Promise<{ dimensionId: number; isMultiValue: boolean; valueIds: number[] }> {
   const dimensionCode = change.dimensionCode.trim();
   const valueCodes = Array.from(new Set(change.valueCodes.map((v) => v.trim()).filter(Boolean)));
   if (!dimensionCode) {
@@ -525,7 +526,11 @@ async function validateExtendedAttributeChange(
     await validateFamilyScopedAttributeSkus(tx, dimensionCode, dim.familyRules, skus);
   }
 
-  return { dimensionId: dim.id, valueIds };
+  return { dimensionId: dim.id, isMultiValue: dim.isMultiValue, valueIds };
+}
+
+export function shouldPreserveSeedKeywordRowsOnAttributeReplace(isMultiValue: boolean): boolean {
+  return isMultiValue;
 }
 
 async function validateFamilyScopedAttributeSkus(

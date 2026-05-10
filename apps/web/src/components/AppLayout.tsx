@@ -104,7 +104,6 @@ const appMenuItems = [
       { key: '/admin/roles', icon: <CrownOutlined />, label: 'Roles & Permissions', requiredPermissions: ['identity_access.manage'] },
       { key: '/admin/security', icon: <AlertOutlined />, label: 'Security Center', requiredPermissions: ['identity_access.view'] },
       { key: '/admin/effective-access', icon: <AuditOutlined />, label: 'Effective Access', requiredPermissions: ['identity_access.view'] },
-      { key: '/admin/audit', icon: <AuditOutlined />, label: 'Security Audit', requiredPermissions: ['identity_access.view'] },
     ],
   },
   {
@@ -193,6 +192,7 @@ const appMenuItems = [
     icon: <AuditOutlined />,
     label: 'Operations',
     children: [
+      { key: '/operations/activity-review', icon: <AuditOutlined />, label: 'Activity Review', requiredPermissions: ['activity_review.view'] },
       { key: '/operations/inventory-close', icon: <CalendarOutlined />, label: 'Inventory Close', requiredPermissions: ['employees.manage'] },
       { key: '/operations/migration-day', icon: <SyncOutlined />, label: 'Migration Day', requiredPermissions: ['employees.manage'] },
     ],

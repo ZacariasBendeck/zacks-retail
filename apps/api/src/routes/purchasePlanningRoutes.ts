@@ -48,6 +48,10 @@ import {
   listCarryoverCandidates,
   listBuyerWorkbooks,
   listStoreCategoryCarrying,
+  markBuyerChecklistCategoriesNoBudget,
+  markBuyerChecklistCategoryNoBudget,
+  reopenBuyerChecklistCategoriesBudget,
+  reopenBuyerChecklistCategoryBudget,
   unlinkPurchaseOrder,
   updateAttributePlan,
   updateBuyerCategoryCard,
@@ -240,6 +244,7 @@ const buyerCategoryStatusSchema = z.enum([
   'NEW_STYLES',
   'PO_LINKED',
   'COMPLETE',
+  'NO_BUDGET',
 ]);
 const plannedStyleStatusSchema = z.enum(['PLANNED', 'SELECTED', 'LINKED', 'CANCELLED']);
 const buyerCarryoverDecisionSchema = z.enum(['UNREVIEWED', 'WINNER', 'MAYBE', 'DROP']);
@@ -396,6 +401,24 @@ const buyerStoreCarryingBulkSchema = z.object({
   updatedBy: z.string().trim().max(120).optional(),
 }).strict();
 
+const buyerChecklistNoBudgetSchema = z.object({
+  categoryNumber: z.number().int().positive(),
+  buyingSeason: buyerSeasonSchema,
+  seasonYear: z.number().int().min(2020).max(2100),
+  buyer: z.string().trim().max(120).nullable().optional(),
+  note: z.string().trim().max(1000).nullable().optional(),
+  actor: z.string().trim().max(120).optional(),
+}).strict();
+
+const buyerChecklistBulkNoBudgetSchema = z.object({
+  categoryNumbers: z.array(z.number().int().positive()).min(1).max(500),
+  buyingSeason: buyerSeasonSchema,
+  seasonYear: z.number().int().min(2020).max(2100),
+  buyer: z.string().trim().max(120).nullable().optional(),
+  note: z.string().trim().max(1000).nullable().optional(),
+  actor: z.string().trim().max(120).optional(),
+}).strict();
+
 router.get('/store-category-carrying', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const categoryNumber = Number(req.query.categoryNumber);
@@ -431,6 +454,7 @@ router.get('/buyer-checklist/categories', async (req: Request, res: Response, ne
     const buyer = typeof req.query.buyer === 'string' ? req.query.buyer : undefined;
     const buyingSeason = typeof req.query.buyingSeason === 'string' ? req.query.buyingSeason : undefined;
     const seasonYear = typeof req.query.seasonYear === 'string' ? Number(req.query.seasonYear) : undefined;
+    const includeNoBudget = req.query.includeNoBudget === 'true' || req.query.includeNoBudget === '1';
     if (buyingSeason && !['SPRING_SUMMER', 'FALL_WINTER'].includes(buyingSeason)) {
       sendZodError(res, [{ code: z.ZodIssueCode.custom, path: ['buyingSeason'], message: 'Invalid buying season' }]);
       return;
@@ -443,8 +467,69 @@ router.get('/buyer-checklist/categories', async (req: Request, res: Response, ne
       buyer,
       buyingSeason: buyingSeason as z.infer<typeof buyerSeasonSchema> | undefined,
       seasonYear,
+      includeNoBudget,
     });
     res.json({ rows });
+  } catch (err) {
+    if (sendBuyerWorkbookServiceError(res, err)) return;
+    next(err);
+  }
+});
+
+router.post('/buyer-checklist/categories/no-budget', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const parsed = buyerChecklistNoBudgetSchema.safeParse(req.body);
+    if (!parsed.success) {
+      sendZodError(res, parsed.error.issues);
+      return;
+    }
+    const result = await markBuyerChecklistCategoryNoBudget(parsed.data);
+    res.json({ result });
+  } catch (err) {
+    if (sendBuyerWorkbookServiceError(res, err)) return;
+    next(err);
+  }
+});
+
+router.post('/buyer-checklist/categories/no-budget/bulk', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const parsed = buyerChecklistBulkNoBudgetSchema.safeParse(req.body);
+    if (!parsed.success) {
+      sendZodError(res, parsed.error.issues);
+      return;
+    }
+    const results = await markBuyerChecklistCategoriesNoBudget(parsed.data);
+    res.json({ results });
+  } catch (err) {
+    if (sendBuyerWorkbookServiceError(res, err)) return;
+    next(err);
+  }
+});
+
+router.post('/buyer-checklist/categories/reopen', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const parsed = buyerChecklistNoBudgetSchema.omit({ note: true }).safeParse(req.body);
+    if (!parsed.success) {
+      sendZodError(res, parsed.error.issues);
+      return;
+    }
+    const result = await reopenBuyerChecklistCategoryBudget(parsed.data);
+    res.json({ result });
+  } catch (err) {
+    if (sendBuyerWorkbookServiceError(res, err)) return;
+    next(err);
+  }
+});
+
+router.post('/buyer-checklist/categories/reopen/bulk', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const parsed = buyerChecklistBulkNoBudgetSchema.omit({ note: true }).safeParse(req.body);
+    if (!parsed.success) {
+      sendZodError(res, parsed.error.issues);
+      return;
+    }
+    const results = await reopenBuyerChecklistCategoriesBudget(parsed.data);
+    res.json({ results });
   } catch (err) {
     if (sendBuyerWorkbookServiceError(res, err)) return;
     next(err);

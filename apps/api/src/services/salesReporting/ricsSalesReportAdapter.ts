@@ -38,7 +38,10 @@ import {
   type OnHandInventoryMetrics,
 } from './ricsOnHandAtCostAdapter';
 import { computeRoiTurnsGp } from './metrics';
-import { loadSkuAttributesBySku } from './skuAttributesEnricher';
+import {
+  loadSkuAttributeAssignmentsBySku,
+  loadSkuAttributesBySku,
+} from './skuAttributesEnricher';
 import {
   parseCriteria,
   matchesCriteria,
@@ -74,6 +77,7 @@ import type {
   SalesAnalysisCriteria,
   SalesAnalysisPrinting,
   SalesAnalysisRow,
+  SalesAnalysisAttributeDimension,
   SalesHierarchyReport,
   SalesHierarchyNode,
   SalesHierarchyStoreOption,
@@ -2232,18 +2236,26 @@ export async function getSalesAnalysis(params: {
   // Optional per-SKU enrichment for SKU_DETAIL runs — only attached when the
   // caller asks via includeAttributes=true (the viewer opts in; the inline
   // builder preview does not, to keep payloads small).
+  let attributeDimensions: SalesAnalysisAttributeDimension[] | undefined;
   if (params.includeAttributes && params.reportType === 'SKU_DETAIL' && rows.length > 0) {
     const skuCodes = rows.map((r) => r.dimensionKey);
     const ageStoreNumbers = params.storeOption === 'COMBINE'
       ? filteredStores
       : Array.from(new Set(rows.map((r) => r.storeNumber).filter((n): n is number => n != null)));
-    const attrsBySku = await loadSkuAttributesBySku(skuCodes, {
-      storeNumbers: ageStoreNumbers,
-      reportEndDate: endDate,
-    });
+    const [attrsBySku, attributeLoad] = await Promise.all([
+      loadSkuAttributesBySku(skuCodes, {
+        storeNumbers: ageStoreNumbers,
+        reportEndDate: endDate,
+      }),
+      loadSkuAttributeAssignmentsBySku(skuCodes),
+    ]);
+    attributeDimensions = attributeLoad.dimensions;
     for (const row of rows) {
-      const attrs = attrsBySku.get(row.dimensionKey.trim().toUpperCase());
+      const skuKey = row.dimensionKey.trim().toUpperCase();
+      const attrs = attrsBySku.get(skuKey);
       if (attrs) row.attributes = attrs;
+      const assignments = attributeLoad.assignmentsBySku.get(skuKey);
+      if (assignments) row.attributeAssignments = assignments;
     }
   }
 
@@ -2257,6 +2269,7 @@ export async function getSalesAnalysis(params: {
     totals,
     periodDays,
     turnsRoiAnnualizer: round2(effectiveTurnsRoiAnnualizer),
+    ...(attributeDimensions ? { attributeDimensions } : {}),
   };
 }
 

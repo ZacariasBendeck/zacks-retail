@@ -90,7 +90,6 @@ const ManualPage = lazy(() => import('./pages/manual/ManualPage'))
 const SalespeoplePage = lazy(() => import('./pages/employees/SalespeoplePage'))
 const UsersListPage = lazy(() => import('./pages/users/UsersListPage'))
 const UserFormPage = lazy(() => import('./pages/users/UserFormPage'))
-const PlatformAuditPage = lazy(() => import('./pages/users/PlatformAuditPage'))
 const RolePermissionsPage = lazy(() => import('./pages/users/RolePermissionsPage'))
 const EffectiveAccessPage = lazy(() => import('./pages/users/EffectiveAccessPage'))
 const SecurityCenterPage = lazy(() => import('./pages/users/SecurityCenterPage'))
@@ -141,6 +140,7 @@ const ChangeSkuAttributesPage = lazy(() => import('./pages/utilities/ChangeSkuAt
 const BatchHistoryPage = lazy(() => import('./pages/utilities/BatchHistoryPage'))
 const BatchHistoryDetailPage = lazy(() => import('./pages/utilities/BatchHistoryDetailPage'))
 const MigrationDayConsolePage = lazy(() => import('./pages/operations/MigrationDayConsolePage'))
+const ActivityReviewPage = lazy(() => import('./pages/operations/ActivityReviewPage'))
 const InventoryClosePage = lazy(() => import('./pages/operations/InventoryClosePage'))
 
 // products module — Inventory Inquiry (/inventory/inquiry now redirects here)
@@ -367,6 +367,10 @@ export default function App() {
             <Route path="/utilities/batch-history/:id" element={gate('products.write', <BatchHistoryDetailPage />)} />
             <Route path="/operations" element={<Navigate to="/operations/inventory-close" replace />} />
             <Route
+              path="/operations/activity-review"
+              element={<RequirePermission permission="activity_review.view"><ActivityReviewPage /></RequirePermission>}
+            />
+            <Route
               path="/operations/inventory-close"
               element={<RequirePermission permission="employees.manage"><InventoryClosePage /></RequirePermission>}
             />
@@ -397,7 +401,7 @@ export default function App() {
             />
             <Route
               path="/admin/audit"
-              element={<RequirePermission permission="identity_access.view"><PlatformAuditPage /></RequirePermission>}
+              element={<RequirePermission permission="activity_review.view"><Navigate to="/operations/activity-review" replace /></RequirePermission>}
             />
             <Route
               path="/admin/roles"

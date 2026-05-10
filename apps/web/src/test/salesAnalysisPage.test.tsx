@@ -1,8 +1,9 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { ConfigProvider } from 'antd'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
+import type React from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import SalesAnalysisPage from '../pages/salesReporting/SalesAnalysisPage'
 import { useSalesAnalysis, useSalesDimensions } from '../hooks/useReports'
@@ -27,6 +28,12 @@ vi.mock('../hooks/useReportTemplates', async () => {
 
 vi.mock('../hooks/useReportRuns', () => ({
   useCreateReportRun: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
+}))
+
+vi.mock('../components/sku-link', () => ({
+  SkuLink: ({ children, skuCode }: { children: React.ReactNode; skuCode: string }) => (
+    <a href={`/products/sku/${skuCode}`}>{children}</a>
+  ),
 }))
 
 const mockUseSalesAnalysis = vi.mocked(useSalesAnalysis)
@@ -89,6 +96,10 @@ function report(): SalesAnalysisReport {
           pictureUrl: '/api/rics-images/6608-BKPU.jpg',
           extended: {},
         },
+        attributeAssignments: {
+          color: { valueCodes: ['black'], valueLabels: ['Black'], label: 'Black' },
+          heel_height: { valueCodes: ['mid', 'high'], valueLabels: ['Mid', 'High'], label: 'Mid, High' },
+        },
       },
       {
         dimensionKey: '2200-BLUE',
@@ -123,6 +134,9 @@ function report(): SalesAnalysisReport {
           pictureUrl: '/api/rics-images/2200-BLUE.jpg',
           extended: {},
         },
+        attributeAssignments: {
+          color: { valueCodes: ['blue'], valueLabels: ['Blue'], label: 'Blue' },
+        },
       },
     ],
     totals: {
@@ -139,12 +153,16 @@ function report(): SalesAnalysisReport {
       priorYearNetSales: null,
       pyPctChange: null,
     },
+    attributeDimensions: [
+      { code: 'color', label: 'Color', isMultiValue: false, sortOrder: 10 },
+      { code: 'heel_height', label: 'Altura del Tacon', isMultiValue: true, sortOrder: 20 },
+    ],
   }
 }
 
-function renderPage(initialEntry = '/reports/sales/analysis'): void {
+function renderPage(initialEntry = '/reports/sales/analysis'): ReturnType<typeof render> {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  render(
+  return render(
     <ConfigProvider>
       <QueryClientProvider client={qc}>
         <MemoryRouter initialEntries={[initialEntry]}>
@@ -223,6 +241,61 @@ describe('SalesAnalysisPage', () => {
           Node.DOCUMENT_POSITION_FOLLOWING,
       ).toBeTruthy()
     })
+  })
+
+  it('renders a 3-level attribute hierarchy and switches attribute dimension without refetch args', async () => {
+    const user = userEvent.setup()
+    mockUseReportTemplate.mockReturnValue({
+      data: {
+        template: {
+          reportType: 'sales-analysis',
+          paramsJson: {
+            dateSpec: { type: 'trailing_days', days: 7 },
+            hierarchyDepth: 3,
+            level1: 'department',
+            level2: 'category',
+            level3: 'attribute',
+            attributeDimensionCode: 'color',
+            storeOption: 'COMBINE',
+          },
+        },
+      },
+    } as unknown as ReturnType<typeof useReportTemplate>)
+
+    const { container } = renderPage('/reports/sales/analysis?templateId=attr')
+
+    await waitFor(() => {
+      expect(lastArgs).toMatchObject({
+        dimension: 'CATEGORY',
+        reportType: 'SKU_DETAIL',
+        includeAttributes: true,
+      })
+    })
+    const argsJsonAfterRun = JSON.stringify(lastArgs)
+    expect(argsJsonAfterRun).not.toContain('attributeDimension')
+
+    const expandButtons = () => Array.from(
+      container.querySelectorAll<HTMLButtonElement>('button.ant-table-row-expand-icon'),
+    )
+    await waitFor(() => expect(expandButtons().length).toBeGreaterThan(0))
+    for (let i = 0; i < 4 && !screen.queryByText('Blue'); i += 1) {
+      const next = expandButtons().find((button) => button.className.includes('collapsed'))
+      if (!next) break
+      await user.click(next)
+    }
+
+    await waitFor(() => {
+      expect(screen.getByText('Blue')).toBeInTheDocument()
+    })
+
+    const selector = screen.getAllByLabelText('Attribute dimension')[0]!.closest('.ant-select')!
+    fireEvent.mouseDown(selector.querySelector('.ant-select-selector')!)
+    await user.click(await screen.findByText('Altura del Tacon'))
+
+    await waitFor(() => {
+      expect(screen.getByText('(No Altura del Tacon)')).toBeInTheDocument()
+    })
+    expect(JSON.stringify(lastArgs)).toBe(argsJsonAfterRun)
   })
 
   it('runs trailing month templates as closed calendar months', async () => {

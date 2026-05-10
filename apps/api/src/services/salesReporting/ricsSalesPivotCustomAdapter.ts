@@ -1,10 +1,11 @@
 /**
- * Custom Pivot adapter — operator picks any 3 of 8 dimensions and the tree
+ * Custom Pivot adapter — operator picks any 3 dimensions and the tree
  * renders as `<L1> → <L2> → <L3> → SKU`.
  *
  *   Allowed dimensions: buyer, sector, department, season, group, vendor,
- *   store, category. Category is valid at level 3 only (narrowest grouping
- *   above SKU); levels 1 & 2 take the other 7.
+ *   store, category, attribute. Category can sit at level 2 so operators can
+ *   run Department -> Category -> Attribute. Attribute is a dynamic deepest
+ *   level backed by app.attribute_dimension assignments.
  *
  * Store is the one dimension that splits the aggregation grain — when it
  * appears in the chosen levels the leaves are keyed by `(store, sku)`;
@@ -19,6 +20,8 @@ import { prisma } from '../../db/prisma';
 import type {
   PivotDimension,
   SalesAnalysisCriteria,
+  SalesPivotAttributeAssignment,
+  SalesPivotAttributeDimension,
   SalesPivotLevels,
   SalesPivotLeafRow,
   SalesPivotReport,
@@ -48,12 +51,16 @@ function exclusiveEnd(iso: string): string {
   return d.toISOString().slice(0, 10);
 }
 
-const L1_L2_DIMENSIONS: ReadonlySet<PivotDimension> = new Set([
+const L1_DIMENSIONS: ReadonlySet<PivotDimension> = new Set([
   'buyer', 'sector', 'department', 'season', 'group', 'vendor', 'store',
 ]);
-const L3_DIMENSIONS: ReadonlySet<PivotDimension> = new Set([
-  ...L1_L2_DIMENSIONS,
+const L2_DIMENSIONS: ReadonlySet<PivotDimension> = new Set([
+  ...L1_DIMENSIONS,
   'category',
+]);
+const L3_DIMENSIONS: ReadonlySet<PivotDimension> = new Set([
+  ...L2_DIMENSIONS,
+  'attribute',
 ]);
 
 interface SalesAggRow {
@@ -92,6 +99,15 @@ interface BuyerRow {
   sku_code: string | null;
   buyer_code: string | null;
   buyer_label: string | null;
+}
+interface AttributeAssignmentRow {
+  sku_code: string | null;
+  dimension_code: string | null;
+  dimension_label: string | null;
+  is_multi_value: boolean | null;
+  dimension_sort_order: number | null;
+  value_code: string | null;
+  value_label: string | null;
 }
 interface StoreRow { number: number | null; desc: string | null }
 interface SeasonOverlayRow { code: string; description: string | null }
@@ -243,6 +259,73 @@ async function loadBuyerForSkus(skus: string[]): Promise<BuyerRow[]> {
     `,
     skus,
   );
+}
+
+async function loadAttributeAssignmentsForSkus(skus: string[]): Promise<{
+  dimensions: SalesPivotAttributeDimension[];
+  assignmentsBySku: Map<string, Record<string, SalesPivotAttributeAssignment>>;
+}> {
+  const empty = {
+    dimensions: [] as SalesPivotAttributeDimension[],
+    assignmentsBySku: new Map<string, Record<string, SalesPivotAttributeAssignment>>(),
+  };
+  if (skus.length === 0) return empty;
+
+  const rows = await prisma.$queryRawUnsafe<AttributeAssignmentRow[]>(
+    `
+      SELECT
+        UPPER(TRIM(saa.sku_code)) AS sku_code,
+        ad.code                   AS dimension_code,
+        ad.label_es               AS dimension_label,
+        ad.is_multi_value         AS is_multi_value,
+        ad.sort_order             AS dimension_sort_order,
+        av.code                   AS value_code,
+        av.label_es               AS value_label
+      FROM app.sku_attribute_assignment saa
+      INNER JOIN app.attribute_dimension ad ON ad.id = saa.dimension_id
+      INNER JOIN app.attribute_value av ON av.id = saa.value_id
+      WHERE UPPER(TRIM(saa.sku_code)) = ANY($1::text[])
+      ORDER BY ad.sort_order, ad.label_es, av.sort_order, av.label_es
+    `,
+    skus,
+  );
+
+  const dimensionsByCode = new Map<string, SalesPivotAttributeDimension>();
+  const assignmentsBySku = new Map<string, Record<string, SalesPivotAttributeAssignment>>();
+
+  for (const row of rows) {
+    const sku = norm(row.sku_code);
+    const dimensionCode = row.dimension_code?.trim();
+    const valueCode = row.value_code?.trim();
+    const valueLabel = row.value_label?.trim();
+    if (!sku || !dimensionCode || !valueCode || !valueLabel) continue;
+
+    if (!dimensionsByCode.has(dimensionCode)) {
+      dimensionsByCode.set(dimensionCode, {
+        code: dimensionCode,
+        label: row.dimension_label?.trim() || dimensionCode,
+        isMultiValue: row.is_multi_value === true,
+        sortOrder: Number(row.dimension_sort_order ?? 0),
+      });
+    }
+
+    const skuAssignments = assignmentsBySku.get(sku) ?? {};
+    const current = skuAssignments[dimensionCode] ?? {
+      valueCodes: [],
+      valueLabels: [],
+      label: '',
+    };
+    current.valueCodes.push(valueCode);
+    current.valueLabels.push(valueLabel);
+    current.label = current.valueLabels.join(', ');
+    skuAssignments[dimensionCode] = current;
+    assignmentsBySku.set(sku, skuAssignments);
+  }
+
+  const dimensions = [...dimensionsByCode.values()]
+    .sort((a, b) => a.sortOrder - b.sortOrder || a.label.localeCompare(b.label));
+
+  return { dimensions, assignmentsBySku };
 }
 
 async function loadStores(): Promise<StoreRow[]> {
@@ -438,7 +521,11 @@ export async function getSalesPivotCustom(params: {
   }
   params.levels.forEach((level, index) => {
     const isDeepest = index === params.levels.length - 1;
-    const allowed = isDeepest ? L3_DIMENSIONS : L1_L2_DIMENSIONS;
+    const allowed = index === 0
+      ? L1_DIMENSIONS
+      : isDeepest
+        ? L3_DIMENSIONS
+        : L2_DIMENSIONS;
     if (!allowed.has(level)) {
       throw new Error(`Invalid level ${index + 1} dimension: ${level}`);
     }
@@ -490,9 +577,16 @@ export async function getSalesPivotCustom(params: {
     if (k) skuSet.add(k);
   }
   const skus = [...skuSet];
-  const [masters, buyers] = await Promise.all([
+  const includeAttributeLevel = set.has('attribute');
+  const [masters, buyers, attributeLoad] = await Promise.all([
     loadMasterForSkus(skus),
     loadBuyerForSkus(skus),
+    includeAttributeLevel
+      ? loadAttributeAssignmentsForSkus(skus)
+      : Promise.resolve({
+          dimensions: [] as SalesPivotAttributeDimension[],
+          assignmentsBySku: new Map<string, Record<string, SalesPivotAttributeAssignment>>(),
+        }),
   ]);
 
   const masterBySku = new Map<string, MasterRow>();
@@ -611,6 +705,9 @@ export async function getSalesPivotCustom(params: {
       sku: leaf.sku,
       skuDescription: m?.desc?.trim() || null,
       pictureFileName: m?.picture_file_name?.trim() || null,
+      ...(includeAttributeLevel
+        ? { attributeAssignments: attributeLoad.assignmentsBySku.get(leaf.sku) ?? {} }
+        : {}),
       onHandQty: leaf.onHandQty,
       onHandCostVal: leaf.onHandCostVal,
       qtyTY: leaf.qtyTY,
@@ -639,6 +736,7 @@ export async function getSalesPivotCustom(params: {
     currentYear,
     priorYear: currentYear - 1,
     storeNumbers: effectiveStoreNumbers ?? [],
+    ...(includeAttributeLevel ? { attributeDimensions: attributeLoad.dimensions } : {}),
     rows,
     totals,
   };
