@@ -175,6 +175,13 @@ describe('reportApi drill-down query mapping', () => {
       priorYear: true,
       includeAttributes: true,
       includeOnOrder: true,
+      exportLayout: 'hierarchy',
+      hierarchyDepth: 3,
+      level1: 'department',
+      level2: 'category',
+      level3: 'attribute',
+      groupOrder: 'LEFT_GROUP_ASC',
+      attributeDimensionCode: 'color',
       showPercentOfTotal: true,
     }), 'http://localhost')
 
@@ -192,6 +199,13 @@ describe('reportApi drill-down query mapping', () => {
     expect(url.searchParams.get('priorYear')).toBe('true')
     expect(url.searchParams.get('includeAttributes')).toBe('true')
     expect(url.searchParams.get('includeOnOrder')).toBe('true')
-    expect(url.searchParams.has('showPercentOfTotal')).toBe(false)
+    expect(url.searchParams.get('exportLayout')).toBe('hierarchy')
+    expect(url.searchParams.get('hierarchyDepth')).toBe('3')
+    expect(url.searchParams.get('level1')).toBe('department')
+    expect(url.searchParams.get('level2')).toBe('category')
+    expect(url.searchParams.get('level3')).toBe('attribute')
+    expect(url.searchParams.get('groupOrder')).toBe('LEFT_GROUP_ASC')
+    expect(url.searchParams.get('attributeDimensionCode')).toBe('color')
+    expect(url.searchParams.get('showPercentOfTotal')).toBe('true')
   })
 })

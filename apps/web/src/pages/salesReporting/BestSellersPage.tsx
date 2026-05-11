@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useMemo } from 'react'
+import type { ColumnsType } from 'antd/es/table'
 import {
   Alert, Button, Checkbox, InputNumber, Select, Space, Table, Spin, Tag,
 } from 'antd'
@@ -30,6 +31,10 @@ import {
   hydrateReportCriteria,
   useReportCriteria,
 } from '../../components/reports/ReportCriteriaPanel'
+import {
+  salesReportColumnGroup,
+  salesReportTableClassName,
+} from '../../components/reports/salesReportTableZones'
 
 const DIMENSION_LABELS: Record<BestSellersDimension, string> = {
   SKU: 'SKUs',
@@ -137,7 +142,7 @@ export default function BestSellersPage() {
     return data.rows.reduce((max, r) => Math.max(max, pickValue(r) ?? 0), 0)
   }, [data, sortedMetric])
 
-  const columns = [
+  const columns: ColumnsType<BestSellerRow> = [
     {
       title: 'Rank', dataIndex: 'rank', key: 'rank', width: 74, align: 'center' as const,
       render: (r: number) => <RankBadge rank={r} />,
@@ -172,6 +177,12 @@ export default function BestSellersPage() {
       align: 'right' as const,
       render: (v: number | null) => <GpBadge value={v} />,
     },
+  ]
+  const groupedColumns: ColumnsType<BestSellerRow> = [
+    salesReportColumnGroup('ranking', columns.slice(0, 1), { title: 'Rank' }),
+    salesReportColumnGroup('identity', columns.slice(1, 3), { boundary: true, title: 'Item' }),
+    salesReportColumnGroup('sales', columns.slice(3, 5), { boundary: true, title: 'Sales' }),
+    salesReportColumnGroup('profit', columns.slice(5), { boundary: true, title: 'Profitability' }),
   ]
 
   return (
@@ -344,8 +355,9 @@ export default function BestSellersPage() {
             ]}
           />
           <Table<BestSellerRow>
+            className={salesReportTableClassName()}
             dataSource={data.rows}
-            columns={columns}
+            columns={groupedColumns}
             rowKey="rank"
             size="small"
             pagination={{ pageSize: 50 }}

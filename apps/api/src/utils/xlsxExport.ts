@@ -31,6 +31,14 @@ export interface XlsxSheetSpec {
   name: string;
   columns: XlsxColumnSpec[];
   rows: Array<Record<string, unknown>>;
+  freezeHeader?: boolean;
+  autoFilter?: boolean;
+  rowOptions?: (row: Record<string, unknown>, rowIndex: number) => {
+    bold?: boolean;
+    fillColor?: string;
+    outlineLevel?: number;
+    indentByKey?: Record<string, number>;
+  } | undefined;
 }
 
 export interface XlsxExportOptions {
@@ -65,8 +73,43 @@ export async function buildXlsxBuffer(sheets: XlsxSheetSpec[]): Promise<Buffer> 
     headerRow.font = { bold: true };
     headerRow.alignment = { vertical: 'middle' };
 
-    for (const rowData of sheetSpec.rows) {
-      sheet.addRow(rowData);
+    if (sheetSpec.freezeHeader) {
+      sheet.views = [{ state: 'frozen', ySplit: 1 }];
+    }
+
+    if (sheetSpec.autoFilter) {
+      sheet.autoFilter = {
+        from: { row: 1, column: 1 },
+        to: { row: 1, column: sheetSpec.columns.length },
+      };
+    }
+
+    for (const [rowIndex, rowData] of sheetSpec.rows.entries()) {
+      const row = sheet.addRow(rowData);
+      const options = sheetSpec.rowOptions?.(rowData, rowIndex);
+      if (!options) continue;
+
+      if (options.outlineLevel != null) {
+        row.outlineLevel = options.outlineLevel;
+      }
+      if (options.bold) {
+        row.font = { ...row.font, bold: true };
+      }
+      if (options.fillColor) {
+        row.eachCell((cell) => {
+          cell.fill = {
+            type: 'pattern',
+            pattern: 'solid',
+            fgColor: { argb: options.fillColor },
+          };
+        });
+      }
+      if (options.indentByKey) {
+        for (const [key, indent] of Object.entries(options.indentByKey)) {
+          const cell = row.getCell(key);
+          cell.alignment = { ...cell.alignment, indent };
+        }
+      }
     }
 
     // Apply per-column number formats. `sheet.getColumn(key)` only works after

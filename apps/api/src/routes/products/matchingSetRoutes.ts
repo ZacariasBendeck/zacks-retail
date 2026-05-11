@@ -10,6 +10,7 @@ import {
   createPurchaseOrderFromMatchingSetPlan,
   saveMatchingSetBuyingPlan,
 } from '../../services/products/matchingSetBuyingPlanService';
+import { queryMatchingSetSalesHistory } from '../../services/products/matchingSetSalesHistoryService';
 import {
   repoHttpCode,
   repoHttpStatus,
@@ -49,6 +50,13 @@ function intParam(v: unknown): number | null {
   return Number.isInteger(n) ? n : null;
 }
 
+function numberListParam(v: unknown): number[] | null {
+  if (v === undefined) return null;
+  const parts = Array.isArray(v) ? v.flatMap((item) => String(item).split(',')) : String(v).split(',');
+  const out = [...new Set(parts.map((part) => Number(part.trim())).filter((n) => Number.isInteger(n) && n > 0))];
+  return out.length > 0 ? out : null;
+}
+
 // Type and role admin must be declared before /:id.
 router.get('/types', async (_req: Request, res: Response) => {
   send(res, await matchingSetService.listTypes());
@@ -82,6 +90,19 @@ router.get('/by-sku/:skuRef', async (req: Request, res: Response) => {
   send(res, await matchingSetService.getBySku(String(req.params.skuRef)));
 });
 
+router.get('/sales-history', async (req: Request, res: Response) => {
+  send(
+    res,
+    await queryMatchingSetSalesHistory({
+      startDate: typeof req.query.startDate === 'string' ? req.query.startDate : null,
+      endDate: typeof req.query.endDate === 'string' ? req.query.endDate : null,
+      setId: typeof req.query.setId === 'string' ? req.query.setId : null,
+      chainId: typeof req.query.chainId === 'string' ? req.query.chainId : null,
+      storeNumbers: numberListParam(req.query.storeNumbers ?? req.query.storeId),
+    }),
+  );
+});
+
 router.get('/', async (req: Request, res: Response) => {
   send(
     res,
@@ -101,6 +122,19 @@ router.get('/', async (req: Request, res: Response) => {
 
 router.post('/', async (req: Request, res: Response) => {
   send(res, await matchingSetService.create(req.body ?? {}, resolveActor(req)), 201);
+});
+
+router.get('/:id/sales-history', async (req: Request, res: Response) => {
+  send(
+    res,
+    await queryMatchingSetSalesHistory({
+      startDate: typeof req.query.startDate === 'string' ? req.query.startDate : null,
+      endDate: typeof req.query.endDate === 'string' ? req.query.endDate : null,
+      setId: String(req.params.id),
+      chainId: typeof req.query.chainId === 'string' ? req.query.chainId : null,
+      storeNumbers: numberListParam(req.query.storeNumbers ?? req.query.storeId),
+    }),
+  );
 });
 
 router.get('/:id', async (req: Request, res: Response) => {

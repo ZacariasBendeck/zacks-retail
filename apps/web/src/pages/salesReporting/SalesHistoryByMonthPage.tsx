@@ -74,6 +74,10 @@ import {
   hydrateReportCriteria,
   useReportCriteria,
 } from '../../components/reports/ReportCriteriaPanel'
+import {
+  salesReportColumnGroup,
+  salesReportTableClassName,
+} from '../../components/reports/salesReportTableZones'
 
 echarts.use([LineChart, GridComponent, TooltipComponent, LegendComponent, TitleComponent, CanvasRenderer])
 
@@ -388,91 +392,94 @@ function buildColumns(
     render: (_: unknown, row) =>
       formatMetricValue(row.metric, row.values[idx]),
   }))
-  return [
-    {
-      title: dimLabel,
-      dataIndex: 'dimLabel',
-      key: 'dimLabel',
-      fixed: 'left',
-      width: 150,
-      render: (value: string, row) => {
-        if (row.kind === 'total' && value) return <Text strong>{value}</Text>
-        if (row.kind === 'group' && value && row.hasChildren) {
-          const expanded = row.groupKey ? expandedGroups.has(row.groupKey) : false
-          return (
-            <Button
-              type="link"
-              size="small"
-              onClick={() => row.groupKey && onToggleGroup(row.groupKey)}
-              style={{ padding: 0, fontWeight: 600 }}
-            >
-              {expanded ? '- ' : '+ '}
-              {value}
-            </Button>
-          )
-        }
-        if (row.isChild && value) {
-          return (
-            <Space size={8} style={{ paddingLeft: 20 }}>
-              <ReportThumbnail
-                url={buildRicsImageUrl(row.pictureFileName)}
-                alt={row.skuCode ?? value}
-                height={28}
-                maxWidth={48}
-              />
-              {row.skuCode ? (
-                <SkuLink skuCode={row.skuCode} storeId={row.storeId}>
-                  {value}
-                </SkuLink>
-              ) : (
-                value
-              )}
-            </Space>
-          )
-        }
-        if (row.skuCode && value) {
-          return (
-            <Space size={8}>
-              <ReportThumbnail
-                url={buildRicsImageUrl(row.pictureFileName)}
-                alt={row.skuCode}
-                height={28}
-                maxWidth={48}
-              />
+  const itemColumn: ColumnsType<HistoryDisplayRow>[number] = {
+    title: dimLabel,
+    dataIndex: 'dimLabel',
+    key: 'dimLabel',
+    fixed: 'left',
+    width: 150,
+    render: (value: string, row) => {
+      if (row.kind === 'total' && value) return <Text strong>{value}</Text>
+      if (row.kind === 'group' && value && row.hasChildren) {
+        const expanded = row.groupKey ? expandedGroups.has(row.groupKey) : false
+        return (
+          <Button
+            type="link"
+            size="small"
+            onClick={() => row.groupKey && onToggleGroup(row.groupKey)}
+            style={{ padding: 0, fontWeight: 600 }}
+          >
+            {expanded ? '- ' : '+ '}
+            {value}
+          </Button>
+        )
+      }
+      if (row.isChild && value) {
+        return (
+          <Space size={8} style={{ paddingLeft: 20 }}>
+            <ReportThumbnail
+              url={buildRicsImageUrl(row.pictureFileName)}
+              alt={row.skuCode ?? value}
+              height={28}
+              maxWidth={48}
+            />
+            {row.skuCode ? (
               <SkuLink skuCode={row.skuCode} storeId={row.storeId}>
                 {value}
               </SkuLink>
-            </Space>
-          )
-        }
-        return value
-      },
+            ) : (
+              value
+            )}
+          </Space>
+        )
+      }
+      if (row.skuCode && value) {
+        return (
+          <Space size={8}>
+            <ReportThumbnail
+              url={buildRicsImageUrl(row.pictureFileName)}
+              alt={row.skuCode}
+              height={28}
+              maxWidth={48}
+            />
+            <SkuLink skuCode={row.skuCode} storeId={row.storeId}>
+              {value}
+            </SkuLink>
+          </Space>
+        )
+      }
+      return value
     },
-    {
-      title: 'Data',
-      key: 'metric',
-      fixed: 'left',
-      width: 190,
-      render: (_: unknown, row) => (
-        row.kind === 'total' || row.kind === 'group'
-          ? <Text strong>{row.metric.label}{row.isPriorYear ? ' PY' : ''}</Text>
-          : <span data-testid={`metric-row-${row.metric.key}${row.isPriorYear ? '-py' : ''}`}>
-              {row.metric.label}{row.isPriorYear ? ' PY' : ''}
-            </span>
-      ),
-    },
-    ...monthCols,
-    {
-      title: '12 Month Total',
-      dataIndex: 'total',
-      key: 'total',
-      align: 'right',
-      width: 100,
-      fixed: 'right',
-      render: (_: unknown, row) => (
-        <Text strong={row.kind === 'total'}>{formatMetricValuePrecise(row.metric, row.total)}</Text>
-      ),
-    },
+  }
+  const dataColumn: ColumnsType<HistoryDisplayRow>[number] = {
+    title: 'Data',
+    key: 'metric',
+    fixed: 'left',
+    width: 190,
+    render: (_: unknown, row) => (
+      row.kind === 'total' || row.kind === 'group'
+        ? <Text strong>{row.metric.label}{row.isPriorYear ? ' PY' : ''}</Text>
+        : <span data-testid={`metric-row-${row.metric.key}${row.isPriorYear ? '-py' : ''}`}>
+            {row.metric.label}{row.isPriorYear ? ' PY' : ''}
+          </span>
+    ),
+  }
+  const totalColumn: ColumnsType<HistoryDisplayRow>[number] = {
+    title: '12 Month Total',
+    dataIndex: 'total',
+    key: 'total',
+    align: 'right',
+    width: 100,
+    fixed: 'right',
+    render: (_: unknown, row) => (
+      <Text strong={row.kind === 'total'}>{formatMetricValuePrecise(row.metric, row.total)}</Text>
+    ),
+  }
+  return [
+    salesReportColumnGroup('identity', [itemColumn], { title: 'Item' }),
+    salesReportColumnGroup('attributes', [dataColumn], { boundary: true, title: 'Data' }),
+    salesReportColumnGroup('sales', monthCols, { boundary: true, title: 'Monthly Trend' }),
+    salesReportColumnGroup('performance', [totalColumn], { boundary: true, title: 'Total' }),
   ]
 }
 
@@ -530,6 +537,7 @@ function HistoryTable({ block, months, dimLabel, metrics, detailLevel, stickyHea
   return (
     <>
       <Table<HistoryDisplayRow>
+        className={salesReportTableClassName()}
         dataSource={rows}
         columns={columns}
         rowKey="key"

@@ -6,6 +6,7 @@ import {
   type MatchingSetMemberInput,
   type MatchingSetPatch,
   type MatchingSetRoleInput,
+  type MatchingSetSalesHistoryFilters,
   type MatchingSetTypeInput,
 } from '../services/productMatchingSetsApi'
 
@@ -56,6 +57,18 @@ export function useMatchingSetBuyingPlan(
   return useQuery({
     queryKey: ['product-matching-sets', 'buying-plan', id, params ?? {}],
     queryFn: () => productMatchingSetsApi.buyingPlan(id!, params),
+    enabled: !!id,
+    staleTime: 30_000,
+  })
+}
+
+export function useMatchingSetSalesHistory(
+  id: string | null | undefined,
+  params?: Omit<MatchingSetSalesHistoryFilters, 'setId'>,
+) {
+  return useQuery({
+    queryKey: ['product-matching-sets', 'sales-history', id, params ?? {}],
+    queryFn: () => productMatchingSetsApi.salesHistoryForSet(id!, params),
     enabled: !!id,
     staleTime: 30_000,
   })

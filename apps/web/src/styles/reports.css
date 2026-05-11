@@ -163,6 +163,39 @@
   min-height: 0;
 }
 
+.sales-analysis-table .ant-table-thead > tr > th,
+.sales-analysis-table .ant-table-tbody > tr > td,
+.sales-analysis-table .ant-table-summary > tr > td {
+  padding: 4px 4px;
+}
+
+.sales-analysis-table .ant-table-thead > tr > th {
+  font-size: 11px;
+  line-height: 1.08;
+  overflow-wrap: anywhere;
+  text-align: center;
+}
+
+.sales-analysis-table .ant-table-tbody > tr > td,
+.sales-analysis-table .ant-table-summary > tr > td {
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.sales-analysis-table .ant-table-tbody > tr.report-zebra-row > td.ant-table-cell {
+  background: #bfdbfe;
+}
+
+.sales-analysis-table .ant-table-tbody > tr.report-zebra-row:hover > td.ant-table-cell {
+  background: #a8cfff;
+}
+
+.sales-analysis-table .ant-tag {
+  line-height: 18px;
+  margin-inline-end: 0;
+  padding-inline: 4px;
+}
+
 .sales-analysis-picture-report--fullscreen {
   background: #fff;
   bottom: 0;
@@ -435,6 +468,167 @@
 .sales-by-day-layout-table .ant-table-summary > tr.sales-by-day-summary-row > td {
   border-top: 2px solid rgba(17, 24, 39, 0.26);
   font-weight: 700;
+}
+
+.sales-report-zone-table {
+  --sales-zone-divider: rgba(15, 23, 42, 0.34);
+  --sales-zone-header-text: #111827;
+  --sales-zone-identity: #f8fafc;
+  --sales-zone-identity-zebra: #e2e8f0;
+  --sales-zone-identity-hover: #d7e1ee;
+  --sales-zone-ranking: #fff4cc;
+  --sales-zone-ranking-zebra: #ffe39a;
+  --sales-zone-ranking-hover: #ffd978;
+  --sales-zone-inventory: #e7f1ff;
+  --sales-zone-inventory-zebra: #bfdbfe;
+  --sales-zone-inventory-hover: #a8cfff;
+  --sales-zone-sales: #e7f8ef;
+  --sales-zone-sales-zebra: #bbf7d0;
+  --sales-zone-sales-hover: #9fe9ba;
+  --sales-zone-profit: #e5f6f4;
+  --sales-zone-profit-zebra: #aee9e2;
+  --sales-zone-profit-hover: #8ddbd2;
+  --sales-zone-performance: #fff0db;
+  --sales-zone-performance-zebra: #fed7aa;
+  --sales-zone-performance-hover: #fdc98d;
+  --sales-zone-prior-year: #f1eafe;
+  --sales-zone-prior-year-zebra: #ddd6fe;
+  --sales-zone-prior-year-hover: #cfc4f8;
+  --sales-zone-on-order: #ffe9df;
+  --sales-zone-on-order-zebra: #fecaca;
+  --sales-zone-on-order-hover: #f9b4b4;
+  --sales-zone-status: #fce7f3;
+  --sales-zone-status-zebra: #fbcfe8;
+  --sales-zone-status-hover: #f6b8db;
+  --sales-zone-time: #eef2f7;
+  --sales-zone-time-zebra: #d6dee9;
+  --sales-zone-time-hover: #c6d1df;
+  --sales-zone-attributes: #e2f5ff;
+  --sales-zone-attributes-zebra: #bae6fd;
+  --sales-zone-attributes-hover: #9fd8f3;
+}
+
+.sales-report-zone-table .ant-table-thead > tr > th.sales-report-zone-group,
+.sales-report-zone-table .ant-table-thead > tr > th.sales-report-zone-cell {
+  color: var(--sales-zone-header-text);
+  font-weight: 700;
+  text-align: center;
+}
+
+.sales-report-zone-table .ant-table-thead > tr > th.sales-report-zone-group {
+  border-bottom-color: rgba(15, 23, 42, 0.2);
+  font-size: 11px;
+  letter-spacing: 0;
+  line-height: 1.05;
+  padding-bottom: 5px;
+  padding-top: 5px;
+  text-transform: uppercase;
+}
+
+.sales-report-zone-table .ant-table-thead > tr > th.sales-report-zone-cell {
+  border-bottom-color: rgba(15, 23, 42, 0.14);
+}
+
+.sales-report-zone-table .sales-report-zone-boundary {
+  box-shadow: inset 3px 0 0 var(--sales-zone-divider);
+}
+
+.sales-report-zone-table .ant-table-tbody > tr.report-zebra-row > td.ant-table-cell:not(.sales-report-zone-cell) {
+  background: #bfdbfe;
+}
+
+.sales-report-zone-table .ant-table-tbody > tr.report-zebra-row:hover > td.ant-table-cell:not(.sales-report-zone-cell) {
+  background: #a8cfff;
+}
+
+.sales-report-zone-table .ant-table-tbody > tr:hover > td.sales-report-zone-cell {
+  background: var(--sales-zone-hover) !important;
+}
+
+.sales-report-zone-table .ant-table-summary > tr > td.sales-report-zone-cell {
+  border-top: 2px solid rgba(15, 23, 42, 0.26);
+  font-weight: 700;
+}
+
+.sales-report-zone-table .ant-table-summary > tr > td.sales-report-zone-cell > div {
+  background: var(--sales-zone-zebra) !important;
+}
+
+.sales-report-zone-table .sales-report-zone-identity {
+  --sales-zone-bg: var(--sales-zone-identity);
+  --sales-zone-zebra: var(--sales-zone-identity-zebra);
+  --sales-zone-hover: var(--sales-zone-identity-hover);
+}
+
+.sales-report-zone-table .sales-report-zone-ranking {
+  --sales-zone-bg: var(--sales-zone-ranking);
+  --sales-zone-zebra: var(--sales-zone-ranking-zebra);
+  --sales-zone-hover: var(--sales-zone-ranking-hover);
+}
+
+.sales-report-zone-table .sales-report-zone-inventory {
+  --sales-zone-bg: var(--sales-zone-inventory);
+  --sales-zone-zebra: var(--sales-zone-inventory-zebra);
+  --sales-zone-hover: var(--sales-zone-inventory-hover);
+}
+
+.sales-report-zone-table .sales-report-zone-sales {
+  --sales-zone-bg: var(--sales-zone-sales);
+  --sales-zone-zebra: var(--sales-zone-sales-zebra);
+  --sales-zone-hover: var(--sales-zone-sales-hover);
+}
+
+.sales-report-zone-table .sales-report-zone-profit {
+  --sales-zone-bg: var(--sales-zone-profit);
+  --sales-zone-zebra: var(--sales-zone-profit-zebra);
+  --sales-zone-hover: var(--sales-zone-profit-hover);
+}
+
+.sales-report-zone-table .sales-report-zone-performance {
+  --sales-zone-bg: var(--sales-zone-performance);
+  --sales-zone-zebra: var(--sales-zone-performance-zebra);
+  --sales-zone-hover: var(--sales-zone-performance-hover);
+}
+
+.sales-report-zone-table .sales-report-zone-priorYear {
+  --sales-zone-bg: var(--sales-zone-prior-year);
+  --sales-zone-zebra: var(--sales-zone-prior-year-zebra);
+  --sales-zone-hover: var(--sales-zone-prior-year-hover);
+}
+
+.sales-report-zone-table .sales-report-zone-onOrder {
+  --sales-zone-bg: var(--sales-zone-on-order);
+  --sales-zone-zebra: var(--sales-zone-on-order-zebra);
+  --sales-zone-hover: var(--sales-zone-on-order-hover);
+}
+
+.sales-report-zone-table .sales-report-zone-status {
+  --sales-zone-bg: var(--sales-zone-status);
+  --sales-zone-zebra: var(--sales-zone-status-zebra);
+  --sales-zone-hover: var(--sales-zone-status-hover);
+}
+
+.sales-report-zone-table .sales-report-zone-time {
+  --sales-zone-bg: var(--sales-zone-time);
+  --sales-zone-zebra: var(--sales-zone-time-zebra);
+  --sales-zone-hover: var(--sales-zone-time-hover);
+}
+
+.sales-report-zone-table .sales-report-zone-attributes {
+  --sales-zone-bg: var(--sales-zone-attributes);
+  --sales-zone-zebra: var(--sales-zone-attributes-zebra);
+  --sales-zone-hover: var(--sales-zone-attributes-hover);
+}
+
+.sales-report-zone-table .ant-table-thead > tr > th.sales-report-zone-group,
+.sales-report-zone-table .ant-table-thead > tr > th.sales-report-zone-cell,
+.sales-report-zone-table .ant-table-tbody > tr > td.sales-report-zone-cell,
+.sales-report-zone-table .ant-table-summary > tr > td.sales-report-zone-cell {
+  background: var(--sales-zone-bg) !important;
+}
+
+.sales-report-zone-table .ant-table-tbody > tr.report-zebra-row > td.sales-report-zone-cell {
+  background: var(--sales-zone-zebra) !important;
 }
 
 .sales-by-day-layout-table .ant-table-summary > tr > td.sales-by-day-summary-label {

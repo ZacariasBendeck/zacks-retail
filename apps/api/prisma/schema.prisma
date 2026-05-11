@@ -1859,6 +1859,7 @@ model MatchingSetRole {
 model MatchingSet {
   id               String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   code             String               @unique(map: "matching_set_code_key")
+  displayName      String?              @map("display_name")
   setTypeCode      String               @map("set_type_code")
   setType          MatchingSetType      @relation(fields: [setTypeCode], references: [code], onDelete: Restrict, onUpdate: Cascade)
   descriptionEs    String?              @map("description_es")

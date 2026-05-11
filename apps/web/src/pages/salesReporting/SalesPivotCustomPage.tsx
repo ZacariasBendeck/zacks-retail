@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
+import type { ColumnsType } from 'antd/es/table'
 import {
   Alert, Card, Checkbox, Col, Row, Select, Space, Spin, Table, Typography,
 } from 'antd'
@@ -33,6 +34,11 @@ import {
   type SalesPivotMeasureKey,
   type SalesPivotMeasureRecord,
 } from './salesPivotParentPercentages'
+import {
+  salesReportColumnGroup,
+  salesReportSummaryCellClassName,
+  salesReportTableClassName,
+} from '../../components/reports/salesReportTableZones'
 
 const { Text } = Typography
 
@@ -606,7 +612,7 @@ export default function SalesPivotCustomPage() {
           }]
         : []
     )
-    return [
+    const rawColumns: ColumnsType<TreeNode> = [
       {
         title: 'Group',
         dataIndex: 'label',
@@ -675,6 +681,21 @@ export default function SalesPivotCustomPage() {
           ...percentColumn('profitLY', ZONE_BG.ly),
         ],
       },
+    ]
+    return [
+      salesReportColumnGroup('identity', rawColumns.slice(0, 1), { title: 'Group' }),
+      salesReportColumnGroup('inventory', (rawColumns[1] as { children: ColumnsType<TreeNode> }).children, {
+        boundary: true,
+        title: 'On Hand',
+      }),
+      salesReportColumnGroup('sales', (rawColumns[2] as { children: ColumnsType<TreeNode> }).children, {
+        boundary: true,
+        title: currentYear != null ? String(currentYear) : 'This Year',
+      }),
+      salesReportColumnGroup('priorYear', (rawColumns[3] as { children: ColumnsType<TreeNode> }).children, {
+        boundary: true,
+        title: priorYear != null ? String(priorYear) : 'Prior Year',
+      }),
     ]
   }, [currentYear, parentTotalsByRowKey, priorYear, showPercentOfParent])
 
@@ -1021,6 +1042,7 @@ export default function SalesPivotCustomPage() {
             />
             <Space direction="vertical" size={8} style={{ width: '100%' }}>
               <Table<TreeNode>
+                className={salesReportTableClassName()}
                 dataSource={tree}
                 columns={columns}
                 rowKey="rowKey"
@@ -1033,16 +1055,26 @@ export default function SalesPivotCustomPage() {
                   const t = data.totals
                   let index = 1
                   const measureCells: ReactNode[] = []
+                  const summaryClassForMeasure = (key: SalesPivotMeasureKey): string => {
+                    if (key === 'onHandQty') return salesReportSummaryCellClassName('inventory', { boundary: true })
+                    if (key === 'onHandCostVal' || key === 'onHandSkuCount') return salesReportSummaryCellClassName('inventory')
+                    if (key === 'qtyTY') return salesReportSummaryCellClassName('sales', { boundary: true })
+                    if (key === 'netSalesTY') return salesReportSummaryCellClassName('sales')
+                    if (key === 'profitTY') return salesReportSummaryCellClassName('profit')
+                    if (key === 'qtyLY') return salesReportSummaryCellClassName('priorYear', { boundary: true })
+                    return salesReportSummaryCellClassName('priorYear')
+                  }
                   const addMeasureCell = (key: SalesPivotMeasureKey, content: ReactNode, value: number) => {
+                    const className = summaryClassForMeasure(key)
                     measureCells.push(
-                      <Table.Summary.Cell key={`${key}-value`} index={index} align="right">
+                      <Table.Summary.Cell key={`${key}-value`} index={index} align="right" className={className}>
                         {content}
                       </Table.Summary.Cell>,
                     )
                     index += 1
                     if (showPercentOfParent) {
                       measureCells.push(
-                        <Table.Summary.Cell key={`${key}-pct`} index={index} align="right">
+                        <Table.Summary.Cell key={`${key}-pct`} index={index} align="right" className={className}>
                           {formatParentPercent(value, value)}
                         </Table.Summary.Cell>,
                       )
@@ -1061,7 +1093,7 @@ export default function SalesPivotCustomPage() {
                   return (
                     <Table.Summary fixed>
                       <Table.Summary.Row>
-                        <Table.Summary.Cell index={0}><strong>Totals</strong></Table.Summary.Cell>
+                        <Table.Summary.Cell index={0} className={salesReportSummaryCellClassName('identity')}><strong>Totals</strong></Table.Summary.Cell>
                         {measureCells}
                       </Table.Summary.Row>
                     </Table.Summary>

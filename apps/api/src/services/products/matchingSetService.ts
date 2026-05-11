@@ -59,6 +59,7 @@ export interface MatchingSetMemberRow {
 export interface MatchingSetDetail {
   id: string;
   code: string;
+  displayName: string;
   setTypeCode: string;
   setTypeLabelEs: string;
   descriptionEs: string | null;
@@ -105,6 +106,7 @@ export interface MatchingSetListFilters {
 
 export interface MatchingSetCreateInput {
   code?: string | null;
+  displayName?: string | null;
   setTypeCode: string;
   descriptionEs?: string | null;
   vendorId?: string | null;
@@ -122,6 +124,7 @@ export interface MatchingSetCreateInput {
 }
 
 export interface MatchingSetPatchInput {
+  displayName?: string | null;
   setTypeCode?: string;
   descriptionEs?: string | null;
   vendorId?: string | null;
@@ -192,6 +195,97 @@ function asNumber(v: unknown): number {
 
 function sellMode(v: unknown): 'separates' | 'bundle_required' {
   return v === 'bundle_required' ? 'bundle_required' : 'separates';
+}
+
+function matchingSetTypeName(setTypeCode: string, setTypeLabelEs?: string | null): string {
+  if (setTypeCode === 'suit') return 'Suit';
+  if (setTypeCode === 'bikini') return 'Bikini';
+  if (setTypeCode === 'pj_set') return 'Pajama';
+  if (setTypeCode === 'coordinate') return 'Coordinate';
+  return setTypeLabelEs ?? 'Set';
+}
+
+function styleFromSkuCode(skuCode: string | null | undefined): string | null {
+  const code = cleanText(skuCode);
+  if (!code) return null;
+  return cleanText(code.split('-')[0]);
+}
+
+function colorCodeLabel(code: string | null | undefined): string | null {
+  const c = cleanText(code)?.toUpperCase();
+  if (!c) return null;
+  const labels: Record<string, string> = {
+    BK: 'Black',
+    BLK: 'Black',
+    NV: 'Navy',
+    NAVY: 'Navy',
+    BG: 'Beige',
+    BR: 'Brown',
+    BN: 'Brown',
+    WH: 'White',
+    WT: 'White',
+    GY: 'Gray',
+    GRY: 'Gray',
+    RD: 'Red',
+    GN: 'Green',
+    GR: 'Green',
+    BL: 'Blue',
+  };
+  return labels[c] ?? cleanText(code);
+}
+
+function colorCodeFromSkuCode(skuCode: string | null | undefined): string | null {
+  const code = cleanText(skuCode);
+  if (!code || !code.includes('-')) return null;
+  const parts = code.split('-').filter(Boolean);
+  return cleanText(parts[parts.length - 1]);
+}
+
+function suggestedDisplayName(input: {
+  setTypeCode: string;
+  setTypeLabelEs?: string | null;
+  vendorId?: string | null;
+  vendorStyle?: string | null;
+  sharedColorCode?: string | null;
+  sharedColorLabel?: string | null;
+  primarySkuCode?: string | null;
+}): string {
+  const style = cleanText(input.vendorStyle) ?? styleFromSkuCode(input.primarySkuCode);
+  const color = cleanText(input.sharedColorLabel)
+    ?? colorCodeLabel(input.sharedColorCode)
+    ?? colorCodeLabel(colorCodeFromSkuCode(input.primarySkuCode));
+  return [
+    matchingSetTypeName(input.setTypeCode, input.setTypeLabelEs),
+    cleanText(input.vendorId),
+    style,
+    color,
+  ].filter((part): part is string => Boolean(part)).join(' - ');
+}
+
+function matchesListQuery(set: MatchingSetDetail, query: string): boolean {
+  const q = query.toLowerCase();
+  const values = [
+    set.displayName,
+    set.code,
+    set.descriptionEs,
+    set.setTypeLabelEs,
+    set.vendorId,
+    set.vendorName,
+    set.vendorStyle,
+    set.materialCode,
+    set.materialLabel,
+    set.sharedColorCode,
+    set.sharedColorLabel,
+    set.season,
+    ...set.members.flatMap((member) => [
+      member.skuCode,
+      member.provisionalCode,
+      member.vendorSku,
+      member.description,
+      member.colorCode,
+    ]),
+  ];
+  return values.some((value) => value != null && String(value).toLowerCase().includes(q));
 }
 
 function defaultQuantityRatio(setTypeCode: string, roleCode: string, value: number | null | undefined): number {
@@ -285,7 +379,7 @@ async function ensureRole(
 async function resolveSkuRef(
   tx: Tx,
   ref: { skuId?: string | null; skuCode?: string | null; provisionalCode?: string | null } | string,
-): Promise<{ ok: true; skuId: string } | { ok: false; error: RepoError }> {
+): Promise<{ ok: true; skuId: string; skuCode: string | null } | { ok: false; error: RepoError }> {
   const raw =
     typeof ref === 'string'
       ? ref
@@ -304,11 +398,11 @@ async function resolveSkuRef(
         ],
       };
 
-  const sku = await tx.sku.findFirst({ where, select: { id: true } });
+  const sku = await tx.sku.findFirst({ where, select: { id: true, code: true, provisionalCode: true } });
   if (!sku) {
     return { ok: false, error: { kind: 'NotFound', message: `SKU '${value}' was not found.` } };
   }
-  return { ok: true, skuId: sku.id };
+  return { ok: true, skuId: sku.id, skuCode: sku.code ?? sku.provisionalCode };
 }
 
 async function stockSummary(skuIds: string[]): Promise<Map<string, { onHandTotal: number; storeCountWithOnHand: number }>> {
@@ -363,6 +457,7 @@ type DetailRow = Prisma.MatchingSetGetPayload<{
 }>;
 
 interface MatchingSetPlanningFields {
+  displayName: string | null;
   materialCode: string | null;
   materialLabel: string | null;
   chainId: string | null;
@@ -373,6 +468,7 @@ interface MatchingSetPlanningFields {
 
 async function loadPlanningFields(id: string): Promise<MatchingSetPlanningFields> {
   const rows = await prisma.$queryRawUnsafe<Array<{
+    display_name: string | null;
     material_code: string | null;
     material_label: string | null;
     chain_id: string | null;
@@ -382,6 +478,7 @@ async function loadPlanningFields(id: string): Promise<MatchingSetPlanningFields
   }>>(
     `
       SELECT
+        s.display_name,
         s.material_code,
         s.material_label,
         s.chain_id,
@@ -397,6 +494,7 @@ async function loadPlanningFields(id: string): Promise<MatchingSetPlanningFields
   );
   const row = rows[0];
   return {
+    displayName: row?.display_name ?? null,
     materialCode: row?.material_code ?? null,
     materialLabel: row?.material_label ?? null,
     chainId: row?.chain_id ?? null,
@@ -437,6 +535,61 @@ async function writePlanningFields(
     `UPDATE app.matching_set SET ${sets.join(', ')} WHERE id = $${values.length}::uuid`,
     ...values,
   );
+}
+
+async function writeDisplayName(tx: Tx, id: string, displayName: string | null): Promise<void> {
+  await tx.$executeRawUnsafe(
+    'UPDATE app.matching_set SET display_name = $1::text WHERE id = $2::uuid',
+    cleanText(displayName),
+    id,
+  );
+}
+
+async function suggestDisplayNameForExistingSet(tx: Tx, id: string): Promise<string> {
+  const rows = await tx.$queryRawUnsafe<Array<{
+    set_type_code: string;
+    set_type_label_es: string | null;
+    vendor_id: string | null;
+    vendor_style: string | null;
+    shared_color_code: string | null;
+    shared_color_label: string | null;
+    primary_sku_code: string | null;
+  }>>(
+    `
+      SELECT
+        s.set_type_code,
+        t.label_es AS set_type_label_es,
+        s.vendor_id,
+        s.vendor_style,
+        s.shared_color_code,
+        s.shared_color_label,
+        pm.sku_code AS primary_sku_code
+      FROM app.matching_set s
+      LEFT JOIN app.matching_set_type t ON t.code = s.set_type_code
+      LEFT JOIN LATERAL (
+        SELECT COALESCE(k.code, k.provisional_code) AS sku_code
+        FROM app.matching_set_member m
+        JOIN app.sku k ON k.id = m.sku_id
+        WHERE m.set_id = s.id
+        ORDER BY m.is_primary DESC, m.added_at ASC
+        LIMIT 1
+      ) pm ON true
+      WHERE s.id = $1::uuid
+      LIMIT 1
+    `,
+    id,
+  );
+  const row = rows[0];
+  if (!row) return 'Set';
+  return suggestedDisplayName({
+    setTypeCode: row.set_type_code,
+    setTypeLabelEs: row.set_type_label_es,
+    vendorId: row.vendor_id,
+    vendorStyle: row.vendor_style,
+    sharedColorCode: row.shared_color_code,
+    sharedColorLabel: row.shared_color_label,
+    primarySkuCode: row.primary_sku_code,
+  });
 }
 
 async function mapDetail(row: DetailRow): Promise<MatchingSetDetail> {
@@ -501,9 +654,19 @@ async function mapDetail(row: DetailRow): Promise<MatchingSetDetail> {
     .sort((a, b) => Number(b.isPrimary) - Number(a.isPrimary) || a.roleCode.localeCompare(b.roleCode));
 
   const salesValues = members.map((m) => m.salesLast90Days).filter((v): v is number => v != null);
+  const primaryMember = members.find((m) => m.isPrimary) ?? members[0] ?? null;
   return {
     id: row.id,
     code: row.code,
+    displayName: planning.displayName ?? suggestedDisplayName({
+      setTypeCode: row.setTypeCode,
+      setTypeLabelEs: row.setType.labelEs,
+      vendorId: row.vendorId,
+      vendorStyle: row.vendorStyle,
+      sharedColorCode: row.sharedColorCode,
+      sharedColorLabel: row.sharedColorLabel,
+      primarySkuCode: primaryMember?.skuCode ?? primaryMember?.provisionalCode ?? null,
+    }),
     setTypeCode: row.setTypeCode,
     setTypeLabelEs: row.setType.labelEs,
     descriptionEs: row.descriptionEs,
@@ -654,6 +817,7 @@ export const matchingSetService = {
     try {
       const page = Math.max(1, filters.page ?? 1);
       const pageSize = Math.min(100, Math.max(1, filters.pageSize ?? 50));
+      const query = cleanText(filters.q);
       const and: Prisma.MatchingSetWhereInput[] = [];
       if (filters.active != null) and.push({ active: filters.active });
       if (filters.setType) and.push({ setTypeCode: filters.setType });
@@ -675,25 +839,6 @@ export const matchingSetService = {
           },
         });
       }
-      if (filters.q) {
-        const q = filters.q.trim();
-        and.push({
-          OR: [
-            { code: { contains: q, mode: 'insensitive' } },
-            { descriptionEs: { contains: q, mode: 'insensitive' } },
-            { vendorStyle: { contains: q, mode: 'insensitive' } },
-            { materialCode: { contains: q, mode: 'insensitive' } },
-            { materialLabel: { contains: q, mode: 'insensitive' } },
-            { sharedColorCode: { contains: q, mode: 'insensitive' } },
-            { sharedColorLabel: { contains: q, mode: 'insensitive' } },
-            { vendor: { shortName: { contains: q, mode: 'insensitive' } } },
-            { vendor: { mailName: { contains: q, mode: 'insensitive' } } },
-            { members: { some: { sku: { code: { contains: q, mode: 'insensitive' } } } } },
-            { members: { some: { sku: { provisionalCode: { contains: q, mode: 'insensitive' } } } } },
-            { members: { some: { sku: { vendorSku: { contains: q, mode: 'insensitive' } } } } },
-          ],
-        });
-      }
 
       const rows = await prisma.matchingSet.findMany({
         where: and.length > 0 ? { AND: and } : undefined,
@@ -706,13 +851,15 @@ export const matchingSetService = {
           },
         },
         orderBy: [{ active: 'desc' }, { updatedAt: 'desc' }],
-        skip: (page - 1) * pageSize,
-        take: pageSize,
+        skip: query ? undefined : (page - 1) * pageSize,
+        take: query ? undefined : pageSize,
       });
 
       const mapped = await Promise.all(rows.map(mapDetail));
-      const filtered = filters.hasGap == null ? mapped : mapped.filter((d) => (d.gaps.length > 0) === filters.hasGap);
-      return Ok(filtered.map((d) => ({
+      const queryFiltered = query ? mapped.filter((d) => matchesListQuery(d, query)) : mapped;
+      const filtered = filters.hasGap == null ? queryFiltered : queryFiltered.filter((d) => (d.gaps.length > 0) === filters.hasGap);
+      const paged = query ? filtered.slice((page - 1) * pageSize, page * pageSize) : filtered;
+      return Ok(paged.map((d) => ({
         ...d,
         primaryMember: d.members.find((m) => m.isPrimary) ?? d.members[0] ?? null,
       })));
@@ -781,6 +928,8 @@ export const matchingSetService = {
         });
         await writePlanningFields(tx, set.id, input, 'create');
 
+        let primarySkuCode: string | null = null;
+        let firstSkuCode: string | null = null;
         for (let i = 0; i < members.length; i++) {
           const member = members[i];
           const roleCode = cleanCode(member.roleCode);
@@ -789,6 +938,8 @@ export const matchingSetService = {
           if (!role.ok) return role;
           const sku = await resolveSkuRef(tx, member);
           if (!sku.ok) return sku;
+          firstSkuCode ??= sku.skuCode;
+          if (member.isPrimary === true || (members.length === 1 && i === 0)) primarySkuCode = sku.skuCode;
           await tx.matchingSetMember.create({
             data: {
               setId: set.id,
@@ -801,6 +952,14 @@ export const matchingSetService = {
             },
           });
         }
+        await writeDisplayName(tx, set.id, cleanText(input.displayName) ?? suggestedDisplayName({
+          setTypeCode,
+          vendorId: input.vendorId,
+          vendorStyle: input.vendorStyle,
+          sharedColorCode: input.sharedColorCode,
+          sharedColorLabel: input.sharedColorLabel,
+          primarySkuCode: primarySkuCode ?? firstSkuCode,
+        }));
         return { ok: true as const, id: set.id };
       });
       if (!result.ok) return Err(result.error);
@@ -842,6 +1001,13 @@ export const matchingSetService = {
           },
         });
         await writePlanningFields(tx, id, input, 'patch');
+        if (input.displayName !== undefined) {
+          await writeDisplayName(
+            tx,
+            id,
+            cleanText(input.displayName) ?? await suggestDisplayNameForExistingSet(tx, id),
+          );
+        }
         return { ok: true as const };
       });
       if (!result.ok) return Err(result.error);

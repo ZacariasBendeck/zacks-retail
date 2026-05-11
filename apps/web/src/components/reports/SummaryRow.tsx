@@ -47,6 +47,7 @@ interface LabelCellProps {
   index: number
   colSpan?: number
   children: ReactNode
+  className?: string
   variant?: 'subtotal' | 'grand'
 }
 
@@ -59,11 +60,12 @@ export function SummaryLabelCell({
   index,
   colSpan,
   children,
+  className,
   variant = 'subtotal',
 }: LabelCellProps) {
   const style = variant === 'grand' ? grandTotalCellStyle() : subtotalCellStyle()
   return (
-    <Table.Summary.Cell index={index} colSpan={colSpan}>
+    <Table.Summary.Cell index={index} colSpan={colSpan} className={className}>
       <div style={style}>
         <Text strong={variant === 'grand'}>{children}</Text>
       </div>
@@ -74,17 +76,19 @@ export function SummaryLabelCell({
 interface NumericCellProps {
   index: number
   children: ReactNode
+  className?: string
   variant?: 'subtotal' | 'grand'
 }
 
 export function SummaryNumericCell({
   index,
   children,
+  className,
   variant = 'subtotal',
 }: NumericCellProps) {
   const style = variant === 'grand' ? grandTotalCellStyle() : subtotalCellStyle()
   return (
-    <Table.Summary.Cell index={index} align="right">
+    <Table.Summary.Cell index={index} align="right" className={className}>
       <div style={{ ...style, textAlign: 'right' }}>
         <Text strong={variant === 'grand'}>{children}</Text>
       </div>

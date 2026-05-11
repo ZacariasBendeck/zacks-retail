@@ -31,6 +31,12 @@ import { parsePositiveIntegerSelection } from '../utils/numberSelection';
 import { buildReportFilename, type ReportFilenameCriterion } from '../utils/reportFilename';
 import type { PivotDimension, SalesAnalysisCriteria, SalesPivotLevels } from '../services/salesReporting/types';
 import { resolveSharedStoreNumbers } from '../services/salesReporting/sharedReportCriteria';
+import {
+  buildSalesAnalysisHierarchyExport,
+  validateSalesAnalysisHierarchyLevels,
+  type SalesAnalysisGroupOrder,
+  type SalesAnalysisHierarchyLevels,
+} from '../services/salesReporting/salesAnalysisExportBuilder';
 
 const router: IRouter = Router();
 
@@ -67,6 +73,23 @@ const queryBoolean = z.preprocess((value) => {
   if (['false', '0', 'no', 'off'].includes(normalized)) return false;
   return value;
 }, z.boolean());
+
+const hierarchyDepthField = z.preprocess((value) => {
+  if (typeof value === 'string') return Number(value);
+  return value;
+}, z.union([z.literal(2), z.literal(3)]));
+
+const salesAnalysisHierarchyDimensionSchema = z.enum([
+  'department',
+  'category',
+  'vendor',
+  'store',
+  'store_chain',
+  'season',
+  'group',
+  'buyer',
+  'attribute',
+]);
 
 const sharedCriteriaShape = {
   stores: csvIntList,
@@ -653,6 +676,14 @@ const salesAnalysisSchema = z.object({
   // stays fast — only the full-screen viewer asks for these columns.
   includeAttributes: queryBoolean.default(false),
   includeOnOrder: queryBoolean.default(false),
+  exportLayout: z.enum(['detail', 'hierarchy']).default('detail'),
+  hierarchyDepth: hierarchyDepthField.default(2),
+  level1: salesAnalysisHierarchyDimensionSchema.default('department'),
+  level2: salesAnalysisHierarchyDimensionSchema.default('category'),
+  level3: salesAnalysisHierarchyDimensionSchema.default('attribute'),
+  groupOrder: z.enum(['NET_SALES_DESC', 'LEFT_GROUP_ASC']).default('NET_SALES_DESC'),
+  attributeDimensionCode: z.string().optional(),
+  showPercentOfTotal: queryBoolean.default(false),
   format: z.enum(['json', 'csv', 'xlsx']).default('json'),
 });
 
@@ -670,6 +701,24 @@ router.get('/sales-analysis', validateQuery(salesAnalysisSchema), async (req: Re
       });
       return;
     }
+    const hierarchyLevels = (q.hierarchyDepth === 3
+      ? [q.level1, q.level2, q.level3]
+      : [q.level1, q.level2]) as SalesAnalysisHierarchyLevels;
+    const useHierarchyExport = q.exportLayout === 'hierarchy' &&
+      q.reportType === 'SKU_DETAIL' &&
+      (q.format === 'csv' || q.format === 'xlsx');
+    if (useHierarchyExport) {
+      const hierarchyError = validateSalesAnalysisHierarchyLevels(hierarchyLevels);
+      if (hierarchyError) {
+        res.status(400).json({
+          error: {
+            code: 'VALIDATION_ERROR',
+            message: hierarchyError,
+          },
+        });
+        return;
+      }
+    }
     const scopedStores = await scopedStoreNumbersForRequest(req, res, q);
     if (scopedStores === null) return;
     const report = await getSalesAnalysis({
@@ -680,7 +729,7 @@ router.get('/sales-analysis', validateQuery(salesAnalysisSchema), async (req: Re
       printing: { wtd: q.wtd, mtd: q.mtd, std: q.std, ytd: q.ytd, priorYear: q.priorYear },
       startDate: q.startDate,
       endDate: q.endDate,
-      includeAttributes: q.includeAttributes,
+      includeAttributes: q.includeAttributes || useHierarchyExport,
       includeOnOrder: q.includeOnOrder,
     });
     const printingOptions = [
@@ -699,8 +748,43 @@ router.get('/sales-analysis', validateQuery(salesAnalysisSchema), async (req: Re
       { key: 'p', value: printingOptions },
       { key: 'attr', value: q.includeAttributes, defaultValue: false },
       { key: 'oo', value: q.includeOnOrder, defaultValue: false },
+      { key: 'layout', value: useHierarchyExport ? q.exportLayout : undefined, defaultValue: 'detail' },
+      { key: 'h', value: useHierarchyExport ? hierarchyLevels.join('_') : undefined },
+      { key: 'order', value: useHierarchyExport ? q.groupOrder : undefined, defaultValue: 'NET_SALES_DESC' },
+      { key: 'pct', value: useHierarchyExport ? q.showPercentOfTotal : undefined, defaultValue: false },
       ...sharedCriteriaFilenameParts(q, { omitStores: true }),
     ];
+    if (useHierarchyExport && q.format === 'xlsx') {
+      const groupedExport = buildSalesAnalysisHierarchyExport(report, {
+        levels: hierarchyLevels,
+        groupOrder: q.groupOrder as SalesAnalysisGroupOrder,
+        attributeDimensionCode: q.attributeDimensionCode,
+        showPercentOfTotal: q.showPercentOfTotal,
+        includeOnOrder: q.includeOnOrder,
+        priorYear: q.priorYear,
+        startDate: q.startDate,
+        endDate: q.endDate,
+      });
+      await sendXlsx(res, {
+        filename: salesExportFilename('SAR', 'xlsx', filenameCriteria),
+        sheets: groupedExport.xlsxSheets,
+      });
+      return;
+    }
+    if (useHierarchyExport && q.format === 'csv') {
+      const groupedExport = buildSalesAnalysisHierarchyExport(report, {
+        levels: hierarchyLevels,
+        groupOrder: q.groupOrder as SalesAnalysisGroupOrder,
+        attributeDimensionCode: q.attributeDimensionCode,
+        showPercentOfTotal: q.showPercentOfTotal,
+        includeOnOrder: q.includeOnOrder,
+        priorYear: q.priorYear,
+        startDate: q.startDate,
+        endDate: q.endDate,
+      });
+      sendCsv(res, groupedExport.csvHeader, groupedExport.csvRows, salesExportFilename('SAR', 'csv', filenameCriteria));
+      return;
+    }
     if (q.format === 'xlsx') {
       await sendXlsx(res, {
         filename: salesExportFilename('SAR', 'xlsx', filenameCriteria),

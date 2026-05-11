@@ -79,6 +79,7 @@ export interface MatchingSetMember {
 export interface MatchingSet {
   id: string
   code: string
+  displayName: string
   setTypeCode: string
   setTypeLabelEs: string
   descriptionEs: string | null
@@ -134,6 +135,7 @@ export interface MatchingSetMemberInput {
 
 export interface MatchingSetInput {
   code?: string | null
+  displayName?: string | null
   setTypeCode: string
   descriptionEs?: string | null
   vendorId?: string | null
@@ -264,6 +266,156 @@ export interface SavedMatchingSetBuyingPlan extends MatchingSetBuyingPlan {
   generatedPoId: string | null
 }
 
+export interface MatchingSetSalesHistoryFilters {
+  startDate?: string | null
+  endDate?: string | null
+  setId?: string | null
+  chainId?: string | null
+  storeNumbers?: number[] | null
+}
+
+export interface MatchingSetSalesHistoryRow {
+  salesMonth: string
+  storeId: number | null
+  setId: string
+  setCode: string
+  descriptionEs: string | null
+  vendorId: string | null
+  vendorName: string | null
+  vendorStyle: string | null
+  materialCode: string | null
+  materialLabel: string | null
+  sharedColorCode: string | null
+  sharedColorLabel: string | null
+  season: string | null
+  chainId: string | null
+  chainLabel: string | null
+  core2PieceSets: number
+  threePieceSets: number
+  vestAttachmentRate: number | null
+  jacketUnitsSold: number
+  pantUnitsSold: number
+  vestUnitsSold: number
+  jacketOnlyQty: number
+  pantOnlyQty: number
+  vestExtraQty: number
+  jacketReturnUnits: number
+  pantReturnUnits: number
+  vestReturnUnits: number
+  totalReturnUnits: number
+  netSales: number
+  grossMargin: number
+}
+
+export interface MatchingSetSalesHistorySizeRow {
+  salesMonth: string
+  storeId: number | null
+  setId: string
+  setCode: string
+  roleCode: string
+  roleLabelEs: string | null
+  sizeLabel: string
+  columnLabel: string
+  rowLabel: string
+  unitsSold: number
+  returnUnits: number
+  netSales: number
+  grossMargin: number
+}
+
+export interface MatchingSetSalesHistoryTotals {
+  core2PieceSets: number
+  threePieceSets: number
+  vestAttachmentRate: number | null
+  jacketUnitsSold: number
+  pantUnitsSold: number
+  vestUnitsSold: number
+  jacketOnlyQty: number
+  pantOnlyQty: number
+  vestExtraQty: number
+  totalReturnUnits: number
+  netSales: number
+  grossMargin: number
+}
+
+export type MatchingSetBuyingGuidanceAction = 'BUY_MORE' | 'DO_NOT_BUY' | 'CLEAR_EXCESS'
+
+export interface MatchingSetBuyingGuidanceRatio {
+  jacket: number
+  pant: number
+  vest: number
+  label: string
+}
+
+export interface MatchingSetBuyingGuidanceRole {
+  skuId: string
+  skuCode: string | null
+  roleCode: string
+  roleLabelEs: string
+  quantityRatio: number
+  unitsSold: number
+  returnUnits: number
+  recentSales: number
+  onHand: number
+  onOrder: number
+  weeksOfSupply: number | null
+  demandReorderQty: number
+  demandReorderCost: number
+  balancedRestockQty: number
+  balancedRestockCost: number
+  unitCost: number
+  action: MatchingSetBuyingGuidanceAction
+  note: string
+}
+
+export interface MatchingSetBuyingGuidanceSizeAction {
+  skuId: string
+  skuCode: string | null
+  roleCode: string
+  roleLabelEs: string
+  sizeLabel: string
+  columnLabel: string
+  rowLabel: string
+  unitsSold: number
+  returnUnits: number
+  recentSales: number
+  onHand: number
+  onOrder: number
+  weeksOfSupply: number | null
+  demandReorderQty: number
+  action: MatchingSetBuyingGuidanceAction
+  note: string
+}
+
+export interface MatchingSetBuyingGuidance {
+  demandLookbackWeeks: number
+  targetCoverWeeks: number
+  historicalSalesRatio: MatchingSetBuyingGuidanceRatio
+  currentInventoryRatio: MatchingSetBuyingGuidanceRatio
+  completeSetCapacity: number
+  bottleneckRoleCode: string | null
+  demandReorderUnits: number
+  demandReorderCost: number
+  balancedRestockUnits: number
+  balancedRestockCost: number
+  roles: MatchingSetBuyingGuidanceRole[]
+  sizeActions: MatchingSetBuyingGuidanceSizeAction[]
+  guidanceMessages: string[]
+}
+
+export interface MatchingSetSalesHistoryReport {
+  startDate: string
+  endDate: string
+  setId: string | null
+  chainId: string | null
+  storeNumbers: number[] | null
+  monthlyRows: MatchingSetSalesHistoryRow[]
+  rows: MatchingSetSalesHistoryRow[]
+  sizeRows: MatchingSetSalesHistorySizeRow[]
+  totals: MatchingSetSalesHistoryTotals
+  buyingGuidance: MatchingSetBuyingGuidance | null
+}
+
 function buildParams(filter?: MatchingSetListFilters): string {
   if (!filter) return ''
   const p = new URLSearchParams()
@@ -276,6 +428,19 @@ function buildParams(filter?: MatchingSetListFilters): string {
   if (filter.hasGap != null) p.set('hasGap', String(filter.hasGap))
   if (filter.page != null) p.set('page', String(filter.page))
   if (filter.pageSize != null) p.set('pageSize', String(filter.pageSize))
+  return p.toString() ? `?${p.toString()}` : ''
+}
+
+function buildSalesHistoryParams(filter?: MatchingSetSalesHistoryFilters): string {
+  if (!filter) return ''
+  const p = new URLSearchParams()
+  if (filter.startDate) p.set('startDate', filter.startDate)
+  if (filter.endDate) p.set('endDate', filter.endDate)
+  if (filter.setId) p.set('setId', filter.setId)
+  if (filter.chainId) p.set('chainId', filter.chainId)
+  if (filter.storeNumbers && filter.storeNumbers.length > 0) {
+    p.set('storeNumbers', filter.storeNumbers.join(','))
+  }
   return p.toString() ? `?${p.toString()}` : ''
 }
 
@@ -375,6 +540,14 @@ export const productMatchingSetsApi = {
     return request<{ planId: string; poId: string; poNumber: string }>(
       `${BASE}/buying-plans/${encodeURIComponent(planId)}/create-po`,
       { method: 'POST' },
+    )
+  },
+  salesHistory(filter?: MatchingSetSalesHistoryFilters): Promise<MatchingSetSalesHistoryReport> {
+    return request<MatchingSetSalesHistoryReport>(`${BASE}/sales-history${buildSalesHistoryParams(filter)}`)
+  },
+  salesHistoryForSet(id: string, filter?: Omit<MatchingSetSalesHistoryFilters, 'setId'>): Promise<MatchingSetSalesHistoryReport> {
+    return request<MatchingSetSalesHistoryReport>(
+      `${BASE}/${encodeURIComponent(id)}/sales-history${buildSalesHistoryParams(filter)}`,
     )
   },
 }

@@ -6,6 +6,11 @@ import { GpBadge, ChangePctBadge } from '../gpBadge'
 import {
   fmtMoney, fmtQty, fmtPct1, fmtPctBare1, DASH,
 } from '../../../utils/reportFormatters'
+import {
+  salesReportColumnGroup,
+  salesReportSummaryCellClassName,
+  salesReportTableClassName,
+} from '../salesReportTableZones'
 
 // Same rowKey annotation the live page uses — concatenates ancestor keys so
 // every row is unique across the tree.
@@ -70,6 +75,16 @@ export default function RenderSalesHierarchyDrillDown({ result }: { result: Sale
         ]
       : []),
   ]
+  const groupedColumns: ColumnsType<TreeRow> = [
+    salesReportColumnGroup('identity', columns.slice(0, 1), { title: 'Group' }),
+    salesReportColumnGroup('sales', columns.slice(1, 3), { boundary: true, title: 'Sales' }),
+    salesReportColumnGroup('profit', columns.slice(3, 6), { boundary: true, title: 'Profit' }),
+    salesReportColumnGroup('inventory', columns.slice(6, 7), { boundary: true, title: 'Inventory' }),
+    salesReportColumnGroup('performance', columns.slice(7, 9), { boundary: true, title: 'Performance' }),
+    ...(priorYear
+      ? [salesReportColumnGroup('priorYear', columns.slice(9), { boundary: true, title: 'Prior Year' })]
+      : []),
+  ]
 
   const t = result.totals
   return (
@@ -80,8 +95,9 @@ export default function RenderSalesHierarchyDrillDown({ result }: { result: Sale
         .hierarchy-row-category > td { background: #fdfdfd !important; }
       `}</style>
       <Table<TreeRow>
+        className={salesReportTableClassName()}
         dataSource={treeRows}
-        columns={columns}
+        columns={groupedColumns}
         rowKey="rowKey"
         size="small"
         pagination={false}
@@ -92,21 +108,21 @@ export default function RenderSalesHierarchyDrillDown({ result }: { result: Sale
           return (
             <Table.Summary fixed>
               <Table.Summary.Row>
-                <SummaryLabelCell index={0} colSpan={1} variant="grand">Totals</SummaryLabelCell>
-                <SummaryNumericCell index={1} variant="grand">{fmtQty(t.qty)}</SummaryNumericCell>
-                <SummaryNumericCell index={2} variant="grand">{fmtMoney(t.netSales)}</SummaryNumericCell>
-                <SummaryNumericCell index={3} variant="grand">{fmtMoney(t.cogs)}</SummaryNumericCell>
-                <SummaryNumericCell index={4} variant="grand">{fmtMoney(t.grossProfit)}</SummaryNumericCell>
-                <SummaryNumericCell index={5} variant="grand">{fmtPct1(t.gpPct)}</SummaryNumericCell>
-                <SummaryNumericCell index={6} variant="grand">{fmtMoney(t.onHandAtCost)}</SummaryNumericCell>
-                <SummaryNumericCell index={7} variant="grand">{fmtPctBare1(t.turns)}</SummaryNumericCell>
-                <SummaryNumericCell index={8} variant="grand">
+                <SummaryLabelCell index={0} colSpan={1} className={salesReportSummaryCellClassName('identity')} variant="grand">Totals</SummaryLabelCell>
+                <SummaryNumericCell index={1} className={salesReportSummaryCellClassName('sales', { boundary: true })} variant="grand">{fmtQty(t.qty)}</SummaryNumericCell>
+                <SummaryNumericCell index={2} className={salesReportSummaryCellClassName('sales')} variant="grand">{fmtMoney(t.netSales)}</SummaryNumericCell>
+                <SummaryNumericCell index={3} className={salesReportSummaryCellClassName('profit', { boundary: true })} variant="grand">{fmtMoney(t.cogs)}</SummaryNumericCell>
+                <SummaryNumericCell index={4} className={salesReportSummaryCellClassName('profit')} variant="grand">{fmtMoney(t.grossProfit)}</SummaryNumericCell>
+                <SummaryNumericCell index={5} className={salesReportSummaryCellClassName('profit')} variant="grand">{fmtPct1(t.gpPct)}</SummaryNumericCell>
+                <SummaryNumericCell index={6} className={salesReportSummaryCellClassName('inventory', { boundary: true })} variant="grand">{fmtMoney(t.onHandAtCost)}</SummaryNumericCell>
+                <SummaryNumericCell index={7} className={salesReportSummaryCellClassName('performance', { boundary: true })} variant="grand">{fmtPctBare1(t.turns)}</SummaryNumericCell>
+                <SummaryNumericCell index={8} className={salesReportSummaryCellClassName('performance')} variant="grand">
                   {t.roiPct == null ? DASH : `${fmtPctBare1(t.roiPct)}×`}
                 </SummaryNumericCell>
                 {priorYearCols > 0 ? (
                   <>
-                    <SummaryNumericCell index={9} variant="grand">{fmtMoney(t.priorYearNetSales)}</SummaryNumericCell>
-                    <SummaryNumericCell index={10} variant="grand">{DASH}</SummaryNumericCell>
+                    <SummaryNumericCell index={9} className={salesReportSummaryCellClassName('priorYear', { boundary: true })} variant="grand">{fmtMoney(t.priorYearNetSales)}</SummaryNumericCell>
+                    <SummaryNumericCell index={10} className={salesReportSummaryCellClassName('priorYear')} variant="grand">{DASH}</SummaryNumericCell>
                   </>
                 ) : null}
               </Table.Summary.Row>

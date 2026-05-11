@@ -5,6 +5,10 @@ import { useSearchParams } from 'react-router-dom'
 import ReportHeader from '../../components/reports/ReportHeader'
 import { useSeasonalityIndex } from '../../hooks/useReports'
 import type { DepartmentSeasonalityRow, SeasonalityMonth } from '../../services/reportApi'
+import {
+  salesReportColumnGroup,
+  salesReportTableClassName,
+} from '../../components/reports/salesReportTableZones'
 
 function currentYearMonth(): string {
   const d = new Date()
@@ -51,7 +55,7 @@ export default function SeasonalityIndexPage() {
       align: 'right' as const,
       render: (_, row) => monthCell(row.months[index] ?? { ...month, rawSalesQty: 0, index: 1 }),
     }))
-    return [
+    const baseColumns: ColumnsType<DepartmentSeasonalityRow> = [
       {
         title: 'Department',
         dataIndex: 'departmentLabel',
@@ -78,6 +82,11 @@ export default function SeasonalityIndexPage() {
         sorter: (a, b) => a.averageMonthlyQty - b.averageMonthlyQty,
       },
       ...monthColumns,
+    ]
+    return [
+      salesReportColumnGroup('identity', baseColumns.slice(0, 1), { title: 'Department' }),
+      salesReportColumnGroup('performance', baseColumns.slice(1, 3), { boundary: true, title: 'Summary' }),
+      salesReportColumnGroup('sales', monthColumns, { boundary: true, title: 'Monthly Index' }),
     ]
   }, [data?.rows])
 
@@ -133,6 +142,7 @@ export default function SeasonalityIndexPage() {
       </Space>
 
       <Table
+        className={salesReportTableClassName()}
         size="small"
         rowKey="departmentNumber"
         loading={isFetching}

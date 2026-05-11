@@ -137,7 +137,7 @@ const plan: ReorderPlan = {
       supplierUsed: true,
       supplierUsageCount: 12,
       supplierLastUsedAt: '2026-01-01T00:00:00.000Z',
-      sameSkuPreviousPack: true,
+      sameSkuPreviousPack: false,
       shortageQty: 0,
       excessQty: 2,
       differenceQty: 2,
@@ -146,6 +146,60 @@ const plan: ReorderPlan = {
         { rowLabel: '', columnLabel: '8', sizeLabel: '8', quantity: 6 },
       ],
     },
+    casePackChoices: [
+      {
+        code: 'PACK1',
+        description: 'Six pair prepack',
+        multiplier: 3,
+        unitsPerPack: 4,
+        totalUnits: 12,
+        autoApply: true,
+        overbuyQty: 2,
+        overbuyLimitQty: 4,
+        supplierUsed: true,
+        supplierUsageCount: 12,
+        supplierLastUsedAt: '2026-01-01T00:00:00.000Z',
+        sameSkuPreviousPack: false,
+        shortageQty: 0,
+        excessQty: 2,
+        differenceQty: 2,
+        categoryUsed: true,
+        categorySkuCount: 8,
+        categoryUsageCount: 15,
+        categoryLastUsedAt: '2026-03-01T00:00:00.000Z',
+        badges: ['CATEGORY_USED', 'BEST_FIT'],
+        sizeCells: [
+          { rowLabel: '', columnLabel: '7', sizeLabel: '7', quantity: 6 },
+          { rowLabel: '', columnLabel: '8', sizeLabel: '8', quantity: 6 },
+        ],
+      },
+      {
+        code: 'OLD',
+        description: 'Previous SKU pack',
+        multiplier: 2,
+        unitsPerPack: 5,
+        totalUnits: 10,
+        autoApply: true,
+        overbuyQty: 0,
+        overbuyLimitQty: 5,
+        supplierUsed: true,
+        supplierUsageCount: 2,
+        supplierLastUsedAt: '2026-01-01T00:00:00.000Z',
+        sameSkuPreviousPack: true,
+        shortageQty: 0,
+        excessQty: 0,
+        differenceQty: 0,
+        categoryUsed: true,
+        categorySkuCount: 1,
+        categoryUsageCount: 1,
+        categoryLastUsedAt: '2026-01-01T00:00:00.000Z',
+        badges: ['PREVIOUS_SKU', 'CATEGORY_USED'],
+        sizeCells: [
+          { rowLabel: '', columnLabel: '7', sizeLabel: '7', quantity: 4 },
+          { rowLabel: '', columnLabel: '8', sizeLabel: '8', quantity: 6 },
+        ],
+      },
+    ],
     sizeLines: [
       sizeLine('7', 4),
       sizeLine('8', 6),
@@ -168,7 +222,7 @@ afterEach(() => {
 })
 
 describe('ReorderPlannerModal case packs', () => {
-  it('renders a pivoted size matrix and creates the PO with case-pack quantities by default', async () => {
+  it('renders a case-pack picker and creates the PO with auto-applied pack quantities by default', async () => {
     vi.mocked(fetchInquiryReorderPlan).mockResolvedValue(plan)
     vi.mocked(createInquiryReorderDraftPo).mockResolvedValue({
       poId: 'po-1',
@@ -180,7 +234,11 @@ describe('ReorderPlannerModal case packs', () => {
 
     renderModal()
 
-    expect(await screen.findByText('PACK1')).toBeInTheDocument()
+    expect((await screen.findAllByText('PACK1')).length).toBeGreaterThan(0)
+    expect(screen.getAllByText('OLD').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Category used').length).toBeGreaterThan(0)
+    expect(screen.getByText('Previous SKU')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Selected PACK1' })).toBeInTheDocument()
     const vendorDraftLink = screen.getByRole('link', { name: /DRAFT42/ })
     expect(vendorDraftLink).toHaveAttribute('href', '/purchasing/orders/po-existing')
     expect(screen.getByText('Suggested')).toBeInTheDocument()
@@ -203,6 +261,34 @@ describe('ReorderPlannerModal case packs', () => {
     })
   })
 
+  it('lets the buyer select the previous SKU case pack before creating the PO', async () => {
+    vi.mocked(fetchInquiryReorderPlan).mockResolvedValue(plan)
+    vi.mocked(createInquiryReorderDraftPo).mockResolvedValue({
+      poId: 'po-1',
+      poNumber: 'PO999',
+      totalQuantity: 10,
+      mode: 'APPENDED',
+      appendedToExistingPo: true,
+    })
+
+    renderModal()
+
+    await screen.findAllByText('PACK1')
+    await userEvent.click(screen.getByRole('button', { name: 'Use OLD' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Add to draft PO' }))
+
+    await waitFor(() => expect(createInquiryReorderDraftPo).toHaveBeenCalled())
+    const firstPayload = vi.mocked(createInquiryReorderDraftPo).mock.calls[0]?.[1]
+    expect(firstPayload).toMatchObject({
+      casePackId: 'OLD',
+      casePackMultiplier: 2,
+      sizeCells: [
+        { rowLabel: '', columnLabel: '7', quantity: 4 },
+        { rowLabel: '', columnLabel: '8', quantity: 6 },
+      ],
+    })
+  })
+
   it('falls back to raw reorder quantities when the pack is cleared', async () => {
     vi.mocked(fetchInquiryReorderPlan).mockResolvedValue(plan)
     vi.mocked(createInquiryReorderDraftPo).mockResolvedValue({
@@ -215,7 +301,7 @@ describe('ReorderPlannerModal case packs', () => {
 
     renderModal()
 
-    await screen.findByText('PACK1')
+    await screen.findAllByText('PACK1')
     await userEvent.click(screen.getByRole('button', { name: 'Clear pack' }))
     await userEvent.click(screen.getByRole('button', { name: 'Add to draft PO' }))
 
@@ -269,9 +355,7 @@ describe('ReorderPlannerModal case packs', () => {
 
     renderModal()
 
-    expect(await screen.findByText('Not auto-applied: exceeds overbuy cap')).toBeInTheDocument()
-    expect(screen.getByText(/Used by supplier 5 times/)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Use pack' })).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'Use PACK1' })).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: 'Add to draft PO' }))
 
     await waitFor(() => expect(createInquiryReorderDraftPo).toHaveBeenCalled())

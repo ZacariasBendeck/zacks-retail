@@ -1,5 +1,6 @@
 import {
   applyOrderConstraints,
+  buildCategoryFirstCasePackChoices,
   buildReorderAppendLineItems,
   buildCasePackSuggestion,
   calculateNativeOnOrderSupplement,
@@ -331,6 +332,132 @@ describe('reorder planner case-pack suggestion', () => {
 
     expect(suggestion?.code).toBe('B');
     expect(suggestion?.sameSkuPreviousPack).toBe(true);
+  });
+
+  it('builds category-first choices with the previous SKU pack first', () => {
+    const choices = buildCategoryFirstCasePackChoices(
+      [
+        line('7', 4, 0.4),
+        line('8', 6, 0.6),
+      ],
+      [
+        pack('CAT1', [
+          { columnLabel: '7', quantity: 2 },
+          { columnLabel: '8', quantity: 3 },
+        ], {
+          categorySkuCount: 12,
+          categoryUsageCount: 20,
+          categoryLastUsedAt: '2026-04-01T00:00:00.000Z',
+        }),
+        pack('OLD', [
+          { columnLabel: '7', quantity: 1 },
+          { columnLabel: '8', quantity: 2 },
+        ], {
+          sameSkuPreviousPack: true,
+          categorySkuCount: 1,
+          categoryUsageCount: 1,
+          categoryLastUsedAt: '2026-01-01T00:00:00.000Z',
+        }),
+      ],
+    );
+
+    expect(choices.map((choice) => choice.code)).toEqual(['OLD', 'CAT1']);
+    expect(choices[0]?.badges).toContain('PREVIOUS_SKU');
+    expect(choices[1]?.badges).toContain('CATEGORY_USED');
+  });
+
+  it('excludes active packs with no category usage unless they are the previous SKU pack', () => {
+    const choices = buildCategoryFirstCasePackChoices(
+      [
+        line('7', 4, 0.4),
+        line('8', 6, 0.6),
+      ],
+      [
+        pack('UNUSED', [
+          { columnLabel: '7', quantity: 2 },
+          { columnLabel: '8', quantity: 3 },
+        ]),
+        pack('CAT1', [
+          { columnLabel: '7', quantity: 2 },
+          { columnLabel: '8', quantity: 3 },
+        ], {
+          categorySkuCount: 3,
+          categoryUsageCount: 4,
+        }),
+      ],
+    );
+
+    expect(choices.map((choice) => choice.code)).toEqual(['CAT1']);
+  });
+
+  it('ranks category packs by SKU usage, PO usage, recency, then fit', () => {
+    const choices = buildCategoryFirstCasePackChoices(
+      [
+        line('7', 4, 0.4),
+        line('8', 6, 0.6),
+      ],
+      [
+        pack('LOW', [
+          { columnLabel: '7', quantity: 2 },
+          { columnLabel: '8', quantity: 3 },
+        ], {
+          categorySkuCount: 2,
+          categoryUsageCount: 50,
+          categoryLastUsedAt: '2026-05-01T00:00:00.000Z',
+        }),
+        pack('HIGH', [
+          { columnLabel: '7', quantity: 1 },
+          { columnLabel: '8', quantity: 1 },
+        ], {
+          categorySkuCount: 5,
+          categoryUsageCount: 10,
+          categoryLastUsedAt: '2026-01-01T00:00:00.000Z',
+        }),
+        pack('MIDNEW', [
+          { columnLabel: '7', quantity: 2 },
+          { columnLabel: '8', quantity: 2 },
+        ], {
+          categorySkuCount: 2,
+          categoryUsageCount: 50,
+          categoryLastUsedAt: '2026-05-02T00:00:00.000Z',
+        }),
+      ],
+    );
+
+    expect(choices.map((choice) => choice.code)).toEqual(['HIGH', 'MIDNEW', 'LOW']);
+  });
+
+  it('marks the best fit and calculates its multiplier for the current reorder', () => {
+    const choices = buildCategoryFirstCasePackChoices(
+      [
+        line('7', 4, 0.4),
+        line('8', 6, 0.6),
+      ],
+      [
+        pack('LOOSE', [
+          { columnLabel: '7', quantity: 3 },
+          { columnLabel: '8', quantity: 3 },
+        ], {
+          categorySkuCount: 1,
+          categoryUsageCount: 1,
+        }),
+        pack('FIT', [
+          { columnLabel: '7', quantity: 2 },
+          { columnLabel: '8', quantity: 3 },
+        ], {
+          categorySkuCount: 1,
+          categoryUsageCount: 1,
+        }),
+      ],
+    );
+
+    const best = choices.find((choice) => choice.badges.includes('BEST_FIT'));
+    expect(best?.code).toBe('FIT');
+    expect(best?.multiplier).toBe(2);
+    expect(best?.sizeCells.map((cell) => [cell.columnLabel, cell.quantity])).toEqual([
+      ['7', 4],
+      ['8', 6],
+    ]);
   });
 });
 

@@ -1058,6 +1058,18 @@ export type SalesAnalysisReportType =
   | 'GROUP_SUMMARY'
   | 'SECTOR_SUMMARY'
 export type SalesAnalysisStoreOption = 'SEPARATE' | 'COMPARE' | 'COMBINE'
+export type SalesAnalysisExportLayout = 'detail' | 'hierarchy'
+export type SalesAnalysisHierarchyDimension =
+  | 'department'
+  | 'category'
+  | 'vendor'
+  | 'store'
+  | 'store_chain'
+  | 'season'
+  | 'group'
+  | 'buyer'
+  | 'attribute'
+export type SalesAnalysisGroupOrder = 'NET_SALES_DESC' | 'LEFT_GROUP_ASC'
 
 /**
  * Per-SKU attribute columns attached to SKU_DETAIL rows when the caller
@@ -1178,8 +1190,6 @@ export interface SalesAnalysisRequestArgs {
   dimension: SalesAnalysisDimension
   reportType: SalesAnalysisReportType
   storeOption?: SalesAnalysisStoreOption
-  /** UI-only hierarchy display order; not sent to the API. */
-  groupOrder?: 'NET_SALES_DESC' | 'LEFT_GROUP_ASC'
   startDate?: string
   endDate?: string
   stores?: number[]
@@ -1211,7 +1221,15 @@ export interface SalesAnalysisRequestArgs {
   includeAttributes?: boolean
   /** Request open purchase-order quantities and landed cost columns. SKU_DETAIL only. */
   includeOnOrder?: boolean
-  /** UI-only column toggle; not sent to the API. */
+  /** Export-only layout. Omitted for JSON previews and raw/detail exports. */
+  exportLayout?: SalesAnalysisExportLayout
+  hierarchyDepth?: 2 | 3
+  level1?: SalesAnalysisHierarchyDimension
+  level2?: SalesAnalysisHierarchyDimension
+  level3?: SalesAnalysisHierarchyDimension
+  groupOrder?: SalesAnalysisGroupOrder
+  attributeDimensionCode?: string
+  /** Export-only column toggle. */
   showPercentOfTotal?: boolean
   signal?: AbortSignal
 }
@@ -1254,7 +1272,19 @@ function buildSalesAnalysisParams(
   if (args.priorYear) params.set('priorYear', 'true')
   if (args.includeAttributes) params.set('includeAttributes', 'true')
   if (args.includeOnOrder) params.set('includeOnOrder', 'true')
-  if (format) params.set('format', format)
+  if (format) {
+    params.set('format', format)
+    if (args.exportLayout) params.set('exportLayout', args.exportLayout)
+    if (args.exportLayout === 'hierarchy') {
+      if (args.hierarchyDepth) params.set('hierarchyDepth', String(args.hierarchyDepth))
+      if (args.level1) params.set('level1', args.level1)
+      if (args.level2) params.set('level2', args.level2)
+      if (args.level3) params.set('level3', args.level3)
+      if (args.groupOrder) params.set('groupOrder', args.groupOrder)
+      if (args.attributeDimensionCode) params.set('attributeDimensionCode', args.attributeDimensionCode)
+      if (args.showPercentOfTotal) params.set('showPercentOfTotal', 'true')
+    }
+  }
   return params
 }
 

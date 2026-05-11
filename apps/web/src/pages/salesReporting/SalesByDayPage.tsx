@@ -61,6 +61,12 @@ import {
   hydrateReportCriteria,
   useReportCriteria,
 } from '../../components/reports/ReportCriteriaPanel'
+import {
+  groupSalesReportColumnSpecs,
+  salesReportSummaryCellClassName,
+  salesReportTableClassName,
+  type SalesReportColumnZone,
+} from '../../components/reports/salesReportTableZones'
 
 const { Text } = Typography
 
@@ -222,6 +228,28 @@ function getSalesByDayColumnTone(key: SalesByDayColumnKey): 'current' | 'compare
   }
 }
 
+function getSalesByDayColumnZone(key: SalesByDayColumnKey): SalesReportColumnZone {
+  switch (getSalesByDayColumnTone(key)) {
+    case 'current':
+      return 'time'
+    case 'compare':
+      return 'priorYear'
+    case 'change':
+      return 'performance'
+  }
+}
+
+function getSalesByDayColumnGroupTitle(key: SalesByDayColumnKey): string {
+  switch (getSalesByDayColumnTone(key)) {
+    case 'current':
+      return 'Date / Current'
+    case 'compare':
+      return 'Comparison'
+    case 'change':
+      return 'Change'
+  }
+}
+
 function withSalesByDayColumnClasses(
   column: SalesByDayTableColumn,
   key: SalesByDayColumnKey,
@@ -253,7 +281,10 @@ function withSalesByDayColumnClasses(
 }
 
 function getSalesByDaySummaryCellClasses(key: SalesByDayColumnKey, extra?: string): string {
-  const classes = [`sales-by-day-col-${getSalesByDayColumnTone(key)}`]
+  const sharedClass = salesReportSummaryCellClassName(getSalesByDayColumnZone(key), {
+    boundary: key === 'comparedToDate' || key === 'dollarChange',
+  })
+  const classes = [`sales-by-day-col-${getSalesByDayColumnTone(key)}`, sharedClass]
   if (key === 'comparedToDate' || key === 'dollarChange') classes.push('sales-by-day-col-boundary')
   if (extra) classes.push(extra)
   return classes.join(' ')
@@ -328,9 +359,13 @@ function buildSalesByDayColumns(
   layout: SalesByDayColumnLayout[],
   comparisonOffsetDays: number,
 ): TableColumnsType<SalesByDayRow> {
-  return layout
-    .filter((column) => column.visible)
-    .map((column) => {
+  const visibleColumns = layout.filter((column) => column.visible)
+  const specs = visibleColumns.map((column, index) => {
+    const previous = visibleColumns[index - 1]
+    const zone = getSalesByDayColumnZone(column.key)
+    const previousZone = previous ? getSalesByDayColumnZone(previous.key) : undefined
+    const boundary = index > 0 && zone !== previousZone
+    const columnDef = (() => {
       switch (column.key) {
         case 'date':
           return withSalesByDayColumnClasses({
@@ -453,7 +488,15 @@ function buildSalesByDayColumns(
               (a.pctChange ?? Number.POSITIVE_INFINITY) - (b.pctChange ?? Number.POSITIVE_INFINITY),
           }, column.key)
       }
-    })
+    })()
+    return {
+      boundary,
+      column: columnDef,
+      title: getSalesByDayColumnGroupTitle(column.key),
+      zone,
+    }
+  })
+  return groupSalesReportColumnSpecs(specs)
 }
 
 export default function SalesByDayPage() {
@@ -853,7 +896,7 @@ function SalesByDayResults({
         />
         <SummaryRow totals={combined.totals} />
         <Table<SalesByDayRow>
-          className="sales-by-day-layout-table"
+          className={salesReportTableClassName('sales-by-day-layout-table')}
           dataSource={combined.rows}
           columns={columns}
           rowKey="date"
@@ -884,7 +927,7 @@ function SalesByDayResults({
           </Typography.Title>
           <SummaryRow totals={breakdown.totals} />
           <Table<SalesByDayRow>
-            className="sales-by-day-layout-table"
+            className={salesReportTableClassName('sales-by-day-layout-table')}
             dataSource={breakdown.rows}
             columns={columns}
             rowKey="date"

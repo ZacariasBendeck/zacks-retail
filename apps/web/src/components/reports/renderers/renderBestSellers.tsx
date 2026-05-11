@@ -1,6 +1,11 @@
 import { Table, Tag } from 'antd'
+import type { ColumnsType } from 'antd/es/table'
 import { GpBadge } from '../gpBadge'
 import { fmtMoney, DASH } from '../../../utils/reportFormatters'
+import {
+  salesReportColumnGroup,
+  salesReportTableClassName,
+} from '../salesReportTableZones'
 
 interface BestSellerRow {
   rank: number
@@ -29,7 +34,7 @@ function fmtInt(v: number): string {
  * would mis-represent share percentages against a now-different filter.
  */
 export default function RenderBestSellers({ result }: { result: BestSellersResult }) {
-  const columns = [
+  const columns: ColumnsType<BestSellerRow> = [
     {
       title: 'Rank', dataIndex: 'rank', key: 'rank', width: 74, align: 'center' as const,
       render: (r: number) => <Tag color={r <= 3 ? 'gold' : 'default'}>{r}</Tag>,
@@ -44,14 +49,22 @@ export default function RenderBestSellers({ result }: { result: BestSellersResul
       render: (v: number | null) => <GpBadge value={v} />,
     },
   ]
+  const groupedColumns: ColumnsType<BestSellerRow> = [
+    salesReportColumnGroup('ranking', columns.slice(0, 1), { title: 'Rank' }),
+    salesReportColumnGroup('identity', columns.slice(1, 3), { boundary: true, title: 'Item' }),
+    salesReportColumnGroup('sales', columns.slice(3, 5), { boundary: true, title: 'Sales' }),
+    salesReportColumnGroup('profit', columns.slice(5), { boundary: true, title: 'Profitability' }),
+  ]
 
   return (
     <Table
+      className={salesReportTableClassName()}
       dataSource={result.rows}
-      columns={columns}
+      columns={groupedColumns}
       rowKey="rank"
       size="small"
       pagination={{ pageSize: 50 }}
+      rowClassName={(_row, index) => (index % 2 === 1 ? 'report-zebra-row' : '')}
     />
   )
 }

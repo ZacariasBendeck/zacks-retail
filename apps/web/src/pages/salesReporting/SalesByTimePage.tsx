@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import type { ColumnsType } from 'antd/es/table'
 import {
   Alert, Card, Checkbox, Segmented, Space, Table, Tooltip, Typography, Spin,
 } from 'antd'
@@ -28,6 +29,11 @@ import {
   hydrateReportCriteria,
   useReportCriteria,
 } from '../../components/reports/ReportCriteriaPanel'
+import {
+  salesReportColumnGroup,
+  salesReportSummaryCellClassName,
+  salesReportTableClassName,
+} from '../../components/reports/salesReportTableZones'
 
 const { Text } = Typography
 
@@ -109,7 +115,7 @@ export default function SalesByTimePage() {
   }
 
   const showPct = query?.pctOfTotal ?? false
-  const columns = [
+  const columns: ColumnsType<SalesHourlyBucket> = [
     {
       title: 'Hour', dataIndex: 'hour', key: 'hour', width: 90,
       render: (h: number) => `${String(h).padStart(2, '0')}:00`,
@@ -133,6 +139,11 @@ export default function SalesByTimePage() {
           render: (v: number | null) => fmtPct1(v),
         }]
       : []),
+  ]
+  const groupedColumns: ColumnsType<SalesHourlyBucket> = [
+    salesReportColumnGroup('time', columns.slice(0, 1), { title: 'Time' }),
+    salesReportColumnGroup('status', columns.slice(1, 3), { boundary: true, title: 'Activity' }),
+    salesReportColumnGroup('sales', columns.slice(3), { boundary: true, title: 'Sales' }),
   ]
 
   return (
@@ -257,8 +268,9 @@ export default function SalesByTimePage() {
             <HourlyBarChart rows={data.rangeA} metric={chartMetric} />
           </Card>
           <Table<SalesHourlyBucket>
+            className={salesReportTableClassName()}
             dataSource={data.rangeA}
-            columns={columns}
+            columns={groupedColumns}
             rowKey="hour"
             pagination={false}
             size="small"
@@ -266,12 +278,12 @@ export default function SalesByTimePage() {
             summary={() => (
               <Table.Summary fixed>
                 <Table.Summary.Row>
-                  <SummaryLabelCell index={0} variant="grand">Totals</SummaryLabelCell>
-                  <SummaryNumericCell index={1} variant="grand">{fmtInt(data.totalsA.tickets)}</SummaryNumericCell>
-                  <SummaryNumericCell index={2} variant="grand">{fmtInt(data.totalsA.qty)}</SummaryNumericCell>
-                  <SummaryNumericCell index={3} variant="grand">{fmtMoney(data.totalsA.dollars)}</SummaryNumericCell>
+                  <SummaryLabelCell index={0} className={salesReportSummaryCellClassName('time')} variant="grand">Totals</SummaryLabelCell>
+                  <SummaryNumericCell index={1} className={salesReportSummaryCellClassName('status', { boundary: true })} variant="grand">{fmtInt(data.totalsA.tickets)}</SummaryNumericCell>
+                  <SummaryNumericCell index={2} className={salesReportSummaryCellClassName('status')} variant="grand">{fmtInt(data.totalsA.qty)}</SummaryNumericCell>
+                  <SummaryNumericCell index={3} className={salesReportSummaryCellClassName('sales', { boundary: true })} variant="grand">{fmtMoney(data.totalsA.dollars)}</SummaryNumericCell>
                   {showPct ? (
-                    <SummaryNumericCell index={4} variant="grand">100.0%</SummaryNumericCell>
+                    <SummaryNumericCell index={4} className={salesReportSummaryCellClassName('sales')} variant="grand">100.0%</SummaryNumericCell>
                   ) : null}
                 </Table.Summary.Row>
               </Table.Summary>

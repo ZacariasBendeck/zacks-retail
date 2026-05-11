@@ -97,6 +97,12 @@ interface CasePackSupplierUsage {
   lastUsedAt: string | null;
 }
 
+interface CasePackCategoryUsage {
+  skuCount: number;
+  usageCount: number;
+  lastUsedAt: string | null;
+}
+
 let activeReorderPlanBuilds = 0;
 const reorderPlanWaiters: Array<() => void> = [];
 
@@ -121,7 +127,12 @@ export interface ReorderCasePackCandidate {
   supplierUsageCount?: number;
   supplierLastUsedAt?: string | null;
   sameSkuPreviousPack?: boolean;
+  categorySkuCount?: number;
+  categoryUsageCount?: number;
+  categoryLastUsedAt?: string | null;
 }
+
+export type ReorderCasePackBadge = 'PREVIOUS_SKU' | 'CATEGORY_USED' | 'BEST_FIT';
 
 export interface ReorderCasePackSuggestion {
   code: string;
@@ -140,6 +151,14 @@ export interface ReorderCasePackSuggestion {
   excessQty: number;
   differenceQty: number;
   sizeCells: ReorderCasePackCell[];
+}
+
+export interface ReorderCasePackChoice extends ReorderCasePackSuggestion {
+  categoryUsed: boolean;
+  categorySkuCount: number;
+  categoryUsageCount: number;
+  categoryLastUsedAt: string | null;
+  badges: ReorderCasePackBadge[];
 }
 
 export interface VendorDraftPoSummary {
@@ -209,6 +228,7 @@ export interface ReorderPlanChain {
     casePackMultiplier: number | null;
   };
   casePackSuggestion: ReorderCasePackSuggestion | null;
+  casePackChoices: ReorderCasePackChoice[];
   sizeLines: ReorderPlanSizeLine[];
 }
 
@@ -594,89 +614,162 @@ function compareCasePackScores(
     || a.code.localeCompare(b.code, undefined, { numeric: true });
 }
 
-export function buildCasePackSuggestion(
+function buildCasePackFit(
   lines: ReorderPlanSizeLine[],
-  casePacks: ReorderCasePackCandidate[],
+  pack: ReorderCasePackCandidate,
 ): ReorderCasePackSuggestion | null {
   const targetTotal = lines.reduce((sum, line) => sum + Math.max(0, Math.trunc(line.recommendedQty)), 0);
   if (targetTotal <= 0) return null;
+  if (pack.unitsPerPack <= 0 || pack.cells.length === 0) return null;
+
+  const packQtyBySize = new Map<string, number>();
+  for (const cell of pack.cells) {
+    const qty = Math.max(0, Math.trunc(cell.quantity));
+    if (qty <= 0) continue;
+    addToMap(packQtyBySize, sizeKey(cell.columnLabel, cell.rowLabel), qty);
+  }
+  if (packQtyBySize.size === 0) return null;
+
+  let maxNeededForCoveredSizes = 1;
+  for (const line of lines) {
+    const target = Math.max(0, Math.trunc(line.recommendedQty));
+    const packQty = packQtyBySize.get(sizeKey(line.columnLabel, line.rowLabel)) ?? 0;
+    if (target > 0 && packQty > 0) {
+      maxNeededForCoveredSizes = Math.max(maxNeededForCoveredSizes, Math.ceil(target / packQty));
+    }
+  }
+  const maxByTotal = Math.max(1, Math.ceil(targetTotal / pack.unitsPerPack));
+  const maxMultiplier = Math.min(10000, Math.max(maxNeededForCoveredSizes, maxByTotal));
 
   let bestAutoApply: ReorderCasePackSuggestion | null = null;
   let bestOptional: ReorderCasePackSuggestion | null = null;
-  for (const pack of casePacks) {
-    if (pack.unitsPerPack <= 0 || pack.cells.length === 0) continue;
-    const packQtyBySize = new Map<string, number>();
-    for (const cell of pack.cells) {
-      const qty = Math.max(0, Math.trunc(cell.quantity));
-      if (qty <= 0) continue;
-      addToMap(packQtyBySize, sizeKey(cell.columnLabel, cell.rowLabel), qty);
-    }
-    if (packQtyBySize.size === 0) continue;
+  for (let multiplier = 1; multiplier <= maxMultiplier; multiplier += 1) {
+    let shortageQty = 0;
+    let excessQty = 0;
+    let differenceQty = 0;
+    const sizeCells: ReorderCasePackCell[] = [];
 
-    let maxNeededForCoveredSizes = 1;
     for (const line of lines) {
       const target = Math.max(0, Math.trunc(line.recommendedQty));
-      const packQty = packQtyBySize.get(sizeKey(line.columnLabel, line.rowLabel)) ?? 0;
-      if (target > 0 && packQty > 0) {
-        maxNeededForCoveredSizes = Math.max(maxNeededForCoveredSizes, Math.ceil(target / packQty));
+      const quantity = (packQtyBySize.get(sizeKey(line.columnLabel, line.rowLabel)) ?? 0) * multiplier;
+      shortageQty += Math.max(0, target - quantity);
+      excessQty += Math.max(0, quantity - target);
+      differenceQty += Math.abs(quantity - target);
+      if (quantity > 0) {
+        sizeCells.push({
+          rowLabel: line.rowLabel,
+          columnLabel: line.columnLabel,
+          sizeLabel: line.sizeLabel,
+          quantity,
+        });
       }
     }
-    const maxByTotal = Math.max(1, Math.ceil(targetTotal / pack.unitsPerPack));
-    const maxMultiplier = Math.min(10000, Math.max(maxNeededForCoveredSizes, maxByTotal));
 
-    for (let multiplier = 1; multiplier <= maxMultiplier; multiplier += 1) {
-      let shortageQty = 0;
-      let excessQty = 0;
-      let differenceQty = 0;
-      const sizeCells: ReorderCasePackCell[] = [];
+    const candidate: ReorderCasePackSuggestion = {
+      code: pack.code,
+      description: pack.description,
+      multiplier,
+      unitsPerPack: pack.unitsPerPack,
+      totalUnits: pack.unitsPerPack * multiplier,
+      autoApply: false,
+      overbuyQty: 0,
+      overbuyLimitQty: Math.max(Math.ceil(targetTotal * 0.10), pack.unitsPerPack),
+      supplierUsed: Boolean(pack.supplierUsed),
+      supplierUsageCount: Math.max(0, Math.trunc(Number(pack.supplierUsageCount ?? 0))),
+      supplierLastUsedAt: pack.supplierLastUsedAt ?? null,
+      sameSkuPreviousPack: Boolean(pack.sameSkuPreviousPack),
+      shortageQty,
+      excessQty,
+      differenceQty,
+      sizeCells,
+    };
+    candidate.overbuyQty = Math.max(0, candidate.totalUnits - targetTotal);
+    candidate.autoApply = candidate.shortageQty === 0 && candidate.overbuyQty <= candidate.overbuyLimitQty;
 
-      for (const line of lines) {
-        const target = Math.max(0, Math.trunc(line.recommendedQty));
-        const quantity = (packQtyBySize.get(sizeKey(line.columnLabel, line.rowLabel)) ?? 0) * multiplier;
-        shortageQty += Math.max(0, target - quantity);
-        excessQty += Math.max(0, quantity - target);
-        differenceQty += Math.abs(quantity - target);
-        if (quantity > 0) {
-          sizeCells.push({
-            rowLabel: line.rowLabel,
-            columnLabel: line.columnLabel,
-            sizeLabel: line.sizeLabel,
-            quantity,
-          });
-        }
-      }
-
-      const candidate: ReorderCasePackSuggestion = {
-        code: pack.code,
-        description: pack.description,
-        multiplier,
-        unitsPerPack: pack.unitsPerPack,
-        totalUnits: pack.unitsPerPack * multiplier,
-        autoApply: false,
-        overbuyQty: 0,
-        overbuyLimitQty: Math.max(Math.ceil(targetTotal * 0.10), pack.unitsPerPack),
-        supplierUsed: Boolean(pack.supplierUsed),
-        supplierUsageCount: Math.max(0, Math.trunc(Number(pack.supplierUsageCount ?? 0))),
-        supplierLastUsedAt: pack.supplierLastUsedAt ?? null,
-        sameSkuPreviousPack: Boolean(pack.sameSkuPreviousPack),
-        shortageQty,
-        excessQty,
-        differenceQty,
-        sizeCells,
-      };
-      candidate.overbuyQty = Math.max(0, candidate.totalUnits - targetTotal);
-      candidate.autoApply = candidate.shortageQty === 0 && candidate.overbuyQty <= candidate.overbuyLimitQty;
-
-      if (candidate.autoApply && (!bestAutoApply || compareCasePackScores(candidate, bestAutoApply) < 0)) {
-        bestAutoApply = candidate;
-      }
-      if (!bestOptional || compareCasePackScores(candidate, bestOptional) < 0) {
-        bestOptional = candidate;
-      }
+    if (candidate.autoApply && (!bestAutoApply || compareCasePackScores(candidate, bestAutoApply) < 0)) {
+      bestAutoApply = candidate;
+    }
+    if (!bestOptional || compareCasePackScores(candidate, bestOptional) < 0) {
+      bestOptional = candidate;
     }
   }
 
   return bestAutoApply ?? bestOptional;
+}
+
+export function buildCasePackSuggestion(
+  lines: ReorderPlanSizeLine[],
+  casePacks: ReorderCasePackCandidate[],
+): ReorderCasePackSuggestion | null {
+  let bestAutoApply: ReorderCasePackSuggestion | null = null;
+  let bestOptional: ReorderCasePackSuggestion | null = null;
+  for (const pack of casePacks) {
+    const candidate = buildCasePackFit(lines, pack);
+    if (!candidate) continue;
+    if (candidate.autoApply && (!bestAutoApply || compareCasePackScores(candidate, bestAutoApply) < 0)) {
+      bestAutoApply = candidate;
+    }
+    if (!bestOptional || compareCasePackScores(candidate, bestOptional) < 0) {
+      bestOptional = candidate;
+    }
+  }
+  return bestAutoApply ?? bestOptional;
+}
+
+function compareCategoryCasePackChoices(a: ReorderCasePackChoice, b: ReorderCasePackChoice): number {
+  const categoryLastUsedA = a.categoryLastUsedAt ? new Date(a.categoryLastUsedAt).getTime() : 0;
+  const categoryLastUsedB = b.categoryLastUsedAt ? new Date(b.categoryLastUsedAt).getTime() : 0;
+  return Number(b.sameSkuPreviousPack) - Number(a.sameSkuPreviousPack)
+    || b.categorySkuCount - a.categorySkuCount
+    || b.categoryUsageCount - a.categoryUsageCount
+    || categoryLastUsedB - categoryLastUsedA
+    || compareCasePackScores(a, b);
+}
+
+export function buildCategoryFirstCasePackChoices(
+  lines: ReorderPlanSizeLine[],
+  casePacks: ReorderCasePackCandidate[],
+): ReorderCasePackChoice[] {
+  const candidates = casePacks
+    .map((pack): ReorderCasePackChoice | null => {
+      const fit = buildCasePackFit(lines, pack);
+      if (!fit) return null;
+      const categorySkuCount = Math.max(0, Math.trunc(Number(pack.categorySkuCount ?? 0)));
+      const categoryUsageCount = Math.max(0, Math.trunc(Number(pack.categoryUsageCount ?? 0)));
+      if (!fit.sameSkuPreviousPack && categoryUsageCount <= 0) return null;
+      return {
+        ...fit,
+        categoryUsed: categoryUsageCount > 0,
+        categorySkuCount,
+        categoryUsageCount,
+        categoryLastUsedAt: pack.categoryLastUsedAt ?? null,
+        badges: [],
+      };
+    })
+    .filter((choice): choice is ReorderCasePackChoice => choice != null);
+
+  let bestFitCode = '';
+  for (const choice of candidates) {
+    if (!bestFitCode) {
+      bestFitCode = normalizeCasePackCode(choice.code);
+      continue;
+    }
+    const bestChoice = candidates.find((candidate) => normalizeCasePackCode(candidate.code) === bestFitCode);
+    if (bestChoice && compareCasePackScores(choice, bestChoice) < 0) {
+      bestFitCode = normalizeCasePackCode(choice.code);
+    }
+  }
+
+  return candidates
+    .sort(compareCategoryCasePackChoices)
+    .map((choice) => ({
+      ...choice,
+      badges: [
+        ...(choice.sameSkuPreviousPack ? ['PREVIOUS_SKU' as const] : []),
+        ...(choice.categoryUsed ? ['CATEGORY_USED' as const] : []),
+        ...(normalizeCasePackCode(choice.code) === bestFitCode ? ['BEST_FIT' as const] : []),
+      ],
+    }));
 }
 
 async function loadSku(skuCode: string): Promise<SkuRow | null> {
@@ -1003,6 +1096,71 @@ async function loadSupplierCasePackUsage(
   );
 
   return new Map(rows.map((row) => [normalizeCasePackCode(row.code), {
+    usageCount: asNumber(row.usage_count),
+    lastUsedAt: toIsoDate(row.last_used_at),
+  }]));
+}
+
+async function loadCategoryCasePackUsage(
+  categoryNumber: number | null | undefined,
+  sizeTypeCode: number | null | undefined,
+): Promise<Map<string, CasePackCategoryUsage>> {
+  if (categoryNumber == null || sizeTypeCode == null) return new Map();
+
+  const rows = await prisma.$queryRawUnsafe<Array<{
+    code: string;
+    sku_count: unknown;
+    usage_count: unknown;
+    last_used_at: Date | string | null;
+  }>>(
+    `
+      WITH usage_rows AS (
+        SELECT
+          NULLIF(BTRIM(pol.case_pack_id), '') AS case_pack_code,
+          po.po_number::text AS po_number,
+          po.order_date AS used_at,
+          pol.sku_id::text AS sku_key
+        FROM app.purchase_order po
+        JOIN app.purchase_order_line pol ON pol.po_id = po.id
+        JOIN app.sku s ON s.id = pol.sku_id
+        WHERE s.category_number = $1
+          AND po.status <> 'CANCELLED'
+          AND NULLIF(BTRIM(pol.case_pack_id), '') IS NOT NULL
+        UNION ALL
+        SELECT
+          NULLIF(BTRIM(l.case_pack_code), '') AS case_pack_code,
+          po.po_number::text AS po_number,
+          COALESCE(po.last_received_at, po.order_date) AS used_at,
+          s.id::text AS sku_key
+        FROM app.purchase_order_legacy po
+        JOIN app.purchase_order_legacy_line l ON l.po_number = po.po_number
+        JOIN app.sku s ON (
+          s.id = l.sku_id
+          OR (
+            l.sku_id IS NULL
+            AND UPPER(BTRIM(COALESCE(s.code, s.provisional_code))) = UPPER(BTRIM(l.sku_code))
+          )
+        )
+        WHERE s.category_number = $1
+          AND NULLIF(BTRIM(l.case_pack_code), '') IS NOT NULL
+      )
+      SELECT
+        cp.code,
+        COUNT(DISTINCT usage_rows.sku_key)::int AS sku_count,
+        COUNT(DISTINCT usage_rows.po_number || '|' || usage_rows.sku_key || '|' || UPPER(usage_rows.case_pack_code))::int AS usage_count,
+        MAX(usage_rows.used_at) AS last_used_at
+      FROM usage_rows
+      JOIN app.case_pack cp ON UPPER(cp.code) = UPPER(usage_rows.case_pack_code)
+      WHERE cp.active = true
+        AND cp.size_type_code = $2
+      GROUP BY cp.code
+    `,
+    categoryNumber,
+    sizeTypeCode,
+  );
+
+  return new Map(rows.map((row) => [normalizeCasePackCode(row.code), {
+    skuCount: asNumber(row.sku_count),
     usageCount: asNumber(row.usage_count),
     lastUsedAt: toIsoDate(row.last_used_at),
   }]));
@@ -1503,6 +1661,7 @@ async function buildReorderPlan(skuCode: string, options: ReorderPlanOptions = {
     seasonalityRow,
     casePacks,
     supplierCasePackUsage,
+    categoryCasePackUsage,
     nativeOpenPoBySize,
     skuMonthlySalesRows,
   ] = await Promise.all([
@@ -1511,17 +1670,22 @@ async function buildReorderPlan(skuCode: string, options: ReorderPlanOptions = {
     timeReorderPlanStep(timings, 'seasonality', () => getDepartmentSeasonalityRow(department.departmentNumber, seasonalityHistoryEndMonth)),
     timeReorderPlanStep(timings, 'casePacks', () => loadActiveCasePackCandidates(sku.size_type, columnLabels, rowLabels)),
     timeReorderPlanStep(timings, 'supplierCasePackUsage', () => loadSupplierCasePackUsage(sku.vendor_id, sku.size_type)),
+    timeReorderPlanStep(timings, 'categoryCasePackUsage', () => loadCategoryCasePackUsage(sku.category_number, sku.size_type)),
     timeReorderPlanStep(timings, 'nativeOpenPoBySize', () => loadNativeOpenPurchaseOrdersBySize(sku.id)),
     timeReorderPlanStep(timings, 'skuMonthlySales', () => loadSkuMonthlySalesByStoreAndSize(sku, allChainStoreNumbers)),
   ]);
   const previousCasePackCode = normalizeCasePackCode(previousOrder.casePackId);
   const casePacksForSuggestion = casePacks.map((pack) => {
     const usage = supplierCasePackUsage.get(normalizeCasePackCode(pack.code));
+    const categoryUsage = categoryCasePackUsage.get(normalizeCasePackCode(pack.code));
     return {
       ...pack,
       supplierUsed: Boolean(usage),
       supplierUsageCount: usage?.usageCount ?? 0,
       supplierLastUsedAt: usage?.lastUsedAt ?? null,
+      categorySkuCount: categoryUsage?.skuCount ?? 0,
+      categoryUsageCount: categoryUsage?.usageCount ?? 0,
+      categoryLastUsedAt: categoryUsage?.lastUsedAt ?? null,
       sameSkuPreviousPack: previousCasePackCode.length > 0
         && normalizeCasePackCode(pack.code) === previousCasePackCode,
     };
@@ -1691,7 +1855,8 @@ async function buildReorderPlan(skuCode: string, options: ReorderPlanOptions = {
     const constrained = applyOrderConstraints(normalized, moqQty, sku.order_multiple)
       .sort((a, b) => a.rowLabel.localeCompare(b.rowLabel, undefined, { numeric: true })
         || a.columnLabel.localeCompare(b.columnLabel, undefined, { numeric: true }));
-    const casePackSuggestion = buildCasePackSuggestion(constrained, casePacksForSuggestion);
+    const casePackChoices = buildCategoryFirstCasePackChoices(constrained, casePacksForSuggestion);
+    const casePackSuggestion = casePackChoices[0] ?? null;
 
     planChains.push({
       chainId: chain.chainId,
@@ -1707,6 +1872,7 @@ async function buildReorderPlan(skuCode: string, options: ReorderPlanOptions = {
         casePackMultiplier: previousOrder.casePackMultiplier,
       },
       casePackSuggestion,
+      casePackChoices,
       sizeLines: constrained,
       totals: {
         onHand: sumLine(constrained, (line) => line.onHand),

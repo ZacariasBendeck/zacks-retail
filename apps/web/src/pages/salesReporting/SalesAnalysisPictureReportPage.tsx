@@ -57,6 +57,12 @@ import {
   salesAnalysisNumberSorter,
   salesAnalysisTextSorter,
 } from '../../components/reports/salesAnalysisSorters'
+import {
+  groupSalesReportColumnSpecs,
+  salesReportColumnGroup,
+  salesReportTableClassName,
+  type SalesReportColumnZone,
+} from '../../components/reports/salesReportTableZones'
 
 const { Text } = Typography
 
@@ -277,6 +283,30 @@ function buildPictureColumns(
       value: (row) => row.attributes?.extended?.[dim] ?? null,
     }))
   return [...fixed, ...extra]
+}
+
+function pictureColumnZone(key: string): SalesReportColumnZone {
+  if (key === 'picture') return 'attributes'
+  if (['unitsOnHand', 'inventoryUnitCost', 'onHandAtCost', 'ageDays'].includes(key)) return 'inventory'
+  if (['qty', 'netSales'].includes(key)) return 'sales'
+  if (['grossProfit', 'gpPct'].includes(key)) return 'profit'
+  if (['roiPct', 'turns'].includes(key)) return 'performance'
+  if (['discountCode', 'twoD50'].includes(key)) return 'status'
+  if (key.startsWith('ext:')) return 'attributes'
+  if (['vendor', 'sku'].includes(key)) return 'identity'
+  return 'attributes'
+}
+
+function pictureColumnGroupTitle(key: string): string {
+  const zone = pictureColumnZone(key)
+  if (key === 'picture') return 'Picture'
+  if (zone === 'identity') return 'Product'
+  if (zone === 'inventory') return 'Inventory'
+  if (zone === 'sales') return 'Sales'
+  if (zone === 'profit') return 'Profit'
+  if (zone === 'performance') return 'Performance'
+  if (zone === 'status') return 'Promotions'
+  return 'Attributes'
 }
 
 function nextSort(current: ExcelColumnFilterState['sort']): ExcelColumnFilterState['sort'] {
@@ -627,42 +657,53 @@ export default function SalesAnalysisPictureReportPage(): JSX.Element {
     })
   }
 
-  const tableColumns = visibleColumns.map((column) => ({
-    title: column.sortOnly ? (
-      <SortOnlyColumnHeader
-        title={column.title}
-        sort={columnFilters[column.key]?.sort}
-        onSort={() => setColumnSort(column.key)}
-      />
-    ) : (
-      <ExcelColumnFilter
-        title={column.title}
-        kind={column.kind}
-        values={(data?.rows ?? []).map((row) => displayValue(column.value(row)))}
-        value={columnFilters[column.key]}
-        popupZIndex={fullScreen ? 1300 : undefined}
-        onApply={(next) => {
-          setColumnFilters((prev) => {
-            const updated = { ...prev, [column.key]: next }
-            if (next.sort) {
-              for (const key of Object.keys(updated)) {
-                if (key !== column.key && updated[key]?.sort) updated[key] = { ...updated[key], sort: undefined }
-              }
-            }
-            return updated
-          })
-        }}
-        onClear={() => setColumnFilters((prev) => ({ ...prev, [column.key]: undefined }))}
-      />
-    ),
-    key: column.key,
-    width: column.width,
-    align: column.align,
-    className: column.className,
-    render: (_: unknown, row: SalesAnalysisRow) => (
-      column.render ? column.render(row) : displayValue(column.value(row)) || DASH
-    ),
-  }))
+  const tableColumnSpecs = visibleColumns.map((column, index) => {
+    const zone = pictureColumnZone(column.key)
+    const previous = visibleColumns[index - 1]
+    const previousZone = previous ? pictureColumnZone(previous.key) : undefined
+    return {
+      boundary: index > 0 && zone !== previousZone,
+      column: {
+        title: column.sortOnly ? (
+          <SortOnlyColumnHeader
+            title={column.title}
+            sort={columnFilters[column.key]?.sort}
+            onSort={() => setColumnSort(column.key)}
+          />
+        ) : (
+          <ExcelColumnFilter
+            title={column.title}
+            kind={column.kind}
+            values={(data?.rows ?? []).map((row) => displayValue(column.value(row)))}
+            value={columnFilters[column.key]}
+            popupZIndex={fullScreen ? 1300 : undefined}
+            onApply={(next) => {
+              setColumnFilters((prev) => {
+                const updated = { ...prev, [column.key]: next }
+                if (next.sort) {
+                  for (const key of Object.keys(updated)) {
+                    if (key !== column.key && updated[key]?.sort) updated[key] = { ...updated[key], sort: undefined }
+                  }
+                }
+                return updated
+              })
+            }}
+            onClear={() => setColumnFilters((prev) => ({ ...prev, [column.key]: undefined }))}
+          />
+        ),
+        key: column.key,
+        width: column.width,
+        align: column.align,
+        className: column.className,
+        render: (_: unknown, row: SalesAnalysisRow) => (
+          column.render ? column.render(row) : displayValue(column.value(row)) || DASH
+        ),
+      },
+      title: pictureColumnGroupTitle(column.key),
+      zone,
+    }
+  })
+  const tableColumns = groupSalesReportColumnSpecs(tableColumnSpecs)
 
   const treeColumns = [
     {
@@ -729,6 +770,16 @@ export default function SalesAnalysisPictureReportPage(): JSX.Element {
             render: (value: number) => fmtQty(value),
           },
         ]
+      : []),
+  ]
+  const groupedTreeColumns = [
+    salesReportColumnGroup('identity', treeColumns.slice(0, 1), { title: 'Product' }),
+    salesReportColumnGroup('inventory', treeColumns.slice(1, 2), { boundary: true, title: 'Inventory' }),
+    salesReportColumnGroup('sales', treeColumns.slice(2, 3), { boundary: true, title: 'Sales' }),
+    salesReportColumnGroup('profit', treeColumns.slice(3, 5), { boundary: true, title: 'Profit' }),
+    salesReportColumnGroup('performance', treeColumns.slice(5, 7), { boundary: true, title: 'Performance' }),
+    ...(query?.includeOnOrder
+      ? [salesReportColumnGroup('onOrder', treeColumns.slice(7), { boundary: true, title: 'On Order' })]
       : []),
   ]
 
@@ -1235,13 +1286,14 @@ export default function SalesAnalysisPictureReportPage(): JSX.Element {
             </div>
             {pictureMode === 'tree' ? (
               <Table<SalesAnalysisTreeNode>
-                className="sales-analysis-picture-table"
+                className={salesReportTableClassName('sales-analysis-picture-table')}
                 dataSource={tree}
-                columns={treeColumns}
+                columns={groupedTreeColumns}
                 rowKey="rowKey"
                 size="small"
                 pagination={{ pageSize: 50, showSizeChanger: true }}
                 expandable={{ defaultExpandAllRows: false }}
+                rowClassName={(_row, index) => (index % 2 === 1 ? 'report-zebra-row' : '')}
                 sticky
                 scroll={{
                   x: query.includeOnOrder ? 1084 : 984,
@@ -1250,12 +1302,13 @@ export default function SalesAnalysisPictureReportPage(): JSX.Element {
               />
             ) : (
               <Table<SalesAnalysisRow>
-                className="sales-analysis-picture-table"
+                className={salesReportTableClassName('sales-analysis-picture-table')}
                 dataSource={filteredRows}
                 columns={tableColumns}
                 rowKey={(row) => `${row.dimensionKey}|${row.storeNumber ?? '*'}`}
                 size="small"
                 pagination={{ pageSize: 50, showSizeChanger: true }}
+                rowClassName={(_row, index) => (index % 2 === 1 ? 'report-zebra-row' : '')}
                 sticky
                 scroll={{
                   x: visibleColumns.reduce((sum, column) => sum + column.width, 0),

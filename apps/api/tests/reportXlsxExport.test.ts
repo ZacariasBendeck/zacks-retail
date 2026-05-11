@@ -299,6 +299,22 @@ describe('sales-by-day XLSX export', () => {
     expect(headerCells).toContain('Turns');
     expect(headerCells).toContain('ROI');
   }, 15_000);
+
+  it('GET /sales/sales-analysis?format=xlsx&exportLayout=hierarchy returns grouped workbook sheets', async () => {
+    const res = await request(app)
+      .get('/api/v1/reports/sales/sales-analysis?dimension=CATEGORY&reportType=SKU_DETAIL&storeOption=COMBINE&startDate=2024-11-04&endDate=2024-11-10&format=xlsx&exportLayout=hierarchy&hierarchyDepth=2&level1=department&level2=category&groupOrder=NET_SALES_DESC&showPercentOfTotal=true')
+      .buffer(true)
+      .parse(binaryParser);
+    expectXlsxHeaders(
+      res,
+      'SAR-CATEGORY-SKU-DETAIL-COMBINE-all-2024-11-04-2024-11-10',
+    );
+    const wb = await assertValidXlsxBuffer(res.body);
+    expect(wb.worksheets.map((ws) => ws.name)).toEqual(['Sales Analysis', 'Raw Detail', 'Run Info']);
+    const headerCells = wb.worksheets[0].getRow(1).values as Array<string | undefined>;
+    expect(headerCells).toContain('Row Type');
+    expect(headerCells).toContain('% of Parent Sales');
+  }, 15_000);
 });
 
 // ─────────────────────────── supertest binary parser ──────────────────────

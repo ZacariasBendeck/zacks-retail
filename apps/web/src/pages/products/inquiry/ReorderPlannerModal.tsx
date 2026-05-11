@@ -22,6 +22,7 @@ import {
   type CreateReorderDraftPoResult,
   type ReorderPlan,
   type ReorderPlanChain,
+  type ReorderCasePackChoice,
   type ReorderCasePackSuggestion,
   type ReorderPlanSizeLine,
 } from '../../../services/ricsInventoryApi';
@@ -70,9 +71,17 @@ function lineKey(line: Pick<ReorderPlanSizeLine, 'rowLabel' | 'columnLabel'>): s
   return `${line.rowLabel}|${line.columnLabel}`;
 }
 
-function casePackQuantityMap(suggestion: ReorderCasePackSuggestion | null | undefined): QuantityMap {
-  if (!suggestion) return {};
-  return Object.fromEntries(suggestion.sizeCells.map((cell) => [`${cell.rowLabel}|${cell.columnLabel}`, cell.quantity]));
+function casePackQuantityMap(
+  pack: ReorderCasePackSuggestion | ReorderCasePackChoice | null | undefined,
+  multiplier?: number,
+): QuantityMap {
+  if (!pack) return {};
+  const safeDefaultMultiplier = Math.max(1, Math.trunc(Number(pack.multiplier) || 1));
+  const safeMultiplier = Math.max(1, Math.trunc(Number(multiplier ?? pack.multiplier) || 1));
+  return Object.fromEntries(pack.sizeCells.map((cell) => {
+    const perPackQty = Math.max(0, Math.round(cell.quantity / safeDefaultMultiplier));
+    return [`${cell.rowLabel}|${cell.columnLabel}`, perPackQty * safeMultiplier];
+  }));
 }
 
 function recommendedQuantityMap(chain: ReorderPlanChain): QuantityMap {
@@ -89,13 +98,41 @@ function initialQuantityMap(chain: ReorderPlanChain): QuantityMap {
     : recommendedQuantityMap(chain);
 }
 
-function packUsageLabel(suggestion: ReorderCasePackSuggestion): string | null {
-  if (suggestion.sameSkuPreviousPack) return 'Previously used on this SKU';
-  if (suggestion.supplierUsed && suggestion.supplierUsageCount > 0) {
-    return `Used by supplier ${formatNumber(suggestion.supplierUsageCount)} ${suggestion.supplierUsageCount === 1 ? 'time' : 'times'}`;
+function badgeLabel(badge: ReorderCasePackChoice['badges'][number]): string {
+  switch (badge) {
+    case 'PREVIOUS_SKU': return 'Previous SKU';
+    case 'CATEGORY_USED': return 'Category used';
+    case 'BEST_FIT': return 'Best fit';
+    default: return badge;
   }
-  if (suggestion.supplierUsed) return 'Used by supplier';
-  return null;
+}
+
+function badgeColor(badge: ReorderCasePackChoice['badges'][number]): string {
+  switch (badge) {
+    case 'PREVIOUS_SKU': return 'green';
+    case 'CATEGORY_USED': return 'blue';
+    case 'BEST_FIT': return 'purple';
+    default: return 'default';
+  }
+}
+
+function findCasePackChoice(chain: ReorderPlanChain, casePackId: string | null | undefined): ReorderCasePackChoice | null {
+  if (!casePackId) return null;
+  return chain.casePackChoices.find((choice) => choice.code === casePackId) ?? null;
+}
+
+function quantityFitSummary(chain: ReorderPlanChain, quantityMap: QuantityMap) {
+  let shortageQty = 0;
+  let excessQty = 0;
+  let differenceQty = 0;
+  for (const line of chain.sizeLines) {
+    const target = Math.max(0, Math.trunc(line.recommendedQty));
+    const quantity = Math.max(0, Math.trunc(Number(quantityMap[lineKey(line)] ?? 0)));
+    shortageQty += Math.max(0, target - quantity);
+    excessQty += Math.max(0, quantity - target);
+    differenceQty += Math.abs(quantity - target);
+  }
+  return { shortageQty, excessQty, differenceQty };
 }
 
 function numericMetricValue(line: ReorderPlanSizeLine, metric: MatrixMetric): number {
@@ -208,23 +245,33 @@ export function ReorderPlannerModal({ open, skuCode, onClose }: ReorderPlannerMo
     }));
   };
 
-  const applyCasePackSuggestion = (targetChainKey: string, chain: ReorderPlanChain) => {
-    const suggestion = chain.casePackSuggestion;
-    if (!suggestion) return;
+  const applyCasePackChoice = (targetChainKey: string, choice: ReorderCasePackChoice, multiplier = choice.multiplier) => {
+    const safeMultiplier = Math.max(1, Math.trunc(Number(multiplier) || 1));
     setPackSelectionsByChain((current) => ({
       ...current,
       [targetChainKey]: {
-        casePackId: suggestion.code,
-        casePackMultiplier: suggestion.multiplier,
+        casePackId: choice.code,
+        casePackMultiplier: safeMultiplier,
       },
     }));
     setQuantitiesByChain((current) => ({
       ...current,
-      [targetChainKey]: casePackQuantityMap(suggestion),
+      [targetChainKey]: casePackQuantityMap(choice, safeMultiplier),
     }));
   };
 
-  const clearCasePackSuggestion = (targetChainKey: string, chain: ReorderPlanChain) => {
+  const updateCasePackMultiplier = (
+    targetChainKey: string,
+    chain: ReorderPlanChain,
+    selection: PackSelection | null,
+    value: number | null,
+  ) => {
+    const choice = findCasePackChoice(chain, selection?.casePackId);
+    if (!choice) return;
+    applyCasePackChoice(targetChainKey, choice, Math.max(1, Math.trunc(Number(value ?? 1))));
+  };
+
+  const clearCasePackSelection = (targetChainKey: string, chain: ReorderPlanChain) => {
     setPackSelectionsByChain((current) => ({
       ...current,
       [targetChainKey]: null,
@@ -359,9 +406,12 @@ export function ReorderPlannerModal({ open, skuCode, onClose }: ReorderPlannerMo
     chain: ReorderPlanChain,
     targetChainKey: string,
     quantityMap: QuantityMap,
-    _selectedPack: PackSelection | null,
+    selectedPack: PackSelection | null,
+    selectedChoice: ReorderCasePackChoice | null,
   ): ColumnsType<SizeMatrixRow> => {
-    const caseQuantities = chain.casePackSuggestion ? casePackQuantityMap(chain.casePackSuggestion) : {};
+    const caseQuantities = selectedPack && selectedChoice
+      ? casePackQuantityMap(selectedChoice, selectedPack.casePackMultiplier)
+      : {};
     const visibleLines = chain.sizeLines.filter((line) => {
       const key = lineKey(line);
       return [
@@ -559,16 +609,87 @@ export function ReorderPlannerModal({ open, skuCode, onClose }: ReorderPlannerMo
               const key = chainKey(chain, index);
               const quantityMap = quantitiesByChain[key] ?? {};
               const packSelection = packSelectionsByChain[key] ?? null;
+              const selectedChoice = findCasePackChoice(chain, packSelection?.casePackId);
+              const selectedCaseQuantities = selectedChoice && packSelection
+                ? casePackQuantityMap(selectedChoice, packSelection.casePackMultiplier)
+                : {};
+              const selectedFit = quantityFitSummary(chain, selectedCaseQuantities);
+              const selectedTotalUnits = selectedChoice && packSelection
+                ? selectedChoice.unitsPerPack * packSelection.casePackMultiplier
+                : 0;
               const total = chain.sizeLines.reduce((sum, line) => sum + Number(quantityMap[lineKey(line)] ?? 0), 0);
-              const packUsage = chain.casePackSuggestion ? packUsageLabel(chain.casePackSuggestion) : null;
-              const packOverCap = Boolean(
-                chain.casePackSuggestion
-                  && !chain.casePackSuggestion.autoApply
-                  && chain.casePackSuggestion.overbuyQty > chain.casePackSuggestion.overbuyLimitQty,
-              );
               const previousPack = chain.previousOrder.casePackId
                 ? ` · ${chain.previousOrder.casePackId}${chain.previousOrder.casePackMultiplier ? ` x ${chain.previousOrder.casePackMultiplier}` : ''}`
                 : '';
+              const casePackColumns: ColumnsType<ReorderCasePackChoice> = [
+                {
+                  title: 'Case pack',
+                  key: 'pack',
+                  width: 260,
+                  render: (_, choice) => (
+                    <Space size={2} direction="vertical">
+                      <Space wrap size={[4, 2]}>
+                        <Tag color={packSelection?.casePackId === choice.code ? 'purple' : 'default'}>{choice.code}</Tag>
+                        {choice.badges.map((badge) => (
+                          <Tag key={badge} color={badgeColor(badge)}>{badgeLabel(badge)}</Tag>
+                        ))}
+                      </Space>
+                      {choice.description ? <Typography.Text>{choice.description}</Typography.Text> : null}
+                    </Space>
+                  ),
+                },
+                {
+                  title: 'Category use',
+                  key: 'usage',
+                  width: 150,
+                  render: (_, choice) => (
+                    <Space size={2} direction="vertical">
+                      <Typography.Text>{formatNumber(choice.categorySkuCount)} SKUs</Typography.Text>
+                      <Typography.Text type="secondary">
+                        {formatNumber(choice.categoryUsageCount)} POs
+                        {choice.categoryLastUsedAt ? ` - last ${choice.categoryLastUsedAt.slice(0, 10)}` : ''}
+                      </Typography.Text>
+                    </Space>
+                  ),
+                },
+                {
+                  title: 'Fit',
+                  key: 'fit',
+                  width: 260,
+                  render: (_, choice) => (
+                    <Space wrap size={[4, 2]}>
+                      <Typography.Text type="secondary">
+                        {formatNumber(choice.unitsPerPack)} units/pack x {formatNumber(choice.multiplier)} = {formatNumber(choice.totalUnits)}
+                      </Typography.Text>
+                      <Tag color={choice.shortageQty > 0 ? 'orange' : 'green'}>Short {formatNumber(choice.shortageQty)}</Tag>
+                      <Tag color={choice.excessQty > 0 ? 'blue' : 'green'}>Excess {formatNumber(choice.excessQty)}</Tag>
+                      {choice.overbuyQty > 0 ? (
+                        <Tag color={choice.overbuyQty > choice.overbuyLimitQty ? 'orange' : 'blue'}>
+                          Overbuy {formatNumber(choice.overbuyQty)}
+                        </Tag>
+                      ) : null}
+                    </Space>
+                  ),
+                },
+                {
+                  title: '',
+                  key: 'action',
+                  width: 110,
+                  align: 'right',
+                  render: (_, choice) => {
+                    const selected = packSelection?.casePackId === choice.code;
+                    return (
+                      <Button
+                        size="small"
+                        type={selected ? 'primary' : 'default'}
+                        onClick={() => applyCasePackChoice(key, choice)}
+                      >
+                        {selected ? `Selected ${choice.code}` : `Use ${choice.code}`}
+                      </Button>
+                    );
+                  },
+                },
+              ];
               return {
                 key,
                 label: `${chain.chainLabel} (${formatNumber(total)})`,
@@ -587,61 +708,55 @@ export function ReorderPlannerModal({ open, skuCode, onClose }: ReorderPlannerMo
                           : 'None'}
                       </Descriptions.Item>
                     </Descriptions>
-                    {chain.casePackSuggestion ? (
-                      <Space wrap size={[8, 4]}>
-                        <Tag color={packSelection ? 'purple' : 'default'}>
-                          {chain.casePackSuggestion.code}
-                        </Tag>
-                        {chain.casePackSuggestion.description ? (
-                          <Typography.Text>{chain.casePackSuggestion.description}</Typography.Text>
-                        ) : null}
-                        <Typography.Text type="secondary">
-                          {formatNumber(chain.casePackSuggestion.unitsPerPack)} units/pack x {formatNumber(chain.casePackSuggestion.multiplier)}
-                          {' = '}
-                          {formatNumber(chain.casePackSuggestion.totalUnits)}
-                        </Typography.Text>
-                        <Tag color={chain.casePackSuggestion.shortageQty > 0 ? 'orange' : 'green'}>
-                          Short {formatNumber(chain.casePackSuggestion.shortageQty)}
-                        </Tag>
-                        <Tag color={chain.casePackSuggestion.excessQty > 0 ? 'blue' : 'green'}>
-                          Excess {formatNumber(chain.casePackSuggestion.excessQty)}
-                        </Tag>
-                        {chain.casePackSuggestion.overbuyQty > 0 ? (
-                          <Tag color={packOverCap ? 'orange' : 'blue'}>
-                            Overbuy {formatNumber(chain.casePackSuggestion.overbuyQty)} / cap {formatNumber(chain.casePackSuggestion.overbuyLimitQty)}
-                          </Tag>
-                        ) : null}
-                        {packOverCap ? (
-                          <Tag color="orange">Not auto-applied: exceeds overbuy cap</Tag>
-                        ) : chain.casePackSuggestion.autoApply ? (
-                          <Tag color="green">Auto-applied</Tag>
-                        ) : null}
-                        {packUsage ? (
-                          <Tag color={chain.casePackSuggestion.sameSkuPreviousPack ? 'green' : 'cyan'}>
-                            {packUsage}
-                            {chain.casePackSuggestion.supplierLastUsedAt && !chain.casePackSuggestion.sameSkuPreviousPack
-                              ? ` - last ${chain.casePackSuggestion.supplierLastUsedAt.slice(0, 10)}`
-                              : ''}
-                          </Tag>
-                        ) : null}
-                        {packSelection ? (
-                          <Button size="small" onClick={() => clearCasePackSuggestion(key, chain)}>
-                            Clear pack
-                          </Button>
+                    {chain.casePackChoices.length > 0 ? (
+                      <Space direction="vertical" size="small" style={{ width: '100%' }}>
+                        {selectedChoice && packSelection ? (
+                          <Space wrap size={[8, 4]}>
+                            <Typography.Text>Selected pack</Typography.Text>
+                            <Tag color="purple">{selectedChoice.code}</Tag>
+                            <Typography.Text>Multiplier</Typography.Text>
+                            <InputNumber
+                              size="small"
+                              min={1}
+                              precision={0}
+                              value={packSelection.casePackMultiplier}
+                              onChange={(value) => updateCasePackMultiplier(key, chain, packSelection, value)}
+                              style={{ width: 72 }}
+                            />
+                            <Typography.Text type="secondary">
+                              {formatNumber(selectedChoice.unitsPerPack)} units/pack = {formatNumber(selectedTotalUnits)}
+                            </Typography.Text>
+                            <Tag color={selectedFit.shortageQty > 0 ? 'orange' : 'green'}>
+                              Short {formatNumber(selectedFit.shortageQty)}
+                            </Tag>
+                            <Tag color={selectedFit.excessQty > 0 ? 'blue' : 'green'}>
+                              Excess {formatNumber(selectedFit.excessQty)}
+                            </Tag>
+                            <Button size="small" onClick={() => clearCasePackSelection(key, chain)}>
+                              Clear pack
+                            </Button>
+                          </Space>
                         ) : (
-                          <Button size="small" onClick={() => applyCasePackSuggestion(key, chain)}>
-                            Use pack
-                          </Button>
+                          <Typography.Text type="secondary">No case pack selected.</Typography.Text>
                         )}
+                        <Table<ReorderCasePackChoice>
+                          size="small"
+                          rowKey={(choice) => choice.code}
+                          columns={casePackColumns}
+                          dataSource={chain.casePackChoices}
+                          pagination={false}
+                          tableLayout="fixed"
+                          scroll={{ x: 'max-content' }}
+                        />
                       </Space>
                     ) : (
-                      <Typography.Text type="secondary">No active case-pack suggestion for this SKU size type.</Typography.Text>
+                      <Typography.Text type="secondary">No category-used case packs found for this SKU size type.</Typography.Text>
                     )}
                     <Table
                       size="small"
                       className="reorder-planner-matrix"
                       rowKey={(row) => row.key}
-                      columns={buildMatrixColumns(chain, key, quantityMap, packSelection)}
+                      columns={buildMatrixColumns(chain, key, quantityMap, packSelection, selectedChoice)}
                       dataSource={matrixRows}
                       pagination={false}
                       tableLayout="fixed"

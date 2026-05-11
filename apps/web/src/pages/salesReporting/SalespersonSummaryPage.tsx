@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import type { ColumnsType } from 'antd/es/table'
 import {
   Alert, Button, Checkbox, Drawer, Form, Input, InputNumber, Select, Space, Table, Typography, Spin, Switch, message,
 } from 'antd'
@@ -8,6 +9,7 @@ import { useSalesDimensions, useSalespersonSummary, type SalespersonSummaryArgs 
 import { manualReportQueryKey, useManualReportRun } from '../../hooks/useManualReportRun'
 import type {
   SalespersonSummaryRow,
+  SalespersonSubtotal,
   SalespersonSubtotalBy,
   CashierRow,
 } from '../../services/reportApi'
@@ -29,6 +31,10 @@ import {
   hydrateReportCriteria,
   useReportCriteria,
 } from '../../components/reports/ReportCriteriaPanel'
+import {
+  salesReportColumnGroup,
+  salesReportTableClassName,
+} from '../../components/reports/salesReportTableZones'
 import {
   fetchRicsSalesperson,
   updateRicsSalesperson,
@@ -181,7 +187,7 @@ export default function SalespersonSummaryPage() {
     return data.cashierSummary.reduce((m, r) => Math.max(m, r.dollars ?? 0), 0)
   }, [data])
 
-  const spColumns = [
+  const spColumns: ColumnsType<SalespersonSummaryRow> = [
     { title: 'Code', dataIndex: 'salespersonCode', key: 'salespersonCode', width: 120 },
     {
       title: 'Name',
@@ -224,8 +230,14 @@ export default function SalespersonSummaryPage() {
       sorter: (a: SalespersonSummaryRow, b: SalespersonSummaryRow) => a.perks - b.perks,
     },
   ]
+  const groupedSpColumns: ColumnsType<SalespersonSummaryRow> = [
+    salesReportColumnGroup('identity', spColumns.slice(0, 3), { title: 'Employee' }),
+    salesReportColumnGroup('status', spColumns.slice(3, 4), { boundary: true, title: 'Activity' }),
+    salesReportColumnGroup('sales', spColumns.slice(4, 5), { boundary: true, title: 'Sales' }),
+    salesReportColumnGroup('performance', spColumns.slice(5), { boundary: true, title: 'Perks' }),
+  ]
 
-  const cashierColumns = [
+  const cashierColumns: ColumnsType<CashierRow> = [
     { title: 'Code', dataIndex: 'cashierCode', key: 'cashierCode', width: 120 },
     { title: 'Name', dataIndex: 'cashierName', key: 'cashierName', width: 200, render: (v: string | null) => v ?? '—' },
     { title: 'Store', dataIndex: 'storeNumber', key: 'storeNumber', width: 80 },
@@ -243,6 +255,11 @@ export default function SalespersonSummaryPage() {
       sorter: (a: CashierRow, b: CashierRow) => a.dollars - b.dollars,
       defaultSortOrder: 'descend' as const,
     },
+  ]
+  const groupedCashierColumns: ColumnsType<CashierRow> = [
+    salesReportColumnGroup('identity', cashierColumns.slice(0, 3), { title: 'Employee' }),
+    salesReportColumnGroup('status', cashierColumns.slice(3, 4), { boundary: true, title: 'Activity' }),
+    salesReportColumnGroup('sales', cashierColumns.slice(4), { boundary: true, title: 'Sales' }),
   ]
 
   return (
@@ -377,8 +394,9 @@ export default function SalespersonSummaryPage() {
           />
           <Typography.Title level={4} style={{ marginTop: 0, marginBottom: 8 }}>Salespeople</Typography.Title>
           <Table<SalespersonSummaryRow>
+            className={salesReportTableClassName()}
             dataSource={data.salespeople}
-            columns={spColumns}
+            columns={groupedSpColumns}
             rowKey={(r) => `${r.salespersonCode}|${r.storeNumber}`}
             size="small"
             pagination={{ pageSize: 25 }}
@@ -389,19 +407,26 @@ export default function SalespersonSummaryPage() {
                 ? {
                     expandedRowRender: (record) =>
                       record.subtotals.length ? (
-                        <Table
+                        <Table<SalespersonSubtotal>
+                          className={salesReportTableClassName()}
                           dataSource={record.subtotals}
                           columns={[
-                            { title: 'Key', dataIndex: 'key', width: 150 },
-                            { title: query.subtotalBy === 'VENDOR' ? 'Vendor' : 'Category', dataIndex: 'label', width: 260 },
-                            {
-                              title: 'Qty', dataIndex: 'qty', align: 'right' as const, width: 100,
-                              render: (v: number) => fmtInt(v),
-                            },
-                            {
-                              title: 'Dollars', dataIndex: 'dollars',
-                              align: 'right' as const, render: (v: number) => fmtMoney(v),
-                            },
+                            salesReportColumnGroup<SalespersonSubtotal>('identity', [
+                              { title: 'Key', dataIndex: 'key', width: 150 },
+                              { title: query.subtotalBy === 'VENDOR' ? 'Vendor' : 'Category', dataIndex: 'label', width: 260 },
+                            ], { title: 'Group' }),
+                            salesReportColumnGroup<SalespersonSubtotal>('status', [
+                              {
+                                title: 'Qty', dataIndex: 'qty', align: 'right' as const, width: 100,
+                                render: (v: number) => fmtInt(v),
+                              },
+                            ], { boundary: true, title: 'Activity' }),
+                            salesReportColumnGroup<SalespersonSubtotal>('sales', [
+                              {
+                                title: 'Dollars', dataIndex: 'dollars',
+                                align: 'right' as const, render: (v: number) => fmtMoney(v),
+                              },
+                            ], { boundary: true, title: 'Sales' }),
                           ]}
                           rowKey="key"
                           pagination={false}
@@ -418,8 +443,9 @@ export default function SalespersonSummaryPage() {
             <>
               <Typography.Title level={4} style={{ marginTop: 24, marginBottom: 8 }}>Cashier Summary</Typography.Title>
               <Table<CashierRow>
+                className={salesReportTableClassName()}
                 dataSource={data.cashierSummary}
-                columns={cashierColumns}
+                columns={groupedCashierColumns}
                 rowKey={(r) => `${r.cashierCode}|${r.storeNumber}`}
                 size="small"
                 pagination={{ pageSize: 25 }}

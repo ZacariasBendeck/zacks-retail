@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import type { ColumnsType } from 'antd/es/table'
 import {
   Alert, Input, Select, Space, Table, Tag, Spin,
 } from 'antd'
@@ -23,6 +24,11 @@ import CollapsibleFilterCard from '../../components/reports/CollapsibleFilterCar
 import { SummaryLabelCell, SummaryNumericCell } from '../../components/reports/SummaryRow'
 import { fmtMoney, fmtInt } from '../../utils/reportFormatters'
 import { useReportTemplate, useTouchReportTemplate } from '../../hooks/useReportTemplates'
+import {
+  salesReportColumnGroup,
+  salesReportSummaryCellClassName,
+  salesReportTableClassName,
+} from '../../components/reports/salesReportTableZones'
 
 function parseInts(s: string): number[] | undefined {
   const arr = s.split(',').map((x) => Number(x.trim())).filter((n) => Number.isFinite(n) && n > 0)
@@ -126,7 +132,7 @@ export default function StockStatusPage() {
     qc.cancelQueries({ queryKey: manualReportQueryKey('stock-status', reportRun) })
   }
 
-  const columns = [
+  const columns: ColumnsType<StockStatusRow> = [
     { title: 'SKU', dataIndex: 'sku', key: 'sku', width: 180, fixed: 'left' as const },
     { title: 'Description', dataIndex: 'description', key: 'description', width: 240, render: (v: string | null) => v ?? '—' },
     { title: 'Vendor', dataIndex: 'vendorCode', key: 'vendorCode', width: 90 },
@@ -164,6 +170,12 @@ export default function StockStatusPage() {
       align: 'right' as const,
       render: (v: number) => fmtMoney(v),
     },
+  ]
+  const groupedColumns: ColumnsType<StockStatusRow> = [
+    salesReportColumnGroup('identity', columns.slice(0, 5), { title: 'Product' }),
+    salesReportColumnGroup('inventory', columns.slice(5, 8), { boundary: true, title: 'Inventory' }),
+    salesReportColumnGroup('status', columns.slice(8, 10), { boundary: true, title: 'Reorder Risk' }),
+    salesReportColumnGroup('performance', columns.slice(10), { boundary: true, title: 'Value' }),
   ]
 
   return (
@@ -344,8 +356,9 @@ export default function StockStatusPage() {
             ]}
           />
           <Table<StockStatusRow>
+            className={salesReportTableClassName()}
             dataSource={data.rows}
-            columns={columns}
+            columns={groupedColumns}
             rowKey={(r) => `${r.sku}|${r.storeNumber}`}
             size="small"
             pagination={{ pageSize: 50 }}
@@ -354,14 +367,14 @@ export default function StockStatusPage() {
             summary={() => (
               <Table.Summary fixed>
                 <Table.Summary.Row>
-                  <SummaryLabelCell index={0} colSpan={5} variant="grand">Totals</SummaryLabelCell>
-                  <SummaryNumericCell index={1} variant="grand">{fmtInt(data.totals.onHand)}</SummaryNumericCell>
-                  <SummaryNumericCell index={2} variant="grand">{fmtInt(data.totals.onOrder)}</SummaryNumericCell>
-                  <SummaryNumericCell index={3} variant="grand">{fmtInt(data.totals.model)}</SummaryNumericCell>
-                  <SummaryNumericCell index={4} variant="grand">{fmtInt(data.totals.short)}</SummaryNumericCell>
-                  <SummaryNumericCell index={5} variant="grand">{fmtInt(data.totals.critical)}</SummaryNumericCell>
-                  <SummaryNumericCell index={6} variant="grand">{fmtMoney(data.totals.retailValue)}</SummaryNumericCell>
-                  <SummaryNumericCell index={7} variant="grand">{fmtMoney(data.totals.costValue)}</SummaryNumericCell>
+                  <SummaryLabelCell index={0} colSpan={5} className={salesReportSummaryCellClassName('identity')} variant="grand">Totals</SummaryLabelCell>
+                  <SummaryNumericCell index={1} className={salesReportSummaryCellClassName('inventory', { boundary: true })} variant="grand">{fmtInt(data.totals.onHand)}</SummaryNumericCell>
+                  <SummaryNumericCell index={2} className={salesReportSummaryCellClassName('inventory')} variant="grand">{fmtInt(data.totals.onOrder)}</SummaryNumericCell>
+                  <SummaryNumericCell index={3} className={salesReportSummaryCellClassName('inventory')} variant="grand">{fmtInt(data.totals.model)}</SummaryNumericCell>
+                  <SummaryNumericCell index={4} className={salesReportSummaryCellClassName('status', { boundary: true })} variant="grand">{fmtInt(data.totals.short)}</SummaryNumericCell>
+                  <SummaryNumericCell index={5} className={salesReportSummaryCellClassName('status')} variant="grand">{fmtInt(data.totals.critical)}</SummaryNumericCell>
+                  <SummaryNumericCell index={6} className={salesReportSummaryCellClassName('performance', { boundary: true })} variant="grand">{fmtMoney(data.totals.retailValue)}</SummaryNumericCell>
+                  <SummaryNumericCell index={7} className={salesReportSummaryCellClassName('performance')} variant="grand">{fmtMoney(data.totals.costValue)}</SummaryNumericCell>
                 </Table.Summary.Row>
               </Table.Summary>
             )}

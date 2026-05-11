@@ -273,12 +273,17 @@ describe('SalesAnalysisPage', () => {
     expect(csvHref).toContain('/api/v1/reports/sales/sales-analysis')
     expect(csvHref).toContain('format=csv')
     expect(csvHref).toContain('includeAttributes=true')
-    expect(csvHref).not.toContain('groupOrder')
+    expect(csvHref).toContain('exportLayout=hierarchy')
+    expect(csvHref).toContain('hierarchyDepth=2')
+    expect(csvHref).toContain('level1=department')
+    expect(csvHref).toContain('level2=category')
+    expect(csvHref).toContain('groupOrder=NET_SALES_DESC')
 
     const xlsxHref = screen.getByRole('link', { name: /Export XLSX/i }).getAttribute('href') ?? ''
     expect(xlsxHref).toContain('format=xlsx')
     expect(xlsxHref).toContain('storeOption=COMBINE')
-    expect(xlsxHref).not.toContain('groupOrder')
+    expect(xlsxHref).toContain('exportLayout=hierarchy')
+    expect(xlsxHref).toContain('groupOrder=NET_SALES_DESC')
   })
 
   it('sorts the Sales Analysis table from metric column headers', async () => {
@@ -370,6 +375,24 @@ describe('SalesAnalysisPage', () => {
     const categoryRow = categoryLabel.closest('tr')
     expect(categoryRow).toBeTruthy()
     expect(within(categoryRow!).getAllByText('100.0%').length).toBeGreaterThanOrEqual(4)
+  })
+
+  it('uses compact percent columns and zebra rows in the live report table', async () => {
+    const user = userEvent.setup()
+    const { container } = renderPage()
+
+    await user.click(screen.getByLabelText(/Show % of total/i))
+    await user.click(screen.getByRole('button', { name: /Run Report/i }))
+
+    await waitFor(() => {
+      expect(screen.getAllByRole('columnheader', { name: /% Total/i }).length).toBeGreaterThanOrEqual(4)
+    })
+
+    const table = container.querySelector<HTMLTableElement>('.sales-analysis-table .ant-table-content table')
+    expect(table?.style.width).toBe('')
+    expect(table?.style.tableLayout).toBe('fixed')
+    expect(container.querySelector('.sales-analysis-table .ant-table-cell-fix-left')).toBeNull()
+    expect(container.querySelector('.sales-analysis-table .report-zebra-row')).toBeTruthy()
   })
 
   it('toggles the report results into full screen mode', async () => {

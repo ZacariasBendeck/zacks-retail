@@ -506,6 +506,16 @@ export interface ReorderCasePackSuggestion {
   sizeCells: ReorderCasePackCell[]
 }
 
+export type ReorderCasePackBadge = 'PREVIOUS_SKU' | 'CATEGORY_USED' | 'BEST_FIT'
+
+export interface ReorderCasePackChoice extends ReorderCasePackSuggestion {
+  categoryUsed: boolean
+  categorySkuCount: number
+  categoryUsageCount: number
+  categoryLastUsedAt: string | null
+  badges: ReorderCasePackBadge[]
+}
+
 export interface ReorderPlanChain {
   chainId: string | null
   chainLabel: string
@@ -533,6 +543,7 @@ export interface ReorderPlanChain {
     casePackMultiplier: number | null
   }
   casePackSuggestion: ReorderCasePackSuggestion | null
+  casePackChoices: ReorderCasePackChoice[]
   sizeLines: ReorderPlanSizeLine[]
 }
 

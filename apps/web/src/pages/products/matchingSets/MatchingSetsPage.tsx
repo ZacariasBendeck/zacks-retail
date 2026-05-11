@@ -40,6 +40,7 @@ import {
   useCreateMatchingSetType,
   useMatchingSet,
   useMatchingSetBuyingPlan,
+  useMatchingSetSalesHistory,
   useMatchingSets,
   useMatchingSetTypes,
   useRemoveMatchingSetMember,
@@ -57,16 +58,22 @@ import type {
   MatchingSetBuyingPlan,
   MatchingSetBuyingPlanMember,
   MatchingSetBuyingPlanSizeLine,
+  MatchingSetBuyingGuidanceRole,
+  MatchingSetBuyingGuidanceSizeAction,
   MatchingSetOtbImpactRow,
   MatchingSetInput,
   MatchingSetListFilters,
   MatchingSetListItem,
   MatchingSetMember,
   MatchingSetMemberInput,
+  MatchingSetSalesHistoryReport,
+  MatchingSetSalesHistoryRow,
+  MatchingSetSalesHistorySizeRow,
   MatchingSetType,
 } from '../../../services/productMatchingSetsApi'
 
 type HeaderFormValues = {
+  displayName?: string | null
   setTypeCode: string
   descriptionEs?: string | null
   vendorId?: string | null
@@ -105,8 +112,86 @@ function formatNumber(value: number | null | undefined): string {
   return new Intl.NumberFormat('es-HN', { maximumFractionDigits: 0 }).format(value)
 }
 
+function formatPercent(value: number | null | undefined): string {
+  if (value == null) return '-'
+  return new Intl.NumberFormat('es-HN', { style: 'percent', maximumFractionDigits: 1 }).format(value)
+}
+
+function todayInputDate(): string {
+  return new Date().toISOString().slice(0, 10)
+}
+
+function oneYearAgoInputDate(): string {
+  const date = new Date()
+  date.setFullYear(date.getFullYear() - 1)
+  return date.toISOString().slice(0, 10)
+}
+
 function primarySku(record: MatchingSetListItem): string {
   return record.primaryMember?.skuCode ?? record.primaryMember?.provisionalCode ?? '-'
+}
+
+function matchingSetTypeName(typeCode: string | null | undefined): string {
+  if (typeCode === 'suit') return 'Suit'
+  if (typeCode === 'bikini') return 'Bikini'
+  if (typeCode === 'pj_set') return 'Pajama'
+  if (typeCode === 'coordinate') return 'Coordinate'
+  return 'Set'
+}
+
+function styleFromSkuCode(skuCode: string | null | undefined): string | null {
+  const code = clean(skuCode)
+  return code ? clean(code.split('-')[0]) : null
+}
+
+function colorCodeLabel(code: string | null | undefined): string | null {
+  const c = clean(code)?.toUpperCase()
+  if (!c) return null
+  const labels: Record<string, string> = {
+    BK: 'Black',
+    BLK: 'Black',
+    NV: 'Navy',
+    NAVY: 'Navy',
+    BG: 'Beige',
+    BR: 'Brown',
+    BN: 'Brown',
+    WH: 'White',
+    WT: 'White',
+    GY: 'Gray',
+    GRY: 'Gray',
+    RD: 'Red',
+    GN: 'Green',
+    GR: 'Green',
+    BL: 'Blue',
+  }
+  return labels[c] ?? clean(code)
+}
+
+function colorCodeFromSkuCode(skuCode: string | null | undefined): string | null {
+  const code = clean(skuCode)
+  if (!code || !code.includes('-')) return null
+  const parts = code.split('-').filter(Boolean)
+  return clean(parts[parts.length - 1])
+}
+
+function suggestedDisplayName(input: {
+  setTypeCode: string | null | undefined
+  vendorId?: string | null
+  vendorStyle?: string | null
+  sharedColorCode?: string | null
+  sharedColorLabel?: string | null
+  primarySkuCode?: string | null
+}): string {
+  const style = clean(input.vendorStyle) ?? styleFromSkuCode(input.primarySkuCode)
+  const color = clean(input.sharedColorLabel)
+    ?? colorCodeLabel(input.sharedColorCode)
+    ?? colorCodeLabel(colorCodeFromSkuCode(input.primarySkuCode))
+  return [
+    matchingSetTypeName(input.setTypeCode),
+    clean(input.vendorId),
+    style,
+    color,
+  ].filter(Boolean).join(' - ')
 }
 
 export default function MatchingSetsPage() {
@@ -123,6 +208,8 @@ export default function MatchingSetsPage() {
   const [receiptMonth, setReceiptMonth] = useState(() => new Date().toISOString().slice(0, 7))
   const [horizonWeeks, setHorizonWeeks] = useState(13)
   const [targetCoverWeeks, setTargetCoverWeeks] = useState(8)
+  const [historyStartDate, setHistoryStartDate] = useState(oneYearAgoInputDate)
+  const [historyEndDate, setHistoryEndDate] = useState(todayInputDate)
   const [savedPlanId, setSavedPlanId] = useState<string | null>(null)
   const [typeForm] = Form.useForm()
   const [roleForm] = Form.useForm()
@@ -137,6 +224,15 @@ export default function MatchingSetsPage() {
     selectedId,
     { chainId: detail?.chainId, receiptMonth, horizonWeeks, targetCoverWeeks },
   )
+  const {
+    data: salesHistory,
+    isFetching: salesHistoryLoading,
+    refetch: refetchSalesHistory,
+  } = useMatchingSetSalesHistory(selectedId, {
+    chainId: detail?.chainId,
+    startDate: historyStartDate,
+    endDate: historyEndDate,
+  })
   const createSet = useCreateMatchingSet()
   const updateSet = useUpdateMatchingSet()
   const archiveSet = useArchiveMatchingSet()
@@ -171,6 +267,7 @@ export default function MatchingSetsPage() {
     if (!drawerOpen) return
     if (detail) {
       form.setFieldsValue({
+        displayName: detail.displayName,
         setTypeCode: detail.setTypeCode,
         descriptionEs: detail.descriptionEs,
         vendorId: detail.vendorId,
@@ -229,7 +326,22 @@ export default function MatchingSetsPage() {
 
   const saveHeader = async () => {
     const values = await form.validateFields()
+    const primaryMember = detail?.members.find((member) => member.isPrimary) ?? detail?.members[0] ?? draftMembers.find((member) => member.isPrimary) ?? draftMembers[0]
+    const primarySkuCode = primaryMember
+      ? 'displayCode' in primaryMember
+        ? primaryMember.displayCode
+        : primaryMember.skuCode ?? primaryMember.provisionalCode
+      : null
+    const displayName = clean(values.displayName) ?? suggestedDisplayName({
+      setTypeCode: values.setTypeCode,
+      vendorId: values.vendorId,
+      vendorStyle: values.vendorStyle,
+      sharedColorCode: values.sharedColorCode,
+      sharedColorLabel: values.sharedColorLabel,
+      primarySkuCode,
+    })
     const payload: MatchingSetInput = {
+      displayName,
       setTypeCode: values.setTypeCode,
       descriptionEs: clean(values.descriptionEs),
       vendorId: clean(values.vendorId),
@@ -291,12 +403,15 @@ export default function MatchingSetsPage() {
   const listColumns: ColumnsType<MatchingSetListItem> = [
     {
       title: 'Set',
-      dataIndex: 'code',
-      width: 150,
+      dataIndex: 'displayName',
+      width: 260,
       render: (value: string, record) => (
-        <Button type="link" style={{ padding: 0 }} onClick={() => openExisting(record.id)}>
-          {value}
-        </Button>
+        <Space direction="vertical" size={0}>
+          <Button type="link" style={{ padding: 0, height: 'auto', textAlign: 'left' }} onClick={() => openExisting(record.id)}>
+            {value || record.code}
+          </Button>
+          <Typography.Text type="secondary">{record.code}</Typography.Text>
+        </Space>
       ),
     },
     { title: 'Type', dataIndex: 'setTypeLabelEs', width: 170 },
@@ -548,14 +663,14 @@ export default function MatchingSetsPage() {
         columns={listColumns}
         dataSource={rows ?? []}
         pagination={{ pageSize: 50, showSizeChanger: true }}
-        scroll={{ x: 1280 }}
+        scroll={{ x: 1390 }}
       />
 
       <Drawer
         open={drawerOpen}
         width={980}
         onClose={() => setDrawerOpen(false)}
-        title={detail ? detail.code : 'New Matching Set'}
+        title={detail ? detail.displayName || detail.code : 'New Matching Set'}
         extra={
           <Space>
             {detail && (
@@ -574,6 +689,9 @@ export default function MatchingSetsPage() {
         }
       >
         <Form form={form} layout="vertical">
+          <Form.Item name="displayName" label="Display Name">
+            <Input placeholder="Suit - KTAI - TR230 - Black" />
+          </Form.Item>
           <Flex gap={12} wrap="wrap">
             <Form.Item name="setTypeCode" label="Type" rules={[{ required: true }]} style={{ minWidth: 220, flex: 1 }}>
               <Select options={(types ?? []).map((type) => ({ value: type.code, label: type.labelEs }))} />
@@ -710,6 +828,21 @@ export default function MatchingSetsPage() {
                       message.success(`PO worksheet created: ${created.poNumber}`)
                       setSavedPlanId(null)
                     }}
+                  />
+                ),
+              },
+              {
+                key: 'sales-history',
+                label: 'Sales & Buy Guidance',
+                children: (
+                  <SalesHistoryPanel
+                    report={salesHistory}
+                    loading={salesHistoryLoading}
+                    startDate={historyStartDate}
+                    endDate={historyEndDate}
+                    onStartDateChange={setHistoryStartDate}
+                    onEndDateChange={setHistoryEndDate}
+                    onRefresh={() => void refetchSalesHistory()}
                   />
                 ),
               },
@@ -927,6 +1060,346 @@ function RoleSettingsDrawer({
 function formatMoney(value: number | null | undefined): string {
   if (value == null) return '-'
   return new Intl.NumberFormat('es-HN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value)
+}
+
+function formatWeeks(value: number | null | undefined): string {
+  if (value == null) return '-'
+  return new Intl.NumberFormat('es-HN', { maximumFractionDigits: 1 }).format(value)
+}
+
+function guidanceActionTag(action: 'BUY_MORE' | 'DO_NOT_BUY' | 'CLEAR_EXCESS') {
+  const config = {
+    BUY_MORE: { color: 'green', label: 'Buy more' },
+    DO_NOT_BUY: { color: 'default', label: 'Do not buy' },
+    CLEAR_EXCESS: { color: 'orange', label: 'Transfer/clear' },
+  }[action]
+  return <Tag color={config.color}>{config.label}</Tag>
+}
+
+function roleName(roleCode: string): string {
+  if (roleCode === 'jacket') return 'Jackets'
+  if (roleCode === 'pant') return 'Pants'
+  if (roleCode === 'vest') return 'Vests'
+  return roleCode
+}
+
+function SalesHistoryPanel({
+  report,
+  loading,
+  startDate,
+  endDate,
+  onStartDateChange,
+  onEndDateChange,
+  onRefresh,
+}: {
+  report: MatchingSetSalesHistoryReport | undefined
+  loading: boolean
+  startDate: string
+  endDate: string
+  onStartDateChange: (value: string) => void
+  onEndDateChange: (value: string) => void
+  onRefresh: () => void
+}) {
+  const rawSummaryColumns: ColumnsType<MatchingSetSalesHistoryRow> = [
+    { title: 'Month', dataIndex: 'salesMonth', width: 95 },
+    { title: 'Store', dataIndex: 'storeId', width: 80, render: (value) => value ?? '-' },
+    { title: 'Set', dataIndex: 'setCode', width: 130 },
+    { title: 'Vendor', dataIndex: 'vendorId', width: 90, render: (value) => value ?? '-' },
+    { title: 'Style', dataIndex: 'vendorStyle', width: 110, render: (value) => value ?? '-' },
+    { title: 'Color', dataIndex: 'sharedColorLabel', width: 130, render: (value) => value ?? '-' },
+    { title: '2-piece', dataIndex: 'core2PieceSets', width: 90, align: 'right', render: formatNumber },
+    { title: '3-piece', dataIndex: 'threePieceSets', width: 90, align: 'right', render: formatNumber },
+    { title: 'Vest Attach', dataIndex: 'vestAttachmentRate', width: 110, align: 'right', render: formatPercent },
+    { title: 'Jackets', dataIndex: 'jacketUnitsSold', width: 90, align: 'right', render: formatNumber },
+    { title: 'Pants', dataIndex: 'pantUnitsSold', width: 90, align: 'right', render: formatNumber },
+    { title: 'Vests', dataIndex: 'vestUnitsSold', width: 90, align: 'right', render: formatNumber },
+    { title: 'Jacket Only', dataIndex: 'jacketOnlyQty', width: 105, align: 'right', render: formatNumber },
+    { title: 'Pant Extra', dataIndex: 'pantOnlyQty', width: 100, align: 'right', render: formatNumber },
+    { title: 'Vest Extra', dataIndex: 'vestExtraQty', width: 100, align: 'right', render: formatNumber },
+    { title: 'Returns', dataIndex: 'totalReturnUnits', width: 90, align: 'right', render: formatNumber },
+    { title: 'Net Sales', dataIndex: 'netSales', width: 120, align: 'right', render: formatMoney },
+    { title: 'Gross Margin', dataIndex: 'grossMargin', width: 130, align: 'right', render: formatMoney },
+  ]
+
+  const rawSizeColumns: ColumnsType<MatchingSetSalesHistorySizeRow> = [
+    { title: 'Month', dataIndex: 'salesMonth', width: 95 },
+    { title: 'Store', dataIndex: 'storeId', width: 80, render: (value) => value ?? '-' },
+    { title: 'Role', dataIndex: 'roleLabelEs', width: 120, render: (value, record) => value ?? record.roleCode },
+    { title: 'Size', dataIndex: 'sizeLabel', width: 120 },
+    { title: 'Units', dataIndex: 'unitsSold', width: 90, align: 'right', render: formatNumber },
+    { title: 'Returns', dataIndex: 'returnUnits', width: 90, align: 'right', render: formatNumber },
+    { title: 'Net Sales', dataIndex: 'netSales', width: 120, align: 'right', render: formatMoney },
+    { title: 'Gross Margin', dataIndex: 'grossMargin', width: 130, align: 'right', render: formatMoney },
+  ]
+
+  const monthlyColumns: ColumnsType<MatchingSetSalesHistoryRow> = [
+    { title: 'Month', dataIndex: 'salesMonth', width: 95 },
+    { title: '2-piece', dataIndex: 'core2PieceSets', align: 'right', render: formatNumber },
+    { title: '3-piece', dataIndex: 'threePieceSets', align: 'right', render: formatNumber },
+    { title: 'Vest Attach', dataIndex: 'vestAttachmentRate', align: 'right', render: formatPercent },
+    { title: 'Jackets', dataIndex: 'jacketUnitsSold', align: 'right', render: formatNumber },
+    { title: 'Pants', dataIndex: 'pantUnitsSold', align: 'right', render: formatNumber },
+    { title: 'Vests', dataIndex: 'vestUnitsSold', align: 'right', render: formatNumber },
+    { title: 'Net Sales', dataIndex: 'netSales', align: 'right', render: formatMoney },
+    { title: 'Gross Margin', dataIndex: 'grossMargin', align: 'right', render: formatMoney },
+  ]
+
+  const storeColumns: ColumnsType<MatchingSetSalesHistoryRow> = [
+    { title: 'Month', dataIndex: 'salesMonth', width: 95 },
+    { title: 'Store', dataIndex: 'storeId', width: 80, render: (value) => value ?? '-' },
+    { title: '2-piece', dataIndex: 'core2PieceSets', align: 'right', render: formatNumber },
+    { title: '3-piece', dataIndex: 'threePieceSets', align: 'right', render: formatNumber },
+    { title: 'Vest Attach', dataIndex: 'vestAttachmentRate', align: 'right', render: formatPercent },
+    { title: 'Jackets', dataIndex: 'jacketUnitsSold', align: 'right', render: formatNumber },
+    { title: 'Pants', dataIndex: 'pantUnitsSold', align: 'right', render: formatNumber },
+    { title: 'Vests', dataIndex: 'vestUnitsSold', align: 'right', render: formatNumber },
+  ]
+
+  const rolePositionColumns: ColumnsType<MatchingSetBuyingGuidanceRole> = [
+    { title: 'Role', dataIndex: 'roleLabelEs', render: (value, record) => value ?? roleName(record.roleCode) },
+    { title: 'Sold', dataIndex: 'unitsSold', align: 'right', render: formatNumber },
+    { title: 'Returns', dataIndex: 'returnUnits', align: 'right', render: formatNumber },
+    { title: 'On Hand', dataIndex: 'onHand', align: 'right', render: formatNumber },
+    { title: 'On Order', dataIndex: 'onOrder', align: 'right', render: formatNumber },
+    { title: 'WOS', dataIndex: 'weeksOfSupply', align: 'right', render: formatWeeks },
+    { title: 'Demand Buy', dataIndex: 'demandReorderQty', align: 'right', render: formatNumber },
+    { title: 'Balanced Buy', dataIndex: 'balancedRestockQty', align: 'right', render: formatNumber },
+  ]
+
+  const sizeActionColumns: ColumnsType<MatchingSetBuyingGuidanceSizeAction> = [
+    { title: 'Action', dataIndex: 'action', width: 125, render: guidanceActionTag },
+    { title: 'Role', dataIndex: 'roleLabelEs', width: 105, render: (value, record) => value ?? roleName(record.roleCode) },
+    { title: 'Size', dataIndex: 'sizeLabel', width: 105 },
+    { title: 'Sold', dataIndex: 'unitsSold', align: 'right', render: formatNumber },
+    { title: 'Recent', dataIndex: 'recentSales', align: 'right', render: formatNumber },
+    { title: 'On Hand', dataIndex: 'onHand', align: 'right', render: formatNumber },
+    { title: 'On Order', dataIndex: 'onOrder', align: 'right', render: formatNumber },
+    { title: 'Buy', dataIndex: 'demandReorderQty', align: 'right', render: formatNumber },
+    { title: 'Why', dataIndex: 'note', render: (value) => <Typography.Text type="secondary">{value}</Typography.Text> },
+  ]
+
+  const totals = report?.totals
+  const guidance = report?.buyingGuidance
+  const roleRows = guidance?.roles ?? []
+
+  return (
+    <Space direction="vertical" size={12} style={{ width: '100%' }}>
+      <Flex justify="space-between" align="start" gap={12} wrap="wrap">
+        <Alert
+          type="info"
+          showIcon
+          style={{ flex: 1, minWidth: 360 }}
+          message="Amounts in Lempira (HNL). Demand uses positive sales quantities; returns are shown separately."
+        />
+        <Button icon={<ReloadOutlined />} onClick={onRefresh} loading={loading}>
+          Refresh
+        </Button>
+      </Flex>
+
+      <Flex gap={8} wrap="wrap" align="end">
+        <div>
+          <Typography.Text type="secondary">Start date</Typography.Text>
+          <Input
+            type="date"
+            value={startDate}
+            onChange={(event) => onStartDateChange(event.target.value)}
+            style={{ display: 'block', width: 150 }}
+          />
+        </div>
+        <div>
+          <Typography.Text type="secondary">End date</Typography.Text>
+          <Input
+            type="date"
+            value={endDate}
+            onChange={(event) => onEndDateChange(event.target.value)}
+            style={{ display: 'block', width: 150 }}
+          />
+        </div>
+      </Flex>
+
+      {guidance ? (
+        <Alert
+          type="warning"
+          showIcon
+          message="Buying guidance"
+          description={
+            <Space direction="vertical" size={4}>
+              {guidance.guidanceMessages.map((msg) => (
+                <Typography.Text key={msg}>{msg}</Typography.Text>
+              ))}
+            </Space>
+          }
+        />
+      ) : null}
+
+      <Flex gap={12} wrap="wrap">
+        <Card size="small" title="Demand Ratio J:P:V" style={{ minWidth: 170, flex: 1 }}>
+          <Typography.Title level={3} style={{ margin: 0 }}>{guidance?.historicalSalesRatio.label ?? '-'}</Typography.Title>
+          <Typography.Text type="secondary">selected range</Typography.Text>
+        </Card>
+        <Card size="small" title="Inventory Ratio J:P:V" style={{ minWidth: 170, flex: 1 }}>
+          <Typography.Title level={3} style={{ margin: 0 }}>{guidance?.currentInventoryRatio.label ?? '-'}</Typography.Title>
+          <Typography.Text type="secondary">current on hand</Typography.Text>
+        </Card>
+        <Card size="small" title="2-piece Sets" style={{ minWidth: 145, flex: 1 }}>
+          <Typography.Title level={3} style={{ margin: 0 }}>{formatNumber(totals?.core2PieceSets)}</Typography.Title>
+        </Card>
+        <Card size="small" title="3-piece Sets" style={{ minWidth: 145, flex: 1 }}>
+          <Typography.Title level={3} style={{ margin: 0 }}>{formatNumber(totals?.threePieceSets)}</Typography.Title>
+        </Card>
+        <Card size="small" title="Vest Attach" style={{ minWidth: 145, flex: 1 }}>
+          <Typography.Title level={3} style={{ margin: 0 }}>{formatPercent(totals?.vestAttachmentRate)}</Typography.Title>
+        </Card>
+        <Card size="small" title="Complete-set Capacity" style={{ minWidth: 175, flex: 1 }}>
+          <Typography.Title level={3} style={{ margin: 0 }}>{formatNumber(guidance?.completeSetCapacity)}</Typography.Title>
+          <Typography.Text type="secondary">bottleneck: {guidance?.bottleneckRoleCode ? roleName(guidance.bottleneckRoleCode) : '-'}</Typography.Text>
+        </Card>
+      </Flex>
+
+      {guidance ? (
+        <Flex gap={12} wrap="wrap" align="stretch">
+          <Card
+            size="small"
+            title="Demand Reorder"
+            style={{ flex: '1 1 360px' }}
+            extra={<Typography.Text strong>{formatNumber(guidance.demandReorderUnits)} units</Typography.Text>}
+          >
+            <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
+              Default mode: buy only where recent velocity and size gaps justify it.
+            </Typography.Paragraph>
+            <Space direction="vertical" style={{ width: '100%' }} size={8}>
+              {roleRows.map((role) => (
+                <Flex key={role.roleCode} justify="space-between" gap={12} align="start" wrap="wrap">
+                  <div style={{ minWidth: 90 }}>
+                    <Typography.Text strong>{roleName(role.roleCode)}</Typography.Text>
+                    <br />
+                    {guidanceActionTag(role.action)}
+                  </div>
+                  <Typography.Title level={4} style={{ margin: 0 }}>{formatNumber(role.demandReorderQty)}</Typography.Title>
+                  <Typography.Text type="secondary" style={{ flex: 1, minWidth: 180 }}>{role.note}</Typography.Text>
+                </Flex>
+              ))}
+              <Typography.Text type="secondary">Estimated cost: {formatMoney(guidance.demandReorderCost)}</Typography.Text>
+            </Space>
+          </Card>
+
+          <Card
+            size="small"
+            title="Balanced Restock"
+            style={{ flex: '1 1 360px' }}
+            extra={<Typography.Text strong>{formatNumber(guidance.balancedRestockUnits)} units</Typography.Text>}
+          >
+            <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
+              Strategic mode: rebuild the planned set ratio for presentation, even when immediate demand is lower.
+            </Typography.Paragraph>
+            <Space direction="vertical" style={{ width: '100%' }} size={8}>
+              {roleRows.map((role) => (
+                <Flex key={role.roleCode} justify="space-between" gap={12} align="start" wrap="wrap">
+                  <div style={{ minWidth: 90 }}>
+                    <Typography.Text strong>{roleName(role.roleCode)}</Typography.Text>
+                    <br />
+                    <Typography.Text type="secondary">ratio {role.quantityRatio}</Typography.Text>
+                  </div>
+                  <Typography.Title level={4} style={{ margin: 0 }}>{formatNumber(role.balancedRestockQty)}</Typography.Title>
+                  <Typography.Text type="secondary" style={{ flex: 1, minWidth: 180 }}>
+                    Rebuilds the planned set balance from current on-hand plus on-order.
+                  </Typography.Text>
+                </Flex>
+              ))}
+              <Typography.Text type="secondary">Estimated cost: {formatMoney(guidance.balancedRestockCost)}</Typography.Text>
+            </Space>
+          </Card>
+        </Flex>
+      ) : null}
+
+      {guidance ? (
+        <>
+          <Divider orientation="left">Role Position</Divider>
+          <Table
+            rowKey="roleCode"
+            size="small"
+            loading={loading}
+            columns={rolePositionColumns}
+            dataSource={roleRows}
+            pagination={false}
+          />
+        </>
+      ) : null}
+
+      <Tabs
+        items={[
+          {
+            key: 'monthly',
+            label: 'Monthly Trend',
+            children: (
+              <Table
+                rowKey={(record) => `${record.salesMonth}:${record.setId}`}
+                size="small"
+                loading={loading}
+                columns={monthlyColumns}
+                dataSource={report?.monthlyRows ?? []}
+                pagination={{ pageSize: 12 }}
+              />
+            ),
+          },
+          {
+            key: 'stores',
+            label: 'Store Breakdown',
+            children: (
+              <Table
+                rowKey={(record) => `${record.salesMonth}:${record.storeId ?? ''}:${record.setId}`}
+                size="small"
+                loading={loading}
+                columns={storeColumns}
+                dataSource={report?.rows ?? []}
+                pagination={{ pageSize: 20 }}
+              />
+            ),
+          },
+          {
+            key: 'sizes',
+            label: 'Size Action List',
+            children: (
+              <Table
+                rowKey={(record) => `${record.roleCode}:${record.sizeLabel}:${record.skuId}`}
+                size="small"
+                loading={loading}
+                columns={sizeActionColumns}
+                dataSource={guidance?.sizeActions ?? []}
+                pagination={{ pageSize: 20 }}
+              />
+            ),
+          },
+          {
+            key: 'raw',
+            label: 'Raw Data',
+            children: (
+              <Space direction="vertical" size={12} style={{ width: '100%' }}>
+                <Table
+                  rowKey={(record) => `${record.salesMonth}:${record.storeId ?? ''}:${record.setId}`}
+                  size="small"
+                  loading={loading}
+                  columns={rawSummaryColumns}
+                  dataSource={report?.rows ?? []}
+                  pagination={{ pageSize: 20 }}
+                  scroll={{ x: 1900 }}
+                />
+                <Table
+                  rowKey={(record) => `${record.salesMonth}:${record.storeId ?? ''}:${record.setId}:${record.roleCode}:${record.sizeLabel}`}
+                  size="small"
+                  loading={loading}
+                  columns={rawSizeColumns}
+                  dataSource={report?.sizeRows ?? []}
+                  pagination={{ pageSize: 20 }}
+                  scroll={{ x: 900 }}
+                />
+              </Space>
+            ),
+          },
+        ]}
+      />
+    </Space>
+  )
 }
 
 function BuyingPlanPanel({
