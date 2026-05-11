@@ -105,6 +105,7 @@ export interface SkuListFilters {
   sectors?: number[]
   departments?: number[]
   categories?: number[]
+  families?: string[]
   seasons?: string[]
   groups?: string[]
   keywords?: string[]

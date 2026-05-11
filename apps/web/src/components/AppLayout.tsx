@@ -214,6 +214,7 @@ const appMenuItems = [
     label: 'Purchasing',
     children: [
       { key: '/purchasing/orders', icon: <FileTextOutlined />, label: 'Purchase Orders', requiredPermissions: ['purchasing.view'] },
+      { key: '/purchasing/quotations', icon: <TagOutlined />, label: 'Supplier Quotations', requiredPermissions: ['purchasing.view'] },
       { key: '/purchasing/orders/new-spec-preview', icon: <ExperimentOutlined />, label: 'PO Entry (Spec Preview)', requiredPermissions: ['purchasing.edit'] },
       { key: '/purchasing/receive', icon: <InboxOutlined />, label: 'Receive POs', requiredPermissions: ['purchasing.edit'] },
       { key: '/purchasing/receive-spec-preview', icon: <ExperimentOutlined />, label: 'Receive PO (Spec Preview)', requiredPermissions: ['purchasing.edit'] },

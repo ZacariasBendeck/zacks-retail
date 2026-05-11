@@ -110,6 +110,7 @@ router.get('/', async (req: Request, res: Response) => {
   const sectors = parseIntArray(req.query.sectors);
   const departments = parseIntArray(req.query.departments);
   const categories = parseIntArray(req.query.categories);
+  const families = parseStringArray(req.query.families);
   const seasons = parseStringArray(req.query.seasons);
   const groups = parseStringArray(req.query.groups);
   const keywords = parseStringArray(req.query.keywords);
@@ -149,6 +150,7 @@ router.get('/', async (req: Request, res: Response) => {
       sectors,
       departments,
       categories,
+      families,
       seasons,
       groups,
       keywords,

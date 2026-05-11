@@ -942,6 +942,7 @@ exports.Prisma.PurchaseOrderScalarFieldEnum = {
   plannedReceiptDate: 'plannedReceiptDate',
   cancelDate: 'cancelDate',
   paymentDate: 'paymentDate',
+  supplierQuotationId: 'supplierQuotationId',
   createdBy: 'createdBy',
   submittedAt: 'submittedAt',
   closedAt: 'closedAt',
@@ -962,6 +963,7 @@ exports.Prisma.PurchaseOrderLineScalarFieldEnum = {
   sourceUnitCost: 'sourceUnitCost',
   commercialUnitCostHnl: 'commercialUnitCostHnl',
   estimatedLandedUnitCostHnl: 'estimatedLandedUnitCostHnl',
+  supplierQuotationLineId: 'supplierQuotationLineId',
   quantityOrdered: 'quantityOrdered',
   quantityReceived: 'quantityReceived',
   writeBackToMaster: 'writeBackToMaster',
@@ -977,6 +979,77 @@ exports.Prisma.PurchaseOrderLineSizeCellScalarFieldEnum = {
   quantityOrdered: 'quantityOrdered',
   createdAt: 'createdAt',
   updatedAt: 'updatedAt'
+};
+
+exports.Prisma.SupplierQuotationScalarFieldEnum = {
+  id: 'id',
+  quoteNumber: 'quoteNumber',
+  vendorCode: 'vendorCode',
+  buyer: 'buyer',
+  season: 'season',
+  chainId: 'chainId',
+  sourceCurrency: 'sourceCurrency',
+  fxRate: 'fxRate',
+  fxDate: 'fxDate',
+  incotermCode: 'incotermCode',
+  incotermPlace: 'incotermPlace',
+  paymentTerms: 'paymentTerms',
+  quoteDate: 'quoteDate',
+  validUntil: 'validUntil',
+  leadTimeDays: 'leadTimeDays',
+  status: 'status',
+  sourceDocumentRef: 'sourceDocumentRef',
+  notes: 'notes',
+  createdAt: 'createdAt',
+  createdBy: 'createdBy',
+  updatedAt: 'updatedAt',
+  updatedBy: 'updatedBy'
+};
+
+exports.Prisma.SupplierQuotationLineScalarFieldEnum = {
+  id: 'id',
+  quotationId: 'quotationId',
+  lineSequence: 'lineSequence',
+  linkedSkuId: 'linkedSkuId',
+  supplierStyle: 'supplierStyle',
+  supplierColorCode: 'supplierColorCode',
+  supplierColorName: 'supplierColorName',
+  description: 'description',
+  familyCode: 'familyCode',
+  categoryNumber: 'categoryNumber',
+  colorFamilyValueId: 'colorFamilyValueId',
+  materialValueId: 'materialValueId',
+  styleElementValueId: 'styleElementValueId',
+  keywords: 'keywords',
+  imageUrl: 'imageUrl',
+  moqQty: 'moqQty',
+  quotedQty: 'quotedQty',
+  unitCost: 'unitCost',
+  estimatedLandedUnitCostHnl: 'estimatedLandedUnitCostHnl',
+  targetRetailHnl: 'targetRetailHnl',
+  marginPct: 'marginPct',
+  plannedReceiptDate: 'plannedReceiptDate',
+  decisionStatus: 'decisionStatus',
+  decisionReason: 'decisionReason',
+  decisionAt: 'decisionAt',
+  decisionBy: 'decisionBy',
+  createdAt: 'createdAt',
+  createdBy: 'createdBy',
+  updatedAt: 'updatedAt',
+  updatedBy: 'updatedBy'
+};
+
+exports.Prisma.SupplierQuotationLineRelationScalarFieldEnum = {
+  id: 'id',
+  sourceLineId: 'sourceLineId',
+  relationType: 'relationType',
+  targetType: 'targetType',
+  targetSkuId: 'targetSkuId',
+  targetMatchingSetId: 'targetMatchingSetId',
+  targetQuotationLineId: 'targetQuotationLineId',
+  note: 'note',
+  createdAt: 'createdAt',
+  createdBy: 'createdBy'
 };
 
 exports.Prisma.PoReceiptScalarFieldEnum = {
@@ -3199,6 +3272,9 @@ exports.Prisma.ModelName = {
   PurchaseOrder: 'PurchaseOrder',
   PurchaseOrderLine: 'PurchaseOrderLine',
   PurchaseOrderLineSizeCell: 'PurchaseOrderLineSizeCell',
+  SupplierQuotation: 'SupplierQuotation',
+  SupplierQuotationLine: 'SupplierQuotationLine',
+  SupplierQuotationLineRelation: 'SupplierQuotationLineRelation',
   PoReceipt: 'PoReceipt',
   PoReceiptLine: 'PoReceiptLine',
   PoStatusHistory: 'PoStatusHistory',

@@ -51,6 +51,7 @@ function buildParams(f?: SkuListFilters): string {
   if (f.departments && f.departments.length > 0) p.set('departments', f.departments.join(','))
   if (f.categories && f.categories.length > 0)
     p.set('categories', f.categories.join(','))
+  if (f.families && f.families.length > 0) p.set('families', f.families.join(','))
   if (f.seasons && f.seasons.length > 0) p.set('seasons', f.seasons.join(','))
   if (f.groups && f.groups.length > 0) p.set('groups', f.groups.join(','))
   if (f.keywords && f.keywords.length > 0) p.set('keywords', f.keywords.join(','))

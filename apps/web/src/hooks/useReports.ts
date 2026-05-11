@@ -269,6 +269,7 @@ export type SalesAnalysisArgs = {
   dimension: SalesAnalysisDimension
   reportType: SalesAnalysisReportType
   storeOption?: SalesAnalysisStoreOption
+  groupOrder?: 'NET_SALES_DESC' | 'LEFT_GROUP_ASC'
   startDate?: string
   endDate?: string
   stores?: number[]

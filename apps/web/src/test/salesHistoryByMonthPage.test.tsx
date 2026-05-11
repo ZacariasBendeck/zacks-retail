@@ -333,6 +333,7 @@ async function clickRunReport(user: ReturnType<typeof userEvent.setup>) {
 describe('SalesHistoryByMonthPage', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    window.sessionStorage.clear()
     vi.mocked(useSalesDimensions).mockReturnValue({
       data: buildDims(),
       isLoading: false,

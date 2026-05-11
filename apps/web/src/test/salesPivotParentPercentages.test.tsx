@@ -269,6 +269,7 @@ describe('Sales Pivot parent percentages', () => {
   beforeEach(() => {
     lastArgs = null
     mockState.snapshotParams = null
+    window.sessionStorage.clear()
     Element.prototype.scrollIntoView = vi.fn()
     const fixed = fixedReport()
     const custom = customReport()

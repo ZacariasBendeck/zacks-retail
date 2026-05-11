@@ -29,7 +29,7 @@ import {
 import type { SkuLifecycleRow, CreateDraftInput } from '../../types/skuLifecycle'
 import { productsAttributesApi } from '../../services/productsAttributesApi'
 import { buildRicsImageUrl } from '../../services/ricsImageUrl'
-import { useAttributeDimensions, useSkuAttributes } from '../../hooks/useProductsAttributes'
+import { useAttributeDimensions, useAttributeMacroRules, useSkuAttributes } from '../../hooks/useProductsAttributes'
 import { VendorLookup } from '../../components/vendor-lookup'
 import { SkuLookup } from '../../components/sku-lookup'
 import { useProductFamilies } from '../../hooks/useProductFamilies'
@@ -40,8 +40,10 @@ import type {
   ImageAnalysisResult,
   EnhancedAnalysisResult,
   AiFillSummary,
+  CategoryItem,
   StyleColorLink,
 } from '../../types/sku'
+import type { AttributeDimension } from '../../types/productsAttributes'
 import { ALLOWED_DEPARTMENTS, isValidDepartment } from '../../constants/domain'
 import { SkuApiError } from '../../services/skuApi'
 import { matchReference, normalize } from './sku-form-modern/formHelpers'
@@ -106,11 +108,39 @@ const DIMENSIONAL_ATTR_MAP: readonly { formField: string; dimensionCode: string 
   { formField: 'outsoleMaterialId', dimensionCode: 'outsole_material' },
   { formField: 'heelMaterialId',    dimensionCode: 'heel_material' },
   { formField: 'occasionId',        dimensionCode: 'occasion' },
-  { formField: 'genderId',          dimensionCode: 'target_audience' },
+  { formField: 'genderId',          dimensionCode: 'gender' },
   { formField: 'labelTypeId',       dimensionCode: 'label_type' },
 ] as const
 const DIMENSIONAL_FORM_FIELDS = new Set(DIMENSIONAL_ATTR_MAP.map((m) => m.formField))
 const DIMENSION_CODE_BY_FORM_FIELD = new Map(DIMENSIONAL_ATTR_MAP.map((m) => [m.formField, m.dimensionCode] as const))
+const FIXED_DIMENSION_CODES = new Set(DIMENSIONAL_ATTR_MAP.map((m) => m.dimensionCode))
+const DYNAMIC_ATTR_FIELD_PREFIX = 'attribute:'
+
+function dynamicAttributeFieldName(dimensionCode: string): string {
+  return `${DYNAMIC_ATTR_FIELD_PREFIX}${dimensionCode}`
+}
+
+function isDynamicAttributeFormField(fieldName: string): boolean {
+  return fieldName.startsWith(DYNAMIC_ATTR_FIELD_PREFIX)
+}
+
+function formatCategoryDepartmentLabel(row: PostgresCategory): string | null {
+  return row.departmentNumber != null && row.departmentDesc
+    ? `${row.departmentNumber} - ${row.departmentDesc}`
+    : null
+}
+
+function dimensionAppliesToFamily(dimension: AttributeDimension, familyCode: string | null): boolean {
+  if (!dimension.values.some((value) => value.isActive)) return false
+  if (!familyCode) return true
+  if (dimension.familyRules.length === 0) return true
+  return dimension.familyRules.some((rule) => rule.familyCode === familyCode && rule.enabled)
+}
+
+function dimensionSortOrder(dimension: AttributeDimension, familyCode: string | null): number {
+  if (!familyCode) return dimension.sortOrder
+  return dimension.familyRules.find((rule) => rule.familyCode === familyCode)?.sortOrder ?? dimension.sortOrder
+}
 
 /** Column fields known to app.sku. Everything else on the form goes into legacy_attrs. */
 const APP_SKU_COLUMN_KEYS = new Set<string>([
@@ -199,6 +229,7 @@ function splitFormValuesForLifecycle(
   for (const [k, v] of Object.entries(values)) {
     if (APP_SKU_COLUMN_KEYS.has(k)) continue
     if (DIMENSIONAL_FORM_FIELDS.has(k)) continue
+    if (isDynamicAttributeFormField(k)) continue
     if (k === 'skuCode' || k === 'price' || k === 'cost') continue
     if (k === 'categoryId' || k === 'department') continue
     if (k === 'ricsDescription' || k === 'webDescription' || k === 'comment' || k === 'keywords') continue
@@ -311,6 +342,7 @@ export default function SkuFormPageModern() {
   const { data: vendors, isLoading: vendorsLoading } = useVendors()
   const { data: refData, isLoading: refLoading } = useReferenceData()
   const { data: attributeDimensions, isLoading: attributeDimensionsLoading } = useAttributeDimensions(false)
+  const { data: macroRules, isLoading: macroRulesLoading } = useAttributeMacroRules()
   const { data: sizeTypes, isLoading: sizeTypesLoading } = useSizeTypes()
   const { data: groups, isLoading: groupsLoading } = useGroups()
   const { data: promotionCodes, isLoading: promotionCodesLoading } = usePromotionCodes()
@@ -318,7 +350,7 @@ export default function SkuFormPageModern() {
   const createMutation = useCreateSkuDraft()
   const updateMutation = useUpdateSkuDraft()
   const finalizeMutation = useFinalizeSkuDraft()
-  const skuLookupKey = lifecycleSku?.code ?? lifecycleSku?.provisionalCode ?? undefined
+  const skuLookupKey = lifecycleSku?.code || lifecycleSku?.provisionalCode || routeSkuCode || undefined
   const { data: skuDimAttrs } = useSkuAttributes(skuLookupKey)
 
   const sku = useMemo(
@@ -411,12 +443,35 @@ export default function SkuFormPageModern() {
     return map
   }, [styleColors])
 
+  const validCategoriesById = useMemo(() => {
+    const map = new Map<number, PostgresCategory>()
+    for (const cat of postgresCategories ?? []) {
+      map.set(cat.categoryNumber, cat)
+    }
+    return map
+  }, [postgresCategories])
+
+  const categoryNumberByLegacyId = useMemo(() => {
+    const map = new Map<number, number>()
+    for (const cat of (refData?.categories ?? []) as CategoryItem[]) {
+      if (typeof cat.id === 'number' && typeof cat.ricsCode === 'number') {
+        map.set(cat.id, cat.ricsCode)
+      }
+    }
+    return map
+  }, [refData])
+
+  const resolveStyleColorCategoryNumber = useCallback((categoryId: number) => {
+    if (validCategoriesById.has(categoryId)) return categoryId
+    return categoryNumberByLegacyId.get(categoryId) ?? categoryId
+  }, [categoryNumberByLegacyId, validCategoriesById])
+
   const styleColorOptions = useMemo(() => {
     return (styleColors ?? []).map((styleColor) => ({
       value: styleColor.styleColorId,
-      label: `${styleColor.style} · ${styleColor.department} · cat ${styleColor.categoryId}`,
+      label: `${styleColor.style} · ${styleColor.department} · cat ${resolveStyleColorCategoryNumber(styleColor.categoryId)}`,
     }))
-  }, [styleColors])
+  }, [resolveStyleColorCategoryNumber, styleColors])
 
   const attributeOptionsByDimension = useMemo<AttributeSelectOptions>(() => {
     const result: AttributeSelectOptions = {}
@@ -430,17 +485,26 @@ export default function SkuFormPageModern() {
     return result
   }, [attributeDimensions])
 
+  const derivedDimensionCodes = useMemo(
+    () => new Set(['color_family', ...(macroRules ?? []).map((rule) => rule.targetDimensionCode)]),
+    [macroRules],
+  )
+
+  const dynamicEditableDimensions = useMemo(() => {
+    return (attributeDimensions ?? [])
+      .filter((dimension) => !FIXED_DIMENSION_CODES.has(dimension.code))
+      .filter((dimension) => !derivedDimensionCodes.has(dimension.code))
+      .filter((dimension) => dimensionAppliesToFamily(dimension, selectedFamily))
+      .slice()
+      .sort((a, b) => (
+        dimensionSortOrder(a, selectedFamily) - dimensionSortOrder(b, selectedFamily)
+        || a.labelEs.localeCompare(b.labelEs)
+      ))
+  }, [attributeDimensions, derivedDimensionCodes, selectedFamily])
+
   const existingSkuPictureUrl = useMemo(() => {
     return buildRicsImageUrl(matchedSku?.pictureFileName ?? lifecycleSku?.pictureFileName ?? null)
   }, [matchedSku?.pictureFileName, lifecycleSku?.pictureFileName])
-
-  const validCategoriesById = useMemo(() => {
-    const map = new Map<number, PostgresCategory>()
-    for (const cat of postgresCategories ?? []) {
-      map.set(cat.categoryNumber, cat)
-    }
-    return map
-  }, [postgresCategories])
 
   const familyLabelByCode = useMemo(() => {
     const m = new Map<string, string>()
@@ -469,16 +533,16 @@ export default function SkuFormPageModern() {
     const cat = lifecycleSku.categoryNumber
     if (cat == null) return
     const row = validCategoriesById.get(cat)
-    if (row) {
-      const nextFamily = row.familyCode || lifecycleSku.familyCode || null
-      if (nextFamily) setSelectedFamily(nextFamily)
-      setDerivedFamilyCode(nextFamily)
-      setDerivedDepartmentLabel(
-        row.departmentNumber != null && row.departmentDesc
-          ? `${row.departmentNumber} — ${row.departmentDesc}`
-          : null,
-      )
+    if (!row) {
+      const fallbackFamily = lifecycleSku.familyCode || null
+      if (fallbackFamily) setSelectedFamily(fallbackFamily)
+      setDerivedFamilyCode(fallbackFamily)
+      return
     }
+    const nextFamily = row.familyCode || lifecycleSku.familyCode || null
+    if (nextFamily) setSelectedFamily(nextFamily)
+    setDerivedFamilyCode(nextFamily)
+    setDerivedDepartmentLabel(formatCategoryDepartmentLabel(row))
   }, [lifecycleSku, validCategoriesById])
 
   useEffect(() => {
@@ -491,11 +555,7 @@ export default function SkuFormPageModern() {
       setSelectedFamily(nextFamily)
     }
     setDerivedFamilyCode(nextFamily)
-    setDerivedDepartmentLabel(
-      row.departmentNumber != null && row.departmentDesc
-        ? `${row.departmentNumber} - ${row.departmentDesc}`
-        : null,
-    )
+    setDerivedDepartmentLabel(formatCategoryDepartmentLabel(row))
     form.setFieldsValue({ department: row.departmentDesc ?? undefined })
   }, [matchedSku, validCategoriesById, selectedFamily, form])
 
@@ -503,13 +563,22 @@ export default function SkuFormPageModern() {
     const current = form.getFieldValue('categoryId') as number | null | undefined
     if (current == null) return
     const row = validCategoriesById.get(current)
-    if (!selectedFamily) {
+    if (!row) {
+      if (validCategoriesById.size === 0) return
       form.setFieldsValue({ categoryId: null })
       setDerivedFamilyCode(null)
       setDerivedDepartmentLabel(null)
       return
     }
-    if (row && row.familyCode !== selectedFamily) {
+    if (!selectedFamily) {
+      const nextFamily = row.familyCode || null
+      if (nextFamily) setSelectedFamily(nextFamily)
+      setDerivedFamilyCode(nextFamily)
+      setDerivedDepartmentLabel(formatCategoryDepartmentLabel(row))
+      form.setFieldsValue({ department: row.departmentDesc ?? undefined })
+      return
+    }
+    if (row.familyCode !== selectedFamily) {
       form.setFieldsValue({ categoryId: null })
       setDerivedFamilyCode(null)
       setDerivedDepartmentLabel(null)
@@ -531,10 +600,7 @@ export default function SkuFormPageModern() {
       return
     }
     setDerivedFamilyCode(row.familyCode || null)
-    const deptLabel = row.departmentNumber != null && row.departmentDesc
-      ? `${row.departmentNumber} — ${row.departmentDesc}`
-      : null
-    setDerivedDepartmentLabel(deptLabel)
+    setDerivedDepartmentLabel(formatCategoryDepartmentLabel(row))
     form.setFields([{ name: 'categoryId', errors: [] }, { name: 'department', errors: [] }])
     form.setFieldsValue({ department: row.departmentDesc ?? undefined })
   }, [form, validCategoriesById])
@@ -543,17 +609,30 @@ export default function SkuFormPageModern() {
     if (!styleColorId) return
     const styleColor = styleColorMap.get(styleColorId)
     if (!styleColor) return
+    const categoryNumber = resolveStyleColorCategoryNumber(styleColor.categoryId)
+    const categoryRow = validCategoriesById.get(categoryNumber)
     const nextValues: Record<string, unknown> = {
       colorId: String(styleColor.colorId),
-      categoryId: styleColor.categoryId,
       department: styleColor.department,
       heelTypeCode: styleColor.heelTypeCode ?? null,
       heelMaterialTypeCode: styleColor.heelMaterialTypeCode ?? null,
       season: styleColor.season ?? undefined,
     }
+    if (categoryRow) {
+      const nextFamily = categoryRow.familyCode || null
+      nextValues.categoryId = categoryRow.categoryNumber
+      if (nextFamily) setSelectedFamily(nextFamily)
+      setDerivedFamilyCode(nextFamily)
+      setDerivedDepartmentLabel(formatCategoryDepartmentLabel(categoryRow))
+      form.setFields([{ name: 'categoryId', errors: [] }, { name: 'department', errors: [] }])
+      message.success('Plantilla style-color aplicada al formulario')
+    } else {
+      setDerivedFamilyCode(null)
+      setDerivedDepartmentLabel(null)
+      message.warning('Plantilla style-color aplicada, pero su categoria no existe en Postgres.')
+    }
     form.setFieldsValue(nextValues)
-    message.success('Plantilla style-color aplicada al formulario')
-  }, [form, message, styleColorMap])
+  }, [form, message, resolveStyleColorCategoryNumber, styleColorMap, validCategoriesById])
 
   const applyAiFill = useCallback((
     result: EnhancedAnalysisResult,
@@ -616,11 +695,7 @@ export default function SkuFormPageModern() {
               fieldsToSet[mapping.formField] = matchedId
               filled.push(mapping.formField)
               setDerivedFamilyCode(cat.familyCode || null)
-              setDerivedDepartmentLabel(
-                cat.departmentNumber != null && cat.departmentDesc
-                  ? `${cat.departmentNumber} — ${cat.departmentDesc}`
-                  : null,
-              )
+              setDerivedDepartmentLabel(formatCategoryDepartmentLabel(cat))
               fieldsToSet['department'] = cat.departmentDesc ?? undefined
             } else {
               skipped.push('categoryId')
@@ -706,7 +781,7 @@ export default function SkuFormPageModern() {
 
   useEffect(() => {
     if (!skuDimAttrs) return
-    const patch: Record<string, string | null> = {}
+    const patch: Record<string, string | string[] | null> = {}
     for (const m of DIMENSIONAL_ATTR_MAP) {
       const entry = skuDimAttrs.byDimension[m.dimensionCode]
       const first = entry?.values?.[0]
@@ -716,8 +791,15 @@ export default function SkuFormPageModern() {
         patch[m.formField] = null
       }
     }
+    for (const dimension of dynamicEditableDimensions) {
+      const entry = skuDimAttrs.byDimension[dimension.code]
+      const codes = entry?.values?.map((value) => value.code) ?? []
+      patch[dynamicAttributeFieldName(dimension.code)] = dimension.isMultiValue
+        ? codes
+        : codes[0] ?? null
+    }
     form.setFieldsValue(patch)
-  }, [skuDimAttrs, form])
+  }, [dynamicEditableDimensions, skuDimAttrs, form])
 
   const fetchExistingSkuPictureFile = useCallback(async (pictureFileName: string) => {
     const imageUrl = buildRicsImageUrl(pictureFileName)
@@ -938,6 +1020,22 @@ export default function SkuFormPageModern() {
         const valueCode = toAttributeCode(v)
         if (valueCode) {
           dimAssignments.push({ dimension_code: m.dimensionCode, value_code: valueCode })
+        }
+      }
+      for (const dimension of dynamicEditableDimensions) {
+        scope.push(dimension.code)
+        const rawValue = (normalized as Record<string, unknown>)[dynamicAttributeFieldName(dimension.code)]
+        const rawValues = Array.isArray(rawValue)
+          ? rawValue
+          : rawValue == null
+            ? []
+            : [rawValue]
+        const valueCodes = rawValues
+          .map(toAttributeCode)
+          .filter((valueCode): valueCode is string => !!valueCode)
+          .slice(0, dimension.isMultiValue ? undefined : 1)
+        for (const valueCode of valueCodes) {
+          dimAssignments.push({ dimension_code: dimension.code, value_code: valueCode })
         }
       }
       const writeDims = async (skuKey: string) => {
@@ -1162,7 +1260,7 @@ export default function SkuFormPageModern() {
     )
   }
 
-  if (refLoading || attributeDimensionsLoading) {
+  if (refLoading || attributeDimensionsLoading || macroRulesLoading) {
     return (
       <div style={{ textAlign: 'center', padding: 80 }}>
         <Spin size="large" tip="Cargando datos de referencia..." />
@@ -1297,6 +1395,8 @@ export default function SkuFormPageModern() {
         <AppearanceSection
           selectedFamily={selectedFamily}
           attributeOptionsByDimension={attributeOptionsByDimension}
+          extraDimensions={dynamicEditableDimensions}
+          dynamicAttributeFieldName={dynamicAttributeFieldName}
           aiFilledFields={aiFilledFields}
         />
 

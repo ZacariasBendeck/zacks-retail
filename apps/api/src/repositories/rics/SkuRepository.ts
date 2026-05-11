@@ -112,6 +112,7 @@ export interface FindAllOptions {
   sectors?: number[];
   departments?: number[];
   categories?: number[];
+  families?: string[];
   seasons?: string[];
   groups?: string[];
   keywords?: string[];
@@ -387,6 +388,16 @@ function buildWhere(opts: FindAllOptions): { clauses: string[]; params: unknown[
     );
   }
 
+  const families = setOf(opts.families ?? []);
+  if (families.length > 0) {
+    pushClause(
+      clauses,
+      params,
+      `UPPER(COALESCE(cpf.family_code, s.family_code, '')) = ANY(?::text[])`,
+      families,
+    );
+  }
+
   const seasons = setOf(opts.seasons ?? (opts.season ? [opts.season] : []));
   if (seasons.length > 0) {
     pushClause(
@@ -472,6 +483,8 @@ function baseSelect(): string {
     FROM app.sku s
     LEFT JOIN app.sku_attribute_override o ON o.rics_sku_code = s.code
     LEFT JOIN app.taxonomy_category c ON c.number = COALESCE(o.category, s.category_number)
+    LEFT JOIN app.category_product_family cpf
+      ON cpf.category_number = COALESCE(o.category, s.category_number)
     LEFT JOIN app.taxonomy_department d
       ON COALESCE(o.category, s.category_number) BETWEEN d.beg_categ AND d.end_categ
     LEFT JOIN app.taxonomy_sector sc

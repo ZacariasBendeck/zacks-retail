@@ -1178,6 +1178,8 @@ export interface SalesAnalysisRequestArgs {
   dimension: SalesAnalysisDimension
   reportType: SalesAnalysisReportType
   storeOption?: SalesAnalysisStoreOption
+  /** UI-only hierarchy display order; not sent to the API. */
+  groupOrder?: 'NET_SALES_DESC' | 'LEFT_GROUP_ASC'
   startDate?: string
   endDate?: string
   stores?: number[]

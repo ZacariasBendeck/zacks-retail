@@ -1,10 +1,14 @@
 import { Col, Collapse, Form, Row, Select, Typography } from 'antd'
+import { useEffect, useState } from 'react'
 import { sectionCard, sectionTitle, sectionSubtitle, tokens } from './styles'
 import { aiLabel, fieldStyle, isApparienciaFieldVisible } from './formHelpers'
+import type { AttributeDimension } from '../../../types/productsAttributes'
 
 interface AppearanceSectionProps {
   selectedFamily: string | null
   attributeOptionsByDimension: Record<string, { label: string; value: string }[]>
+  extraDimensions?: AttributeDimension[]
+  dynamicAttributeFieldName?: (dimensionCode: string) => string
   aiFilledFields: Set<string>
 }
 
@@ -13,12 +17,25 @@ interface AppearanceSectionProps {
  * family=zapatos (14 fields), collapsed by default otherwise (only 5 fields
  * show but still behind a toggle to keep the primary flow tight).
  */
-export function AppearanceSection({ selectedFamily, attributeOptionsByDimension, aiFilledFields }: AppearanceSectionProps) {
+export function AppearanceSection({
+  selectedFamily,
+  attributeOptionsByDimension,
+  extraDimensions = [],
+  dynamicAttributeFieldName,
+  aiFilledFields,
+}: AppearanceSectionProps) {
   const autoExpanded = selectedFamily === 'zapatos'
+  const [activeKeys, setActiveKeys] = useState<string[]>(autoExpanded ? ['appearance'] : [])
+
+  useEffect(() => {
+    if (!autoExpanded) return
+    setActiveKeys((current) => current.includes('appearance') ? current : [...current, 'appearance'])
+  }, [autoExpanded])
 
   return (
     <Collapse
-      defaultActiveKey={autoExpanded ? ['appearance'] : []}
+      activeKey={activeKeys}
+      onChange={(keys) => setActiveKeys((Array.isArray(keys) ? keys : [keys]).map(String))}
       style={{ background: 'transparent', border: 'none' }}
       expandIconPosition="end"
       items={[
@@ -72,7 +89,7 @@ export function AppearanceSection({ selectedFamily, attributeOptionsByDimension,
                     <Select
                       placeholder="Seleccionar"
                       allowClear
-                      options={attributeOptionsByDimension.target_audience ?? []}
+                      options={attributeOptionsByDimension.gender ?? attributeOptionsByDimension.target_audience ?? []}
                     />
                   </Form.Item>
                 </Col>
@@ -183,6 +200,30 @@ export function AppearanceSection({ selectedFamily, attributeOptionsByDimension,
                   )}
                 </Row>
               )}
+
+              {extraDimensions.length > 0 && dynamicAttributeFieldName ? (
+                <Row gutter={tokens.rowGutter}>
+                  {extraDimensions.map((dimension) => (
+                    <Col key={dimension.code} xs={24} sm={12} md={8} lg={6}>
+                      <Form.Item
+                        label={dimension.labelEs}
+                        name={dynamicAttributeFieldName(dimension.code)}
+                        style={{ marginBottom: 12 }}
+                      >
+                        <Select
+                          placeholder="Seleccionar"
+                          allowClear
+                          showSearch
+                          optionFilterProp="label"
+                          mode={dimension.isMultiValue ? 'multiple' : undefined}
+                          maxTagCount="responsive"
+                          options={attributeOptionsByDimension[dimension.code] ?? []}
+                        />
+                      </Form.Item>
+                    </Col>
+                  ))}
+                </Row>
+              ) : null}
             </div>
           ),
         },

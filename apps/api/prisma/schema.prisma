@@ -675,6 +675,7 @@ model Vendor {
   dateLastChanged DateTime?            @map("date_last_changed")
   storeAccounts   VendorStoreAccount[]
   matchingSets    MatchingSet[]
+  supplierQuotations SupplierQuotation[]
 
   @@map("vendor")
   @@schema("app")
@@ -736,6 +737,7 @@ model StoreGroup {
   updatedAt        DateTime                     @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
   members          StoreGroupMember[]
   matchingSets     MatchingSet[]
+  supplierQuotations SupplierQuotation[]
   sizeCurves       MatchingSetMemberSizeCurve[]
   matchingBuyPlans MatchingSetBuyPlan[]
   purchasePlans    PurchasePlan[]
@@ -1257,6 +1259,8 @@ model PurchaseOrder {
   plannedReceiptDate   DateTime? @map("planned_receipt_date") @db.Timestamptz(6)
   cancelDate           DateTime? @map("cancel_date") @db.Timestamptz(6)
   paymentDate          DateTime? @map("payment_date") @db.Timestamptz(6)
+  supplierQuotationId  String?   @map("supplier_quotation_id") @db.Uuid
+  supplierQuotation    SupplierQuotation? @relation(fields: [supplierQuotationId], references: [id], onDelete: SetNull, onUpdate: Cascade)
   createdBy            String    @map("created_by")
   submittedAt          DateTime? @map("submitted_at") @db.Timestamptz(6)
   closedAt             DateTime? @map("closed_at") @db.Timestamptz(6)
@@ -1274,6 +1278,7 @@ model PurchaseOrder {
   @@index([shipToStoreId, shipDate], map: "purchase_order_ship_store_ship_date_idx")
   @@index([plannedReceiptDate, status], map: "purchase_order_planned_receipt_status_idx")
   @@index([classification, status], map: "purchase_order_classification_status_idx")
+  @@index([supplierQuotationId], map: "purchase_order_supplier_quotation_idx")
   @@map("purchase_order")
   @@schema("app")
 }
@@ -1295,6 +1300,8 @@ model PurchaseOrderLine {
   sourceUnitCost             Decimal?      @map("source_unit_cost") @db.Decimal(14, 4)
   commercialUnitCostHnl      Decimal?      @map("commercial_unit_cost_hnl") @db.Decimal(14, 4)
   estimatedLandedUnitCostHnl Decimal?      @map("estimated_landed_unit_cost_hnl") @db.Decimal(14, 4)
+  supplierQuotationLineId     String?       @map("supplier_quotation_line_id") @db.Uuid
+  supplierQuotationLine       SupplierQuotationLine? @relation(fields: [supplierQuotationLineId], references: [id], onDelete: SetNull, onUpdate: Cascade)
   quantityOrdered            Int           @map("quantity_ordered")
   quantityReceived           Int           @default(0) @map("quantity_received")
   writeBackToMaster          Boolean       @default(false) @map("write_back_to_master")
@@ -1309,6 +1316,7 @@ model PurchaseOrderLine {
   @@unique([poId, lineSequence], map: "purchase_order_line_sequence_key")
   @@index([poId], map: "purchase_order_line_po_id_idx")
   @@index([skuId], map: "purchase_order_line_sku_id_idx")
+  @@index([supplierQuotationLineId], map: "purchase_order_line_supplier_quote_line_idx")
   @@map("purchase_order_line")
   @@schema("app")
 }
@@ -1325,6 +1333,125 @@ model PurchaseOrderLineSizeCell {
 
   @@unique([poLineId, columnLabel, rowLabel], map: "purchase_order_line_size_cell_key")
   @@map("purchase_order_line_size_cell")
+  @@schema("app")
+}
+
+/// Buyer-entered supplier quote header. This is the purchasing-side record
+/// used before a style becomes a draft SKU or purchase-order line.
+model SupplierQuotation {
+  id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  quoteNumber       String    @unique(map: "supplier_quotation_quote_number_key") @map("quote_number") @db.VarChar(32)
+  vendorCode        String    @map("vendor_code") @db.VarChar(4)
+  vendor            Vendor    @relation(fields: [vendorCode], references: [code], onDelete: Restrict, onUpdate: Cascade)
+  buyer             String?   @db.VarChar(120)
+  season            String?   @db.VarChar(2)
+  chainId           String?   @map("chain_id") @db.VarChar(64)
+  chain             StoreGroup? @relation(fields: [chainId], references: [code], onDelete: SetNull, onUpdate: Cascade)
+  sourceCurrency    String    @default("HNL") @map("source_currency") @db.VarChar(3)
+  fxRate            Decimal   @default(1) @map("fx_rate") @db.Decimal(18, 8)
+  fxDate            DateTime  @default(now()) @map("fx_date") @db.Date
+  incotermCode      String?   @map("incoterm_code") @db.VarChar(8)
+  incotermPlace     String?   @map("incoterm_place")
+  paymentTerms      String?   @map("payment_terms")
+  quoteDate         DateTime  @default(now()) @map("quote_date") @db.Date
+  validUntil        DateTime? @map("valid_until") @db.Date
+  leadTimeDays      Int?      @map("lead_time_days") @db.SmallInt
+  status            String    @default("DRAFT") @db.VarChar(24)
+  sourceDocumentRef String?   @map("source_document_ref")
+  notes             String?
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy         String    @default("system") @map("created_by")
+  updatedAt         DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy         String    @default("system") @map("updated_by")
+
+  lines          SupplierQuotationLine[]
+  purchaseOrders PurchaseOrder[]
+
+  @@index([vendorCode, status], map: "supplier_quotation_vendor_status_idx")
+  @@index([buyer, status], map: "supplier_quotation_buyer_status_idx")
+  @@index([chainId, quoteDate], map: "supplier_quotation_chain_quote_date_idx")
+  @@index([status, updatedAt], map: "supplier_quotation_status_updated_idx")
+  @@map("supplier_quotation")
+  @@schema("app")
+}
+
+/// A quoted supplier style/color line. Accepted lines can become DRAFT SKUs
+/// and normal purchase-order lines while preserving quote traceability.
+model SupplierQuotationLine {
+  id                         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  quotationId                String    @map("quotation_id") @db.Uuid
+  quotation                  SupplierQuotation @relation(fields: [quotationId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  lineSequence               Int       @map("line_sequence")
+  linkedSkuId                String?   @map("linked_sku_id") @db.Uuid
+  linkedSku                  Sku?      @relation(fields: [linkedSkuId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  supplierStyle              String    @map("supplier_style")
+  supplierColorCode          String?   @map("supplier_color_code")
+  supplierColorName          String?   @map("supplier_color_name")
+  description                String?
+  familyCode                 String?   @map("family_code")
+  family                     ProductFamily? @relation(fields: [familyCode], references: [code], onDelete: SetNull, onUpdate: Cascade)
+  categoryNumber             Int?      @map("category_number") @db.SmallInt
+  category                   TaxonomyCategory? @relation(fields: [categoryNumber], references: [number], onDelete: SetNull, onUpdate: Cascade)
+  colorFamilyValueId         Int?      @map("color_family_value_id") @db.SmallInt
+  colorFamilyValue           AttributeValue? @relation("SupplierQuotationColorFamily", fields: [colorFamilyValueId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  materialValueId            Int?      @map("material_value_id") @db.SmallInt
+  materialValue              AttributeValue? @relation("SupplierQuotationMaterial", fields: [materialValueId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  styleElementValueId        Int?      @map("style_element_value_id") @db.SmallInt
+  styleElementValue          AttributeValue? @relation("SupplierQuotationStyleElement", fields: [styleElementValueId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  keywords                   String?
+  imageUrl                   String?   @map("image_url")
+  moqQty                     Int?      @map("moq_qty")
+  quotedQty                  Int?      @map("quoted_qty")
+  unitCost                   Decimal   @map("unit_cost") @db.Decimal(14, 4)
+  estimatedLandedUnitCostHnl Decimal?  @map("estimated_landed_unit_cost_hnl") @db.Decimal(14, 4)
+  targetRetailHnl            Decimal?  @map("target_retail_hnl") @db.Decimal(12, 2)
+  marginPct                  Decimal?  @map("margin_pct") @db.Decimal(7, 4)
+  plannedReceiptDate         DateTime? @map("planned_receipt_date") @db.Timestamptz(6)
+  decisionStatus             String    @default("NEW") @map("decision_status") @db.VarChar(24)
+  decisionReason             String?   @map("decision_reason")
+  decisionAt                 DateTime? @map("decision_at") @db.Timestamptz(6)
+  decisionBy                 String?   @map("decision_by")
+  createdAt                  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy                  String    @default("system") @map("created_by")
+  updatedAt                  DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy                  String    @default("system") @map("updated_by")
+
+  sourceRelations SupplierQuotationLineRelation[] @relation("SourceQuotationLineRelations")
+  targetRelations SupplierQuotationLineRelation[] @relation("TargetQuotationLineRelations")
+  purchaseOrderLines PurchaseOrderLine[]
+
+  @@unique([quotationId, lineSequence], map: "supplier_quotation_line_sequence_key")
+  @@index([quotationId, decisionStatus], map: "supplier_quotation_line_quote_decision_idx")
+  @@index([linkedSkuId], map: "supplier_quotation_line_sku_idx")
+  @@index([familyCode, categoryNumber], map: "supplier_quotation_line_family_category_idx")
+  @@index([supplierStyle], map: "supplier_quotation_line_supplier_style_idx")
+  @@map("supplier_quotation_line")
+  @@schema("app")
+}
+
+/// Manual buyer links from a quoted line to another quote, existing SKU, or
+/// matching set. Automatic similarity suggestions are calculated, not stored.
+model SupplierQuotationLineRelation {
+  id                       String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  sourceLineId             String    @map("source_line_id") @db.Uuid
+  sourceLine               SupplierQuotationLine @relation("SourceQuotationLineRelations", fields: [sourceLineId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  relationType             String    @map("relation_type") @db.VarChar(24)
+  targetType               String    @map("target_type") @db.VarChar(24)
+  targetSkuId              String?   @map("target_sku_id") @db.Uuid
+  targetSku                Sku?      @relation(fields: [targetSkuId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  targetMatchingSetId      String?   @map("target_matching_set_id") @db.Uuid
+  targetMatchingSet        MatchingSet? @relation(fields: [targetMatchingSetId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  targetQuotationLineId    String?   @map("target_quotation_line_id") @db.Uuid
+  targetQuotationLine      SupplierQuotationLine? @relation("TargetQuotationLineRelations", fields: [targetQuotationLineId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  note                     String?
+  createdAt                DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy                String    @default("system") @map("created_by")
+
+  @@index([sourceLineId], map: "supplier_quotation_line_relation_source_idx")
+  @@index([targetSkuId], map: "supplier_quotation_line_relation_sku_idx")
+  @@index([targetMatchingSetId], map: "supplier_quotation_line_relation_matching_set_idx")
+  @@index([targetQuotationLineId], map: "supplier_quotation_line_relation_quote_line_idx")
+  @@map("supplier_quotation_line_relation")
   @@schema("app")
 }
 
@@ -1538,6 +1665,7 @@ model ProductFamily {
   categoryMappings CategoryProductFamily[]
   attributeRules   AttributeFamilyRule[]
   skus             Sku[]
+  supplierQuotationLines SupplierQuotationLine[]
 
   @@index([sortOrder], map: "product_family_sort_order_idx")
   @@map("product_family")
@@ -1678,6 +1806,8 @@ model Sku {
   inventoryHistorySnapshots InventoryHistorySnapshot[]
   matchingSetMembers        MatchingSetMember[]
   importCostBuildOutputs    ImportCostBuild[]
+  supplierQuotationLines    SupplierQuotationLine[]
+  supplierQuotationRelations SupplierQuotationLineRelation[]
 
   @@unique([provisionalCode], map: "sku_provisional_code_key")
   @@index([skuState, familyCode], map: "sku_state_family_idx")
@@ -1752,6 +1882,7 @@ model MatchingSet {
   updatedBy        String               @default("system") @map("updated_by")
   members          MatchingSetMember[]
   buyPlans         MatchingSetBuyPlan[]
+  supplierQuotationRelations SupplierQuotationLineRelation[]
 
   @@index([setTypeCode], map: "matching_set_type_idx")
   @@index([vendorId], map: "matching_set_vendor_idx")
@@ -3238,6 +3369,9 @@ model AttributeValue {
   createdAt     DateTime                 @default(now()) @map("created_at")
   assignments   SkuAttributeAssignment[]
   categoryBuyerAssignments CategoryBuyerAssignment[]
+  supplierQuotationColorLines SupplierQuotationLine[] @relation("SupplierQuotationColorFamily")
+  supplierQuotationMaterialLines SupplierQuotationLine[] @relation("SupplierQuotationMaterial")
+  supplierQuotationStyleElementLines SupplierQuotationLine[] @relation("SupplierQuotationStyleElement")
 
   @@unique([dimensionId, code])
   @@map("attribute_value")
@@ -4310,6 +4444,7 @@ model TaxonomyCategory {
   description     String   @map("desc")
   dateLastChanged DateTime @default(now()) @updatedAt @map("date_last_changed")
   buyerAssignments CategoryBuyerAssignment[]
+  supplierQuotationLines SupplierQuotationLine[]
 
   @@map("taxonomy_category")
   @@schema("app")

@@ -193,7 +193,7 @@ export async function loadSkuAttributesBySku(
     .map((n) => Number(n))
     .filter((n) => Number.isFinite(n));
   const historySqlParams: unknown[] = [unique];
-  const historyWhere: string[] = ['UPPER(TRIM(sku_code)) = ANY($1::text[])'];
+  const historyWhere: string[] = ['sku_code = ANY($1::text[])'];
   if (storeNumbers.length > 0) {
     historySqlParams.push(storeNumbers);
     historyWhere.push(`store_id = ANY($${historySqlParams.length}::int[])`);
@@ -201,13 +201,13 @@ export async function loadSkuAttributesBySku(
   const historyRows = await prisma.$queryRawUnsafe<HistoryRow[]>(
     `
     SELECT
-      UPPER(TRIM(sku_code))       AS sku_code,
+      sku_code                    AS sku_code,
       store_id                    AS store_id,
       MIN(date_first_received)    AS date_first_received,
       MAX(date_last_received)     AS date_last_received
     FROM app.inventory_history_snapshot
     WHERE ${historyWhere.join(' AND ')}
-    GROUP BY UPPER(TRIM(sku_code)), store_id
+    GROUP BY sku_code, store_id
     `,
     ...historySqlParams,
   );

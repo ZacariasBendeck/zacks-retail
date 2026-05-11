@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { ConfigProvider } from 'antd'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -6,6 +6,7 @@ import { MemoryRouter } from 'react-router-dom'
 import type React from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import SalesAnalysisPage from '../pages/salesReporting/SalesAnalysisPage'
+import RenderSalesAnalysis from '../components/reports/renderers/renderSalesAnalysis'
 import { useSalesAnalysis, useSalesDimensions } from '../hooks/useReports'
 import { useReportTemplate, useTouchReportTemplate } from '../hooks/useReportTemplates'
 import type { SalesAnalysisArgs } from '../hooks/useReports'
@@ -160,6 +161,60 @@ function report(): SalesAnalysisReport {
   }
 }
 
+function reportWithAdditionalCategory(): SalesAnalysisReport {
+  const base = report()
+  const accessoryRow: SalesAnalysisReport['rows'][number] = {
+    dimensionKey: '1000-BLK',
+    dimensionLabel: 'Accessory SKU',
+    storeNumber: null,
+    qty: 1,
+    netSales: 50,
+    cogs: 20,
+    grossProfit: 30,
+    gpPct: 60,
+    unitsOnHand: 10,
+    inventoryUnitCost: 10,
+    onHandAtCost: 100,
+    turns: 0.2,
+    roiPct: 30,
+    priorYearNetSales: null,
+    pyPctChange: null,
+    attributes: {
+      description: 'Accessory SKU',
+      vendorCode: 'ACC',
+      manufacturer: 'Accessories',
+      categoryNumber: 100,
+      categoryDesc: 'Accesorios Mujer',
+      departmentNumber: 5,
+      departmentDesc: 'Zapato Mujer',
+      season: 'A',
+      groupCode: 'IBL',
+      styleColor: 'PLAN/BK',
+      currentPrice: 50,
+      currentCost: 10,
+      unitsOnHand: 10,
+      pictureUrl: '/api/rics-images/1000-BLK.jpg',
+      extended: {},
+    },
+    attributeAssignments: {
+      color: { valueCodes: ['black'], valueLabels: ['Black'], label: 'Black' },
+    },
+  }
+  return {
+    ...base,
+    rows: [...base.rows, accessoryRow],
+    totals: {
+      ...base.totals,
+      qty: base.totals.qty + accessoryRow.qty,
+      netSales: base.totals.netSales + accessoryRow.netSales,
+      cogs: base.totals.cogs + accessoryRow.cogs,
+      grossProfit: base.totals.grossProfit + accessoryRow.grossProfit,
+      unitsOnHand: base.totals.unitsOnHand + accessoryRow.unitsOnHand,
+      onHandAtCost: base.totals.onHandAtCost + accessoryRow.onHandAtCost,
+    },
+  }
+}
+
 function renderPage(initialEntry = '/reports/sales/analysis'): ReturnType<typeof render> {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
@@ -173,14 +228,21 @@ function renderPage(initialEntry = '/reports/sales/analysis'): ReturnType<typeof
   )
 }
 
+function expectTextBefore(first: string, second: string): void {
+  expect(screen.getByText(first).compareDocumentPosition(screen.getByText(second)) & Node.DOCUMENT_POSITION_FOLLOWING)
+    .toBeTruthy()
+}
+
 describe('SalesAnalysisPage', () => {
   beforeEach(() => {
     lastArgs = null
+    window.sessionStorage.clear()
     Element.prototype.scrollIntoView = vi.fn()
     mockUseSalesDimensions.mockReturnValue({ data: dims(), isLoading: false } as unknown as ReturnType<typeof useSalesDimensions>)
+    const reportData = report()
     mockUseSalesAnalysis.mockImplementation((run) => {
       lastArgs = run?.args ?? null
-      return { data: run ? report() : undefined, isFetching: false, error: null } as unknown as ReturnType<
+      return { data: run ? reportData : undefined, isFetching: false, error: null } as unknown as ReturnType<
         typeof useSalesAnalysis
       >
     })
@@ -211,10 +273,12 @@ describe('SalesAnalysisPage', () => {
     expect(csvHref).toContain('/api/v1/reports/sales/sales-analysis')
     expect(csvHref).toContain('format=csv')
     expect(csvHref).toContain('includeAttributes=true')
+    expect(csvHref).not.toContain('groupOrder')
 
     const xlsxHref = screen.getByRole('link', { name: /Export XLSX/i }).getAttribute('href') ?? ''
     expect(xlsxHref).toContain('format=xlsx')
     expect(xlsxHref).toContain('storeOption=COMBINE')
+    expect(xlsxHref).not.toContain('groupOrder')
   })
 
   it('sorts the Sales Analysis table from metric column headers', async () => {
@@ -240,6 +304,90 @@ describe('SalesAnalysisPage', () => {
         screen.getByText('5 - Zapato Mujer').compareDocumentPosition(screen.getByText('8 - Low Stock Dept')) &
           Node.DOCUMENT_POSITION_FOLLOWING,
       ).toBeTruthy()
+    })
+  })
+
+  it('switches leftmost groups to alphabetical order without changing API args', async () => {
+    const user = userEvent.setup()
+    renderPage()
+
+    await user.click(screen.getByRole('button', { name: /Run Report/i }))
+
+    await waitFor(() => {
+      expectTextBefore('8 - Low Stock Dept', '5 - Zapato Mujer')
+    })
+    const argsJsonAfterRun = JSON.stringify(lastArgs)
+
+    await user.click(screen.getByRole('button', { name: /Modify filters/i }))
+    await user.click(await screen.findByText('A-Z'))
+
+    await waitFor(() => {
+      expectTextBefore('5 - Zapato Mujer', '8 - Low Stock Dept')
+    })
+    expect(JSON.stringify(lastArgs)).toBe(argsJsonAfterRun)
+  })
+
+  it('keeps second-level groups alphabetical when A-Z order is selected', async () => {
+    const user = userEvent.setup()
+    const reportData = reportWithAdditionalCategory()
+    mockUseSalesAnalysis.mockImplementation((run) => {
+      lastArgs = run?.args ?? null
+      return { data: run ? reportData : undefined, isFetching: false, error: null } as unknown as ReturnType<
+        typeof useSalesAnalysis
+      >
+    })
+    renderPage()
+
+    await user.click(screen.getByRole('button', { name: /Run Report/i }))
+    await user.click(screen.getByRole('button', { name: /Modify filters/i }))
+    await user.click(await screen.findByText('A-Z'))
+
+    const deptRow = screen.getByText('5 - Zapato Mujer').closest('tr')
+    expect(deptRow).toBeTruthy()
+    await user.click(deptRow!.querySelector<HTMLButtonElement>('button.ant-table-row-expand-icon')!)
+
+    await waitFor(() => {
+      expectTextBefore('100 - Accesorios Mujer', '216 - Zap Deport Mujer')
+    })
+  })
+
+  it('shows tree percentages against each row parent subtotal', async () => {
+    const user = userEvent.setup()
+    renderPage()
+
+    await user.click(screen.getByLabelText(/Show % of total/i))
+    await user.click(screen.getByRole('button', { name: /Run Report/i }))
+
+    await waitFor(() => {
+      expect(screen.getByText('5 - Zapato Mujer')).toBeInTheDocument()
+    })
+
+    const deptRow = screen.getByText('5 - Zapato Mujer').closest('tr')
+    expect(deptRow).toBeTruthy()
+    await user.click(deptRow!.querySelector<HTMLButtonElement>('button.ant-table-row-expand-icon')!)
+
+    const categoryLabel = await screen.findByText('216 - Zap Deport Mujer')
+    const categoryRow = categoryLabel.closest('tr')
+    expect(categoryRow).toBeTruthy()
+    expect(within(categoryRow!).getAllByText('100.0%').length).toBeGreaterThanOrEqual(4)
+  })
+
+  it('toggles the report results into full screen mode', async () => {
+    const user = userEvent.setup()
+    const { container } = renderPage()
+
+    await user.click(screen.getByRole('button', { name: /Run Report/i }))
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /Full screen/i })).toBeEnabled()
+    })
+    await user.click(screen.getByRole('button', { name: /Full screen/i }))
+
+    expect(container.querySelector('.sales-analysis-report--fullscreen')).toBeTruthy()
+
+    await user.click(screen.getAllByRole('button', { name: /Exit full screen/i })[0]!)
+
+    await waitFor(() => {
+      expect(container.querySelector('.sales-analysis-report--fullscreen')).toBeNull()
     })
   })
 
@@ -323,5 +471,92 @@ describe('SalesAnalysisPage', () => {
         endDate: '2026-04-30',
       })
     })
+  })
+
+  it('hydrates saved alphabetical group order from a template', async () => {
+    mockUseReportTemplate.mockReturnValue({
+      data: {
+        template: {
+          reportType: 'sales-analysis',
+          paramsJson: {
+            dateSpec: { type: 'trailing_days', days: 7 },
+            level1: 'department',
+            level2: 'category',
+            storeOption: 'COMBINE',
+            groupOrder: 'LEFT_GROUP_ASC',
+          },
+        },
+      },
+    } as unknown as ReturnType<typeof useReportTemplate>)
+
+    renderPage('/reports/sales/analysis?templateId=alpha')
+
+    await waitFor(() => {
+      expect(lastArgs).toMatchObject({
+        groupOrder: 'LEFT_GROUP_ASC',
+      })
+    })
+    await waitFor(() => {
+      expectTextBefore('5 - Zapato Mujer', '8 - Low Stock Dept')
+    })
+  })
+})
+
+describe('RenderSalesAnalysis', () => {
+  it('uses saved alphabetical group order for frozen snapshots', async () => {
+    const user = userEvent.setup()
+    render(
+      <ConfigProvider>
+        <RenderSalesAnalysis
+          result={reportWithAdditionalCategory()}
+          params={{
+            level1: 'department',
+            level2: 'category',
+            groupOrder: 'LEFT_GROUP_ASC',
+          }}
+        />
+      </ConfigProvider>,
+    )
+
+    await waitFor(() => {
+      expectTextBefore('5 - Zapato Mujer', '8 - Low Stock Dept')
+    })
+
+    const deptRow = screen.getByText('5 - Zapato Mujer').closest('tr')
+    expect(deptRow).toBeTruthy()
+    await user.click(deptRow!.querySelector<HTMLButtonElement>('button.ant-table-row-expand-icon')!)
+
+    await waitFor(() => {
+      expectTextBefore('100 - Accesorios Mujer', '216 - Zap Deport Mujer')
+    })
+  })
+
+  it('uses parent subtotal percentages for frozen hierarchy snapshots', async () => {
+    const user = userEvent.setup()
+    render(
+      <ConfigProvider>
+        <RenderSalesAnalysis
+          result={report()}
+          params={{
+            level1: 'department',
+            level2: 'category',
+            showPercentOfTotal: true,
+          }}
+        />
+      </ConfigProvider>,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('5 - Zapato Mujer')).toBeInTheDocument()
+    })
+
+    const deptRow = screen.getByText('5 - Zapato Mujer').closest('tr')
+    expect(deptRow).toBeTruthy()
+    await user.click(deptRow!.querySelector<HTMLButtonElement>('button.ant-table-row-expand-icon')!)
+
+    const categoryLabel = await screen.findByText('216 - Zap Deport Mujer')
+    const categoryRow = categoryLabel.closest('tr')
+    expect(categoryRow).toBeTruthy()
+    expect(within(categoryRow!).getAllByText('100.0%').length).toBeGreaterThanOrEqual(4)
   })
 })

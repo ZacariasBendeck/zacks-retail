@@ -156,6 +156,7 @@ describe('SalesByDayPage', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     window.localStorage.clear()
+    window.sessionStorage.clear()
     vi.mocked(useSalesDimensions).mockReturnValue({
       data: buildDims(),
       isLoading: false,

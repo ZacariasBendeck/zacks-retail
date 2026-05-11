@@ -44,6 +44,7 @@ const PurchaseOrdersPage = lazy(() => import('./pages/purchasing/PurchaseOrdersP
 const PurchaseOrderFormPage = lazy(() => import('./pages/purchasing/PurchaseOrderFormPage'))
 const PurchaseOrderDetailPage = lazy(() => import('./pages/purchasing/PurchaseOrderDetailPage'))
 const PurchaseOrderReportsPage = lazy(() => import('./pages/purchasing/PurchaseOrderReportsPage'))
+const SupplierQuotationsPage = lazy(() => import('./pages/purchasing/SupplierQuotationsPage'))
 const PoEntryMockPage = lazy(() => import('./pages/purchasing/PoEntryMockPage'))
 const PoReceiveMockPage = lazy(() => import('./pages/purchasing/PoReceiveMockPage'))
 const OtbDashboardPage = lazy(() => import('./pages/otb/OtbDashboardPage'))
@@ -243,6 +244,7 @@ export default function App() {
             <Route path="/inventory/audit" element={gate('inventory.view', <InventoryAuditPage />)} />
             <Route path="/purchasing" element={<Navigate to="/purchasing/orders" replace />} />
             <Route path="/purchasing/orders" element={gate('purchasing.view', <PurchaseOrdersPage />)} />
+            <Route path="/purchasing/quotations" element={gate('purchasing.view', <SupplierQuotationsPage />)} />
             <Route path="/purchasing/reports" element={gate('purchasing.view', <PurchaseOrderReportsPage />)} />
             <Route path="/purchasing/orders/new" element={gate('purchasing.edit', <PurchaseOrderFormPage />)} />
             <Route path="/purchasing/orders/new-spec-preview" element={gate('purchasing.edit', <PoEntryMockPage />)} />

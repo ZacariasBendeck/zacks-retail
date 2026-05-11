@@ -2,7 +2,13 @@ import { useState, useEffect, useMemo, useRef } from 'react'
 import {
   Alert, Button, Checkbox, Radio, Select, Space, Table, Tag, Tooltip, Typography, Spin,
 } from 'antd'
-import { DownloadOutlined, FileExcelOutlined, QuestionCircleOutlined } from '@ant-design/icons'
+import {
+  DownloadOutlined,
+  FileExcelOutlined,
+  FullscreenExitOutlined,
+  FullscreenOutlined,
+  QuestionCircleOutlined,
+} from '@ant-design/icons'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import dayjs, { type Dayjs } from 'dayjs'
@@ -110,6 +116,10 @@ type SalesAnalysisHierarchyLevels =
   | [SalesAnalysisHierarchyDimension, SalesAnalysisHierarchyDimension]
   | [SalesAnalysisHierarchyDimension, SalesAnalysisHierarchyDimension, SalesAnalysisHierarchyDimension]
 
+type SalesAnalysisGroupOrder = 'NET_SALES_DESC' | 'LEFT_GROUP_ASC'
+type SalesAnalysisPercentMeasure = 'onHandAtCost' | 'qty' | 'netSales' | 'grossProfit'
+type SalesAnalysisPercentBase = Record<SalesAnalysisPercentMeasure, number>
+
 const HIERARCHY_OPTIONS: Array<{ value: SalesAnalysisHierarchyDimension; label: string }> = [
   { value: 'department', label: 'Department' },
   { value: 'category', label: 'Category' },
@@ -132,6 +142,20 @@ const DEEPEST_HIERARCHY_OPTIONS: Array<{ value: SalesAnalysisHierarchyDimension;
 const HIERARCHY_LABELS = Object.fromEntries(
   DEEPEST_HIERARCHY_OPTIONS.map((o) => [o.value, o.label]),
 ) as Record<SalesAnalysisHierarchyDimension, string>
+
+const DEFAULT_GROUP_ORDER: SalesAnalysisGroupOrder = 'NET_SALES_DESC'
+const GROUP_ORDER_OPTIONS: Array<{ value: SalesAnalysisGroupOrder; label: string }> = [
+  { value: 'NET_SALES_DESC', label: 'Net Sales' },
+  { value: 'LEFT_GROUP_ASC', label: 'A-Z' },
+]
+const GROUP_ORDER_LABELS: Record<SalesAnalysisGroupOrder, string> = {
+  NET_SALES_DESC: 'Net Sales',
+  LEFT_GROUP_ASC: 'A-Z',
+}
+
+function isSalesAnalysisGroupOrder(value: unknown): value is SalesAnalysisGroupOrder {
+  return value === 'NET_SALES_DESC' || value === 'LEFT_GROUP_ASC'
+}
 
 function hierarchyLabel(dim: SalesAnalysisHierarchyDimension, attributeLabel?: string): string {
   return dim === 'attribute' ? (attributeLabel || 'Attribute') : HIERARCHY_LABELS[dim]
@@ -165,6 +189,7 @@ interface SalesAnalysisTreeNode {
   label: string
   skuCode?: string
   pictureUrl?: string | null
+  percentBase?: SalesAnalysisPercentBase
   qty: number
   netSales: number
   cogs: number
@@ -290,6 +315,23 @@ function percentOfTotal(value: number, total: number | null | undefined): number
   return Math.round((value / total) * 1000) / 10
 }
 
+function percentOfParentSubtotal(
+  record: SalesAnalysisTreeNode,
+  measure: SalesAnalysisPercentMeasure,
+): number | null {
+  return percentOfTotal(record[measure], record.percentBase?.[measure])
+}
+
+function assignPercentBases(
+  nodes: SalesAnalysisTreeNode[],
+  percentBase: SalesAnalysisPercentBase,
+): void {
+  for (const node of nodes) {
+    node.percentBase = percentBase
+    if (node.children?.length) assignPercentBases(node.children, node)
+  }
+}
+
 function aggregateChainLeaves(
   leaves: SalesAnalysisRow[],
   periodDays: number,
@@ -386,8 +428,10 @@ function analysisDimKeyLabel(
 function buildSalesAnalysisTree(
   rows: SalesAnalysisRow[],
   levels: SalesAnalysisHierarchyLevels,
+  groupOrder: SalesAnalysisGroupOrder,
   periodDays: number,
   turnsRoiAnnualizer: number,
+  percentBase: SalesAnalysisPercentBase,
   attributeDimension?: SalesAnalysisAttributeDimension | null,
 ): SalesAnalysisTreeNode[] {
   interface Bucket {
@@ -486,13 +530,18 @@ function buildSalesAnalysisTree(
             .sort(cmp)
             .map((child) => buildBucket(child, levelIndex + 1, path)),
     }
-    row.children!.sort((a, b) => b.netSales - a.netSales)
+    if (groupOrder === 'NET_SALES_DESC') {
+      row.children!.sort((a, b) => b.netSales - a.netSales)
+    }
     for (const child of row.children!) addAnalysisMeasures(row, child)
     recomputeAnalysisRatios(row, periodDays, turnsRoiAnnualizer)
     return row
   }
   const top = [...root.values()].sort(cmp).map((bucket) => buildBucket(bucket, 0, ''))
-  top.sort((a, b) => b.netSales - a.netSales)
+  if (groupOrder === 'NET_SALES_DESC') {
+    top.sort((a, b) => b.netSales - a.netSales)
+  }
+  assignPercentBases(top, percentBase)
   return top
 }
 
@@ -506,6 +555,7 @@ export default function SalesAnalysisPage() {
   const [level1, setLevel1] = useState<SalesAnalysisHierarchyDimension>('department')
   const [level2, setLevel2] = useState<SalesAnalysisHierarchyDimension>('category')
   const [level3, setLevel3] = useState<SalesAnalysisHierarchyDimension>('attribute')
+  const [groupOrder, setGroupOrder] = useState<SalesAnalysisGroupOrder>(DEFAULT_GROUP_ORDER)
   const [attributeDimensionCode, setAttributeDimensionCode] = useState<string | null>(null)
   const [dateSpec, setDateSpec] = useState<DateSpec>(DEFAULT_DATE_SPEC)
   // Criteria state — arrays for the multi-selects, strings for RICS grammar.
@@ -528,6 +578,7 @@ export default function SalesAnalysisPage() {
   const [priorYear, setPriorYear] = useState(false)
   const [includeOnOrder, setIncludeOnOrder] = useState(false)
   const [showPercentOfTotal, setShowPercentOfTotal] = useState(false)
+  const [fullScreen, setFullScreen] = useState(false)
   // Auto-collapses after a successful report run so results get the
   // vertical real-estate instead of the tall filter form. Operators expand
   // again via the "Modify filters" button.
@@ -545,6 +596,26 @@ export default function SalesAnalysisPage() {
   useEffect(() => {
     if (query && data && !isFetching) setFilterOpen(false)
   }, [query, data, isFetching])
+
+  useEffect(() => {
+    if (!data) setFullScreen(false)
+  }, [data])
+
+  useEffect(() => {
+    if (!fullScreen) return undefined
+
+    const previousOverflow = document.body.style.overflow
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setFullScreen(false)
+    }
+
+    document.body.style.overflow = 'hidden'
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.body.style.overflow = previousOverflow
+      document.removeEventListener('keydown', onKeyDown)
+    }
+  }, [fullScreen])
 
   // ?templateId=... replay. Fetch the template, hydrate form state, fire the
   // query with the loaded params, and bump lastUsedAt. Runs exactly once per
@@ -571,6 +642,7 @@ export default function SalesAnalysisPage() {
       level1?: SalesAnalysisHierarchyDimension
       level2?: SalesAnalysisHierarchyDimension
       level3?: SalesAnalysisHierarchyDimension
+      groupOrder?: SalesAnalysisGroupOrder
       attributeDimensionCode?: string | null
     }
     // New templates save a dateSpec; legacy ones only have startDate/endDate.
@@ -591,11 +663,13 @@ export default function SalesAnalysisPage() {
     const nextLevels: SalesAnalysisHierarchyLevels = nextDepth === 3
       ? [nextLevel1, nextLevel2, nextLevel3]
       : [nextLevel1, nextLevel2]
+    const nextGroupOrder = isSalesAnalysisGroupOrder(p.groupOrder) ? p.groupOrder : DEFAULT_GROUP_ORDER
     if (p.storeOption) setStoreOption(p.storeOption)
     setHierarchyDepth(nextDepth)
     setLevel1(nextLevel1)
     setLevel2(nextLevel2)
     setLevel3(nextLevel3)
+    setGroupOrder(nextGroupOrder)
     setAttributeDimensionCode(p.attributeDimensionCode ?? null)
     setDateSpec(spec)
     setSelectedStores(Array.isArray(p.stores) ? p.stores : [])
@@ -645,6 +719,7 @@ export default function SalesAnalysisPage() {
       includeAttributes: true,
       includeOnOrder: !!p.includeOnOrder,
       showPercentOfTotal: !!p.showPercentOfTotal,
+      groupOrder: nextGroupOrder,
     })
     touchTemplate.mutate(templateId)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -652,6 +727,7 @@ export default function SalesAnalysisPage() {
 
   function hydrateRunArgs(args: SalesAnalysisArgs): void {
     if (args.storeOption) setStoreOption(args.storeOption)
+    setGroupOrder(isSalesAnalysisGroupOrder(args.groupOrder) ? args.groupOrder : DEFAULT_GROUP_ORDER)
     if (args.startDate && args.endDate) {
       setDateSpec({ type: 'fixed', startDate: args.startDate, endDate: args.endDate })
     }
@@ -715,6 +791,7 @@ export default function SalesAnalysisPage() {
       includeAttributes: true,
       includeOnOrder,
       showPercentOfTotal,
+      groupOrder,
     })
   }
   function onStop(): void {
@@ -761,11 +838,13 @@ export default function SalesAnalysisPage() {
     () => (data ? buildSalesAnalysisTree(
       data.rows,
       hierarchyLevels,
+      groupOrder,
       data.periodDays,
       data.turnsRoiAnnualizer ?? (data.periodDays > 0 ? 365 / data.periodDays : 0),
+      data.totals,
       selectedAttributeDimension,
     ) : []),
-    [data, hierarchyLevels, selectedAttributeDimension],
+    [data, hierarchyLevels, groupOrder, selectedAttributeDimension],
   )
 
   const columns = [
@@ -814,7 +893,8 @@ export default function SalesAnalysisPage() {
             align: 'right' as const,
             sorter: salesAnalysisNumberSorter<SalesAnalysisTreeNode>('onHandAtCost'),
             sortDirections: SALES_ANALYSIS_NUMERIC_SORT_DIRECTIONS,
-            render: (v: number) => fmtPct1(percentOfTotal(v, data?.totals.onHandAtCost)),
+            render: (_v: number, record: SalesAnalysisTreeNode) =>
+              fmtPct1(percentOfParentSubtotal(record, 'onHandAtCost')),
           },
         ]
       : []),
@@ -831,7 +911,8 @@ export default function SalesAnalysisPage() {
             align: 'right' as const,
             sorter: salesAnalysisNumberSorter<SalesAnalysisTreeNode>('qty'),
             sortDirections: SALES_ANALYSIS_NUMERIC_SORT_DIRECTIONS,
-            render: (v: number) => fmtPct1(percentOfTotal(v, data?.totals.qty)),
+            render: (_v: number, record: SalesAnalysisTreeNode) =>
+              fmtPct1(percentOfParentSubtotal(record, 'qty')),
           },
         ]
       : []),
@@ -840,7 +921,7 @@ export default function SalesAnalysisPage() {
       align: 'right' as const,
       sorter: salesAnalysisNumberSorter<SalesAnalysisTreeNode>('netSales'),
       sortDirections: SALES_ANALYSIS_NUMERIC_SORT_DIRECTIONS,
-      defaultSortOrder: 'descend' as const,
+      ...(groupOrder === 'NET_SALES_DESC' ? { defaultSortOrder: 'descend' as const } : {}),
       render: (v: number) => fmtMoney(v),
     },
     ...(query?.showPercentOfTotal
@@ -850,7 +931,8 @@ export default function SalesAnalysisPage() {
             align: 'right' as const,
             sorter: salesAnalysisNumberSorter<SalesAnalysisTreeNode>('netSales'),
             sortDirections: SALES_ANALYSIS_NUMERIC_SORT_DIRECTIONS,
-            render: (v: number) => fmtPct1(percentOfTotal(v, data?.totals.netSales)),
+            render: (_v: number, record: SalesAnalysisTreeNode) =>
+              fmtPct1(percentOfParentSubtotal(record, 'netSales')),
           },
         ]
       : []),
@@ -875,7 +957,8 @@ export default function SalesAnalysisPage() {
             align: 'right' as const,
             sorter: salesAnalysisNumberSorter<SalesAnalysisTreeNode>('grossProfit'),
             sortDirections: SALES_ANALYSIS_NUMERIC_SORT_DIRECTIONS,
-            render: (v: number) => fmtPct1(percentOfTotal(v, data?.totals.grossProfit)),
+            render: (_v: number, record: SalesAnalysisTreeNode) =>
+              fmtPct1(percentOfParentSubtotal(record, 'grossProfit')),
           },
         ]
       : []),
@@ -1067,6 +1150,13 @@ export default function SalesAnalysisPage() {
                 style={{ width: 210 }}
               />
             ) : null}
+            <Button
+              icon={fullScreen ? <FullscreenExitOutlined /> : <FullscreenOutlined />}
+              disabled={!data}
+              onClick={() => setFullScreen((value) => !value)}
+            >
+              {fullScreen ? 'Exit full screen' : 'Full screen'}
+            </Button>
             <Button icon={<DownloadOutlined />} disabled={!csvUrl} href={csvUrl}>
               Export CSV
             </Button>
@@ -1101,6 +1191,7 @@ export default function SalesAnalysisPage() {
                 level1,
                 level2,
                 ...(hierarchyDepth === 3 ? { level3 } : {}),
+                groupOrder,
                 attributeDimensionCode: selectedAttributeDimension?.code ?? attributeDimensionCode ?? undefined,
                 dateSpec,
                 stores: selectedStores.length ? selectedStores : undefined,
@@ -1137,6 +1228,7 @@ export default function SalesAnalysisPage() {
                 level1,
                 level2,
                 ...(hierarchyDepth === 3 ? { level3 } : {}),
+                groupOrder,
                 attributeDimensionCode: selectedAttributeDimension?.code ?? attributeDimensionCode ?? undefined,
                 dateSpec,
                 stores: selectedStores.length ? selectedStores : undefined,
@@ -1185,6 +1277,7 @@ export default function SalesAnalysisPage() {
                 if (priorYear) parts.push('vs PY')
                 if (includeOnOrder) parts.push('on order')
                 if (showPercentOfTotal) parts.push('% of total')
+                if (groupOrder === 'LEFT_GROUP_ASC') parts.push('A-Z')
                 return parts.join(' · ')
               }}
             />
@@ -1239,6 +1332,15 @@ export default function SalesAnalysisPage() {
                   />
                 </>
               ) : null}
+              <Text type="secondary" className="sales-analysis-field-label">Order</Text>
+              <Radio.Group
+                value={groupOrder}
+                onChange={(e) => setGroupOrder(e.target.value as SalesAnalysisGroupOrder)}
+                optionType="button"
+                buttonStyle="solid"
+                size="small"
+                options={GROUP_ORDER_OPTIONS}
+              />
               {hierarchyHasAttribute ? (
                 <>
                   <Text type="secondary" className="sales-analysis-field-label">Attribute</Text>
@@ -1512,7 +1614,7 @@ export default function SalesAnalysisPage() {
           hint={`No sales between ${query.startDate} and ${query.endDate} for the selected filters. Try a wider date range or remove some criteria.`}
         />
       ) : data ? (
-        <>
+        <div className={fullScreen ? 'sales-analysis-report sales-analysis-report--fullscreen' : 'sales-analysis-report'}>
         <FilterChips
           chips={[
             { label: 'Hierarchy', value: currentHierarchyDescriptor },
@@ -1524,6 +1626,7 @@ export default function SalesAnalysisPage() {
             query.priorYear ? { label: 'Compare', value: 'Prior year' } : null,
             query.includeOnOrder ? { label: 'On order', value: 'Included' } : null,
             query.showPercentOfTotal ? { label: 'Percentages', value: 'Shown' } : null,
+            { label: 'Order', value: GROUP_ORDER_LABELS[groupOrder] },
             query.stores?.length ? { label: 'Stores in', value: `${query.stores.length} selected` } : null,
             query.chains?.length ? { label: 'Chains in', value: `${query.chains.length} selected` } : null,
             query.sectors?.length ? { label: 'Sectors in', value: `${query.sectors.length} selected` } : null,
@@ -1542,14 +1645,48 @@ export default function SalesAnalysisPage() {
             chipFromRaw('Keywords', query.keywordsRaw),
           ]}
         />
+        {fullScreen ? (
+          <div className="sales-analysis-report-toolbar">
+            <Text type="secondary">
+              {data.rows.length.toLocaleString()} SKU {data.rows.length === 1 ? 'row' : 'rows'}
+            </Text>
+            <Space size={8}>
+              {hierarchyHasAttribute && data ? (
+                <Select
+                  size="small"
+                  aria-label="Attribute dimension"
+                  value={selectedAttributeDimension?.code}
+                  placeholder="Attribute"
+                  options={attributeDimensions.map((dimension) => ({
+                    value: dimension.code,
+                    label: dimension.label,
+                  }))}
+                  onChange={setAttributeDimensionCode}
+                  disabled={!attributeDimensions.length}
+                  style={{ width: 210 }}
+                />
+              ) : null}
+              <Button
+                icon={<FullscreenExitOutlined />}
+                onClick={() => setFullScreen(false)}
+              >
+                Exit full screen
+              </Button>
+            </Space>
+          </div>
+        ) : null}
         <Table<SalesAnalysisTreeNode>
+          key={`sales-analysis-${groupOrder}`}
           dataSource={tree}
           columns={columns}
           rowKey="rowKey"
           size="small"
           pagination={{ pageSize: 50 }}
           expandable={{ defaultExpandAllRows: false }}
-          scroll={{ x: (query.priorYear ? 2220 : 1380) + (query.showPercentOfTotal ? 400 : 0) + (query.includeOnOrder ? 400 : 0) }}
+          scroll={{
+            x: (query.priorYear ? 2220 : 1380) + (query.showPercentOfTotal ? 400 : 0) + (query.includeOnOrder ? 400 : 0),
+            ...(fullScreen ? { y: 'calc(100vh - 164px)' } : {}),
+          }}
           summary={() => {
             const t = data.totals
             const numericCells = buildSalesAnalysisSummaryCells(t, {
@@ -1605,7 +1742,7 @@ export default function SalesAnalysisPage() {
             )
           }}
         />
-        </>
+        </div>
       ) : null}
       </div>
     </div>

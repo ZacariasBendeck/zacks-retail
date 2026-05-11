@@ -42,6 +42,7 @@ import {
   useSeasons,
   useSectors,
 } from '../../hooks/useProductsTaxonomy'
+import { useProductFamilies } from '../../hooks/useProductFamilies'
 import { useVendors } from '../../hooks/useProductsVendors'
 import {
   useAttributeDimensions,
@@ -210,6 +211,9 @@ const ATTRIBUTE_VALUE_CODE_PATTERN = /^[a-z0-9][a-z0-9_]*$/
 const isUniversalAttributeDimension = (dimension: AttributeDimension) =>
   dimension.familyRules.length === 0
 
+const normalizeFamilyCode = (code: string | null | undefined) =>
+  (code ?? '').trim().toUpperCase()
+
 const attributeColumnKey = (dimensionCode: string) => `${ATTRIBUTE_COLUMN_PREFIX}${dimensionCode}`
 
 const formatAmount = (value: number | null | undefined) =>
@@ -300,6 +304,37 @@ export function getVisibleActionDimensions(
   })
 }
 
+const selectedFamilyRuleSortOrder = (
+  dimension: AttributeDimension,
+  selectedFamilyCodes: Set<string>,
+): number => {
+  if (selectedFamilyCodes.size === 0) return dimension.sortOrder
+  const matchingOrders = dimension.familyRules
+    .filter((rule) => rule.enabled && selectedFamilyCodes.has(normalizeFamilyCode(rule.familyCode)))
+    .map((rule) => rule.sortOrder)
+  return matchingOrders.length > 0 ? Math.min(...matchingOrders) : dimension.sortOrder
+}
+
+export function getVisibleFamilyFilterDimensions(
+  dimensions: AttributeDimension[],
+  familyCodes: string[],
+): AttributeDimension[] {
+  const selectedFamilyCodes = new Set(familyCodes.map(normalizeFamilyCode).filter(Boolean))
+  return dimensions
+    .filter((dimension) => !isUniversalAttributeDimension(dimension))
+    .filter((dimension) => {
+      if (selectedFamilyCodes.size === 0) return true
+      return dimension.familyRules.some(
+        (rule) => rule.enabled && selectedFamilyCodes.has(normalizeFamilyCode(rule.familyCode)),
+      )
+    })
+    .sort((a, b) =>
+      selectedFamilyRuleSortOrder(a, selectedFamilyCodes) - selectedFamilyRuleSortOrder(b, selectedFamilyCodes) ||
+      a.sortOrder - b.sortOrder ||
+      a.labelEs.localeCompare(b.labelEs),
+    )
+}
+
 const orderColumnKeys = (keys: string[], orderedKeys: string[]) => {
   const requested = new Set(keys)
   const ordered = orderedKeys.filter((key) => requested.has(key))
@@ -316,6 +351,7 @@ export default function ChangeSkuAttributesPage() {
   const [departmentNumber, setDepartmentNumber] = useState<number | null>(null)
   const [sectorNumber, setSectorNumber] = useState<number | null>(null)
   const [categoryNumbers, setCategoryNumbers] = useState<number[]>([])
+  const [familyCodes, setFamilyCodes] = useState<string[]>([])
   const [groupCodes, setGroupCodes] = useState<string[]>([])
   const [keywordCodes, setKeywordCodes] = useState<string[]>([])
   const [seasonCodes, setSeasonCodes] = useState<string[]>([])
@@ -363,6 +399,7 @@ export default function ChangeSkuAttributesPage() {
   const { data: keywords } = useKeywords()
   const { data: seasons } = useSeasons()
   const { data: vendors } = useVendors()
+  const { data: productFamilies, isLoading: productFamiliesLoading } = useProductFamilies()
   const { data: attributeDimensions } = useAttributeDimensions(true)
   const { data: macroRules } = useAttributeMacroRules()
   const createAttributeValue = useCreateValue()
@@ -376,13 +413,52 @@ export default function ChangeSkuAttributesPage() {
     [sortedAttributeDimensions],
   )
   const familyAttributeDimensions = useMemo(
-    () => sortedAttributeDimensions.filter((dimension) => !isUniversalAttributeDimension(dimension)),
-    [sortedAttributeDimensions],
+    () => getVisibleFamilyFilterDimensions(sortedAttributeDimensions, familyCodes),
+    [familyCodes, sortedAttributeDimensions],
   )
+
+  useEffect(() => {
+    const visibleDimensionCodes = new Set([
+      ...universalAttributeDimensions.map((dimension) => dimension.code),
+      ...familyAttributeDimensions.map((dimension) => dimension.code),
+    ])
+    setAttributeFilters((prev) => {
+      let changed = false
+      const next: Record<string, string[]> = {}
+      for (const [dimensionCode, values] of Object.entries(prev)) {
+        if (!visibleDimensionCodes.has(dimensionCode)) {
+          changed = true
+          continue
+        }
+        next[dimensionCode] = values
+      }
+      return changed ? next : prev
+    })
+  }, [familyAttributeDimensions, universalAttributeDimensions])
 
   const derivedDimensionCodes = useMemo(
     () => new Set((macroRules ?? []).map((r) => r.targetDimensionCode)),
     [macroRules],
+  )
+
+  const productFamilyOptions = useMemo(
+    () => [...(productFamilies ?? [])]
+      .sort((a, b) => a.sortOrder - b.sortOrder || a.labelEs.localeCompare(b.labelEs))
+      .map((family) => ({
+        value: family.code,
+        label: `${family.code} - ${family.labelEs}`,
+      })),
+    [productFamilies],
+  )
+
+  const familyLabelByCode = useMemo(
+    () => new Map((productFamilies ?? []).map((family) => [family.code, family.labelEs])),
+    [productFamilies],
+  )
+
+  const selectedFamilyCodeSet = useMemo(
+    () => new Set(familyCodes.map(normalizeFamilyCode).filter(Boolean)),
+    [familyCodes],
   )
 
   const selectedAttributeDimension = useMemo(() => {
@@ -438,9 +514,12 @@ export default function ChangeSkuAttributesPage() {
     const parentRange = new Set<number>()
     if (deptCategoryRange) for (const c of deptCategoryRange) parentRange.add(c)
     else if (sectorCategoryRange) for (const c of sectorCategoryRange) parentRange.add(c)
-    if (parentRange.size === 0) return categories
-    return categories.filter((c) => parentRange.has(c.number))
-  }, [categories, deptCategoryRange, sectorCategoryRange])
+    return categories.filter((c) => {
+      if (parentRange.size > 0 && !parentRange.has(c.number)) return false
+      if (selectedFamilyCodeSet.size === 0) return true
+      return selectedFamilyCodeSet.has(normalizeFamilyCode(c.productFamilyCode))
+    })
+  }, [categories, deptCategoryRange, sectorCategoryRange, selectedFamilyCodeSet])
 
   const onSectorChange = (v: number | null) => {
     setSectorNumber(v)
@@ -468,6 +547,19 @@ export default function ChangeSkuAttributesPage() {
         setCategoryNumbers((prev) => prev.filter((c) => c >= d.begCateg && c <= d.endCateg))
       }
     }
+  }
+
+  const onFamilyChange = (values: string[]) => {
+    const nextFamilies = values.filter(Boolean)
+    setFamilyCodes(nextFamilies)
+    if (nextFamilies.length === 0 || !categories) return
+    const selectedCodes = new Set(nextFamilies.map(normalizeFamilyCode).filter(Boolean))
+    const allowedCategories = new Set(
+      categories
+        .filter((category) => selectedCodes.has(normalizeFamilyCode(category.productFamilyCode)))
+        .map((category) => category.number),
+    )
+    setCategoryNumbers((prev) => prev.filter((categoryNumber) => allowedCategories.has(categoryNumber)))
   }
 
   // Committed query
@@ -1011,6 +1103,7 @@ export default function ChangeSkuAttributesPage() {
     sectors: sectorNumber != null ? [sectorNumber] : undefined,
     departments: departmentNumber != null ? [departmentNumber] : undefined,
     categories: categoryNumbers.length > 0 ? categoryNumbers : undefined,
+    families: familyCodes.length > 0 ? familyCodes : undefined,
     seasons: seasonCodes.length > 0 ? seasonCodes : undefined,
     groups: groupCodes.length > 0 ? groupCodes : undefined,
     keywords: keywordCodes.length > 0 ? keywordCodes : undefined,
@@ -1026,6 +1119,7 @@ export default function ChangeSkuAttributesPage() {
     setDepartmentNumber(null)
     setSectorNumber(null)
     setCategoryNumbers([])
+    setFamilyCodes([])
     setGroupCodes([])
     setKeywordCodes([])
     setSeasonCodes([])
@@ -1040,6 +1134,7 @@ export default function ChangeSkuAttributesPage() {
     departmentNumber != null ||
     sectorNumber != null ||
     categoryNumbers.length > 0 ||
+    familyCodes.length > 0 ||
     groupCodes.length > 0 ||
     keywordCodes.length > 0 ||
     seasonCodes.length > 0 ||
@@ -1469,7 +1564,7 @@ export default function ChangeSkuAttributesPage() {
       }))
 
   const renderMerchandiseFilters = () => (
-    <Space wrap size={8}>
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
       <Input
         placeholder="SKU (ABC*, *123, AB*12)"
         prefix={<SearchOutlined />}
@@ -1516,7 +1611,7 @@ export default function ChangeSkuAttributesPage() {
       <Select
         mode="multiple"
         placeholder={
-          departmentNumber != null || sectorNumber != null
+          familyCodes.length > 0 || departmentNumber != null || sectorNumber != null
             ? `Category (${availableCategories.length} in scope)`
             : 'Category'
         }
@@ -1533,7 +1628,22 @@ export default function ChangeSkuAttributesPage() {
           (option?.label as string).toLowerCase().includes(input.toLowerCase())
         }
       />
-    </Space>
+      <Select
+        mode="multiple"
+        placeholder="Product Families"
+        value={familyCodes}
+        onChange={onFamilyChange}
+        loading={productFamiliesLoading}
+        allowClear
+        showSearch
+        style={{ minWidth: 260, marginLeft: 'auto' }}
+        maxTagCount={2}
+        options={productFamilyOptions}
+        filterOption={(input, option) =>
+          (option?.label as string).toLowerCase().includes(input.toLowerCase())
+        }
+      />
+    </div>
   )
 
   const renderCoreFilters = () => (
@@ -1695,6 +1805,11 @@ export default function ChangeSkuAttributesPage() {
           {categoryNumbers.map((n) => (
             <Tag key={`cat-${n}`} closable onClose={() => setCategoryNumbers((prev) => prev.filter((x) => x !== n))}>
               Category: {n}
+            </Tag>
+          ))}
+          {familyCodes.map((code) => (
+            <Tag key={`family-${code}`} closable onClose={() => onFamilyChange(familyCodes.filter((x) => x !== code))}>
+              Family: {familyLabelByCode.get(code) ?? code}
             </Tag>
           ))}
         </Space>

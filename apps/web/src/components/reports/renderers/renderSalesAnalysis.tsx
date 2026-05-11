@@ -24,11 +24,16 @@ type SalesAnalysisHierarchyDimension =
   | 'group'
   | 'buyer'
 
+type SalesAnalysisGroupOrder = 'NET_SALES_DESC' | 'LEFT_GROUP_ASC'
+type SalesAnalysisPercentMeasure = 'onHandAtCost' | 'qty' | 'netSales' | 'grossProfit'
+type SalesAnalysisPercentBase = Record<SalesAnalysisPercentMeasure, number>
+
 interface SalesAnalysisTreeNode {
   rowKey: string
   label: string
   skuCode?: string
   pictureUrl?: string | null
+  percentBase?: SalesAnalysisPercentBase
   qty: number
   netSales: number
   cogs: number
@@ -89,6 +94,8 @@ const HIERARCHY_LABELS: Record<SalesAnalysisHierarchyDimension, string> = {
   buyer: 'Buyer',
 }
 
+const DEFAULT_GROUP_ORDER: SalesAnalysisGroupOrder = 'NET_SALES_DESC'
+
 function hierarchyLabel(dim: SalesAnalysisHierarchyDimension): string {
   return HIERARCHY_LABELS[dim]
 }
@@ -113,6 +120,10 @@ function readHierarchyLevels(params: Record<string, unknown>): [SalesAnalysisHie
     return [level1, level2]
   }
   return ['department', 'category']
+}
+
+function readGroupOrder(params: Record<string, unknown>): SalesAnalysisGroupOrder {
+  return params.groupOrder === 'LEFT_GROUP_ASC' ? 'LEFT_GROUP_ASC' : DEFAULT_GROUP_ORDER
 }
 
 function emptyAnalysisMeasures(): SalesAnalysisMeasures {
@@ -189,6 +200,23 @@ function addAnalysisMeasures(into: SalesAnalysisMeasures, row: SalesAnalysisMeas
 function percentOfTotal(value: number, total: number | null | undefined): number | null {
   if (total == null || total === 0) return null
   return Math.round((value / total) * 1000) / 10
+}
+
+function percentOfParentSubtotal(
+  record: SalesAnalysisTreeNode,
+  measure: SalesAnalysisPercentMeasure,
+): number | null {
+  return percentOfTotal(record[measure], record.percentBase?.[measure])
+}
+
+function assignPercentBases(
+  nodes: SalesAnalysisTreeNode[],
+  percentBase: SalesAnalysisPercentBase,
+): void {
+  for (const node of nodes) {
+    node.percentBase = percentBase
+    if (node.children?.length) assignPercentBases(node.children, node)
+  }
 }
 
 function aggregateChainLeaves(
@@ -280,8 +308,10 @@ function analysisDimKeyLabel(
 function buildSalesAnalysisTree(
   rows: SalesAnalysisRow[],
   levels: [SalesAnalysisHierarchyDimension, SalesAnalysisHierarchyDimension],
+  groupOrder: SalesAnalysisGroupOrder,
   periodDays: number,
   turnsRoiAnnualizer: number,
+  percentBase: SalesAnalysisPercentBase,
 ): SalesAnalysisTreeNode[] {
   interface Bucket {
     key: string
@@ -371,12 +401,17 @@ function buildSalesAnalysisTree(
       ...emptyAnalysisMeasures(),
       children: [...bucket.children.values()].sort(cmp).map((child) => buildLevel2(child, `${levels[0]}:${bucket.key}`)),
     }
-    row.children!.sort((a, b) => b.netSales - a.netSales)
+    if (groupOrder === 'NET_SALES_DESC') {
+      row.children!.sort((a, b) => b.netSales - a.netSales)
+    }
     for (const child of row.children!) addAnalysisMeasures(row, child)
     recomputeAnalysisRatios(row, periodDays, turnsRoiAnnualizer)
     return row
   })
-  top.sort((a, b) => b.netSales - a.netSales)
+  if (groupOrder === 'NET_SALES_DESC') {
+    top.sort((a, b) => b.netSales - a.netSales)
+  }
+  assignPercentBases(top, percentBase)
   return top
 }
 
@@ -453,13 +488,16 @@ export default function RenderSalesAnalysis({
   const includeOnOrder = params?.includeOnOrder === true || result.rows.some((r) => r.onOrderQty != null || r.onOrderCost != null)
   const showPercentOfTotal = params?.showPercentOfTotal === true
   const hierarchyLevels = readHierarchyLevels(params ?? {})
+  const groupOrder = readGroupOrder(params ?? {})
 
   if (result.reportType === 'SKU_DETAIL') {
     const tree = buildSalesAnalysisTree(
       result.rows,
       hierarchyLevels,
+      groupOrder,
       result.periodDays,
       result.turnsRoiAnnualizer ?? (result.periodDays > 0 ? 365 / result.periodDays : 0),
+      result.totals,
     )
     const columns = [
       {
@@ -484,20 +522,20 @@ export default function RenderSalesAnalysis({
       { title: 'Avg Cost', dataIndex: 'inventoryUnitCost', key: 'inventoryUnitCost', width: 100, align: 'right' as const, sorter: salesAnalysisNumberSorter<SalesAnalysisTreeNode>('inventoryUnitCost'), sortDirections: SALES_ANALYSIS_NUMERIC_SORT_DIRECTIONS, render: (v: number | null) => fmtMoney(v) },
       { title: 'Total Inv Cost', dataIndex: 'onHandAtCost', key: 'onHandAtCost', width: 130, align: 'right' as const, sorter: salesAnalysisNumberSorter<SalesAnalysisTreeNode>('onHandAtCost'), sortDirections: SALES_ANALYSIS_NUMERIC_SORT_DIRECTIONS, render: (v: number) => fmtMoney(v) },
       ...(showPercentOfTotal
-        ? [{ title: '% of Total', dataIndex: 'onHandAtCost', key: 'onHandAtCostPctOfTotal', width: 100, align: 'right' as const, sorter: salesAnalysisNumberSorter<SalesAnalysisTreeNode>('onHandAtCost'), sortDirections: SALES_ANALYSIS_NUMERIC_SORT_DIRECTIONS, render: (v: number) => fmtPct1(percentOfTotal(v, result.totals.onHandAtCost)) }]
+        ? [{ title: '% of Total', dataIndex: 'onHandAtCost', key: 'onHandAtCostPctOfTotal', width: 100, align: 'right' as const, sorter: salesAnalysisNumberSorter<SalesAnalysisTreeNode>('onHandAtCost'), sortDirections: SALES_ANALYSIS_NUMERIC_SORT_DIRECTIONS, render: (_v: number, record: SalesAnalysisTreeNode) => fmtPct1(percentOfParentSubtotal(record, 'onHandAtCost')) }]
         : []),
       { title: 'Qty Sold', dataIndex: 'qty', key: 'qty', width: 90, align: 'right' as const, sorter: salesAnalysisNumberSorter<SalesAnalysisTreeNode>('qty'), sortDirections: SALES_ANALYSIS_NUMERIC_SORT_DIRECTIONS, render: (v: number) => fmtQty(v) },
       ...(showPercentOfTotal
-        ? [{ title: '% of Total', dataIndex: 'qty', key: 'qtyPctOfTotal', width: 100, align: 'right' as const, sorter: salesAnalysisNumberSorter<SalesAnalysisTreeNode>('qty'), sortDirections: SALES_ANALYSIS_NUMERIC_SORT_DIRECTIONS, render: (v: number) => fmtPct1(percentOfTotal(v, result.totals.qty)) }]
+        ? [{ title: '% of Total', dataIndex: 'qty', key: 'qtyPctOfTotal', width: 100, align: 'right' as const, sorter: salesAnalysisNumberSorter<SalesAnalysisTreeNode>('qty'), sortDirections: SALES_ANALYSIS_NUMERIC_SORT_DIRECTIONS, render: (_v: number, record: SalesAnalysisTreeNode) => fmtPct1(percentOfParentSubtotal(record, 'qty')) }]
         : []),
-      { title: 'Net Sales', dataIndex: 'netSales', key: 'netSales', width: 130, align: 'right' as const, sorter: salesAnalysisNumberSorter<SalesAnalysisTreeNode>('netSales'), sortDirections: SALES_ANALYSIS_NUMERIC_SORT_DIRECTIONS, defaultSortOrder: 'descend' as const, render: (v: number) => fmtMoney(v) },
+      { title: 'Net Sales', dataIndex: 'netSales', key: 'netSales', width: 130, align: 'right' as const, sorter: salesAnalysisNumberSorter<SalesAnalysisTreeNode>('netSales'), sortDirections: SALES_ANALYSIS_NUMERIC_SORT_DIRECTIONS, ...(groupOrder === 'NET_SALES_DESC' ? { defaultSortOrder: 'descend' as const } : {}), render: (v: number) => fmtMoney(v) },
       ...(showPercentOfTotal
-        ? [{ title: '% of Total', dataIndex: 'netSales', key: 'netSalesPctOfTotal', width: 100, align: 'right' as const, sorter: salesAnalysisNumberSorter<SalesAnalysisTreeNode>('netSales'), sortDirections: SALES_ANALYSIS_NUMERIC_SORT_DIRECTIONS, render: (v: number) => fmtPct1(percentOfTotal(v, result.totals.netSales)) }]
+        ? [{ title: '% of Total', dataIndex: 'netSales', key: 'netSalesPctOfTotal', width: 100, align: 'right' as const, sorter: salesAnalysisNumberSorter<SalesAnalysisTreeNode>('netSales'), sortDirections: SALES_ANALYSIS_NUMERIC_SORT_DIRECTIONS, render: (_v: number, record: SalesAnalysisTreeNode) => fmtPct1(percentOfParentSubtotal(record, 'netSales')) }]
         : []),
       { title: 'COGS', dataIndex: 'cogs', key: 'cogs', width: 130, align: 'right' as const, sorter: salesAnalysisNumberSorter<SalesAnalysisTreeNode>('cogs'), sortDirections: SALES_ANALYSIS_NUMERIC_SORT_DIRECTIONS, render: (v: number) => fmtMoney(v) },
       { title: 'Gross Profit', dataIndex: 'grossProfit', key: 'grossProfit', width: 130, align: 'right' as const, sorter: salesAnalysisNumberSorter<SalesAnalysisTreeNode>('grossProfit'), sortDirections: SALES_ANALYSIS_NUMERIC_SORT_DIRECTIONS, render: (v: number) => fmtMoney(v) },
       ...(showPercentOfTotal
-        ? [{ title: '% of Total', dataIndex: 'grossProfit', key: 'grossProfitPctOfTotal', width: 100, align: 'right' as const, sorter: salesAnalysisNumberSorter<SalesAnalysisTreeNode>('grossProfit'), sortDirections: SALES_ANALYSIS_NUMERIC_SORT_DIRECTIONS, render: (v: number) => fmtPct1(percentOfTotal(v, result.totals.grossProfit)) }]
+        ? [{ title: '% of Total', dataIndex: 'grossProfit', key: 'grossProfitPctOfTotal', width: 100, align: 'right' as const, sorter: salesAnalysisNumberSorter<SalesAnalysisTreeNode>('grossProfit'), sortDirections: SALES_ANALYSIS_NUMERIC_SORT_DIRECTIONS, render: (_v: number, record: SalesAnalysisTreeNode) => fmtPct1(percentOfParentSubtotal(record, 'grossProfit')) }]
         : []),
       { title: 'GP %', dataIndex: 'gpPct', key: 'gpPct', width: 90, align: 'right' as const, sorter: salesAnalysisNumberSorter<SalesAnalysisTreeNode>('gpPct'), sortDirections: SALES_ANALYSIS_NUMERIC_SORT_DIRECTIONS, render: (v: number | null) => <GpBadge value={v} /> },
       { title: 'Turns', dataIndex: 'turns', key: 'turns', width: 80, align: 'right' as const, sorter: salesAnalysisNumberSorter<SalesAnalysisTreeNode>('turns'), sortDirections: SALES_ANALYSIS_NUMERIC_SORT_DIRECTIONS, render: (v: number | null) => fmtPctBare1(v) },
@@ -527,6 +565,7 @@ export default function RenderSalesAnalysis({
     const onOrderStartIndex = priorYear ? 18 : 11
     return (
       <Table<SalesAnalysisTreeNode>
+        key={`sales-analysis-${groupOrder}`}
         dataSource={tree}
         columns={columns}
         rowKey="rowKey"

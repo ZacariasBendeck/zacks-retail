@@ -137,6 +137,32 @@
   margin: 8px 0;
 }
 
+.sales-analysis-report-toolbar {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  margin: 8px 0;
+}
+
+.sales-analysis-report--fullscreen {
+  background: #fff;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  left: 0;
+  overflow: hidden;
+  padding: 14px 16px;
+  position: fixed;
+  right: 0;
+  top: 0;
+  z-index: 1200;
+}
+
+.sales-analysis-report--fullscreen .ant-table-wrapper {
+  min-height: 0;
+}
+
 .sales-analysis-picture-report--fullscreen {
   background: #fff;
   bottom: 0;

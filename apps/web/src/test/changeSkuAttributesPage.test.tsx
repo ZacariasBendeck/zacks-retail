@@ -6,6 +6,7 @@ import {
   getResultFamilyScope,
   getVisibleColorLabels,
   getVisibleActionDimensions,
+  getVisibleFamilyFilterDimensions,
 } from '../pages/utilities/ChangeSkuAttributesPage'
 
 function dimension(
@@ -74,6 +75,20 @@ describe('ChangeSkuAttributesPage attribute action scope', () => {
     ).map((row) => row.code)
 
     expect(visible).toEqual(['marca', 'suit_detail'])
+  })
+
+  it('narrows family filter dimensions to the selected product family', () => {
+    const visible = getVisibleFamilyFilterDimensions(
+      [
+        dimension('marca'),
+        dimension('shoe_detail', ['shoes']),
+        dimension('apparel_detail', ['apparel']),
+        dimension('shared_detail', ['shoes', 'apparel']),
+      ],
+      ['shoes'],
+    ).map((row) => row.code).sort()
+
+    expect(visible).toEqual(['shared_detail', 'shoe_detail'])
   })
 })
 

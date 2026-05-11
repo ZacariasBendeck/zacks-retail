@@ -3371,7 +3371,7 @@ async function loadSalesAnalysisInventoryScope(params: {
     }
     if (params.skuFilter?.length) {
       sqlParams.push(normalizedStringList(params.skuFilter).map((sku) => sku.toUpperCase()));
-      wheres.push(`UPPER(BTRIM(h.sku_code)) = ANY($${sqlParams.length}::text[])`);
+      wheres.push(`h.sku_code = ANY($${sqlParams.length}::text[])`);
     }
     if (params.categoryPrefilter?.length) {
       sqlParams.push(normalizedNumberList(params.categoryPrefilter));
@@ -3434,7 +3434,7 @@ async function loadSalesAnalysisInventoryScope(params: {
       inventory_scope AS (
         SELECT
           h.id AS snapshot_id,
-          UPPER(BTRIM(h.sku_code)) AS sku_key,
+          h.sku_code AS sku_key,
           h.store_id,
              h.on_hand::float8 AS total_on_hand,
              COALESCE(s.current_cost, h.average_cost)::float8 AS current_cost,

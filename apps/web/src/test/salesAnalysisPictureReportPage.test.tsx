@@ -148,6 +148,7 @@ describe('SalesAnalysisPictureReportPage', () => {
   beforeEach(() => {
     lastArgs = null
     window.localStorage.clear()
+    window.sessionStorage.clear()
     mockUseSalesDimensions.mockReturnValue({ data: dims(), isLoading: false } as unknown as ReturnType<typeof useSalesDimensions>)
     mockUseSalesAnalysis.mockImplementation((run) => {
       lastArgs = run?.args ?? null
