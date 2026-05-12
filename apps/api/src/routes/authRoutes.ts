@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Response, Router } from 'express';
 import { z } from 'zod';
 import { PrismaClient } from '../prismaClient';
 import { authenticate, changePassword } from '../services/identityAccess/userService';
@@ -10,6 +10,19 @@ import {
   recordSessionEvent,
 } from '../services/identityAccess/securityAuditService';
 import { requireAuth, SESSION_COOKIE } from '../middleware/authMiddleware';
+
+const ROOT_SESSION_COOKIE_PATH = '/';
+const LEGACY_SESSION_COOKIE_PATHS = ['/api/v1/auth', '/api/v1', '/api'];
+
+function clearSessionCookies(res: Response, paths: string[]): void {
+  for (const path of paths) {
+    res.clearCookie(SESSION_COOKIE, {
+      path,
+      sameSite: 'lax',
+      secure: process.env.NODE_ENV === 'production',
+    });
+  }
+}
 
 export function createAuthRoutes(prisma: PrismaClient): Router {
   const router = Router();
@@ -60,8 +73,9 @@ export function createAuthRoutes(prisma: PrismaClient): Router {
         sameSite: 'lax',
         secure: process.env.NODE_ENV === 'production',
         expires: session.expiresAt,
-        path: '/',
+        path: ROOT_SESSION_COOKIE_PATH,
       });
+      clearSessionCookies(res, LEGACY_SESSION_COOKIE_PATHS);
       const role = await prisma.role.findUnique({ where: { id: user.roleId } });
       await recordLoginEvent(prisma, {
         email: user.email,
@@ -109,7 +123,7 @@ export function createAuthRoutes(prisma: PrismaClient): Router {
           req,
         });
       }
-      res.clearCookie(SESSION_COOKIE, { path: '/' });
+      clearSessionCookies(res, [ROOT_SESSION_COOKIE_PATH, ...LEGACY_SESSION_COOKIE_PATHS]);
       res.status(204).end();
     } catch (err) {
       next(err);

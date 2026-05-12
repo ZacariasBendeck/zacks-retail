@@ -75,6 +75,21 @@ describe('auth routes', () => {
     expect(res.body.permissions).toEqual(expect.arrayContaining(['employees.manage']));
   });
 
+  it('GET /auth/me tolerates stale duplicate sid cookies', async () => {
+    const login = await request(app).post('/api/v1/auth/login').send({ email, password });
+    const cookie = login.headers['set-cookie'][0].split(';')[0];
+    const staleCookie = 'sid=00000000-0000-4000-8000-000000000000';
+    const res = await request(app).get('/api/v1/auth/me').set('Cookie', `${staleCookie}; ${cookie}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.user.email).toBe(email);
+  });
+
+  it('GET /auth/me ignores malformed sid cookies', async () => {
+    const res = await request(app).get('/api/v1/auth/me').set('Cookie', 'sid=not-a-session-id');
+    expect(res.status).toBe(401);
+  });
+
   it('POST /auth/logout clears the session', async () => {
     const login = await request(app).post('/api/v1/auth/login').send({ email, password });
     const cookie = login.headers['set-cookie'][0];

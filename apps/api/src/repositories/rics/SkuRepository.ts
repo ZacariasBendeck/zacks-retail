@@ -190,8 +190,18 @@ function getPool(): Pool {
   return pool;
 }
 
+function sanitizePgText(value: string): string {
+  return value.replace(/\0/g, '');
+}
+
 function normalizeCode(code: string): string {
-  return code.trim().toUpperCase();
+  return sanitizePgText(code).trim().toUpperCase();
+}
+
+function normalizeTextFilter(value: string | null | undefined): string | null {
+  if (value == null) return null;
+  const trimmed = sanitizePgText(value).trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 function trimString(value: string | null | undefined): string | null {
@@ -301,18 +311,20 @@ function numSet(values: number[]): number[] {
 }
 
 function sqlLikePattern(pattern: string): string {
-  if (pattern.includes('*')) {
-    return pattern.toUpperCase().replace(/\*/g, '%');
+  const normalized = sanitizePgText(pattern).trim().toUpperCase();
+  if (normalized.includes('*')) {
+    return normalized.replace(/\*/g, '%');
   }
-  return `%${pattern.toUpperCase()}%`;
+  return `%${normalized}%`;
 }
 
 function buildWhere(opts: FindAllOptions): { clauses: string[]; params: unknown[] } {
   const clauses = ['s.code IS NOT NULL'];
   const params: unknown[] = [];
 
-  if (opts.q && opts.q.trim().length > 0) {
-    const needle = `%${opts.q.trim().toUpperCase()}%`;
+  const q = normalizeTextFilter(opts.q);
+  if (q) {
+    const needle = `%${q.toUpperCase()}%`;
     params.push(needle);
     const ref = `$${params.length}`;
     clauses.push(
@@ -330,21 +342,23 @@ function buildWhere(opts: FindAllOptions): { clauses: string[]; params: unknown[
     );
   }
 
-  if (opts.sku && opts.sku.trim().length > 0) {
+  const sku = normalizeTextFilter(opts.sku);
+  if (sku) {
     pushClause(
       clauses,
       params,
       `UPPER(s.code) LIKE ?`,
-      sqlLikePattern(opts.sku.trim()),
+      sqlLikePattern(sku),
     );
   }
 
-  if (opts.description && opts.description.trim().length > 0) {
+  const description = normalizeTextFilter(opts.description);
+  if (description) {
     pushClause(
       clauses,
       params,
       `UPPER(COALESCE(NULLIF(BTRIM(s.description_rics), ''), NULLIF(BTRIM(s.description_web), ''), s.provisional_code, '')) LIKE ?`,
-      sqlLikePattern(opts.description.trim()),
+      sqlLikePattern(description),
     );
   }
 
@@ -432,18 +446,23 @@ function buildWhere(opts: FindAllOptions): { clauses: string[]; params: unknown[
     );
   }
 
-  if (opts.styleColor && opts.styleColor.trim().length > 0) {
+  const styleColor = normalizeTextFilter(opts.styleColor);
+  if (styleColor) {
     pushClause(
       clauses,
       params,
       `UPPER(COALESCE(s.style_color, '')) LIKE ?`,
-      `%${opts.styleColor.trim().toUpperCase()}%`,
+      `%${styleColor.toUpperCase()}%`,
     );
   }
 
-  if (opts.codes && opts.codes.length > 0) {
+  if (opts.codes !== undefined) {
     const codes = setOf(opts.codes);
-    pushClause(clauses, params, `UPPER(s.code) = ANY(?::text[])`, codes);
+    if (codes.length > 0) {
+      pushClause(clauses, params, `UPPER(s.code) = ANY(?::text[])`, codes);
+    } else {
+      clauses.push('FALSE');
+    }
   }
 
   return { clauses, params };

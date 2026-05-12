@@ -8,6 +8,7 @@ import { Router, Request, Response, IRouter } from 'express';
 import { skuService } from '../../services/products/skuService';
 import { attributesService } from '../../services/products/attributesService';
 import {
+  Ok,
   repoHttpStatus,
   repoHttpCode,
   type Result,
@@ -133,8 +134,12 @@ router.get('/', async (req: Request, res: Response) => {
         .json({ error: { code: repoHttpCode(err), message: err.message } });
       return;
     }
-    // Zero matches = empty list (not "no filter"). Sentinel: ['\0__NO_MATCH__'].
-    codes = attrResult.value.size === 0 ? ['\0__NO_MATCH__'] : Array.from(attrResult.value);
+    // Zero matches = empty list (not "no filter").
+    if (attrResult.value.size === 0) {
+      send(res, Ok([]));
+      return;
+    }
+    codes = Array.from(attrResult.value);
   }
   send(
     res,

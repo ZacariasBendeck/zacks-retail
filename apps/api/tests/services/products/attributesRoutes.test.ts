@@ -138,6 +138,7 @@ jest.mock('../../../src/repositories/rics/SkuRepository', () => ({
 }));
 
 import app from '../../../src/app';
+import { SkuRepository } from '../../../src/repositories/rics/SkuRepository';
 
 beforeEach(() => {
   replaceMock.mockReset();
@@ -341,6 +342,17 @@ describe('GET /api/v1/products/skus (attr.* filter)', () => {
       { dimensionCode: 'buyer', valueCodes: ['zb', 'ab'] },
       { dimensionCode: 'discount_type', valueCodes: ['pct_50'] },
     ]);
+  });
+
+  it('returns an empty list without a Postgres sentinel when attr filters match no SKUs', async () => {
+    findCodesMock.mockResolvedValue(Ok(new Set<string>()));
+    (SkuRepository.findAll as jest.Mock).mockClear();
+
+    const res = await request(app).get('/api/v1/products/skus?attr.buyer=missing');
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([]);
+    expect(SkuRepository.findAll).not.toHaveBeenCalled();
   });
 
   it('returns empty list without invoking attributesService when no attr filters present', async () => {

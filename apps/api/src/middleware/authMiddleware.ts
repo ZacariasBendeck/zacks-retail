@@ -17,21 +17,69 @@ declare global {
 
 export const SESSION_COOKIE = 'sid';
 
+const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function decodeCookieValue(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+export function extractSessionCookieCandidates(req: Request): string[] {
+  const candidates: string[] = [];
+  const rawCookieHeader = req.get('cookie');
+
+  if (rawCookieHeader) {
+    for (const part of rawCookieHeader.split(';')) {
+      const separator = part.indexOf('=');
+      if (separator <= 0) continue;
+
+      const name = part.slice(0, separator).trim();
+      if (name !== SESSION_COOKIE) continue;
+
+      const value = decodeCookieValue(part.slice(separator + 1).trim());
+      if (value) candidates.push(value);
+    }
+  }
+
+  const parsedCookie = req.cookies?.[SESSION_COOKIE];
+  if (typeof parsedCookie === 'string') {
+    candidates.push(parsedCookie);
+  } else if (Array.isArray(parsedCookie)) {
+    candidates.push(...parsedCookie.filter((value): value is string => typeof value === 'string'));
+  }
+
+  return Array.from(new Set(candidates)).filter((value) => SESSION_ID_PATTERN.test(value));
+}
+
 export function attachUser(prisma: PrismaClient) {
   return async function (req: Request, _res: Response, next: NextFunction) {
-    const sid = req.cookies?.[SESSION_COOKIE];
-    if (!sid) return next();
-    const session = await findActiveSession(prisma, sid);
-    if (!session) return next();
-    const user = await prisma.user.findUnique({
-      where: { id: session.userId },
-      include: { role: true },
-    });
-    if (!user || !user.active) return next();
-    req.user = user;
-    req.sessionId = session.id;
-    req.permissions = await getEffectivePermissions(prisma, user.id);
-    next();
+    try {
+      const sessionIds = extractSessionCookieCandidates(req);
+      if (sessionIds.length === 0) return next();
+
+      for (const sessionId of sessionIds) {
+        const session = await findActiveSession(prisma, sessionId);
+        if (!session) continue;
+
+        const user = await prisma.user.findUnique({
+          where: { id: session.userId },
+          include: { role: true },
+        });
+        if (!user || !user.active) continue;
+
+        req.user = user;
+        req.sessionId = session.id;
+        req.permissions = await getEffectivePermissions(prisma, user.id);
+        return next();
+      }
+
+      return next();
+    } catch (err) {
+      return next(err);
+    }
   };
 }
 
