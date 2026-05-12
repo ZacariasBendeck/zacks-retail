@@ -1,4 +1,4 @@
-const DEFAULT_RICS_IMAGE_BASE_URL = 'https://proc-scenes-filtering-danny.trycloudflare.com/RICSPICS';
+const DEFAULT_RICS_IMAGE_BASE_URL = '/api/rics-images';
 
 const baseUrl = (() => {
   const raw = import.meta.env.VITE_RICS_IMAGE_BASE_URL?.trim();

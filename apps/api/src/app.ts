@@ -81,6 +81,80 @@ app.use(cookieParser());
 const prisma = new PrismaClient();
 app.use(attachUser(prisma));
 
+const DEFAULT_RICS_REMOTE_IMAGE_BASE_URL = 'https://proc-scenes-filtering-danny.trycloudflare.com/RICSPICS';
+const RICS_REMOTE_IMAGE_BASE_URL = (process.env.RICS_IMAGE_BASE_URL?.trim() || DEFAULT_RICS_REMOTE_IMAGE_BASE_URL).replace(/\/+$/, '');
+const resolvedRicsImageUrls = new Map<string, { url: string | null; expiresAt: number }>();
+const RICS_IMAGE_RESOLUTION_TTL_MS = 10 * 60_000;
+
+function sanitizeRicsImageFileName(raw: string | undefined): string | null {
+  const fileName = raw?.trim();
+  if (!fileName || fileName.length > 255) return null;
+  if (fileName.includes('/') || fileName.includes('\\') || fileName.includes('\0')) return null;
+  return fileName;
+}
+
+function candidateRicsImageFileNames(fileName: string): string[] {
+  const candidates = [fileName];
+  const match = fileName.match(/^(.*)\.(jpg|jpeg|gif|bmp|png|webp)$/i);
+  if (match) {
+    const stem = match[1];
+    const ext = match[2];
+    candidates.push(`${stem}.${ext.toUpperCase()}`, `${stem}.${ext.toLowerCase()}`);
+  }
+  return Array.from(new Set(candidates));
+}
+
+async function remoteImageExists(url: string): Promise<boolean> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5_000);
+  try {
+    const response = await fetch(url, { method: 'HEAD', signal: controller.signal });
+    return response.ok;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function resolveRicsImageUrl(fileName: string): Promise<string | null> {
+  const cacheKey = fileName.toLowerCase();
+  const cached = resolvedRicsImageUrls.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.url;
+
+  let resolved: string | null = null;
+  for (const candidate of candidateRicsImageFileNames(fileName)) {
+    const url = `${RICS_REMOTE_IMAGE_BASE_URL}/${encodeURIComponent(candidate)}`;
+    if (await remoteImageExists(url)) {
+      resolved = url;
+      break;
+    }
+  }
+
+  resolvedRicsImageUrls.set(cacheKey, {
+    url: resolved,
+    expiresAt: Date.now() + RICS_IMAGE_RESOLUTION_TTL_MS,
+  });
+  return resolved;
+}
+
+app.get('/api/rics-images/:filename', async (req, res): Promise<void> => {
+  const fileName = sanitizeRicsImageFileName(req.params.filename);
+  if (!fileName) {
+    res.status(400).send('Invalid image filename.');
+    return;
+  }
+
+  const url = await resolveRicsImageUrl(fileName);
+  if (!url) {
+    res.status(404).send('Image not found.');
+    return;
+  }
+
+  res.setHeader('Cache-Control', 'public, max-age=3600');
+  res.redirect(302, url);
+});
+
 // RICS product images — served from the legacy RICS install's pics folder.
 // Defaults to C:\RICSWIN\ricspics on Windows. Override with RICS_IMAGES_DIR.
 // URLs resolve like /rics-images/DMTDU1BK.jpg.

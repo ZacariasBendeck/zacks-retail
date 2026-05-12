@@ -1,7 +1,7 @@
-const DEFAULT_RICS_IMAGE_BASE_URL = 'https://proc-scenes-filtering-danny.trycloudflare.com/RICSPICS';
+const DEFAULT_RICS_IMAGE_BASE_URL = '/api/rics-images';
 
 function getRicsImageBaseUrl(): string {
-  const raw = process.env.RICS_IMAGE_BASE_URL?.trim();
+  const raw = process.env.RICS_IMAGE_PUBLIC_BASE_URL?.trim();
   if (!raw) return DEFAULT_RICS_IMAGE_BASE_URL;
   return raw.replace(/\/+$/, '');
 }
