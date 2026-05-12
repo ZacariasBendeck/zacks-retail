@@ -1,7 +1,7 @@
 import { Image } from 'antd'
 
 interface Props {
-  /** Absolute or `/rics-images/…` URL. When null/empty, renders nothing. */
+  /** Absolute or app-served image URL. When null/empty, renders nothing. */
   url: string | null | undefined
   /** Optional alt text for accessibility. */
   alt?: string

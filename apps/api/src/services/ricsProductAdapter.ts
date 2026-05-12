@@ -1469,7 +1469,7 @@ export interface SkuLookupRow {
   category: string;
   styleColor: string | null;
   currentPrice: number | null;
-  /** `/rics-images/<filename>` URL for the SKU's picture, or null. */
+  /** URL for the SKU's picture, or null. */
   pictureUrl: string | null;
 }
 

@@ -263,7 +263,7 @@ export default function SkuListPage() {
           // fullscreen) for free, while keeping the inline thumbnail the same
           // size as before. preview={{ src }} is what powers the large view;
           // we don't pass a separate `previewSrc` since the source is already
-          // the full-res image from /rics-images.
+          // the full-res RICS image.
           <Image
             src={url}
             alt=""

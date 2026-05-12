@@ -6,6 +6,7 @@ import { recordPlatformAuditEvent } from './platformAuditService';
 import * as purchaseOrderService from './purchaseOrderService';
 import type { PurchaseOrder } from '../models/purchaseOrder';
 import { create as createDraftSku } from './products/skuLifecycleService';
+import { buildRicsImageUrl } from './ricsImageUrl';
 
 const QUOTATION_TABLE = 'app.supplier_quotation';
 const LINE_TABLE = 'app.supplier_quotation_line';
@@ -1272,7 +1273,7 @@ export function createSupplierQuotationService(
             keywords: string | null;
             current_cost: unknown;
             retail_price: unknown;
-            image_url: string | null;
+            picture_file_name: string | null;
             attr_tokens: string | null;
           }>>(
             `
@@ -1292,7 +1293,7 @@ export function createSupplierQuotationService(
                 s.keywords,
                 s.current_cost,
                 s.retail_price,
-                CASE WHEN NULLIF(s.picture_file_name, '') IS NULL THEN NULL ELSE '/rics-images/' || s.picture_file_name END AS image_url,
+                s.picture_file_name,
                 string_agg(DISTINCT ad.code || ':' || av.code || ':' || av.label_es, ' ') AS attr_tokens
               FROM app.sku s
               LEFT JOIN app.vendor v ON v.code = s.vendor_id
@@ -1334,7 +1335,7 @@ export function createSupplierQuotationService(
               vendorName: row.vendor_name,
               unitCost: nullableNumber(row.current_cost),
               retailPrice: nullableNumber(row.retail_price),
-              imageUrl: row.image_url,
+              imageUrl: buildRicsImageUrl(row.picture_file_name),
             });
           }
         }

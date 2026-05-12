@@ -30,6 +30,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import dayjs from 'dayjs'
 import './EnterSalesPage.css'
 import { SkuLookup } from '../../../components/sku-lookup'
+import { buildRicsImageUrl } from '../../../services/ricsImageUrl'
 import type { SkuLookupRow } from '../../../services/skuApi'
 import { salesPosApi, type PosHeaderPatchInput, type PosLineInput } from '../../../services/salesPosApi'
 import type {
@@ -454,7 +455,7 @@ export default function EnterSalesPage() {
         category: row.categoryName || String(row.categoryNumber ?? ''),
         styleColor: row.styleColor,
         currentPrice: row.currentPrice ?? null,
-        pictureUrl: row.pictureFileName ? `/rics-images/${encodeURIComponent(row.pictureFileName)}` : null,
+        pictureUrl: buildRicsImageUrl(row.pictureFileName),
       }))
 
       return { rows, total: rows.length }

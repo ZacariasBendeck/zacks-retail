@@ -533,7 +533,10 @@ describe('SalesHistoryByMonthPage', () => {
     await user.click(screen.getByRole('button', { name: /\+ NIKE/ }))
     const skuLink = screen.getByRole('link', { name: 'SKU-A' })
     expect(skuLink).toHaveAttribute('href', '/products/inquiry/SKU-A')
-    expect(screen.getByAltText('SKU-A')).toHaveAttribute('src', '/rics-images/SKU-A.JPG')
+    expect(screen.getByAltText('SKU-A')).toHaveAttribute(
+      'src',
+      'https://proc-scenes-filtering-danny.trycloudflare.com/RICSPICS/SKU-A.JPG',
+    )
     expect(screen.getByText('SKU-B')).toBeInTheDocument()
     expect(screen.getAllByTestId('metric-row-netSales')).toHaveLength(2)
   })
