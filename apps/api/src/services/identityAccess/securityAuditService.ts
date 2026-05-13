@@ -163,7 +163,7 @@ export async function listSessionEvents(
   prisma: PrismaClient,
   input: { userId?: string | null; sessionId?: string | null; limit?: number },
 ): Promise<SessionEventSummary[]> {
-  const limit = Math.min(Math.max(input.limit ?? 50, 1), 200);
+  const limit = Math.max(input.limit ?? 50, 1);
   try {
     const rows = await prisma.$queryRawUnsafe<SessionEventRow[]>(
       `
@@ -221,7 +221,7 @@ export async function listLoginEvents(
   prisma: PrismaClient,
   input: { userId?: string | null; email?: string | null; limit?: number },
 ): Promise<LoginEventSummary[]> {
-  const limit = Math.min(Math.max(input.limit ?? 50, 1), 200);
+  const limit = Math.max(input.limit ?? 50, 1);
   try {
     const rows = input.userId
       ? await prisma.$queryRawUnsafe<LoginEventRow[]>(
@@ -266,7 +266,7 @@ export async function listFailedLoginEvents(
   prisma: PrismaClient,
   input: { email?: string | null; limit?: number } = {},
 ): Promise<LoginEventSummary[]> {
-  const limit = Math.min(Math.max(input.limit ?? 100, 1), 500);
+  const limit = Math.max(input.limit ?? 100, 1);
   try {
     const rows = await prisma.$queryRawUnsafe<LoginEventRow[]>(
       `

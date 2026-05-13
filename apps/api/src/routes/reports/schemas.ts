@@ -78,14 +78,13 @@ export const updateRunSchema = z
   });
 export type UpdateRunBody = z.infer<typeof updateRunSchema>;
 
-// `limit` defaults to 50 (matches the Phase 1.1 spec). Capped at 200 so a
-// single page cannot flood the list endpoint; paging via offset covers the
-// rest.
+// `limit` defaults to 50 (matches the Phase 1.1 spec). Paging via offset
+// allows covering results beyond the page size.
 export const listRunsQuerySchema = z.object({
   scope: listScopeSchema,
   reportType: reportTypeSchema.optional(),
   sourceTemplateId: z.string().uuid().optional(),
-  limit: z.coerce.number().int().min(1).max(200).default(50),
+  limit: z.coerce.number().int().min(1).default(50),
   offset: z.coerce.number().int().min(0).default(0),
 });
 export type ListRunsQuery = z.infer<typeof listRunsQuerySchema>;

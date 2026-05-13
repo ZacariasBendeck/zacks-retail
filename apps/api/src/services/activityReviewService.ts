@@ -294,8 +294,8 @@ function applyDerivedFilters(events: ActivityReviewEvent[], query: ActivityRevie
 }
 
 function limitedQuery(query: ActivityReviewQuery): { limit: number; scanLimit: number } {
-  const limit = Math.min(Math.max(query.limit ?? 100, 1), 200);
-  const scanLimit = needsDerivedFiltering(query) ? Math.min(Math.max(limit * 10, 500), 2000) : limit;
+  const limit = Math.max(query.limit ?? 100, 1);
+  const scanLimit = needsDerivedFiltering(query) ? Math.max(limit * 10, 500) : limit;
   return { limit, scanLimit };
 }
 
