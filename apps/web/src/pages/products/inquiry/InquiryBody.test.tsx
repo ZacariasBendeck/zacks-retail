@@ -53,6 +53,7 @@ const baseInquiry = {
   vendor: { code: 'TBR', name: 'Test Brand' },
   vendorSku: null,
   styleColor: 'BLACK',
+  status: 'ACTIVE',
   sizeType: {
     id: 3,
     name: 'Shoe',
@@ -182,6 +183,8 @@ describe('InquiryBody', () => {
 
     renderInquiryBody();
 
+    expect(screen.getByText('SKU State')).toBeInTheDocument();
+    expect(screen.getByText('ACTIVE')).toBeInTheDocument();
     expect(screen.getByTestId('inquiry-grid-caption')).toHaveTextContent(
       /Short Quantities\s*4 \/ 6 \(66.67%\)/,
     );
@@ -273,7 +276,7 @@ describe('InquiryBody', () => {
     expect(screen.getByText('Reorder planner modal')).toBeInTheDocument();
   });
 
-  it('shows and opens the replacement SKU instead of opening the reorder planner for a replaced SKU', async () => {
+  it('blocks reorder planner actions and links to the replacement SKU for a replaced SKU', async () => {
     const onPickSku = vi.fn();
     vi.mocked(useInquiryData).mockReturnValue({
       data: {
@@ -307,10 +310,17 @@ describe('InquiryBody', () => {
 
     renderInquiryBody({ onPickSku });
 
-    expect(screen.getByText('Replaced by ZN03-NDPT')).toBeInTheDocument();
-    await userEvent.click(screen.getByRole('button', { name: /Order replacement/i }));
-    expect(onPickSku).toHaveBeenCalledWith({ skuCode: 'ZN03-NDPT', skuId: 'new-id' });
+    expect(screen.getAllByText('Replaced by ZN03-NDPT').length).toBeGreaterThan(0);
+    await userEvent.click(screen.getByRole('button', { name: /shopping-cart Reorder/i }));
+    expect(screen.getAllByText('SKU ZN02-NDPT has been replaced by ZN03-NDPT. Reorder the replacement SKU instead.').length).toBeGreaterThan(0);
     expect(screen.queryByText('Reorder planner modal')).not.toBeInTheDocument();
+    expect(onPickSku).not.toHaveBeenCalled();
+
+    await userEvent.click(screen.getByRole('button', { name: /Recommended reorder/i }));
+    expect(screen.queryByText('Recommended reorder modal')).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Replaced by ZN03-NDPT' }));
+    expect(onPickSku).toHaveBeenCalledWith({ skuCode: 'ZN03-NDPT', skuId: 'new-id' });
   });
 
   it('calls the edit handler from the Edit SKU button', async () => {

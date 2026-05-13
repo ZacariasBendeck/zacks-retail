@@ -7,6 +7,8 @@ export interface SkuLinkProps {
   storeId?: number;
   children?: React.ReactNode;
   className?: string;
+  style?: React.CSSProperties;
+  title?: string;
 }
 
 /**
@@ -16,7 +18,7 @@ export interface SkuLinkProps {
  * the full-page `/products/inquiry/:skuCode` route in a new tab — so
  * bookmarking and new-tab workflows still work.
  */
-export const SkuLink: React.FC<SkuLinkProps> = ({ skuCode, storeId, children, className }) => {
+export const SkuLink: React.FC<SkuLinkProps> = ({ skuCode, storeId, children, className, style, title }) => {
   const encoded = encodeURIComponent(skuCode);
   const qs = storeId !== undefined ? `?storeId=${storeId}` : '';
   const to = `/products/inquiry/${encoded}${qs}`;
@@ -33,7 +35,7 @@ export const SkuLink: React.FC<SkuLinkProps> = ({ skuCode, storeId, children, cl
   };
 
   return (
-    <Link to={to} className={className} onClick={handleClick}>
+    <Link to={to} className={className} style={style} title={title} onClick={handleClick}>
       {children ?? skuCode}
     </Link>
   );

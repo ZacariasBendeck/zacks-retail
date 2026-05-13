@@ -164,7 +164,7 @@ async function skuExists(skuCode: string): Promise<boolean> {
  */
 async function resolveSkuFamily(skuCode: string): Promise<string | null> {
   const rows = await prisma.$queryRawUnsafe<{ family_code: string | null }[]>(
-    `SELECT cpf.family_code
+    `SELECT COALESCE(cpf.family_code, s.family_code) AS family_code
      FROM app.sku s
      LEFT JOIN app.category_product_family cpf ON cpf.category_number = s.category_number
      WHERE (s.code = $1 OR s.provisional_code = $1)
@@ -172,6 +172,15 @@ async function resolveSkuFamily(skuCode: string): Promise<string | null> {
     skuCode,
   );
   return rows[0]?.family_code ?? null;
+}
+
+function dimensionAppliesToFamily(
+  dimension: { familyRules: Array<{ familyCode: string; enabled: boolean }> },
+  familyCode: string | null,
+): boolean {
+  if (dimension.familyRules.length === 0) return true;
+  if (familyCode == null) return false;
+  return dimension.familyRules.some((rule) => rule.familyCode === familyCode && rule.enabled);
 }
 
 async function listDerivedTargetDimensionCodes(): Promise<Set<string>> {
@@ -463,11 +472,7 @@ export const AttributesRepository = {
     }
   },
 
-  /**
-   * Per-SKU attributes. Returns every declared dim — even unclassified ones —
-   * so the client can render uniformly. Returns NotFound if the SKU doesn't
-   * exist in the mirror.
-   */
+  /** Summaries for attribute derivation rule sets, grouped by source/target dimension. */
   async listAttributeMacroRuleSummaries(): Promise<Result<AttributeMacroRuleSummary[]>> {
     try {
       const rows = await prisma.$queryRawUnsafe<{
@@ -699,14 +704,17 @@ export const AttributesRepository = {
         return Err({ kind: 'NotFound', message: `SKU '${skuCode}' not found.` });
       }
 
-      const dims = await prisma.attributeDimension.findMany({
-        orderBy: { sortOrder: 'asc' },
-      });
-
-      const assignments = await prisma.skuAttributeAssignment.findMany({
-        where: { skuCode },
-        include: { value: true, dimension: true },
-      });
+      const [skuFamily, dims, assignments] = await Promise.all([
+        resolveSkuFamily(skuCode),
+        prisma.attributeDimension.findMany({
+          orderBy: { sortOrder: 'asc' },
+          include: { familyRules: true },
+        }),
+        prisma.skuAttributeAssignment.findMany({
+          where: { skuCode },
+          include: { value: true, dimension: true },
+        }),
+      ]);
 
       const byDim = new Map<number, AssignmentDetail[]>();
       for (const a of assignments) {
@@ -722,6 +730,7 @@ export const AttributesRepository = {
 
       const byDimension: Record<string, SkuDimensionEntry> = {};
       for (const d of dims) {
+        if (!dimensionAppliesToFamily(d, skuFamily) && !byDim.has(d.id)) continue;
         const values = (byDim.get(d.id) ?? []).sort((x, y) => x.code.localeCompare(y.code));
         byDimension[d.code] = { isMultiValue: d.isMultiValue, values };
       }

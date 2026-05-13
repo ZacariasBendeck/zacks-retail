@@ -3,6 +3,7 @@ import { ArrowLeftOutlined, SaveOutlined, PlusOutlined, ThunderboltOutlined, Ste
 import { tokens } from './styles'
 import type { SkuLifecycleRow } from '../../../types/skuLifecycle'
 import type { Sku } from '../../../types/sku'
+import { SkuLink } from '../../../components/sku-link/SkuLink'
 
 interface PageHeaderProps {
   isEdit: boolean
@@ -36,6 +37,7 @@ export function PageHeader({
   const isDraft = skuState === 'DRAFT'
   const isActive = skuState === 'ACTIVE'
   const isDiscontinued = skuState === 'DISCONTINUED'
+  const currentSkuCode = lifecycleSku?.code ?? lifecycleSku?.provisionalCode ?? null
 
   return (
     <div
@@ -61,9 +63,15 @@ export function PageHeader({
         )}
         {isActive && <Tag color="green">ACTIVO</Tag>}
         {isDiscontinued && <Tag color="red">DISCONTINUADO</Tag>}
-        {lifecycleSku && (
-          <Tag color="blue" style={{ fontFamily: 'monospace' }}>
-            {lifecycleSku.code ?? lifecycleSku.provisionalCode}
+        {currentSkuCode && (
+          <Tag color="blue" style={{ fontFamily: 'monospace', cursor: 'pointer' }}>
+            <SkuLink
+              skuCode={currentSkuCode}
+              title="Open Inventory Inquiry"
+              style={{ color: 'inherit', textDecoration: 'none' }}
+            >
+              {currentSkuCode}
+            </SkuLink>
           </Tag>
         )}
         {!isEdit && matchedSku && (

@@ -27,6 +27,7 @@ export function ReplacementSection({ sku }: ReplacementSectionProps) {
   const [replacementType, setReplacementType] = useState<SkuReplacementType>('EXACT')
   const [transferDemand, setTransferDemand] = useState(true)
   const [note, setNote] = useState('')
+  const [saveStatus, setSaveStatus] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
   const skuId = sku?.id
   const { data: replacement, isLoading } = useSkuReplacement(skuId)
   const saveMutation = useSaveSkuReplacement()
@@ -54,28 +55,48 @@ export function ReplacementSection({ sku }: ReplacementSectionProps) {
     setNote(replacement.note ?? '')
   }, [replacement?.id])
 
+  useEffect(() => {
+    setSaveStatus(null)
+  }, [sku?.id])
+
   if (!sku) return null
 
   const handleSave = async () => {
     if (!selected) {
       message.warning('Select the replacement SKU first.')
+      setSaveStatus({ type: 'error', message: 'Select the replacement SKU first.' })
       return
     }
-    await saveMutation.mutateAsync({
-      id: sku.id,
-      input: {
-        replacementSkuId: selected.skuId,
-        replacementType,
-        transferDemand,
-        note,
-      },
-    })
-    message.success(`Replacement saved: ${skuCode ?? 'SKU'} -> ${selected.skuCode}`)
+    try {
+      await saveMutation.mutateAsync({
+        id: sku.id,
+        input: {
+          replacementSkuId: selected.skuId,
+          replacementType,
+          transferDemand,
+          note,
+        },
+      })
+      const successMessage = `Replacement saved: ${skuCode ?? 'SKU'} -> ${selected.skuCode}`
+      setSaveStatus({ type: 'success', message: successMessage })
+      message.success(successMessage)
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Failed to save replacement.'
+      setSaveStatus({ type: 'error', message: errorMessage })
+      message.error(errorMessage)
+    }
   }
 
   const handleRetire = async () => {
-    await retireMutation.mutateAsync(sku.id)
-    message.success('Replacement link retired.')
+    try {
+      await retireMutation.mutateAsync(sku.id)
+      setSaveStatus({ type: 'success', message: 'Replacement link retired.' })
+      message.success('Replacement link retired.')
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Failed to retire replacement link.'
+      setSaveStatus({ type: 'error', message: errorMessage })
+      message.error(errorMessage)
+    }
   }
 
   return (
@@ -101,6 +122,14 @@ export function ReplacementSection({ sku }: ReplacementSectionProps) {
               showIcon
               message={`Current replacement: ${replacement.replacementSkuCode}`}
               description="Saving this section keeps the old SKU discontinued and updates the active replacement link."
+            />
+          ) : null}
+
+          {saveStatus ? (
+            <Alert
+              type={saveStatus.type}
+              showIcon
+              message={saveStatus.message}
             />
           ) : null}
 

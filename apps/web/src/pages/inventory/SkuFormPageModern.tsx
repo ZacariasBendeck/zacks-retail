@@ -1374,6 +1374,8 @@ export default function SkuFormPageModern() {
           onOpenSkuLookup={() => setSkuLookupOpen(true)}
         />
 
+        <ReplacementSection sku={lifecycleSku} />
+
         {/* AI analysis alerts live just above the Identity section so they sit
             adjacent to the image dropzone without crowding its 240px column. */}
         <AiAnalysisPanel
@@ -1436,8 +1438,6 @@ export default function SkuFormPageModern() {
           attributeOptionsByDimension={attributeOptionsByDimension}
           seasonsCatalog={seasonsCatalog}
         />
-
-        <ReplacementSection sku={lifecycleSku} />
 
         <MatchingSetsCard skuRef={skuLookupKey} />
       </Form>

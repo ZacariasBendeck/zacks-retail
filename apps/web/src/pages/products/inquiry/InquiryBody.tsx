@@ -106,6 +106,7 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
   const [lookupOpen, setLookupOpen] = React.useState(false);
   const [aiModalOpen, setAiModalOpen] = React.useState(false);
   const [reorderModalOpen, setReorderModalOpen] = React.useState(false);
+  const [reorderBlockedMessage, setReorderBlockedMessage] = React.useState<string | null>(null);
   const [navLoading, setNavLoading] = React.useState(false);
   const activeTabPanelRef = React.useRef<HTMLDivElement | null>(null);
   const prevSkuCodeRef = React.useRef(skuCode);
@@ -116,6 +117,7 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
     setLookupOpen(false);
     setAiModalOpen(false);
     setReorderModalOpen(false);
+    setReorderBlockedMessage(null);
     if (!skuCode) onActiveTabChange(null);
   }, [skuCode, onActiveTabChange]);
 
@@ -213,6 +215,15 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
   const replacementContext = data.replacementContext ?? { replacedBy: null, supersedes: [] };
   const replacedBy = replacementContext.replacedBy;
   const supersedesWithDemand = replacementContext.supersedes.filter((item) => item.transferDemand);
+  const replacementReorderWarning = replacedBy
+    ? `SKU ${data.sku} has been replaced by ${replacedBy.replacementSkuCode}. Reorder the replacement SKU instead.`
+    : null;
+  const blockReorderIfReplaced = () => {
+    if (!replacementReorderWarning) return false;
+    setReorderBlockedMessage(replacementReorderWarning);
+    message.warning(replacementReorderWarning);
+    return true;
+  };
 
   return (
     <div style={{ fontSize: 12 }}>
@@ -247,7 +258,7 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
           showIcon
           style={{ marginBottom: 8 }}
           message={`Replaced by ${replacedBy.replacementSkuCode}`}
-          description="Order the replacement SKU. This SKU stays visible for sales history, returns, and inventory audit."
+          description="This SKU cannot be reordered from this record. It stays visible for sales history, returns, and inventory audit."
           action={
             <Button
               size="small"
@@ -259,6 +270,26 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
               Open replacement
             </Button>
           }
+        />
+      )}
+
+      {reorderBlockedMessage && (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 8 }}
+          message={reorderBlockedMessage}
+          action={replacedBy ? (
+            <Button
+              size="small"
+              onClick={() => onPickSku({
+                skuCode: replacedBy.replacementSkuCode,
+                skuId: replacedBy.replacementSkuId,
+              })}
+            >
+              Open replacement
+            </Button>
+          ) : undefined}
         />
       )}
 
@@ -280,24 +311,25 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
               <Button size="small" icon={<SearchOutlined />} onClick={() => setLookupOpen(true)}>
                 SKU Lookup
               </Button>
-              <Button size="small" icon={<RobotOutlined />} onClick={() => setAiModalOpen(true)}>
+              <Button
+                size="small"
+                icon={<RobotOutlined />}
+                onClick={() => {
+                  if (blockReorderIfReplaced()) return;
+                  setAiModalOpen(true);
+                }}
+              >
                 Recommended reorder
               </Button>
               <Button
                 size="small"
                 icon={<ShoppingCartOutlined />}
                 onClick={() => {
-                  if (replacedBy) {
-                    onPickSku({
-                      skuCode: replacedBy.replacementSkuCode,
-                      skuId: replacedBy.replacementSkuId,
-                    });
-                    return;
-                  }
+                  if (blockReorderIfReplaced()) return;
                   setReorderModalOpen(true);
                 }}
               >
-                {replacedBy ? 'Order replacement' : 'Reorder'}
+                Reorder
               </Button>
               <Button
                 size="small"
@@ -308,7 +340,7 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
               </Button>
             </Space>
           </div>
-          <HeaderCard inquiry={data} storeId={storeId} />
+          <HeaderCard inquiry={data} storeId={storeId} onPickSku={onPickSku} />
           <AttributeBadgeStrip skuCode={data.sku} mode="assigned" />
           <MatchingSetsCard skuRef={data.sku} compact onOpenMatchingSets={onOpenMatchingSets} />
         </div>
