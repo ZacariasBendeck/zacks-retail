@@ -38,14 +38,14 @@ describe('GET /api/v1/reports/sales/by-day all stores', () => {
       if (sql.includes('FROM app.sales_history_ticket')) {
         if (startDate === '2024-11-04') {
           return Promise.resolve([
-            { d: '2024-11-04', store: 2, net_sales: 100, profit: 60 },
-            { d: '2024-11-04', store: 13, net_sales: 50, profit: 30 },
+            { d: '2024-11-04', store: 2, ticket_count: 2, net_sales: 100, profit: 60 },
+            { d: '2024-11-04', store: 13, ticket_count: 1, net_sales: 50, profit: 30 },
           ]);
         }
         if (startDate === '2023-11-06') {
           return Promise.resolve([
-            { d: '2023-11-06', store: 2, net_sales: 75, profit: 40 },
-            { d: '2023-11-06', store: 13, net_sales: 25, profit: 10 },
+            { d: '2023-11-06', store: 2, ticket_count: 1, net_sales: 75, profit: 40 },
+            { d: '2023-11-06', store: 13, ticket_count: 1, net_sales: 25, profit: 10 },
           ]);
         }
         return Promise.resolve([]);
@@ -66,21 +66,30 @@ describe('GET /api/v1/reports/sales/by-day all stores', () => {
     expect(res.body.combined).toMatchObject({
       storeLabel: 'Combined (2 stores)',
       totals: {
+        ticketCount: 3,
         netSales: 150,
+        avgTicket: 50,
         profit: 90,
+        comparedTicketCount: 2,
         comparedNetSales: 100,
+        comparedAvgTicket: 50,
         comparedProfit: 50,
         dollarChange: 50,
         profitChange: 40,
         pctChange: 50,
+        profitPctChange: 80,
       },
     });
     expect(res.body.combined.rows[0]).toMatchObject({
       date: '2024-11-04',
+      ticketCount: 3,
       netSales: 150,
+      avgTicket: 50,
       profit: 90,
       comparedToDate: '2023-11-06',
+      comparedTicketCount: 2,
       comparedNetSales: 100,
+      comparedAvgTicket: 50,
       comparedProfit: 50,
     });
 
@@ -133,6 +142,7 @@ describe('GET /api/v1/reports/sales/by-day all stores', () => {
       const text = String(sql);
       expect(text).toContain('SUM(COALESCE(t.net_amount, 0))');
       expect(text).toContain('SUM(COALESCE(t.net_amount, 0) - COALESCE(t.cost_amount, 0))');
+      expect(text).toContain('COUNT(*)::int AS ticket_count');
       expect(text).not.toContain('sales_history_ticket_line');
       expect(text).not.toContain("transaction_kind = 'purchase'");
     }

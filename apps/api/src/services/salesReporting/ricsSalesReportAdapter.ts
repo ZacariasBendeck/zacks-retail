@@ -509,6 +509,7 @@ interface RawTicketDetailRow {
 interface TicketLine {
   store: number;
   ticket: number;
+  ticketKey: string;
   date: string;                 // 'YYYY-MM-DD'
   hour: number;                 // 0..23
   sku: string;
@@ -614,6 +615,14 @@ function round2(value: number): number {
 
 function round1(value: number): number {
   return Math.round((value + Number.EPSILON) * 10) / 10;
+}
+
+function avgTicket(netSales: number, ticketCount: number): number {
+  return ticketCount === 0 ? 0 : round2(netSales / ticketCount);
+}
+
+function percentChangeFrom(change: number, comparedValue: number): number | null {
+  return comparedValue === 0 ? null : round1((change / comparedValue) * 100);
 }
 
 const EMPTY_INVENTORY_METRICS: OnHandInventoryMetrics = {
@@ -805,6 +814,7 @@ async function loadTicketLines(params: {
     const sql = `SELECT
   h.store_id     AS "H_Store",
   h.ticket_number AS "H_Ticket",
+  h.id::text     AS "H_TicketId",
   to_char(h.purchased_at AT TIME ZONE '${REPORT_TIME_ZONE}', 'YYYY-MM-DD"T"HH24:MI:SS') AS "H_RealDate",
   h.cashier_code AS "H_Cashier",
   CASE WHEN h.status = 'completed' THEN 'Y' ELSE 'N' END AS "H_Posted",
@@ -833,7 +843,7 @@ WHERE
 LIMIT ${MAX_TICKET_ROWS}`;
 
     interface Raw {
-      H_Store: number | null; H_Ticket: number | null; H_RealDate: string | null;
+      H_Store: number | null; H_Ticket: number | null; H_TicketId: string | null; H_RealDate: string | null;
       H_Cashier: string | null; H_Posted: string | null;
       D_SKU: string | null; D_Column: string | null; D_Row: string | null;
       D_Qty: number | null; D_Extension: number | null; D_Perks: number | null;
@@ -845,6 +855,7 @@ LIMIT ${MAX_TICKET_ROWS}`;
     return raw.map<TicketLine>((r) => ({
       store: Number(r.H_Store ?? 0),
       ticket: Number(r.H_Ticket ?? 0),
+      ticketKey: r.H_TicketId ?? `${r.H_Store ?? ''}|${r.H_Ticket ?? ''}|${r.H_RealDate ?? ''}`,
       date: parseMsDateToIso(r.H_RealDate),
       hour: parseMsDateToHour(r.H_RealDate),
       sku: (r.D_SKU ?? '').trim(),
@@ -982,6 +993,7 @@ GROUP BY 1, 2, 3, 4, 5`;
       return {
         store: Number(r.H_Store ?? 0),
         ticket: 0,
+        ticketKey: `aggregate|${r.H_Store ?? ''}|${r.D_SKU ?? ''}|${r.D_Category ?? ''}|${r.D_Vendor ?? ''}|${r.D_PriceBucket ?? ''}`,
         date: startDate,
         hour: 0,
         sku: (r.D_SKU ?? '').trim(),
@@ -1065,6 +1077,7 @@ WHERE
 // ─────────────────────────── Sales by Day (RICS p. 52) ────────────────────
 
 interface DailyStoreSales {
+  ticketCount: number;
   netSales: number;
   profit: number;
 }
@@ -1100,7 +1113,7 @@ async function loadDailySalesByStores(params: {
   const includeUnposted = params.includeUnposted !== false;
   const storeKey = [...params.storeNumbers].map((n) => Number(n)).sort((a, b) => a - b).join(',');
 
-  const cacheKey = `sr:dailyNet:v3:${storeKey}:${startDate}:${endDate}:${includeUnposted}`;
+  const cacheKey = `sr:dailyNet:v4:${storeKey}:${startDate}:${endDate}:${includeUnposted}`;
   return cachedAsync(cacheKey, 600_000, async () => {
     const startBoundary = `($1::date::timestamp AT TIME ZONE 'America/Tegucigalpa')`;
     const endBoundary = `($2::date::timestamp AT TIME ZONE 'America/Tegucigalpa')`;
@@ -1111,6 +1124,7 @@ async function loadDailySalesByStores(params: {
       SELECT
         to_char(t.purchased_at AT TIME ZONE 'America/Tegucigalpa', 'YYYY-MM-DD') AS d,
         t.store_id::int AS store,
+        COUNT(*)::int AS ticket_count,
         SUM(COALESCE(t.net_amount, 0))::float8 AS net_sales,
         SUM(COALESCE(t.net_amount, 0) - COALESCE(t.cost_amount, 0))::float8 AS profit
       FROM app.sales_history_ticket t
@@ -1124,7 +1138,7 @@ async function loadDailySalesByStores(params: {
         t.store_id
     `;
     const rows = await prisma.$queryRawUnsafe<
-      { d: string | null; store: number | null; net_sales: number | null; profit: number | null }[]
+      { d: string | null; store: number | null; ticket_count: number | null; net_sales: number | null; profit: number | null }[]
     >(
       sql,
       startDate,
@@ -1140,6 +1154,7 @@ async function loadDailySalesByStores(params: {
         map.set(r.d, perStore);
       }
       perStore.set(Number(r.store), {
+        ticketCount: Number(r.ticket_count ?? 0),
         netSales: Number(r.net_sales ?? 0),
         profit: Number(r.profit ?? 0),
       });
@@ -1231,24 +1246,34 @@ export async function getSalesByDay(params: {
       const comparedToDate = addDays(date, -comparisonOffsetDays);
       const cur = current.get(date)?.get(storeNumber);
       const cmp = compare.get(comparedToDate)?.get(storeNumber);
+      const ticketCount = cur?.ticketCount ?? 0;
       const netSales = round2(cur?.netSales ?? 0);
+      const currentAvgTicket = avgTicket(netSales, ticketCount);
       const profit = round2(cur?.profit ?? 0);
+      const comparedTicketCount = cmp?.ticketCount ?? 0;
       const comparedNetSales = round2(cmp?.netSales ?? 0);
+      const comparedAvgTicket = avgTicket(comparedNetSales, comparedTicketCount);
       const comparedProfit = round2(cmp?.profit ?? 0);
       const dollarChange = round2(netSales - comparedNetSales);
       const profitChange = round2(profit - comparedProfit);
-      const pctChange = comparedNetSales === 0 ? null : round1((dollarChange / comparedNetSales) * 100);
+      const pctChange = percentChangeFrom(dollarChange, comparedNetSales);
+      const profitPctChange = percentChangeFrom(profitChange, comparedProfit);
       return {
         date,
         dayName: weekdayName(date),
+        ticketCount,
         netSales,
+        avgTicket: currentAvgTicket,
         profit,
         comparedToDate,
+        comparedTicketCount,
         comparedNetSales,
+        comparedAvgTicket,
         comparedProfit,
         dollarChange,
         profitChange,
         pctChange,
+        profitPctChange,
       };
     });
 
@@ -1269,14 +1294,15 @@ export async function getSalesByDay(params: {
   if (combineStores) {
     const combinedRows: RicsSalesByDayRow[] = days.map((date) => {
       const comparedToDate = addDays(date, -comparisonOffsetDays);
-      let netSales = 0, profit = 0, comparedNetSales = 0, comparedProfit = 0;
+      let ticketCount = 0, netSales = 0, profit = 0;
+      let comparedTicketCount = 0, comparedNetSales = 0, comparedProfit = 0;
       const curForDate = current.get(date);
       const cmpForDate = compare.get(comparedToDate);
       for (const storeNumber of storeNumbers) {
         const cur = curForDate?.get(storeNumber);
         const cmp = cmpForDate?.get(storeNumber);
-        if (cur) { netSales += cur.netSales; profit += cur.profit; }
-        if (cmp) { comparedNetSales += cmp.netSales; comparedProfit += cmp.profit; }
+        if (cur) { ticketCount += cur.ticketCount; netSales += cur.netSales; profit += cur.profit; }
+        if (cmp) { comparedTicketCount += cmp.ticketCount; comparedNetSales += cmp.netSales; comparedProfit += cmp.profit; }
       }
       netSales = round2(netSales);
       profit = round2(profit);
@@ -1284,18 +1310,24 @@ export async function getSalesByDay(params: {
       comparedProfit = round2(comparedProfit);
       const dollarChange = round2(netSales - comparedNetSales);
       const profitChange = round2(profit - comparedProfit);
-      const pctChange = comparedNetSales === 0 ? null : round1((dollarChange / comparedNetSales) * 100);
+      const pctChange = percentChangeFrom(dollarChange, comparedNetSales);
+      const profitPctChange = percentChangeFrom(profitChange, comparedProfit);
       return {
         date,
         dayName: weekdayName(date),
+        ticketCount,
         netSales,
+        avgTicket: avgTicket(netSales, ticketCount),
         profit,
         comparedToDate,
+        comparedTicketCount,
         comparedNetSales,
+        comparedAvgTicket: avgTicket(comparedNetSales, comparedTicketCount),
         comparedProfit,
         dollarChange,
         profitChange,
         pctChange,
+        profitPctChange,
       };
     });
     combined = {
@@ -1319,14 +1351,32 @@ export async function getSalesByDay(params: {
 }
 
 function buildTotals(rows: RicsSalesByDayRow[]): RicsSalesTotals {
+  const ticketCount = rows.reduce((s, r) => s + r.ticketCount, 0);
   const netSales = round2(rows.reduce((s, r) => s + r.netSales, 0));
+  const currentAvgTicket = avgTicket(netSales, ticketCount);
   const profit = round2(rows.reduce((s, r) => s + r.profit, 0));
+  const comparedTicketCount = rows.reduce((s, r) => s + r.comparedTicketCount, 0);
   const comparedNetSales = round2(rows.reduce((s, r) => s + r.comparedNetSales, 0));
+  const comparedAvgTicket = avgTicket(comparedNetSales, comparedTicketCount);
   const comparedProfit = round2(rows.reduce((s, r) => s + r.comparedProfit, 0));
   const dollarChange = round2(netSales - comparedNetSales);
   const profitChange = round2(profit - comparedProfit);
-  const pctChange = comparedNetSales === 0 ? null : round1((dollarChange / comparedNetSales) * 100);
-  return { netSales, profit, comparedNetSales, comparedProfit, dollarChange, profitChange, pctChange };
+  const pctChange = percentChangeFrom(dollarChange, comparedNetSales);
+  const profitPctChange = percentChangeFrom(profitChange, comparedProfit);
+  return {
+    ticketCount,
+    netSales,
+    avgTicket: currentAvgTicket,
+    profit,
+    comparedTicketCount,
+    comparedNetSales,
+    comparedAvgTicket,
+    comparedProfit,
+    dollarChange,
+    profitChange,
+    pctChange,
+    profitPctChange,
+  };
 }
 
 // ─────────────────────────── Sales by Time (RICS p. 41) ───────────────────
@@ -2922,6 +2972,7 @@ async function filterTicketLinesByCriteria(
 
 function aggregateDailySalesFromLines(lines: AnalysisLine[]): Map<string, Map<number, DailyStoreSales>> {
   const map = new Map<string, Map<number, DailyStoreSales>>();
+  const countedTickets = new Set<string>();
   for (const line of lines) {
     if (!line.date || !line.store) continue;
     let perStore = map.get(line.date);
@@ -2929,7 +2980,12 @@ function aggregateDailySalesFromLines(lines: AnalysisLine[]): Map<string, Map<nu
       perStore = new Map<number, DailyStoreSales>();
       map.set(line.date, perStore);
     }
-    const current = perStore.get(line.store) ?? { netSales: 0, profit: 0 };
+    const current = perStore.get(line.store) ?? { ticketCount: 0, netSales: 0, profit: 0 };
+    const ticketKey = `${line.date}|${line.store}|${line.ticketKey || line.ticket}`;
+    if (!countedTickets.has(ticketKey)) {
+      countedTickets.add(ticketKey);
+      current.ticketCount += 1;
+    }
     current.netSales += line.extension;
     current.profit += line.extension - lineCogs(line);
     perStore.set(line.store, current);
@@ -3075,6 +3131,7 @@ function zeroSalesAnalysisLine(master: SkuMasterFields, store: number): Analysis
   return {
     store,
     ticket: 0,
+    ticketKey: `zero|${store}|${master.sku}`,
     date: '',
     hour: 0,
     sku: master.sku,

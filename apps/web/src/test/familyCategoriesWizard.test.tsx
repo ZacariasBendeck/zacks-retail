@@ -107,6 +107,13 @@ const categories: PostgresCategory[] = [
     departmentDesc: 'Accessories',
     familyCode: 'shoes',
   },
+  {
+    categoryNumber: 201,
+    categoryDesc: 'Shoe cleaner',
+    departmentNumber: 20,
+    departmentDesc: 'Accessories',
+    familyCode: '',
+  },
 ]
 
 const assignedCategories = categories.filter((category) => category.familyCode === 'shoes')
@@ -221,6 +228,36 @@ describe('Family category assignment wizard', () => {
         code: 'shoes',
         categories: [100, 101, 102, 200],
         force: true,
+      })
+    })
+  })
+
+  it('searches categories across sectors before assignment', async () => {
+    const user = userEvent.setup()
+    renderWizard()
+
+    await user.type(
+      await screen.findByPlaceholderText('Search category number or description'),
+      'cleaner',
+    )
+    await user.click(screen.getByRole('button', { name: 'Continue to categories' }))
+
+    expect(await screen.findByText('Shoe cleaner')).toBeInTheDocument()
+    expect(screen.queryByText('Dress shoe')).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Assign all visible' }))
+    await user.click(screen.getByRole('button', { name: 'Review changes' }))
+
+    expect(await screen.findByText('1 added')).toBeInTheDocument()
+    expect(screen.getByText('Shoe cleaner')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Save assignment' }))
+
+    await waitFor(() => {
+      expect(replaceMutation).toHaveBeenCalledWith({
+        code: 'shoes',
+        categories: [100, 200, 201],
+        force: false,
       })
     })
   })

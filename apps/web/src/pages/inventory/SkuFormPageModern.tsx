@@ -56,6 +56,7 @@ import { PricingSection } from './sku-form-modern/PricingSection'
 import { AppearanceSection } from './sku-form-modern/AppearanceSection'
 import { AdvancedSection } from './sku-form-modern/AdvancedSection'
 import { AiAnalysisPanel } from './sku-form-modern/AiAnalysisPanel'
+import { ReplacementSection } from './sku-form-modern/ReplacementSection'
 import MatchingSetsCard from '../../components/products/MatchingSetsCard'
 
 const DEPARTMENTS: Department[] = ALLOWED_DEPARTMENTS
@@ -534,6 +535,7 @@ export default function SkuFormPageModern() {
     if (cat == null) return
     const row = validCategoriesById.get(cat)
     if (!row) {
+      if (validCategoriesById.size === 0) return
       const fallbackFamily = lifecycleSku.familyCode || null
       if (fallbackFamily) setSelectedFamily(fallbackFamily)
       setDerivedFamilyCode(fallbackFamily)
@@ -543,7 +545,8 @@ export default function SkuFormPageModern() {
     if (nextFamily) setSelectedFamily(nextFamily)
     setDerivedFamilyCode(nextFamily)
     setDerivedDepartmentLabel(formatCategoryDepartmentLabel(row))
-  }, [lifecycleSku, validCategoriesById])
+    form.setFieldsValue({ department: row.departmentDesc ?? undefined })
+  }, [form, lifecycleSku, validCategoriesById])
 
   useEffect(() => {
     if (!matchedSku?.categoryId) return
@@ -579,11 +582,19 @@ export default function SkuFormPageModern() {
       return
     }
     if (row.familyCode !== selectedFamily) {
+      const loadedCategory = lifecycleSku?.categoryNumber ?? matchedSku?.categoryId ?? null
+      if (loadedCategory === current && row.familyCode) {
+        setSelectedFamily(row.familyCode)
+        setDerivedFamilyCode(row.familyCode)
+        setDerivedDepartmentLabel(formatCategoryDepartmentLabel(row))
+        form.setFieldsValue({ department: row.departmentDesc ?? undefined })
+        return
+      }
       form.setFieldsValue({ categoryId: null })
       setDerivedFamilyCode(null)
       setDerivedDepartmentLabel(null)
     }
-  }, [selectedFamily, validCategoriesById, form])
+  }, [lifecycleSku?.categoryNumber, matchedSku?.categoryId, selectedFamily, validCategoriesById, form])
 
   const handleCategoryChange = useCallback((categoryNumber: number | null) => {
     if (!categoryNumber) {
@@ -603,6 +614,22 @@ export default function SkuFormPageModern() {
     setDerivedDepartmentLabel(formatCategoryDepartmentLabel(row))
     form.setFields([{ name: 'categoryId', errors: [] }, { name: 'department', errors: [] }])
     form.setFieldsValue({ department: row.departmentDesc ?? undefined })
+  }, [form, validCategoriesById])
+
+  const handleFamilyChange = useCallback((familyCode: string | null) => {
+    setSelectedFamily(familyCode)
+    const current = form.getFieldValue('categoryId') as number | null | undefined
+    if (current == null) {
+      setDerivedFamilyCode(null)
+      setDerivedDepartmentLabel(null)
+      return
+    }
+    const row = validCategoriesById.get(current)
+    if (!familyCode || (row && row.familyCode !== familyCode)) {
+      form.setFieldsValue({ categoryId: null, department: undefined })
+      setDerivedFamilyCode(null)
+      setDerivedDepartmentLabel(null)
+    }
   }, [form, validCategoriesById])
 
   const handleStyleColorChange = useCallback((styleColorId: string | null) => {
@@ -878,6 +905,10 @@ export default function SkuFormPageModern() {
     try {
       const found = await lookupMutation.mutateAsync(trimmed)
       if (found) {
+        if (!isRouteEdit) {
+          navigate(`${SKU_ROOT_PATH}/${encodeURIComponent(found.skuCode)}/edit`)
+          return
+        }
         setImagePreview(null)
         setAiFillSummary(null)
         setAiFilledFields(new Set())
@@ -913,7 +944,7 @@ export default function SkuFormPageModern() {
       setAnalysisWarning(null)
       setLastUploadedFile(null)
     }
-  }, [lookupMutation, populateForm, message, validCategoriesById, selectedFamily])
+  }, [isRouteEdit, lookupMutation, navigate, populateForm, message, validCategoriesById, selectedFamily])
 
   const handleResetToCreate = useCallback(() => {
     const currentCode = form.getFieldValue('skuCode')
@@ -1361,7 +1392,7 @@ export default function SkuFormPageModern() {
           onFillWithAi={handleFillWithAi}
           canFillWithAi={canRunAiFill}
           selectedFamily={selectedFamily}
-          onFamilyChange={setSelectedFamily}
+          onFamilyChange={handleFamilyChange}
           productFamilies={productFamilies}
           familiesLoading={familiesLoading}
           categoryOptions={categoryOptions}
@@ -1405,6 +1436,8 @@ export default function SkuFormPageModern() {
           attributeOptionsByDimension={attributeOptionsByDimension}
           seasonsCatalog={seasonsCatalog}
         />
+
+        <ReplacementSection sku={lifecycleSku} />
 
         <MatchingSetsCard skuRef={skuLookupKey} />
       </Form>

@@ -405,6 +405,199 @@ async function resolveSkuRef(
   return { ok: true, skuId: sku.id, skuCode: sku.code ?? sku.provisionalCode };
 }
 
+interface ResolvedMatchingSetMember {
+  input: MatchingSetMemberInput;
+  roleCode: string;
+  skuId: string;
+  skuCode: string | null;
+}
+
+interface SkuHeaderSource {
+  skuId: string;
+  skuCode: string | null;
+  vendorId: string | null;
+  vendorSku: string | null;
+  colorCode: string | null;
+  colorAttributeCode: string | null;
+  colorAttributeLabel: string | null;
+  materialCode: string | null;
+  materialLabel: string | null;
+  season: string | null;
+}
+
+interface DerivedMatchingSetHeader {
+  vendorId: string | null;
+  vendorStyle: string | null;
+  sharedColorCode: string | null;
+  sharedColorLabel: string | null;
+  materialCode: string | null;
+  materialLabel: string | null;
+  season: string | null;
+}
+
+async function loadSkuHeaderSources(tx: Tx, skuIds: string[]): Promise<Map<string, SkuHeaderSource>> {
+  if (skuIds.length === 0) return new Map();
+  const rows = await tx.$queryRawUnsafe<Array<{
+    sku_id: string;
+    sku_code: string | null;
+    provisional_code: string;
+    vendor_id: string | null;
+    vendor_sku: string | null;
+    color_code: string | null;
+    color_attribute_code: string | null;
+    color_attribute_label: string | null;
+    material_code: string | null;
+    material_label: string | null;
+    season: string | null;
+  }>>(
+    `
+      SELECT
+        s.id::text AS sku_id,
+        s.code AS sku_code,
+        s.provisional_code,
+        s.vendor_id,
+        s.vendor_sku,
+        s.color_code,
+        color_attr.code AS color_attribute_code,
+        color_attr.label_es AS color_attribute_label,
+        material_attr.code AS material_code,
+        material_attr.label_es AS material_label,
+        s.season
+      FROM app.sku s
+      LEFT JOIN LATERAL (
+        SELECT av.code, av.label_es
+        FROM app.sku_attribute_assignment a
+        JOIN app.attribute_dimension d ON d.id = a.dimension_id
+        JOIN app.attribute_value av ON av.id = a.value_id
+        WHERE a.sku_code = COALESCE(s.code, s.provisional_code)
+          AND d.code = 'color'
+        ORDER BY a.assigned_at DESC, av.sort_order ASC, av.code ASC
+        LIMIT 1
+      ) color_attr ON true
+      LEFT JOIN LATERAL (
+        SELECT av.code, av.label_es
+        FROM app.sku_attribute_assignment a
+        JOIN app.attribute_dimension d ON d.id = a.dimension_id
+        JOIN app.attribute_value av ON av.id = a.value_id
+        WHERE a.sku_code = COALESCE(s.code, s.provisional_code)
+          AND d.code = 'upper_material'
+        ORDER BY a.assigned_at DESC, av.sort_order ASC, av.code ASC
+        LIMIT 1
+      ) material_attr ON true
+      WHERE s.id = ANY($1::uuid[])
+    `,
+    skuIds,
+  );
+
+  return new Map(rows.map((row) => [
+    row.sku_id,
+    {
+      skuId: row.sku_id,
+      skuCode: row.sku_code ?? row.provisional_code,
+      vendorId: row.vendor_id,
+      vendorSku: row.vendor_sku,
+      colorCode: row.color_code,
+      colorAttributeCode: row.color_attribute_code,
+      colorAttributeLabel: row.color_attribute_label,
+      materialCode: row.material_code,
+      materialLabel: row.material_label,
+      season: row.season,
+    },
+  ]));
+}
+
+function consensus(values: Array<string | null | undefined>): string | null {
+  const cleaned = values.map(cleanText).filter((value): value is string => Boolean(value));
+  if (cleaned.length === 0 || cleaned.length !== values.length) return null;
+  const first = cleaned[0];
+  return cleaned.every((value) => value === first) ? first : null;
+}
+
+function deriveFromSingleSku(source: SkuHeaderSource): DerivedMatchingSetHeader {
+  const colorCode = cleanText(source.colorCode) ?? cleanText(source.colorAttributeCode);
+  return {
+    vendorId: cleanText(source.vendorId),
+    vendorStyle: cleanText(source.vendorSku) ?? styleFromSkuCode(source.skuCode),
+    sharedColorCode: colorCode,
+    sharedColorLabel: cleanText(source.colorAttributeLabel) ?? colorCodeLabel(colorCode),
+    materialCode: cleanText(source.materialCode),
+    materialLabel: cleanText(source.materialLabel),
+    season: cleanText(source.season),
+  };
+}
+
+function deriveMatchingSetHeaderFromSkus(
+  sources: SkuHeaderSource[],
+  primarySkuId: string | null,
+): DerivedMatchingSetHeader {
+  const primary = primarySkuId ? sources.find((source) => source.skuId === primarySkuId) : null;
+  if (primary) return deriveFromSingleSku(primary);
+
+  const perSku = sources.map(deriveFromSingleSku);
+  return {
+    vendorId: consensus(perSku.map((source) => source.vendorId)),
+    vendorStyle: consensus(perSku.map((source) => source.vendorStyle)),
+    sharedColorCode: consensus(perSku.map((source) => source.sharedColorCode)),
+    sharedColorLabel: consensus(perSku.map((source) => source.sharedColorLabel)),
+    materialCode: consensus(perSku.map((source) => source.materialCode)),
+    materialLabel: consensus(perSku.map((source) => source.materialLabel)),
+    season: consensus(perSku.map((source) => source.season)),
+  };
+}
+
+function fallbackSkuSource(resolved: ResolvedMatchingSetMember): SkuHeaderSource {
+  return {
+    skuId: resolved.skuId,
+    skuCode: resolved.skuCode,
+    vendorId: null,
+    vendorSku: null,
+    colorCode: null,
+    colorAttributeCode: null,
+    colorAttributeLabel: null,
+    materialCode: null,
+    materialLabel: null,
+    season: null,
+  };
+}
+
+function mergeDerivedCreateHeader(
+  input: MatchingSetCreateInput,
+  derived: DerivedMatchingSetHeader,
+): DerivedMatchingSetHeader {
+  return {
+    vendorId: cleanText(input.vendorId) ?? derived.vendorId,
+    vendorStyle: cleanText(input.vendorStyle) ?? derived.vendorStyle,
+    sharedColorCode: cleanText(input.sharedColorCode) ?? derived.sharedColorCode,
+    sharedColorLabel: cleanText(input.sharedColorLabel) ?? derived.sharedColorLabel,
+    materialCode: cleanText(input.materialCode) ?? derived.materialCode,
+    materialLabel: cleanText(input.materialLabel) ?? derived.materialLabel,
+    season: cleanText(input.season) ?? derived.season,
+  };
+}
+
+function mergeDerivedExistingHeader(
+  existing: {
+    vendorId: string | null;
+    vendorStyle: string | null;
+    sharedColorCode: string | null;
+    sharedColorLabel: string | null;
+    materialCode: string | null;
+    materialLabel: string | null;
+    season: string | null;
+  },
+  derived: DerivedMatchingSetHeader,
+): DerivedMatchingSetHeader {
+  return {
+    vendorId: cleanText(existing.vendorId) ?? derived.vendorId,
+    vendorStyle: cleanText(existing.vendorStyle) ?? derived.vendorStyle,
+    sharedColorCode: cleanText(existing.sharedColorCode) ?? derived.sharedColorCode,
+    sharedColorLabel: cleanText(existing.sharedColorLabel) ?? derived.sharedColorLabel,
+    materialCode: cleanText(existing.materialCode) ?? derived.materialCode,
+    materialLabel: cleanText(existing.materialLabel) ?? derived.materialLabel,
+    season: cleanText(existing.season) ?? derived.season,
+  };
+}
+
 async function stockSummary(skuIds: string[]): Promise<Map<string, { onHandTotal: number; storeCountWithOnHand: number }>> {
   if (skuIds.length === 0) return new Map();
   const rows = await prisma.$queryRawUnsafe<{ sku_id: string; on_hand_total: unknown; store_count_with_on_hand: unknown }[]>(
@@ -543,6 +736,14 @@ async function writeDisplayName(tx: Tx, id: string, displayName: string | null):
     cleanText(displayName),
     id,
   );
+}
+
+async function loadDisplayName(tx: Tx, id: string): Promise<string | null> {
+  const rows = await tx.$queryRawUnsafe<Array<{ display_name: string | null }>>(
+    'SELECT display_name FROM app.matching_set WHERE id = $1::uuid LIMIT 1',
+    id,
+  );
+  return rows[0]?.display_name ?? null;
 }
 
 async function suggestDisplayNameForExistingSet(tx: Tx, id: string): Promise<string> {
@@ -910,55 +1111,82 @@ export const matchingSetService = {
           return { ok: false as const, error: { kind: 'ConstraintViolation' as const, message: 'Only one primary member is allowed.' } };
         }
 
-        const code = cleanText(input.code) ?? await nextGeneratedCode(tx);
-        const set = await tx.matchingSet.create({
-          data: {
-            code,
-            setTypeCode,
-            descriptionEs: input.descriptionEs ?? null,
-            vendorId: cleanText(input.vendorId),
-            vendorStyle: cleanText(input.vendorStyle),
-            sharedColorCode: cleanText(input.sharedColorCode),
-            sharedColorLabel: cleanText(input.sharedColorLabel),
-            season: cleanText(input.season),
-            notes: input.notes ?? null,
-            createdBy: actor,
-            updatedBy: actor,
-          },
-        });
-        await writePlanningFields(tx, set.id, input, 'create');
-
-        let primarySkuCode: string | null = null;
-        let firstSkuCode: string | null = null;
-        for (let i = 0; i < members.length; i++) {
-          const member = members[i];
+        const resolvedMembers: ResolvedMatchingSetMember[] = [];
+        for (const member of members) {
           const roleCode = cleanCode(member.roleCode);
           if (!roleCode) return { ok: false as const, error: { kind: 'ConstraintViolation' as const, message: 'roleCode is required for every member.' } };
           const role = await ensureRole(tx, setTypeCode, roleCode, { requireActive: true });
           if (!role.ok) return role;
           const sku = await resolveSkuRef(tx, member);
           if (!sku.ok) return sku;
-          firstSkuCode ??= sku.skuCode;
-          if (member.isPrimary === true || (members.length === 1 && i === 0)) primarySkuCode = sku.skuCode;
+          resolvedMembers.push({
+            input: member,
+            roleCode,
+            skuId: sku.skuId,
+            skuCode: sku.skuCode,
+          });
+        }
+
+        const sourceMap = await loadSkuHeaderSources(tx, resolvedMembers.map((member) => member.skuId));
+        const sources = resolvedMembers.map((member) => sourceMap.get(member.skuId) ?? fallbackSkuSource(member));
+        const explicitPrimarySkuId = resolvedMembers.find((member) => member.input.isPrimary === true)?.skuId ?? null;
+        const derivationPrimarySkuId = explicitPrimarySkuId ?? (resolvedMembers.length === 1 ? resolvedMembers[0]?.skuId ?? null : null);
+        const header = mergeDerivedCreateHeader(
+          input,
+          deriveMatchingSetHeaderFromSkus(sources, derivationPrimarySkuId),
+        );
+
+        const code = cleanText(input.code) ?? await nextGeneratedCode(tx);
+        const set = await tx.matchingSet.create({
+          data: {
+            code,
+            setTypeCode,
+            descriptionEs: input.descriptionEs ?? null,
+            vendorId: header.vendorId,
+            vendorStyle: header.vendorStyle,
+            sharedColorCode: header.sharedColorCode,
+            sharedColorLabel: header.sharedColorLabel,
+            season: header.season,
+            notes: input.notes ?? null,
+            createdBy: actor,
+            updatedBy: actor,
+          },
+        });
+        await writePlanningFields(tx, set.id, {
+          materialCode: header.materialCode,
+          materialLabel: header.materialLabel,
+          chainId: input.chainId,
+          sellMode: input.sellMode,
+          planningActive: input.planningActive,
+        }, 'create');
+
+        let primarySkuCode: string | null = null;
+        let firstSkuCode: string | null = null;
+        for (let i = 0; i < resolvedMembers.length; i++) {
+          const member = resolvedMembers[i];
+          firstSkuCode ??= member.skuCode;
+          const isPrimary = member.input.isPrimary === true || (resolvedMembers.length === 1 && i === 0);
+          if (isPrimary) primarySkuCode = member.skuCode;
           await tx.matchingSetMember.create({
             data: {
               setId: set.id,
-              skuId: sku.skuId,
-              roleCode,
-              isPrimary: member.isPrimary === true || (members.length === 1 && i === 0),
-              quantityRatio: new Prisma.Decimal(defaultQuantityRatio(setTypeCode, roleCode, member.quantityRatio)),
+              skuId: member.skuId,
+              roleCode: member.roleCode,
+              isPrimary,
+              quantityRatio: new Prisma.Decimal(defaultQuantityRatio(setTypeCode, member.roleCode, member.input.quantityRatio)),
               addedBy: actor,
               updatedBy: actor,
             },
           });
         }
+        const displayNameSkuCode = primarySkuCode ?? (resolvedMembers.length === 1 ? firstSkuCode : null);
         await writeDisplayName(tx, set.id, cleanText(input.displayName) ?? suggestedDisplayName({
           setTypeCode,
-          vendorId: input.vendorId,
-          vendorStyle: input.vendorStyle,
-          sharedColorCode: input.sharedColorCode,
-          sharedColorLabel: input.sharedColorLabel,
-          primarySkuCode: primarySkuCode ?? firstSkuCode,
+          vendorId: header.vendorId,
+          vendorStyle: header.vendorStyle,
+          sharedColorCode: header.sharedColorCode,
+          sharedColorLabel: header.sharedColorLabel,
+          primarySkuCode: displayNameSkuCode,
         }));
         return { ok: true as const, id: set.id };
       });
@@ -1045,6 +1273,7 @@ export const matchingSetService = {
         if (!role.ok) return role;
         const sku = await resolveSkuRef(tx, input);
         if (!sku.ok) return sku;
+        const existingMemberCount = await tx.matchingSetMember.count({ where: { setId: id } });
         if (input.isPrimary === true) {
           await tx.matchingSetMember.updateMany({ where: { setId: id, isPrimary: true }, data: { isPrimary: false, updatedBy: actor } });
         }
@@ -1059,7 +1288,43 @@ export const matchingSetService = {
             updatedBy: actor,
           },
         });
-        await tx.matchingSet.update({ where: { id }, data: { updatedBy: actor } });
+        if (existingMemberCount === 0) {
+          const resolvedMember: ResolvedMatchingSetMember = {
+            input,
+            roleCode,
+            skuId: sku.skuId,
+            skuCode: sku.skuCode,
+          };
+          const sourceMap = await loadSkuHeaderSources(tx, [sku.skuId]);
+          const source = sourceMap.get(sku.skuId) ?? fallbackSkuSource(resolvedMember);
+          const header = mergeDerivedExistingHeader(set, deriveMatchingSetHeaderFromSkus([source], sku.skuId));
+          const existingDisplayName = await loadDisplayName(tx, id);
+          await tx.matchingSet.update({
+            where: { id },
+            data: {
+              vendorId: header.vendorId,
+              vendorStyle: header.vendorStyle,
+              sharedColorCode: header.sharedColorCode,
+              sharedColorLabel: header.sharedColorLabel,
+              materialCode: header.materialCode,
+              materialLabel: header.materialLabel,
+              season: header.season,
+              updatedBy: actor,
+            },
+          });
+          if (!cleanText(existingDisplayName)) {
+            await writeDisplayName(tx, id, suggestedDisplayName({
+              setTypeCode: set.setTypeCode,
+              vendorId: header.vendorId,
+              vendorStyle: header.vendorStyle,
+              sharedColorCode: header.sharedColorCode,
+              sharedColorLabel: header.sharedColorLabel,
+              primarySkuCode: sku.skuCode,
+            }));
+          }
+        } else {
+          await tx.matchingSet.update({ where: { id }, data: { updatedBy: actor } });
+        }
         return { ok: true as const };
       });
       if (!result.ok) return Err(result.error);

@@ -44,7 +44,7 @@ interface RuleRow {
  */
 export default function RulesTab({ dimension }: Props) {
   const { message } = App.useApp()
-  const { data: families } = useProductFamilies()
+  const { data: families, isLoading: familiesLoading, error: familiesError } = useProductFamilies()
   const replace = useReplaceDimensionFamilyRules()
   const updateDim = useUpdateDimension()
 
@@ -74,6 +74,7 @@ export default function RulesTab({ dimension }: Props) {
   }, [dimension, families])
 
   const anyEnabled = useMemo(() => localRules.some((r) => r.enabled), [localRules])
+  const familyCount = families?.length ?? localRules.length
 
   const handleSave = async () => {
     try {
@@ -137,7 +138,8 @@ export default function RulesTab({ dimension }: Props) {
       render: (_: unknown, r: RuleRow) => (
         <Switch
           size="small"
-          checked={r.enabled}
+          checked={universalToggleLocal || r.enabled}
+          disabled={universalToggleLocal}
           onChange={(checked) => {
             setLocalRules((prev) =>
               prev.map((x) =>
@@ -159,8 +161,8 @@ export default function RulesTab({ dimension }: Props) {
       render: (_: unknown, r: RuleRow) => (
         <Switch
           size="small"
-          checked={r.isRequired}
-          disabled={!r.enabled}
+          checked={!universalToggleLocal && r.isRequired}
+          disabled={universalToggleLocal || !r.enabled}
           onChange={(checked) => {
             setLocalRules((prev) =>
               prev.map((x) => (x.familyCode === r.familyCode ? { ...x, isRequired: checked } : x)),
@@ -180,7 +182,7 @@ export default function RulesTab({ dimension }: Props) {
           min={0}
           step={10}
           value={r.sortOrder}
-          disabled={!r.enabled}
+          disabled={universalToggleLocal || !r.enabled}
           onChange={(v) => {
             setLocalRules((prev) =>
               prev.map((x) =>
@@ -204,7 +206,7 @@ export default function RulesTab({ dimension }: Props) {
             <Popconfirm
               title={
                 universalToggleLocal
-                  ? '¿Restringir a familias específicas? Se materializarán 11 reglas deshabilitadas.'
+                  ? `¿Restringir a familias específicas? Se materializarán ${familyCount} reglas deshabilitadas.`
                   : '¿Hacer universal? Esto eliminará todas las reglas existentes de esta dimensión.'
               }
               onConfirm={() => {
@@ -223,15 +225,22 @@ export default function RulesTab({ dimension }: Props) {
                 : 'Se aplica sólo a las familias marcadas abajo.'}
             </Typography.Text>
           </Space>
-          {!universalToggleLocal ? (
-            <Table<RuleRow>
-              size="small"
-              rowKey="familyCode"
-              columns={columns}
-              dataSource={localRules}
-              pagination={false}
+          {familiesError ? (
+            <Alert
+              type="error"
+              showIcon
+              message="No se pudieron cargar las familias"
+              description={(familiesError as Error).message}
             />
           ) : null}
+          <Table<RuleRow>
+            size="small"
+            rowKey="familyCode"
+            columns={columns}
+            dataSource={localRules}
+            loading={familiesLoading}
+            pagination={false}
+          />
           {!universalToggleLocal && !anyEnabled ? (
             <Alert
               type="warning"

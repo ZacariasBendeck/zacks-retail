@@ -20,6 +20,7 @@ import { prisma } from '../../db/prisma';
 import { Err, Ok, type Result, type RepoError } from './repoResult';
 import { isUniqueViolation, duplicatePrimaryKey, isRecordNotFound, notFound } from './prismaErrors';
 import { loadSkuCountsByCategory } from './taxonomySkuCounts';
+import { clearFamilyCaches } from '../../services/products/productFamilyService';
 
 export interface Category {
   number: number;
@@ -448,6 +449,7 @@ export const CategoryRepository = {
       }
       throw err;
     }
+    clearFamilyCaches();
     return this.getByNumber(input.number);
   },
 
@@ -510,6 +512,7 @@ export const CategoryRepository = {
       if (isRecordNotFound(err)) return Err(notFound(`Category ${number} not found.`));
       throw err;
     }
+    clearFamilyCaches();
     return this.getByNumber(number);
   },
 
@@ -527,6 +530,7 @@ export const CategoryRepository = {
       if (isRecordNotFound(err)) return Err(notFound(`Category ${number} not found.`));
       throw err;
     }
+    clearFamilyCaches();
     return Ok(undefined);
   },
 

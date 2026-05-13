@@ -194,6 +194,29 @@ export interface InventoryInquiry {
   rollup?: InquiryRollup
   grids?: InquiryGrids
   pictureUrl?: string | null
+  replacementContext?: {
+    replacedBy: SkuReplacementSummary | null
+    supersedes: SkuReplacementSummary[]
+  }
+}
+
+export interface SkuReplacementSummary {
+  id: string
+  oldSkuId: string
+  oldSkuCode: string
+  oldDescription: string | null
+  replacementSkuId: string
+  replacementSkuCode: string
+  replacementDescription: string | null
+  replacementType: 'EXACT' | 'SIMILAR' | 'VENDOR_SUBSTITUTE'
+  transferDemand: boolean
+  effectiveAt: string
+  retiredAt: string | null
+  note: string | null
+  createdAt: string
+  createdBy: string
+  updatedAt: string
+  updatedBy: string
 }
 
 export type FindBySizeSort = 'SKU' | 'DESCRIPTION' | 'VENDOR' | 'CATEGORY'
@@ -585,6 +608,7 @@ export interface ReorderPlan {
     lineCount: number
     totalQuantity: number
   } | null
+  demandSources: Array<{ skuId: string; skuCode: string; description: string | null }>
   defaults: ReorderPlannerDefaults
   chains: ReorderPlanChain[]
   warnings: string[]

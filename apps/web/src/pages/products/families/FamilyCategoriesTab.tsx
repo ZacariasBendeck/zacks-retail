@@ -3,8 +3,10 @@ import {
   Alert,
   App,
   Button,
+  Checkbox,
   Collapse,
   Empty,
+  Input,
   Select,
   Space,
   Spin,
@@ -116,6 +118,23 @@ function familyLabel(code: string, families: ProductFamily[] | undefined): strin
   return families?.find((family) => family.code === code)?.labelEs ?? code
 }
 
+function matchesCategorySearch(row: ScopedCategory, query: string): boolean {
+  if (!query) return true
+  const haystack = [
+    row.categoryNumber,
+    row.categoryDesc,
+    row.departmentNumber,
+    row.departmentDesc,
+    row.sectorNumber,
+    row.sectorDesc,
+    row.familyCode,
+  ]
+    .filter((value) => value != null)
+    .join(' ')
+    .toLowerCase()
+  return haystack.includes(query)
+}
+
 function scopedChangeRows(
   rows: ScopedCategory[],
   baselineAssigned: Set<number>,
@@ -190,6 +209,8 @@ export default function FamilyCategoriesTab({ family }: Props) {
   const [currentStep, setCurrentStep] = useState<WizardStep>(0)
   const [sectorNumber, setSectorNumber] = useState<number | null>(null)
   const [departmentNumber, setDepartmentNumber] = useState<number | null>(null)
+  const [categoryQuery, setCategoryQuery] = useState('')
+  const [unassignedOnly, setUnassignedOnly] = useState(false)
   const [baselineAssigned, setBaselineAssigned] = useState<Set<number>>(new Set())
   const [draftAssigned, setDraftAssigned] = useState<Set<number>>(new Set())
   const [pendingError, setPendingError] = useState<string | null>(null)
@@ -198,6 +219,8 @@ export default function FamilyCategoriesTab({ family }: Props) {
     setCurrentStep(0)
     setSectorNumber(null)
     setDepartmentNumber(null)
+    setCategoryQuery('')
+    setUnassignedOnly(false)
     setPendingError(null)
   }, [family.code])
 
@@ -291,14 +314,21 @@ export default function FamilyCategoriesTab({ family }: Props) {
       .sort((a, b) => a.value - b.value)
   }, [enrichedCategories, sectorNumber])
 
+  const normalizedCategoryQuery = categoryQuery.trim().toLowerCase()
   const scopedCategories = useMemo(
-    () =>
-      enrichedCategories.filter((category) => {
+    () => {
+      const rows = enrichedCategories.filter((category) => {
+        if (normalizedCategoryQuery) {
+          return matchesCategorySearch(category, normalizedCategoryQuery)
+        }
         if (sectorNumber != null && category.sectorNumber !== sectorNumber) return false
         if (departmentNumber != null && category.departmentNumber !== departmentNumber) return false
         return sectorNumber != null
-      }),
-    [departmentNumber, enrichedCategories, sectorNumber],
+      })
+      if (!unassignedOnly) return rows
+      return rows.filter((category) => !category.familyCode)
+    },
+    [departmentNumber, enrichedCategories, normalizedCategoryQuery, sectorNumber, unassignedOnly],
   )
 
   const selectedSector = sectors?.find((sector) => sector.number === sectorNumber) ?? null
@@ -466,6 +496,30 @@ export default function FamilyCategoriesTab({ family }: Props) {
             }}
           />
         </div>
+        <div>
+          <Typography.Text strong style={{ display: 'block', marginBottom: 4 }}>
+            Search
+          </Typography.Text>
+          <Input.Search
+            allowClear
+            style={{ width: 320 }}
+            placeholder="Search category number or description"
+            value={categoryQuery}
+            onChange={(event) => {
+              setCategoryQuery(event.target.value)
+              setPendingError(null)
+            }}
+          />
+        </div>
+        <Checkbox
+          checked={unassignedOnly}
+          onChange={(event) => {
+            setUnassignedOnly(event.target.checked)
+            setPendingError(null)
+          }}
+        >
+          Unassigned only
+        </Checkbox>
       </Space>
       {renderStats()}
       {selectedSector ? (
@@ -622,33 +676,44 @@ export default function FamilyCategoriesTab({ family }: Props) {
       {currentStep === 1 ? renderSelect() : null}
       {currentStep === 2 ? renderReview() : null}
 
-      <Space wrap>
-        <Button
-          disabled={currentStep === 0}
-          onClick={() => setCurrentStep((currentStep - 1) as WizardStep)}
-        >
-          Back
-        </Button>
-        {currentStep < 2 ? (
+      <div
+        style={{
+          position: 'sticky',
+          bottom: 0,
+          zIndex: 2,
+          background: '#fff',
+          borderTop: '1px solid #f0f0f0',
+          padding: '12px 0 0',
+        }}
+      >
+        <Space wrap>
           <Button
-            type="primary"
-            disabled={sectorNumber == null}
-            onClick={() => setCurrentStep((currentStep + 1) as WizardStep)}
+            disabled={currentStep === 0}
+            onClick={() => setCurrentStep((currentStep - 1) as WizardStep)}
           >
-            {currentStep === 0 ? 'Continue to categories' : 'Review changes'}
+            Back
           </Button>
-        ) : (
-          <Button
-            type="primary"
-            disabled={!isDirty || !!pendingError}
-            loading={replace.isPending}
-            onClick={() => void handleSave(false)}
-          >
-            Save assignment
-          </Button>
-        )}
-        {isDirty ? <Typography.Text type="warning">Unsaved changes.</Typography.Text> : null}
-      </Space>
+          {currentStep < 2 ? (
+            <Button
+              type="primary"
+              disabled={sectorNumber == null && !normalizedCategoryQuery}
+              onClick={() => setCurrentStep((currentStep + 1) as WizardStep)}
+            >
+              {currentStep === 0 ? 'Continue to categories' : 'Review changes'}
+            </Button>
+          ) : (
+            <Button
+              type="primary"
+              disabled={!isDirty || !!pendingError}
+              loading={replace.isPending}
+              onClick={() => void handleSave(false)}
+            >
+              Save assignment
+            </Button>
+          )}
+          {isDirty ? <Typography.Text type="warning">Unsaved changes.</Typography.Text> : null}
+        </Space>
+      </div>
     </Space>
   )
 }

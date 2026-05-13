@@ -249,7 +249,8 @@ describe('sales-by-day XLSX export', () => {
     const ws = wb.worksheets[0];
     const headerCells = ws.getRow(1).values as Array<string | undefined>;
     expect(headerCells).toContain('Net Sales');
-    expect(headerCells).toContain('% Change');
+    expect(headerCells).toContain('Net Sales % Change');
+    expect(headerCells).toContain('Profit % Change');
     // 1 header + 7 date rows + 1 Weekly Totals row = 9.
     expect(ws.rowCount).toBe(9);
     const totalsRow = ws.getRow(9).values as Array<unknown>;
@@ -266,8 +267,11 @@ describe('sales-by-day XLSX export', () => {
     const ws = wb.worksheets[0];
     const headerCells = ws.getRow(1).values as Array<string | undefined>;
     expect(headerCells).toContain('Net Sales');
+    expect(headerCells).toContain('Tickets');
+    expect(headerCells).toContain('Avg Ticket');
     expect(headerCells).toContain('Compared Profit');
     expect(headerCells).toContain('Profit Change');
+    expect(headerCells).toContain('Profit % Change');
   });
 
   it('GET /sales/by-day?format=xlsx uses all-stores filename when stores are omitted', async () => {

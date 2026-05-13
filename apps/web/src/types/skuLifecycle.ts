@@ -15,6 +15,34 @@
  */
 
 export type SkuState = 'DRAFT' | 'ACTIVE' | 'DISCONTINUED'
+export type SkuReplacementType = 'EXACT' | 'SIMILAR' | 'VENDOR_SUBSTITUTE'
+
+export interface SkuReplacementSummary {
+  id: string
+  oldSkuId: string
+  oldSkuCode: string
+  oldDescription: string | null
+  replacementSkuId: string
+  replacementSkuCode: string
+  replacementDescription: string | null
+  replacementType: SkuReplacementType
+  transferDemand: boolean
+  effectiveAt: string
+  retiredAt: string | null
+  note: string | null
+  createdAt: string
+  createdBy: string
+  updatedAt: string
+  updatedBy: string
+}
+
+export interface SkuReplacementInput {
+  replacementSkuId?: string | null
+  replacementSkuCode?: string | null
+  replacementType?: SkuReplacementType
+  transferDemand?: boolean
+  note?: string | null
+}
 
 export interface SkuLifecycleRow {
   id: string

@@ -118,6 +118,7 @@ export function useCreateCategory() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['taxonomy', 'categories'] })
       qc.invalidateQueries({ queryKey: ['product-families'] })
+      qc.invalidateQueries({ queryKey: ['product-categories'] })
     },
   })
 }
@@ -129,6 +130,7 @@ export function useUpdateCategory() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['taxonomy', 'categories'] })
       qc.invalidateQueries({ queryKey: ['product-families'] })
+      qc.invalidateQueries({ queryKey: ['product-categories'] })
     },
   })
 }
@@ -139,6 +141,7 @@ export function useDeleteCategory() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['taxonomy', 'categories'] })
       qc.invalidateQueries({ queryKey: ['product-families'] })
+      qc.invalidateQueries({ queryKey: ['product-categories'] })
     },
   })
 }

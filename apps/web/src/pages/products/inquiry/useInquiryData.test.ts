@@ -45,5 +45,6 @@ describe('flattenInquiryPayload', () => {
     expect(result.vendorSku).toBe('AUSHAN H201#4001');
     expect(result.styleColor).toBe('ROJO/PT');
     expect(result.status).toBe('ACTIVE');
+    expect(result.replacementContext).toEqual({ replacedBy: null, supersedes: [] });
   });
 });

@@ -100,6 +100,10 @@ const baseInquiry = {
     perks: null,
     comment: null,
   },
+  replacementContext: {
+    replacedBy: null,
+    supersedes: [],
+  },
 };
 
 function renderInquiryBody(overrides: Partial<ComponentProps<typeof InquiryBody>> = {}) {
@@ -267,6 +271,46 @@ describe('InquiryBody', () => {
 
     await userEvent.click(screen.getByRole('button', { name: /shopping-cart Reorder/i }));
     expect(screen.getByText('Reorder planner modal')).toBeInTheDocument();
+  });
+
+  it('shows and opens the replacement SKU instead of opening the reorder planner for a replaced SKU', async () => {
+    const onPickSku = vi.fn();
+    vi.mocked(useInquiryData).mockReturnValue({
+      data: {
+        ...baseInquiry,
+        status: 'DISCONTINUED',
+        replacementContext: {
+          replacedBy: {
+            id: 'replacement-link-1',
+            oldSkuId: 'old-id',
+            oldSkuCode: 'ZN02-NDPT',
+            oldDescription: 'Test Product',
+            replacementSkuId: 'new-id',
+            replacementSkuCode: 'ZN03-NDPT',
+            replacementDescription: 'Replacement Product',
+            replacementType: 'EXACT',
+            transferDemand: true,
+            effectiveAt: '2026-05-12T00:00:00.000Z',
+            retiredAt: null,
+            note: null,
+            createdAt: '2026-05-12T00:00:00.000Z',
+            createdBy: 'system',
+            updatedAt: '2026-05-12T00:00:00.000Z',
+            updatedBy: 'system',
+          },
+          supersedes: [],
+        },
+      },
+      isLoading: false,
+      error: null,
+    } as unknown as ReturnType<typeof useInquiryData>);
+
+    renderInquiryBody({ onPickSku });
+
+    expect(screen.getByText('Replaced by ZN03-NDPT')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: /Order replacement/i }));
+    expect(onPickSku).toHaveBeenCalledWith({ skuCode: 'ZN03-NDPT', skuId: 'new-id' });
+    expect(screen.queryByText('Reorder planner modal')).not.toBeInTheDocument();
   });
 
   it('calls the edit handler from the Edit SKU button', async () => {

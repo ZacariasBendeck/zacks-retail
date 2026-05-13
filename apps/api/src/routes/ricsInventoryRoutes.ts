@@ -770,6 +770,10 @@ function reorderDraftPoErrorMessage(code: string): string {
   if (code === 'ONLY_DRAFT_EDITABLE') return 'Only draft purchase orders can be updated by the reorder planner.';
   if (code === 'PO_VENDOR_MISMATCH') return 'The selected draft PO no longer matches the SKU vendor.';
   if (code === 'VENDOR_NOT_FOUND') return 'Vendor not found.';
+  if (code.startsWith('SKU_REPLACED_BY:')) {
+    const replacementSku = code.split(':')[1] || 'the replacement SKU';
+    return `This SKU has been replaced. Create the reorder for ${replacementSku}.`;
+  }
   if (code.startsWith('SKU_NOT_FOUND')) return 'SKU not found.';
   return 'Failed to create reorder draft PO.';
 }

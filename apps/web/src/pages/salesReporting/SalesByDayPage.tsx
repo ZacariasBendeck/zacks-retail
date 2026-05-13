@@ -51,7 +51,7 @@ import ReportEmptyState from '../../components/reports/ReportEmptyState'
 import CollapsibleFilterCard from '../../components/reports/CollapsibleFilterCard'
 import { ChangePctBadge } from '../../components/reports/gpBadge'
 import { DraggableModal } from '../../components/draggable-modal'
-import { fmtChangeMoney, fmtMoney } from '../../utils/reportFormatters'
+import { fmtChangeMoney, fmtInt, fmtMoney } from '../../utils/reportFormatters'
 import { useReportTemplate, useTouchReportTemplate } from '../../hooks/useReportTemplates'
 import { briefDateSpec, readDateSpecFromParams, resolveDateSpec, type DateSpec } from '../../utils/dateSpec'
 import { parseStoreNumberSelectionText } from '../../utils/storeNumberSelection'
@@ -71,19 +71,24 @@ import {
 const { Text } = Typography
 
 const DEFAULT_DATE_SPEC: DateSpec = { type: 'trailing_days', days: 7 }
-const SALES_BY_DAY_LAYOUT_STORAGE_KEY = 'sales-by-day:layout:v3'
+const SALES_BY_DAY_LAYOUT_STORAGE_KEY = 'sales-by-day:layout:v4'
 
 type SalesByDayColumnKey =
   | 'date'
   | 'dayName'
+  | 'ticketCount'
   | 'netSales'
+  | 'avgTicket'
   | 'profit'
   | 'comparedToDate'
+  | 'comparedTicketCount'
   | 'comparedNetSales'
+  | 'comparedAvgTicket'
   | 'comparedProfit'
   | 'dollarChange'
   | 'profitChange'
   | 'pctChange'
+  | 'profitPctChange'
 
 type SalesByDayColumnAlign = 'left' | 'center' | 'right'
 
@@ -100,14 +105,19 @@ type SalesByDayTableColumn = TableColumnsType<SalesByDayRow>[number]
 const DEFAULT_SALES_BY_DAY_COLUMN_LAYOUT: SalesByDayColumnLayout[] = [
   { key: 'date', label: 'Date', width: 89, visible: true, align: 'right' },
   { key: 'dayName', label: 'Day', width: 90, visible: true, align: 'left' },
+  { key: 'ticketCount', label: 'Tickets', width: 88, visible: true, align: 'right' },
   { key: 'netSales', label: 'Net Sales', width: 110, visible: true, align: 'right' },
+  { key: 'avgTicket', label: 'Avg Ticket', width: 110, visible: true, align: 'right' },
   { key: 'profit', label: 'Profit', width: 110, visible: false, align: 'right' },
   { key: 'comparedToDate', label: 'Compared To', width: 170, visible: true, align: 'right' },
+  { key: 'comparedTicketCount', label: 'Compared Tickets', width: 130, visible: true, align: 'right' },
   { key: 'comparedNetSales', label: 'Compared Net', width: 110, visible: true, align: 'right' },
+  { key: 'comparedAvgTicket', label: 'Compared Avg Ticket', width: 150, visible: true, align: 'right' },
   { key: 'comparedProfit', label: 'Compared Profit', width: 110, visible: false, align: 'right' },
   { key: 'dollarChange', label: 'Change', width: 110, visible: true, align: 'right' },
-  { key: 'profitChange', label: 'Profit Change', width: 110, visible: false, align: 'right' },
-  { key: 'pctChange', label: '% Change', width: 92, visible: true, align: 'right' },
+  { key: 'pctChange', label: 'Net Sales % Change', width: 130, visible: true, align: 'right' },
+  { key: 'profitChange', label: 'Profit Change', width: 118, visible: true, align: 'right' },
+  { key: 'profitPctChange', label: 'Profit % Change', width: 118, visible: true, align: 'right' },
 ]
 
 const SALES_BY_DAY_ALIGN_OPTIONS: Array<{ value: SalesByDayColumnAlign; label: string }> = [
@@ -115,7 +125,7 @@ const SALES_BY_DAY_ALIGN_OPTIONS: Array<{ value: SalesByDayColumnAlign; label: s
   { value: 'center', label: 'Center' },
   { value: 'right', label: 'Right' },
 ]
-const PROFIT_COLUMN_KEYS: SalesByDayColumnKey[] = ['profit', 'comparedProfit', 'profitChange']
+const PROFIT_COLUMN_KEYS: SalesByDayColumnKey[] = ['profit', 'comparedProfit']
 
 export const parseSalesByDayStoreRangeText = parseStoreNumberSelectionText
 
@@ -214,16 +224,21 @@ function getSalesByDayColumnTone(key: SalesByDayColumnKey): 'current' | 'compare
   switch (key) {
     case 'date':
     case 'dayName':
+    case 'ticketCount':
     case 'netSales':
+    case 'avgTicket':
     case 'profit':
       return 'current'
     case 'comparedToDate':
+    case 'comparedTicketCount':
     case 'comparedNetSales':
+    case 'comparedAvgTicket':
     case 'comparedProfit':
       return 'compare'
     case 'dollarChange':
-    case 'profitChange':
     case 'pctChange':
+    case 'profitChange':
+    case 'profitPctChange':
       return 'change'
   }
 }
@@ -312,12 +327,20 @@ function renderSalesByDaySummaryValue(
     case 'dayName':
     case 'comparedToDate':
       return null
+    case 'ticketCount':
+      return fmtInt(totals.ticketCount)
     case 'netSales':
       return fmtMoney(totals.netSales)
+    case 'avgTicket':
+      return fmtMoney(totals.avgTicket)
     case 'profit':
       return fmtMoney(totals.profit)
+    case 'comparedTicketCount':
+      return fmtInt(totals.comparedTicketCount)
     case 'comparedNetSales':
       return fmtMoney(totals.comparedNetSales)
+    case 'comparedAvgTicket':
+      return fmtMoney(totals.comparedAvgTicket)
     case 'comparedProfit':
       return fmtMoney(totals.comparedProfit)
     case 'dollarChange':
@@ -326,6 +349,8 @@ function renderSalesByDaySummaryValue(
       return fmtChangeMoney(totals.profitChange)
     case 'pctChange':
       return <ChangePctBadge value={totals.pctChange} />
+    case 'profitPctChange':
+      return <ChangePctBadge value={totals.profitPctChange} />
   }
 }
 
@@ -386,6 +411,16 @@ function buildSalesByDayColumns(
             align: column.align,
             sorter: (a: SalesByDayRow, b: SalesByDayRow) => a.dayName.localeCompare(b.dayName),
           }, column.key)
+        case 'ticketCount':
+          return withSalesByDayColumnClasses({
+            title: 'Tickets',
+            dataIndex: 'ticketCount',
+            key: 'ticketCount',
+            width: column.width,
+            align: column.align,
+            render: (value: number) => fmtInt(value),
+            sorter: (a: SalesByDayRow, b: SalesByDayRow) => a.ticketCount - b.ticketCount,
+          }, column.key)
         case 'netSales':
           return withSalesByDayColumnClasses({
             title: 'Net Sales',
@@ -395,6 +430,16 @@ function buildSalesByDayColumns(
             align: column.align,
             render: (value: number) => fmtMoney(value),
             sorter: (a: SalesByDayRow, b: SalesByDayRow) => a.netSales - b.netSales,
+          }, column.key)
+        case 'avgTicket':
+          return withSalesByDayColumnClasses({
+            title: 'Avg Ticket',
+            dataIndex: 'avgTicket',
+            key: 'avgTicket',
+            width: column.width,
+            align: column.align,
+            render: (value: number) => fmtMoney(value),
+            sorter: (a: SalesByDayRow, b: SalesByDayRow) => a.avgTicket - b.avgTicket,
           }, column.key)
         case 'profit':
           return withSalesByDayColumnClasses({
@@ -438,6 +483,26 @@ function buildSalesByDayColumns(
             render: (value: number) => fmtMoney(value),
             sorter: (a: SalesByDayRow, b: SalesByDayRow) => a.comparedNetSales - b.comparedNetSales,
           }, column.key)
+        case 'comparedTicketCount':
+          return withSalesByDayColumnClasses({
+            title: 'Compared Tickets',
+            dataIndex: 'comparedTicketCount',
+            key: 'comparedTicketCount',
+            width: column.width,
+            align: column.align,
+            render: (value: number) => fmtInt(value),
+            sorter: (a: SalesByDayRow, b: SalesByDayRow) => a.comparedTicketCount - b.comparedTicketCount,
+          }, column.key)
+        case 'comparedAvgTicket':
+          return withSalesByDayColumnClasses({
+            title: 'Compared Avg Ticket',
+            dataIndex: 'comparedAvgTicket',
+            key: 'comparedAvgTicket',
+            width: column.width,
+            align: column.align,
+            render: (value: number) => fmtMoney(value),
+            sorter: (a: SalesByDayRow, b: SalesByDayRow) => a.comparedAvgTicket - b.comparedAvgTicket,
+          }, column.key)
         case 'comparedProfit':
           return withSalesByDayColumnClasses({
             title: 'Compared Profit',
@@ -478,7 +543,7 @@ function buildSalesByDayColumns(
           }, column.key)
         case 'pctChange':
           return withSalesByDayColumnClasses({
-            title: '% Change',
+            title: 'Net Sales % Change',
             dataIndex: 'pctChange',
             key: 'pctChange',
             width: column.width,
@@ -486,6 +551,17 @@ function buildSalesByDayColumns(
             render: (value: number | null) => <ChangePctBadge value={value} />,
             sorter: (a: SalesByDayRow, b: SalesByDayRow) =>
               (a.pctChange ?? Number.POSITIVE_INFINITY) - (b.pctChange ?? Number.POSITIVE_INFINITY),
+          }, column.key)
+        case 'profitPctChange':
+          return withSalesByDayColumnClasses({
+            title: 'Profit % Change',
+            dataIndex: 'profitPctChange',
+            key: 'profitPctChange',
+            width: column.width,
+            align: column.align,
+            render: (value: number | null) => <ChangePctBadge value={value} />,
+            sorter: (a: SalesByDayRow, b: SalesByDayRow) =>
+              (a.profitPctChange ?? Number.POSITIVE_INFINITY) - (b.profitPctChange ?? Number.POSITIVE_INFINITY),
           }, column.key)
       }
     })()
@@ -690,14 +766,14 @@ export default function SalesByDayPage() {
           : column,
       ),
     )
-    message.success?.(nextVisible ? 'Profit columns shown.' : 'Profit columns hidden.')
+    message.success?.(nextVisible ? 'Profit detail columns shown.' : 'Profit detail columns hidden.')
   }
 
   return (
     <div>
       <ReportHeader
         title="Sales by Day"
-        description="Net sales + profit by day for selected stores, paired against a prior-period baseline."
+        description="Net sales, tickets, average ticket, and profit by day for selected stores, paired against a prior-period baseline."
         citation="RICS Ch. 6 p. 52"
         breadcrumb={[
           { title: <Link to="/reports/others">Other Reports</Link> },
@@ -720,7 +796,7 @@ export default function SalesByDayPage() {
               icon={profitColumnsVisible ? <EyeInvisibleOutlined /> : <EyeOutlined />}
               onClick={toggleProfitColumns}
             >
-              {profitColumnsVisible ? 'Hide profit columns' : 'Show profit columns'}
+              {profitColumnsVisible ? 'Hide profit details' : 'Show profit details'}
             </Button>
             <Button icon={<SettingOutlined />} onClick={() => setLayoutEditorOpen(true)}>
               Table layout
@@ -973,7 +1049,7 @@ function SummaryRow({ totals }: { totals: SalesTotals }) {
       <Col xs={24} sm={12} lg={6}>
         <Card>
           <Statistic
-            title="% Change"
+            title="Net Sales % Change"
             value={totals.pctChange ?? 0}
             precision={1}
             suffix="%"

@@ -66,24 +66,34 @@ function buildReport(): SalesByDayReport {
           {
             date: '2026-04-01',
             dayName: 'Wednesday',
+            ticketCount: 100,
             netSales: 266_881.97,
+            avgTicket: 2_668.82,
             profit: 155_951.27,
             comparedToDate: '2025-04-02',
+            comparedTicketCount: 80,
             comparedNetSales: 231_389.66,
+            comparedAvgTicket: 2_892.37,
             comparedProfit: 142_700.12,
             dollarChange: 35_492.31,
             profitChange: 13_251.15,
             pctChange: 15.3,
+            profitPctChange: 9.3,
           },
         ],
         totals: {
+          ticketCount: 100,
           netSales: 266_881.97,
+          avgTicket: 2_668.82,
           profit: 155_951.27,
+          comparedTicketCount: 80,
           comparedNetSales: 231_389.66,
+          comparedAvgTicket: 2_892.37,
           comparedProfit: 142_700.12,
           dollarChange: 35_492.31,
           profitChange: 13_251.15,
           pctChange: 15.3,
+          profitPctChange: 9.3,
         },
       },
     ],
@@ -93,24 +103,34 @@ function buildReport(): SalesByDayReport {
         {
           date: '2026-04-01',
           dayName: 'Wednesday',
+          ticketCount: 100,
           netSales: 266_881.97,
+          avgTicket: 2_668.82,
           profit: 155_951.27,
           comparedToDate: '2025-04-02',
+          comparedTicketCount: 80,
           comparedNetSales: 231_389.66,
+          comparedAvgTicket: 2_892.37,
           comparedProfit: 142_700.12,
           dollarChange: 35_492.31,
           profitChange: 13_251.15,
           pctChange: 15.3,
+          profitPctChange: 9.3,
         },
       ],
       totals: {
+        ticketCount: 100,
         netSales: 266_881.97,
+        avgTicket: 2_668.82,
         profit: 155_951.27,
+        comparedTicketCount: 80,
         comparedNetSales: 231_389.66,
+        comparedAvgTicket: 2_892.37,
         comparedProfit: 142_700.12,
         dollarChange: 35_492.31,
         profitChange: 13_251.15,
         pctChange: 15.3,
+        profitPctChange: 9.3,
       },
     },
   }
@@ -239,15 +259,20 @@ describe('SalesByDayPage', () => {
 
     expect(screen.queryByRole('columnheader', { name: /^Profit$/i })).not.toBeInTheDocument()
     expect(screen.queryByRole('columnheader', { name: /Compared Profit/i })).not.toBeInTheDocument()
-    expect(screen.queryByRole('columnheader', { name: /^Profit Change$/i })).not.toBeInTheDocument()
     expect(screen.queryByText('142,700.12')).not.toBeInTheDocument()
-    expect(screen.queryByText(/13,251\.15/)).not.toBeInTheDocument()
+    expect(screen.getAllByRole('columnheader', { name: /^Tickets$/i }).length).toBeGreaterThan(0)
+    expect(screen.getAllByRole('columnheader', { name: /Compared Tickets/i }).length).toBeGreaterThan(0)
+    expect(screen.getAllByRole('columnheader', { name: /Avg Ticket/i }).length).toBeGreaterThan(0)
+    expect(screen.getAllByRole('columnheader', { name: /^Profit Change$/i }).length).toBeGreaterThan(0)
+    expect(screen.getAllByRole('columnheader', { name: /Profit % Change/i }).length).toBeGreaterThan(0)
+    expect(screen.getAllByText(/13,251\.15/).length).toBeGreaterThan(0)
     expect(screen.getByText(/\$ Change/i)).toBeInTheDocument()
+    expect(screen.getAllByText(/Net Sales % Change/i).length).toBeGreaterThan(0)
     expect(screen.getByText(/^Totals$/i)).toBeInTheDocument()
     expect(screen.getAllByText('266,881.97').length).toBeGreaterThan(1)
   })
 
-  it('toggles all profit columns with one button', async () => {
+  it('toggles profit detail columns with one button', async () => {
     const user = userEvent.setup()
     renderPage()
 
@@ -256,9 +281,10 @@ describe('SalesByDayPage', () => {
 
     await waitFor(() => {
       expect(screen.queryByRole('columnheader', { name: /^Profit$/i })).not.toBeInTheDocument()
+      expect(screen.getAllByRole('columnheader', { name: /^Profit Change$/i }).length).toBeGreaterThan(0)
     })
 
-    await user.click(screen.getByRole('button', { name: /Show profit columns/i }))
+    await user.click(screen.getByRole('button', { name: /Show profit details/i }))
 
     await waitFor(() => {
       expect(screen.getAllByRole('columnheader', { name: /Compared Profit/i }).length).toBeGreaterThan(0)
@@ -268,12 +294,12 @@ describe('SalesByDayPage', () => {
       expect(screen.getAllByText(/13,251\.15/).length).toBeGreaterThan(0)
     })
 
-    await user.click(screen.getByRole('button', { name: /Hide profit columns/i }))
+    await user.click(screen.getByRole('button', { name: /Hide profit details/i }))
 
     await waitFor(() => {
       expect(screen.queryByRole('columnheader', { name: /^Profit$/i })).not.toBeInTheDocument()
       expect(screen.queryByRole('columnheader', { name: /Compared Profit/i })).not.toBeInTheDocument()
-      expect(screen.queryByRole('columnheader', { name: /^Profit Change$/i })).not.toBeInTheDocument()
+      expect(screen.getAllByRole('columnheader', { name: /^Profit Change$/i }).length).toBeGreaterThan(0)
     })
   })
 
@@ -292,7 +318,7 @@ describe('SalesByDayPage', () => {
     const initialTable = document.querySelector<HTMLTableElement>(
       '.sales-by-day-layout-table .ant-table-content table',
     )
-    expect(initialTable?.style.width).toBe('771px')
+    expect(initialTable?.style.width).toBe('1523px')
 
     await user.click(screen.getByRole('button', { name: /Table layout/i }))
     await screen.findByText(/Sales by Day table layout/i)
@@ -306,7 +332,7 @@ describe('SalesByDayPage', () => {
     const updatedTable = document.querySelector<HTMLTableElement>(
       '.sales-by-day-layout-table .ant-table-content table',
     )
-    expect(updatedTable?.style.width).toBe('881px')
+    expect(updatedTable?.style.width).toBe('1633px')
   })
 })
 

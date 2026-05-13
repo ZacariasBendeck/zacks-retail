@@ -19,6 +19,7 @@
  */
 import { Router, Request, Response, IRouter } from 'express';
 import { skuLifecycle } from '../../services/products/skuLifecycleService';
+import { skuReplacementService } from '../../services/products/skuReplacementService';
 import {
   repoHttpStatus,
   repoHttpCode,
@@ -64,6 +65,32 @@ router.get('/by-code/:code/next', async (req: Request, res: Response) => {
 
 router.get('/by-code/:code', async (req: Request, res: Response) => {
   send(res, await skuLifecycle.getByCode(String(req.params.code)));
+});
+
+// GET /:id/replacement — active replacement link for this SKU, if any.
+router.get('/:id/replacement', async (req: Request, res: Response) => {
+  send(res, await skuReplacementService.getReplacementForSku(String(req.params.id)));
+});
+
+// PUT /:id/replacement — mark this SKU as replaced by another SKU.
+router.put('/:id/replacement', async (req: Request, res: Response) => {
+  send(
+    res,
+    await skuReplacementService.saveReplacementForSku(
+      String(req.params.id),
+      req.body ?? {},
+      resolveActor(req),
+    ),
+  );
+});
+
+// DELETE /:id/replacement — retire the active replacement link. The old SKU
+// stays DISCONTINUED until an operator intentionally reactivates it elsewhere.
+router.delete('/:id/replacement', async (req: Request, res: Response) => {
+  send(
+    res,
+    await skuReplacementService.retireReplacementForSku(String(req.params.id), resolveActor(req)),
+  );
 });
 
 // GET /:id — fetch any SKU by id (any state; the name is a historical lie)

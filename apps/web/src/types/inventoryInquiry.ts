@@ -65,6 +65,32 @@ export interface InquiryInfo {
   comment: string | null;
 }
 
+export type SkuReplacementType = 'EXACT' | 'SIMILAR' | 'VENDOR_SUBSTITUTE';
+
+export interface InquirySkuReplacement {
+  id: string;
+  oldSkuId: string;
+  oldSkuCode: string;
+  oldDescription: string | null;
+  replacementSkuId: string;
+  replacementSkuCode: string;
+  replacementDescription: string | null;
+  replacementType: SkuReplacementType;
+  transferDemand: boolean;
+  effectiveAt: string;
+  retiredAt: string | null;
+  note: string | null;
+  createdAt: string;
+  createdBy: string;
+  updatedAt: string;
+  updatedBy: string;
+}
+
+export interface InquiryReplacementContext {
+  replacedBy: InquirySkuReplacement | null;
+  supersedes: InquirySkuReplacement[];
+}
+
 export type InquiryRecommendationDecision =
   | 'NO_ACTION'
   | 'REBALANCE'
@@ -134,4 +160,5 @@ export interface InventoryInquiry {
   grids: InquiryGrids;
   pictureUrl: string | null;
   info: InquiryInfo;
+  replacementContext: InquiryReplacementContext;
 }

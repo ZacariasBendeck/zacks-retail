@@ -738,24 +738,34 @@ export async function fetchSalesDimensions(signal?: AbortSignal): Promise<SalesD
 export interface SalesByDayRow {
   date: string
   dayName: string
+  ticketCount: number
   netSales: number
+  avgTicket: number
   profit: number
   comparedToDate: string
+  comparedTicketCount: number
   comparedNetSales: number
+  comparedAvgTicket: number
   comparedProfit: number
   dollarChange: number
   profitChange: number
   pctChange: number | null
+  profitPctChange: number | null
 }
 
 export interface SalesTotals {
+  ticketCount: number
   netSales: number
+  avgTicket: number
   profit: number
+  comparedTicketCount: number
   comparedNetSales: number
+  comparedAvgTicket: number
   comparedProfit: number
   dollarChange: number
   profitChange: number
   pctChange: number | null
+  profitPctChange: number | null
 }
 
 export interface SalesByDayStoreBreakdown {

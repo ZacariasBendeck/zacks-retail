@@ -4,6 +4,7 @@ import { App as AntApp, ConfigProvider } from 'antd'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AttributeDimension } from '../types/productsAttributes'
+import type { ProductFamily } from '../types/sku'
 
 vi.mock('../hooks/useProductsAttributes', () => ({
   useAttributeDimensions: vi.fn(),
@@ -48,6 +49,13 @@ const dimension: AttributeDimension = {
   values: [],
 }
 
+const family: ProductFamily = {
+  code: 'zapatos',
+  labelEs: 'Zapatos',
+  descriptionEs: null,
+  sortOrder: 10,
+}
+
 const idleMutation = () => ({ mutateAsync: vi.fn(), isPending: false })
 
 function renderPage() {
@@ -73,6 +81,7 @@ describe('Attributes catalog page', () => {
     vi.mocked(familyHooks.useProductFamilies).mockReturnValue({
       data: [],
       isLoading: false,
+      error: null,
     } as never)
     vi.mocked(attributeHooks.useCreateDimension).mockReturnValue(idleMutation() as never)
     vi.mocked(attributeHooks.useUpdateDimension).mockReturnValue(idleMutation() as never)
@@ -109,5 +118,20 @@ describe('Attributes catalog page', () => {
 
     expect(await screen.findByText(/Editar dimensi.n .* openings/)).toBeInTheDocument()
     expect(screen.getByDisplayValue('Openings')).toBeInTheDocument()
+  })
+
+  it('shows product family rows on the rules tab even while a dimension is universal', async () => {
+    const user = userEvent.setup()
+    vi.mocked(familyHooks.useProductFamilies).mockReturnValue({
+      data: [family],
+      isLoading: false,
+      error: null,
+    } as never)
+
+    renderPage()
+
+    await user.click(await screen.findByRole('tab', { name: 'Reglas' }))
+
+    expect(await screen.findByRole('row', { name: /Zapatos zapatos/ })).toBeInTheDocument()
   })
 })

@@ -565,10 +565,10 @@ router.get('/rics-sales-by-day-store', validateQuery(ricsSalesByDayStoreQuerySch
     comparisonEndDate: fullReport.comparisonEndDate,
     rows: block?.rows ?? [],
     weeklyTotals: block?.totals ?? {
-      netSales: 0, profit: 0, comparedNetSales: 0, comparedProfit: 0, dollarChange: 0, profitChange: 0, pctChange: null,
+      ticketCount: 0, netSales: 0, avgTicket: 0, profit: 0, comparedTicketCount: 0, comparedNetSales: 0, comparedAvgTicket: 0, comparedProfit: 0, dollarChange: 0, profitChange: 0, pctChange: null, profitPctChange: null,
     },
     storeTotals: block?.totals ?? {
-      netSales: 0, profit: 0, comparedNetSales: 0, comparedProfit: 0, dollarChange: 0, profitChange: 0, pctChange: null,
+      ticketCount: 0, netSales: 0, avgTicket: 0, profit: 0, comparedTicketCount: 0, comparedNetSales: 0, comparedAvgTicket: 0, comparedProfit: 0, dollarChange: 0, profitChange: 0, pctChange: null, profitPctChange: null,
     },
   };
   const filenameCriteria = [
@@ -585,23 +585,35 @@ router.get('/rics-sales-by-day-store', validateQuery(ricsSalesByDayStoreQuerySch
         store: report.storeLabel,
         date: r.date,
         day: r.dayName,
+        ticketCount: r.ticketCount,
         netSales: r.netSales,
+        avgTicket: r.avgTicket,
         comparedToDate: r.comparedToDate,
+        comparedTicketCount: r.comparedTicketCount,
         comparedNetSales: r.comparedNetSales,
+        comparedAvgTicket: r.comparedAvgTicket,
         dollarChange: r.dollarChange,
         // % Change is already a display-ready percentage (e.g. 12.3 = 12.3%),
         // so we use the pre-scaled 'percent1' format rather than Excel's '%'.
         pctChange: r.pctChange,
+        profitChange: r.profitChange,
+        profitPctChange: r.profitPctChange,
       })),
       {
         store: 'Weekly Totals',
         date: '',
         day: '',
+        ticketCount: report.weeklyTotals.ticketCount,
         netSales: report.weeklyTotals.netSales,
+        avgTicket: report.weeklyTotals.avgTicket,
         comparedToDate: '',
+        comparedTicketCount: report.weeklyTotals.comparedTicketCount,
         comparedNetSales: report.weeklyTotals.comparedNetSales,
+        comparedAvgTicket: report.weeklyTotals.comparedAvgTicket,
         dollarChange: report.weeklyTotals.dollarChange,
         pctChange: report.weeklyTotals.pctChange,
+        profitChange: report.weeklyTotals.profitChange,
+        profitPctChange: report.weeklyTotals.profitPctChange,
       },
     ];
     await sendXlsx(res, {
@@ -613,11 +625,17 @@ router.get('/rics-sales-by-day-store', validateQuery(ricsSalesByDayStoreQuerySch
             { header: 'Store', key: 'store', width: 22 },
             { header: 'Date', key: 'date', width: 12 },
             { header: 'Day', key: 'day', width: 12 },
+            { header: 'Tickets', key: 'ticketCount', width: 10, numFmt: XLSX_NUMFMT.integer },
             { header: 'Net Sales', key: 'netSales', width: 14, numFmt: XLSX_NUMFMT.money },
+            { header: 'Avg Ticket', key: 'avgTicket', width: 14, numFmt: XLSX_NUMFMT.money },
             { header: 'Compared To Date', key: 'comparedToDate', width: 16 },
+            { header: 'Compared Tickets', key: 'comparedTicketCount', width: 17, numFmt: XLSX_NUMFMT.integer },
             { header: 'Compared Net Sales', key: 'comparedNetSales', width: 18, numFmt: XLSX_NUMFMT.money },
+            { header: 'Compared Avg Ticket', key: 'comparedAvgTicket', width: 20, numFmt: XLSX_NUMFMT.money },
             { header: '$ Change', key: 'dollarChange', width: 12, numFmt: XLSX_NUMFMT.money },
-            { header: '% Change', key: 'pctChange', width: 10, numFmt: XLSX_NUMFMT.percent1 },
+            { header: 'Net Sales % Change', key: 'pctChange', width: 18, numFmt: XLSX_NUMFMT.percent1 },
+            { header: 'Profit Change', key: 'profitChange', width: 14, numFmt: XLSX_NUMFMT.money },
+            { header: 'Profit % Change', key: 'profitPctChange', width: 16, numFmt: XLSX_NUMFMT.percent1 },
           ],
           rows,
         },
@@ -627,17 +645,23 @@ router.get('/rics-sales-by-day-store', validateQuery(ricsSalesByDayStoreQuerySch
   }
 
   if (query.format === 'csv') {
-    const header = 'Store,Date,Day,Net Sales,Compared To Date,Compared Net Sales,$ Change,% Change';
+    const header = 'Store,Date,Day,Tickets,Net Sales,Avg Ticket,Compared To Date,Compared Tickets,Compared Net Sales,Compared Avg Ticket,$ Change,Net Sales % Change,Profit Change,Profit % Change';
     const rows = report.rows.map((row) =>
       [
         escapeCsv(report.storeLabel),
         row.date,
         row.dayName,
+        row.ticketCount,
         row.netSales.toFixed(2),
+        row.avgTicket.toFixed(2),
         row.comparedToDate,
+        row.comparedTicketCount,
         row.comparedNetSales.toFixed(2),
+        row.comparedAvgTicket.toFixed(2),
         row.dollarChange.toFixed(2),
         row.pctChange == null ? '' : row.pctChange.toFixed(1),
+        row.profitChange.toFixed(2),
+        row.profitPctChange == null ? '' : row.profitPctChange.toFixed(1),
       ].join(',')
     );
 
@@ -645,11 +669,17 @@ router.get('/rics-sales-by-day-store', validateQuery(ricsSalesByDayStoreQuerySch
       escapeCsv('Weekly Totals'),
       '',
       '',
+      report.weeklyTotals.ticketCount,
       report.weeklyTotals.netSales.toFixed(2),
+      report.weeklyTotals.avgTicket.toFixed(2),
       '',
+      report.weeklyTotals.comparedTicketCount,
       report.weeklyTotals.comparedNetSales.toFixed(2),
+      report.weeklyTotals.comparedAvgTicket.toFixed(2),
       report.weeklyTotals.dollarChange.toFixed(2),
       report.weeklyTotals.pctChange == null ? '' : report.weeklyTotals.pctChange.toFixed(1),
+      report.weeklyTotals.profitChange.toFixed(2),
+      report.weeklyTotals.profitPctChange == null ? '' : report.weeklyTotals.profitPctChange.toFixed(1),
     ].join(',');
 
     const csv = [header, ...rows, totals].join('\n');

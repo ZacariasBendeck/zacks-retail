@@ -15,24 +15,34 @@
 export interface RicsSalesByDayRow {
   date: string;                 // 'YYYY-MM-DD'
   dayName: string;              // 'Monday' ... 'Sunday'
+  ticketCount: number;
   netSales: number;
+  avgTicket: number;
   profit: number;               // net_amount - cost_amount, current period
   comparedToDate: string;
+  comparedTicketCount: number;
   comparedNetSales: number;
+  comparedAvgTicket: number;
   comparedProfit: number;       // profit for the matching prior-period day
   dollarChange: number;         // netSales - comparedNetSales
   profitChange: number;         // profit - comparedProfit
   pctChange: number | null;
+  profitPctChange: number | null;
 }
 
 export interface RicsSalesTotals {
+  ticketCount: number;
   netSales: number;
+  avgTicket: number;
   profit: number;
+  comparedTicketCount: number;
   comparedNetSales: number;
+  comparedAvgTicket: number;
   comparedProfit: number;
   dollarChange: number;
   profitChange: number;
   pctChange: number | null;
+  profitPctChange: number | null;
 }
 
 export interface RicsSalesByDayStoreBreakdown {

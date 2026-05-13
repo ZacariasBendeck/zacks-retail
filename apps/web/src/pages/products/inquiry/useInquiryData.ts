@@ -41,6 +41,7 @@ interface BackendInquiry {
   pictureUrl: string | null;
   lastReceivedAt?: string | null;
   info?: InquiryInfo;
+  replacementContext?: InventoryInquiry['replacementContext'];
 }
 
 export function flattenInquiryPayload(raw: BackendInquiry): InventoryInquiry {
@@ -78,6 +79,10 @@ export function flattenInquiryPayload(raw: BackendInquiry): InventoryInquiry {
       lastMarkdownAt: null,
       perks: null,
       comment: null,
+    },
+    replacementContext: raw.replacementContext ?? {
+      replacedBy: null,
+      supersedes: [],
     },
   };
 }

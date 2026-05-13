@@ -1,10 +1,13 @@
 import { useCallback, useMemo, useState } from 'react'
-import { Card, Col, DatePicker, Input, InputNumber, Row, Select, Space, Typography } from 'antd'
+import { Alert, Button, Card, Col, DatePicker, Input, InputNumber, Row, Select, Space, Typography } from 'antd'
+import { FileDoneOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import ServerDataTable, { type ServerQueryChange, type ServerTableColumn } from '../../components/ServerDataTable'
+import ReportEmptyState from '../../components/reports/ReportEmptyState'
 import { useSalesLedger } from '../../hooks/useSalesLedger'
 import { useStores } from '../../hooks/useStores'
 import type { SalesChannel, SalesLedgerParams, SalesLedgerRow } from '../../types/salesLedger'
+import { getErrorMessage } from '../../utils/errors'
 
 // Currency is Honduran Lempira (HNL) system-wide — labeled once at the top of
 // the page, not repeated in every cell (see CLAUDE.md "Currency" policy).
@@ -25,16 +28,83 @@ const CHANNEL_OPTIONS: { label: string; value: SalesChannel }[] = [
   { label: 'Wholesale', value: 'WHOLESALE' },
 ]
 
-export default function SalesLedgerPage() {
-  const [params, setParams] = useState<SalesLedgerParams>({
-    page: 1,
-    pageSize: 50,
-    sort: 'saleDate',
-    order: 'desc',
-  })
+const DEFAULT_PARAMS: SalesLedgerParams = {
+  page: 1,
+  pageSize: 50,
+  sort: 'saleDate',
+  order: 'desc',
+}
 
-  const { data, isLoading, isFetching } = useSalesLedger(params)
+function cleanParams(params: SalesLedgerParams): SalesLedgerParams {
+  const next: SalesLedgerParams = {
+    ...params,
+    page: params.page ?? DEFAULT_PARAMS.page,
+    pageSize: params.pageSize ?? DEFAULT_PARAMS.pageSize,
+    sort: params.sort ?? DEFAULT_PARAMS.sort,
+    order: params.order ?? DEFAULT_PARAMS.order,
+  }
+
+  const department = params.department?.trim()
+  const skuCode = params.skuCode?.trim()
+  const style = params.style?.trim()
+
+  return {
+    ...next,
+    department: department || undefined,
+    skuCode: skuCode || undefined,
+    style: style || undefined,
+  }
+}
+
+function applyServerQueryChange(
+  prev: SalesLedgerParams,
+  query: ServerQueryChange,
+): SalesLedgerParams {
+  const hasDepartmentFilter =
+    query.filters != null && Object.prototype.hasOwnProperty.call(query.filters, 'department')
+  const hasChannelFilter =
+    query.filters != null && Object.prototype.hasOwnProperty.call(query.filters, 'channel')
+  const hasStoreFilter =
+    query.filters != null && Object.prototype.hasOwnProperty.call(query.filters, 'storeId')
+  const departmentFilter = hasDepartmentFilter ? query.filters?.department ?? [] : null
+  const channelFilter = hasChannelFilter ? query.filters?.channel ?? [] : null
+  const storeFilter = hasStoreFilter ? query.filters?.storeId ?? [] : null
+
+  return cleanParams({
+    ...prev,
+    page: query.page,
+    pageSize: query.pageSize,
+    sort: query.sort ?? prev.sort,
+    order: query.order ?? prev.order,
+    department:
+      departmentFilter == null
+        ? prev.department
+        : departmentFilter.length > 0
+          ? String(departmentFilter[0])
+          : undefined,
+    channel:
+      channelFilter == null
+        ? prev.channel
+        : channelFilter.length > 0
+          ? (channelFilter[0] as SalesChannel)
+          : undefined,
+    storeId:
+      storeFilter == null
+        ? prev.storeId
+        : storeFilter.length > 0
+          ? Number(storeFilter[0])
+          : undefined,
+  })
+}
+
+export default function SalesLedgerPage() {
+  const [draftParams, setDraftParams] = useState<SalesLedgerParams>({ ...DEFAULT_PARAMS })
+  const [activeParams, setActiveParams] = useState<SalesLedgerParams | null>(null)
+  const [activeRunId, setActiveRunId] = useState<number | null>(null)
+
+  const { data, isLoading, isFetching, error } = useSalesLedger(activeParams, activeRunId)
   const { data: stores = [], isLoading: storesLoading } = useStores()
+  const tableParams = activeParams ?? draftParams
 
   const storeOptions = useMemo(
     () =>
@@ -46,41 +116,27 @@ export default function SalesLedgerPage() {
   )
 
   const handleQueryChange = useCallback((query: ServerQueryChange) => {
-    const hasDepartmentFilter =
-      query.filters != null && Object.prototype.hasOwnProperty.call(query.filters, 'department')
-    const hasChannelFilter =
-      query.filters != null && Object.prototype.hasOwnProperty.call(query.filters, 'channel')
-    const hasStoreFilter =
-      query.filters != null && Object.prototype.hasOwnProperty.call(query.filters, 'storeId')
-    const departmentFilter = hasDepartmentFilter ? query.filters?.department ?? [] : null
-    const channelFilter = hasChannelFilter ? query.filters?.channel ?? [] : null
-    const storeFilter = hasStoreFilter ? query.filters?.storeId ?? [] : null
+    if (!activeParams) return
+    const next = applyServerQueryChange(activeParams, query)
+    setActiveParams(next)
+    setDraftParams(next)
+    setActiveRunId((prev) => (prev ?? 0) + 1)
+  }, [activeParams])
 
-    setParams((prev) => ({
-      ...prev,
-      page: query.page,
-      pageSize: query.pageSize,
-      sort: query.sort ?? prev.sort,
-      order: query.order ?? prev.order,
-      department:
-        departmentFilter == null
-          ? prev.department
-          : departmentFilter.length > 0
-            ? String(departmentFilter[0])
-            : undefined,
-      channel:
-        channelFilter == null
-          ? prev.channel
-          : channelFilter.length > 0
-            ? (channelFilter[0] as SalesChannel)
-            : undefined,
-      storeId:
-        storeFilter == null
-          ? prev.storeId
-          : storeFilter.length > 0
-            ? Number(storeFilter[0])
-            : undefined,
-    }))
+  const handleRunReport = useCallback(() => {
+    const next = cleanParams({
+      ...draftParams,
+      page: 1,
+    })
+    setDraftParams(next)
+    setActiveParams(next)
+    setActiveRunId((prev) => (prev ?? 0) + 1)
+  }, [draftParams])
+
+  const handleClear = useCallback(() => {
+    setDraftParams({ ...DEFAULT_PARAMS })
+    setActiveParams(null)
+    setActiveRunId(null)
   }, [])
 
   const totalRevenue = useMemo(
@@ -105,7 +161,7 @@ export default function SalesLedgerPage() {
       sorter: true,
       width: 180,
       filters: storeOptions.map((store) => ({ text: store.label, value: store.value })),
-      filteredValue: params.storeId != null ? [params.storeId] : null,
+      filteredValue: tableParams.storeId != null ? [tableParams.storeId] : null,
       render: (_value: number | null, record) => record.storeLabel,
       exportValue: (record) => record.storeLabel,
     },
@@ -145,7 +201,7 @@ export default function SalesLedgerPage() {
       key: 'channel',
       width: 120,
       filters: CHANNEL_OPTIONS.map((channel) => ({ text: channel.label, value: channel.value })),
-      filteredValue: params.channel ? [params.channel] : null,
+      filteredValue: tableParams.channel ? [tableParams.channel] : null,
     },
     {
       title: 'Units',
@@ -194,9 +250,9 @@ export default function SalesLedgerPage() {
               loading={storesLoading}
               optionFilterProp="label"
               style={{ width: '100%' }}
-              value={params.storeId}
+              value={draftParams.storeId}
               onChange={(value) =>
-                setParams((prev) => ({
+                setDraftParams((prev) => ({
                   ...prev,
                   storeId: value == null ? undefined : Number(value),
                   page: 1,
@@ -213,8 +269,8 @@ export default function SalesLedgerPage() {
               placeholder="All channels"
               allowClear
               style={{ width: '100%' }}
-              value={params.channel}
-              onChange={(value) => setParams((prev) => ({ ...prev, channel: value, page: 1 }))}
+              value={draftParams.channel}
+              onChange={(value) => setDraftParams((prev) => ({ ...prev, channel: value, page: 1 }))}
               options={CHANNEL_OPTIONS}
             />
           </Col>
@@ -225,9 +281,9 @@ export default function SalesLedgerPage() {
             <Input
               allowClear
               placeholder="e.g. ZAP. TACON"
-              value={params.department}
+              value={draftParams.department}
               onChange={(event) =>
-                setParams((prev) => ({
+                setDraftParams((prev) => ({
                   ...prev,
                   department: event.target.value || undefined,
                   page: 1,
@@ -244,9 +300,9 @@ export default function SalesLedgerPage() {
               max={CATEGORY_MAX}
               placeholder={`${CATEGORY_MIN}-${CATEGORY_MAX}`}
               style={{ width: '100%' }}
-              value={params.category}
+              value={draftParams.category}
               onChange={(value) =>
-                setParams((prev) => ({
+                setDraftParams((prev) => ({
                   ...prev,
                   category: value == null ? undefined : Number(value),
                   page: 1,
@@ -261,9 +317,9 @@ export default function SalesLedgerPage() {
             <Input
               allowClear
               placeholder="e.g. AB123"
-              value={params.skuCode}
+              value={draftParams.skuCode}
               onChange={(event) =>
-                setParams((prev) => ({
+                setDraftParams((prev) => ({
                   ...prev,
                   skuCode: event.target.value || undefined,
                   page: 1,
@@ -278,9 +334,9 @@ export default function SalesLedgerPage() {
             <Input
               allowClear
               placeholder="e.g. Oxford"
-              value={params.style}
+              value={draftParams.style}
               onChange={(event) =>
-                setParams((prev) => ({
+                setDraftParams((prev) => ({
                   ...prev,
                   style: event.target.value || undefined,
                   page: 1,
@@ -294,9 +350,9 @@ export default function SalesLedgerPage() {
             </Typography.Text>
             <DatePicker
               style={{ width: '100%' }}
-              value={params.startDate ? dayjs(params.startDate) : null}
+              value={draftParams.startDate ? dayjs(draftParams.startDate) : null}
               onChange={(value) =>
-                setParams((prev) => ({
+                setDraftParams((prev) => ({
                   ...prev,
                   startDate: value ? value.format('YYYY-MM-DD') : undefined,
                   page: 1,
@@ -310,9 +366,9 @@ export default function SalesLedgerPage() {
             </Typography.Text>
             <DatePicker
               style={{ width: '100%' }}
-              value={params.endDate ? dayjs(params.endDate) : null}
+              value={draftParams.endDate ? dayjs(draftParams.endDate) : null}
               onChange={(value) =>
-                setParams((prev) => ({
+                setDraftParams((prev) => ({
                   ...prev,
                   endDate: value ? value.format('YYYY-MM-DD') : undefined,
                   page: 1,
@@ -320,31 +376,61 @@ export default function SalesLedgerPage() {
               }
             />
           </Col>
+          <Col xs={24}>
+            <Space>
+              <Button
+                type="primary"
+                icon={<FileDoneOutlined />}
+                loading={activeParams != null && isFetching}
+                onClick={handleRunReport}
+              >
+                {activeParams ? 'Re-run' : 'Run Report'}
+              </Button>
+              <Button onClick={handleClear}>Clear</Button>
+            </Space>
+          </Col>
         </Row>
       </Card>
 
-      <Card size="small">
-        <ServerDataTable<SalesLedgerRow>
-          title={
-            <Space>
-              <Typography.Text strong>Transactions</Typography.Text>
-              <Typography.Text type="secondary">
-                Visible revenue: {formatMoney(totalRevenue)}
-              </Typography.Text>
-            </Space>
-          }
-          data={data?.data}
-          columns={columns}
-          rowKey="id"
-          loading={isLoading}
-          fetching={isFetching}
-          pagination={data?.pagination}
-          onQueryChange={handleQueryChange}
-          expectedTotalRows={data?.pagination.totalItems}
-          exportFileName={`sales-ledger-${new Date().toISOString().slice(0, 10)}`}
-          scrollX={1320}
+      {error && (
+        <Alert
+          type="error"
+          showIcon
+          message="Sales ledger report failed"
+          description={getErrorMessage(error, 'Unable to load the sales ledger report.')}
         />
-      </Card>
+      )}
+
+      {!activeParams && !error && (
+        <Card size="small">
+          <ReportEmptyState reason="idle" message="Configure filters, then click Run Report." />
+        </Card>
+      )}
+
+      {activeParams && !error && (
+        <Card size="small">
+          <ServerDataTable<SalesLedgerRow>
+            title={
+              <Space>
+                <Typography.Text strong>Transactions</Typography.Text>
+                <Typography.Text type="secondary">
+                  Visible revenue: {formatMoney(totalRevenue)}
+                </Typography.Text>
+              </Space>
+            }
+            data={data?.data}
+            columns={columns}
+            rowKey="id"
+            loading={isLoading}
+            fetching={isFetching}
+            pagination={data?.pagination}
+            onQueryChange={handleQueryChange}
+            expectedTotalRows={data?.pagination.totalItems}
+            exportFileName={`sales-ledger-${new Date().toISOString().slice(0, 10)}`}
+            scrollX={1320}
+          />
+        </Card>
+      )}
     </Space>
   )
 }

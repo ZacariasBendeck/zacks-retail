@@ -20,7 +20,7 @@ interface ReportCard {
 const REPORTS: ReportCard[] = [
   {
     title: 'Sales by Day',
-    description: 'Net sales by day for one store, with prior-year weekday comparison.',
+    description: 'Net sales, tickets, and average ticket by day, with prior-year weekday comparison.',
     citation: 'RICS Ch. 6 p. 52',
     to: '/reports/others/sales-by-day',
     icon: <BarChartOutlined />,

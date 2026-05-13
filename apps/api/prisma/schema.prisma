@@ -1808,6 +1808,8 @@ model Sku {
   importCostBuildOutputs    ImportCostBuild[]
   supplierQuotationLines    SupplierQuotationLine[]
   supplierQuotationRelations SupplierQuotationLineRelation[]
+  replacementsFromThis      SkuReplacement[] @relation("SkuReplacementOld")
+  replacementsToThis        SkuReplacement[] @relation("SkuReplacementNew")
 
   @@unique([provisionalCode], map: "sku_provisional_code_key")
   @@index([skuState, familyCode], map: "sku_state_family_idx")
@@ -2023,6 +2025,27 @@ model SkuActivity {
   @@index([skuId, occurredAt(sort: Desc)], map: "sku_activity_sku_id_idx")
   @@index([occurredAt(sort: Desc)], map: "sku_activity_occurred_at_idx")
   @@map("sku_activity")
+  @@schema("app")
+}
+
+model SkuReplacement {
+  id               String    @id @default(uuid()) @db.Uuid
+  oldSkuId         String    @map("old_sku_id") @db.Uuid
+  oldSku           Sku       @relation("SkuReplacementOld", fields: [oldSkuId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  replacementSkuId String    @map("replacement_sku_id") @db.Uuid
+  replacementSku   Sku       @relation("SkuReplacementNew", fields: [replacementSkuId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  replacementType  String    @default("EXACT") @map("replacement_type") @db.VarChar(24)
+  transferDemand   Boolean   @default(true) @map("transfer_demand")
+  effectiveAt      DateTime  @default(now()) @map("effective_at") @db.Timestamptz(6)
+  retiredAt        DateTime? @map("retired_at") @db.Timestamptz(6)
+  note             String?
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy        String    @default("system") @map("created_by") @db.VarChar(120)
+  updatedAt        DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy        String    @default("system") @map("updated_by") @db.VarChar(120)
+
+  @@index([effectiveAt(sort: Desc)], map: "sku_replacement_effective_idx")
+  @@map("sku_replacement")
   @@schema("app")
 }
 

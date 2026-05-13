@@ -4,6 +4,8 @@ import type {
   CreateDraftInput,
   UpdateDraftInput,
   FinalizeDraftInput,
+  SkuReplacementInput,
+  SkuReplacementSummary,
 } from '../types/skuLifecycle'
 
 const BASE = '/api/v1/products/sku-drafts'
@@ -37,6 +39,14 @@ export function useSkuDraft(id: string | null | undefined) {
   return useQuery({
     queryKey: ['sku-drafts', 'detail', id],
     queryFn: () => apiJson<SkuLifecycleRow>(`${BASE}/${id!}`),
+    enabled: !!id,
+  })
+}
+
+export function useSkuReplacement(id: string | null | undefined) {
+  return useQuery({
+    queryKey: ['sku-replacement', id],
+    queryFn: () => apiJson<SkuReplacementSummary | null>(`${BASE}/${id!}/replacement`),
     enabled: !!id,
   })
 }
@@ -77,6 +87,11 @@ function invalidateAll(qc: ReturnType<typeof useQueryClient>) {
   qc.invalidateQueries({ queryKey: ['sku-drafts'] })
 }
 
+function invalidateReplacement(qc: ReturnType<typeof useQueryClient>, id: string) {
+  qc.invalidateQueries({ queryKey: ['sku-replacement', id] })
+  invalidateAll(qc)
+}
+
 export function useCreateSkuDraft() {
   const qc = useQueryClient()
   return useMutation({
@@ -113,5 +128,26 @@ export function useDiscontinueSkuDraft() {
     mutationFn: (id: string) =>
       apiJson<SkuLifecycleRow>(`${BASE}/${id}/discontinue`, { method: 'POST' }),
     onSuccess: () => invalidateAll(qc),
+  })
+}
+
+export function useSaveSkuReplacement() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, input }: { id: string; input: SkuReplacementInput }) =>
+      apiJson<SkuReplacementSummary>(`${BASE}/${id}/replacement`, {
+        method: 'PUT',
+        body: JSON.stringify(input),
+      }),
+    onSuccess: (_data, variables) => invalidateReplacement(qc, variables.id),
+  })
+}
+
+export function useRetireSkuReplacement() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiJson<SkuReplacementSummary | null>(`${BASE}/${id}/replacement`, { method: 'DELETE' }),
+    onSuccess: (_data, id) => invalidateReplacement(qc, id),
   })
 }

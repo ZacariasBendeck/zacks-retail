@@ -90,6 +90,7 @@ const plan: ReorderPlan = {
     lineCount: 1,
     totalQuantity: 30,
   },
+  demandSources: [],
   defaults: {
     scope: 'SKU',
     scopeKey: 'sku-1',

@@ -210,6 +210,9 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
       ? ''
       : '—';
   const hasVisibleInventoryActivity = hasAnyGridValue(data.grids);
+  const replacementContext = data.replacementContext ?? { replacedBy: null, supersedes: [] };
+  const replacedBy = replacementContext.replacedBy;
+  const supersedesWithDemand = replacementContext.supersedes.filter((item) => item.transferDemand);
 
   return (
     <div style={{ fontSize: 12 }}>
@@ -238,6 +241,37 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
         />
       )}
 
+      {replacedBy && (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 8 }}
+          message={`Replaced by ${replacedBy.replacementSkuCode}`}
+          description="Order the replacement SKU. This SKU stays visible for sales history, returns, and inventory audit."
+          action={
+            <Button
+              size="small"
+              onClick={() => onPickSku({
+                skuCode: replacedBy.replacementSkuCode,
+                skuId: replacedBy.replacementSkuId,
+              })}
+            >
+              Open replacement
+            </Button>
+          }
+        />
+      )}
+
+      {!replacedBy && supersedesWithDemand.length > 0 && (
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 8 }}
+          message={`Demand includes replaced SKU${supersedesWithDemand.length === 1 ? '' : 's'} ${supersedesWithDemand.map((item) => item.oldSkuCode).join(', ')}`}
+          description="Exact replacement sales history is included when this SKU is planned for reorder."
+        />
+      )}
+
       {/* Top row: Header (left) | Pricing + Rollup + Picture (right) */}
       <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start', marginBottom: 8 }}>
         <div style={{ flex: '1 1 0', minWidth: 0 }}>
@@ -249,8 +283,21 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
               <Button size="small" icon={<RobotOutlined />} onClick={() => setAiModalOpen(true)}>
                 Recommended reorder
               </Button>
-              <Button size="small" icon={<ShoppingCartOutlined />} onClick={() => setReorderModalOpen(true)}>
-                Reorder
+              <Button
+                size="small"
+                icon={<ShoppingCartOutlined />}
+                onClick={() => {
+                  if (replacedBy) {
+                    onPickSku({
+                      skuCode: replacedBy.replacementSkuCode,
+                      skuId: replacedBy.replacementSkuId,
+                    });
+                    return;
+                  }
+                  setReorderModalOpen(true);
+                }}
+              >
+                {replacedBy ? 'Order replacement' : 'Reorder'}
               </Button>
               <Button
                 size="small"

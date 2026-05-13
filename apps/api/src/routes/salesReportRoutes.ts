@@ -302,7 +302,7 @@ const byDaySchema = z.object({
  * /api/v1/reports/sales/by-day:
  *   get:
  *     tags: [Sales Reports]
- *     summary: Sales by Day (RICS Ch. 6 p. 52) — net sales + profit by day for one or more stores, with prior-year weekday comparison.
+ *     summary: Sales by Day (RICS Ch. 6 p. 52) — net sales, tickets, average ticket, and profit by day for one or more stores, with prior-year weekday comparison.
  *     parameters:
  *       - { in: query, name: stores, required: false, schema: { type: string, description: "CSV of store numbers; omit for all stores" } }
  *       - { in: query, name: startDate, required: true, schema: { type: string, format: date } }
@@ -351,28 +351,38 @@ router.get('/by-day', validateQuery(byDaySchema), async (req: Request, res: Resp
             store: block.label,
             date: r.date,
             day: r.dayName,
+            ticketCount: r.ticketCount,
             netSales: r.netSales,
+            avgTicket: r.avgTicket,
             profit: r.profit,
             comparedToDate: r.comparedToDate,
+            comparedTicketCount: r.comparedTicketCount,
             comparedNetSales: r.comparedNetSales,
+            comparedAvgTicket: r.comparedAvgTicket,
             comparedProfit: r.comparedProfit,
             dollarChange: r.dollarChange,
-            profitChange: r.profitChange,
             pctChange: r.pctChange,
+            profitChange: r.profitChange,
+            profitPctChange: r.profitPctChange,
           });
         }
         xlsxRows.push({
           store: `${block.label} — Totals`,
           date: '',
           day: '',
+          ticketCount: block.totals.ticketCount,
           netSales: block.totals.netSales,
+          avgTicket: block.totals.avgTicket,
           profit: block.totals.profit,
           comparedToDate: '',
+          comparedTicketCount: block.totals.comparedTicketCount,
           comparedNetSales: block.totals.comparedNetSales,
+          comparedAvgTicket: block.totals.comparedAvgTicket,
           comparedProfit: block.totals.comparedProfit,
           dollarChange: block.totals.dollarChange,
-          profitChange: block.totals.profitChange,
           pctChange: block.totals.pctChange,
+          profitChange: block.totals.profitChange,
+          profitPctChange: block.totals.profitPctChange,
         });
       }
       await sendXlsx(res, {
@@ -384,14 +394,19 @@ router.get('/by-day', validateQuery(byDaySchema), async (req: Request, res: Resp
               { header: 'Store', key: 'store', width: 28 },
               { header: 'Date', key: 'date', width: 12 },
               { header: 'Day', key: 'day', width: 12 },
+              { header: 'Tickets', key: 'ticketCount', width: 10, numFmt: XLSX_NUMFMT.integer },
               { header: 'Net Sales', key: 'netSales', width: 14, numFmt: XLSX_NUMFMT.money },
+              { header: 'Avg Ticket', key: 'avgTicket', width: 14, numFmt: XLSX_NUMFMT.money },
               { header: 'Profit', key: 'profit', width: 14, numFmt: XLSX_NUMFMT.money },
               { header: 'Compared To Date', key: 'comparedToDate', width: 16 },
+              { header: 'Compared Tickets', key: 'comparedTicketCount', width: 17, numFmt: XLSX_NUMFMT.integer },
               { header: 'Compared Net Sales', key: 'comparedNetSales', width: 18, numFmt: XLSX_NUMFMT.money },
+              { header: 'Compared Avg Ticket', key: 'comparedAvgTicket', width: 20, numFmt: XLSX_NUMFMT.money },
               { header: 'Compared Profit', key: 'comparedProfit', width: 16, numFmt: XLSX_NUMFMT.money },
               { header: '$ Change', key: 'dollarChange', width: 12, numFmt: XLSX_NUMFMT.money },
+              { header: 'Net Sales % Change', key: 'pctChange', width: 18, numFmt: XLSX_NUMFMT.percent1 },
               { header: 'Profit Change', key: 'profitChange', width: 14, numFmt: XLSX_NUMFMT.money },
-              { header: '% Change', key: 'pctChange', width: 10, numFmt: XLSX_NUMFMT.percent1 },
+              { header: 'Profit % Change', key: 'profitPctChange', width: 16, numFmt: XLSX_NUMFMT.percent1 },
             ],
             rows: xlsxRows,
           },
@@ -400,7 +415,7 @@ router.get('/by-day', validateQuery(byDaySchema), async (req: Request, res: Resp
       return;
     }
     if (q.format === 'csv') {
-      const header = ['Store', 'Date', 'Day', 'Net Sales', 'Profit', 'Compared To Date', 'Compared Net Sales', 'Compared Profit', '$ Change', 'Profit Change', '% Change'];
+      const header = ['Store', 'Date', 'Day', 'Tickets', 'Net Sales', 'Avg Ticket', 'Profit', 'Compared To Date', 'Compared Tickets', 'Compared Net Sales', 'Compared Avg Ticket', 'Compared Profit', '$ Change', 'Net Sales % Change', 'Profit Change', 'Profit % Change'];
       const rows: (string | number | null | undefined)[][] = [];
       for (const block of exportBlocks) {
         for (const r of block.rows) {
@@ -408,26 +423,36 @@ router.get('/by-day', validateQuery(byDaySchema), async (req: Request, res: Resp
             block.label,
             r.date,
             r.dayName,
+            r.ticketCount,
             r.netSales.toFixed(2),
+            r.avgTicket.toFixed(2),
             r.profit.toFixed(2),
             r.comparedToDate,
+            r.comparedTicketCount,
             r.comparedNetSales.toFixed(2),
+            r.comparedAvgTicket.toFixed(2),
             r.comparedProfit.toFixed(2),
             r.dollarChange.toFixed(2),
-            r.profitChange.toFixed(2),
             r.pctChange == null ? '' : r.pctChange.toFixed(1),
+            r.profitChange.toFixed(2),
+            r.profitPctChange == null ? '' : r.profitPctChange.toFixed(1),
           ]);
         }
         rows.push([
           `${block.label} — Totals`, '', '',
+          block.totals.ticketCount,
           block.totals.netSales.toFixed(2),
+          block.totals.avgTicket.toFixed(2),
           block.totals.profit.toFixed(2),
           '',
+          block.totals.comparedTicketCount,
           block.totals.comparedNetSales.toFixed(2),
+          block.totals.comparedAvgTicket.toFixed(2),
           block.totals.comparedProfit.toFixed(2),
           block.totals.dollarChange.toFixed(2),
-          block.totals.profitChange.toFixed(2),
           block.totals.pctChange == null ? '' : block.totals.pctChange.toFixed(1),
+          block.totals.profitChange.toFixed(2),
+          block.totals.profitPctChange == null ? '' : block.totals.profitPctChange.toFixed(1),
         ]);
       }
       sendCsv(res, header, rows, salesExportFilename('SBD', 'csv', filenameCriteria));

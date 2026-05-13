@@ -24,6 +24,10 @@
 import { prisma } from '../db/prisma';
 import { findNeighborSku } from './ricsProductAdapter';
 import { buildRicsImageUrl } from './ricsImageUrl';
+import {
+  getReplacementContextBySkuId,
+  type SkuReplacementContext,
+} from './products/skuReplacementService';
 
 // ─────────────────────────── public types ─────────────────────────────────
 
@@ -230,6 +234,7 @@ export interface InventoryInquiry {
   grids: InquiryGrids;
   pictureUrl: string | null;
   info: InquiryInfo;
+  replacementContext: SkuReplacementContext;
 }
 
 export type FindBySizeSort = 'SKU' | 'DESCRIPTION' | 'VENDOR' | 'CATEGORY';
@@ -1796,10 +1801,11 @@ export async function getInventoryInquiry(
   const skuRow = await timeInquiryStep(timings, 'skuLookup', () => loadAppInventorySkuByCode(trimmed));
   if (!skuRow) return null;
 
-  const [stores, sizeTypes, categories] = await Promise.all([
+  const [stores, sizeTypes, categories, replacementContext] = await Promise.all([
     timeInquiryStep(timings, 'stores', () => loadStoreMap()),
     timeInquiryStep(timings, 'sizeTypes', () => loadSizeTypeMap()),
     timeInquiryStep(timings, 'categories', () => loadCategoryMap()),
+    timeInquiryStep(timings, 'replacementContext', () => getReplacementContextBySkuId(skuRow.id)),
   ]);
   const sizeType = skuRow.sizeType != null ? sizeTypes.get(Number(skuRow.sizeType)) ?? null : null;
   const category =
@@ -2003,6 +2009,7 @@ export async function getInventoryInquiry(
       perks: skuRow.perks ?? null,
       comment: skuRow.comment?.trim() || null,
     },
+    replacementContext,
   };
 
   logSlowInquiry(skuCode, Date.now() - totalStartedAt, timings);
