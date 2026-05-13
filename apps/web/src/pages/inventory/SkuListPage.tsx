@@ -527,12 +527,12 @@ export default function SkuListPage() {
       width: 90,
       render: (_: unknown, r: EnrichedSku) => (
         <Space size={0}>
-          <Tooltip title="Edit legacy SKU detail">
+          <Tooltip title="Edit SKU">
             <Button
               type="text"
               size="small"
               icon={<EditOutlined />}
-              onClick={() => navigate(`/products/skus/${encodeURIComponent(r.code)}`)}
+              onClick={() => navigate(`/products/skus/${encodeURIComponent(r.code)}/edit`)}
             />
           </Tooltip>
           <Popconfirm

@@ -155,6 +155,11 @@ export const LegacyInquiryRedirect: React.FC = () => {
   return <Navigate to={`${base}${qs ? `?${qs}` : ''}`} replace />
 }
 
+export const LegacySkuEditRedirect: React.FC = () => {
+  const { code } = useParams<{ code?: string }>()
+  return <Navigate to={code ? `/products/skus/${encodeURIComponent(code)}/edit` : '/products/skus'} replace />
+}
+
 function RouteLoadingFallback() {
   return (
     <Flex align="center" justify="center" style={{ minHeight: 240 }} data-testid="route-loading-fallback">
@@ -347,7 +352,7 @@ export default function App() {
             <Route path="/products/skus/:skuId/edit" element={gate('products.write', <SkuFormPageModern />)} />
             {/* Legacy RICS-tabs creator, kept as an alternate entry. */}
             <Route path="/products/skus/new-alt" element={gate('products.write', <ProductsSkuFormPage />)} />
-            <Route path="/products/skus/:code" element={gate('products.view', <ProductsSkuFormPage />)} />
+            <Route path="/products/skus/:code" element={gate('products.view', <LegacySkuEditRedirect />)} />
             <Route path="/products/attributes" element={gate('products.view', <AttributesCatalogPage />)} />
             <Route path="/products/attributes/macros" element={gate('products.view', <AttributesCatalogPage />)} />
             <Route path="/products/families" element={gate('products.view', <ProductFamiliesPage />)} />

@@ -72,6 +72,7 @@ export function ReplacementSection({ sku }: ReplacementSectionProps) {
         id: sku.id,
         input: {
           replacementSkuId: selected.skuId,
+          replacementSkuCode: selected.skuCode,
           replacementType,
           transferDemand,
           note,

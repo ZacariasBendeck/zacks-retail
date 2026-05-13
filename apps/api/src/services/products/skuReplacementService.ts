@@ -75,6 +75,7 @@ const VALID_REPLACEMENT_TYPES = new Set<SkuReplacementType>([
   'SIMILAR',
   'VENDOR_SUBSTITUTE',
 ]);
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function normalizeReplacementType(raw: SaveSkuReplacementInput['replacementType']): SkuReplacementType {
   const normalized = String(raw ?? 'EXACT').trim().toUpperCase();
@@ -169,8 +170,13 @@ async function loadSkuByCode(code: string): Promise<SkuLiteRow | null> {
 }
 
 async function resolveReplacementSku(input: SaveSkuReplacementInput): Promise<SkuLiteRow | null> {
-  const id = cleanText(input.replacementSkuId);
-  if (id) return loadSkuById(id);
+  const idOrCode = cleanText(input.replacementSkuId);
+  if (idOrCode) {
+    const sku = UUID_RE.test(idOrCode)
+      ? await loadSkuById(idOrCode)
+      : await loadSkuByCode(idOrCode);
+    if (sku) return sku;
+  }
   const code = cleanText(input.replacementSkuCode);
   if (code) return loadSkuByCode(code);
   return null;

@@ -425,7 +425,7 @@ export default function SkuListPage() {
             type="text"
             size="small"
             icon={<EditOutlined />}
-            onClick={() => navigate(`/products/skus/${encodeURIComponent(r.code)}`)}
+            onClick={() => navigate(`/products/skus/${encodeURIComponent(r.code)}/edit`)}
           />
           <Popconfirm
             title="Delete this SKU? RICS semantics require no sales/POs/inventory activity."

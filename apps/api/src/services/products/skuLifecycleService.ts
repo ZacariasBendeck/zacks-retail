@@ -129,6 +129,13 @@ const CODE_MAX_LEN = 15;
 /** Code format — alphanumeric + dashes, no whitespace. Permissive on purpose;
  *  the operator controls the convention via the (future) suggestion rules. */
 const CODE_FORMAT = /^[A-Za-z0-9][A-Za-z0-9\-_]{0,14}$/;
+const UUID_FORMAT = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function skuIdentityWhere(idOrCode: string) {
+  return UUID_FORMAT.test(idOrCode)
+    ? { id: idOrCode }
+    : { OR: [{ code: idOrCode }, { provisionalCode: idOrCode }] };
+}
 
 // ────────────── Provisional code generation ──────────────
 /**
@@ -440,7 +447,9 @@ export async function create(
 // ────────────── Lookup ──────────────
 export async function getById(id: string): Promise<Result<SkuRow>> {
   try {
-    const row = await prisma.sku.findUnique({ where: { id } });
+    const row = UUID_FORMAT.test(id)
+      ? await prisma.sku.findUnique({ where: { id } })
+      : await prisma.sku.findFirst({ where: skuIdentityWhere(id) });
     if (!row) return Err({ kind: 'NotFound', message: `SKU ${id} not found.` });
     const [legacyMap, extraMap] = await Promise.all([
       fetchLegacyAttrsMap([row.id]),
@@ -495,8 +504,11 @@ export async function update(
   actor: string,
 ): Promise<Result<SkuRow>> {
   try {
-    const existing = await prisma.sku.findUnique({ where: { id } });
+    const existing = UUID_FORMAT.test(id)
+      ? await prisma.sku.findUnique({ where: { id } })
+      : await prisma.sku.findFirst({ where: skuIdentityWhere(id) });
     if (!existing) return Err({ kind: 'NotFound', message: `SKU ${id} not found.` });
+    const resolvedId = existing.id;
     if (existing.skuState === 'DISCONTINUED') {
       return Err({
         kind: 'ConstraintViolation',
@@ -520,7 +532,7 @@ export async function update(
 
     const updated = await prisma.$transaction(async (tx) => {
       const row = await tx.sku.update({
-        where: { id },
+        where: { id: resolvedId },
         data: {
           ...(patch.familyCode !== undefined ? { familyCode: patch.familyCode } : {}),
           ...(patch.categoryNumber !== undefined ? { categoryNumber: patch.categoryNumber } : {}),
@@ -558,13 +570,13 @@ export async function update(
         if (patch.legacyAttrs === null) {
           await tx.$executeRawUnsafe(
             `UPDATE app.sku SET legacy_attrs = NULL WHERE id = $1::uuid`,
-            id,
+            resolvedId,
           );
         } else {
           await tx.$executeRawUnsafe(
             `UPDATE app.sku SET legacy_attrs = $1::jsonb WHERE id = $2::uuid`,
             JSON.stringify(patch.legacyAttrs),
-            id,
+            resolvedId,
           );
         }
       }
@@ -573,14 +585,14 @@ export async function update(
         await tx.$executeRawUnsafe(
           `UPDATE app.sku SET perks = $1::numeric WHERE id = $2::uuid`,
           patch.perks,
-          id,
+          resolvedId,
         );
       }
       if (patch.discountCode !== undefined) {
         await tx.$executeRawUnsafe(
           `UPDATE app.sku SET discount_code = $1::text WHERE id = $2::uuid`,
           patch.discountCode,
-          id,
+          resolvedId,
         );
       }
       await tx.skuActivity.create({
@@ -635,10 +647,13 @@ export async function finalize(
       // Step 1: re-read inside the transaction. Serializable isolation isn't
       // enabled globally — for safety on concurrent finalize attempts we rely
       // on the UNIQUE index on `code` + the sku_state check.
-      const existing = await tx.sku.findUnique({ where: { id } });
+      const existing = UUID_FORMAT.test(id)
+        ? await tx.sku.findUnique({ where: { id } })
+        : await tx.sku.findFirst({ where: skuIdentityWhere(id) });
       if (!existing) {
         return { ok: false as const, error: { kind: 'NotFound' as const, message: `SKU ${id} not found.` } };
       }
+      const resolvedId = existing.id;
       if (existing.skuState !== 'DRAFT') {
         return {
           ok: false as const,
@@ -653,7 +668,7 @@ export async function finalize(
       const patch = input.data ?? {};
       if (Object.keys(patch).length > 0) {
         await tx.sku.update({
-          where: { id },
+          where: { id: resolvedId },
           data: {
             ...(patch.familyCode !== undefined ? { familyCode: patch.familyCode } : {}),
             ...(patch.categoryNumber !== undefined ? { categoryNumber: patch.categoryNumber } : {}),
@@ -689,13 +704,13 @@ export async function finalize(
           if (patch.legacyAttrs === null) {
             await tx.$executeRawUnsafe(
               `UPDATE app.sku SET legacy_attrs = NULL WHERE id = $1::uuid`,
-              id,
+              resolvedId,
             );
           } else {
             await tx.$executeRawUnsafe(
               `UPDATE app.sku SET legacy_attrs = $1::jsonb WHERE id = $2::uuid`,
               JSON.stringify(patch.legacyAttrs),
-              id,
+              resolvedId,
             );
           }
         }
@@ -703,21 +718,21 @@ export async function finalize(
           await tx.$executeRawUnsafe(
             `UPDATE app.sku SET perks = $1::numeric WHERE id = $2::uuid`,
             patch.perks,
-            id,
+            resolvedId,
           );
         }
         if (patch.discountCode !== undefined) {
           await tx.$executeRawUnsafe(
             `UPDATE app.sku SET discount_code = $1::text WHERE id = $2::uuid`,
             patch.discountCode,
-            id,
+            resolvedId,
           );
         }
       }
 
       // Step 3: re-read for the validation + activity payload. Captures both
       // the pre-finalize patches and the original row.
-      const merged = await tx.sku.findUnique({ where: { id } });
+      const merged = await tx.sku.findUnique({ where: { id: resolvedId } });
       if (!merged) {
         return { ok: false as const, error: { kind: 'NotFound' as const, message: `SKU ${id} disappeared mid-transaction.` } };
       }
@@ -740,9 +755,9 @@ export async function finalize(
       // suspenders for the brief window between a mirror swap and the
       // subsequent backfill.
       const clash = await tx.$queryRaw<{ n: number }[]>`
-        SELECT COUNT(*)::int AS n FROM (
+          SELECT COUNT(*)::int AS n FROM (
           SELECT 1 FROM app.sku
-            WHERE code = ${finalCode} AND id <> ${id}::uuid
+            WHERE code = ${finalCode} AND id <> ${resolvedId}::uuid
           UNION ALL
           SELECT 1 FROM rics_mirror.inventory_master
             WHERE sku = ${finalCode} AND (status IS NULL OR status <> 'D')
@@ -760,7 +775,7 @@ export async function finalize(
 
       // Step 5 + 6: flip state + audit row.
       const row = await tx.sku.update({
-        where: { id },
+        where: { id: resolvedId },
         data: {
           code: finalCode,
           skuState: 'ACTIVE',
@@ -813,8 +828,11 @@ export async function discontinue(
   actor: string,
 ): Promise<Result<SkuRow>> {
   try {
-    const existing = await prisma.sku.findUnique({ where: { id } });
+    const existing = UUID_FORMAT.test(id)
+      ? await prisma.sku.findUnique({ where: { id } })
+      : await prisma.sku.findFirst({ where: skuIdentityWhere(id) });
     if (!existing) return Err({ kind: 'NotFound', message: `SKU ${id} not found.` });
+    const resolvedId = existing.id;
     if (existing.skuState === 'DISCONTINUED') {
       return Err({
         kind: 'ConstraintViolation',
@@ -824,7 +842,7 @@ export async function discontinue(
 
     const updated = await prisma.$transaction(async (tx) => {
       const row = await tx.sku.update({
-        where: { id },
+        where: { id: resolvedId },
         data: {
           skuState: 'DISCONTINUED',
           discontinuedAt: new Date(),

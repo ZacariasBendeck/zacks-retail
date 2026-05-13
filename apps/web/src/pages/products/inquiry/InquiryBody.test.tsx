@@ -276,6 +276,47 @@ describe('InquiryBody', () => {
     expect(screen.getByText('Reorder planner modal')).toBeInTheDocument();
   });
 
+  it('shows the SKUs replaced by the current SKU in the inquiry header', async () => {
+    const onPickSku = vi.fn();
+    vi.mocked(useInquiryData).mockReturnValue({
+      data: {
+        ...baseInquiry,
+        sku: 'ZN03-NDPT',
+        replacementContext: {
+          replacedBy: null,
+          supersedes: [
+            {
+              id: 'replacement-link-2',
+              oldSkuId: 'old-id',
+              oldSkuCode: 'ZN02-NDPT',
+              oldDescription: 'Previous Product',
+              replacementSkuId: 'new-id',
+              replacementSkuCode: 'ZN03-NDPT',
+              replacementDescription: 'Replacement Product',
+              replacementType: 'EXACT',
+              transferDemand: true,
+              effectiveAt: '2026-05-12T00:00:00.000Z',
+              retiredAt: null,
+              note: null,
+              createdAt: '2026-05-12T00:00:00.000Z',
+              createdBy: 'system',
+              updatedAt: '2026-05-12T00:00:00.000Z',
+              updatedBy: 'system',
+            },
+          ],
+        },
+      },
+      isLoading: false,
+      error: null,
+    } as unknown as ReturnType<typeof useInquiryData>);
+
+    renderInquiryBody({ onPickSku });
+
+    expect(screen.getByText('Replaces')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'ZN02-NDPT' }));
+    expect(onPickSku).toHaveBeenCalledWith({ skuCode: 'ZN02-NDPT', skuId: 'old-id' });
+  });
+
   it('blocks reorder planner actions and links to the replacement SKU for a replaced SKU', async () => {
     const onPickSku = vi.fn();
     vi.mocked(useInquiryData).mockReturnValue({

@@ -267,6 +267,29 @@ maybeDescribe('skuLifecycleService', () => {
       expect(patched.value.retailPrice).toBe(99.99);
     });
 
+    it('accepts a SKU code as the update key', async () => {
+      const r = await skuLifecycle.create({ vendorSku: 'CODE-KEY' }, ACTOR);
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+
+      const patched = await skuLifecycle.update(
+        r.value.provisionalCode,
+        {
+          vendorSku: 'BY-CODE',
+          legacyAttrs: { colorId: 123 },
+          perks: 5,
+        },
+        ACTOR,
+      );
+
+      expect(patched.ok).toBe(true);
+      if (!patched.ok) return;
+      expect(patched.value.id).toBe(r.value.id);
+      expect(patched.value.vendorSku).toBe('BY-CODE');
+      expect(patched.value.legacyAttrs).toEqual({ colorId: 123 });
+      expect(patched.value.perks).toBe(5);
+    });
+
     it('blocks edits on DISCONTINUED', async () => {
       const r = await skuLifecycle.create({ vendorSku: 'DISC' }, ACTOR);
       expect(r.ok).toBe(true);
