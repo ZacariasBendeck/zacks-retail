@@ -453,7 +453,7 @@ export default function ActivityReviewPage() {
             <Input.Search placeholder="Search" allowClear />
           </Form.Item>
           <Form.Item name="limit" style={{ minWidth: 100 }}>
-            <Select options={[25, 50, 100, 200].map((value) => ({ value, label: String(value) }))} />
+            <Select options={[25, 50, 100, 500, 1000, 5000].map((value) => ({ value, label: String(value) }))} />
           </Form.Item>
           <Button onClick={() => form.resetFields()}>Clear</Button>
         </Form>
