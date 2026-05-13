@@ -23,7 +23,7 @@ const activityReviewQuery = z.object({
   search: z.string().trim().optional(),
   createdFrom: z.coerce.date().optional(),
   createdTo: z.coerce.date().optional(),
-  limit: z.coerce.number().int().min(1).max(200).optional(),
+  limit: z.coerce.number().int().min(1).optional(),
 });
 
 const reviewBody = z.object({

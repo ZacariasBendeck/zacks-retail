@@ -256,7 +256,7 @@ export async function listPlatformAuditEvents(
     where.push(`created_at <= $${params.length}`);
   }
 
-  const limit = Math.min(Math.max(query.limit ?? 50, 1), 200);
+  const limit = Math.max(query.limit ?? 50, 1);
   params.push(limit);
 
   const sql = `
@@ -334,7 +334,6 @@ export async function getPlatformAuditOptions(
           FROM platform.platform_audit_log
           WHERE actor_user_id IS NOT NULL
           ORDER BY actor_user_id ASC
-          LIMIT 200
         `,
       ),
       prisma.$queryRawUnsafe<Array<{ resource_type: string; resource_id: string }>>(
