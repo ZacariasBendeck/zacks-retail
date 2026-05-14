@@ -10,6 +10,8 @@
  */
 
 import { Router, type IRouter, type Request, type Response } from 'express';
+import { requirePermission } from '../../middleware/authMiddleware';
+import { PERMISSIONS } from '../../services/identityAccess/permissions';
 import { prisma } from '../../db/prisma';
 import {
   applyBatchChange,
@@ -23,6 +25,8 @@ import type {
 } from '../../services/utilities/types';
 
 const router: IRouter = Router();
+
+router.use(requirePermission(PERMISSIONS.PRODUCTS_SKU_BULK_WRITE));
 
 const VALID_OPS: readonly BatchOperationType[] = [
   'CHANGE_KEYWORDS_ADD',

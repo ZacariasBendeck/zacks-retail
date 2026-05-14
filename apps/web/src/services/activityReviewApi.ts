@@ -2,6 +2,7 @@ const API_BASE = '/api/v1/activity-review'
 
 export type ActivityReviewRiskLevel = 'LOW' | 'MEDIUM' | 'HIGH'
 export type ActivityReviewStatus = 'UNREVIEWED' | 'REVIEWED' | 'FLAGGED' | 'NO_ISSUE'
+export type ActivityReviewBulkReviewMode = 'IDS' | 'FILTER'
 
 export interface ActivityReviewEvent {
   id: string
@@ -62,6 +63,38 @@ export interface ActivityReviewFilters {
   limit?: number
 }
 
+export interface ActivityReviewBulkSkippedEvent {
+  id: string
+  occurredAt: string
+  actionLabel: string
+  module: string
+  outcome: string
+  riskLevel: ActivityReviewRiskLevel
+  reviewStatus: ActivityReviewStatus
+}
+
+export interface ActivityReviewBulkReviewResult {
+  status: Exclude<ActivityReviewStatus, 'UNREVIEWED'>
+  updatedCount: number
+  skippedCount: number
+  skippedEvents: ActivityReviewBulkSkippedEvent[]
+  hasMore: boolean
+}
+
+export type ActivityReviewBulkReviewInput =
+  | {
+      mode: 'IDS'
+      eventIds: string[]
+      status: Exclude<ActivityReviewStatus, 'UNREVIEWED'>
+      reviewNote: string
+    }
+  | {
+      mode: 'FILTER'
+      filters: ActivityReviewFilters
+      status: Exclude<ActivityReviewStatus, 'UNREVIEWED'>
+      reviewNote: string
+    }
+
 export class ActivityReviewApiError extends Error {
   status: number
   code?: string
@@ -113,6 +146,11 @@ export const activityReviewApi = {
   getEvent: (id: string) => request<{ event: ActivityReviewEvent }>(`/events/${id}`),
   updateReview: (id: string, input: { status: Exclude<ActivityReviewStatus, 'UNREVIEWED'>; reviewNote?: string | null }) =>
     request<{ event: ActivityReviewEvent }>(`/events/${id}/review`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  bulkReview: (input: ActivityReviewBulkReviewInput) =>
+    request<ActivityReviewBulkReviewResult>('/events/bulk-review', {
       method: 'POST',
       body: JSON.stringify(input),
     }),

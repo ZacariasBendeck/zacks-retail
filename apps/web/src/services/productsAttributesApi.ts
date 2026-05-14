@@ -51,6 +51,10 @@ export interface MacroRulesReplaceInput {
   rules: { sourceValueCode: string; targetValueCode: string | null }[]
 }
 
+export interface SetSkuAttributeDimensionInput {
+  value_codes: string[]
+}
+
 export class AttributesApiError extends Error {
   status: number
   code?: string
@@ -110,6 +114,19 @@ export const productsAttributesApi = {
       method: 'PUT',
       body: JSON.stringify(input),
     })
+  },
+  setDimensionForSku(
+    code: string,
+    dimensionCode: string,
+    input: SetSkuAttributeDimensionInput,
+  ): Promise<SkuAttributes> {
+    return request<SkuAttributes>(
+      `${BASE}/skus/${encodeURIComponent(code)}/attributes/${encodeURIComponent(dimensionCode)}`,
+      {
+        method: 'PUT',
+        body: JSON.stringify(input),
+      },
+    )
   },
   coverage(): Promise<AttributeCoverageRow[]> {
     return request<AttributeCoverageRow[]>(`${BASE}/attributes/coverage`)

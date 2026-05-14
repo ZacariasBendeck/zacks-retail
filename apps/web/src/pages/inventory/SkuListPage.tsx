@@ -24,12 +24,15 @@ import {
   PlusOutlined,
   ReloadOutlined,
   SearchOutlined,
+  TagsOutlined,
 } from '@ant-design/icons'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
+import { useAuth } from '../../auth/useAuth'
 import { useDeleteProductsSku } from '../../hooks/useProductsSkus'
 import { productsSkuApi } from '../../services/productsSkuApi'
 import { SkuLink } from '../../components/sku-link'
+import SkuBulkChangePanel from './SkuBulkChangePanel'
 import {
   useCategories,
   useDepartments,
@@ -46,8 +49,27 @@ import { buildRicsImageUrl } from '../../services/ricsImageUrl'
 import type { SkuListFilters } from '../../types/productsSku'
 import type { Department, Sector } from '../../types/productsTaxonomy'
 import type { AttributeDimension } from '../../types/productsAttributes'
+import { buildSkuListFiltersFromState } from './skuListFilters'
 
-const NO_MATCH_CATEGORY = -2147483648
+const SKU_BULK_WRITE_PERMISSION = 'products.sku_bulk_write'
+const DEFAULT_VISIBLE_COLUMN_KEYS = [
+  'thumb',
+  'code',
+  'description',
+  'vendor',
+  'vendorSku',
+  'category',
+  'department',
+  'sector',
+  'styleColor',
+  'season',
+  'groupCode',
+  'sizeType',
+  'keywords',
+  'listPrice',
+  'onHand',
+  'status',
+]
 
 /**
  * Merged SKU workbench.
@@ -60,10 +82,13 @@ const NO_MATCH_CATEGORY = -2147483648
 export default function SkuListPage() {
   const navigate = useNavigate()
   const { message } = App.useApp()
+  const { permissions } = useAuth()
   const [searchParams] = useSearchParams()
+  const canBulkChangeSkus = permissions.has(SKU_BULK_WRITE_PERMISSION)
 
   const initialFilters = useMemo(() => {
     const q = searchParams.get('q') ?? ''
+    const sku = searchParams.get('sku') ?? ''
     const description = searchParams.get('description') ?? ''
     const styleColor = searchParams.get('styleColor') ?? ''
     const splitCsv = (v: string | null) =>
@@ -79,11 +104,15 @@ export default function SkuListPage() {
         attrSelections[dim] = v.split(',').map((s) => s.trim()).filter(Boolean)
       }
     }
-    return { q, description, styleColor, vendorCodes, seasonCodes, groupCodes, keywordCodes, attrSelections }
+    return { q, sku, description, styleColor, vendorCodes, seasonCodes, groupCodes, keywordCodes, attrSelections }
   }, [searchParams])
 
   const [q, setQ] = useState(initialFilters.q)
+  const [skuPattern, setSkuPattern] = useState(initialFilters.sku)
   const [showFilters, setShowFilters] = useState(true)
+  const [bulkMode, setBulkMode] = useState(canBulkChangeSkus && searchParams.get('bulk') === '1')
+  const [selectedCodes, setSelectedCodes] = useState<string[]>([])
+  const [visibleResultColumnKeys, setVisibleResultColumnKeys] = useState<string[]>(DEFAULT_VISIBLE_COLUMN_KEYS)
   const [productFamilyCode, setProductFamilyCode] = useState<string | null>(null)
   const [departmentNumber, setDepartmentNumber] = useState<number | null>(null)
   const [sectorNumber, setSectorNumber] = useState<number | null>(null)
@@ -179,26 +208,21 @@ export default function SkuListPage() {
   }, [familyCategoryNumbers, deptCategoryRange, sectorCategoryRange, categoryNumbers])
 
   const buildFilters = (): SkuListFilters => {
-    const attrsPayload: Record<string, string[]> = {}
-    for (const [dim, vals] of Object.entries(attrSelections)) {
-      if (vals.length > 0) attrsPayload[dim] = vals
-    }
-    return {
-      q: q.trim() || undefined,
-      vendors: vendorCodes.length > 0 ? vendorCodes : undefined,
-      categories:
-        effectiveCategories === undefined
-          ? undefined
-          : effectiveCategories.length > 0
-            ? effectiveCategories
-            : [NO_MATCH_CATEGORY],
-      seasons: seasonCodes.length > 0 ? seasonCodes : undefined,
-      groups: groupCodes.length > 0 ? groupCodes : undefined,
-      keywords: keywordCodes.length > 0 ? keywordCodes : undefined,
-      styleColor: styleColor.trim() || undefined,
-      description: description.trim() || undefined,
-      attributes: Object.keys(attrsPayload).length > 0 ? attrsPayload : undefined,
-    }
+    return buildSkuListFiltersFromState({
+      q,
+      skuPattern,
+      vendorCodes,
+      sectorNumber,
+      departmentNumber,
+      productFamilyCode,
+      effectiveCategories,
+      seasonCodes,
+      groupCodes,
+      keywordCodes,
+      styleColor,
+      description,
+      attrSelections,
+    })
   }
 
   const [activeFilters, setActiveFilters] = useState<SkuListFilters | null>(null)
@@ -269,6 +293,7 @@ export default function SkuListPage() {
 
   const clearFilters = () => {
     setQ('')
+    setSkuPattern('')
     setProductFamilyCode(null)
     setDepartmentNumber(null)
     setSectorNumber(null)
@@ -291,6 +316,16 @@ export default function SkuListPage() {
     return () => clearTimeout(id)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams])
+
+  useEffect(() => {
+    if (canBulkChangeSkus && searchParams.get('bulk') === '1') {
+      setBulkMode(true)
+    }
+    if (!canBulkChangeSkus && bulkMode) {
+      setBulkMode(false)
+      setSelectedCodes([])
+    }
+  }, [bulkMode, canBulkChangeSkus, searchParams])
 
   useEffect(() => {
     if (!productFamilyCode || !familyCategoryNumbers) return
@@ -318,6 +353,7 @@ export default function SkuListPage() {
   const attrFiltersSet = Object.values(attrSelections).some((v) => v.length > 0)
   const anyFilterSet =
     q.trim().length > 0 ||
+    skuPattern.trim().length > 0 ||
     description.trim().length > 0 ||
     productFamilyCode != null ||
     departmentNumber != null ||
@@ -418,6 +454,16 @@ export default function SkuListPage() {
         (a.vendor ?? '').localeCompare(b.vendor ?? ''),
     },
     {
+      title: 'Vendor SKU',
+      dataIndex: 'vendorSku',
+      key: 'vendorSku',
+      width: 130,
+      sorter: (a: EnrichedSku, b: EnrichedSku) =>
+        (a.vendorSku ?? '').localeCompare(b.vendorSku ?? ''),
+      render: (value: string | null) =>
+        value ? value : <Typography.Text type="secondary">-</Typography.Text>,
+    },
+    {
       title: 'Category',
       dataIndex: 'category',
       key: 'category',
@@ -481,6 +527,44 @@ export default function SkuListPage() {
       width: 90,
       sorter: (a: EnrichedSku, b: EnrichedSku) =>
         (a.season ?? '').localeCompare(b.season ?? ''),
+    },
+    {
+      title: 'Group',
+      dataIndex: 'groupCode',
+      key: 'groupCode',
+      width: 90,
+      sorter: (a: EnrichedSku, b: EnrichedSku) =>
+        (a.groupCode ?? '').localeCompare(b.groupCode ?? ''),
+      render: (value: string | null) =>
+        value ? value : <Typography.Text type="secondary">-</Typography.Text>,
+    },
+    {
+      title: 'Size Type',
+      dataIndex: 'sizeType',
+      key: 'sizeType',
+      width: 90,
+      align: 'right' as const,
+      sorter: (a: EnrichedSku, b: EnrichedSku) => (a.sizeType ?? 0) - (b.sizeType ?? 0),
+      render: (value: number | null) =>
+        value == null ? <Typography.Text type="secondary">-</Typography.Text> : value,
+    },
+    {
+      title: 'Keywords',
+      key: 'keywords',
+      width: 180,
+      render: (_: unknown, r: EnrichedSku) => {
+        const keywords = r.keywords ?? []
+        if (keywords.length === 0) return <Typography.Text type="secondary">-</Typography.Text>
+        return (
+          <Space size={2} wrap>
+            {keywords.map((keyword) => (
+              <Tag key={keyword} style={{ marginInlineEnd: 0 }}>
+                {keyword}
+              </Tag>
+            ))}
+          </Space>
+        )
+      },
     },
     {
       title: 'List',
@@ -553,6 +637,27 @@ export default function SkuListPage() {
     },
   ]
 
+  const resultColumnOptions = columns
+    .filter((column) => String(column.key) !== 'actions')
+    .map((column) => ({
+      value: String(column.key),
+      label: typeof column.title === 'string' ? column.title || 'Image' : String(column.key),
+      disabled: String(column.key) === 'code',
+    }))
+
+  const visibleColumns = columns.filter((column) => {
+    const key = String(column.key)
+    return key === 'actions' || visibleResultColumnKeys.includes(key)
+  })
+
+  const setVisibleResultColumns = (keys: string[]) => {
+    setVisibleResultColumnKeys(Array.from(new Set(['code', ...keys])))
+  }
+
+  const resetResultColumns = () => {
+    setVisibleResultColumnKeys(DEFAULT_VISIBLE_COLUMN_KEYS)
+  }
+
   return (
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
       <Card size="small">
@@ -578,6 +683,16 @@ export default function SkuListPage() {
               >
                 New SKU
               </Button>
+              {canBulkChangeSkus ? (
+                <Button
+                  icon={<TagsOutlined />}
+                  onClick={() => setBulkMode((value) => !value)}
+                  type={bulkMode ? 'primary' : 'default'}
+                  ghost={bulkMode}
+                >
+                  Change attributes
+                </Button>
+              ) : null}
               <Button
                 icon={<FilterOutlined />}
                 onClick={() => setShowFilters(!showFilters)}
@@ -615,6 +730,17 @@ export default function SkuListPage() {
                     filterOption={(input, option) =>
                       String(option?.label ?? '').toLowerCase().includes(input.toLowerCase())
                     }
+                  />
+                </Col>
+                <Col xs={24} sm={12} md={8} lg={6} xl={4}>
+                  {filterLabel('SKU')}
+                  <Input
+                    placeholder="ABC*, *123, AB*12"
+                    value={skuPattern}
+                    onChange={(e) => setSkuPattern(e.target.value)}
+                    onPressEnter={runQuery}
+                    allowClear
+                    maxLength={15}
                   />
                 </Col>
                 <Col xs={24} sm={12} md={8} lg={6} xl={5}>
@@ -704,7 +830,7 @@ export default function SkuListPage() {
                 <Col xs={24} sm={12} md={8} lg={6} xl={5}>
                   {filterLabel('Description')}
                   <Input
-                    placeholder="Supports * wildcards"
+                    placeholder="BOOT*, *CUERO, BO*RO"
                     value={description}
                     onChange={(e) => setDescription(e.target.value)}
                     onPressEnter={runQuery}
@@ -843,6 +969,37 @@ export default function SkuListPage() {
         </Card>
       )}
 
+      {bulkMode && canBulkChangeSkus ? (
+        <SkuBulkChangePanel
+          activeFilters={activeFilters}
+          hasRun={hasRun}
+          resultCount={resultCount}
+          resultSkus={enriched}
+          selectedCodes={selectedCodes}
+          setSelectedCodes={setSelectedCodes}
+        />
+      ) : null}
+
+      {bulkMode && canBulkChangeSkus && hasRun ? (
+        <Card size="small">
+          <Space wrap size="small">
+            <Typography.Text type="secondary">Result columns</Typography.Text>
+            <Select
+              mode="multiple"
+              value={visibleResultColumnKeys}
+              onChange={setVisibleResultColumns}
+              options={resultColumnOptions}
+              optionFilterProp="label"
+              maxTagCount="responsive"
+              style={{ minWidth: 420, maxWidth: 760 }}
+            />
+            <Button size="small" onClick={resetResultColumns}>
+              Reset columns
+            </Button>
+          </Space>
+        </Card>
+      ) : null}
+
       <Card
         size="small"
         title={
@@ -869,8 +1026,17 @@ export default function SkuListPage() {
             className="products-compact-table"
             rowKey="code"
             dataSource={enriched}
-            columns={columns}
+            columns={visibleColumns}
             loading={isRunning}
+            rowSelection={
+              bulkMode && canBulkChangeSkus
+                ? {
+                    selectedRowKeys: selectedCodes,
+                    onChange: (keys) => setSelectedCodes(keys.map(String)),
+                    preserveSelectedRowKeys: true,
+                  }
+                : undefined
+            }
             pagination={{
               defaultPageSize: 25,
               showSizeChanger: true,

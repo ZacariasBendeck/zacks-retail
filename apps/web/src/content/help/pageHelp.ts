@@ -1,5 +1,24 @@
 import type { PageHelpEntry } from '../../components/page-help'
 
+export const activityReviewHelp: PageHelpEntry = {
+  id: 'activity-review',
+  title: 'Activity review cadence',
+  module: 'Operations',
+  processSteps: [
+    'Start with Review = Unreviewed so the page shows the open review backlog.',
+    'Daily: inspect high-risk, failed, access-control, refund, delete, approval, import, inventory, and cost-change activity.',
+    'Weekly: filter repetitive LOW or MEDIUM successful activity, spot-check a sample, then bulk mark routine rows No Issue.',
+    'Monthly: review patterns by user, store, module, high-risk count, failed count, and flagged count.',
+    'Use Flagged when a manager must follow up; use Reviewed for meaningful activity you inspected; use No Issue for routine safe activity.',
+  ],
+  philosophy:
+    'Activity review is a manager control, not a click-through chore. High-risk work should be inspected directly; repetitive low-risk operational noise can be cleared in batches after spot-checking.',
+  manualLinks: [
+    { label: 'Platform manual', to: '/manual/platform#activity-review' },
+    { label: 'Identity access manual', to: '/manual/identity-access' },
+  ],
+}
+
 export const inventoryAuditHelp: PageHelpEntry = {
   id: 'inventory-audit',
   title: 'Auditoría de inventario',

@@ -1,7 +1,11 @@
 import { render, screen } from '@testing-library/react'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { describe, expect, it } from 'vitest'
-import { LegacyInquiryRedirect, LegacySkuEditRedirect } from '../App'
+import {
+  LegacyChangeSkuAttributesRedirect,
+  LegacyInquiryRedirect,
+  LegacySkuEditRedirect,
+} from '../App'
 
 function LocationEcho() {
   const location = useLocation()
@@ -53,6 +57,23 @@ describe('LegacySkuEditRedirect', () => {
 
     expect(await screen.findByTestId('location')).toHaveTextContent(
       '/products/skus/PA3053839SBL2/edit',
+    )
+  })
+})
+
+describe('LegacyChangeSkuAttributesRedirect', () => {
+  it('redirects the old utility URL into SKU bulk-change mode', async () => {
+    render(
+      <MemoryRouter initialEntries={['/utilities/change-sku-attributes']}>
+        <Routes>
+          <Route path="/utilities/change-sku-attributes" element={<LegacyChangeSkuAttributesRedirect />} />
+          <Route path="/inventory/skus" element={<LocationEcho />} />
+        </Routes>
+      </MemoryRouter>,
+    )
+
+    expect(await screen.findByTestId('location')).toHaveTextContent(
+      '/inventory/skus?bulk=1',
     )
   })
 })

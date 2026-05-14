@@ -10,6 +10,7 @@ function fakeRepo() {
     listDimensionsWithValues: jest.fn(async () => Ok([])),
     getSkuAttributes: jest.fn(async () => Ok({ skuCode: 'X', byDimension: {} })),
     replaceSkuAttributes: jest.fn(async () => Ok({ previous: [], next: [] })),
+    replaceSkuAttributeDimension: jest.fn(async () => Ok({ previous: [], next: [] })),
     findSkuCodesByAttributeFilters: jest.fn(async () => Ok(new Set<string>())),
     getCoverage: jest.fn(async () => Ok([])),
     listAttributeMacroRuleSummaries: jest.fn(async () => Ok([])),
@@ -87,6 +88,34 @@ describe('attributesService.setForSku', () => {
         action: 'sku_attributes_set',
         targetTable: 'app.sku_attribute_assignment',
         targetPk: 'ABC',
+      })
+    );
+  });
+
+  it('replaces one dimension and audits the SKU/dimension target', async () => {
+    const repo = fakeRepo();
+    repo.replaceSkuAttributeDimension.mockResolvedValueOnce(
+      Ok({
+        previous: [{ code: 'old', labelEs: 'Old', assignedBy: 'seed:keyword:x', assignedAt: '2026-04-20T00:00:00.000Z' }],
+        next: [{ code: 'new', labelEs: 'New', assignedBy: 'operator@example', assignedAt: '2026-04-22T00:00:00.000Z' }],
+      })
+    );
+    const audit = fakeAudit();
+    const service = createAttributesService({
+      actor: 'operator@example',
+      audit,
+      repo: repo as unknown as typeof import('../../../src/repositories/products/AttributesRepository').AttributesRepository,
+    });
+
+    await service.setDimensionForSku('ABC', 'color', ['new']);
+
+    expect(repo.replaceSkuAttributeDimension).toHaveBeenCalledWith('ABC', 'color', ['new'], 'operator@example');
+    expect(audit.record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actor: 'operator@example',
+        action: 'sku_attribute_dimension_set',
+        targetTable: 'app.sku_attribute_assignment',
+        targetPk: 'ABC:color',
       })
     );
   });

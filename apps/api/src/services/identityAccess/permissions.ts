@@ -34,6 +34,7 @@ export const PERMISSIONS = {
   OTB_VIEW:               'otb.view',
 
   // products
+  PRODUCTS_SKU_BULK_WRITE: 'products.sku_bulk_write',
   PRODUCTS_WRITE:         'products.write',
   PRODUCTS_VIEW:          'products.view',
 
@@ -143,6 +144,13 @@ export const PERMISSION_CATALOG: readonly PermissionDefinition[] = [
     moduleLabel: 'Products',
     label: 'View products',
     description: 'View product catalog, SKU details, taxonomy, product attributes, and lookup data.',
+  },
+  {
+    key: PERMISSIONS.PRODUCTS_SKU_BULK_WRITE,
+    module: 'products',
+    moduleLabel: 'Products',
+    label: 'Bulk change SKU attributes',
+    description: 'Apply reversible batch changes to SKU categories, vendors, seasons, groups, keywords, and extended attributes.',
   },
   {
     key: PERMISSIONS.PRODUCTS_WRITE,

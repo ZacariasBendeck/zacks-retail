@@ -203,9 +203,8 @@ const appMenuItems = [
     label: 'Utilities',
     children: [
       { key: '/utilities/overview', icon: <ExperimentOutlined />, label: 'Overview', requiredPermissions: ['store_ops.view'] },
-      { key: '/utilities/change-sku-attributes', icon: <FileTextOutlined />, label: 'Change SKU Attributes', requiredPermissions: ['products.write'] },
-      { key: '/utilities/change-keywords', icon: <FileTextOutlined />, label: 'Change Keywords', requiredPermissions: ['products.write'] },
-      { key: '/utilities/batch-history', icon: <HistoryOutlined />, label: 'Batch History', requiredPermissions: ['products.write'] },
+      { key: '/utilities/change-keywords', icon: <FileTextOutlined />, label: 'Change Keywords', requiredPermissions: ['products.sku_bulk_write'] },
+      { key: '/utilities/batch-history', icon: <HistoryOutlined />, label: 'Batch History', requiredPermissions: ['products.sku_bulk_write'] },
     ],
   },
   {

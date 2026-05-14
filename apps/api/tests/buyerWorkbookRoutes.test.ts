@@ -294,7 +294,16 @@ describe('buyer workbook purchase-planning routes', () => {
 
     const update = await request(app())
       .patch('/api/v1/purchase-planning/buyer-workbooks/workbook-1/cards/card-1')
-      .send({ status: 'HISTORY_REVIEWED', targetNewSkuCount: 4, targetCarryoverSkuCount: 11, actor: 'buyer' });
+      .send({
+        status: 'HISTORY_REVIEWED',
+        targetNewSkuCount: 4,
+        targetCarryoverSkuCount: 11,
+        salesProjections: [
+          { yearMonth: '2025-08', projectedUnits: 30, projectedSales: 61496 },
+          { yearMonth: '2025-09', projectedUnits: 32, projectedSales: 65000 },
+        ],
+        actor: 'buyer',
+      });
     const copy = await request(app())
       .post('/api/v1/purchase-planning/buyer-workbooks/workbook-1/cards/card-1/copy-model')
       .send({ targetStoreIds: [21], actor: 'buyer' });
@@ -303,6 +312,10 @@ describe('buyer workbook purchase-planning routes', () => {
     expect(service.updateBuyerCategoryCard).toHaveBeenCalledWith('workbook-1', 'card-1', expect.objectContaining({
       status: 'HISTORY_REVIEWED',
       targetNewSkuCount: 4,
+      salesProjections: [
+        { yearMonth: '2025-08', projectedUnits: 30, projectedSales: 61496 },
+        { yearMonth: '2025-09', projectedUnits: 32, projectedSales: 65000 },
+      ],
     }));
     expect(copy.status).toBe(200);
     expect(service.copySeedModel).toHaveBeenCalledWith('workbook-1', 'card-1', { targetStoreIds: [21], actor: 'buyer' });

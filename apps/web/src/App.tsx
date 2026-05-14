@@ -137,7 +137,6 @@ const UtilitiesHubPage = lazy(() => import('./pages/utilities/UtilitiesHubPage')
 const StoresPage = lazy(() => import('./pages/utilities/StoresPage'))
 const StoreChainsPage = lazy(() => import('./pages/utilities/StoreChainsPage'))
 const ChangeKeywordsPage = lazy(() => import('./pages/utilities/ChangeKeywordsPage'))
-const ChangeSkuAttributesPage = lazy(() => import('./pages/utilities/ChangeSkuAttributesPage'))
 const BatchHistoryPage = lazy(() => import('./pages/utilities/BatchHistoryPage'))
 const BatchHistoryDetailPage = lazy(() => import('./pages/utilities/BatchHistoryDetailPage'))
 const MigrationDayConsolePage = lazy(() => import('./pages/operations/MigrationDayConsolePage'))
@@ -158,6 +157,10 @@ export const LegacyInquiryRedirect: React.FC = () => {
 export const LegacySkuEditRedirect: React.FC = () => {
   const { code } = useParams<{ code?: string }>()
   return <Navigate to={code ? `/products/skus/${encodeURIComponent(code)}/edit` : '/products/skus'} replace />
+}
+
+export const LegacyChangeSkuAttributesRedirect: React.FC = () => {
+  return <Navigate to="/inventory/skus?bulk=1" replace />
 }
 
 function RouteLoadingFallback() {
@@ -268,6 +271,7 @@ export default function App() {
             <Route path="/purchase-planning/v3" element={gate('purchasing.view', <PurchasePlanningV3Page />)} />
             <Route path="/purchase-planning/assortment" element={gate('purchasing.view', <AssortmentPlanningPage />)} />
             <Route path="/purchase-planning/buyer-checklist" element={gate('purchasing.view', <BuyerPurchasePlanningPage />)} />
+            <Route path="/purchase-planning/buyer-checklist/workbooks/:workbookId/cards/:cardId" element={gate('purchasing.view', <BuyerPurchasePlanningPage />)} />
             <Route path="/import-management" element={gate('import_management.view', <ImportShipmentsPage />)} />
             <Route path="/import-management/:shipmentId" element={gate('import_management.view', <ImportShipmentsPage />)} />
             <Route
@@ -363,15 +367,15 @@ export default function App() {
             <Route path="/utilities/overview" element={<Navigate to="/utilities" replace />} />
             <Route path="/utilities/stores" element={gate('store_ops.view', <StoresPage />)} />
             <Route path="/utilities/store-chains" element={gate('store_ops.view', <StoreChainsPage />)} />
-            <Route path="/utilities/change-keywords" element={gate('products.write', <ChangeKeywordsPage />)} />
-            <Route path="/utilities/change-sku-attributes" element={gate('products.write', <ChangeSkuAttributesPage />)} />
+            <Route path="/utilities/change-keywords" element={gate('products.sku_bulk_write', <ChangeKeywordsPage />)} />
+            <Route path="/utilities/change-sku-attributes" element={<LegacyChangeSkuAttributesRedirect />} />
             {/* Backward-compat redirects from the four pre-consolidation routes. */}
-            <Route path="/utilities/change-categories" element={<Navigate to="/utilities/change-sku-attributes" replace />} />
-            <Route path="/utilities/change-vendors" element={<Navigate to="/utilities/change-sku-attributes" replace />} />
-            <Route path="/utilities/change-seasons" element={<Navigate to="/utilities/change-sku-attributes" replace />} />
-            <Route path="/utilities/change-group-codes" element={<Navigate to="/utilities/change-sku-attributes" replace />} />
-            <Route path="/utilities/batch-history" element={gate('products.write', <BatchHistoryPage />)} />
-            <Route path="/utilities/batch-history/:id" element={gate('products.write', <BatchHistoryDetailPage />)} />
+            <Route path="/utilities/change-categories" element={<Navigate to="/inventory/skus?bulk=1" replace />} />
+            <Route path="/utilities/change-vendors" element={<Navigate to="/inventory/skus?bulk=1" replace />} />
+            <Route path="/utilities/change-seasons" element={<Navigate to="/inventory/skus?bulk=1" replace />} />
+            <Route path="/utilities/change-group-codes" element={<Navigate to="/inventory/skus?bulk=1" replace />} />
+            <Route path="/utilities/batch-history" element={gate('products.sku_bulk_write', <BatchHistoryPage />)} />
+            <Route path="/utilities/batch-history/:id" element={gate('products.sku_bulk_write', <BatchHistoryDetailPage />)} />
             <Route path="/operations" element={<Navigate to="/operations/inventory-close" replace />} />
             <Route
               path="/operations/activity-review"

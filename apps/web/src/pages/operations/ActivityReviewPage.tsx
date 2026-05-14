@@ -1,13 +1,15 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { Dayjs } from 'dayjs'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
+  Alert,
   Button,
   Card,
   DatePicker,
   Divider,
   Form,
   Input,
+  Modal,
   Select,
   Space,
   Table,
@@ -28,17 +30,36 @@ import {
   activityReviewApi,
 } from '../../services/activityReviewApi'
 import type {
+  ActivityReviewBulkReviewMode,
+  ActivityReviewBulkReviewResult,
   ActivityReviewEvent,
   ActivityReviewFilters,
   ActivityReviewRiskLevel,
   ActivityReviewStatus,
   ActivityReviewUserSummary,
 } from '../../services/activityReviewApi'
+import { InlinePageHelp, useRegisterPageHelp } from '../../components/page-help'
+import { activityReviewHelp } from '../../content/help/pageHelp'
 
 const { RangePicker } = DatePicker
 
 interface ActivityReviewFilterForm extends Omit<ActivityReviewFilters, 'createdFrom' | 'createdTo'> {
   dateRange?: [Dayjs, Dayjs] | null
+}
+
+interface BulkReviewForm {
+  status?: Exclude<ActivityReviewStatus, 'UNREVIEWED'>
+  reviewNote?: string
+}
+
+interface BulkReviewIntent {
+  mode: ActivityReviewBulkReviewMode
+  status: Exclude<ActivityReviewStatus, 'UNREVIEWED'>
+}
+
+const DEFAULT_FILTER_VALUES: ActivityReviewFilterForm = {
+  reviewStatus: 'UNREVIEWED',
+  limit: 100,
 }
 
 const MODULE_OPTIONS = [
@@ -81,23 +102,30 @@ const REVIEW_OPTIONS: Array<{ value: ActivityReviewStatus; label: string }> = [
   { value: 'REVIEWED', label: 'Reviewed' },
   { value: 'NO_ISSUE', label: 'No Issue' },
 ]
+const BULK_STATUS_OPTIONS: Array<{ value: Exclude<ActivityReviewStatus, 'UNREVIEWED'>; label: string }> = [
+  { value: 'NO_ISSUE', label: 'No Issue' },
+  { value: 'REVIEWED', label: 'Reviewed' },
+  { value: 'FLAGGED', label: 'Flagged' },
+]
+const LIMIT_OPTIONS = [25, 50, 100, 500, 1000, 5000].map((value) => ({ value, label: String(value) }))
 const ACRONYMS = new Set(['API', 'AR', 'CSV', 'GP', 'MFA', 'OTB', 'PO', 'POS', 'SKU'])
 
 function normalizeFilters(values: ActivityReviewFilterForm | undefined): ActivityReviewFilters {
-  const dateRange = values?.dateRange
+  const normalizedValues = values ?? DEFAULT_FILTER_VALUES
+  const dateRange = normalizedValues.dateRange
   return {
-    actorUserId: values?.actorUserId,
-    module: values?.module,
-    category: values?.category,
-    resourceType: values?.resourceType,
-    storeId: values?.storeId,
-    outcome: values?.outcome,
-    riskLevel: values?.riskLevel,
-    reviewStatus: values?.reviewStatus,
-    search: values?.search?.trim() || undefined,
+    actorUserId: normalizedValues.actorUserId,
+    module: normalizedValues.module,
+    category: normalizedValues.category,
+    resourceType: normalizedValues.resourceType,
+    storeId: normalizedValues.storeId,
+    outcome: normalizedValues.outcome,
+    riskLevel: normalizedValues.riskLevel,
+    reviewStatus: normalizedValues.reviewStatus,
+    search: normalizedValues.search?.trim() || undefined,
     createdFrom: dateRange?.[0]?.startOf('day').toISOString(),
     createdTo: dateRange?.[1]?.endOf('day').toISOString(),
-    limit: values?.limit ?? 100,
+    limit: normalizedValues.limit ?? 100,
   }
 }
 
@@ -140,6 +168,14 @@ function reviewTag(status: ActivityReviewStatus) {
           ? 'green'
           : 'default'
   return <Tag color={color}>{status.replace('_', ' ')}</Tag>
+}
+
+function canBulkClearEvent(event: ActivityReviewEvent): boolean {
+  return event.outcome === 'SUCCESS' && event.riskLevel !== 'HIGH'
+}
+
+function bulkStatusLabel(status: Exclude<ActivityReviewStatus, 'UNREVIEWED'>): string {
+  return BULK_STATUS_OPTIONS.find((option) => option.value === status)?.label ?? status.replace('_', ' ')
 }
 
 function renderJson(value: unknown) {
@@ -189,11 +225,25 @@ function simpleFieldValue(value: unknown): string {
   return JSON.stringify(value)
 }
 
-function actorLabel(event: ActivityReviewEvent): string {
-  if (event.actorName || event.actorEmail) {
-    return `${event.actorName ?? 'User'}${event.actorEmail ? ` <${event.actorEmail}>` : ''}`
-  }
+type ActorIdentity = {
+  actorUserId?: string | null
+  actorName?: string | null
+  actorEmail?: string | null
+}
+
+function actorDisplayName(actor: ActorIdentity): string {
+  if (actor.actorName && actor.actorName !== 'System') return actor.actorName
+  if (actor.actorEmail) return actor.actorEmail
+  if (actor.actorUserId) return `Unknown user (${actor.actorUserId.slice(0, 8)})`
   return 'System'
+}
+
+function actorLabel(actor: ActorIdentity): string {
+  const displayName = actorDisplayName(actor)
+  if (actor.actorEmail && displayName !== actor.actorEmail) {
+    return `${displayName} <${actor.actorEmail}>`
+  }
+  return displayName
 }
 
 function resourceLabel(event: ActivityReviewEvent): string {
@@ -278,18 +328,30 @@ function ActivityReviewDetail({
 }
 
 export default function ActivityReviewPage() {
+  useRegisterPageHelp(activityReviewHelp)
   const [form] = Form.useForm<ActivityReviewFilterForm>()
+  const [bulkForm] = Form.useForm<BulkReviewForm>()
   const watched = Form.useWatch([], form) as ActivityReviewFilterForm | undefined
+  const watchedBulkStatus = Form.useWatch('status', bulkForm) as Exclude<ActivityReviewStatus, 'UNREVIEWED'> | undefined
   const queryClient = useQueryClient()
   const apiFilters = useMemo(() => normalizeFilters(watched), [watched])
+  const summaryFilters = useMemo(() => {
+    const filters = { ...apiFilters }
+    delete filters.limit
+    return filters
+  }, [apiFilters])
+  const [activeTab, setActiveTab] = useState('events')
+  const [selectedEventIds, setSelectedEventIds] = useState<string[]>([])
+  const [bulkIntent, setBulkIntent] = useState<BulkReviewIntent | null>(null)
+  const [lastBulkResult, setLastBulkResult] = useState<ActivityReviewBulkReviewResult | null>(null)
 
   const eventsQuery = useQuery({
     queryKey: ['activity-review-events', apiFilters],
     queryFn: () => activityReviewApi.listEvents(apiFilters),
   })
   const summaryQuery = useQuery({
-    queryKey: ['activity-review-summary', apiFilters],
-    queryFn: () => activityReviewApi.getSummary(apiFilters),
+    queryKey: ['activity-review-summary', summaryFilters],
+    queryFn: () => activityReviewApi.getSummary(summaryFilters),
   })
   const reviewMutation = useMutation({
     mutationFn: (input: { eventId: string; status: Exclude<ActivityReviewStatus, 'UNREVIEWED'>; note: string | null }) =>
@@ -305,9 +367,48 @@ export default function ActivityReviewPage() {
       message.error(error instanceof Error ? error.message : 'Unable to save review status')
     },
   })
+  const bulkReviewMutation = useMutation({
+    mutationFn: (input: Parameters<typeof activityReviewApi.bulkReview>[0]) => activityReviewApi.bulkReview(input),
+    onSuccess: async (result) => {
+      setLastBulkResult(result)
+      setSelectedEventIds([])
+      setBulkIntent(null)
+      bulkForm.resetFields()
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['activity-review-events'] }),
+        queryClient.invalidateQueries({ queryKey: ['activity-review-summary'] }),
+      ])
+      const summary = `${result.updatedCount} updated${result.skippedCount ? `, ${result.skippedCount} skipped` : ''}`
+      if (result.skippedCount || result.hasMore) {
+        message.warning(`Bulk review saved: ${summary}`)
+      } else {
+        message.success(`Bulk review saved: ${summary}`)
+      }
+    },
+    onError: (error) => {
+      message.error(error instanceof Error ? error.message : 'Unable to save bulk review')
+    },
+  })
 
   const events = eventsQuery.data?.events ?? []
   const summary = summaryQuery.data?.summary ?? []
+  const isEventsTab = activeTab === 'events'
+  const selectedEvents = useMemo(
+    () => events.filter((event) => selectedEventIds.includes(event.id)),
+    [events, selectedEventIds],
+  )
+  const activeBulkStatus = watchedBulkStatus ?? bulkIntent?.status ?? 'NO_ISSUE'
+  const bulkUnsafeCount = useMemo(() => {
+    const candidates = bulkIntent?.mode === 'IDS' ? selectedEvents : events
+    if (activeBulkStatus === 'FLAGGED') return 0
+    return candidates.filter((event) => !canBulkClearEvent(event)).length
+  }, [activeBulkStatus, bulkIntent?.mode, events, selectedEvents])
+
+  useEffect(() => {
+    if (events.length === 0 && selectedEventIds.length === 0) return
+    const visibleIds = new Set(events.map((event) => event.id))
+    setSelectedEventIds((current) => current.filter((id) => visibleIds.has(id)))
+  }, [events, selectedEventIds.length])
   const actorOptions = useMemo(() => {
     const actors = new Map<string, string>()
     for (const event of events) {
@@ -315,7 +416,7 @@ export default function ActivityReviewPage() {
     }
     for (const row of summary) {
       if (row.actorUserId) {
-        actors.set(row.actorUserId, `${row.actorName}${row.actorEmail ? ` <${row.actorEmail}>` : ''}`)
+        actors.set(row.actorUserId, actorLabel(row))
       }
     }
     return Array.from(actors.entries()).map(([value, label]) => ({ value, label }))
@@ -328,7 +429,7 @@ export default function ActivityReviewPage() {
       width: 220,
       render: (_, event) => (
         <Space direction="vertical" size={0}>
-          <Typography.Text>{event.actorName ?? event.actorEmail ?? 'System'}</Typography.Text>
+          <Typography.Text>{actorDisplayName(event)}</Typography.Text>
           {event.actorEmail ? <Typography.Text type="secondary">{event.actorEmail}</Typography.Text> : null}
         </Space>
       ),
@@ -369,7 +470,7 @@ export default function ActivityReviewPage() {
       title: 'User',
       render: (_, row) => (
         <Space direction="vertical" size={0}>
-          <Typography.Text>{row.actorName}</Typography.Text>
+          <Typography.Text>{actorDisplayName(row)}</Typography.Text>
           {row.actorEmail ? <Typography.Text type="secondary">{row.actorEmail}</Typography.Text> : null}
         </Space>
       ),
@@ -401,12 +502,55 @@ export default function ActivityReviewPage() {
     reviewMutation.mutate({ eventId, status, note: note?.trim() || null })
   }
 
+  const openBulkReview = (
+    mode: ActivityReviewBulkReviewMode,
+    status: Exclude<ActivityReviewStatus, 'UNREVIEWED'>,
+  ) => {
+    if (mode === 'IDS' && selectedEventIds.length === 0) {
+      message.warning('Select at least one activity row first')
+      return
+    }
+    setLastBulkResult(null)
+    setBulkIntent({ mode, status })
+    bulkForm.setFieldsValue({ status, reviewNote: '' })
+  }
+
+  const submitBulkReview = async () => {
+    if (!bulkIntent) return
+    const values = await bulkForm.validateFields()
+    const status = values.status ?? bulkIntent.status
+    const reviewNote = values.reviewNote?.trim() ?? ''
+
+    if (bulkIntent.mode === 'IDS') {
+      bulkReviewMutation.mutate({
+        mode: 'IDS',
+        eventIds: selectedEventIds,
+        status,
+        reviewNote,
+      })
+      return
+    }
+
+    bulkReviewMutation.mutate({
+      mode: 'FILTER',
+      filters: apiFilters,
+      status,
+      reviewNote,
+    })
+  }
+
+  const selectAllVisible = () => {
+    setSelectedEventIds(events.map((event) => event.id))
+  }
+
   return (
+    <>
     <Card>
       <Space direction="vertical" style={{ width: '100%' }} size="middle">
         <Space align="center" style={{ width: '100%', display: 'flex', justifyContent: 'space-between' }}>
           <Typography.Title level={3} style={{ margin: 0 }}>Activity Review</Typography.Title>
           <Space>
+            <InlinePageHelp entry={activityReviewHelp} mode="popover" />
             <Button
               icon={<DownloadOutlined />}
               onClick={() => {
@@ -427,12 +571,19 @@ export default function ActivityReviewPage() {
             </Button>
           </Space>
         </Space>
-        <Form form={form} layout="inline" initialValues={{ limit: 100 }}>
+        <Form form={form} layout="inline" initialValues={DEFAULT_FILTER_VALUES}>
           <Form.Item name="dateRange">
             <RangePicker />
           </Form.Item>
           <Form.Item name="actorUserId" style={{ minWidth: 220 }}>
-            <Select showSearch allowClear placeholder="User" optionFilterProp="label" options={actorOptions} />
+            <Select
+              aria-label="Activity user filter"
+              showSearch
+              allowClear
+              placeholder="User"
+              optionFilterProp="label"
+              options={actorOptions}
+            />
           </Form.Item>
           <Form.Item name="module" style={{ minWidth: 180 }}>
             <Select showSearch allowClear placeholder="Module" optionFilterProp="label" options={MODULE_OPTIONS} />
@@ -452,12 +603,80 @@ export default function ActivityReviewPage() {
           <Form.Item name="search" style={{ minWidth: 220 }}>
             <Input.Search placeholder="Search" allowClear />
           </Form.Item>
-          <Form.Item name="limit" style={{ minWidth: 100 }}>
-            <Select options={[25, 50, 100, 200].map((value) => ({ value, label: String(value) }))} />
-          </Form.Item>
+          {isEventsTab ? (
+            <Form.Item name="limit" style={{ minWidth: 100 }}>
+              <Select aria-label="Activity result limit" options={LIMIT_OPTIONS} />
+            </Form.Item>
+          ) : null}
           <Button onClick={() => form.resetFields()}>Clear</Button>
         </Form>
+        {lastBulkResult ? (
+          <Alert
+            showIcon
+            type={lastBulkResult.skippedCount || lastBulkResult.hasMore ? 'warning' : 'success'}
+            message={`Bulk review saved: ${lastBulkResult.updatedCount} updated${lastBulkResult.skippedCount ? `, ${lastBulkResult.skippedCount} skipped` : ''}${lastBulkResult.hasMore ? ', more matching rows remain' : ''}.`}
+            description={
+              lastBulkResult.skippedEvents.length > 0
+                ? `Skipped high-risk or failed activity: ${lastBulkResult.skippedEvents.map((event) => event.actionLabel).join(', ')}.`
+                : undefined
+            }
+          />
+        ) : null}
+        {isEventsTab ? (
+          <Space
+            align="center"
+            wrap
+            style={{
+              width: '100%',
+              justifyContent: 'space-between',
+              padding: '8px 12px',
+              border: '1px solid #f0f0f0',
+              borderRadius: 6,
+            }}
+          >
+            <Space wrap>
+              <Typography.Text strong>
+                {selectedEventIds.length.toLocaleString()} selected
+              </Typography.Text>
+              <Button size="small" onClick={selectAllVisible} disabled={events.length === 0}>
+                Select all visible
+              </Button>
+              <Button size="small" onClick={() => setSelectedEventIds([])} disabled={selectedEventIds.length === 0}>
+                Clear selection
+              </Button>
+            </Space>
+            <Space wrap>
+              <Button
+                icon={<CloseCircleOutlined />}
+                disabled={selectedEventIds.length === 0}
+                onClick={() => openBulkReview('IDS', 'NO_ISSUE')}
+              >
+                Mark No Issue
+              </Button>
+              <Button
+                icon={<CheckCircleOutlined />}
+                disabled={selectedEventIds.length === 0}
+                onClick={() => openBulkReview('IDS', 'REVIEWED')}
+              >
+                Mark Reviewed
+              </Button>
+              <Button
+                danger
+                icon={<FlagOutlined />}
+                disabled={selectedEventIds.length === 0}
+                onClick={() => openBulkReview('IDS', 'FLAGGED')}
+              >
+                Flag
+              </Button>
+              <Button onClick={() => openBulkReview('FILTER', 'NO_ISSUE')}>
+                Apply to all matching filters
+              </Button>
+            </Space>
+          </Space>
+        ) : null}
         <Tabs
+          activeKey={activeTab}
+          onChange={setActiveTab}
           items={[
             {
               key: 'events',
@@ -470,6 +689,10 @@ export default function ActivityReviewPage() {
                   dataSource={events}
                   columns={eventColumns}
                   scroll={{ x: 1350 }}
+                  rowSelection={{
+                    selectedRowKeys: selectedEventIds,
+                    onChange: (keys) => setSelectedEventIds(keys.map(String)),
+                  }}
                   expandable={{
                     expandedRowRender: (event) => (
                       <ActivityReviewDetail
@@ -499,5 +722,64 @@ export default function ActivityReviewPage() {
         />
       </Space>
     </Card>
+    <Modal
+      title={
+        bulkIntent?.mode === 'FILTER'
+          ? 'Bulk review all matching activity'
+          : `Bulk mark selected activity ${bulkStatusLabel(activeBulkStatus)}`
+      }
+      open={Boolean(bulkIntent)}
+      okText="Save bulk review"
+      confirmLoading={bulkReviewMutation.isPending}
+      onCancel={() => {
+        setBulkIntent(null)
+        bulkForm.resetFields()
+      }}
+      onOk={() => void submitBulkReview()}
+    >
+      <Space direction="vertical" style={{ width: '100%' }} size="middle">
+        <Alert
+          showIcon
+          type={bulkUnsafeCount > 0 && activeBulkStatus !== 'FLAGGED' ? 'warning' : 'info'}
+          message={
+            bulkIntent?.mode === 'FILTER'
+              ? 'This will apply to all rows matching the current filters, up to 5,000 per run.'
+              : `This will apply to ${selectedEventIds.length.toLocaleString()} selected row${selectedEventIds.length === 1 ? '' : 's'}.`
+          }
+          description={
+            activeBulkStatus === 'FLAGGED'
+              ? 'Flagged bulk review can include high-risk and failed activity.'
+              : `${bulkUnsafeCount.toLocaleString()} visible high-risk or failed row${bulkUnsafeCount === 1 ? '' : 's'} will be skipped.`
+          }
+        />
+        <Form form={bulkForm} layout="vertical">
+          {bulkIntent?.mode === 'FILTER' ? (
+            <Form.Item
+              name="status"
+              label="Bulk status"
+              rules={[{ required: true, message: 'Choose a review status' }]}
+            >
+              <Select options={BULK_STATUS_OPTIONS} />
+            </Form.Item>
+          ) : null}
+          <Form.Item
+            name="reviewNote"
+            label="Manager note"
+            rules={[
+              { required: true, whitespace: true, message: 'Add a manager note for bulk review' },
+              { max: 2000, message: 'Manager note must be 2000 characters or fewer' },
+            ]}
+          >
+            <Input.TextArea
+              rows={4}
+              maxLength={2000}
+              showCount
+              placeholder="Example: Routine successful POS/session activity. Spot-checked 10 records."
+            />
+          </Form.Item>
+        </Form>
+      </Space>
+    </Modal>
+    </>
   )
 }

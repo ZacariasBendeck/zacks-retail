@@ -38,6 +38,20 @@ export interface HistoricalTargetSummary {
   averageBeginningOnHand: number
 }
 
+export interface SalesProjectionMonth {
+  yearMonth: string
+  projectedUnits: number
+  projectedSales: number
+}
+
+export interface SalesProjectionPlan {
+  months: SalesProjectionMonth[]
+  totalProjectedUnits: number
+  totalProjectedSales: number
+  updatedBy: string | null
+  updatedAt: string | null
+}
+
 export interface AttributeMixRow {
   valueCode: string
   valueLabel: string
@@ -180,6 +194,7 @@ export interface BuyerCategoryCard {
     months: HistoricalMonthMetric[]
     summary: HistoricalTargetSummary
   }
+  salesProjection: SalesProjectionPlan
   attributeMix: AttributeMixDimension[]
   notes: string | null
   createdAt: string
@@ -482,6 +497,7 @@ export async function updateBuyerCategoryCard(
     status?: BuyerCategoryStatus
     targetNewSkuCount?: number
     targetCarryoverSkuCount?: number
+    salesProjections?: SalesProjectionMonth[]
     notes?: string | null
     actor?: string
   },

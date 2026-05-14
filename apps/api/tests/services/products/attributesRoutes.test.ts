@@ -11,6 +11,7 @@ import request from 'supertest';
 import { Err, Ok } from '../../../src/repositories/rics/repoResult';
 
 const replaceMock = jest.fn();
+const replaceDimensionMock = jest.fn();
 const bulkAssignMock = jest.fn();
 const findCodesMock = jest.fn();
 const replaceMacroRulesMock = jest.fn();
@@ -106,6 +107,7 @@ jest.mock('../../../src/repositories/products/AttributesRepository', () => {
           : Ok(SKU_ATTRS)
       ),
       replaceSkuAttributes: (...args: unknown[]) => replaceMock(...args),
+      replaceSkuAttributeDimension: (...args: unknown[]) => replaceDimensionMock(...args),
       findSkuCodesByAttributeFilters: (...args: unknown[]) => findCodesMock(...args),
       getCoverage: jest.fn(async () => Ok(COVERAGE)),
       listAttributeMacroRuleSummaries: jest.fn(async () => Ok(MACRO_SUMMARIES)),
@@ -142,6 +144,7 @@ import { SkuRepository } from '../../../src/repositories/rics/SkuRepository';
 
 beforeEach(() => {
   replaceMock.mockReset();
+  replaceDimensionMock.mockReset();
   bulkAssignMock.mockReset();
   findCodesMock.mockReset();
   replaceMacroRulesMock.mockReset();
@@ -328,6 +331,36 @@ describe('PUT /api/v1/products/skus/:code/attributes', () => {
       .put('/api/v1/products/skus/MISSING/attributes')
       .send({ assignments: [] });
     expect(res.status).toBe(404);
+  });
+
+  it('replaces one dimension from the inline inquiry editor', async () => {
+    replaceDimensionMock.mockResolvedValue(
+      Ok({
+        previous: [{ code: 'old', labelEs: 'Old', assignedBy: 'seed:keyword:x', assignedAt: '2026-04-20T00:00:00.000Z' }],
+        next: [{ code: 'blue', labelEs: 'Azul', assignedBy: 'u', assignedAt: '2026-04-22T00:00:00.000Z' }],
+      })
+    );
+
+    const res = await request(app)
+      .put('/api/v1/products/skus/ZB12345/attributes/color')
+      .send({ value_codes: ['blue'] });
+
+    expect(res.status).toBe(200);
+    expect(replaceDimensionMock).toHaveBeenCalledWith(
+      'ZB12345',
+      'color',
+      ['blue'],
+      expect.any(String),
+    );
+  });
+
+  it('422 on malformed single-dimension value list', async () => {
+    const res = await request(app)
+      .put('/api/v1/products/skus/ZB12345/attributes/color')
+      .send({ value_codes: ['blue', 123] });
+
+    expect(res.status).toBe(422);
+    expect(replaceDimensionMock).not.toHaveBeenCalled();
   });
 });
 

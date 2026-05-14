@@ -2,10 +2,10 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { ConfigProvider } from 'antd'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import BuyerPurchasePlanningPage from '../pages/purchasePlanning/BuyerPurchasePlanningPage'
-import { useCategories, useDepartments } from '../hooks/useProductsTaxonomy'
+import { useCategories, useCategoryBuyerOptions, useDepartments } from '../hooks/useProductsTaxonomy'
 import { useStoreChains, useStores } from '../hooks/useStores'
 import { fetchPurchaseOrders } from '../services/purchaseOrderApi'
 import {
@@ -31,7 +31,19 @@ vi.mock('../hooks/useStores', () => ({
 
 vi.mock('../hooks/useProductsTaxonomy', () => ({
   useCategories: vi.fn(),
+  useCategoryBuyerOptions: vi.fn(),
   useDepartments: vi.fn(),
+}))
+
+vi.mock('../auth/useAuth', () => ({
+  useAuth: () => ({
+    user: { id: 'user-1', email: 'buyer@example.com', displayName: 'Buyer', role: { id: 'role-1', name: 'Buyer' } },
+    permissions: new Set(['purchasing.view']),
+    loading: false,
+    login: vi.fn(),
+    logout: vi.fn(),
+    refresh: vi.fn(),
+  }),
 }))
 
 vi.mock('../services/purchaseOrderApi', () => ({
@@ -126,6 +138,15 @@ const detail: BuyerWorkbookDetail = {
             sellThroughPct: null,
           },
         ],
+      },
+      salesProjection: {
+        months: [
+          { yearMonth: '2025-08', projectedUnits: 30, projectedSales: 61496 },
+        ],
+        totalProjectedUnits: 30,
+        totalProjectedSales: 61496,
+        updatedBy: 'buyer',
+        updatedAt: '2026-05-07T00:00:00.000Z',
       },
       attributeMix: [
         {
@@ -237,7 +258,7 @@ const detail: BuyerWorkbookDetail = {
   poLinks: [],
 }
 
-function renderPage() {
+function renderPage(initialEntries = ['/purchase-planning/buyer-checklist']) {
   const qc = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -248,8 +269,11 @@ function renderPage() {
   return render(
     <ConfigProvider>
       <QueryClientProvider client={qc}>
-        <MemoryRouter>
-          <BuyerPurchasePlanningPage />
+        <MemoryRouter initialEntries={initialEntries}>
+          <Routes>
+            <Route path="/purchase-planning/buyer-checklist" element={<BuyerPurchasePlanningPage />} />
+            <Route path="/purchase-planning/buyer-checklist/workbooks/:workbookId/cards/:cardId" element={<BuyerPurchasePlanningPage />} />
+          </Routes>
         </MemoryRouter>
       </QueryClientProvider>
     </ConfigProvider>,
@@ -257,7 +281,7 @@ function renderPage() {
 }
 
 async function openCategory() {
-  await userEvent.click(await screen.findByRole('button', { name: /Continue/i }))
+  renderPage(['/purchase-planning/buyer-checklist/workbooks/workbook-1/cards/card-1'])
   await screen.findByText('Carryover Model')
 }
 
@@ -268,6 +292,7 @@ async function chooseSelectOption(label: string, option: string) {
 
 afterEach(() => {
   vi.clearAllMocks()
+  window.localStorage.clear()
 })
 
 describe('BuyerPurchasePlanningPage', () => {
@@ -291,6 +316,11 @@ describe('BuyerPurchasePlanningPage', () => {
       data: [{ number: 1, description: 'Menswear', begCateg: 1, endCateg: 99, dateLastChanged: null, skuCount: 100 }],
       isLoading: false,
     } as never)
+    vi.mocked(useCategoryBuyerOptions).mockReturnValue({
+      data: [{ valueId: 1, code: 'buyer', labelEs: 'Buyer', isActive: true, sortOrder: 1 }],
+      isLoading: false,
+    } as never)
+    window.localStorage.setItem('buyer-checklist:last-buyer:user-1', 'buyer')
     vi.mocked(fetchBuyerWorkbooks).mockResolvedValue([
       {
         ...detail.workbook,
@@ -449,9 +479,13 @@ describe('BuyerPurchasePlanningPage', () => {
     ])
     renderPage()
 
+    expect(fetchBuyerChecklistCategories).not.toHaveBeenCalled()
+    expect(fetchBuyerWorkbooks).not.toHaveBeenCalled()
+    expect(fetchBuyerWorkbook).not.toHaveBeenCalled()
+    expect(fetchPurchaseOrders).not.toHaveBeenCalled()
+    expect(screen.getByText('Buyer (buyer)')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: /Load Checklist/i }))
     await userEvent.click(await screen.findByRole('button', { name: /Start Review/i }))
-    await chooseSelectOption('Seed Store', '20 - Store 20')
-    await userEvent.click(screen.getByRole('button', { name: /Review History/i }))
 
     await waitFor(() => expect(createBuyerWorkbook).toHaveBeenCalledTimes(1))
     expect(vi.mocked(createBuyerWorkbook).mock.calls[0]?.[0]).toMatchObject({
@@ -460,6 +494,7 @@ describe('BuyerPurchasePlanningPage', () => {
       categoryNumbers: [11],
       buyer: 'buyer',
     })
+    expect(await screen.findByText('Set Sales Projections')).toBeInTheDocument()
   }, 15_000)
 
   it('marks a landing category no-budget and can show and reopen it', async () => {
@@ -542,6 +577,7 @@ describe('BuyerPurchasePlanningPage', () => {
 
     renderPage()
 
+    await userEvent.click(screen.getByRole('button', { name: /Load Checklist/i }))
     await screen.findByText('11 - Traje Smoking Hombre')
     await userEvent.click(screen.getByRole('button', { name: /^No Budget$/i }))
     const confirmButtons = await screen.findAllByRole('button', { name: /^No Budget$/i })
@@ -568,6 +604,7 @@ describe('BuyerPurchasePlanningPage', () => {
   it('marks selected landing categories no-budget in one action', async () => {
     const { container } = renderPage()
 
+    await userEvent.click(screen.getByRole('button', { name: /Load Checklist/i }))
     await screen.findByText('11 - Traje Smoking Hombre')
     const rowCheckbox = container.querySelector('.ant-table-tbody .ant-checkbox-input')
     expect(rowCheckbox).toBeTruthy()
@@ -584,11 +621,9 @@ describe('BuyerPurchasePlanningPage', () => {
     await waitFor(() => expect(screen.queryByText('11 - Traje Smoking Hombre')).not.toBeInTheDocument())
   }, 15_000)
 
-  it('renders the kanban board and marks a category complete', async () => {
-    renderPage()
-
+  it('renders the full-page category review and marks a category complete', async () => {
     await openCategory()
-    expect(screen.getByText('History')).toBeInTheDocument()
+    expect(screen.getByText('Set Sales Projections')).toBeInTheDocument()
     expect(screen.getByText('Attribute Plan')).toBeInTheDocument()
 
     await userEvent.click(screen.getByRole('button', { name: /Mark Category Complete/i }))
@@ -601,7 +636,6 @@ describe('BuyerPurchasePlanningPage', () => {
   }, 15_000)
 
   it('copies the seed model to target stores', async () => {
-    renderPage()
     await openCategory()
 
     await userEvent.click(screen.getByRole('button', { name: /Copy Exact Model/i }))
@@ -671,6 +705,7 @@ describe('BuyerPurchasePlanningPage', () => {
     ])
     renderPage()
 
+    await userEvent.click(screen.getByRole('button', { name: /Load Checklist/i }))
     await userEvent.click(await screen.findByRole('button', { name: /Manual Review Setup/i }))
     await chooseSelectOption('Category', '11 - Traje Smoking Hombre')
     await screen.findByText('12 stock')
@@ -689,7 +724,6 @@ describe('BuyerPurchasePlanningPage', () => {
   }, 15_000)
 
   it('flags a carryover unavailable and sends the replacement reason', async () => {
-    renderPage()
     await openCategory()
 
     const unavailableButtons = screen.getAllByRole('button', { name: /Unavailable/i })

@@ -16,7 +16,6 @@ import { InfoTab } from './tabs/InfoTab';
 import { DetailTab } from './tabs/DetailTab';
 import { PosTab } from './tabs/PosTab';
 import { TrendTab } from './tabs/TrendTab';
-import AttributeBadgeStrip from '../../../components/products/AttributeBadgeStrip';
 import { SkuAiRecommendationModal } from './SkuAiRecommendationModal';
 import MatchingSetsCard from '../../../components/products/MatchingSetsCard';
 import { ReorderPlannerModal } from './ReorderPlannerModal';
@@ -341,7 +340,6 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
             </Space>
           </div>
           <HeaderCard inquiry={data} storeId={storeId} onPickSku={onPickSku} />
-          <AttributeBadgeStrip skuCode={data.sku} mode="assigned" />
           <MatchingSetsCard skuRef={data.sku} compact onOpenMatchingSets={onOpenMatchingSets} />
         </div>
 
@@ -357,9 +355,6 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
           )}
         </div>
       </div>
-
-      {/* Unassigned attributes only; assigned values live in the header info box above. */}
-      <AttributeBadgeStrip skuCode={data.sku} />
 
       {/* View-mode selector */}
       <div style={{ marginBottom: 4 }}>

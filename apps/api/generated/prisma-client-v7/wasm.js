@@ -1259,6 +1259,7 @@ exports.Prisma.MatchingSetRoleScalarFieldEnum = {
 exports.Prisma.MatchingSetScalarFieldEnum = {
   id: 'id',
   code: 'code',
+  displayName: 'displayName',
   setTypeCode: 'setTypeCode',
   descriptionEs: 'descriptionEs',
   vendorId: 'vendorId',
@@ -1356,6 +1357,21 @@ exports.Prisma.SkuActivityScalarFieldEnum = {
   actor: 'actor',
   payloadJson: 'payloadJson',
   occurredAt: 'occurredAt'
+};
+
+exports.Prisma.SkuReplacementScalarFieldEnum = {
+  id: 'id',
+  oldSkuId: 'oldSkuId',
+  replacementSkuId: 'replacementSkuId',
+  replacementType: 'replacementType',
+  transferDemand: 'transferDemand',
+  effectiveAt: 'effectiveAt',
+  retiredAt: 'retiredAt',
+  note: 'note',
+  createdAt: 'createdAt',
+  createdBy: 'createdBy',
+  updatedAt: 'updatedAt',
+  updatedBy: 'updatedBy'
 };
 
 exports.Prisma.SkuSizeScalarFieldEnum = {
@@ -3297,6 +3313,7 @@ exports.Prisma.ModelName = {
   MatchingSetBuyPlan: 'MatchingSetBuyPlan',
   MatchingSetBuyPlanLine: 'MatchingSetBuyPlanLine',
   SkuActivity: 'SkuActivity',
+  SkuReplacement: 'SkuReplacement',
   SkuSize: 'SkuSize',
   Inventory: 'Inventory',
   InventoryAuditLog: 'InventoryAuditLog',

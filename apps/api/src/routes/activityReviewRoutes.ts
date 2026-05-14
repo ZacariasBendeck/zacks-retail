@@ -4,7 +4,10 @@ import type { PrismaClient } from '../prismaClient';
 import { requirePermission } from '../middleware/authMiddleware';
 import { PERMISSIONS } from '../services/identityAccess/permissions';
 import {
+  ACTIVITY_REVIEW_BULK_REVIEW_LIMIT,
+  ACTIVITY_REVIEW_LIST_LIMIT,
   activityReviewEventsCsv,
+  bulkUpdateActivityReviewEventReviews,
   getActivityReviewEvent,
   getActivityReviewSummary,
   listActivityReviewEvents,
@@ -23,12 +26,35 @@ const activityReviewQuery = z.object({
   search: z.string().trim().optional(),
   createdFrom: z.coerce.date().optional(),
   createdTo: z.coerce.date().optional(),
-  limit: z.coerce.number().int().min(1).optional(),
+  limit: z.coerce.number().int().min(1).max(ACTIVITY_REVIEW_LIST_LIMIT).optional(),
 });
 
 const reviewBody = z.object({
   status: z.enum(['REVIEWED', 'FLAGGED', 'NO_ISSUE']),
   reviewNote: z.string().trim().max(2000).optional().nullable(),
+});
+
+const bulkReviewBody = z.object({
+  status: z.enum(['REVIEWED', 'FLAGGED', 'NO_ISSUE']),
+  reviewNote: z.string().trim().min(1).max(2000),
+  mode: z.enum(['IDS', 'FILTER']),
+  eventIds: z.array(z.string().trim().min(1)).max(ACTIVITY_REVIEW_BULK_REVIEW_LIMIT).optional(),
+  filters: activityReviewQuery.optional(),
+}).superRefine((body, ctx) => {
+  if (body.mode === 'IDS' && (!body.eventIds || body.eventIds.length === 0)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['eventIds'],
+      message: 'eventIds are required for IDS bulk review mode',
+    });
+  }
+  if (body.mode === 'FILTER' && body.filters == null) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['filters'],
+      message: 'filters are required for FILTER bulk review mode',
+    });
+  }
 });
 
 export function createActivityReviewRoutes(prisma: PrismaClient): Router {
@@ -71,6 +97,31 @@ export function createActivityReviewRoutes(prisma: PrismaClient): Router {
       }
       const events = await listActivityReviewEvents(prisma, parsed.data);
       res.json({ events });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.post('/events/bulk-review', async (req, res, next) => {
+    try {
+      const parsed = bulkReviewBody.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: { code: 'INVALID_BODY', message: parsed.error.message } });
+      }
+
+      const result = await bulkUpdateActivityReviewEventReviews(prisma, {
+        mode: parsed.data.mode,
+        status: parsed.data.status,
+        reviewNote: parsed.data.reviewNote,
+        eventIds: parsed.data.eventIds,
+        filters: parsed.data.filters,
+        reviewedByUserId: req.user?.id ?? null,
+        actorSessionId: req.sessionId ?? null,
+        ipAddress: req.ip ?? null,
+        userAgent: req.get('user-agent') ?? null,
+      });
+
+      res.json(result);
     } catch (err) {
       next(err);
     }

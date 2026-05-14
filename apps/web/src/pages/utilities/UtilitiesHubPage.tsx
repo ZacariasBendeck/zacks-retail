@@ -7,12 +7,16 @@
 
 import { Card, Col, Row, Tag, Typography } from 'antd'
 import { Link } from 'react-router-dom'
+import { useAuth } from '../../auth/useAuth'
+
+const SKU_BULK_WRITE_PERMISSION = 'products.sku_bulk_write'
 
 interface UtilityCard {
   title: string
   description: string
   to?: string
   status: 'active' | 'deferred'
+  requiredPermission?: string
   deferredReason?: string
   ricsPage: string
 }
@@ -35,9 +39,10 @@ const CARDS: UtilityCard[] = [
   {
     title: 'Change SKU Attributes',
     description:
-      'Search and select SKUs, then reassign their Category, Vendor, Season, or Group in one batch. The action picker lives next to the Apply button.',
-    to: '/utilities/change-sku-attributes',
+      'Open the SKU List in bulk-change mode to reassign Category, Vendor, Season, Group, Keywords, or extended attributes in one batch.',
+    to: '/inventory/skus?bulk=1',
     status: 'active',
+    requiredPermission: SKU_BULK_WRITE_PERMISSION,
     ricsPage: 'p. 194',
   },
   {
@@ -45,6 +50,7 @@ const CARDS: UtilityCard[] = [
     description: 'Add or remove a keyword across SKUs matching criteria.',
     to: '/utilities/change-keywords',
     status: 'active',
+    requiredPermission: SKU_BULK_WRITE_PERMISSION,
     ricsPage: 'p. 195',
   },
   {
@@ -66,6 +72,7 @@ const CARDS: UtilityCard[] = [
     description: 'Review every batch operation, drill into per-SKU before/after, undo in one click.',
     to: '/utilities/batch-history',
     status: 'active',
+    requiredPermission: SKU_BULK_WRITE_PERMISSION,
     ricsPage: '(new)',
   },
   {
@@ -92,6 +99,11 @@ const CARDS: UtilityCard[] = [
 ]
 
 export default function UtilitiesHubPage() {
+  const { permissions } = useAuth()
+  const visibleCards = CARDS.filter(
+    (card) => !card.requiredPermission || permissions.has(card.requiredPermission),
+  )
+
   return (
     <div>
       <Typography.Title level={3}>Utilities</Typography.Title>
@@ -102,7 +114,7 @@ export default function UtilitiesHubPage() {
       </Typography.Paragraph>
 
       <Row gutter={[16, 16]}>
-        {CARDS.map((c) => (
+        {visibleCards.map((c) => (
           <Col xs={24} md={12} lg={8} key={c.title}>
             <Card
               hoverable={c.status === 'active'}

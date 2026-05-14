@@ -1,10 +1,16 @@
 import React from 'react';
 import { Button, Space, Tag } from 'antd';
 import type { InventoryInquiry } from '../../../types/inventoryInquiry';
+import {
+  AttributeHeaderGroupRows,
+  AttributeHeaderValueCell,
+  OPERATIONAL_ATTRIBUTE_CODES,
+  useAttributeHeaderModel,
+} from '../../../components/products/AttributeBadgeStrip';
 
 // Compact header mirroring the RICS Inventory Inquiry layout:
 // a dense label|value grid where the label is right-aligned grey and
-// the value column carries the data. Two paired columns per row.
+// the value column carries the data. Three paired columns per row.
 
 const cellLabel: React.CSSProperties = {
   color: '#666',
@@ -30,6 +36,7 @@ export const HeaderCard: React.FC<{
 }) => {
   const replacedBy = inquiry.replacementContext?.replacedBy ?? null;
   const supersedes = inquiry.replacementContext?.supersedes ?? [];
+  const attributeModel = useAttributeHeaderModel(inquiry.sku, true);
 
   return (
     <table style={{ borderCollapse: 'collapse', fontSize: 12 }}>
@@ -39,6 +46,12 @@ export const HeaderCard: React.FC<{
           <td style={cellValue}><strong>{inquiry.sku}</strong></td>
           <th style={cellLabel}>Description</th>
           <td style={cellValue}>{inquiry.description}</td>
+          <th style={cellLabel}>Comprador</th>
+          <AttributeHeaderValueCell
+            cellValueStyle={cellValue}
+            dimCode={OPERATIONAL_ATTRIBUTE_CODES[0]}
+            model={attributeModel}
+          />
         </tr>
         <tr>
           <th style={cellLabel}>Category</th>
@@ -49,12 +62,24 @@ export const HeaderCard: React.FC<{
           <td style={cellValue}>
             {inquiry.vendor?.code} {inquiry.vendor?.name}
           </td>
+          <th style={cellLabel}>Empresa</th>
+          <AttributeHeaderValueCell
+            cellValueStyle={cellValue}
+            dimCode={OPERATIONAL_ATTRIBUTE_CODES[1]}
+            model={attributeModel}
+          />
         </tr>
         <tr>
           <th style={cellLabel}>Vendor SKU</th>
           <td style={cellValue}>{inquiry.vendorSku ?? '-'}</td>
           <th style={cellLabel}>Style/Color</th>
           <td style={cellValue}>{inquiry.styleColor ?? '-'}</td>
+          <th style={cellLabel}>Cadena</th>
+          <AttributeHeaderValueCell
+            cellValueStyle={cellValue}
+            dimCode={OPERATIONAL_ATTRIBUTE_CODES[2]}
+            model={attributeModel}
+          />
         </tr>
         <tr>
           <th style={cellLabel}>Size Type</th>
@@ -63,6 +88,12 @@ export const HeaderCard: React.FC<{
           </td>
           <th style={cellLabel}>Last Received</th>
           <td style={cellValue}>{inquiry.lastReceivedAt ?? '-'}</td>
+          <th style={cellLabel}>Descuento</th>
+          <AttributeHeaderValueCell
+            cellValueStyle={cellValue}
+            dimCode={OPERATIONAL_ATTRIBUTE_CODES[3]}
+            model={attributeModel}
+          />
         </tr>
         <tr>
           <th style={cellLabel}>Store</th>
@@ -88,11 +119,17 @@ export const HeaderCard: React.FC<{
               ) : null}
             </Space>
           </td>
+          <th style={cellLabel}>label_type</th>
+          <AttributeHeaderValueCell
+            cellValueStyle={cellValue}
+            dimCode={OPERATIONAL_ATTRIBUTE_CODES[4]}
+            model={attributeModel}
+          />
         </tr>
         {supersedes.length > 0 ? (
           <tr>
             <th style={cellLabel}>Replaces</th>
-            <td colSpan={3} style={{ ...cellValue, whiteSpace: 'normal' }}>
+            <td colSpan={5} style={{ ...cellValue, whiteSpace: 'normal' }}>
               <Space size={[6, 4]} wrap>
                 {supersedes.map((item) => (
                   <Space key={item.id} size={4} wrap>
@@ -118,6 +155,12 @@ export const HeaderCard: React.FC<{
             </td>
           </tr>
         ) : null}
+        <AttributeHeaderGroupRows
+          cellLabelStyle={cellLabel}
+          cellValueStyle={cellValue}
+          excludedDimensionCodes={OPERATIONAL_ATTRIBUTE_CODES}
+          model={attributeModel}
+        />
       </tbody>
     </table>
   );

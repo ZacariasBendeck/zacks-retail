@@ -5,6 +5,7 @@ import {
   type DimensionPatch,
   type FamilyRulesReplaceInput,
   type MacroRulesReplaceInput,
+  type SetSkuAttributeDimensionInput,
   type ValueInput,
   type ValuePatch,
 } from '../services/productsAttributesApi'
@@ -23,10 +24,11 @@ function invalidateAllAttributes(qc: ReturnType<typeof useQueryClient>) {
   qc.invalidateQueries({ queryKey: ['products-skus'] })
 }
 
-export function useAttributeDimensions(withCounts = false) {
+export function useAttributeDimensions(withCounts = false, enabled = true) {
   return useQuery({
     queryKey: ['products-attributes', 'dimensions', { withCounts }],
     queryFn: () => productsAttributesApi.listDimensions(withCounts),
+    enabled,
     staleTime: CATALOG_STALE_MS,
   })
 }
@@ -71,6 +73,27 @@ export function useSetSkuAttributes() {
   })
 }
 
+export function useSetSkuAttributeDimension() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({
+      code,
+      dimensionCode,
+      input,
+    }: {
+      code: string
+      dimensionCode: string
+      input: SetSkuAttributeDimensionInput
+    }) => productsAttributesApi.setDimensionForSku(code, dimensionCode, input),
+    onSuccess: (data, vars) => {
+      qc.setQueryData(['products-attributes', 'sku', vars.code], data)
+      qc.invalidateQueries({ queryKey: ['products-attributes', 'sku', vars.code] })
+      qc.invalidateQueries({ queryKey: ['products-attributes', 'dimensions'] })
+      qc.invalidateQueries({ queryKey: ['products-skus'] })
+    },
+  })
+}
+
 export function useAttributeCoverage() {
   return useQuery({
     queryKey: ['products-attributes', 'coverage'],
@@ -81,10 +104,11 @@ export function useAttributeCoverage() {
 
 // ──────────────── Dimension admin ────────────────
 
-export function useAttributeMacroRules() {
+export function useAttributeMacroRules(enabled = true) {
   return useQuery({
     queryKey: ['products-attributes', 'macros'],
     queryFn: () => productsAttributesApi.listMacroRules(),
+    enabled,
     staleTime: CATALOG_STALE_MS,
   })
 }

@@ -137,6 +137,36 @@ export function createAttributesService(opts: AttributesServiceOptions = {}) {
     },
 
     /**
+     * Replace one dimension for one SKU. Used by Inventory Inquiry inline
+     * edits where the operator expects the clicked pill's value to change
+     * immediately, including replacing any keyword-derived value for that dim.
+     */
+    async setDimensionForSku(
+      skuCode: string,
+      dimensionCode: string,
+      valueCodes: string[],
+    ): Promise<Result<SkuAttributesResponse>> {
+      const result = await repo.replaceSkuAttributeDimension(skuCode, dimensionCode, valueCodes, actor);
+      if (!result.ok) return result;
+
+      await audit.record({
+        actor,
+        action: 'sku_attribute_dimension_set',
+        targetTable: TABLE,
+        targetPk: `${skuCode}:${dimensionCode}`,
+        payload: {
+          skuCode,
+          dimensionCode,
+          previous: result.value.previous.map((a) => ({ code: a.code, by: a.assignedBy })),
+          next: result.value.next.map((a) => ({ code: a.code, by: a.assignedBy })),
+          requested: valueCodes,
+        },
+      });
+
+      return repo.getSkuAttributes(skuCode);
+    },
+
+    /**
      * Bulk assign (used by `utilities` batch-change). Writes a single audit row
      * for the whole operation — per-SKU before/after lives in the utilities
      * batch-operation-item audit trail already.

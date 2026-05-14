@@ -1023,6 +1023,152 @@ export const AttributesRepository = {
    * compute the set of SKU codes that match (union within a dim, intersection
    * across dims). Consumed by the SKU list route.
    */
+  /**
+   * Single-dimension replace for quick inline edits from Inventory Inquiry.
+   * Unlike the broader scoped replace above, this intentionally removes every
+   * source row for the dimension, including keyword-derived rows, so a manual
+   * correction does not leave the old inferred value visible beside it.
+   */
+  async replaceSkuAttributeDimension(
+    skuCode: string,
+    dimensionCode: string,
+    valueCodes: string[],
+    actor: string,
+  ): Promise<Result<{ previous: AssignmentDetail[]; next: AssignmentDetail[] }>> {
+    try {
+      if (!(await skuExists(skuCode))) {
+        return Err({ kind: 'NotFound', message: `SKU '${skuCode}' not found.` });
+      }
+
+      const dims = await prisma.attributeDimension.findMany({
+        include: { values: true, familyRules: true },
+      });
+      const dim = dims.find((d) => d.code === dimensionCode);
+      if (!dim) {
+        return Err({
+          kind: 'ConstraintViolation',
+          message: `Unknown dimension '${dimensionCode}'.`,
+        });
+      }
+
+      const derivedTargetDimensionCodes = await listDerivedTargetDimensionCodes();
+      if (derivedTargetDimensionCodes.has(dimensionCode)) {
+        return Err({
+          kind: 'ConstraintViolation',
+          message: `Dimension '${dimensionCode}' is derived from another attribute and cannot be assigned manually.`,
+        });
+      }
+
+      const skuFamily = await resolveSkuFamily(skuCode);
+      const uniqueValueCodes = Array.from(new Set(valueCodes.map((code) => code.trim()).filter(Boolean)));
+      if (!dim.isMultiValue && uniqueValueCodes.length > 1) {
+        return Err({
+          kind: 'ConstraintViolation',
+          message: `Dimension '${dimensionCode}' is single-value; received ${uniqueValueCodes.length} values.`,
+        });
+      }
+
+      if (uniqueValueCodes.length > 0 && dim.familyRules.length > 0) {
+        if (skuFamily == null) {
+          return Err({
+            kind: 'ConstraintViolation',
+            message: `Dimension '${dimensionCode}' is family-scoped but SKU '${skuCode}' has no family mapping for its category.`,
+          });
+        }
+        const rule = dim.familyRules.find((r) => r.familyCode === skuFamily);
+        if (!rule || !rule.enabled) {
+          return Err({
+            kind: 'ConstraintViolation',
+            message: `Dimension '${dimensionCode}' does not apply to family '${skuFamily}'.`,
+          });
+        }
+      }
+
+      if (skuFamily != null) {
+        const requiredRule = dim.familyRules.find((r) => r.familyCode === skuFamily && r.enabled && r.isRequired);
+        if (requiredRule && uniqueValueCodes.length === 0) {
+          return Err({
+            kind: 'ConstraintViolation',
+            message: `Required dimension '${dimensionCode}' cannot be cleared for family '${skuFamily}'.`,
+          });
+        }
+      }
+
+      const valueRows: { dimensionId: number; valueId: number }[] = [];
+      for (const valueCode of uniqueValueCodes) {
+        const value = dim.values.find((candidate) => candidate.code === valueCode);
+        if (!value) {
+          return Err({
+            kind: 'ConstraintViolation',
+            message: `Value '${valueCode}' does not belong to dimension '${dimensionCode}'.`,
+          });
+        }
+        if (!value.isActive) {
+          return Err({
+            kind: 'ConstraintViolation',
+            message: `Value '${valueCode}' in dimension '${dimensionCode}' is inactive; cannot be assigned.`,
+          });
+        }
+        valueRows.push({ dimensionId: dim.id, valueId: value.id });
+      }
+
+      const previousRows = await prisma.skuAttributeAssignment.findMany({
+        where: { skuCode, dimensionId: dim.id },
+        include: { value: true },
+      });
+      const previous: AssignmentDetail[] = previousRows.map((r) => ({
+        code: r.value.code,
+        labelEs: r.value.labelEs,
+        assignedBy: r.assignedBy,
+        assignedAt: r.assignedAt.toISOString(),
+      }));
+
+      const macroSourceDimensionCodes = await listMacroSourceDimensionCodes();
+      const shouldDerive = macroSourceDimensionCodes.includes(dimensionCode);
+
+      await prisma.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe(
+          `DELETE FROM app.sku_attribute_assignment
+           WHERE sku_code = $1
+             AND dimension_id = $2::smallint`,
+          skuCode,
+          dim.id,
+        );
+
+        if (valueRows.length > 0) {
+          await tx.skuAttributeAssignment.createMany({
+            data: valueRows.map((row) => ({
+              skuCode,
+              dimensionId: row.dimensionId,
+              valueId: row.valueId,
+              assignedBy: actor,
+            })),
+            skipDuplicates: true,
+          });
+        }
+
+        if (shouldDerive) {
+          await deriveAttributeMacrosForSkus(tx, [dimensionCode], [skuCode]);
+        }
+      });
+
+      const nextRows = await prisma.skuAttributeAssignment.findMany({
+        where: { skuCode, dimensionId: dim.id },
+        include: { value: true },
+      });
+      const next: AssignmentDetail[] = nextRows.map((r) => ({
+        code: r.value.code,
+        labelEs: r.value.labelEs,
+        assignedBy: r.assignedBy,
+        assignedAt: r.assignedAt.toISOString(),
+      }));
+
+      return Ok({ previous, next });
+    } catch (err) {
+      return Err(toRepoError(err));
+    }
+  },
+
   async findSkuCodesByAttributeFilters(
     filters: { dimensionCode: string; valueCodes: string[] }[]
   ): Promise<Result<Set<string>>> {

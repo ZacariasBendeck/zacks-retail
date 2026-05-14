@@ -9,7 +9,10 @@ vi.mock('./useInquiryData', () => ({
 }));
 
 vi.mock('../../../components/products/AttributeBadgeStrip', () => ({
-  default: () => null,
+  AttributeHeaderGroupRows: () => null,
+  AttributeHeaderValueCell: () => <td>-</td>,
+  OPERATIONAL_ATTRIBUTE_CODES: ['buyer', 'company', 'store_chain', 'discount_type', 'label_type'],
+  useAttributeHeaderModel: () => ({}),
 }));
 
 vi.mock('../../../components/products/MatchingSetsCard', () => ({

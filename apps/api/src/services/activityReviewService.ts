@@ -34,6 +34,7 @@ export interface ActivityReviewEvent {
 }
 
 export interface ActivityReviewQuery {
+  auditEventIds?: string[];
   actorUserId?: string;
   module?: string;
   category?: string;
@@ -71,6 +72,38 @@ export interface ActivityReviewUpdateInput {
   actorSessionId?: string | null;
   ipAddress?: string | null;
   userAgent?: string | null;
+}
+
+export type ActivityReviewBulkReviewMode = 'IDS' | 'FILTER';
+
+export interface ActivityReviewBulkReviewInput {
+  mode: ActivityReviewBulkReviewMode;
+  status: Exclude<ActivityReviewStatus, 'UNREVIEWED'>;
+  reviewNote: string;
+  eventIds?: string[];
+  filters?: ActivityReviewQuery;
+  reviewedByUserId?: string | null;
+  actorSessionId?: string | null;
+  ipAddress?: string | null;
+  userAgent?: string | null;
+}
+
+export interface ActivityReviewBulkSkippedEvent {
+  id: string;
+  occurredAt: string;
+  actionLabel: string;
+  module: string;
+  outcome: string;
+  riskLevel: ActivityReviewRiskLevel;
+  reviewStatus: ActivityReviewStatus;
+}
+
+export interface ActivityReviewBulkReviewResult {
+  status: Exclude<ActivityReviewStatus, 'UNREVIEWED'>;
+  updatedCount: number;
+  skippedCount: number;
+  skippedEvents: ActivityReviewBulkSkippedEvent[];
+  hasMore: boolean;
 }
 
 interface ActivityReviewRow {
@@ -113,6 +146,9 @@ const KNOWN_MODULES = new Set([
   'sales_pos',
   'utilities',
 ]);
+export const ACTIVITY_REVIEW_LIST_LIMIT = 5000;
+export const ACTIVITY_REVIEW_BULK_REVIEW_LIMIT = 5000;
+const ACTIVITY_REVIEW_SKIPPED_SAMPLE_LIMIT = 10;
 const ACRONYMS = new Set(['API', 'AR', 'CSV', 'GP', 'MFA', 'OTB', 'PO', 'POS', 'SKU']);
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -301,7 +337,7 @@ function limitedQuery(query: ActivityReviewQuery): { limit: number; scanLimit: n
 
 function buildEventSql(
   query: ActivityReviewQuery,
-  scanLimit: number,
+  scanLimit: number | null,
   includeReviewTable = true,
 ): { sql: string; params: unknown[] } {
   const params: unknown[] = [];
@@ -312,6 +348,10 @@ function buildEventSql(
     where.push(clause.replace('?', `$${params.length}`));
   }
 
+  if (query.auditEventIds?.length) {
+    params.push(query.auditEventIds);
+    where.push(`a.id = ANY($${params.length}::text[])`);
+  }
   if (query.actorUserId) addWhere('a.actor_user_id = ?', query.actorUserId);
   if (query.outcome) addWhere('a.outcome = ?', query.outcome.toUpperCase());
   if (query.resourceType) addWhere('a.resource_type = ?', query.resourceType);
@@ -324,8 +364,11 @@ function buildEventSql(
     );
   }
 
-  params.push(scanLimit);
-  const limitRef = `$${params.length}`;
+  let limitClause = '';
+  if (scanLimit !== null) {
+    params.push(scanLimit);
+    limitClause = `LIMIT $${params.length}`;
+  }
   const reviewSelect = includeReviewTable
     ? 'r.status AS review_status, r.reviewed_by_user_id, r.reviewed_at, r.review_note'
     : 'NULL::text AS review_status, NULL::text AS reviewed_by_user_id, NULL::timestamp AS reviewed_at, NULL::text AS review_note';
@@ -351,9 +394,13 @@ function buildEventSql(
       LEFT JOIN public."Role" resource_role ON a.resource_type = 'identity.role' AND resource_role.id = a.resource_id
       ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
       ORDER BY a.created_at DESC, a.id DESC
-      LIMIT ${limitRef}
+      ${limitClause}
     `,
   };
+}
+
+function unknownActorName(actorUserId: string): string {
+  return `Unknown user (${actorUserId.slice(0, 8)})`;
 }
 
 export async function listActivityReviewEvents(
@@ -370,6 +417,27 @@ export async function listActivityReviewEvents(
       const fallback = buildEventSql(query, scanLimit, false);
       const rows = await prisma.$queryRawUnsafe<ActivityReviewRow[]>(fallback.sql, ...fallback.params);
       return applyDerivedFilters(rows.map(rowToEvent), query).slice(0, limit);
+    } catch {
+      return [];
+    }
+  }
+}
+
+async function listActivityReviewEventsForSummary(
+  prisma: PrismaClient,
+  query: ActivityReviewQuery = {},
+): Promise<ActivityReviewEvent[]> {
+  const summaryQuery = { ...query };
+  delete summaryQuery.limit;
+  try {
+    const { sql, params } = buildEventSql(summaryQuery, null);
+    const rows = await prisma.$queryRawUnsafe<ActivityReviewRow[]>(sql, ...params);
+    return applyDerivedFilters(rows.map(rowToEvent), summaryQuery);
+  } catch {
+    try {
+      const fallback = buildEventSql(summaryQuery, null, false);
+      const rows = await prisma.$queryRawUnsafe<ActivityReviewRow[]>(fallback.sql, ...fallback.params);
+      return applyDerivedFilters(rows.map(rowToEvent), summaryQuery);
     } catch {
       return [];
     }
@@ -400,7 +468,7 @@ export async function getActivityReviewSummary(
   prisma: PrismaClient,
   query: ActivityReviewQuery = {},
 ): Promise<ActivityReviewUserSummary[]> {
-  const events = await listActivityReviewEvents(prisma, { ...query, limit: query.limit ?? 200 });
+  const events = await listActivityReviewEventsForSummary(prisma, query);
   const today = startOfToday();
   const week = startOfWeek();
   const grouped = new Map<string, ActivityReviewUserSummary>();
@@ -413,7 +481,7 @@ export async function getActivityReviewSummary(
       existing ??
       {
         actorUserId: event.actorUserId,
-        actorName: event.actorName ?? event.actorEmail ?? 'System',
+        actorName: event.actorName ?? event.actorEmail ?? (event.actorUserId ? unknownActorName(event.actorUserId) : 'System'),
         actorEmail: event.actorEmail,
         lastActivityAt: event.occurredAt,
         totalEvents: 0,
@@ -464,19 +532,22 @@ async function ensureActivityReviewReviewTable(prisma: PrismaClient): Promise<vo
   `);
 }
 
-export async function updateActivityReviewEventReview(
+async function upsertActivityReviewEventReviews(
   prisma: PrismaClient,
-  input: ActivityReviewUpdateInput,
-): Promise<ActivityReviewEvent | null> {
-  const existing = await getActivityReviewEvent(prisma, input.auditEventId);
-  if (!existing) return null;
+  eventIds: string[],
+  status: Exclude<ActivityReviewStatus, 'UNREVIEWED'>,
+  reviewedByUserId: string | null,
+  reviewNote: string | null,
+): Promise<void> {
+  if (eventIds.length === 0) return;
 
   await ensureActivityReviewReviewTable(prisma);
   await prisma.$executeRawUnsafe(
     `
       INSERT INTO platform.activity_review_event_review
         (audit_event_id, status, reviewed_by_user_id, review_note, reviewed_at, updated_at)
-      VALUES ($1, $2, $3, $4, now(), now())
+      SELECT audit_event_id, $2, $3, $4, now(), now()
+      FROM unnest($1::text[]) AS audit_event_id
       ON CONFLICT (audit_event_id)
       DO UPDATE SET
         status = EXCLUDED.status,
@@ -485,7 +556,23 @@ export async function updateActivityReviewEventReview(
         reviewed_at = now(),
         updated_at = now()
     `,
-    input.auditEventId,
+    eventIds,
+    status,
+    reviewedByUserId,
+    reviewNote,
+  );
+}
+
+export async function updateActivityReviewEventReview(
+  prisma: PrismaClient,
+  input: ActivityReviewUpdateInput,
+): Promise<ActivityReviewEvent | null> {
+  const existing = await getActivityReviewEvent(prisma, input.auditEventId);
+  if (!existing) return null;
+
+  await upsertActivityReviewEventReviews(
+    prisma,
+    [input.auditEventId],
     input.status,
     input.reviewedByUserId ?? null,
     input.reviewNote?.trim() || null,
@@ -506,6 +593,106 @@ export async function updateActivityReviewEventReview(
   });
 
   return getActivityReviewEvent(prisma, input.auditEventId);
+}
+
+function uniqueNonEmpty(values: string[] | undefined): string[] {
+  return Array.from(new Set((values ?? []).map((value) => value.trim()).filter(Boolean)));
+}
+
+function canBulkApplyStatus(
+  event: ActivityReviewEvent,
+  status: Exclude<ActivityReviewStatus, 'UNREVIEWED'>,
+): boolean {
+  if (status === 'FLAGGED') return true;
+  return event.outcome === 'SUCCESS' && event.riskLevel !== 'HIGH';
+}
+
+function skippedEventSummary(event: ActivityReviewEvent): ActivityReviewBulkSkippedEvent {
+  return {
+    id: event.id,
+    occurredAt: event.occurredAt,
+    actionLabel: event.actionLabel,
+    module: event.module,
+    outcome: event.outcome,
+    riskLevel: event.riskLevel,
+    reviewStatus: event.reviewStatus,
+  };
+}
+
+async function bulkReviewCandidates(
+  prisma: PrismaClient,
+  input: ActivityReviewBulkReviewInput,
+): Promise<{ events: ActivityReviewEvent[]; requestedCount: number; hasMore: boolean }> {
+  if (input.mode === 'IDS') {
+    const ids = uniqueNonEmpty(input.eventIds);
+    if (ids.length === 0) return { events: [], requestedCount: 0, hasMore: false };
+    const events = await listActivityReviewEvents(prisma, {
+      auditEventIds: ids,
+      limit: Math.max(ids.length, 1),
+    });
+    return { events, requestedCount: ids.length, hasMore: false };
+  }
+
+  const events = await listActivityReviewEvents(prisma, {
+    ...(input.filters ?? {}),
+    limit: ACTIVITY_REVIEW_BULK_REVIEW_LIMIT + 1,
+  });
+  return {
+    events: events.slice(0, ACTIVITY_REVIEW_BULK_REVIEW_LIMIT),
+    requestedCount: events.length,
+    hasMore: events.length > ACTIVITY_REVIEW_BULK_REVIEW_LIMIT,
+  };
+}
+
+export async function bulkUpdateActivityReviewEventReviews(
+  prisma: PrismaClient,
+  input: ActivityReviewBulkReviewInput,
+): Promise<ActivityReviewBulkReviewResult> {
+  const reviewNote = input.reviewNote.trim();
+  const { events, requestedCount, hasMore } = await bulkReviewCandidates(prisma, input);
+  const eligible = events.filter((event) => canBulkApplyStatus(event, input.status));
+  const skipped = events.filter((event) => !canBulkApplyStatus(event, input.status));
+  const missingCount = input.mode === 'IDS' ? Math.max(requestedCount - events.length, 0) : 0;
+
+  await upsertActivityReviewEventReviews(
+    prisma,
+    eligible.map((event) => event.id),
+    input.status,
+    input.reviewedByUserId ?? null,
+    reviewNote,
+  );
+
+  await recordPlatformAuditEvent(prisma, {
+    eventType: 'activity_review.events_bulk_reviewed',
+    action: 'BULK_REVIEW_ACTIVITY_EVENTS',
+    resourceType: 'activity_review.event_batch',
+    resourceId: null,
+    actorUserId: input.reviewedByUserId ?? null,
+    actorSessionId: input.actorSessionId ?? null,
+    outcome: 'SUCCESS',
+    reason: reviewNote,
+    ipAddress: input.ipAddress ?? null,
+    userAgent: input.userAgent ?? null,
+    metadataJson: {
+      mode: input.mode,
+      status: input.status,
+      requestedCount,
+      matchedCount: events.length,
+      updatedCount: eligible.length,
+      skippedCount: skipped.length + missingCount,
+      skippedEventIds: skipped.slice(0, ACTIVITY_REVIEW_SKIPPED_SAMPLE_LIMIT).map((event) => event.id),
+      hasMore,
+      filters: input.mode === 'FILTER' ? input.filters ?? {} : undefined,
+    },
+  });
+
+  return {
+    status: input.status,
+    updatedCount: eligible.length,
+    skippedCount: skipped.length + missingCount,
+    skippedEvents: skipped.slice(0, ACTIVITY_REVIEW_SKIPPED_SAMPLE_LIMIT).map(skippedEventSummary),
+    hasMore,
+  };
 }
 
 function csvCell(value: unknown): string {

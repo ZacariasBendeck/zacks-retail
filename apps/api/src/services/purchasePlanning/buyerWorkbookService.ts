@@ -62,6 +62,20 @@ export interface HistoricalTargetSummary {
   averageBeginningOnHand: number;
 }
 
+export interface SalesProjectionMonth {
+  yearMonth: string;
+  projectedUnits: number;
+  projectedSales: number;
+}
+
+export interface SalesProjectionPlan {
+  months: SalesProjectionMonth[];
+  totalProjectedUnits: number;
+  totalProjectedSales: number;
+  updatedBy: string | null;
+  updatedAt: string | null;
+}
+
 export interface AttributeMixRow {
   valueCode: string;
   valueLabel: string;
@@ -165,6 +179,27 @@ export interface BuyerChecklistCategoryRow {
   action: 'START_REVIEW' | 'CONTINUE' | 'NO_BUDGET';
 }
 
+type BuyerChecklistCategorySqlRow = {
+  buyerCode: string | null;
+  buyerLabel: string | null;
+  categoryNumber: number;
+  categoryLabel: string;
+  departmentNumber: number | null;
+  departmentLabel: string | null;
+};
+
+type BuyerChecklistCategorySalesSqlRow = {
+  categoryNumber: number;
+  last12MonthsSales: unknown;
+  last12MonthsUnits: unknown;
+};
+
+type BuyerChecklistCategoryInventorySqlRow = {
+  categoryNumber: number;
+  currentInventoryUnits: unknown;
+  currentInventoryValue: unknown;
+};
+
 export interface BuyerNoBudgetCategoryResult {
   categoryNumber: number;
   buyingSeason: BuyerWorkbookSeason;
@@ -212,6 +247,7 @@ export interface BuyerCategoryCard {
     months: HistoricalMonthMetric[];
     summary: HistoricalTargetSummary;
   };
+  salesProjection: SalesProjectionPlan;
   attributeMix: AttributeMixDimension[];
   notes: string | null;
   createdAt: string;
@@ -372,6 +408,11 @@ interface CardRow {
   additionalNewStyleTargetCount: number;
   totalNewStyleTargetCount: number;
   historyJson: unknown;
+  salesProjectionJson: unknown;
+  salesProjectionUnits: unknown;
+  salesProjectionSales: unknown;
+  salesProjectionUpdatedBy: string | null;
+  salesProjectionUpdatedAt: Date | string | null;
   attributeMixJson: unknown;
   notes: string | null;
   createdAt: Date | string;
@@ -647,6 +688,39 @@ export function summarizeHistoricalTargets(months: HistoricalMonthMetric[]): His
   };
 }
 
+function normalizeSalesProjection(row: CardRow, historyMonths: HistoricalMonthMetric[]): SalesProjectionPlan {
+  const savedMonths = jsonArray<Partial<SalesProjectionMonth>>(row.salesProjectionJson)
+    .map((month) => ({
+      yearMonth: typeof month.yearMonth === 'string' ? month.yearMonth : '',
+      projectedUnits: Math.max(0, Math.round(toNumber(month.projectedUnits))),
+      projectedSales: Math.max(0, Math.round(toNumber(month.projectedSales) * 100) / 100),
+    }))
+    .filter((month) => /^\d{4}-\d{2}$/.test(month.yearMonth));
+
+  const months = savedMonths.length > 0
+    ? savedMonths
+    : historyMonths.map((month) => ({
+      yearMonth: month.yearMonth,
+      projectedUnits: Math.max(0, Math.round(month.quantitySold)),
+      projectedSales: Math.max(0, Math.round(month.netSales * 100) / 100),
+    }));
+
+  const totalProjectedUnits = savedMonths.length > 0
+    ? Math.max(0, Math.round(toNumber(row.salesProjectionUnits)))
+    : months.reduce((sum, month) => sum + month.projectedUnits, 0);
+  const totalProjectedSales = savedMonths.length > 0
+    ? Math.max(0, Math.round(toNumber(row.salesProjectionSales) * 100) / 100)
+    : Math.round(months.reduce((sum, month) => sum + month.projectedSales, 0) * 100) / 100;
+
+  return {
+    months,
+    totalProjectedUnits,
+    totalProjectedSales,
+    updatedBy: row.salesProjectionUpdatedBy,
+    updatedAt: toIso(row.salesProjectionUpdatedAt),
+  };
+}
+
 export function aggregateAttributeMix(rows: Array<{
   dimensionCode: string;
   dimensionLabel: string;
@@ -773,6 +847,7 @@ function normalizeWorkbookList(row: WorkbookRow): BuyerWorkbookListItem {
 
 function normalizeCard(row: CardRow): BuyerCategoryCard {
   const history = jsonObject<{ months?: HistoricalMonthMetric[]; summary?: HistoricalTargetSummary }>(row.historyJson);
+  const historyMonths = Array.isArray(history.months) ? history.months : [];
   const attributeMix = normalizeAttributeMix(row.attributeMixJson);
   return {
     id: row.id,
@@ -792,9 +867,10 @@ function normalizeCard(row: CardRow): BuyerCategoryCard {
     additionalNewStyleTargetCount: Number(row.additionalNewStyleTargetCount ?? 0),
     totalNewStyleTargetCount: Number(row.totalNewStyleTargetCount ?? 0),
     history: {
-      months: Array.isArray(history.months) ? history.months : [],
+      months: historyMonths,
       summary: history.summary ?? summarizeHistoricalTargets([]),
     },
+    salesProjection: normalizeSalesProjection(row, historyMonths),
     attributeMix,
     notes: row.notes,
     createdAt: toIso(row.createdAt)!,
@@ -1042,22 +1118,11 @@ export async function listBuyerChecklistCategories(input: {
   const seasonYear = input.seasonYear ?? new Date().getFullYear();
   const includeNoBudget = input.includeNoBudget === true;
   const seasonSeries = buyerSeasonSeries(buyingSeason, seasonYear);
-  const latestMonth = await latestYearMonth();
-  const fromYearMonth = shiftYearMonth(latestMonth, -11);
+  const reportMonth = await latestInventorySnapshotYearMonth();
+  const fromYearMonth = shiftYearMonth(reportMonth, -11);
   const currentSeasonMonths = monthsForBuyerSeason(buyingSeason, seasonYear);
 
-  const categoryRows = await prisma.$queryRawUnsafe<Array<{
-    buyerCode: string | null;
-    buyerLabel: string | null;
-    categoryNumber: number;
-    categoryLabel: string;
-    departmentNumber: number | null;
-    departmentLabel: string | null;
-    last12MonthsSales: unknown;
-    last12MonthsUnits: unknown;
-    currentInventoryUnits: unknown;
-    currentInventoryValue: unknown;
-  }>>(
+  const categoryRows = await prisma.$queryRawUnsafe<BuyerChecklistCategorySqlRow[]>(
     `
 WITH buyer_assignment AS (
   SELECT DISTINCT ON (UPPER(BTRIM(saa.sku_code)))
@@ -1088,27 +1153,6 @@ sku_scope AS (
       ($1::text IS NULL AND ba.buyer_code IS NOT NULL)
       OR ($1::text IS NOT NULL AND UPPER(ba.buyer_code) = UPPER($1::text))
     )
-),
-sales AS (
-  SELECT
-    scope.category_number,
-    SUM(COALESCE(m.qty_sales, 0))::float8 AS units,
-    SUM(COALESCE(m.net_sales, 0))::float8 AS sales
-  FROM sku_scope scope
-  JOIN app.inventory_history_snapshot h ON h.sku_id = scope.sku_id
-  JOIN app.inventory_history_month m ON m.snapshot_id = h.id
-  WHERE m.year_month >= $2::text
-    AND m.year_month <= $3::text
-  GROUP BY scope.category_number
-),
-inventory AS (
-  SELECT
-    scope.category_number,
-    SUM(COALESCE(h.on_hand, 0))::float8 AS units,
-    SUM(COALESCE(h.on_hand, 0) * COALESCE(h.average_cost, 0))::float8 AS value
-  FROM sku_scope scope
-  JOIN app.inventory_history_snapshot h ON h.sku_id = scope.sku_id
-  GROUP BY scope.category_number
 )
 SELECT
   MAX(scope.buyer_code) AS "buyerCode",
@@ -1116,27 +1160,31 @@ SELECT
   c.number AS "categoryNumber",
   c.number::text || ' - ' || c."desc" AS "categoryLabel",
   d.number AS "departmentNumber",
-  CASE WHEN d.number IS NULL THEN 'Unmapped' ELSE d.number::text || ' - ' || d."desc" END AS "departmentLabel",
-  COALESCE(sales.sales, 0)::float8 AS "last12MonthsSales",
-  COALESCE(sales.units, 0)::float8 AS "last12MonthsUnits",
-  COALESCE(inventory.units, 0)::float8 AS "currentInventoryUnits",
-  COALESCE(inventory.value, 0)::float8 AS "currentInventoryValue"
+  CASE WHEN d.number IS NULL THEN 'Unmapped' ELSE d.number::text || ' - ' || d."desc" END AS "departmentLabel"
 FROM sku_scope scope
 JOIN app.taxonomy_category c ON c.number = scope.category_number
 LEFT JOIN app.taxonomy_department d ON c.number BETWEEN d.beg_categ AND d.end_categ
-LEFT JOIN sales ON sales.category_number = c.number
-LEFT JOIN inventory ON inventory.category_number = c.number
-GROUP BY c.number, c."desc", d.number, d."desc", sales.sales, sales.units, inventory.units, inventory.value
+GROUP BY c.number, c."desc", d.number, d."desc"
 ORDER BY COALESCE(d.number, 9999), c.number
 LIMIT 1000
     `,
     buyer,
-    fromYearMonth,
-    latestMonth,
   );
 
   const categoryNumbers = categoryRows.map((row) => Number(row.categoryNumber));
   const departmentNumbers = uniqueSorted(categoryRows.map((row) => Number(row.departmentNumber)).filter((row) => Number.isInteger(row)));
+  const [salesRows, inventoryRows] = await Promise.all([
+    loadBuyerChecklistCategorySales({
+      buyer,
+      categoryNumbers,
+      fromYearMonth,
+      toYearMonth: reportMonth,
+    }),
+    loadBuyerChecklistCategoryInventory({
+      buyer,
+      categoryNumbers,
+    }),
+  ]);
   const planRows = categoryNumbers.length === 0 ? [] : await prisma.$queryRawUnsafe<Array<{
     categoryNumber: number;
     buyingSeason: BuyerWorkbookSeason;
@@ -1221,6 +1269,20 @@ LIMIT 1000
     currentSeasonMonths,
   );
 
+  const salesMap = new Map(salesRows.map((row) => [
+    Number(row.categoryNumber),
+    {
+      sales: toNumber(row.last12MonthsSales),
+      units: toNumber(row.last12MonthsUnits),
+    },
+  ]));
+  const inventoryMap = new Map(inventoryRows.map((row) => [
+    Number(row.categoryNumber),
+    {
+      units: toNumber(row.currentInventoryUnits),
+      value: toNumber(row.currentInventoryValue),
+    },
+  ]));
   const planMap = new Map<string, BuyerChecklistSeasonPlan>();
   for (const row of planRows) {
     planMap.set(`${row.categoryNumber}:${row.buyingSeason}:${row.seasonYear}`, {
@@ -1263,10 +1325,10 @@ LIMIT 1000
       categoryLabel: row.categoryLabel,
       departmentNumber: row.departmentNumber == null ? null : Number(row.departmentNumber),
       departmentLabel: row.departmentLabel ?? 'Unmapped',
-      last12MonthsSales: Math.round(toNumber(row.last12MonthsSales) * 100) / 100,
-      last12MonthsUnits: Math.round(toNumber(row.last12MonthsUnits)),
-      currentInventoryUnits: Math.round(toNumber(row.currentInventoryUnits)),
-      currentInventoryValue: Math.round(toNumber(row.currentInventoryValue) * 100) / 100,
+      last12MonthsSales: Math.round((salesMap.get(Number(row.categoryNumber))?.sales ?? 0) * 100) / 100,
+      last12MonthsUnits: Math.round(salesMap.get(Number(row.categoryNumber))?.units ?? 0),
+      currentInventoryUnits: Math.round(inventoryMap.get(Number(row.categoryNumber))?.units ?? 0),
+      currentInventoryValue: Math.round((inventoryMap.get(Number(row.categoryNumber))?.value ?? 0) * 100) / 100,
       departmentOtbUnits: row.departmentNumber == null ? null : otbMap.get(Number(row.departmentNumber)) ?? null,
       ...plans,
       action,
@@ -1558,9 +1620,8 @@ async function loadHistoricalMetrics(input: {
   categoryNumber: number;
   seasonMonths: string[];
 }, db: DbClient = prisma): Promise<{ months: HistoricalMonthMetric[]; summary: HistoricalTargetSummary }> {
-  const fromYearMonth = shiftYearMonth(input.seasonMonths[0], -36);
-  const toYearMonth = shiftYearMonth(input.seasonMonths[0], -1);
-  const selectedMonthNumbers = monthNumbers(input.seasonMonths);
+  const toYearMonth = await latestYearMonth(db);
+  const fromYearMonth = shiftYearMonth(toYearMonth, -11);
   const rows = await db.$queryRawUnsafe<HistorySqlRow[]>(
     `
 WITH chain_first AS (
@@ -1592,7 +1653,6 @@ src AS (
     AND k.category_number = $2::int
     AND m.year_month >= $3::text
     AND m.year_month <= $4::text
-    AND EXTRACT(MONTH FROM to_date(m.year_month || '-01', 'YYYY-MM-DD'))::int = ANY($5::int[])
 )
 SELECT
   year_month AS "yearMonth",
@@ -1641,7 +1701,6 @@ ORDER BY year_month
     input.categoryNumber,
     fromYearMonth,
     toYearMonth,
-    selectedMonthNumbers,
   );
 
   const months: HistoricalMonthMetric[] = rows.map((row) => {
@@ -1857,6 +1916,162 @@ async function latestYearMonth(db: DbClient = prisma): Promise<string> {
     `,
   );
   return rows[0]?.yearMonth ?? yearMonth(new Date().getUTCFullYear(), new Date().getUTCMonth() + 1);
+}
+
+async function latestInventorySnapshotYearMonth(db: DbClient = prisma): Promise<string> {
+  const rows = await db.$queryRawUnsafe<Array<{ yearMonth: string | null }>>(
+    `
+      SELECT to_char(MAX(snapshot_as_of), 'YYYY-MM') AS "yearMonth"
+      FROM app.inventory_history_snapshot
+    `,
+  );
+  return rows[0]?.yearMonth ?? shiftYearMonth(await latestYearMonth(db), 1);
+}
+
+function parseYearMonthParts(input: string): { year: number; month: number } {
+  const [yearPart, monthPart] = input.split('-');
+  const year = Number(yearPart);
+  const month = Number(monthPart);
+  if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) {
+    throw new BuyerWorkbookServiceError(500, 'INVALID_YEAR_MONTH', `Invalid year-month value: ${input}`);
+  }
+  return { year, month };
+}
+
+async function loadBuyerChecklistCategorySales(input: {
+  buyer: string | null;
+  categoryNumbers: number[];
+  fromYearMonth: string;
+  toYearMonth: string;
+}, db: DbClient = prisma): Promise<BuyerChecklistCategorySalesSqlRow[]> {
+  if (input.categoryNumbers.length === 0) return [];
+  const report = parseYearMonthParts(input.toYearMonth);
+  return db.$queryRawUnsafe<BuyerChecklistCategorySalesSqlRow[]>(
+    `
+WITH buyer_assignment AS (
+  SELECT DISTINCT ON (UPPER(BTRIM(saa.sku_code)))
+    UPPER(BTRIM(saa.sku_code)) AS sku_code,
+    av.code AS buyer_code
+  FROM app.sku_attribute_assignment saa
+  JOIN app.attribute_dimension ad
+    ON ad.id = saa.dimension_id
+   AND ad.code = 'buyer'
+  JOIN app.attribute_value av ON av.id = saa.value_id
+  WHERE COALESCE(BTRIM(saa.sku_code), '') <> ''
+  ORDER BY UPPER(BTRIM(saa.sku_code)), av.sort_order NULLS LAST, av.code
+),
+src AS (
+  SELECT
+    k.category_number AS category_number,
+    CONCAT(
+      CASE
+        WHEN m.slot_number < $4::int THEN $3::int
+        ELSE $3::int - 1
+      END,
+      '-',
+      LPAD(m.slot_number::text, 2, '0')
+    ) AS year_month,
+    COALESCE(m.qty_sales, 0)::float8 AS qty_sales,
+    COALESCE(m.net_sales, 0)::float8 AS net_sales,
+    COALESCE(m.profit, 0)::float8 AS profit
+  FROM app.sku k
+  JOIN buyer_assignment ba
+    ON ba.sku_code = UPPER(BTRIM(COALESCE(k.code, k.provisional_code)))
+  JOIN app.inventory_history_snapshot s ON s.sku_id = k.id
+  JOIN app.inventory_history_month m ON m.snapshot_id = s.id
+  WHERE k.category_number = ANY($5::int[])
+    AND COALESCE(k.rics_status, '') <> 'D'
+    AND (
+      ($6::text IS NULL AND ba.buyer_code IS NOT NULL)
+      OR ($6::text IS NOT NULL AND UPPER(ba.buyer_code) = UPPER($6::text))
+    )
+    AND (
+      m.qty_sales <> 0 OR
+      COALESCE(m.net_sales, 0) <> 0 OR
+      COALESCE(m.profit, 0) <> 0
+    )
+
+  UNION ALL
+
+  SELECT
+    k.category_number AS category_number,
+    $2::text AS year_month,
+    COALESCE(s.month_qty_sales, 0)::float8 AS qty_sales,
+    COALESCE(s.month_dol_sales, 0)::float8 AS net_sales,
+    COALESCE(s.month_profit, 0)::float8 AS profit
+  FROM app.sku k
+  JOIN buyer_assignment ba
+    ON ba.sku_code = UPPER(BTRIM(COALESCE(k.code, k.provisional_code)))
+  JOIN app.inventory_history_snapshot s ON s.sku_id = k.id
+  WHERE k.category_number = ANY($5::int[])
+    AND COALESCE(k.rics_status, '') <> 'D'
+    AND (
+      ($6::text IS NULL AND ba.buyer_code IS NOT NULL)
+      OR ($6::text IS NOT NULL AND UPPER(ba.buyer_code) = UPPER($6::text))
+    )
+    AND (
+      COALESCE(s.month_qty_sales, 0) <> 0 OR
+      COALESCE(s.month_dol_sales, 0) <> 0 OR
+      COALESCE(s.month_profit, 0) <> 0
+    )
+)
+SELECT
+  category_number AS "categoryNumber",
+  SUM(qty_sales)::float8 AS "last12MonthsUnits",
+  SUM(net_sales)::float8 AS "last12MonthsSales"
+FROM src
+WHERE year_month >= $1::text
+  AND year_month <= $2::text
+  AND (qty_sales <> 0 OR net_sales <> 0 OR profit <> 0)
+GROUP BY category_number
+    `,
+    input.fromYearMonth,
+    input.toYearMonth,
+    report.year,
+    report.month,
+    input.categoryNumbers,
+    input.buyer,
+  );
+}
+
+async function loadBuyerChecklistCategoryInventory(input: {
+  buyer: string | null;
+  categoryNumbers: number[];
+}, db: DbClient = prisma): Promise<BuyerChecklistCategoryInventorySqlRow[]> {
+  if (input.categoryNumbers.length === 0) return [];
+  return db.$queryRawUnsafe<BuyerChecklistCategoryInventorySqlRow[]>(
+    `
+WITH buyer_assignment AS (
+  SELECT DISTINCT ON (UPPER(BTRIM(saa.sku_code)))
+    UPPER(BTRIM(saa.sku_code)) AS sku_code,
+    av.code AS buyer_code
+  FROM app.sku_attribute_assignment saa
+  JOIN app.attribute_dimension ad
+    ON ad.id = saa.dimension_id
+   AND ad.code = 'buyer'
+  JOIN app.attribute_value av ON av.id = saa.value_id
+  WHERE COALESCE(BTRIM(saa.sku_code), '') <> ''
+  ORDER BY UPPER(BTRIM(saa.sku_code)), av.sort_order NULLS LAST, av.code
+)
+SELECT
+  k.category_number AS "categoryNumber",
+  SUM(COALESCE(s.on_hand, 0))::float8 AS "currentInventoryUnits",
+  SUM(COALESCE(s.on_hand, 0) * COALESCE(k.current_cost, s.average_cost, 0))::float8 AS "currentInventoryValue"
+FROM app.sku k
+JOIN buyer_assignment ba
+  ON ba.sku_code = UPPER(BTRIM(COALESCE(k.code, k.provisional_code)))
+JOIN app.inventory_history_snapshot s ON s.sku_id = k.id
+WHERE k.category_number = ANY($1::int[])
+  AND COALESCE(k.rics_status, '') <> 'D'
+  AND (
+    ($2::text IS NULL AND ba.buyer_code IS NOT NULL)
+    OR ($2::text IS NOT NULL AND UPPER(ba.buyer_code) = UPPER($2::text))
+  )
+GROUP BY k.category_number
+    `,
+    input.categoryNumbers,
+    input.buyer,
+  );
 }
 
 function shiftBuyerSeasonYearMonthStart(season: BuyerWorkbookSeason, seasonYear: number): string {
@@ -2187,7 +2402,7 @@ export async function createBuyerWorkbook(input: {
             $3,
             $4::int,
             $5,
-            'HISTORY_REVIEWED',
+            'NOT_STARTED',
             $6::int,
             $7::int[],
             $8::int,
@@ -2296,6 +2511,11 @@ export async function getBuyerWorkbook(id: string): Promise<BuyerWorkbookDetail>
           additional_new_style_target_count AS "additionalNewStyleTargetCount",
           total_new_style_target_count AS "totalNewStyleTargetCount",
           history_json AS "historyJson",
+          sales_projection_json AS "salesProjectionJson",
+          sales_projection_units AS "salesProjectionUnits",
+          sales_projection_sales AS "salesProjectionSales",
+          sales_projection_updated_by AS "salesProjectionUpdatedBy",
+          sales_projection_updated_at AS "salesProjectionUpdatedAt",
           attribute_mix_json AS "attributeMixJson",
           notes,
           created_at AS "createdAt",
@@ -2482,6 +2702,11 @@ async function ensureCard(workbookId: string, cardId: string, db: DbClient = pri
         additional_new_style_target_count AS "additionalNewStyleTargetCount",
         total_new_style_target_count AS "totalNewStyleTargetCount",
         history_json AS "historyJson",
+        sales_projection_json AS "salesProjectionJson",
+        sales_projection_units AS "salesProjectionUnits",
+        sales_projection_sales AS "salesProjectionSales",
+        sales_projection_updated_by AS "salesProjectionUpdatedBy",
+        sales_projection_updated_at AS "salesProjectionUpdatedAt",
         attribute_mix_json AS "attributeMixJson",
         notes,
         created_at AS "createdAt",
@@ -2539,10 +2764,20 @@ export async function updateBuyerCategoryCard(workbookId: string, cardId: string
   status?: BuyerCategoryStatus;
   targetNewSkuCount?: number;
   targetCarryoverSkuCount?: number;
+  salesProjections?: SalesProjectionMonth[];
   notes?: string | null;
   actor?: string | null;
 }): Promise<BuyerWorkbookDetail> {
   const actor = cleanText(input.actor) ?? 'system';
+  const salesProjectionMonths = input.salesProjections?.map((month) => ({
+    yearMonth: month.yearMonth,
+    projectedUnits: Math.max(0, Math.trunc(toNumber(month.projectedUnits))),
+    projectedSales: Math.max(0, Math.round(toNumber(month.projectedSales) * 100) / 100),
+  })).filter((month) => /^\d{4}-\d{2}$/.test(month.yearMonth)) ?? null;
+  const salesProjectionUnits = salesProjectionMonths?.reduce((sum, month) => sum + month.projectedUnits, 0) ?? null;
+  const salesProjectionSales = salesProjectionMonths == null
+    ? null
+    : Math.round(salesProjectionMonths.reduce((sum, month) => sum + month.projectedSales, 0) * 100) / 100;
   await prisma.$transaction(async (tx) => {
     const before = normalizeCard(await ensureCard(workbookId, cardId, tx));
     await tx.$executeRawUnsafe(
@@ -2553,6 +2788,11 @@ export async function updateBuyerCategoryCard(workbookId: string, cardId: string
           target_new_sku_count = COALESCE($4::int, target_new_sku_count),
           target_carryover_sku_count = COALESCE($5::int, target_carryover_sku_count),
           notes = CASE WHEN $6::boolean THEN $7::text ELSE notes END,
+          sales_projection_json = CASE WHEN $8::boolean THEN $9::jsonb ELSE sales_projection_json END,
+          sales_projection_units = CASE WHEN $8::boolean THEN $10::int ELSE sales_projection_units END,
+          sales_projection_sales = CASE WHEN $8::boolean THEN $11::numeric ELSE sales_projection_sales END,
+          sales_projection_updated_by = CASE WHEN $8::boolean THEN $12::text ELSE sales_projection_updated_by END,
+          sales_projection_updated_at = CASE WHEN $8::boolean THEN CURRENT_TIMESTAMP ELSE sales_projection_updated_at END,
           updated_at = CURRENT_TIMESTAMP
         WHERE workbook_id = $1::uuid
           AND id = $2::uuid
@@ -2564,6 +2804,11 @@ export async function updateBuyerCategoryCard(workbookId: string, cardId: string
       input.targetCarryoverSkuCount == null ? null : Math.max(0, Math.trunc(input.targetCarryoverSkuCount)),
       input.notes !== undefined,
       input.notes ?? null,
+      input.salesProjections !== undefined,
+      JSON.stringify(salesProjectionMonths ?? []),
+      salesProjectionUnits,
+      salesProjectionSales,
+      actor,
     );
     await tx.$executeRawUnsafe(
       `

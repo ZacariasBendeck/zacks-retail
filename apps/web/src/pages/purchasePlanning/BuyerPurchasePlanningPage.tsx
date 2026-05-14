@@ -3,7 +3,6 @@ import {
   Alert,
   Button,
   Col,
-  Drawer,
   Form,
   Input,
   InputNumber,
@@ -28,9 +27,10 @@ import {
   SaveOutlined,
   StopOutlined,
 } from '@ant-design/icons'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useCategories, useDepartments } from '../../hooks/useProductsTaxonomy'
+import { useAuth } from '../../auth/useAuth'
+import { useCategories, useCategoryBuyerOptions, useDepartments } from '../../hooks/useProductsTaxonomy'
 import { useStoreChains, useStores } from '../../hooks/useStores'
 import { fetchPurchaseOrders } from '../../services/purchaseOrderApi'
 import {
@@ -69,6 +69,7 @@ import {
   type CarryoverLine,
   type HistoricalMonthMetric,
   type PlannedStyle,
+  type SalesProjectionMonth,
   type StoreCategoryCarryingRow,
 } from '../../services/buyerPurchasePlanningApi'
 
@@ -76,7 +77,7 @@ const { Title, Text } = Typography
 
 const statusColumns: Array<{ key: BuyerCategoryStatus; label: string; color: string }> = [
   { key: 'NOT_STARTED', label: 'Not Started', color: 'default' },
-  { key: 'HISTORY_REVIEWED', label: 'History Reviewed', color: 'blue' },
+  { key: 'HISTORY_REVIEWED', label: 'Sales Projected', color: 'blue' },
   { key: 'CARRYOVER_REVIEW', label: 'Carryover Review', color: 'gold' },
   { key: 'CARRYOVERS', label: 'Carryovers', color: 'cyan' },
   { key: 'NEW_STYLES', label: 'New Styles', color: 'purple' },
@@ -153,9 +154,24 @@ function landingRowKey(row: BuyerChecklistCategoryRow): string {
   return `${row.categoryNumber}-${row.departmentNumber ?? 'none'}`
 }
 
+function buyerStorageKey(userId: string | undefined): string | null {
+  return userId ? `buyer-checklist:last-buyer:${userId}` : null
+}
+
+type LoadedChecklistRequest = {
+  buyer: string
+  buyingSeason: BuyerWorkbookSeason
+  seasonYear: number
+  includeNoBudget: boolean
+}
+
 export default function BuyerPurchasePlanningPage() {
   const [messageApi, contextHolder] = message.useMessage()
   const queryClient = useQueryClient()
+  const navigate = useNavigate()
+  const params = useParams<{ workbookId?: string; cardId?: string }>()
+  const { user } = useAuth()
+  const isReviewRoute = Boolean(params.workbookId && params.cardId)
   const [createForm] = Form.useForm<BuyerWorkbookCreateRequest>()
   const [carryingForm] = Form.useForm<{
     categoryNumber: number
@@ -194,6 +210,7 @@ export default function BuyerPurchasePlanningPage() {
   const [landingSeason, setLandingSeason] = useState<BuyerWorkbookSeason>('FALL_WINTER')
   const [landingYear, setLandingYear] = useState(new Date().getFullYear())
   const [buyerFilter, setBuyerFilter] = useState('')
+  const [loadedChecklistRequest, setLoadedChecklistRequest] = useState<LoadedChecklistRequest | null>(null)
   const [landingSearch, setLandingSearch] = useState('')
   const [showNoBudget, setShowNoBudget] = useState(false)
   const [selectedLandingRowKeys, setSelectedLandingRowKeys] = useState<string[]>([])
@@ -208,40 +225,54 @@ export default function BuyerPurchasePlanningPage() {
   const [editingCarryoverLine, setEditingCarryoverLine] = useState<CarryoverLine | null>(null)
   const [editingSizeCells, setEditingSizeCells] = useState<CarryoverLine['sizeCells']>([])
   const [attributePlanValues, setAttributePlanValues] = useState<Record<string, { plannedStyleCount: number; plannedUnits: number; notes?: string | null }>>({})
+  const [salesProjectionRows, setSalesProjectionRows] = useState<SalesProjectionMonth[]>([])
+  const checklistLoaded = loadedChecklistRequest !== null
 
   const { data: stores = [], isLoading: storesLoading } = useStores()
   const { data: storeChains = [], isLoading: chainsLoading } = useStoreChains()
   const { data: categories = [], isLoading: categoriesLoading } = useCategories()
   const { data: departments = [], isLoading: departmentsLoading } = useDepartments()
+  const buyerOptionsQuery = useCategoryBuyerOptions()
 
   const workbooks = useQuery({
     queryKey: ['buyer-purchase-workbooks'],
     queryFn: () => fetchBuyerWorkbooks({ status: 'all' }),
+    enabled: checklistLoaded && !isReviewRoute,
     staleTime: 60_000,
   })
 
-  const checklistCategoryQueryKey = ['buyer-checklist-categories', buyerFilter, landingSeason, landingYear, showNoBudget] as const
+  const checklistCategoryQueryKey = [
+    'buyer-checklist-categories',
+    loadedChecklistRequest?.buyer,
+    loadedChecklistRequest?.buyingSeason,
+    loadedChecklistRequest?.seasonYear,
+    loadedChecklistRequest?.includeNoBudget,
+  ] as const
   const checklistCategories = useQuery({
     queryKey: checklistCategoryQueryKey,
     queryFn: () => fetchBuyerChecklistCategories({
-      buyer: buyerFilter.trim() || undefined,
-      buyingSeason: landingSeason,
-      seasonYear: landingYear,
-      includeNoBudget: showNoBudget,
+      buyer: loadedChecklistRequest?.buyer,
+      buyingSeason: loadedChecklistRequest!.buyingSeason,
+      seasonYear: loadedChecklistRequest!.seasonYear,
+      includeNoBudget: loadedChecklistRequest!.includeNoBudget,
     }),
+    enabled: checklistLoaded && !isReviewRoute,
     staleTime: 60_000,
   })
 
+  const reviewWorkbookId = params.workbookId ?? selectedWorkbookId
+  const reviewCardId = params.cardId ?? drawerCardId
   const detail = useQuery({
-    queryKey: ['buyer-purchase-workbook', selectedWorkbookId],
-    queryFn: () => fetchBuyerWorkbook(selectedWorkbookId!),
-    enabled: !!selectedWorkbookId,
+    queryKey: ['buyer-purchase-workbook', reviewWorkbookId],
+    queryFn: () => fetchBuyerWorkbook(reviewWorkbookId!),
+    enabled: !!reviewWorkbookId,
     staleTime: 30_000,
   })
 
   const purchaseOrders = useQuery({
     queryKey: ['buyer-purchase-workbook', 'po-options'],
     queryFn: () => fetchPurchaseOrders({ page: 1, pageSize: 50, sort: 'updatedAt', order: 'desc' }),
+    enabled: isReviewRoute && !!reviewCardId,
     staleTime: 30_000,
   })
 
@@ -254,25 +285,25 @@ export default function BuyerPurchasePlanningPage() {
 
   const selectedDetail = detail.data
   const selectedCard = useMemo(
-    () => (selectedDetail?.cards ?? []).find((card) => card.id === drawerCardId) ?? null,
-    [drawerCardId, selectedDetail],
+    () => (selectedDetail?.cards ?? []).find((card) => card.id === reviewCardId) ?? null,
+    [reviewCardId, selectedDetail],
   )
 
   const selectedCardCarryovers = useMemo(
-    () => (selectedDetail?.carryovers ?? []).filter((line) => line.cardId === drawerCardId),
-    [drawerCardId, selectedDetail],
+    () => (selectedDetail?.carryovers ?? []).filter((line) => line.cardId === reviewCardId),
+    [reviewCardId, selectedDetail],
   )
   const selectedCardCandidates = useMemo(
-    () => (selectedDetail?.carryoverCandidates ?? []).filter((candidate) => candidate.cardId === drawerCardId),
-    [drawerCardId, selectedDetail],
+    () => (selectedDetail?.carryoverCandidates ?? []).filter((candidate) => candidate.cardId === reviewCardId),
+    [reviewCardId, selectedDetail],
   )
   const selectedCardStyles = useMemo(
-    () => (selectedDetail?.plannedStyles ?? []).filter((line) => line.cardId === drawerCardId),
-    [drawerCardId, selectedDetail],
+    () => (selectedDetail?.plannedStyles ?? []).filter((line) => line.cardId === reviewCardId),
+    [reviewCardId, selectedDetail],
   )
   const selectedCardLinks = useMemo(
-    () => (selectedDetail?.poLinks ?? []).filter((line) => line.cardId === drawerCardId),
-    [drawerCardId, selectedDetail],
+    () => (selectedDetail?.poLinks ?? []).filter((line) => line.cardId === reviewCardId),
+    [reviewCardId, selectedDetail],
   )
   const selectedAttributeMix = useMemo(
     () => selectedCard?.attributeMix ?? [],
@@ -285,7 +316,7 @@ export default function BuyerPurchasePlanningPage() {
   const selectedAttributePlanMap = useMemo(() => {
     const map = new Map<string, { plannedStyleCount: number; plannedUnits: number; notes?: string | null }>()
     ;(selectedDetail?.attributePlans ?? [])
-      .filter((row) => row.cardId === drawerCardId)
+      .filter((row) => row.cardId === reviewCardId)
       .forEach((row) => {
         map.set(attributePlanKey(row.dimensionCode, row.valueCode), {
           plannedStyleCount: row.plannedStyleCount,
@@ -294,7 +325,18 @@ export default function BuyerPurchasePlanningPage() {
         })
       })
     return map
-  }, [drawerCardId, selectedDetail])
+  }, [reviewCardId, selectedDetail])
+  const salesProjectionByMonth = useMemo(
+    () => new Map(salesProjectionRows.map((row) => [row.yearMonth, row])),
+    [salesProjectionRows],
+  )
+  const salesProjectionTotals = useMemo(() => ({
+    projectedUnits: salesProjectionRows.reduce((sum, row) => sum + Math.max(0, Number(row.projectedUnits ?? 0)), 0),
+    projectedSales: salesProjectionRows.reduce((sum, row) => sum + Math.max(0, Number(row.projectedSales ?? 0)), 0),
+  }), [salesProjectionRows])
+  const canContinuePlanning = selectedCard
+    ? selectedCard.status !== 'NOT_STARTED' || selectedCard.salesProjection.updatedAt != null
+    : false
 
   const filteredChecklistRows = useMemo(() => {
     const term = landingSearch.trim().toLowerCase()
@@ -319,6 +361,13 @@ export default function BuyerPurchasePlanningPage() {
     const modelUnits = carryingSuggestionRows.reduce((sum, row) => sum + row.modelUnits, 0)
     return `${formatInt(carryingSuggestionRows.length)} stores suggested from ${formatInt(stockUnits)} stock units and ${formatInt(modelUnits)} model units`
   }, [carryingSuggestionRows])
+
+  useEffect(() => {
+    const key = buyerStorageKey(user?.id)
+    if (!key) return
+    const savedBuyer = window.localStorage.getItem(key)
+    if (savedBuyer) setBuyerFilter(savedBuyer)
+  }, [user?.id])
 
   useEffect(() => {
     if (!selectedCard) return
@@ -347,6 +396,7 @@ export default function BuyerPurchasePlanningPage() {
       })
     })
     setAttributePlanValues(nextAttributeValues)
+    setSalesProjectionRows(selectedCard.salesProjection.months)
   }, [copyForm, newStyleTargetForm, selectedAttributeMix, selectedAttributePlanMap, selectedCard, selectedTargetStoreIds, targetForm])
 
   function putDetail(next: BuyerWorkbookDetail) {
@@ -407,9 +457,13 @@ export default function BuyerPurchasePlanningPage() {
     mutationFn: createBuyerWorkbook,
     onSuccess: (next) => {
       putDetail(next)
-      setDrawerCardId(next.cards[0]?.id ?? null)
+      const firstCardId = next.cards[0]?.id ?? null
+      setDrawerCardId(firstCardId)
       setReviewSetupVisible(false)
-      messageApi.success('History review started')
+      if (firstCardId) {
+        navigate(`/purchase-planning/buyer-checklist/workbooks/${encodeURIComponent(next.workbook.id)}/cards/${encodeURIComponent(firstCardId)}`)
+      }
+      messageApi.success('Sales projection review started')
     },
     onError: (error) => messageApi.error((error as Error).message),
   })
@@ -421,11 +475,13 @@ export default function BuyerPurchasePlanningPage() {
       status?: BuyerCategoryStatus
       targetNewSkuCount?: number
       targetCarryoverSkuCount?: number
+      salesProjections?: SalesProjectionMonth[]
       notes?: string | null
     }) => updateBuyerCategoryCard(input.workbookId, input.cardId, {
       status: input.status,
       targetNewSkuCount: input.targetNewSkuCount,
       targetCarryoverSkuCount: input.targetCarryoverSkuCount,
+      salesProjections: input.salesProjections,
       notes: input.notes,
       actor: 'buyer',
     }),
@@ -674,6 +730,12 @@ export default function BuyerPurchasePlanningPage() {
     value: po.id,
     label: `${po.poNumber} - ${po.vendorName ?? po.vendorId}`,
   })) ?? []
+  const buyerSelectOptions = (buyerOptionsQuery.data ?? [])
+    .filter((buyer) => buyer.isActive)
+    .map((buyer) => ({
+      value: buyer.code,
+      label: buyer.labelEs && buyer.labelEs !== buyer.code ? `${buyer.labelEs} (${buyer.code})` : buyer.code,
+    }))
 
   const landingColumns: ColumnsType<BuyerChecklistCategoryRow> = [
     {
@@ -729,6 +791,8 @@ export default function BuyerPurchasePlanningPage() {
             <Button
               type={row.action === 'CONTINUE' ? 'default' : 'primary'}
               size="small"
+              loading={row.action !== 'CONTINUE' && createWorkbookMutation.isPending}
+              disabled={row.action !== 'CONTINUE' && storesLoading}
               onClick={() => row.action === 'CONTINUE' ? continueCategory(row) : startCategoryReview(row)}
             >
               {row.action === 'CONTINUE' ? 'Continue' : 'Start Review'}
@@ -751,6 +815,33 @@ export default function BuyerPurchasePlanningPage() {
     { title: 'Month', dataIndex: 'yearMonth', width: 96 },
     { title: 'Sold', dataIndex: 'quantitySold', align: 'right', render: formatInt },
     { title: 'Net Sales', dataIndex: 'netSales', align: 'right', render: formatMoney },
+    {
+      title: 'Projected Units',
+      width: 150,
+      render: (_, row) => (
+        <InputNumber
+          aria-label={`Projected units ${row.yearMonth}`}
+          min={0}
+          value={salesProjectionByMonth.get(row.yearMonth)?.projectedUnits ?? 0}
+          style={{ width: '100%' }}
+          onChange={(value) => updateSalesProjectionMonth(row.yearMonth, { projectedUnits: Math.max(0, Math.trunc(Number(value ?? 0))) })}
+        />
+      ),
+    },
+    {
+      title: 'Projected HNL',
+      width: 160,
+      render: (_, row) => (
+        <InputNumber
+          aria-label={`Projected HNL ${row.yearMonth}`}
+          min={0}
+          precision={2}
+          value={salesProjectionByMonth.get(row.yearMonth)?.projectedSales ?? 0}
+          style={{ width: '100%' }}
+          onChange={(value) => updateSalesProjectionMonth(row.yearMonth, { projectedSales: Math.max(0, Number(value ?? 0)) })}
+        />
+      ),
+    },
     { title: 'Beg. Inv.', dataIndex: 'beginningOnHand', align: 'right', render: formatInt },
     { title: 'Profit', dataIndex: 'profit', align: 'right', render: formatMoney },
     { title: 'GP ROI', dataIndex: 'roiPct', align: 'right', render: formatPct },
@@ -1020,26 +1111,51 @@ export default function BuyerPurchasePlanningPage() {
     })
   }
 
+  function loadChecklist() {
+    const buyer = buyerFilter.trim()
+    if (!buyer) {
+      messageApi.error('Select a buyer before loading the checklist')
+      return
+    }
+    const key = buyerStorageKey(user?.id)
+    if (key) window.localStorage.setItem(key, buyer)
+    setLoadedChecklistRequest({
+      buyer,
+      buyingSeason: landingSeason,
+      seasonYear: landingYear,
+      includeNoBudget: showNoBudget,
+    })
+    clearLandingSelection()
+  }
+
   function openCard(card: BuyerCategoryCard) {
     setDrawerCardId(card.id)
+    navigate(`/purchase-planning/buyer-checklist/workbooks/${encodeURIComponent(card.workbookId)}/cards/${encodeURIComponent(card.id)}`)
   }
 
   function startCategoryReview(row: BuyerChecklistCategoryRow) {
-    setSelectedWorkbookId(null)
-    setDrawerCardId(null)
-    setReviewSetupVisible(true)
-    setCarryingCategoryNumber(row.categoryNumber)
     const seasonLabel = seasonOptions.find((option) => option.value === landingSeason)?.label ?? landingSeason
-    createForm.setFieldsValue({
+    const seedStoreId = stores[0]?.id
+    const setupValues: BuyerWorkbookCreateRequest = {
       buyingSeason: landingSeason,
       seasonYear: landingYear,
       categoryNumbers: [row.categoryNumber],
       departmentNumbers: undefined,
-      buyer: row.buyerCode ?? 'buyer',
+      buyer: row.buyerCode ?? (buyerFilter.trim() || 'buyer'),
       createdBy: 'buyer',
       label: `${seasonLabel} ${landingYear} ${row.categoryLabel}`,
-    })
+      seedStoreId: seedStoreId ?? 0,
+    }
+    setSelectedWorkbookId(null)
+    setDrawerCardId(null)
+    setCarryingCategoryNumber(row.categoryNumber)
     carryingForm.setFieldsValue({ categoryNumber: row.categoryNumber })
+    if (seedStoreId) {
+      createWorkbookMutation.mutate(setupValues)
+      return
+    }
+    setReviewSetupVisible(true)
+    createForm.setFieldsValue(setupValues)
   }
 
   function confirmNoBudget(row: BuyerChecklistCategoryRow) {
@@ -1073,6 +1189,21 @@ export default function BuyerPurchasePlanningPage() {
     }
     setSelectedWorkbookId(row.currentSeason.workbookId)
     setDrawerCardId(row.currentSeason.cardId)
+    navigate(`/purchase-planning/buyer-checklist/workbooks/${encodeURIComponent(row.currentSeason.workbookId)}/cards/${encodeURIComponent(row.currentSeason.cardId)}`)
+  }
+
+  function updateSalesProjectionMonth(yearMonth: string, patch: Partial<Omit<SalesProjectionMonth, 'yearMonth'>>) {
+    setSalesProjectionRows((previous) => previous.map((row) => row.yearMonth === yearMonth ? { ...row, ...patch } : row))
+  }
+
+  function saveSalesProjections() {
+    if (!selectedDetail || !selectedCard) return
+    updateCardMutation.mutate({
+      workbookId: selectedDetail.workbook.id,
+      cardId: selectedCard.id,
+      status: selectedCard.status === 'NOT_STARTED' ? 'HISTORY_REVIEWED' : undefined,
+      salesProjections: salesProjectionRows,
+    })
   }
 
   function saveEditingSizeCells() {
@@ -1092,23 +1223,65 @@ export default function BuyerPurchasePlanningPage() {
       <Space direction="vertical" size="large" style={{ width: '100%' }}>
         <div>
           <Title level={2} style={{ margin: 0 }}>Buyer Checklist</Title>
-          <Text type="secondary">Start with the category dashboard, then review history for one seed store and season.</Text>
+          <Text type="secondary">Select a buyer, load the checklist, then set sales projections before building the buy.</Text>
         </div>
 
+        {!isReviewRoute ? (
+        <>
         <div style={{ border: '1px solid #f0f0f0', borderRadius: 8, padding: 16, background: '#fff' }}>
           <Row gutter={[12, 12]} align="middle" style={{ marginBottom: 12 }}>
             <Col xs={24} xl={8}>
               <Title level={4} style={{ margin: 0 }}>Buyer Checklist Landing Page</Title>
-              <Text type="secondary">Categories you are responsible for, current inventory, open-to-buy, and planning status.</Text>
+              <Text type="secondary">Choose a buyer first. The checklist loads only when requested.</Text>
             </Col>
-            <Col xs={12} md={5} xl={3}>
-              <Input
-                allowClear
-                value={buyerFilter}
-                placeholder="Buyer code (optional)"
-                onChange={(event) => setBuyerFilter(event.target.value)}
+            <Col xs={24} md={8} xl={5}>
+              <Select
+                showSearch
+                value={buyerFilter || undefined}
+                placeholder="Select buyer"
+                loading={buyerOptionsQuery.isLoading}
+                optionFilterProp="label"
+                options={buyerSelectOptions}
+                style={{ width: '100%' }}
+                onChange={(value) => {
+                  setBuyerFilter(value)
+                  setLoadedChecklistRequest(null)
+                  clearLandingSelection()
+                }}
               />
             </Col>
+            <Col xs={12} md={4} xl={3}>
+              <Select
+                value={landingSeason}
+                options={seasonOptions}
+                style={{ width: '100%' }}
+                onChange={(value) => {
+                  setLandingSeason(value)
+                  setLoadedChecklistRequest(null)
+                  clearLandingSelection()
+                }}
+              />
+            </Col>
+            <Col xs={12} md={3} xl={2}>
+              <InputNumber
+                min={2020}
+                max={2100}
+                value={landingYear}
+                style={{ width: '100%' }}
+                onChange={(value) => {
+                  setLandingYear(Number(value ?? new Date().getFullYear()))
+                  setLoadedChecklistRequest(null)
+                  clearLandingSelection()
+                }}
+              />
+            </Col>
+            <Col xs={24} md={5} xl={3}>
+              <Button block type="primary" onClick={loadChecklist} disabled={!buyerFilter.trim()} loading={checklistCategories.isFetching}>
+                Load Checklist
+              </Button>
+            </Col>
+            {checklistLoaded ? (
+            <>
             <Col xs={12} md={7} xl={5}>
               <Input.Search
                 allowClear
@@ -1118,29 +1291,16 @@ export default function BuyerPurchasePlanningPage() {
                 onSearch={setLandingSearch}
               />
             </Col>
-            <Col xs={12} md={4} xl={3}>
-              <Select
-                value={landingSeason}
-                options={seasonOptions}
-                style={{ width: '100%' }}
-                onChange={setLandingSeason}
-              />
-            </Col>
-            <Col xs={12} md={3} xl={2}>
-              <InputNumber
-                min={2020}
-                max={2100}
-                value={landingYear}
-                style={{ width: '100%' }}
-                onChange={(value) => setLandingYear(Number(value ?? new Date().getFullYear()))}
-              />
-            </Col>
             <Col xs={12} md={4} xl={2}>
               <Space>
                 <Switch
                   aria-label="Show No Budget"
                   checked={showNoBudget}
-                  onChange={setShowNoBudget}
+                  onChange={(checked) => {
+                    setShowNoBudget(checked)
+                    setLoadedChecklistRequest((previous) => previous ? { ...previous, includeNoBudget: checked } : previous)
+                    clearLandingSelection()
+                  }}
                 />
                 <Text>Show No Budget</Text>
               </Space>
@@ -1161,45 +1321,48 @@ export default function BuyerPurchasePlanningPage() {
                 Manual Review Setup
               </Button>
             </Col>
+            </>
+            ) : null}
           </Row>
-          <Table<BuyerChecklistCategoryRow>
-            size="small"
-            rowKey={landingRowKey}
-            rowSelection={{
-              selectedRowKeys: selectedLandingRowKeys,
-              onChange: (keys, rows) => {
-                setSelectedLandingRowKeys(keys.map(String))
-                setSelectedLandingRows(rows)
-              },
-              getCheckboxProps: (row) => ({
-                disabled: row.action === 'NO_BUDGET',
-              }),
-            }}
-            loading={checklistCategories.isLoading}
-            columns={landingColumns}
-            dataSource={filteredChecklistRows}
-            pagination={{ pageSize: 12 }}
-            scroll={{ x: 1500 }}
-          />
+          {checklistLoaded ? (
+            <Table<BuyerChecklistCategoryRow>
+              size="small"
+              rowKey={landingRowKey}
+              rowSelection={{
+                selectedRowKeys: selectedLandingRowKeys,
+                onChange: (keys, rows) => {
+                  setSelectedLandingRowKeys(keys.map(String))
+                  setSelectedLandingRows(rows)
+                },
+                getCheckboxProps: (row) => ({
+                  disabled: row.action === 'NO_BUDGET',
+                }),
+              }}
+              loading={checklistCategories.isLoading}
+              columns={landingColumns}
+              dataSource={filteredChecklistRows}
+              pagination={{ pageSize: 12 }}
+              scroll={{ x: 1500 }}
+            />
+          ) : null}
         </div>
 
         {reviewSetupVisible ? (
         <Row gutter={[16, 16]}>
           <Col xs={24} xl={16}>
             <div style={{ border: '1px solid #f0f0f0', borderRadius: 8, padding: 16, background: '#fff' }}>
-              <Title level={4} style={{ marginTop: 0 }}>Review Sales History</Title>
+              <Title level={4} style={{ marginTop: 0 }}>Set Up Sales Projection Review</Title>
               <Form<BuyerWorkbookCreateRequest>
                 form={createForm}
                 layout="vertical"
                 initialValues={{
                   buyingSeason: 'FALL_WINTER',
                   seasonYear: new Date().getFullYear(),
-                  buyer: 'buyer',
                   createdBy: 'buyer',
                 }}
                 onFinish={(values) => createWorkbookMutation.mutate({
                   ...values,
-                  buyer: values.buyer ?? (buyerFilter.trim() || 'buyer'),
+                  buyer: buyerFilter.trim() || values.buyer || 'buyer',
                   createdBy: values.createdBy ?? 'buyer',
                   targetStoreIds: values.targetStoreIds?.length ? values.targetStoreIds : undefined,
                   categoryNumbers: values.categoryNumbers?.length ? values.categoryNumbers : undefined,
@@ -1245,7 +1408,7 @@ export default function BuyerPurchasePlanningPage() {
                   <Col xs={24} md={4}>
                     <Form.Item label=" ">
                       <Button block type="primary" htmlType="submit" icon={<FileSearchOutlined />} loading={createWorkbookMutation.isPending}>
-                        Review History
+                        Start Review
                       </Button>
                     </Form.Item>
                   </Col>
@@ -1426,19 +1589,25 @@ export default function BuyerPurchasePlanningPage() {
             </Space>
           </div>
         ) : (
-          <Alert type="info" message="Choose a seed store and category to review history, or open a saved buying plan." />
+          <Alert type="info" message="Load a buyer checklist, then start or continue a category review." />
         )}
+        </>
+        ) : null}
       </Space>
 
-      <Drawer
-        title={selectedCard ? `${selectedCard.categoryLabel} - ${selectedCard.departmentLabel}` : 'Category Detail'}
-        open={!!selectedCard}
-        width="min(1280px, 96vw)"
-        onClose={() => setDrawerCardId(null)}
-        destroyOnClose={false}
-      >
+      {isReviewRoute ? (
+      <div style={{ marginTop: 24 }}>
+        {detail.isLoading ? <Alert type="info" message="Loading category review..." /> : null}
+        {detail.error ? <Alert type="error" message={(detail.error as Error).message} style={{ marginBottom: 16 }} /> : null}
         {selectedCard && selectedDetail ? (
           <Space direction="vertical" size="large" style={{ width: '100%' }}>
+            <Space wrap style={{ justifyContent: 'space-between', width: '100%' }}>
+              <Space direction="vertical" size={0}>
+                <Title level={3} style={{ margin: 0 }}>{selectedCard.categoryLabel}</Title>
+                <Text type="secondary">{selectedCard.departmentLabel}</Text>
+              </Space>
+              <Button onClick={() => navigate('/purchase-planning/buyer-checklist')}>Back to Checklist</Button>
+            </Space>
             <Space wrap>
               {statusTag(selectedCard.status)}
               <Tag>Seed store {selectedCard.seedStoreId}</Tag>
@@ -1446,6 +1615,54 @@ export default function BuyerPurchasePlanningPage() {
               <Tag>Historical sample {formatInt(selectedCard.history.summary.sampleMonths)} months</Tag>
             </Space>
 
+            <div style={{ border: '1px solid #f0f0f0', borderRadius: 8, padding: 16 }}>
+              <Row gutter={[12, 12]} align="middle" style={{ marginBottom: 12 }}>
+                <Col xs={24} md={15}>
+                  <Title level={4} style={{ margin: 0 }}>Set Sales Projections</Title>
+                  <Text type="secondary">Amounts in Lempira (HNL). Use the last 12 months as the baseline for projected units and sales.</Text>
+                </Col>
+                <Col xs={12} md={3}>
+                  <Text type="secondary">Projected Units</Text>
+                  <Title level={5} style={{ margin: 0 }}>{formatInt(salesProjectionTotals.projectedUnits)}</Title>
+                </Col>
+                <Col xs={12} md={3}>
+                  <Text type="secondary">Projected HNL</Text>
+                  <Title level={5} style={{ margin: 0 }}>{formatMoney(salesProjectionTotals.projectedSales)}</Title>
+                </Col>
+                <Col xs={24} md={3}>
+                  <Button
+                    block
+                    type="primary"
+                    icon={<SaveOutlined />}
+                    loading={updateCardMutation.isPending}
+                    onClick={saveSalesProjections}
+                  >
+                    Save Projections
+                  </Button>
+                </Col>
+              </Row>
+              <Row gutter={[12, 12]} style={{ marginBottom: 12 }}>
+                <Col xs={12} md={6}><Text strong>Actual Units: </Text>{formatInt(selectedCard.history.summary.totalQuantitySold)}</Col>
+                <Col xs={12} md={6}><Text strong>Actual Net Sales: </Text>{formatMoney(selectedCard.history.summary.totalNetSales)}</Col>
+                <Col xs={12} md={6}><Text strong>Avg. BOH: </Text>{formatInt(selectedCard.history.summary.averageBeginningOnHand)}</Col>
+                <Col xs={12} md={6}><Text strong>Sell-through: </Text>n/a when receipts are unavailable</Col>
+              </Row>
+              <Table<HistoricalMonthMetric>
+                size="small"
+                rowKey="yearMonth"
+                columns={historyColumns}
+                dataSource={selectedCard.history.months}
+                pagination={{ pageSize: 12 }}
+                scroll={{ x: 1160 }}
+              />
+            </div>
+
+            {!canContinuePlanning ? (
+              <Alert type="info" message="Save sales projections before continuing to targets, carryovers, new styles, attributes, and PO links." />
+            ) : null}
+
+            {canContinuePlanning ? (
+            <>
             <div style={{ border: '1px solid #f0f0f0', borderRadius: 8, padding: 16 }}>
               <Title level={4} style={{ marginTop: 0 }}>Targets</Title>
               <Form form={targetForm} layout="vertical" onFinish={(values) => updateCardMutation.mutate({
@@ -1495,24 +1712,6 @@ export default function BuyerPurchasePlanningPage() {
               <Text type="secondary">
                 Suggested from history: {formatInt(selectedCard.suggestedNewSkuCount)} new and {formatInt(selectedCard.suggestedCarryoverSkuCount)} carryover SKUs.
               </Text>
-            </div>
-
-            <div style={{ border: '1px solid #f0f0f0', borderRadius: 8, padding: 16 }}>
-              <Title level={4} style={{ marginTop: 0 }}>History</Title>
-              <Row gutter={[12, 12]} style={{ marginBottom: 12 }}>
-                <Col xs={12} md={6}><Text strong>Units: </Text>{formatInt(selectedCard.history.summary.totalQuantitySold)}</Col>
-                <Col xs={12} md={6}><Text strong>Net sales: </Text>{formatMoney(selectedCard.history.summary.totalNetSales)}</Col>
-                <Col xs={12} md={6}><Text strong>Avg. BOH: </Text>{formatInt(selectedCard.history.summary.averageBeginningOnHand)}</Col>
-                <Col xs={12} md={6}><Text strong>Sell-through: </Text>n/a when receipts are unavailable</Col>
-              </Row>
-              <Table<HistoricalMonthMetric>
-                size="small"
-                rowKey="yearMonth"
-                columns={historyColumns}
-                dataSource={selectedCard.history.months}
-                pagination={{ pageSize: 6 }}
-                scroll={{ x: 900 }}
-              />
             </div>
 
             <div style={{ border: '1px solid #f0f0f0', borderRadius: 8, padding: 16 }}>
@@ -1804,9 +2003,14 @@ export default function BuyerPurchasePlanningPage() {
                 Mark Category Complete
               </Button>
             </div>
+            </>
+            ) : null}
           </Space>
+        ) : !detail.isLoading && !detail.error ? (
+          <Alert type="warning" message="Category review was not found." />
         ) : null}
-      </Drawer>
+      </div>
+      ) : null}
 
       <Modal
         title={unavailableLine ? `Flag ${unavailableLine.skuCode} unavailable` : 'Flag carryover unavailable'}

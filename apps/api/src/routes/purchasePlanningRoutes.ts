@@ -274,6 +274,11 @@ const buyerCardUpdateSchema = z.object({
   status: buyerCategoryStatusSchema.optional(),
   targetNewSkuCount: z.number().int().min(0).max(10_000).optional(),
   targetCarryoverSkuCount: z.number().int().min(0).max(10_000).optional(),
+  salesProjections: z.array(z.object({
+    yearMonth: z.string().regex(/^\d{4}-\d{2}$/),
+    projectedUnits: z.number().int().min(0).max(10_000_000),
+    projectedSales: z.number().min(0).max(1_000_000_000),
+  }).strict()).max(36).optional(),
   notes: z.string().max(4000).nullable().optional(),
   actor: z.string().trim().max(120).optional(),
 }).strict();

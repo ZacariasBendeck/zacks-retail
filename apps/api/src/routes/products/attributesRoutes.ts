@@ -35,6 +35,7 @@
  *   GET  /skus/:code/attributes
  *   POST /skus/attributes/bulk
  *   PUT  /skus/:code/attributes
+ *   PUT  /skus/:code/attributes/:dimensionCode
  *
  * Spec: docs/dev/specs/2026-04-22-sku-extended-attributes-foundation-design.md
  * Plan: C:\Users\zbend\.claude\plans\now-we-have-all-vivid-charm.md
@@ -380,6 +381,41 @@ router.post('/attributes/dimensions/:code/values/reorder', async (req: Request, 
 
 router.get('/skus/:code/attributes', async (req: Request, res: Response) => {
   send(res, await attributesService.getForSku(paramString(req.params.code)));
+});
+
+router.put('/skus/:code/attributes/:dimensionCode', async (req: Request, res: Response) => {
+  const body = (req.body ?? {}) as { value_codes?: unknown; valueCodes?: unknown };
+  const raw = Array.isArray(body.value_codes)
+    ? body.value_codes
+    : Array.isArray(body.valueCodes)
+      ? body.valueCodes
+      : null;
+  if (!raw) {
+    return res.status(422).json({
+      error: { code: 'CONSTRAINT_VIOLATION', message: 'value_codes[] is required.' },
+    });
+  }
+
+  const valueCodes: string[] = [];
+  for (const value of raw) {
+    if (typeof value !== 'string') {
+      return res.status(422).json({
+        error: { code: 'CONSTRAINT_VIOLATION', message: 'value_codes[] must contain strings.' },
+      });
+    }
+    const trimmed = value.trim();
+    if (trimmed.length > 0) valueCodes.push(trimmed);
+  }
+
+  const perRequest = createAttributesService({ actor: resolveActor(req) });
+  send(
+    res,
+    await perRequest.setDimensionForSku(
+      paramString(req.params.code),
+      paramString(req.params.dimensionCode),
+      valueCodes,
+    ),
+  );
 });
 
 router.put('/skus/:code/attributes', async (req: Request, res: Response) => {

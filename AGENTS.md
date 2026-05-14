@@ -43,9 +43,13 @@ RICS CSV files
   -> validate and normalize
   -> good records inserted into app customer tables
   -> incomplete or unsafe records inserted into import reject/audit tables
+```
 
-  ## You will be required to test modules by clicking through things in the browser.  
+## Browser testing
 
-  -email: zbendeck@gmail.com
-  -login: 123
+Browser click-through testing is not required by default. Use browser testing only when explicitly requested.
 
+## Webpage login
+
+- email: zbendeck@gmail.com
+- login: Crossfit007
