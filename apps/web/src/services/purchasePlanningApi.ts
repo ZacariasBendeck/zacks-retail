@@ -18,6 +18,7 @@ export type PurchasePlanEohMethod = 'forward' | 'seasonal';
 export type PurchasePlanningSeason = 'spring' | 'summer' | 'fall' | 'winter';
 export type PurchasePlanAdjustmentKind = 'percent_lift' | 'absolute_total';
 export type PurchasePlanPlanningScope = 'store_group' | 'enterprise';
+export type PurchasePlanPlanningDimension = 'department' | 'category';
 
 export interface PurchasePlanRequest {
   dimension: PurchasePlanDimension;
@@ -77,10 +78,12 @@ export interface PurchasePlanResponse {
 
 export interface SavedPurchasePlanCreateRequest {
   planningScope?: PurchasePlanPlanningScope;
+  planningDimension?: PurchasePlanPlanningDimension;
   storeGroupCode?: string;
   season: PurchasePlanningSeason;
   seasonYear: number;
   departmentNumbers: number[];
+  categoryNumbers?: number[];
   label?: string;
   forecast?: {
     method?: PurchasePlanForecastMethod;
@@ -99,6 +102,7 @@ export interface SavedPurchasePlanHeader {
   label: string;
   status: 'draft' | 'archived';
   planningScope: PurchasePlanPlanningScope;
+  planningDimension: PurchasePlanPlanningDimension;
   planningScopeLabel: string;
   storeGroupCode: string;
   storeGroupLabel: string | null;
@@ -106,6 +110,7 @@ export interface SavedPurchasePlanHeader {
   seasonYear: number;
   seasonMonths: string[];
   selectedDepartments: number[];
+  selectedCategories: number[];
   forecastMethod: PurchasePlanForecastMethod;
   eohMethod: PurchasePlanEohMethod;
   coverMonths: number;

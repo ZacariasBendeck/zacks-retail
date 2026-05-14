@@ -62,13 +62,22 @@ import { createEmployeeRoutes } from './routes/employeeRoutes';
 import { createTimeClockRoutes } from './routes/timeClockRoutes';
 import { createUserRoutes } from './routes/userRoutes';
 import { createPlatformAuditRoutes } from './routes/platformAuditRoutes';
+import { createPlatformRequestTraceRoutes } from './routes/platformRequestTraceRoutes';
 import { createActivityReviewRoutes } from './routes/activityReviewRoutes';
 import { createReportTemplatesRoutes } from './routes/reports/reportTemplatesRoutes';
 import { createReportRunsRoutes } from './routes/reports/reportRunsRoutes';
 import { attachUser } from './middleware/authMiddleware';
+import {
+  enrichRequestContextMiddleware,
+  requestLoggingMiddleware,
+} from './observability/requestLoggingMiddleware';
+import { getTraceId } from './observability/requestContext';
+import { logger } from './observability/logger';
 
 const app: Express = express();
+const prisma = new PrismaClient();
 
+app.use(requestLoggingMiddleware(prisma));
 app.use(cors());
 // Bumped from the 100KB default so Save-snapshot can POST a full report
 // payload. The reportRuns route enforces its own 20 MB resultJson cap via
@@ -78,13 +87,17 @@ app.use(cors());
 // rejected with 413 PayloadTooLarge before the route handler even runs.
 app.use(express.json({ limit: '25mb' }));
 app.use(cookieParser());
-const prisma = new PrismaClient();
 app.use(attachUser(prisma));
+app.use(enrichRequestContextMiddleware);
 
 const DEFAULT_RICS_REMOTE_IMAGE_BASE_URL = 'https://proc-scenes-filtering-danny.trycloudflare.com/RICSPICS';
 const RICS_REMOTE_IMAGE_BASE_URL = (process.env.RICS_IMAGE_BASE_URL?.trim() || DEFAULT_RICS_REMOTE_IMAGE_BASE_URL).replace(/\/+$/, '');
 const resolvedRicsImageUrls = new Map<string, { url: string | null; expiresAt: number }>();
 const RICS_IMAGE_RESOLUTION_TTL_MS = 10 * 60_000;
+// RICS product images - served from the legacy RICS install's pics folder.
+// Defaults to C:\RICSWIN\ricspics on Windows. Override with RICS_IMAGES_DIR.
+// URLs resolve like /rics-images/DMTDU1BK.jpg.
+const RICS_IMAGES_DIR = path.resolve(process.env.RICS_IMAGES_DIR || 'C:/RICSWIN/ricspics');
 
 function sanitizeRicsImageFileName(raw: string | undefined): string | null {
   const fileName = raw?.trim();
@@ -98,8 +111,10 @@ function candidateRicsImageFileNames(fileName: string): string[] {
   const match = fileName.match(/^(.*)\.(jpg|jpeg|gif|bmp|png|webp)$/i);
   if (match) {
     const stem = match[1];
-    const ext = match[2];
+    const ext = match[2].toLowerCase();
     candidates.push(`${stem}.${ext.toUpperCase()}`, `${stem}.${ext.toLowerCase()}`);
+    if (ext === 'jpg') candidates.push(`${stem}.jpeg`, `${stem}.JPEG`);
+    if (ext === 'jpeg') candidates.push(`${stem}.jpg`, `${stem}.JPG`);
   }
   return Array.from(new Set(candidates));
 }
@@ -115,6 +130,16 @@ async function remoteImageExists(url: string): Promise<boolean> {
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function resolveLocalRicsImagePath(fileName: string): string | null {
+  if (!fs.existsSync(RICS_IMAGES_DIR)) return null;
+  for (const candidate of candidateRicsImageFileNames(fileName)) {
+    const candidatePath = path.resolve(RICS_IMAGES_DIR, candidate);
+    if (!candidatePath.startsWith(RICS_IMAGES_DIR + path.sep)) continue;
+    if (fs.existsSync(candidatePath)) return candidatePath;
+  }
+  return null;
 }
 
 async function resolveRicsImageUrl(fileName: string): Promise<string | null> {
@@ -145,6 +170,13 @@ app.get('/api/rics-images/:filename', async (req, res): Promise<void> => {
     return;
   }
 
+  const localPath = resolveLocalRicsImagePath(fileName);
+  if (localPath) {
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.sendFile(localPath);
+    return;
+  }
+
   const url = await resolveRicsImageUrl(fileName);
   if (!url) {
     res.status(404).send('Image not found.');
@@ -155,10 +187,6 @@ app.get('/api/rics-images/:filename', async (req, res): Promise<void> => {
   res.redirect(302, url);
 });
 
-// RICS product images — served from the legacy RICS install's pics folder.
-// Defaults to C:\RICSWIN\ricspics on Windows. Override with RICS_IMAGES_DIR.
-// URLs resolve like /rics-images/DMTDU1BK.jpg.
-const RICS_IMAGES_DIR = path.resolve(process.env.RICS_IMAGES_DIR || 'C:/RICSWIN/ricspics');
 if (fs.existsSync(RICS_IMAGES_DIR)) {
   app.use(
     '/rics-images',
@@ -264,6 +292,7 @@ app.use('/api/v1/users', createUserRoutes(prisma));
 
 // platform shared audit log
 app.use('/api/v1/platform/audit', createPlatformAuditRoutes(prisma));
+app.use('/api/v1/platform/request-traces', createPlatformRequestTraceRoutes(prisma));
 app.use('/api/v1/activity-review', createActivityReviewRoutes(prisma));
 
 // employees module
@@ -283,13 +312,29 @@ app.get('/health', (_req, res) => {
 // operators can trace a client-side 500 back to the exact route without
 // guessing. In dev, we also echo the error name in the response body — the
 // client still only sees INTERNAL_ERROR in prod so we don't leak details.
-app.use((err: Error, req: express.Request, res: express.Response, _next: express.NextFunction) => {
-  console.error(`Unhandled error on ${req.method} ${req.originalUrl}:`, err);
+app.use((err: Error, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (res.headersSent) return next(err);
+
+  const traceId = getTraceId();
+  res.locals.requestError = {
+    code: 'INTERNAL_ERROR',
+    message: 'An internal server error occurred.',
+  };
+  logger.error(
+    {
+      err,
+      method: req.method,
+      originalUrl: req.originalUrl,
+      traceId,
+    },
+    'unhandled request error',
+  );
   const isDev = process.env.NODE_ENV !== 'production';
   res.status(500).json({
     error: {
       code: 'INTERNAL_ERROR',
       message: 'An internal server error occurred.',
+      traceId,
       ...(isDev ? { devDetail: `${err.name}: ${err.message}` } : {}),
     },
   });

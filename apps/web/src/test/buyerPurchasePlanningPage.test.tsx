@@ -10,8 +10,10 @@ import { useStoreChains, useStores } from '../hooks/useStores'
 import { fetchPurchaseOrders } from '../services/purchaseOrderApi'
 import {
   bulkUpdateStoreCategoryCarrying,
+  confirmBuyerSalesProjectionWorkbook,
   copyBuyerSeedModel,
   createBuyerWorkbook,
+  ensureBuyerSalesProjectionWorkbook,
   fetchBuyerChecklistCategories,
   fetchBuyerWorkbook,
   fetchBuyerWorkbooks,
@@ -23,6 +25,11 @@ import {
   updateBuyerCategoryCard,
   type BuyerWorkbookDetail,
 } from '../services/buyerPurchasePlanningApi'
+import {
+  recalculateSavedPurchasePlan,
+  updateSavedPurchasePlanRows,
+  type SavedPurchasePlanDetail,
+} from '../services/purchasePlanningApi'
 
 vi.mock('../hooks/useStores', () => ({
   useStores: vi.fn(),
@@ -57,9 +64,11 @@ vi.mock('../services/buyerPurchasePlanningApi', async () => {
     addBuyerCarryoverLine: vi.fn(),
     addBuyerPlannedStyle: vi.fn(),
     bulkUpdateStoreCategoryCarrying: vi.fn(),
+    confirmBuyerSalesProjectionWorkbook: vi.fn(),
     copyBuyerSeedModel: vi.fn(),
     createBuyerCarryoverModelLine: vi.fn(),
     createBuyerWorkbook: vi.fn(),
+    ensureBuyerSalesProjectionWorkbook: vi.fn(),
     fetchBuyerChecklistCategories: vi.fn(),
     fetchBuyerWorkbook: vi.fn(),
     fetchBuyerWorkbooks: vi.fn(),
@@ -75,6 +84,15 @@ vi.mock('../services/buyerPurchasePlanningApi', async () => {
     updateBuyerCarryoverCandidate: vi.fn(),
     updateBuyerCarryoverLine: vi.fn(),
     updateBuyerNewStyleTargets: vi.fn(),
+  }
+})
+
+vi.mock('../services/purchasePlanningApi', async () => {
+  const actual = await vi.importActual<typeof import('../services/purchasePlanningApi')>('../services/purchasePlanningApi')
+  return {
+    ...actual,
+    recalculateSavedPurchasePlan: vi.fn(),
+    updateSavedPurchasePlanRows: vi.fn(),
   }
 })
 
@@ -148,6 +166,7 @@ const detail: BuyerWorkbookDetail = {
         updatedBy: 'buyer',
         updatedAt: '2026-05-07T00:00:00.000Z',
       },
+      salesProjectionPlanId: null,
       attributeMix: [
         {
           dimensionCode: 'color_family',
@@ -258,6 +277,90 @@ const detail: BuyerWorkbookDetail = {
   poLinks: [],
 }
 
+const projectionMonths = [
+  '2026-05', '2026-06', '2026-07',
+  '2026-08', '2026-09', '2026-10',
+  '2026-11', '2026-12', '2027-01',
+  '2027-02', '2027-03', '2027-04',
+  '2027-05', '2027-06', '2027-07',
+]
+
+const salesProjectionPlan: SavedPurchasePlanDetail = {
+  plan: {
+    id: 'plan-1',
+    label: 'Enterprise-wide 11 - Traje Smoking Hombre Summer 2026 to Summer 2027',
+    status: 'draft',
+    planningScope: 'enterprise',
+    planningDimension: 'category',
+    planningScopeLabel: 'Enterprise-wide',
+    storeGroupCode: 'enterprise',
+    storeGroupLabel: 'Enterprise-wide',
+    season: 'summer',
+    seasonYear: 2026,
+    seasonMonths: projectionMonths,
+    selectedDepartments: [1],
+    selectedCategories: [11],
+    forecastMethod: 'holtWinters',
+    eohMethod: 'forward',
+    coverMonths: 3,
+    discountNormalization: true,
+    historyFromYearMonth: '2023-05',
+    historyToYearMonth: '2026-04',
+    createdBy: 'buyer',
+    createdAt: '2026-05-07T00:00:00.000Z',
+    updatedAt: '2026-05-07T00:00:00.000Z',
+    archivedAt: null,
+  },
+  departments: [
+    {
+      departmentKey: '11',
+      departmentNumber: null,
+      departmentLabel: '11 - Traje Smoking Hombre',
+      baselineTotalBuy: 100,
+      currentTotalBuy: 100,
+      deltaBuy: 0,
+      totalProjSales: 90,
+      currentOnHand: 60,
+      currentOnOrder: 0,
+      futureOnOrder: 0,
+      nativeOpenPo: 0,
+      hasHistory: true,
+      months: projectionMonths.map((yearMonth, index) => ({
+        id: `projection-row-${index + 1}`,
+        planId: 'plan-1',
+        departmentKey: '11',
+        departmentNumber: null,
+        departmentLabel: '11 - Traje Smoking Hombre',
+        yearMonth,
+        baselineBoh: 60,
+        baselineProjSales: 6,
+        baselineEohTarget: 55,
+        baselineBuy: 1,
+        baselineEohActual: 55,
+        currentBoh: 60,
+        currentProjSales: 6,
+        currentEohTarget: 55,
+        currentBuy: 1,
+        currentEohActual: 55,
+        onHand: 60,
+        currentOnOrder: 0,
+        futureOnOrder: 0,
+        nativeOpenPo: 0,
+        stockPosition: 60,
+        normalizationFactor: 1,
+        rawProjSales: 6,
+      })),
+    },
+  ],
+  adjustments: [],
+  totals: {
+    baselineTotalBuy: 100,
+    currentTotalBuy: 100,
+    deltaBuy: 0,
+    totalProjSales: 90,
+  },
+}
+
 function renderPage(initialEntries = ['/purchase-planning/buyer-checklist']) {
   const qc = new QueryClient({
     defaultOptions: {
@@ -282,7 +385,8 @@ function renderPage(initialEntries = ['/purchase-planning/buyer-checklist']) {
 
 async function openCategory() {
   renderPage(['/purchase-planning/buyer-checklist/workbooks/workbook-1/cards/card-1'])
-  await screen.findByText('Carryover Model')
+  await screen.findByRole('tab', { name: 'Sales Projection' })
+  await screen.findByLabelText('Worksheet grid')
 }
 
 async function chooseSelectOption(label: string, option: string) {
@@ -381,6 +485,7 @@ describe('BuyerPurchasePlanningPage', () => {
       },
     ])
     vi.mocked(fetchBuyerWorkbook).mockResolvedValue(detail)
+    vi.mocked(ensureBuyerSalesProjectionWorkbook).mockResolvedValue({ plan: salesProjectionPlan, buyerWorkbook: detail })
     vi.mocked(fetchStoreCategoryCarrying).mockResolvedValue([])
     vi.mocked(fetchPurchaseOrders).mockResolvedValue({
       data: [
@@ -397,6 +502,23 @@ describe('BuyerPurchasePlanningPage', () => {
       pagination: { page: 1, pageSize: 50, totalItems: 1, totalPages: 1 },
     } as never)
     vi.mocked(createBuyerWorkbook).mockResolvedValue(detail)
+    vi.mocked(confirmBuyerSalesProjectionWorkbook).mockResolvedValue({
+      ...detail,
+      cards: [
+        {
+          ...detail.cards[0]!,
+          status: 'HISTORY_REVIEWED',
+          salesProjectionPlanId: 'plan-1',
+          salesProjection: {
+            ...detail.cards[0]!.salesProjection,
+            updatedBy: 'buyer',
+            updatedAt: '2026-05-07T01:00:00.000Z',
+          },
+        },
+      ],
+    })
+    vi.mocked(updateSavedPurchasePlanRows).mockResolvedValue(salesProjectionPlan)
+    vi.mocked(recalculateSavedPurchasePlan).mockResolvedValue(salesProjectionPlan)
     vi.mocked(updateBuyerCategoryCard).mockResolvedValue(detail)
     vi.mocked(copyBuyerSeedModel).mockResolvedValue(detail)
     vi.mocked(flagBuyerCarryoverUnavailable).mockResolvedValue(detail)
@@ -494,7 +616,9 @@ describe('BuyerPurchasePlanningPage', () => {
       categoryNumbers: [11],
       buyer: 'buyer',
     })
-    expect(await screen.findByText('Set Sales Projections')).toBeInTheDocument()
+    expect(await screen.findByRole('tab', { name: 'Sales Projection' })).toBeInTheDocument()
+    expect(await screen.findByLabelText('Worksheet grid')).toBeInTheDocument()
+    expect(ensureBuyerSalesProjectionWorkbook).toHaveBeenCalledWith('workbook-1', 'card-1', 'buyer')
   }, 15_000)
 
   it('marks a landing category no-budget and can show and reopen it', async () => {
@@ -623,8 +747,24 @@ describe('BuyerPurchasePlanningPage', () => {
 
   it('renders the full-page category review and marks a category complete', async () => {
     await openCategory()
-    expect(screen.getByText('Set Sales Projections')).toBeInTheDocument()
-    expect(screen.getByText('Attribute Plan')).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'Sales Projection' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('button', { name: 'Confirm sales projection' })).toBeInTheDocument()
+    expect(screen.getByLabelText('May 2026 projected sales')).toBeInTheDocument()
+    await userEvent.clear(screen.getByLabelText('May 2026 projected sales'))
+    await userEvent.type(screen.getByLabelText('May 2026 projected sales'), '8')
+    await userEvent.click(screen.getByRole('button', { name: 'Save worksheet' }))
+
+    await waitFor(() => expect(updateSavedPurchasePlanRows).toHaveBeenCalledWith('plan-1', expect.objectContaining({
+      rows: [expect.objectContaining({ rowId: 'projection-row-1', currentProjSales: 8 })],
+      appliedBy: 'buyer',
+    })))
+    await waitFor(() => expect(confirmBuyerSalesProjectionWorkbook).toHaveBeenCalledWith('workbook-1', 'card-1', 'buyer'))
+
+    await userEvent.click(screen.getByRole('tab', { name: 'Attribute Plan' }))
+    expect(screen.getByRole('button', { name: /Save Attribute Plan/i })).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('tab', { name: 'Carryover Review' }))
+    expect(screen.getByText('Carryover Winner Review')).toBeInTheDocument()
+    expect(screen.getByText('Carryover Model')).toBeInTheDocument()
 
     await userEvent.click(screen.getByRole('button', { name: /Mark Category Complete/i }))
 
@@ -637,6 +777,8 @@ describe('BuyerPurchasePlanningPage', () => {
 
   it('copies the seed model to target stores', async () => {
     await openCategory()
+    await userEvent.click(screen.getByRole('tab', { name: 'Carryover Review' }))
+    await screen.findByText('Carryover Model')
 
     await userEvent.click(screen.getByRole('button', { name: /Copy Exact Model/i }))
 
@@ -725,6 +867,8 @@ describe('BuyerPurchasePlanningPage', () => {
 
   it('flags a carryover unavailable and sends the replacement reason', async () => {
     await openCategory()
+    await userEvent.click(screen.getByRole('tab', { name: 'Carryover Review' }))
+    await screen.findByText('Carryover Model')
 
     const unavailableButtons = screen.getAllByRole('button', { name: /Unavailable/i })
     const unavailableButton = unavailableButtons[unavailableButtons.length - 1]

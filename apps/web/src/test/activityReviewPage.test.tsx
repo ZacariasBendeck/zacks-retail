@@ -156,6 +156,22 @@ describe('ActivityReviewPage', () => {
     expect(await screen.findByTitle('Unknown user (user-orp)')).toBeInTheDocument()
   })
 
+  it('shows event pagination in the tab header and table footer', async () => {
+    const events = Array.from({ length: 23 }, (_, index) => ({
+      ...event,
+      id: `audit-page-${index}`,
+      actionLabel: `SKU Update ${index + 1}`,
+    }))
+    apiMock.listEvents.mockResolvedValue({ events })
+    const { container } = renderPage()
+
+    await screen.findByText('SKU Update 1')
+
+    expect(container.querySelector('.ant-tabs-nav .ant-pagination')).toBeTruthy()
+    expect(container.querySelector('.ant-table-wrapper .ant-pagination')).toBeTruthy()
+    expect(container.querySelectorAll('.ant-pagination').length).toBeGreaterThanOrEqual(2)
+  })
+
   it('defaults to unreviewed activity without capping the user summary', async () => {
     const user = userEvent.setup()
     renderPage()

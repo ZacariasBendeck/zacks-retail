@@ -130,6 +130,30 @@ describe('purchase planning saved-plan routes', () => {
     }));
   });
 
+  it('creates a saved category-dimension plan without department numbers', async () => {
+    const res = await request(app)
+      .post('/api/v1/purchase-planning/plans')
+      .send({
+        planningDimension: 'category',
+        storeGroupCode: 'enterprise',
+        season: 'summer',
+        seasonYear: 2026,
+        categoryNumbers: [262],
+        forecast: { method: 'holtWinters' },
+        eohMethod: 'forward',
+        coverMonths: 3,
+        discountNormalization: true,
+      });
+
+    expect(res.status).toBe(201);
+    expect(createPurchasePlan).toHaveBeenCalledWith(expect.objectContaining({
+      planningDimension: 'category',
+      storeGroupCode: 'enterprise',
+      departmentNumbers: [],
+      categoryNumbers: [262],
+    }));
+  });
+
   it('lists saved plans', async () => {
     const res = await request(app).get('/api/v1/purchase-planning/plans?status=draft');
 

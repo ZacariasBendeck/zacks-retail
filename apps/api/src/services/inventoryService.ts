@@ -1,6 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/database';
 import { prisma } from '../db/prisma';
+import { getTraceId } from '../observability/requestContext';
 import {
   Inventory,
   AuditLogEntry,
@@ -490,7 +491,7 @@ export type MutationError = {
 export type MutationResult = AuditLogEntry & { version: number; idempotentReplay?: boolean };
 
 export async function executeMutation(input: InventoryMutationInput): Promise<MutationResult | MutationError> {
-  const traceId = uuidv4();
+  const traceId = getTraceId() ?? uuidv4();
   const db = getDb();
 
   // Validate category code range

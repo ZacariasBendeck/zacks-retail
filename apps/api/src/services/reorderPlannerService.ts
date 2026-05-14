@@ -1,4 +1,6 @@
 import { prisma } from '../db/prisma';
+import { logger } from '../observability/logger';
+import { traceStep } from '../observability/requestContext';
 import { getInventoryInquiry } from './ricsInventoryFacade';
 import { appendPurchaseOrderLineItem, createPurchaseOrder } from './purchaseOrderService';
 import { getCasePackByCode } from './casePackService';
@@ -332,7 +334,7 @@ async function timeReorderPlanStep<T>(
 ): Promise<T> {
   const startedAt = Date.now();
   try {
-    return await loader();
+    return await traceStep(`reorderPlan.${name}`, loader);
   } finally {
     timings.push({ name, ms: Date.now() - startedAt });
   }
@@ -347,13 +349,17 @@ function logSlowReorderPlan(
   const thresholdMs = reorderPlanSlowThresholdMs();
   if (totalMs < thresholdMs) return;
 
-  console.warn('[reorderPlannerService] slow reorder plan', {
-    sku,
-    totalMs,
-    thresholdMs,
-    steps: timings.map((entry) => ({ name: entry.name, ms: entry.ms })),
-    error: error instanceof Error ? error.message : undefined,
-  });
+  logger.warn(
+    {
+      event: 'reorder_plan.slow',
+      sku,
+      totalMs,
+      thresholdMs,
+      steps: timings.map((entry) => ({ name: entry.name, ms: entry.ms })),
+      error: error instanceof Error ? error.message : undefined,
+    },
+    'slow reorder plan',
+  );
 }
 
 function asNumber(value: unknown): number {

@@ -30,6 +30,7 @@ import {
 const LIST_STALE_MS = 10 * 60 * 1000
 import type {
   CategoryInput,
+  CategoryBulkAssignmentInput,
   DepartmentInput,
   GroupInput,
   KeywordInput,
@@ -131,6 +132,18 @@ export function useUpdateCategory() {
       qc.invalidateQueries({ queryKey: ['taxonomy', 'categories'] })
       qc.invalidateQueries({ queryKey: ['product-families'] })
       qc.invalidateQueries({ queryKey: ['product-categories'] })
+    },
+  })
+}
+export function useBulkUpdateCategoryAssignments() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (input: CategoryBulkAssignmentInput) => categoriesApi.bulkUpdateAssignments(input),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['taxonomy', 'categories'] })
+      qc.invalidateQueries({ queryKey: ['product-families'] })
+      qc.invalidateQueries({ queryKey: ['product-categories'] })
+      qc.invalidateQueries({ queryKey: ['store-category-carrying'] })
     },
   })
 }

@@ -41,6 +41,21 @@ export interface CategoryInput {
   storeIds?: number[] | null
 }
 
+export type CategoryAssignmentMode = 'REPLACE' | 'ADD' | 'REMOVE'
+
+export interface CategoryBulkAssignmentInput {
+  categoryNumbers: number[]
+  buyerCodes?: string[] | null
+  buyerMode?: CategoryAssignmentMode
+  storeIds?: number[] | null
+  storeMode?: CategoryAssignmentMode
+}
+
+export interface CategoryBulkAssignmentResult {
+  updatedCount: number
+  categories: Category[]
+}
+
 export interface CategoryBuyer {
   valueId: number
   code: string

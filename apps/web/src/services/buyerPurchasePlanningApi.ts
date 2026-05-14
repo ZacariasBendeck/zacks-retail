@@ -1,3 +1,5 @@
+import type { SavedPurchasePlanDetail } from './purchasePlanningApi'
+
 export type BuyerWorkbookSeason = 'SPRING_SUMMER' | 'FALL_WINTER'
 export type BuyerWorkbookStatus = 'DRAFT' | 'ARCHIVED'
 export type BuyerCategoryStatus =
@@ -195,6 +197,7 @@ export interface BuyerCategoryCard {
     summary: HistoricalTargetSummary
   }
   salesProjection: SalesProjectionPlan
+  salesProjectionPlanId: string | null
   attributeMix: AttributeMixDimension[]
   notes: string | null
   createdAt: string
@@ -292,6 +295,11 @@ export interface BuyerWorkbookDetail {
   plannedStyles: PlannedStyle[]
   attributePlans: AttributePlanRow[]
   poLinks: BuyerPoLink[]
+}
+
+export interface BuyerSalesProjectionWorkbookResult {
+  plan: SavedPurchasePlanDetail
+  buyerWorkbook: BuyerWorkbookDetail
 }
 
 export interface StoreCategoryCarryingRow {
@@ -487,6 +495,38 @@ export async function createBuyerWorkbook(input: BuyerWorkbookCreateRequest): Pr
 
 export async function fetchBuyerWorkbook(id: string): Promise<BuyerWorkbookDetail> {
   const res = await fetch(`/api/v1/purchase-planning/buyer-workbooks/${encodeURIComponent(id)}`)
+  return parseJsonOrThrow<BuyerWorkbookDetail>(res)
+}
+
+export async function ensureBuyerSalesProjectionWorkbook(
+  workbookId: string,
+  cardId: string,
+  actor = 'buyer',
+): Promise<BuyerSalesProjectionWorkbookResult> {
+  const res = await fetch(
+    `/api/v1/purchase-planning/buyer-workbooks/${encodeURIComponent(workbookId)}/cards/${encodeURIComponent(cardId)}/sales-projection-workbook`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ actor }),
+    },
+  )
+  return parseJsonOrThrow<BuyerSalesProjectionWorkbookResult>(res)
+}
+
+export async function confirmBuyerSalesProjectionWorkbook(
+  workbookId: string,
+  cardId: string,
+  actor = 'buyer',
+): Promise<BuyerWorkbookDetail> {
+  const res = await fetch(
+    `/api/v1/purchase-planning/buyer-workbooks/${encodeURIComponent(workbookId)}/cards/${encodeURIComponent(cardId)}/sales-projection-workbook/confirm`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ actor }),
+    },
+  )
   return parseJsonOrThrow<BuyerWorkbookDetail>(res)
 }
 

@@ -8,6 +8,8 @@ import {
   createModelLineFromCandidate,
   copySeedModel,
   createBuyerWorkbook,
+  confirmBuyerSalesProjectionWorkbook,
+  ensureBuyerSalesProjectionWorkbook,
   flagCandidateUnavailable,
   flagCarryoverUnavailable,
   getBuyerWorkbook,
@@ -36,6 +38,8 @@ jest.mock('../src/services/purchasePlanning/buyerWorkbookService', () => ({
   createModelLineFromCandidate: jest.fn(),
   createBuyerWorkbook: jest.fn(),
   deletePlannedStyle: jest.fn(),
+  confirmBuyerSalesProjectionWorkbook: jest.fn(),
+  ensureBuyerSalesProjectionWorkbook: jest.fn(),
   flagCandidateUnavailable: jest.fn(),
   flagCarryoverUnavailable: jest.fn(),
   getBuyerWorkbook: jest.fn(),
@@ -66,6 +70,8 @@ const service = {
   copySeedModel: copySeedModel as jest.Mock,
   createModelLineFromCandidate: createModelLineFromCandidate as jest.Mock,
   createBuyerWorkbook: createBuyerWorkbook as jest.Mock,
+  confirmBuyerSalesProjectionWorkbook: confirmBuyerSalesProjectionWorkbook as jest.Mock,
+  ensureBuyerSalesProjectionWorkbook: ensureBuyerSalesProjectionWorkbook as jest.Mock,
   flagCandidateUnavailable: flagCandidateUnavailable as jest.Mock,
   flagCarryoverUnavailable: flagCarryoverUnavailable as jest.Mock,
   getBuyerWorkbook: getBuyerWorkbook as jest.Mock,
@@ -319,6 +325,32 @@ describe('buyer workbook purchase-planning routes', () => {
     }));
     expect(copy.status).toBe(200);
     expect(service.copySeedModel).toHaveBeenCalledWith('workbook-1', 'card-1', { targetStoreIds: [21], actor: 'buyer' });
+  });
+
+  it('ensures and confirms category sales projection workbooks', async () => {
+    const workbookDetail = detail();
+    service.ensureBuyerSalesProjectionWorkbook.mockResolvedValue({
+      plan: { plan: { id: 'plan-1', planningDimension: 'category', selectedCategories: [11] }, departments: [], adjustments: [], totals: {} },
+      buyerWorkbook: workbookDetail,
+    });
+    service.confirmBuyerSalesProjectionWorkbook.mockResolvedValue({
+      ...workbookDetail,
+      cards: [{ ...workbookDetail.cards[0], status: 'HISTORY_REVIEWED', salesProjectionPlanId: 'plan-1' }],
+    });
+
+    const ensured = await request(app())
+      .post('/api/v1/purchase-planning/buyer-workbooks/workbook-1/cards/card-1/sales-projection-workbook')
+      .send({ actor: 'buyer' });
+    const confirmed = await request(app())
+      .post('/api/v1/purchase-planning/buyer-workbooks/workbook-1/cards/card-1/sales-projection-workbook/confirm')
+      .send({ actor: 'buyer' });
+
+    expect(ensured.status).toBe(200);
+    expect(ensured.body.plan.plan.id).toBe('plan-1');
+    expect(service.ensureBuyerSalesProjectionWorkbook).toHaveBeenCalledWith('workbook-1', 'card-1', 'buyer');
+    expect(confirmed.status).toBe(200);
+    expect(confirmed.body.cards[0].status).toBe('HISTORY_REVIEWED');
+    expect(service.confirmBuyerSalesProjectionWorkbook).toHaveBeenCalledWith('workbook-1', 'card-1', 'buyer');
   });
 
   it('adds carryovers, flags unavailable replacements, and adds planned styles', async () => {

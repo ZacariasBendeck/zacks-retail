@@ -106,4 +106,18 @@ describe('SkuListPage bulk mode', () => {
     expect(screen.getByText(/0 SKUs selected/i)).toBeInTheDocument()
     expect(screen.getByText('Change:')).toBeInTheDocument()
   })
+
+  it('shows query actions and selected-filter pills in the filter footer', async () => {
+    authState.permissions = new Set<string>(['products.view', 'products.sku_bulk_write'])
+    const user = userEvent.setup()
+
+    renderPage()
+
+    expect(screen.getByRole('button', { name: /run query/i })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /load all/i })).not.toBeInTheDocument()
+
+    await user.type(screen.getByPlaceholderText('ABC*, *123, AB*12'), 'AB*12')
+
+    expect(screen.getByText('SKU: AB*12')).toBeInTheDocument()
+  })
 })

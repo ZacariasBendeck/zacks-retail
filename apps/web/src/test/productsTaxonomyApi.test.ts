@@ -113,6 +113,26 @@ describe('productsTaxonomyApi', () => {
     expect(JSON.parse(String(initOf()?.body))).toEqual({ buyerCodes: ['zb'], storeIds: [1, 2] })
   })
 
+  it('PATCHes bulk category buyer and store assignments', async () => {
+    vi.mocked(fetch).mockResolvedValue(ok({ updatedCount: 2, categories: [] }))
+    await categoriesApi.bulkUpdateAssignments({
+      categoryNumbers: [5, 6],
+      buyerCodes: ['zb'],
+      buyerMode: 'ADD',
+      storeIds: [1, 2],
+      storeMode: 'REPLACE',
+    })
+    expect(urlOf()).toBe('/api/v1/taxonomy/categories/bulk-assignments')
+    expect(initOf()?.method).toBe('PATCH')
+    expect(JSON.parse(String(initOf()?.body))).toEqual({
+      categoryNumbers: [5, 6],
+      buyerCodes: ['zb'],
+      buyerMode: 'ADD',
+      storeIds: [1, 2],
+      storeMode: 'REPLACE',
+    })
+  })
+
   it('URL-encodes string keys for groups/keywords/promotion codes', async () => {
     vi.mocked(fetch).mockResolvedValue(ok({ code: 'A/B', description: 'x', dateLastChanged: null }))
     await groupsApi.get('A/B')

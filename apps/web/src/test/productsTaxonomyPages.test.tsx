@@ -1,4 +1,5 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { ConfigProvider, App as AntApp } from 'antd'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -14,6 +15,7 @@ vi.mock('../hooks/useProductsTaxonomy', () => ({
   useCategoryBuyerOptions: vi.fn(),
   useCreateCategory: vi.fn(),
   useUpdateCategory: vi.fn(),
+  useBulkUpdateCategoryAssignments: vi.fn(),
   useDeleteCategory: vi.fn(),
   useGroups: vi.fn(),
   useGroup: vi.fn(),
@@ -95,6 +97,7 @@ describe('Products taxonomy pages', () => {
     vi.mocked(hooks.useDeleteDepartment).mockReturnValue(noopMutation)
     vi.mocked(hooks.useDeleteCategory).mockReturnValue(noopMutation)
     vi.mocked(hooks.useUpdateCategory).mockReturnValue(noopMutation)
+    vi.mocked(hooks.useBulkUpdateCategoryAssignments).mockReturnValue(noopMutation)
     vi.mocked(hooks.useCategoryBuyerOptions).mockReturnValue({ data: [], isLoading: false } as never)
     vi.mocked(hooks.useDeleteGroup).mockReturnValue(noopMutation)
     vi.mocked(hooks.useDeleteKeyword).mockReturnValue(noopMutation)
@@ -171,6 +174,43 @@ describe('Products taxonomy pages', () => {
     renderPage(<CategoryListPage />)
     expect(screen.getByText('TEST CAT')).toBeTruthy()
     expect(screen.getByText(/New category/)).toBeTruthy()
+  })
+
+  it('CategoryListPage offers bulk editor and simple list tabs', async () => {
+    const user = userEvent.setup()
+    vi.mocked(hooks.useCategories).mockReturnValue({
+      data: [{ number: 100, description: 'TEST CAT', dateLastChanged: null, skuCount: 7 }],
+      isLoading: false,
+    } as never)
+    vi.mocked(hooks.useDepartments).mockReturnValue({
+      data: [{ number: 1, description: 'ROPA', begCateg: 1, endCateg: 199, dateLastChanged: null, skuCount: 0 }],
+      isLoading: false,
+    } as never)
+    vi.mocked(hooks.useSectors).mockReturnValue({
+      data: [{ number: 1, description: 'GENERAL', begDept: 1, endDept: 99, dateLastChanged: null, skuCount: 0 }],
+      isLoading: false,
+    } as never)
+
+    renderPage(<CategoryListPage />)
+
+    const tablist = screen.getByRole('tablist')
+    const tabs = within(tablist).getAllByRole('tab')
+    expect(tabs.map((tab) => tab.textContent)).toEqual(['Simple list', 'Bulk editor'])
+    expect(within(tablist).getByRole('tab', { name: 'Simple list' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.queryByText('Bulk buyers')).toBeNull()
+
+    const activePanel = screen.getByRole('tabpanel')
+    expect(within(activePanel).getByRole('columnheader', { name: 'Number' })).toBeTruthy()
+    expect(within(activePanel).getByRole('columnheader', { name: 'Description' })).toBeTruthy()
+    expect(within(activePanel).getByRole('columnheader', { name: 'Department' })).toBeTruthy()
+    expect(within(activePanel).getByRole('columnheader', { name: 'Sector' })).toBeTruthy()
+    expect(within(activePanel).getByRole('columnheader', { name: 'SKUs' })).toBeTruthy()
+    expect(within(activePanel).queryByRole('columnheader', { name: 'Product Family' })).toBeNull()
+    expect(within(activePanel).queryByText('Bulk buyers')).toBeNull()
+
+    await user.click(within(tablist).getByRole('tab', { name: 'Bulk editor' }))
+
+    expect(screen.getByText('Bulk buyers')).toBeTruthy()
   })
 
   it('CategoryFormPage in create mode shows empty form and Save button', () => {

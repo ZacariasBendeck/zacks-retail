@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import {
   Alert,
   Button,
@@ -11,7 +11,6 @@ import {
   Modal,
   Row,
   Select,
-  Segmented,
   Space,
   Switch,
   Table,
@@ -40,18 +39,20 @@ import {
   type SavedPurchasePlanDepartment,
   type SavedPurchasePlanListItem,
   type SavedPurchasePlanRowsUpdateRequest,
-  type SavedPurchasePlanRow,
   type SeasonalPurchaseReportResponse,
   type SeasonalPurchaseReportSeason,
   type SeasonalPurchaseReportValue,
 } from '../../services/purchasePlanningApi'
+import {
+  SavedPurchasePlanWorkbook,
+  buildPurchasePlanWorksheetPeriods,
+  formatPurchasePlanMonth,
+} from './SavedPurchasePlanWorkbook'
 
 const { Title, Text } = Typography
 
 const integerFmt = new Intl.NumberFormat('en-US')
 const moneyFmt = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 })
-const pctFmt = new Intl.NumberFormat('en-US', { maximumFractionDigits: 1 })
-
 const FORECAST_OPTIONS: Array<{ value: PurchasePlanForecastMethod; label: string }> = [
   { value: 'holtWinters', label: 'Holt-Winters' },
   { value: 'sameMonthLastYear', label: 'Same month last year' },
@@ -107,43 +108,6 @@ interface SeasonalReportRow {
   label: string
 }
 
-type WorksheetColumnMode = 'months' | 'seasons'
-
-type WorksheetMetricKey =
-  | 'currentBoh'
-  | 'currentProjSales'
-  | 'currentEohTarget'
-  | 'baselineBuy'
-  | 'currentBuy'
-  | 'currentEohActual'
-  | 'stockPosition'
-  | 'normalizationFactor'
-
-type EditableWorksheetMetricKey = 'currentProjSales' | 'currentEohTarget' | 'currentBuy'
-
-interface WorksheetMetric {
-  key: WorksheetMetricKey
-  label: string
-  aggregate: 'sum' | 'first' | 'last' | 'average'
-  editableKey?: EditableWorksheetMetricKey
-  inputLabel?: string
-  format: 'integer' | 'percent'
-}
-
-interface WorksheetPeriod {
-  key: string
-  label: string
-  months: string[]
-  mode: WorksheetColumnMode
-}
-
-interface WorksheetPivotRow {
-  key: string
-  departmentKey: string
-  departmentLabel: string
-  metric: WorksheetMetric
-}
-
 const REPORT_ROWS: SeasonalReportRow[] = [
   { key: 'projectedBoh', label: 'Projected BOH' },
   { key: 'projectedSales', label: 'Projected Sales' },
@@ -151,17 +115,6 @@ const REPORT_ROWS: SeasonalReportRow[] = [
   { key: 'draftPos', label: 'Draft POs' },
   { key: 'confirmedPos', label: 'Confirmed POs' },
   { key: 'openToBuy', label: 'Open To Buy' },
-]
-
-const WORKSHEET_METRICS: WorksheetMetric[] = [
-  { key: 'currentBoh', label: 'Projected BOH', aggregate: 'first', format: 'integer' },
-  { key: 'currentProjSales', label: 'Projected sales', aggregate: 'sum', editableKey: 'currentProjSales', inputLabel: 'projected sales', format: 'integer' },
-  { key: 'currentEohTarget', label: 'EOH target', aggregate: 'last', editableKey: 'currentEohTarget', inputLabel: 'EOH target', format: 'integer' },
-  { key: 'baselineBuy', label: 'Baseline buy', aggregate: 'sum', format: 'integer' },
-  { key: 'currentBuy', label: 'Current buy', aggregate: 'sum', editableKey: 'currentBuy', inputLabel: 'current buy', format: 'integer' },
-  { key: 'currentEohActual', label: 'Projected EOH', aggregate: 'last', format: 'integer' },
-  { key: 'stockPosition', label: 'Stock position', aggregate: 'last', format: 'integer' },
-  { key: 'normalizationFactor', label: 'Norm', aggregate: 'average', format: 'percent' },
 ]
 
 const DEFAULT_POLICY_MONTHS = [
@@ -176,10 +129,6 @@ const DEFAULT_POLICY_TARGET_SKUS = [180, 160, 140, 150, 190]
 const DEFAULT_POLICY_STORE_COUNTS = [28, 27, 26, 28, 28]
 const DEFAULT_POLICY_DEMAND_COVER = [210, 150, 150, 150, 150]
 
-function formatMonth(yearMonth: string): string {
-  return dayjs(`${yearMonth}-01`).format('MMM YYYY')
-}
-
 function formatInt(value: number): string {
   return integerFmt.format(Math.round(value ?? 0))
 }
@@ -190,65 +139,6 @@ function formatHnl(value: number): string {
 
 function formUnit(value: number | null | undefined): number {
   return Math.max(0, Math.round(Number(value ?? 0)))
-}
-
-function seasonForYearMonth(yearMonth: string): { key: string; label: string } {
-  const [rawYear, rawMonth] = yearMonth.split('-')
-  const year = Number(rawYear)
-  const month = Number(rawMonth)
-  if (month >= 2 && month <= 4) return { key: `spring-${year}`, label: `Spring ${year}` }
-  if (month >= 5 && month <= 7) return { key: `summer-${year}`, label: `Summer ${year}` }
-  if (month >= 8 && month <= 10) return { key: `fall-${year}`, label: `Fall ${year}` }
-  if (month >= 11 && month <= 12) return { key: `winter-${year}`, label: `Winter ${year}` }
-  return { key: `winter-${year - 1}`, label: `Winter ${year - 1}` }
-}
-
-function buildWorksheetPeriods(months: string[], mode: WorksheetColumnMode): WorksheetPeriod[] {
-  const sortedMonths = [...new Set(months)].sort()
-  if (mode === 'months') {
-    return sortedMonths.map((month) => ({
-      key: month,
-      label: formatMonth(month),
-      months: [month],
-      mode,
-    }))
-  }
-
-  const periods: WorksheetPeriod[] = []
-  for (const month of sortedMonths) {
-    const season = seasonForYearMonth(month)
-    const current = periods[periods.length - 1]
-    if (current?.key === season.key) {
-      current.months.push(month)
-    } else {
-      periods.push({ key: season.key, label: season.label, months: [month], mode })
-    }
-  }
-  return periods
-}
-
-function worksheetMetricValue(row: SavedPurchasePlanRow, metric: WorksheetMetric): number | null {
-  const value = row[metric.key]
-  return typeof value === 'number' ? value : null
-}
-
-function aggregateWorksheetMetric(rows: SavedPurchasePlanRow[], metric: WorksheetMetric): number | null {
-  const sortedRows = [...rows].sort((a, b) => a.yearMonth.localeCompare(b.yearMonth))
-  const values = sortedRows
-    .map((row) => worksheetMetricValue(row, metric))
-    .filter((value): value is number => value != null)
-  if (values.length === 0) return null
-  if (metric.aggregate === 'first') return values[0] ?? null
-  if (metric.aggregate === 'last') return values[values.length - 1] ?? null
-  if (metric.aggregate === 'average') return values.reduce((sum, value) => sum + value, 0) / values.length
-  return values.reduce((sum, value) => sum + value, 0)
-}
-
-function formatWorksheetMetric(value: number | null, metric: WorksheetMetric): string {
-  if (value == null) return '-'
-  return metric.format === 'percent'
-    ? `${pctFmt.format(value * 100)}%`
-    : formatInt(value)
 }
 
 function defaultPolicyDraft(index: number): TargetPolicyDraft {
@@ -291,11 +181,6 @@ export default function PurchasePlanningPage() {
   const [activeTab, setActiveTab] = useState('report')
   const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null)
   const [adjustmentTarget, setAdjustmentTarget] = useState<SavedPurchasePlanDepartment | null>(null)
-  const [worksheetRows, setWorksheetRows] = useState<SavedPurchasePlanRow[]>([])
-  const [autoBuyRowIds, setAutoBuyRowIds] = useState<Set<string>>(new Set())
-  const [projectionPct, setProjectionPct] = useState<number>(0)
-  const [worksheetReason, setWorksheetReason] = useState('Worksheet edit')
-  const [worksheetColumnMode, setWorksheetColumnMode] = useState<WorksheetColumnMode>('months')
   const [seasonalReport, setSeasonalReport] = useState<SeasonalPurchaseReportResponse | null>(null)
   const [policyDepartmentNumber, setPolicyDepartmentNumber] = useState<number | undefined>()
   const [policyDrafts, setPolicyDrafts] = useState<Record<string, TargetPolicyDraft>>({})
@@ -388,19 +273,9 @@ export default function PurchasePlanningPage() {
   })
 
   const selectedPlan = detail.data?.plan.id === selectedPlanId ? detail.data : undefined
-  const sourceWorksheetRows = useMemo<SavedPurchasePlanRow[]>(() => (
+  const selectedPlanRows = useMemo(() => (
     selectedPlan?.departments.flatMap((department) => department.months) ?? []
   ), [selectedPlan])
-  const originalRowsById = useMemo(() => (
-    new Map(sourceWorksheetRows.map((row) => [row.id, row]))
-  ), [sourceWorksheetRows])
-
-  useEffect(() => {
-    setWorksheetRows(sourceWorksheetRows.map((row) => ({ ...row })))
-    setAutoBuyRowIds(new Set())
-    setProjectionPct(0)
-    setWorksheetReason('Worksheet edit')
-  }, [sourceWorksheetRows])
 
   const seasonalReportColumns = useMemo<ColumnsType<SeasonalReportRow>>(() => [
     {
@@ -441,128 +316,13 @@ export default function PurchasePlanningPage() {
       title: 'Window',
       width: 190,
       render: (_: unknown, row) => row.seasonMonths.length > 3
-        ? `${formatMonth(row.seasonMonths[0] ?? '')} - ${formatMonth(row.seasonMonths[row.seasonMonths.length - 1] ?? '')}`
+        ? `${formatPurchasePlanMonth(row.seasonMonths[0] ?? '')} - ${formatPurchasePlanMonth(row.seasonMonths[row.seasonMonths.length - 1] ?? '')}`
         : `${row.season} ${row.seasonYear}`,
     },
     { title: 'Departments', dataIndex: 'departmentCount', width: 110, align: 'right' },
     { title: 'Units', dataIndex: 'currentTotalBuy', width: 100, align: 'right', render: formatInt },
   ], [])
 
-  const showWorksheetDepartment = (selectedPlan?.departments.length ?? 0) > 1
-
-  const worksheetPeriods = useMemo(() => {
-    const months = selectedPlan?.plan.seasonMonths.length
-      ? selectedPlan.plan.seasonMonths
-      : worksheetRows.map((row) => row.yearMonth)
-    return buildWorksheetPeriods(months, worksheetColumnMode)
-  }, [selectedPlan, worksheetColumnMode, worksheetRows])
-
-  const worksheetRowByDepartmentMonth = useMemo(() => {
-    const out = new Map<string, SavedPurchasePlanRow>()
-    for (const row of worksheetRows) {
-      out.set(`${row.departmentKey}|${row.yearMonth}`, row)
-    }
-    return out
-  }, [worksheetRows])
-
-  const worksheetPivotRows = useMemo<WorksheetPivotRow[]>(() => {
-    const departmentsByKey = new Map<string, string>()
-    for (const row of worksheetRows) {
-      if (!departmentsByKey.has(row.departmentKey)) departmentsByKey.set(row.departmentKey, row.departmentLabel)
-    }
-    return [...departmentsByKey.entries()].flatMap(([departmentKey, departmentLabel]) =>
-      WORKSHEET_METRICS.map((metric) => ({
-        key: `${departmentKey}-${metric.key}`,
-        departmentKey,
-        departmentLabel,
-        metric,
-      })),
-    )
-  }, [worksheetRows])
-
-  function renderWorksheetPivotCell(row: WorksheetPivotRow, period: WorksheetPeriod): ReactNode {
-    const periodRows = period.months
-      .map((month) => worksheetRowByDepartmentMonth.get(`${row.departmentKey}|${month}`))
-      .filter((value): value is SavedPurchasePlanRow => Boolean(value))
-    const metric = row.metric
-    const monthlyRow = period.mode === 'months' ? periodRows[0] : undefined
-
-    if (monthlyRow && metric.editableKey) {
-      const original = originalRowsById.get(monthlyRow.id)
-      const currentValue = monthlyRow[metric.editableKey]
-      return (
-        <InputNumber
-          aria-label={`${showWorksheetDepartment ? `${row.departmentLabel} ` : ''}${period.label} ${metric.inputLabel}`}
-          min={0}
-          precision={0}
-          size="small"
-          value={currentValue}
-          status={original?.[metric.editableKey] === currentValue ? undefined : 'warning'}
-          onChange={(value) => updateWorksheetCell(monthlyRow.id, { [metric.editableKey!]: formUnit(value) })}
-          style={{ width: 92 }}
-        />
-      )
-    }
-
-    return (
-      <Text strong={metric.key === 'currentBuy'}>
-        {formatWorksheetMetric(aggregateWorksheetMetric(periodRows, metric), metric)}
-      </Text>
-    )
-  }
-
-  const worksheetColumns = useMemo<ColumnsType<WorksheetPivotRow>>(() => {
-    return [
-      ...(showWorksheetDepartment ? [{
-        title: 'Department',
-        dataIndex: 'departmentLabel',
-        fixed: 'left' as const,
-        width: 220,
-        render: (value: string) => (
-          <Space size={6}>
-            <Text>{value}</Text>
-          </Space>
-        ),
-      }] : []),
-      {
-        title: 'Worksheet row',
-        dataIndex: ['metric', 'label'],
-        fixed: 'left' as const,
-        width: 150,
-        render: (_: unknown, row) => <Text>{row.metric.label}</Text>,
-      },
-      ...worksheetPeriods.map((period) => ({
-        title: period.label,
-        key: period.key,
-        align: 'right' as const,
-        width: period.mode === 'months' ? 118 : 132,
-        render: (_: unknown, row: WorksheetPivotRow) => renderWorksheetPivotCell(row, period),
-      })),
-    ]
-  }, [originalRowsById, showWorksheetDepartment, worksheetPeriods, worksheetRowByDepartmentMonth])
-
-  const worksheetChanges = useMemo(() => buildWorksheetChanges(worksheetRows, originalRowsById), [originalRowsById, worksheetRows])
-  const worksheetTotals = useMemo(() => {
-    const totals = worksheetRows.reduce((acc, row) => ({
-      projectedBoh: acc.projectedBoh + row.currentBoh,
-      projectedSales: acc.projectedSales + row.currentProjSales,
-      eohTarget: acc.eohTarget + row.currentEohTarget,
-      baselineTotalBuy: acc.baselineTotalBuy + row.baselineBuy,
-      currentTotalBuy: acc.currentTotalBuy + row.currentBuy,
-      currentEohActual: acc.currentEohActual + row.currentEohActual,
-    }), {
-      projectedBoh: 0,
-      projectedSales: 0,
-      eohTarget: 0,
-      baselineTotalBuy: 0,
-      currentTotalBuy: 0,
-      currentEohActual: 0,
-    })
-    return {
-      ...totals,
-      deltaBuy: totals.currentTotalBuy - totals.baselineTotalBuy,
-    }
-  }, [worksheetRows])
   const effectivePolicyDepartmentNumber = policyDepartmentNumber
     ?? seasonalReport?.departmentNumber
     ?? selectedPlan?.departments[0]?.departmentNumber
@@ -595,11 +355,11 @@ export default function PurchasePlanningPage() {
     ?? selectedPlan?.plan.seasonMonths
     ?? DEFAULT_POLICY_MONTHS
   const policyMonthKey = policyMonthList.join('|')
-  const policyPeriods = useMemo(() => buildWorksheetPeriods(policyMonthList, 'seasons'), [policyMonthKey])
+  const policyPeriods = useMemo(() => buildPurchasePlanWorksheetPeriods(policyMonthList, 'seasons'), [policyMonthKey])
   const selectedDepartmentWorksheetRows = useMemo(() => {
-    if (effectivePolicyDepartmentNumber == null) return worksheetRows
-    return worksheetRows.filter((row) => row.departmentNumber === effectivePolicyDepartmentNumber)
-  }, [effectivePolicyDepartmentNumber, worksheetRows])
+    if (effectivePolicyDepartmentNumber == null) return selectedPlanRows
+    return selectedPlanRows.filter((row) => row.departmentNumber === effectivePolicyDepartmentNumber)
+  }, [effectivePolicyDepartmentNumber, selectedPlanRows])
   const policyRows = useMemo<TargetPolicyRow[]>(() => policyPeriods.map((period, index) => {
     const draft = policyDrafts[period.key] ?? defaultPolicyDraft(index)
     const derivedStoreCount = DEFAULT_POLICY_STORE_COUNTS[index] ?? DEFAULT_POLICY_STORE_COUNTS[0] ?? 0
@@ -649,7 +409,7 @@ export default function PurchasePlanningPage() {
       render: (_: string, row) => (
         <Space direction="vertical" size={0}>
           <Text>{row.label}</Text>
-          <Text type="secondary" style={{ fontSize: 12 }}>{row.months.map(formatMonth).join(', ')}</Text>
+          <Text type="secondary" style={{ fontSize: 12 }}>{row.months.map(formatPurchasePlanMonth).join(', ')}</Text>
         </Space>
       ),
     },
@@ -768,100 +528,6 @@ export default function PurchasePlanningPage() {
         reason: values.reason,
         appliedBy: 'buyer',
       },
-    })
-  }
-
-  function recalculateWorksheetRows(rows: SavedPurchasePlanRow[], autoBuyIds: Set<string>): SavedPurchasePlanRow[] {
-    const byDepartment = new Map<string, SavedPurchasePlanRow[]>()
-    for (const row of rows) {
-      const group = byDepartment.get(row.departmentKey) ?? []
-      group.push(row)
-      byDepartment.set(row.departmentKey, group)
-    }
-
-    const recalculatedById = new Map<string, SavedPurchasePlanRow>()
-    for (const departmentRows of byDepartment.values()) {
-      const sortedRows = [...departmentRows].sort((a, b) => a.yearMonth.localeCompare(b.yearMonth))
-      let runningBoh = sortedRows[0]?.currentBoh ?? 0
-      sortedRows.forEach((row, index) => {
-        const currentBoh = index === 0 ? row.currentBoh : runningBoh
-        const currentBuy = autoBuyIds.has(row.id)
-          ? Math.max(0, row.currentProjSales + row.currentEohTarget - currentBoh)
-          : row.currentBuy
-        const currentEohActual = currentBoh + currentBuy - row.currentProjSales
-        const next = { ...row, currentBoh, currentBuy, currentEohActual }
-        recalculatedById.set(row.id, next)
-        runningBoh = currentEohActual
-      })
-    }
-    return rows.map((row) => recalculatedById.get(row.id) ?? row)
-  }
-
-  function updateWorksheetCell(rowId: string, changes: Partial<Pick<SavedPurchasePlanRow, 'currentProjSales' | 'currentEohTarget' | 'currentBuy'>>): void {
-    const nextAutoBuyIds = new Set(autoBuyRowIds)
-    if (changes.currentBuy != null) nextAutoBuyIds.delete(rowId)
-    if (changes.currentProjSales != null || changes.currentEohTarget != null) nextAutoBuyIds.add(rowId)
-    setAutoBuyRowIds(nextAutoBuyIds)
-    setWorksheetRows((rows) => recalculateWorksheetRows(
-      rows.map((row) => row.id === rowId ? { ...row, ...changes } : row),
-      nextAutoBuyIds,
-    ))
-  }
-
-  function applyProjectionPercent(): void {
-    const pct = Number(projectionPct)
-    if (!Number.isFinite(pct) || pct < -100) {
-      messageApi.error('Projection percent must be -100 or higher')
-      return
-    }
-    const multiplier = 1 + pct / 100
-    const nextAutoBuyIds = new Set(autoBuyRowIds)
-    worksheetRows.forEach((row) => nextAutoBuyIds.add(row.id))
-    setAutoBuyRowIds(nextAutoBuyIds)
-    setWorksheetRows((rows) => recalculateWorksheetRows(
-      rows.map((row) => ({
-        ...row,
-        currentProjSales: formUnit(row.currentProjSales * multiplier),
-        currentEohTarget: formUnit(row.currentEohTarget * multiplier),
-      })),
-      nextAutoBuyIds,
-    ))
-  }
-
-  function resetWorksheet(): void {
-    setWorksheetRows(sourceWorksheetRows.map((row) => ({ ...row })))
-    setAutoBuyRowIds(new Set())
-    setProjectionPct(0)
-    setWorksheetReason('Worksheet edit')
-  }
-
-  function saveWorksheet(): void {
-    if (!selectedPlanId || worksheetChanges.length === 0) return
-    const reason = worksheetReason.trim() || 'Worksheet edit'
-    worksheetUpdateMutation.mutate({
-      planId: selectedPlanId,
-      payload: {
-        rows: worksheetChanges,
-        reason,
-        appliedBy: 'buyer',
-      },
-    })
-  }
-
-  function buildWorksheetChanges(
-    rows: SavedPurchasePlanRow[],
-    originals: Map<string, SavedPurchasePlanRow>,
-  ): SavedPurchasePlanRowsUpdateRequest['rows'] {
-    return rows.flatMap((row) => {
-      const original = originals.get(row.id)
-      if (!original) return []
-      const change: SavedPurchasePlanRowsUpdateRequest['rows'][number] = { rowId: row.id }
-      if (row.currentProjSales !== original.currentProjSales) change.currentProjSales = row.currentProjSales
-      if (row.currentEohTarget !== original.currentEohTarget) change.currentEohTarget = row.currentEohTarget
-      if (row.currentBuy !== original.currentBuy) change.currentBuy = row.currentBuy
-      return change.currentProjSales == null && change.currentEohTarget == null && change.currentBuy == null
-        ? []
-        : [change]
     })
   }
 
@@ -999,112 +665,25 @@ export default function PurchasePlanningPage() {
           <Empty description="Generate a report or select a saved worksheet." image={Empty.PRESENTED_IMAGE_SIMPLE} style={{ padding: 40 }} />
         </Card>
       ) : selectedPlan ? (
-        <Card
-          size="small"
-          title={selectedPlan.plan.label}
-          extra={(
-            <Space>
-              <Tag>{selectedPlan.plan.planningScopeLabel ?? selectedPlan.plan.storeGroupLabel ?? selectedPlan.plan.storeGroupCode}</Tag>
-              <Tag>{selectedPlan.plan.seasonMonths.length > 3 ? '15-month workbook' : `${selectedPlan.plan.season} ${selectedPlan.plan.seasonYear}`}</Tag>
-              <Button htmlType="button" onClick={() => recalculateMutation.mutate(selectedPlan.plan.id)} loading={recalculateMutation.isPending}>
-                Recalculate
-              </Button>
-              <Button danger htmlType="button" onClick={() => archiveMutation.mutate(selectedPlan.plan.id)} loading={archiveMutation.isPending}>
-                Archive
-              </Button>
-            </Space>
+        <SavedPurchasePlanWorkbook
+          detail={selectedPlan}
+          loading={detail.isFetching}
+          saveLoading={worksheetUpdateMutation.isPending}
+          recalculateLoading={recalculateMutation.isPending}
+          archiveLoading={archiveMutation.isPending}
+          onSaveRows={(planId, payload) => worksheetUpdateMutation.mutate({ planId, payload })}
+          onRecalculate={(planId) => recalculateMutation.mutate(planId)}
+          onArchive={(planId) => archiveMutation.mutate(planId)}
+          extraControls={(
+            <>
+              {selectedPlan.departments.map((department) => (
+                <Button key={department.departmentKey} size="small" htmlType="button" onClick={() => openAdjustment(department)}>
+                  Adjust {selectedPlan.departments.length === 1 ? 'department' : department.departmentLabel}
+                </Button>
+              ))}
+            </>
           )}
-        >
-          <Space wrap style={{ marginBottom: 12 }}>
-            <Text type="secondary">Months: {selectedPlan.plan.seasonMonths.map(formatMonth).join(', ')}</Text>
-            <Text type="secondary">History: {selectedPlan.plan.historyFromYearMonth} to {selectedPlan.plan.historyToYearMonth}</Text>
-            <Text type="secondary">Forecast: {selectedPlan.plan.forecastMethod}</Text>
-            {selectedPlan.plan.discountNormalization ? <Tag color="blue">discount normalization</Tag> : null}
-          </Space>
-          <Row gutter={12} style={{ marginBottom: 16 }}>
-            <Col xs={24} sm={8}>
-              <Text type="secondary">Baseline buy</Text>
-              <Title level={4} style={{ margin: 0 }}>{formatInt(worksheetTotals.baselineTotalBuy)}</Title>
-            </Col>
-            <Col xs={24} sm={8}>
-              <Text type="secondary">Current buy</Text>
-              <Title level={4} style={{ margin: 0 }}>{formatInt(worksheetTotals.currentTotalBuy)}</Title>
-            </Col>
-            <Col xs={24} sm={8}>
-              <Text type="secondary">Adjusted delta</Text>
-              <Title level={4} style={{ margin: 0 }}>{worksheetTotals.deltaBuy > 0 ? '+' : ''}{formatInt(worksheetTotals.deltaBuy)}</Title>
-            </Col>
-          </Row>
-          <Space wrap style={{ marginBottom: 12 }}>
-            {selectedPlan.departments.map((department) => (
-              <Button key={department.departmentKey} size="small" htmlType="button" onClick={() => openAdjustment(department)}>
-                Adjust {selectedPlan.departments.length === 1 ? 'department' : department.departmentLabel}
-              </Button>
-            ))}
-          </Space>
-          <Space wrap align="end" style={{ marginBottom: 12 }}>
-            <Space direction="vertical" size={2}>
-              <Text type="secondary">Columns</Text>
-              <Segmented<WorksheetColumnMode>
-                aria-label="Worksheet columns"
-                value={worksheetColumnMode}
-                onChange={setWorksheetColumnMode}
-                options={[
-                  { label: 'Months', value: 'months' },
-                  { label: 'Seasons', value: 'seasons' },
-                ]}
-              />
-            </Space>
-            <Space direction="vertical" size={2}>
-              <Text type="secondary">Projection %</Text>
-              <InputNumber
-                aria-label="Projection percent"
-                min={-100}
-                max={500}
-                precision={1}
-                value={projectionPct}
-                onChange={(value) => setProjectionPct(Number(value ?? 0))}
-                style={{ width: 110 }}
-              />
-            </Space>
-            <Button htmlType="button" onClick={applyProjectionPercent} disabled={worksheetRows.length === 0}>
-              Apply projection %
-            </Button>
-            <Space direction="vertical" size={2}>
-              <Text type="secondary">Reason</Text>
-              <Input
-                aria-label="Worksheet reason"
-                value={worksheetReason}
-                onChange={(event) => setWorksheetReason(event.target.value)}
-                style={{ width: 260 }}
-              />
-            </Space>
-            <Button
-              type="primary"
-              htmlType="button"
-              onClick={saveWorksheet}
-              loading={worksheetUpdateMutation.isPending}
-              disabled={worksheetChanges.length === 0}
-            >
-              Save worksheet
-            </Button>
-            <Button htmlType="button" onClick={resetWorksheet} disabled={worksheetChanges.length === 0}>
-              Reset worksheet
-            </Button>
-            {worksheetChanges.length > 0 ? <Tag color="gold">{worksheetChanges.length} changed</Tag> : null}
-          </Space>
-          <Table<WorksheetPivotRow>
-            aria-label="Worksheet grid"
-            dataSource={worksheetPivotRows}
-            columns={worksheetColumns}
-            rowKey="key"
-            size="small"
-            loading={detail.isFetching}
-            pagination={false}
-            scroll={{ x: 'max-content' }}
-            locale={{ emptyText: 'No monthly rows for this worksheet.' }}
-          />
-        </Card>
+        />
       ) : (
         <Card loading size="small" />
       )}

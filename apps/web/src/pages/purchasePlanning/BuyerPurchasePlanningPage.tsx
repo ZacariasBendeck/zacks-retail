@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   Alert,
   Button,
+  Card,
   Col,
   Form,
   Input,
@@ -12,6 +13,7 @@ import {
   Space,
   Switch,
   Table,
+  Tabs,
   Tag,
   Tooltip,
   Typography,
@@ -34,12 +36,19 @@ import { useCategories, useCategoryBuyerOptions, useDepartments } from '../../ho
 import { useStoreChains, useStores } from '../../hooks/useStores'
 import { fetchPurchaseOrders } from '../../services/purchaseOrderApi'
 import {
+  recalculateSavedPurchasePlan,
+  updateSavedPurchasePlanRows,
+  type SavedPurchasePlanRowsUpdateRequest,
+} from '../../services/purchasePlanningApi'
+import {
   addBuyerCarryoverLine,
   addBuyerPlannedStyle,
   bulkUpdateStoreCategoryCarrying,
+  confirmBuyerSalesProjectionWorkbook,
   copyBuyerSeedModel,
   createBuyerCarryoverModelLine,
   createBuyerWorkbook,
+  ensureBuyerSalesProjectionWorkbook,
   fetchBuyerChecklistCategories,
   fetchBuyerWorkbook,
   fetchBuyerWorkbooks,
@@ -67,11 +76,10 @@ import {
   type BuyerWorkbookListItem,
   type CarryoverCandidate,
   type CarryoverLine,
-  type HistoricalMonthMetric,
   type PlannedStyle,
-  type SalesProjectionMonth,
   type StoreCategoryCarryingRow,
 } from '../../services/buyerPurchasePlanningApi'
+import { SavedPurchasePlanWorkbook } from './SavedPurchasePlanWorkbook'
 
 const { Title, Text } = Typography
 
@@ -225,7 +233,6 @@ export default function BuyerPurchasePlanningPage() {
   const [editingCarryoverLine, setEditingCarryoverLine] = useState<CarryoverLine | null>(null)
   const [editingSizeCells, setEditingSizeCells] = useState<CarryoverLine['sizeCells']>([])
   const [attributePlanValues, setAttributePlanValues] = useState<Record<string, { plannedStyleCount: number; plannedUnits: number; notes?: string | null }>>({})
-  const [salesProjectionRows, setSalesProjectionRows] = useState<SalesProjectionMonth[]>([])
   const checklistLoaded = loadedChecklistRequest !== null
 
   const { data: stores = [], isLoading: storesLoading } = useStores()
@@ -266,6 +273,13 @@ export default function BuyerPurchasePlanningPage() {
     queryKey: ['buyer-purchase-workbook', reviewWorkbookId],
     queryFn: () => fetchBuyerWorkbook(reviewWorkbookId!),
     enabled: !!reviewWorkbookId,
+    staleTime: 30_000,
+  })
+
+  const salesProjectionWorkbook = useQuery({
+    queryKey: ['buyer-sales-projection-workbook', reviewWorkbookId, reviewCardId],
+    queryFn: () => ensureBuyerSalesProjectionWorkbook(reviewWorkbookId!, reviewCardId!, 'buyer'),
+    enabled: isReviewRoute && !!reviewWorkbookId && !!reviewCardId,
     staleTime: 30_000,
   })
 
@@ -326,18 +340,6 @@ export default function BuyerPurchasePlanningPage() {
       })
     return map
   }, [reviewCardId, selectedDetail])
-  const salesProjectionByMonth = useMemo(
-    () => new Map(salesProjectionRows.map((row) => [row.yearMonth, row])),
-    [salesProjectionRows],
-  )
-  const salesProjectionTotals = useMemo(() => ({
-    projectedUnits: salesProjectionRows.reduce((sum, row) => sum + Math.max(0, Number(row.projectedUnits ?? 0)), 0),
-    projectedSales: salesProjectionRows.reduce((sum, row) => sum + Math.max(0, Number(row.projectedSales ?? 0)), 0),
-  }), [salesProjectionRows])
-  const canContinuePlanning = selectedCard
-    ? selectedCard.status !== 'NOT_STARTED' || selectedCard.salesProjection.updatedAt != null
-    : false
-
   const filteredChecklistRows = useMemo(() => {
     const term = landingSearch.trim().toLowerCase()
     const rows = checklistCategories.data ?? []
@@ -396,7 +398,6 @@ export default function BuyerPurchasePlanningPage() {
       })
     })
     setAttributePlanValues(nextAttributeValues)
-    setSalesProjectionRows(selectedCard.salesProjection.months)
   }, [copyForm, newStyleTargetForm, selectedAttributeMix, selectedAttributePlanMap, selectedCard, selectedTargetStoreIds, targetForm])
 
   function putDetail(next: BuyerWorkbookDetail) {
@@ -475,19 +476,53 @@ export default function BuyerPurchasePlanningPage() {
       status?: BuyerCategoryStatus
       targetNewSkuCount?: number
       targetCarryoverSkuCount?: number
-      salesProjections?: SalesProjectionMonth[]
       notes?: string | null
     }) => updateBuyerCategoryCard(input.workbookId, input.cardId, {
       status: input.status,
       targetNewSkuCount: input.targetNewSkuCount,
       targetCarryoverSkuCount: input.targetCarryoverSkuCount,
-      salesProjections: input.salesProjections,
       notes: input.notes,
       actor: 'buyer',
     }),
     onSuccess: (next) => {
       putDetail(next)
       messageApi.success('Category updated')
+    },
+    onError: (error) => messageApi.error((error as Error).message),
+  })
+
+  const updateProjectionRowsMutation = useMutation({
+    mutationFn: (input: { planId: string; payload: SavedPurchasePlanRowsUpdateRequest }) =>
+      updateSavedPurchasePlanRows(input.planId, input.payload),
+    onSuccess: (plan) => {
+      queryClient.setQueryData(['buyer-sales-projection-workbook', reviewWorkbookId, reviewCardId], (previous: typeof salesProjectionWorkbook.data) => (
+        previous ? { ...previous, plan } : previous
+      ))
+      if (selectedCard?.status === 'NOT_STARTED') {
+        confirmProjectionMutation.mutate()
+      }
+      messageApi.success('Worksheet saved')
+    },
+    onError: (error) => messageApi.error((error as Error).message),
+  })
+
+  const recalculateProjectionMutation = useMutation({
+    mutationFn: (planId: string) => recalculateSavedPurchasePlan(planId, 'buyer'),
+    onSuccess: (plan) => {
+      queryClient.setQueryData(['buyer-sales-projection-workbook', reviewWorkbookId, reviewCardId], (previous: typeof salesProjectionWorkbook.data) => (
+        previous ? { ...previous, plan } : previous
+      ))
+      messageApi.success('Projection workbook recalculated')
+    },
+    onError: (error) => messageApi.error((error as Error).message),
+  })
+
+  const confirmProjectionMutation = useMutation({
+    mutationFn: () => confirmBuyerSalesProjectionWorkbook(reviewWorkbookId!, reviewCardId!, 'buyer'),
+    onSuccess: (next) => {
+      putDetail(next)
+      void queryClient.invalidateQueries({ queryKey: ['buyer-sales-projection-workbook', reviewWorkbookId, reviewCardId] })
+      messageApi.success('Sales projection confirmed')
     },
     onError: (error) => messageApi.error((error as Error).message),
   })
@@ -809,45 +844,6 @@ export default function BuyerPurchasePlanningPage() {
         )
       ),
     },
-  ]
-
-  const historyColumns: ColumnsType<HistoricalMonthMetric> = [
-    { title: 'Month', dataIndex: 'yearMonth', width: 96 },
-    { title: 'Sold', dataIndex: 'quantitySold', align: 'right', render: formatInt },
-    { title: 'Net Sales', dataIndex: 'netSales', align: 'right', render: formatMoney },
-    {
-      title: 'Projected Units',
-      width: 150,
-      render: (_, row) => (
-        <InputNumber
-          aria-label={`Projected units ${row.yearMonth}`}
-          min={0}
-          value={salesProjectionByMonth.get(row.yearMonth)?.projectedUnits ?? 0}
-          style={{ width: '100%' }}
-          onChange={(value) => updateSalesProjectionMonth(row.yearMonth, { projectedUnits: Math.max(0, Math.trunc(Number(value ?? 0))) })}
-        />
-      ),
-    },
-    {
-      title: 'Projected HNL',
-      width: 160,
-      render: (_, row) => (
-        <InputNumber
-          aria-label={`Projected HNL ${row.yearMonth}`}
-          min={0}
-          precision={2}
-          value={salesProjectionByMonth.get(row.yearMonth)?.projectedSales ?? 0}
-          style={{ width: '100%' }}
-          onChange={(value) => updateSalesProjectionMonth(row.yearMonth, { projectedSales: Math.max(0, Number(value ?? 0)) })}
-        />
-      ),
-    },
-    { title: 'Beg. Inv.', dataIndex: 'beginningOnHand', align: 'right', render: formatInt },
-    { title: 'Profit', dataIndex: 'profit', align: 'right', render: formatMoney },
-    { title: 'GP ROI', dataIndex: 'roiPct', align: 'right', render: formatPct },
-    { title: 'Turns', dataIndex: 'turns', align: 'right', render: (value: number | null) => value == null ? 'n/a' : value.toFixed(2) },
-    { title: 'New SKUs', dataIndex: 'newSkuDistinctCount', align: 'right', render: formatInt },
-    { title: 'Carryover SKUs', dataIndex: 'carryoverSkuDistinctCount', align: 'right', render: formatInt },
   ]
 
   const candidateColumns: ColumnsType<CarryoverCandidate> = [
@@ -1190,20 +1186,6 @@ export default function BuyerPurchasePlanningPage() {
     setSelectedWorkbookId(row.currentSeason.workbookId)
     setDrawerCardId(row.currentSeason.cardId)
     navigate(`/purchase-planning/buyer-checklist/workbooks/${encodeURIComponent(row.currentSeason.workbookId)}/cards/${encodeURIComponent(row.currentSeason.cardId)}`)
-  }
-
-  function updateSalesProjectionMonth(yearMonth: string, patch: Partial<Omit<SalesProjectionMonth, 'yearMonth'>>) {
-    setSalesProjectionRows((previous) => previous.map((row) => row.yearMonth === yearMonth ? { ...row, ...patch } : row))
-  }
-
-  function saveSalesProjections() {
-    if (!selectedDetail || !selectedCard) return
-    updateCardMutation.mutate({
-      workbookId: selectedDetail.workbook.id,
-      cardId: selectedCard.id,
-      status: selectedCard.status === 'NOT_STARTED' ? 'HISTORY_REVIEWED' : undefined,
-      salesProjections: salesProjectionRows,
-    })
   }
 
   function saveEditingSizeCells() {
@@ -1615,54 +1597,34 @@ export default function BuyerPurchasePlanningPage() {
               <Tag>Historical sample {formatInt(selectedCard.history.summary.sampleMonths)} months</Tag>
             </Space>
 
-            <div style={{ border: '1px solid #f0f0f0', borderRadius: 8, padding: 16 }}>
-              <Row gutter={[12, 12]} align="middle" style={{ marginBottom: 12 }}>
-                <Col xs={24} md={15}>
-                  <Title level={4} style={{ margin: 0 }}>Set Sales Projections</Title>
-                  <Text type="secondary">Amounts in Lempira (HNL). Use the last 12 months as the baseline for projected units and sales.</Text>
-                </Col>
-                <Col xs={12} md={3}>
-                  <Text type="secondary">Projected Units</Text>
-                  <Title level={5} style={{ margin: 0 }}>{formatInt(salesProjectionTotals.projectedUnits)}</Title>
-                </Col>
-                <Col xs={12} md={3}>
-                  <Text type="secondary">Projected HNL</Text>
-                  <Title level={5} style={{ margin: 0 }}>{formatMoney(salesProjectionTotals.projectedSales)}</Title>
-                </Col>
-                <Col xs={24} md={3}>
-                  <Button
-                    block
-                    type="primary"
-                    icon={<SaveOutlined />}
-                    loading={updateCardMutation.isPending}
-                    onClick={saveSalesProjections}
-                  >
-                    Save Projections
-                  </Button>
-                </Col>
-              </Row>
-              <Row gutter={[12, 12]} style={{ marginBottom: 12 }}>
-                <Col xs={12} md={6}><Text strong>Actual Units: </Text>{formatInt(selectedCard.history.summary.totalQuantitySold)}</Col>
-                <Col xs={12} md={6}><Text strong>Actual Net Sales: </Text>{formatMoney(selectedCard.history.summary.totalNetSales)}</Col>
-                <Col xs={12} md={6}><Text strong>Avg. BOH: </Text>{formatInt(selectedCard.history.summary.averageBeginningOnHand)}</Col>
-                <Col xs={12} md={6}><Text strong>Sell-through: </Text>n/a when receipts are unavailable</Col>
-              </Row>
-              <Table<HistoricalMonthMetric>
-                size="small"
-                rowKey="yearMonth"
-                columns={historyColumns}
-                dataSource={selectedCard.history.months}
-                pagination={{ pageSize: 12 }}
-                scroll={{ x: 1160 }}
-              />
-            </div>
-
-            {!canContinuePlanning ? (
-              <Alert type="info" message="Save sales projections before continuing to targets, carryovers, new styles, attributes, and PO links." />
-            ) : null}
-
-            {canContinuePlanning ? (
-            <>
+            <Tabs
+              key={selectedCard.id}
+              defaultActiveKey="sales-projection"
+              items={[
+                {
+                  key: 'sales-projection',
+                  label: 'Sales Projection',
+                  children: (
+                    <SavedPurchasePlanWorkbook
+                      detail={salesProjectionWorkbook.data?.plan}
+                      loading={salesProjectionWorkbook.isLoading || salesProjectionWorkbook.isFetching}
+                      error={salesProjectionWorkbook.error}
+                      showArchive={false}
+                      saveLoading={updateProjectionRowsMutation.isPending}
+                      recalculateLoading={recalculateProjectionMutation.isPending}
+                      confirmLoading={confirmProjectionMutation.isPending}
+                      confirmLabel="Confirm sales projection"
+                      onSaveRows={(planId, payload) => updateProjectionRowsMutation.mutate({ planId, payload })}
+                      onRecalculate={(planId) => recalculateProjectionMutation.mutate(planId)}
+                      onConfirm={() => confirmProjectionMutation.mutate()}
+                    />
+                  ),
+                },
+                {
+                  key: 'carryover-review',
+                  label: 'Carryover Review',
+                  children: (
+                    <Space direction="vertical" size="large" style={{ width: '100%' }}>
             <div style={{ border: '1px solid #f0f0f0', borderRadius: 8, padding: 16 }}>
               <Title level={4} style={{ marginTop: 0 }}>Targets</Title>
               <Form form={targetForm} layout="vertical" onFinish={(values) => updateCardMutation.mutate({
@@ -1890,48 +1852,6 @@ export default function BuyerPurchasePlanningPage() {
             </div>
 
             <div style={{ border: '1px solid #f0f0f0', borderRadius: 8, padding: 16 }}>
-              <Row gutter={[12, 12]} align="middle" style={{ marginBottom: 12 }}>
-                <Col xs={24} md={18}>
-                  <Title level={4} style={{ margin: 0 }}>Attribute Plan</Title>
-                  <Text type="secondary">Each dimension has its own mix percent, so Color, Punta de Tacon, Material, and other relevant attributes are not blended together.</Text>
-                </Col>
-                <Col xs={24} md={6}>
-                  <Button
-                    block
-                    icon={<SaveOutlined />}
-                    loading={updateAttributePlanMutation.isPending}
-                    onClick={() => updateAttributePlanMutation.mutate({
-                      workbookId: selectedDetail.workbook.id,
-                      cardId: selectedCard.id,
-                      dimensions: selectedAttributeMix,
-                    })}
-                  >
-                    Save Attribute Plan
-                  </Button>
-                </Col>
-              </Row>
-              <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-                {selectedAttributeMix.length ? selectedAttributeMix.map((dimension) => (
-                  <div key={dimension.dimensionCode} style={{ borderTop: '1px solid #f0f0f0', paddingTop: 12 }}>
-                    <Space wrap style={{ marginBottom: 8 }}>
-                      <Text strong>{dimension.dimensionLabel}</Text>
-                      <Tag>{formatInt(dimension.totalUnitsSold)} units</Tag>
-                      <Tag>{formatMoney(dimension.totalNetSales)} sales</Tag>
-                    </Space>
-                    <Table<AttributeMixRow>
-                      size="small"
-                      rowKey={(row) => `${dimension.dimensionCode}-${row.valueCode}`}
-                      columns={attributeColumns(dimension)}
-                      dataSource={attributeDimensionValues(dimension)}
-                      pagination={attributeDimensionValues(dimension).length > 8 ? { pageSize: 8 } : false}
-                      scroll={{ x: 900 }}
-                    />
-                  </div>
-                )) : <Alert type="info" message="No relevant attribute mix is available for this category history." />}
-              </Space>
-            </div>
-
-            <div style={{ border: '1px solid #f0f0f0', borderRadius: 8, padding: 16 }}>
               <Title level={4} style={{ marginTop: 0 }}>PO Links</Title>
               <Form
                 form={poLinkForm}
@@ -2003,8 +1923,58 @@ export default function BuyerPurchasePlanningPage() {
                 Mark Category Complete
               </Button>
             </div>
-            </>
-            ) : null}
+                    </Space>
+                  ),
+                },
+                {
+                  key: 'attribute-plan',
+                  label: 'Attribute Plan',
+                  children: (
+                    <Card size="small">
+                      <Row gutter={[12, 12]} align="middle" style={{ marginBottom: 12 }}>
+                        <Col xs={24} md={18}>
+                          <Title level={4} style={{ margin: 0 }}>Attribute Plan</Title>
+                          <Text type="secondary">Each dimension has its own mix percent, so Color, Punta de Tacon, Material, and other relevant attributes are not blended together.</Text>
+                        </Col>
+                        <Col xs={24} md={6}>
+                          <Button
+                            block
+                            icon={<SaveOutlined />}
+                            loading={updateAttributePlanMutation.isPending}
+                            onClick={() => updateAttributePlanMutation.mutate({
+                              workbookId: selectedDetail.workbook.id,
+                              cardId: selectedCard.id,
+                              dimensions: selectedAttributeMix,
+                            })}
+                          >
+                            Save Attribute Plan
+                          </Button>
+                        </Col>
+                      </Row>
+                      <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+                        {selectedAttributeMix.length ? selectedAttributeMix.map((dimension) => (
+                          <div key={dimension.dimensionCode} style={{ borderTop: '1px solid #f0f0f0', paddingTop: 12 }}>
+                            <Space wrap style={{ marginBottom: 8 }}>
+                              <Text strong>{dimension.dimensionLabel}</Text>
+                              <Tag>{formatInt(dimension.totalUnitsSold)} units</Tag>
+                              <Tag>{formatMoney(dimension.totalNetSales)} sales</Tag>
+                            </Space>
+                            <Table<AttributeMixRow>
+                              size="small"
+                              rowKey={(row) => `${dimension.dimensionCode}-${row.valueCode}`}
+                              columns={attributeColumns(dimension)}
+                              dataSource={attributeDimensionValues(dimension)}
+                              pagination={attributeDimensionValues(dimension).length > 8 ? { pageSize: 8 } : false}
+                              scroll={{ x: 900 }}
+                            />
+                          </div>
+                        )) : <Alert type="info" message="No relevant attribute mix is available for this category history." />}
+                      </Space>
+                    </Card>
+                  ),
+                },
+              ]}
+            />
           </Space>
         ) : !detail.isLoading && !detail.error ? (
           <Alert type="warning" message="Category review was not found." />

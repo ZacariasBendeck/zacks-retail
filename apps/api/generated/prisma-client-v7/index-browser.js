@@ -454,6 +454,24 @@ exports.Prisma.PlatformAuditLogScalarFieldEnum = {
   createdAt: 'createdAt'
 };
 
+exports.Prisma.PlatformRequestTraceScalarFieldEnum = {
+  id: 'id',
+  traceId: 'traceId',
+  requestId: 'requestId',
+  method: 'method',
+  route: 'route',
+  originalUrl: 'originalUrl',
+  statusCode: 'statusCode',
+  durationMs: 'durationMs',
+  actorUserId: 'actorUserId',
+  actorSessionId: 'actorSessionId',
+  errorCode: 'errorCode',
+  errorMessage: 'errorMessage',
+  timingJson: 'timingJson',
+  metadataJson: 'metadataJson',
+  createdAt: 'createdAt'
+};
+
 exports.Prisma.ActivityReviewEventReviewScalarFieldEnum = {
   auditEventId: 'auditEventId',
   status: 'status',
@@ -579,6 +597,7 @@ exports.Prisma.PurchasePlanScalarFieldEnum = {
   id: 'id',
   storeGroupCode: 'storeGroupCode',
   planningScope: 'planningScope',
+  planningDimension: 'planningDimension',
   scopeLabel: 'scopeLabel',
   label: 'label',
   status: 'status',
@@ -586,6 +605,7 @@ exports.Prisma.PurchasePlanScalarFieldEnum = {
   seasonYear: 'seasonYear',
   seasonMonths: 'seasonMonths',
   selectedDepartments: 'selectedDepartments',
+  selectedCategories: 'selectedCategories',
   forecastMethod: 'forecastMethod',
   eohMethod: 'eohMethod',
   coverMonths: 'coverMonths',
@@ -3256,6 +3276,7 @@ exports.Prisma.ModelName = {
   SeasonOverlay: 'SeasonOverlay',
   EtlRun: 'EtlRun',
   PlatformAuditLog: 'PlatformAuditLog',
+  PlatformRequestTrace: 'PlatformRequestTrace',
   ActivityReviewEventReview: 'ActivityReviewEventReview',
   SkuAttributeOverride: 'SkuAttributeOverride',
   VendorOverlay: 'VendorOverlay',

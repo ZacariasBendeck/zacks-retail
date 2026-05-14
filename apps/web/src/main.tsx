@@ -4,7 +4,6 @@ import { BrowserRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ConfigProvider, App as AntApp } from 'antd'
 import App from './App'
-import { InquiryPopupProvider } from './components/inquiry-popup'
 import { searchSkusForLookup } from './services/skuApi'
 import './styles/productsCompactTable.css'
 import './styles/reports.css'
@@ -60,9 +59,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
               v7_relativeSplatPath: true,
             }}
           >
-            <InquiryPopupProvider>
-              <App />
-            </InquiryPopupProvider>
+            <App />
           </BrowserRouter>
         </AntApp>
       </ConfigProvider>

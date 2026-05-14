@@ -1,6 +1,8 @@
 import fs from 'fs';
 import path from 'path';
 import Anthropic from '@anthropic-ai/sdk';
+import { logger } from '../observability/logger';
+import { traceStep } from '../observability/requestContext';
 import {
   getInquiryInfo,
   getInquiryOpenPoRows,
@@ -427,7 +429,14 @@ function logRecommendationTiming(
     timing.parseMs != null ? `parseMs=${timing.parseMs}` : null,
     `totalMs=${timing.totalMs}`,
   ].filter(Boolean);
-  console.info(`[skuInquiryRecommendation] ${parts.join(' ')}`);
+  logger.info(
+    {
+      event: 'sku_inquiry_recommendation.timing',
+      sku,
+      ...timing,
+    },
+    `[skuInquiryRecommendation] ${parts.join(' ')}`,
+  );
 }
 
 function numericCellValue(value: number | null | undefined): number {
@@ -696,12 +705,16 @@ async function analyzeSkuInquiryRecommendationUncached(
   cacheKey: string,
 ): Promise<InquiryRecommendation | null> {
   const dataStartedAt = Date.now();
-  const [inquiry, info, trend, openPoRows] = await Promise.all([
-    getInventoryInquiry(sku),
-    getInquiryInfo(sku),
-    getInquiryTrend(sku),
-    getInquiryOpenPoRows(sku),
-  ]);
+  const [inquiry, info, trend, openPoRows] = await traceStep(
+    'skuInquiryRecommendation.data',
+    () => Promise.all([
+      getInventoryInquiry(sku),
+      getInquiryInfo(sku),
+      getInquiryTrend(sku),
+      getInquiryOpenPoRows(sku),
+    ]),
+    { sku },
+  );
   const dataMs = Date.now() - dataStartedAt;
 
   if (!inquiry) {
@@ -720,7 +733,11 @@ async function analyzeSkuInquiryRecommendationUncached(
 
   const prompt = loadPromptTemplate();
   const snapshotStartedAt = Date.now();
-  const snapshot = buildSkuRecommendationSnapshot(inquiry, info, trend, openPoRows, notes);
+  const snapshot = await traceStep(
+    'skuInquiryRecommendation.snapshot',
+    async () => buildSkuRecommendationSnapshot(inquiry, info, trend, openPoRows, notes),
+    { sku },
+  );
   const snapshotJson = JSON.stringify(snapshot);
   const snapshotMs = Date.now() - snapshotStartedAt;
   const client = new Anthropic({ apiKey });
@@ -729,20 +746,24 @@ async function analyzeSkuInquiryRecommendationUncached(
   let response;
   const aiStartedAt = Date.now();
   try {
-    response = await client.messages.create(
-      {
-        model: DEFAULT_MODEL,
-        max_tokens: DEFAULT_MAX_TOKENS,
-        messages: [
-          {
-            role: 'user',
-            content:
-              `${prompt}\n\nReturn one complete JSON object and no surrounding text.` +
-              `\n\n## Snapshot\n\n${snapshotJson}`,
-          },
-        ],
-      },
-      { signal: controller.signal },
+    response = await traceStep(
+      'skuInquiryRecommendation.ai',
+      () => client.messages.create(
+        {
+          model: DEFAULT_MODEL,
+          max_tokens: DEFAULT_MAX_TOKENS,
+          messages: [
+            {
+              role: 'user',
+              content:
+                `${prompt}\n\nReturn one complete JSON object and no surrounding text.` +
+                `\n\n## Snapshot\n\n${snapshotJson}`,
+            },
+          ],
+        },
+        { signal: controller.signal },
+      ),
+      { sku, model: DEFAULT_MODEL },
     );
   } catch (error) {
     if (controller.signal.aborted) {
@@ -760,7 +781,11 @@ async function analyzeSkuInquiryRecommendationUncached(
   }
 
   const parseStartedAt = Date.now();
-  const recommendation = parseTextRecommendation(textBlock.text);
+  const recommendation = await traceStep(
+    'skuInquiryRecommendation.parse',
+    async () => parseTextRecommendation(textBlock.text),
+    { sku },
+  );
   const parseMs = Date.now() - parseStartedAt;
   setCachedRecommendation(cacheKey, recommendation);
   logRecommendationTiming(sku, {

@@ -10,6 +10,7 @@ import {
   Form,
   Input,
   Modal,
+  Pagination,
   Select,
   Space,
   Table,
@@ -18,7 +19,7 @@ import {
   Typography,
   message,
 } from 'antd'
-import type { ColumnsType } from 'antd/es/table'
+import type { ColumnsType, TablePaginationConfig } from 'antd/es/table'
 import {
   CheckCircleOutlined,
   CloseCircleOutlined,
@@ -344,6 +345,8 @@ export default function ActivityReviewPage() {
   const [selectedEventIds, setSelectedEventIds] = useState<string[]>([])
   const [bulkIntent, setBulkIntent] = useState<BulkReviewIntent | null>(null)
   const [lastBulkResult, setLastBulkResult] = useState<ActivityReviewBulkReviewResult | null>(null)
+  const [eventPage, setEventPage] = useState(1)
+  const [eventPageSize, setEventPageSize] = useState(10)
 
   const eventsQuery = useQuery({
     queryKey: ['activity-review-events', apiFilters],
@@ -393,6 +396,7 @@ export default function ActivityReviewPage() {
   const events = eventsQuery.data?.events ?? []
   const summary = summaryQuery.data?.summary ?? []
   const isEventsTab = activeTab === 'events'
+  const eventFilterPageKey = useMemo(() => JSON.stringify(apiFilters), [apiFilters])
   const selectedEvents = useMemo(
     () => events.filter((event) => selectedEventIds.includes(event.id)),
     [events, selectedEventIds],
@@ -409,6 +413,13 @@ export default function ActivityReviewPage() {
     const visibleIds = new Set(events.map((event) => event.id))
     setSelectedEventIds((current) => current.filter((id) => visibleIds.has(id)))
   }, [events, selectedEventIds.length])
+  useEffect(() => {
+    setEventPage(1)
+  }, [eventFilterPageKey])
+  useEffect(() => {
+    const maxPage = Math.max(1, Math.ceil(events.length / eventPageSize))
+    setEventPage((current) => Math.min(current, maxPage))
+  }, [events.length, eventPageSize])
   const actorOptions = useMemo(() => {
     const actors = new Map<string, string>()
     for (const event of events) {
@@ -541,6 +552,20 @@ export default function ActivityReviewPage() {
 
   const selectAllVisible = () => {
     setSelectedEventIds(events.map((event) => event.id))
+  }
+
+  const handleEventPaginationChange = (page: number, pageSize?: number) => {
+    setEventPage(page)
+    if (pageSize) setEventPageSize(pageSize)
+  }
+  const eventPagination: TablePaginationConfig = {
+    current: eventPage,
+    pageSize: eventPageSize,
+    total: events.length,
+    showSizeChanger: true,
+    position: ['bottomRight'],
+    onChange: handleEventPaginationChange,
+    onShowSizeChange: handleEventPaginationChange,
   }
 
   return (
@@ -677,6 +702,19 @@ export default function ActivityReviewPage() {
         <Tabs
           activeKey={activeTab}
           onChange={setActiveTab}
+          tabBarExtraContent={
+            isEventsTab ? (
+              <Pagination
+                size="small"
+                current={eventPage}
+                pageSize={eventPageSize}
+                total={events.length}
+                showSizeChanger
+                onChange={handleEventPaginationChange}
+                onShowSizeChange={handleEventPaginationChange}
+              />
+            ) : null
+          }
           items={[
             {
               key: 'events',
@@ -688,6 +726,7 @@ export default function ActivityReviewPage() {
                   loading={eventsQuery.isLoading || eventsQuery.isFetching}
                   dataSource={events}
                   columns={eventColumns}
+                  pagination={eventPagination}
                   scroll={{ x: 1350 }}
                   rowSelection={{
                     selectedRowKeys: selectedEventIds,

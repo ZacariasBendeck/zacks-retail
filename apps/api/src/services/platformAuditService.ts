@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { PrismaClient } from '../prismaClient';
+import { getTraceId } from '../observability/requestContext';
 
 export interface PlatformAuditEvent {
   id: string;
@@ -18,6 +19,7 @@ export interface PlatformAuditEvent {
   beforeJson: unknown;
   afterJson: unknown;
   metadataJson: unknown;
+  traceId: string | null;
   createdAt: string;
 }
 
@@ -74,6 +76,7 @@ interface PlatformAuditRow {
   before_json: unknown;
   after_json: unknown;
   metadata_json: unknown;
+  trace_id: string | null;
   created_at: Date;
 }
 
@@ -109,7 +112,7 @@ export async function recordPlatformAuditEvent(
       input.beforeJson == null ? null : JSON.stringify(input.beforeJson),
       input.afterJson == null ? null : JSON.stringify(input.afterJson),
       input.metadataJson == null ? null : JSON.stringify(input.metadataJson),
-      input.traceId ?? null,
+      input.traceId ?? getTraceId(),
     );
   } catch {
     // Audit should never block the operational transaction. The route-level
@@ -147,6 +150,7 @@ function auditRowToEvent(row: PlatformAuditRow): PlatformAuditEvent {
     beforeJson: row.before_json ?? null,
     afterJson: row.after_json ?? null,
     metadataJson: row.metadata_json ?? null,
+    traceId: row.trace_id ?? null,
     createdAt: row.created_at.toISOString(),
   };
 }
@@ -262,7 +266,7 @@ export async function listPlatformAuditEvents(
   const sql = `
     SELECT id, event_type, action, resource_type, resource_id, actor_user_id,
            actor_session_id, outcome, reason, ip_address, user_agent,
-           before_json, after_json, metadata_json, created_at
+           before_json, after_json, metadata_json, trace_id, created_at
     FROM platform.platform_audit_log
     ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
     ORDER BY created_at DESC, id DESC
@@ -286,7 +290,7 @@ export async function getPlatformAuditEvent(
       `
         SELECT id, event_type, action, resource_type, resource_id, actor_user_id,
                actor_session_id, outcome, reason, ip_address, user_agent,
-               before_json, after_json, metadata_json, created_at
+               before_json, after_json, metadata_json, trace_id, created_at
         FROM platform.platform_audit_log
         WHERE id = $1
         LIMIT 1

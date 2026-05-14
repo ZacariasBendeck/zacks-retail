@@ -65,16 +65,27 @@ function renderModuleShell(initialEntry = '/inventory/dashboard') {
             <Route path="/purchase-planning/buyer-checklist" element={<div data-testid="purchase-planning-buyer-checklist">Buyer Checklist</div>} />
             <Route path="/import-management" element={<div data-testid="import-management">Import Management</div>} />
             <Route path="/customers" element={<div data-testid="customers">Customers</div>} />
-            <Route path="/products/vendors" element={<div data-testid="file-setup-vendors">Vendors</div>} />
-            <Route path="/products/taxonomy/categories" element={<div data-testid="file-setup-categories">Categories</div>} />
-            <Route path="/products/taxonomy/return-codes" element={<div data-testid="file-setup-return-codes">Return Codes</div>} />
-            <Route path="/products/taxonomy/promotion-codes" element={<div data-testid="file-setup-promotion-codes">Promotion Codes</div>} />
-            <Route path="/file-setup/case-packs" element={<div data-testid="file-setup-case-packs">Case Packs</div>} />
-            <Route path="/admin/users" element={<div data-testid="file-setup-users">Users</div>} />
+            <Route path="/products/vendors" element={<div data-testid="products-vendors">Vendors</div>} />
+            <Route path="/products/taxonomy/categories" element={<div data-testid="products-categories">Categories</div>} />
+            <Route path="/products/taxonomy/departments" element={<div data-testid="products-departments">Departments</div>} />
+            <Route path="/products/taxonomy/sectors" element={<div data-testid="products-sectors">Sectors</div>} />
+            <Route path="/products/taxonomy/groups" element={<div data-testid="products-groups">Groups</div>} />
+            <Route path="/products/taxonomy/keywords" element={<div data-testid="products-keywords">Keywords</div>} />
+            <Route path="/products/taxonomy/seasons" element={<div data-testid="products-seasons">Seasons</div>} />
+            <Route path="/products/taxonomy/size-types" element={<div data-testid="products-size-types">Size Types</div>} />
+            <Route path="/products/taxonomy/return-codes" element={<div data-testid="products-return-codes">Return Codes</div>} />
+            <Route path="/products/taxonomy/promotion-codes" element={<div data-testid="products-promotion-codes">Promotion Codes</div>} />
+            <Route path="/file-setup/case-packs" element={<div data-testid="products-case-packs">Case Packs</div>} />
+            <Route path="/admin/users" element={<div data-testid="users-access-users">Users</div>} />
+            <Route path="/admin/roles" element={<div data-testid="users-access-roles">Roles & Permissions</div>} />
+            <Route path="/admin/security" element={<div data-testid="users-access-security">Security Center</div>} />
+            <Route path="/admin/effective-access" element={<div data-testid="users-access-effective-access">Effective Access</div>} />
+            <Route path="/admin/audit" element={<div data-testid="platform-security-audit">Security Audit</div>} />
             <Route path="/utilities" element={<Navigate to="/utilities/stores" replace />} />
             <Route path="/utilities/stores" element={<div data-testid="utilities-stores">Stores</div>} />
             <Route path="/utilities/store-chains" element={<div data-testid="utilities-store-chains">Store Chains</div>} />
             <Route path="/operations/activity-review" element={<div data-testid="operations-activity-review">Activity Review</div>} />
+            <Route path="/inventory/audit" element={<div data-testid="platform-inventory-audit">Inventory Audit</div>} />
             <Route path="/purchasing" element={<Navigate to="/purchasing/orders" replace />} />
             <Route path="/purchasing/orders" element={<div data-testid="purchasing-orders">Purchasing Orders</div>} />
             <Route path="/purchasing/receive" element={<div data-testid="purchasing-receive">Receive POs</div>} />
@@ -101,6 +112,8 @@ describe('Module Shell Navigation', () => {
     expect(screen.getByRole('menuitem', { name: /Inventory/i })).toBeInTheDocument()
     expect(screen.getByRole('menuitem', { name: /Products/i })).toBeInTheDocument()
     expect(screen.getByRole('menuitem', { name: /File Setup/i })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: /Users & Access/i })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: /Platform/i })).toBeInTheDocument()
     expect(screen.getByRole('menuitem', { name: /Plan de Compras/i })).toBeInTheDocument()
     expect(screen.getByRole('menuitem', { name: /Sales POS/i })).toBeInTheDocument()
     expect(screen.getByRole('menuitem', { name: /Customer Intelligence/i })).toBeInTheDocument()
@@ -118,23 +131,23 @@ describe('Module Shell Navigation', () => {
     expect(screen.getByRole('heading', { name: 'Inventory' })).toBeInTheDocument()
   })
 
-  it('keeps File Setup open when navigating between its child routes', async () => {
+  it('keeps File Setup open for remaining setup records', async () => {
     const user = userEvent.setup()
     renderModuleShell('/inventory/dashboard')
 
     const fileSetupMenu = screen.getByRole('menuitem', { name: /File Setup/i })
     await user.click(fileSetupMenu)
 
-    const vendorsLink = await screen.findByRole('link', { name: 'Vendors' })
-    const vendorsItem = vendorsLink.closest('[role="menuitem"]')
-    expect(vendorsItem).toBeTruthy()
-    if (!vendorsItem) throw new Error('Vendors menu item not found')
+    const storesLink = await screen.findByRole('link', { name: 'Stores' })
+    const storesItem = storesLink.closest('[role="menuitem"]')
+    expect(storesItem).toBeTruthy()
+    if (!storesItem) throw new Error('Stores menu item not found')
 
-    await user.click(vendorsItem)
+    await user.click(storesItem)
 
-    expect(await screen.findByTestId('file-setup-vendors')).toBeInTheDocument()
+    expect(await screen.findByTestId('utilities-stores')).toBeInTheDocument()
     expect(screen.getByRole('menuitem', { name: /File Setup/i })).toHaveAttribute('aria-expanded', 'true')
-    expect(screen.getByRole('link', { name: 'Categories' })).toBeVisible()
+    expect(screen.getByRole('link', { name: 'Store Chains' })).toBeVisible()
   })
 
   it('navigates across all module child routes and updates module header', async () => {
@@ -146,6 +159,7 @@ describe('Module Shell Navigation', () => {
       pageId: string
       moduleTitle: string
       openModuleLabel?: string
+      openGroupLabel?: string
     }> = [
       { label: 'Balances', pageId: 'inventory-balances', moduleTitle: 'Inventory' },
       { label: 'SKU List', pageId: 'inventory-skus', moduleTitle: 'Products', openModuleLabel: 'Products' },
@@ -161,15 +175,26 @@ describe('Module Shell Navigation', () => {
       { label: 'Buyer Checklist', pageId: 'purchase-planning-buyer-checklist', moduleTitle: 'Plan de Compras', openModuleLabel: 'Plan de Compras' },
       { label: 'Import Management', pageId: 'import-management', moduleTitle: 'Import Management' },
       { label: 'Customer Records', pageId: 'customers', moduleTitle: 'Customer Intelligence', openModuleLabel: 'Customer Intelligence' },
-      { label: 'Vendors', pageId: 'file-setup-vendors', moduleTitle: 'File Setup', openModuleLabel: 'File Setup' },
-      { label: 'Categories', pageId: 'file-setup-categories', moduleTitle: 'File Setup', openModuleLabel: 'File Setup' },
-      { label: 'Case Packs', pageId: 'file-setup-case-packs', moduleTitle: 'File Setup', openModuleLabel: 'File Setup' },
-      { label: 'Return Codes', pageId: 'file-setup-return-codes', moduleTitle: 'File Setup', openModuleLabel: 'File Setup' },
-      { label: 'Promotion Codes', pageId: 'file-setup-promotion-codes', moduleTitle: 'File Setup', openModuleLabel: 'File Setup' },
+      { label: 'Vendors', pageId: 'products-vendors', moduleTitle: 'Products', openModuleLabel: 'Products', openGroupLabel: 'Catalogue Setup' },
+      { label: 'Categories', pageId: 'products-categories', moduleTitle: 'Products', openModuleLabel: 'Products', openGroupLabel: 'Catalogue Setup' },
+      { label: 'Departments', pageId: 'products-departments', moduleTitle: 'Products', openModuleLabel: 'Products', openGroupLabel: 'Catalogue Setup' },
+      { label: 'Sectors', pageId: 'products-sectors', moduleTitle: 'Products', openModuleLabel: 'Products', openGroupLabel: 'Catalogue Setup' },
+      { label: 'Groups', pageId: 'products-groups', moduleTitle: 'Products', openModuleLabel: 'Products', openGroupLabel: 'Catalogue Setup' },
+      { label: 'Keywords', pageId: 'products-keywords', moduleTitle: 'Products', openModuleLabel: 'Products', openGroupLabel: 'Catalogue Setup' },
+      { label: 'Seasons', pageId: 'products-seasons', moduleTitle: 'Products', openModuleLabel: 'Products', openGroupLabel: 'Catalogue Setup' },
+      { label: 'Size Types', pageId: 'products-size-types', moduleTitle: 'Products', openModuleLabel: 'Products', openGroupLabel: 'Catalogue Setup' },
+      { label: 'Case Packs', pageId: 'products-case-packs', moduleTitle: 'Products', openModuleLabel: 'Products', openGroupLabel: 'Catalogue Setup' },
+      { label: 'Return Codes', pageId: 'products-return-codes', moduleTitle: 'Products', openModuleLabel: 'Products', openGroupLabel: 'Catalogue Setup' },
+      { label: 'Promotion Codes', pageId: 'products-promotion-codes', moduleTitle: 'Products', openModuleLabel: 'Products', openGroupLabel: 'Catalogue Setup' },
       { label: 'Stores', pageId: 'utilities-stores', moduleTitle: 'File Setup', openModuleLabel: 'File Setup' },
       { label: 'Store Chains', pageId: 'utilities-store-chains', moduleTitle: 'File Setup', openModuleLabel: 'File Setup' },
-      { label: 'Users', pageId: 'file-setup-users', moduleTitle: 'File Setup', openModuleLabel: 'File Setup' },
-      { label: 'Activity Review', pageId: 'operations-activity-review', moduleTitle: 'Operations', openModuleLabel: 'Operations' },
+      { label: 'Users', pageId: 'users-access-users', moduleTitle: 'Users & Access', openModuleLabel: 'Users & Access' },
+      { label: 'Roles & Permissions', pageId: 'users-access-roles', moduleTitle: 'Users & Access', openModuleLabel: 'Users & Access' },
+      { label: 'Security Center', pageId: 'users-access-security', moduleTitle: 'Users & Access', openModuleLabel: 'Users & Access' },
+      { label: 'Effective Access', pageId: 'users-access-effective-access', moduleTitle: 'Users & Access', openModuleLabel: 'Users & Access' },
+      { label: 'Activity Review', pageId: 'operations-activity-review', moduleTitle: 'Platform', openModuleLabel: 'Platform' },
+      { label: 'Security Audit', pageId: 'platform-security-audit', moduleTitle: 'Platform', openModuleLabel: 'Platform' },
+      { label: 'Inventory Audit', pageId: 'platform-inventory-audit', moduleTitle: 'Platform', openModuleLabel: 'Platform' },
       { label: 'Purchase Orders', pageId: 'purchasing-orders', moduleTitle: 'Purchasing', openModuleLabel: 'Purchasing' },
       { label: 'Receive POs', pageId: 'purchasing-receive', moduleTitle: 'Purchasing', openModuleLabel: 'Purchasing' },
       { label: 'Monthly Plans', pageId: 'otb-monthly-plans', moduleTitle: 'OTB - no en uso', openModuleLabel: 'OTB' },
@@ -182,6 +207,12 @@ describe('Module Shell Navigation', () => {
         const moduleMenu = screen.getByRole('menuitem', { name: new RegExp(check.openModuleLabel, 'i') })
         if (moduleMenu.getAttribute('aria-expanded') !== 'true') {
           await user.click(moduleMenu)
+        }
+      }
+      if (check.openGroupLabel) {
+        const groupMenu = await screen.findByRole('menuitem', { name: new RegExp(check.openGroupLabel, 'i') })
+        if (groupMenu.getAttribute('aria-expanded') !== 'true') {
+          await user.click(groupMenu)
         }
       }
       const menuLink = await screen.findByRole('link', { name: check.label })

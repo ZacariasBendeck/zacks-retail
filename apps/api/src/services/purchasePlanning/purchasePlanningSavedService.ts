@@ -29,6 +29,7 @@ import type {
   PurchasePlanDetailResponse,
   PurchasePlanHeader,
   PurchasePlanListItem,
+  PurchasePlanPlanningDimension,
   PurchasePlanPlanningScope,
   PurchasePlanRowsUpdateRequest,
   PurchasePlanRowUpdateRequest,
@@ -54,6 +55,8 @@ const UNMAPPED_KEY = 'unmapped';
 const UNMAPPED_LABEL = 'Unmapped';
 const ENTERPRISE_SCOPE: PurchasePlanPlanningScope = 'enterprise';
 const STORE_GROUP_SCOPE: PurchasePlanPlanningScope = 'store_group';
+const DEPARTMENT_DIMENSION: PurchasePlanPlanningDimension = 'department';
+const CATEGORY_DIMENSION: PurchasePlanPlanningDimension = 'category';
 const ENTERPRISE_CODE = 'enterprise';
 const ENTERPRISE_LABEL = 'Enterprise-wide';
 const ENTERPRISE_WORKBOOK_MONTHS = 15;
@@ -91,6 +94,12 @@ interface DepartmentRow {
   description: string;
 }
 
+interface CategoryRow {
+  number: number;
+  description: string;
+  departmentNumber: number | null;
+}
+
 interface MonthlyFactRow {
   departmentKey: string | null;
   departmentNumber: number | null;
@@ -124,6 +133,7 @@ interface PlanHeaderRow {
   label: string;
   status: string;
   planningScope: string | null;
+  planningDimension: string | null;
   scopeLabel: string | null;
   storeGroupCode: string | null;
   storeGroupLabel: string | null;
@@ -131,6 +141,7 @@ interface PlanHeaderRow {
   seasonYear: number;
   seasonMonths: string[] | null;
   selectedDepartments: number[] | string[] | null;
+  selectedCategories: number[] | string[] | null;
   forecastMethod: string;
   eohMethod: string;
   coverMonths: number;
@@ -263,10 +274,20 @@ function departmentLabel(number: number | null, label: string | null | undefined
   return clean ? `${number} - ${clean}` : String(number);
 }
 
+function categoryLabel(number: number, label: string | null | undefined): string {
+  const clean = label?.trim();
+  return clean ? `${number} - ${clean}` : String(number);
+}
+
+function normalizePlanningDimension(value: string | null | undefined): PurchasePlanPlanningDimension {
+  return value === CATEGORY_DIMENSION ? CATEGORY_DIMENSION : DEPARTMENT_DIMENSION;
+}
+
 function normalizeHeader(row: PlanHeaderRow): PurchasePlanHeader {
   const planningScope: PurchasePlanPlanningScope = row.planningScope === ENTERPRISE_SCOPE
     ? ENTERPRISE_SCOPE
     : STORE_GROUP_SCOPE;
+  const planningDimension = normalizePlanningDimension(row.planningDimension);
   const planningScopeLabel = row.scopeLabel?.trim()
     || (planningScope === ENTERPRISE_SCOPE
       ? ENTERPRISE_LABEL
@@ -276,6 +297,7 @@ function normalizeHeader(row: PlanHeaderRow): PurchasePlanHeader {
     label: row.label,
     status: row.status as PurchasePlanHeader['status'],
     planningScope,
+    planningDimension,
     planningScopeLabel,
     storeGroupCode: row.storeGroupCode ?? (planningScope === ENTERPRISE_SCOPE ? ENTERPRISE_CODE : ''),
     storeGroupLabel: planningScope === ENTERPRISE_SCOPE ? ENTERPRISE_LABEL : row.storeGroupLabel,
@@ -283,6 +305,7 @@ function normalizeHeader(row: PlanHeaderRow): PurchasePlanHeader {
     seasonYear: Number(row.seasonYear),
     seasonMonths: row.seasonMonths ?? [],
     selectedDepartments: parseIntArray(row.selectedDepartments),
+    selectedCategories: parseIntArray(row.selectedCategories),
     forecastMethod: row.forecastMethod as ForecastMethod,
     eohMethod: row.eohMethod as EohMethod,
     coverMonths: Number(row.coverMonths),
@@ -492,13 +515,54 @@ async function loadDepartments(departmentNumbers: number[], db: DbClient = prism
   return out;
 }
 
+async function loadCategories(categoryNumbers: number[], db: DbClient = prisma): Promise<Map<string, {
+  number: number;
+  label: string;
+  departmentNumber: number | null;
+}>> {
+  const rows = await db.$queryRawUnsafe<CategoryRow[]>(
+    `
+      SELECT
+        c.number,
+        c."desc" AS description,
+        d.number AS "departmentNumber"
+      FROM app.taxonomy_category c
+      LEFT JOIN app.taxonomy_department d ON c.number BETWEEN d.beg_categ AND d.end_categ
+      WHERE c.number = ANY($1::int[])
+      ORDER BY c.number
+    `,
+    categoryNumbers,
+  );
+  const out = new Map<string, { number: number; label: string; departmentNumber: number | null }>();
+  for (const row of rows) {
+    const number = Number(row.number);
+    out.set(String(number), {
+      number,
+      label: categoryLabel(number, row.description),
+      departmentNumber: row.departmentNumber == null ? null : Number(row.departmentNumber),
+    });
+  }
+  return out;
+}
+
 async function loadMonthlyFacts(params: {
   storeNumbers: number[];
   departmentNumbers: number[];
+  categoryNumbers?: number[];
+  planningDimension?: PurchasePlanPlanningDimension;
   fromYearMonth: string;
   toYearMonth: string;
   includeUnmapped?: boolean;
 }, db: DbClient = prisma): Promise<{ history: HistoryPoint[]; labelByKey: Map<string, string>; numberByKey: Map<string, number | null> }> {
+  if ((params.planningDimension ?? DEPARTMENT_DIMENSION) === CATEGORY_DIMENSION) {
+    return loadCategoryMonthlyFacts({
+      storeNumbers: params.storeNumbers,
+      categoryNumbers: params.categoryNumbers ?? [],
+      fromYearMonth: params.fromYearMonth,
+      toYearMonth: params.toYearMonth,
+    }, db);
+  }
+
   const rows = await db.$queryRawUnsafe<MonthlyFactRow[]>(
     `
 WITH src AS (
@@ -577,11 +641,103 @@ ORDER BY department_key, year_month
   return { history, labelByKey, numberByKey };
 }
 
+async function loadCategoryMonthlyFacts(params: {
+  storeNumbers: number[];
+  categoryNumbers: number[];
+  fromYearMonth: string;
+  toYearMonth: string;
+}, db: DbClient = prisma): Promise<{ history: HistoryPoint[]; labelByKey: Map<string, string>; numberByKey: Map<string, number | null> }> {
+  const rows = await db.$queryRawUnsafe<MonthlyFactRow[]>(
+    `
+WITH src AS (
+  SELECT
+    s.store_id,
+    k.category_number::text AS department_key,
+    NULL::int AS department_number,
+    c."desc" AS department_label,
+    m.year_month,
+    COALESCE(m.qty_sales, 0)::float8 AS qty_sales,
+    COALESCE(m.net_sales, 0)::float8 AS net_sales,
+    COALESCE(m.qty_sales, 0)::float8 * COALESCE(k.retail_price, k.list_price, 0)::float8 AS reference_retail
+  FROM app.inventory_history_snapshot s
+  INNER JOIN app.inventory_history_month m ON m.snapshot_id = s.id
+  JOIN app.sku k ON k.id = s.sku_id
+  LEFT JOIN app.taxonomy_category c ON c.number = k.category_number
+  WHERE m.year_month >= $1::text
+    AND m.year_month <= $2::text
+    AND s.store_id = ANY($3::int[])
+    AND k.category_number = ANY($4::int[])
+
+  UNION ALL
+
+  SELECT
+    s.store_id,
+    k.category_number::text AS department_key,
+    NULL::int AS department_number,
+    c."desc" AS department_label,
+    to_char(s.snapshot_as_of, 'YYYY-MM') AS year_month,
+    COALESCE(s.month_qty_sales, 0)::float8 AS qty_sales,
+    COALESCE(s.month_dol_sales, 0)::float8 AS net_sales,
+    COALESCE(s.month_qty_sales, 0)::float8 * COALESCE(k.retail_price, k.list_price, 0)::float8 AS reference_retail
+  FROM app.inventory_history_snapshot s
+  JOIN app.sku k ON k.id = s.sku_id
+  LEFT JOIN app.taxonomy_category c ON c.number = k.category_number
+  WHERE to_char(s.snapshot_as_of, 'YYYY-MM') >= $1::text
+    AND to_char(s.snapshot_as_of, 'YYYY-MM') <= $2::text
+    AND s.store_id = ANY($3::int[])
+    AND k.category_number = ANY($4::int[])
+)
+SELECT
+  department_key AS "departmentKey",
+  department_number AS "departmentNumber",
+  department_label AS "departmentLabel",
+  year_month AS "yearMonth",
+  SUM(qty_sales)::float8 AS "qty",
+  SUM(net_sales)::float8 AS "netSales",
+  SUM(reference_retail)::float8 AS "referenceRetail"
+FROM src
+WHERE qty_sales <> 0 OR net_sales <> 0
+GROUP BY department_key, department_number, department_label, year_month
+ORDER BY department_key, year_month
+    `,
+    params.fromYearMonth,
+    params.toYearMonth,
+    params.storeNumbers,
+    params.categoryNumbers,
+  );
+
+  const labelByKey = new Map<string, string>();
+  const numberByKey = new Map<string, number | null>();
+  const history: HistoryPoint[] = rows.map((row) => {
+    const key = normalizeDepartmentKey(row.departmentKey);
+    const categoryNumber = Number(key);
+    labelByKey.set(key, categoryLabel(categoryNumber, row.departmentLabel));
+    numberByKey.set(key, null);
+    return {
+      dimKey: key,
+      yearMonth: row.yearMonth,
+      qty: toNumber(row.qty),
+      netSales: toNumber(row.netSales),
+      referenceRetail: toNumber(row.referenceRetail),
+    };
+  });
+  return { history, labelByKey, numberByKey };
+}
+
 async function loadInventoryPositions(params: {
   storeNumbers: number[];
   departmentNumbers: number[];
+  categoryNumbers?: number[];
+  planningDimension?: PurchasePlanPlanningDimension;
   includeUnmapped?: boolean;
 }, db: DbClient = prisma): Promise<Map<string, InventoryPosition>> {
+  if ((params.planningDimension ?? DEPARTMENT_DIMENSION) === CATEGORY_DIMENSION) {
+    return loadCategoryInventoryPositions({
+      storeNumbers: params.storeNumbers,
+      categoryNumbers: params.categoryNumbers ?? [],
+    }, db);
+  }
+
   const inventoryRows = await db.$queryRawUnsafe<PositionRow[]>(
       `
         SELECT
@@ -621,6 +777,65 @@ async function loadInventoryPositions(params: {
       params.departmentNumbers,
       params.includeUnmapped ?? false,
     );
+
+  const positions = new Map<string, InventoryPosition>();
+  for (const row of inventoryRows) {
+    positions.set(normalizeDepartmentKey(row.departmentKey), {
+      onHand: toNumber(row.onHand),
+      currentOnOrder: toNumber(row.currentOnOrder),
+      futureOnOrder: toNumber(row.futureOnOrder),
+      nativeOpenPo: 0,
+    });
+  }
+  for (const row of openPoRows) {
+    const key = normalizeDepartmentKey(row.departmentKey);
+    const current = positions.get(key) ?? { onHand: 0, currentOnOrder: 0, futureOnOrder: 0, nativeOpenPo: 0 };
+    current.nativeOpenPo = toNumber(row.nativeOpenPo);
+    positions.set(key, current);
+  }
+  return positions;
+}
+
+async function loadCategoryInventoryPositions(params: {
+  storeNumbers: number[];
+  categoryNumbers: number[];
+}, db: DbClient = prisma): Promise<Map<string, InventoryPosition>> {
+  const inventoryRows = await db.$queryRawUnsafe<PositionRow[]>(
+    `
+      SELECT
+        k.category_number::text AS "departmentKey",
+        NULL::int AS "departmentNumber",
+        c."desc" AS "departmentLabel",
+        SUM(h.on_hand)::int AS "onHand",
+        SUM(h.current_on_order)::int AS "currentOnOrder",
+        SUM(h.future_on_order)::int AS "futureOnOrder"
+      FROM app.inventory_history_snapshot h
+      JOIN app.sku k ON k.id = h.sku_id
+      LEFT JOIN app.taxonomy_category c ON c.number = k.category_number
+      WHERE h.store_id = ANY($1::int[])
+        AND k.category_number = ANY($2::int[])
+      GROUP BY k.category_number, c."desc"
+    `,
+    params.storeNumbers,
+    params.categoryNumbers,
+  );
+  const openPoRows = await db.$queryRawUnsafe<NativeOpenPoRow[]>(
+    `
+      SELECT
+        k.category_number::text AS "departmentKey",
+        COALESCE(SUM(GREATEST(pol.quantity_ordered - pol.quantity_received, 0)), 0)::int AS "nativeOpenPo"
+      FROM app.purchase_order po
+      JOIN app.purchase_order_line pol ON pol.po_id = po.id
+      JOIN app.sku k ON k.id = pol.sku_id
+      WHERE po.status IN ('SUBMITTED','CONFIRMED','PARTIALLY_RECEIVED')
+        AND po.ship_to_store_id = ANY($1::int[])
+        AND GREATEST(pol.quantity_ordered - pol.quantity_received, 0) > 0
+        AND k.category_number = ANY($2::int[])
+      GROUP BY k.category_number
+    `,
+    params.storeNumbers,
+    params.categoryNumbers,
+  );
 
   const positions = new Map<string, InventoryPosition>();
   for (const row of inventoryRows) {
@@ -701,7 +916,7 @@ interface LoadedPlanningData {
     numberByKey: Map<string, number | null>;
   };
   positions: Map<string, InventoryPosition>;
-  departments: Map<string, { number: number; label: string }>;
+  departments: Map<string, { number: number | null; label: string }>;
 }
 
 interface PlanningRange {
@@ -827,11 +1042,13 @@ function calculateRowsFromLoadedPlanningData(input: {
 
 async function buildCalculatedRows(input: {
   planningScope?: PurchasePlanPlanningScope;
+  planningDimension?: PurchasePlanPlanningDimension;
   storeGroupCode?: string;
   season: PurchasePlanSeason;
   seasonYear: number;
   seasonMonths?: string[];
   departmentNumbers: number[];
+  categoryNumbers?: number[];
   forecastMethod: ForecastMethod;
   forecastParams: ForecastParams;
   eohMethod: EohMethod;
@@ -846,15 +1063,44 @@ async function buildCalculatedRows(input: {
   historyFromYearMonth: string;
   historyToYearMonth: string;
   selectedDepartments: number[];
+  selectedCategories: number[];
   rows: Array<Omit<PurchasePlanSavedRow, 'id' | 'planId'>>;
 }> {
   const planningScope = input.planningScope === ENTERPRISE_SCOPE ? ENTERPRISE_SCOPE : STORE_GROUP_SCOPE;
-  const selectedDepartments = [...new Set(input.departmentNumbers.map((n) => Math.trunc(Number(n))).filter((n) => n > 0))].sort((a, b) => a - b);
-  if (selectedDepartments.length === 0) {
+  const planningDimension = input.planningDimension === CATEGORY_DIMENSION ? CATEGORY_DIMENSION : DEPARTMENT_DIMENSION;
+  const selectedCategories = planningDimension === CATEGORY_DIMENSION
+    ? [...new Set((input.categoryNumbers ?? []).map((n) => Math.trunc(Number(n))).filter((n) => n > 0))].sort((a, b) => a - b)
+    : [];
+  if (planningDimension === CATEGORY_DIMENSION && selectedCategories.length === 0) {
+    throw new PurchasePlanningServiceError(400, 'NO_CATEGORIES', 'At least one category is required.');
+  }
+
+  const categoryDefinitions = planningDimension === CATEGORY_DIMENSION
+    ? await loadCategories(selectedCategories)
+    : new Map<string, { number: number; label: string; departmentNumber: number | null }>();
+  const missingCategories = selectedCategories.filter((n) => !categoryDefinitions.has(String(n)));
+  if (missingCategories.length > 0) {
+    throw new PurchasePlanningServiceError(404, 'CATEGORY_NOT_FOUND', `Category(s) not found: ${missingCategories.join(', ')}`);
+  }
+
+  const selectedDepartments = planningDimension === CATEGORY_DIMENSION
+    ? uniqueSortedNumbers([...categoryDefinitions.values()]
+      .map((category) => category.departmentNumber)
+      .filter((n): n is number => Number.isInteger(n)))
+    : [...new Set(input.departmentNumbers.map((n) => Math.trunc(Number(n))).filter((n) => n > 0))].sort((a, b) => a - b);
+  if (planningDimension === DEPARTMENT_DIMENSION && selectedDepartments.length === 0) {
     throw new PurchasePlanningServiceError(400, 'NO_DEPARTMENTS', 'At least one department is required.');
   }
-  const departments = await loadDepartments(selectedDepartments);
-  const missing = selectedDepartments.filter((n) => !departments.has(String(n)));
+
+  const departments: Map<string, { number: number | null; label: string }> = planningDimension === CATEGORY_DIMENSION
+    ? new Map([...categoryDefinitions.values()].map((category) => [
+      String(category.number),
+      { number: null, label: category.label },
+    ]))
+    : await loadDepartments(selectedDepartments);
+  const missing = planningDimension === DEPARTMENT_DIMENSION
+    ? selectedDepartments.filter((n) => !departments.has(String(n)))
+    : [];
   if (missing.length > 0) {
     throw new PurchasePlanningServiceError(404, 'DEPARTMENT_NOT_FOUND', `Department(s) not found: ${missing.join(', ')}`);
   }
@@ -902,6 +1148,8 @@ async function buildCalculatedRows(input: {
     const loadedFacts = await loadMonthlyFacts({
       storeNumbers: demandStoreNumbers,
       departmentNumbers: selectedDepartments,
+      categoryNumbers: selectedCategories,
+      planningDimension,
       fromYearMonth: range.historyFromYearMonth,
       toYearMonth: range.historyToYearMonth,
       includeUnmapped: false,
@@ -909,6 +1157,8 @@ async function buildCalculatedRows(input: {
     const loadedPositions = await loadInventoryPositions({
       storeNumbers: planningStoreNumbers,
       departmentNumbers: selectedDepartments,
+      categoryNumbers: selectedCategories,
+      planningDimension,
       includeUnmapped: false,
     }, db);
     return [loadedFacts, loadedPositions] as const;
@@ -922,7 +1172,8 @@ async function buildCalculatedRows(input: {
     seasonMonths: range.seasonMonths,
     historyFromYearMonth: range.historyFromYearMonth,
     historyToYearMonth: range.historyToYearMonth,
-    selectedDepartments,
+    selectedDepartments: selectedDepartments.length > 0 ? selectedDepartments : [0],
+    selectedCategories,
     rows: calculateRowsFromLoadedPlanningData({
       data: { facts, positions, departments },
       range,
@@ -988,6 +1239,7 @@ async function loadPlanHeader(id: string, db: DbClient = prisma): Promise<Purcha
         p.label,
         p.status,
         COALESCE(p.planning_scope, 'store_group') AS "planningScope",
+        COALESCE(p.planning_dimension, 'department') AS "planningDimension",
         p.scope_label AS "scopeLabel",
         p.store_group_code AS "storeGroupCode",
         sg.label AS "storeGroupLabel",
@@ -995,6 +1247,7 @@ async function loadPlanHeader(id: string, db: DbClient = prisma): Promise<Purcha
         p.season_year AS "seasonYear",
         p.season_months AS "seasonMonths",
         p.selected_departments AS "selectedDepartments",
+        COALESCE(p.selected_categories, ARRAY[]::int[]) AS "selectedCategories",
         p.forecast_method AS "forecastMethod",
         p.eoh_method AS "eohMethod",
         p.cover_months AS "coverMonths",
@@ -1048,7 +1301,10 @@ async function loadRows(planId: string, db: DbClient = prisma, departmentKey?: s
       JOIN app.purchase_plan p ON p.id = r.plan_id
       WHERE r.plan_id = $1::uuid
         AND ($2::text IS NULL OR r.department_key = $2::text)
-        AND r.department_number = ANY(p.selected_departments)
+        AND (
+          COALESCE(p.planning_dimension, 'department') = 'category'
+          OR r.department_number = ANY(p.selected_departments)
+        )
       ORDER BY r.department_number NULLS LAST, r.department_key, r.year_month
     `,
     planId,
@@ -1189,13 +1445,16 @@ export async function createPurchasePlan(input: PurchasePlanCreateRequest): Prom
   const eohMethod = input.eohMethod ?? DEFAULT_EOH_METHOD;
   const coverMonths = Math.max(1, Math.round(input.coverMonths ?? DEFAULT_COVER_MONTHS));
   const planningScope = input.planningScope === ENTERPRISE_SCOPE ? ENTERPRISE_SCOPE : STORE_GROUP_SCOPE;
+  const planningDimension = input.planningDimension === CATEGORY_DIMENSION ? CATEGORY_DIMENSION : DEPARTMENT_DIMENSION;
   const calculation = await buildCalculatedRows({
     planningScope,
+    planningDimension,
     storeGroupCode: input.storeGroupCode,
     season: input.season,
     seasonYear: input.seasonYear,
     seasonMonths: input.seasonMonths,
     departmentNumbers: input.departmentNumbers,
+    categoryNumbers: input.categoryNumbers,
     forecastMethod,
     forecastParams: input.forecast ?? {},
     eohMethod,
@@ -1209,21 +1468,23 @@ export async function createPurchasePlan(input: PurchasePlanCreateRequest): Prom
     const inserted = await tx.$queryRawUnsafe<Array<{ id: string }>>(
       `
         INSERT INTO app.purchase_plan (
-          store_group_code, planning_scope, scope_label, label, season, season_year, season_months, selected_departments,
+          store_group_code, planning_scope, planning_dimension, scope_label, label, season, season_year, season_months, selected_departments, selected_categories,
           forecast_method, eoh_method, cover_months, discount_normalization,
           history_from_year_month, history_to_year_month, created_by
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7::text[], $8::int[], $9, $10, $11, $12, $13, $14, $15)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8::text[], $9::int[], $10::int[], $11, $12, $13, $14, $15, $16, $17)
         RETURNING id::text
       `,
       calculation.storeGroupCode,
       calculation.planningScope,
+      planningDimension,
       calculation.scopeLabel,
       label,
       input.season,
       input.seasonYear,
       calculation.seasonMonths,
       calculation.selectedDepartments,
+      calculation.selectedCategories,
       forecastMethod,
       eohMethod,
       coverMonths,
@@ -1257,6 +1518,7 @@ export async function listPurchasePlans(params: {
         p.label,
         p.status,
         COALESCE(p.planning_scope, 'store_group') AS "planningScope",
+        COALESCE(p.planning_dimension, 'department') AS "planningDimension",
         p.scope_label AS "scopeLabel",
         p.store_group_code AS "storeGroupCode",
         sg.label AS "storeGroupLabel",
@@ -1264,6 +1526,7 @@ export async function listPurchasePlans(params: {
         p.season_year AS "seasonYear",
         p.season_months AS "seasonMonths",
         p.selected_departments AS "selectedDepartments",
+        COALESCE(p.selected_categories, ARRAY[]::int[]) AS "selectedCategories",
         p.forecast_method AS "forecastMethod",
         p.eoh_method AS "eohMethod",
         p.cover_months AS "coverMonths",
@@ -1282,6 +1545,7 @@ export async function listPurchasePlans(params: {
       LEFT JOIN app.purchase_plan_row r ON r.plan_id = p.id
       WHERE ($1::text IS NULL OR p.status = $1::text)
         AND COALESCE(p.planning_scope, 'store_group') = 'enterprise'
+        AND COALESCE(p.planning_dimension, 'department') = 'department'
         AND p.store_group_code IS NULL
         AND COALESCE(array_length(p.season_months, 1), 0) = $2::int
       GROUP BY p.id, sg.label
@@ -1460,11 +1724,13 @@ export async function recalculatePurchasePlan(planId: string, actor = 'system'):
     const beforeRows = await loadRows(planId, tx);
     const calculation = await buildCalculatedRows({
       planningScope: plan.planningScope,
+      planningDimension: plan.planningDimension,
       storeGroupCode: plan.planningScope === ENTERPRISE_SCOPE ? undefined : plan.storeGroupCode,
       season: plan.season,
       seasonYear: plan.seasonYear,
       seasonMonths: plan.seasonMonths,
       departmentNumbers: plan.selectedDepartments,
+      categoryNumbers: plan.selectedCategories,
       forecastMethod: plan.forecastMethod,
       forecastParams: {},
       eohMethod: plan.eohMethod,
@@ -1556,6 +1822,7 @@ async function findReportWorkbook(params: {
       FROM app.purchase_plan p
       WHERE p.status = 'draft'
         AND COALESCE(p.planning_scope, 'store_group') = 'enterprise'
+        AND COALESCE(p.planning_dimension, 'department') = 'department'
         AND p.store_group_code IS NULL
         AND COALESCE(array_length(p.season_months, 1), 0) = $1::int
         AND p.season = $2

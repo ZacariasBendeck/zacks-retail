@@ -22,6 +22,8 @@
  */
 
 import { prisma } from '../db/prisma';
+import { logger } from '../observability/logger';
+import { traceStep } from '../observability/requestContext';
 import { findNeighborSku } from './ricsProductAdapter';
 import { buildRicsImageUrl } from './ricsImageUrl';
 import {
@@ -437,7 +439,7 @@ async function timeInquiryStep<T>(
 ): Promise<T> {
   const startedAt = Date.now();
   try {
-    return await loader();
+    return await traceStep(`inventoryInquiry.${name}`, loader);
   } finally {
     timings.push({ name, ms: Date.now() - startedAt });
   }
@@ -452,13 +454,17 @@ function logSlowInquiry(
   const thresholdMs = inquirySlowThresholdMs();
   if (totalMs < thresholdMs) return;
 
-  console.warn('[ricsInventoryAdapter] slow inventory inquiry', {
-    sku,
-    totalMs,
-    thresholdMs,
-    steps: timings.map((entry) => ({ name: entry.name, ms: entry.ms })),
-    error: error instanceof Error ? error.message : undefined,
-  });
+  logger.warn(
+    {
+      event: 'inventory_inquiry.slow',
+      sku,
+      totalMs,
+      thresholdMs,
+      steps: timings.map((entry) => ({ name: entry.name, ms: entry.ms })),
+      error: error instanceof Error ? error.message : undefined,
+    },
+    'slow inventory inquiry',
+  );
 }
 
 // ─────────────────────────── data source ──────────────────────────────────

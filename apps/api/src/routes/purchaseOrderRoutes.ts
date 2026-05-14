@@ -22,6 +22,7 @@ import {
   validate,
   validateQuery,
 } from '../middleware/validation';
+import { getTraceId } from '../observability/requestContext';
 
 const router: IRouter = Router();
 
@@ -395,6 +396,7 @@ router.patch('/:poId/submit', validate(poSubmitSchema), async (req: Request, res
     ?? req.header('x-trace-id')
     ?? req.header('x-request-id')
     ?? req.header('x-correlation-id')
+    ?? getTraceId()
     ?? null;
   let auditEvents: OtbPolicyAuditEvent[] = [];
 

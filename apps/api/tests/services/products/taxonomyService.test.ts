@@ -38,7 +38,9 @@ jest.mock('../../../src/repositories/rics/CategoryRepository', () => ({
     getByNumber: jest.fn(async () => Err({ kind: 'NotFound', message: 'not found' })),
     create: jest.fn(async () => Ok({ number: 1, description: 'x', dateLastChanged: null, skuCount: 0 })),
     update: jest.fn(async () => Ok({ number: 1, description: 'x', dateLastChanged: null, skuCount: 0 })),
+    bulkUpdateAssignments: jest.fn(async () => Ok({ updatedCount: 1, categories: [] })),
     delete: jest.fn(async () => Ok(undefined)),
+    listBuyerOptions: jest.fn(async () => Ok([])),
   },
 }));
 

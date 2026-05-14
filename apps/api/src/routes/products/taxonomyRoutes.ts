@@ -135,6 +135,10 @@ router.get('/categories', async (_req: Request, res: Response) => {
   send(res, await taxonomyService.categories.list());
 });
 
+router.patch('/categories/bulk-assignments', async (req: Request, res: Response) => {
+  send(res, await taxonomyService.categories.bulkUpdateAssignments(req.body));
+});
+
 router.get('/categories/:number', async (req: Request, res: Response) => {
   const n = parseInt32(req.params.number);
   if (n == null) {

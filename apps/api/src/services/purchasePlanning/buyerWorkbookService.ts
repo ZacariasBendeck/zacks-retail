@@ -1,5 +1,8 @@
 import { prisma } from '../../db/prisma';
 import { getSkuStoreCellRollup } from '../ricsInventoryAdapter';
+import { createPurchasePlan, getPurchasePlan } from './purchasePlanningSavedService';
+import { buildSeasonWindowFromYearMonth } from './season';
+import type { PurchasePlanDetailResponse } from './types';
 
 type DbClient = {
   $queryRawUnsafe: typeof prisma.$queryRawUnsafe;
@@ -248,6 +251,7 @@ export interface BuyerCategoryCard {
     summary: HistoricalTargetSummary;
   };
   salesProjection: SalesProjectionPlan;
+  salesProjectionPlanId: string | null;
   attributeMix: AttributeMixDimension[];
   notes: string | null;
   createdAt: string;
@@ -347,6 +351,11 @@ export interface BuyerWorkbookDetail {
   poLinks: PoLink[];
 }
 
+export interface BuyerSalesProjectionWorkbookResult {
+  plan: PurchasePlanDetailResponse;
+  buyerWorkbook: BuyerWorkbookDetail;
+}
+
 export interface StoreCategoryCarryingRow {
   storeId: number;
   storeLabel: string;
@@ -413,6 +422,7 @@ interface CardRow {
   salesProjectionSales: unknown;
   salesProjectionUpdatedBy: string | null;
   salesProjectionUpdatedAt: Date | string | null;
+  salesProjectionPlanId: string | null;
   attributeMixJson: unknown;
   notes: string | null;
   createdAt: Date | string;
@@ -871,6 +881,7 @@ function normalizeCard(row: CardRow): BuyerCategoryCard {
       summary: history.summary ?? summarizeHistoricalTargets([]),
     },
     salesProjection: normalizeSalesProjection(row, historyMonths),
+    salesProjectionPlanId: row.salesProjectionPlanId,
     attributeMix,
     notes: row.notes,
     createdAt: toIso(row.createdAt)!,
@@ -1124,45 +1135,32 @@ export async function listBuyerChecklistCategories(input: {
 
   const categoryRows = await prisma.$queryRawUnsafe<BuyerChecklistCategorySqlRow[]>(
     `
-WITH buyer_assignment AS (
-  SELECT DISTINCT ON (UPPER(BTRIM(saa.sku_code)))
-    UPPER(BTRIM(saa.sku_code)) AS sku_code,
+WITH category_assignment AS (
+  SELECT
+    cba.category_number,
     av.code AS buyer_code,
-    av.label_es AS buyer_label
-  FROM app.sku_attribute_assignment saa
+    av.label_es AS buyer_label,
+    av.sort_order AS buyer_sort_order
+  FROM app.category_buyer_assignment cba
+  JOIN app.attribute_value av ON av.id = cba.buyer_value_id
   JOIN app.attribute_dimension ad
-    ON ad.id = saa.dimension_id
+    ON ad.id = av.dimension_id
    AND ad.code = 'buyer'
-  JOIN app.attribute_value av ON av.id = saa.value_id
-  WHERE COALESCE(BTRIM(saa.sku_code), '') <> ''
-  ORDER BY UPPER(BTRIM(saa.sku_code)), av.sort_order NULLS LAST, av.code
-),
-sku_scope AS (
-  SELECT DISTINCT
-    s.id AS sku_id,
-    UPPER(BTRIM(COALESCE(s.code, s.provisional_code))) AS sku_code,
-    s.category_number,
-    ba.buyer_code,
-    ba.buyer_label
-  FROM app.sku s
-  LEFT JOIN buyer_assignment ba
-    ON ba.sku_code = UPPER(BTRIM(COALESCE(s.code, s.provisional_code)))
-  WHERE s.category_number IS NOT NULL
-    AND COALESCE(s.rics_status, '') <> 'D'
+  WHERE COALESCE(BTRIM(av.code), '') <> ''
     AND (
-      ($1::text IS NULL AND ba.buyer_code IS NOT NULL)
-      OR ($1::text IS NOT NULL AND UPPER(ba.buyer_code) = UPPER($1::text))
+      $1::text IS NULL
+      OR UPPER(BTRIM(av.code)) = UPPER(BTRIM($1::text))
     )
 )
 SELECT
-  MAX(scope.buyer_code) AS "buyerCode",
-  MAX(scope.buyer_label) AS "buyerLabel",
+  STRING_AGG(ca.buyer_code, ', ' ORDER BY ca.buyer_sort_order NULLS LAST, ca.buyer_code) AS "buyerCode",
+  STRING_AGG(COALESCE(NULLIF(ca.buyer_label, ''), ca.buyer_code), ', ' ORDER BY ca.buyer_sort_order NULLS LAST, ca.buyer_code) AS "buyerLabel",
   c.number AS "categoryNumber",
   c.number::text || ' - ' || c."desc" AS "categoryLabel",
   d.number AS "departmentNumber",
   CASE WHEN d.number IS NULL THEN 'Unmapped' ELSE d.number::text || ' - ' || d."desc" END AS "departmentLabel"
-FROM sku_scope scope
-JOIN app.taxonomy_category c ON c.number = scope.category_number
+FROM app.taxonomy_category c
+JOIN category_assignment ca ON ca.category_number = c.number
 LEFT JOIN app.taxonomy_department d ON c.number BETWEEN d.beg_categ AND d.end_categ
 GROUP BY c.number, c."desc", d.number, d."desc"
 ORDER BY COALESCE(d.number, 9999), c.number
@@ -1171,21 +1169,8 @@ LIMIT 1000
     buyer,
   );
 
-  const categoryNumbers = categoryRows.map((row) => Number(row.categoryNumber));
-  const departmentNumbers = uniqueSorted(categoryRows.map((row) => Number(row.departmentNumber)).filter((row) => Number.isInteger(row)));
-  const [salesRows, inventoryRows] = await Promise.all([
-    loadBuyerChecklistCategorySales({
-      buyer,
-      categoryNumbers,
-      fromYearMonth,
-      toYearMonth: reportMonth,
-    }),
-    loadBuyerChecklistCategoryInventory({
-      buyer,
-      categoryNumbers,
-    }),
-  ]);
-  const planRows = categoryNumbers.length === 0 ? [] : await prisma.$queryRawUnsafe<Array<{
+  const baseCategoryNumbers = categoryRows.map((row) => Number(row.categoryNumber));
+  const planRows = baseCategoryNumbers.length === 0 ? [] : await prisma.$queryRawUnsafe<Array<{
     categoryNumber: number;
     buyingSeason: BuyerWorkbookSeason;
     seasonYear: number;
@@ -1211,12 +1196,12 @@ LIMIT 1000
         AND w.season_year = ANY($3::int[])
       ORDER BY c.category_number, w.buying_season, w.season_year, c.updated_at DESC
     `,
-    categoryNumbers,
+    baseCategoryNumbers,
     seasonSeries.map((season) => season.buyingSeason),
     seasonSeries.map((season) => season.seasonYear),
   );
 
-  const noBudgetRows = categoryNumbers.length === 0 ? [] : await prisma.$queryRawUnsafe<Array<{
+  const noBudgetRows = baseCategoryNumbers.length === 0 ? [] : await prisma.$queryRawUnsafe<Array<{
     id: string;
     categoryNumber: number;
     buyingSeason: BuyerWorkbookSeason;
@@ -1244,10 +1229,52 @@ LIMIT 1000
         AND buying_season = ANY($2::text[])
         AND season_year = ANY($3::int[])
     `,
-    categoryNumbers,
+    baseCategoryNumbers,
     seasonSeries.map((season) => season.buyingSeason),
     seasonSeries.map((season) => season.seasonYear),
   );
+
+  const planMap = new Map<string, BuyerChecklistSeasonPlan>();
+  for (const row of planRows) {
+    planMap.set(`${row.categoryNumber}:${row.buyingSeason}:${row.seasonYear}`, {
+      buyingSeason: row.buyingSeason,
+      seasonYear: Number(row.seasonYear),
+      workbookId: row.workbookId,
+      cardId: row.cardId,
+      status: row.status,
+      updatedAt: toIso(row.updatedAt),
+      noBudgetId: null,
+      noBudgetNote: null,
+      noBudgetMarkedBy: null,
+      noBudgetMarkedAt: null,
+    });
+  }
+  const noBudgetMap = new Map(noBudgetRows.map((row) => [
+    `${row.categoryNumber}:${row.buyingSeason}:${row.seasonYear}`,
+    row,
+  ]));
+  const currentSeason = seasonSeries[0];
+  const visibleCategoryRows = includeNoBudget ? categoryRows : categoryRows.filter((row) => {
+    const key = `${row.categoryNumber}:${currentSeason.buyingSeason}:${currentSeason.seasonYear}`;
+    const currentPlan = mergeNoBudgetPlan(
+      planMap.get(key) ?? emptySeasonPlan(currentSeason.buyingSeason, currentSeason.seasonYear),
+      noBudgetMap.get(key),
+    );
+    return currentPlan.status !== 'NO_BUDGET';
+  });
+
+  const categoryNumbers = visibleCategoryRows.map((row) => Number(row.categoryNumber));
+  const departmentNumbers = uniqueSorted(visibleCategoryRows.map((row) => Number(row.departmentNumber)).filter((row) => Number.isInteger(row)));
+  const [salesRows, inventoryRows] = await Promise.all([
+    loadBuyerChecklistCategorySales({
+      categoryNumbers,
+      fromYearMonth,
+      toYearMonth: reportMonth,
+    }),
+    loadBuyerChecklistCategoryInventory({
+      categoryNumbers,
+    }),
+  ]);
 
   const otbRows = departmentNumbers.length === 0 ? [] : await prisma.$queryRawUnsafe<Array<{
     departmentNumber: number;
@@ -1283,28 +1310,9 @@ LIMIT 1000
       value: toNumber(row.currentInventoryValue),
     },
   ]));
-  const planMap = new Map<string, BuyerChecklistSeasonPlan>();
-  for (const row of planRows) {
-    planMap.set(`${row.categoryNumber}:${row.buyingSeason}:${row.seasonYear}`, {
-      buyingSeason: row.buyingSeason,
-      seasonYear: Number(row.seasonYear),
-      workbookId: row.workbookId,
-      cardId: row.cardId,
-      status: row.status,
-      updatedAt: toIso(row.updatedAt),
-      noBudgetId: null,
-      noBudgetNote: null,
-      noBudgetMarkedBy: null,
-      noBudgetMarkedAt: null,
-    });
-  }
-  const noBudgetMap = new Map(noBudgetRows.map((row) => [
-    `${row.categoryNumber}:${row.buyingSeason}:${row.seasonYear}`,
-    row,
-  ]));
   const otbMap = new Map(otbRows.map((row) => [Number(row.departmentNumber), Math.round(toNumber(row.openToBuyUnits))]));
 
-  const rows: BuyerChecklistCategoryRow[] = categoryRows.map((row) => {
+  const rows: BuyerChecklistCategoryRow[] = visibleCategoryRows.map((row) => {
     const plans = Object.fromEntries(seasonSeries.map((season) => [
       season.key,
       mergeNoBudgetPlan(
@@ -1334,7 +1342,7 @@ LIMIT 1000
       action,
     };
   });
-  return includeNoBudget ? rows : rows.filter((row) => row.currentSeason.status !== 'NO_BUDGET');
+  return rows;
 }
 
 export async function markBuyerChecklistCategoryNoBudget(input: {
@@ -1939,7 +1947,6 @@ function parseYearMonthParts(input: string): { year: number; month: number } {
 }
 
 async function loadBuyerChecklistCategorySales(input: {
-  buyer: string | null;
   categoryNumbers: number[];
   fromYearMonth: string;
   toYearMonth: string;
@@ -1948,19 +1955,7 @@ async function loadBuyerChecklistCategorySales(input: {
   const report = parseYearMonthParts(input.toYearMonth);
   return db.$queryRawUnsafe<BuyerChecklistCategorySalesSqlRow[]>(
     `
-WITH buyer_assignment AS (
-  SELECT DISTINCT ON (UPPER(BTRIM(saa.sku_code)))
-    UPPER(BTRIM(saa.sku_code)) AS sku_code,
-    av.code AS buyer_code
-  FROM app.sku_attribute_assignment saa
-  JOIN app.attribute_dimension ad
-    ON ad.id = saa.dimension_id
-   AND ad.code = 'buyer'
-  JOIN app.attribute_value av ON av.id = saa.value_id
-  WHERE COALESCE(BTRIM(saa.sku_code), '') <> ''
-  ORDER BY UPPER(BTRIM(saa.sku_code)), av.sort_order NULLS LAST, av.code
-),
-src AS (
+WITH src AS (
   SELECT
     k.category_number AS category_number,
     CONCAT(
@@ -1975,16 +1970,11 @@ src AS (
     COALESCE(m.net_sales, 0)::float8 AS net_sales,
     COALESCE(m.profit, 0)::float8 AS profit
   FROM app.sku k
-  JOIN buyer_assignment ba
-    ON ba.sku_code = UPPER(BTRIM(COALESCE(k.code, k.provisional_code)))
-  JOIN app.inventory_history_snapshot s ON s.sku_id = k.id
+  JOIN app.inventory_history_snapshot s
+    ON s.sku_code = COALESCE(k.code, k.provisional_code)
   JOIN app.inventory_history_month m ON m.snapshot_id = s.id
   WHERE k.category_number = ANY($5::int[])
     AND COALESCE(k.rics_status, '') <> 'D'
-    AND (
-      ($6::text IS NULL AND ba.buyer_code IS NOT NULL)
-      OR ($6::text IS NOT NULL AND UPPER(ba.buyer_code) = UPPER($6::text))
-    )
     AND (
       m.qty_sales <> 0 OR
       COALESCE(m.net_sales, 0) <> 0 OR
@@ -2000,15 +1990,10 @@ src AS (
     COALESCE(s.month_dol_sales, 0)::float8 AS net_sales,
     COALESCE(s.month_profit, 0)::float8 AS profit
   FROM app.sku k
-  JOIN buyer_assignment ba
-    ON ba.sku_code = UPPER(BTRIM(COALESCE(k.code, k.provisional_code)))
-  JOIN app.inventory_history_snapshot s ON s.sku_id = k.id
+  JOIN app.inventory_history_snapshot s
+    ON s.sku_code = COALESCE(k.code, k.provisional_code)
   WHERE k.category_number = ANY($5::int[])
     AND COALESCE(k.rics_status, '') <> 'D'
-    AND (
-      ($6::text IS NULL AND ba.buyer_code IS NOT NULL)
-      OR ($6::text IS NOT NULL AND UPPER(ba.buyer_code) = UPPER($6::text))
-    )
     AND (
       COALESCE(s.month_qty_sales, 0) <> 0 OR
       COALESCE(s.month_dol_sales, 0) <> 0 OR
@@ -2030,47 +2015,27 @@ GROUP BY category_number
     report.year,
     report.month,
     input.categoryNumbers,
-    input.buyer,
   );
 }
 
 async function loadBuyerChecklistCategoryInventory(input: {
-  buyer: string | null;
   categoryNumbers: number[];
 }, db: DbClient = prisma): Promise<BuyerChecklistCategoryInventorySqlRow[]> {
   if (input.categoryNumbers.length === 0) return [];
   return db.$queryRawUnsafe<BuyerChecklistCategoryInventorySqlRow[]>(
     `
-WITH buyer_assignment AS (
-  SELECT DISTINCT ON (UPPER(BTRIM(saa.sku_code)))
-    UPPER(BTRIM(saa.sku_code)) AS sku_code,
-    av.code AS buyer_code
-  FROM app.sku_attribute_assignment saa
-  JOIN app.attribute_dimension ad
-    ON ad.id = saa.dimension_id
-   AND ad.code = 'buyer'
-  JOIN app.attribute_value av ON av.id = saa.value_id
-  WHERE COALESCE(BTRIM(saa.sku_code), '') <> ''
-  ORDER BY UPPER(BTRIM(saa.sku_code)), av.sort_order NULLS LAST, av.code
-)
 SELECT
   k.category_number AS "categoryNumber",
   SUM(COALESCE(s.on_hand, 0))::float8 AS "currentInventoryUnits",
   SUM(COALESCE(s.on_hand, 0) * COALESCE(k.current_cost, s.average_cost, 0))::float8 AS "currentInventoryValue"
 FROM app.sku k
-JOIN buyer_assignment ba
-  ON ba.sku_code = UPPER(BTRIM(COALESCE(k.code, k.provisional_code)))
-JOIN app.inventory_history_snapshot s ON s.sku_id = k.id
+JOIN app.inventory_history_snapshot s
+  ON s.sku_code = COALESCE(k.code, k.provisional_code)
 WHERE k.category_number = ANY($1::int[])
   AND COALESCE(k.rics_status, '') <> 'D'
-  AND (
-    ($2::text IS NULL AND ba.buyer_code IS NOT NULL)
-    OR ($2::text IS NOT NULL AND UPPER(ba.buyer_code) = UPPER($2::text))
-  )
 GROUP BY k.category_number
     `,
     input.categoryNumbers,
-    input.buyer,
   );
 }
 
@@ -2516,6 +2481,7 @@ export async function getBuyerWorkbook(id: string): Promise<BuyerWorkbookDetail>
           sales_projection_sales AS "salesProjectionSales",
           sales_projection_updated_by AS "salesProjectionUpdatedBy",
           sales_projection_updated_at AS "salesProjectionUpdatedAt",
+          sales_projection_plan_id::text AS "salesProjectionPlanId",
           attribute_mix_json AS "attributeMixJson",
           notes,
           created_at AS "createdAt",
@@ -2681,6 +2647,191 @@ export async function getBuyerWorkbook(id: string): Promise<BuyerWorkbookDetail>
   };
 }
 
+function projectionWorkbookWindow() {
+  const seasonWindow = buildSeasonWindowFromYearMonth(undefined, 5);
+  const first = seasonWindow[0]!;
+  const last = seasonWindow[seasonWindow.length - 1]!;
+  return {
+    first,
+    last,
+    months: seasonWindow.flatMap((season) => season.months),
+    labelSuffix: `${first.seasonLabel} to ${last.seasonLabel}`,
+  };
+}
+
+async function findExistingCategoryProjectionPlan(input: {
+  categoryNumber: number;
+  season: string;
+  seasonYear: number;
+  months: string[];
+}, db: DbClient = prisma): Promise<string | null> {
+  const rows = await db.$queryRawUnsafe<Array<{ id: string }>>(
+    `
+      SELECT p.id::text AS id
+      FROM app.purchase_plan p
+      WHERE p.status = 'draft'
+        AND COALESCE(p.planning_scope, 'store_group') = 'enterprise'
+        AND COALESCE(p.planning_dimension, 'department') = 'category'
+        AND p.store_group_code IS NULL
+        AND p.season = $1
+        AND p.season_year = $2::int
+        AND p.season_months = $3::text[]
+        AND COALESCE(p.selected_categories, ARRAY[]::int[]) = ARRAY[$4::int]
+      ORDER BY p.updated_at DESC, p.created_at DESC
+      LIMIT 1
+    `,
+    input.season,
+    input.seasonYear,
+    input.months,
+    input.categoryNumber,
+  );
+  return rows[0]?.id ?? null;
+}
+
+async function linkSalesProjectionPlan(input: {
+  workbookId: string;
+  cardId: string;
+  planId: string;
+  actor: string;
+}, db: DbClient = prisma): Promise<void> {
+  const before = normalizeCard(await ensureCard(input.workbookId, input.cardId, db));
+  await db.$executeRawUnsafe(
+    `
+      UPDATE app.buyer_purchase_category_card
+      SET sales_projection_plan_id = $3::uuid,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE workbook_id = $1::uuid
+        AND id = $2::uuid
+    `,
+    input.workbookId,
+    input.cardId,
+    input.planId,
+  );
+  await db.$executeRawUnsafe(
+    `
+      UPDATE app.buyer_purchase_workbook
+      SET updated_at = CURRENT_TIMESTAMP
+      WHERE id = $1::uuid
+    `,
+    input.workbookId,
+  );
+  const after = normalizeCard(await ensureCard(input.workbookId, input.cardId, db));
+  await audit(db, input.workbookId, 'sales_projection_workbook_link', input.actor, before, after);
+}
+
+export async function ensureBuyerSalesProjectionWorkbook(
+  workbookId: string,
+  cardId: string,
+  actorInput?: string | null,
+): Promise<BuyerSalesProjectionWorkbookResult> {
+  const actor = cleanText(actorInput) ?? 'buyer';
+  const card = normalizeCard(await ensureCard(workbookId, cardId));
+  if (card.salesProjectionPlanId) {
+    try {
+      return {
+        plan: await getPurchasePlan(card.salesProjectionPlanId),
+        buyerWorkbook: await getBuyerWorkbook(workbookId),
+      };
+    } catch (err) {
+      if ((err as { code?: string })?.code !== 'PLAN_NOT_FOUND') throw err;
+    }
+  }
+
+  const window = projectionWorkbookWindow();
+  const existingPlanId = await findExistingCategoryProjectionPlan({
+    categoryNumber: card.categoryNumber,
+    season: window.first.season,
+    seasonYear: window.first.seasonYear,
+    months: window.months,
+  });
+  const plan = existingPlanId
+    ? await getPurchasePlan(existingPlanId)
+    : await createPurchasePlan({
+      planningScope: 'enterprise',
+      planningDimension: 'category',
+      season: window.first.season,
+      seasonYear: window.first.seasonYear,
+      seasonMonths: window.months,
+      departmentNumbers: card.departmentNumber == null ? [] : [card.departmentNumber],
+      categoryNumbers: [card.categoryNumber],
+      label: `Enterprise-wide ${card.categoryLabel} ${window.labelSuffix}`,
+      forecast: { method: 'holtWinters' },
+      eohMethod: 'forward',
+      coverMonths: 3,
+      discountNormalization: true,
+      createdBy: actor,
+    });
+
+  await prisma.$transaction(async (tx) => {
+    await linkSalesProjectionPlan({
+      workbookId,
+      cardId,
+      planId: plan.plan.id,
+      actor,
+    }, tx);
+  });
+
+  return {
+    plan,
+    buyerWorkbook: await getBuyerWorkbook(workbookId),
+  };
+}
+
+export async function confirmBuyerSalesProjectionWorkbook(
+  workbookId: string,
+  cardId: string,
+  actorInput?: string | null,
+): Promise<BuyerWorkbookDetail> {
+  const actor = cleanText(actorInput) ?? 'buyer';
+  const { plan } = await ensureBuyerSalesProjectionWorkbook(workbookId, cardId, actor);
+  const projectionMonths: SalesProjectionMonth[] = plan.departments
+    .flatMap((department) => department.months)
+    .map((row) => ({
+      yearMonth: row.yearMonth,
+      projectedUnits: Math.max(0, Math.round(row.currentProjSales)),
+      projectedSales: 0,
+    }));
+  const projectionUnits = projectionMonths.reduce((sum, row) => sum + row.projectedUnits, 0);
+
+  await prisma.$transaction(async (tx) => {
+    const before = normalizeCard(await ensureCard(workbookId, cardId, tx));
+    await tx.$executeRawUnsafe(
+      `
+        UPDATE app.buyer_purchase_category_card
+        SET
+          status = CASE WHEN status = 'NOT_STARTED' THEN 'HISTORY_REVIEWED' ELSE status END,
+          sales_projection_plan_id = $3::uuid,
+          sales_projection_json = $4::jsonb,
+          sales_projection_units = $5::int,
+          sales_projection_sales = 0,
+          sales_projection_updated_by = $6::text,
+          sales_projection_updated_at = CURRENT_TIMESTAMP,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE workbook_id = $1::uuid
+          AND id = $2::uuid
+      `,
+      workbookId,
+      cardId,
+      plan.plan.id,
+      JSON.stringify(projectionMonths),
+      projectionUnits,
+      actor,
+    );
+    await tx.$executeRawUnsafe(
+      `
+        UPDATE app.buyer_purchase_workbook
+        SET updated_at = CURRENT_TIMESTAMP
+        WHERE id = $1::uuid
+      `,
+      workbookId,
+    );
+    const after = normalizeCard(await ensureCard(workbookId, cardId, tx));
+    await audit(tx, workbookId, 'sales_projection_workbook_confirm', actor, before, after);
+  });
+
+  return getBuyerWorkbook(workbookId);
+}
+
 async function ensureCard(workbookId: string, cardId: string, db: DbClient = prisma): Promise<CardRow> {
   const rows = await db.$queryRawUnsafe<CardRow[]>(
     `
@@ -2707,6 +2858,7 @@ async function ensureCard(workbookId: string, cardId: string, db: DbClient = pri
         sales_projection_sales AS "salesProjectionSales",
         sales_projection_updated_by AS "salesProjectionUpdatedBy",
         sales_projection_updated_at AS "salesProjectionUpdatedAt",
+        sales_projection_plan_id::text AS "salesProjectionPlanId",
         attribute_mix_json AS "attributeMixJson",
         notes,
         created_at AS "createdAt",

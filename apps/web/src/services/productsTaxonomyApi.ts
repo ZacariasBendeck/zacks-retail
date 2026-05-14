@@ -7,6 +7,8 @@
 
 import type {
   Category,
+  CategoryBulkAssignmentInput,
+  CategoryBulkAssignmentResult,
   CategoryBuyerOption,
   CategoryInput,
   Department,
@@ -105,6 +107,11 @@ export const categoriesApi = {
     request<Category>(`${BASE}/categories`, { method: 'POST', body: JSON.stringify(input) }),
   update: (n: number, patch: Partial<Omit<CategoryInput, 'number'>>) =>
     request<Category>(`${BASE}/categories/${n}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+  bulkUpdateAssignments: (input: CategoryBulkAssignmentInput) =>
+    request<CategoryBulkAssignmentResult>(`${BASE}/categories/bulk-assignments`, {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    }),
   remove: (n: number) => request<void>(`${BASE}/categories/${n}`, { method: 'DELETE' }),
 }
 

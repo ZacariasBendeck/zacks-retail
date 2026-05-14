@@ -1,11 +1,10 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import {
   Alert,
   App,
   Button,
   Card,
   Col,
-  Image,
   Input,
   Popconfirm,
   Row,
@@ -32,6 +31,7 @@ import { useAuth } from '../../auth/useAuth'
 import { useDeleteProductsSku } from '../../hooks/useProductsSkus'
 import { productsSkuApi } from '../../services/productsSkuApi'
 import { SkuLink } from '../../components/sku-link'
+import ReportThumbnail from '../../components/reports/ReportThumbnail'
 import SkuBulkChangePanel from './SkuBulkChangePanel'
 import {
   useCategories,
@@ -276,19 +276,22 @@ export default function SkuListPage() {
   type EnrichedSku = (typeof enriched)[number]
 
   const runQuery = () => {
-    setActiveFilters(buildFilters())
+    const filters = buildFilters()
+    if (!skuListFiltersHaveValues(filters)) {
+      setActiveFilters(null)
+      setSelectedCodes([])
+      message.info('Select at least one filter before running the SKU query.')
+      return
+    }
+    setActiveFilters(filters)
   }
 
   const refresh = () => {
     if (activeFilters == null) {
-      setActiveFilters(buildFilters())
+      runQuery()
       return
     }
     void refetch()
-  }
-
-  const runQueryLoadAll = () => {
-    setActiveFilters({})
   }
 
   const clearFilters = () => {
@@ -307,7 +310,17 @@ export default function SkuListPage() {
     setAttrSelections({})
   }
 
+  const queueRunAfterFilterStateChange = () => {
+    if (activeFilters != null) runAfterFilterStateChangeRef.current = true
+  }
+
+  const runQueryOnEnter = (event: KeyboardEvent<HTMLElement>) => {
+    if (event.key !== 'Enter' || event.nativeEvent.isComposing) return
+    window.setTimeout(runQuery, 0)
+  }
+
   const autoRanRef = useRef(false)
+  const runAfterFilterStateChangeRef = useRef(false)
   useEffect(() => {
     if (autoRanRef.current) return
     if (searchParams.get('run') !== '1') return
@@ -350,6 +363,28 @@ export default function SkuListPage() {
     })
   }, [attrDimensions, visibleAttrDimensions])
 
+  useEffect(() => {
+    if (!runAfterFilterStateChangeRef.current) return
+    runAfterFilterStateChangeRef.current = false
+    const filters = buildFilters()
+    setActiveFilters(skuListFiltersHaveValues(filters) ? filters : null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    q,
+    skuPattern,
+    vendorCodes,
+    sectorNumber,
+    departmentNumber,
+    productFamilyCode,
+    effectiveCategories,
+    seasonCodes,
+    groupCodes,
+    keywordCodes,
+    styleColor,
+    description,
+    attrSelections,
+  ])
+
   const attrFiltersSet = Object.values(attrSelections).some((v) => v.length > 0)
   const anyFilterSet =
     q.trim().length > 0 ||
@@ -369,6 +404,169 @@ export default function SkuListPage() {
   const isRunning = isLoading || isFetching
   const hasRun = activeFilters != null
   const resultCount = enriched.length
+  const labelList = (
+    values: Array<string | number>,
+    options: Array<{ value: string | number; label: string }>,
+  ) => {
+    const byValue = new Map(options.map((option) => [String(option.value), option.label]))
+    const labels = values.map((value) => byValue.get(String(value)) ?? String(value))
+    if (labels.length <= 3) return labels.join(', ')
+    return `${labels.slice(0, 3).join(', ')} +${labels.length - 3}`
+  }
+  const filterPills: Array<{ key: string; label: string; onClose: () => void }> = []
+  if (q.trim()) {
+    filterPills.push({
+      key: 'q',
+      label: `Search: ${q.trim()}`,
+      onClose: () => {
+        setQ('')
+        queueRunAfterFilterStateChange()
+      },
+    })
+  }
+  if (skuPattern.trim()) {
+    filterPills.push({
+      key: 'sku',
+      label: `SKU: ${skuPattern.trim()}`,
+      onClose: () => {
+        setSkuPattern('')
+        queueRunAfterFilterStateChange()
+      },
+    })
+  }
+  if (productFamilyCode) {
+    filterPills.push({
+      key: 'family',
+      label: `Family: ${familyLabelByCode.get(productFamilyCode) ?? productFamilyCode}`,
+      onClose: () => {
+        setProductFamilyCode(null)
+        queueRunAfterFilterStateChange()
+      },
+    })
+  }
+  if (categoryNumbers.length > 0) {
+    filterPills.push({
+      key: 'categories',
+      label: `Category: ${labelList(categoryNumbers, categoryOptions)}`,
+      onClose: () => {
+        setCategoryNumbers([])
+        queueRunAfterFilterStateChange()
+      },
+    })
+  }
+  if (departmentNumber != null) {
+    const department = departments?.find((entry) => entry.number === departmentNumber)
+    filterPills.push({
+      key: 'department',
+      label: `Department: ${department ? `${department.number} - ${department.description}` : departmentNumber}`,
+      onClose: () => {
+        setDepartmentNumber(null)
+        queueRunAfterFilterStateChange()
+      },
+    })
+  }
+  if (sectorNumber != null) {
+    const sector = sectors?.find((entry) => entry.number === sectorNumber)
+    filterPills.push({
+      key: 'sector',
+      label: `Sector: ${sector ? `${sector.number} - ${sector.description}` : sectorNumber}`,
+      onClose: () => {
+        setSectorNumber(null)
+        queueRunAfterFilterStateChange()
+      },
+    })
+  }
+  if (styleColor.trim()) {
+    filterPills.push({
+      key: 'styleColor',
+      label: `Style/Color: ${styleColor.trim()}`,
+      onClose: () => {
+        setStyleColor('')
+        queueRunAfterFilterStateChange()
+      },
+    })
+  }
+  if (groupCodes.length > 0) {
+    filterPills.push({
+      key: 'groups',
+      label: `Group: ${labelList(groupCodes, (groups ?? []).map((group) => ({
+        value: group.code,
+        label: `${group.code} - ${group.description}`,
+      })))}`,
+      onClose: () => {
+        setGroupCodes([])
+        queueRunAfterFilterStateChange()
+      },
+    })
+  }
+  if (description.trim()) {
+    filterPills.push({
+      key: 'description',
+      label: `Description: ${description.trim()}`,
+      onClose: () => {
+        setDescription('')
+        queueRunAfterFilterStateChange()
+      },
+    })
+  }
+  if (vendorCodes.length > 0) {
+    filterPills.push({
+      key: 'vendors',
+      label: `Vendor: ${labelList(vendorCodes, (vendors ?? []).map((vendor) => ({
+        value: vendor.code,
+        label: `${vendor.code} - ${vendor.name}`,
+      })))}`,
+      onClose: () => {
+        setVendorCodes([])
+        queueRunAfterFilterStateChange()
+      },
+    })
+  }
+  if (seasonCodes.length > 0) {
+    filterPills.push({
+      key: 'seasons',
+      label: `Season: ${labelList(seasonCodes, (seasons ?? []).map((season) => ({
+        value: season.code,
+        label: `${season.code} - ${season.description}`,
+      })))}`,
+      onClose: () => {
+        setSeasonCodes([])
+        queueRunAfterFilterStateChange()
+      },
+    })
+  }
+  if (keywordCodes.length > 0) {
+    filterPills.push({
+      key: 'keywords',
+      label: `Keyword: ${labelList(keywordCodes, (keywords ?? []).map((keyword) => ({
+        value: keyword.keyword,
+        label: keyword.description ? `${keyword.keyword} - ${keyword.description}` : keyword.keyword,
+      })))}`,
+      onClose: () => {
+        setKeywordCodes([])
+        queueRunAfterFilterStateChange()
+      },
+    })
+  }
+  for (const dimension of visibleAttrDimensions) {
+    const selectedValues = attrSelections[dimension.code] ?? []
+    if (selectedValues.length === 0) continue
+    filterPills.push({
+      key: `attr:${dimension.code}`,
+      label: `${dimension.labelEs}: ${labelList(selectedValues, dimension.values.map((value) => ({
+        value: value.code,
+        label: value.labelEs,
+      })))}`,
+      onClose: () => {
+        setAttrSelections((prev) => {
+          const next = { ...prev }
+          delete next[dimension.code]
+          return next
+        })
+        queueRunAfterFilterStateChange()
+      },
+    })
+  }
 
   const columns = [
     {
@@ -408,25 +606,7 @@ export default function SkuListPage() {
             />
           )
         }
-        return (
-          <Image
-            src={url}
-            alt=""
-            loading="lazy"
-            style={{
-              height: 50,
-              width: 'auto',
-              maxWidth: 120,
-              objectFit: 'contain',
-              display: 'block',
-              cursor: 'zoom-in',
-            }}
-            preview={{ mask: false }}
-            onError={(e) => {
-              (e.currentTarget as HTMLImageElement).style.visibility = 'hidden'
-            }}
-          />
-        )
+        return <ReportThumbnail url={url} alt={r.code} height={50} maxWidth={120} />
       },
     },
     {
@@ -683,16 +863,6 @@ export default function SkuListPage() {
               >
                 New SKU
               </Button>
-              {canBulkChangeSkus ? (
-                <Button
-                  icon={<TagsOutlined />}
-                  onClick={() => setBulkMode((value) => !value)}
-                  type={bulkMode ? 'primary' : 'default'}
-                  ghost={bulkMode}
-                >
-                  Change attributes
-                </Button>
-              ) : null}
               <Button
                 icon={<FilterOutlined />}
                 onClick={() => setShowFilters(!showFilters)}
@@ -720,6 +890,7 @@ export default function SkuListPage() {
                     placeholder="Any family"
                     value={productFamilyCode ?? undefined}
                     onChange={(v) => setProductFamilyCode((v as string | undefined) ?? null)}
+                    onInputKeyDown={runQueryOnEnter}
                     allowClear
                     showSearch
                     style={{ width: '100%' }}
@@ -750,6 +921,7 @@ export default function SkuListPage() {
                     placeholder={productFamilyCode ? 'Family categories' : 'Any category'}
                     value={categoryNumbers}
                     onChange={setCategoryNumbers}
+                    onInputKeyDown={runQueryOnEnter}
                     allowClear
                     showSearch
                     style={{ width: '100%' }}
@@ -766,6 +938,7 @@ export default function SkuListPage() {
                     placeholder="All departments"
                     value={departmentNumber ?? undefined}
                     onChange={(v) => setDepartmentNumber(typeof v === 'number' ? v : null)}
+                    onInputKeyDown={runQueryOnEnter}
                     allowClear
                     showSearch
                     style={{ width: '100%' }}
@@ -784,6 +957,7 @@ export default function SkuListPage() {
                     placeholder="All sectors"
                     value={sectorNumber ?? undefined}
                     onChange={(v) => setSectorNumber(typeof v === 'number' ? v : null)}
+                    onInputKeyDown={runQueryOnEnter}
                     allowClear
                     showSearch
                     style={{ width: '100%' }}
@@ -814,6 +988,7 @@ export default function SkuListPage() {
                     placeholder="Any group"
                     value={groupCodes}
                     onChange={setGroupCodes}
+                    onInputKeyDown={runQueryOnEnter}
                     allowClear
                     showSearch
                     style={{ width: '100%' }}
@@ -838,11 +1013,6 @@ export default function SkuListPage() {
                     maxLength={30}
                   />
                 </Col>
-              </Row>
-            </FilterGroup>
-
-            <FilterGroup title="2. Proveedor">
-              <Row gutter={[12, 12]}>
                 <Col xs={24} sm={12} md={8} lg={6} xl={5}>
                   {filterLabel('Vendor')}
                   <Select
@@ -850,6 +1020,7 @@ export default function SkuListPage() {
                     placeholder="Any vendor"
                     value={vendorCodes}
                     onChange={setVendorCodes}
+                    onInputKeyDown={runQueryOnEnter}
                     allowClear
                     showSearch
                     style={{ width: '100%' }}
@@ -863,49 +1034,6 @@ export default function SkuListPage() {
                     }
                   />
                 </Col>
-              </Row>
-            </FilterGroup>
-
-            {visibleAttrDimensions.length > 0 ? (
-              <FilterGroup
-                title="4. Apariencia y Diseño"
-                extra={
-                  productFamilyCode
-                    ? `Showing attributes for ${familyLabelByCode.get(productFamilyCode) ?? productFamilyCode}`
-                    : 'Select a product family to narrow family-specific attributes'
-                }
-              >
-                <Row gutter={[12, 12]}>
-                  {visibleAttrDimensions.map((dim) => (
-                    <Col xs={24} sm={12} md={8} lg={6} xl={4} key={dim.code}>
-                      {filterLabel(dim.labelEs)}
-                      <Select
-                        mode="multiple"
-                        placeholder={`Any ${dim.labelEs}`}
-                        value={attrSelections[dim.code] ?? []}
-                        onChange={(v) =>
-                          setAttrSelections((prev) => ({ ...prev, [dim.code]: v as string[] }))
-                        }
-                        allowClear
-                        showSearch
-                        optionFilterProp="label"
-                        style={{ width: '100%' }}
-                        maxTagCount="responsive"
-                        options={dim.values
-                          .filter((val) => val.isActive)
-                          .map((val) => ({
-                            value: val.code,
-                            label: val.labelEs,
-                          }))}
-                      />
-                    </Col>
-                  ))}
-                </Row>
-              </FilterGroup>
-            ) : null}
-
-            <FilterGroup title="5. Avanzado">
-              <Row gutter={[12, 12]}>
                 <Col xs={24} sm={12} md={8} lg={6} xl={4}>
                   {filterLabel('Season')}
                   <Select
@@ -913,6 +1041,7 @@ export default function SkuListPage() {
                     placeholder="Any season"
                     value={seasonCodes}
                     onChange={setSeasonCodes}
+                    onInputKeyDown={runQueryOnEnter}
                     allowClear
                     showSearch
                     style={{ width: '100%' }}
@@ -933,6 +1062,7 @@ export default function SkuListPage() {
                     placeholder="Any keyword"
                     value={keywordCodes}
                     onChange={setKeywordCodes}
+                    onInputKeyDown={runQueryOnEnter}
                     allowClear
                     showSearch
                     style={{ width: '100%' }}
@@ -949,21 +1079,76 @@ export default function SkuListPage() {
               </Row>
             </FilterGroup>
 
-            <Space>
+            {visibleAttrDimensions.length > 0 ? (
+              <FilterGroup
+                title="2. Apariencia y Diseño"
+                extra={
+                  productFamilyCode
+                    ? `Showing attributes for ${familyLabelByCode.get(productFamilyCode) ?? productFamilyCode}`
+                    : 'Select a product family to narrow family-specific attributes'
+                }
+              >
+                <Row gutter={[12, 12]}>
+                  {visibleAttrDimensions.map((dim) => (
+                    <Col xs={24} sm={12} md={8} lg={6} xl={4} key={dim.code}>
+                      {filterLabel(dim.labelEs)}
+                      <Select
+                        mode="multiple"
+                        placeholder={`Any ${dim.labelEs}`}
+                        value={attrSelections[dim.code] ?? []}
+                        onChange={(v) =>
+                          setAttrSelections((prev) => ({ ...prev, [dim.code]: v as string[] }))
+                        }
+                        onInputKeyDown={runQueryOnEnter}
+                        allowClear
+                        showSearch
+                        optionFilterProp="label"
+                        style={{ width: '100%' }}
+                        maxTagCount="responsive"
+                        options={dim.values
+                          .filter((val) => val.isActive)
+                          .map((val) => ({
+                            value: val.code,
+                            label: val.labelEs,
+                          }))}
+                      />
+                    </Col>
+                  ))}
+                </Row>
+              </FilterGroup>
+            ) : null}
+
+            {filterPills.length > 0 ? (
+              <Space wrap size={[4, 4]}>
+                {filterPills.map((pill) => (
+                  <Tag key={pill.key} closable onClose={pill.onClose}>
+                    {pill.label}
+                  </Tag>
+                ))}
+              </Space>
+            ) : null}
+
+            <Space wrap>
               <Button
                 type="primary"
                 icon={<PlayCircleOutlined />}
                 onClick={runQuery}
                 loading={isRunning && hasRun}
+                disabled={!anyFilterSet}
               >
-                Apply filters
+                Run Query
               </Button>
               {anyFilterSet ? <Button onClick={clearFilters}>Clear filters</Button> : null}
-              <Tooltip title="Pulls every SKU. Slow first time; use only when you need the full catalog.">
-                <Button onClick={runQueryLoadAll} loading={isRunning && !anyFilterSet}>
-                  Load all
+              {canBulkChangeSkus ? (
+                <Button
+                  icon={<TagsOutlined />}
+                  onClick={() => setBulkMode((value) => !value)}
+                  type={bulkMode ? 'primary' : 'default'}
+                  ghost={bulkMode}
+                >
+                  Change attributes
                 </Button>
-              </Tooltip>
+              ) : null}
             </Space>
           </Space>
         </Card>
@@ -1090,6 +1275,29 @@ function FilterGroup({
     >
       {children}
     </Card>
+  )
+}
+
+function skuListFiltersHaveValues(filters: SkuListFilters): boolean {
+  return Boolean(
+    filters.q ||
+    filters.sku ||
+    filters.vendor ||
+    filters.category != null ||
+    filters.season ||
+    filters.group ||
+    filters.keyword ||
+    (filters.vendors && filters.vendors.length > 0) ||
+    (filters.sectors && filters.sectors.length > 0) ||
+    (filters.departments && filters.departments.length > 0) ||
+    (filters.categories && filters.categories.length > 0) ||
+    (filters.families && filters.families.length > 0) ||
+    (filters.seasons && filters.seasons.length > 0) ||
+    (filters.groups && filters.groups.length > 0) ||
+    (filters.keywords && filters.keywords.length > 0) ||
+    filters.styleColor ||
+    filters.description ||
+    Object.values(filters.attributes ?? {}).some((values) => values.length > 0)
   )
 }
 

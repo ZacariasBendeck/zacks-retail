@@ -49,6 +49,16 @@ RICS CSV files
 
 Browser click-through testing is not required by default. Use browser testing only when explicitly requested.
 
+## Inventory Inquiry surfaces
+
+Inventory Inquiry has two user-facing hosts:
+- Full page route: `/products/inquiry/:skuCode`
+- App-wide modal: opened from `SkuLink` / `useInquiryPopup`
+
+When changing Inventory Inquiry body, header, attributes, SKU lookup, action buttons, permissions, or inline editing behavior, treat both hosts as in scope. Verify the direct page and the modal path. For modal verification, open a real SKU link from another page so the popup context is exercised.
+
+The inquiry popup provider must stay inside `AuthProvider`; modal content depends on auth permissions such as `products.write` for inline attribute editing.
+
 ## Webpage login
 
 - email: zbendeck@gmail.com

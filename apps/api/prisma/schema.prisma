@@ -569,6 +569,33 @@ model PlatformAuditLog {
   @@schema("platform")
 }
 
+model PlatformRequestTrace {
+  id             String   @id @default(uuid())
+  traceId        String   @map("trace_id")
+  requestId      String   @map("request_id")
+  method         String
+  route          String?
+  originalUrl    String   @map("original_url")
+  statusCode     Int      @map("status_code")
+  durationMs     Int      @map("duration_ms")
+  actorUserId    String?  @map("actor_user_id")
+  actorSessionId String?  @map("actor_session_id")
+  errorCode      String?  @map("error_code")
+  errorMessage   String?  @map("error_message")
+  timingJson     Json     @default("[]") @map("timing_json")
+  metadataJson   Json?    @map("metadata_json")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([traceId, createdAt(sort: Desc)], map: "platform_request_trace_trace_idx")
+  @@index([requestId], map: "platform_request_trace_request_idx")
+  @@index([route, createdAt(sort: Desc)], map: "platform_request_trace_route_idx")
+  @@index([statusCode, createdAt(sort: Desc)], map: "platform_request_trace_status_idx")
+  @@index([durationMs(sort: Desc), createdAt(sort: Desc)], map: "platform_request_trace_duration_idx")
+  @@index([createdAt(sort: Desc)], map: "platform_request_trace_created_idx")
+  @@map("platform_request_trace")
+  @@schema("platform")
+}
+
 /// Manager review state for Activity Review. This intentionally lives outside
 /// the append-only audit log so review workflow updates do not rewrite events.
 model ActivityReviewEventReview {
@@ -765,6 +792,7 @@ model PurchasePlan {
   storeGroupCode        String?                  @map("store_group_code") @db.VarChar(64)
   storeGroup            StoreGroup?              @relation(fields: [storeGroupCode], references: [code], onDelete: Restrict, onUpdate: Cascade)
   planningScope         String                   @default("store_group") @map("planning_scope") @db.VarChar(24)
+  planningDimension     String                   @default("department") @map("planning_dimension") @db.VarChar(24)
   scopeLabel            String?                  @map("scope_label")
   label                 String
   status                String                   @default("draft") @db.VarChar(16)
@@ -772,6 +800,7 @@ model PurchasePlan {
   seasonYear            Int                      @map("season_year") @db.SmallInt
   seasonMonths          String[]                 @map("season_months")
   selectedDepartments   Int[]                    @map("selected_departments")
+  selectedCategories    Int[]                    @default([]) @map("selected_categories")
   forecastMethod        String                   @map("forecast_method") @db.VarChar(32)
   eohMethod             String                   @map("eoh_method") @db.VarChar(16)
   coverMonths           Int                      @default(3) @map("cover_months") @db.SmallInt

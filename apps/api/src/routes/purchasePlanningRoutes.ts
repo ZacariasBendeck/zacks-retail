@@ -37,8 +37,10 @@ import {
   bulkUpdateStoreCategoryCarrying,
   createModelLineFromCandidate,
   copySeedModel,
+  confirmBuyerSalesProjectionWorkbook,
   createBuyerWorkbook,
   deletePlannedStyle,
+  ensureBuyerSalesProjectionWorkbook,
   flagCandidateUnavailable,
   flagCarryoverUnavailable,
   getBuyerWorkbook,
@@ -83,10 +85,12 @@ const forecastSchema = z
 const savedPlanCreateSchema = z
   .object({
     planningScope: z.enum(['store_group', 'enterprise']).optional(),
+    planningDimension: z.enum(['department', 'category']).optional(),
     storeGroupCode: z.string().trim().min(1).max(64).optional(),
     season: z.enum(['spring', 'summer', 'fall', 'winter']),
     seasonYear: z.number().int().min(2020).max(2100),
-    departmentNumbers: z.array(z.number().int().min(1).max(99)).min(1).max(99),
+    departmentNumbers: z.array(z.number().int().min(1).max(99)).max(99).optional(),
+    categoryNumbers: z.array(z.number().int().min(1).max(9999)).max(500).optional(),
     label: z.string().trim().min(1).max(200).optional(),
     forecast: z.object({
       method: forecastMethodSchema.optional(),
@@ -101,11 +105,26 @@ const savedPlanCreateSchema = z
   })
   .strict()
   .superRefine((value, ctx) => {
+    const planningDimension = value.planningDimension ?? 'department';
     if ((value.planningScope ?? 'store_group') === 'store_group' && !value.storeGroupCode) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['storeGroupCode'],
         message: 'Select a chain',
+      });
+    }
+    if (planningDimension === 'department' && !(value.departmentNumbers?.length)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['departmentNumbers'],
+        message: 'Select at least one department',
+      });
+    }
+    if (planningDimension === 'category' && !(value.categoryNumbers?.length)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['categoryNumbers'],
+        message: 'Select at least one category',
       });
     }
   });
@@ -611,6 +630,46 @@ router.patch('/buyer-workbooks/:id/cards/:cardId', async (req: Request, res: Res
   }
 });
 
+router.post('/buyer-workbooks/:id/cards/:cardId/sales-projection-workbook', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const parsed = actorSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      sendZodError(res, parsed.error.issues);
+      return;
+    }
+    const workbook = await ensureBuyerSalesProjectionWorkbook(
+      routeParam(req.params.id),
+      routeParam(req.params.cardId),
+      parsed.data.actor ?? 'buyer',
+    );
+    res.json(workbook);
+  } catch (err) {
+    if (sendBuyerWorkbookServiceError(res, err)) return;
+    if (sendServiceError(res, err)) return;
+    next(err);
+  }
+});
+
+router.post('/buyer-workbooks/:id/cards/:cardId/sales-projection-workbook/confirm', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const parsed = actorSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      sendZodError(res, parsed.error.issues);
+      return;
+    }
+    const workbook = await confirmBuyerSalesProjectionWorkbook(
+      routeParam(req.params.id),
+      routeParam(req.params.cardId),
+      parsed.data.actor ?? 'buyer',
+    );
+    res.json(workbook);
+  } catch (err) {
+    if (sendBuyerWorkbookServiceError(res, err)) return;
+    if (sendServiceError(res, err)) return;
+    next(err);
+  }
+});
+
 router.post('/buyer-workbooks/:id/cards/:cardId/carryovers', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const parsed = buyerCarryoverCreateSchema.safeParse(req.body);
@@ -887,7 +946,10 @@ router.post('/plans', async (req: Request, res: Response, next: NextFunction) =>
       sendZodError(res, parsed.error.issues);
       return;
     }
-    const plan = await createPurchasePlan(parsed.data);
+    const plan = await createPurchasePlan({
+      ...parsed.data,
+      departmentNumbers: parsed.data.departmentNumbers ?? [],
+    });
     res.status(201).json(plan);
   } catch (err) {
     if (sendServiceError(res, err)) return;

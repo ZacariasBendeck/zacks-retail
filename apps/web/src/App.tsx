@@ -6,6 +6,7 @@ import { AuthProvider } from './auth/AuthContext'
 import { RequireAuth } from './auth/RequireAuth'
 import { RequirePermission } from './auth/RequirePermission'
 import { useAuth } from './auth/useAuth'
+import { InquiryPopupProvider } from './components/inquiry-popup'
 import LegacyPurchaseOrderDetailPage from './pages/purchasing/LegacyPurchaseOrderDetailPage'
 
 const SkuListPage = lazy(() => import('./pages/inventory/SkuListPage'))
@@ -94,6 +95,7 @@ const UserFormPage = lazy(() => import('./pages/users/UserFormPage'))
 const RolePermissionsPage = lazy(() => import('./pages/users/RolePermissionsPage'))
 const EffectiveAccessPage = lazy(() => import('./pages/users/EffectiveAccessPage'))
 const SecurityCenterPage = lazy(() => import('./pages/users/SecurityCenterPage'))
+const PlatformAuditPage = lazy(() => import('./pages/users/PlatformAuditPage'))
 const EnterSalesPage = lazy(() => import('./pages/sales/enter/EnterSalesPage'))
 const CasePacksPage = lazy(() => import('./pages/fileSetup/CasePacksPage'))
 
@@ -191,26 +193,28 @@ function gate(permission: string, element: ReactElement) {
 export default function App() {
   return (
     <AuthProvider>
-      <Routes>
-        <Route
-          path="/login"
-          element={
-            <Suspense fallback={<RouteLoadingFallback />}>
-              <LoginPage />
-            </Suspense>
-          }
-        />
-        <Route
-          path="/report-viewer"
-          element={
-            <RequireAuth>
+      {/* Keep the popup inside AuthProvider; inquiry modal editing reads auth permissions. */}
+      <InquiryPopupProvider>
+        <Routes>
+          <Route
+            path="/login"
+            element={
               <Suspense fallback={<RouteLoadingFallback />}>
-                <ReportViewerPage />
+                <LoginPage />
               </Suspense>
-            </RequireAuth>
-          }
-        />
-        <Route element={<RequireAuth><AppLayout /></RequireAuth>}>
+            }
+          />
+          <Route
+            path="/report-viewer"
+            element={
+              <RequireAuth>
+                <Suspense fallback={<RouteLoadingFallback />}>
+                  <ReportViewerPage />
+                </Suspense>
+              </RequireAuth>
+            }
+          />
+          <Route element={<RequireAuth><AppLayout /></RequireAuth>}>
           <Route path="/" element={<DefaultRoute />} />
           <Route path="/dashboard" element={<DefaultRoute />} />
           <Route path="/inventory" element={<Navigate to="/inventory/dashboard" replace />} />
@@ -316,7 +320,7 @@ export default function App() {
 
             {/* products module — Phase 1 Step 2 taxonomy pages */}
             <Route path="/products" element={<Navigate to="/inventory/skus" replace />} />
-            <Route path="/file-setup" element={<Navigate to="/products/vendors" replace />} />
+            <Route path="/file-setup" element={<Navigate to="/utilities/stores" replace />} />
             <Route path="/file-setup/case-packs" element={gate('products.view', <CasePacksPage />)} />
             <Route path="/products/taxonomy" element={gate('products.view', <TaxonomyHomePage />)} />
             <Route path="/products/taxonomy/departments" element={gate('products.view', <DepartmentListPage />)} />
@@ -412,7 +416,7 @@ export default function App() {
             />
             <Route
               path="/admin/audit"
-              element={<RequirePermission permission="activity_review.view"><Navigate to="/operations/activity-review" replace /></RequirePermission>}
+              element={<RequirePermission permission="identity_access.view"><PlatformAuditPage /></RequirePermission>}
             />
             <Route
               path="/admin/roles"
@@ -428,8 +432,9 @@ export default function App() {
             />
           </Route>
         </Route>
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </InquiryPopupProvider>
     </AuthProvider>
   )
 }

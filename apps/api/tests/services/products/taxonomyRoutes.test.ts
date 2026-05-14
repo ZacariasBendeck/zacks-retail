@@ -50,7 +50,9 @@ jest.mock('../../../src/repositories/rics/CategoryRepository', () => ({
     getByNumber: jest.fn(async () => Err({ kind: 'NotFound', message: 'not found' })),
     create: jest.fn(async () => Ok({ number: 5, description: 'c', dateLastChanged: null, skuCount: 0 })),
     update: jest.fn(async () => Ok({ number: 5, description: 'c', dateLastChanged: null, skuCount: 0 })),
+    bulkUpdateAssignments: jest.fn(async () => Ok({ updatedCount: 2, categories: [] })),
     delete: jest.fn(async () => Ok(undefined)),
+    listBuyerOptions: jest.fn(async () => Ok([])),
   },
 }));
 
@@ -237,6 +239,16 @@ describe('DELETE /api/v1/taxonomy/departments/:number', () => {
   it('returns 204 on success', async () => {
     const res = await request(app).delete('/api/v1/taxonomy/departments/1');
     expect(res.status).toBe(204);
+  });
+});
+
+describe('PATCH /api/v1/taxonomy/categories/bulk-assignments', () => {
+  it('returns the bulk assignment result', async () => {
+    const res = await request(app)
+      .patch('/api/v1/taxonomy/categories/bulk-assignments')
+      .send({ categoryNumbers: [5, 6], buyerCodes: ['ZB'], buyerMode: 'REPLACE' });
+    expect(res.status).toBe(200);
+    expect(res.body.updatedCount).toBe(2);
   });
 });
 

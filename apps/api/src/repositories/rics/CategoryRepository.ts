@@ -43,6 +43,21 @@ export interface CategoryInput {
   storeIds?: number[] | null;
 }
 
+export type CategoryAssignmentMode = 'REPLACE' | 'ADD' | 'REMOVE';
+
+export interface CategoryBulkAssignmentInput {
+  categoryNumbers: number[];
+  buyerCodes?: string[] | null;
+  buyerMode?: CategoryAssignmentMode;
+  storeIds?: number[] | null;
+  storeMode?: CategoryAssignmentMode;
+}
+
+export interface CategoryBulkAssignmentResult {
+  updatedCount: number;
+  categories: Category[];
+}
+
 export interface CategoryBuyer {
   valueId: number;
   code: string;
@@ -146,6 +161,34 @@ function normalizeStoreIds(raw: unknown): Result<number[] | undefined> {
   return Ok(ids);
 }
 
+function normalizeCategoryNumbers(raw: unknown): Result<number[]> {
+  if (!Array.isArray(raw) || raw.length === 0) {
+    return Err({ kind: 'ConstraintViolation', message: 'categoryNumbers must be a non-empty array of category numbers.' });
+  }
+
+  const numbers: number[] = [];
+  const seen = new Set<number>();
+  for (const value of raw) {
+    if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 999) {
+      return Err({ kind: 'ConstraintViolation', message: 'categoryNumbers must contain only category numbers from 1 to 999.' });
+    }
+    if (!seen.has(value)) {
+      seen.add(value);
+      numbers.push(value);
+    }
+  }
+  return Ok(numbers);
+}
+
+function normalizeAssignmentMode(raw: unknown, fieldName: string): Result<CategoryAssignmentMode> {
+  if (raw === undefined || raw === null || raw === '') return Ok('REPLACE');
+  if (raw === 'REPLACE' || raw === 'ADD' || raw === 'REMOVE') return Ok(raw);
+  return Err({
+    kind: 'ConstraintViolation',
+    message: `${fieldName} must be one of REPLACE, ADD, or REMOVE.`,
+  });
+}
+
 async function resolveBuyerOptionsByCode(codes: string[]): Promise<Result<CategoryBuyerOption[]>> {
   if (codes.length === 0) return Ok([]);
 
@@ -200,6 +243,22 @@ async function resolveStoreIds(storeIds: number[]): Promise<Result<number[]>> {
     });
   }
   return Ok(rows.map((row) => Number(row.storeId)));
+}
+
+async function ensureCategoriesExist(categoryNumbers: number[]): Promise<Result<void>> {
+  const rows = await prisma.taxonomyCategory.findMany({
+    where: { number: { in: categoryNumbers } },
+    select: { number: true },
+  });
+  const found = new Set(rows.map((row) => row.number));
+  const missing = categoryNumbers.filter((number) => !found.has(number));
+  if (missing.length > 0) {
+    return Err({
+      kind: 'ConstraintViolation',
+      message: `Unknown category number${missing.length === 1 ? '' : 's'}: ${missing.join(', ')}.`,
+    });
+  }
+  return Ok(undefined);
 }
 
 async function loadBuyerAssignments(categoryNumbers?: number[]): Promise<Map<number, CategoryBuyer[]>> {
@@ -294,6 +353,32 @@ function attachStores(category: Category, storesByCategory: Map<number, Category
   };
 }
 
+async function hydrateCategoryRows(rows: CategoryRow[]): Promise<Category[]> {
+  const categoryNumbers = rows.map((row) => row.number);
+  const mappings = categoryNumbers.length > 0
+    ? await prisma.categoryProductFamily.findMany({
+        where: { categoryNumber: { in: categoryNumbers } },
+        include: { family: true },
+      })
+    : [];
+  const mappingByCategory = new Map(mappings.map((m) => [m.categoryNumber, m]));
+  const buyersByCategory = await loadBuyerAssignments(categoryNumbers);
+  const storesByCategory = await loadStoreAssignments(categoryNumbers);
+  const counts = await loadSkuCountsByCategory();
+
+  return rows.map((row) => {
+    const mapping = mappingByCategory.get(row.number);
+    return attachStores(attachBuyers({
+      ...mapRow({
+        ...row,
+        productFamilyCode: mapping?.familyCode ?? null,
+        productFamilyLabelEs: mapping?.family.labelEs ?? null,
+      }),
+      skuCount: counts.get(row.number) ?? 0,
+    }, buyersByCategory), storesByCategory);
+  });
+}
+
 async function replaceBuyerAssignments(
   tx: Pick<typeof prisma, '$executeRawUnsafe'>,
   categoryNumber: number,
@@ -318,6 +403,50 @@ async function replaceBuyerAssignments(
           updated_at = CURRENT_TIMESTAMP
     `,
     categoryNumber,
+    buyerValueIds,
+  );
+}
+
+async function applyBuyerAssignmentsBulk(
+  tx: Pick<typeof prisma, '$executeRawUnsafe'>,
+  categoryNumbers: number[],
+  buyerValueIds: number[] | undefined,
+  mode: CategoryAssignmentMode,
+): Promise<void> {
+  if (buyerValueIds === undefined) return;
+
+  if (mode === 'REPLACE') {
+    await tx.$executeRawUnsafe(
+      `DELETE FROM app.category_buyer_assignment WHERE category_number = ANY($1::int[])`,
+      categoryNumbers,
+    );
+  } else if (mode === 'REMOVE') {
+    if (buyerValueIds.length === 0) return;
+    await tx.$executeRawUnsafe(
+      `
+        DELETE FROM app.category_buyer_assignment
+        WHERE category_number = ANY($1::int[])
+          AND buyer_value_id = ANY($2::int[])
+      `,
+      categoryNumbers,
+      buyerValueIds,
+    );
+    return;
+  }
+
+  if (buyerValueIds.length === 0) return;
+
+  await tx.$executeRawUnsafe(
+    `
+      INSERT INTO app.category_buyer_assignment (category_number, buyer_value_id, updated_by)
+      SELECT category_number::smallint, buyer_value_id::smallint, 'taxonomy-category-bulk'
+      FROM unnest($1::int[]) AS categories(category_number)
+      CROSS JOIN unnest($2::int[]) AS buyers(buyer_value_id)
+      ON CONFLICT (category_number, buyer_value_id) DO UPDATE
+      SET updated_by = EXCLUDED.updated_by,
+          updated_at = CURRENT_TIMESTAMP
+    `,
+    categoryNumbers,
     buyerValueIds,
   );
 }
@@ -371,45 +500,97 @@ async function replaceStoreAssignments(
   );
 }
 
+async function upsertStoreCarryingBulk(
+  tx: Pick<typeof prisma, '$executeRawUnsafe'>,
+  categoryNumbers: number[],
+  storeIds: number[],
+  carries: boolean,
+): Promise<void> {
+  if (storeIds.length === 0) return;
+
+  await tx.$executeRawUnsafe(
+    `
+      INSERT INTO app.store_category_carrying (
+        store_id,
+        category_number,
+        carries,
+        source,
+        chain_code,
+        note,
+        updated_by,
+        updated_at
+      )
+      SELECT
+        store_id::int,
+        category_number::smallint,
+        $3::boolean,
+        'MANUAL',
+        NULL,
+        NULL,
+        'taxonomy-category-bulk',
+        CURRENT_TIMESTAMP
+      FROM unnest($1::int[]) AS categories(category_number)
+      CROSS JOIN unnest($2::int[]) AS stores(store_id)
+      ON CONFLICT (store_id, category_number) DO UPDATE
+      SET carries = EXCLUDED.carries,
+          source = EXCLUDED.source,
+          chain_code = EXCLUDED.chain_code,
+          note = EXCLUDED.note,
+          updated_by = EXCLUDED.updated_by,
+          updated_at = CURRENT_TIMESTAMP
+    `,
+    categoryNumbers,
+    storeIds,
+    carries,
+  );
+}
+
+async function applyStoreAssignmentsBulk(
+  tx: Pick<typeof prisma, '$executeRawUnsafe'>,
+  categoryNumbers: number[],
+  storeIds: number[] | undefined,
+  mode: CategoryAssignmentMode,
+): Promise<void> {
+  if (storeIds === undefined) return;
+
+  if (mode === 'REPLACE') {
+    await tx.$executeRawUnsafe(
+      `
+        UPDATE app.store_category_carrying
+        SET carries = false,
+            source = 'MANUAL',
+            chain_code = NULL,
+            note = NULL,
+            updated_by = 'taxonomy-category-bulk',
+            updated_at = CURRENT_TIMESTAMP
+        WHERE category_number = ANY($1::int[])
+          AND carries = true
+      `,
+      categoryNumbers,
+    );
+    await upsertStoreCarryingBulk(tx, categoryNumbers, storeIds, true);
+    return;
+  }
+
+  if (mode === 'ADD') {
+    await upsertStoreCarryingBulk(tx, categoryNumbers, storeIds, true);
+    return;
+  }
+
+  await upsertStoreCarryingBulk(tx, categoryNumbers, storeIds, false);
+}
+
 export const CategoryRepository = {
   async list(): Promise<Result<Category[]>> {
     const rows = await prisma.taxonomyCategory.findMany({ orderBy: { number: 'asc' } });
-    const mappings = await prisma.categoryProductFamily.findMany({ include: { family: true } });
-    const mappingByCategory = new Map(mappings.map((m) => [m.categoryNumber, m]));
-    const buyersByCategory = await loadBuyerAssignments(rows.map((row) => row.number));
-    const storesByCategory = await loadStoreAssignments(rows.map((row) => row.number));
-    const counts = await loadSkuCountsByCategory();
-    return Ok(rows.map((row) => {
-      const mapping = mappingByCategory.get(row.number);
-      return attachStores(attachBuyers({
-        ...mapRow({
-          ...row,
-          productFamilyCode: mapping?.familyCode ?? null,
-          productFamilyLabelEs: mapping?.family.labelEs ?? null,
-        }),
-        skuCount: counts.get(row.number) ?? 0,
-      }, buyersByCategory), storesByCategory);
-    }));
+    return Ok(await hydrateCategoryRows(rows));
   },
 
   async getByNumber(number: number): Promise<Result<Category>> {
     const row = await prisma.taxonomyCategory.findUnique({ where: { number } });
     if (row == null) return Err(notFound(`Category ${number} not found.`));
-    const mapping = await prisma.categoryProductFamily.findUnique({
-      where: { categoryNumber: number },
-      include: { family: true },
-    });
-    const counts = await loadSkuCountsByCategory();
-    const buyersByCategory = await loadBuyerAssignments([number]);
-    const storesByCategory = await loadStoreAssignments([number]);
-    return Ok(attachStores(attachBuyers({
-      ...mapRow({
-        ...row,
-        productFamilyCode: mapping?.familyCode ?? null,
-        productFamilyLabelEs: mapping?.family.labelEs ?? null,
-      }),
-      skuCount: counts.get(number) ?? 0,
-    }, buyersByCategory), storesByCategory));
+    const categories = await hydrateCategoryRows([row]);
+    return Ok(categories[0]!);
   },
 
   async create(input: CategoryInput): Promise<Result<Category>> {
@@ -514,6 +695,72 @@ export const CategoryRepository = {
     }
     clearFamilyCaches();
     return this.getByNumber(number);
+  },
+
+  async bulkUpdateAssignments(input: CategoryBulkAssignmentInput): Promise<Result<CategoryBulkAssignmentResult>> {
+    const categoryNumbersResult = normalizeCategoryNumbers(input.categoryNumbers);
+    if (!categoryNumbersResult.ok) return categoryNumbersResult;
+    const categoryNumbers = categoryNumbersResult.value;
+
+    const buyerModeResult = normalizeAssignmentMode(input.buyerMode, 'buyerMode');
+    if (!buyerModeResult.ok) return buyerModeResult;
+    const storeModeResult = normalizeAssignmentMode(input.storeMode, 'storeMode');
+    if (!storeModeResult.ok) return storeModeResult;
+
+    const buyerCodesResult = normalizeBuyerCodes(input.buyerCodes);
+    if (!buyerCodesResult.ok) return buyerCodesResult;
+    const storeIdsResult = normalizeStoreIds(input.storeIds);
+    if (!storeIdsResult.ok) return storeIdsResult;
+
+    if (buyerCodesResult.value === undefined && storeIdsResult.value === undefined) {
+      return Err({
+        kind: 'ConstraintViolation',
+        message: 'At least one of buyerCodes or storeIds is required.',
+      });
+    }
+    if (buyerModeResult.value !== 'REPLACE' && buyerCodesResult.value !== undefined && buyerCodesResult.value.length === 0) {
+      return Err({
+        kind: 'ConstraintViolation',
+        message: 'Select at least one buyer code to add or remove.',
+      });
+    }
+    if (storeModeResult.value !== 'REPLACE' && storeIdsResult.value !== undefined && storeIdsResult.value.length === 0) {
+      return Err({
+        kind: 'ConstraintViolation',
+        message: 'Select at least one store to add or remove.',
+      });
+    }
+
+    const categoriesExist = await ensureCategoriesExist(categoryNumbers);
+    if (!categoriesExist.ok) return categoriesExist;
+
+    const buyersResult = await resolveBuyerOptionsByCode(buyerCodesResult.value ?? []);
+    if (!buyersResult.ok) return buyersResult;
+    const buyerValueIds = buyerCodesResult.value === undefined
+      ? undefined
+      : buyersResult.value.map((buyer) => buyer.valueId);
+
+    let storeIds: number[] | undefined;
+    if (storeIdsResult.value !== undefined) {
+      const storesResult = await resolveStoreIds(storeIdsResult.value);
+      if (!storesResult.ok) return storesResult;
+      storeIds = storesResult.value;
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await applyBuyerAssignmentsBulk(tx, categoryNumbers, buyerValueIds, buyerModeResult.value);
+      await applyStoreAssignmentsBulk(tx, categoryNumbers, storeIds, storeModeResult.value);
+    });
+
+    const rows = await prisma.taxonomyCategory.findMany({
+      where: { number: { in: categoryNumbers } },
+      orderBy: { number: 'asc' },
+    });
+
+    return Ok({
+      updatedCount: rows.length,
+      categories: await hydrateCategoryRows(rows),
+    });
   },
 
   async delete(number: number): Promise<Result<void>> {

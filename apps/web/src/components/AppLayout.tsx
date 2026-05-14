@@ -39,8 +39,11 @@ import { PageHelpDrawer, PageHelpProvider, type PageHelpEntry } from './page-hel
 
 const { Header, Sider, Content } = Layout
 
+const PRODUCTS_CATALOGUE_SETUP_MENU_KEY = '/products/catalogue-setup'
 const PRODUCTS_ENRICHMENT_MENU_KEY = '/products/enrichment'
 const FILE_SETUP_MENU_KEY = '/file-setup'
+const PLATFORM_MENU_KEY = '/platform'
+const USERS_ACCESS_MENU_KEY = '/admin'
 
 const ROUTER_LINK_STYLE: CSSProperties = {
   color: 'inherit',
@@ -70,6 +73,23 @@ const appMenuItems = [
       { key: '/products/inquiry', icon: <SearchOutlined />, label: 'Inquiry', requiredPermissions: ['products.view'] },
       { type: 'divider' as const },
       {
+        key: PRODUCTS_CATALOGUE_SETUP_MENU_KEY,
+        label: 'Catalogue Setup',
+        children: [
+          { key: '/products/vendors', icon: <AppstoreOutlined />, label: 'Vendors', requiredPermissions: ['products.view'] },
+          { key: '/products/taxonomy/categories', icon: <FileTextOutlined />, label: 'Categories', requiredPermissions: ['products.view'] },
+          { key: '/products/taxonomy/departments', icon: <FileTextOutlined />, label: 'Departments', requiredPermissions: ['products.view'] },
+          { key: '/products/taxonomy/sectors', icon: <FileTextOutlined />, label: 'Sectors', requiredPermissions: ['products.view'] },
+          { key: '/products/taxonomy/groups', icon: <FileTextOutlined />, label: 'Groups', requiredPermissions: ['products.view'] },
+          { key: '/products/taxonomy/keywords', icon: <FileTextOutlined />, label: 'Keywords', requiredPermissions: ['products.view'] },
+          { key: '/products/taxonomy/seasons', icon: <FileTextOutlined />, label: 'Seasons', requiredPermissions: ['products.view'] },
+          { key: '/products/taxonomy/size-types', icon: <FileTextOutlined />, label: 'Size Types', requiredPermissions: ['products.view'] },
+          { key: '/file-setup/case-packs', icon: <FileTextOutlined />, label: 'Case Packs', requiredPermissions: ['products.view'] },
+          { key: '/products/taxonomy/return-codes', icon: <FileTextOutlined />, label: 'Return Codes', requiredPermissions: ['products.view'] },
+          { key: '/products/taxonomy/promotion-codes', icon: <FileTextOutlined />, label: 'Promotion Codes', requiredPermissions: ['products.view'] },
+        ],
+      },
+      {
         key: PRODUCTS_ENRICHMENT_MENU_KEY,
         label: 'Product Enrichment',
         children: [
@@ -86,24 +106,30 @@ const appMenuItems = [
     icon: <FileTextOutlined />,
     label: 'File Setup',
     children: [
-      { key: '/products/vendors', icon: <AppstoreOutlined />, label: 'Vendors', requiredPermissions: ['products.view'] },
-      { key: '/products/taxonomy/categories', icon: <FileTextOutlined />, label: 'Categories', requiredPermissions: ['products.view'] },
-      { key: '/products/taxonomy/departments', icon: <FileTextOutlined />, label: 'Departments', requiredPermissions: ['products.view'] },
-      { key: '/products/taxonomy/sectors', icon: <FileTextOutlined />, label: 'Sectors', requiredPermissions: ['products.view'] },
-      { key: '/products/taxonomy/groups', icon: <FileTextOutlined />, label: 'Groups', requiredPermissions: ['products.view'] },
-      { key: '/products/taxonomy/keywords', icon: <FileTextOutlined />, label: 'Keywords', requiredPermissions: ['products.view'] },
-      { key: '/products/taxonomy/seasons', icon: <FileTextOutlined />, label: 'Seasons', requiredPermissions: ['products.view'] },
-      { key: '/products/taxonomy/size-types', icon: <FileTextOutlined />, label: 'Size Types', requiredPermissions: ['products.view'] },
-      { key: '/file-setup/case-packs', icon: <FileTextOutlined />, label: 'Case Packs', requiredPermissions: ['products.view'] },
-      { key: '/products/taxonomy/return-codes', icon: <FileTextOutlined />, label: 'Return Codes', requiredPermissions: ['products.view'] },
-      { key: '/products/taxonomy/promotion-codes', icon: <FileTextOutlined />, label: 'Promotion Codes', requiredPermissions: ['products.view'] },
       { key: '/utilities/stores', icon: <ShopOutlined />, label: 'Stores', requiredPermissions: ['store_ops.view'] },
       { key: '/utilities/store-chains', icon: <ApartmentOutlined />, label: 'Store Chains', requiredPermissions: ['store_ops.view'] },
       { key: '/employees/salespeople', icon: <TeamOutlined />, label: 'Salespeople', requiredPermissions: ['employees.view'] },
+    ],
+  },
+  {
+    key: USERS_ACCESS_MENU_KEY,
+    icon: <UserOutlined />,
+    label: 'Users & Access',
+    children: [
       { key: '/admin/users', icon: <UserOutlined />, label: 'Users', requiredPermissions: ['identity_access.view'] },
       { key: '/admin/roles', icon: <CrownOutlined />, label: 'Roles & Permissions', requiredPermissions: ['identity_access.manage'] },
       { key: '/admin/security', icon: <AlertOutlined />, label: 'Security Center', requiredPermissions: ['identity_access.view'] },
       { key: '/admin/effective-access', icon: <AuditOutlined />, label: 'Effective Access', requiredPermissions: ['identity_access.view'] },
+    ],
+  },
+  {
+    key: PLATFORM_MENU_KEY,
+    icon: <AuditOutlined />,
+    label: 'Platform',
+    children: [
+      { key: '/operations/activity-review', icon: <AuditOutlined />, label: 'Activity Review', requiredPermissions: ['activity_review.view'] },
+      { key: '/admin/audit', icon: <AuditOutlined />, label: 'Security Audit', requiredPermissions: ['identity_access.view'] },
+      { key: '/inventory/audit', icon: <AuditOutlined />, label: 'Inventory Audit', requiredPermissions: ['inventory.view'] },
     ],
   },
   {
@@ -122,7 +148,6 @@ const appMenuItems = [
       { key: '/inventory/movements', icon: <SyncOutlined />, label: 'Movements', requiredPermissions: ['inventory.view'] },
       { key: '/inventory/change-detail', icon: <HistoryOutlined />, label: 'Change Detail', requiredPermissions: ['inventory.view'] },
       { key: '/inventory/sales-ledger', icon: <HistoryOutlined />, label: 'Sales Ledger', requiredPermissions: ['inventory.view'] },
-      { key: '/inventory/audit', icon: <AuditOutlined />, label: 'Audit', requiredPermissions: ['inventory.view'] },
       // Demoted - not in active use (muted style)
       { key: '/inventory/dashboard', icon: <DashboardOutlined />, label: <DemotedLabel>Dashboard</DemotedLabel>, requiredPermissions: ['inventory.view'] },
     ],
@@ -192,7 +217,6 @@ const appMenuItems = [
     icon: <AuditOutlined />,
     label: 'Operations',
     children: [
-      { key: '/operations/activity-review', icon: <AuditOutlined />, label: 'Activity Review', requiredPermissions: ['activity_review.view'] },
       { key: '/operations/inventory-close', icon: <CalendarOutlined />, label: 'Inventory Close', requiredPermissions: ['employees.manage'] },
       { key: '/operations/migration-day', icon: <SyncOutlined />, label: 'Migration Day', requiredPermissions: ['employees.manage'] },
     ],

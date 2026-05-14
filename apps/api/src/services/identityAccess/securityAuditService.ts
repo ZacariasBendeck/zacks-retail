@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Request } from 'express';
 import { PrismaClient } from '../../prismaClient';
+import { getTraceId } from '../../observability/requestContext';
 
 export interface IdentityAuditInput {
   actorUserId?: string | null;
@@ -31,10 +32,10 @@ export async function recordIdentityAudit(
         INSERT INTO platform.platform_audit_log
           (id, event_type, action, resource_type, resource_id, actor_user_id,
            actor_session_id, outcome, reason, ip_address, user_agent,
-           before_json, after_json, metadata_json, created_at)
+           before_json, after_json, metadata_json, trace_id, created_at)
         VALUES
           ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-           $12::jsonb, $13::jsonb, $14::jsonb, now())
+           $12::jsonb, $13::jsonb, $14::jsonb, $15, now())
       `,
       randomUUID(),
       input.eventType,
@@ -50,6 +51,7 @@ export async function recordIdentityAudit(
       nullableJson(input.beforeJson),
       nullableJson(input.afterJson),
       nullableJson(input.metadataJson),
+      getTraceId(),
     );
   } catch {
     // Audit must not break operator workflows while older environments catch

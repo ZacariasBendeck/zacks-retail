@@ -65,14 +65,14 @@ function mockChecklistQueries(input: MockChecklistQueryInput = {}) {
   (prisma.$queryRawUnsafe as jest.Mock)
     .mockResolvedValueOnce([{ yearMonth: '2026-05' }])
     .mockResolvedValueOnce(categories)
+    .mockResolvedValueOnce([])
+    .mockResolvedValueOnce(input.noBudget ?? [])
     .mockResolvedValueOnce(input.sales ?? [
       { categoryNumber: 262, last12MonthsSales: 1000.49, last12MonthsUnits: 12.2 },
     ])
     .mockResolvedValueOnce(input.inventory ?? [
       { categoryNumber: 262, currentInventoryUnits: 20, currentInventoryValue: 500.25 },
     ])
-    .mockResolvedValueOnce([])
-    .mockResolvedValueOnce(input.noBudget ?? [])
     .mockResolvedValueOnce([]);
 }
 
@@ -105,13 +105,24 @@ describe('listBuyerChecklistCategories aggregation', () => {
     expect(salesSql).toContain('m.qty_sales <> 0');
     expect(salesSql).toContain('COALESCE(m.net_sales, 0) <> 0');
     expect(salesSql).toContain('COALESCE(m.profit, 0) <> 0');
+    expect(salesSql).toContain('JOIN app.inventory_history_snapshot s');
+    expect(salesSql).toContain('ON s.sku_code = COALESCE(k.code, k.provisional_code)');
+    expect(salesSql).not.toContain('sku_attribute_assignment');
+    expect(salesSql).not.toMatch(/\bBTRIM\b/i);
+    expect(salesSql).not.toMatch(/s\.sku_id\s*=\s*k\.id/i);
+    expect(salesSql).not.toMatch(/ticket/i);
     expect(salesSql).not.toMatch(/m\.year_month\s*(>=|<=|between)/i);
-    expect(salesParams).toEqual(['2025-06', '2026-05', 2026, 5, [262, 560], null]);
+    expect(salesParams).toEqual(['2025-06', '2026-05', 2026, 5, [262, 560]]);
 
-    const [inventorySql] = sqlCallContaining('AS "currentInventoryUnits"');
+    const [inventorySql, ...inventoryParams] = sqlCallContaining('AS "currentInventoryUnits"');
     expect(inventorySql).toContain('JOIN app.inventory_history_snapshot s');
+    expect(inventorySql).toContain('ON s.sku_code = COALESCE(k.code, k.provisional_code)');
     expect(inventorySql).toContain('COALESCE(k.current_cost, s.average_cost, 0)');
+    expect(inventorySql).not.toContain('sku_attribute_assignment');
+    expect(inventorySql).not.toMatch(/\bBTRIM\b/i);
+    expect(inventorySql).not.toMatch(/s\.sku_id\s*=\s*k\.id/i);
     expect(inventorySql).not.toContain('inventory_history_month');
+    expect(inventoryParams).toEqual([[262, 560]]);
 
     expect(rows).toEqual(expect.arrayContaining([
       expect.objectContaining({
@@ -131,7 +142,7 @@ describe('listBuyerChecklistCategories aggregation', () => {
     ]));
   });
 
-  it('passes the buyer filter through the base, sales, and inventory queries', async () => {
+  it('uses the buyer filter only to select category-owned checklist rows', async () => {
     mockChecklistQueries({
       categories: [{
         buyerCode: 'ZB',
@@ -149,7 +160,9 @@ describe('listBuyerChecklistCategories aggregation', () => {
       seasonYear: 2026,
     });
 
-    const baseCall = sqlCallContaining('JOIN app.taxonomy_category c');
+    const baseCall = sqlCallContaining('app.category_buyer_assignment');
+    expect(baseCall[0]).toContain('JOIN category_assignment ca ON ca.category_number = c.number');
+    expect(baseCall[0]).toContain('UPPER(BTRIM(av.code)) = UPPER(BTRIM($1::text))');
     expect(baseCall.slice(1)).toEqual(['ZB']);
     expect(sqlCallContaining('AS "last12MonthsSales"').slice(1)).toEqual([
       '2025-06',
@@ -157,9 +170,8 @@ describe('listBuyerChecklistCategories aggregation', () => {
       2026,
       5,
       [262],
-      'ZB',
     ]);
-    expect(sqlCallContaining('AS "currentInventoryUnits"').slice(1)).toEqual([[262], 'ZB']);
+    expect(sqlCallContaining('AS "currentInventoryUnits"').slice(1)).toEqual([[262]]);
     expect(rows[0]).toEqual(expect.objectContaining({ buyerCode: 'ZB', categoryNumber: 262 }));
   });
 
@@ -212,6 +224,14 @@ describe('listBuyerChecklistCategories aggregation', () => {
       seasonYear: 2026,
     });
     expect(filtered.map((row: { categoryNumber: number }) => row.categoryNumber)).toEqual([262]);
+    expect(sqlCallContaining('AS "last12MonthsSales"').slice(1)).toEqual([
+      '2025-06',
+      '2026-05',
+      2026,
+      5,
+      [262],
+    ]);
+    expect(sqlCallContaining('AS "currentInventoryUnits"').slice(1)).toEqual([[262]]);
 
     (prisma.$queryRawUnsafe as jest.Mock).mockReset();
     mockChecklistQueries({ noBudget });
