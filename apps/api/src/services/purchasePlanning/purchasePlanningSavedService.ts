@@ -14,6 +14,7 @@ import {
   resolveYearMonth,
   type PurchasePlanSeasonWindowItem,
 } from './season';
+import { traceStep } from '../../observability/requestContext';
 import type {
   EohMethod,
   ForecastParams,
@@ -695,13 +696,14 @@ WITH src AS (
     COALESCE(m.net_sales, 0)::float8 AS net_sales,
     COALESCE(m.qty_sales, 0)::float8 * COALESCE(k.retail_price, k.list_price, 0)::float8 AS reference_retail,
     COALESCE(m.qty_on_hand, 0)::float8 AS beginning_on_hand
-  FROM app.inventory_history_snapshot s
+  FROM app.sku k
+  JOIN app.inventory_history_snapshot s
+    ON s.sku_id = k.id
+   AND s.store_id = ANY($3::int[])
   INNER JOIN app.inventory_history_month m ON m.snapshot_id = s.id
-  JOIN app.sku k ON k.id = s.sku_id
   LEFT JOIN app.taxonomy_category c ON c.number = k.category_number
   WHERE m.year_month >= $1::text
     AND m.year_month <= $2::text
-    AND s.store_id = ANY($3::int[])
     AND k.category_number = ANY($4::int[])
 
   UNION ALL
@@ -716,12 +718,13 @@ WITH src AS (
     COALESCE(s.month_dol_sales, 0)::float8 AS net_sales,
     COALESCE(s.month_qty_sales, 0)::float8 * COALESCE(k.retail_price, k.list_price, 0)::float8 AS reference_retail,
     COALESCE(s.on_hand, 0)::float8 AS beginning_on_hand
-  FROM app.inventory_history_snapshot s
-  JOIN app.sku k ON k.id = s.sku_id
+  FROM app.sku k
+  JOIN app.inventory_history_snapshot s
+    ON s.sku_id = k.id
+   AND s.store_id = ANY($3::int[])
   LEFT JOIN app.taxonomy_category c ON c.number = k.category_number
-  WHERE to_char(s.snapshot_as_of, 'YYYY-MM') >= $1::text
-    AND to_char(s.snapshot_as_of, 'YYYY-MM') <= $2::text
-    AND s.store_id = ANY($3::int[])
+  WHERE s.snapshot_as_of >= (($1::text || '-01')::date)
+    AND s.snapshot_as_of < ((($2::text || '-01')::date + INTERVAL '1 month'))
     AND k.category_number = ANY($4::int[])
 )
 SELECT
@@ -782,21 +785,35 @@ async function loadTicketSalesUnits(params: {
       `
 WITH src AS (
   SELECT
-    COALESCE(
-      k.category_number,
-      NULLIF(regexp_replace(COALESCE(l.category_key, ''), '\\D', '', 'g'), '')::int
-    ) AS category_number,
+    k.category_number AS category_number,
+    to_char(t.purchased_at AT TIME ZONE 'America/Tegucigalpa', 'YYYY-MM') AS year_month,
+    COALESCE(l.quantity, 0)::float8 AS qty_sales
+  FROM app.sku k
+  JOIN app.sales_history_ticket_line l
+    ON l.sku_id = k.id
+  INNER JOIN app.sales_history_ticket t
+    ON t.id = l.ticket_id
+  WHERE t.purchased_at >= (($1::text || '-01')::date::timestamp AT TIME ZONE 'America/Tegucigalpa')
+    AND t.purchased_at < ((($2::text || '-01')::date + INTERVAL '1 month')::timestamp AT TIME ZONE 'America/Tegucigalpa')
+    AND t.store_id = ANY($3::int[])
+    AND LOWER(COALESCE(t.status, '')) = 'completed'
+    AND k.category_number = ANY($4::int[])
+
+  UNION ALL
+
+  SELECT
+    NULLIF(regexp_replace(COALESCE(l.category_key, ''), '\\D', '', 'g'), '')::int AS category_number,
     to_char(t.purchased_at AT TIME ZONE 'America/Tegucigalpa', 'YYYY-MM') AS year_month,
     COALESCE(l.quantity, 0)::float8 AS qty_sales
   FROM app.sales_history_ticket t
   INNER JOIN app.sales_history_ticket_line l
     ON l.ticket_id = t.id
-  LEFT JOIN app.sku k
-    ON k.id = l.sku_id
   WHERE t.purchased_at >= (($1::text || '-01')::date::timestamp AT TIME ZONE 'America/Tegucigalpa')
     AND t.purchased_at < ((($2::text || '-01')::date + INTERVAL '1 month')::timestamp AT TIME ZONE 'America/Tegucigalpa')
     AND t.store_id = ANY($3::int[])
     AND LOWER(COALESCE(t.status, '')) = 'completed'
+    AND l.sku_id IS NULL
+    AND NULLIF(regexp_replace(COALESCE(l.category_key, ''), '\\D', '', 'g'), '')::int = ANY($4::int[])
 )
 SELECT
   src.category_number::text AS "departmentKey",
@@ -954,11 +971,12 @@ async function loadCategoryInventoryPositions(params: {
         SUM(h.on_hand)::int AS "onHand",
         SUM(h.current_on_order)::int AS "currentOnOrder",
         SUM(h.future_on_order)::int AS "futureOnOrder"
-      FROM app.inventory_history_snapshot h
-      JOIN app.sku k ON k.id = h.sku_id
+      FROM app.sku k
+      JOIN app.inventory_history_snapshot h
+        ON h.sku_id = k.id
+       AND h.store_id = ANY($1::int[])
       LEFT JOIN app.taxonomy_category c ON c.number = k.category_number
-      WHERE h.store_id = ANY($1::int[])
-        AND k.category_number = ANY($2::int[])
+      WHERE k.category_number = ANY($2::int[])
       GROUP BY k.category_number, c."desc"
     `,
     params.storeNumbers,
@@ -969,9 +987,9 @@ async function loadCategoryInventoryPositions(params: {
       SELECT
         k.category_number::text AS "departmentKey",
         COALESCE(SUM(GREATEST(pol.quantity_ordered - pol.quantity_received, 0)), 0)::int AS "nativeOpenPo"
-      FROM app.purchase_order po
-      JOIN app.purchase_order_line pol ON pol.po_id = po.id
-      JOIN app.sku k ON k.id = pol.sku_id
+      FROM app.sku k
+      JOIN app.purchase_order_line pol ON pol.sku_id = k.id
+      JOIN app.purchase_order po ON po.id = pol.po_id
       WHERE po.status IN ('SUBMITTED','CONFIRMED','PARTIALLY_RECEIVED')
         AND po.ship_to_store_id = ANY($1::int[])
         AND GREATEST(pol.quantity_ordered - pol.quantity_received, 0) > 0
@@ -1800,28 +1818,42 @@ function buildSalesTrendSummary(
 }
 
 export async function getPurchasePlanSalesTrendSummary(id: string): Promise<PurchasePlanSalesTrendSummary> {
-  const plan = await loadPlanHeader(id);
+  const plan = await traceStep('purchasePlan.trend.loadHeader', () => loadPlanHeader(id), { planId: id });
   return withPlanningQuerySettings(async (db) => {
-    const storeNumbers = await loadPlanningStoreNumbersForPlan(plan, db);
+    const storeNumbers = await traceStep('purchasePlan.trend.loadStores', () => loadPlanningStoreNumbersForPlan(plan, db), {
+      planningScope: plan.planningScope,
+    });
     const trendFromYearMonth = [plan.historyFromYearMonth, shiftYearMonth(plan.historyToYearMonth, -23)].sort()[1]!;
-    const facts = await loadMonthlyFacts({
-      storeNumbers,
-      departmentNumbers: plan.selectedDepartments,
-      categoryNumbers: plan.selectedCategories,
-      planningDimension: plan.planningDimension,
-      fromYearMonth: trendFromYearMonth,
-      toYearMonth: plan.historyToYearMonth,
-      includeUnmapped: false,
-    }, db);
-    const ticketUnits = await loadTicketSalesUnits({
-      storeNumbers,
-      departmentNumbers: plan.selectedDepartments,
-      categoryNumbers: plan.selectedCategories,
-      planningDimension: plan.planningDimension,
-      fromYearMonth: trendFromYearMonth,
-      toYearMonth: plan.historyToYearMonth,
-      includeUnmapped: false,
-    }, db);
+    const facts = await traceStep('purchasePlan.trend.loadMonthlyFacts', () => loadMonthlyFacts({
+        storeNumbers,
+        departmentNumbers: plan.selectedDepartments,
+        categoryNumbers: plan.selectedCategories,
+        planningDimension: plan.planningDimension,
+        fromYearMonth: trendFromYearMonth,
+        toYearMonth: plan.historyToYearMonth,
+        includeUnmapped: false,
+      }, db), {
+        planningDimension: plan.planningDimension,
+        storeCount: storeNumbers.length,
+        categoryCount: plan.selectedCategories.length,
+        fromYearMonth: trendFromYearMonth,
+        toYearMonth: plan.historyToYearMonth,
+      });
+    const ticketUnits = await traceStep('purchasePlan.trend.loadTicketSalesUnits', () => loadTicketSalesUnits({
+        storeNumbers,
+        departmentNumbers: plan.selectedDepartments,
+        categoryNumbers: plan.selectedCategories,
+        planningDimension: plan.planningDimension,
+        fromYearMonth: trendFromYearMonth,
+        toYearMonth: plan.historyToYearMonth,
+        includeUnmapped: false,
+      }, db), {
+        planningDimension: plan.planningDimension,
+        storeCount: storeNumbers.length,
+        categoryCount: plan.selectedCategories.length,
+        fromYearMonth: trendFromYearMonth,
+        toYearMonth: plan.historyToYearMonth,
+      });
     return buildSalesTrendSummary(plan, facts.history, ticketUnits);
   });
 }
@@ -1906,7 +1938,7 @@ function applyMonthlyRowUpdates(
       const currentProjSales = normalizedUnitOverride(update, 'currentProjSales');
       const currentEohTarget = normalizedUnitOverride(update, 'currentEohTarget');
       const currentBuy = normalizedUnitOverride(update, 'currentBuy');
-      const shouldRecalculateBuy = currentBuy == null && (currentProjSales != null || currentEohTarget != null);
+      const shouldRecalculateBuy = currentBuy == null && currentEohTarget != null;
       if (currentProjSales != null) next.currentProjSales = currentProjSales;
       if (currentEohTarget != null) next.currentEohTarget = currentEohTarget;
       if (currentBuy != null) {
@@ -2076,12 +2108,19 @@ export async function listPurchasePlans(params: {
 }
 
 export async function getPurchasePlan(id: string): Promise<PurchasePlanDetailResponse> {
-  const plan = await loadPlanHeader(id);
+  const plan = await traceStep('purchasePlan.detail.loadHeader', () => loadPlanHeader(id), { planId: id });
   const [rows, adjustments] = await Promise.all([
-    loadRows(id),
-    loadAdjustments(id),
+    traceStep('purchasePlan.detail.loadRows', () => loadRows(id), { planId: id }),
+    traceStep('purchasePlan.detail.loadAdjustments', () => loadAdjustments(id), { planId: id }),
   ]);
-  return { plan, ...summarizeRows(await withHistoricalComparisonMetrics(plan, rows), adjustments) };
+  const rowsWithComparisons = await traceStep('purchasePlan.detail.historicalComparison', () => (
+    withHistoricalComparisonMetrics(plan, rows)
+  ), {
+    planId: id,
+    planningDimension: plan.planningDimension,
+    rowCount: rows.length,
+  });
+  return { plan, ...summarizeRows(rowsWithComparisons, adjustments) };
 }
 
 export async function addPurchasePlanAdjustment(

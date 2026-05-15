@@ -232,6 +232,7 @@ export default function BuyerPurchasePlanningPage() {
   const [unavailableReason, setUnavailableReason] = useState('')
   const [editingCarryoverLine, setEditingCarryoverLine] = useState<CarryoverLine | null>(null)
   const [editingSizeCells, setEditingSizeCells] = useState<CarryoverLine['sizeCells']>([])
+  const [reviewTabKey, setReviewTabKey] = useState('sales-projection')
   const [attributePlanValues, setAttributePlanValues] = useState<Record<string, { plannedStyleCount: number; plannedUnits: number; notes?: string | null }>>({})
   const checklistLoaded = loadedChecklistRequest !== null
 
@@ -286,7 +287,7 @@ export default function BuyerPurchasePlanningPage() {
   const purchaseOrders = useQuery({
     queryKey: ['buyer-purchase-workbook', 'po-options'],
     queryFn: () => fetchPurchaseOrders({ page: 1, pageSize: 50, sort: 'updatedAt', order: 'desc' }),
-    enabled: isReviewRoute && !!reviewCardId,
+    enabled: isReviewRoute && !!reviewCardId && reviewTabKey === 'carryover-review',
     staleTime: 30_000,
   })
 
@@ -373,6 +374,7 @@ export default function BuyerPurchasePlanningPage() {
 
   useEffect(() => {
     if (!selectedCard) return
+    setReviewTabKey('sales-projection')
     targetForm.setFieldsValue({
       status: selectedCard.status,
       targetNewSkuCount: selectedCard.targetNewSkuCount,
@@ -1599,7 +1601,8 @@ export default function BuyerPurchasePlanningPage() {
 
             <Tabs
               key={selectedCard.id}
-              defaultActiveKey="sales-projection"
+              activeKey={reviewTabKey}
+              onChange={setReviewTabKey}
               items={[
                 {
                   key: 'sales-projection',

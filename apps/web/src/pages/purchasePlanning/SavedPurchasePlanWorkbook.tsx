@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { QuestionCircleOutlined } from '@ant-design/icons'
-import { Alert, Button, Card, Col, Empty, Input, InputNumber, Row, Segmented, Space, Table, Tag, Tooltip, Typography } from 'antd'
+import { Alert, Button, Card, Col, Empty, Input, InputNumber, Row, Segmented, Space, Table, Tabs, Tag, Tooltip, Typography } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import dayjs from 'dayjs'
 import {
@@ -17,6 +17,7 @@ const { Title, Text } = Typography
 const integerFmt = new Intl.NumberFormat('en-US')
 
 type WorksheetColumnMode = 'months' | 'seasons'
+type WorksheetTabKey = 'sales-projection' | 'on-hand-projection'
 
 type WorksheetMetricKey =
   | 'currentBoh'
@@ -310,7 +311,7 @@ function formatSummaryUnits(value: number | null | undefined): string {
   return `${formatInt(value)} units`
 }
 
-function buildWorksheetChanges(
+function buildSalesWorksheetChanges(
   rows: SavedPurchasePlanRow[],
   originals: Map<string, SavedPurchasePlanRow>,
 ): SavedPurchasePlanRowsUpdateRequest['rows'] {
@@ -319,9 +320,21 @@ function buildWorksheetChanges(
     if (!original) return []
     const change: SavedPurchasePlanRowsUpdateRequest['rows'][number] = { rowId: row.id }
     if (row.currentProjSales !== original.currentProjSales) change.currentProjSales = row.currentProjSales
+    return change.currentProjSales == null ? [] : [change]
+  })
+}
+
+function buildOnHandWorksheetChanges(
+  rows: SavedPurchasePlanRow[],
+  originals: Map<string, SavedPurchasePlanRow>,
+): SavedPurchasePlanRowsUpdateRequest['rows'] {
+  return rows.flatMap((row) => {
+    const original = originals.get(row.id)
+    if (!original) return []
+    const change: SavedPurchasePlanRowsUpdateRequest['rows'][number] = { rowId: row.id }
     if (row.currentEohTarget !== original.currentEohTarget) change.currentEohTarget = row.currentEohTarget
     if (row.currentBuy !== original.currentBuy) change.currentBuy = row.currentBuy
-    return change.currentProjSales == null && change.currentEohTarget == null && change.currentBuy == null ? [] : [change]
+    return change.currentEohTarget == null && change.currentBuy == null ? [] : [change]
   })
 }
 
@@ -344,9 +357,11 @@ export function SavedPurchasePlanWorkbook({
   onConfirm,
 }: SavedPurchasePlanWorkbookProps) {
   const [worksheetRows, setWorksheetRows] = useState<SavedPurchasePlanRow[]>([])
+  const [activeWorksheetTab, setActiveWorksheetTab] = useState<WorksheetTabKey>('sales-projection')
   const [autoBuyRowIds, setAutoBuyRowIds] = useState<Set<string>>(new Set())
   const [projectionPct, setProjectionPct] = useState<number>(0)
-  const [worksheetReason, setWorksheetReason] = useState('Worksheet edit')
+  const [salesWorksheetReason, setSalesWorksheetReason] = useState('Worksheet edit')
+  const [onHandWorksheetReason, setOnHandWorksheetReason] = useState('On hand projection edit')
   const [worksheetColumnMode, setWorksheetColumnMode] = useState<WorksheetColumnMode>('months')
 
   const sourceWorksheetRows = useMemo<SavedPurchasePlanRow[]>(() => (
@@ -358,10 +373,15 @@ export function SavedPurchasePlanWorkbook({
   const suggestedProjectionPct = salesTrendSummary?.suggestedProjectionPct ?? 0
 
   useEffect(() => {
+    setActiveWorksheetTab('sales-projection')
+  }, [detail?.plan.id])
+
+  useEffect(() => {
     setWorksheetRows(sourceWorksheetRows.map((row) => ({ ...row })))
     setAutoBuyRowIds(new Set())
     setProjectionPct(suggestedProjectionPct)
-    setWorksheetReason('Worksheet edit')
+    setSalesWorksheetReason('Worksheet edit')
+    setOnHandWorksheetReason('On hand projection edit')
   }, [sourceWorksheetRows, suggestedProjectionPct])
 
   const showWorksheetDepartment = (detail?.departments.length ?? 0) > 1
@@ -403,7 +423,8 @@ export function SavedPurchasePlanWorkbook({
     [worksheetRows],
   )
 
-  const worksheetChanges = useMemo(() => buildWorksheetChanges(worksheetRows, originalRowsById), [originalRowsById, worksheetRows])
+  const salesWorksheetChanges = useMemo(() => buildSalesWorksheetChanges(worksheetRows, originalRowsById), [originalRowsById, worksheetRows])
+  const onHandWorksheetChanges = useMemo(() => buildOnHandWorksheetChanges(worksheetRows, originalRowsById), [originalRowsById, worksheetRows])
   const salesProjectionSummary = useMemo<SalesProjectionSummary>(() => {
     const projectionMonths = (detail?.plan.seasonMonths.length
       ? [...detail.plan.seasonMonths]
@@ -461,10 +482,17 @@ export function SavedPurchasePlanWorkbook({
     return rows.map((row) => recalculatedById.get(row.id) ?? row)
   }
 
-  function updateWorksheetCell(rowId: string, changes: Partial<Pick<SavedPurchasePlanRow, 'currentProjSales' | 'currentEohTarget' | 'currentBuy'>>): void {
+  function updateSalesProjectionCell(rowId: string, currentProjSales: number): void {
+    setWorksheetRows((rows) => recalculateWorksheetRows(
+      rows.map((row) => row.id === rowId ? { ...row, currentProjSales } : row),
+      new Set(),
+    ))
+  }
+
+  function updateOnHandProjectionCell(rowId: string, changes: Partial<Pick<SavedPurchasePlanRow, 'currentEohTarget' | 'currentBuy'>>): void {
     const nextAutoBuyIds = new Set(autoBuyRowIds)
     if (changes.currentBuy != null) nextAutoBuyIds.delete(rowId)
-    if (changes.currentProjSales != null || changes.currentEohTarget != null) nextAutoBuyIds.add(rowId)
+    if (changes.currentEohTarget != null) nextAutoBuyIds.add(rowId)
     setAutoBuyRowIds(nextAutoBuyIds)
     setWorksheetRows((rows) => recalculateWorksheetRows(
       rows.map((row) => row.id === rowId ? { ...row, ...changes } : row),
@@ -476,16 +504,12 @@ export function SavedPurchasePlanWorkbook({
     const pct = Number(value)
     if (!Number.isFinite(pct) || pct < -100) return
     const multiplier = 1 + pct / 100
-    const nextAutoBuyIds = new Set(autoBuyRowIds)
-    worksheetRows.forEach((row) => nextAutoBuyIds.add(row.id))
-    setAutoBuyRowIds(nextAutoBuyIds)
     setWorksheetRows((rows) => recalculateWorksheetRows(
       rows.map((row) => ({
         ...row,
         currentProjSales: formUnit(row.currentProjSales * multiplier),
-        currentEohTarget: formUnit(row.currentEohTarget * multiplier),
       })),
-      nextAutoBuyIds,
+      new Set(),
     ))
   }
 
@@ -495,22 +519,50 @@ export function SavedPurchasePlanWorkbook({
 
   function applySuggestedProjectionPercent(): void {
     setProjectionPct(suggestedProjectionPct)
-    setWorksheetReason(`Suggested category trend ${formatSignedPercent(suggestedProjectionPct)}`)
+    setSalesWorksheetReason(`Suggested category trend ${formatSignedPercent(suggestedProjectionPct)}`)
     applyProjectionPercentValue(suggestedProjectionPct)
   }
 
-  function resetWorksheet(): void {
-    setWorksheetRows(sourceWorksheetRows.map((row) => ({ ...row })))
-    setAutoBuyRowIds(new Set())
+  function resetSalesWorksheet(): void {
+    setWorksheetRows((rows) => recalculateWorksheetRows(
+      rows.map((row) => {
+        const original = originalRowsById.get(row.id)
+        return original ? { ...row, currentProjSales: original.currentProjSales } : row
+      }),
+      new Set(),
+    ))
     setProjectionPct(suggestedProjectionPct)
-    setWorksheetReason('Worksheet edit')
+    setSalesWorksheetReason('Worksheet edit')
   }
 
-  function saveWorksheet(): void {
-    if (!detail?.plan.id || worksheetChanges.length === 0) return
+  function resetOnHandWorksheet(): void {
+    setWorksheetRows((rows) => recalculateWorksheetRows(
+      rows.map((row) => {
+        const original = originalRowsById.get(row.id)
+        return original
+          ? { ...row, currentEohTarget: original.currentEohTarget, currentBuy: original.currentBuy }
+          : row
+      }),
+      new Set(),
+    ))
+    setAutoBuyRowIds(new Set())
+    setOnHandWorksheetReason('On hand projection edit')
+  }
+
+  function saveSalesWorksheet(): void {
+    if (!detail?.plan.id || salesWorksheetChanges.length === 0) return
     onSaveRows(detail.plan.id, {
-      rows: worksheetChanges,
-      reason: worksheetReason.trim() || 'Worksheet edit',
+      rows: salesWorksheetChanges,
+      reason: salesWorksheetReason.trim() || 'Worksheet edit',
+      appliedBy: 'buyer',
+    })
+  }
+
+  function saveOnHandWorksheet(): void {
+    if (!detail?.plan.id || onHandWorksheetChanges.length === 0) return
+    onSaveRows(detail.plan.id, {
+      rows: onHandWorksheetChanges,
+      reason: onHandWorksheetReason.trim() || 'On hand projection edit',
       appliedBy: 'buyer',
     })
   }
@@ -534,7 +586,14 @@ export function SavedPurchasePlanWorkbook({
           size="small"
           value={currentValue}
           status={original?.[metric.editableKey] === currentValue ? undefined : 'warning'}
-          onChange={(value) => updateWorksheetCell(monthlyRow.id, { [metric.editableKey!]: formUnit(value) })}
+          onChange={(value) => {
+            const nextValue = formUnit(value)
+            if (metric.editableKey === 'currentProjSales') {
+              updateSalesProjectionCell(monthlyRow.id, nextValue)
+            } else {
+              updateOnHandProjectionCell(monthlyRow.id, { [metric.editableKey!]: nextValue })
+            }
+          }}
           style={{ width: 92 }}
         />
       )
@@ -605,7 +664,7 @@ export function SavedPurchasePlanWorkbook({
               Recalculate
             </Button>
           ) : null}
-          {onConfirm ? (
+          {onConfirm && activeWorksheetTab === 'sales-projection' ? (
             <Button type="primary" htmlType="button" onClick={() => onConfirm(detail.plan.id)} loading={confirmLoading}>
               {confirmLabel}
             </Button>
@@ -624,180 +683,237 @@ export function SavedPurchasePlanWorkbook({
         <Text type="secondary">Forecast: {detail.plan.forecastMethod}</Text>
         {detail.plan.discountNormalization ? <Tag color="blue">discount normalization</Tag> : null}
       </Space>
-      {salesTrendSummary ? (
-        <div className="purchase-plan-trend-panel">
-          <Space direction="vertical" size={8} style={{ width: '100%' }}>
-            <Space wrap align="center">
-              <Text type="secondary">Category trend</Text>
-              <Tooltip title={renderCategoryTrendTooltip(salesTrendSummary)} placement="top">
-                <Button
-                  aria-label="How category trend is calculated"
-                  className="purchase-plan-trend-help"
-                  htmlType="button"
-                  icon={<QuestionCircleOutlined />}
-                  size="small"
-                  type="text"
-                />
-              </Tooltip>
-              <Tag color={trendDirectionColor(salesTrendSummary.direction)}>
-                {trendDirectionLabel(salesTrendSummary.direction)}
-              </Tag>
-              <Tag color={confidenceColor(salesTrendSummary.confidence)}>
-                {salesTrendSummary.confidence} confidence
-              </Tag>
-            </Space>
-            <Row gutter={[12, 8]}>
-              <Col xs={12} md={5}>
-                <Text type="secondary">Last 12M</Text>
-                <div>
-                  <Text strong>{formatInt(salesTrendSummary.last12.currentUnits)} units</Text>
-                  <Text type="secondary"> {formatSignedPercent(salesTrendSummary.last12.changePct)}</Text>
-                </div>
-                <Text type="secondary">vs {formatInt(salesTrendSummary.last12.comparisonUnits)} units</Text>
-              </Col>
-              <Col xs={12} md={5}>
-                <Text type="secondary">Recent 6M YoY</Text>
-                <div>
-                  <Text strong>{formatInt(salesTrendSummary.recent6.currentUnits)} units</Text>
-                  <Text type="secondary"> {formatSignedPercent(salesTrendSummary.recent6.changePct)}</Text>
-                </div>
-                <Text type="secondary">vs {formatInt(salesTrendSummary.recent6.comparisonUnits)} units</Text>
-              </Col>
-              <Col xs={12} md={5}>
-                <Text type="secondary">Recent 3M YoY</Text>
-                <div>
-                  <Text strong>{formatInt(salesTrendSummary.recent3.currentUnits)} units</Text>
-                  <Text type="secondary"> {formatSignedPercent(salesTrendSummary.recent3.changePct)}</Text>
-                </div>
-                <Text type="secondary">vs {formatInt(salesTrendSummary.recent3.comparisonUnits)} units</Text>
-              </Col>
-              <Col xs={12} md={4}>
-                <Text type="secondary">Slope</Text>
-                <div>
-                  <Text strong>{formatSignedPercent(salesTrendSummary.monthlySlopePct)}</Text>
-                </div>
-              </Col>
-              <Col xs={24} md={5}>
-                <Text type="secondary">Suggested projection</Text>
-                <Space>
-                  <Text strong>{formatSignedPercent(salesTrendSummary.suggestedProjectionPct)}</Text>
-                  <Button size="small" htmlType="button" onClick={applySuggestedProjectionPercent} disabled={worksheetRows.length === 0}>
-                    Apply suggested %
+      <Tabs
+        activeKey={activeWorksheetTab}
+        destroyInactiveTabPane
+        onChange={(key) => setActiveWorksheetTab(key as WorksheetTabKey)}
+        items={[
+          {
+            key: 'sales-projection',
+            label: 'Sales Projection',
+            children: (
+              <Space direction="vertical" size={16} style={{ width: '100%' }}>
+                {salesTrendSummary ? (
+                  <div className="purchase-plan-trend-panel">
+                    <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                      <Space wrap align="center">
+                        <Text type="secondary">Category trend</Text>
+                        <Tooltip title={renderCategoryTrendTooltip(salesTrendSummary)} placement="top">
+                          <Button
+                            aria-label="How category trend is calculated"
+                            className="purchase-plan-trend-help"
+                            htmlType="button"
+                            icon={<QuestionCircleOutlined />}
+                            size="small"
+                            type="text"
+                          />
+                        </Tooltip>
+                        <Tag color={trendDirectionColor(salesTrendSummary.direction)}>
+                          {trendDirectionLabel(salesTrendSummary.direction)}
+                        </Tag>
+                        <Tag color={confidenceColor(salesTrendSummary.confidence)}>
+                          {salesTrendSummary.confidence} confidence
+                        </Tag>
+                      </Space>
+                      <Row gutter={[12, 8]}>
+                        <Col xs={12} md={5}>
+                          <Text type="secondary">Last 12M</Text>
+                          <div>
+                            <Text strong>{formatInt(salesTrendSummary.last12.currentUnits)} units</Text>
+                            <Text type="secondary"> {formatSignedPercent(salesTrendSummary.last12.changePct)}</Text>
+                          </div>
+                          <Text type="secondary">vs {formatInt(salesTrendSummary.last12.comparisonUnits)} units</Text>
+                        </Col>
+                        <Col xs={12} md={5}>
+                          <Text type="secondary">Recent 6M YoY</Text>
+                          <div>
+                            <Text strong>{formatInt(salesTrendSummary.recent6.currentUnits)} units</Text>
+                            <Text type="secondary"> {formatSignedPercent(salesTrendSummary.recent6.changePct)}</Text>
+                          </div>
+                          <Text type="secondary">vs {formatInt(salesTrendSummary.recent6.comparisonUnits)} units</Text>
+                        </Col>
+                        <Col xs={12} md={5}>
+                          <Text type="secondary">Recent 3M YoY</Text>
+                          <div>
+                            <Text strong>{formatInt(salesTrendSummary.recent3.currentUnits)} units</Text>
+                            <Text type="secondary"> {formatSignedPercent(salesTrendSummary.recent3.changePct)}</Text>
+                          </div>
+                          <Text type="secondary">vs {formatInt(salesTrendSummary.recent3.comparisonUnits)} units</Text>
+                        </Col>
+                        <Col xs={12} md={4}>
+                          <Text type="secondary">Slope</Text>
+                          <div>
+                            <Text strong>{formatSignedPercent(salesTrendSummary.monthlySlopePct)}</Text>
+                          </div>
+                        </Col>
+                        <Col xs={24} md={5}>
+                          <Text type="secondary">Suggested projection</Text>
+                          <Space>
+                            <Text strong>{formatSignedPercent(salesTrendSummary.suggestedProjectionPct)}</Text>
+                            <Button size="small" htmlType="button" onClick={applySuggestedProjectionPercent} disabled={worksheetRows.length === 0}>
+                              Apply suggested %
+                            </Button>
+                          </Space>
+                        </Col>
+                      </Row>
+                      {salesTrendSummary.notes?.[0] ? (
+                        <Text type="secondary">{salesTrendSummary.notes[0]}</Text>
+                      ) : null}
+                    </Space>
+                  </div>
+                ) : null}
+                <Space wrap align="end">
+                  <Space direction="vertical" size={2}>
+                    <Text type="secondary">Columns</Text>
+                    <Segmented<WorksheetColumnMode>
+                      aria-label="Worksheet columns"
+                      value={worksheetColumnMode}
+                      onChange={setWorksheetColumnMode}
+                      options={[
+                        { label: 'Months', value: 'months' },
+                        { label: 'Seasons', value: 'seasons' },
+                      ]}
+                    />
+                  </Space>
+                  <Space direction="vertical" size={2}>
+                    <Text type="secondary">Projection %</Text>
+                    <InputNumber
+                      aria-label="Projection percent"
+                      min={-100}
+                      max={500}
+                      precision={1}
+                      value={projectionPct}
+                      onChange={(value) => setProjectionPct(Number(value ?? 0))}
+                      style={{ width: 110 }}
+                    />
+                  </Space>
+                  <Button htmlType="button" onClick={applyProjectionPercent} disabled={worksheetRows.length === 0}>
+                    Apply projection %
                   </Button>
+                  <Space direction="vertical" size={2}>
+                    <Text type="secondary">Reason</Text>
+                    <Input
+                      aria-label="Worksheet reason"
+                      value={salesWorksheetReason}
+                      onChange={(event) => setSalesWorksheetReason(event.target.value)}
+                      style={{ width: 260 }}
+                    />
+                  </Space>
+                  <Button
+                    type="primary"
+                    htmlType="button"
+                    onClick={saveSalesWorksheet}
+                    loading={saveLoading}
+                    disabled={salesWorksheetChanges.length === 0}
+                  >
+                    Save worksheet
+                  </Button>
+                  <Button htmlType="button" onClick={resetSalesWorksheet} disabled={salesWorksheetChanges.length === 0}>
+                    Reset worksheet
+                  </Button>
+                  {salesWorksheetChanges.length > 0 ? <Tag color="gold">{salesWorksheetChanges.length} changed</Tag> : null}
                 </Space>
-              </Col>
-            </Row>
-            {salesTrendSummary.notes?.[0] ? (
-              <Text type="secondary">{salesTrendSummary.notes[0]}</Text>
-            ) : null}
-          </Space>
-        </div>
-      ) : null}
-      <Space wrap align="end" style={{ marginBottom: 12 }}>
-        {extraControls}
-        <Space direction="vertical" size={2}>
-          <Text type="secondary">Columns</Text>
-          <Segmented<WorksheetColumnMode>
-            aria-label="Worksheet columns"
-            value={worksheetColumnMode}
-            onChange={setWorksheetColumnMode}
-            options={[
-              { label: 'Months', value: 'months' },
-              { label: 'Seasons', value: 'seasons' },
-            ]}
-          />
-        </Space>
-        <Space direction="vertical" size={2}>
-          <Text type="secondary">Projection %</Text>
-          <InputNumber
-            aria-label="Projection percent"
-            min={-100}
-            max={500}
-            precision={1}
-            value={projectionPct}
-            onChange={(value) => setProjectionPct(Number(value ?? 0))}
-            style={{ width: 110 }}
-          />
-        </Space>
-        <Button htmlType="button" onClick={applyProjectionPercent} disabled={worksheetRows.length === 0}>
-          Apply projection %
-        </Button>
-        <Space direction="vertical" size={2}>
-          <Text type="secondary">Reason</Text>
-          <Input
-            aria-label="Worksheet reason"
-            value={worksheetReason}
-            onChange={(event) => setWorksheetReason(event.target.value)}
-            style={{ width: 260 }}
-          />
-        </Space>
-        <Button
-          type="primary"
-          htmlType="button"
-          onClick={saveWorksheet}
-          loading={saveLoading}
-          disabled={worksheetChanges.length === 0}
-        >
-          Save worksheet
-        </Button>
-        <Button htmlType="button" onClick={resetWorksheet} disabled={worksheetChanges.length === 0}>
-          Reset worksheet
-        </Button>
-        {worksheetChanges.length > 0 ? <Tag color="gold">{worksheetChanges.length} changed</Tag> : null}
-      </Space>
-      <Space direction="vertical" size={16} style={{ width: '100%' }}>
-        <div>
-          <Title level={5} style={{ marginTop: 0 }}>Sales projection worksheet</Title>
-          <Table<WorksheetPivotRow>
-            aria-label="Sales projection worksheet"
-            className="purchase-plan-workbook-grid"
-            dataSource={salesWorksheetPivotRows}
-            columns={worksheetColumns}
-            rowKey="key"
-            size="small"
-            loading={loading}
-            pagination={false}
-            scroll={{ x: 'max-content' }}
-            locale={{ emptyText: emptyDescription }}
-          />
-        </div>
-        <div className="purchase-plan-sales-summary" aria-label="Sales projection summary">
-          <Title level={5} style={{ margin: 0 }}>Sales projection summary</Title>
-          <div className="purchase-plan-sales-summary-grid">
-            <div className="purchase-plan-sales-summary-item">
-              <Text type="secondary">Last year's 12 month sales</Text>
-              <Text strong>{formatSummaryUnits(salesProjectionSummary.lastYear12MonthSales)}</Text>
-            </div>
-            <div className="purchase-plan-sales-summary-item">
-              <Text type="secondary">Projected sales for next 12 months</Text>
-              <Text strong>{formatSummaryUnits(salesProjectionSummary.projectedNext12MonthSales)}</Text>
-            </div>
-            <div className="purchase-plan-sales-summary-item">
-              <Text type="secondary">Suggested sales projection increase for the year</Text>
-              <Text strong>{formatSignedPercent(salesProjectionSummary.suggestedProjectionIncreasePct)}</Text>
-            </div>
-            <div className="purchase-plan-sales-summary-item">
-              <Text type="secondary">Projected sales increase</Text>
-              <Text strong>{formatSignedPercent(salesProjectionSummary.userProjectedIncreasePct)}</Text>
-            </div>
-          </div>
-        </div>
-        <div>
-          <Title level={5} style={{ marginTop: 0 }}>ON Hand projection worksheet</Title>
-          <Table<WorksheetPivotRow>
-            aria-label="On hand projection worksheet"
-            className="purchase-plan-workbook-grid"
-            dataSource={onHandWorksheetPivotRows}
-            columns={worksheetColumns}
-            rowKey="key"
-            size="small"
-            loading={loading}
-            pagination={false}
-            scroll={{ x: 'max-content' }}
-            locale={{ emptyText: emptyDescription }}
-          />
-        </div>
-      </Space>
+                <div>
+                  <Title level={5} style={{ marginTop: 0 }}>Sales projection worksheet</Title>
+                  <Table<WorksheetPivotRow>
+                    aria-label="Sales projection worksheet"
+                    className="purchase-plan-workbook-grid"
+                    dataSource={salesWorksheetPivotRows}
+                    columns={worksheetColumns}
+                    rowKey="key"
+                    size="small"
+                    loading={loading}
+                    pagination={false}
+                    scroll={{ x: 'max-content' }}
+                    locale={{ emptyText: emptyDescription }}
+                  />
+                </div>
+                <div className="purchase-plan-sales-summary" aria-label="Sales projection summary">
+                  <Title level={5} style={{ margin: 0 }}>Sales projection summary</Title>
+                  <div className="purchase-plan-sales-summary-grid">
+                    <div className="purchase-plan-sales-summary-item">
+                      <Text type="secondary">Last year's 12 month sales</Text>
+                      <Text strong>{formatSummaryUnits(salesProjectionSummary.lastYear12MonthSales)}</Text>
+                    </div>
+                    <div className="purchase-plan-sales-summary-item">
+                      <Text type="secondary">Projected sales for next 12 months</Text>
+                      <Text strong>{formatSummaryUnits(salesProjectionSummary.projectedNext12MonthSales)}</Text>
+                    </div>
+                    <div className="purchase-plan-sales-summary-item">
+                      <Text type="secondary">Suggested sales projection increase for the year</Text>
+                      <Text strong>{formatSignedPercent(salesProjectionSummary.suggestedProjectionIncreasePct)}</Text>
+                    </div>
+                    <div className="purchase-plan-sales-summary-item">
+                      <Text type="secondary">Projected sales increase</Text>
+                      <Text strong>{formatSignedPercent(salesProjectionSummary.userProjectedIncreasePct)}</Text>
+                    </div>
+                  </div>
+                </div>
+              </Space>
+            ),
+          },
+          {
+            key: 'on-hand-projection',
+            label: 'On Hand Projection',
+            children: (
+              <Space direction="vertical" size={16} style={{ width: '100%' }}>
+                <Space wrap align="end">
+                  {extraControls}
+                  <Space direction="vertical" size={2}>
+                    <Text type="secondary">Columns</Text>
+                    <Segmented<WorksheetColumnMode>
+                      aria-label="Worksheet columns"
+                      value={worksheetColumnMode}
+                      onChange={setWorksheetColumnMode}
+                      options={[
+                        { label: 'Months', value: 'months' },
+                        { label: 'Seasons', value: 'seasons' },
+                      ]}
+                    />
+                  </Space>
+                  <Space direction="vertical" size={2}>
+                    <Text type="secondary">Reason</Text>
+                    <Input
+                      aria-label="On hand worksheet reason"
+                      value={onHandWorksheetReason}
+                      onChange={(event) => setOnHandWorksheetReason(event.target.value)}
+                      style={{ width: 260 }}
+                    />
+                  </Space>
+                  <Button
+                    type="primary"
+                    htmlType="button"
+                    onClick={saveOnHandWorksheet}
+                    loading={saveLoading}
+                    disabled={onHandWorksheetChanges.length === 0}
+                  >
+                    Save on hand projection
+                  </Button>
+                  <Button htmlType="button" onClick={resetOnHandWorksheet} disabled={onHandWorksheetChanges.length === 0}>
+                    Reset on hand projection
+                  </Button>
+                  {onHandWorksheetChanges.length > 0 ? <Tag color="gold">{onHandWorksheetChanges.length} changed</Tag> : null}
+                </Space>
+                <div>
+                  <Title level={5} style={{ marginTop: 0 }}>On Hand Projection worksheet</Title>
+                  <Table<WorksheetPivotRow>
+                    aria-label="On hand projection worksheet"
+                    className="purchase-plan-workbook-grid"
+                    dataSource={onHandWorksheetPivotRows}
+                    columns={worksheetColumns}
+                    rowKey="key"
+                    size="small"
+                    loading={loading}
+                    pagination={false}
+                    scroll={{ x: 'max-content' }}
+                    locale={{ emptyText: emptyDescription }}
+                  />
+                </div>
+              </Space>
+            ),
+          },
+        ]}
+      />
     </Card>
   )
 }
