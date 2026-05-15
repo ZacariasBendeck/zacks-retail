@@ -1,12 +1,16 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
-import { Alert, Button, Card, Col, Empty, Input, InputNumber, Row, Segmented, Space, Table, Tag, Typography } from 'antd'
+import { QuestionCircleOutlined } from '@ant-design/icons'
+import { Alert, Button, Card, Col, Empty, Input, InputNumber, Row, Segmented, Space, Table, Tag, Tooltip, Typography } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import dayjs from 'dayjs'
 import {
   type SavedPurchasePlanDetail,
   type SavedPurchasePlanRow,
   type SavedPurchasePlanRowsUpdateRequest,
+  type SavedPurchasePlanSalesTrendDirection,
+  type SavedPurchasePlanSalesTrendSummary,
 } from '../../services/purchasePlanningApi'
+import './SavedPurchasePlanWorkbook.css'
 
 const { Title, Text } = Typography
 
@@ -16,7 +20,15 @@ type WorksheetColumnMode = 'months' | 'seasons'
 
 type WorksheetMetricKey =
   | 'currentBoh'
+  | 'lastYearSalesUnits'
+  | 'lastYearBeginningOnHand'
+  | 'yearBeforeLastSalesUnits'
+  | 'lastYearVsPriorChangePct'
+  | 'yearBeforeLastBeginningOnHand'
+  | 'lastYearSellThroughPct'
   | 'currentProjSales'
+  | 'salesUnitDelta'
+  | 'salesUnitChangePct'
   | 'currentEohTarget'
   | 'baselineBuy'
   | 'currentBuy'
@@ -33,6 +45,7 @@ interface WorksheetMetric {
   editableKey?: EditableWorksheetMetricKey
   inputLabel?: string
   format: 'integer' | 'percent'
+  signed?: boolean
 }
 
 interface WorksheetPeriod {
@@ -49,9 +62,27 @@ interface WorksheetPivotRow {
   metric: WorksheetMetric
 }
 
-const WORKSHEET_METRICS: WorksheetMetric[] = [
-  { key: 'currentBoh', label: 'Projected BOH', aggregate: 'first', format: 'integer' },
+interface SalesProjectionSummary {
+  lastYear12MonthSales: number | null
+  projectedNext12MonthSales: number
+  suggestedProjectionIncreasePct: number | null
+  userProjectedIncreasePct: number | null
+}
+
+const SALES_PROJECTION_METRICS: WorksheetMetric[] = [
+  { key: 'lastYearSalesUnits', label: "Last year's sales units", aggregate: 'sum', format: 'integer' },
+  { key: 'lastYearBeginningOnHand', label: "Last year's beginning on hand", aggregate: 'sum', format: 'integer' },
+  { key: 'yearBeforeLastSalesUnits', label: 'Year before last sales units', aggregate: 'sum', format: 'integer' },
+  { key: 'lastYearVsPriorChangePct', label: 'Increase last year vs prior', aggregate: 'average', format: 'percent', signed: true },
+  { key: 'yearBeforeLastBeginningOnHand', label: 'Year before last beginning on hand', aggregate: 'sum', format: 'integer' },
+  { key: 'lastYearSellThroughPct', label: 'Sell thru for the month', aggregate: 'average', format: 'percent' },
   { key: 'currentProjSales', label: 'Projected sales', aggregate: 'sum', editableKey: 'currentProjSales', inputLabel: 'projected sales', format: 'integer' },
+  { key: 'salesUnitDelta', label: 'Compared sales units', aggregate: 'sum', format: 'integer', signed: true },
+]
+
+const ON_HAND_PROJECTION_METRICS: WorksheetMetric[] = [
+  { key: 'currentProjSales', label: 'Projected sales', aggregate: 'sum', format: 'integer' },
+  { key: 'currentBoh', label: 'Projected BOH', aggregate: 'first', format: 'integer' },
   { key: 'currentEohTarget', label: 'EOH target', aggregate: 'last', editableKey: 'currentEohTarget', inputLabel: 'EOH target', format: 'integer' },
   { key: 'baselineBuy', label: 'Baseline buy', aggregate: 'sum', format: 'integer' },
   { key: 'currentBuy', label: 'Current buy', aggregate: 'sum', editableKey: 'currentBuy', inputLabel: 'current buy', format: 'integer' },
@@ -72,6 +103,7 @@ export interface SavedPurchasePlanWorkbookProps {
   showArchive?: boolean
   confirmLabel?: string
   extraControls?: ReactNode
+  salesTrendSummary?: SavedPurchasePlanSalesTrendSummary | null
   onSaveRows: (planId: string, payload: SavedPurchasePlanRowsUpdateRequest) => void
   onRecalculate?: (planId: string) => void
   onArchive?: (planId: string) => void
@@ -121,18 +153,133 @@ function formatInt(value: number | null | undefined): string {
   return integerFmt.format(Math.round(value ?? 0))
 }
 
+function formatSignedPercent(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(Number(value))) return 'N/A'
+  const rounded = Math.round(Number(value) * 10) / 10
+  return `${rounded > 0 ? '+' : ''}${rounded}%`
+}
+
+function formatTrendMonthRange(fromYearMonth: string | null | undefined, toYearMonth: string | null | undefined): string {
+  if (!fromYearMonth || !toYearMonth) return 'N/A'
+  if (fromYearMonth === toYearMonth) return formatPurchasePlanMonth(fromYearMonth)
+  return `${formatPurchasePlanMonth(fromYearMonth)}-${formatPurchasePlanMonth(toYearMonth)}`
+}
+
+function renderTrendWindowHelp(label: string, trendWindow: SavedPurchasePlanSalesTrendSummary['last12']): ReactNode {
+  return (
+    <div>
+      <strong>{label}:</strong>{' '}
+      {formatTrendMonthRange(trendWindow.currentFromYearMonth, trendWindow.currentToYearMonth)} vs{' '}
+      {formatTrendMonthRange(trendWindow.comparisonFromYearMonth, trendWindow.comparisonToYearMonth)}
+      {' '}({formatInt(trendWindow.currentUnits)} units vs {formatInt(trendWindow.comparisonUnits)} units)
+    </div>
+  )
+}
+
+function renderCategoryTrendTooltip(summary: SavedPurchasePlanSalesTrendSummary): ReactNode {
+  return (
+    <div className="purchase-plan-trend-tooltip">
+      <div><strong>Trend calculations</strong></div>
+      <div>Uses complete workbook history through {formatPurchasePlanMonth(summary.historyToYearMonth)}.</div>
+      <div>Enterprise sales and on-hand calculations include all stores and warehouses.</div>
+      {renderTrendWindowHelp('Last 12M', summary.last12)}
+      {renderTrendWindowHelp('Recent 6M', summary.recent6)}
+      {renderTrendWindowHelp('Recent 3M', summary.recent3)}
+      <div>Change % = (current units - comparison units) / comparison units.</div>
+      <div>If comparison units are zero, percent is shown as N/A.</div>
+    </div>
+  )
+}
+
 function formUnit(value: number | null | undefined): number {
   if (value == null || Number.isNaN(Number(value))) return 0
   return Math.max(0, Math.round(Number(value)))
 }
 
+function trendDirectionLabel(direction: SavedPurchasePlanSalesTrendDirection): string {
+  switch (direction) {
+    case 'increasing':
+      return 'Increasing'
+    case 'decreasing':
+      return 'Decreasing'
+    case 'flat':
+      return 'Flat'
+    case 'insufficient_history':
+      return 'Insufficient history'
+    default:
+      return direction
+  }
+}
+
+function trendDirectionColor(direction: SavedPurchasePlanSalesTrendDirection): string {
+  if (direction === 'increasing') return 'green'
+  if (direction === 'decreasing') return 'red'
+  if (direction === 'flat') return 'blue'
+  return 'default'
+}
+
+function confidenceColor(confidence: SavedPurchasePlanSalesTrendSummary['confidence']): string {
+  if (confidence === 'high') return 'green'
+  if (confidence === 'medium') return 'gold'
+  return 'red'
+}
+
 function worksheetMetricValue(row: SavedPurchasePlanRow, metric: WorksheetMetric): number | null {
-  const value = row[metric.key]
+  if (metric.key === 'salesUnitDelta') {
+    return row.lastYearSalesUnits == null ? null : row.currentProjSales - row.lastYearSalesUnits
+  }
+  if (metric.key === 'salesUnitChangePct') {
+    if (row.lastYearSalesUnits == null || row.lastYearSalesUnits === 0) return null
+    return (row.currentProjSales - row.lastYearSalesUnits) / row.lastYearSalesUnits
+  }
+  if (metric.key === 'lastYearVsPriorChangePct') {
+    if (
+      row.lastYearSalesUnits == null
+      || row.yearBeforeLastSalesUnits == null
+      || row.yearBeforeLastSalesUnits === 0
+    ) return null
+    return (row.lastYearSalesUnits - row.yearBeforeLastSalesUnits) / row.yearBeforeLastSalesUnits
+  }
+  if (metric.key === 'lastYearSellThroughPct') {
+    if (
+      row.lastYearSalesUnits == null
+      || row.lastYearNextMonthBeginningOnHand == null
+      || row.lastYearNextMonthBeginningOnHand <= 0
+    ) return null
+    return row.lastYearSalesUnits / row.lastYearNextMonthBeginningOnHand
+  }
+  const value = row[metric.key as keyof SavedPurchasePlanRow]
   return value == null ? null : Number(value)
 }
 
 function aggregateWorksheetMetric(rows: SavedPurchasePlanRow[], metric: WorksheetMetric): number | null {
   if (rows.length === 0) return null
+  if (metric.key === 'salesUnitChangePct') {
+    const lastYearSales = rows.reduce((sum, row) => sum + (row.lastYearSalesUnits ?? 0), 0)
+    if (lastYearSales === 0) return null
+    const projectedSales = rows.reduce((sum, row) => sum + row.currentProjSales, 0)
+    return (projectedSales - lastYearSales) / lastYearSales
+  }
+  if (metric.key === 'lastYearVsPriorChangePct') {
+    const comparableRows = rows.filter((row) => (
+      row.lastYearSalesUnits != null
+      && row.yearBeforeLastSalesUnits != null
+    ))
+    const priorSales = comparableRows.reduce((sum, row) => sum + (row.yearBeforeLastSalesUnits ?? 0), 0)
+    if (priorSales === 0) return null
+    const lastYearSales = comparableRows.reduce((sum, row) => sum + (row.lastYearSalesUnits ?? 0), 0)
+    return (lastYearSales - priorSales) / priorSales
+  }
+  if (metric.key === 'lastYearSellThroughPct') {
+    const rowsWithSellThroughBasis = rows.filter((row) => (
+      row.lastYearSalesUnits != null
+      && row.lastYearNextMonthBeginningOnHand != null
+      && row.lastYearNextMonthBeginningOnHand > 0
+    ))
+    const sales = rowsWithSellThroughBasis.reduce((sum, row) => sum + (row.lastYearSalesUnits ?? 0), 0)
+    const beginningOnHand = rowsWithSellThroughBasis.reduce((sum, row) => sum + (row.lastYearNextMonthBeginningOnHand ?? 0), 0)
+    return beginningOnHand > 0 ? sales / beginningOnHand : null
+  }
   const values = rows
     .map((row) => worksheetMetricValue(row, metric))
     .filter((value): value is number => value != null)
@@ -153,8 +300,14 @@ function aggregateWorksheetMetric(rows: SavedPurchasePlanRow[], metric: Workshee
 
 function formatWorksheetMetric(value: number | null, metric: WorksheetMetric): string {
   if (value == null) return '-'
-  if (metric.format === 'percent') return `${Math.round(value * 1000) / 10}%`
-  return formatInt(value)
+  const sign = metric.signed && value > 0 ? '+' : ''
+  if (metric.format === 'percent') return `${sign}${Math.round(value * 1000) / 10}%`
+  return `${sign}${formatInt(value)}`
+}
+
+function formatSummaryUnits(value: number | null | undefined): string {
+  if (value == null) return 'N/A'
+  return `${formatInt(value)} units`
 }
 
 function buildWorksheetChanges(
@@ -184,6 +337,7 @@ export function SavedPurchasePlanWorkbook({
   showArchive = true,
   confirmLabel = 'Confirm sales projection',
   extraControls,
+  salesTrendSummary,
   onSaveRows,
   onRecalculate,
   onArchive,
@@ -201,13 +355,14 @@ export function SavedPurchasePlanWorkbook({
   const originalRowsById = useMemo(() => (
     new Map(sourceWorksheetRows.map((row) => [row.id, row]))
   ), [sourceWorksheetRows])
+  const suggestedProjectionPct = salesTrendSummary?.suggestedProjectionPct ?? 0
 
   useEffect(() => {
     setWorksheetRows(sourceWorksheetRows.map((row) => ({ ...row })))
     setAutoBuyRowIds(new Set())
-    setProjectionPct(0)
+    setProjectionPct(suggestedProjectionPct)
     setWorksheetReason('Worksheet edit')
-  }, [sourceWorksheetRows])
+  }, [sourceWorksheetRows, suggestedProjectionPct])
 
   const showWorksheetDepartment = (detail?.departments.length ?? 0) > 1
   const worksheetPeriods = useMemo(() => {
@@ -225,35 +380,60 @@ export function SavedPurchasePlanWorkbook({
     return out
   }, [worksheetRows])
 
-  const worksheetPivotRows = useMemo<WorksheetPivotRow[]>(() => {
+  const buildWorksheetPivotRows = (metrics: WorksheetMetric[]): WorksheetPivotRow[] => {
     const departmentsByKey = new Map<string, string>()
     for (const row of worksheetRows) {
       if (!departmentsByKey.has(row.departmentKey)) departmentsByKey.set(row.departmentKey, row.departmentLabel)
     }
     return [...departmentsByKey.entries()].flatMap(([departmentKey, departmentLabel]) =>
-      WORKSHEET_METRICS.map((metric) => ({
+      metrics.map((metric) => ({
         key: `${departmentKey}-${metric.key}`,
         departmentKey,
         departmentLabel,
         metric,
       })),
     )
-  }, [worksheetRows])
+  }
+  const salesWorksheetPivotRows = useMemo<WorksheetPivotRow[]>(
+    () => buildWorksheetPivotRows(SALES_PROJECTION_METRICS),
+    [worksheetRows],
+  )
+  const onHandWorksheetPivotRows = useMemo<WorksheetPivotRow[]>(
+    () => buildWorksheetPivotRows(ON_HAND_PROJECTION_METRICS),
+    [worksheetRows],
+  )
 
   const worksheetChanges = useMemo(() => buildWorksheetChanges(worksheetRows, originalRowsById), [originalRowsById, worksheetRows])
-  const worksheetTotals = useMemo(() => {
-    const totals = worksheetRows.reduce((acc, row) => ({
-      baselineTotalBuy: acc.baselineTotalBuy + row.baselineBuy,
-      currentTotalBuy: acc.currentTotalBuy + row.currentBuy,
-    }), {
-      baselineTotalBuy: 0,
-      currentTotalBuy: 0,
-    })
+  const salesProjectionSummary = useMemo<SalesProjectionSummary>(() => {
+    const projectionMonths = (detail?.plan.seasonMonths.length
+      ? [...detail.plan.seasonMonths]
+      : worksheetRows.map((row) => row.yearMonth)
+    )
+      .filter((month, index, months) => months.indexOf(month) === index)
+      .sort()
+      .slice(0, 12)
+    const projectionMonthSet = new Set(projectionMonths)
+    const projectedNext12MonthSales = worksheetRows.reduce((sum, row) => (
+      projectionMonthSet.has(row.yearMonth) ? sum + row.currentProjSales : sum
+    ), 0)
+    const lastYearRows = worksheetRows.filter((row) => (
+      projectionMonthSet.has(row.yearMonth)
+      && row.lastYearSalesUnits != null
+    ))
+    const fallbackLastYear12MonthSales = lastYearRows.length > 0
+      ? lastYearRows.reduce((sum, row) => sum + (row.lastYearSalesUnits ?? 0), 0)
+      : null
+    const lastYear12MonthSales = salesTrendSummary?.last12.currentUnits ?? fallbackLastYear12MonthSales
+    const userProjectedIncreasePct = lastYear12MonthSales && lastYear12MonthSales > 0
+      ? ((projectedNext12MonthSales - lastYear12MonthSales) / lastYear12MonthSales) * 100
+      : null
     return {
-      ...totals,
-      deltaBuy: totals.currentTotalBuy - totals.baselineTotalBuy,
+      lastYear12MonthSales,
+      projectedNext12MonthSales,
+      suggestedProjectionIncreasePct: salesTrendSummary?.suggestedProjectionPct ?? null,
+      userProjectedIncreasePct,
     }
-  }, [worksheetRows])
+  }, [detail, salesTrendSummary, worksheetRows])
 
   function recalculateWorksheetRows(rows: SavedPurchasePlanRow[], autoBuyIds: Set<string>): SavedPurchasePlanRow[] {
     const byDepartment = new Map<string, SavedPurchasePlanRow[]>()
@@ -292,8 +472,8 @@ export function SavedPurchasePlanWorkbook({
     ))
   }
 
-  function applyProjectionPercent(): void {
-    const pct = Number(projectionPct)
+  function applyProjectionPercentValue(value: number): void {
+    const pct = Number(value)
     if (!Number.isFinite(pct) || pct < -100) return
     const multiplier = 1 + pct / 100
     const nextAutoBuyIds = new Set(autoBuyRowIds)
@@ -309,10 +489,20 @@ export function SavedPurchasePlanWorkbook({
     ))
   }
 
+  function applyProjectionPercent(): void {
+    applyProjectionPercentValue(projectionPct)
+  }
+
+  function applySuggestedProjectionPercent(): void {
+    setProjectionPct(suggestedProjectionPct)
+    setWorksheetReason(`Suggested category trend ${formatSignedPercent(suggestedProjectionPct)}`)
+    applyProjectionPercentValue(suggestedProjectionPct)
+  }
+
   function resetWorksheet(): void {
     setWorksheetRows(sourceWorksheetRows.map((row) => ({ ...row })))
     setAutoBuyRowIds(new Set())
-    setProjectionPct(0)
+    setProjectionPct(suggestedProjectionPct)
     setWorksheetReason('Worksheet edit')
   }
 
@@ -338,6 +528,7 @@ export function SavedPurchasePlanWorkbook({
       return (
         <InputNumber
           aria-label={`${showWorksheetDepartment ? `${row.departmentLabel} ` : ''}${period.label} ${metric.inputLabel}`}
+          className="purchase-plan-workbook-grid-input"
           min={0}
           precision={0}
           size="small"
@@ -349,9 +540,19 @@ export function SavedPurchasePlanWorkbook({
       )
     }
 
+    const value = aggregateWorksheetMetric(periodRows, metric)
+    if (metric.key === 'lastYearSellThroughPct' && value != null && value > 0.3) {
+      return (
+        <Space direction="vertical" size={2} className="purchase-plan-workbook-sell-through-warning">
+          <Text type="warning">{formatWorksheetMetric(value, metric)}</Text>
+          <Tag color="orange" style={{ marginInlineEnd: 0 }}>constrained</Tag>
+        </Space>
+      )
+    }
+
     return (
       <Text strong={metric.key === 'currentBuy'}>
-        {formatWorksheetMetric(aggregateWorksheetMetric(periodRows, metric), metric)}
+        {formatWorksheetMetric(value, metric)}
       </Text>
     )
   }
@@ -371,11 +572,12 @@ export function SavedPurchasePlanWorkbook({
       width: 150,
       render: (_: unknown, row) => <Text>{row.metric.label}</Text>,
     },
-    ...worksheetPeriods.map((period) => ({
+    ...worksheetPeriods.map((period, index) => ({
       title: period.label,
       key: period.key,
       align: 'right' as const,
       width: period.mode === 'months' ? 118 : 132,
+      className: index % 2 === 0 ? 'purchase-plan-workbook-grid-period-even' : 'purchase-plan-workbook-grid-period-odd',
       render: (_: unknown, row: WorksheetPivotRow) => renderWorksheetPivotCell(row, period),
     })),
   ], [originalRowsById, showWorksheetDepartment, worksheetPeriods, worksheetRowByDepartmentMonth])
@@ -422,20 +624,75 @@ export function SavedPurchasePlanWorkbook({
         <Text type="secondary">Forecast: {detail.plan.forecastMethod}</Text>
         {detail.plan.discountNormalization ? <Tag color="blue">discount normalization</Tag> : null}
       </Space>
-      <Row gutter={12} style={{ marginBottom: 16 }}>
-        <Col xs={24} sm={8}>
-          <Text type="secondary">Baseline buy</Text>
-          <Title level={4} style={{ margin: 0 }}>{formatInt(worksheetTotals.baselineTotalBuy)}</Title>
-        </Col>
-        <Col xs={24} sm={8}>
-          <Text type="secondary">Current buy</Text>
-          <Title level={4} style={{ margin: 0 }}>{formatInt(worksheetTotals.currentTotalBuy)}</Title>
-        </Col>
-        <Col xs={24} sm={8}>
-          <Text type="secondary">Adjusted delta</Text>
-          <Title level={4} style={{ margin: 0 }}>{worksheetTotals.deltaBuy > 0 ? '+' : ''}{formatInt(worksheetTotals.deltaBuy)}</Title>
-        </Col>
-      </Row>
+      {salesTrendSummary ? (
+        <div className="purchase-plan-trend-panel">
+          <Space direction="vertical" size={8} style={{ width: '100%' }}>
+            <Space wrap align="center">
+              <Text type="secondary">Category trend</Text>
+              <Tooltip title={renderCategoryTrendTooltip(salesTrendSummary)} placement="top">
+                <Button
+                  aria-label="How category trend is calculated"
+                  className="purchase-plan-trend-help"
+                  htmlType="button"
+                  icon={<QuestionCircleOutlined />}
+                  size="small"
+                  type="text"
+                />
+              </Tooltip>
+              <Tag color={trendDirectionColor(salesTrendSummary.direction)}>
+                {trendDirectionLabel(salesTrendSummary.direction)}
+              </Tag>
+              <Tag color={confidenceColor(salesTrendSummary.confidence)}>
+                {salesTrendSummary.confidence} confidence
+              </Tag>
+            </Space>
+            <Row gutter={[12, 8]}>
+              <Col xs={12} md={5}>
+                <Text type="secondary">Last 12M</Text>
+                <div>
+                  <Text strong>{formatInt(salesTrendSummary.last12.currentUnits)} units</Text>
+                  <Text type="secondary"> {formatSignedPercent(salesTrendSummary.last12.changePct)}</Text>
+                </div>
+                <Text type="secondary">vs {formatInt(salesTrendSummary.last12.comparisonUnits)} units</Text>
+              </Col>
+              <Col xs={12} md={5}>
+                <Text type="secondary">Recent 6M YoY</Text>
+                <div>
+                  <Text strong>{formatInt(salesTrendSummary.recent6.currentUnits)} units</Text>
+                  <Text type="secondary"> {formatSignedPercent(salesTrendSummary.recent6.changePct)}</Text>
+                </div>
+                <Text type="secondary">vs {formatInt(salesTrendSummary.recent6.comparisonUnits)} units</Text>
+              </Col>
+              <Col xs={12} md={5}>
+                <Text type="secondary">Recent 3M YoY</Text>
+                <div>
+                  <Text strong>{formatInt(salesTrendSummary.recent3.currentUnits)} units</Text>
+                  <Text type="secondary"> {formatSignedPercent(salesTrendSummary.recent3.changePct)}</Text>
+                </div>
+                <Text type="secondary">vs {formatInt(salesTrendSummary.recent3.comparisonUnits)} units</Text>
+              </Col>
+              <Col xs={12} md={4}>
+                <Text type="secondary">Slope</Text>
+                <div>
+                  <Text strong>{formatSignedPercent(salesTrendSummary.monthlySlopePct)}</Text>
+                </div>
+              </Col>
+              <Col xs={24} md={5}>
+                <Text type="secondary">Suggested projection</Text>
+                <Space>
+                  <Text strong>{formatSignedPercent(salesTrendSummary.suggestedProjectionPct)}</Text>
+                  <Button size="small" htmlType="button" onClick={applySuggestedProjectionPercent} disabled={worksheetRows.length === 0}>
+                    Apply suggested %
+                  </Button>
+                </Space>
+              </Col>
+            </Row>
+            {salesTrendSummary.notes?.[0] ? (
+              <Text type="secondary">{salesTrendSummary.notes[0]}</Text>
+            ) : null}
+          </Space>
+        </div>
+      ) : null}
       <Space wrap align="end" style={{ marginBottom: 12 }}>
         {extraControls}
         <Space direction="vertical" size={2}>
@@ -488,17 +745,59 @@ export function SavedPurchasePlanWorkbook({
         </Button>
         {worksheetChanges.length > 0 ? <Tag color="gold">{worksheetChanges.length} changed</Tag> : null}
       </Space>
-      <Table<WorksheetPivotRow>
-        aria-label="Worksheet grid"
-        dataSource={worksheetPivotRows}
-        columns={worksheetColumns}
-        rowKey="key"
-        size="small"
-        loading={loading}
-        pagination={false}
-        scroll={{ x: 'max-content' }}
-        locale={{ emptyText: emptyDescription }}
-      />
+      <Space direction="vertical" size={16} style={{ width: '100%' }}>
+        <div>
+          <Title level={5} style={{ marginTop: 0 }}>Sales projection worksheet</Title>
+          <Table<WorksheetPivotRow>
+            aria-label="Sales projection worksheet"
+            className="purchase-plan-workbook-grid"
+            dataSource={salesWorksheetPivotRows}
+            columns={worksheetColumns}
+            rowKey="key"
+            size="small"
+            loading={loading}
+            pagination={false}
+            scroll={{ x: 'max-content' }}
+            locale={{ emptyText: emptyDescription }}
+          />
+        </div>
+        <div className="purchase-plan-sales-summary" aria-label="Sales projection summary">
+          <Title level={5} style={{ margin: 0 }}>Sales projection summary</Title>
+          <div className="purchase-plan-sales-summary-grid">
+            <div className="purchase-plan-sales-summary-item">
+              <Text type="secondary">Last year's 12 month sales</Text>
+              <Text strong>{formatSummaryUnits(salesProjectionSummary.lastYear12MonthSales)}</Text>
+            </div>
+            <div className="purchase-plan-sales-summary-item">
+              <Text type="secondary">Projected sales for next 12 months</Text>
+              <Text strong>{formatSummaryUnits(salesProjectionSummary.projectedNext12MonthSales)}</Text>
+            </div>
+            <div className="purchase-plan-sales-summary-item">
+              <Text type="secondary">Suggested sales projection increase for the year</Text>
+              <Text strong>{formatSignedPercent(salesProjectionSummary.suggestedProjectionIncreasePct)}</Text>
+            </div>
+            <div className="purchase-plan-sales-summary-item">
+              <Text type="secondary">Projected sales increase</Text>
+              <Text strong>{formatSignedPercent(salesProjectionSummary.userProjectedIncreasePct)}</Text>
+            </div>
+          </div>
+        </div>
+        <div>
+          <Title level={5} style={{ marginTop: 0 }}>ON Hand projection worksheet</Title>
+          <Table<WorksheetPivotRow>
+            aria-label="On hand projection worksheet"
+            className="purchase-plan-workbook-grid"
+            dataSource={onHandWorksheetPivotRows}
+            columns={worksheetColumns}
+            rowKey="key"
+            size="small"
+            loading={loading}
+            pagination={false}
+            scroll={{ x: 'max-content' }}
+            locale={{ emptyText: emptyDescription }}
+          />
+        </div>
+      </Space>
     </Card>
   )
 }

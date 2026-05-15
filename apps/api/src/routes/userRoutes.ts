@@ -865,6 +865,7 @@ export function createUserRoutes(prisma: PrismaClient): Router {
   const createBody = z.object({
     email: z.string().email(),
     displayName: z.string().min(1),
+    preferredLocale: z.enum(['en-US', 'es-HN']).nullable().optional(),
     password: z.string().min(8),
     roleId: z.string().uuid(),
     ricsUserId: z.string().optional().nullable(),
@@ -914,6 +915,7 @@ export function createUserRoutes(prisma: PrismaClient): Router {
   const patchBody = z.object({
     email: z.string().email().optional(),
     displayName: z.string().min(1).optional(),
+    preferredLocale: z.enum(['en-US', 'es-HN']).nullable().optional(),
     roleId: z.string().uuid().optional(),
     active: z.boolean().optional(),
     ricsUserId: z.string().nullable().optional(),

@@ -1,4 +1,5 @@
 import React from 'react';
+import { useTranslation } from '@benlow-rics/i18n/react';
 import type { InquiryRollup } from '../../../types/inventoryInquiry';
 
 // Compact rollup grid mirroring the RICS inquiry panel: plain <table>
@@ -8,11 +9,11 @@ import type { InquiryRollup } from '../../../types/inventoryInquiry';
 const fmtQty = new Intl.NumberFormat('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
 const fmtMoney = new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
-const PERIODS: Array<{ key: keyof InquiryRollup; label: string }> = [
-  { key: 'week',   label: 'Week' },
-  { key: 'month',  label: 'Month' },
-  { key: 'season', label: 'Season' },
-  { key: 'year',   label: 'Year' },
+const PERIODS: Array<{ key: keyof InquiryRollup; labelKey: string }> = [
+  { key: 'week',   labelKey: 'rollup.week' },
+  { key: 'month',  labelKey: 'rollup.month' },
+  { key: 'season', labelKey: 'rollup.season' },
+  { key: 'year',   labelKey: 'rollup.year' },
 ];
 
 const th: React.CSSProperties = {
@@ -28,24 +29,26 @@ const td: React.CSSProperties = {
   minWidth: 60,
 };
 
-export const SalesRollupStrip: React.FC<{ rollup: InquiryRollup }> = ({ rollup }) => (
-  <table style={{ borderCollapse: 'collapse', fontSize: 12 }}>
+export const SalesRollupStrip: React.FC<{ rollup: InquiryRollup }> = ({ rollup }) => {
+  const { t } = useTranslation('inquiry');
+  return (
+    <table style={{ borderCollapse: 'collapse', fontSize: 12 }}>
     <thead>
       <tr>
-        <th scope="col" style={{ ...th, textAlign: 'left' }}>Sales</th>
-        <th scope="col" style={th}>Qty</th>
-        <th scope="col" style={th}>Net</th>
-        <th scope="col" style={th}>Markdown</th>
-        <th scope="col" style={th}>Profit</th>
+        <th scope="col" style={{ ...th, textAlign: 'left' }}>{t('rollup.sales')}</th>
+        <th scope="col" style={th}>{t('rollup.qty')}</th>
+        <th scope="col" style={th}>{t('rollup.net')}</th>
+        <th scope="col" style={th}>{t('rollup.markdown')}</th>
+        <th scope="col" style={th}>{t('rollup.profit')}</th>
       </tr>
     </thead>
     <tbody>
-      {PERIODS.map(({ key, label }) => {
+      {PERIODS.map(({ key, labelKey }) => {
         const cell = rollup[key];
         return (
           <tr key={key}>
             {/* role "cell" (plain <td>) not "rowheader" — test asserts getByRole('cell', …) */}
-            <td style={{ ...td, textAlign: 'left', color: '#666', fontWeight: 500 }}>{label}</td>
+            <td style={{ ...td, textAlign: 'left', color: '#666', fontWeight: 500 }}>{t(labelKey)}</td>
             <td style={td}>{fmtQty.format(cell.qty)}</td>
             <td style={td}>{fmtMoney.format(cell.net)}</td>
             <td style={td}>{fmtMoney.format(cell.markdown)}</td>
@@ -55,4 +58,5 @@ export const SalesRollupStrip: React.FC<{ rollup: InquiryRollup }> = ({ rollup }
       })}
     </tbody>
   </table>
-);
+  );
+};

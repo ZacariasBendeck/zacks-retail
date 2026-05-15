@@ -44,7 +44,7 @@ export interface Facets {
   sizes: { label: string; count: number }[]
   categories: { id: number; name: string; count: number }[]
   departments: { name: string; count: number }[]
-  materials: { name: string; count: number }[]
+  materials: { id: number; name: string; count: number }[]
   priceRange: { min: number; max: number }
 }
 

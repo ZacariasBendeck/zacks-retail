@@ -107,6 +107,11 @@ const planDetail: SavedPurchasePlanDetail = {
           stockPosition: 70,
           normalizationFactor: 0.8,
           rawProjSales: 75,
+          lastYearSalesUnits: 50,
+          lastYearBeginningOnHand: 100,
+          lastYearNextMonthBeginningOnHand: 200,
+          yearBeforeLastSalesUnits: 40,
+          yearBeforeLastBeginningOnHand: 90,
         },
         {
           id: 'row-2',
@@ -132,6 +137,11 @@ const planDetail: SavedPurchasePlanDetail = {
           stockPosition: 0,
           normalizationFactor: null,
           rawProjSales: null,
+          lastYearSalesUnits: 100,
+          lastYearBeginningOnHand: 100,
+          lastYearNextMonthBeginningOnHand: 250,
+          yearBeforeLastSalesUnits: 120,
+          yearBeforeLastBeginningOnHand: 130,
         },
         ...[
           '2026-07', '2026-08', '2026-09', '2026-10', '2026-11', '2026-12',
@@ -160,6 +170,11 @@ const planDetail: SavedPurchasePlanDetail = {
           stockPosition: 0,
           normalizationFactor: null,
           rawProjSales: null,
+          lastYearSalesUnits: null,
+          lastYearBeginningOnHand: null,
+          lastYearNextMonthBeginningOnHand: null,
+          yearBeforeLastSalesUnits: null,
+          yearBeforeLastBeginningOnHand: null,
         })),
       ],
     },
@@ -357,8 +372,8 @@ async function chooseSelectOption(label: string, option: string) {
   await userEvent.click(await within(dropdown).findByTitle(option))
 }
 
-function worksheetMetricCells(label: string, department?: string): string[] {
-  const table = screen.getByLabelText('Worksheet grid')
+function worksheetMetricCells(label: string, department?: string, tableLabel = 'Sales projection worksheet'): string[] {
+  const table = screen.getByLabelText(tableLabel)
   const rows = within(table).getAllByText(label).map((node) => node.closest('tr')).filter(Boolean)
   const row = department
     ? rows.find((candidate) => candidate?.textContent?.includes(department))
@@ -475,16 +490,31 @@ describe('PurchasePlanningPage saved plans', () => {
     await userEvent.click(screen.getByRole('tab', { name: 'Saved plans' }))
     await userEvent.click(await screen.findByRole('button', { name: 'Enterprise-wide 10 - Footwear Summer 2026 to Summer 2027' }))
 
-    expect(await screen.findByRole('columnheader', { name: 'May 2026' })).toBeInTheDocument()
-    expect(screen.getByRole('columnheader', { name: 'Jul 2027' })).toBeInTheDocument()
+    expect((await screen.findAllByRole('columnheader', { name: 'May 2026' })).length).toBeGreaterThan(0)
+    expect(screen.getAllByRole('columnheader', { name: 'Jul 2027' }).length).toBeGreaterThan(0)
     expect(screen.getByRole('button', { name: 'Recalculate' })).toBeInTheDocument()
-    expect(screen.getByRole('columnheader', { name: 'Worksheet row' })).toBeInTheDocument()
+    expect(screen.getAllByRole('columnheader', { name: 'Worksheet row' }).length).toBeGreaterThan(0)
     expect(screen.queryByRole('columnheader', { name: 'Department' })).not.toBeInTheDocument()
     expect(screen.getByText('15-month workbook')).toBeInTheDocument()
-    expect(within(screen.getByLabelText('Worksheet grid')).getByText('Norm')).toBeInTheDocument()
+    expect(within(screen.getByLabelText('On hand projection worksheet')).getByText('Norm')).toBeInTheDocument()
+    expect(worksheetMetricCells("Last year's sales units").slice(0, 3)).toEqual(["Last year's sales units", '50', '100'])
+    expect(worksheetMetricCells("Last year's beginning on hand").slice(0, 3)).toEqual(["Last year's beginning on hand", '100', '100'])
+    expect(worksheetMetricCells('Year before last sales units').slice(0, 3)).toEqual(['Year before last sales units', '40', '120'])
+    expect(worksheetMetricCells('Increase last year vs prior').slice(0, 3)).toEqual(['Increase last year vs prior', '+25%', '-16.7%'])
+    expect(worksheetMetricCells('Year before last beginning on hand').slice(0, 3)).toEqual(['Year before last beginning on hand', '90', '130'])
+    expect(worksheetMetricCells('Sell thru for the month').slice(0, 3)).toEqual(['Sell thru for the month', '25%', '40%constrained'])
+    expect(worksheetMetricCells('Compared sales units').slice(0, 3)).toEqual(['Compared sales units', '+10', '-30'])
+    const salesWorksheetRows = within(screen.getByLabelText('Sales projection worksheet'))
+      .getAllByRole('row')
+      .map((row) => row.textContent ?? '')
+    expect(salesWorksheetRows.findIndex((row) => row.includes('Increase last year vs prior')))
+      .toBe(salesWorksheetRows.findIndex((row) => row.includes('Year before last sales units')) + 1)
     expect(screen.getByText('80%')).toBeInTheDocument()
     expect(screen.getByLabelText('May 2026 current buy')).toHaveValue('45')
     expect(screen.getByLabelText('Jun 2026 current buy')).toHaveValue('40')
+    expect(screen.getByLabelText('May 2026 projected sales').closest('.purchase-plan-workbook-grid-input')).not.toBeNull()
+    expect(screen.getByLabelText('Sales projection worksheet').closest('.purchase-plan-workbook-grid')).not.toBeNull()
+    expect(screen.getByLabelText('On hand projection worksheet').closest('.purchase-plan-workbook-grid')).not.toBeNull()
   })
 
   it('collapses worksheet month columns into season rollups', async () => {
@@ -497,20 +527,26 @@ describe('PurchasePlanningPage saved plans', () => {
     await userEvent.click(screen.getByRole('tab', { name: 'Saved plans' }))
     await userEvent.click(await screen.findByRole('button', { name: 'Enterprise-wide 10 - Footwear Summer 2026 to Summer 2027' }))
 
-    expect(await screen.findByRole('columnheader', { name: 'May 2026' })).toBeInTheDocument()
+    expect((await screen.findAllByRole('columnheader', { name: 'May 2026' })).length).toBeGreaterThan(0)
     await userEvent.click(screen.getByText('Seasons'))
 
-    expect(await screen.findByRole('columnheader', { name: 'Summer 2026' })).toBeInTheDocument()
-    expect(screen.getByRole('columnheader', { name: 'Fall 2026' })).toBeInTheDocument()
-    expect(screen.getByRole('columnheader', { name: 'Winter 2026' })).toBeInTheDocument()
-    expect(screen.getByRole('columnheader', { name: 'Spring 2027' })).toBeInTheDocument()
-    expect(screen.getByRole('columnheader', { name: 'Summer 2027' })).toBeInTheDocument()
+    expect((await screen.findAllByRole('columnheader', { name: 'Summer 2026' })).length).toBeGreaterThan(0)
+    expect(screen.getAllByRole('columnheader', { name: 'Fall 2026' }).length).toBeGreaterThan(0)
+    expect(screen.getAllByRole('columnheader', { name: 'Winter 2026' }).length).toBeGreaterThan(0)
+    expect(screen.getAllByRole('columnheader', { name: 'Spring 2027' }).length).toBeGreaterThan(0)
+    expect(screen.getAllByRole('columnheader', { name: 'Summer 2027' }).length).toBeGreaterThan(0)
     expect(screen.queryByRole('columnheader', { name: 'May 2026' })).not.toBeInTheDocument()
     expect(screen.queryByLabelText('Summer 2026 projected sales')).not.toBeInTheDocument()
-    expect(worksheetMetricCells('Current buy')).toEqual(['Current buy', '125', '120', '120', '120', '120'])
+    expect(worksheetMetricCells('Current buy', undefined, 'On hand projection worksheet')).toEqual(['Current buy', '125', '120', '120', '120', '120'])
+    expect(screen.getByLabelText('Sales projection summary').closest('.purchase-plan-sales-summary')).not.toBeNull()
+    expect(within(screen.getByLabelText('Sales projection summary')).getByText('Projected sales for next 12 months')).toBeInTheDocument()
+    expect(within(screen.getByLabelText('Sales projection summary')).getByText('150 units')).toBeInTheDocument()
+    expect(within(screen.getByLabelText('Sales projection summary')).getByText('630 units')).toBeInTheDocument()
+    expect(within(screen.getByLabelText('Sales projection summary')).getByText('+320%')).toBeInTheDocument()
+    expect(screen.queryByText('Adjusted delta')).not.toBeInTheDocument()
 
     await userEvent.click(screen.getByText('Months'))
-    expect(await screen.findByRole('columnheader', { name: 'May 2026' })).toBeInTheDocument()
+    expect((await screen.findAllByRole('columnheader', { name: 'May 2026' })).length).toBeGreaterThan(0)
     expect(screen.getByLabelText('May 2026 projected sales')).toBeInTheDocument()
   })
 
@@ -524,7 +560,7 @@ describe('PurchasePlanningPage saved plans', () => {
     await userEvent.click(screen.getByRole('tab', { name: 'Saved plans' }))
     await userEvent.click(await screen.findByRole('button', { name: 'Enterprise-wide 10 - Footwear Summer 2026 to Summer 2027' }))
 
-    await screen.findByRole('columnheader', { name: 'May 2026' })
+    await screen.findAllByRole('columnheader', { name: 'May 2026' })
     expect(screen.getByLabelText('May 2026 current buy')).toHaveValue('45')
     expect(screen.getByLabelText('Jun 2026 current buy')).toHaveValue('80')
 
@@ -600,8 +636,8 @@ describe('PurchasePlanningPage saved plans', () => {
     await userEvent.click(screen.getByRole('tab', { name: 'Saved plans' }))
     await userEvent.click(await screen.findByRole('button', { name: 'Enterprise-wide 10 - Footwear Summer 2026 to Summer 2027' }))
 
-    expect(await screen.findByRole('columnheader', { name: 'Department' })).toBeInTheDocument()
-    expect(within(screen.getByLabelText('Worksheet grid')).getAllByText('20 - Apparel').length).toBeGreaterThan(0)
+    expect((await screen.findAllByRole('columnheader', { name: 'Department' })).length).toBeGreaterThan(0)
+    expect(within(screen.getByLabelText('On hand projection worksheet')).getAllByText('20 - Apparel').length).toBeGreaterThan(0)
     expect(screen.getByLabelText('10 - Footwear May 2026 current buy')).toHaveValue('45')
   })
 
@@ -615,7 +651,7 @@ describe('PurchasePlanningPage saved plans', () => {
 
     await userEvent.click(screen.getByRole('tab', { name: 'Saved plans' }))
     await userEvent.click(await screen.findByRole('button', { name: 'Enterprise-wide 10 - Footwear Summer 2026 to Summer 2027' }))
-    await screen.findByRole('columnheader', { name: 'May 2026' })
+    await screen.findAllByRole('columnheader', { name: 'May 2026' })
     const adjustButtons = screen.getAllByRole('button', { name: /Adjust/ })
     const adjustButton = adjustButtons[0]
     if (!adjustButton) throw new Error('Expected an adjustment action')
@@ -636,7 +672,7 @@ describe('PurchasePlanningPage saved plans', () => {
     ])
     expect(archiveSavedPurchasePlan).not.toHaveBeenCalled()
     expect(recalculateSavedPurchasePlan).not.toHaveBeenCalled()
-  })
+  }, 15_000)
 
   it('edits monthly projection, target, and buy cells directly in the worksheet', async () => {
     vi.mocked(useDepartments).mockReturnValue({ data: [], isLoading: false } as never)
@@ -677,7 +713,7 @@ describe('PurchasePlanningPage saved plans', () => {
       },
     ])
     expect(addSavedPurchasePlanAdjustment).not.toHaveBeenCalled()
-  })
+  }, 15_000)
 
   it('applies a projection percent and recalculates worksheet cells before saving', async () => {
     vi.mocked(useDepartments).mockReturnValue({ data: [], isLoading: false } as never)

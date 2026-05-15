@@ -1,0 +1,93 @@
+.purchase-plan-workbook-grid .ant-table-thead > tr > th,
+.purchase-plan-workbook-grid .ant-table-tbody > tr > td {
+  border-bottom: 1px solid #c9d1d9 !important;
+  border-inline-end: 1px solid #c9d1d9 !important;
+}
+
+.purchase-plan-workbook-grid .ant-table-thead > tr > th {
+  background: #edf2f7 !important;
+}
+
+.purchase-plan-workbook-grid .ant-table-tbody > tr:nth-child(odd) > td {
+  background: #fbfcfd;
+}
+
+.purchase-plan-workbook-grid .ant-table-tbody > tr:nth-child(even) > td {
+  background: #f0f3f6;
+}
+
+.purchase-plan-workbook-grid .ant-table-tbody > tr > td.purchase-plan-workbook-grid-period-odd {
+  background: #eef3f8;
+}
+
+.purchase-plan-workbook-grid .ant-table-tbody > tr:nth-child(even) > td.purchase-plan-workbook-grid-period-odd {
+  background: #e3eaf1;
+}
+
+.purchase-plan-workbook-grid .ant-table-tbody > tr:hover > td,
+.purchase-plan-workbook-grid .ant-table-tbody > tr:hover > td.purchase-plan-workbook-grid-period-odd {
+  background: #dcecff !important;
+}
+
+.purchase-plan-workbook-grid .purchase-plan-workbook-grid-input .ant-input-number-input {
+  text-align: right;
+}
+
+.purchase-plan-workbook-sell-through-warning {
+  width: 100%;
+  align-items: flex-end;
+  line-height: 1.15;
+}
+
+.purchase-plan-trend-panel {
+  margin-bottom: 16px;
+  padding: 12px;
+  border: 1px solid #d8dee6;
+  border-radius: 6px;
+  background: #f8fafc;
+}
+
+.purchase-plan-trend-help {
+  color: #5f6b7a;
+}
+
+.purchase-plan-trend-tooltip {
+  max-width: 420px;
+}
+
+.purchase-plan-trend-tooltip > div + div {
+  margin-top: 6px;
+}
+
+.purchase-plan-sales-summary {
+  margin: 36px 0;
+  padding: 16px 0;
+  border-top: 1px solid #d8dee6;
+  border-bottom: 1px solid #d8dee6;
+}
+
+.purchase-plan-sales-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(160px, 1fr));
+  gap: 16px;
+  margin-top: 12px;
+}
+
+.purchase-plan-sales-summary-item {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+
+@media (max-width: 900px) {
+  .purchase-plan-sales-summary-grid {
+    grid-template-columns: repeat(2, minmax(160px, 1fr));
+  }
+}
+
+@media (max-width: 560px) {
+  .purchase-plan-sales-summary-grid {
+    grid-template-columns: 1fr;
+  }
+}

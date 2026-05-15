@@ -1,9 +1,12 @@
+import type { SupportedLocale } from '@benlow-rics/i18n';
+
 const API_BASE = '/api/v1/users';
 
 export interface AdminUser {
   id: string;
   email: string;
   displayName: string;
+  preferredLocale: SupportedLocale | null;
   active: boolean;
   roleId: string;
   role: { id: string; name: string; permissions: string[] };
@@ -179,6 +182,7 @@ export interface CreateUserInput {
 export interface UpdateUserInput {
   email?: string;
   displayName?: string;
+  preferredLocale?: SupportedLocale | null;
   roleId?: string;
   active?: boolean;
   ricsUserId?: string | null;

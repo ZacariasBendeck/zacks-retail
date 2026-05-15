@@ -1,5 +1,6 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useTranslation } from '@benlow-rics/i18n/react';
 import { DraggableModal } from '../draggable-modal';
 import { InquiryBody } from '../../pages/products/inquiry/InquiryBody';
 import type { InquiryTab, NeighborScope } from '../../pages/products/inquiry/ActionBar';
@@ -29,6 +30,7 @@ const InquiryPopupContext = React.createContext<InquiryPopupContextValue | null>
  */
 export const InquiryPopupProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const navigate = useNavigate();
+  const { t } = useTranslation('inquiry');
   const [state, setState] = React.useState<{ open: boolean; skuCode: string; storeId?: number }>({
     open: false,
     skuCode: '',
@@ -78,7 +80,7 @@ export const InquiryPopupProvider: React.FC<{ children: React.ReactNode }> = ({ 
     <InquiryPopupContext.Provider value={ctx}>
       {children}
       <DraggableModal
-        title={state.skuCode ? `Inventory Inquiry - ${state.skuCode}` : 'Inventory Inquiry'}
+        title={state.skuCode ? `${t('title')} - ${state.skuCode}` : t('title')}
         width="92vw"
         open={state.open}
         onCancel={closeInquiry}

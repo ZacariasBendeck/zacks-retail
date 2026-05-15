@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { Row, Col, Typography, Breadcrumb, Empty, Spin } from 'antd'
 import { HomeOutlined, ShoppingCartOutlined } from '@ant-design/icons'
+import { useTranslation } from '@benlow-rics/i18n/react'
 import { useCartStore } from '@/store/cartStore'
 import CartItem from '@/components/CartItem'
 import CartSummary from '@/components/CartSummary'
@@ -8,6 +9,7 @@ import CartSummary from '@/components/CartSummary'
 const { Title } = Typography
 
 export default function CartPage() {
+  const { t } = useTranslation('storefront')
   const { cart, loading, loadCart, updateItem, removeItem } = useCartStore()
 
   useEffect(() => {
@@ -18,13 +20,13 @@ export default function CartPage() {
     <div style={{ maxWidth: 1400, margin: '0 auto', padding: '16px 24px' }}>
       <Breadcrumb
         items={[
-          { title: <><HomeOutlined /> Inicio</>, href: '/' },
-          { title: <><ShoppingCartOutlined /> Carrito</> },
+          { title: <><HomeOutlined /> {t('product.home')}</>, href: '/' },
+          { title: <><ShoppingCartOutlined /> {t('cart.breadcrumb')}</> },
         ]}
         style={{ marginBottom: 24 }}
       />
 
-      <Title level={2}>Mi Carrito</Title>
+      <Title level={2}>{t('cart.title')}</Title>
 
       {loading && !cart && (
         <div style={{ textAlign: 'center', padding: 80 }}>
@@ -33,7 +35,7 @@ export default function CartPage() {
       )}
 
       {cart && cart.lines.length === 0 && (
-        <Empty description="Tu carrito esta vacio" style={{ padding: 80 }} />
+        <Empty description={t('cart.empty')} style={{ padding: 80 }} />
       )}
 
       {cart && cart.lines.length > 0 && (

@@ -1,9 +1,11 @@
 import { Row, Col, Typography, InputNumber, Button, Image } from 'antd'
 import { DeleteOutlined } from '@ant-design/icons'
+import { formatHnl } from '@benlow-rics/i18n'
+import { useI18nLocale } from '@benlow-rics/i18n/react'
+import { useTranslation } from '@benlow-rics/i18n/react'
 import type { CartLine } from '@/types/cart'
 
 const { Text } = Typography
-const PLACEHOLDER = 'https://placehold.co/120x120/f5f5f5/999?text=Sin+Imagen'
 
 interface CartItemProps {
   line: CartLine
@@ -13,6 +15,10 @@ interface CartItemProps {
 }
 
 export default function CartItem({ line, onUpdateQuantity, onRemove, disabled }: CartItemProps) {
+  const { t } = useTranslation('storefront')
+  const { locale } = useI18nLocale()
+  const placeholder = `https://placehold.co/120x120/f5f5f5/999?text=${encodeURIComponent(t('product.noImage'))}`
+
   return (
     <Row
       align="middle"
@@ -21,7 +27,7 @@ export default function CartItem({ line, onUpdateQuantity, onRemove, disabled }:
     >
       <Col xs={6} md={3}>
         <Image
-          src={line.productImage ?? PLACEHOLDER}
+          src={line.productImage ?? placeholder}
           alt={line.productName}
           width={80}
           height={80}
@@ -31,14 +37,14 @@ export default function CartItem({ line, onUpdateQuantity, onRemove, disabled }:
       </Col>
       <Col xs={18} md={8}>
         <Text strong style={{ display: 'block' }}>{line.productName}</Text>
-        {line.size && <Text type="secondary">Talla: {line.size}</Text>}
-        {line.color && <Text type="secondary" style={{ marginLeft: 12 }}>Color: {line.color}</Text>}
+        {line.size && <Text type="secondary">{t('cart.size', { size: line.size })}</Text>}
+        {line.color && <Text type="secondary" style={{ marginLeft: 12 }}>{t('cart.color', { color: line.color })}</Text>}
         {line.skuCode && (
           <div><Text type="secondary" style={{ fontSize: 11 }}>SKU: {line.skuCode}</Text></div>
         )}
       </Col>
       <Col xs={8} md={4}>
-        <Text type="secondary">L {line.unitPrice.toFixed(2)}</Text>
+        <Text type="secondary">{formatHnl(line.unitPrice, locale)}</Text>
       </Col>
       <Col xs={8} md={4}>
         <InputNumber
@@ -51,7 +57,7 @@ export default function CartItem({ line, onUpdateQuantity, onRemove, disabled }:
         />
       </Col>
       <Col xs={5} md={3}>
-        <Text strong>L {line.subtotal.toFixed(2)}</Text>
+        <Text strong>{formatHnl(line.subtotal, locale)}</Text>
       </Col>
       <Col xs={3} md={2}>
         <Button

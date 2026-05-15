@@ -1,0 +1,101 @@
+{
+  "title": "Consulta de Inventario",
+  "pickSku": "Seleccionar SKU",
+  "loadingAria": "Cargando consulta",
+  "loadingSku": "Cargando {{sku}}...",
+  "buttons": {
+    "skuLookup": "Buscar SKU",
+    "recommendedReorder": "Reorden recomendado",
+    "reorder": "Reordenar",
+    "editSku": "Editar SKU",
+    "openReplacement": "Abrir reemplazo"
+  },
+  "messages": {
+    "noNeighbor": "No hay SKU {{direction}} en {{scope}}.",
+    "replacedBy": "Reemplazado por {{sku}}",
+    "replacedDescription": "Este SKU no puede reordenarse desde este registro. Queda visible para historial de ventas, devoluciones y auditoria de inventario.",
+    "replacementWarning": "El SKU {{sku}} fue reemplazado por {{replacementSku}}. Reordena el SKU de reemplazo.",
+    "demandIncludes": "La demanda incluye SKUs reemplazados {{skus}}",
+    "demandIncludes_one": "La demanda incluye el SKU reemplazado {{skus}}",
+    "demandIncludes_other": "La demanda incluye SKUs reemplazados {{skus}}",
+    "demandIncludesDescription": "El historial exacto de ventas del reemplazo se incluye cuando este SKU se planifica para reorden.",
+    "noActivity": "No hay actividad actual de inventario para este SKU",
+    "noActivityDescription": "El SKU {{sku}} existe, pero los datos importados actualmente no muestran existencia, ordenes, modelo ni ventas.",
+    "noDataForMode": "No hay datos para esta vista."
+  },
+  "scope": {
+    "tooltip": "Alcance para navegacion Anterior / Siguiente",
+    "general": "Cualquiera",
+    "vendor": "Proveedor",
+    "category": "Categoria",
+    "catalog": "el catalogo",
+    "sameVendor": "el mismo proveedor",
+    "sameCategory": "la misma categoria"
+  },
+  "tabs": {
+    "upcs": "UPCs",
+    "pos": "OCs",
+    "trend": "Tendencia",
+    "info": "Info",
+    "detail": "Detalle"
+  },
+  "headers": {
+    "sku": "SKU",
+    "description": "Descripcion",
+    "buyer": "Comprador",
+    "category": "Categoria",
+    "vendor": "Proveedor",
+    "company": "Empresa",
+    "vendorSku": "SKU Proveedor",
+    "styleColor": "Estilo/Color",
+    "chain": "Cadena",
+    "sizeType": "Tipo de Talla",
+    "lastReceived": "Ultima Recepcion",
+    "discount": "Descuento",
+    "store": "Tienda",
+    "allStores": "Todas las Tiendas",
+    "storeNumber": "Tienda {{storeId}}",
+    "skuState": "Estado SKU",
+    "labelType": "label_type",
+    "replacedBy": "Reemplazado por {{sku}}",
+    "replaces": "Reemplaza",
+    "demand": "demanda"
+  },
+  "pricing": {
+    "retail": "Precio Retail",
+    "markdown1": "Rebaja 1",
+    "markdown2": "Rebaja 2",
+    "avgCost": "Costo Promedio",
+    "currentCost": "Costo Actual",
+    "listPrice": "Precio Lista"
+  },
+  "rollup": {
+    "sales": "Ventas",
+    "qty": "Cant.",
+    "net": "Neto",
+    "markdown": "Rebaja",
+    "profit": "Utilidad",
+    "week": "Semana",
+    "month": "Mes",
+    "season": "Temporada",
+    "year": "Ano"
+  },
+  "modes": {
+    "ON_HAND": "Existencia",
+    "ON_ORDER_CURRENT": "En Orden (Inmediato)",
+    "ON_ORDER_FUTURE": "En Orden (Futuro)",
+    "MODEL": "Cantidades Modelo",
+    "SHORT": "Faltantes",
+    "MTD_SALES": "Ventas Mes a la Fecha",
+    "STD_SALES": "Ventas Temporada a la Fecha",
+    "YTD_SALES": "Ventas Ano a la Fecha",
+    "LY_SALES": "Ventas Ano Anterior",
+    "SINGLE_COLUMN": "Solo Columna",
+    "ALL_STORES_ON_HAND": "Todas las Tiendas - Existencia",
+    "ALL_STORES_SUMMARY": "Todas las Tiendas - Resumen",
+    "MAX": "Cantidades Maximas",
+    "REORDER": "Cantidades de Reorden"
+  },
+  "row": "Fila",
+  "total": "Total"
+}

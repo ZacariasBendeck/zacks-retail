@@ -2,8 +2,7 @@ import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { BrowserRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { ConfigProvider, App as AntApp } from 'antd'
-import esES from 'antd/locale/es_ES'
+import { AppI18nProvider } from '@benlow-rics/i18n/react'
 import App from './App'
 
 const queryClient = new QueryClient({
@@ -18,8 +17,8 @@ const queryClient = new QueryClient({
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <QueryClientProvider client={queryClient}>
-      <ConfigProvider
-        locale={esES}
+      <AppI18nProvider
+        app="storefront"
         theme={{
           token: {
             colorPrimary: '#1677ff',
@@ -27,12 +26,10 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           },
         }}
       >
-        <AntApp>
-          <BrowserRouter>
-            <App />
-          </BrowserRouter>
-        </AntApp>
-      </ConfigProvider>
+        <BrowserRouter>
+          <App />
+        </BrowserRouter>
+      </AppI18nProvider>
     </QueryClientProvider>
   </React.StrictMode>,
 )

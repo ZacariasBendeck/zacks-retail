@@ -1,8 +1,8 @@
 import { prisma } from '../../db/prisma';
 import { getSkuStoreCellRollup } from '../ricsInventoryAdapter';
-import { createPurchasePlan, getPurchasePlan } from './purchasePlanningSavedService';
+import { createPurchasePlan, getPurchasePlan, getPurchasePlanSalesTrendSummary } from './purchasePlanningSavedService';
 import { buildSeasonWindowFromYearMonth } from './season';
-import type { PurchasePlanDetailResponse } from './types';
+import type { PurchasePlanDetailResponse, PurchasePlanSalesTrendSummary } from './types';
 
 type DbClient = {
   $queryRawUnsafe: typeof prisma.$queryRawUnsafe;
@@ -353,6 +353,7 @@ export interface BuyerWorkbookDetail {
 
 export interface BuyerSalesProjectionWorkbookResult {
   plan: PurchasePlanDetailResponse;
+  trendSummary: PurchasePlanSalesTrendSummary;
   buyerWorkbook: BuyerWorkbookDetail;
 }
 
@@ -2719,6 +2720,17 @@ async function linkSalesProjectionPlan(input: {
   await audit(db, input.workbookId, 'sales_projection_workbook_link', input.actor, before, after);
 }
 
+async function buildSalesProjectionWorkbookResult(
+  workbookId: string,
+  plan: PurchasePlanDetailResponse,
+): Promise<BuyerSalesProjectionWorkbookResult> {
+  const [trendSummary, buyerWorkbook] = await Promise.all([
+    getPurchasePlanSalesTrendSummary(plan.plan.id),
+    getBuyerWorkbook(workbookId),
+  ]);
+  return { plan, trendSummary, buyerWorkbook };
+}
+
 export async function ensureBuyerSalesProjectionWorkbook(
   workbookId: string,
   cardId: string,
@@ -2728,10 +2740,7 @@ export async function ensureBuyerSalesProjectionWorkbook(
   const card = normalizeCard(await ensureCard(workbookId, cardId));
   if (card.salesProjectionPlanId) {
     try {
-      return {
-        plan: await getPurchasePlan(card.salesProjectionPlanId),
-        buyerWorkbook: await getBuyerWorkbook(workbookId),
-      };
+      return buildSalesProjectionWorkbookResult(workbookId, await getPurchasePlan(card.salesProjectionPlanId));
     } catch (err) {
       if ((err as { code?: string })?.code !== 'PLAN_NOT_FOUND') throw err;
     }
@@ -2771,10 +2780,7 @@ export async function ensureBuyerSalesProjectionWorkbook(
     }, tx);
   });
 
-  return {
-    plan,
-    buyerWorkbook: await getBuyerWorkbook(workbookId),
-  };
+  return buildSalesProjectionWorkbookResult(workbookId, plan);
 }
 
 export async function confirmBuyerSalesProjectionWorkbook(

@@ -37,6 +37,7 @@ export interface HistoryPoint {
   qty: number;
   netSales?: number;
   referenceRetail?: number;
+  beginningOnHand?: number;
 }
 
 export interface ProjectedPoint {
@@ -227,6 +228,11 @@ export interface PurchasePlanSavedRow {
   stockPosition: number;
   normalizationFactor: number | null;
   rawProjSales: number | null;
+  lastYearSalesUnits?: number | null;
+  lastYearBeginningOnHand?: number | null;
+  lastYearNextMonthBeginningOnHand?: number | null;
+  yearBeforeLastSalesUnits?: number | null;
+  yearBeforeLastBeginningOnHand?: number | null;
 }
 
 export interface PurchasePlanDepartmentSummary {
@@ -266,6 +272,42 @@ export interface PurchasePlanDetailResponse {
     deltaBuy: number;
     totalProjSales: number;
   };
+}
+
+export type PurchasePlanSalesTrendDirection =
+  | 'increasing'
+  | 'decreasing'
+  | 'flat'
+  | 'insufficient_history';
+
+export type PurchasePlanSalesTrendConfidence = 'high' | 'medium' | 'low';
+
+export interface PurchasePlanSalesTrendWindow {
+  label: string;
+  currentFromYearMonth: string | null;
+  currentToYearMonth: string | null;
+  comparisonFromYearMonth: string | null;
+  comparisonToYearMonth: string | null;
+  currentUnits: number;
+  comparisonUnits: number;
+  changeUnits: number;
+  changePct: number | null;
+}
+
+export interface PurchasePlanSalesTrendSummary {
+  historyFromYearMonth: string;
+  historyToYearMonth: string;
+  sampleMonths: number;
+  last12: PurchasePlanSalesTrendWindow;
+  recent6: PurchasePlanSalesTrendWindow;
+  recent3: PurchasePlanSalesTrendWindow;
+  monthlySlopeUnits: number | null;
+  monthlySlopePct: number | null;
+  direction: PurchasePlanSalesTrendDirection;
+  confidence: PurchasePlanSalesTrendConfidence;
+  suggestedProjectionPct: number;
+  volatilityPct: number | null;
+  notes: string[];
 }
 
 export interface PurchasePlanListItem extends PurchasePlanHeader {

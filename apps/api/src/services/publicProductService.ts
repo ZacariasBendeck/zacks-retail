@@ -54,7 +54,7 @@ export interface FacetsResult {
   sizes: { label: string; count: number }[];
   categories: FacetValue[];
   departments: { name: string; count: number }[];
-  materials: { name: string; count: number }[];
+  materials: FacetValue[];
   priceRange: PriceRange;
 }
 
@@ -404,14 +404,14 @@ export function getProductFacets(filters: FacetFilterParams = {}): FacetsResult 
   // Materials — exclude material filter
   const matWhere = buildFacetConditions(filters, 'material');
   const materials = db.prepare(`
-    SELECT rum.name, COUNT(DISTINCT s.style) as count
+    SELECT rum.id, rum.name, COUNT(DISTINCT s.style) as count
     FROM skus s
     JOIN ref_upper_materials rum ON rum.id = s.upper_material_id
     WHERE ${matWhere.conditions.join(' AND ')}
-    GROUP BY rum.name
+    GROUP BY rum.id, rum.name
     HAVING count > 0
     ORDER BY count DESC
-  `).all(...matWhere.values) as unknown as { name: string; count: number }[];
+  `).all(...matWhere.values) as unknown as FacetValue[];
 
   // Price range — apply ALL filters (no exclusion)
   const priceWhere = buildFacetConditions(filters);

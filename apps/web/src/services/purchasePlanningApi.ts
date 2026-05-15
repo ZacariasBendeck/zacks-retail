@@ -147,6 +147,11 @@ export interface SavedPurchasePlanRow {
   stockPosition: number;
   normalizationFactor: number | null;
   rawProjSales: number | null;
+  lastYearSalesUnits?: number | null;
+  lastYearBeginningOnHand?: number | null;
+  lastYearNextMonthBeginningOnHand?: number | null;
+  yearBeforeLastSalesUnits?: number | null;
+  yearBeforeLastBeginningOnHand?: number | null;
 }
 
 export interface SavedPurchasePlanDepartment {
@@ -186,6 +191,42 @@ export interface SavedPurchasePlanDetail {
     deltaBuy: number;
     totalProjSales: number;
   };
+}
+
+export type SavedPurchasePlanSalesTrendDirection =
+  | 'increasing'
+  | 'decreasing'
+  | 'flat'
+  | 'insufficient_history';
+
+export type SavedPurchasePlanSalesTrendConfidence = 'high' | 'medium' | 'low';
+
+export interface SavedPurchasePlanSalesTrendWindow {
+  label: string;
+  currentFromYearMonth: string | null;
+  currentToYearMonth: string | null;
+  comparisonFromYearMonth: string | null;
+  comparisonToYearMonth: string | null;
+  currentUnits: number;
+  comparisonUnits: number;
+  changeUnits: number;
+  changePct: number | null;
+}
+
+export interface SavedPurchasePlanSalesTrendSummary {
+  historyFromYearMonth: string;
+  historyToYearMonth: string;
+  sampleMonths: number;
+  last12: SavedPurchasePlanSalesTrendWindow;
+  recent6: SavedPurchasePlanSalesTrendWindow;
+  recent3: SavedPurchasePlanSalesTrendWindow;
+  monthlySlopeUnits: number | null;
+  monthlySlopePct: number | null;
+  direction: SavedPurchasePlanSalesTrendDirection;
+  confidence: SavedPurchasePlanSalesTrendConfidence;
+  suggestedProjectionPct: number;
+  volatilityPct: number | null;
+  notes: string[];
 }
 
 export interface SavedPurchasePlanListItem extends SavedPurchasePlanHeader {

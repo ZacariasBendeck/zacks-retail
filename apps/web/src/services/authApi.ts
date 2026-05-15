@@ -1,3 +1,5 @@
+import type { SupportedLocale } from '@benlow-rics/i18n';
+
 const API_BASE = '/api/v1/auth';
 
 export interface MeResponse {
@@ -5,6 +7,7 @@ export interface MeResponse {
     id: string;
     email: string;
     displayName: string;
+    preferredLocale: SupportedLocale | null;
     role: { id: string; name: string };
   };
   permissions: string[];
@@ -35,6 +38,11 @@ export const authApi = {
     }),
   logout: () => request<void>('/logout', { method: 'POST' }),
   me: () => request<MeResponse>('/me'),
+  updatePreferences: (input: { preferredLocale: SupportedLocale | null }) =>
+    request<{ user: MeResponse['user'] }>('/me/preferences', {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    }),
   changePassword: (oldPassword: string, newPassword: string) =>
     request<void>('/change-password', {
       method: 'POST',

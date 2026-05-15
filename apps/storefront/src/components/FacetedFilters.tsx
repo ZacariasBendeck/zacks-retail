@@ -1,4 +1,7 @@
 import { Checkbox, Collapse, InputNumber, Space, Typography, Button } from 'antd'
+import { formatHnl } from '@benlow-rics/i18n'
+import { useI18nLocale } from '@benlow-rics/i18n/react'
+import { useTranslation } from '@benlow-rics/i18n/react'
 import type { Facets } from '@/types/product'
 
 export interface FilterState {
@@ -107,6 +110,8 @@ function SizeFilterSection({
 }
 
 export default function FacetedFilters({ facets, filters, onChange, loading }: FacetedFiltersProps) {
+  const { t } = useTranslation('storefront')
+  const { locale } = useI18nLocale()
   const hasActiveFilters = filters.brandId != null || filters.colorId != null ||
     filters.sizeLabel != null || filters.categoryId != null || filters.department != null ||
     filters.materialId != null || filters.minPrice != null || filters.maxPrice != null
@@ -122,11 +127,12 @@ export default function FacetedFilters({ facets, filters, onChange, loading }: F
   const sizes = (facets?.sizes ?? []).filter(o => o.count > 0)
   const colors = (facets?.colors ?? []).filter(o => o.count > 0)
   const materials = (facets?.materials ?? []).filter(o => o.count > 0)
+  const withSelectedCount = (label: string, selected: boolean) => selected ? `${label} (1)` : label
 
   const sections = [
     {
       key: 'department',
-      label: `Departamento${filters.department ? ' (1)' : ''}`,
+      label: withSelectedCount(t('catalog.filterLabels.department'), Boolean(filters.department)),
       children: (
         <NameFilterSection
           options={departments}
@@ -137,7 +143,7 @@ export default function FacetedFilters({ facets, filters, onChange, loading }: F
     },
     {
       key: 'category',
-      label: `Categoria${filters.categoryId != null ? ' (1)' : ''}`,
+      label: withSelectedCount(t('catalog.filterLabels.category'), filters.categoryId != null),
       children: (
         <IdFilterSection
           options={categories}
@@ -148,7 +154,7 @@ export default function FacetedFilters({ facets, filters, onChange, loading }: F
     },
     {
       key: 'brand',
-      label: `Marca${filters.brandId != null ? ' (1)' : ''}`,
+      label: withSelectedCount(t('catalog.filterLabels.brand'), filters.brandId != null),
       children: (
         <IdFilterSection
           options={brands}
@@ -159,7 +165,7 @@ export default function FacetedFilters({ facets, filters, onChange, loading }: F
     },
     {
       key: 'size',
-      label: `Talla${filters.sizeLabel ? ' (1)' : ''}`,
+      label: withSelectedCount(t('catalog.filterLabels.size'), Boolean(filters.sizeLabel)),
       children: (
         <SizeFilterSection
           options={sizes}
@@ -170,7 +176,7 @@ export default function FacetedFilters({ facets, filters, onChange, loading }: F
     },
     {
       key: 'color',
-      label: `Color${filters.colorId != null ? ' (1)' : ''}`,
+      label: withSelectedCount(t('catalog.filterLabels.color'), filters.colorId != null),
       children: (
         <IdFilterSection
           options={colors}
@@ -181,18 +187,21 @@ export default function FacetedFilters({ facets, filters, onChange, loading }: F
     },
     {
       key: 'price',
-      label: 'Precio',
+      label: t('catalog.filterLabels.price'),
       children: (
         <div>
           {facets?.priceRange && (
             <Typography.Text type="secondary" style={{ display: 'block', marginBottom: 8, fontSize: 12 }}>
-              Rango: L {facets.priceRange.min.toLocaleString('en-US', { maximumFractionDigits: 0 })} - L {facets.priceRange.max.toLocaleString('en-US', { maximumFractionDigits: 0 })}
+              {t('catalog.range', {
+                min: formatHnl(facets.priceRange.min, locale),
+                max: formatHnl(facets.priceRange.max, locale),
+              })}
             </Typography.Text>
           )}
           <Space>
             <InputNumber
-              placeholder="Min"
-              prefix="$"
+              placeholder={t('catalog.min')}
+              prefix="L"
               value={filters.minPrice}
               onChange={(v) => onChange({ ...filters, minPrice: v ?? undefined })}
               style={{ width: 100 }}
@@ -200,8 +209,8 @@ export default function FacetedFilters({ facets, filters, onChange, loading }: F
             />
             <span>-</span>
             <InputNumber
-              placeholder="Max"
-              prefix="$"
+              placeholder={t('catalog.max')}
+              prefix="L"
               value={filters.maxPrice}
               onChange={(v) => onChange({ ...filters, maxPrice: v ?? undefined })}
               style={{ width: 100 }}
@@ -213,7 +222,7 @@ export default function FacetedFilters({ facets, filters, onChange, loading }: F
     },
     {
       key: 'material',
-      label: `Material${filters.materialId != null ? ' (1)' : ''}`,
+      label: withSelectedCount(t('catalog.filterLabels.material'), filters.materialId != null),
       children: (
         <NameFilterSection
           options={materials}
@@ -229,7 +238,7 @@ export default function FacetedFilters({ facets, filters, onChange, loading }: F
       {hasActiveFilters && (
         <div style={{ marginBottom: 12 }}>
           <Button type="link" onClick={clearAll} style={{ padding: 0 }}>
-            Limpiar filtros
+            {t('catalog.clearFilters')}
           </Button>
         </div>
       )}

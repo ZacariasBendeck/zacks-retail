@@ -13,6 +13,22 @@ import { requireAuth, SESSION_COOKIE } from '../middleware/authMiddleware';
 
 const ROOT_SESSION_COOKIE_PATH = '/';
 const LEGACY_SESSION_COOKIE_PATHS = ['/api/v1/auth', '/api/v1', '/api'];
+const SUPPORTED_LOCALES = ['en-US', 'es-HN'] as const;
+
+function userPayload(user: {
+  id: string;
+  email: string;
+  displayName: string;
+  preferredLocale?: string | null;
+}, role: { id: string; name: string }) {
+  return {
+    id: user.id,
+    email: user.email,
+    displayName: user.displayName,
+    preferredLocale: user.preferredLocale ?? null,
+    role: { id: role.id, name: role.name },
+  };
+}
 
 function clearSessionCookies(res: Response, paths: string[]): void {
   for (const path of paths) {
@@ -91,12 +107,7 @@ export function createAuthRoutes(prisma: PrismaClient): Router {
         req,
       });
       res.json({
-        user: {
-          id: user.id,
-          email: user.email,
-          displayName: user.displayName,
-          role: { id: role!.id, name: role!.name },
-        },
+        user: userPayload(user, role!),
       });
     } catch (err) {
       next(err);
@@ -134,14 +145,44 @@ export function createAuthRoutes(prisma: PrismaClient): Router {
     const user = req.user!;
     const role = await prisma.role.findUnique({ where: { id: user.roleId } });
     res.json({
-      user: {
-        id: user.id,
-        email: user.email,
-        displayName: user.displayName,
-        role: { id: role!.id, name: role!.name },
-      },
+      user: userPayload(user, role!),
       permissions: Array.from(req.permissions ?? []),
     });
+  });
+
+  const preferencesBody = z.object({
+    preferredLocale: z.enum(SUPPORTED_LOCALES).nullable(),
+  });
+
+  router.patch('/me/preferences', requireAuth, async (req, res, next) => {
+    try {
+      const parsed = preferencesBody.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({
+          error: { code: 'INVALID_BODY', message: parsed.error.message },
+        });
+      }
+      const before = req.user!;
+      const updated = await prisma.user.update({
+        where: { id: before.id },
+        data: { preferredLocale: parsed.data.preferredLocale },
+      });
+      const role = await prisma.role.findUnique({ where: { id: updated.roleId } });
+      await recordIdentityAudit(prisma, {
+        actorUserId: req.user!.id,
+        actorSessionId: req.sessionId,
+        eventType: 'identity.user_preferences.updated',
+        action: 'UPDATE_USER_PREFERENCES',
+        resourceType: 'identity.user',
+        resourceId: req.user!.id,
+        beforeJson: { preferredLocale: before.preferredLocale ?? null },
+        afterJson: { preferredLocale: updated.preferredLocale ?? null },
+        req,
+      });
+      res.json({ user: userPayload(updated, role!) });
+    } catch (err) {
+      next(err);
+    }
   });
 
   const changePasswordBody = z.object({

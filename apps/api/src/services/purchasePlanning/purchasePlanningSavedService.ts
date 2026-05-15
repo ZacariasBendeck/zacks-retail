@@ -34,6 +34,10 @@ import type {
   PurchasePlanRowsUpdateRequest,
   PurchasePlanRowUpdateRequest,
   PurchasePlanSavedRow,
+  PurchasePlanSalesTrendConfidence,
+  PurchasePlanSalesTrendDirection,
+  PurchasePlanSalesTrendSummary,
+  PurchasePlanSalesTrendWindow,
   PurchasePlanSeason,
   PurchasePlanningSeasonalReportRequest,
   SeasonalPurchaseReportResponse,
@@ -108,6 +112,13 @@ interface MonthlyFactRow {
   qty: unknown;
   netSales: unknown;
   referenceRetail: unknown;
+  beginningOnHand: unknown;
+}
+
+interface TicketSalesUnitsRow {
+  departmentKey: string | null;
+  yearMonth: string;
+  qty: unknown;
 }
 
 interface PositionRow {
@@ -195,6 +206,11 @@ interface SavedRowDb {
   stockPosition: number;
   normalizationFactor: unknown;
   rawProjSales: number | null;
+  lastYearSalesUnits?: number | null;
+  lastYearBeginningOnHand?: number | null;
+  lastYearNextMonthBeginningOnHand?: number | null;
+  yearBeforeLastSalesUnits?: number | null;
+  yearBeforeLastBeginningOnHand?: number | null;
 }
 
 interface AdjustmentDb {
@@ -254,6 +270,16 @@ function monthsBetweenExclusive(startYearMonth: string, endYearMonth: string): s
   const out: string[] = [];
   let cursor = shiftYearMonth(startYearMonth, 1);
   while (cursor < endYearMonth) {
+    out.push(cursor);
+    cursor = shiftYearMonth(cursor, 1);
+  }
+  return out;
+}
+
+function monthsBetweenInclusive(startYearMonth: string, endYearMonth: string): string[] {
+  const out: string[] = [];
+  let cursor = startYearMonth;
+  while (cursor <= endYearMonth) {
     out.push(cursor);
     cursor = shiftYearMonth(cursor, 1);
   }
@@ -344,6 +370,11 @@ function normalizeSavedRow(row: SavedRowDb): PurchasePlanSavedRow {
     stockPosition: Number(row.stockPosition),
     normalizationFactor: row.normalizationFactor == null ? null : toNumber(row.normalizationFactor),
     rawProjSales: row.rawProjSales == null ? null : Number(row.rawProjSales),
+    lastYearSalesUnits: row.lastYearSalesUnits == null ? null : Number(row.lastYearSalesUnits),
+    lastYearBeginningOnHand: row.lastYearBeginningOnHand == null ? null : Number(row.lastYearBeginningOnHand),
+    lastYearNextMonthBeginningOnHand: row.lastYearNextMonthBeginningOnHand == null ? null : Number(row.lastYearNextMonthBeginningOnHand),
+    yearBeforeLastSalesUnits: row.yearBeforeLastSalesUnits == null ? null : Number(row.yearBeforeLastSalesUnits),
+    yearBeforeLastBeginningOnHand: row.yearBeforeLastBeginningOnHand == null ? null : Number(row.yearBeforeLastBeginningOnHand),
   };
 }
 
@@ -574,7 +605,8 @@ WITH src AS (
     m.year_month,
     COALESCE(m.qty_sales, 0)::float8 AS qty_sales,
     COALESCE(m.net_sales, 0)::float8 AS net_sales,
-    COALESCE(m.qty_sales, 0)::float8 * COALESCE(k.retail_price, k.list_price, 0)::float8 AS reference_retail
+    COALESCE(m.qty_sales, 0)::float8 * COALESCE(k.retail_price, k.list_price, 0)::float8 AS reference_retail,
+    COALESCE(m.qty_on_hand, 0)::float8 AS beginning_on_hand
   FROM app.inventory_history_snapshot s
   INNER JOIN app.inventory_history_month m ON m.snapshot_id = s.id
   LEFT JOIN app.sku k ON k.id = s.sku_id
@@ -594,7 +626,8 @@ WITH src AS (
     to_char(s.snapshot_as_of, 'YYYY-MM') AS year_month,
     COALESCE(s.month_qty_sales, 0)::float8 AS qty_sales,
     COALESCE(s.month_dol_sales, 0)::float8 AS net_sales,
-    COALESCE(s.month_qty_sales, 0)::float8 * COALESCE(k.retail_price, k.list_price, 0)::float8 AS reference_retail
+    COALESCE(s.month_qty_sales, 0)::float8 * COALESCE(k.retail_price, k.list_price, 0)::float8 AS reference_retail,
+    COALESCE(s.on_hand, 0)::float8 AS beginning_on_hand
   FROM app.inventory_history_snapshot s
   LEFT JOIN app.sku k ON k.id = s.sku_id
   LEFT JOIN app.taxonomy_department d ON k.category_number BETWEEN d.beg_categ AND d.end_categ
@@ -610,9 +643,10 @@ SELECT
   year_month AS "yearMonth",
   SUM(qty_sales)::float8 AS "qty",
   SUM(net_sales)::float8 AS "netSales",
-  SUM(reference_retail)::float8 AS "referenceRetail"
+  SUM(reference_retail)::float8 AS "referenceRetail",
+  SUM(beginning_on_hand)::float8 AS "beginningOnHand"
 FROM src
-WHERE qty_sales <> 0 OR net_sales <> 0
+WHERE qty_sales <> 0 OR net_sales <> 0 OR beginning_on_hand <> 0
 GROUP BY department_key, department_number, department_label, year_month
 ORDER BY department_key, year_month
     `,
@@ -636,6 +670,7 @@ ORDER BY department_key, year_month
       qty: toNumber(row.qty),
       netSales: toNumber(row.netSales),
       referenceRetail: toNumber(row.referenceRetail),
+      beginningOnHand: toNumber(row.beginningOnHand),
     };
   });
   return { history, labelByKey, numberByKey };
@@ -658,7 +693,8 @@ WITH src AS (
     m.year_month,
     COALESCE(m.qty_sales, 0)::float8 AS qty_sales,
     COALESCE(m.net_sales, 0)::float8 AS net_sales,
-    COALESCE(m.qty_sales, 0)::float8 * COALESCE(k.retail_price, k.list_price, 0)::float8 AS reference_retail
+    COALESCE(m.qty_sales, 0)::float8 * COALESCE(k.retail_price, k.list_price, 0)::float8 AS reference_retail,
+    COALESCE(m.qty_on_hand, 0)::float8 AS beginning_on_hand
   FROM app.inventory_history_snapshot s
   INNER JOIN app.inventory_history_month m ON m.snapshot_id = s.id
   JOIN app.sku k ON k.id = s.sku_id
@@ -678,7 +714,8 @@ WITH src AS (
     to_char(s.snapshot_as_of, 'YYYY-MM') AS year_month,
     COALESCE(s.month_qty_sales, 0)::float8 AS qty_sales,
     COALESCE(s.month_dol_sales, 0)::float8 AS net_sales,
-    COALESCE(s.month_qty_sales, 0)::float8 * COALESCE(k.retail_price, k.list_price, 0)::float8 AS reference_retail
+    COALESCE(s.month_qty_sales, 0)::float8 * COALESCE(k.retail_price, k.list_price, 0)::float8 AS reference_retail,
+    COALESCE(s.on_hand, 0)::float8 AS beginning_on_hand
   FROM app.inventory_history_snapshot s
   JOIN app.sku k ON k.id = s.sku_id
   LEFT JOIN app.taxonomy_category c ON c.number = k.category_number
@@ -694,9 +731,10 @@ SELECT
   year_month AS "yearMonth",
   SUM(qty_sales)::float8 AS "qty",
   SUM(net_sales)::float8 AS "netSales",
-  SUM(reference_retail)::float8 AS "referenceRetail"
+  SUM(reference_retail)::float8 AS "referenceRetail",
+  SUM(beginning_on_hand)::float8 AS "beginningOnHand"
 FROM src
-WHERE qty_sales <> 0 OR net_sales <> 0
+WHERE qty_sales <> 0 OR net_sales <> 0 OR beginning_on_hand <> 0
 GROUP BY department_key, department_number, department_label, year_month
 ORDER BY department_key, year_month
     `,
@@ -719,9 +757,116 @@ ORDER BY department_key, year_month
       qty: toNumber(row.qty),
       netSales: toNumber(row.netSales),
       referenceRetail: toNumber(row.referenceRetail),
+      beginningOnHand: toNumber(row.beginningOnHand),
     };
   });
   return { history, labelByKey, numberByKey };
+}
+
+async function loadTicketSalesUnits(params: {
+  storeNumbers: number[];
+  departmentNumbers: number[];
+  categoryNumbers?: number[];
+  planningDimension?: PurchasePlanPlanningDimension;
+  fromYearMonth: string;
+  toYearMonth: string;
+  includeUnmapped?: boolean;
+}, db: DbClient = prisma): Promise<Map<string, number>> {
+  if (params.fromYearMonth > params.toYearMonth || params.storeNumbers.length === 0) return new Map();
+
+  const isCategoryPlan = (params.planningDimension ?? DEPARTMENT_DIMENSION) === CATEGORY_DIMENSION;
+  if (isCategoryPlan) {
+    const categoryNumbers = params.categoryNumbers ?? [];
+    if (categoryNumbers.length === 0) return new Map();
+    const rows = await db.$queryRawUnsafe<TicketSalesUnitsRow[]>(
+      `
+WITH src AS (
+  SELECT
+    COALESCE(
+      k.category_number,
+      NULLIF(regexp_replace(COALESCE(l.category_key, ''), '\\D', '', 'g'), '')::int
+    ) AS category_number,
+    to_char(t.purchased_at AT TIME ZONE 'America/Tegucigalpa', 'YYYY-MM') AS year_month,
+    COALESCE(l.quantity, 0)::float8 AS qty_sales
+  FROM app.sales_history_ticket t
+  INNER JOIN app.sales_history_ticket_line l
+    ON l.ticket_id = t.id
+  LEFT JOIN app.sku k
+    ON k.id = l.sku_id
+  WHERE t.purchased_at >= (($1::text || '-01')::date::timestamp AT TIME ZONE 'America/Tegucigalpa')
+    AND t.purchased_at < ((($2::text || '-01')::date + INTERVAL '1 month')::timestamp AT TIME ZONE 'America/Tegucigalpa')
+    AND t.store_id = ANY($3::int[])
+    AND LOWER(COALESCE(t.status, '')) = 'completed'
+)
+SELECT
+  src.category_number::text AS "departmentKey",
+  src.year_month AS "yearMonth",
+  SUM(src.qty_sales)::float8 AS "qty"
+FROM src
+WHERE src.category_number = ANY($4::int[])
+  AND src.qty_sales <> 0
+GROUP BY src.category_number, src.year_month
+ORDER BY src.category_number, src.year_month
+      `,
+      params.fromYearMonth,
+      params.toYearMonth,
+      params.storeNumbers,
+      categoryNumbers,
+    );
+    const out = new Map<string, number>();
+    for (const row of rows) {
+      const key = `${normalizeDepartmentKey(row.departmentKey)}|${row.yearMonth}`;
+      out.set(key, (out.get(key) ?? 0) + toNumber(row.qty));
+    }
+    return out;
+  }
+
+  if (params.departmentNumbers.length === 0) return new Map();
+  const rows = await db.$queryRawUnsafe<TicketSalesUnitsRow[]>(
+    `
+WITH src AS (
+  SELECT
+    COALESCE(
+      k.category_number,
+      NULLIF(regexp_replace(COALESCE(l.category_key, ''), '\\D', '', 'g'), '')::int,
+      0
+    ) AS category_number,
+    to_char(t.purchased_at AT TIME ZONE 'America/Tegucigalpa', 'YYYY-MM') AS year_month,
+    COALESCE(l.quantity, 0)::float8 AS qty_sales
+  FROM app.sales_history_ticket t
+  INNER JOIN app.sales_history_ticket_line l
+    ON l.ticket_id = t.id
+  LEFT JOIN app.sku k
+    ON k.id = l.sku_id
+  WHERE t.purchased_at >= (($1::text || '-01')::date::timestamp AT TIME ZONE 'America/Tegucigalpa')
+    AND t.purchased_at < ((($2::text || '-01')::date + INTERVAL '1 month')::timestamp AT TIME ZONE 'America/Tegucigalpa')
+    AND t.store_id = ANY($3::int[])
+    AND LOWER(COALESCE(t.status, '')) = 'completed'
+)
+SELECT
+  COALESCE(d.number::text, 'unmapped') AS "departmentKey",
+  src.year_month AS "yearMonth",
+  SUM(src.qty_sales)::float8 AS "qty"
+FROM src
+LEFT JOIN app.taxonomy_department d
+  ON src.category_number BETWEEN d.beg_categ AND d.end_categ
+WHERE (d.number = ANY($4::int[]) OR ($5::boolean AND d.number IS NULL))
+  AND src.qty_sales <> 0
+GROUP BY COALESCE(d.number::text, 'unmapped'), src.year_month
+ORDER BY COALESCE(d.number::text, 'unmapped'), src.year_month
+    `,
+    params.fromYearMonth,
+    params.toYearMonth,
+    params.storeNumbers,
+    params.departmentNumbers,
+    params.includeUnmapped ?? false,
+  );
+  const out = new Map<string, number>();
+  for (const row of rows) {
+    const key = `${normalizeDepartmentKey(row.departmentKey)}|${row.yearMonth}`;
+    out.set(key, (out.get(key) ?? 0) + toNumber(row.qty));
+  }
+  return out;
 }
 
 async function loadInventoryPositions(params: {
@@ -1105,7 +1250,7 @@ async function buildCalculatedRows(input: {
     throw new PurchasePlanningServiceError(404, 'DEPARTMENT_NOT_FOUND', `Department(s) not found: ${missing.join(', ')}`);
   }
 
-  const [storeGroup, demandStoreNumbers, planningStoreNumbers] = await (async (): Promise<[StoreGroupRow, number[], number[]]> => {
+  const [storeGroup, planningStoreNumbers] = await (async (): Promise<[StoreGroupRow, number[]]> => {
     if (planningScope === ENTERPRISE_SCOPE) {
       const [groups, warehouseStoreNumbers] = await Promise.all([
         loadEnterpriseDemandStoreGroups(),
@@ -1117,19 +1262,19 @@ async function buildCalculatedRows(input: {
         code: ENTERPRISE_CODE,
         label: ENTERPRISE_LABEL,
         storeNumbers: demandStores,
-      }, demandStores, planningStores];
+      }, planningStores];
     }
 
     const code = input.storeGroupCode?.trim();
     if (!code) throw new PurchasePlanningServiceError(400, 'NO_CHAIN', 'Store chain is required.');
     const group = await getStoreGroup(code);
     const storeNumbers = parseIntArray(group.storeNumbers);
-    return [group, storeNumbers, storeNumbers];
+    return [group, storeNumbers];
   })();
 
   const fallbackYearMonth = shiftYearMonth(buildSeasonMonths(input.season, input.seasonYear)[0], -1);
   const latestDataYearMonth = await withPlanningQuerySettings((db) =>
-    loadLatestDataYearMonth(demandStoreNumbers, fallbackYearMonth, db));
+    loadLatestDataYearMonth(planningStoreNumbers, fallbackYearMonth, db));
   const range = input.seasonMonths
     ? planningRangeForMonths({
       months: input.seasonMonths,
@@ -1146,7 +1291,7 @@ async function buildCalculatedRows(input: {
     });
   const [facts, positions] = await withPlanningQuerySettings(async (db) => {
     const loadedFacts = await loadMonthlyFacts({
-      storeNumbers: demandStoreNumbers,
+      storeNumbers: planningStoreNumbers,
       departmentNumbers: selectedDepartments,
       categoryNumbers: selectedCategories,
       planningDimension,
@@ -1311,6 +1456,374 @@ async function loadRows(planId: string, db: DbClient = prisma, departmentKey?: s
     departmentKey ?? null,
   );
   return rows.map(normalizeSavedRow);
+}
+
+async function loadPlanningStoreNumbersForPlan(plan: PurchasePlanHeader, db: DbClient): Promise<number[]> {
+  if (plan.planningScope === ENTERPRISE_SCOPE) {
+    const [groups, warehouseStoreNumbers] = await Promise.all([
+      loadEnterpriseDemandStoreGroups(db),
+      loadWarehouseStoreNumbers(db),
+    ]);
+    return uniqueSortedNumbers([
+      ...groups.flatMap((group) => parseIntArray(group.storeNumbers)),
+      ...warehouseStoreNumbers,
+    ]);
+  }
+  const group = await getStoreGroup(plan.storeGroupCode, db);
+  return parseIntArray(group.storeNumbers);
+}
+
+async function withHistoricalComparisonMetrics(
+  plan: PurchasePlanHeader,
+  rows: PurchasePlanSavedRow[],
+): Promise<PurchasePlanSavedRow[]> {
+  if (rows.length === 0) return rows;
+  const maxComparisonYearMonth = shiftYearMonth(plan.historyToYearMonth, 1);
+  const priorMonths = [...new Set(rows.flatMap((row) => [
+    shiftYearMonth(row.yearMonth, -12),
+    shiftYearMonth(row.yearMonth, -11),
+    shiftYearMonth(row.yearMonth, -24),
+  ]))]
+    .filter((month) => month >= plan.historyFromYearMonth && month <= maxComparisonYearMonth)
+    .sort();
+  if (priorMonths.length === 0) {
+    return rows.map((row) => ({
+      ...row,
+      lastYearSalesUnits: null,
+      lastYearBeginningOnHand: null,
+      lastYearNextMonthBeginningOnHand: null,
+      yearBeforeLastSalesUnits: null,
+      yearBeforeLastBeginningOnHand: null,
+    }));
+  }
+
+  const { history, ticketUnitsByDimMonth } = await withPlanningQuerySettings(async (db) => {
+    const storeNumbers = await loadPlanningStoreNumbersForPlan(plan, db);
+    const facts = await loadMonthlyFacts({
+      storeNumbers,
+      departmentNumbers: plan.selectedDepartments,
+      categoryNumbers: plan.selectedCategories,
+      planningDimension: plan.planningDimension,
+      fromYearMonth: priorMonths[0]!,
+      toYearMonth: priorMonths[priorMonths.length - 1]!,
+      includeUnmapped: false,
+    }, db);
+    const ticketUnits = await loadTicketSalesUnits({
+      storeNumbers,
+      departmentNumbers: plan.selectedDepartments,
+      categoryNumbers: plan.selectedCategories,
+      planningDimension: plan.planningDimension,
+      fromYearMonth: priorMonths[0]!,
+      toYearMonth: priorMonths[priorMonths.length - 1]!,
+      includeUnmapped: false,
+    }, db);
+    return { history: facts.history, ticketUnitsByDimMonth: ticketUnits };
+  });
+  const unitsByDimMonth = new Map<string, number>();
+  const beginningOnHandByDimMonth = new Map<string, number>();
+  for (const point of history) {
+    const key = `${normalizeDepartmentKey(point.dimKey)}|${point.yearMonth}`;
+    unitsByDimMonth.set(key, (unitsByDimMonth.get(key) ?? 0) + point.qty);
+    beginningOnHandByDimMonth.set(key, (beginningOnHandByDimMonth.get(key) ?? 0) + (point.beginningOnHand ?? 0));
+  }
+
+  const rollingInventoryStartYearMonth = shiftYearMonth(plan.historyToYearMonth, -11);
+  const salesUnitsFor = (key: string, yearMonth: string): number | null => {
+    if (yearMonth < rollingInventoryStartYearMonth && ticketUnitsByDimMonth.has(key)) {
+      return Math.round(ticketUnitsByDimMonth.get(key) ?? 0);
+    }
+    if (unitsByDimMonth.has(key)) return Math.round(unitsByDimMonth.get(key) ?? 0);
+    if (ticketUnitsByDimMonth.has(key)) return Math.round(ticketUnitsByDimMonth.get(key) ?? 0);
+    return null;
+  };
+  const beginningOnHandFor = (key: string): number | null => (
+    beginningOnHandByDimMonth.has(key)
+      ? Math.round(beginningOnHandByDimMonth.get(key) ?? 0)
+      : null
+  );
+
+  return rows.map((row) => {
+    const lastYearMonth = shiftYearMonth(row.yearMonth, -12);
+    const lastYearNextMonth = shiftYearMonth(row.yearMonth, -11);
+    const yearBeforeLastMonth = shiftYearMonth(row.yearMonth, -24);
+    const hasLastYearMonth = lastYearMonth >= plan.historyFromYearMonth && lastYearMonth <= plan.historyToYearMonth;
+    const hasLastYearNextMonth = lastYearNextMonth >= plan.historyFromYearMonth && lastYearNextMonth <= maxComparisonYearMonth;
+    const hasYearBeforeLastMonth = yearBeforeLastMonth >= plan.historyFromYearMonth && yearBeforeLastMonth <= plan.historyToYearMonth;
+    const lastYearKey = `${row.departmentKey}|${lastYearMonth}`;
+    const lastYearNextKey = `${row.departmentKey}|${lastYearNextMonth}`;
+    const yearBeforeLastKey = `${row.departmentKey}|${yearBeforeLastMonth}`;
+    return {
+      ...row,
+      lastYearSalesUnits: hasLastYearMonth
+        ? salesUnitsFor(lastYearKey, lastYearMonth)
+        : null,
+      lastYearBeginningOnHand: hasLastYearMonth
+        ? beginningOnHandFor(lastYearKey)
+        : null,
+      lastYearNextMonthBeginningOnHand: hasLastYearNextMonth
+        ? beginningOnHandFor(lastYearNextKey)
+        : null,
+      yearBeforeLastSalesUnits: hasYearBeforeLastMonth
+        ? salesUnitsFor(yearBeforeLastKey, yearBeforeLastMonth)
+        : null,
+      yearBeforeLastBeginningOnHand: hasYearBeforeLastMonth
+        ? beginningOnHandFor(yearBeforeLastKey)
+        : null,
+    };
+  });
+}
+
+function roundUnits(value: number): number {
+  return Math.max(0, Math.round(value));
+}
+
+function roundPercent(value: number): number {
+  return Math.round(value * 10) / 10;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function sumTrendUnits(rows: Array<{ units: number }>): number {
+  return roundUnits(rows.reduce((sum, row) => sum + row.units, 0));
+}
+
+type TrendMonthRow = { yearMonth: string; units: number };
+
+function trendPeriodStart(rows: TrendMonthRow[]): string | null {
+  return rows[0]?.yearMonth ?? null;
+}
+
+function trendPeriodEnd(rows: TrendMonthRow[]): string | null {
+  return rows[rows.length - 1]?.yearMonth ?? null;
+}
+
+function buildSameMonthsPriorYearRows(currentRows: TrendMonthRow[], unitsByMonth: Map<string, number>): TrendMonthRow[] {
+  return currentRows.map((row) => {
+    const yearMonth = shiftYearMonth(row.yearMonth, -12);
+    return {
+      yearMonth,
+      units: unitsByMonth.get(yearMonth) ?? 0,
+    };
+  });
+}
+
+function buildTrendWindow(
+  label: string,
+  currentRows: TrendMonthRow[],
+  comparisonRows: TrendMonthRow[],
+): PurchasePlanSalesTrendWindow {
+  const currentUnits = sumTrendUnits(currentRows);
+  const comparisonUnits = sumTrendUnits(comparisonRows);
+  return {
+    label,
+    currentFromYearMonth: trendPeriodStart(currentRows),
+    currentToYearMonth: trendPeriodEnd(currentRows),
+    comparisonFromYearMonth: trendPeriodStart(comparisonRows),
+    comparisonToYearMonth: trendPeriodEnd(comparisonRows),
+    currentUnits,
+    comparisonUnits,
+    changeUnits: currentUnits - comparisonUnits,
+    changePct: comparisonUnits > 0
+      ? roundPercent(((currentUnits - comparisonUnits) / comparisonUnits) * 100)
+      : null,
+  };
+}
+
+function weightedTrendPct(values: Array<{ value: number | null; weight: number }>): number | null {
+  let weighted = 0;
+  let totalWeight = 0;
+  for (const item of values) {
+    if (item.value == null || !Number.isFinite(item.value)) continue;
+    weighted += item.value * item.weight;
+    totalWeight += item.weight;
+  }
+  return totalWeight > 0 ? weighted / totalWeight : null;
+}
+
+function linearTrend(rows: Array<{ units: number }>): { slopeUnits: number | null; slopePct: number | null } {
+  if (rows.length < 2) return { slopeUnits: null, slopePct: null };
+  const xAvg = (rows.length - 1) / 2;
+  const yAvg = rows.reduce((sum, row) => sum + row.units, 0) / rows.length;
+  const denominator = rows.reduce((sum, _row, index) => sum + ((index - xAvg) ** 2), 0);
+  if (denominator === 0) return { slopeUnits: null, slopePct: null };
+  const slope = rows.reduce((sum, row, index) => sum + ((index - xAvg) * (row.units - yAvg)), 0) / denominator;
+  return {
+    slopeUnits: Math.round(slope * 100) / 100,
+    slopePct: yAvg > 0 ? roundPercent(((slope * (rows.length - 1)) / yAvg) * 100) : null,
+  };
+}
+
+function volatilityPct(rows: Array<{ units: number }>): number | null {
+  if (rows.length < 2) return null;
+  const avg = rows.reduce((sum, row) => sum + row.units, 0) / rows.length;
+  if (avg <= 0) return null;
+  const variance = rows.reduce((sum, row) => sum + ((row.units - avg) ** 2), 0) / rows.length;
+  return roundPercent((Math.sqrt(variance) / avg) * 100);
+}
+
+function trendDirection(params: {
+  sampleMonths: number;
+  currentUnits: number;
+  comparisonUnits: number;
+  trendPct: number | null;
+}): PurchasePlanSalesTrendDirection {
+  if (params.sampleMonths < 12 || (params.currentUnits === 0 && params.comparisonUnits === 0)) return 'insufficient_history';
+  const trendPct = params.trendPct ?? 0;
+  if (trendPct > 3) return 'increasing';
+  if (trendPct < -3) return 'decreasing';
+  return 'flat';
+}
+
+function trendConfidence(params: {
+  sampleMonths: number;
+  currentUnits: number;
+  comparisonUnits: number;
+  volatilityPct: number | null;
+}): PurchasePlanSalesTrendConfidence {
+  if (params.sampleMonths < 12 || (params.currentUnits === 0 && params.comparisonUnits === 0)) return 'low';
+  let confidence: PurchasePlanSalesTrendConfidence = params.sampleMonths >= 24 && params.comparisonUnits > 0 ? 'high' : 'medium';
+  if ((params.volatilityPct ?? 0) > 100) confidence = confidence === 'high' ? 'medium' : 'low';
+  return confidence;
+}
+
+function buildTrendNotes(params: {
+  sampleMonths: number;
+  last12: PurchasePlanSalesTrendWindow;
+  recent3: PurchasePlanSalesTrendWindow;
+  volatilityPct: number | null;
+  discountNormalization: boolean;
+}): string[] {
+  const notes: string[] = [];
+  if (params.sampleMonths < 24) notes.push('Less than 24 months of category history are available for the comparison window.');
+  if (params.last12.changePct == null) notes.push('Prior 12-month unit baseline is zero, so year-over-year percent is not available.');
+  if ((params.volatilityPct ?? 0) > 80) notes.push('Monthly unit sales are volatile; review outlier months before confirming the projection.');
+  if (
+    params.last12.changePct != null
+    && params.recent3.changePct != null
+    && Math.sign(params.last12.changePct) !== 0
+    && Math.sign(params.recent3.changePct) !== 0
+    && Math.sign(params.last12.changePct) !== Math.sign(params.recent3.changePct)
+  ) {
+    notes.push('Recent 3-month year-over-year trend differs from the 12-month trend.');
+  }
+  if (params.discountNormalization) notes.push('Discount normalization is enabled for the workbook forecast.');
+  return notes;
+}
+
+function buildSalesTrendSummary(
+  plan: PurchasePlanHeader,
+  history: HistoryPoint[],
+  ticketUnitsByDimMonth: Map<string, number> = new Map(),
+): PurchasePlanSalesTrendSummary {
+  const trendFromYearMonth = [plan.historyFromYearMonth, shiftYearMonth(plan.historyToYearMonth, -23)].sort()[1]!;
+  const months = monthsBetweenInclusive(trendFromYearMonth, plan.historyToYearMonth);
+  const unitsByMonth = new Map<string, number>();
+  for (const point of history) {
+    unitsByMonth.set(point.yearMonth, (unitsByMonth.get(point.yearMonth) ?? 0) + Math.max(0, Number(point.qty) || 0));
+  }
+  const ticketUnitsByMonth = new Map<string, number>();
+  for (const [key, units] of ticketUnitsByDimMonth.entries()) {
+    const yearMonth = key.split('|').at(-1);
+    if (!isYearMonth(yearMonth)) continue;
+    ticketUnitsByMonth.set(yearMonth, (ticketUnitsByMonth.get(yearMonth) ?? 0) + Math.max(0, Number(units) || 0));
+  }
+  const rollingInventoryStartYearMonth = shiftYearMonth(plan.historyToYearMonth, -11);
+  const trendUnitsForMonth = (yearMonth: string): number => {
+    const hasInventoryUnits = unitsByMonth.has(yearMonth);
+    const hasTicketUnits = ticketUnitsByMonth.has(yearMonth);
+    if (yearMonth < rollingInventoryStartYearMonth && hasTicketUnits) {
+      return ticketUnitsByMonth.get(yearMonth) ?? 0;
+    }
+    if (hasInventoryUnits) {
+      return unitsByMonth.get(yearMonth) ?? 0;
+    }
+    if (hasTicketUnits) {
+      return ticketUnitsByMonth.get(yearMonth) ?? 0;
+    }
+    return 0;
+  };
+  const monthRows = months.map((yearMonth) => ({
+    yearMonth,
+    units: trendUnitsForMonth(yearMonth),
+  }));
+  const trendUnitsByMonth = new Map(monthRows.map((row) => [row.yearMonth, row.units]));
+  const last12Rows = monthRows.slice(-12);
+  const prior12Rows = monthRows.slice(-24, -12);
+  const recent6Rows = monthRows.slice(-6);
+  const recent6ComparisonRows = buildSameMonthsPriorYearRows(recent6Rows, trendUnitsByMonth);
+  const recent3Rows = monthRows.slice(-3);
+  const recent3ComparisonRows = buildSameMonthsPriorYearRows(recent3Rows, trendUnitsByMonth);
+  const last12 = buildTrendWindow('Last 12M vs prior 12M', last12Rows, prior12Rows);
+  const recent6 = buildTrendWindow('Recent 6M YoY', recent6Rows, recent6ComparisonRows);
+  const recent3 = buildTrendWindow('Recent 3M YoY', recent3Rows, recent3ComparisonRows);
+  const slope = linearTrend(last12Rows);
+  const volatility = volatilityPct(last12Rows);
+  const trendPct = weightedTrendPct([
+    { value: last12.changePct, weight: 0.6 },
+    { value: recent6.changePct, weight: 0.3 },
+    { value: slope.slopePct, weight: 0.1 },
+  ]);
+  const confidence = trendConfidence({
+    sampleMonths: monthRows.length,
+    currentUnits: last12.currentUnits,
+    comparisonUnits: last12.comparisonUnits,
+    volatilityPct: volatility,
+  });
+  return {
+    historyFromYearMonth: trendFromYearMonth,
+    historyToYearMonth: plan.historyToYearMonth,
+    sampleMonths: monthRows.length,
+    last12,
+    recent6,
+    recent3,
+    monthlySlopeUnits: slope.slopeUnits,
+    monthlySlopePct: slope.slopePct,
+    direction: trendDirection({
+      sampleMonths: monthRows.length,
+      currentUnits: last12.currentUnits,
+      comparisonUnits: last12.comparisonUnits,
+      trendPct,
+    }),
+    confidence,
+    suggestedProjectionPct: confidence === 'low' && trendPct == null ? 0 : roundPercent(clamp(trendPct ?? 0, -25, 35)),
+    volatilityPct: volatility,
+    notes: buildTrendNotes({
+      sampleMonths: monthRows.length,
+      last12,
+      recent3,
+      volatilityPct: volatility,
+      discountNormalization: plan.discountNormalization,
+    }),
+  };
+}
+
+export async function getPurchasePlanSalesTrendSummary(id: string): Promise<PurchasePlanSalesTrendSummary> {
+  const plan = await loadPlanHeader(id);
+  return withPlanningQuerySettings(async (db) => {
+    const storeNumbers = await loadPlanningStoreNumbersForPlan(plan, db);
+    const trendFromYearMonth = [plan.historyFromYearMonth, shiftYearMonth(plan.historyToYearMonth, -23)].sort()[1]!;
+    const facts = await loadMonthlyFacts({
+      storeNumbers,
+      departmentNumbers: plan.selectedDepartments,
+      categoryNumbers: plan.selectedCategories,
+      planningDimension: plan.planningDimension,
+      fromYearMonth: trendFromYearMonth,
+      toYearMonth: plan.historyToYearMonth,
+      includeUnmapped: false,
+    }, db);
+    const ticketUnits = await loadTicketSalesUnits({
+      storeNumbers,
+      departmentNumbers: plan.selectedDepartments,
+      categoryNumbers: plan.selectedCategories,
+      planningDimension: plan.planningDimension,
+      fromYearMonth: trendFromYearMonth,
+      toYearMonth: plan.historyToYearMonth,
+      includeUnmapped: false,
+    }, db);
+    return buildSalesTrendSummary(plan, facts.history, ticketUnits);
+  });
 }
 
 async function loadAdjustments(planId: string, db: DbClient = prisma): Promise<PurchasePlanAdjustment[]> {
@@ -1563,12 +2076,12 @@ export async function listPurchasePlans(params: {
 }
 
 export async function getPurchasePlan(id: string): Promise<PurchasePlanDetailResponse> {
-  const [plan, rows, adjustments] = await Promise.all([
-    loadPlanHeader(id),
+  const plan = await loadPlanHeader(id);
+  const [rows, adjustments] = await Promise.all([
     loadRows(id),
     loadAdjustments(id),
   ]);
-  return { plan, ...summarizeRows(rows, adjustments) };
+  return { plan, ...summarizeRows(await withHistoricalComparisonMetrics(plan, rows), adjustments) };
 }
 
 export async function addPurchasePlanAdjustment(

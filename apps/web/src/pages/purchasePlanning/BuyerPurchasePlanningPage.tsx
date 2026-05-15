@@ -1202,13 +1202,13 @@ export default function BuyerPurchasePlanningPage() {
   return (
     <div style={{ padding: 24 }}>
       {contextHolder}
+      {!isReviewRoute ? (
       <Space direction="vertical" size="large" style={{ width: '100%' }}>
         <div>
           <Title level={2} style={{ margin: 0 }}>Buyer Checklist</Title>
           <Text type="secondary">Select a buyer, load the checklist, then set sales projections before building the buy.</Text>
         </div>
 
-        {!isReviewRoute ? (
         <>
         <div style={{ border: '1px solid #f0f0f0', borderRadius: 8, padding: 16, background: '#fff' }}>
           <Row gutter={[12, 12]} align="middle" style={{ marginBottom: 12 }}>
@@ -1574,8 +1574,8 @@ export default function BuyerPurchasePlanningPage() {
           <Alert type="info" message="Load a buyer checklist, then start or continue a category review." />
         )}
         </>
-        ) : null}
       </Space>
+      ) : null}
 
       {isReviewRoute ? (
       <div style={{ marginTop: 24 }}>
@@ -1614,6 +1614,7 @@ export default function BuyerPurchasePlanningPage() {
                       recalculateLoading={recalculateProjectionMutation.isPending}
                       confirmLoading={confirmProjectionMutation.isPending}
                       confirmLabel="Confirm sales projection"
+                      salesTrendSummary={salesProjectionWorkbook.data?.trendSummary}
                       onSaveRows={(planId, payload) => updateProjectionRowsMutation.mutate({ planId, payload })}
                       onRecalculate={(planId) => recalculateProjectionMutation.mutate(planId)}
                       onConfirm={() => confirmProjectionMutation.mutate()}

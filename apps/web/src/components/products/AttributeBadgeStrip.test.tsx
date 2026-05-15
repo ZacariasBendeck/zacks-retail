@@ -190,6 +190,7 @@ function authValue(permissions: string[]): AuthState {
     login: vi.fn(),
     logout: vi.fn(),
     refresh: vi.fn(),
+    updatePreferences: vi.fn(),
   }
 }
 

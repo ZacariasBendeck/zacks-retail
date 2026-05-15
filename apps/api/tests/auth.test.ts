@@ -17,6 +17,7 @@ async function ensureOwnerUser(email: string, password: string): Promise<void> {
       roleId: ownerRole!.id,
       active: true,
       displayName: 'Owner',
+      preferredLocale: null,
     },
     create: {
       email,
@@ -24,6 +25,7 @@ async function ensureOwnerUser(email: string, password: string): Promise<void> {
       roleId: ownerRole!.id,
       active: true,
       displayName: 'Owner',
+      preferredLocale: null,
     },
   });
 }
@@ -56,6 +58,7 @@ describe('auth routes', () => {
     expect(res.status).toBe(200);
     expect(res.body.user.email).toBe(email);
     expect(res.body.user.role.name).toBe('OWNER');
+    expect(res.body.user.preferredLocale).toBeNull();
     const cookie = res.headers['set-cookie']?.[0];
     expect(cookie).toMatch(/^sid=/);
     expect(cookie).toMatch(/HttpOnly/i);
@@ -72,7 +75,49 @@ describe('auth routes', () => {
     const res = await request(app).get('/api/v1/auth/me').set('Cookie', cookie);
     expect(res.status).toBe(200);
     expect(res.body.user.email).toBe(email);
+    expect(res.body.user.preferredLocale).toBeNull();
     expect(res.body.permissions).toEqual(expect.arrayContaining(['employees.manage']));
+  });
+
+  it('PATCH /auth/me/preferences persists a supported locale and auth responses include it', async () => {
+    const login = await request(app).post('/api/v1/auth/login').send({ email, password });
+    const cookie = login.headers['set-cookie'][0];
+
+    const update = await request(app)
+      .patch('/api/v1/auth/me/preferences')
+      .set('Cookie', cookie)
+      .send({ preferredLocale: 'es-HN' });
+
+    expect(update.status).toBe(200);
+    expect(update.body.user.preferredLocale).toBe('es-HN');
+
+    const me = await request(app).get('/api/v1/auth/me').set('Cookie', cookie);
+    expect(me.status).toBe(200);
+    expect(me.body.user.preferredLocale).toBe('es-HN');
+
+    const nextLogin = await request(app).post('/api/v1/auth/login').send({ email, password });
+    expect(nextLogin.status).toBe(200);
+    expect(nextLogin.body.user.preferredLocale).toBe('es-HN');
+
+    const reset = await request(app)
+      .patch('/api/v1/auth/me/preferences')
+      .set('Cookie', cookie)
+      .send({ preferredLocale: null });
+    expect(reset.status).toBe(200);
+    expect(reset.body.user.preferredLocale).toBeNull();
+  });
+
+  it('PATCH /auth/me/preferences rejects unsupported locales', async () => {
+    const login = await request(app).post('/api/v1/auth/login').send({ email, password });
+    const cookie = login.headers['set-cookie'][0];
+
+    const res = await request(app)
+      .patch('/api/v1/auth/me/preferences')
+      .set('Cookie', cookie)
+      .send({ preferredLocale: 'es-MX' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('INVALID_BODY');
   });
 
   it('GET /auth/me tolerates stale duplicate sid cookies', async () => {

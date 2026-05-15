@@ -1,0 +1,38 @@
+{
+  "language": {
+    "selectorLabel": "Idioma"
+  },
+  "actions": {
+    "save": "Guardar",
+    "create": "Crear",
+    "close": "Cerrar",
+    "cancel": "Cancelar",
+    "back": "Volver",
+    "search": "Buscar",
+    "clear": "Limpiar",
+    "next": "Siguiente",
+    "previous": "Anterior",
+    "print": "Imprimir",
+    "edit": "Editar",
+    "open": "Abrir",
+    "add": "Agregar",
+    "remove": "Quitar",
+    "continue": "Continuar"
+  },
+  "status": {
+    "loading": "Cargando",
+    "online": "En linea",
+    "offline": "Sin conexion",
+    "active": "ACTIVO",
+    "discontinued": "DESCONTINUADO",
+    "draft": "BORRADOR"
+  },
+  "validation": {
+    "required": "Requerido",
+    "email": "Ingresa un correo valido",
+    "minPassword": "Usa al menos 8 caracteres"
+  },
+  "empty": {
+    "noData": "Sin datos"
+  }
+}

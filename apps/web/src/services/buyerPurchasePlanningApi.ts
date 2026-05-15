@@ -1,4 +1,4 @@
-import type { SavedPurchasePlanDetail } from './purchasePlanningApi'
+import type { SavedPurchasePlanDetail, SavedPurchasePlanSalesTrendSummary } from './purchasePlanningApi'
 
 export type BuyerWorkbookSeason = 'SPRING_SUMMER' | 'FALL_WINTER'
 export type BuyerWorkbookStatus = 'DRAFT' | 'ARCHIVED'
@@ -299,6 +299,7 @@ export interface BuyerWorkbookDetail {
 
 export interface BuyerSalesProjectionWorkbookResult {
   plan: SavedPurchasePlanDetail
+  trendSummary: SavedPurchasePlanSalesTrendSummary
   buyerWorkbook: BuyerWorkbookDetail
 }
 

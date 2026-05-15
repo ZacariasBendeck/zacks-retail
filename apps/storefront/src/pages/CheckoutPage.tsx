@@ -1,6 +1,9 @@
 import { useEffect, useState } from 'react'
 import { Row, Col, Typography, Breadcrumb, Card, Result, Button, Spin, Divider } from 'antd'
 import { HomeOutlined, CheckCircleOutlined } from '@ant-design/icons'
+import { formatHnl } from '@benlow-rics/i18n'
+import { useI18nLocale } from '@benlow-rics/i18n/react'
+import { useTranslation } from '@benlow-rics/i18n/react'
 import { useNavigate } from 'react-router-dom'
 import { useCartStore } from '@/store/cartStore'
 import CheckoutForm from '@/components/CheckoutForm'
@@ -10,6 +13,8 @@ import type { CheckoutData, Order } from '@/types/order'
 const { Title, Text } = Typography
 
 export default function CheckoutPage() {
+  const { t } = useTranslation('storefront')
+  const { locale } = useI18nLocale()
   const navigate = useNavigate()
   const { cart, loading: cartLoading, loadCart } = useCartStore()
   const [submitting, setSubmitting] = useState(false)
@@ -37,11 +42,11 @@ export default function CheckoutPage() {
       <div style={{ maxWidth: 800, margin: '0 auto', padding: '40px 24px' }}>
         <Result
           icon={<CheckCircleOutlined style={{ color: '#52c41a' }} />}
-          title="Pedido Confirmado"
-          subTitle={`Orden #${order.name} - Total: L ${order.total.toFixed(2)}`}
+          title={t('checkout.confirmed')}
+          subTitle={t('checkout.orderTotal', { orderName: order.name, total: formatHnl(order.total, locale) })}
           extra={[
             <Button key="home" type="primary" onClick={() => navigate('/')}>
-              Seguir Comprando
+              {t('checkout.continueShopping')}
             </Button>,
           ]}
         />
@@ -56,8 +61,8 @@ export default function CheckoutPage() {
   if (!cart || cart.lines.length === 0) {
     return (
       <div style={{ maxWidth: 800, margin: '0 auto', padding: '40px 24px' }}>
-        <Result title="Tu carrito esta vacio"
-          extra={<Button type="primary" onClick={() => navigate('/')}>Ver Productos</Button>} />
+        <Result title={t('checkout.emptyCart')}
+          extra={<Button type="primary" onClick={() => navigate('/')}>{t('checkout.viewProducts')}</Button>} />
       </div>
     )
   }
@@ -66,14 +71,14 @@ export default function CheckoutPage() {
     <div style={{ maxWidth: 1400, margin: '0 auto', padding: '16px 24px' }}>
       <Breadcrumb
         items={[
-          { title: <><HomeOutlined /> Inicio</>, href: '/' },
-          { title: 'Carrito', href: '/cart' },
-          { title: 'Checkout' },
+          { title: <><HomeOutlined /> {t('product.home')}</>, href: '/' },
+          { title: t('cart.breadcrumb'), href: '/cart' },
+          { title: t('checkout.breadcrumb') },
         ]}
         style={{ marginBottom: 24 }}
       />
 
-      <Title level={2}>Finalizar Compra</Title>
+      <Title level={2}>{t('checkout.title')}</Title>
 
       <Row gutter={[32, 24]}>
         <Col xs={24} lg={14}>
@@ -82,27 +87,27 @@ export default function CheckoutPage() {
           </Card>
         </Col>
         <Col xs={24} lg={10}>
-          <Card title="Tu Pedido" style={{ position: 'sticky', top: 120 }}>
+          <Card title={t('checkout.yourOrder')} style={{ position: 'sticky', top: 120 }}>
             {cart.lines.map((line) => (
               <div key={line.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid #f5f5f5' }}>
                 <div>
                   <Text>{line.productName}</Text>
                   <Text type="secondary" style={{ marginLeft: 8 }}>x{line.quantity}</Text>
                 </div>
-                <Text>L {line.subtotal.toFixed(2)}</Text>
+                <Text>{formatHnl(line.subtotal, locale)}</Text>
               </div>
             ))}
             <Divider style={{ margin: '12px 0' }} />
             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <Text>Subtotal</Text><Text>L {cart.subtotal.toFixed(2)}</Text>
+              <Text>{t('checkout.subtotal')}</Text><Text>{formatHnl(cart.subtotal, locale)}</Text>
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4 }}>
-              <Text>Impuestos</Text><Text>L {cart.tax.toFixed(2)}</Text>
+              <Text>{t('checkout.tax')}</Text><Text>{formatHnl(cart.tax, locale)}</Text>
             </div>
             <Divider style={{ margin: '12px 0' }} />
             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <Title level={4} style={{ margin: 0 }}>Total</Title>
-              <Title level={4} style={{ margin: 0, color: '#1677ff' }}>L {cart.total.toFixed(2)}</Title>
+              <Title level={4} style={{ margin: 0 }}>{t('checkout.total')}</Title>
+              <Title level={4} style={{ margin: 0, color: '#1677ff' }}>{formatHnl(cart.total, locale)}</Title>
             </div>
           </Card>
         </Col>

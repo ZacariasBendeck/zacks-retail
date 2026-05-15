@@ -1,5 +1,6 @@
 import { Routes, Route } from 'react-router-dom'
 import { Layout } from 'antd'
+import { useTranslation } from '@benlow-rics/i18n/react'
 import StoreHeader from '@/components/StoreHeader'
 import ProductListingPage from '@/pages/ProductListingPage'
 import ProductDetailPage from '@/pages/ProductDetailPage'
@@ -9,6 +10,7 @@ import CheckoutPage from '@/pages/CheckoutPage'
 const { Footer, Content } = Layout
 
 export default function App() {
+  const { t } = useTranslation('storefront')
   return (
     <Layout style={{ minHeight: '100vh', background: '#fff' }}>
       <StoreHeader />
@@ -21,7 +23,7 @@ export default function App() {
         </Routes>
       </Content>
       <Footer style={{ textAlign: 'center', background: '#001529', color: '#fff', padding: '24px 50px' }}>
-        Zapatería &copy; 2026. Todos los derechos reservados.
+        {t('footer')}
       </Footer>
     </Layout>
   )

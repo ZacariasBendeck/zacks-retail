@@ -1,4 +1,5 @@
 import { Select, Typography, Space } from 'antd'
+import { useTranslation } from '@benlow-rics/i18n/react'
 
 interface SortBarProps {
   total: number
@@ -7,16 +8,16 @@ interface SortBarProps {
   onSortChange: (sort: string, order: string) => void
 }
 
-const SORT_OPTIONS = [
-  { value: 'name_asc', label: 'Nombre: A-Z' },
-  { value: 'name_desc', label: 'Nombre: Z-A' },
-  { value: 'price_asc', label: 'Precio: Menor a Mayor' },
-  { value: 'price_desc', label: 'Precio: Mayor a Menor' },
-  { value: 'newest_desc', label: 'Mas Recientes' },
-]
-
 export default function SortBar({ total, sort, order, onSortChange }: SortBarProps) {
+  const { t } = useTranslation('storefront')
   const currentValue = `${sort}_${order}`
+  const sortOptions = [
+    { value: 'name_asc', label: t('catalog.sort.nameAsc') },
+    { value: 'name_desc', label: t('catalog.sort.nameDesc') },
+    { value: 'price_asc', label: t('catalog.sort.priceAsc') },
+    { value: 'price_desc', label: t('catalog.sort.priceDesc') },
+    { value: 'newest_desc', label: t('catalog.sort.newest') },
+  ]
 
   const handleChange = (value: string) => {
     const [s, o] = value.split('_') as [string, string]
@@ -33,14 +34,14 @@ export default function SortBar({ total, sort, order, onSortChange }: SortBarPro
       borderBottom: '1px solid #f0f0f0',
     }}>
       <Typography.Text>
-        <strong>{total.toLocaleString()}</strong> resultados
+        {t('catalog.results', { count: total })}
       </Typography.Text>
       <Space>
-        <Typography.Text type="secondary">Ordenar por:</Typography.Text>
+        <Typography.Text type="secondary">{t('catalog.sortBy')}</Typography.Text>
         <Select
           value={currentValue}
           onChange={handleChange}
-          options={SORT_OPTIONS}
+          options={sortOptions}
           style={{ width: 220 }}
         />
       </Space>

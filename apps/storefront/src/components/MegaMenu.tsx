@@ -2,6 +2,7 @@ import { useState, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { MenuOutlined, CloseOutlined, RightOutlined } from '@ant-design/icons'
 import { Button, Drawer, Collapse } from 'antd'
+import { useTranslation } from '@benlow-rics/i18n/react'
 import { useFacets } from '@/hooks/useProducts'
 import type { Facets } from '@/types/product'
 
@@ -16,7 +17,7 @@ interface MenuItem {
   groups: SubcategoryGroup[]
 }
 
-function buildMenuItems(facets: Facets | undefined): MenuItem[] {
+function buildMenuItems(facets: Facets | undefined, t: (key: string) => string): MenuItem[] {
   const departments = facets?.departments ?? []
   const categories = facets?.categories ?? []
   const brands = facets?.brands ?? []
@@ -24,10 +25,10 @@ function buildMenuItems(facets: Facets | undefined): MenuItem[] {
   const deptMap: Record<string, string> = {
     FORMAL: 'Formal',
     CASUAL: 'Casual',
-    FIESTA: 'Fiesta',
-    SANDALIAS: 'Sandalias',
-    BOOTS: 'Botas',
-    COMFORT: 'Comfort',
+    FIESTA: t('nav.party'),
+    SANDALIAS: t('nav.sandals'),
+    BOOTS: t('nav.boots'),
+    COMFORT: t('nav.comfort'),
   }
 
   const topCategories = categories.slice(0, 12)
@@ -36,24 +37,24 @@ function buildMenuItems(facets: Facets | undefined): MenuItem[] {
   return [
     {
       key: 'zapatos',
-      label: 'Zapatos',
+      label: t('nav.shoes'),
       groups: [
         {
-          title: 'Departamentos',
+          title: t('nav.departments'),
           items: departments.map(d => ({
             label: deptMap[d.name] ?? d.name,
             params: { department: d.name },
           })),
         },
         {
-          title: 'Categorias',
+          title: t('nav.categories'),
           items: topCategories.map(c => ({
             label: c.name,
             params: { categoryId: String(c.id) },
           })),
         },
         {
-          title: 'Marcas Populares',
+          title: t('nav.popularBrands'),
           items: topBrands.slice(0, 6).map(b => ({
             label: b.name,
             params: { brandId: String(b.id) },
@@ -63,17 +64,17 @@ function buildMenuItems(facets: Facets | undefined): MenuItem[] {
     },
     {
       key: 'formal',
-      label: 'Formal',
+      label: t('nav.formal'),
       groups: [
         {
-          title: 'Categorias',
+          title: t('nav.categories'),
           items: topCategories.map(c => ({
             label: c.name,
             params: { department: 'FORMAL', categoryId: String(c.id) },
           })),
         },
         {
-          title: 'Marcas',
+          title: t('nav.brands'),
           items: topBrands.slice(0, 8).map(b => ({
             label: b.name,
             params: { department: 'FORMAL', brandId: String(b.id) },
@@ -83,17 +84,17 @@ function buildMenuItems(facets: Facets | undefined): MenuItem[] {
     },
     {
       key: 'casual',
-      label: 'Casual',
+      label: t('nav.casual'),
       groups: [
         {
-          title: 'Categorias',
+          title: t('nav.categories'),
           items: topCategories.map(c => ({
             label: c.name,
             params: { department: 'CASUAL', categoryId: String(c.id) },
           })),
         },
         {
-          title: 'Marcas',
+          title: t('nav.brands'),
           items: topBrands.slice(0, 8).map(b => ({
             label: b.name,
             params: { department: 'CASUAL', brandId: String(b.id) },
@@ -103,17 +104,17 @@ function buildMenuItems(facets: Facets | undefined): MenuItem[] {
     },
     {
       key: 'fiesta',
-      label: 'Fiesta',
+      label: t('nav.party'),
       groups: [
         {
-          title: 'Categorias',
+          title: t('nav.categories'),
           items: topCategories.map(c => ({
             label: c.name,
             params: { department: 'FIESTA', categoryId: String(c.id) },
           })),
         },
         {
-          title: 'Marcas',
+          title: t('nav.brands'),
           items: topBrands.slice(0, 8).map(b => ({
             label: b.name,
             params: { department: 'FIESTA', brandId: String(b.id) },
@@ -123,17 +124,17 @@ function buildMenuItems(facets: Facets | undefined): MenuItem[] {
     },
     {
       key: 'sandalias',
-      label: 'Sandalias',
+      label: t('nav.sandals'),
       groups: [
         {
-          title: 'Estilos',
+          title: t('nav.styles'),
           items: topCategories.slice(0, 8).map(c => ({
             label: c.name,
             params: { department: 'SANDALIAS', categoryId: String(c.id) },
           })),
         },
         {
-          title: 'Marcas',
+          title: t('nav.brands'),
           items: topBrands.slice(0, 6).map(b => ({
             label: b.name,
             params: { department: 'SANDALIAS', brandId: String(b.id) },
@@ -143,17 +144,17 @@ function buildMenuItems(facets: Facets | undefined): MenuItem[] {
     },
     {
       key: 'botas',
-      label: 'Botas',
+      label: t('nav.boots'),
       groups: [
         {
-          title: 'Estilos',
+          title: t('nav.styles'),
           items: topCategories.slice(0, 8).map(c => ({
             label: c.name,
             params: { department: 'BOOTS', categoryId: String(c.id) },
           })),
         },
         {
-          title: 'Marcas',
+          title: t('nav.brands'),
           items: topBrands.slice(0, 6).map(b => ({
             label: b.name,
             params: { department: 'BOOTS', brandId: String(b.id) },
@@ -163,17 +164,17 @@ function buildMenuItems(facets: Facets | undefined): MenuItem[] {
     },
     {
       key: 'comfort',
-      label: 'Comfort',
+      label: t('nav.comfort'),
       groups: [
         {
-          title: 'Categorias',
+          title: t('nav.categories'),
           items: topCategories.slice(0, 8).map(c => ({
             label: c.name,
             params: { department: 'COMFORT', categoryId: String(c.id) },
           })),
         },
         {
-          title: 'Marcas',
+          title: t('nav.brands'),
           items: topBrands.slice(0, 6).map(b => ({
             label: b.name,
             params: { department: 'COMFORT', brandId: String(b.id) },
@@ -183,17 +184,17 @@ function buildMenuItems(facets: Facets | undefined): MenuItem[] {
     },
     {
       key: 'marcas',
-      label: 'Marcas',
+      label: t('nav.brands'),
       groups: [
         {
-          title: 'Marcas A-M',
+          title: t('nav.brandsAM'),
           items: topBrands.filter((_, i) => i % 2 === 0).map(b => ({
             label: b.name,
             params: { brandId: String(b.id) },
           })),
         },
         {
-          title: 'Marcas N-Z',
+          title: t('nav.brandsNZ'),
           items: topBrands.filter((_, i) => i % 2 === 1).map(b => ({
             label: b.name,
             params: { brandId: String(b.id) },
@@ -203,7 +204,7 @@ function buildMenuItems(facets: Facets | undefined): MenuItem[] {
     },
     {
       key: 'outlet',
-      label: 'Outlet',
+      label: t('nav.outlet'),
       groups: [],
     },
   ]
@@ -271,8 +272,9 @@ function DropdownPanel({
 
 export default function MegaMenu() {
   const navigate = useNavigate()
+  const { t } = useTranslation('storefront')
   const { data: facets } = useFacets()
-  const menuItems = buildMenuItems(facets)
+  const menuItems = buildMenuItems(facets, t)
   const [activeKey, setActiveKey] = useState<string | null>(null)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [mobileExpandedKey, setMobileExpandedKey] = useState<string | null>(null)
@@ -394,7 +396,7 @@ export default function MegaMenu() {
 
       {/* Mobile drawer */}
       <Drawer
-        title="Menu"
+        title={t('nav.menu')}
         placement="left"
         open={drawerOpen}
         onClose={() => { setDrawerOpen(false); setMobileExpandedKey(null) }}

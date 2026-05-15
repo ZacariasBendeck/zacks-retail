@@ -33,7 +33,9 @@ import {
   QuestionCircleOutlined,
   CheckCircleOutlined,
 } from '@ant-design/icons'
-import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom'
+import { Link, Outlet, useLocation, useNavigate, type NavigateFunction } from 'react-router-dom'
+import { LanguageSelector } from '@benlow-rics/i18n/react'
+import { useTranslation } from '@benlow-rics/i18n/react'
 import { useAuth } from '../auth/useAuth'
 import { PageHelpDrawer, PageHelpProvider, type PageHelpEntry } from './page-help'
 
@@ -44,6 +46,37 @@ const PRODUCTS_ENRICHMENT_MENU_KEY = '/products/enrichment'
 const FILE_SETUP_MENU_KEY = '/file-setup'
 const PLATFORM_MENU_KEY = '/platform'
 const USERS_ACCESS_MENU_KEY = '/admin'
+
+const MAIN_SIDEBAR_MENU_ORDER = [
+  '/products',
+  '/purchasing',
+  '/inventory',
+  '/reports',
+  FILE_SETUP_MENU_KEY,
+  '/import-management',
+  '/purchase-planning-group',
+  '/customers-group',
+  '/operations',
+  '/utilities',
+  PLATFORM_MENU_KEY,
+]
+
+const MENU_TITLE_ROUTES: Record<string, string> = {
+  '/products': '/inventory/skus',
+  [PRODUCTS_CATALOGUE_SETUP_MENU_KEY]: '/products/vendors',
+  [PRODUCTS_ENRICHMENT_MENU_KEY]: '/products/attributes',
+  [FILE_SETUP_MENU_KEY]: '/utilities/stores',
+  [USERS_ACCESS_MENU_KEY]: '/admin/users',
+  [PLATFORM_MENU_KEY]: '/operations/activity-review',
+  '/inventory': '/inventory/adjustments',
+  '/purchase-planning-group': '/purchase-planning',
+  '/customers-group': '/customers/dashboard',
+  '/reports': '/reports/aging',
+  '/operations': '/operations/inventory-close',
+  '/utilities': '/utilities',
+  '/purchasing': '/purchasing/orders',
+  '/otb': '/otb/monthly-plans',
+}
 
 const ROUTER_LINK_STYLE: CSSProperties = {
   color: 'inherit',
@@ -155,7 +188,7 @@ const appMenuItems = [
   {
     key: '/purchase-planning-group',
     icon: <FundOutlined />,
-    label: 'Plan de Compras',
+    label: 'Purchase Planning',
     requiredPermissions: ['purchasing.view'],
     children: [
       { key: '/purchase-planning', icon: <FundOutlined />, label: 'V2 - Actual', requiredPermissions: ['purchasing.view'] },
@@ -197,13 +230,13 @@ const appMenuItems = [
     icon: <FileTextOutlined />,
     label: 'Reports',
     children: [
+      { key: '/reports/sales', icon: <BarChartOutlined />, label: 'Sales', requiredPermissions: ['reports.view'] },
+      { key: '/reports/others', icon: <AppstoreOutlined />, label: 'Others', requiredPermissions: ['reports.view'] },
       { key: '/reports/aging', icon: <ClockCircleOutlined />, label: 'Aging', requiredPermissions: ['reports.view'] },
       { key: '/reports/inventory-detail', icon: <InboxOutlined />, label: 'Inventory Detail', requiredPermissions: ['reports.view'] },
       { key: '/reports/transfer-summary', icon: <SwapOutlined />, label: 'Transfer Summary', requiredPermissions: ['reports.view'] },
       { key: '/reports/recommended-transfers', icon: <FundOutlined />, label: 'Recommended Transfers', requiredPermissions: ['reports.view'] },
-      { key: '/reports/sales', icon: <BarChartOutlined />, label: 'Sales', requiredPermissions: ['reports.view'] },
       { key: '/reports/sales/seasonality-index', icon: <FundOutlined />, label: 'Seasonality Index', requiredPermissions: ['reports.view'] },
-      { key: '/reports/others', icon: <AppstoreOutlined />, label: 'Others', requiredPermissions: ['reports.view'] },
       { key: '/reports/templates', icon: <BookOutlined />, label: 'Templates', requiredPermissions: ['reports.admin'] },
       { key: '/reports/runs', icon: <CameraOutlined />, label: 'Snapshots', requiredPermissions: ['reports.admin'] },
       // Demoted - not in active use (muted style)
@@ -255,6 +288,110 @@ const appMenuItems = [
   },
 ]
 
+const MENU_STRING_KEYS: Record<string, string> = {
+  Products: 'modules.products',
+  'New SKU': 'menu.newSku',
+  'SKU List': 'menu.skuList',
+  'Borradores de SKU': 'menu.skuDrafts',
+  Inquiry: 'menu.inquiry',
+  'Catalogue Setup': 'menu.catalogueSetup',
+  Vendors: 'menu.vendors',
+  Categories: 'menu.categories',
+  Departments: 'menu.departments',
+  Sectors: 'menu.sectors',
+  Groups: 'menu.groups',
+  Keywords: 'menu.keywords',
+  Seasons: 'menu.seasons',
+  'Size Types': 'menu.sizeTypes',
+  'Case Packs': 'menu.casePacks',
+  'Return Codes': 'menu.returnCodes',
+  'Promotion Codes': 'menu.promotionCodes',
+  'Product Enrichment': 'menu.productEnrichment',
+  Attributes: 'menu.attributes',
+  'Macro Categories': 'menu.macroCategories',
+  'Product Families': 'menu.productFamilies',
+  'Matching Sets': 'menu.matchingSets',
+  'File Setup': 'modules.fileSetup',
+  Stores: 'menu.stores',
+  'Store Chains': 'menu.storeChains',
+  Salespeople: 'menu.salespeople',
+  'Users & Access': 'modules.usersAccess',
+  Users: 'menu.users',
+  'Roles & Permissions': 'menu.rolesPermissions',
+  'Security Center': 'menu.securityCenter',
+  'Effective Access': 'menu.effectiveAccess',
+  Platform: 'modules.platform',
+  'Activity Review': 'menu.activityReview',
+  'Security Audit': 'menu.securityAudit',
+  'Inventory Audit': 'menu.inventoryAudit',
+  Inventory: 'modules.inventory',
+  'Stock Maintenance': 'menu.stockMaintenance',
+  Balances: 'menu.balances',
+  'Find by Size': 'menu.findBySize',
+  'Model Quantities': 'menu.modelQuantities',
+  'Transfer - Manual': 'menu.transferManual',
+  'Transfer - Automatic': 'menu.transferAutomatic',
+  'Transfer - Balancing (Legacy)': 'menu.transferBalancingLegacy',
+  'Transfer - Balancing v2': 'menu.transferBalancingV2',
+  Movements: 'menu.movements',
+  'Change Detail': 'menu.changeDetail',
+  'Sales Ledger': 'menu.salesLedger',
+  Dashboard: 'menu.dashboard',
+  'Purchase Planning': 'modules.purchasePlanning',
+  'V2 - Actual': 'menu.purchasePlanningV2',
+  'V3 - Warehouse Shared': 'menu.purchasePlanningV3',
+  'Assortment Releases': 'menu.assortmentReleases',
+  'Buyer Checklist': 'menu.buyerChecklist',
+  'Import Management': 'modules.importManagement',
+  'Sales POS': 'modules.salesPos',
+  'Enter Sales': 'menu.enterSales',
+  'Customer Intelligence': 'modules.customerIntelligence',
+  'Customers (KPI)': 'menu.customersKpi',
+  'Customer Records': 'menu.customerRecords',
+  Segments: 'menu.segments',
+  'Churn Risk': 'menu.churnRisk',
+  'VIP Customers': 'menu.vipCustomers',
+  'Discount Sensitivity': 'menu.discountSensitivity',
+  Reports: 'modules.reports',
+  Aging: 'menu.aging',
+  'Inventory Detail': 'menu.inventoryDetail',
+  'Transfer Summary': 'menu.transferSummary',
+  'Recommended Transfers': 'menu.recommendedTransfers',
+  Sales: 'menu.sales',
+  'Seasonality Index': 'menu.seasonalityIndex',
+  Others: 'menu.others',
+  Templates: 'menu.templates',
+  Snapshots: 'menu.snapshots',
+  'On-Hand': 'menu.onHand',
+  Turnover: 'menu.turnover',
+  'Sell-Through': 'menu.sellThrough',
+  Operations: 'modules.operations',
+  'Inventory Close': 'menu.inventoryClose',
+  'Migration Day': 'menu.migrationDay',
+  Utilities: 'modules.utilities',
+  Overview: 'menu.overview',
+  'Change Keywords': 'menu.changeKeywords',
+  'Batch History': 'menu.batchHistory',
+  Purchasing: 'modules.purchasing',
+  'Purchase Orders': 'menu.purchaseOrders',
+  'Supplier Quotations': 'menu.supplierQuotations',
+  'PO Entry (Spec Preview)': 'menu.poEntrySpecPreview',
+  'Receive POs': 'menu.receivePos',
+  'Receive PO (Spec Preview)': 'menu.receivePoSpecPreview',
+  OTB: 'modules.otb',
+  'Monthly Plans': 'menu.monthlyPlans',
+  'Budget Dashboard': 'menu.budgetDashboard',
+}
+
+function translateMenuLabel(
+  label: ReactNode,
+  t: (key: string, options?: { defaultValue: string }) => string,
+): ReactNode {
+  if (typeof label !== 'string') return label
+  const key = MENU_STRING_KEYS[label]
+  return key ? t(key, { defaultValue: label }) : label
+}
+
 function hasMenuPermission(item: any, permissions: ReadonlySet<string>): boolean {
   const required = item?.requiredPermissions as string[] | undefined;
   if (!required || required.length === 0) return true;
@@ -288,6 +425,18 @@ function filterMenuItemsForPermissions(items: readonly any[], permissions: Reado
   return compactDividers(filtered);
 }
 
+function orderMainSidebarMenuItems(items: readonly any[]): any[] {
+  const menuOrder = new Map(MAIN_SIDEBAR_MENU_ORDER.map((key, index) => [key, index]))
+  return items
+    .map((item, index) => ({ item, index }))
+    .sort((a, b) => {
+      const aOrder = menuOrder.get(a.item?.key) ?? Number.MAX_SAFE_INTEGER
+      const bOrder = menuOrder.get(b.item?.key) ?? Number.MAX_SAFE_INTEGER
+      return aOrder === bOrder ? a.index - b.index : aOrder - bOrder
+    })
+    .map(({ item }) => item)
+}
+
 function firstLeafRoute(items: readonly any[]): string | null {
   for (const item of items) {
     if (!item || item.type === 'divider') continue;
@@ -301,19 +450,46 @@ function firstLeafRoute(items: readonly any[]): string | null {
   return null;
 }
 
-export function firstAccessibleMenuRoute(permissions: ReadonlySet<string>): string {
-  return firstLeafRoute(filterMenuItemsForPermissions(appMenuItems, permissions)) ?? '/me';
+function collectLeafRoutes(items: readonly any[]): string[] {
+  const out: string[] = [];
+  for (const item of items) {
+    if (!item || item.type === 'divider') continue;
+    if (Array.isArray(item.children)) out.push(...collectLeafRoutes(item.children));
+    else if (typeof item.key === 'string' && item.key.startsWith('/')) out.push(routeForMenuKey(item.key));
+  }
+  return out;
 }
 
-function linkLeafMenuItems(items: readonly any[]): any[] {
+function routeForMenuTitle(item: any): string | null {
+  if (!Array.isArray(item.children)) return null;
+  const fallbackRoute = firstLeafRoute(item.children);
+  const preferredRoute = typeof item.key === 'string' ? MENU_TITLE_ROUTES[item.key] : null;
+  if (!preferredRoute) return fallbackRoute;
+  return collectLeafRoutes(item.children).includes(preferredRoute) ? preferredRoute : fallbackRoute;
+}
+
+export function firstAccessibleMenuRoute(permissions: ReadonlySet<string>): string {
+  return firstLeafRoute(filterMenuItemsForPermissions(orderMainSidebarMenuItems(appMenuItems), permissions)) ?? '/me';
+}
+
+function linkLeafMenuItems(
+  items: readonly any[],
+  t: (key: string, options?: { defaultValue: string }) => string,
+  navigate: NavigateFunction,
+): any[] {
   return items.map((item) => {
     if (!item || item.type === 'divider') return item
-    const menuItem = { ...item }
+    const menuItem = { ...item, label: translateMenuLabel(item.label, t) }
     delete menuItem.requiredPermissions
     if (Array.isArray(item.children)) {
+      const titleRoute = routeForMenuTitle(item)
       return {
         ...menuItem,
-        children: linkLeafMenuItems(item.children),
+        onTitleClick: ({ domEvent }: { domEvent: MouseEvent<HTMLElement> | KeyboardEvent<HTMLElement> }) => {
+          if (!titleRoute || isModifiedNavigationEvent(domEvent)) return
+          navigate(titleRoute)
+        },
+        children: linkLeafMenuItems(item.children, t, navigate),
       }
     }
     if (typeof item.key !== 'string' || !item.key.startsWith('/')) return item
@@ -329,10 +505,11 @@ function linkLeafMenuItems(items: readonly any[]): any[] {
 }
 
 function DemotedLabel({ children }: { children: ReactNode }) {
+  const { t } = useTranslation('shell')
   return (
     <span style={{ opacity: 0.55, fontStyle: 'italic' }}>
-      {children}{' '}
-      <span style={{ fontSize: 11, opacity: 0.85 }}>- no en uso</span>
+      {translateMenuLabel(children, t)}{' '}
+      <span style={{ fontSize: 11, opacity: 0.85 }}>- {t('demoted.notInUse')}</span>
     </span>
   )
 }
@@ -341,25 +518,29 @@ export default function AppLayout() {
   const navigate = useNavigate()
   const location = useLocation()
   const currentPath = location.pathname
-  const { user, logout, permissions } = useAuth()
-  const visibleAppMenuItems = useMemo(() => filterMenuItemsForPermissions(appMenuItems, permissions), [permissions])
-  const menuItems = useMemo(() => linkLeafMenuItems(visibleAppMenuItems), [visibleAppMenuItems])
+  const { user, logout, permissions, updatePreferences } = useAuth()
+  const { t } = useTranslation('shell')
+  const visibleAppMenuItems = useMemo(
+    () => filterMenuItemsForPermissions(orderMainSidebarMenuItems(appMenuItems), permissions),
+    [permissions],
+  )
+  const menuItems = useMemo(() => linkLeafMenuItems(visibleAppMenuItems, t, navigate), [visibleAppMenuItems, t, navigate])
 
   const userMenuItems = [
     {
       key: 'me',
-      label: <Link to="/me">My account</Link>,
+      label: <Link to="/me">{t('userMenu.myAccount')}</Link>,
     },
     ...(permissions.has('identity_access.view')
       ? [{
           key: 'users',
-          label: <Link to="/admin/users">Users</Link>,
+          label: <Link to="/admin/users">{t('userMenu.users')}</Link>,
         }]
       : []),
     { type: 'divider' as const },
     {
       key: 'logout',
-      label: 'Sign out',
+      label: t('userMenu.signOut'),
       onClick: async () => {
         await logout()
         navigate('/login')
@@ -444,7 +625,9 @@ export default function AppLayout() {
     ) ??
     visibleAppMenuItems.find((item) => item.children && collectMenuKeys(item.children).includes(selectedMenuKey)) ??
     visibleAppMenuItems[0]
-  const activeModuleLabel = currentPath.startsWith('/manual') ? 'Manual' : activeModule?.label ?? 'Inventory'
+  const activeModuleLabel = currentPath.startsWith('/manual')
+    ? t('modules.manual')
+    : translateMenuLabel(activeModule?.label ?? 'Inventory', t)
 
   const desiredOpenKeys = Array.from(new Set(collectOpenKeysForPath(visibleAppMenuItems, currentPath)))
   const [openKeys, setOpenKeys] = useState<string[]>(() => desiredOpenKeys)
@@ -465,7 +648,7 @@ export default function AppLayout() {
         <Sider breakpoint="lg" collapsedWidth={60}>
           <div style={{ padding: '16px', textAlign: 'center' }}>
             <Typography.Text strong style={{ color: '#fff', fontSize: 16 }}>
-              Benlow RICS
+              {t('brand')}
             </Typography.Text>
           </div>
           <Menu
@@ -497,16 +680,22 @@ export default function AppLayout() {
             </Typography.Title>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               {currentHelp ? (
-                <Tooltip title="Ayuda de esta página">
+                <Tooltip title={t('help.tooltip')}>
                   <Button
-                    aria-label="Ayuda de esta página"
+                    aria-label={t('help.tooltip')}
                     icon={<QuestionCircleOutlined />}
                     onClick={() => setHelpDrawerOpen(true)}
                   >
-                    Ayuda
+                    {t('help.button')}
                   </Button>
                 </Tooltip>
               ) : null}
+              <LanguageSelector
+                onLocaleChange={(preferredLocale) =>
+                  updatePreferences({ preferredLocale }).catch(() => {
+                    // The local setting still applies; My account can retry persistence.
+                  })}
+              />
               <Dropdown menu={{ items: userMenuItems }} placement="bottomRight">
                 <Button type="text" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <Avatar size="small" icon={<UserOutlined />} />

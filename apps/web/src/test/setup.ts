@@ -1,5 +1,10 @@
 import '@testing-library/jest-dom/vitest'
-import { vi } from 'vitest'
+import { beforeAll, vi } from 'vitest'
+import { initGlobalI18nForTests } from '@benlow-rics/i18n/react'
+
+beforeAll(async () => {
+  await initGlobalI18nForTests('web')
+})
 
 if (!window.matchMedia) {
   Object.defineProperty(window, 'matchMedia', {

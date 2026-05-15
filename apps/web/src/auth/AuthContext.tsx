@@ -1,4 +1,5 @@
 import { createContext, ReactNode, useCallback, useEffect, useState } from 'react';
+import type { SupportedLocale } from '@benlow-rics/i18n';
 import { authApi, MeResponse } from '../services/authApi';
 
 export interface AuthState {
@@ -8,6 +9,7 @@ export interface AuthState {
   login: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   refresh: () => Promise<void>;
+  updatePreferences: (input: { preferredLocale: SupportedLocale | null }) => Promise<void>;
 }
 
 export const AuthContext = createContext<AuthState | null>(null);
@@ -45,8 +47,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setPermissions(new Set());
   }, []);
 
+  const updatePreferences = useCallback(async (input: { preferredLocale: SupportedLocale | null }) => {
+    const result = await authApi.updatePreferences(input);
+    setUser(result.user);
+  }, []);
+
   return (
-    <AuthContext.Provider value={{ user, permissions, loading, login, logout, refresh }}>
+    <AuthContext.Provider value={{ user, permissions, loading, login, logout, refresh, updatePreferences }}>
       {children}
     </AuthContext.Provider>
   );

@@ -1,5 +1,6 @@
 import React from 'react';
 import { Button, Space, Tooltip } from 'antd';
+import { useTranslation } from '@benlow-rics/i18n/react';
 
 export type ViewMode =
   | 'ON_HAND' | 'ON_ORDER_CURRENT' | 'ON_ORDER_FUTURE'
@@ -12,54 +13,59 @@ export type ViewMode =
 interface Mode {
   value: ViewMode;
   label: string;
+  labelKey: string;
   shortcut: string;
   live: boolean;
   waitingOn?: string;
 }
 
 export const VIEW_MODES: Mode[] = [
-  { value: 'ON_HAND',             label: 'On Hand',                shortcut: 'F2',       live: true },
-  { value: 'ON_ORDER_CURRENT',    label: 'On Order (At-Once)',     shortcut: 'F3',       live: true },
-  { value: 'ON_ORDER_FUTURE',     label: 'On Order (Future)',      shortcut: 'F4',       live: true },
-  { value: 'MODEL',               label: 'Model Quantities',       shortcut: 'F5',       live: true },
-  { value: 'SHORT',               label: 'Short Quantities',       shortcut: 'F6',       live: true },
-  { value: 'MTD_SALES',           label: 'Month-to-Date Sales',    shortcut: 'F7',       live: true },
-  { value: 'STD_SALES',           label: 'Season-to-Date Sales',   shortcut: 'F8',       live: true },
-  { value: 'YTD_SALES',           label: 'Year-To-Date Sales',     shortcut: 'F9',       live: true },
-  { value: 'SINGLE_COLUMN',       label: 'Column Only',            shortcut: 'F11',      live: true },
-  { value: 'ALL_STORES_ON_HAND',  label: 'All Stores - On Hand',   shortcut: 'Shift+F1', live: true },
-  { value: 'ALL_STORES_SUMMARY',  label: 'All Stores Summary',     shortcut: 'Shift+F2', live: true },
-  { value: 'MAX',                 label: 'Max Quantities',         shortcut: 'Shift+F3', live: true },
-  { value: 'REORDER',             label: 'Reorder Quantities',     shortcut: 'Shift+F4', live: true },
-  { value: 'LY_SALES',            label: 'Last Year Sales',        shortcut: 'Shift+F5', live: true },
+  { value: 'ON_HAND', label: 'On Hand', labelKey: 'modes.ON_HAND', shortcut: 'F2', live: true },
+  { value: 'ON_ORDER_CURRENT', label: 'On Order (At-Once)', labelKey: 'modes.ON_ORDER_CURRENT', shortcut: 'F3', live: true },
+  { value: 'ON_ORDER_FUTURE', label: 'On Order (Future)', labelKey: 'modes.ON_ORDER_FUTURE', shortcut: 'F4', live: true },
+  { value: 'MODEL', label: 'Model Quantities', labelKey: 'modes.MODEL', shortcut: 'F5', live: true },
+  { value: 'SHORT', label: 'Short Quantities', labelKey: 'modes.SHORT', shortcut: 'F6', live: true },
+  { value: 'MTD_SALES', label: 'Month-to-Date Sales', labelKey: 'modes.MTD_SALES', shortcut: 'F7', live: true },
+  { value: 'STD_SALES', label: 'Season-to-Date Sales', labelKey: 'modes.STD_SALES', shortcut: 'F8', live: true },
+  { value: 'YTD_SALES', label: 'Year-To-Date Sales', labelKey: 'modes.YTD_SALES', shortcut: 'F9', live: true },
+  { value: 'SINGLE_COLUMN', label: 'Column Only', labelKey: 'modes.SINGLE_COLUMN', shortcut: 'F11', live: true },
+  { value: 'ALL_STORES_ON_HAND', label: 'All Stores - On Hand', labelKey: 'modes.ALL_STORES_ON_HAND', shortcut: 'Shift+F1', live: true },
+  { value: 'ALL_STORES_SUMMARY', label: 'All Stores Summary', labelKey: 'modes.ALL_STORES_SUMMARY', shortcut: 'Shift+F2', live: true },
+  { value: 'MAX', label: 'Max Quantities', labelKey: 'modes.MAX', shortcut: 'Shift+F3', live: true },
+  { value: 'REORDER', label: 'Reorder Quantities', labelKey: 'modes.REORDER', shortcut: 'Shift+F4', live: true },
+  { value: 'LY_SALES', label: 'Last Year Sales', labelKey: 'modes.LY_SALES', shortcut: 'Shift+F5', live: true },
 ];
 
 export const ViewModeSelector: React.FC<{
   value: ViewMode;
   onChange: (mode: ViewMode) => void;
-}> = ({ value, onChange }) => (
-  <Space wrap size={[4, 4]}>
-    {VIEW_MODES.map((m) => {
-      const button = (
-        <Button
-          key={m.value}
-          size="small"
-          type={value === m.value ? 'primary' : 'default'}
-          disabled={!m.live}
-          onClick={() => onChange(m.value)}
-          style={{ fontSize: 11, padding: '0 8px', height: 22 }}
-        >
-          {m.label}
-          <span style={{ opacity: 0.55, marginLeft: 4, fontSize: 10 }}>{m.shortcut}</span>
-        </Button>
-      );
-      return m.live ? (
-        button
-      ) : (
-        <Tooltip key={m.value} title={`Phase 2 — waiting on ${m.waitingOn}`}>
-          <span>{button}</span>
-        </Tooltip>
-      );
-    })}
-  </Space>
-);
+}> = ({ value, onChange }) => {
+  const { t } = useTranslation('inquiry');
+
+  return (
+    <Space wrap size={[4, 4]}>
+      {VIEW_MODES.map((m) => {
+        const button = (
+          <Button
+            key={m.value}
+            size="small"
+            type={value === m.value ? 'primary' : 'default'}
+            disabled={!m.live}
+            onClick={() => onChange(m.value)}
+            style={{ fontSize: 11, padding: '0 8px', height: 22 }}
+          >
+            {t(m.labelKey)}
+            <span style={{ opacity: 0.55, marginLeft: 4, fontSize: 10 }}>{m.shortcut}</span>
+          </Button>
+        );
+        return m.live ? (
+          button
+        ) : (
+          <Tooltip key={m.value} title={`Phase 2 - waiting on ${m.waitingOn}`}>
+            <span>{button}</span>
+          </Tooltip>
+        );
+      })}
+    </Space>
+  );
+};

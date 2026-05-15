@@ -1,5 +1,6 @@
 import React from 'react';
 import { Button, Space, Tag } from 'antd';
+import { useTranslation } from '@benlow-rics/i18n/react';
 import type { InventoryInquiry } from '../../../types/inventoryInquiry';
 import {
   AttributeHeaderGroupRows,
@@ -34,6 +35,7 @@ export const HeaderCard: React.FC<{
   storeId,
   onPickSku,
 }) => {
+  const { t } = useTranslation(['inquiry', 'common']);
   const replacedBy = inquiry.replacementContext?.replacedBy ?? null;
   const supersedes = inquiry.replacementContext?.supersedes ?? [];
   const attributeModel = useAttributeHeaderModel(inquiry.sku, true);
@@ -42,11 +44,11 @@ export const HeaderCard: React.FC<{
     <table style={{ borderCollapse: 'collapse', fontSize: 12 }}>
       <tbody>
         <tr>
-          <th style={cellLabel}>SKU</th>
+          <th style={cellLabel}>{t('inquiry:headers.sku')}</th>
           <td style={cellValue}><strong>{inquiry.sku}</strong></td>
-          <th style={cellLabel}>Description</th>
+          <th style={cellLabel}>{t('inquiry:headers.description')}</th>
           <td style={cellValue}>{inquiry.description}</td>
-          <th style={cellLabel}>Comprador</th>
+          <th style={cellLabel}>{t('inquiry:headers.buyer')}</th>
           <AttributeHeaderValueCell
             cellValueStyle={cellValue}
             dimCode={OPERATIONAL_ATTRIBUTE_CODES[0]}
@@ -54,15 +56,15 @@ export const HeaderCard: React.FC<{
           />
         </tr>
         <tr>
-          <th style={cellLabel}>Category</th>
+          <th style={cellLabel}>{t('inquiry:headers.category')}</th>
           <td style={cellValue}>
             {inquiry.category?.id} {inquiry.category?.name}
           </td>
-          <th style={cellLabel}>Vendor</th>
+          <th style={cellLabel}>{t('inquiry:headers.vendor')}</th>
           <td style={cellValue}>
             {inquiry.vendor?.code} {inquiry.vendor?.name}
           </td>
-          <th style={cellLabel}>Empresa</th>
+          <th style={cellLabel}>{t('inquiry:headers.company')}</th>
           <AttributeHeaderValueCell
             cellValueStyle={cellValue}
             dimCode={OPERATIONAL_ATTRIBUTE_CODES[1]}
@@ -70,11 +72,11 @@ export const HeaderCard: React.FC<{
           />
         </tr>
         <tr>
-          <th style={cellLabel}>Vendor SKU</th>
+          <th style={cellLabel}>{t('inquiry:headers.vendorSku')}</th>
           <td style={cellValue}>{inquiry.vendorSku ?? '-'}</td>
-          <th style={cellLabel}>Style/Color</th>
+          <th style={cellLabel}>{t('inquiry:headers.styleColor')}</th>
           <td style={cellValue}>{inquiry.styleColor ?? '-'}</td>
-          <th style={cellLabel}>Cadena</th>
+          <th style={cellLabel}>{t('inquiry:headers.chain')}</th>
           <AttributeHeaderValueCell
             cellValueStyle={cellValue}
             dimCode={OPERATIONAL_ATTRIBUTE_CODES[2]}
@@ -82,13 +84,13 @@ export const HeaderCard: React.FC<{
           />
         </tr>
         <tr>
-          <th style={cellLabel}>Size Type</th>
+          <th style={cellLabel}>{t('inquiry:headers.sizeType')}</th>
           <td style={cellValue}>
             {inquiry.sizeType?.id} {inquiry.sizeType?.name}
           </td>
-          <th style={cellLabel}>Last Received</th>
+          <th style={cellLabel}>{t('inquiry:headers.lastReceived')}</th>
           <td style={cellValue}>{inquiry.lastReceivedAt ?? '-'}</td>
-          <th style={cellLabel}>Descuento</th>
+          <th style={cellLabel}>{t('inquiry:headers.discount')}</th>
           <AttributeHeaderValueCell
             cellValueStyle={cellValue}
             dimCode={OPERATIONAL_ATTRIBUTE_CODES[3]}
@@ -96,13 +98,13 @@ export const HeaderCard: React.FC<{
           />
         </tr>
         <tr>
-          <th style={cellLabel}>Store</th>
-          <td style={cellValue}>{storeId != null ? `Store ${storeId}` : 'All Stores'}</td>
-          <th style={cellLabel}>SKU State</th>
+          <th style={cellLabel}>{t('inquiry:headers.store')}</th>
+          <td style={cellValue}>{storeId != null ? t('inquiry:headers.storeNumber', { storeId }) : t('inquiry:headers.allStores')}</td>
+          <th style={cellLabel}>{t('inquiry:headers.skuState')}</th>
           <td style={cellValue}>
             <Space size={6} wrap>
               <Tag color={statusColor(inquiry.status)} style={{ marginRight: 0 }}>
-                {formatStatus(inquiry.status)}
+                {formatStatusLabel(inquiry.status, t)}
               </Tag>
               {replacedBy ? (
                 <Button
@@ -114,12 +116,12 @@ export const HeaderCard: React.FC<{
                   })}
                   style={{ padding: 0, height: 'auto', lineHeight: 1 }}
                 >
-                  Replaced by {replacedBy.replacementSkuCode}
+                  {t('inquiry:headers.replacedBy', { sku: replacedBy.replacementSkuCode })}
                 </Button>
               ) : null}
             </Space>
           </td>
-          <th style={cellLabel}>label_type</th>
+          <th style={cellLabel}>{t('inquiry:headers.labelType')}</th>
           <AttributeHeaderValueCell
             cellValueStyle={cellValue}
             dimCode={OPERATIONAL_ATTRIBUTE_CODES[4]}
@@ -128,7 +130,7 @@ export const HeaderCard: React.FC<{
         </tr>
         {supersedes.length > 0 ? (
           <tr>
-            <th style={cellLabel}>Replaces</th>
+            <th style={cellLabel}>{t('inquiry:headers.replaces')}</th>
             <td colSpan={5} style={{ ...cellValue, whiteSpace: 'normal' }}>
               <Space size={[6, 4]} wrap>
                 {supersedes.map((item) => (
@@ -146,7 +148,7 @@ export const HeaderCard: React.FC<{
                     </Button>
                     {item.transferDemand ? (
                       <Tag color="blue" style={{ marginRight: 0 }}>
-                        demand
+                        {t('inquiry:headers.demand')}
                       </Tag>
                     ) : null}
                   </Space>
@@ -170,6 +172,17 @@ function formatStatus(status: string | null | undefined): string {
   const normalized = status?.trim().toUpperCase();
   if (!normalized) return 'ACTIVE';
   if (normalized === 'D') return 'DISCONTINUED';
+  return normalized;
+}
+
+function formatStatusLabel(
+  status: string | null | undefined,
+  t: (key: string, options?: { defaultValue: string }) => string,
+): string {
+  const normalized = formatStatus(status);
+  if (normalized === 'ACTIVE') return t('common:status.active');
+  if (normalized === 'DISCONTINUED') return t('common:status.discontinued');
+  if (normalized === 'DRAFT') return t('common:status.draft');
   return normalized;
 }
 

@@ -1,5 +1,8 @@
 import { Card, Typography, Divider, Button, Space } from 'antd'
 import { ShoppingOutlined } from '@ant-design/icons'
+import { formatHnl } from '@benlow-rics/i18n'
+import { useI18nLocale } from '@benlow-rics/i18n/react'
+import { useTranslation } from '@benlow-rics/i18n/react'
 import { useNavigate } from 'react-router-dom'
 import type { Cart } from '@/types/cart'
 
@@ -12,27 +15,29 @@ interface CartSummaryProps {
 
 export default function CartSummary({ cart, loading }: CartSummaryProps) {
   const navigate = useNavigate()
+  const { t } = useTranslation('storefront')
+  const { locale } = useI18nLocale()
 
   return (
     <Card style={{ position: 'sticky', top: 120 }}>
-      <Title level={5}>Resumen del Pedido</Title>
+      <Title level={5}>{t('cart.summaryTitle')}</Title>
       <Space direction="vertical" style={{ width: '100%' }} size={8}>
         <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-          <Text>Subtotal ({cart.itemCount} articulos)</Text>
-          <Text>L {cart.subtotal.toFixed(2)}</Text>
+          <Text>{t('cart.subtotalItems', { count: cart.itemCount })}</Text>
+          <Text>{formatHnl(cart.subtotal, locale)}</Text>
         </div>
         <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-          <Text>Impuestos</Text>
-          <Text>L {cart.tax.toFixed(2)}</Text>
+          <Text>{t('checkout.tax')}</Text>
+          <Text>{formatHnl(cart.tax, locale)}</Text>
         </div>
         <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-          <Text>Envio</Text>
-          <Text type="success">Gratis</Text>
+          <Text>{t('cart.shipping')}</Text>
+          <Text type="success">{t('cart.free')}</Text>
         </div>
         <Divider style={{ margin: '8px 0' }} />
         <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-          <Title level={4} style={{ margin: 0 }}>Total</Title>
-          <Title level={4} style={{ margin: 0, color: '#1677ff' }}>L {cart.total.toFixed(2)}</Title>
+          <Title level={4} style={{ margin: 0 }}>{t('checkout.total')}</Title>
+          <Title level={4} style={{ margin: 0, color: '#1677ff' }}>{formatHnl(cart.total, locale)}</Title>
         </div>
       </Space>
       <Button
@@ -44,7 +49,7 @@ export default function CartSummary({ cart, loading }: CartSummaryProps) {
         onClick={() => navigate('/checkout')}
         disabled={cart.lines.length === 0 || loading}
       >
-        Proceder al Pago
+        {t('cart.checkout')}
       </Button>
       <Button
         type="link"
@@ -52,7 +57,7 @@ export default function CartSummary({ cart, loading }: CartSummaryProps) {
         style={{ marginTop: 8 }}
         onClick={() => navigate('/')}
       >
-        Seguir Comprando
+        {t('checkout.continueShopping')}
       </Button>
     </Card>
   )

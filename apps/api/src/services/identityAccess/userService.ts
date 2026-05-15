@@ -6,6 +6,7 @@ import { assertRoleAssignable } from './roleManagementService';
 export interface CreateUserInput {
   email: string;
   displayName: string;
+  preferredLocale?: string | null;
   password: string;
   roleId: string;
   ricsUserId?: string | null;
@@ -25,6 +26,7 @@ export interface CreateUserInput {
 export interface UpdateUserInput {
   email?: string;
   displayName?: string;
+  preferredLocale?: string | null;
   roleId?: string;
   active?: boolean;
   ricsUserId?: string | null;
@@ -89,6 +91,7 @@ export async function createUser(prisma: PrismaClient, input: CreateUserInput): 
     data: {
       email: input.email.toLowerCase().trim(),
       displayName: input.displayName.trim(),
+      preferredLocale: normalizeOptionalText(input.preferredLocale) ?? null,
       passwordHash,
       roleId: input.roleId,
       ricsUserId: input.ricsUserId ?? null,
@@ -125,6 +128,9 @@ export async function updateUser(
     data: {
       ...(input.email !== undefined ? { email: input.email.toLowerCase().trim() } : {}),
       ...(input.displayName !== undefined ? { displayName: input.displayName.trim() } : {}),
+      ...(input.preferredLocale !== undefined
+        ? { preferredLocale: normalizeOptionalText(input.preferredLocale) }
+        : {}),
       ...(input.roleId !== undefined ? { roleId: input.roleId } : {}),
       ...(input.active !== undefined ? { active: input.active } : {}),
       ...(input.ricsUserId !== undefined ? { ricsUserId: input.ricsUserId } : {}),

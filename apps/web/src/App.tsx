@@ -8,6 +8,7 @@ import { RequirePermission } from './auth/RequirePermission'
 import { useAuth } from './auth/useAuth'
 import { InquiryPopupProvider } from './components/inquiry-popup'
 import LegacyPurchaseOrderDetailPage from './pages/purchasing/LegacyPurchaseOrderDetailPage'
+import { AuthLocaleBridge } from './i18n/AuthLocaleBridge'
 
 const SkuListPage = lazy(() => import('./pages/inventory/SkuListPage'))
 const SkuFormPageModern = lazy(() => import('./pages/inventory/SkuFormPageModern'))
@@ -193,6 +194,7 @@ function gate(permission: string, element: ReactElement) {
 export default function App() {
   return (
     <AuthProvider>
+      <AuthLocaleBridge />
       {/* Keep the popup inside AuthProvider; inquiry modal editing reads auth permissions. */}
       <InquiryPopupProvider>
         <Routes>

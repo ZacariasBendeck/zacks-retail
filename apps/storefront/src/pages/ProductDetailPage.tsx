@@ -1,15 +1,18 @@
 import { useParams, useNavigate } from 'react-router-dom'
 import { Row, Col, Typography, Button, Rate, Space, Divider, Breadcrumb, Select, Spin, Image, message } from 'antd'
 import { ArrowLeftOutlined, HomeOutlined, ShoppingCartOutlined, HeartOutlined } from '@ant-design/icons'
+import { formatHnl } from '@benlow-rics/i18n'
+import { useI18nLocale } from '@benlow-rics/i18n/react'
+import { useTranslation } from '@benlow-rics/i18n/react'
 import { useProduct } from '@/hooks/useProducts'
 import { useState } from 'react'
 import { useCartStore } from '@/store/cartStore'
 
 const { Title, Text, Paragraph } = Typography
 
-const PLACEHOLDER_IMG = 'https://placehold.co/600x600/f5f5f5/999?text=Sin+Imagen'
-
 export default function ProductDetailPage() {
+  const { t } = useTranslation('storefront')
+  const { locale } = useI18nLocale()
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const { data: product, isLoading } = useProduct(id ?? '')
@@ -20,7 +23,7 @@ export default function ProductDetailPage() {
   const handleAddToCart = async () => {
     if (!product || !selectedSize) return
     await addItem(parseInt(selectedSize, 10))
-    message.success('Agregado al carrito')
+    message.success(t('product.addedToCart'))
   }
 
   if (isLoading) {
@@ -34,9 +37,9 @@ export default function ProductDetailPage() {
   if (!product) {
     return (
       <div style={{ maxWidth: 1400, margin: '0 auto', padding: '24px' }}>
-        <Button icon={<ArrowLeftOutlined />} onClick={() => navigate(-1)}>Volver</Button>
+        <Button icon={<ArrowLeftOutlined />} onClick={() => navigate(-1)}>{t('product.back')}</Button>
         <div style={{ textAlign: 'center', padding: 80 }}>
-          <Title level={3}>Producto no encontrado</Title>
+          <Title level={3}>{t('product.notFound')}</Title>
         </div>
       </div>
     )
@@ -47,27 +50,28 @@ export default function ProductDetailPage() {
     : []
 
   const SPEC_LABELS: Record<string, string> = {
-    shoeType: 'Tipo de Zapato',
-    heelShape: 'Forma del Tacon',
-    heelHeight: 'Altura del Tacon',
-    toeShape: 'Forma de Punta',
-    closureType: 'Tipo de Cierre',
-    upperMaterial: 'Material Superior',
-    outsoleMaterial: 'Material de Suela',
-    finish: 'Acabado',
-    widthType: 'Ancho',
-    pattern: 'Patron',
-    occasion: 'Ocasion',
-    heelType: 'Tipo de Tacon',
-    material: 'Material',
+    shoeType: t('product.specLabels.shoeType'),
+    heelShape: t('product.specLabels.heelShape'),
+    heelHeight: t('product.specLabels.heelHeight'),
+    toeShape: t('product.specLabels.toeShape'),
+    closureType: t('product.specLabels.closureType'),
+    upperMaterial: t('product.specLabels.upperMaterial'),
+    outsoleMaterial: t('product.specLabels.outsoleMaterial'),
+    finish: t('product.specLabels.finish'),
+    widthType: t('product.specLabels.widthType'),
+    pattern: t('product.specLabels.pattern'),
+    occasion: t('product.specLabels.occasion'),
+    heelType: t('product.specLabels.heelType'),
+    material: t('product.specLabels.material'),
   }
+  const placeholderImg = `https://placehold.co/600x600/f5f5f5/999?text=${encodeURIComponent(t('product.noImage'))}`
 
   return (
     <div style={{ maxWidth: 1400, margin: '0 auto', padding: '16px 24px' }}>
       <Breadcrumb
         items={[
-          { title: <><HomeOutlined /> Inicio</>, href: '/' },
-          { title: 'Zapatos', href: '/' },
+          { title: <><HomeOutlined /> {t('product.home')}</>, href: '/' },
+          { title: t('product.shoes'), href: '/' },
           ...(product.department ? [{ title: product.department }] : []),
           ...(product.category ? [{ title: product.category }] : []),
           { title: product.name },
@@ -80,7 +84,7 @@ export default function ProductDetailPage() {
         <Col xs={24} md={12}>
           <div style={{ position: 'sticky', top: 120 }}>
             <Image
-              src={product.mainImage ?? PLACEHOLDER_IMG}
+              src={product.mainImage ?? placeholderImg}
               alt={product.name}
               style={{
                 width: '100%',
@@ -97,7 +101,7 @@ export default function ProductDetailPage() {
         {/* Product info */}
         <Col xs={24} md={12}>
           <Text type="secondary" style={{ textTransform: 'uppercase', letterSpacing: 1, fontSize: 13 }}>
-            {product.brand ?? 'Sin marca'}
+            {product.brand ?? t('product.unbranded')}
           </Text>
           <Title level={2} style={{ margin: '8px 0 12px' }}>{product.name}</Title>
 
@@ -109,7 +113,7 @@ export default function ProductDetailPage() {
 
           <div style={{ marginBottom: 24 }}>
             <Title level={3} style={{ color: '#1677ff', margin: 0, display: 'inline' }}>
-              L {product.price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              {formatHnl(product.price, locale)}
             </Title>
           </div>
 
@@ -119,7 +123,7 @@ export default function ProductDetailPage() {
           {product.availableColors.length > 0 && (
             <div style={{ marginBottom: 20 }}>
               <Text strong style={{ display: 'block', marginBottom: 8 }}>
-                Color: {product.availableColors.find(c => c.colorId === selectedColor)?.name ?? product.color ?? 'Seleccionar'}
+                {t('product.color', { color: product.availableColors.find(c => c.colorId === selectedColor)?.name ?? product.color ?? t('product.selectColor') })}
               </Text>
               <Space size={8}>
                 {product.availableColors.map(color => (
@@ -152,15 +156,15 @@ export default function ProductDetailPage() {
           {/* Size selector */}
           {product.availableSizes.length > 0 && (
             <div style={{ marginBottom: 24 }}>
-              <Text strong style={{ display: 'block', marginBottom: 8 }}>Talla:</Text>
+              <Text strong style={{ display: 'block', marginBottom: 8 }}>{t('product.size')}</Text>
               <Select
-                placeholder="Seleccionar talla"
+                placeholder={t('product.selectSize')}
                 value={selectedSize}
                 onChange={setSelectedSize}
                 style={{ width: 200 }}
                 options={product.availableSizes.map(s => ({
                   value: s.id,
-                  label: `Talla ${s.label}${s.inStock ? '' : ' (Agotado)'}`,
+                  label: `${t('product.sizeLabel', { size: s.label })}${s.inStock ? '' : ` (${t('product.outOfStock')})`}`,
                   disabled: !s.inStock,
                 }))}
               />
@@ -177,10 +181,10 @@ export default function ProductDetailPage() {
               disabled={!selectedSize}
               onClick={handleAddToCart}
             >
-              {selectedSize ? 'Agregar al Carrito' : 'Selecciona una talla'}
+              {selectedSize ? t('product.addToCart') : t('product.chooseSize')}
             </Button>
             <Button size="large" icon={<HeartOutlined />} block>
-              Agregar a Favoritos
+              {t('product.addToFavorites')}
             </Button>
           </Space>
 
@@ -189,7 +193,7 @@ export default function ProductDetailPage() {
           {/* Description */}
           {product.description && (
             <div style={{ marginBottom: 24 }}>
-              <Title level={5}>Descripcion</Title>
+              <Title level={5}>{t('product.description')}</Title>
               <Paragraph>{product.description}</Paragraph>
             </div>
           )}
@@ -197,7 +201,7 @@ export default function ProductDetailPage() {
           {/* Specifications */}
           {specsEntries.length > 0 && (
             <div>
-              <Title level={5}>Especificaciones</Title>
+              <Title level={5}>{t('product.specifications')}</Title>
               <div style={{ background: '#fafafa', borderRadius: 8, padding: 16 }}>
                 {specsEntries.map(([key, value]) => (
                   <Row key={key} style={{ padding: '6px 0', borderBottom: '1px solid #f0f0f0' }}>

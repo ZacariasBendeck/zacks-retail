@@ -5,6 +5,14 @@ import { ConfigProvider } from 'antd'
 import { describe, expect, it, vi } from 'vitest'
 import AppLayout from '../components/AppLayout'
 
+vi.mock('@benlow-rics/i18n/react', async () => {
+  const actual = await vi.importActual<typeof import('@benlow-rics/i18n/react')>('@benlow-rics/i18n/react')
+  return {
+    ...actual,
+    LanguageSelector: () => <select aria-label="Language" />,
+  }
+})
+
 vi.mock('../auth/useAuth', () => ({
   useAuth: () => ({
     user: {
@@ -38,8 +46,35 @@ vi.mock('../auth/useAuth', () => ({
     login: vi.fn(),
     logout: vi.fn(async () => {}),
     refresh: vi.fn(async () => {}),
+    updatePreferences: vi.fn(async () => {}),
   }),
 }))
+
+function getTopLevelMenuLabels() {
+  const rootMenu = document.querySelector('.ant-menu-root')
+  if (!rootMenu) throw new Error('Root sidebar menu not found')
+
+  return Array.from(rootMenu.children)
+    .flatMap((child) => {
+      if (!(child instanceof HTMLElement)) return []
+      const titleHost =
+        child.getAttribute('role') === 'menuitem'
+          ? child
+          : Array.from(child.children).find(
+              (child): child is HTMLElement =>
+                child instanceof HTMLElement && child.classList.contains('ant-menu-submenu-title'),
+            )
+      if (!titleHost) return []
+
+      const titleContent =
+        Array.from(titleHost.children).find(
+          (child): child is HTMLElement =>
+            child instanceof HTMLElement && child.classList.contains('ant-menu-title-content'),
+        ) ?? titleHost.querySelector('.ant-menu-title-content')
+
+      return [titleContent?.textContent?.replace(/\s+/g, ' ').trim() ?? '']
+    })
+}
 
 function renderModuleShell(initialEntry = '/inventory/dashboard') {
   render(
@@ -64,6 +99,7 @@ function renderModuleShell(initialEntry = '/inventory/dashboard') {
             <Route path="/purchase-planning/v3" element={<div data-testid="purchase-planning-v3">Purchase Planning V3</div>} />
             <Route path="/purchase-planning/buyer-checklist" element={<div data-testid="purchase-planning-buyer-checklist">Buyer Checklist</div>} />
             <Route path="/import-management" element={<div data-testid="import-management">Import Management</div>} />
+            <Route path="/customers/dashboard" element={<div data-testid="customers-dashboard">Customers Dashboard</div>} />
             <Route path="/customers" element={<div data-testid="customers">Customers</div>} />
             <Route path="/products/vendors" element={<div data-testid="products-vendors">Vendors</div>} />
             <Route path="/products/taxonomy/categories" element={<div data-testid="products-categories">Categories</div>} />
@@ -114,7 +150,7 @@ describe('Module Shell Navigation', () => {
     expect(screen.getByRole('menuitem', { name: /File Setup/i })).toBeInTheDocument()
     expect(screen.getByRole('menuitem', { name: /Users & Access/i })).toBeInTheDocument()
     expect(screen.getByRole('menuitem', { name: /Platform/i })).toBeInTheDocument()
-    expect(screen.getByRole('menuitem', { name: /Plan de Compras/i })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: /Purchase Planning/i })).toBeInTheDocument()
     expect(screen.getByRole('menuitem', { name: /Sales POS/i })).toBeInTheDocument()
     expect(screen.getByRole('menuitem', { name: /Customer Intelligence/i })).toBeInTheDocument()
     expect(screen.getByRole('menuitem', { name: /Utilities/i })).toBeInTheDocument()
@@ -123,6 +159,24 @@ describe('Module Shell Navigation', () => {
     expect(screen.getByRole('menuitem', { name: /OTB/i })).toBeInTheDocument()
     expect(screen.getByRole('menuitem', { name: /Reports/i })).toBeInTheDocument()
     expect(screen.getByRole('menuitem', { name: /Operations/i })).toBeInTheDocument()
+  })
+
+  it('orders the main sidebar modules for retail workflows', () => {
+    renderModuleShell()
+
+    expect(getTopLevelMenuLabels().slice(0, 11)).toEqual([
+      'Products',
+      'Purchasing',
+      'Inventory',
+      'Reports',
+      'File Setup',
+      'Import Management',
+      'Purchase Planning',
+      'Customer Intelligence',
+      'Operations',
+      'Utilities',
+      'Platform',
+    ])
   })
 
   it('redirects the default route to the inventory dashboard', () => {
@@ -150,6 +204,16 @@ describe('Module Shell Navigation', () => {
     expect(screen.getByRole('link', { name: 'Store Chains' })).toBeVisible()
   })
 
+  it('navigates from Import Management when another module title is clicked', async () => {
+    const user = userEvent.setup()
+    renderModuleShell('/import-management')
+
+    await user.click(screen.getByRole('menuitem', { name: /Purchasing/i }))
+
+    expect(await screen.findByTestId('purchasing-orders')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Purchasing' })).toBeInTheDocument()
+  })
+
   it('navigates across all module child routes and updates module header', async () => {
     const user = userEvent.setup()
     renderModuleShell('/inventory/dashboard')
@@ -170,9 +234,9 @@ describe('Module Shell Navigation', () => {
       { label: 'Transfer - Balancing v2', pageId: 'inventory-balancing-v2', moduleTitle: 'Inventory' },
       { label: 'Sales Ledger', pageId: 'inventory-sales-ledger', moduleTitle: 'Inventory' },
       { label: 'Movements', pageId: 'inventory-movements', moduleTitle: 'Inventory' },
-      { label: 'V2 - Actual', pageId: 'purchase-planning', moduleTitle: 'Plan de Compras', openModuleLabel: 'Plan de Compras' },
-      { label: 'V3 - Warehouse Shared', pageId: 'purchase-planning-v3', moduleTitle: 'Plan de Compras', openModuleLabel: 'Plan de Compras' },
-      { label: 'Buyer Checklist', pageId: 'purchase-planning-buyer-checklist', moduleTitle: 'Plan de Compras', openModuleLabel: 'Plan de Compras' },
+      { label: 'V2 - Actual', pageId: 'purchase-planning', moduleTitle: 'Purchase Planning', openModuleLabel: 'Purchase Planning' },
+      { label: 'V3 - Warehouse Shared', pageId: 'purchase-planning-v3', moduleTitle: 'Purchase Planning', openModuleLabel: 'Purchase Planning' },
+      { label: 'Buyer Checklist', pageId: 'purchase-planning-buyer-checklist', moduleTitle: 'Purchase Planning', openModuleLabel: 'Purchase Planning' },
       { label: 'Import Management', pageId: 'import-management', moduleTitle: 'Import Management' },
       { label: 'Customer Records', pageId: 'customers', moduleTitle: 'Customer Intelligence', openModuleLabel: 'Customer Intelligence' },
       { label: 'Vendors', pageId: 'products-vendors', moduleTitle: 'Products', openModuleLabel: 'Products', openGroupLabel: 'Catalogue Setup' },
@@ -197,8 +261,8 @@ describe('Module Shell Navigation', () => {
       { label: 'Inventory Audit', pageId: 'platform-inventory-audit', moduleTitle: 'Platform', openModuleLabel: 'Platform' },
       { label: 'Purchase Orders', pageId: 'purchasing-orders', moduleTitle: 'Purchasing', openModuleLabel: 'Purchasing' },
       { label: 'Receive POs', pageId: 'purchasing-receive', moduleTitle: 'Purchasing', openModuleLabel: 'Purchasing' },
-      { label: 'Monthly Plans', pageId: 'otb-monthly-plans', moduleTitle: 'OTB - no en uso', openModuleLabel: 'OTB' },
-      { label: 'Budget Dashboard', pageId: 'otb-dashboard', moduleTitle: 'OTB - no en uso', openModuleLabel: 'OTB' },
+      { label: 'Monthly Plans', pageId: 'otb-monthly-plans', moduleTitle: 'OTB - not in use', openModuleLabel: 'OTB' },
+      { label: 'Budget Dashboard', pageId: 'otb-dashboard', moduleTitle: 'OTB - not in use', openModuleLabel: 'OTB' },
       { label: 'Sales', pageId: 'reports-sales', moduleTitle: 'Reports', openModuleLabel: 'Reports' },
     ]
 

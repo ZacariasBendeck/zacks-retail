@@ -1,0 +1,101 @@
+{
+  "title": "Inventory Inquiry",
+  "pickSku": "Pick a SKU",
+  "loadingAria": "Loading inquiry",
+  "loadingSku": "Loading {{sku}}...",
+  "buttons": {
+    "skuLookup": "SKU Lookup",
+    "recommendedReorder": "Recommended reorder",
+    "reorder": "Reorder",
+    "editSku": "Edit SKU",
+    "openReplacement": "Open replacement"
+  },
+  "messages": {
+    "noNeighbor": "No {{direction}} SKU in {{scope}}.",
+    "replacedBy": "Replaced by {{sku}}",
+    "replacedDescription": "This SKU cannot be reordered from this record. It stays visible for sales history, returns, and inventory audit.",
+    "replacementWarning": "SKU {{sku}} has been replaced by {{replacementSku}}. Reorder the replacement SKU instead.",
+    "demandIncludes": "Demand includes replaced SKUs {{skus}}",
+    "demandIncludes_one": "Demand includes replaced SKU {{skus}}",
+    "demandIncludes_other": "Demand includes replaced SKUs {{skus}}",
+    "demandIncludesDescription": "Exact replacement sales history is included when this SKU is planned for reorder.",
+    "noActivity": "No current inventory activity for this SKU",
+    "noActivityDescription": "SKU {{sku}} exists, but the imported data currently shows no on-hand, on-order, model, or sales values.",
+    "noDataForMode": "No data for this view mode."
+  },
+  "scope": {
+    "tooltip": "Scope for Prev / Next navigation",
+    "general": "Any",
+    "vendor": "Vendor",
+    "category": "Category",
+    "catalog": "the catalog",
+    "sameVendor": "the same vendor",
+    "sameCategory": "the same category"
+  },
+  "tabs": {
+    "upcs": "UPCs",
+    "pos": "POs",
+    "trend": "Trend",
+    "info": "Info",
+    "detail": "Detail"
+  },
+  "headers": {
+    "sku": "SKU",
+    "description": "Description",
+    "buyer": "Buyer",
+    "category": "Category",
+    "vendor": "Vendor",
+    "company": "Company",
+    "vendorSku": "Vendor SKU",
+    "styleColor": "Style/Color",
+    "chain": "Chain",
+    "sizeType": "Size Type",
+    "lastReceived": "Last Received",
+    "discount": "Discount",
+    "store": "Store",
+    "allStores": "All Stores",
+    "storeNumber": "Store {{storeId}}",
+    "skuState": "SKU State",
+    "labelType": "label_type",
+    "replacedBy": "Replaced by {{sku}}",
+    "replaces": "Replaces",
+    "demand": "demand"
+  },
+  "pricing": {
+    "retail": "Retail Price",
+    "markdown1": "Markdown 1",
+    "markdown2": "Markdown 2",
+    "avgCost": "Average Cost",
+    "currentCost": "Current Cost",
+    "listPrice": "List Price"
+  },
+  "rollup": {
+    "sales": "Sales",
+    "qty": "Qty",
+    "net": "Net",
+    "markdown": "Markdown",
+    "profit": "Profit",
+    "week": "Week",
+    "month": "Month",
+    "season": "Season",
+    "year": "Year"
+  },
+  "modes": {
+    "ON_HAND": "On Hand",
+    "ON_ORDER_CURRENT": "On Order (At-Once)",
+    "ON_ORDER_FUTURE": "On Order (Future)",
+    "MODEL": "Model Quantities",
+    "SHORT": "Short Quantities",
+    "MTD_SALES": "Month-to-Date Sales",
+    "STD_SALES": "Season-to-Date Sales",
+    "YTD_SALES": "Year-To-Date Sales",
+    "LY_SALES": "Last Year Sales",
+    "SINGLE_COLUMN": "Column Only",
+    "ALL_STORES_ON_HAND": "All Stores - On Hand",
+    "ALL_STORES_SUMMARY": "All stores - Summary",
+    "MAX": "Max Quantities",
+    "REORDER": "Reorder Quantities"
+  },
+  "row": "Row",
+  "total": "Total"
+}

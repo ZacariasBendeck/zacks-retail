@@ -30,6 +30,7 @@ import {
   ShoppingOutlined,
   StopOutlined,
 } from '@ant-design/icons'
+import { useTranslation } from '@benlow-rics/i18n/react'
 import { fetchSalesPasswordStatus, setSalesPassword } from '../services/posApi'
 import {
   useAddLine,
@@ -59,6 +60,7 @@ const DEFAULT_STORE_ID = 1
 
 export default function CheckoutPage() {
   const { message } = App.useApp()
+  const { t } = useTranslation('pos')
 
   const [storeId] = useState(DEFAULT_STORE_ID)
   const [registerId, setRegisterId] = useState<string>('')
@@ -94,10 +96,10 @@ export default function CheckoutPage() {
           <Col flex="auto">
             <Space direction="vertical" size={2}>
               <Typography.Title level={4} style={{ margin: 0 }}>
-                Register — Checkout
+                {t('checkout.title')}
               </Typography.Title>
               <Typography.Text type="secondary">
-                {stores.data?.stores[0]?.name ?? 'Store'} · Cashier {DEFAULT_CASHIER}
+                {stores.data?.stores[0]?.name ?? t('checkout.storeFallback')} - {t('checkout.cashier', { cashier: DEFAULT_CASHIER })}
               </Typography.Text>
             </Space>
           </Col>
@@ -105,7 +107,7 @@ export default function CheckoutPage() {
             <Space size="middle">
               <Select
                 style={{ minWidth: 180 }}
-                placeholder="Register"
+                placeholder={t('checkout.registerPlaceholder')}
                 value={registerId || undefined}
                 options={
                   registers.data?.registers.map((r) => ({
@@ -125,7 +127,7 @@ export default function CheckoutPage() {
                 onClick={() => setPasswordModalOpen(true)}
                 title="Change sales passwords (RICS p. 52)"
               >
-                Passwords
+                {t('checkout.passwords')}
               </Button>
             </Space>
           </Col>
@@ -143,7 +145,7 @@ export default function CheckoutPage() {
           shift={pendingPostShift}
           onPosted={() => {
             setPendingPostShift(null)
-            message.success('Sales posted to inventory')
+            message.success(t('checkout.salesPosted'))
           }}
           onDismiss={() => setPendingPostShift(null)}
         />
@@ -151,7 +153,7 @@ export default function CheckoutPage() {
 
       {!registerId ? (
         <Card>
-          <Empty description="Pick a register to start" />
+          <Empty description={t('checkout.pickRegister')} />
         </Card>
       ) : !activeShift ? (
         <OpenShiftCard
@@ -192,6 +194,7 @@ function PendingPostBanner({
   onDismiss: () => void
 }) {
   const { message } = App.useApp()
+  const { t } = useTranslation('pos')
   const postShift = usePostShiftToInventory()
   return (
     <Card
@@ -199,8 +202,8 @@ function PendingPostBanner({
       styles={{ header: { background: '#fffbe6' } }}
       title={
         <Space>
-          <Typography.Text strong>Shift closed — sales not yet posted</Typography.Text>
-          <Tag color="warning">BATCH MODE</Tag>
+          <Typography.Text strong>{t('checkout.shiftClosedUnposted')}</Typography.Text>
+          <Tag color="warning">{t('checkout.batchMode')}</Tag>
         </Space>
       }
       extra={
@@ -217,9 +220,9 @@ function PendingPostBanner({
             }}
             loading={postShift.isPending}
           >
-            Post Sales to Inventory
+            {t('checkout.postSales')}
           </Button>
-          <Button onClick={onDismiss}>Later</Button>
+          <Button onClick={onDismiss}>{t('checkout.later')}</Button>
         </Space>
       }
     >
@@ -235,15 +238,17 @@ function PendingPostBanner({
 // ---------------------------------------------------------------------------
 
 function ShiftStatusTag({ shift }: { shift: Shift | null }) {
-  if (!shift) return <Tag color="default">No open shift</Tag>
+  const { t } = useTranslation('pos')
+  if (!shift) return <Tag color="default">{t('checkout.noOpenShift')}</Tag>
   return (
     <Tag color="processing">
-      Shift open · Last ticket #{shift.lastTicketNumberUsed}
+      {t('checkout.shiftOpen', { ticketNumber: shift.lastTicketNumberUsed })}
     </Tag>
   )
 }
 
 function OnlineStatusBadge() {
+  const { t } = useTranslation('common')
   const [online, setOnline] = useState<boolean>(
     typeof navigator !== 'undefined' ? navigator.onLine : true,
   )
@@ -259,7 +264,7 @@ function OnlineStatusBadge() {
   }, [])
   return (
     <Tag color={online ? 'success' : 'error'}>
-      {online ? 'Online' : 'Offline'}
+      {online ? t('status.online') : t('status.offline')}
     </Tag>
   )
 }
@@ -276,11 +281,12 @@ function OpenShiftCard({
   onOpened: () => void
 }) {
   const { message } = App.useApp()
+  const { t } = useTranslation('pos')
   const [form] = Form.useForm()
   const openMutation = useOpenShift()
 
   return (
-    <Card title="Open shift">
+    <Card title={t('checkout.openShift')}>
       <Form
         layout="vertical"
         form={form}
@@ -298,10 +304,10 @@ function OpenShiftCard({
               openingCashFloat: Number(values.openingCashFloat) || 0,
               postingMode: values.postingMode,
             })
-            message.success('Shift opened')
+            message.success(t('checkout.shiftOpened'))
             onOpened()
           } catch (e: any) {
-            message.error(e?.message ?? 'Failed to open shift')
+            message.error(e?.message ?? t('messages.failedOpenShift'))
           }
         }}
       >
@@ -309,8 +315,8 @@ function OpenShiftCard({
           <Col span={8}>
             <Form.Item
               name="openedByUserId"
-              label="Cashier ID"
-              rules={[{ required: true, message: 'Cashier is required' }]}
+              label={t('checkout.cashierId')}
+              rules={[{ required: true, message: t('checkout.cashierRequired') }]}
             >
               <Input />
             </Form.Item>
@@ -318,8 +324,8 @@ function OpenShiftCard({
           <Col span={8}>
             <Form.Item
               name="openingCashFloat"
-              label="Opening cash float"
-              rules={[{ required: true, message: 'Cash float is required' }]}
+              label={t('checkout.openingCashFloat')}
+              rules={[{ required: true, message: t('checkout.cashFloatRequired') }]}
             >
               <InputNumber min={0} step={0.01} style={{ width: '100%' }} />
             </Form.Item>
@@ -327,20 +333,20 @@ function OpenShiftCard({
           <Col span={8}>
             <Form.Item
               name="postingMode"
-              label="Posting mode"
-              tooltip="REALTIME deducts inventory at End Sale. BATCH defers to an end-of-day Post Sales to Inventory step (RICS p. 45)."
+              label={t('checkout.postingMode')}
+              tooltip={t('checkout.postingModeTooltip')}
             >
               <Select
                 options={[
-                  { value: 'REALTIME', label: 'Real-time' },
-                  { value: 'BATCH', label: 'Batch (post at end of day)' },
+                  { value: 'REALTIME', label: t('checkout.realTime') },
+                  { value: 'BATCH', label: t('checkout.batch') },
                 ]}
               />
             </Form.Item>
           </Col>
         </Row>
         <Button type="primary" htmlType="submit" loading={openMutation.isPending}>
-          Open shift
+          {t('checkout.openShift')}
         </Button>
       </Form>
     </Card>
@@ -369,6 +375,7 @@ function ShiftOpenView({
   onTicketRefresh: () => void
   messageApi: ReturnType<typeof App.useApp>['message']
 }) {
+  const { t } = useTranslation('pos')
   const createTicket = useCreateTicket()
   const [payoutOpen, setPayoutOpen] = useState(false)
   const [closeOpen, setCloseOpen] = useState(false)
@@ -383,7 +390,7 @@ function ShiftOpenView({
       })
       onCreateTicket(t)
     } catch (e: any) {
-      messageApi.error(e?.message ?? 'Failed to start ticket')
+      messageApi.error(e?.message ?? t('messages.failedStartTicket'))
     }
   }
 
@@ -399,10 +406,10 @@ function ShiftOpenView({
               onRefresh={onTicketRefresh}
             />
           ) : (
-            <Card title="No active ticket">
+            <Card title={t('checkout.noActiveTicket')}>
               <Space direction="vertical" style={{ width: '100%' }}>
                 <Typography.Paragraph>
-                  Start a new sales ticket to begin ringing up items.
+                  {t('checkout.startTicketHint')}
                 </Typography.Paragraph>
                 <Button
                   type="primary"
@@ -411,7 +418,7 @@ function ShiftOpenView({
                   onClick={handleStartTicket}
                   loading={createTicket.isPending}
                 >
-                  New ticket
+                  {t('checkout.newTicket')}
                 </Button>
               </Space>
             </Card>
@@ -419,19 +426,19 @@ function ShiftOpenView({
         </Col>
 
         <Col xs={24} md={8}>
-          <Card title="Shift">
+          <Card title={t('checkout.shift')}>
             <Descriptions size="small" column={1} colon={false}>
-              <Descriptions.Item label="Opened by">{shift.openedByUserId}</Descriptions.Item>
-              <Descriptions.Item label="Float">${shift.openingCashFloat.toFixed(2)}</Descriptions.Item>
-              <Descriptions.Item label="Posting mode">{shift.postingMode}</Descriptions.Item>
+              <Descriptions.Item label={t('checkout.openedBy')}>{shift.openedByUserId}</Descriptions.Item>
+              <Descriptions.Item label={t('checkout.float')}>${shift.openingCashFloat.toFixed(2)}</Descriptions.Item>
+              <Descriptions.Item label={t('checkout.postingMode')}>{shift.postingMode}</Descriptions.Item>
             </Descriptions>
             <div style={{ marginTop: 12 }}>
               <Space direction="vertical" style={{ width: '100%' }}>
                 <Button block icon={<DollarOutlined />} onClick={() => setTotalsOpen(true)}>
-                  Cash totals
+                  {t('checkout.cashTotals')}
                 </Button>
                 <Button block icon={<ReloadOutlined />} onClick={() => setPayoutOpen(true)}>
-                  Pay out
+                  {t('checkout.payOut')}
                 </Button>
                 <Button
                   block
@@ -440,7 +447,7 @@ function ShiftOpenView({
                   onClick={() => setCloseOpen(true)}
                   disabled={!!ticket && !ticket.endedAt}
                 >
-                  Close shift
+                  {t('checkout.closeShift')}
                 </Button>
               </Space>
             </div>
@@ -486,6 +493,7 @@ function TicketPanel({
   onRefresh: () => void
 }) {
   const { message } = App.useApp()
+  const { t } = useTranslation('pos')
   const addLine = useAddLine(ticket.id)
   const removeLine = useRemoveLine(ticket.id)
   const endTicket = useEndTicket()
@@ -514,7 +522,7 @@ function TicketPanel({
       })
       onRefresh()
     } catch (e: any) {
-      message.error(e?.message ?? 'Failed to add line')
+      message.error(e?.message ?? t('messages.failedAddLine'))
     }
   }
 
@@ -522,24 +530,24 @@ function TicketPanel({
     try {
       await removeLine.mutateAsync(lineId)
     } catch (e: any) {
-      message.error(e?.message ?? 'Failed to remove line')
+      message.error(e?.message ?? t('messages.failedRemoveLine'))
     }
   }
 
   async function handleEnd() {
     if (ticket.lines.length === 0) {
-      message.warning('Add at least one line before ending the sale')
+      message.warning(t('messages.addLineBeforeEnd'))
       return
     }
     if (tenderedSum < ticket.grandTotal) {
-      message.warning(`Tender is short by $${(ticket.grandTotal - tenderedSum).toFixed(2)}`)
+      message.warning(t('messages.tenderShort', { amount: `$${(ticket.grandTotal - tenderedSum).toFixed(2)}` }))
       return
     }
     try {
       await endTicket.mutateAsync(ticket.id)
-      message.success(`Ticket #${ticket.ticketNumber} posted`)
+      message.success(t('messages.ticketPosted', { ticketNumber: ticket.ticketNumber }))
     } catch (e: any) {
-      message.error(e?.message ?? 'Failed to end sale')
+      message.error(e?.message ?? t('messages.failedEndSale'))
     }
   }
 
@@ -548,10 +556,10 @@ function TicketPanel({
       title={
         <Space>
           <span>
-            Ticket #{ticket.ticketNumber}
+            {t('checkout.ticket', { ticketNumber: ticket.ticketNumber })}
             {isFrozen && (
               <Tag style={{ marginLeft: 8 }} color={ticket.voidedAt ? 'red' : 'success'}>
-                {ticket.voidedAt ? 'VOIDED' : ticket.postingStatus}
+                {ticket.voidedAt ? t('checkout.voided') : ticket.postingStatus}
               </Tag>
             )}
           </span>
@@ -569,16 +577,16 @@ function TicketPanel({
                       ticketId: ticket.id,
                       actorUserId: DEFAULT_CASHIER,
                     })
-                    message.success('Reprint recorded')
+                    message.success(t('messages.reprintRecorded'))
                   } catch (e: any) {
-                    message.error(e?.message ?? 'Reprint failed')
+                    message.error(e?.message ?? t('messages.reprintFailed'))
                   }
                 }}
               >
-                Reprint
+                {t('checkout.reprint')}
               </Button>
               <Button type="primary" icon={<ShoppingOutlined />} onClick={onClear}>
-                New ticket
+                {t('checkout.newTicket')}
               </Button>
             </>
           )}
@@ -588,7 +596,7 @@ function TicketPanel({
               icon={<StopOutlined />}
               onClick={() => setVoidOpen(true)}
             >
-              Void
+              {t('checkout.void')}
             </Button>
           )}
         </Space>
@@ -603,7 +611,7 @@ function TicketPanel({
             rowKey="id"
             dataSource={ticket.lines}
             pagination={false}
-            locale={{ emptyText: 'No items on ticket' }}
+            locale={{ emptyText: t('checkout.noItems') }}
             columns={[
               {
                 title: '#',
@@ -616,20 +624,20 @@ function TicketPanel({
                 render: (v) => v ?? '—',
               },
               {
-                title: 'Qty',
+                title: t('checkout.qty'),
                 dataIndex: 'quantity',
                 width: 60,
                 align: 'right',
               },
               {
-                title: 'Unit',
+                title: t('checkout.unit'),
                 dataIndex: 'unitPrice',
                 width: 90,
                 align: 'right',
                 render: (v: number) => `$${v.toFixed(2)}`,
               },
               {
-                title: 'Net',
+                title: t('checkout.net'),
                 dataIndex: 'extendedNet',
                 width: 100,
                 align: 'right',
@@ -657,7 +665,7 @@ function TicketPanel({
               <>
                 <Table.Summary.Row>
                   <Table.Summary.Cell index={0} colSpan={4}>
-                    <strong>Subtotal</strong>
+                    <strong>{t('checkout.subtotal')}</strong>
                   </Table.Summary.Cell>
                   <Table.Summary.Cell index={1} align="right">
                     <strong>${ticket.subtotal.toFixed(2)}</strong>
@@ -666,7 +674,7 @@ function TicketPanel({
                 </Table.Summary.Row>
                 <Table.Summary.Row>
                   <Table.Summary.Cell index={0} colSpan={4}>
-                    Tax
+                    {t('checkout.tax')}
                   </Table.Summary.Cell>
                   <Table.Summary.Cell index={1} align="right">
                     ${ticket.taxTotal.toFixed(2)}
@@ -676,7 +684,7 @@ function TicketPanel({
                 <Table.Summary.Row>
                   <Table.Summary.Cell index={0} colSpan={4}>
                     <Typography.Text strong style={{ fontSize: 16 }}>
-                      Grand total
+                      {t('checkout.grandTotal')}
                     </Typography.Text>
                   </Table.Summary.Cell>
                   <Table.Summary.Cell index={1} align="right">
@@ -692,7 +700,7 @@ function TicketPanel({
         </Col>
 
         <Col xs={24} lg={10}>
-          <Card size="small" title="Tenders" style={{ marginBottom: 12 }}>
+          <Card size="small" title={t('checkout.tenders')} style={{ marginBottom: 12 }}>
             <TendersPanel ticket={ticket} storeId={storeId} disabled={isFrozen} />
             {ticket.tenders.length > 0 && (
               <List
@@ -714,7 +722,7 @@ function TicketPanel({
             <Row gutter={8}>
               <Col span={12}>
                 <Statistic
-                  title="Balance due"
+                  title={t('checkout.balanceDue')}
                   value={balance}
                   precision={2}
                   prefix="$"
@@ -723,7 +731,7 @@ function TicketPanel({
               </Col>
               <Col span={12}>
                 <Statistic
-                  title="Change"
+                  title={t('checkout.change')}
                   value={isFrozen ? ticket.changeGiven : change}
                   precision={2}
                   prefix="$"
@@ -740,7 +748,7 @@ function TicketPanel({
                 loading={endTicket.isPending}
                 onClick={handleEnd}
               >
-                End sale
+                {t('checkout.endSale')}
               </Button>
             )}
             {isFrozen && !ticket.voidedAt && (
@@ -748,7 +756,7 @@ function TicketPanel({
                 type="secondary"
                 style={{ marginTop: 12, marginBottom: 0 }}
               >
-                Posted {formatDate(ticket.postedAt)}
+                {t('checkout.posted', { date: formatDate(ticket.postedAt) })}
               </Typography.Paragraph>
             )}
           </Card>
@@ -774,6 +782,7 @@ function SkuSearchPanel({
   onAdd: (sku: PosSku, quantity: number) => void
   disabled?: boolean
 }) {
+  const { t } = useTranslation('pos')
   const [query, setQuery] = useState('')
   const [quantity, setQuantity] = useState(1)
   const [results, setResults] = useState<PosSku[]>([])
@@ -788,7 +797,7 @@ function SkuSearchPanel({
       return
     }
     setLoading(true)
-    const t = setTimeout(async () => {
+    const timer = setTimeout(async () => {
       try {
         const data = await searchPosSkus(query.trim(), 20)
         if (!cancelled) {
@@ -798,7 +807,7 @@ function SkuSearchPanel({
       } catch (err: any) {
         if (!cancelled) {
           setResults([])
-          setError(err?.message ?? 'SKU search failed')
+          setError(err?.message ?? t('messages.skuSearchFailed'))
         }
       } finally {
         if (!cancelled) setLoading(false)
@@ -806,15 +815,15 @@ function SkuSearchPanel({
     }, 200)
     return () => {
       cancelled = true
-      clearTimeout(t)
+      clearTimeout(timer)
     }
-  }, [query])
+  }, [query, t])
 
   return (
-    <Card size="small" title="Add item">
+    <Card size="small" title={t('checkout.addItem')}>
       <Space.Compact block>
         <Input
-          placeholder="Scan or search RICS SKU (code, description, vendor SKU, keyword)…"
+          placeholder={t('checkout.scanPlaceholder')}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           disabled={disabled}
@@ -861,7 +870,7 @@ function SkuSearchPanel({
                       setQuantity(1)
                     }}
                   >
-                    Add
+                    {t('checkout.addItem')}
                   </Button>,
                 ]}
               >
@@ -869,8 +878,8 @@ function SkuSearchPanel({
                   title={
                     <span>
                       <Typography.Text code>{sku.skuCode}</Typography.Text>{'  '}
-                      {sku.description ?? sku.styleColor ?? '(no description)'}
-                      {sku.coupon && <Tag color="gold" style={{ marginLeft: 8 }}>COUPON</Tag>}
+                      {sku.description ?? sku.styleColor ?? t('checkout.noDescription')}
+                      {sku.coupon && <Tag color="gold" style={{ marginLeft: 8 }}>{t('checkout.coupon')}</Tag>}
                     </span>
                   }
                   description={
@@ -904,6 +913,7 @@ function TendersPanel({
   disabled?: boolean
 }) {
   const { message } = App.useApp()
+  const { t } = useTranslation('pos')
   const tenderTypes = useTenderTypes(storeId)
   const addTender = useAddTender(ticket.id)
 
@@ -920,15 +930,15 @@ function TendersPanel({
 
   async function handleAdd() {
     if (!tenderTypeId) {
-      message.warning('Pick a tender type')
+      message.warning(t('messages.pickTenderType'))
       return
     }
     if (!amount) {
-      message.warning('Enter a tender amount')
+      message.warning(t('messages.enterTenderAmount'))
       return
     }
     if (requiresAccount && !accountNumber) {
-      message.warning('Account number required for this tender')
+      message.warning(t('messages.accountRequired'))
       return
     }
     try {
@@ -940,7 +950,7 @@ function TendersPanel({
       setAmount(0)
       setAccountNumber('')
     } catch (e: any) {
-      message.error(e?.message ?? 'Failed to add tender')
+      message.error(e?.message ?? t('messages.failedAddTender'))
     }
   }
 
@@ -953,7 +963,7 @@ function TendersPanel({
   return (
     <Space direction="vertical" style={{ width: '100%' }}>
       <Select
-        placeholder="Tender type"
+        placeholder={t('checkout.tenderType')}
         style={{ width: '100%' }}
         value={tenderTypeId}
         disabled={disabled}
@@ -966,7 +976,7 @@ function TendersPanel({
       <InputNumber
         value={amount}
         onChange={(v) => setAmount(Number(v) || 0)}
-        placeholder="Amount"
+        placeholder={t('checkout.amount')}
         prefix="$"
         step={0.01}
         style={{ width: '100%' }}
@@ -974,7 +984,7 @@ function TendersPanel({
       />
       {requiresAccount && (
         <Input
-          placeholder="Customer account #"
+          placeholder={t('checkout.customerAccount')}
           value={accountNumber}
           onChange={(e) => setAccountNumber(e.target.value)}
           disabled={disabled}
@@ -987,7 +997,7 @@ function TendersPanel({
         disabled={disabled || ticket.tenders.filter((t) => !t.isContinuation).length >= 4}
         loading={addTender.isPending}
       >
-        Add tender
+        {t('checkout.addTender')}
       </Button>
     </Space>
   )

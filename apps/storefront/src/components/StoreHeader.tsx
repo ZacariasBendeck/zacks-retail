@@ -1,5 +1,7 @@
 import { Layout, Input, Space, Typography, Badge, Button } from 'antd'
 import { SearchOutlined, ShoppingCartOutlined, UserOutlined } from '@ant-design/icons'
+import { LanguageSelector } from '@benlow-rics/i18n/react'
+import { useTranslation } from '@benlow-rics/i18n/react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useState, useEffect } from 'react'
 import MegaMenu from './MegaMenu'
@@ -9,6 +11,7 @@ const { Header } = Layout
 
 export default function StoreHeader() {
   const navigate = useNavigate()
+  const { t } = useTranslation('storefront')
   const [searchParams] = useSearchParams()
   const [searchValue, setSearchValue] = useState(searchParams.get('q') ?? '')
   const { cart, loadCart } = useCartStore()
@@ -59,12 +62,12 @@ export default function StoreHeader() {
               style={{ margin: 0, cursor: 'pointer', color: '#1677ff' }}
               onClick={() => navigate('/')}
             >
-              Zapateria
+              {t('header.brand')}
             </Typography.Title>
           </div>
 
           <Input.Search
-            placeholder="Buscar zapatos..."
+            placeholder={t('header.searchPlaceholder')}
             allowClear
             value={searchValue}
             onChange={(e) => setSearchValue(e.target.value)}
@@ -75,10 +78,11 @@ export default function StoreHeader() {
           />
 
           <Space size="middle">
-            <Button type="text" icon={<UserOutlined />}>Mi Cuenta</Button>
+            <LanguageSelector />
+            <Button type="text" icon={<UserOutlined />}>{t('header.account')}</Button>
             <Badge count={cart?.itemCount ?? 0} showZero={false}>
               <Button type="text" icon={<ShoppingCartOutlined />} onClick={() => navigate('/cart')}>
-                Carrito
+                {t('header.cart')}
               </Button>
             </Badge>
           </Space>

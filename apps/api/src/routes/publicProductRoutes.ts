@@ -118,6 +118,7 @@ const productListQuerySchema = z.object({
  *                   items:
  *                     type: object
  *                     properties:
+ *                       id: { type: integer }
  *                       name: { type: string }
  *                       count: { type: integer }
  *                 materials:

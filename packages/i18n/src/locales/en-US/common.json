@@ -1,0 +1,38 @@
+{
+  "language": {
+    "selectorLabel": "Language"
+  },
+  "actions": {
+    "save": "Save",
+    "create": "Create",
+    "close": "Close",
+    "cancel": "Cancel",
+    "back": "Back",
+    "search": "Search",
+    "clear": "Clear",
+    "next": "Next",
+    "previous": "Prev",
+    "print": "Print",
+    "edit": "Edit",
+    "open": "Open",
+    "add": "Add",
+    "remove": "Remove",
+    "continue": "Continue"
+  },
+  "status": {
+    "loading": "Loading",
+    "online": "Online",
+    "offline": "Offline",
+    "active": "ACTIVE",
+    "discontinued": "DISCONTINUED",
+    "draft": "DRAFT"
+  },
+  "validation": {
+    "required": "Required",
+    "email": "Enter a valid email address",
+    "minPassword": "Use at least 8 characters"
+  },
+  "empty": {
+    "noData": "No data"
+  }
+}

@@ -2,6 +2,7 @@ import { useCallback } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
 import { Row, Col, Pagination, Spin, Empty, Button, Drawer } from 'antd'
 import { FilterOutlined } from '@ant-design/icons'
+import { useTranslation } from '@benlow-rics/i18n/react'
 import { useProducts, useFacets } from '@/hooks/useProducts'
 import Breadcrumbs from '@/components/Breadcrumbs'
 import FacetedFilters, { type FilterState } from '@/components/FacetedFilters'
@@ -17,6 +18,7 @@ function numParam(params: URLSearchParams, key: string): number | undefined {
 }
 
 export default function ProductListingPage() {
+  const { t } = useTranslation('storefront')
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
   const [drawerOpen, setDrawerOpen] = useState(false)
@@ -105,7 +107,7 @@ export default function ProductListingPage() {
       {/* Mobile filter button */}
       <div className="mobile-filter-btn" style={{ display: 'none', marginBottom: 16 }}>
         <Button icon={<FilterOutlined />} onClick={() => setDrawerOpen(true)} block>
-          Filtros
+          {t('catalog.filters')}
         </Button>
       </div>
 
@@ -137,7 +139,7 @@ export default function ProductListingPage() {
               <Spin size="large" />
             </div>
           ) : !data?.data.length ? (
-            <Empty description="No se encontraron productos" />
+            <Empty description={t('catalog.noProducts')} />
           ) : (
             <>
               <Row gutter={[16, 16]}>
@@ -156,7 +158,11 @@ export default function ProductListingPage() {
                     pageSize={data.pagination.limit}
                     onChange={handlePageChange}
                     showSizeChanger={false}
-                    showTotal={(total, range) => `${range[0]}-${range[1]} de ${total} productos`}
+                    showTotal={(total, range) => t('catalog.productTotal', {
+                      start: range[0],
+                      end: range[1],
+                      total,
+                    })}
                   />
                 </div>
               )}
@@ -167,7 +173,7 @@ export default function ProductListingPage() {
 
       {/* Mobile filter drawer */}
       <Drawer
-        title="Filtros"
+        title={t('catalog.filters')}
         placement="left"
         open={drawerOpen}
         onClose={() => setDrawerOpen(false)}

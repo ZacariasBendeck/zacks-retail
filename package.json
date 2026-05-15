@@ -5,7 +5,8 @@
   "scripts": {
     "db:up": "docker compose up -d postgres",
     "db:down": "docker compose down",
-    "db:logs": "docker compose logs -f postgres"
+    "db:logs": "docker compose logs -f postgres",
+    "i18n:check": "pnpm --filter @benlow-rics/i18n check:keys"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
@@ -16,5 +17,9 @@
       "esbuild",
       "prisma"
     ]
+  },
+  "devDependencies": {
+    "i18next": "^26.1.0",
+    "react-i18next": "^17.0.7"
   }
 }

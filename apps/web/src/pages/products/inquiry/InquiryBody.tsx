@@ -1,6 +1,7 @@
 import React from 'react';
 import { Alert, Button, Select, Space, Typography, message, Spin } from 'antd';
 import { EditOutlined, RobotOutlined, SearchOutlined, ShoppingCartOutlined } from '@ant-design/icons';
+import { useTranslation } from '@benlow-rics/i18n/react';
 import { HeaderCard } from './HeaderCard';
 import { PicturePanel } from './PicturePanel';
 import { PricingPanel } from './PricingPanel';
@@ -102,6 +103,7 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
   onScopeChange,
   onSelectedRowChange,
 }) => {
+  const { t } = useTranslation(['inquiry', 'common']);
   const [lookupOpen, setLookupOpen] = React.useState(false);
   const [aiModalOpen, setAiModalOpen] = React.useState(false);
   const [reorderModalOpen, setReorderModalOpen] = React.useState(false);
@@ -146,7 +148,10 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
         if (!response.ok) throw new Error(`neighbor lookup failed: ${response.status}`);
         const { sku } = (await response.json()) as { sku: string | null };
         if (!sku) {
-          message.info(`No ${direction === 'next' ? 'next' : 'previous'} SKU in ${scopeLabel(scope)}.`);
+          message.info(t('inquiry:messages.noNeighbor', {
+            direction: t(`common:actions.${direction === 'next' ? 'next' : 'previous'}`),
+            scope: scopeLabel(scope, t),
+          }));
           return;
         }
         onPickSku({ skuCode: sku, skuId: sku });
@@ -156,7 +161,7 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
         setNavLoading(false);
       }
     },
-    [skuCode, scope, onPickSku],
+    [skuCode, scope, onPickSku, t],
   );
 
   const rowOptions = (data?.sizeType?.rows ?? []).filter((label) => label.trim().length > 0);
@@ -177,7 +182,7 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
       <>
         <div style={{ padding: 48, textAlign: 'center' }}>
           <Button type="primary" icon={<SearchOutlined />} onClick={() => setLookupOpen(true)}>
-            Pick a SKU
+            {t('inquiry:pickSku')}
           </Button>
         </div>
         {lookupOpen && (
@@ -193,9 +198,9 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
 
   if (isLoading) {
     return (
-      <div style={{ padding: 48, textAlign: 'center' }} role="status" aria-label="Loading inquiry">
+      <div style={{ padding: 48, textAlign: 'center' }} role="status" aria-label={t('inquiry:loadingAria')}>
         <Spin size="large" />
-        <div style={{ marginTop: 12, color: '#888' }}>Loading {skuCode}…</div>
+        <div style={{ marginTop: 12, color: '#888' }}>{t('inquiry:loadingSku', { sku: skuCode })}</div>
       </div>
     );
   }
@@ -215,7 +220,10 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
   const replacedBy = replacementContext.replacedBy;
   const supersedesWithDemand = replacementContext.supersedes.filter((item) => item.transferDemand);
   const replacementReorderWarning = replacedBy
-    ? `SKU ${data.sku} has been replaced by ${replacedBy.replacementSkuCode}. Reorder the replacement SKU instead.`
+    ? t('inquiry:messages.replacementWarning', {
+        sku: data.sku,
+        replacementSku: replacedBy.replacementSkuCode,
+      })
     : null;
   const blockReorderIfReplaced = () => {
     if (!replacementReorderWarning) return false;
@@ -256,8 +264,8 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
           type="warning"
           showIcon
           style={{ marginBottom: 8 }}
-          message={`Replaced by ${replacedBy.replacementSkuCode}`}
-          description="This SKU cannot be reordered from this record. It stays visible for sales history, returns, and inventory audit."
+          message={t('inquiry:messages.replacedBy', { sku: replacedBy.replacementSkuCode })}
+          description={t('inquiry:messages.replacedDescription')}
           action={
             <Button
               size="small"
@@ -266,7 +274,7 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
                 skuId: replacedBy.replacementSkuId,
               })}
             >
-              Open replacement
+              {t('inquiry:buttons.openReplacement')}
             </Button>
           }
         />
@@ -286,7 +294,7 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
                 skuId: replacedBy.replacementSkuId,
               })}
             >
-              Open replacement
+              {t('inquiry:buttons.openReplacement')}
             </Button>
           ) : undefined}
         />
@@ -297,8 +305,11 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
           type="info"
           showIcon
           style={{ marginBottom: 8 }}
-          message={`Demand includes replaced SKU${supersedesWithDemand.length === 1 ? '' : 's'} ${supersedesWithDemand.map((item) => item.oldSkuCode).join(', ')}`}
-          description="Exact replacement sales history is included when this SKU is planned for reorder."
+          message={t('inquiry:messages.demandIncludes', {
+            count: supersedesWithDemand.length,
+            skus: supersedesWithDemand.map((item) => item.oldSkuCode).join(', '),
+          })}
+          description={t('inquiry:messages.demandIncludesDescription')}
         />
       )}
 
@@ -308,7 +319,7 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
           <div style={{ marginBottom: 4 }}>
             <Space size="small">
               <Button size="small" icon={<SearchOutlined />} onClick={() => setLookupOpen(true)}>
-                SKU Lookup
+                {t('inquiry:buttons.skuLookup')}
               </Button>
               <Button
                 size="small"
@@ -318,7 +329,7 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
                   setAiModalOpen(true);
                 }}
               >
-                Recommended reorder
+                {t('inquiry:buttons.recommendedReorder')}
               </Button>
               <Button
                 size="small"
@@ -328,14 +339,14 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
                   setReorderModalOpen(true);
                 }}
               >
-                Reorder
+                {t('inquiry:buttons.reorder')}
               </Button>
               <Button
                 size="small"
                 icon={<EditOutlined />}
                 onClick={() => onEditSku?.(data.sku)}
               >
-                Edit SKU
+                {t('inquiry:buttons.editSku')}
               </Button>
             </Space>
           </div>
@@ -367,7 +378,7 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
           data-testid="inquiry-grid-caption"
           style={{ background: '#e6f0ff', padding: '2px 8px', fontWeight: 600, borderBottom: '1px solid #ccd8ea' }}
         >
-          <span>{gridCaptionFor(mode)}</span>
+          <span>{t(`inquiry:modes.${mode}`)}</span>
           {headerTotal != null && (
             <span style={{ marginLeft: 12, fontWeight: 500 }}>
               {formatHeaderTotal(mode, headerTotal, data.grids)}
@@ -379,13 +390,13 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
             type="info"
             showIcon
             style={{ margin: 8 }}
-            message="No current inventory activity for this SKU"
-            description={`SKU ${data.sku} exists, but the imported data currently shows no on-hand, on-order, model, or sales values.`}
+            message={t('inquiry:messages.noActivity')}
+            description={t('inquiry:messages.noActivityDescription', { sku: data.sku })}
           />
         )}
         {needsRowSelection && effectiveSelectedRow && rowOptions.length > 1 && (
           <Space size="small" style={{ padding: '6px 8px', borderBottom: '1px solid #eef2f7' }}>
-            <Typography.Text type="secondary">Row</Typography.Text>
+            <Typography.Text type="secondary">{t('inquiry:row')}</Typography.Text>
             <Select
               size="small"
               value={effectiveSelectedRow}
@@ -398,7 +409,7 @@ export const InquiryBody: React.FC<InquiryBodyProps> = ({
         )}
         {grid
           ? <SizeGridComponent grid={grid} nullDisplay={gridNullDisplay} />
-          : <em style={{ color: '#999', padding: 8, display: 'block' }}>No data for this view mode.</em>}
+          : <em style={{ color: '#999', padding: 8, display: 'block' }}>{t('inquiry:messages.noDataForMode')}</em>}
       </div>
 
       {/* Action bar */}
@@ -446,30 +457,10 @@ function hasAnyGridValue(grids: InquiryGrids): boolean {
   );
 }
 
-function scopeLabel(scope: NeighborScope): string {
-  if (scope === 'vendor')   return 'the same vendor';
-  if (scope === 'category') return 'the same category';
-  return 'the catalog';
-}
-
-function gridCaptionFor(mode: ViewMode): string {
-  switch (mode) {
-    case 'ON_HAND':            return 'On Hand';
-    case 'ON_ORDER_CURRENT':   return 'On Order (At-Once)';
-    case 'ON_ORDER_FUTURE':    return 'On Order (Future)';
-    case 'MODEL':              return 'Model Quantities';
-    case 'SHORT':              return 'Short Quantities';
-    case 'MTD_SALES':          return 'Month-to-Date Sales';
-    case 'STD_SALES':          return 'Season-to-Date Sales';
-    case 'YTD_SALES':          return 'Year-To-Date Sales';
-    case 'LY_SALES':           return 'Last Year Sales';
-    case 'SINGLE_COLUMN':      return 'Column Only';
-    case 'ALL_STORES_ON_HAND': return 'All Stores - On Hand';
-    case 'ALL_STORES_SUMMARY': return 'All stores - Summary';
-    case 'MAX':                return 'Max Quantities';
-    case 'REORDER':            return 'Reorder Quantities';
-    default:                   return '';
-  }
+function scopeLabel(scope: NeighborScope, t: (key: string) => string): string {
+  if (scope === 'vendor')   return t('inquiry:scope.sameVendor');
+  if (scope === 'category') return t('inquiry:scope.sameCategory');
+  return t('inquiry:scope.catalog');
 }
 
 function formatGridTotal(total: number): string {

@@ -29,6 +29,7 @@ import {
   recalculateSavedPurchasePlan,
   updateSavedPurchasePlanRows,
   type SavedPurchasePlanDetail,
+  type SavedPurchasePlanSalesTrendSummary,
 } from '../services/purchasePlanningApi'
 
 vi.mock('../hooks/useStores', () => ({
@@ -349,6 +350,11 @@ const salesProjectionPlan: SavedPurchasePlanDetail = {
         stockPosition: 60,
         normalizationFactor: 1,
         rawProjSales: 6,
+        lastYearSalesUnits: index === 0 ? 5 : null,
+        lastYearBeginningOnHand: index === 0 ? 5 : null,
+        lastYearNextMonthBeginningOnHand: index === 0 ? 5 : null,
+        yearBeforeLastSalesUnits: index === 0 ? 4 : null,
+        yearBeforeLastBeginningOnHand: index === 0 ? 6 : null,
       })),
     },
   ],
@@ -359,6 +365,52 @@ const salesProjectionPlan: SavedPurchasePlanDetail = {
     deltaBuy: 0,
     totalProjSales: 90,
   },
+}
+
+const salesTrendSummary: SavedPurchasePlanSalesTrendSummary = {
+  historyFromYearMonth: '2024-05',
+  historyToYearMonth: '2026-04',
+  sampleMonths: 24,
+  last12: {
+    label: 'Last 12M vs prior 12M',
+    currentFromYearMonth: '2025-05',
+    currentToYearMonth: '2026-04',
+    comparisonFromYearMonth: '2024-05',
+    comparisonToYearMonth: '2025-04',
+    currentUnits: 440,
+    comparisonUnits: 400,
+    changeUnits: 40,
+    changePct: 10,
+  },
+  recent6: {
+    label: 'Recent 6M YoY',
+    currentFromYearMonth: '2025-11',
+    currentToYearMonth: '2026-04',
+    comparisonFromYearMonth: '2024-11',
+    comparisonToYearMonth: '2025-04',
+    currentUnits: 230,
+    comparisonUnits: 210,
+    changeUnits: 20,
+    changePct: 9.5,
+  },
+  recent3: {
+    label: 'Recent 3M YoY',
+    currentFromYearMonth: '2026-02',
+    currentToYearMonth: '2026-04',
+    comparisonFromYearMonth: '2025-02',
+    comparisonToYearMonth: '2025-04',
+    currentUnits: 105,
+    comparisonUnits: 125,
+    changeUnits: -20,
+    changePct: -16,
+  },
+  monthlySlopeUnits: 0.4,
+  monthlySlopePct: 7,
+  direction: 'increasing',
+  confidence: 'high',
+  suggestedProjectionPct: 10,
+  volatilityPct: 24,
+  notes: ['Recent 3-month year-over-year trend differs from the 12-month trend.'],
 }
 
 function renderPage(initialEntries = ['/purchase-planning/buyer-checklist']) {
@@ -386,7 +438,7 @@ function renderPage(initialEntries = ['/purchase-planning/buyer-checklist']) {
 async function openCategory() {
   renderPage(['/purchase-planning/buyer-checklist/workbooks/workbook-1/cards/card-1'])
   await screen.findByRole('tab', { name: 'Sales Projection' })
-  await screen.findByLabelText('Worksheet grid')
+  await screen.findByLabelText('Sales projection worksheet')
 }
 
 async function chooseSelectOption(label: string, option: string) {
@@ -485,7 +537,7 @@ describe('BuyerPurchasePlanningPage', () => {
       },
     ])
     vi.mocked(fetchBuyerWorkbook).mockResolvedValue(detail)
-    vi.mocked(ensureBuyerSalesProjectionWorkbook).mockResolvedValue({ plan: salesProjectionPlan, buyerWorkbook: detail })
+    vi.mocked(ensureBuyerSalesProjectionWorkbook).mockResolvedValue({ plan: salesProjectionPlan, trendSummary: salesTrendSummary, buyerWorkbook: detail })
     vi.mocked(fetchStoreCategoryCarrying).mockResolvedValue([])
     vi.mocked(fetchPurchaseOrders).mockResolvedValue({
       data: [
@@ -617,7 +669,7 @@ describe('BuyerPurchasePlanningPage', () => {
       buyer: 'buyer',
     })
     expect(await screen.findByRole('tab', { name: 'Sales Projection' })).toBeInTheDocument()
-    expect(await screen.findByLabelText('Worksheet grid')).toBeInTheDocument()
+    expect(await screen.findByLabelText('Sales projection worksheet')).toBeInTheDocument()
     expect(ensureBuyerSalesProjectionWorkbook).toHaveBeenCalledWith('workbook-1', 'card-1', 'buyer')
   }, 15_000)
 
@@ -747,11 +799,45 @@ describe('BuyerPurchasePlanningPage', () => {
 
   it('renders the full-page category review and marks a category complete', async () => {
     await openCategory()
+    expect(screen.queryByRole('heading', { level: 2, name: 'Buyer Checklist' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Back to Checklist' })).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: 'Sales Projection' })).toHaveAttribute('aria-selected', 'true')
     expect(screen.getByRole('button', { name: 'Confirm sales projection' })).toBeInTheDocument()
+    expect(screen.getByText('Category trend')).toBeInTheDocument()
+    await userEvent.hover(screen.getByRole('button', { name: 'How category trend is calculated' }))
+    const trendTooltip = await screen.findByRole('tooltip')
+    expect(trendTooltip).toHaveTextContent('Enterprise sales and on-hand calculations include all stores and warehouses.')
+    expect(trendTooltip).toHaveTextContent('Last 12M: May 2025-Apr 2026 vs May 2024-Apr 2025')
+    expect(trendTooltip).toHaveTextContent('Recent 6M: Nov 2025-Apr 2026 vs Nov 2024-Apr 2025')
+    expect(trendTooltip).toHaveTextContent('Recent 3M: Feb 2026-Apr 2026 vs Feb 2025-Apr 2025')
+    expect(trendTooltip).toHaveTextContent('Change % = (current units - comparison units) / comparison units.')
+    expect(trendTooltip).toHaveTextContent('If comparison units are zero, percent is shown as N/A.')
+    expect(screen.getByText('Suggested projection')).toBeInTheDocument()
     expect(screen.getByLabelText('May 2026 projected sales')).toBeInTheDocument()
+    expect(screen.getByText("Last year's sales units")).toBeInTheDocument()
+    expect(screen.getByText("Last year's beginning on hand")).toBeInTheDocument()
+    expect(screen.getByText('Year before last sales units')).toBeInTheDocument()
+    expect(screen.getByText('Increase last year vs prior')).toBeInTheDocument()
+    expect(screen.getAllByText('+25%').length).toBeGreaterThan(0)
+    expect(screen.getByText('Year before last beginning on hand')).toBeInTheDocument()
+    expect(screen.getByText('Sell thru for the month')).toBeInTheDocument()
+    expect(screen.getByText('Compared sales units')).toBeInTheDocument()
+    const summary = within(screen.getByLabelText('Sales projection summary'))
+    expect(summary.getByText("Last year's 12 month sales")).toBeInTheDocument()
+    expect(summary.getByText('Projected sales for next 12 months')).toBeInTheDocument()
+    expect(summary.getByText('Suggested sales projection increase for the year')).toBeInTheDocument()
+    expect(summary.getByText('Projected sales increase')).toBeInTheDocument()
+    expect(summary.getByText('440 units')).toBeInTheDocument()
+    expect(summary.getByText('72 units')).toBeInTheDocument()
+    expect(summary.getByText('+10%')).toBeInTheDocument()
+    expect(summary.getByText('-83.6%')).toBeInTheDocument()
+    expect(screen.queryByText('Adjusted delta')).not.toBeInTheDocument()
+    expect(screen.getByText('ON Hand projection worksheet')).toBeInTheDocument()
     await userEvent.clear(screen.getByLabelText('May 2026 projected sales'))
     await userEvent.type(screen.getByLabelText('May 2026 projected sales'), '8')
+    expect(await screen.findByText('+3')).toBeInTheDocument()
+    expect(screen.getAllByText('100%')[0]).toBeInTheDocument()
+    expect(screen.getByText('constrained')).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: 'Save worksheet' }))
 
     await waitFor(() => expect(updateSavedPurchasePlanRows).toHaveBeenCalledWith('plan-1', expect.objectContaining({
@@ -773,6 +859,23 @@ describe('BuyerPurchasePlanningPage', () => {
       'card-1',
       expect.objectContaining({ status: 'COMPLETE', actor: 'buyer' }),
     ))
+  }, 15_000)
+
+  it('applies the suggested category trend projection to the worksheet', async () => {
+    await openCategory()
+
+    await userEvent.click(screen.getByRole('button', { name: 'Apply suggested %' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Save worksheet' }))
+
+    await waitFor(() => expect(updateSavedPurchasePlanRows).toHaveBeenCalledTimes(1))
+    const payload = vi.mocked(updateSavedPurchasePlanRows).mock.calls[0]?.[1]
+    expect(vi.mocked(updateSavedPurchasePlanRows).mock.calls[0]?.[0]).toBe('plan-1')
+    expect(payload?.rows).toHaveLength(15)
+    expect(payload?.rows).toEqual(expect.arrayContaining([
+      { rowId: 'projection-row-1', currentProjSales: 7, currentEohTarget: 61, currentBuy: 8 },
+    ]))
+    expect(payload?.reason).toBe('Suggested category trend +10%')
+    expect(payload?.appliedBy).toBe('buyer')
   }, 15_000)
 
   it('copies the seed model to target stores', async () => {
