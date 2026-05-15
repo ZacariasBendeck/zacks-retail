@@ -24,6 +24,7 @@ import {
   CheckCircleOutlined,
   CopyOutlined,
   FileSearchOutlined,
+  InfoCircleOutlined,
   LinkOutlined,
   PlusOutlined,
   SaveOutlined,
@@ -32,7 +33,7 @@ import {
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '../../auth/useAuth'
-import { useCategories, useCategoryBuyerOptions, useDepartments } from '../../hooks/useProductsTaxonomy'
+import { useCategories, useCategoryBuyerOptions } from '../../hooks/useProductsTaxonomy'
 import { useStoreChains, useStores } from '../../hooks/useStores'
 import { fetchPurchaseOrders } from '../../services/purchaseOrderApi'
 import {
@@ -52,7 +53,6 @@ import {
   ensureBuyerSalesProjectionWorkbook,
   fetchBuyerChecklistCategories,
   fetchBuyerWorkbook,
-  fetchBuyerWorkbooks,
   fetchStoreCategoryCarrying,
   flagBuyerCarryoverCandidateUnavailable,
   flagBuyerCarryoverUnavailable,
@@ -69,7 +69,6 @@ import {
   type AttributeMixRow,
   type AttributeReconciliationRow,
   type BuyerChecklistCategoryRow,
-  type BuyerCategoryCard,
   type BuyerCategoryStatus,
   type BuyerChecklistStepStatus,
   type BuyerChecklistWorkflowSteps,
@@ -77,7 +76,6 @@ import {
   type BuyerWorkbookSeason,
   type BuyerWorkbookCreateRequest,
   type BuyerWorkbookDetail,
-  type BuyerWorkbookListItem,
   type CarryoverCandidate,
   type CarryoverLine,
   type PlannedStyle,
@@ -191,17 +189,6 @@ function attributeDimensionValues(dimension: AttributeMixDimension): AttributeMi
   return Array.isArray(dimension.values) ? dimension.values : []
 }
 
-function cardCount(detail: BuyerWorkbookDetail | undefined, cardId: string, kind: 'carryovers' | 'styles' | 'poLinks') {
-  if (!detail) return 0
-  if (kind === 'carryovers') return detail.carryovers.filter((line) => line.cardId === cardId).length
-  if (kind === 'styles') return detail.plannedStyles.filter((line) => line.cardId === cardId).length
-  return detail.poLinks.filter((line) => line.cardId === cardId).length
-}
-
-function workbookProgress(workbook: BuyerWorkbookListItem): string {
-  return `${formatInt(workbook.completeCount)} / ${formatInt(workbook.cardCount)} complete`
-}
-
 function landingRowKey(row: BuyerChecklistCategoryRow): string {
   return `${row.categoryNumber}-${row.departmentNumber ?? 'none'}`
 }
@@ -225,7 +212,6 @@ export default function BuyerPurchasePlanningPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const { user } = useAuth()
   const isReviewRoute = Boolean(params.workbookId && params.cardId)
-  const [createForm] = Form.useForm<BuyerWorkbookCreateRequest>()
   const [carryingForm] = Form.useForm<{
     categoryNumber: number
     chainCode?: string
@@ -268,8 +254,6 @@ export default function BuyerPurchasePlanningPage() {
   const [showNoBudget, setShowNoBudget] = useState(false)
   const [selectedLandingRowKeys, setSelectedLandingRowKeys] = useState<string[]>([])
   const [selectedLandingRows, setSelectedLandingRows] = useState<BuyerChecklistCategoryRow[]>([])
-  const [reviewSetupVisible, setReviewSetupVisible] = useState(false)
-  const [selectedWorkbookId, setSelectedWorkbookId] = useState<string | null>(null)
   const [drawerCardId, setDrawerCardId] = useState<string | null>(null)
   const [pendingReviewTab, setPendingReviewTab] = useState<ReviewTabKey>(defaultReviewTab)
   const [carryingCategoryNumber, setCarryingCategoryNumber] = useState<number | null>(null)
@@ -286,15 +270,7 @@ export default function BuyerPurchasePlanningPage() {
   const { data: stores = [], isLoading: storesLoading } = useStores()
   const { data: storeChains = [], isLoading: chainsLoading } = useStoreChains()
   const { data: categories = [], isLoading: categoriesLoading } = useCategories()
-  const { data: departments = [], isLoading: departmentsLoading } = useDepartments()
   const buyerOptionsQuery = useCategoryBuyerOptions()
-
-  const workbooks = useQuery({
-    queryKey: ['buyer-purchase-workbooks'],
-    queryFn: () => fetchBuyerWorkbooks({ status: 'all' }),
-    enabled: checklistLoaded && !isReviewRoute,
-    staleTime: 60_000,
-  })
 
   const checklistCategoryQueryKey = [
     'buyer-checklist-categories',
@@ -315,7 +291,7 @@ export default function BuyerPurchasePlanningPage() {
     staleTime: 60_000,
   })
 
-  const reviewWorkbookId = params.workbookId ?? selectedWorkbookId
+  const reviewWorkbookId = params.workbookId ?? null
   const reviewCardId = params.cardId ?? drawerCardId
   const detail = useQuery({
     queryKey: ['buyer-purchase-workbook', reviewWorkbookId],
@@ -341,7 +317,7 @@ export default function BuyerPurchasePlanningPage() {
   const carryingRows = useQuery({
     queryKey: ['store-category-carrying', carryingCategoryNumber],
     queryFn: () => fetchStoreCategoryCarrying(carryingCategoryNumber!),
-    enabled: carryingCategoryNumber != null,
+    enabled: isReviewRoute && reviewTabKey === 'on-hand-projection' && carryingCategoryNumber != null,
     staleTime: 30_000,
   })
 
@@ -485,6 +461,11 @@ export default function BuyerPurchasePlanningPage() {
       additionalNewStyleTargetCount: selectedCard.additionalNewStyleTargetCount,
       totalNewStyleTargetCount: selectedCard.totalNewStyleTargetCount,
     })
+    setCarryingCategoryNumber(selectedCard.categoryNumber)
+    carryingForm.setFieldsValue({
+      categoryNumber: selectedCard.categoryNumber,
+      carries: carryingForm.getFieldValue('carries') ?? true,
+    })
     copyForm.setFieldsValue({ targetStoreIds: selectedTargetStoreIds.filter((storeId) => storeId !== selectedCard.seedStoreId) })
     const nextAttributeValues: Record<string, { plannedStyleCount: number; plannedUnits: number; notes?: string | null }> = {}
     selectedAttributeMix.forEach((dimension) => {
@@ -499,12 +480,10 @@ export default function BuyerPurchasePlanningPage() {
       })
     })
     setAttributePlanValues(nextAttributeValues)
-  }, [copyForm, newStyleTargetForm, selectedAttributeMix, selectedAttributePlanMap, selectedCard, selectedTargetStoreIds, targetForm])
+  }, [carryingForm, copyForm, newStyleTargetForm, selectedAttributeMix, selectedAttributePlanMap, selectedCard, selectedTargetStoreIds, targetForm])
 
   function putDetail(next: BuyerWorkbookDetail) {
-    setSelectedWorkbookId(next.workbook.id)
     queryClient.setQueryData(['buyer-purchase-workbook', next.workbook.id], next)
-    void queryClient.invalidateQueries({ queryKey: ['buyer-purchase-workbooks'] })
     void queryClient.invalidateQueries({ queryKey: ['buyer-checklist-categories'] })
   }
 
@@ -561,7 +540,6 @@ export default function BuyerPurchasePlanningPage() {
       putDetail(next)
       const firstCardId = next.cards[0]?.id ?? null
       setDrawerCardId(firstCardId)
-      setReviewSetupVisible(false)
       if (firstCardId) {
         navigate(`/purchase-planning/buyer-checklist/workbooks/${encodeURIComponent(next.workbook.id)}/cards/${encodeURIComponent(firstCardId)}?tab=${pendingReviewTab}`)
       }
@@ -639,7 +617,6 @@ export default function BuyerPurchasePlanningPage() {
     }),
     onSuccess: (_, row) => {
       applyNoBudgetToLanding([row])
-      void queryClient.invalidateQueries({ queryKey: ['buyer-purchase-workbooks'] })
       messageApi.success('Category marked No Budget')
     },
     onError: (error) => messageApi.error((error as Error).message),
@@ -655,7 +632,6 @@ export default function BuyerPurchasePlanningPage() {
     }),
     onSuccess: (_, rows) => {
       applyNoBudgetToLanding(rows)
-      void queryClient.invalidateQueries({ queryKey: ['buyer-purchase-workbooks'] })
       messageApi.success(`${formatInt(rows.length)} categories marked No Budget`)
     },
     onError: (error) => messageApi.error((error as Error).message),
@@ -671,7 +647,6 @@ export default function BuyerPurchasePlanningPage() {
     }),
     onSuccess: (_, row) => {
       applyReopenToLanding(row)
-      void queryClient.invalidateQueries({ queryKey: ['buyer-purchase-workbooks'] })
       messageApi.success('Category reopened')
     },
     onError: (error) => messageApi.error((error as Error).message),
@@ -858,10 +833,6 @@ export default function BuyerPurchasePlanningPage() {
   const categoryOptions = categories.map((category) => ({
     value: category.number,
     label: `${category.number} - ${category.description}`,
-  }))
-  const departmentOptions = departments.map((department) => ({
-    value: department.number,
-    label: `${department.number} - ${department.description}`,
   }))
   const poOptions = purchaseOrders.data?.data.map((po) => ({
     value: po.id,
@@ -1323,14 +1294,13 @@ export default function BuyerPurchasePlanningPage() {
     return `/purchase-planning/buyer-checklist/workbooks/${encodeURIComponent(workbookId)}/cards/${encodeURIComponent(cardId)}?tab=${tab}`
   }
 
-  function openCard(card: BuyerCategoryCard, tab: ReviewTabKey = defaultReviewTab) {
-    setDrawerCardId(card.id)
-    navigate(reviewPath(card.workbookId, card.id, tab))
-  }
-
   function startCategoryReview(row: BuyerChecklistCategoryRow, tab: ReviewTabKey = defaultReviewTab) {
     const seasonLabel = seasonOptions.find((option) => option.value === landingSeason)?.label ?? landingSeason
     const seedStoreId = stores[0]?.id
+    if (!seedStoreId) {
+      messageApi.error('No seed store is available to start this review.')
+      return
+    }
     const setupValues: BuyerWorkbookCreateRequest = {
       buyingSeason: landingSeason,
       seasonYear: landingYear,
@@ -1339,19 +1309,13 @@ export default function BuyerPurchasePlanningPage() {
       buyer: row.buyerCode ?? (buyerFilter.trim() || 'buyer'),
       createdBy: 'buyer',
       label: `${seasonLabel} ${landingYear} ${row.categoryLabel}`,
-      seedStoreId: seedStoreId ?? 0,
+      seedStoreId,
     }
-    setSelectedWorkbookId(null)
     setDrawerCardId(null)
     setPendingReviewTab(tab)
     setCarryingCategoryNumber(row.categoryNumber)
     carryingForm.setFieldsValue({ categoryNumber: row.categoryNumber })
-    if (seedStoreId) {
-      createWorkbookMutation.mutate(setupValues)
-      return
-    }
-    setReviewSetupVisible(true)
-    createForm.setFieldsValue(setupValues)
+    createWorkbookMutation.mutate(setupValues)
   }
 
   function confirmNoBudget(row: BuyerChecklistCategoryRow) {
@@ -1383,7 +1347,6 @@ export default function BuyerPurchasePlanningPage() {
       startCategoryReview(row, tab)
       return
     }
-    setSelectedWorkbookId(row.currentSeason.workbookId)
     setDrawerCardId(row.currentSeason.cardId)
     navigate(reviewPath(row.currentSeason.workbookId, row.currentSeason.cardId, tab))
   }
@@ -1407,6 +1370,98 @@ export default function BuyerPurchasePlanningPage() {
     })
   }
 
+  const carryingSetupSection = (
+    <Space direction="vertical" size="large" style={{ width: '100%' }}>
+      <div style={{ border: '1px solid #f0f0f0', borderRadius: 8, padding: 16, background: '#fff' }}>
+        <Title level={4} style={{ marginTop: 0 }}>Carrying Setup</Title>
+        <Form
+          form={carryingForm}
+          layout="vertical"
+          initialValues={{ carries: true }}
+          onFinish={(values) => {
+            setCarryingCategoryNumber(values.categoryNumber)
+            carryingMutation.mutate({
+              categoryNumber: values.categoryNumber,
+              chainCode: values.chainCode,
+              storeIds: values.storeIds,
+              carries: values.carries,
+              note: values.note,
+              updatedBy: 'buyer',
+            })
+          }}
+        >
+          <Row gutter={12}>
+            <Col xs={24} md={12}>
+              <Form.Item label="Category" name="categoryNumber" rules={[{ required: true }]}>
+                <Select
+                  showSearch
+                  loading={categoriesLoading}
+                  optionFilterProp="label"
+                  options={categoryOptions}
+                  onChange={(value) => setCarryingCategoryNumber(value)}
+                />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={12}>
+              <Form.Item label="Chain" name="chainCode">
+                <Select allowClear showSearch loading={chainsLoading} optionFilterProp="label" options={chainOptions} />
+              </Form.Item>
+            </Col>
+            <Col xs={24}>
+              <Form.Item label="Specific Stores" name="storeIds">
+                <Select mode="multiple" maxTagCount="responsive" showSearch loading={storesLoading} optionFilterProp="label" options={storeOptions} />
+              </Form.Item>
+            </Col>
+            <Col xs={8}>
+              <Form.Item label="Carries" name="carries" valuePropName="checked">
+                <Switch />
+              </Form.Item>
+            </Col>
+            <Col xs={16}>
+              <Form.Item label="Note" name="note">
+                <Input />
+              </Form.Item>
+            </Col>
+            <Col span={24}>
+              <Button htmlType="submit" icon={<SaveOutlined />} loading={carryingMutation.isPending}>
+                Apply Carrying Setup
+              </Button>
+            </Col>
+          </Row>
+        </Form>
+      </div>
+
+      {carryingCategoryNumber != null ? (
+        <div style={{ border: '1px solid #f0f0f0', borderRadius: 8, padding: 16, background: '#fff' }}>
+          <Row gutter={[12, 12]} align="middle" style={{ marginBottom: 12 }}>
+            <Col xs={24} md={14}>
+              <Title level={4} style={{ margin: 0 }}>Store Carrying Matrix</Title>
+              <Text type="secondary">{carryingSuggestionSummary}</Text>
+            </Col>
+            <Col xs={24} md={10}>
+              <Button
+                icon={<SaveOutlined />}
+                loading={carryingMutation.isPending}
+                disabled={carryingRows.isLoading || carryingSuggestionRows.length === 0}
+                onClick={applySuggestedCarrying}
+              >
+                Apply Suggested Stores
+              </Button>
+            </Col>
+          </Row>
+          <Table<StoreCategoryCarryingRow>
+            size="small"
+            rowKey={(row) => `${row.storeId}-${row.categoryNumber}`}
+            loading={carryingRows.isLoading}
+            columns={carryingColumns}
+            dataSource={carryingRows.data ?? []}
+            pagination={{ pageSize: 12 }}
+          />
+        </div>
+      ) : null}
+    </Space>
+  )
+
   return (
     <div style={{ padding: 24 }}>
       {contextHolder}
@@ -1421,7 +1476,12 @@ export default function BuyerPurchasePlanningPage() {
         <div style={{ border: '1px solid #f0f0f0', borderRadius: 8, padding: 16, background: '#fff' }}>
           <Row gutter={[12, 12]} align="middle" style={{ marginBottom: 12 }}>
             <Col xs={24} xl={8}>
-              <Title level={4} style={{ margin: 0 }}>Buyer Checklist Landing Page</Title>
+              <Space size={6} align="center">
+                <Title level={4} style={{ margin: 0 }}>Buyer Checklist Landing Page</Title>
+                <Tooltip title="Category budget ownership comes from Products > Taxonomy > Categories buyer assignments. The selected buyer owns the purchasing budget for every category assigned to that buyer; SKU-level buyer attributes do not determine this checklist.">
+                  <InfoCircleOutlined aria-label="Category budget ownership note" style={{ color: '#8c8c8c' }} />
+                </Tooltip>
+              </Space>
               <Text type="secondary">Choose a buyer first. The checklist loads only when requested.</Text>
             </Col>
             <Col xs={24} md={8} xl={5}>
@@ -1506,11 +1566,6 @@ export default function BuyerPurchasePlanningPage() {
                 No Budget Selected
               </Button>
             </Col>
-            <Col xs={24} md={5} xl={3}>
-              <Button block icon={<FileSearchOutlined />} onClick={() => setReviewSetupVisible(true)}>
-                Manual Review Setup
-              </Button>
-            </Col>
             </>
             ) : null}
           </Row>
@@ -1531,256 +1586,11 @@ export default function BuyerPurchasePlanningPage() {
               loading={checklistCategories.isLoading}
               columns={landingColumns}
               dataSource={filteredChecklistRows}
-              pagination={{ pageSize: 12 }}
+              pagination={false}
               scroll={{ x: 1500 }}
             />
           ) : null}
         </div>
-
-        {reviewSetupVisible ? (
-        <Row gutter={[16, 16]}>
-          <Col xs={24} xl={16}>
-            <div style={{ border: '1px solid #f0f0f0', borderRadius: 8, padding: 16, background: '#fff' }}>
-              <Title level={4} style={{ marginTop: 0 }}>Set Up Sales Projection Review</Title>
-              <Form<BuyerWorkbookCreateRequest>
-                form={createForm}
-                layout="vertical"
-                initialValues={{
-                  buyingSeason: 'FALL_WINTER',
-                  seasonYear: new Date().getFullYear(),
-                  createdBy: 'buyer',
-                }}
-                onFinish={(values) => createWorkbookMutation.mutate({
-                  ...values,
-                  buyer: buyerFilter.trim() || values.buyer || 'buyer',
-                  createdBy: values.createdBy ?? 'buyer',
-                  targetStoreIds: values.targetStoreIds?.length ? values.targetStoreIds : undefined,
-                  categoryNumbers: values.categoryNumbers?.length ? values.categoryNumbers : undefined,
-                  departmentNumbers: values.departmentNumbers?.length ? values.departmentNumbers : undefined,
-                })}
-              >
-                <Row gutter={12}>
-                  <Col xs={24} md={5}>
-                    <Form.Item label="Seed Store" name="seedStoreId" rules={[{ required: true }]}>
-                      <Select showSearch loading={storesLoading} optionFilterProp="label" options={storeOptions} />
-                    </Form.Item>
-                  </Col>
-                  <Col xs={24} md={7}>
-                    <Form.Item label="Categories to Review" name="categoryNumbers">
-                      <Select mode="multiple" maxTagCount="responsive" showSearch loading={categoriesLoading} optionFilterProp="label" options={categoryOptions} />
-                    </Form.Item>
-                  </Col>
-                  <Col xs={24} md={6}>
-                    <Form.Item label="Departments to Review" name="departmentNumbers">
-                      <Select mode="multiple" maxTagCount="responsive" showSearch loading={departmentsLoading} optionFilterProp="label" options={departmentOptions} />
-                    </Form.Item>
-                  </Col>
-                  <Col xs={12} md={3}>
-                    <Form.Item label="Season" name="buyingSeason" rules={[{ required: true }]}>
-                      <Select options={seasonOptions} />
-                    </Form.Item>
-                  </Col>
-                  <Col xs={12} md={3}>
-                    <Form.Item label="Year" name="seasonYear" rules={[{ required: true }]}>
-                      <InputNumber min={2020} max={2100} style={{ width: '100%' }} />
-                    </Form.Item>
-                  </Col>
-                  <Col xs={24} md={7}>
-                    <Form.Item label="Plan Name" name="label">
-                      <Input placeholder="Fall/Winter 2026 Smoking" />
-                    </Form.Item>
-                  </Col>
-                  <Col xs={24} md={9}>
-                    <Form.Item label="Copy-To Stores" name="targetStoreIds">
-                      <Select mode="multiple" maxTagCount="responsive" showSearch loading={storesLoading} optionFilterProp="label" options={storeOptions} />
-                    </Form.Item>
-                  </Col>
-                  <Col xs={24} md={4}>
-                    <Form.Item label=" ">
-                      <Button block type="primary" htmlType="submit" icon={<FileSearchOutlined />} loading={createWorkbookMutation.isPending}>
-                        Start Review
-                      </Button>
-                    </Form.Item>
-                  </Col>
-                </Row>
-              </Form>
-            </div>
-          </Col>
-
-          <Col xs={24} xl={8}>
-            <div style={{ border: '1px solid #f0f0f0', borderRadius: 8, padding: 16, background: '#fff' }}>
-              <Title level={4} style={{ marginTop: 0 }}>Carrying Setup</Title>
-              <Form
-                form={carryingForm}
-                layout="vertical"
-                initialValues={{ carries: true }}
-                onFinish={(values) => {
-                  setCarryingCategoryNumber(values.categoryNumber)
-                  carryingMutation.mutate({
-                    categoryNumber: values.categoryNumber,
-                    chainCode: values.chainCode,
-                    storeIds: values.storeIds,
-                    carries: values.carries,
-                    note: values.note,
-                    updatedBy: 'buyer',
-                  })
-                }}
-              >
-                <Row gutter={12}>
-                  <Col xs={24} md={12}>
-                    <Form.Item label="Category" name="categoryNumber" rules={[{ required: true }]}>
-                      <Select
-                        showSearch
-                        loading={categoriesLoading}
-                        optionFilterProp="label"
-                        options={categoryOptions}
-                        onChange={(value) => setCarryingCategoryNumber(value)}
-                      />
-                    </Form.Item>
-                  </Col>
-                  <Col xs={24} md={12}>
-                    <Form.Item label="Chain" name="chainCode">
-                      <Select allowClear showSearch loading={chainsLoading} optionFilterProp="label" options={chainOptions} />
-                    </Form.Item>
-                  </Col>
-                  <Col xs={24}>
-                    <Form.Item label="Specific Stores" name="storeIds">
-                      <Select mode="multiple" maxTagCount="responsive" showSearch loading={storesLoading} optionFilterProp="label" options={storeOptions} />
-                    </Form.Item>
-                  </Col>
-                  <Col xs={8}>
-                    <Form.Item label="Carries" name="carries" valuePropName="checked">
-                      <Switch />
-                    </Form.Item>
-                  </Col>
-                  <Col xs={16}>
-                    <Form.Item label="Note" name="note">
-                      <Input />
-                    </Form.Item>
-                  </Col>
-                  <Col span={24}>
-                    <Button htmlType="submit" icon={<SaveOutlined />} loading={carryingMutation.isPending}>
-                      Apply Carrying Setup
-                    </Button>
-                  </Col>
-                </Row>
-              </Form>
-            </div>
-          </Col>
-        </Row>
-        ) : null}
-
-        {carryingCategoryNumber != null ? (
-          <div style={{ border: '1px solid #f0f0f0', borderRadius: 8, padding: 16, background: '#fff' }}>
-            <Row gutter={[12, 12]} align="middle" style={{ marginBottom: 12 }}>
-              <Col xs={24} md={14}>
-                <Title level={4} style={{ margin: 0 }}>Store Carrying Matrix</Title>
-                <Text type="secondary">{carryingSuggestionSummary}</Text>
-              </Col>
-              <Col xs={24} md={10}>
-                <Button
-                  icon={<SaveOutlined />}
-                  loading={carryingMutation.isPending}
-                  disabled={carryingRows.isLoading || carryingSuggestionRows.length === 0}
-                  onClick={applySuggestedCarrying}
-                >
-                  Apply Suggested Stores
-                </Button>
-              </Col>
-            </Row>
-            <Table<StoreCategoryCarryingRow>
-              size="small"
-              rowKey={(row) => `${row.storeId}-${row.categoryNumber}`}
-              loading={carryingRows.isLoading}
-              columns={carryingColumns}
-              dataSource={carryingRows.data ?? []}
-              pagination={{ pageSize: 12 }}
-            />
-          </div>
-        ) : null}
-
-        <div style={{ border: '1px solid #f0f0f0', borderRadius: 8, padding: 16, background: '#fff' }}>
-          <Row gutter={[12, 12]} align="middle">
-            <Col xs={24} md={12}>
-              <Title level={4} style={{ margin: 0 }}>Saved Buying Plans</Title>
-            </Col>
-            <Col xs={24} md={12}>
-              <Select
-                style={{ width: '100%' }}
-                value={selectedWorkbookId ?? undefined}
-                loading={workbooks.isLoading}
-                placeholder="Open saved buying plan"
-                onChange={setSelectedWorkbookId}
-                options={(workbooks.data ?? []).map((workbook) => ({
-                  value: workbook.id,
-                  label: `${workbook.label} - ${workbookProgress(workbook)}`,
-                }))}
-              />
-            </Col>
-          </Row>
-        </div>
-
-        {detail.error ? (
-          <Alert type="error" message={(detail.error as Error).message} />
-        ) : null}
-
-        {selectedDetail ? (
-          <div>
-            <Space direction="vertical" size={12} style={{ width: '100%' }}>
-              <Space wrap>
-                <Title level={3} style={{ margin: 0 }}>{selectedDetail.workbook.label}</Title>
-                <Tag>{seasonOptions.find((option) => option.value === selectedDetail.workbook.buyingSeason)?.label}</Tag>
-                <Tag>{selectedDetail.workbook.seasonMonths.join(', ')}</Tag>
-                <Tag>Seed store {selectedDetail.workbook.seedStoreId}</Tag>
-              </Space>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, minmax(220px, 1fr))', gap: 12, overflowX: 'auto', paddingBottom: 8 }}>
-                {statusColumns.map((column) => {
-                  const cards = selectedDetail.cards.filter((card) => card.status === column.key)
-                  return (
-                    <div key={column.key} style={{ minWidth: 220, background: '#fafafa', border: '1px solid #f0f0f0', borderRadius: 8, padding: 10 }}>
-                      <Space style={{ justifyContent: 'space-between', width: '100%', marginBottom: 8 }}>
-                        <Text strong>{column.label}</Text>
-                        <Tag color={column.color}>{cards.length}</Tag>
-                      </Space>
-                      <Space direction="vertical" size={8} style={{ width: '100%' }}>
-                        {cards.map((card) => (
-                          <button
-                            key={card.id}
-                            type="button"
-                            onClick={() => openCard(card)}
-                            style={{
-                              width: '100%',
-                              textAlign: 'left',
-                              border: '1px solid #d9d9d9',
-                              borderRadius: 8,
-                              background: '#fff',
-                              padding: 12,
-                              cursor: 'pointer',
-                            }}
-                          >
-                            <Space direction="vertical" size={4} style={{ width: '100%' }}>
-                              <Text strong>{card.categoryLabel}</Text>
-                              <Text type="secondary">{card.departmentLabel}</Text>
-                              <Space wrap size={4}>
-                                <Tag>New {formatInt(card.targetNewSkuCount)}</Tag>
-                                <Tag>Carry {formatInt(card.targetCarryoverSkuCount)}</Tag>
-                                <Tag>{formatInt(cardCount(selectedDetail, card.id, 'carryovers'))} carryovers</Tag>
-                                <Tag>{formatInt(cardCount(selectedDetail, card.id, 'styles'))} styles</Tag>
-                                <Tag>{formatInt(cardCount(selectedDetail, card.id, 'poLinks'))} PO links</Tag>
-                              </Space>
-                            </Space>
-                          </button>
-                        ))}
-                      </Space>
-                    </div>
-                  )
-                })}
-              </div>
-            </Space>
-          </div>
-        ) : (
-          <Alert type="info" message="Load a buyer checklist, then start or continue a category review." />
-        )}
         </>
       </Space>
       ) : null}
@@ -1864,6 +1674,8 @@ export default function BuyerPurchasePlanningPage() {
                 onConfirm={() => confirmProjectionMutation.mutate()}
               />
             ) : null}
+
+            {reviewTabKey === 'on-hand-projection' ? carryingSetupSection : null}
 
             {reviewTabKey === 'carryovers' ? (
               <Space direction="vertical" size="large" style={{ width: '100%' }}>

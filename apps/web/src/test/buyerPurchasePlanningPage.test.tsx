@@ -5,7 +5,7 @@ import { ConfigProvider } from 'antd'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import BuyerPurchasePlanningPage from '../pages/purchasePlanning/BuyerPurchasePlanningPage'
-import { useCategories, useCategoryBuyerOptions, useDepartments } from '../hooks/useProductsTaxonomy'
+import { useCategories, useCategoryBuyerOptions } from '../hooks/useProductsTaxonomy'
 import { useStoreChains, useStores } from '../hooks/useStores'
 import { fetchPurchaseOrders } from '../services/purchaseOrderApi'
 import {
@@ -16,13 +16,13 @@ import {
   ensureBuyerSalesProjectionWorkbook,
   fetchBuyerChecklistCategories,
   fetchBuyerWorkbook,
-  fetchBuyerWorkbooks,
   fetchStoreCategoryCarrying,
   flagBuyerCarryoverUnavailable,
   markBuyerCategoriesNoBudget,
   markBuyerCategoryNoBudget,
   reopenBuyerCategoryBudget,
   updateBuyerCategoryCard,
+  type BuyerChecklistCategoryRow,
   type BuyerWorkbookDetail,
 } from '../services/buyerPurchasePlanningApi'
 import {
@@ -40,7 +40,6 @@ vi.mock('../hooks/useStores', () => ({
 vi.mock('../hooks/useProductsTaxonomy', () => ({
   useCategories: vi.fn(),
   useCategoryBuyerOptions: vi.fn(),
-  useDepartments: vi.fn(),
 }))
 
 vi.mock('../auth/useAuth', () => ({
@@ -72,7 +71,6 @@ vi.mock('../services/buyerPurchasePlanningApi', async () => {
     ensureBuyerSalesProjectionWorkbook: vi.fn(),
     fetchBuyerChecklistCategories: vi.fn(),
     fetchBuyerWorkbook: vi.fn(),
-    fetchBuyerWorkbooks: vi.fn(),
     fetchStoreCategoryCarrying: vi.fn(),
     flagBuyerCarryoverCandidateUnavailable: vi.fn(),
     flagBuyerCarryoverUnavailable: vi.fn(),
@@ -493,6 +491,60 @@ const missingChecklistSteps = {
   },
 }
 
+function checklistRow(categoryNumber: number): BuyerChecklistCategoryRow {
+  return {
+    buyerCode: 'buyer',
+    buyerLabel: 'Buyer',
+    categoryNumber,
+    categoryLabel: `${categoryNumber} - Category ${categoryNumber}`,
+    departmentNumber: 1,
+    departmentLabel: '1 - Menswear',
+    last12MonthsSales: 0,
+    last12MonthsUnits: 0,
+    currentInventoryUnits: 0,
+    currentInventoryValue: 0,
+    departmentOtbUnits: 0,
+    currentSeason: {
+      buyingSeason: 'FALL_WINTER',
+      seasonYear: 2026,
+      workbookId: null,
+      cardId: null,
+      status: null,
+      updatedAt: null,
+      noBudgetId: null,
+      noBudgetNote: null,
+      noBudgetMarkedBy: null,
+      noBudgetMarkedAt: null,
+      steps: missingChecklistSteps,
+    },
+    nextSeason: {
+      buyingSeason: 'SPRING_SUMMER',
+      seasonYear: 2027,
+      workbookId: null,
+      cardId: null,
+      status: null,
+      updatedAt: null,
+      noBudgetId: null,
+      noBudgetNote: null,
+      noBudgetMarkedBy: null,
+      noBudgetMarkedAt: null,
+    },
+    followingSeason: {
+      buyingSeason: 'FALL_WINTER',
+      seasonYear: 2027,
+      workbookId: null,
+      cardId: null,
+      status: null,
+      updatedAt: null,
+      noBudgetId: null,
+      noBudgetNote: null,
+      noBudgetMarkedBy: null,
+      noBudgetMarkedAt: null,
+    },
+    action: 'START_REVIEW',
+  }
+}
+
 function LocationProbe() {
   const location = useLocation()
   return <div data-testid="current-location">{location.pathname}{location.search}</div>
@@ -555,22 +607,11 @@ describe('BuyerPurchasePlanningPage', () => {
       data: [{ number: 11, description: 'Traje Smoking Hombre', dateLastChanged: null, skuCount: 15, productFamilyCode: null, productFamilyLabelEs: null }],
       isLoading: false,
     } as never)
-    vi.mocked(useDepartments).mockReturnValue({
-      data: [{ number: 1, description: 'Menswear', begCateg: 1, endCateg: 99, dateLastChanged: null, skuCount: 100 }],
-      isLoading: false,
-    } as never)
     vi.mocked(useCategoryBuyerOptions).mockReturnValue({
       data: [{ valueId: 1, code: 'buyer', labelEs: 'Buyer', isActive: true, sortOrder: 1 }],
       isLoading: false,
     } as never)
     window.localStorage.setItem('buyer-checklist:last-buyer:user-1', 'buyer')
-    vi.mocked(fetchBuyerWorkbooks).mockResolvedValue([
-      {
-        ...detail.workbook,
-        cardCount: 1,
-        completeCount: 0,
-      },
-    ])
     vi.mocked(fetchBuyerChecklistCategories).mockResolvedValue([
       {
         buyerCode: 'buyer',
@@ -686,6 +727,16 @@ describe('BuyerPurchasePlanningPage', () => {
     vi.mocked(bulkUpdateStoreCategoryCarrying).mockResolvedValue([])
   })
 
+  it('explains that checklist budget ownership comes from category buyer assignments', async () => {
+    renderPage()
+
+    await userEvent.hover(screen.getByLabelText('Category budget ownership note'))
+
+    const tooltip = await screen.findByRole('tooltip')
+    expect(tooltip).toHaveTextContent('Category budget ownership comes from Products > Taxonomy > Categories buyer assignments.')
+    expect(tooltip).toHaveTextContent('SKU-level buyer attributes do not determine this checklist.')
+  })
+
   it('loads history from the store/category starting point', async () => {
     vi.mocked(fetchBuyerChecklistCategories).mockResolvedValueOnce([
       {
@@ -743,11 +794,18 @@ describe('BuyerPurchasePlanningPage', () => {
     renderPage()
 
     expect(fetchBuyerChecklistCategories).not.toHaveBeenCalled()
-    expect(fetchBuyerWorkbooks).not.toHaveBeenCalled()
     expect(fetchBuyerWorkbook).not.toHaveBeenCalled()
     expect(fetchPurchaseOrders).not.toHaveBeenCalled()
     expect(screen.getByText('Buyer (buyer)')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Manual Review Setup/i })).not.toBeInTheDocument()
+    expect(screen.queryByText('Set Up Sales Projection Review')).not.toBeInTheDocument()
+    expect(screen.queryByText('Saved Buying Plans')).not.toBeInTheDocument()
+    expect(screen.queryByPlaceholderText('Open saved buying plan')).not.toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: /Load Checklist/i }))
+    expect(screen.queryByRole('button', { name: /Manual Review Setup/i })).not.toBeInTheDocument()
+    expect(screen.queryByText('Set Up Sales Projection Review')).not.toBeInTheDocument()
+    expect(screen.queryByText('Saved Buying Plans')).not.toBeInTheDocument()
+    expect(screen.queryByPlaceholderText('Open saved buying plan')).not.toBeInTheDocument()
     await userEvent.click(await screen.findByRole('button', { name: /Start Review/i }))
 
     await waitFor(() => expect(createBuyerWorkbook).toHaveBeenCalledTimes(1))
@@ -760,6 +818,18 @@ describe('BuyerPurchasePlanningPage', () => {
     expect((await screen.findAllByRole('tab', { name: 'Sales Projection' })).length).toBeGreaterThan(0)
     expect(await screen.findByLabelText('Sales projection worksheet')).toBeInTheDocument()
     expect(ensureBuyerSalesProjectionWorkbook).toHaveBeenCalledWith('workbook-1', 'card-1', 'buyer')
+  }, 15_000)
+
+  it('renders all loaded buyer categories on the checklist landing table', async () => {
+    vi.mocked(fetchBuyerChecklistCategories).mockResolvedValueOnce(
+      Array.from({ length: 13 }, (_, index) => checklistRow(index + 1)),
+    )
+    renderPage()
+
+    await userEvent.click(screen.getByRole('button', { name: /Load Checklist/i }))
+
+    expect(await screen.findByText('13 - Category 13')).toBeInTheDocument()
+    expect(screen.queryByTitle('Next Page')).not.toBeInTheDocument()
   }, 15_000)
 
   it('shows checklist step columns and opens status cells on the matching tab', async () => {
@@ -1108,11 +1178,9 @@ describe('BuyerPurchasePlanningPage', () => {
         updatedAt: '2026-05-07T00:00:00.000Z',
       },
     ])
-    renderPage()
-
-    await userEvent.click(screen.getByRole('button', { name: /Load Checklist/i }))
-    await userEvent.click(await screen.findByRole('button', { name: /Manual Review Setup/i }))
-    await chooseSelectOption('Category', '11 - Traje Smoking Hombre')
+    await openCategory()
+    expect(screen.queryByRole('heading', { name: 'Carrying Setup' })).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('tab', { name: 'On Hand Projection' }))
     await screen.findByText('12 stock')
     await userEvent.click(screen.getByRole('button', { name: /Apply Suggested Stores/i }))
 
