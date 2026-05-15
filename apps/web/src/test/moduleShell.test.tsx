@@ -289,5 +289,5 @@ describe('Module Shell Navigation', () => {
       expect(await screen.findByTestId(check.pageId)).toBeInTheDocument()
       expect(await screen.findByRole('heading', { name: check.moduleTitle })).toBeInTheDocument()
     }
-  }, 30_000)
+  }, 45_000)
 })

@@ -29,7 +29,7 @@ import {
   SaveOutlined,
   StopOutlined,
 } from '@ant-design/icons'
-import { Link, useNavigate, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '../../auth/useAuth'
 import { useCategories, useCategoryBuyerOptions, useDepartments } from '../../hooks/useProductsTaxonomy'
@@ -38,6 +38,7 @@ import { fetchPurchaseOrders } from '../../services/purchaseOrderApi'
 import {
   recalculateSavedPurchasePlan,
   updateSavedPurchasePlanRows,
+  type SavedPurchasePlanRecalculateRequest,
   type SavedPurchasePlanRowsUpdateRequest,
 } from '../../services/purchasePlanningApi'
 import {
@@ -66,9 +67,12 @@ import {
   updateBuyerNewStyleTargets,
   type AttributeMixDimension,
   type AttributeMixRow,
+  type AttributeReconciliationRow,
   type BuyerChecklistCategoryRow,
   type BuyerCategoryCard,
   type BuyerCategoryStatus,
+  type BuyerChecklistStepStatus,
+  type BuyerChecklistWorkflowSteps,
   type BuyerPoLink,
   type BuyerWorkbookSeason,
   type BuyerWorkbookCreateRequest,
@@ -106,6 +110,26 @@ const candidateDecisionOptions = [
   { value: 'DROP', label: 'Drop' },
 ]
 
+type ReviewTabKey = 'sales-projection' | 'on-hand-projection' | 'carryovers' | 'attribute-plan'
+
+const reviewTabKeys: ReviewTabKey[] = ['sales-projection', 'on-hand-projection', 'carryovers', 'attribute-plan']
+const defaultReviewTab: ReviewTabKey = 'sales-projection'
+const reviewTabLabels: Record<ReviewTabKey, string> = {
+  'sales-projection': 'Sales Projection',
+  'on-hand-projection': 'On Hand Projection',
+  carryovers: 'Carryovers',
+  'attribute-plan': 'Attribute Plan',
+}
+
+const stepStatusMeta: Record<BuyerChecklistStepStatus, { label: string; color: string }> = {
+  missing: { label: 'Missing', color: 'default' },
+  draft: { label: 'Draft', color: 'gold' },
+  confirmed: { label: 'Confirmed', color: 'green' },
+  complete: { label: 'Complete', color: 'green' },
+  alert: { label: 'Alert', color: 'red' },
+  not_applicable: { label: 'N/A', color: 'default' },
+}
+
 const integerFmt = new Intl.NumberFormat('en-US')
 const moneyFmt = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 })
 const pctFmt = new Intl.NumberFormat('en-US', { maximumFractionDigits: 1 })
@@ -130,13 +154,33 @@ function compareNumber(left: number | null | undefined, right: number | null | u
   return Number(left ?? 0) - Number(right ?? 0)
 }
 
-function statusTag(status: BuyerCategoryStatus) {
-  const meta = statusColumns.find((column) => column.key === status)
-  return <Tag color={meta?.color}>{meta?.label ?? status}</Tag>
+function normalizeReviewTab(value: string | null): ReviewTabKey {
+  if (value === 'carryover-review') return 'carryovers'
+  return reviewTabKeys.includes(value as ReviewTabKey) ? value as ReviewTabKey : defaultReviewTab
 }
 
-function planStatusTag(status: BuyerCategoryStatus | null) {
-  return status ? statusTag(status) : <Tag>No plan</Tag>
+function stepStatusTag(status: BuyerChecklistStepStatus) {
+  const meta = stepStatusMeta[status]
+  return <Tag color={meta.color}>{meta.label}</Tag>
+}
+
+function emptyWorkflowSteps(currentInventoryUnits = 0, departmentOtbUnits: number | null = null): BuyerChecklistWorkflowSteps {
+  return {
+    salesProjection: { status: 'missing', projectedUnits: 0, updatedAt: null, planId: null },
+    inventoryPlan: { status: 'missing', hasProjectionPlan: false, currentInventoryUnits, departmentOtbUnits },
+    carryovers: { status: 'missing', targetCount: 0, plannedCount: 0, boughtCount: 0 },
+    attributePlan: {
+      status: 'missing',
+      plannedUnits: 0,
+      currentInventoryUnits: 0,
+      purchaseUnits: 0,
+      actualUnits: 0,
+      maxVariancePct: 0,
+      maxVarianceUnits: 0,
+      alertCount: 0,
+      updatedAt: null,
+    },
+  }
 }
 
 function attributePlanKey(dimensionCode: string, valueCode: string) {
@@ -178,6 +222,7 @@ export default function BuyerPurchasePlanningPage() {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const params = useParams<{ workbookId?: string; cardId?: string }>()
+  const [searchParams, setSearchParams] = useSearchParams()
   const { user } = useAuth()
   const isReviewRoute = Boolean(params.workbookId && params.cardId)
   const [createForm] = Form.useForm<BuyerWorkbookCreateRequest>()
@@ -226,15 +271,17 @@ export default function BuyerPurchasePlanningPage() {
   const [reviewSetupVisible, setReviewSetupVisible] = useState(false)
   const [selectedWorkbookId, setSelectedWorkbookId] = useState<string | null>(null)
   const [drawerCardId, setDrawerCardId] = useState<string | null>(null)
+  const [pendingReviewTab, setPendingReviewTab] = useState<ReviewTabKey>(defaultReviewTab)
   const [carryingCategoryNumber, setCarryingCategoryNumber] = useState<number | null>(null)
   const [unavailableLine, setUnavailableLine] = useState<CarryoverLine | null>(null)
   const [unavailableCandidate, setUnavailableCandidate] = useState<CarryoverCandidate | null>(null)
   const [unavailableReason, setUnavailableReason] = useState('')
   const [editingCarryoverLine, setEditingCarryoverLine] = useState<CarryoverLine | null>(null)
   const [editingSizeCells, setEditingSizeCells] = useState<CarryoverLine['sizeCells']>([])
-  const [reviewTabKey, setReviewTabKey] = useState('sales-projection')
+  const [reviewTabKey, setReviewTabKey] = useState<ReviewTabKey>(defaultReviewTab)
   const [attributePlanValues, setAttributePlanValues] = useState<Record<string, { plannedStyleCount: number; plannedUnits: number; notes?: string | null }>>({})
   const checklistLoaded = loadedChecklistRequest !== null
+  const requestedReviewTab = normalizeReviewTab(searchParams.get('tab'))
 
   const { data: stores = [], isLoading: storesLoading } = useStores()
   const { data: storeChains = [], isLoading: chainsLoading } = useStoreChains()
@@ -287,7 +334,7 @@ export default function BuyerPurchasePlanningPage() {
   const purchaseOrders = useQuery({
     queryKey: ['buyer-purchase-workbook', 'po-options'],
     queryFn: () => fetchPurchaseOrders({ page: 1, pageSize: 50, sort: 'updatedAt', order: 'desc' }),
-    enabled: isReviewRoute && !!reviewCardId && reviewTabKey === 'carryover-review',
+    enabled: isReviewRoute && !!reviewCardId && reviewTabKey === 'carryovers',
     staleTime: 30_000,
   })
 
@@ -338,9 +385,57 @@ export default function BuyerPurchasePlanningPage() {
           plannedUnits: row.plannedUnits,
           notes: row.notes,
         })
-      })
+    })
     return map
   }, [reviewCardId, selectedDetail])
+  const selectedWorkflowSteps = useMemo<BuyerChecklistWorkflowSteps>(() => {
+    if (!selectedCard) return emptyWorkflowSteps()
+    const salesProjectionStatus: BuyerChecklistStepStatus = selectedCard.salesProjection.updatedAt
+      ? 'confirmed'
+      : selectedCard.salesProjectionPlanId ? 'draft' : 'missing'
+    const carryoverTarget = Math.max(0, selectedCard.targetCarryoverSkuCount)
+    const plannedCarryovers = selectedCardCarryovers.filter((line) => !line.unavailable).length
+    const boughtCarryovers = new Set(selectedCardLinks.filter((link) => link.carryoverLineId).map((link) => link.carryoverLineId)).size
+    const carryoverStatus: BuyerChecklistStepStatus = carryoverTarget === 0
+      ? 'complete'
+      : boughtCarryovers >= carryoverTarget
+        ? 'complete'
+        : plannedCarryovers > 0 || boughtCarryovers > 0 ? 'draft' : 'missing'
+    const reconciliation = selectedCard.attributeReconciliation ?? []
+    const attrAlertCount = reconciliation.reduce((sum, dimension) => sum + dimension.alertCount, 0)
+    const attributeStatus: BuyerChecklistStepStatus = reconciliation.length === 0 ? 'missing' : attrAlertCount > 0 ? 'alert' : 'complete'
+    return {
+      salesProjection: {
+        status: salesProjectionStatus,
+        projectedUnits: selectedCard.salesProjection.totalProjectedUnits,
+        updatedAt: selectedCard.salesProjection.updatedAt,
+        planId: selectedCard.salesProjectionPlanId,
+      },
+      inventoryPlan: {
+        status: selectedCard.salesProjectionPlanId ? salesProjectionStatus === 'confirmed' ? 'confirmed' : 'draft' : 'missing',
+        hasProjectionPlan: Boolean(selectedCard.salesProjectionPlanId),
+        currentInventoryUnits: selectedCard.history.summary.averageBeginningOnHand,
+        departmentOtbUnits: null,
+      },
+      carryovers: {
+        status: carryoverStatus,
+        targetCount: carryoverTarget,
+        plannedCount: plannedCarryovers,
+        boughtCount: boughtCarryovers,
+      },
+      attributePlan: {
+        status: attributeStatus,
+        plannedUnits: reconciliation.reduce((sum, dimension) => sum + dimension.plannedUnits, 0),
+        currentInventoryUnits: reconciliation.reduce((sum, dimension) => sum + dimension.currentInventoryUnits, 0),
+        purchaseUnits: reconciliation.reduce((sum, dimension) => sum + dimension.purchaseUnits, 0),
+        actualUnits: reconciliation.reduce((sum, dimension) => sum + dimension.actualUnits, 0),
+        maxVariancePct: reconciliation.reduce((max, dimension) => Math.max(max, dimension.maxVariancePct), 0),
+        maxVarianceUnits: reconciliation.reduce((max, dimension) => Math.max(max, dimension.maxVarianceUnits), 0),
+        alertCount: attrAlertCount,
+        updatedAt: selectedDetail?.attributePlans.filter((row) => row.cardId === selectedCard.id).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0]?.updatedAt ?? null,
+      },
+    }
+  }, [selectedCard, selectedCardCarryovers, selectedCardLinks, selectedDetail?.attributePlans])
   const filteredChecklistRows = useMemo(() => {
     const term = landingSearch.trim().toLowerCase()
     const rows = checklistCategories.data ?? []
@@ -374,7 +469,11 @@ export default function BuyerPurchasePlanningPage() {
 
   useEffect(() => {
     if (!selectedCard) return
-    setReviewTabKey('sales-projection')
+    setReviewTabKey(requestedReviewTab)
+  }, [requestedReviewTab, selectedCard?.id])
+
+  useEffect(() => {
+    if (!selectedCard) return
     targetForm.setFieldsValue({
       status: selectedCard.status,
       targetNewSkuCount: selectedCard.targetNewSkuCount,
@@ -464,7 +563,7 @@ export default function BuyerPurchasePlanningPage() {
       setDrawerCardId(firstCardId)
       setReviewSetupVisible(false)
       if (firstCardId) {
-        navigate(`/purchase-planning/buyer-checklist/workbooks/${encodeURIComponent(next.workbook.id)}/cards/${encodeURIComponent(firstCardId)}`)
+        navigate(`/purchase-planning/buyer-checklist/workbooks/${encodeURIComponent(next.workbook.id)}/cards/${encodeURIComponent(firstCardId)}?tab=${pendingReviewTab}`)
       }
       messageApi.success('Sales projection review started')
     },
@@ -509,7 +608,8 @@ export default function BuyerPurchasePlanningPage() {
   })
 
   const recalculateProjectionMutation = useMutation({
-    mutationFn: (planId: string) => recalculateSavedPurchasePlan(planId, 'buyer'),
+    mutationFn: (input: { planId: string; payload: SavedPurchasePlanRecalculateRequest }) =>
+      recalculateSavedPurchasePlan(input.planId, input.payload),
     onSuccess: (plan) => {
       queryClient.setQueryData(['buyer-sales-projection-workbook', reviewWorkbookId, reviewCardId], (previous: typeof salesProjectionWorkbook.data) => (
         previous ? { ...previous, plan } : previous
@@ -774,6 +874,40 @@ export default function BuyerPurchasePlanningPage() {
       label: buyer.labelEs && buyer.labelEs !== buyer.code ? `${buyer.labelEs} (${buyer.code})` : buyer.code,
     }))
 
+  function landingStepAction(row: BuyerChecklistCategoryRow, tab: ReviewTabKey) {
+    if (row.action === 'NO_BUDGET') return
+    if (row.action === 'CONTINUE') {
+      continueCategory(row, tab)
+      return
+    }
+    startCategoryReview(row, tab)
+  }
+
+  function renderLandingStep(row: BuyerChecklistCategoryRow, tab: ReviewTabKey, status: BuyerChecklistStepStatus, detail: string) {
+    if (row.action === 'NO_BUDGET') {
+      return (
+        <Space direction="vertical" size={0}>
+          {stepStatusTag('not_applicable')}
+          <Text type="secondary">No budget</Text>
+        </Space>
+      )
+    }
+    const meta = stepStatusMeta[status]
+    return (
+      <Space direction="vertical" size={0}>
+        <Button
+          type="link"
+          size="small"
+          style={{ padding: 0, height: 'auto' }}
+          onClick={() => landingStepAction(row, tab)}
+        >
+          {meta.label}
+        </Button>
+        <Text type={status === 'alert' ? 'danger' : 'secondary'}>{detail}</Text>
+      </Space>
+    )
+  }
+
   const landingColumns: ColumnsType<BuyerChecklistCategoryRow> = [
     {
       title: 'Category',
@@ -788,7 +922,6 @@ export default function BuyerPurchasePlanningPage() {
     },
     { title: 'Department', dataIndex: 'departmentLabel', width: 220 },
     { title: 'Last 12M Sales', dataIndex: 'last12MonthsSales', align: 'right', width: 130, render: formatMoney },
-    { title: 'Last 12M Units', dataIndex: 'last12MonthsUnits', align: 'right', width: 120, render: formatInt },
     {
       title: 'Current Inventory',
       dataIndex: 'currentInventoryUnits',
@@ -801,10 +934,45 @@ export default function BuyerPurchasePlanningPage() {
         </Space>
       ),
     },
-    { title: 'Dept. OTB', dataIndex: 'departmentOtbUnits', align: 'right', width: 110, render: (value: number | null) => value == null ? 'n/a' : formatInt(value) },
-    { title: 'Current Plan', width: 140, render: (_, row) => planStatusTag(row.currentSeason.status) },
-    { title: 'Next Season', width: 140, render: (_, row) => planStatusTag(row.nextSeason.status) },
-    { title: 'Future Season', width: 140, render: (_, row) => planStatusTag(row.followingSeason.status) },
+    {
+      title: 'Sales Projection',
+      width: 150,
+      render: (_, row) => {
+        const steps = row.currentSeason.steps ?? emptyWorkflowSteps(row.currentInventoryUnits, row.departmentOtbUnits)
+        const detail = steps.salesProjection.projectedUnits > 0
+          ? `${formatInt(steps.salesProjection.projectedUnits)} units`
+          : steps.salesProjection.updatedAt ? new Date(steps.salesProjection.updatedAt).toLocaleDateString() : 'Set projection'
+        return renderLandingStep(row, 'sales-projection', steps.salesProjection.status, detail)
+      },
+    },
+    {
+      title: 'Inventory Plan',
+      width: 150,
+      render: (_, row) => {
+        const steps = row.currentSeason.steps ?? emptyWorkflowSteps(row.currentInventoryUnits, row.departmentOtbUnits)
+        const otb = steps.inventoryPlan.departmentOtbUnits == null ? 'n/a OTB' : `${formatInt(steps.inventoryPlan.departmentOtbUnits)} OTB`
+        return renderLandingStep(row, 'on-hand-projection', steps.inventoryPlan.status, `${formatInt(steps.inventoryPlan.currentInventoryUnits)} on hand, ${otb}`)
+      },
+    },
+    {
+      title: 'Carryovers',
+      width: 135,
+      render: (_, row) => {
+        const steps = row.currentSeason.steps ?? emptyWorkflowSteps(row.currentInventoryUnits, row.departmentOtbUnits)
+        return renderLandingStep(row, 'carryovers', steps.carryovers.status, `${formatInt(steps.carryovers.boughtCount)} / ${formatInt(steps.carryovers.targetCount)} bought`)
+      },
+    },
+    {
+      title: 'Attribute Plan',
+      width: 150,
+      render: (_, row) => {
+        const steps = row.currentSeason.steps ?? emptyWorkflowSteps(row.currentInventoryUnits, row.departmentOtbUnits)
+        const detail = steps.attributePlan.status === 'alert'
+          ? `${formatInt(steps.attributePlan.alertCount)} alerts`
+          : `${formatInt(steps.attributePlan.plannedUnits)} planned`
+        return renderLandingStep(row, 'attribute-plan', steps.attributePlan.status, detail)
+      },
+    },
     {
       title: 'Updated',
       width: 120,
@@ -973,6 +1141,31 @@ export default function BuyerPurchasePlanningPage() {
     ]
   }
 
+  const attributeReconciliationColumns: ColumnsType<AttributeReconciliationRow> = [
+    { title: 'Value', dataIndex: 'valueLabel', width: 180 },
+    { title: 'Planned Units', dataIndex: 'plannedUnits', align: 'right', render: formatInt },
+    { title: 'Inventory Units', dataIndex: 'currentInventoryUnits', align: 'right', render: formatInt },
+    { title: 'Purchased Units', dataIndex: 'purchaseUnits', align: 'right', render: formatInt },
+    { title: 'Actual Units', dataIndex: 'actualUnits', align: 'right', render: formatInt },
+    { title: 'Planned Mix', dataIndex: 'plannedPct', align: 'right', render: formatPct },
+    { title: 'Actual Mix', dataIndex: 'actualPct', align: 'right', render: formatPct },
+    {
+      title: 'Variance',
+      align: 'right',
+      render: (_, row) => (
+        <Space direction="vertical" size={0} style={{ alignItems: 'flex-end' }}>
+          <Text type={row.status === 'alert' ? 'danger' : undefined}>{formatInt(row.varianceUnits)} units</Text>
+          <Text type="secondary">{formatPct(row.variancePct)}</Text>
+        </Space>
+      ),
+    },
+    {
+      title: 'Status',
+      width: 100,
+      render: (_, row) => stepStatusTag(row.status),
+    },
+  ]
+
   const carryoverColumns: ColumnsType<CarryoverLine> = [
     { title: 'Store', dataIndex: 'storeId', width: 80, render: (value: number | null) => value ?? 'Seed' },
     {
@@ -1126,12 +1319,16 @@ export default function BuyerPurchasePlanningPage() {
     clearLandingSelection()
   }
 
-  function openCard(card: BuyerCategoryCard) {
-    setDrawerCardId(card.id)
-    navigate(`/purchase-planning/buyer-checklist/workbooks/${encodeURIComponent(card.workbookId)}/cards/${encodeURIComponent(card.id)}`)
+  function reviewPath(workbookId: string, cardId: string, tab: ReviewTabKey = defaultReviewTab) {
+    return `/purchase-planning/buyer-checklist/workbooks/${encodeURIComponent(workbookId)}/cards/${encodeURIComponent(cardId)}?tab=${tab}`
   }
 
-  function startCategoryReview(row: BuyerChecklistCategoryRow) {
+  function openCard(card: BuyerCategoryCard, tab: ReviewTabKey = defaultReviewTab) {
+    setDrawerCardId(card.id)
+    navigate(reviewPath(card.workbookId, card.id, tab))
+  }
+
+  function startCategoryReview(row: BuyerChecklistCategoryRow, tab: ReviewTabKey = defaultReviewTab) {
     const seasonLabel = seasonOptions.find((option) => option.value === landingSeason)?.label ?? landingSeason
     const seedStoreId = stores[0]?.id
     const setupValues: BuyerWorkbookCreateRequest = {
@@ -1146,6 +1343,7 @@ export default function BuyerPurchasePlanningPage() {
     }
     setSelectedWorkbookId(null)
     setDrawerCardId(null)
+    setPendingReviewTab(tab)
     setCarryingCategoryNumber(row.categoryNumber)
     carryingForm.setFieldsValue({ categoryNumber: row.categoryNumber })
     if (seedStoreId) {
@@ -1180,14 +1378,22 @@ export default function BuyerPurchasePlanningPage() {
     })
   }
 
-  function continueCategory(row: BuyerChecklistCategoryRow) {
+  function continueCategory(row: BuyerChecklistCategoryRow, tab: ReviewTabKey = defaultReviewTab) {
     if (!row.currentSeason.workbookId || !row.currentSeason.cardId) {
-      startCategoryReview(row)
+      startCategoryReview(row, tab)
       return
     }
     setSelectedWorkbookId(row.currentSeason.workbookId)
     setDrawerCardId(row.currentSeason.cardId)
-    navigate(`/purchase-planning/buyer-checklist/workbooks/${encodeURIComponent(row.currentSeason.workbookId)}/cards/${encodeURIComponent(row.currentSeason.cardId)}`)
+    navigate(reviewPath(row.currentSeason.workbookId, row.currentSeason.cardId, tab))
+  }
+
+  function changeReviewTab(tab: string) {
+    const nextTab = normalizeReviewTab(tab)
+    setReviewTabKey(nextTab)
+    const nextParams = new URLSearchParams(searchParams)
+    nextParams.set('tab', nextTab)
+    setSearchParams(nextParams, { replace: true })
   }
 
   function saveEditingSizeCells() {
@@ -1592,43 +1798,75 @@ export default function BuyerPurchasePlanningPage() {
               </Space>
               <Button onClick={() => navigate('/purchase-planning/buyer-checklist')}>Back to Checklist</Button>
             </Space>
-            <Space wrap>
-              {statusTag(selectedCard.status)}
-              <Tag>Seed store {selectedCard.seedStoreId}</Tag>
-              <Tag>{formatInt(selectedTargetStoreIds.length)} target stores</Tag>
-              <Tag>Historical sample {formatInt(selectedCard.history.summary.sampleMonths)} months</Tag>
-            </Space>
+
+            <Row gutter={[8, 8]}>
+              <Col xs={24} md={6}>
+                <button type="button" onClick={() => changeReviewTab('sales-projection')} style={{ width: '100%', textAlign: 'left', border: '1px solid #f0f0f0', borderRadius: 8, background: '#fff', padding: 12, cursor: 'pointer' }}>
+                  <Space direction="vertical" size={2}>
+                    <Text strong>Sales Projection</Text>
+                    <Space size={4}>{stepStatusTag(selectedWorkflowSteps.salesProjection.status)}<Text type="secondary">{formatInt(selectedWorkflowSteps.salesProjection.projectedUnits)} units</Text></Space>
+                  </Space>
+                </button>
+              </Col>
+              <Col xs={24} md={6}>
+                <button type="button" onClick={() => changeReviewTab('on-hand-projection')} style={{ width: '100%', textAlign: 'left', border: '1px solid #f0f0f0', borderRadius: 8, background: '#fff', padding: 12, cursor: 'pointer' }}>
+                  <Space direction="vertical" size={2}>
+                    <Text strong>Inventory Plan</Text>
+                    <Space size={4}>{stepStatusTag(selectedWorkflowSteps.inventoryPlan.status)}<Text type="secondary">{selectedWorkflowSteps.inventoryPlan.hasProjectionPlan ? 'Projection linked' : 'No worksheet'}</Text></Space>
+                  </Space>
+                </button>
+              </Col>
+              <Col xs={24} md={6}>
+                <button type="button" onClick={() => changeReviewTab('carryovers')} style={{ width: '100%', textAlign: 'left', border: '1px solid #f0f0f0', borderRadius: 8, background: '#fff', padding: 12, cursor: 'pointer' }}>
+                  <Space direction="vertical" size={2}>
+                    <Text strong>Carryovers</Text>
+                    <Space size={4}>{stepStatusTag(selectedWorkflowSteps.carryovers.status)}<Text type="secondary">{formatInt(selectedWorkflowSteps.carryovers.boughtCount)} / {formatInt(selectedWorkflowSteps.carryovers.targetCount)} bought</Text></Space>
+                  </Space>
+                </button>
+              </Col>
+              <Col xs={24} md={6}>
+                <button type="button" onClick={() => changeReviewTab('attribute-plan')} style={{ width: '100%', textAlign: 'left', border: '1px solid #f0f0f0', borderRadius: 8, background: '#fff', padding: 12, cursor: 'pointer' }}>
+                  <Space direction="vertical" size={2}>
+                    <Text strong>Attribute Plan</Text>
+                    <Space size={4}>{stepStatusTag(selectedWorkflowSteps.attributePlan.status)}<Text type={selectedWorkflowSteps.attributePlan.status === 'alert' ? 'danger' : 'secondary'}>{selectedWorkflowSteps.attributePlan.status === 'alert' ? `${formatInt(selectedWorkflowSteps.attributePlan.alertCount)} alerts` : `${formatInt(selectedWorkflowSteps.attributePlan.plannedUnits)} planned`}</Text></Space>
+                  </Space>
+                </button>
+              </Col>
+            </Row>
 
             <Tabs
               key={selectedCard.id}
               activeKey={reviewTabKey}
-              onChange={setReviewTabKey}
+              onChange={changeReviewTab}
               items={[
-                {
-                  key: 'sales-projection',
-                  label: 'Sales Projection',
-                  children: (
-                    <SavedPurchasePlanWorkbook
-                      detail={salesProjectionWorkbook.data?.plan}
-                      loading={salesProjectionWorkbook.isLoading || salesProjectionWorkbook.isFetching}
-                      error={salesProjectionWorkbook.error}
-                      showArchive={false}
-                      saveLoading={updateProjectionRowsMutation.isPending}
-                      recalculateLoading={recalculateProjectionMutation.isPending}
-                      confirmLoading={confirmProjectionMutation.isPending}
-                      confirmLabel="Confirm sales projection"
-                      salesTrendSummary={salesProjectionWorkbook.data?.trendSummary}
-                      onSaveRows={(planId, payload) => updateProjectionRowsMutation.mutate({ planId, payload })}
-                      onRecalculate={(planId) => recalculateProjectionMutation.mutate(planId)}
-                      onConfirm={() => confirmProjectionMutation.mutate()}
-                    />
-                  ),
-                },
-                {
-                  key: 'carryover-review',
-                  label: 'Carryover Review',
-                  children: (
-                    <Space direction="vertical" size="large" style={{ width: '100%' }}>
+                { key: 'sales-projection', label: reviewTabLabels['sales-projection'] },
+                { key: 'on-hand-projection', label: reviewTabLabels['on-hand-projection'] },
+                { key: 'carryovers', label: reviewTabLabels.carryovers },
+                { key: 'attribute-plan', label: reviewTabLabels['attribute-plan'] },
+              ]}
+            />
+
+            {reviewTabKey === 'sales-projection' || reviewTabKey === 'on-hand-projection' ? (
+              <SavedPurchasePlanWorkbook
+                detail={salesProjectionWorkbook.data?.plan}
+                loading={salesProjectionWorkbook.isLoading || salesProjectionWorkbook.isFetching}
+                error={salesProjectionWorkbook.error}
+                showArchive={false}
+                showWorksheetTabs={false}
+                activeWorksheetTab={reviewTabKey === 'on-hand-projection' ? 'on-hand-projection' : 'sales-projection'}
+                saveLoading={updateProjectionRowsMutation.isPending}
+                recalculateLoading={recalculateProjectionMutation.isPending}
+                confirmLoading={confirmProjectionMutation.isPending}
+                confirmLabel="Confirm sales projection"
+                salesTrendSummary={salesProjectionWorkbook.data?.trendSummary}
+                onSaveRows={(planId, payload) => updateProjectionRowsMutation.mutate({ planId, payload })}
+                onRecalculate={(planId, payload) => recalculateProjectionMutation.mutate({ planId, payload })}
+                onConfirm={() => confirmProjectionMutation.mutate()}
+              />
+            ) : null}
+
+            {reviewTabKey === 'carryovers' ? (
+              <Space direction="vertical" size="large" style={{ width: '100%' }}>
             <div style={{ border: '1px solid #f0f0f0', borderRadius: 8, padding: 16 }}>
               <Title level={4} style={{ marginTop: 0 }}>Targets</Title>
               <Form form={targetForm} layout="vertical" onFinish={(values) => updateCardMutation.mutate({
@@ -1927,14 +2165,11 @@ export default function BuyerPurchasePlanningPage() {
                 Mark Category Complete
               </Button>
             </div>
-                    </Space>
-                  ),
-                },
-                {
-                  key: 'attribute-plan',
-                  label: 'Attribute Plan',
-                  children: (
-                    <Card size="small">
+              </Space>
+            ) : null}
+
+            {reviewTabKey === 'attribute-plan' ? (
+              <Card size="small">
                       <Row gutter={[12, 12]} align="middle" style={{ marginBottom: 12 }}>
                         <Col xs={24} md={18}>
                           <Title level={4} style={{ margin: 0 }}>Attribute Plan</Title>
@@ -1956,6 +2191,43 @@ export default function BuyerPurchasePlanningPage() {
                         </Col>
                       </Row>
                       <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+                        {(selectedCard.attributeReconciliation ?? []).length ? (
+                          <div style={{ border: '1px solid #f0f0f0', borderRadius: 8, padding: 16 }}>
+                            <Space wrap style={{ justifyContent: 'space-between', width: '100%', marginBottom: 12 }}>
+                              <Space direction="vertical" size={0}>
+                                <Text strong>Plan vs Inventory and Purchases</Text>
+                                <Text type="secondary">Actual mix combines current inventory and linked purchase quantities.</Text>
+                              </Space>
+                              <Space wrap>
+                                <Tag>{formatInt(selectedWorkflowSteps.attributePlan.plannedUnits)} planned</Tag>
+                                <Tag>{formatInt(selectedWorkflowSteps.attributePlan.currentInventoryUnits)} inventory</Tag>
+                                <Tag>{formatInt(selectedWorkflowSteps.attributePlan.purchaseUnits)} purchased</Tag>
+                                {selectedWorkflowSteps.attributePlan.alertCount > 0 ? <Tag color="red">{formatInt(selectedWorkflowSteps.attributePlan.alertCount)} alerts</Tag> : <Tag color="green">Matched</Tag>}
+                              </Space>
+                            </Space>
+                            <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+                              {(selectedCard.attributeReconciliation ?? []).map((dimension) => (
+                                <div key={dimension.dimensionCode}>
+                                  <Space wrap style={{ marginBottom: 8 }}>
+                                    <Text strong>{dimension.dimensionLabel}</Text>
+                                    <Tag>{formatInt(dimension.actualUnits)} actual units</Tag>
+                                    <Tag>{formatPct(dimension.maxVariancePct)} max mix variance</Tag>
+                                  </Space>
+                                  <Table<AttributeReconciliationRow>
+                                    size="small"
+                                    rowKey={(row) => `${dimension.dimensionCode}-${row.valueCode}`}
+                                    columns={attributeReconciliationColumns}
+                                    dataSource={dimension.values}
+                                    pagination={dimension.values.length > 8 ? { pageSize: 8 } : false}
+                                    scroll={{ x: 980 }}
+                                  />
+                                </div>
+                              ))}
+                            </Space>
+                          </div>
+                        ) : (
+                          <Alert type="info" message="Save an attribute plan to compare it against current inventory and linked purchases." />
+                        )}
                         {selectedAttributeMix.length ? selectedAttributeMix.map((dimension) => (
                           <div key={dimension.dimensionCode} style={{ borderTop: '1px solid #f0f0f0', paddingTop: 12 }}>
                             <Space wrap style={{ marginBottom: 8 }}>
@@ -1974,11 +2246,8 @@ export default function BuyerPurchasePlanningPage() {
                           </div>
                         )) : <Alert type="info" message="No relevant attribute mix is available for this category history." />}
                       </Space>
-                    </Card>
-                  ),
-                },
-              ]}
-            />
+              </Card>
+            ) : null}
           </Space>
         ) : !detail.isLoading && !detail.error ? (
           <Alert type="warning" message="Category review was not found." />

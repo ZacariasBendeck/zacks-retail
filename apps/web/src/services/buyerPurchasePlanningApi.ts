@@ -14,6 +14,39 @@ export type BuyerCategoryStatus =
 export type PlannedStyleStatus = 'PLANNED' | 'SELECTED' | 'LINKED' | 'CANCELLED'
 export type CarryoverDecision = 'UNREVIEWED' | 'WINNER' | 'MAYBE' | 'DROP'
 export type CarryoverAvailability = 'UNKNOWN' | 'AVAILABLE' | 'UNAVAILABLE'
+export type BuyerChecklistStepStatus = 'missing' | 'draft' | 'confirmed' | 'complete' | 'alert' | 'not_applicable'
+
+export interface BuyerChecklistWorkflowSteps {
+  salesProjection: {
+    status: BuyerChecklistStepStatus
+    projectedUnits: number
+    updatedAt: string | null
+    planId: string | null
+  }
+  inventoryPlan: {
+    status: BuyerChecklistStepStatus
+    hasProjectionPlan: boolean
+    currentInventoryUnits: number
+    departmentOtbUnits: number | null
+  }
+  carryovers: {
+    status: BuyerChecklistStepStatus
+    targetCount: number
+    plannedCount: number
+    boughtCount: number
+  }
+  attributePlan: {
+    status: BuyerChecklistStepStatus
+    plannedUnits: number
+    currentInventoryUnits: number
+    purchaseUnits: number
+    actualUnits: number
+    maxVariancePct: number
+    maxVarianceUnits: number
+    alertCount: number
+    updatedAt: string | null
+  }
+}
 
 export interface HistoricalMonthMetric {
   yearMonth: string
@@ -90,6 +123,36 @@ export interface AttributePlanRow {
   updatedAt: string
 }
 
+export interface AttributeReconciliationRow {
+  dimensionCode: string
+  dimensionLabel: string
+  valueCode: string
+  valueLabel: string
+  plannedStyleCount: number
+  plannedUnits: number
+  currentInventoryUnits: number
+  purchaseUnits: number
+  actualUnits: number
+  plannedPct: number
+  actualPct: number
+  varianceUnits: number
+  variancePct: number
+  status: BuyerChecklistStepStatus
+}
+
+export interface AttributeReconciliationDimension {
+  dimensionCode: string
+  dimensionLabel: string
+  plannedUnits: number
+  currentInventoryUnits: number
+  purchaseUnits: number
+  actualUnits: number
+  maxVariancePct: number
+  maxVarianceUnits: number
+  alertCount: number
+  values: AttributeReconciliationRow[]
+}
+
 export interface CarryoverCandidateMetrics {
   unitsSold: number
   netSales: number
@@ -137,6 +200,7 @@ export interface BuyerChecklistSeasonPlan {
   noBudgetNote: string | null
   noBudgetMarkedBy: string | null
   noBudgetMarkedAt: string | null
+  steps?: BuyerChecklistWorkflowSteps | null
 }
 
 export interface BuyerChecklistCategoryRow {
@@ -199,6 +263,7 @@ export interface BuyerCategoryCard {
   salesProjection: SalesProjectionPlan
   salesProjectionPlanId: string | null
   attributeMix: AttributeMixDimension[]
+  attributeReconciliation?: AttributeReconciliationDimension[]
   notes: string | null
   createdAt: string
   updatedAt: string

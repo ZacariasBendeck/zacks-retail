@@ -1,5 +1,5 @@
 import { prisma } from '../../db/prisma';
-import { forecast, shiftYearMonth } from './forecast';
+import { fillConstrainedDemandHistory, forecast, shiftYearMonth } from './forecast';
 import { computePlanWithInventoryPosition } from './compute';
 import {
   normalizeDiscountDistortedHistory,
@@ -163,6 +163,7 @@ interface MonthlyFactRow {
   qty: unknown;
   netSales: unknown;
   referenceRetail: unknown;
+  beginningOnHand: unknown;
 }
 
 interface PositionRow {
@@ -420,7 +421,8 @@ async function loadMonthlyFacts(input: {
           m.year_month,
           COALESCE(m.qty_sales, 0)::float8 AS qty_sales,
           COALESCE(m.net_sales, 0)::float8 AS net_sales,
-          COALESCE(m.qty_sales, 0)::float8 * COALESCE(k.retail_price, k.list_price, 0)::float8 AS reference_retail
+          COALESCE(m.qty_sales, 0)::float8 * COALESCE(k.retail_price, k.list_price, 0)::float8 AS reference_retail,
+          COALESCE(m.qty_on_hand, 0)::float8 AS beginning_on_hand
         FROM app.inventory_history_snapshot s
         INNER JOIN app.inventory_history_month m ON m.snapshot_id = s.id
         LEFT JOIN app.sku k ON k.id = s.sku_id
@@ -436,7 +438,8 @@ async function loadMonthlyFacts(input: {
           to_char(s.snapshot_as_of, 'YYYY-MM') AS year_month,
           COALESCE(s.month_qty_sales, 0)::float8 AS qty_sales,
           COALESCE(s.month_dol_sales, 0)::float8 AS net_sales,
-          COALESCE(s.month_qty_sales, 0)::float8 * COALESCE(k.retail_price, k.list_price, 0)::float8 AS reference_retail
+          COALESCE(s.month_qty_sales, 0)::float8 * COALESCE(k.retail_price, k.list_price, 0)::float8 AS reference_retail,
+          COALESCE(s.on_hand, 0)::float8 AS beginning_on_hand
         FROM app.inventory_history_snapshot s
         LEFT JOIN app.sku k ON k.id = s.sku_id
         JOIN app.taxonomy_department d ON k.category_number BETWEEN d.beg_categ AND d.end_categ
@@ -449,9 +452,10 @@ async function loadMonthlyFacts(input: {
         year_month AS "yearMonth",
         SUM(qty_sales)::float8 AS "qty",
         SUM(net_sales)::float8 AS "netSales",
-        SUM(reference_retail)::float8 AS "referenceRetail"
+        SUM(reference_retail)::float8 AS "referenceRetail",
+        SUM(beginning_on_hand)::float8 AS "beginningOnHand"
       FROM src
-      WHERE qty_sales <> 0 OR net_sales <> 0
+      WHERE qty_sales <> 0 OR net_sales <> 0 OR beginning_on_hand <> 0
       GROUP BY year_month
       ORDER BY year_month
     `,
@@ -466,6 +470,7 @@ async function loadMonthlyFacts(input: {
     qty: toNumber(row.qty),
     netSales: toNumber(row.netSales),
     referenceRetail: toNumber(row.referenceRetail),
+    beginningOnHand: toNumber(row.beginningOnHand),
   }));
 }
 
@@ -678,6 +683,16 @@ function buildProjectionMonths(year: number): string[] {
   return PURCHASE_PLAN_SEASONS.flatMap((season) => buildSeasonMonths(season, year));
 }
 
+function monthsBetweenInclusive(fromYearMonth: string, toYearMonth: string): string[] {
+  const months: string[] = [];
+  let cursor = fromYearMonth;
+  while (cursor <= toYearMonth) {
+    months.push(cursor);
+    cursor = shiftYearMonth(cursor, 1);
+  }
+  return months;
+}
+
 function sumRows(rows: Array<{ projSales: number; eohTarget: number; buy: number; eohActual: number }>, field: 'projSales' | 'eohTarget' | 'buy'): number {
   return rows.reduce((sum, row) => sum + Math.max(0, Math.round(row[field])), 0);
 }
@@ -725,7 +740,10 @@ async function buildV3Report(input: PurchasePlanV3Request): Promise<PurchasePlan
       }),
       loadInventoryPosition({ storeNumbers, departmentNumber }),
     ]);
-    const normalized = normalizeDiscountDistortedHistory(history, discountNormalization);
+    const historyForForecast = forecastMethod === 'constrainedDemand'
+      ? fillConstrainedDemandHistory(history, ['demand'], monthsBetweenInclusive(historyFromYearMonth, historyToYearMonth))
+      : history;
+    const normalized = normalizeDiscountDistortedHistory(historyForForecast, discountNormalization);
     const projected = forecast(normalized, forecastMethod, input.forecast ?? {}, forecastMonths);
     const rows = computePlanWithInventoryPosition(
       projected.length ? projected : forecast([{ dimKey: 'demand', yearMonth: historyToYearMonth, qty: 0 }], forecastMethod, input.forecast ?? {}, forecastMonths),

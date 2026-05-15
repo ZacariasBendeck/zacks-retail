@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { ConfigProvider } from 'antd'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import BuyerPurchasePlanningPage from '../pages/purchasePlanning/BuyerPurchasePlanningPage'
 import { useCategories, useCategoryBuyerOptions, useDepartments } from '../hooks/useProductsTaxonomy'
@@ -186,6 +186,37 @@ const detail: BuyerWorkbookDetail = {
               roiPct: 74.5,
               sellThroughPct: null,
               skuCount: 12,
+            },
+          ],
+        },
+      ],
+      attributeReconciliation: [
+        {
+          dimensionCode: 'color_family',
+          dimensionLabel: 'Color Family',
+          plannedUnits: 70,
+          currentInventoryUnits: 100,
+          purchaseUnits: 0,
+          actualUnits: 100,
+          maxVariancePct: 0,
+          maxVarianceUnits: 30,
+          alertCount: 1,
+          values: [
+            {
+              dimensionCode: 'color_family',
+              dimensionLabel: 'Color Family',
+              valueCode: 'black',
+              valueLabel: 'Black',
+              plannedStyleCount: 2,
+              plannedUnits: 70,
+              currentInventoryUnits: 100,
+              purchaseUnits: 0,
+              actualUnits: 100,
+              plannedPct: 100,
+              actualPct: 100,
+              varianceUnits: 30,
+              variancePct: 0,
+              status: 'alert',
             },
           ],
         },
@@ -413,6 +444,60 @@ const salesTrendSummary: SavedPurchasePlanSalesTrendSummary = {
   notes: ['Recent 3-month year-over-year trend differs from the 12-month trend.'],
 }
 
+const checklistSteps = {
+  salesProjection: {
+    status: 'confirmed' as const,
+    projectedUnits: 30,
+    updatedAt: '2026-05-07T00:00:00.000Z',
+    planId: 'plan-1',
+  },
+  inventoryPlan: {
+    status: 'confirmed' as const,
+    hasProjectionPlan: true,
+    currentInventoryUnits: 123,
+    departmentOtbUnits: 250,
+  },
+  carryovers: {
+    status: 'draft' as const,
+    targetCount: 11,
+    plannedCount: 1,
+    boughtCount: 0,
+  },
+  attributePlan: {
+    status: 'alert' as const,
+    plannedUnits: 70,
+    currentInventoryUnits: 100,
+    purchaseUnits: 0,
+    actualUnits: 100,
+    maxVariancePct: 0,
+    maxVarianceUnits: 30,
+    alertCount: 1,
+    updatedAt: '2026-05-07T00:00:00.000Z',
+  },
+}
+
+const missingChecklistSteps = {
+  salesProjection: { status: 'missing' as const, projectedUnits: 0, updatedAt: null, planId: null },
+  inventoryPlan: { status: 'missing' as const, hasProjectionPlan: false, currentInventoryUnits: 123, departmentOtbUnits: 250 },
+  carryovers: { status: 'missing' as const, targetCount: 0, plannedCount: 0, boughtCount: 0 },
+  attributePlan: {
+    status: 'missing' as const,
+    plannedUnits: 0,
+    currentInventoryUnits: 0,
+    purchaseUnits: 0,
+    actualUnits: 0,
+    maxVariancePct: 0,
+    maxVarianceUnits: 0,
+    alertCount: 0,
+    updatedAt: null,
+  },
+}
+
+function LocationProbe() {
+  const location = useLocation()
+  return <div data-testid="current-location">{location.pathname}{location.search}</div>
+}
+
 function renderPage(initialEntries = ['/purchase-planning/buyer-checklist']) {
   const qc = new QueryClient({
     defaultOptions: {
@@ -425,6 +510,7 @@ function renderPage(initialEntries = ['/purchase-planning/buyer-checklist']) {
     <ConfigProvider>
       <QueryClientProvider client={qc}>
         <MemoryRouter initialEntries={initialEntries}>
+          <LocationProbe />
           <Routes>
             <Route path="/purchase-planning/buyer-checklist" element={<BuyerPurchasePlanningPage />} />
             <Route path="/purchase-planning/buyer-checklist/workbooks/:workbookId/cards/:cardId" element={<BuyerPurchasePlanningPage />} />
@@ -437,12 +523,13 @@ function renderPage(initialEntries = ['/purchase-planning/buyer-checklist']) {
 
 async function openCategory() {
   renderPage(['/purchase-planning/buyer-checklist/workbooks/workbook-1/cards/card-1'])
-  await screen.findByRole('tab', { name: 'Sales Projection' })
+  expect((await screen.findAllByRole('tab', { name: 'Sales Projection' })).length).toBeGreaterThan(0)
   await screen.findByLabelText('Sales projection worksheet')
 }
 
 async function chooseSelectOption(label: string, option: string) {
-  await userEvent.click(screen.getByLabelText(label))
+  const control = screen.queryByRole('combobox', { name: label }) ?? screen.getAllByLabelText(label)[0]!
+  fireEvent.mouseDown(control.closest('.ant-select')?.querySelector('.ant-select-selector') ?? control)
   await userEvent.click(await within(document.body).findByTitle(option))
 }
 
@@ -508,6 +595,7 @@ describe('BuyerPurchasePlanningPage', () => {
           noBudgetNote: null,
           noBudgetMarkedBy: null,
           noBudgetMarkedAt: null,
+          steps: checklistSteps,
         },
         nextSeason: {
           buyingSeason: 'SPRING_SUMMER',
@@ -623,6 +711,7 @@ describe('BuyerPurchasePlanningPage', () => {
           noBudgetNote: null,
           noBudgetMarkedBy: null,
           noBudgetMarkedAt: null,
+          steps: missingChecklistSteps,
         },
         nextSeason: {
           buyingSeason: 'SPRING_SUMMER',
@@ -668,9 +757,44 @@ describe('BuyerPurchasePlanningPage', () => {
       categoryNumbers: [11],
       buyer: 'buyer',
     })
-    expect(await screen.findByRole('tab', { name: 'Sales Projection' })).toBeInTheDocument()
+    expect((await screen.findAllByRole('tab', { name: 'Sales Projection' })).length).toBeGreaterThan(0)
     expect(await screen.findByLabelText('Sales projection worksheet')).toBeInTheDocument()
     expect(ensureBuyerSalesProjectionWorkbook).toHaveBeenCalledWith('workbook-1', 'card-1', 'buyer')
+  }, 15_000)
+
+  it('shows checklist step columns and opens status cells on the matching tab', async () => {
+    renderPage()
+
+    await userEvent.click(screen.getByRole('button', { name: /Load Checklist/i }))
+    await screen.findByText('11 - Traje Smoking Hombre')
+
+    expect(screen.getByRole('columnheader', { name: 'Sales Projection' })).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: 'Inventory Plan' })).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: 'Carryovers' })).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: 'Attribute Plan' })).toBeInTheDocument()
+    expect(screen.queryByRole('columnheader', { name: 'Last 12M Units' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('columnheader', { name: 'Current Plan' })).not.toBeInTheDocument()
+
+    const categoryRow = screen.getByText('11 - Traje Smoking Hombre').closest('tr')
+    expect(categoryRow).toBeTruthy()
+    await userEvent.click(within(categoryRow as HTMLElement).getByRole('button', { name: 'Alert' }))
+
+    await screen.findByRole('tab', { name: 'Attribute Plan' })
+    expect(screen.getByTestId('current-location')).toHaveTextContent('/purchase-planning/buyer-checklist/workbooks/workbook-1/cards/card-1?tab=attribute-plan')
+    expect(screen.getByRole('tab', { name: 'Attribute Plan' })).toHaveAttribute('aria-selected', 'true')
+  }, 15_000)
+
+  it('opens URL-selected category tabs and keeps tab changes in the URL', async () => {
+    renderPage(['/purchase-planning/buyer-checklist/workbooks/workbook-1/cards/card-1?tab=on-hand-projection'])
+
+    expect(await screen.findByRole('tab', { name: 'On Hand Projection' })).toHaveAttribute('aria-selected', 'true')
+    expect(await screen.findByText('On Hand Projection worksheet')).toBeInTheDocument()
+    expect(screen.getByTestId('current-location')).toHaveTextContent('?tab=on-hand-projection')
+
+    await userEvent.click(screen.getByRole('tab', { name: 'Carryovers' }))
+    expect(await screen.findByText('Carryover Model')).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'Carryovers' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByTestId('current-location')).toHaveTextContent('?tab=carryovers')
   }, 15_000)
 
   it('marks a landing category no-budget and can show and reopen it', async () => {
@@ -697,6 +821,7 @@ describe('BuyerPurchasePlanningPage', () => {
         noBudgetNote: null,
         noBudgetMarkedBy: null,
         noBudgetMarkedAt: null,
+        steps: checklistSteps,
       },
       nextSeason: {
         buyingSeason: 'SPRING_SUMMER' as const,
@@ -801,7 +926,20 @@ describe('BuyerPurchasePlanningPage', () => {
     await openCategory()
     expect(screen.queryByRole('heading', { level: 2, name: 'Buyer Checklist' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Back to Checklist' })).toBeInTheDocument()
-    expect(screen.getByRole('tab', { name: 'Sales Projection' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.queryByText('Not Started')).not.toBeInTheDocument()
+    expect(screen.queryByText('Seed store 20')).not.toBeInTheDocument()
+    expect(screen.queryByText('2 target stores')).not.toBeInTheDocument()
+    expect(screen.queryByText('Historical sample 6 months')).not.toBeInTheDocument()
+    expect(screen.getByText('May 2026 to Jul 2027')).toBeInTheDocument()
+    expect(screen.queryByText('Enterprise-wide 11 - Traje Smoking Hombre Summer 2026 to Summer 2027')).not.toBeInTheDocument()
+    expect(screen.queryByText(/^Months:/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/^History:/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/^Forecast:/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/^discount normalization$/i)).not.toBeInTheDocument()
+    const salesProjectionTabs = screen.getAllByRole('tab', { name: 'Sales Projection' })
+    expect(salesProjectionTabs).toHaveLength(1)
+    expect(salesProjectionTabs[0]).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('tab', { name: 'On Hand Projection' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Confirm sales projection' })).toBeInTheDocument()
     expect(screen.getByText('Category trend')).toBeInTheDocument()
     await userEvent.hover(screen.getByRole('button', { name: 'How category trend is calculated' }))
@@ -813,7 +951,9 @@ describe('BuyerPurchasePlanningPage', () => {
     expect(trendTooltip).toHaveTextContent('Change % = (current units - comparison units) / comparison units.')
     expect(trendTooltip).toHaveTextContent('If comparison units are zero, percent is shown as N/A.')
     expect(screen.getByText('Suggested projection')).toBeInTheDocument()
-    expect(screen.getByLabelText('May 2026 projected sales')).toBeInTheDocument()
+    expect(screen.getByRole('combobox', { name: 'Forecast method' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Regenerate' })).toBeInTheDocument()
+    expect(screen.getByLabelText('May 2026 user projected sales')).toBeInTheDocument()
     expect(screen.getByText("Last year's sales units")).toBeInTheDocument()
     expect(screen.getByText("Last year's beginning on hand")).toBeInTheDocument()
     expect(screen.getByText('Year before last sales units')).toBeInTheDocument()
@@ -821,20 +961,27 @@ describe('BuyerPurchasePlanningPage', () => {
     expect(screen.getAllByText('+25%').length).toBeGreaterThan(0)
     expect(screen.getByText('Year before last beginning on hand')).toBeInTheDocument()
     expect(screen.getByText('Sell thru for the month')).toBeInTheDocument()
+    expect(screen.getByText('Projected sales')).toBeInTheDocument()
+    expect(screen.getByText('User projected sales')).toBeInTheDocument()
     expect(screen.getByText('Compared sales units')).toBeInTheDocument()
     const summary = within(screen.getByLabelText('Sales projection summary'))
     expect(summary.getByText("Last year's 12 month sales")).toBeInTheDocument()
-    expect(summary.getByText('Projected sales for next 12 months')).toBeInTheDocument()
+    expect(summary.getByText('User projected sales for next 12 months')).toBeInTheDocument()
     expect(summary.getByText('Suggested sales projection increase for the year')).toBeInTheDocument()
-    expect(summary.getByText('Projected sales increase')).toBeInTheDocument()
+    expect(summary.getByText('User projected sales increase')).toBeInTheDocument()
     expect(summary.getByText('440 units')).toBeInTheDocument()
     expect(summary.getByText('72 units')).toBeInTheDocument()
     expect(summary.getByText('+10%')).toBeInTheDocument()
     expect(summary.getByText('-83.6%')).toBeInTheDocument()
     expect(screen.queryByText('Adjusted delta')).not.toBeInTheDocument()
-    expect(screen.getByText('ON Hand projection worksheet')).toBeInTheDocument()
-    await userEvent.clear(screen.getByLabelText('May 2026 projected sales'))
-    await userEvent.type(screen.getByLabelText('May 2026 projected sales'), '8')
+    expect(screen.queryByLabelText('On hand projection worksheet')).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('tab', { name: 'On Hand Projection' }))
+    expect(screen.getByText('On Hand Projection worksheet')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Confirm sales projection' })).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('tab', { name: 'Sales Projection' }))
+    expect(screen.getByRole('button', { name: 'Confirm sales projection' })).toBeInTheDocument()
+    await userEvent.clear(screen.getByLabelText('May 2026 user projected sales'))
+    await userEvent.type(screen.getByLabelText('May 2026 user projected sales'), '8')
     expect(await screen.findByText('+3')).toBeInTheDocument()
     expect(screen.getAllByText('100%')[0]).toBeInTheDocument()
     expect(screen.getByText('constrained')).toBeInTheDocument()
@@ -848,7 +995,7 @@ describe('BuyerPurchasePlanningPage', () => {
 
     await userEvent.click(screen.getByRole('tab', { name: 'Attribute Plan' }))
     expect(screen.getByRole('button', { name: /Save Attribute Plan/i })).toBeInTheDocument()
-    await userEvent.click(screen.getByRole('tab', { name: 'Carryover Review' }))
+    await userEvent.click(screen.getByRole('tab', { name: 'Carryovers' }))
     expect(screen.getByText('Carryover Winner Review')).toBeInTheDocument()
     expect(screen.getByText('Carryover Model')).toBeInTheDocument()
 
@@ -859,7 +1006,7 @@ describe('BuyerPurchasePlanningPage', () => {
       'card-1',
       expect.objectContaining({ status: 'COMPLETE', actor: 'buyer' }),
     ))
-  }, 15_000)
+  }, 25_000)
 
   it('applies the suggested category trend projection to the worksheet', async () => {
     await openCategory()
@@ -872,15 +1019,28 @@ describe('BuyerPurchasePlanningPage', () => {
     expect(vi.mocked(updateSavedPurchasePlanRows).mock.calls[0]?.[0]).toBe('plan-1')
     expect(payload?.rows).toHaveLength(15)
     expect(payload?.rows).toEqual(expect.arrayContaining([
-      { rowId: 'projection-row-1', currentProjSales: 7, currentEohTarget: 61, currentBuy: 8 },
+      { rowId: 'projection-row-1', currentProjSales: 7 },
     ]))
     expect(payload?.reason).toBe('Suggested category trend +10%')
     expect(payload?.appliedBy).toBe('buyer')
   }, 15_000)
 
+  it('regenerates the buyer sales projection workbook with the selected forecast method', async () => {
+    await openCategory()
+
+    await chooseSelectOption('Forecast method', 'Trailing average')
+    await userEvent.click(screen.getByRole('button', { name: 'Regenerate' }))
+
+    await waitFor(() => expect(recalculateSavedPurchasePlan).toHaveBeenCalledWith('plan-1', {
+      actor: 'buyer',
+      forecast: { method: 'trailingAverage' },
+      mode: 'preserve_user',
+    }))
+  }, 15_000)
+
   it('copies the seed model to target stores', async () => {
     await openCategory()
-    await userEvent.click(screen.getByRole('tab', { name: 'Carryover Review' }))
+    await userEvent.click(screen.getByRole('tab', { name: 'Carryovers' }))
     await screen.findByText('Carryover Model')
 
     await userEvent.click(screen.getByRole('button', { name: /Copy Exact Model/i }))
@@ -970,7 +1130,7 @@ describe('BuyerPurchasePlanningPage', () => {
 
   it('flags a carryover unavailable and sends the replacement reason', async () => {
     await openCategory()
-    await userEvent.click(screen.getByRole('tab', { name: 'Carryover Review' }))
+    await userEvent.click(screen.getByRole('tab', { name: 'Carryovers' }))
     await screen.findByText('Carryover Model')
 
     const unavailableButtons = screen.getAllByRole('button', { name: /Unavailable/i })

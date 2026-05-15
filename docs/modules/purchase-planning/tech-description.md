@@ -56,6 +56,7 @@ Available methods:
 | `trailingAverage` | Average over `trailingMonths`. |
 | `yoyGrowth` | Same month last year multiplied by `1 + growthPct / 100`. |
 | `blendedMultiYear` | Average same month over 2 or 3 years when available. |
+| `constrainedDemand` | Average adjusted same-month demand after lifting months where beginning on-hand was zero or sell-through was at least 30%. |
 
 Before forecasting, optional discount normalization down-weights history months whose realized net sales are materially below reference retail value. The saved rows keep `normalizationFactor` and `rawProjSales` so the UI can show where normalization affected demand.
 

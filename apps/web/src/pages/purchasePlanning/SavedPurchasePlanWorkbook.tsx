@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { QuestionCircleOutlined } from '@ant-design/icons'
-import { Alert, Button, Card, Col, Empty, Input, InputNumber, Row, Segmented, Space, Table, Tabs, Tag, Tooltip, Typography } from 'antd'
+import { Alert, Button, Card, Col, Empty, Input, InputNumber, Row, Segmented, Select, Space, Table, Tabs, Tag, Tooltip, Typography } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import dayjs from 'dayjs'
 import {
+  type PurchasePlanForecastMethod,
   type SavedPurchasePlanDetail,
+  type SavedPurchasePlanRecalculateRequest,
   type SavedPurchasePlanRow,
   type SavedPurchasePlanRowsUpdateRequest,
   type SavedPurchasePlanSalesTrendDirection,
@@ -17,7 +19,8 @@ const { Title, Text } = Typography
 const integerFmt = new Intl.NumberFormat('en-US')
 
 type WorksheetColumnMode = 'months' | 'seasons'
-type WorksheetTabKey = 'sales-projection' | 'on-hand-projection'
+export type SavedPurchasePlanWorksheetTabKey = 'sales-projection' | 'on-hand-projection'
+type SavedForecastMethod = PurchasePlanForecastMethod
 
 type WorksheetMetricKey =
   | 'currentBoh'
@@ -27,6 +30,7 @@ type WorksheetMetricKey =
   | 'lastYearVsPriorChangePct'
   | 'yearBeforeLastBeginningOnHand'
   | 'lastYearSellThroughPct'
+  | 'baselineProjSales'
   | 'currentProjSales'
   | 'salesUnitDelta'
   | 'salesUnitChangePct'
@@ -77,12 +81,13 @@ const SALES_PROJECTION_METRICS: WorksheetMetric[] = [
   { key: 'lastYearVsPriorChangePct', label: 'Increase last year vs prior', aggregate: 'average', format: 'percent', signed: true },
   { key: 'yearBeforeLastBeginningOnHand', label: 'Year before last beginning on hand', aggregate: 'sum', format: 'integer' },
   { key: 'lastYearSellThroughPct', label: 'Sell thru for the month', aggregate: 'average', format: 'percent' },
-  { key: 'currentProjSales', label: 'Projected sales', aggregate: 'sum', editableKey: 'currentProjSales', inputLabel: 'projected sales', format: 'integer' },
+  { key: 'baselineProjSales', label: 'Projected sales', aggregate: 'sum', format: 'integer' },
+  { key: 'currentProjSales', label: 'User projected sales', aggregate: 'sum', editableKey: 'currentProjSales', inputLabel: 'user projected sales', format: 'integer' },
   { key: 'salesUnitDelta', label: 'Compared sales units', aggregate: 'sum', format: 'integer', signed: true },
 ]
 
 const ON_HAND_PROJECTION_METRICS: WorksheetMetric[] = [
-  { key: 'currentProjSales', label: 'Projected sales', aggregate: 'sum', format: 'integer' },
+  { key: 'currentProjSales', label: 'User projected sales', aggregate: 'sum', format: 'integer' },
   { key: 'currentBoh', label: 'Projected BOH', aggregate: 'first', format: 'integer' },
   { key: 'currentEohTarget', label: 'EOH target', aggregate: 'last', editableKey: 'currentEohTarget', inputLabel: 'EOH target', format: 'integer' },
   { key: 'baselineBuy', label: 'Baseline buy', aggregate: 'sum', format: 'integer' },
@@ -91,6 +96,20 @@ const ON_HAND_PROJECTION_METRICS: WorksheetMetric[] = [
   { key: 'stockPosition', label: 'Stock position', aggregate: 'last', format: 'integer' },
   { key: 'normalizationFactor', label: 'Norm', aggregate: 'average', format: 'percent' },
 ]
+
+const FORECAST_OPTIONS: Array<{ value: SavedForecastMethod; label: string }> = [
+  { value: 'holtWinters', label: 'Holt-Winters' },
+  { value: 'sameMonthLastYear', label: 'Same month last year' },
+  { value: 'trailingAverage', label: 'Trailing average' },
+  { value: 'yoyGrowth', label: 'YoY growth %' },
+  { value: 'blendedMultiYear', label: 'Blended multi-year' },
+  { value: 'constrainedDemand', label: 'Constrained demand' },
+]
+const SAVED_FORECAST_METHODS = new Set<PurchasePlanForecastMethod>(FORECAST_OPTIONS.map((option) => option.value))
+
+function savedForecastMethod(method: PurchasePlanForecastMethod | undefined): SavedForecastMethod {
+  return method && SAVED_FORECAST_METHODS.has(method) ? method as SavedForecastMethod : 'holtWinters'
+}
 
 export interface SavedPurchasePlanWorkbookProps {
   detail: SavedPurchasePlanDetail | null | undefined
@@ -102,17 +121,28 @@ export interface SavedPurchasePlanWorkbookProps {
   archiveLoading?: boolean
   confirmLoading?: boolean
   showArchive?: boolean
+  showWorksheetTabs?: boolean
+  activeWorksheetTab?: SavedPurchasePlanWorksheetTabKey
   confirmLabel?: string
   extraControls?: ReactNode
   salesTrendSummary?: SavedPurchasePlanSalesTrendSummary | null
   onSaveRows: (planId: string, payload: SavedPurchasePlanRowsUpdateRequest) => void
-  onRecalculate?: (planId: string) => void
+  onRecalculate?: (planId: string, request: SavedPurchasePlanRecalculateRequest) => void
   onArchive?: (planId: string) => void
   onConfirm?: (planId: string) => void
 }
 
 export function formatPurchasePlanMonth(yearMonth: string): string {
   return dayjs(`${yearMonth}-01`).format('MMM YYYY')
+}
+
+function formatPurchasePlanMonthRange(months: string[]): string {
+  const sortedMonths = [...new Set(months)].sort()
+  if (sortedMonths.length === 0) return 'Projection months'
+  const firstMonth = sortedMonths[0]!
+  const lastMonth = sortedMonths[sortedMonths.length - 1]!
+  if (firstMonth === lastMonth) return formatPurchasePlanMonth(firstMonth)
+  return `${formatPurchasePlanMonth(firstMonth)} to ${formatPurchasePlanMonth(lastMonth)}`
 }
 
 function seasonForYearMonth(yearMonth: string): { key: string; label: string } {
@@ -348,6 +378,8 @@ export function SavedPurchasePlanWorkbook({
   archiveLoading,
   confirmLoading,
   showArchive = true,
+  showWorksheetTabs = true,
+  activeWorksheetTab,
   confirmLabel = 'Confirm sales projection',
   extraControls,
   salesTrendSummary,
@@ -357,12 +389,13 @@ export function SavedPurchasePlanWorkbook({
   onConfirm,
 }: SavedPurchasePlanWorkbookProps) {
   const [worksheetRows, setWorksheetRows] = useState<SavedPurchasePlanRow[]>([])
-  const [activeWorksheetTab, setActiveWorksheetTab] = useState<WorksheetTabKey>('sales-projection')
+  const [internalWorksheetTab, setInternalWorksheetTab] = useState<SavedPurchasePlanWorksheetTabKey>('sales-projection')
   const [autoBuyRowIds, setAutoBuyRowIds] = useState<Set<string>>(new Set())
   const [projectionPct, setProjectionPct] = useState<number>(0)
   const [salesWorksheetReason, setSalesWorksheetReason] = useState('Worksheet edit')
   const [onHandWorksheetReason, setOnHandWorksheetReason] = useState('On hand projection edit')
   const [worksheetColumnMode, setWorksheetColumnMode] = useState<WorksheetColumnMode>('months')
+  const [selectedForecastMethod, setSelectedForecastMethod] = useState<SavedForecastMethod>('holtWinters')
 
   const sourceWorksheetRows = useMemo<SavedPurchasePlanRow[]>(() => (
     detail?.departments.flatMap((department) => department.months) ?? []
@@ -371,10 +404,15 @@ export function SavedPurchasePlanWorkbook({
     new Map(sourceWorksheetRows.map((row) => [row.id, row]))
   ), [sourceWorksheetRows])
   const suggestedProjectionPct = salesTrendSummary?.suggestedProjectionPct ?? 0
+  const selectedWorksheetTab = activeWorksheetTab ?? internalWorksheetTab
 
   useEffect(() => {
-    setActiveWorksheetTab('sales-projection')
+    setInternalWorksheetTab('sales-projection')
   }, [detail?.plan.id])
+
+  useEffect(() => {
+    setSelectedForecastMethod(savedForecastMethod(detail?.plan.forecastMethod))
+  }, [detail?.plan.forecastMethod])
 
   useEffect(() => {
     setWorksheetRows(sourceWorksheetRows.map((row) => ({ ...row })))
@@ -455,6 +493,12 @@ export function SavedPurchasePlanWorkbook({
       userProjectedIncreasePct,
     }
   }, [detail, salesTrendSummary, worksheetRows])
+  const workbookTitle = useMemo(() => {
+    const months = detail?.plan.seasonMonths.length
+      ? detail.plan.seasonMonths
+      : worksheetRows.map((row) => row.yearMonth)
+    return formatPurchasePlanMonthRange(months)
+  }, [detail, worksheetRows])
 
   function recalculateWorksheetRows(rows: SavedPurchasePlanRow[], autoBuyIds: Set<string>): SavedPurchasePlanRow[] {
     const byDepartment = new Map<string, SavedPurchasePlanRow[]>()
@@ -654,17 +698,32 @@ export function SavedPurchasePlanWorkbook({
   return (
     <Card
       size="small"
-      title={detail.plan.label}
+      title={workbookTitle}
       extra={(
         <Space>
-          <Tag>{detail.plan.planningScopeLabel ?? detail.plan.storeGroupLabel ?? detail.plan.storeGroupCode}</Tag>
-          <Tag>{detail.plan.seasonMonths.length > 3 ? '15-month workbook' : `${detail.plan.season} ${detail.plan.seasonYear}`}</Tag>
           {onRecalculate ? (
-            <Button htmlType="button" onClick={() => onRecalculate(detail.plan.id)} loading={recalculateLoading}>
-              Recalculate
-            </Button>
+            <>
+              <Select<SavedForecastMethod>
+                aria-label="Forecast method"
+                value={selectedForecastMethod}
+                options={FORECAST_OPTIONS}
+                onChange={setSelectedForecastMethod}
+                style={{ width: 190 }}
+              />
+              <Button
+                htmlType="button"
+                onClick={() => onRecalculate(detail.plan.id, {
+                  actor: 'buyer',
+                  forecast: { method: selectedForecastMethod },
+                  mode: 'preserve_user',
+                })}
+                loading={recalculateLoading}
+              >
+                Regenerate
+              </Button>
+            </>
           ) : null}
-          {onConfirm && activeWorksheetTab === 'sales-projection' ? (
+          {onConfirm && selectedWorksheetTab === 'sales-projection' ? (
             <Button type="primary" htmlType="button" onClick={() => onConfirm(detail.plan.id)} loading={confirmLoading}>
               {confirmLabel}
             </Button>
@@ -677,16 +736,13 @@ export function SavedPurchasePlanWorkbook({
         </Space>
       )}
     >
-      <Space wrap style={{ marginBottom: 12 }}>
-        <Text type="secondary">Months: {detail.plan.seasonMonths.map(formatPurchasePlanMonth).join(', ')}</Text>
-        <Text type="secondary">History: {detail.plan.historyFromYearMonth} to {detail.plan.historyToYearMonth}</Text>
-        <Text type="secondary">Forecast: {detail.plan.forecastMethod}</Text>
-        {detail.plan.discountNormalization ? <Tag color="blue">discount normalization</Tag> : null}
-      </Space>
       <Tabs
-        activeKey={activeWorksheetTab}
-        destroyInactiveTabPane
-        onChange={(key) => setActiveWorksheetTab(key as WorksheetTabKey)}
+        activeKey={selectedWorksheetTab}
+        destroyOnHidden
+        tabBarStyle={showWorksheetTabs ? undefined : { display: 'none' }}
+        onChange={(key) => {
+          if (!activeWorksheetTab) setInternalWorksheetTab(key as SavedPurchasePlanWorksheetTabKey)
+        }}
         items={[
           {
             key: 'sales-projection',
@@ -836,7 +892,7 @@ export function SavedPurchasePlanWorkbook({
                       <Text strong>{formatSummaryUnits(salesProjectionSummary.lastYear12MonthSales)}</Text>
                     </div>
                     <div className="purchase-plan-sales-summary-item">
-                      <Text type="secondary">Projected sales for next 12 months</Text>
+                      <Text type="secondary">User projected sales for next 12 months</Text>
                       <Text strong>{formatSummaryUnits(salesProjectionSummary.projectedNext12MonthSales)}</Text>
                     </div>
                     <div className="purchase-plan-sales-summary-item">
@@ -844,7 +900,7 @@ export function SavedPurchasePlanWorkbook({
                       <Text strong>{formatSignedPercent(salesProjectionSummary.suggestedProjectionIncreasePct)}</Text>
                     </div>
                     <div className="purchase-plan-sales-summary-item">
-                      <Text type="secondary">Projected sales increase</Text>
+                      <Text type="secondary">User projected sales increase</Text>
                       <Text strong>{formatSignedPercent(salesProjectionSummary.userProjectedIncreasePct)}</Text>
                     </div>
                   </div>

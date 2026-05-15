@@ -167,6 +167,79 @@ describe('forecast — blendedMultiYear', () => {
   });
 });
 
+describe('forecast - constrainedDemand', () => {
+  it('lifts zero beginning-on-hand months from unconstrained same-month peers', () => {
+    const history: HistoryPoint[] = [
+      { dimKey: 'D', yearMonth: '2023-05', qty: 0, beginningOnHand: 0 },
+      { dimKey: 'D', yearMonth: '2024-05', qty: 10, beginningOnHand: 100 },
+      { dimKey: 'D', yearMonth: '2025-05', qty: 20, beginningOnHand: 100 },
+    ];
+
+    const out = forecast(history, 'constrainedDemand', {}, ['2026-05']);
+
+    expect(out[0].projQty).toBe(15);
+  });
+
+  it('uses the 30 percent sell-through threshold for partial constraints', () => {
+    const constrained: HistoryPoint[] = [
+      { dimKey: 'D', yearMonth: '2024-06', qty: 30, beginningOnHand: 100 },
+      { dimKey: 'D', yearMonth: '2025-06', qty: 90, beginningOnHand: 400 },
+    ];
+    const unconstrained: HistoryPoint[] = [
+      { dimKey: 'D', yearMonth: '2024-06', qty: 29, beginningOnHand: 100 },
+      { dimKey: 'D', yearMonth: '2025-06', qty: 90, beginningOnHand: 400 },
+    ];
+
+    expect(forecast(constrained, 'constrainedDemand', {}, ['2026-06'])[0].projQty).toBe(90);
+    expect(forecast(unconstrained, 'constrainedDemand', {}, ['2026-06'])[0].projQty).toBe(59.5);
+  });
+
+  it('never lowers a constrained month below its observed sales', () => {
+    const history: HistoryPoint[] = [
+      { dimKey: 'D', yearMonth: '2025-08', qty: 50, beginningOnHand: 500 },
+      { dimKey: 'D', yearMonth: '2025-09', qty: 120, beginningOnHand: 100 },
+    ];
+
+    const out = forecast(history, 'constrainedDemand', {}, ['2026-09']);
+
+    expect(out[0].projQty).toBe(120);
+  });
+
+  it('uses raw observed units when normalized constrained sales are lower', () => {
+    const history = [
+      { dimKey: 'D', yearMonth: '2024-10', qty: 20, rawQty: 80, beginningOnHand: 100 },
+      { dimKey: 'D', yearMonth: '2025-10', qty: 40, rawQty: 40, beginningOnHand: 400 },
+    ] satisfies Array<HistoryPoint & { rawQty: number }>;
+
+    const out = forecast(history, 'constrainedDemand', {}, ['2026-10']);
+
+    expect(out[0].projQty).toBe(60);
+  });
+
+  it('falls back to adjacent calendar months when same-month peers are unavailable', () => {
+    const history: HistoryPoint[] = [
+      { dimKey: 'D', yearMonth: '2025-06', qty: 40, beginningOnHand: 200 },
+      { dimKey: 'D', yearMonth: '2025-07', qty: 0, beginningOnHand: 0 },
+      { dimKey: 'D', yearMonth: '2025-08', qty: 60, beginningOnHand: 300 },
+    ];
+
+    const out = forecast(history, 'constrainedDemand', {}, ['2026-07']);
+
+    expect(out[0].projQty).toBe(50);
+  });
+
+  it('does not treat missing beginning-on-hand as constrained', () => {
+    const history: HistoryPoint[] = [
+      { dimKey: 'D', yearMonth: '2024-09', qty: 0 },
+      { dimKey: 'D', yearMonth: '2025-09', qty: 100, beginningOnHand: 1000 },
+    ];
+
+    const out = forecast(history, 'constrainedDemand', {}, ['2026-09']);
+
+    expect(out[0].projQty).toBe(50);
+  });
+});
+
 describe('forecast - holtWinters', () => {
   it('uses trend and monthly seasonality when enough history exists', () => {
     const history: HistoryPoint[] = [];

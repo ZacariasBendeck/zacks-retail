@@ -17,6 +17,7 @@ import {
   createPurchasePlan,
   getPurchasePlan,
   getPurchasePlanSalesTrendSummary,
+  recalculatePurchasePlan,
   updatePurchasePlanRow,
 } from '../../src/services/purchasePlanning/purchasePlanningSavedService';
 
@@ -222,7 +223,7 @@ describe('purchase planning saved service department scoping', () => {
       if (text.includes('FROM app.purchase_plan p') && text.includes('WHERE p.id = $1::uuid')) {
         return [headerRow()];
       }
-      if (text.includes('FROM app.purchase_plan_row r')) {
+      if (text.includes('purchase_plan_row') && text.includes('department_key')) {
         return rows;
       }
       if (text.includes('FROM app.purchase_plan_adjustment')) {
@@ -277,7 +278,7 @@ describe('purchase planning saved service department scoping', () => {
       if (text.includes('FROM app.purchase_plan p') && text.includes('WHERE p.id = $1::uuid')) {
         return [headerRow()];
       }
-      if (text.includes('FROM app.purchase_plan_row r')) {
+      if (text.includes('purchase_plan_row') && text.includes('department_key')) {
         return rows;
       }
       if (text.includes('FROM app.purchase_plan_adjustment')) {
@@ -495,6 +496,207 @@ describe('purchase planning saved service department scoping', () => {
 
     expect(inventoryStoreArgs).toEqual([[1, 2, 99]]);
     expect(ticketStoreArgs).toEqual([[1, 2, 99]]);
+  });
+
+  it('preserves target and buy values during sales-only updates', async () => {
+    const rows = [
+      savedRow({ id: 'row-1', yearMonth: '2026-03' }),
+      savedRow({
+        id: 'row-2',
+        yearMonth: '2026-04',
+        baselineBoh: 55,
+        baselineProjSales: 70,
+        baselineEohTarget: 65,
+        baselineBuy: 80,
+        baselineEohActual: 65,
+        currentBoh: 55,
+        currentProjSales: 70,
+        currentEohTarget: 65,
+        currentBuy: 80,
+        currentEohActual: 65,
+        onHand: 0,
+        currentOnOrder: 0,
+        futureOnOrder: 0,
+        nativeOpenPo: 0,
+        stockPosition: 0,
+      }),
+    ];
+    const queryHandler = jest.fn(async (sql: string) => {
+      const text = String(sql);
+      if (text.includes('FROM app.purchase_plan p') && text.includes('WHERE p.id = $1::uuid')) {
+        return [headerRow()];
+      }
+      if (text.includes('FROM app.store_group sg') && text.includes('WHERE sg.code = $1')) {
+        return [{ code: 'all-stores', label: 'All Stores', storeNumbers: [1, 2] }];
+      }
+      if (text.includes('WITH src AS')) {
+        return [];
+      }
+      if (text.includes('FROM app.purchase_plan_row r')) {
+        return rows;
+      }
+      if (text.includes('FROM app.purchase_plan_adjustment')) {
+        return [];
+      }
+      return [];
+    });
+    mockPrisma.$queryRawUnsafe.mockImplementation(queryHandler);
+    mockTx.$queryRawUnsafe.mockImplementation(queryHandler);
+
+    await updatePurchasePlanRow(planId, 'row-1', {
+      currentProjSales: 80,
+      reason: 'Monthly sales override',
+      appliedBy: 'buyer',
+    });
+
+    const updateCalls = mockTx.$executeRawUnsafe.mock.calls
+      .filter(([sql]) => String(sql).includes('UPDATE app.purchase_plan_row'));
+    expect(updateCalls).toHaveLength(2);
+    expect(updateCalls[0]?.slice(1)).toEqual(['row-1', 70, 80, 55, 45, 35]);
+    expect(updateCalls[1]?.slice(1)).toEqual(['row-2', 35, 70, 65, 80, 45]);
+  });
+
+  it('updates generated projection baseline with a selected forecast while preserving user projection values', async () => {
+    const rows = [
+      savedRow({ id: 'row-1', yearMonth: '2026-03' }),
+      savedRow({
+        id: 'row-2',
+        yearMonth: '2026-04',
+        baselineBoh: 55,
+        baselineProjSales: 70,
+        baselineEohTarget: 65,
+        baselineBuy: 80,
+        baselineEohActual: 65,
+        currentBoh: 55,
+        currentProjSales: 77,
+        currentEohTarget: 65,
+        currentBuy: 80,
+        currentEohActual: 58,
+        onHand: 0,
+        currentOnOrder: 0,
+        futureOnOrder: 0,
+        nativeOpenPo: 0,
+        stockPosition: 0,
+      }),
+    ];
+    const queryHandler = jest.fn(async (sql: string) => {
+      const text = String(sql);
+      if (text.includes('FROM app.purchase_plan p') && text.includes('WHERE p.id = $1::uuid')) {
+        return [headerRow()];
+      }
+      if (text.includes('FROM app.taxonomy_department') && text.includes('WHERE number = ANY')) {
+        return [{ number: 5, description: 'CAMISAS MARCA HOMBRE' }];
+      }
+      if (text.includes('FROM app.store_group sg') && text.includes('WHERE sg.code = $1')) {
+        return [{ code: 'all-stores', label: 'All Stores', storeNumbers: [1, 2] }];
+      }
+      if (text.includes('MAX(snapshot_as_of)')) {
+        return [{ yearMonth: '2026-02' }];
+      }
+      if (text.includes('WITH src AS')) {
+        return [
+          { departmentKey: '5', departmentNumber: 5, departmentLabel: 'CAMISAS MARCA HOMBRE', yearMonth: '2025-03', qty: 90, netSales: 0, referenceRetail: 0, beginningOnHand: 0 },
+          { departmentKey: '5', departmentNumber: 5, departmentLabel: 'CAMISAS MARCA HOMBRE', yearMonth: '2025-04', qty: 100, netSales: 0, referenceRetail: 0, beginningOnHand: 0 },
+          { departmentKey: '5', departmentNumber: 5, departmentLabel: 'CAMISAS MARCA HOMBRE', yearMonth: '2025-05', qty: 110, netSales: 0, referenceRetail: 0, beginningOnHand: 0 },
+          { departmentKey: '5', departmentNumber: 5, departmentLabel: 'CAMISAS MARCA HOMBRE', yearMonth: '2025-06', qty: 120, netSales: 0, referenceRetail: 0, beginningOnHand: 0 },
+          { departmentKey: '5', departmentNumber: 5, departmentLabel: 'CAMISAS MARCA HOMBRE', yearMonth: '2025-07', qty: 130, netSales: 0, referenceRetail: 0, beginningOnHand: 0 },
+          { departmentKey: '5', departmentNumber: 5, departmentLabel: 'CAMISAS MARCA HOMBRE', yearMonth: '2025-08', qty: 140, netSales: 0, referenceRetail: 0, beginningOnHand: 0 },
+        ];
+      }
+      if (text.includes('SUM(h.on_hand)')) {
+        return [{ departmentKey: '5', departmentNumber: 5, departmentLabel: 'CAMISAS MARCA HOMBRE', onHand: 0, currentOnOrder: 0, futureOnOrder: 0 }];
+      }
+      if (text.includes('purchase_plan_row') && text.includes('department_key')) {
+        return rows;
+      }
+      if (text.includes('nativeOpenPo')) {
+        return [];
+      }
+      if (text.includes('FROM app.purchase_plan_adjustment')) {
+        return [];
+      }
+      return [];
+    });
+    mockPrisma.$queryRawUnsafe.mockImplementation(queryHandler);
+    mockTx.$queryRawUnsafe.mockImplementation(queryHandler);
+
+    await recalculatePurchasePlan(planId, {
+      actor: 'buyer',
+      forecast: { method: 'sameMonthLastYear' },
+      mode: 'preserve_user',
+    });
+
+    const insertCalls = mockTx.$executeRawUnsafe.mock.calls
+      .filter(([sql]) => String(sql).includes('INSERT INTO app.purchase_plan_row'));
+    const marchInsert = insertCalls.find((call) => call[5] === '2026-03');
+    expect(marchInsert?.[7]).toBe(90);
+    expect(marchInsert?.[12]).toBe(60);
+
+    const aprilInsert = insertCalls.find((call) => call[5] === '2026-04');
+    expect(aprilInsert?.[7]).toBe(100);
+    expect(aprilInsert?.[12]).toBe(77);
+
+    const planUpdate = mockTx.$executeRawUnsafe.mock.calls
+      .find(([sql]) => String(sql).includes('UPDATE app.purchase_plan') && String(sql).includes('forecast_method'));
+    expect(planUpdate?.slice(1)).toEqual([planId, '2023-03', '2026-02', 'sameMonthLastYear']);
+  });
+
+  it('recalculates buy during EOH-target-only updates', async () => {
+    const rows = [
+      savedRow({ id: 'row-1', yearMonth: '2026-03' }),
+      savedRow({
+        id: 'row-2',
+        yearMonth: '2026-04',
+        baselineBoh: 55,
+        baselineProjSales: 70,
+        baselineEohTarget: 65,
+        baselineBuy: 80,
+        baselineEohActual: 65,
+        currentBoh: 55,
+        currentProjSales: 70,
+        currentEohTarget: 65,
+        currentBuy: 80,
+        currentEohActual: 65,
+        onHand: 0,
+        currentOnOrder: 0,
+        futureOnOrder: 0,
+        nativeOpenPo: 0,
+        stockPosition: 0,
+      }),
+    ];
+    const queryHandler = jest.fn(async (sql: string) => {
+      const text = String(sql);
+      if (text.includes('FROM app.purchase_plan p') && text.includes('WHERE p.id = $1::uuid')) {
+        return [headerRow()];
+      }
+      if (text.includes('FROM app.store_group sg') && text.includes('WHERE sg.code = $1')) {
+        return [{ code: 'all-stores', label: 'All Stores', storeNumbers: [1, 2] }];
+      }
+      if (text.includes('WITH src AS')) {
+        return [];
+      }
+      if (text.includes('FROM app.purchase_plan_row r')) {
+        return rows;
+      }
+      if (text.includes('FROM app.purchase_plan_adjustment')) {
+        return [];
+      }
+      return [];
+    });
+    mockPrisma.$queryRawUnsafe.mockImplementation(queryHandler);
+    mockTx.$queryRawUnsafe.mockImplementation(queryHandler);
+
+    await updatePurchasePlanRow(planId, 'row-1', {
+      currentEohTarget: 60,
+      reason: 'Monthly EOH target override',
+      appliedBy: 'buyer',
+    });
+
+    const updateCalls = mockTx.$executeRawUnsafe.mock.calls
+      .filter(([sql]) => String(sql).includes('UPDATE app.purchase_plan_row'));
+    expect(updateCalls).toHaveLength(2);
+    expect(updateCalls[0]?.slice(1)).toEqual(['row-1', 70, 60, 60, 50, 60]);
+    expect(updateCalls[1]?.slice(1)).toEqual(['row-2', 60, 70, 65, 80, 70]);
   });
 
   it('updates monthly projection and target values and rolls EOH forward', async () => {

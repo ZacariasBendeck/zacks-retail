@@ -18,6 +18,14 @@ const DEFAULT_TRAILING_MONTHS = 6;
 const DEFAULT_YEARS_TO_BLEND: 2 | 3 = 2;
 const HOLT_WINTERS_PERIOD = 12;
 const HOLT_WINTERS_MIN_POINTS = 18;
+const CONSTRAINED_SELL_THROUGH_THRESHOLD = 0.30;
+
+interface IndexedHistoryPoint {
+  yearMonth: string;
+  qty: number;
+  observedQty: number;
+  beginningOnHand: number | null;
+}
 
 /**
  * Produce a projection point for every (dimKey × horizon month) pair.
@@ -32,6 +40,10 @@ export function forecast(
   params: ForecastParams,
   horizonYearMonths: string[],
 ): ProjectedPoint[] {
+  if (method === 'constrainedDemand') {
+    return forecastConstrainedDemand(history, horizonYearMonths);
+  }
+
   const byDim = indexHistory(history);
   const dimKeys = [...byDim.keys()].sort();
 
@@ -70,10 +82,29 @@ function projectOne(
       const years = params.yearsToBlend === 3 ? 3 : DEFAULT_YEARS_TO_BLEND;
       return Math.max(0, blendedMultiYear(series, horizonYm, years));
     }
+    case 'constrainedDemand':
+      return Math.max(0, constrainedDemand(series, horizonYm));
     default:
       // Exhaustive check — TypeScript will error if a case is missing.
       return assertNever(method);
   }
+}
+
+export function fillConstrainedDemandHistory(
+  history: HistoryPoint[],
+  dimKeys: string[],
+  historyYearMonths: string[],
+): HistoryPoint[] {
+  const existing = new Set(history.map((point) => `${point.dimKey}|${point.yearMonth}`));
+  const out = [...history];
+  for (const dimKey of [...new Set(dimKeys)].sort()) {
+    for (const yearMonth of historyYearMonths) {
+      const key = `${dimKey}|${yearMonth}`;
+      if (existing.has(key)) continue;
+      out.push({ dimKey, yearMonth, qty: 0, beginningOnHand: 0 });
+    }
+  }
+  return out;
 }
 
 function sameMonthLastYear(series: Map<string, number>, horizonYm: string): number {
@@ -120,6 +151,83 @@ function blendedMultiYear(
   }
   if (count === 0) return 0;
   return sum / count;
+}
+
+function constrainedDemand(series: Map<string, number>, horizonYm: string): number {
+  const month = horizonYm.slice(5, 7);
+  const values = [...series.entries()]
+    .filter(([yearMonth]) => yearMonth.slice(5, 7) === month)
+    .map(([, qty]) => qty);
+  return average(values);
+}
+
+function forecastConstrainedDemand(
+  history: HistoryPoint[],
+  horizonYearMonths: string[],
+): ProjectedPoint[] {
+  const byDim = indexHistoryPoints(history);
+  const out: ProjectedPoint[] = [];
+
+  for (const dimKey of [...byDim.keys()].sort()) {
+    const adjustedSeries = buildConstrainedDemandSeries(byDim.get(dimKey)!);
+    for (const yearMonth of horizonYearMonths) {
+      out.push({
+        dimKey,
+        yearMonth,
+        projQty: Math.max(0, constrainedDemand(adjustedSeries, yearMonth)),
+      });
+    }
+  }
+
+  return out;
+}
+
+function buildConstrainedDemandSeries(pointsByMonth: Map<string, IndexedHistoryPoint>): Map<string, number> {
+  const points = [...pointsByMonth.values()].sort((a, b) => a.yearMonth.localeCompare(b.yearMonth));
+  const unconstrained = points.filter((point) => !isConstrained(point));
+  const out = new Map<string, number>();
+
+  for (const point of points) {
+    const estimate = isConstrained(point)
+      ? estimateUnconstrainedPeerDemand(point, unconstrained)
+      : point.qty;
+    out.set(point.yearMonth, Math.max(0, point.observedQty, point.qty, estimate));
+  }
+
+  return out;
+}
+
+function isConstrained(point: IndexedHistoryPoint): boolean {
+  if (point.beginningOnHand == null) return false;
+  if (point.beginningOnHand <= 0) return true;
+  return point.observedQty / point.beginningOnHand >= CONSTRAINED_SELL_THROUGH_THRESHOLD;
+}
+
+function estimateUnconstrainedPeerDemand(
+  point: IndexedHistoryPoint,
+  unconstrained: IndexedHistoryPoint[],
+): number {
+  const month = Number(point.yearMonth.slice(5, 7));
+  const previousMonth = month === 1 ? 12 : month - 1;
+  const nextMonth = month === 12 ? 1 : month + 1;
+
+  const sameCalendarMonth = averagePeerQty(unconstrained.filter((peer) =>
+    Number(peer.yearMonth.slice(5, 7)) === month));
+  if (sameCalendarMonth != null) return sameCalendarMonth;
+
+  const adjacentCalendarMonth = averagePeerQty(unconstrained.filter((peer) => {
+    const peerMonth = Number(peer.yearMonth.slice(5, 7));
+    return peerMonth === previousMonth || peerMonth === nextMonth;
+  }));
+  if (adjacentCalendarMonth != null) return adjacentCalendarMonth;
+
+  const anyUnconstrainedMonth = averagePeerQty(unconstrained);
+  return anyUnconstrainedMonth ?? point.qty;
+}
+
+function averagePeerQty(points: IndexedHistoryPoint[]): number | null {
+  if (points.length === 0) return null;
+  return average(points.map((point) => point.qty));
 }
 
 function holtWinters(series: Map<string, number>, horizonYm: string): number {
@@ -189,6 +297,38 @@ function indexHistory(history: HistoryPoint[]): Map<string, Map<string, number>>
       byDim.set(h.dimKey, inner);
     }
     inner.set(h.yearMonth, (inner.get(h.yearMonth) ?? 0) + h.qty);
+  }
+  return byDim;
+}
+
+function indexHistoryPoints(history: HistoryPoint[]): Map<string, Map<string, IndexedHistoryPoint>> {
+  const byDim = new Map<string, Map<string, IndexedHistoryPoint>>();
+  for (const h of history) {
+    let inner = byDim.get(h.dimKey);
+    if (!inner) {
+      inner = new Map();
+      byDim.set(h.dimKey, inner);
+    }
+
+    const qty = Math.max(0, Number(h.qty) || 0);
+    const observedQty = Math.max(0, Number((h as { rawQty?: unknown }).rawQty ?? h.qty) || 0);
+    const beginningOnHand = h.beginningOnHand == null ? null : Math.max(0, Number(h.beginningOnHand) || 0);
+    const current = inner.get(h.yearMonth);
+    if (!current) {
+      inner.set(h.yearMonth, {
+        yearMonth: h.yearMonth,
+        qty,
+        observedQty,
+        beginningOnHand,
+      });
+      continue;
+    }
+
+    current.qty += qty;
+    current.observedQty += observedQty;
+    if (beginningOnHand != null) {
+      current.beginningOnHand = (current.beginningOnHand ?? 0) + beginningOnHand;
+    }
   }
   return byDim;
 }

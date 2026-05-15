@@ -4,6 +4,7 @@ import {
   createSavedPurchasePlan,
   fetchSavedPurchasePlans,
   generateSeasonalPurchaseReport,
+  recalculateSavedPurchasePlan,
   updateSavedPurchasePlanRow,
   updateSavedPurchasePlanRows,
 } from '../services/purchasePlanningApi'
@@ -90,6 +91,23 @@ describe('purchasePlanningApi saved plans', () => {
 
     expect(fetch).toHaveBeenCalledWith('/api/v1/purchase-planning/plans/plan-1/rows', expect.objectContaining({
       method: 'PATCH',
+      body: JSON.stringify(payload),
+    }))
+  })
+
+  it('posts recalculate requests with forecast and preserve-user mode', async () => {
+    const payload = {
+      actor: 'buyer',
+      forecast: { method: 'trailingAverage' as const },
+      mode: 'preserve_user' as const,
+    }
+    vi.mocked(fetch).mockResolvedValue(ok({ plan: { id: 'plan-1' } }))
+
+    await recalculateSavedPurchasePlan('plan-1', payload)
+
+    expect(fetch).toHaveBeenCalledWith('/api/v1/purchase-planning/plans/plan-1/recalculate', expect.objectContaining({
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     }))
   })

@@ -14,6 +14,7 @@ Saved seasonal buying plans for chain + department. Given historical sales, curr
 - Grain: `app.store_group` chain + `app.taxonomy_department` department + three-month merchandise season.
 - Seasons: Spring Feb-Apr, Summer May-Jul, Fall Aug-Oct, Winter Nov-Jan. `seasonYear` is the year the season starts, so Winter 2026 is Nov 2026-Jan 2027.
 - Default forecast: Holt-Winters with monthly seasonality. The v1 ad-hoc methods remain available.
+- Constrained-demand forecast: lifts historical months where beginning on-hand was zero or sell-through was at least 30%, then projects from adjusted same-month demand.
 - Discount normalization: months with unusually low realized net sales versus reference retail are down-weighted before forecasting.
 - Buy math subtracts stock position: on-hand, current/future on-order from `app.inventory_history_snapshot`, and committed native open PO quantities from submitted/confirmed/partially received purchase orders.
 - Saved rows keep immutable baseline values and current adjusted values so buyers can compare baseline versus adjusted revision.

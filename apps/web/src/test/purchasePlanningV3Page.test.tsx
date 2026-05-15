@@ -152,6 +152,7 @@ describe('PurchasePlanningV3Page', () => {
     await chooseSelectOption('Chains', 'Unlimited (2)')
     await chooseSelectOption('Chains', 'Magic Shoes & Fashion (2)')
     await chooseSelectOption('Department', '10 - Footwear')
+    await chooseSelectOption('Forecast', 'Constrained demand')
     await userEvent.click(screen.getByRole('button', { name: 'Generate V3' }))
 
     await waitFor(() => expect(generatePurchasePlanV3Report).toHaveBeenCalledTimes(1))
@@ -159,7 +160,7 @@ describe('PurchasePlanningV3Page', () => {
       storeGroupCodes: ['unlimited', 'magic-shoes'],
       departmentNumber: 10,
       year: 2026,
-      forecast: { method: 'holtWinters' },
+      forecast: { method: 'constrainedDemand' },
       eohMethod: 'forward',
       coverMonths: 3,
       discountNormalization: true,

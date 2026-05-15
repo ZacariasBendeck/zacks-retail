@@ -16,7 +16,8 @@ export type ForecastMethod =
   | 'sameMonthLastYear'
   | 'trailingAverage'
   | 'yoyGrowth'
-  | 'blendedMultiYear';
+  | 'blendedMultiYear'
+  | 'constrainedDemand';
 
 export interface ForecastParams {
   /** Used when method='trailingAverage'. Default 6. */
@@ -176,6 +177,16 @@ export interface PurchasePlanRowsUpdateRequest {
   }>;
   reason: string;
   appliedBy?: string;
+}
+
+export type PurchasePlanRecalculateMode = 'overwrite' | 'preserve_user';
+
+export interface PurchasePlanRecalculateRequest {
+  actor?: string;
+  forecast?: {
+    method?: ForecastMethod;
+  } & ForecastParams;
+  mode?: PurchasePlanRecalculateMode;
 }
 
 export interface PurchasePlanHeader {

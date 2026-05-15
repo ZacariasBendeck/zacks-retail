@@ -367,7 +367,8 @@ function renderPage() {
 }
 
 async function chooseSelectOption(label: string, option: string) {
-  await userEvent.click(screen.getByLabelText(label))
+  const control = screen.queryByRole('combobox', { name: label }) ?? screen.getAllByLabelText(label)[0]!
+  await userEvent.click(control)
   const dropdown = document.body
   await userEvent.click(await within(dropdown).findByTitle(option))
 }
@@ -379,7 +380,10 @@ function worksheetMetricCells(label: string, department?: string, tableLabel = '
     ? rows.find((candidate) => candidate?.textContent?.includes(department))
     : rows[0]
   if (!row) throw new Error(`Expected worksheet row ${label}`)
-  return within(row).getAllByRole('cell').map((cell) => cell.textContent?.trim() ?? '')
+  return within(row).getAllByRole('cell').map((cell) => {
+    const input = Array.from(cell.querySelectorAll('input')).find((candidate) => candidate.value !== '')
+    return input instanceof HTMLInputElement ? input.value : cell.textContent?.trim() ?? ''
+  })
 }
 
 function numericInputValue(label: string): number {
@@ -492,28 +496,34 @@ describe('PurchasePlanningPage saved plans', () => {
 
     expect((await screen.findAllByRole('columnheader', { name: 'May 2026' })).length).toBeGreaterThan(0)
     expect(screen.getAllByRole('columnheader', { name: 'Jul 2027' }).length).toBeGreaterThan(0)
-    expect(screen.getByRole('button', { name: 'Recalculate' })).toBeInTheDocument()
+    expect(screen.getByRole('combobox', { name: 'Forecast method' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Regenerate' })).toBeInTheDocument()
     expect(screen.getAllByRole('columnheader', { name: 'Worksheet row' }).length).toBeGreaterThan(0)
     expect(screen.queryByRole('columnheader', { name: 'Department' })).not.toBeInTheDocument()
-    expect(screen.getByText('15-month workbook')).toBeInTheDocument()
-    expect(within(screen.getByLabelText('On hand projection worksheet')).getByText('Norm')).toBeInTheDocument()
+    expect(screen.queryByText('15-month workbook')).not.toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'Sales Projection' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.queryByLabelText('On hand projection worksheet')).not.toBeInTheDocument()
     expect(worksheetMetricCells("Last year's sales units").slice(0, 3)).toEqual(["Last year's sales units", '50', '100'])
     expect(worksheetMetricCells("Last year's beginning on hand").slice(0, 3)).toEqual(["Last year's beginning on hand", '100', '100'])
     expect(worksheetMetricCells('Year before last sales units').slice(0, 3)).toEqual(['Year before last sales units', '40', '120'])
     expect(worksheetMetricCells('Increase last year vs prior').slice(0, 3)).toEqual(['Increase last year vs prior', '+25%', '-16.7%'])
     expect(worksheetMetricCells('Year before last beginning on hand').slice(0, 3)).toEqual(['Year before last beginning on hand', '90', '130'])
     expect(worksheetMetricCells('Sell thru for the month').slice(0, 3)).toEqual(['Sell thru for the month', '25%', '40%constrained'])
+    expect(worksheetMetricCells('Projected sales').slice(0, 3)).toEqual(['Projected sales', '60', '70'])
+    expect(worksheetMetricCells('User projected sales').slice(0, 3)).toEqual(['User projected sales', '60', '70'])
     expect(worksheetMetricCells('Compared sales units').slice(0, 3)).toEqual(['Compared sales units', '+10', '-30'])
     const salesWorksheetRows = within(screen.getByLabelText('Sales projection worksheet'))
       .getAllByRole('row')
       .map((row) => row.textContent ?? '')
     expect(salesWorksheetRows.findIndex((row) => row.includes('Increase last year vs prior')))
       .toBe(salesWorksheetRows.findIndex((row) => row.includes('Year before last sales units')) + 1)
+    expect(screen.getByLabelText('May 2026 user projected sales').closest('.purchase-plan-workbook-grid-input')).not.toBeNull()
+    expect(screen.getByLabelText('Sales projection worksheet').closest('.purchase-plan-workbook-grid')).not.toBeNull()
+    await userEvent.click(screen.getByRole('tab', { name: 'On Hand Projection' }))
+    expect(within(await screen.findByLabelText('On hand projection worksheet')).getByText('Norm')).toBeInTheDocument()
     expect(screen.getByText('80%')).toBeInTheDocument()
     expect(screen.getByLabelText('May 2026 current buy')).toHaveValue('45')
     expect(screen.getByLabelText('Jun 2026 current buy')).toHaveValue('40')
-    expect(screen.getByLabelText('May 2026 projected sales').closest('.purchase-plan-workbook-grid-input')).not.toBeNull()
-    expect(screen.getByLabelText('Sales projection worksheet').closest('.purchase-plan-workbook-grid')).not.toBeNull()
     expect(screen.getByLabelText('On hand projection worksheet').closest('.purchase-plan-workbook-grid')).not.toBeNull()
   })
 
@@ -536,18 +546,21 @@ describe('PurchasePlanningPage saved plans', () => {
     expect(screen.getAllByRole('columnheader', { name: 'Spring 2027' }).length).toBeGreaterThan(0)
     expect(screen.getAllByRole('columnheader', { name: 'Summer 2027' }).length).toBeGreaterThan(0)
     expect(screen.queryByRole('columnheader', { name: 'May 2026' })).not.toBeInTheDocument()
-    expect(screen.queryByLabelText('Summer 2026 projected sales')).not.toBeInTheDocument()
-    expect(worksheetMetricCells('Current buy', undefined, 'On hand projection worksheet')).toEqual(['Current buy', '125', '120', '120', '120', '120'])
+    expect(screen.queryByLabelText('Summer 2026 user projected sales')).not.toBeInTheDocument()
     expect(screen.getByLabelText('Sales projection summary').closest('.purchase-plan-sales-summary')).not.toBeNull()
-    expect(within(screen.getByLabelText('Sales projection summary')).getByText('Projected sales for next 12 months')).toBeInTheDocument()
+    expect(within(screen.getByLabelText('Sales projection summary')).getByText('User projected sales for next 12 months')).toBeInTheDocument()
     expect(within(screen.getByLabelText('Sales projection summary')).getByText('150 units')).toBeInTheDocument()
     expect(within(screen.getByLabelText('Sales projection summary')).getByText('630 units')).toBeInTheDocument()
     expect(within(screen.getByLabelText('Sales projection summary')).getByText('+320%')).toBeInTheDocument()
     expect(screen.queryByText('Adjusted delta')).not.toBeInTheDocument()
 
+    await userEvent.click(screen.getByRole('tab', { name: 'On Hand Projection' }))
+    expect(worksheetMetricCells('Current buy', undefined, 'On hand projection worksheet')).toEqual(['Current buy', '125', '120', '120', '120', '120'])
+
     await userEvent.click(screen.getByText('Months'))
     expect((await screen.findAllByRole('columnheader', { name: 'May 2026' })).length).toBeGreaterThan(0)
-    expect(screen.getByLabelText('May 2026 projected sales')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('tab', { name: 'Sales Projection' }))
+    expect(screen.getByLabelText('May 2026 user projected sales')).toBeInTheDocument()
   })
 
   it('shows worksheet totals and recalculates them before saving edits', async () => {
@@ -561,11 +574,13 @@ describe('PurchasePlanningPage saved plans', () => {
     await userEvent.click(await screen.findByRole('button', { name: 'Enterprise-wide 10 - Footwear Summer 2026 to Summer 2027' }))
 
     await screen.findAllByRole('columnheader', { name: 'May 2026' })
+
+    await userEvent.clear(screen.getByLabelText('May 2026 user projected sales'))
+    await userEvent.type(screen.getByLabelText('May 2026 user projected sales'), '80')
+    await userEvent.click(screen.getByRole('tab', { name: 'On Hand Projection' }))
     expect(screen.getByLabelText('May 2026 current buy')).toHaveValue('45')
     expect(screen.getByLabelText('Jun 2026 current buy')).toHaveValue('80')
 
-    await userEvent.clear(screen.getByLabelText('May 2026 projected sales'))
-    await userEvent.type(screen.getByLabelText('May 2026 projected sales'), '80')
     await userEvent.clear(screen.getByLabelText('May 2026 EOH target'))
     await userEvent.type(screen.getByLabelText('May 2026 EOH target'), '60')
     await userEvent.clear(screen.getByLabelText('May 2026 current buy'))
@@ -635,6 +650,7 @@ describe('PurchasePlanningPage saved plans', () => {
 
     await userEvent.click(screen.getByRole('tab', { name: 'Saved plans' }))
     await userEvent.click(await screen.findByRole('button', { name: 'Enterprise-wide 10 - Footwear Summer 2026 to Summer 2027' }))
+    await userEvent.click(await screen.findByRole('tab', { name: 'On Hand Projection' }))
 
     expect((await screen.findAllByRole('columnheader', { name: 'Department' })).length).toBeGreaterThan(0)
     expect(within(screen.getByLabelText('On hand projection worksheet')).getAllByText('20 - Apparel').length).toBeGreaterThan(0)
@@ -652,6 +668,7 @@ describe('PurchasePlanningPage saved plans', () => {
     await userEvent.click(screen.getByRole('tab', { name: 'Saved plans' }))
     await userEvent.click(await screen.findByRole('button', { name: 'Enterprise-wide 10 - Footwear Summer 2026 to Summer 2027' }))
     await screen.findAllByRole('columnheader', { name: 'May 2026' })
+    await userEvent.click(screen.getByRole('tab', { name: 'On Hand Projection' }))
     const adjustButtons = screen.getAllByRole('button', { name: /Adjust/ })
     const adjustButton = adjustButtons[0]
     if (!adjustButton) throw new Error('Expected an adjustment action')
@@ -674,7 +691,31 @@ describe('PurchasePlanningPage saved plans', () => {
     expect(recalculateSavedPurchasePlan).not.toHaveBeenCalled()
   }, 15_000)
 
-  it('edits monthly projection, target, and buy cells directly in the worksheet', async () => {
+  it('regenerates the shared worksheet with the selected forecast method while preserving user values', async () => {
+    vi.mocked(useDepartments).mockReturnValue({ data: [], isLoading: false } as never)
+    vi.mocked(fetchSavedPurchasePlans).mockResolvedValue([listItem])
+    vi.mocked(fetchSavedPurchasePlan).mockResolvedValue(planDetail)
+    vi.mocked(recalculateSavedPurchasePlan).mockResolvedValue({
+      ...planDetail,
+      plan: { ...planDetail.plan, forecastMethod: 'trailingAverage' },
+    })
+
+    renderPage()
+
+    await userEvent.click(screen.getByRole('tab', { name: 'Saved plans' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Enterprise-wide 10 - Footwear Summer 2026 to Summer 2027' }))
+    expect(await screen.findByRole('combobox', { name: 'Forecast method' })).toBeInTheDocument()
+    await chooseSelectOption('Forecast method', 'Trailing average')
+    await userEvent.click(screen.getByRole('button', { name: 'Regenerate' }))
+
+    await waitFor(() => expect(recalculateSavedPurchasePlan).toHaveBeenCalledWith('plan-1', {
+      actor: 'buyer',
+      forecast: { method: 'trailingAverage' },
+      mode: 'preserve_user',
+    }))
+  }, 15_000)
+
+  it('saves monthly sales projection edits from the sales worksheet only', async () => {
     vi.mocked(useDepartments).mockReturnValue({ data: [], isLoading: false } as never)
     vi.mocked(fetchSavedPurchasePlans).mockResolvedValue([listItem])
     vi.mocked(fetchSavedPurchasePlan).mockResolvedValue(planDetail)
@@ -685,17 +726,11 @@ describe('PurchasePlanningPage saved plans', () => {
     await userEvent.click(screen.getByRole('tab', { name: 'Saved plans' }))
     await userEvent.click(await screen.findByRole('button', { name: 'Enterprise-wide 10 - Footwear Summer 2026 to Summer 2027' }))
 
-    const projectedSales = await screen.findByLabelText('May 2026 projected sales')
-    const eohTarget = screen.getByLabelText('May 2026 EOH target')
-    const currentBuy = screen.getByLabelText('May 2026 current buy')
+    const projectedSales = await screen.findByLabelText('May 2026 user projected sales')
     await userEvent.clear(projectedSales)
     await userEvent.type(projectedSales, '80')
-    await userEvent.clear(eohTarget)
-    await userEvent.type(eohTarget, '60')
-    await userEvent.clear(currentBuy)
-    await userEvent.type(currentBuy, '70')
     await userEvent.clear(screen.getByLabelText('Worksheet reason'))
-    await userEvent.type(screen.getByLabelText('Worksheet reason'), 'Manual monthly plan override')
+    await userEvent.type(screen.getByLabelText('Worksheet reason'), 'Manual sales projection override')
     await userEvent.click(screen.getByRole('button', { name: 'Save worksheet' }))
 
     await waitFor(() => expect(updateSavedPurchasePlanRows).toHaveBeenCalledTimes(1))
@@ -705,10 +740,46 @@ describe('PurchasePlanningPage saved plans', () => {
         rows: [{
           rowId: 'row-1',
           currentProjSales: 80,
+        }],
+        reason: 'Manual sales projection override',
+        appliedBy: 'buyer',
+      },
+    ])
+    expect(addSavedPurchasePlanAdjustment).not.toHaveBeenCalled()
+  }, 15_000)
+
+  it('saves EOH target and buy edits from the on hand worksheet only', async () => {
+    vi.mocked(useDepartments).mockReturnValue({ data: [], isLoading: false } as never)
+    vi.mocked(fetchSavedPurchasePlans).mockResolvedValue([listItem])
+    vi.mocked(fetchSavedPurchasePlan).mockResolvedValue(planDetail)
+    vi.mocked(updateSavedPurchasePlanRows).mockResolvedValue(planDetail)
+
+    renderPage()
+
+    await userEvent.click(screen.getByRole('tab', { name: 'Saved plans' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Enterprise-wide 10 - Footwear Summer 2026 to Summer 2027' }))
+    await userEvent.click(await screen.findByRole('tab', { name: 'On Hand Projection' }))
+
+    const eohTarget = await screen.findByLabelText('May 2026 EOH target')
+    const currentBuy = screen.getByLabelText('May 2026 current buy')
+    await userEvent.clear(eohTarget)
+    await userEvent.type(eohTarget, '60')
+    await userEvent.clear(currentBuy)
+    await userEvent.type(currentBuy, '70')
+    await userEvent.clear(screen.getByLabelText('On hand worksheet reason'))
+    await userEvent.type(screen.getByLabelText('On hand worksheet reason'), 'Manual on hand projection override')
+    await userEvent.click(screen.getByRole('button', { name: 'Save on hand projection' }))
+
+    await waitFor(() => expect(updateSavedPurchasePlanRows).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(updateSavedPurchasePlanRows).mock.calls[0]).toEqual([
+      'plan-1',
+      {
+        rows: [{
+          rowId: 'row-1',
           currentEohTarget: 60,
           currentBuy: 70,
         }],
-        reason: 'Manual monthly plan override',
+        reason: 'Manual on hand projection override',
         appliedBy: 'buyer',
       },
     ])
@@ -736,8 +807,8 @@ describe('PurchasePlanningPage saved plans', () => {
     expect(vi.mocked(updateSavedPurchasePlanRows).mock.calls[0]?.[0]).toBe('plan-1')
     expect(payload?.rows).toHaveLength(15)
     expect(payload?.rows).toEqual(expect.arrayContaining([
-      { rowId: 'row-1', currentProjSales: 66, currentEohTarget: 61, currentBuy: 57 },
-      { rowId: 'row-2', currentProjSales: 77, currentEohTarget: 72, currentBuy: 88 },
+      { rowId: 'row-1', currentProjSales: 66 },
+      { rowId: 'row-2', currentProjSales: 77 },
     ]))
     expect(payload?.reason).toBe('Worksheet edit')
     expect(payload?.appliedBy).toBe('buyer')

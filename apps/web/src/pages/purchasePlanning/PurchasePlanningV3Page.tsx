@@ -48,6 +48,7 @@ const FORECAST_OPTIONS: Array<{ value: PurchasePlanForecastMethod; label: string
   { value: 'trailingAverage', label: 'Trailing average' },
   { value: 'yoyGrowth', label: 'YoY growth %' },
   { value: 'blendedMultiYear', label: 'Blended multi-year' },
+  { value: 'constrainedDemand', label: 'Constrained demand' },
 ]
 
 const EOH_OPTIONS: Array<{ value: PurchasePlanEohMethod; label: string }> = [

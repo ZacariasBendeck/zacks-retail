@@ -12,7 +12,8 @@ export type PurchasePlanForecastMethod =
   | 'sameMonthLastYear'
   | 'trailingAverage'
   | 'yoyGrowth'
-  | 'blendedMultiYear';
+  | 'blendedMultiYear'
+  | 'constrainedDemand';
 
 export type PurchasePlanEohMethod = 'forward' | 'seasonal';
 export type PurchasePlanningSeason = 'spring' | 'summer' | 'fall' | 'winter';
@@ -260,6 +261,19 @@ export interface SavedPurchasePlanRowsUpdateRequest {
   }>;
   reason: string;
   appliedBy?: string;
+}
+
+export type SavedPurchasePlanRecalculateMode = 'overwrite' | 'preserve_user';
+
+export interface SavedPurchasePlanRecalculateRequest {
+  actor?: string;
+  forecast?: {
+    method?: PurchasePlanForecastMethod;
+    trailingMonths?: number;
+    growthPct?: number;
+    yearsToBlend?: 2 | 3;
+  };
+  mode?: SavedPurchasePlanRecalculateMode;
 }
 
 export interface SavedPurchasePlanCompare {
@@ -553,11 +567,15 @@ export async function updateSavedPurchasePlanRows(
   return parseJsonOrThrow<SavedPurchasePlanDetail>(res);
 }
 
-export async function recalculateSavedPurchasePlan(id: string, actor?: string): Promise<SavedPurchasePlanDetail> {
+export async function recalculateSavedPurchasePlan(
+  id: string,
+  request: string | SavedPurchasePlanRecalculateRequest = {},
+): Promise<SavedPurchasePlanDetail> {
+  const body = typeof request === 'string' ? { actor: request } : request;
   const res = await fetch(`/api/v1/purchase-planning/plans/${encodeURIComponent(id)}/recalculate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ actor }),
+    body: JSON.stringify(body),
   });
   return parseJsonOrThrow<SavedPurchasePlanDetail>(res);
 }

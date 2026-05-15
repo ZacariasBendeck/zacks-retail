@@ -14,7 +14,7 @@ import { getOnHandSkuRows } from '../salesReporting/ricsOnHandAtCostAdapter';
 import { listSalesDimensions } from '../salesReporting/salesReportFacade';
 import { DepartmentRepository } from '../../repositories/rics/DepartmentRepository';
 import { parseCriteria, matchesCriteria } from '../../utils/criteriaGrammar';
-import { forecast, shiftYearMonth } from './forecast';
+import { fillConstrainedDemandHistory, forecast, shiftYearMonth } from './forecast';
 import { computePlan } from './compute';
 import type {
   Dimension,
@@ -43,8 +43,20 @@ function buildHorizon(asOfYm: string, count: number): string[] {
   return out;
 }
 
+function monthsBetweenInclusive(fromYm: string, toYm: string): string[] {
+  const out: string[] = [];
+  let cursor = fromYm;
+  while (cursor <= toYm) {
+    out.push(cursor);
+    cursor = shiftYearMonth(cursor, 1);
+  }
+  return out;
+}
+
 function buildHistoryWindow(asOfYm: string, method: string): { from: string; to: string } {
-  const months = method === 'blendedMultiYear' ? HISTORY_MONTHS_FOR_BLENDED : HISTORY_MONTHS_DEFAULT;
+  const months = method === 'blendedMultiYear' || method === 'constrainedDemand'
+    ? HISTORY_MONTHS_FOR_BLENDED
+    : HISTORY_MONTHS_DEFAULT;
   // `to` is `asOfYm` itself (the most recent month eligible as history).
   return { from: shiftYearMonth(asOfYm, -months + 1), to: asOfYm };
 }
@@ -208,6 +220,7 @@ export async function computePurchasePlan(req: PlanRequest): Promise<PlanRespons
 
   const { history, labelByKey } = aggregateHistory(salesRows, aggregateInputs);
   const onHandByDim = aggregateOnHand(onHandRows, aggregateInputs);
+  const forecastDimKeys = [...new Set([...labelByKey.keys(), ...onHandByDim.keys()])];
 
   // Patch in department labels for dept-level aggregation when they were
   // absent from the sales rollup (e.g. a dept present in on-hand but with no
@@ -220,7 +233,10 @@ export async function computePurchasePlan(req: PlanRequest): Promise<PlanRespons
     if (!labelByKey.has('0')) labelByKey.set('0', 'Unassigned');
   }
 
-  const projected = forecast(history, req.forecast.method, req.forecast, horizon);
+  const historyForForecast = req.forecast.method === 'constrainedDemand'
+    ? fillConstrainedDemandHistory(history, forecastDimKeys, monthsBetweenInclusive(window.from, window.to))
+    : history;
+  const projected = forecast(historyForForecast, req.forecast.method, req.forecast, horizon);
   const planRaw = computePlan(projected, onHandByDim, horizon, {
     eohMethod: req.eohMethod,
     coverMonths: req.coverMonths,

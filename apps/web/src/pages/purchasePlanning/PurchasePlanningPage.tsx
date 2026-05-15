@@ -35,6 +35,7 @@ import {
   type PurchasePlanAdjustmentKind,
   type PurchasePlanEohMethod,
   type PurchasePlanForecastMethod,
+  type SavedPurchasePlanRecalculateRequest,
   type SavedPurchasePlanAdjustmentRequest,
   type SavedPurchasePlanDepartment,
   type SavedPurchasePlanListItem,
@@ -59,6 +60,7 @@ const FORECAST_OPTIONS: Array<{ value: PurchasePlanForecastMethod; label: string
   { value: 'trailingAverage', label: 'Trailing average' },
   { value: 'yoyGrowth', label: 'YoY growth %' },
   { value: 'blendedMultiYear', label: 'Blended multi-year' },
+  { value: 'constrainedDemand', label: 'Constrained demand' },
 ]
 
 const EOH_OPTIONS: Array<{ value: PurchasePlanEohMethod; label: string }> = [
@@ -254,7 +256,8 @@ export default function PurchasePlanningPage() {
   })
 
   const recalculateMutation = useMutation({
-    mutationFn: (planId: string) => recalculateSavedPurchasePlan(planId, 'buyer'),
+    mutationFn: ({ planId, payload }: { planId: string; payload: SavedPurchasePlanRecalculateRequest }) =>
+      recalculateSavedPurchasePlan(planId, payload),
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: ['purchase-planning'] })
       messageApi.success('Plan recalculated')
@@ -672,7 +675,7 @@ export default function PurchasePlanningPage() {
           recalculateLoading={recalculateMutation.isPending}
           archiveLoading={archiveMutation.isPending}
           onSaveRows={(planId, payload) => worksheetUpdateMutation.mutate({ planId, payload })}
-          onRecalculate={(planId) => recalculateMutation.mutate(planId)}
+          onRecalculate={(planId, payload) => recalculateMutation.mutate({ planId, payload })}
           onArchive={(planId) => archiveMutation.mutate(planId)}
           extraControls={(
             <>

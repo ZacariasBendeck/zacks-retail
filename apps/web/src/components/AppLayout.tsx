@@ -191,10 +191,10 @@ const appMenuItems = [
     label: 'Purchase Planning',
     requiredPermissions: ['purchasing.view'],
     children: [
+      { key: '/purchase-planning/buyer-checklist', icon: <CheckCircleOutlined />, label: 'Buyer Checklist', requiredPermissions: ['purchasing.view'] },
       { key: '/purchase-planning', icon: <FundOutlined />, label: 'V2 - Actual', requiredPermissions: ['purchasing.view'] },
       { key: '/purchase-planning/v3', icon: <FundOutlined />, label: 'V3 - Warehouse Shared', requiredPermissions: ['purchasing.view'] },
       { key: '/purchase-planning/assortment', icon: <SwapOutlined />, label: 'Assortment Releases', requiredPermissions: ['purchasing.view'] },
-      { key: '/purchase-planning/buyer-checklist', icon: <CheckCircleOutlined />, label: 'Buyer Checklist', requiredPermissions: ['purchasing.view'] },
     ],
   },
   {

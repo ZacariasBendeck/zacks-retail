@@ -4,6 +4,9 @@ import { createPurchasePlan, getPurchasePlan, getPurchasePlanSalesTrendSummary }
 import { buildSeasonWindowFromYearMonth } from './season';
 import type { PurchasePlanDetailResponse, PurchasePlanSalesTrendSummary } from './types';
 
+const ATTRIBUTE_VARIANCE_PCT_THRESHOLD = 10;
+const ATTRIBUTE_VARIANCE_UNITS_THRESHOLD = 20;
+
 type DbClient = {
   $queryRawUnsafe: typeof prisma.$queryRawUnsafe;
   $executeRawUnsafe: typeof prisma.$executeRawUnsafe;
@@ -24,6 +27,47 @@ export type BuyerCategoryStatus =
 export type PlannedStyleStatus = 'PLANNED' | 'SELECTED' | 'LINKED' | 'CANCELLED';
 export type CarryoverDecision = 'UNREVIEWED' | 'WINNER' | 'MAYBE' | 'DROP';
 export type CarryoverAvailability = 'UNKNOWN' | 'AVAILABLE' | 'UNAVAILABLE';
+export type BuyerChecklistStepStatus = 'missing' | 'draft' | 'confirmed' | 'complete' | 'alert' | 'not_applicable';
+
+export interface BuyerChecklistSalesProjectionStep {
+  status: BuyerChecklistStepStatus;
+  projectedUnits: number;
+  updatedAt: string | null;
+  planId: string | null;
+}
+
+export interface BuyerChecklistInventoryPlanStep {
+  status: BuyerChecklistStepStatus;
+  hasProjectionPlan: boolean;
+  currentInventoryUnits: number;
+  departmentOtbUnits: number | null;
+}
+
+export interface BuyerChecklistCarryoverStep {
+  status: BuyerChecklistStepStatus;
+  targetCount: number;
+  plannedCount: number;
+  boughtCount: number;
+}
+
+export interface BuyerChecklistAttributePlanStep {
+  status: BuyerChecklistStepStatus;
+  plannedUnits: number;
+  currentInventoryUnits: number;
+  purchaseUnits: number;
+  actualUnits: number;
+  maxVariancePct: number;
+  maxVarianceUnits: number;
+  alertCount: number;
+  updatedAt: string | null;
+}
+
+export interface BuyerChecklistWorkflowSteps {
+  salesProjection: BuyerChecklistSalesProjectionStep;
+  inventoryPlan: BuyerChecklistInventoryPlanStep;
+  carryovers: BuyerChecklistCarryoverStep;
+  attributePlan: BuyerChecklistAttributePlanStep;
+}
 
 export class BuyerWorkbookServiceError extends Error {
   status: number;
@@ -115,6 +159,36 @@ export interface AttributePlanRow {
   updatedAt: string;
 }
 
+export interface AttributeReconciliationRow {
+  dimensionCode: string;
+  dimensionLabel: string;
+  valueCode: string;
+  valueLabel: string;
+  plannedStyleCount: number;
+  plannedUnits: number;
+  currentInventoryUnits: number;
+  purchaseUnits: number;
+  actualUnits: number;
+  plannedPct: number;
+  actualPct: number;
+  varianceUnits: number;
+  variancePct: number;
+  status: BuyerChecklistStepStatus;
+}
+
+export interface AttributeReconciliationDimension {
+  dimensionCode: string;
+  dimensionLabel: string;
+  plannedUnits: number;
+  currentInventoryUnits: number;
+  purchaseUnits: number;
+  actualUnits: number;
+  maxVariancePct: number;
+  maxVarianceUnits: number;
+  alertCount: number;
+  values: AttributeReconciliationRow[];
+}
+
 export interface CarryoverCandidateMetrics {
   unitsSold: number;
   netSales: number;
@@ -162,6 +236,7 @@ export interface BuyerChecklistSeasonPlan {
   noBudgetNote: string | null;
   noBudgetMarkedBy: string | null;
   noBudgetMarkedAt: string | null;
+  steps?: BuyerChecklistWorkflowSteps | null;
 }
 
 export interface BuyerChecklistCategoryRow {
@@ -253,6 +328,7 @@ export interface BuyerCategoryCard {
   salesProjection: SalesProjectionPlan;
   salesProjectionPlanId: string | null;
   attributeMix: AttributeMixDimension[];
+  attributeReconciliation: AttributeReconciliationDimension[];
   notes: string | null;
   createdAt: string;
   updatedAt: string;
@@ -430,6 +506,22 @@ interface CardRow {
   updatedAt: Date | string;
 }
 
+interface BuyerChecklistPlanSqlRow {
+  categoryNumber: number;
+  buyingSeason: BuyerWorkbookSeason;
+  seasonYear: number;
+  workbookId: string;
+  cardId: string;
+  status: BuyerCategoryStatus;
+  updatedAt: Date | string;
+  salesProjectionPlanId: string | null;
+  salesProjectionUnits: unknown;
+  salesProjectionUpdatedAt: Date | string | null;
+  targetCarryoverSkuCount: unknown;
+  plannedCarryoverCount: unknown;
+  boughtCarryoverCount: unknown;
+}
+
 interface StorePlanRow {
   id: string;
   workbookId: string;
@@ -520,6 +612,16 @@ interface AttributePlanDbRow {
   updatedAt: Date | string;
 }
 
+interface AttributeActualSqlRow {
+  cardId: string;
+  dimensionCode: string;
+  dimensionLabel: string;
+  valueCode: string;
+  valueLabel: string;
+  currentInventoryUnits: unknown;
+  purchaseUnits: unknown;
+}
+
 interface PoLinkRow {
   id: string;
   workbookId: string;
@@ -584,6 +686,10 @@ function toNumber(value: unknown): number {
   }
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function roundOne(value: number): number {
+  return Math.round(value * 10) / 10;
 }
 
 function toNullableNumber(value: unknown): number | null {
@@ -884,6 +990,7 @@ function normalizeCard(row: CardRow): BuyerCategoryCard {
     salesProjection: normalizeSalesProjection(row, historyMonths),
     salesProjectionPlanId: row.salesProjectionPlanId,
     attributeMix,
+    attributeReconciliation: [],
     notes: row.notes,
     createdAt: toIso(row.createdAt)!,
     updatedAt: toIso(row.updatedAt)!,
@@ -1013,6 +1120,165 @@ function normalizePoLink(row: PoLinkRow): PoLink {
     notes: row.notes,
     linkedBy: row.linkedBy,
     linkedAt: toIso(row.linkedAt)!,
+  };
+}
+
+function attributeActualKey(cardId: string, dimensionCode: string, valueCode: string): string {
+  return `${cardId}::${dimensionCode}::${valueCode}`;
+}
+
+function buildAttributeReconciliation(
+  plans: AttributePlanRow[],
+  actualRows: AttributeActualSqlRow[],
+): Map<string, AttributeReconciliationDimension[]> {
+  const actualMap = new Map<string, {
+    cardId: string;
+    dimensionCode: string;
+    dimensionLabel: string;
+    valueCode: string;
+    valueLabel: string;
+    currentInventoryUnits: number;
+    purchaseUnits: number;
+  }>();
+
+  for (const row of actualRows) {
+    const key = attributeActualKey(row.cardId, row.dimensionCode, row.valueCode);
+    const existing = actualMap.get(key);
+    const currentInventoryUnits = toNumber(row.currentInventoryUnits);
+    const purchaseUnits = toNumber(row.purchaseUnits);
+    if (existing) {
+      existing.currentInventoryUnits += currentInventoryUnits;
+      existing.purchaseUnits += purchaseUnits;
+    } else {
+      actualMap.set(key, {
+        cardId: row.cardId,
+        dimensionCode: row.dimensionCode,
+        dimensionLabel: row.dimensionLabel,
+        valueCode: row.valueCode,
+        valueLabel: row.valueLabel,
+        currentInventoryUnits,
+        purchaseUnits,
+      });
+    }
+  }
+
+  const planMap = new Map<string, AttributePlanRow>();
+  for (const plan of plans) {
+    planMap.set(attributeActualKey(plan.cardId, plan.dimensionCode, plan.valueCode), plan);
+  }
+
+  const keys = new Set([...planMap.keys(), ...actualMap.keys()]);
+  const byCardDimension = new Map<string, AttributeReconciliationRow[]>();
+  const dimensionMeta = new Map<string, { cardId: string; dimensionCode: string; dimensionLabel: string }>();
+
+  for (const key of keys) {
+    const plan = planMap.get(key);
+    const actual = actualMap.get(key);
+    const cardId = plan?.cardId ?? actual?.cardId;
+    const dimensionCode = plan?.dimensionCode ?? actual?.dimensionCode;
+    const valueCode = plan?.valueCode ?? actual?.valueCode;
+    if (!cardId || !dimensionCode || !valueCode) continue;
+    const dimensionLabel = plan?.dimensionLabel ?? actual?.dimensionLabel ?? dimensionCode;
+    const valueLabel = plan?.valueLabel ?? actual?.valueLabel ?? valueCode;
+    const row: AttributeReconciliationRow = {
+      dimensionCode,
+      dimensionLabel,
+      valueCode,
+      valueLabel,
+      plannedStyleCount: plan?.plannedStyleCount ?? 0,
+      plannedUnits: plan?.plannedUnits ?? 0,
+      currentInventoryUnits: actual?.currentInventoryUnits ?? 0,
+      purchaseUnits: actual?.purchaseUnits ?? 0,
+      actualUnits: (actual?.currentInventoryUnits ?? 0) + (actual?.purchaseUnits ?? 0),
+      plannedPct: 0,
+      actualPct: 0,
+      varianceUnits: 0,
+      variancePct: 0,
+      status: 'complete',
+    };
+    const dimensionKey = `${cardId}::${dimensionCode}`;
+    if (!byCardDimension.has(dimensionKey)) byCardDimension.set(dimensionKey, []);
+    byCardDimension.get(dimensionKey)!.push(row);
+    dimensionMeta.set(dimensionKey, { cardId, dimensionCode, dimensionLabel });
+  }
+
+  const byCard = new Map<string, AttributeReconciliationDimension[]>();
+  for (const [dimensionKey, rows] of byCardDimension.entries()) {
+    const meta = dimensionMeta.get(dimensionKey);
+    if (!meta) continue;
+    const plannedUnits = rows.reduce((sum, row) => sum + row.plannedUnits, 0);
+    const currentInventoryUnits = rows.reduce((sum, row) => sum + row.currentInventoryUnits, 0);
+    const purchaseUnits = rows.reduce((sum, row) => sum + row.purchaseUnits, 0);
+    const actualUnits = rows.reduce((sum, row) => sum + row.actualUnits, 0);
+    let maxVariancePct = 0;
+    let maxVarianceUnits = 0;
+    let alertCount = 0;
+
+    const values = rows
+      .map((row) => {
+        const plannedPct = plannedUnits > 0 ? (row.plannedUnits / plannedUnits) * 100 : 0;
+        const actualPct = actualUnits > 0 ? (row.actualUnits / actualUnits) * 100 : 0;
+        const varianceUnits = row.actualUnits - row.plannedUnits;
+        const variancePct = actualPct - plannedPct;
+        const isAlert = Math.abs(variancePct) > ATTRIBUTE_VARIANCE_PCT_THRESHOLD
+          || Math.abs(varianceUnits) > ATTRIBUTE_VARIANCE_UNITS_THRESHOLD;
+        maxVariancePct = Math.max(maxVariancePct, Math.abs(variancePct));
+        maxVarianceUnits = Math.max(maxVarianceUnits, Math.abs(varianceUnits));
+        if (isAlert) alertCount += 1;
+        return {
+          ...row,
+          plannedPct: roundOne(plannedPct),
+          actualPct: roundOne(actualPct),
+          varianceUnits: Math.round(varianceUnits),
+          variancePct: roundOne(variancePct),
+          status: isAlert ? 'alert' as BuyerChecklistStepStatus : 'complete' as BuyerChecklistStepStatus,
+        };
+      })
+      .sort((left, right) => Math.abs(right.variancePct) - Math.abs(left.variancePct)
+        || Math.abs(right.varianceUnits) - Math.abs(left.varianceUnits)
+        || left.valueLabel.localeCompare(right.valueLabel));
+
+    const dimension: AttributeReconciliationDimension = {
+      dimensionCode: meta.dimensionCode,
+      dimensionLabel: meta.dimensionLabel,
+      plannedUnits: Math.round(plannedUnits),
+      currentInventoryUnits: Math.round(currentInventoryUnits),
+      purchaseUnits: Math.round(purchaseUnits),
+      actualUnits: Math.round(actualUnits),
+      maxVariancePct: roundOne(maxVariancePct),
+      maxVarianceUnits: Math.round(maxVarianceUnits),
+      alertCount,
+      values,
+    };
+    if (!byCard.has(meta.cardId)) byCard.set(meta.cardId, []);
+    byCard.get(meta.cardId)!.push(dimension);
+  }
+
+  for (const dimensions of byCard.values()) {
+    dimensions.sort((left, right) => right.alertCount - left.alertCount || left.dimensionLabel.localeCompare(right.dimensionLabel));
+  }
+
+  return byCard;
+}
+
+function attributeSummaryFromReconciliation(dimensions: AttributeReconciliationDimension[]): BuyerChecklistAttributePlanStep {
+  const plannedUnits = dimensions.reduce((sum, dimension) => sum + dimension.plannedUnits, 0);
+  const currentInventoryUnits = dimensions.reduce((sum, dimension) => sum + dimension.currentInventoryUnits, 0);
+  const purchaseUnits = dimensions.reduce((sum, dimension) => sum + dimension.purchaseUnits, 0);
+  const actualUnits = dimensions.reduce((sum, dimension) => sum + dimension.actualUnits, 0);
+  const maxVariancePct = dimensions.reduce((max, dimension) => Math.max(max, dimension.maxVariancePct), 0);
+  const maxVarianceUnits = dimensions.reduce((max, dimension) => Math.max(max, dimension.maxVarianceUnits), 0);
+  const alertCount = dimensions.reduce((sum, dimension) => sum + dimension.alertCount, 0);
+  return {
+    status: dimensions.length === 0 ? 'missing' : alertCount > 0 ? 'alert' : 'complete',
+    plannedUnits,
+    currentInventoryUnits,
+    purchaseUnits,
+    actualUnits,
+    maxVariancePct,
+    maxVarianceUnits,
+    alertCount,
+    updatedAt: null,
   };
 }
 
@@ -1171,15 +1437,7 @@ LIMIT 1000
   );
 
   const baseCategoryNumbers = categoryRows.map((row) => Number(row.categoryNumber));
-  const planRows = baseCategoryNumbers.length === 0 ? [] : await prisma.$queryRawUnsafe<Array<{
-    categoryNumber: number;
-    buyingSeason: BuyerWorkbookSeason;
-    seasonYear: number;
-    workbookId: string;
-    cardId: string;
-    status: BuyerCategoryStatus;
-    updatedAt: Date | string;
-  }>>(
+  const planRows = baseCategoryNumbers.length === 0 ? [] : await prisma.$queryRawUnsafe<BuyerChecklistPlanSqlRow[]>(
     `
       SELECT DISTINCT ON (c.category_number, w.buying_season, w.season_year)
         c.category_number AS "categoryNumber",
@@ -1188,7 +1446,23 @@ LIMIT 1000
         w.id::text AS "workbookId",
         c.id::text AS "cardId",
         c.status,
-        c.updated_at AS "updatedAt"
+        c.updated_at AS "updatedAt",
+        c.sales_projection_plan_id::text AS "salesProjectionPlanId",
+        c.sales_projection_units AS "salesProjectionUnits",
+        c.sales_projection_updated_at AS "salesProjectionUpdatedAt",
+        c.target_carryover_sku_count AS "targetCarryoverSkuCount",
+        (
+          SELECT COUNT(DISTINCT l.id)::int
+          FROM app.buyer_purchase_carryover_line l
+          WHERE l.card_id = c.id
+            AND l.unavailable = false
+        ) AS "plannedCarryoverCount",
+        (
+          SELECT COUNT(DISTINCT p.carryover_line_id)::int
+          FROM app.buyer_purchase_po_link p
+          WHERE p.card_id = c.id
+            AND p.carryover_line_id IS NOT NULL
+        ) AS "boughtCarryoverCount"
       FROM app.buyer_purchase_category_card c
       JOIN app.buyer_purchase_workbook w ON w.id = c.workbook_id
       WHERE c.category_number = ANY($1::int[])
@@ -1236,7 +1510,9 @@ LIMIT 1000
   );
 
   const planMap = new Map<string, BuyerChecklistSeasonPlan>();
+  const planDetailByCardId = new Map<string, BuyerChecklistPlanSqlRow>();
   for (const row of planRows) {
+    planDetailByCardId.set(row.cardId, row);
     planMap.set(`${row.categoryNumber}:${row.buyingSeason}:${row.seasonYear}`, {
       buyingSeason: row.buyingSeason,
       seasonYear: Number(row.seasonYear),
@@ -1312,6 +1588,28 @@ LIMIT 1000
     },
   ]));
   const otbMap = new Map(otbRows.map((row) => [Number(row.departmentNumber), Math.round(toNumber(row.openToBuyUnits))]));
+  const currentCardIds = visibleCategoryRows
+    .map((row) => {
+      const currentPlan = planMap.get(`${row.categoryNumber}:${currentSeason.buyingSeason}:${currentSeason.seasonYear}`);
+      return currentPlan?.cardId ?? null;
+    })
+    .filter((cardId): cardId is string => Boolean(cardId));
+  const [currentAttributePlans, currentAttributeActualRows] = await Promise.all([
+    loadAttributePlansForCards(currentCardIds),
+    loadAttributeActualRowsForCards(currentCardIds),
+  ]);
+  const attributeReconciliationByCard = buildAttributeReconciliation(currentAttributePlans, currentAttributeActualRows);
+  const attributePlanUpdatedAtByCard = new Map<string, string | null>();
+  for (const plan of currentAttributePlans) {
+    const previous = attributePlanUpdatedAtByCard.get(plan.cardId);
+    if (!previous || plan.updatedAt > previous) attributePlanUpdatedAtByCard.set(plan.cardId, plan.updatedAt);
+  }
+  const attributeSummaryByCard = new Map<string, BuyerChecklistAttributePlanStep>();
+  for (const cardId of currentCardIds) {
+    const summary = attributeSummaryFromReconciliation(attributeReconciliationByCard.get(cardId) ?? []);
+    summary.updatedAt = attributePlanUpdatedAtByCard.get(cardId) ?? null;
+    attributeSummaryByCard.set(cardId, summary);
+  }
 
   const rows: BuyerChecklistCategoryRow[] = visibleCategoryRows.map((row) => {
     const plans = Object.fromEntries(seasonSeries.map((season) => [
@@ -1322,6 +1620,18 @@ LIMIT 1000
         noBudgetMap.get(`${row.categoryNumber}:${season.buyingSeason}:${season.seasonYear}`),
       ),
     ])) as Pick<BuyerChecklistCategoryRow, 'currentSeason' | 'nextSeason' | 'followingSeason'>;
+    const currentInventoryUnits = Math.round(inventoryMap.get(Number(row.categoryNumber))?.units ?? 0);
+    const currentDepartmentOtbUnits = row.departmentNumber == null ? null : otbMap.get(Number(row.departmentNumber)) ?? null;
+    plans.currentSeason = {
+      ...plans.currentSeason,
+      steps: buildChecklistWorkflowSteps({
+        plan: plans.currentSeason,
+        detail: plans.currentSeason.cardId ? planDetailByCardId.get(plans.currentSeason.cardId) : undefined,
+        attributePlan: plans.currentSeason.cardId ? attributeSummaryByCard.get(plans.currentSeason.cardId) : undefined,
+        currentInventoryUnits,
+        departmentOtbUnits: currentDepartmentOtbUnits,
+      }),
+    };
     const action: BuyerChecklistCategoryRow['action'] = plans.currentSeason.status === 'NO_BUDGET'
       ? 'NO_BUDGET'
       : plans.currentSeason.cardId
@@ -1336,9 +1646,9 @@ LIMIT 1000
       departmentLabel: row.departmentLabel ?? 'Unmapped',
       last12MonthsSales: Math.round((salesMap.get(Number(row.categoryNumber))?.sales ?? 0) * 100) / 100,
       last12MonthsUnits: Math.round(salesMap.get(Number(row.categoryNumber))?.units ?? 0),
-      currentInventoryUnits: Math.round(inventoryMap.get(Number(row.categoryNumber))?.units ?? 0),
+      currentInventoryUnits,
       currentInventoryValue: Math.round((inventoryMap.get(Number(row.categoryNumber))?.value ?? 0) * 100) / 100,
-      departmentOtbUnits: row.departmentNumber == null ? null : otbMap.get(Number(row.departmentNumber)) ?? null,
+      departmentOtbUnits: currentDepartmentOtbUnits,
       ...plans,
       action,
     };
@@ -1835,6 +2145,128 @@ ORDER BY d.label_es, SUM(s.units_sold) DESC, v.label_es
   })));
 }
 
+async function loadAttributeActualRowsForCards(cardIds: string[], db: DbClient = prisma): Promise<AttributeActualSqlRow[]> {
+  if (cardIds.length === 0) return [];
+  return db.$queryRawUnsafe<AttributeActualSqlRow[]>(
+    `
+WITH card_scope AS (
+  SELECT
+    c.id,
+    c.id::text AS card_id,
+    c.category_number,
+    CASE
+      WHEN COALESCE(array_length(c.target_store_ids, 1), 0) > 0 THEN c.target_store_ids
+      ELSE ARRAY[c.seed_store_id]
+    END AS store_ids
+  FROM app.buyer_purchase_category_card c
+  WHERE c.id = ANY($1::uuid[])
+),
+plan_dimensions AS (
+  SELECT DISTINCT
+    card_id::text AS card_id,
+    dimension_code
+  FROM app.buyer_purchase_attribute_plan
+  WHERE card_id = ANY($1::uuid[])
+),
+inventory_units AS (
+  SELECT
+    cs.card_id AS "cardId",
+    d.code AS "dimensionCode",
+    d.label_es AS "dimensionLabel",
+    v.code AS "valueCode",
+    v.label_es AS "valueLabel",
+    SUM(GREATEST(COALESCE(sl.on_hand, 0), 0))::float8 AS "currentInventoryUnits",
+    0::float8 AS "purchaseUnits"
+  FROM card_scope cs
+  JOIN app.sku k ON k.category_number = cs.category_number
+  JOIN app.stock_level sl ON sl.sku_id = k.id
+    AND sl.store_id = ANY(cs.store_ids)
+    AND COALESCE(sl.on_hand, 0) > 0
+  JOIN app.sku_attribute_assignment a ON UPPER(a.sku_code) = UPPER(COALESCE(k.code, k.provisional_code))
+  JOIN app.attribute_dimension d ON d.id = a.dimension_id
+  JOIN app.attribute_value v ON v.id = a.value_id
+  JOIN plan_dimensions pd
+    ON pd.card_id = cs.card_id
+   AND pd.dimension_code = d.code
+  GROUP BY cs.card_id, d.code, d.label_es, v.code, v.label_es
+),
+po_skus AS (
+  SELECT
+    p.card_id::text AS card_id,
+    UPPER(BTRIM(COALESCE(cl.sku_code, ps.linked_sku_code))) AS sku_code,
+    SUM(GREATEST(COALESCE(p.quantity, 0), 0))::float8 AS quantity
+  FROM app.buyer_purchase_po_link p
+  LEFT JOIN app.buyer_purchase_carryover_line cl ON cl.id = p.carryover_line_id
+  LEFT JOIN app.buyer_purchase_planned_style ps ON ps.id = p.planned_style_id
+  WHERE p.card_id = ANY($1::uuid[])
+    AND COALESCE(cl.sku_code, ps.linked_sku_code) IS NOT NULL
+  GROUP BY p.card_id, UPPER(BTRIM(COALESCE(cl.sku_code, ps.linked_sku_code)))
+),
+purchase_units AS (
+  SELECT
+    ps.card_id AS "cardId",
+    d.code AS "dimensionCode",
+    d.label_es AS "dimensionLabel",
+    v.code AS "valueCode",
+    v.label_es AS "valueLabel",
+    0::float8 AS "currentInventoryUnits",
+    SUM(ps.quantity)::float8 AS "purchaseUnits"
+  FROM po_skus ps
+  JOIN app.sku k ON UPPER(COALESCE(k.code, k.provisional_code)) = ps.sku_code
+  JOIN app.sku_attribute_assignment a ON UPPER(a.sku_code) = ps.sku_code
+  JOIN app.attribute_dimension d ON d.id = a.dimension_id
+  JOIN app.attribute_value v ON v.id = a.value_id
+  JOIN plan_dimensions pd
+    ON pd.card_id = ps.card_id
+   AND pd.dimension_code = d.code
+  GROUP BY ps.card_id, d.code, d.label_es, v.code, v.label_es
+)
+SELECT
+  combined."cardId",
+  combined."dimensionCode",
+  combined."dimensionLabel",
+  combined."valueCode",
+  combined."valueLabel",
+  SUM(combined."currentInventoryUnits")::float8 AS "currentInventoryUnits",
+  SUM(combined."purchaseUnits")::float8 AS "purchaseUnits"
+FROM (
+  SELECT * FROM inventory_units
+  UNION ALL
+  SELECT * FROM purchase_units
+) combined
+GROUP BY combined."cardId", combined."dimensionCode", combined."dimensionLabel", combined."valueCode", combined."valueLabel"
+ORDER BY combined."cardId", combined."dimensionLabel", combined."valueLabel"
+    `,
+    cardIds,
+  );
+}
+
+async function loadAttributePlansForCards(cardIds: string[], db: DbClient = prisma): Promise<AttributePlanRow[]> {
+  if (cardIds.length === 0) return [];
+  const rows = await db.$queryRawUnsafe<AttributePlanDbRow[]>(
+    `
+      SELECT
+        id::text,
+        workbook_id::text AS "workbookId",
+        card_id::text AS "cardId",
+        dimension_code AS "dimensionCode",
+        dimension_label AS "dimensionLabel",
+        value_code AS "valueCode",
+        value_label AS "valueLabel",
+        planned_style_count AS "plannedStyleCount",
+        planned_units AS "plannedUnits",
+        notes,
+        updated_by AS "updatedBy",
+        updated_at AS "updatedAt"
+      FROM app.buyer_purchase_attribute_plan
+      WHERE card_id = ANY($1::uuid[])
+      ORDER BY dimension_label, value_label
+    `,
+    cardIds,
+  );
+  return rows.map(normalizeAttributePlan);
+}
+
 function nextBuyerSeason(input: { buyingSeason: BuyerWorkbookSeason; seasonYear: number }): {
   buyingSeason: BuyerWorkbookSeason;
   seasonYear: number;
@@ -1878,6 +2310,119 @@ async function findBuyerChecklistCategoryRow(input: {
     throw new BuyerWorkbookServiceError(404, 'CATEGORY_NOT_FOUND', 'Category was not found in the buyer checklist.');
   }
   return row;
+}
+
+function emptySalesProjectionStep(status: BuyerChecklistStepStatus): BuyerChecklistSalesProjectionStep {
+  return {
+    status,
+    projectedUnits: 0,
+    updatedAt: null,
+    planId: null,
+  };
+}
+
+function emptyInventoryPlanStep(
+  status: BuyerChecklistStepStatus,
+  currentInventoryUnits: number,
+  departmentOtbUnits: number | null,
+): BuyerChecklistInventoryPlanStep {
+  return {
+    status,
+    hasProjectionPlan: false,
+    currentInventoryUnits,
+    departmentOtbUnits,
+  };
+}
+
+function emptyCarryoverStep(status: BuyerChecklistStepStatus): BuyerChecklistCarryoverStep {
+  return {
+    status,
+    targetCount: 0,
+    plannedCount: 0,
+    boughtCount: 0,
+  };
+}
+
+function emptyAttributePlanStep(status: BuyerChecklistStepStatus): BuyerChecklistAttributePlanStep {
+  return {
+    status,
+    plannedUnits: 0,
+    currentInventoryUnits: 0,
+    purchaseUnits: 0,
+    actualUnits: 0,
+    maxVariancePct: 0,
+    maxVarianceUnits: 0,
+    alertCount: 0,
+    updatedAt: null,
+  };
+}
+
+function emptyWorkflowSteps(
+  status: BuyerChecklistStepStatus,
+  currentInventoryUnits: number,
+  departmentOtbUnits: number | null,
+): BuyerChecklistWorkflowSteps {
+  return {
+    salesProjection: emptySalesProjectionStep(status),
+    inventoryPlan: emptyInventoryPlanStep(status, currentInventoryUnits, departmentOtbUnits),
+    carryovers: emptyCarryoverStep(status),
+    attributePlan: emptyAttributePlanStep(status),
+  };
+}
+
+function buildChecklistWorkflowSteps(input: {
+  plan: BuyerChecklistSeasonPlan;
+  detail: BuyerChecklistPlanSqlRow | undefined;
+  attributePlan: BuyerChecklistAttributePlanStep | undefined;
+  currentInventoryUnits: number;
+  departmentOtbUnits: number | null;
+}): BuyerChecklistWorkflowSteps {
+  if (input.plan.status === 'NO_BUDGET') {
+    return emptyWorkflowSteps('not_applicable', input.currentInventoryUnits, input.departmentOtbUnits);
+  }
+  if (!input.plan.cardId || !input.detail) {
+    return emptyWorkflowSteps('missing', input.currentInventoryUnits, input.departmentOtbUnits);
+  }
+
+  const planId = input.detail.salesProjectionPlanId;
+  const salesProjectionUpdatedAt = toIso(input.detail.salesProjectionUpdatedAt);
+  const hasProjectionPlan = Boolean(planId);
+  const salesProjectionStatus: BuyerChecklistStepStatus = salesProjectionUpdatedAt
+    ? 'confirmed'
+    : hasProjectionPlan ? 'draft' : 'missing';
+  const inventoryStatus: BuyerChecklistStepStatus = hasProjectionPlan
+    ? salesProjectionStatus === 'confirmed' ? 'confirmed' : 'draft'
+    : 'missing';
+  const targetCount = Math.max(0, Math.round(toNumber(input.detail.targetCarryoverSkuCount)));
+  const plannedCount = Math.max(0, Math.round(toNumber(input.detail.plannedCarryoverCount)));
+  const boughtCount = Math.max(0, Math.round(toNumber(input.detail.boughtCarryoverCount)));
+  const carryoverStatus: BuyerChecklistStepStatus = targetCount === 0
+    ? 'complete'
+    : boughtCount >= targetCount
+      ? 'complete'
+      : plannedCount > 0 || boughtCount > 0 ? 'draft' : 'missing';
+
+  return {
+    salesProjection: {
+      status: salesProjectionStatus,
+      projectedUnits: Math.max(0, Math.round(toNumber(input.detail.salesProjectionUnits))),
+      updatedAt: salesProjectionUpdatedAt,
+      planId,
+    },
+    inventoryPlan: {
+      status: inventoryStatus,
+      hasProjectionPlan,
+      currentInventoryUnits: input.currentInventoryUnits,
+      departmentOtbUnits: input.departmentOtbUnits,
+    },
+    carryovers: {
+      status: carryoverStatus,
+      targetCount,
+      plannedCount,
+      boughtCount,
+    },
+    attributePlan: input.attributePlan ?? emptyAttributePlanStep('missing'),
+  };
 }
 
 function emptySeasonPlan(buyingSeason: BuyerWorkbookSeason, seasonYear: number): BuyerChecklistSeasonPlan {
@@ -2636,14 +3181,25 @@ export async function getBuyerWorkbook(id: string): Promise<BuyerWorkbookDetail>
     ),
   ]);
 
+  const normalizedAttributePlans = attributePlanRows.map(normalizeAttributePlan);
+  const attributeActualRows = await loadAttributeActualRowsForCards(cardRows.map((row) => row.id));
+  const attributeReconciliationByCard = buildAttributeReconciliation(normalizedAttributePlans, attributeActualRows);
+  const cards = cardRows.map((row) => {
+    const card = normalizeCard(row);
+    return {
+      ...card,
+      attributeReconciliation: attributeReconciliationByCard.get(card.id) ?? [],
+    };
+  });
+
   return {
     workbook,
-    cards: cardRows.map(normalizeCard),
+    cards,
     storePlans: storePlanRows.map(normalizeStorePlan),
     carryoverCandidates: candidateRows.map(normalizeCandidate),
     carryovers: carryoverRows.map(normalizeCarryover),
     plannedStyles: styleRows.map(normalizeStyle),
-    attributePlans: attributePlanRows.map(normalizeAttributePlan),
+    attributePlans: normalizedAttributePlans,
     poLinks: linkRows.map(normalizePoLink),
   };
 }

@@ -1,5 +1,5 @@
 import { prisma } from '../../db/prisma';
-import { forecast, shiftYearMonth } from './forecast';
+import { fillConstrainedDemandHistory, forecast, shiftYearMonth } from './forecast';
 import { computePlanWithInventoryPosition } from './compute';
 import { applySeasonTotalAdjustment } from './adjustments';
 import {
@@ -32,6 +32,7 @@ import type {
   PurchasePlanListItem,
   PurchasePlanPlanningDimension,
   PurchasePlanPlanningScope,
+  PurchasePlanRecalculateRequest,
   PurchasePlanRowsUpdateRequest,
   PurchasePlanRowUpdateRequest,
   PurchasePlanSavedRow,
@@ -1154,15 +1155,22 @@ function calculateRowsFromLoadedPlanningData(input: {
   const history = input.data.facts.history.filter((point) =>
     point.yearMonth >= input.range.historyFromYearMonth &&
     point.yearMonth <= input.range.historyToYearMonth);
-  const normalized = normalizeDiscountDistortedHistory(history, input.discountNormalization);
   const dimKeys = [...new Set([...labelByKey.keys(), ...positions.keys()])];
+  const historyForForecast = input.forecastMethod === 'constrainedDemand'
+    ? fillConstrainedDemandHistory(
+      history,
+      dimKeys,
+      monthsBetweenInclusive(input.range.historyFromYearMonth, input.range.historyToYearMonth),
+    )
+    : history;
+  const normalized = normalizeDiscountDistortedHistory(historyForForecast, input.discountNormalization);
   const normalizedProjection = ensureProjectedRectangle(
     forecast(normalized, input.forecastMethod, input.forecastParams, input.range.projectionMonths),
     dimKeys,
     input.range.projectionMonths,
   );
   const rawProjection = ensureProjectedRectangle(
-    forecast(history, input.forecastMethod, input.forecastParams, input.range.projectionMonths),
+    forecast(historyForForecast, input.forecastMethod, input.forecastParams, input.range.projectionMonths),
     dimKeys,
     input.range.projectionMonths,
   );
@@ -1985,6 +1993,43 @@ async function applyExistingAdjustmentRows(
   await updateCurrentRows(next, db);
 }
 
+function normalizeRecalculateInput(input?: string | PurchasePlanRecalculateRequest): Required<Pick<PurchasePlanRecalculateRequest, 'mode'>> & {
+  actor: string;
+  forecast: NonNullable<PurchasePlanRecalculateRequest['forecast']>;
+} {
+  const raw = typeof input === 'string' ? { actor: input } : input ?? {};
+  return {
+    actor: raw.actor?.trim() || 'system',
+    forecast: raw.forecast ?? {},
+    mode: raw.mode === 'preserve_user' ? 'preserve_user' : 'overwrite',
+  };
+}
+
+function preserveCurrentValues(
+  calculatedRows: Array<Omit<PurchasePlanSavedRow, 'id' | 'planId'>>,
+  beforeRows: PurchasePlanSavedRow[],
+): Array<Omit<PurchasePlanSavedRow, 'id' | 'planId'>> {
+  const beforeByKey = new Map(beforeRows.map((row) => [`${row.departmentKey}|${row.yearMonth}`, row]));
+  const beforeByDepartmentNumber = new Map(
+    beforeRows
+      .filter((row) => row.departmentNumber != null)
+      .map((row) => [`${row.departmentNumber}|${row.yearMonth}`, row]),
+  );
+  return calculatedRows.map((row) => {
+    const before = beforeByKey.get(`${row.departmentKey}|${row.yearMonth}`)
+      ?? (row.departmentNumber == null ? undefined : beforeByDepartmentNumber.get(`${row.departmentNumber}|${row.yearMonth}`));
+    if (!before) return row;
+    return {
+      ...row,
+      currentBoh: before.currentBoh,
+      currentProjSales: before.currentProjSales,
+      currentEohTarget: before.currentEohTarget,
+      currentBuy: before.currentBuy,
+      currentEohActual: before.currentEohActual,
+    };
+  });
+}
+
 export async function createPurchasePlan(input: PurchasePlanCreateRequest): Promise<PurchasePlanDetailResponse> {
   const forecastMethod = input.forecast?.method ?? DEFAULT_FORECAST_METHOD;
   const eohMethod = input.eohMethod ?? DEFAULT_EOH_METHOD;
@@ -2267,13 +2312,18 @@ export async function updatePurchasePlanRows(
   return getPurchasePlan(planId);
 }
 
-export async function recalculatePurchasePlan(planId: string, actor = 'system'): Promise<PurchasePlanDetailResponse> {
+export async function recalculatePurchasePlan(
+  planId: string,
+  input?: string | PurchasePlanRecalculateRequest,
+): Promise<PurchasePlanDetailResponse> {
+  const recalculateInput = normalizeRecalculateInput(input);
   await prisma.$transaction(async (tx) => {
     const plan = await loadPlanHeader(planId, tx);
     if (plan.status === 'archived') {
       throw new PurchasePlanningServiceError(409, 'PLAN_ARCHIVED', 'Archived plans cannot be recalculated.');
     }
     const beforeRows = await loadRows(planId, tx);
+    const forecastMethod = recalculateInput.forecast.method ?? plan.forecastMethod;
     const calculation = await buildCalculatedRows({
       planningScope: plan.planningScope,
       planningDimension: plan.planningDimension,
@@ -2283,17 +2333,22 @@ export async function recalculatePurchasePlan(planId: string, actor = 'system'):
       seasonMonths: plan.seasonMonths,
       departmentNumbers: plan.selectedDepartments,
       categoryNumbers: plan.selectedCategories,
-      forecastMethod: plan.forecastMethod,
-      forecastParams: {},
+      forecastMethod,
+      forecastParams: recalculateInput.forecast,
       eohMethod: plan.eohMethod,
       coverMonths: plan.coverMonths,
       discountNormalization: plan.discountNormalization,
     });
+    const rowsToInsert = recalculateInput.mode === 'preserve_user'
+      ? preserveCurrentValues(calculation.rows, beforeRows)
+      : calculation.rows;
     await tx.$executeRawUnsafe(`DELETE FROM app.purchase_plan_row WHERE plan_id = $1::uuid`, planId);
-    await insertRows(planId, calculation.rows, tx);
-    const adjustments = await loadAdjustments(planId, tx);
-    for (const adjustment of adjustments) {
-      await applyExistingAdjustmentRows(planId, adjustment, tx);
+    await insertRows(planId, rowsToInsert, tx);
+    if (recalculateInput.mode !== 'preserve_user') {
+      const adjustments = await loadAdjustments(planId, tx);
+      for (const adjustment of adjustments) {
+        await applyExistingAdjustmentRows(planId, adjustment, tx);
+      }
     }
     await tx.$executeRawUnsafe(
       `
@@ -2301,14 +2356,23 @@ export async function recalculatePurchasePlan(planId: string, actor = 'system'):
         SET
           history_from_year_month = $2,
           history_to_year_month = $3,
+          forecast_method = $4,
           updated_at = CURRENT_TIMESTAMP
         WHERE id = $1::uuid
       `,
       planId,
       calculation.historyFromYearMonth,
       calculation.historyToYearMonth,
+      forecastMethod,
     );
-    await recordAudit(planId, 'recalculate', actor, beforeRows, calculation.rows, tx);
+    await recordAudit(
+      planId,
+      'recalculate',
+      recalculateInput.actor,
+      { rows: beforeRows, forecastMethod: plan.forecastMethod },
+      { rows: rowsToInsert, forecastMethod, mode: recalculateInput.mode },
+      tx,
+    );
   });
   return getPurchasePlan(planId);
 }
@@ -2414,7 +2478,11 @@ async function ensureReportWorkbook(params: {
   });
   if (existing) {
     return {
-      detail: await getPurchasePlan(existing.id),
+      detail: await recalculatePurchasePlan(existing.id, {
+        actor: params.createdBy,
+        forecast: { method: params.forecastMethod, ...params.forecastParams },
+        mode: 'preserve_user',
+      }),
       autoCreated: false,
       duplicateSourceCount: toNumber(existing.matchCount),
     };

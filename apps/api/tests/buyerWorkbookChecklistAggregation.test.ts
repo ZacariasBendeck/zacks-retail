@@ -29,6 +29,13 @@ type MockChecklistQueryInput = {
     currentInventoryUnits: number;
     currentInventoryValue: number;
   }>;
+  otb?: Array<{
+    departmentNumber: number;
+    openToBuyUnits: number;
+  }>;
+  planRows?: Array<Record<string, unknown>>;
+  attributePlans?: Array<Record<string, unknown>>;
+  attributeActualRows?: Array<Record<string, unknown>>;
   noBudget?: Array<{
     id: string;
     categoryNumber: number;
@@ -65,7 +72,7 @@ function mockChecklistQueries(input: MockChecklistQueryInput = {}) {
   (prisma.$queryRawUnsafe as jest.Mock)
     .mockResolvedValueOnce([{ yearMonth: '2026-05' }])
     .mockResolvedValueOnce(categories)
-    .mockResolvedValueOnce([])
+    .mockResolvedValueOnce(input.planRows ?? [])
     .mockResolvedValueOnce(input.noBudget ?? [])
     .mockResolvedValueOnce(input.sales ?? [
       { categoryNumber: 262, last12MonthsSales: 1000.49, last12MonthsUnits: 12.2 },
@@ -73,7 +80,13 @@ function mockChecklistQueries(input: MockChecklistQueryInput = {}) {
     .mockResolvedValueOnce(input.inventory ?? [
       { categoryNumber: 262, currentInventoryUnits: 20, currentInventoryValue: 500.25 },
     ])
-    .mockResolvedValueOnce([]);
+    .mockResolvedValueOnce(input.otb ?? []);
+
+  if ((input.planRows?.length ?? 0) > 0 || input.attributePlans || input.attributeActualRows) {
+    (prisma.$queryRawUnsafe as jest.Mock)
+      .mockResolvedValueOnce(input.attributePlans ?? [])
+      .mockResolvedValueOnce(input.attributeActualRows ?? []);
+  }
 }
 
 function sqlCallContaining(fragment: string) {
@@ -131,6 +144,14 @@ describe('listBuyerChecklistCategories aggregation', () => {
         last12MonthsUnits: 12,
         currentInventoryUnits: 20,
         currentInventoryValue: 500.25,
+        currentSeason: expect.objectContaining({
+          steps: expect.objectContaining({
+            salesProjection: expect.objectContaining({ status: 'missing' }),
+            inventoryPlan: expect.objectContaining({ status: 'missing', currentInventoryUnits: 20 }),
+            carryovers: expect.objectContaining({ status: 'missing' }),
+            attributePlan: expect.objectContaining({ status: 'missing' }),
+          }),
+        }),
       }),
       expect.objectContaining({
         categoryNumber: 560,
@@ -140,6 +161,148 @@ describe('listBuyerChecklistCategories aggregation', () => {
         currentInventoryValue: 0,
       }),
     ]));
+  });
+
+  it('summarizes current-season workflow steps from projection, carryover, PO, and attribute rows', async () => {
+    mockChecklistQueries({
+      inventory: [
+        { categoryNumber: 262, currentInventoryUnits: 20, currentInventoryValue: 500.25 },
+        { categoryNumber: 560, currentInventoryUnits: 8, currentInventoryValue: 250 },
+      ],
+      otb: [
+        { departmentNumber: 56, openToBuyUnits: 40 },
+        { departmentNumber: 59, openToBuyUnits: 12 },
+      ],
+      planRows: [
+        {
+          categoryNumber: 262,
+          buyingSeason: 'FALL_WINTER',
+          seasonYear: 2026,
+          workbookId: 'workbook-1',
+          cardId: 'card-1',
+          status: 'NOT_STARTED',
+          updatedAt: '2026-05-01T00:00:00.000Z',
+          salesProjectionPlanId: 'plan-1',
+          salesProjectionUnits: 120,
+          salesProjectionUpdatedAt: null,
+          targetCarryoverSkuCount: 3,
+          plannedCarryoverCount: 2,
+          boughtCarryoverCount: 1,
+        },
+        {
+          categoryNumber: 560,
+          buyingSeason: 'FALL_WINTER',
+          seasonYear: 2026,
+          workbookId: 'workbook-2',
+          cardId: 'card-2',
+          status: 'HISTORY_REVIEWED',
+          updatedAt: '2026-05-02T00:00:00.000Z',
+          salesProjectionPlanId: 'plan-2',
+          salesProjectionUnits: 48,
+          salesProjectionUpdatedAt: '2026-05-02T01:00:00.000Z',
+          targetCarryoverSkuCount: 1,
+          plannedCarryoverCount: 1,
+          boughtCarryoverCount: 1,
+        },
+      ],
+      attributePlans: [
+        {
+          id: 'attr-1',
+          workbookId: 'workbook-1',
+          cardId: 'card-1',
+          dimensionCode: 'color_family',
+          dimensionLabel: 'Color Family',
+          valueCode: 'black',
+          valueLabel: 'Black',
+          plannedStyleCount: 2,
+          plannedUnits: 70,
+          notes: null,
+          updatedBy: 'buyer',
+          updatedAt: '2026-05-03T00:00:00.000Z',
+        },
+      ],
+      attributeActualRows: [
+        {
+          cardId: 'card-1',
+          dimensionCode: 'color_family',
+          dimensionLabel: 'Color Family',
+          valueCode: 'black',
+          valueLabel: 'Black',
+          currentInventoryUnits: 100,
+          purchaseUnits: 0,
+        },
+        {
+          cardId: 'card-1',
+          dimensionCode: 'color_family',
+          dimensionLabel: 'Color Family',
+          valueCode: 'brown',
+          valueLabel: 'Brown',
+          currentInventoryUnits: 30,
+          purchaseUnits: 0,
+        },
+      ],
+    });
+
+    const rows = await service.listBuyerChecklistCategories({
+      buyingSeason: 'FALL_WINTER',
+      seasonYear: 2026,
+    });
+
+    const draftRow = rows.find((row: { categoryNumber: number }) => row.categoryNumber === 262);
+    expect(draftRow.currentSeason.steps).toMatchObject({
+      salesProjection: {
+        status: 'draft',
+        projectedUnits: 120,
+        planId: 'plan-1',
+        updatedAt: null,
+      },
+      inventoryPlan: {
+        status: 'draft',
+        hasProjectionPlan: true,
+        currentInventoryUnits: 20,
+        departmentOtbUnits: 40,
+      },
+      carryovers: {
+        status: 'draft',
+        targetCount: 3,
+        plannedCount: 2,
+        boughtCount: 1,
+      },
+      attributePlan: {
+        status: 'alert',
+        plannedUnits: 70,
+        currentInventoryUnits: 130,
+        actualUnits: 130,
+        maxVarianceUnits: 30,
+        alertCount: 2,
+        updatedAt: '2026-05-03T00:00:00.000Z',
+      },
+    });
+
+    const confirmedRow = rows.find((row: { categoryNumber: number }) => row.categoryNumber === 560);
+    expect(confirmedRow.currentSeason.steps).toMatchObject({
+      salesProjection: {
+        status: 'confirmed',
+        projectedUnits: 48,
+        planId: 'plan-2',
+        updatedAt: '2026-05-02T01:00:00.000Z',
+      },
+      inventoryPlan: {
+        status: 'confirmed',
+        hasProjectionPlan: true,
+        currentInventoryUnits: 8,
+        departmentOtbUnits: 12,
+      },
+      carryovers: {
+        status: 'complete',
+        targetCount: 1,
+        plannedCount: 1,
+        boughtCount: 1,
+      },
+      attributePlan: {
+        status: 'missing',
+      },
+    });
   });
 
   it('uses the buyer filter only to select category-owned checklist rows', async () => {
@@ -244,6 +407,12 @@ describe('listBuyerChecklistCategories aggregation', () => {
     expect(included[1].currentSeason).toEqual(expect.objectContaining({
       status: 'NO_BUDGET',
       noBudgetId: 'no-budget-1',
+      steps: expect.objectContaining({
+        salesProjection: expect.objectContaining({ status: 'not_applicable' }),
+        inventoryPlan: expect.objectContaining({ status: 'not_applicable' }),
+        carryovers: expect.objectContaining({ status: 'not_applicable' }),
+        attributePlan: expect.objectContaining({ status: 'not_applicable' }),
+      }),
     }));
   });
 });

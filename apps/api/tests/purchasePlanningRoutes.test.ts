@@ -127,6 +127,7 @@ describe('purchase planning saved-plan routes', () => {
       season: 'spring',
       seasonYear: 2026,
       departmentNumbers: [5, 6],
+      forecast: { method: 'holtWinters' },
     }));
   });
 
@@ -202,9 +203,17 @@ describe('purchase planning saved-plan routes', () => {
 
     const recalcRes = await request(app)
       .post('/api/v1/purchase-planning/plans/plan-1/recalculate')
-      .send({ actor: 'buyer' });
+      .send({
+        actor: 'buyer',
+        forecast: { method: 'trailingAverage' },
+        mode: 'preserve_user',
+      });
     expect(recalcRes.status).toBe(200);
-    expect(recalculatePurchasePlan).toHaveBeenCalledWith('plan-1', 'buyer');
+    expect(recalculatePurchasePlan).toHaveBeenCalledWith('plan-1', {
+      actor: 'buyer',
+      forecast: { method: 'trailingAverage' },
+      mode: 'preserve_user',
+    });
 
     const compareRes = await request(app).get('/api/v1/purchase-planning/plans/plan-1/compare');
     expect(compareRes.status).toBe(200);
@@ -325,7 +334,7 @@ describe('purchase planning saved-plan routes', () => {
         storeGroupCodes: ['unlimited', 'magic-shoes'],
         departmentNumber: 10,
         year: 2026,
-        forecast: { method: 'holtWinters' },
+        forecast: { method: 'constrainedDemand' },
         eohMethod: 'forward',
         coverMonths: 3,
         discountNormalization: true,
@@ -336,6 +345,7 @@ describe('purchase planning saved-plan routes', () => {
       storeGroupCodes: ['unlimited', 'magic-shoes'],
       departmentNumber: 10,
       year: 2026,
+      forecast: { method: 'constrainedDemand' },
     }));
 
     const createRes = await request(app)

@@ -65,12 +65,22 @@ import {
 
 const router: IRouter = Router();
 
+const savedForecastMethodSchema = z.enum([
+  'holtWinters',
+  'sameMonthLastYear',
+  'trailingAverage',
+  'yoyGrowth',
+  'blendedMultiYear',
+  'constrainedDemand',
+]);
+
 const forecastMethodSchema = z.enum([
   'holtWinters',
   'sameMonthLastYear',
   'trailingAverage',
   'yoyGrowth',
   'blendedMultiYear',
+  'constrainedDemand',
 ]);
 
 const forecastSchema = z
@@ -93,7 +103,7 @@ const savedPlanCreateSchema = z
     categoryNumbers: z.array(z.number().int().min(1).max(9999)).max(500).optional(),
     label: z.string().trim().min(1).max(200).optional(),
     forecast: z.object({
-      method: forecastMethodSchema.optional(),
+      method: savedForecastMethodSchema.optional(),
       trailingMonths: z.number().int().min(1).max(24).optional(),
       growthPct: z.number().min(-99).max(500).optional(),
       yearsToBlend: z.union([z.literal(2), z.literal(3)]).optional(),
@@ -201,6 +211,17 @@ const actorSchema = z.object({
   actor: z.string().trim().max(120).optional(),
 }).strict();
 
+const savedPlanRecalculateSchema = z.object({
+  actor: z.string().trim().max(120).optional(),
+  forecast: z.object({
+    method: savedForecastMethodSchema.optional(),
+    trailingMonths: z.number().int().min(1).max(24).optional(),
+    growthPct: z.number().min(-99).max(500).optional(),
+    yearsToBlend: z.union([z.literal(2), z.literal(3)]).optional(),
+  }).strict().optional(),
+  mode: z.enum(['overwrite', 'preserve_user']).optional(),
+}).strict();
+
 const seasonalReportSchema = z
   .object({
     departmentNumber: z.number().int().min(1).max(99),
@@ -209,7 +230,7 @@ const seasonalReportSchema = z
       .regex(/^\d{4}-(0[1-9]|1[0-2])$/, 'asOfYearMonth must be YYYY-MM')
       .optional(),
     forecast: z.object({
-      method: forecastMethodSchema.optional(),
+      method: savedForecastMethodSchema.optional(),
       trailingMonths: z.number().int().min(1).max(24).optional(),
       growthPct: z.number().min(-99).max(500).optional(),
       yearsToBlend: z.union([z.literal(2), z.literal(3)]).optional(),
@@ -1089,12 +1110,12 @@ router.get('/plans/:id', async (req: Request, res: Response, next: NextFunction)
 
 router.post('/plans/:id/recalculate', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const parsed = actorSchema.safeParse(req.body ?? {});
+    const parsed = savedPlanRecalculateSchema.safeParse(req.body ?? {});
     if (!parsed.success) {
       sendZodError(res, parsed.error.issues);
       return;
     }
-    const plan = await recalculatePurchasePlan(routeParam(req.params.id), parsed.data.actor ?? 'system');
+    const plan = await recalculatePurchasePlan(routeParam(req.params.id), parsed.data);
     res.json(plan);
   } catch (err) {
     if (sendServiceError(res, err)) return;

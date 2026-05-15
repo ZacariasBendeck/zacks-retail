@@ -63,6 +63,8 @@ Absolute season totals distribute back into months by the forecast-demand share 
 
 Default forecast method is Holt-Winters with monthly seasonality. The older ad-hoc methods remain available.
 
+Constrained-demand forecast is available when buyers want demand lifted for months where inventory likely capped sales. It treats zero beginning on-hand and months with at least 30% sell-through as constrained, then projects from adjusted same-month demand.
+
 Discount-heavy months are down-weighted before forecasting by comparing realized net sales against reference retail value. Rows keep metadata so buyers can see when normalization affected demand.
 
 Buy math subtracts existing stock position:
