@@ -122,7 +122,7 @@ const reviewTabLabels: Record<ReviewTabKey, string> = {
 const stepStatusMeta: Record<BuyerChecklistStepStatus, { label: string; color: string }> = {
   missing: { label: 'Missing', color: 'default' },
   draft: { label: 'Draft', color: 'gold' },
-  confirmed: { label: 'Confirmed', color: 'green' },
+  confirmed: { label: 'Complete', color: 'green' },
   complete: { label: 'Complete', color: 'green' },
   alert: { label: 'Alert', color: 'red' },
   not_applicable: { label: 'N/A', color: 'default' },
@@ -160,6 +160,19 @@ function normalizeReviewTab(value: string | null): ReviewTabKey {
 function stepStatusTag(status: BuyerChecklistStepStatus) {
   const meta = stepStatusMeta[status]
   return <Tag color={meta.color}>{meta.label}</Tag>
+}
+
+function inventoryPlanStepStatus(hasProjectionPlan: boolean): BuyerChecklistStepStatus {
+  return hasProjectionPlan ? 'draft' : 'missing'
+}
+
+function carryoverStepStatus(targetCount: number, plannedCount: number, boughtCount: number): BuyerChecklistStepStatus {
+  if (targetCount <= 0) {
+    if (plannedCount > 0 || boughtCount > 0) return boughtCount >= Math.max(1, plannedCount) ? 'complete' : 'draft'
+    return 'not_applicable'
+  }
+  if (boughtCount >= targetCount) return 'complete'
+  return plannedCount > 0 || boughtCount > 0 ? 'draft' : 'missing'
 }
 
 function emptyWorkflowSteps(currentInventoryUnits = 0, departmentOtbUnits: number | null = null): BuyerChecklistWorkflowSteps {
@@ -372,11 +385,6 @@ export default function BuyerPurchasePlanningPage() {
     const carryoverTarget = Math.max(0, selectedCard.targetCarryoverSkuCount)
     const plannedCarryovers = selectedCardCarryovers.filter((line) => !line.unavailable).length
     const boughtCarryovers = new Set(selectedCardLinks.filter((link) => link.carryoverLineId).map((link) => link.carryoverLineId)).size
-    const carryoverStatus: BuyerChecklistStepStatus = carryoverTarget === 0
-      ? 'complete'
-      : boughtCarryovers >= carryoverTarget
-        ? 'complete'
-        : plannedCarryovers > 0 || boughtCarryovers > 0 ? 'draft' : 'missing'
     const reconciliation = selectedCard.attributeReconciliation ?? []
     const attrAlertCount = reconciliation.reduce((sum, dimension) => sum + dimension.alertCount, 0)
     const attributeStatus: BuyerChecklistStepStatus = reconciliation.length === 0 ? 'missing' : attrAlertCount > 0 ? 'alert' : 'complete'
@@ -388,13 +396,13 @@ export default function BuyerPurchasePlanningPage() {
         planId: selectedCard.salesProjectionPlanId,
       },
       inventoryPlan: {
-        status: selectedCard.salesProjectionPlanId ? salesProjectionStatus === 'confirmed' ? 'confirmed' : 'draft' : 'missing',
+        status: inventoryPlanStepStatus(Boolean(selectedCard.salesProjectionPlanId)),
         hasProjectionPlan: Boolean(selectedCard.salesProjectionPlanId),
         currentInventoryUnits: selectedCard.history.summary.averageBeginningOnHand,
         departmentOtbUnits: null,
       },
       carryovers: {
-        status: carryoverStatus,
+        status: carryoverStepStatus(carryoverTarget, plannedCarryovers, boughtCarryovers),
         targetCount: carryoverTarget,
         plannedCount: plannedCarryovers,
         boughtCount: boughtCarryovers,
@@ -577,9 +585,8 @@ export default function BuyerPurchasePlanningPage() {
       queryClient.setQueryData(['buyer-sales-projection-workbook', reviewWorkbookId, reviewCardId], (previous: typeof salesProjectionWorkbook.data) => (
         previous ? { ...previous, plan } : previous
       ))
-      if (selectedCard?.status === 'NOT_STARTED') {
-        confirmProjectionMutation.mutate()
-      }
+      void queryClient.invalidateQueries({ queryKey: ['buyer-purchase-workbook', reviewWorkbookId] })
+      void queryClient.invalidateQueries({ queryKey: ['buyer-checklist-categories'] })
       messageApi.success('Worksheet saved')
     },
     onError: (error) => messageApi.error((error as Error).message),
@@ -592,6 +599,8 @@ export default function BuyerPurchasePlanningPage() {
       queryClient.setQueryData(['buyer-sales-projection-workbook', reviewWorkbookId, reviewCardId], (previous: typeof salesProjectionWorkbook.data) => (
         previous ? { ...previous, plan } : previous
       ))
+      void queryClient.invalidateQueries({ queryKey: ['buyer-purchase-workbook', reviewWorkbookId] })
+      void queryClient.invalidateQueries({ queryKey: ['buyer-checklist-categories'] })
       messageApi.success('Projection workbook recalculated')
     },
     onError: (error) => messageApi.error((error as Error).message),
@@ -602,7 +611,7 @@ export default function BuyerPurchasePlanningPage() {
     onSuccess: (next) => {
       putDetail(next)
       void queryClient.invalidateQueries({ queryKey: ['buyer-sales-projection-workbook', reviewWorkbookId, reviewCardId] })
-      messageApi.success('Sales projection confirmed')
+      messageApi.success('Sales projection marked complete')
     },
     onError: (error) => messageApi.error((error as Error).message),
   })
@@ -892,7 +901,18 @@ export default function BuyerPurchasePlanningPage() {
       ),
     },
     { title: 'Department', dataIndex: 'departmentLabel', width: 220 },
-    { title: 'Last 12M Sales', dataIndex: 'last12MonthsSales', align: 'right', width: 130, render: formatMoney },
+    {
+      title: 'Last 12M Sales',
+      dataIndex: 'last12MonthsSales',
+      align: 'right',
+      width: 145,
+      render: (value: number, row) => (
+        <Space direction="vertical" size={0} style={{ alignItems: 'flex-end' }}>
+          <Text>{formatInt(row.last12MonthsUnits)} units</Text>
+          <Text type="secondary">{formatMoney(value)}</Text>
+        </Space>
+      ),
+    },
     {
       title: 'Current Inventory',
       dataIndex: 'currentInventoryUnits',
@@ -921,8 +941,7 @@ export default function BuyerPurchasePlanningPage() {
       width: 150,
       render: (_, row) => {
         const steps = row.currentSeason.steps ?? emptyWorkflowSteps(row.currentInventoryUnits, row.departmentOtbUnits)
-        const otb = steps.inventoryPlan.departmentOtbUnits == null ? 'n/a OTB' : `${formatInt(steps.inventoryPlan.departmentOtbUnits)} OTB`
-        return renderLandingStep(row, 'on-hand-projection', steps.inventoryPlan.status, `${formatInt(steps.inventoryPlan.currentInventoryUnits)} on hand, ${otb}`)
+        return renderLandingStep(row, 'on-hand-projection', steps.inventoryPlan.status, `${formatInt(steps.inventoryPlan.currentInventoryUnits)} on hand`)
       },
     },
     {
@@ -1667,7 +1686,11 @@ export default function BuyerPurchasePlanningPage() {
                 saveLoading={updateProjectionRowsMutation.isPending}
                 recalculateLoading={recalculateProjectionMutation.isPending}
                 confirmLoading={confirmProjectionMutation.isPending}
-                confirmLabel="Confirm sales projection"
+                confirmLabel="Mark Complete"
+                confirmTooltip="Marks only this sales projection worksheet complete and updates the Buyer Checklist projected units."
+                confirmDisabledTooltip="Save worksheet changes before marking this sales projection complete."
+                confirmButtonStyle={{ backgroundColor: '#389e0d', borderColor: '#389e0d' }}
+                disableConfirmWhenDirty
                 salesTrendSummary={salesProjectionWorkbook.data?.trendSummary}
                 onSaveRows={(planId, payload) => updateProjectionRowsMutation.mutate({ planId, payload })}
                 onRecalculate={(planId, payload) => recalculateProjectionMutation.mutate({ planId, payload })}

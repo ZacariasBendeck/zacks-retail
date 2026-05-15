@@ -12,14 +12,47 @@ import {
 
 const router: IRouter = Router();
 
+const planningScopeSchema = z.object({
+  type: z.enum(['CATEGORY', 'DEPARTMENT']),
+  number: z.number().int().min(1).max(9999),
+}).strict();
+
+const planningFactorsSchema = z.object({
+  historyMonths: z.number().int().min(1).max(60).optional(),
+  modelCoverWeeks: z.number().min(0).max(52).optional(),
+  modelDisplayFloor: z.number().min(0).max(50).optional(),
+  maxModelQuantity: z.number().int().min(1).max(500).optional(),
+  stockOnlyStoreWeightPct: z.number().min(0).max(100).optional(),
+  unseenColorFallbackPct: z.number().min(0).max(100).optional(),
+  waveWeights: z.array(z.object({
+    releaseDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'releaseDate must be YYYY-MM-DD'),
+    weight: z.number().min(0).max(1000),
+  }).strict()).max(96).optional(),
+  storeModelOverrides: z.array(z.object({
+    storeId: z.number().int().positive(),
+    modelQuantity: z.number().int().min(0).max(200),
+  }).strict()).max(250).optional(),
+  colorOverrides: z.array(z.object({
+    canonicalColor: z.string().trim().min(1).max(120),
+    targetStyleCount: z.number().int().min(0).max(10000).optional(),
+    weight: z.number().min(0).max(1000000).optional(),
+  }).strict()).max(250).optional(),
+  skuWaveOverrides: z.array(z.object({
+    skuId: z.string().trim().min(1).max(80),
+    releaseDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'releaseDate must be YYYY-MM-DD').nullable(),
+  }).strict()).max(5000).optional(),
+}).strict();
+
 const planRequestSchema = z
   .object({
+    planningScope: planningScopeSchema.optional(),
     categoryNumber: z.number().int().min(1).max(9999).optional(),
     warehouseStoreId: z.number().int().positive().optional(),
     targetStoreIds: z.array(z.number().int().positive()).max(250).optional(),
     startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'startDate must be YYYY-MM-DD').optional(),
     horizonMonths: z.number().int().min(1).max(24).optional(),
     highSeasonMonths: z.array(z.number().int().min(1).max(12)).max(12).optional(),
+    planningFactors: planningFactorsSchema.optional(),
     label: z.string().trim().min(1).max(200).optional(),
     createdBy: z.string().trim().max(120).optional(),
   })

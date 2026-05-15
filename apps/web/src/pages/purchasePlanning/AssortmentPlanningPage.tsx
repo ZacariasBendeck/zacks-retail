@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   Alert,
   Button,
@@ -20,10 +20,11 @@ import {
   message,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
-import { CheckOutlined, ReloadOutlined, SaveOutlined, SwapOutlined } from '@ant-design/icons'
+import { CheckOutlined, DeleteOutlined, PlusOutlined, ReloadOutlined, SaveOutlined, SwapOutlined } from '@ant-design/icons'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import dayjs, { type Dayjs } from 'dayjs'
 import { useStores } from '../../hooks/useStores'
+import { useCategories, useDepartments } from '../../hooks/useProductsTaxonomy'
 import {
   commitAssortmentWave,
   createAssortmentPlan,
@@ -31,13 +32,18 @@ import {
   fetchAssortmentPlan,
   fetchAssortmentPlans,
   previewAssortmentPlan,
+  type AssortmentColorOverride,
   type AssortmentColorMix,
   type AssortmentPlanListItem,
   type AssortmentPlanReport,
+  type AssortmentPlanningScopeType,
   type AssortmentPoolItem,
+  type AssortmentSkuWaveOverride,
+  type AssortmentStoreModelOverride,
   type AssortmentStoreAllocation,
   type AssortmentTargetStore,
   type AssortmentWave,
+  type AssortmentWaveWeight,
   type AssortmentWaveLine,
 } from '../../services/assortmentPlanningApi'
 
@@ -45,12 +51,19 @@ const { Title, Text } = Typography
 
 interface AssortmentForm {
   label?: string
-  categoryNumber: number
+  scopeType: AssortmentPlanningScopeType
+  scopeNumber: number
   warehouseStoreId: number
   targetStoreIds?: number[]
   startDate: Dayjs
   horizonMonths: number
   highSeasonMonths: number[]
+  historyMonths: number
+  modelCoverWeeks: number
+  modelDisplayFloor: number
+  maxModelQuantity: number
+  stockOnlyStoreWeightPct: number
+  unseenColorFallbackPct: number
 }
 
 const integerFmt = new Intl.NumberFormat('en-US')
@@ -92,15 +105,36 @@ function statusTag(status: string) {
   return <Tag>{status}</Tag>
 }
 
-function buildRequest(values: AssortmentForm) {
+function buildRequest(
+  values: AssortmentForm,
+  controls: {
+    waveWeights: AssortmentWaveWeight[]
+    storeModelOverrides: AssortmentStoreModelOverride[]
+    colorOverrides: AssortmentColorOverride[]
+    skuWaveOverrides: AssortmentSkuWaveOverride[]
+  },
+) {
   return {
     label: values.label?.trim() || undefined,
-    categoryNumber: values.categoryNumber,
+    categoryNumber: values.scopeType === 'CATEGORY' ? values.scopeNumber : undefined,
+    planningScope: { type: values.scopeType, number: values.scopeNumber },
     warehouseStoreId: values.warehouseStoreId,
     targetStoreIds: values.targetStoreIds?.length ? values.targetStoreIds : undefined,
     startDate: values.startDate.format('YYYY-MM-DD'),
     horizonMonths: values.horizonMonths,
     highSeasonMonths: values.highSeasonMonths,
+    planningFactors: {
+      historyMonths: values.historyMonths,
+      modelCoverWeeks: values.modelCoverWeeks,
+      modelDisplayFloor: values.modelDisplayFloor,
+      maxModelQuantity: values.maxModelQuantity,
+      stockOnlyStoreWeightPct: values.stockOnlyStoreWeightPct,
+      unseenColorFallbackPct: values.unseenColorFallbackPct,
+      waveWeights: controls.waveWeights.filter((wave) => wave.releaseDate && wave.weight > 0),
+      storeModelOverrides: controls.storeModelOverrides,
+      colorOverrides: controls.colorOverrides,
+      skuWaveOverrides: controls.skuWaveOverrides,
+    },
     createdBy: 'buyer',
   }
 }
@@ -119,8 +153,14 @@ export default function AssortmentPlanningPage() {
   const [activeTab, setActiveTab] = useState('plan')
   const [report, setReport] = useState<AssortmentPlanReport | null>(null)
   const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null)
+  const [waveWeights, setWaveWeights] = useState<AssortmentWaveWeight[]>([])
+  const [storeModelOverrides, setStoreModelOverrides] = useState<AssortmentStoreModelOverride[]>([])
+  const [colorOverrides, setColorOverrides] = useState<AssortmentColorOverride[]>([])
+  const [skuWaveOverrides, setSkuWaveOverrides] = useState<AssortmentSkuWaveOverride[]>([])
 
   const { data: stores = [], isLoading: storesLoading } = useStores()
+  const { data: categories = [], isLoading: categoriesLoading } = useCategories()
+  const { data: departments = [], isLoading: departmentsLoading } = useDepartments()
   const plans = useQuery({
     queryKey: ['assortment-planning', 'plans'],
     queryFn: () => fetchAssortmentPlans({ status: 'all' }),
@@ -132,6 +172,35 @@ export default function AssortmentPlanningPage() {
     enabled: !!selectedPlanId,
   })
 
+  function syncControlsFromReport(next: AssortmentPlanReport) {
+    setWaveWeights(next.planningFactors.waveWeights)
+    setStoreModelOverrides(next.planningFactors.storeModelOverrides)
+    setColorOverrides(next.planningFactors.colorOverrides)
+    setSkuWaveOverrides(next.planningFactors.skuWaveOverrides)
+  }
+
+  useEffect(() => {
+    const loaded = selectedPlan.data
+    if (!loaded) return
+    form.setFieldsValue({
+      label: loaded.plan?.label,
+      scopeType: loaded.planningScope.type,
+      scopeNumber: loaded.planningScope.number,
+      warehouseStoreId: loaded.warehouseStoreId,
+      targetStoreIds: loaded.targetStores.map((store) => store.storeId),
+      startDate: dayjs(loaded.startDate),
+      horizonMonths: loaded.horizonMonths,
+      highSeasonMonths: loaded.highSeasonMonths,
+      historyMonths: loaded.planningFactors.historyMonths,
+      modelCoverWeeks: loaded.planningFactors.modelCoverWeeks,
+      modelDisplayFloor: loaded.planningFactors.modelDisplayFloor,
+      maxModelQuantity: loaded.planningFactors.maxModelQuantity,
+      stockOnlyStoreWeightPct: loaded.planningFactors.stockOnlyStoreWeightPct,
+      unseenColorFallbackPct: loaded.planningFactors.unseenColorFallbackPct,
+    })
+    syncControlsFromReport(loaded)
+  }, [form, selectedPlan.data])
+
   const storeOptions = useMemo(
     () => stores
       .filter((store) => store.active)
@@ -141,12 +210,32 @@ export default function AssortmentPlanningPage() {
       })),
     [stores],
   )
+  const categoryOptions = useMemo(
+    () => categories.map((category) => ({
+      value: category.number,
+      label: `${category.number} - ${category.description}`,
+    })),
+    [categories],
+  )
+  const departmentOptions = useMemo(
+    () => departments.map((department) => ({
+      value: department.number,
+      label: `${department.number} - ${department.description}`,
+    })),
+    [departments],
+  )
 
   const previewMutation = useMutation({
-    mutationFn: (values: AssortmentForm) => previewAssortmentPlan(buildRequest(values)),
+    mutationFn: (values: AssortmentForm) => previewAssortmentPlan(buildRequest(values, {
+      waveWeights,
+      storeModelOverrides,
+      colorOverrides,
+      skuWaveOverrides,
+    })),
     onSuccess: (next, values) => {
       setReport(next)
       setSelectedPlanId(null)
+      syncControlsFromReport(next)
       if (!values.targetStoreIds?.length) {
         form.setFieldsValue({ targetStoreIds: next.targetStores.map((store) => store.storeId) })
       }
@@ -156,10 +245,16 @@ export default function AssortmentPlanningPage() {
   })
 
   const saveMutation = useMutation({
-    mutationFn: (values: AssortmentForm) => createAssortmentPlan(buildRequest(values)),
+    mutationFn: (values: AssortmentForm) => createAssortmentPlan(buildRequest(values, {
+      waveWeights,
+      storeModelOverrides,
+      colorOverrides,
+      skuWaveOverrides,
+    })),
     onSuccess: async (next) => {
       setReport(next)
       setSelectedPlanId(next.plan?.id ?? null)
+      syncControlsFromReport(next)
       await qc.invalidateQueries({ queryKey: ['assortment-planning'] })
       messageApi.success('Assortment plan saved')
     },
@@ -195,29 +290,166 @@ export default function AssortmentPlanningPage() {
     () => new Map((visibleReport?.targetStores ?? []).map((store) => [store.storeId, store])),
     [visibleReport],
   )
+  const waveSchedule = visibleReport?.planningFactors.waveWeights ?? []
+  const waveOptionRows = useMemo(
+    () => waveSchedule.map((wave, index) => ({
+      sequence: index + 1,
+      releaseDate: wave.releaseDate,
+      label: `#${index + 1} - ${wave.releaseDate}`,
+    })),
+    [waveSchedule],
+  )
+  const waveDateBySequence = useMemo(
+    () => new Map(waveOptionRows.map((wave) => [wave.sequence, wave.releaseDate])),
+    [waveOptionRows],
+  )
+  const waveSequenceByDate = useMemo(
+    () => new Map(waveOptionRows.map((wave) => [wave.releaseDate, wave.sequence])),
+    [waveOptionRows],
+  )
+  const skuWaveOverrideBySkuId = useMemo(
+    () => new Map(skuWaveOverrides.map((override) => [override.skuId, override.releaseDate])),
+    [skuWaveOverrides],
+  )
+
+  function effectiveWaveDate(row: AssortmentPoolItem): string | null {
+    if (skuWaveOverrideBySkuId.has(row.skuId)) return skuWaveOverrideBySkuId.get(row.skuId) ?? null
+    return row.assignedWaveSequence ? waveDateBySequence.get(row.assignedWaveSequence) ?? null : null
+  }
+
+  function effectiveWaveSequence(row: AssortmentPoolItem): number | null {
+    const releaseDate = effectiveWaveDate(row)
+    if (!releaseDate) return null
+    return waveSequenceByDate.get(releaseDate) ?? row.assignedWaveSequence ?? null
+  }
+
+  function setStoreModelOverride(storeId: number, modelQuantity: number | null) {
+    setStoreModelOverrides((current) => {
+      const next = new Map(current.map((row) => [row.storeId, row.modelQuantity]))
+      next.set(storeId, Math.max(0, Math.round(modelQuantity ?? 0)))
+      return [...next.entries()].map(([id, quantity]) => ({ storeId: id, modelQuantity: quantity }))
+    })
+  }
+
+  function setColorOverride(color: string, patch: Partial<Omit<AssortmentColorOverride, 'canonicalColor'>>) {
+    setColorOverrides((current) => {
+      const next = new Map(current.map((row) => [row.canonicalColor, row]))
+      const existing = next.get(color) ?? { canonicalColor: color }
+      next.set(color, {
+        ...existing,
+        ...patch,
+      })
+      return [...next.values()]
+    })
+  }
+
+  function setWaveWeight(releaseDate: string, weight: number | null) {
+    setWaveWeights((current) => current.map((wave) => (
+      wave.releaseDate === releaseDate ? { ...wave, weight: Math.max(0, Number(weight ?? 0)) } : wave
+    )))
+  }
+
+  function setSkuWaveOverride(skuId: string, releaseDate: string | null) {
+    setSkuWaveOverrides((current) => {
+      const next = new Map(current.map((row) => [row.skuId, row.releaseDate]))
+      next.set(skuId, releaseDate)
+      return [...next.entries()]
+        .map(([id, date]) => ({ skuId: id, releaseDate: date }))
+        .sort((left, right) => left.skuId.localeCompare(right.skuId))
+    })
+  }
+
+  function setWaveDate(oldDate: string, nextDate: Dayjs | null) {
+    if (!nextDate) return
+    const releaseDate = nextDate.format('YYYY-MM-DD')
+    setWaveWeights((current) => current
+      .map((wave) => (wave.releaseDate === oldDate ? { ...wave, releaseDate } : wave))
+      .sort((left, right) => left.releaseDate.localeCompare(right.releaseDate)))
+    setSkuWaveOverrides((current) => current.map((override) => (
+      override.releaseDate === oldDate ? { ...override, releaseDate } : override
+    )))
+  }
+
+  function addWaveWeight() {
+    const startDate = form.getFieldValue('startDate') as Dayjs | undefined
+    const releaseDate = (startDate ?? dayjs()).format('YYYY-MM-DD')
+    setWaveWeights((current) => [...current, { releaseDate, weight: 1 }]
+      .sort((left, right) => left.releaseDate.localeCompare(right.releaseDate)))
+  }
+
+  function removeWaveWeight(releaseDate: string) {
+    setWaveWeights((current) => current.filter((wave) => wave.releaseDate !== releaseDate))
+    setSkuWaveOverrides((current) => current.map((override) => (
+      override.releaseDate === releaseDate ? { ...override, releaseDate: null } : override
+    )))
+  }
 
   const targetColumns = useMemo<ColumnsType<AssortmentTargetStore>>(() => [
     { title: 'Store', dataIndex: 'storeLabel', width: 180 },
     { title: 'SKU budget', dataIndex: 'suggestedSkuBudget', align: 'right', width: 110, render: formatInt },
-    { title: 'Model/style', dataIndex: 'suggestedModelQuantity', align: 'right', width: 110, render: formatInt },
+    {
+      title: 'Model/style',
+      dataIndex: 'suggestedModelQuantity',
+      align: 'right',
+      width: 130,
+      render: (value: number, row) => (
+        <InputNumber
+          aria-label={`${row.storeLabel} model quantity`}
+          min={0}
+          max={500}
+          size="small"
+          value={storeModelOverrides.find((override) => override.storeId === row.storeId)?.modelQuantity ?? value}
+          onChange={(next) => setStoreModelOverride(row.storeId, next)}
+        />
+      ),
+    },
     { title: 'Sales units', dataIndex: 'salesUnits', align: 'right', width: 110, render: formatInt },
     { title: 'Monthly sales', dataIndex: 'averageMonthlySales', align: 'right', width: 120, render: formatInt },
     { title: 'Sales/SKU/mo', dataIndex: 'salesPerSkuMonth', align: 'right', width: 120 },
     { title: 'Current SKUs', dataIndex: 'currentSkuCount', align: 'right', width: 110, render: formatInt },
     { title: 'Current units', dataIndex: 'currentUnits', align: 'right', width: 110, render: formatInt },
     { title: 'Weight', dataIndex: 'weight', align: 'right', width: 90, render: formatInt },
-  ], [])
+  ], [storeModelOverrides])
 
   const poolColumns = useMemo<ColumnsType<AssortmentPoolItem>>(() => [
     { title: 'SKU', dataIndex: 'skuCode', fixed: 'left', width: 130 },
     { title: 'Description', dataIndex: 'skuDescription', ellipsis: true },
+    { title: 'Category', dataIndex: 'categoryLabel', width: 180, ellipsis: true },
     { title: 'Reason', dataIndex: 'inclusionReason', width: 150, render: reasonTag },
     { title: 'Color', dataIndex: 'canonicalColor', width: 130, render: (value: string, row) => <Space size={4}><Text>{value}</Text><Tag>{row.rawColorKey}</Tag></Space> },
     { title: 'WH units', dataIndex: 'warehouseUnits', align: 'right', width: 100, render: formatInt },
     { title: 'Store units', dataIndex: 'storeUnits', align: 'right', width: 100, render: formatInt },
-    { title: 'Wave', dataIndex: 'assignedWaveSequence', align: 'right', width: 80, render: (value?: number) => value ? `#${value}` : '-' },
+    {
+      title: 'Wave',
+      dataIndex: 'assignedWaveSequence',
+      width: 165,
+      sorter: (left, right) =>
+        (effectiveWaveSequence(left) ?? 9999) - (effectiveWaveSequence(right) ?? 9999)
+        || left.skuCode.localeCompare(right.skuCode),
+      render: (_: number | undefined, row) => (
+        <Select
+          aria-label={`${row.skuCode} wave assignment`}
+          size="small"
+          style={{ width: 145 }}
+          value={effectiveWaveDate(row) ?? '__unassigned__'}
+          options={[
+            { value: '__unassigned__', label: 'No wave' },
+            ...waveOptionRows.map((wave) => ({ value: wave.releaseDate, label: wave.label })),
+          ]}
+          onChange={(value) => setSkuWaveOverride(row.skuId, value === '__unassigned__' ? null : value)}
+        />
+      ),
+    },
+    {
+      title: 'Wave Date',
+      width: 120,
+      sorter: (left, right) =>
+        (effectiveWaveDate(left) ?? '9999-99-99').localeCompare(effectiveWaveDate(right) ?? '9999-99-99')
+        || left.skuCode.localeCompare(right.skuCode),
+      render: (_: unknown, row) => effectiveWaveDate(row) ?? '-',
+    },
     { title: 'Keywords', dataIndex: 'keywords', ellipsis: true, width: 180, render: (value: string | null) => value || '-' },
-  ], [])
+  ], [skuWaveOverrideBySkuId, waveDateBySequence, waveOptionRows, waveSequenceByDate])
 
   const colorColumns = useMemo<ColumnsType<AssortmentColorMix>>(() => [
     { title: 'Color', dataIndex: 'canonicalColor', width: 160 },
@@ -225,8 +457,38 @@ export default function AssortmentPlanningPage() {
     { title: 'Sales units', dataIndex: 'salesUnits', align: 'right', width: 110, render: formatInt },
     { title: 'Sales mix', dataIndex: 'salesPct', align: 'right', width: 100, render: formatPct },
     { title: 'Planned styles', dataIndex: 'plannedStyleCount', align: 'right', width: 120, render: formatInt },
+    {
+      title: 'Target styles',
+      width: 120,
+      align: 'right',
+      render: (_: unknown, row) => (
+        <InputNumber
+          aria-label={`${row.canonicalColor} target styles`}
+          min={0}
+          max={10000}
+          size="small"
+          value={colorOverrides.find((override) => override.canonicalColor === row.canonicalColor)?.targetStyleCount ?? row.plannedStyleCount}
+          onChange={(value) => setColorOverride(row.canonicalColor, { targetStyleCount: value == null ? undefined : Math.round(value) })}
+        />
+      ),
+    },
+    {
+      title: 'Color weight',
+      width: 120,
+      align: 'right',
+      render: (_: unknown, row) => (
+        <InputNumber
+          aria-label={`${row.canonicalColor} color weight`}
+          min={0}
+          max={1000000}
+          size="small"
+          value={colorOverrides.find((override) => override.canonicalColor === row.canonicalColor)?.weight ?? row.salesUnits}
+          onChange={(value) => setColorOverride(row.canonicalColor, { weight: value == null ? undefined : value })}
+        />
+      ),
+    },
     { title: 'Planned mix', dataIndex: 'plannedStylePct', align: 'right', width: 110, render: formatPct },
-  ], [])
+  ], [colorOverrides])
 
   const lineColumns = useMemo<ColumnsType<AssortmentWaveLine>>(() => [
     { title: 'SKU', dataIndex: 'skuCode', width: 130 },
@@ -271,6 +533,22 @@ export default function AssortmentPlanningPage() {
   const waveColumns = useMemo<ColumnsType<AssortmentWave>>(() => [
     { title: 'Wave', dataIndex: 'sequence', width: 80, render: (value: number) => `#${value}` },
     { title: 'Release date', dataIndex: 'releaseDate', width: 125 },
+    {
+      title: 'Weight',
+      width: 110,
+      align: 'right',
+      render: (_: unknown, wave) => (
+        <InputNumber
+          aria-label={`Wave ${wave.sequence} weight`}
+          min={0}
+          max={1000}
+          size="small"
+          value={waveWeights.find((item) => item.releaseDate === wave.releaseDate)?.weight ?? 1}
+          disabled={wave.status === 'COMMITTED'}
+          onChange={(value) => setWaveWeight(wave.releaseDate, value)}
+        />
+      ),
+    },
     { title: 'Status', dataIndex: 'status', width: 150, render: statusTag },
     { title: 'Styles', dataIndex: 'styleCount', align: 'right', width: 90, render: formatInt },
     { title: 'Release units', dataIndex: 'totalUnits', align: 'right', width: 115, render: formatInt },
@@ -319,7 +597,7 @@ export default function AssortmentPlanningPage() {
         )
       },
     },
-  ], [commitMutation, draftMutation, planId])
+  ], [commitMutation, draftMutation, planId, waveWeights])
 
   const planColumns = useMemo<ColumnsType<AssortmentPlanListItem>>(() => [
     {
@@ -339,7 +617,7 @@ export default function AssortmentPlanningPage() {
       ),
     },
     { title: 'Status', dataIndex: 'status', width: 140, render: statusTag },
-    { title: 'Category', dataIndex: 'categoryLabel', width: 220 },
+    { title: 'Scope', dataIndex: 'scopeLabel', width: 240 },
     { title: 'Start', dataIndex: 'startDate', width: 110 },
     { title: 'SKUs', dataIndex: 'poolSkuCount', align: 'right', width: 90, render: formatInt },
     { title: 'Units', dataIndex: 'poolUnits', align: 'right', width: 90, render: formatInt },
@@ -366,26 +644,59 @@ export default function AssortmentPlanningPage() {
                     form={form}
                     layout="vertical"
                     initialValues={{
-                      categoryNumber: 71,
+                      scopeType: 'CATEGORY',
+                      scopeNumber: 71,
                       warehouseStoreId: 99,
                       startDate: dayjs(),
                       horizonMonths: 12,
                       highSeasonMonths: [6, 11, 12],
+                      historyMonths: 12,
+                      modelCoverWeeks: 4,
+                      modelDisplayFloor: 1,
+                      maxModelQuantity: 6,
+                      stockOnlyStoreWeightPct: 5,
+                      unseenColorFallbackPct: 2,
                     }}
                     onFinish={(values) => previewMutation.mutate(values)}
                   >
                     <Row gutter={12}>
                       <Col xs={24} md={6} lg={4}>
-                        <Form.Item name="categoryNumber" label="Category" rules={[{ required: true }]}>
-                          <InputNumber min={1} max={9999} style={{ width: '100%' }} />
+                        <Form.Item name="scopeType" label="Scope" rules={[{ required: true }]}>
+                          <Select
+                            options={[
+                              { value: 'CATEGORY', label: 'Category' },
+                              { value: 'DEPARTMENT', label: 'Department' },
+                            ]}
+                            onChange={() => form.setFieldValue('scopeNumber', undefined)}
+                          />
                         </Form.Item>
                       </Col>
-                      <Col xs={24} md={6} lg={5}>
+                      <Col xs={24} md={10} lg={8}>
+                        <Form.Item
+                          noStyle
+                          shouldUpdate={(prev, next) => prev.scopeType !== next.scopeType}
+                        >
+                          {({ getFieldValue }) => {
+                            const scopeType = getFieldValue('scopeType') as AssortmentPlanningScopeType
+                            return (
+                              <Form.Item name="scopeNumber" label={scopeType === 'DEPARTMENT' ? 'Department' : 'Category'} rules={[{ required: true }]}>
+                                <Select
+                                  loading={scopeType === 'DEPARTMENT' ? departmentsLoading : categoriesLoading}
+                                  options={scopeType === 'DEPARTMENT' ? departmentOptions : categoryOptions}
+                                  showSearch
+                                  optionFilterProp="label"
+                                />
+                              </Form.Item>
+                            )
+                          }}
+                        </Form.Item>
+                      </Col>
+                      <Col xs={24} md={8} lg={4}>
                         <Form.Item name="warehouseStoreId" label="Warehouse" rules={[{ required: true }]}>
                           <Select loading={storesLoading} options={storeOptions} showSearch optionFilterProp="label" />
                         </Form.Item>
                       </Col>
-                      <Col xs={24} md={6} lg={5}>
+                      <Col xs={24} md={6} lg={4}>
                         <Form.Item name="startDate" label="Start date" rules={[{ required: true }]}>
                           <DatePicker style={{ width: '100%' }} />
                         </Form.Item>
@@ -400,12 +711,12 @@ export default function AssortmentPlanningPage() {
                           <Select mode="multiple" options={HIGH_SEASON_MONTH_OPTIONS} />
                         </Form.Item>
                       </Col>
-                      <Col xs={24} md={12} lg={8}>
+                      <Col xs={24} md={12} lg={6}>
                         <Form.Item name="label" label="Plan label">
                           <Input placeholder="Optional" />
                         </Form.Item>
                       </Col>
-                      <Col xs={24} lg={16}>
+                      <Col xs={24} lg={18}>
                         <Form.Item name="targetStoreIds" label="Target stores">
                           <Select
                             mode="multiple"
@@ -417,6 +728,72 @@ export default function AssortmentPlanningPage() {
                             maxTagCount="responsive"
                           />
                         </Form.Item>
+                      </Col>
+                      <Col xs={12} md={6} lg={3}>
+                        <Form.Item name="historyMonths" label="History months">
+                          <InputNumber min={1} max={60} style={{ width: '100%' }} />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={12} md={6} lg={3}>
+                        <Form.Item name="modelCoverWeeks" label="Cover weeks">
+                          <InputNumber min={0} max={52} step={0.5} style={{ width: '100%' }} />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={12} md={6} lg={3}>
+                        <Form.Item name="modelDisplayFloor" label="Display floor">
+                          <InputNumber min={0} max={50} step={0.5} style={{ width: '100%' }} />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={12} md={6} lg={3}>
+                        <Form.Item name="maxModelQuantity" label="Max model">
+                          <InputNumber min={1} max={500} style={{ width: '100%' }} />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={12} md={6} lg={3}>
+                        <Form.Item name="stockOnlyStoreWeightPct" label="Stock-only %">
+                          <InputNumber min={0} max={100} step={0.5} style={{ width: '100%' }} />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={12} md={6} lg={3}>
+                        <Form.Item name="unseenColorFallbackPct" label="New color %">
+                          <InputNumber min={0} max={100} step={0.5} style={{ width: '100%' }} />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={24}>
+                        <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                          <Space style={{ justifyContent: 'space-between', width: '100%' }}>
+                            <Text strong>Wave dates</Text>
+                            <Button size="small" icon={<PlusOutlined />} onClick={addWaveWeight}>Add wave</Button>
+                          </Space>
+                          {waveWeights.length ? (
+                            <Space wrap>
+                              {waveWeights.map((wave) => (
+                                <Space key={wave.releaseDate} size={6}>
+                                  <DatePicker
+                                    aria-label={`${wave.releaseDate} release date`}
+                                    value={dayjs(wave.releaseDate)}
+                                    onChange={(value) => setWaveDate(wave.releaseDate, value)}
+                                  />
+                                  <InputNumber
+                                    aria-label={`${wave.releaseDate} wave weight`}
+                                    min={0}
+                                    max={1000}
+                                    value={wave.weight}
+                                    onChange={(value) => setWaveWeight(wave.releaseDate, value)}
+                                  />
+                                  <Button
+                                    aria-label={`${wave.releaseDate} remove wave`}
+                                    size="small"
+                                    icon={<DeleteOutlined />}
+                                    onClick={() => removeWaveWeight(wave.releaseDate)}
+                                  />
+                                </Space>
+                              ))}
+                            </Space>
+                          ) : (
+                            <Text type="secondary">Auto schedule</Text>
+                          )}
+                        </Space>
                       </Col>
                     </Row>
                     <Space>
@@ -509,7 +886,7 @@ export default function AssortmentPlanningPage() {
                               columns={poolColumns}
                               dataSource={visibleReport.pool}
                               pagination={{ pageSize: 50, showSizeChanger: true }}
-                              scroll={{ x: 1100 }}
+                              scroll={{ x: 1300 }}
                             />
                           ),
                         },

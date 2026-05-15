@@ -1,6 +1,11 @@
 import { prisma } from '../../db/prisma';
 import { getSkuStoreCellRollup } from '../ricsInventoryAdapter';
 import { createPurchasePlan, getPurchasePlan, getPurchasePlanSalesTrendSummary } from './purchasePlanningSavedService';
+import {
+  completeBuyerSalesProjectionCard,
+  linkBuyerSalesProjectionPlanDraft,
+  syncBuyerSalesProjectionDraftForPlan,
+} from './buyerSalesProjectionSync';
 import { buildSeasonWindowFromYearMonth } from './season';
 import type { PurchasePlanDetailResponse, PurchasePlanSalesTrendSummary } from './types';
 
@@ -1398,7 +1403,6 @@ export async function listBuyerChecklistCategories(input: {
   const seasonSeries = buyerSeasonSeries(buyingSeason, seasonYear);
   const reportMonth = await latestInventorySnapshotYearMonth();
   const fromYearMonth = shiftYearMonth(reportMonth, -11);
-  const currentSeasonMonths = monthsForBuyerSeason(buyingSeason, seasonYear);
 
   const categoryRows = await prisma.$queryRawUnsafe<BuyerChecklistCategorySqlRow[]>(
     `
@@ -1541,7 +1545,6 @@ LIMIT 1000
   });
 
   const categoryNumbers = visibleCategoryRows.map((row) => Number(row.categoryNumber));
-  const departmentNumbers = uniqueSorted(visibleCategoryRows.map((row) => Number(row.departmentNumber)).filter((row) => Number.isInteger(row)));
   const [salesRows, inventoryRows] = await Promise.all([
     loadBuyerChecklistCategorySales({
       categoryNumbers,
@@ -1552,26 +1555,6 @@ LIMIT 1000
       categoryNumbers,
     }),
   ]);
-
-  const otbRows = departmentNumbers.length === 0 ? [] : await prisma.$queryRawUnsafe<Array<{
-    departmentNumber: number;
-    openToBuyUnits: unknown;
-  }>>(
-    `
-      SELECT
-        r.department_number AS "departmentNumber",
-        SUM(COALESCE(r.current_buy, 0) - COALESCE(r.current_on_order, 0) - COALESCE(r.future_on_order, 0) - COALESCE(r.native_open_po, 0))::float8 AS "openToBuyUnits"
-      FROM app.purchase_plan_row r
-      JOIN app.purchase_plan p ON p.id = r.plan_id
-      WHERE r.department_number = ANY($1::int[])
-        AND r.year_month = ANY($2::text[])
-        AND COALESCE(p.status, 'draft') <> 'archived'
-        AND p.archived_at IS NULL
-      GROUP BY r.department_number
-    `,
-    departmentNumbers,
-    currentSeasonMonths,
-  );
 
   const salesMap = new Map(salesRows.map((row) => [
     Number(row.categoryNumber),
@@ -1587,7 +1570,6 @@ LIMIT 1000
       value: toNumber(row.currentInventoryValue),
     },
   ]));
-  const otbMap = new Map(otbRows.map((row) => [Number(row.departmentNumber), Math.round(toNumber(row.openToBuyUnits))]));
   const currentCardIds = visibleCategoryRows
     .map((row) => {
       const currentPlan = planMap.get(`${row.categoryNumber}:${currentSeason.buyingSeason}:${currentSeason.seasonYear}`);
@@ -1621,7 +1603,7 @@ LIMIT 1000
       ),
     ])) as Pick<BuyerChecklistCategoryRow, 'currentSeason' | 'nextSeason' | 'followingSeason'>;
     const currentInventoryUnits = Math.round(inventoryMap.get(Number(row.categoryNumber))?.units ?? 0);
-    const currentDepartmentOtbUnits = row.departmentNumber == null ? null : otbMap.get(Number(row.departmentNumber)) ?? null;
+    const currentDepartmentOtbUnits: number | null = null;
     plans.currentSeason = {
       ...plans.currentSeason,
       steps: buildChecklistWorkflowSteps({
@@ -2391,13 +2373,15 @@ function buildChecklistWorkflowSteps(input: {
     ? 'confirmed'
     : hasProjectionPlan ? 'draft' : 'missing';
   const inventoryStatus: BuyerChecklistStepStatus = hasProjectionPlan
-    ? salesProjectionStatus === 'confirmed' ? 'confirmed' : 'draft'
+    ? 'draft'
     : 'missing';
   const targetCount = Math.max(0, Math.round(toNumber(input.detail.targetCarryoverSkuCount)));
   const plannedCount = Math.max(0, Math.round(toNumber(input.detail.plannedCarryoverCount)));
   const boughtCount = Math.max(0, Math.round(toNumber(input.detail.boughtCarryoverCount)));
-  const carryoverStatus: BuyerChecklistStepStatus = targetCount === 0
-    ? 'complete'
+  const carryoverStatus: BuyerChecklistStepStatus = targetCount <= 0
+    ? plannedCount > 0 || boughtCount > 0
+      ? boughtCount >= Math.max(1, plannedCount) ? 'complete' : 'draft'
+      : 'not_applicable'
     : boughtCount >= targetCount
       ? 'complete'
       : plannedCount > 0 || boughtCount > 0 ? 'draft' : 'missing';
@@ -3252,26 +3236,7 @@ async function linkSalesProjectionPlan(input: {
   actor: string;
 }, db: DbClient = prisma): Promise<void> {
   const before = normalizeCard(await ensureCard(input.workbookId, input.cardId, db));
-  await db.$executeRawUnsafe(
-    `
-      UPDATE app.buyer_purchase_category_card
-      SET sales_projection_plan_id = $3::uuid,
-          updated_at = CURRENT_TIMESTAMP
-      WHERE workbook_id = $1::uuid
-        AND id = $2::uuid
-    `,
-    input.workbookId,
-    input.cardId,
-    input.planId,
-  );
-  await db.$executeRawUnsafe(
-    `
-      UPDATE app.buyer_purchase_workbook
-      SET updated_at = CURRENT_TIMESTAMP
-      WHERE id = $1::uuid
-    `,
-    input.workbookId,
-  );
+  await linkBuyerSalesProjectionPlanDraft(input, db);
   const after = normalizeCard(await ensureCard(input.workbookId, input.cardId, db));
   await audit(db, input.workbookId, 'sales_projection_workbook_link', input.actor, before, after);
 }
@@ -3296,6 +3261,9 @@ export async function ensureBuyerSalesProjectionWorkbook(
   const card = normalizeCard(await ensureCard(workbookId, cardId));
   if (card.salesProjectionPlanId) {
     try {
+      if (!card.salesProjection.updatedAt) {
+        await syncBuyerSalesProjectionDraftForPlan(card.salesProjectionPlanId);
+      }
       return buildSalesProjectionWorkbookResult(workbookId, await getPurchasePlan(card.salesProjectionPlanId));
     } catch (err) {
       if ((err as { code?: string })?.code !== 'PLAN_NOT_FOUND') throw err;
@@ -3346,47 +3314,10 @@ export async function confirmBuyerSalesProjectionWorkbook(
 ): Promise<BuyerWorkbookDetail> {
   const actor = cleanText(actorInput) ?? 'buyer';
   const { plan } = await ensureBuyerSalesProjectionWorkbook(workbookId, cardId, actor);
-  const projectionMonths: SalesProjectionMonth[] = plan.departments
-    .flatMap((department) => department.months)
-    .map((row) => ({
-      yearMonth: row.yearMonth,
-      projectedUnits: Math.max(0, Math.round(row.currentProjSales)),
-      projectedSales: 0,
-    }));
-  const projectionUnits = projectionMonths.reduce((sum, row) => sum + row.projectedUnits, 0);
 
   await prisma.$transaction(async (tx) => {
     const before = normalizeCard(await ensureCard(workbookId, cardId, tx));
-    await tx.$executeRawUnsafe(
-      `
-        UPDATE app.buyer_purchase_category_card
-        SET
-          status = CASE WHEN status = 'NOT_STARTED' THEN 'HISTORY_REVIEWED' ELSE status END,
-          sales_projection_plan_id = $3::uuid,
-          sales_projection_json = $4::jsonb,
-          sales_projection_units = $5::int,
-          sales_projection_sales = 0,
-          sales_projection_updated_by = $6::text,
-          sales_projection_updated_at = CURRENT_TIMESTAMP,
-          updated_at = CURRENT_TIMESTAMP
-        WHERE workbook_id = $1::uuid
-          AND id = $2::uuid
-      `,
-      workbookId,
-      cardId,
-      plan.plan.id,
-      JSON.stringify(projectionMonths),
-      projectionUnits,
-      actor,
-    );
-    await tx.$executeRawUnsafe(
-      `
-        UPDATE app.buyer_purchase_workbook
-        SET updated_at = CURRENT_TIMESTAMP
-        WHERE id = $1::uuid
-      `,
-      workbookId,
-    );
+    await completeBuyerSalesProjectionCard({ workbookId, cardId, planId: plan.plan.id, actor }, tx);
     const after = normalizeCard(await ensureCard(workbookId, cardId, tx));
     await audit(tx, workbookId, 'sales_projection_workbook_confirm', actor, before, after);
   });

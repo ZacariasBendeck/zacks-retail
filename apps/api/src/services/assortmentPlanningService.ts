@@ -5,10 +5,12 @@ const DEFAULT_CATEGORY_NUMBER = 71;
 const DEFAULT_WAREHOUSE_STORE_ID = 99;
 const DEFAULT_HORIZON_MONTHS = 12;
 const DEFAULT_HIGH_SEASON_MONTHS = [6, 11, 12];
-const HISTORY_MONTHS = 12;
-const MODEL_COVER_WEEKS = 4;
-const MODEL_DISPLAY_FLOOR = 1;
-const MAX_MODEL_QUANTITY = 6;
+const DEFAULT_HISTORY_MONTHS = 12;
+const DEFAULT_MODEL_COVER_WEEKS = 4;
+const DEFAULT_MODEL_DISPLAY_FLOOR = 1;
+const DEFAULT_MAX_MODEL_QUANTITY = 6;
+const DEFAULT_STOCK_ONLY_STORE_WEIGHT_PCT = 5;
+const DEFAULT_UNSEEN_COLOR_FALLBACK_PCT = 2;
 
 export class AssortmentPlanningServiceError extends Error {
   status: number;
@@ -25,13 +27,56 @@ export function isAssortmentPlanningServiceError(err: unknown): err is Assortmen
   return err instanceof AssortmentPlanningServiceError;
 }
 
+export type AssortmentPlanningScopeType = 'CATEGORY' | 'DEPARTMENT';
+
+export interface AssortmentPlanningScope {
+  type: AssortmentPlanningScopeType;
+  number: number;
+}
+
+export interface AssortmentWaveWeight {
+  releaseDate: string;
+  weight: number;
+}
+
+export interface AssortmentStoreModelOverride {
+  storeId: number;
+  modelQuantity: number;
+}
+
+export interface AssortmentColorOverride {
+  canonicalColor: string;
+  targetStyleCount?: number;
+  weight?: number;
+}
+
+export interface AssortmentSkuWaveOverride {
+  skuId: string;
+  releaseDate: string | null;
+}
+
+export interface AssortmentPlanningFactors {
+  historyMonths: number;
+  modelCoverWeeks: number;
+  modelDisplayFloor: number;
+  maxModelQuantity: number;
+  stockOnlyStoreWeightPct: number;
+  unseenColorFallbackPct: number;
+  waveWeights: AssortmentWaveWeight[];
+  storeModelOverrides: AssortmentStoreModelOverride[];
+  colorOverrides: AssortmentColorOverride[];
+  skuWaveOverrides: AssortmentSkuWaveOverride[];
+}
+
 export interface AssortmentPlanRequest {
+  planningScope?: AssortmentPlanningScope;
   categoryNumber?: number;
   warehouseStoreId?: number;
   targetStoreIds?: number[];
   startDate?: string;
   horizonMonths?: number;
   highSeasonMonths?: number[];
+  planningFactors?: Partial<AssortmentPlanningFactors>;
   label?: string;
   createdBy?: string;
 }
@@ -40,14 +85,18 @@ export interface AssortmentPlanHeader {
   id: string;
   label: string;
   status: string;
+  planningScope: AssortmentPlanningScope;
+  scopeLabel: string;
   categoryNumber: number;
   categoryLabel: string;
+  categoryNumbers: number[];
   warehouseStoreId: number;
   warehouseStoreLabel: string;
   targetStoreIds: number[];
   startDate: string;
   horizonMonths: number;
   highSeasonMonths: number[];
+  planningFactors: AssortmentPlanningFactors;
   historyFromYearMonth: string;
   historyToYearMonth: string;
   createdBy: string;
@@ -76,6 +125,8 @@ export interface AssortmentPoolItem {
   skuId: string;
   skuCode: string;
   skuDescription: string | null;
+  categoryNumber: number;
+  categoryLabel: string;
   styleColor: string | null;
   colorCode: string | null;
   rawColorKey: string;
@@ -132,14 +183,18 @@ export interface AssortmentWave {
 
 export interface AssortmentPlanReport {
   plan?: AssortmentPlanHeader;
+  planningScope: AssortmentPlanningScope;
+  scopeLabel: string;
   categoryNumber: number;
   categoryLabel: string;
+  categoryNumbers: number[];
   warehouseStoreId: number;
   warehouseStoreLabel: string;
   targetStores: AssortmentTargetStore[];
   startDate: string;
   horizonMonths: number;
   highSeasonMonths: number[];
+  planningFactors: AssortmentPlanningFactors;
   historyFromYearMonth: string;
   historyToYearMonth: string;
   pool: AssortmentPoolItem[];
@@ -172,6 +227,13 @@ interface CategoryRow {
   description: string;
 }
 
+interface DepartmentRow {
+  number: number;
+  description: string;
+  begCateg: number;
+  endCateg: number;
+}
+
 interface StoreRow {
   number: number;
   description: string | null;
@@ -181,6 +243,8 @@ interface PoolSqlRow {
   skuId: string;
   skuCode: string;
   skuDescription: string | null;
+  categoryNumber: unknown;
+  categoryDescription: string | null;
   styleColor: string | null;
   colorCode: string | null;
   keywords: string | null;
@@ -206,14 +270,19 @@ interface StoredPlanRow {
   id: string;
   label: string;
   status: string;
+  planningScopeType: AssortmentPlanningScopeType | null;
+  planningScopeNumber: number | null;
+  scopeLabel: string | null;
   categoryNumber: number;
   categoryLabel: string;
+  categoryNumbers: number[] | null;
   warehouseStoreId: number;
   warehouseStoreLabel: string;
   targetStoreIds: number[] | null;
   startDate: Date | string;
   horizonMonths: number;
   highSeasonMonths: number[] | null;
+  planningFactors: unknown;
   historyFromYearMonth: string;
   historyToYearMonth: string;
   metadata: unknown;
@@ -228,6 +297,8 @@ interface StoredPoolRow {
   skuId: string;
   skuCode: string;
   skuDescription: string | null;
+  categoryNumber: number | null;
+  categoryLabel: string | null;
   rawColorKey: string;
   canonicalColor: string;
   colorFamily: string;
@@ -392,18 +463,31 @@ export function deriveRawColorKey(input: {
 }
 
 function normalizeHeader(row: StoredPlanRow): AssortmentPlanHeader {
+  const metadata = row.metadata && typeof row.metadata === 'object' ? row.metadata as Record<string, unknown> : {};
+  const legacyScope: AssortmentPlanningScope = { type: 'CATEGORY', number: Number(row.categoryNumber) };
+  const planningScope: AssortmentPlanningScope = {
+    type: row.planningScopeType === 'DEPARTMENT' ? 'DEPARTMENT' : 'CATEGORY',
+    number: Number(row.planningScopeNumber ?? row.categoryNumber),
+  };
+  const planningFactors = normalizePlanningFactors(
+    row.planningFactors ?? (metadata.planningFactors as Partial<AssortmentPlanningFactors> | undefined),
+  );
   return {
     id: row.id,
     label: row.label,
     status: row.status,
+    planningScope: Number.isFinite(planningScope.number) ? planningScope : legacyScope,
+    scopeLabel: row.scopeLabel ?? row.categoryLabel,
     categoryNumber: Number(row.categoryNumber),
     categoryLabel: row.categoryLabel,
+    categoryNumbers: (row.categoryNumbers?.length ? row.categoryNumbers : [Number(row.categoryNumber)]).map(Number),
     warehouseStoreId: Number(row.warehouseStoreId),
     warehouseStoreLabel: row.warehouseStoreLabel,
     targetStoreIds: (row.targetStoreIds ?? []).map(Number),
     startDate: dateOnly(row.startDate),
     horizonMonths: Number(row.horizonMonths),
     highSeasonMonths: (row.highSeasonMonths ?? []).map(Number),
+    planningFactors,
     historyFromYearMonth: row.historyFromYearMonth,
     historyToYearMonth: row.historyToYearMonth,
     createdBy: row.createdBy,
@@ -472,6 +556,120 @@ function clampInt(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, Math.round(value)));
 }
 
+function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
+  const parsed = toNumber(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(min, Math.min(max, parsed));
+}
+
+function isDateOnly(value: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(new Date(`${value}T00:00:00.000Z`).getTime());
+}
+
+function defaultPlanningFactors(): AssortmentPlanningFactors {
+  return {
+    historyMonths: DEFAULT_HISTORY_MONTHS,
+    modelCoverWeeks: DEFAULT_MODEL_COVER_WEEKS,
+    modelDisplayFloor: DEFAULT_MODEL_DISPLAY_FLOOR,
+    maxModelQuantity: DEFAULT_MAX_MODEL_QUANTITY,
+    stockOnlyStoreWeightPct: DEFAULT_STOCK_ONLY_STORE_WEIGHT_PCT,
+    unseenColorFallbackPct: DEFAULT_UNSEEN_COLOR_FALLBACK_PCT,
+    waveWeights: [],
+    storeModelOverrides: [],
+    colorOverrides: [],
+    skuWaveOverrides: [],
+  };
+}
+
+function normalizeWaveWeights(values: unknown): AssortmentWaveWeight[] {
+  if (!Array.isArray(values)) return [];
+  const byDate = new Map<string, number>();
+  for (const value of values) {
+    if (!value || typeof value !== 'object') continue;
+    const row = value as Partial<AssortmentWaveWeight>;
+    if (typeof row.releaseDate !== 'string' || !isDateOnly(row.releaseDate)) continue;
+    byDate.set(row.releaseDate, clampNumber(row.weight, 0, 1000, 1));
+  }
+  return [...byDate.entries()]
+    .map(([releaseDate, weight]) => ({ releaseDate, weight }))
+    .filter((row) => row.weight > 0)
+    .sort((left, right) => left.releaseDate.localeCompare(right.releaseDate));
+}
+
+function normalizeStoreModelOverrides(values: unknown): AssortmentStoreModelOverride[] {
+  if (!Array.isArray(values)) return [];
+  const byStore = new Map<number, number>();
+  for (const value of values) {
+    if (!value || typeof value !== 'object') continue;
+    const row = value as Partial<AssortmentStoreModelOverride>;
+    const storeId = Math.trunc(Number(row.storeId));
+    if (!Number.isInteger(storeId) || storeId <= 0) continue;
+    byStore.set(storeId, clampInt(toNumber(row.modelQuantity), 0, 200));
+  }
+  return [...byStore.entries()]
+    .map(([storeId, modelQuantity]) => ({ storeId, modelQuantity }))
+    .sort((left, right) => left.storeId - right.storeId);
+}
+
+function normalizeColorOverrides(values: unknown): AssortmentColorOverride[] {
+  if (!Array.isArray(values)) return [];
+  const byColor = new Map<string, AssortmentColorOverride>();
+  for (const value of values) {
+    if (!value || typeof value !== 'object') continue;
+    const row = value as Partial<AssortmentColorOverride>;
+    const canonicalColor = typeof row.canonicalColor === 'string' ? row.canonicalColor.trim() : '';
+    if (!canonicalColor) continue;
+    const override: AssortmentColorOverride = { canonicalColor };
+    if (row.targetStyleCount != null) override.targetStyleCount = clampInt(toNumber(row.targetStyleCount), 0, 10000);
+    if (row.weight != null) override.weight = clampNumber(row.weight, 0, 1000000, 0);
+    byColor.set(canonicalColor, override);
+  }
+  return [...byColor.values()].sort((left, right) => left.canonicalColor.localeCompare(right.canonicalColor));
+}
+
+function normalizeSkuWaveOverrides(values: unknown): AssortmentSkuWaveOverride[] {
+  if (!Array.isArray(values)) return [];
+  const bySku = new Map<string, string | null>();
+  for (const value of values) {
+    if (!value || typeof value !== 'object') continue;
+    const row = value as Partial<AssortmentSkuWaveOverride>;
+    const skuId = typeof row.skuId === 'string' ? row.skuId.trim() : '';
+    if (!skuId) continue;
+    const releaseDate = row.releaseDate == null ? null : String(row.releaseDate).trim();
+    if (releaseDate !== null && !isDateOnly(releaseDate)) continue;
+    bySku.set(skuId, releaseDate);
+  }
+  return [...bySku.entries()]
+    .map(([skuId, releaseDate]) => ({ skuId, releaseDate }))
+    .sort((left, right) => left.skuId.localeCompare(right.skuId));
+}
+
+export function normalizePlanningFactors(input: Partial<AssortmentPlanningFactors> | null | undefined): AssortmentPlanningFactors {
+  const defaults = defaultPlanningFactors();
+  return {
+    historyMonths: clampInt(toNumber(input?.historyMonths ?? defaults.historyMonths), 1, 60),
+    modelCoverWeeks: clampNumber(input?.modelCoverWeeks ?? defaults.modelCoverWeeks, 0, 52, defaults.modelCoverWeeks),
+    modelDisplayFloor: clampNumber(input?.modelDisplayFloor ?? defaults.modelDisplayFloor, 0, 50, defaults.modelDisplayFloor),
+    maxModelQuantity: clampInt(toNumber(input?.maxModelQuantity ?? defaults.maxModelQuantity), 1, 500),
+    stockOnlyStoreWeightPct: clampNumber(input?.stockOnlyStoreWeightPct ?? defaults.stockOnlyStoreWeightPct, 0, 100, defaults.stockOnlyStoreWeightPct),
+    unseenColorFallbackPct: clampNumber(input?.unseenColorFallbackPct ?? defaults.unseenColorFallbackPct, 0, 100, defaults.unseenColorFallbackPct),
+    waveWeights: normalizeWaveWeights(input?.waveWeights),
+    storeModelOverrides: normalizeStoreModelOverrides(input?.storeModelOverrides),
+    colorOverrides: normalizeColorOverrides(input?.colorOverrides),
+    skuWaveOverrides: normalizeSkuWaveOverrides(input?.skuWaveOverrides),
+  };
+}
+
+function withReleaseSchedule(factors: AssortmentPlanningFactors, releaseDates: string[]): AssortmentPlanningFactors {
+  const schedule = factors.waveWeights.length
+    ? normalizeWaveWeights(factors.waveWeights)
+    : releaseDates.map((releaseDate) => ({ releaseDate, weight: 1 }));
+  return {
+    ...factors,
+    waveWeights: schedule.length ? schedule : releaseDates.map((releaseDate) => ({ releaseDate, weight: 1 })),
+  };
+}
+
 async function loadCategory(categoryNumber: number): Promise<CategoryRow> {
   const rows = await prisma.$queryRawUnsafe<CategoryRow[]>(
     `
@@ -487,6 +685,89 @@ async function loadCategory(categoryNumber: number): Promise<CategoryRow> {
     throw new AssortmentPlanningServiceError(404, 'CATEGORY_NOT_FOUND', `Category not found: ${categoryNumber}`);
   }
   return row;
+}
+
+async function loadDepartment(departmentNumber: number): Promise<DepartmentRow> {
+  const rows = await prisma.$queryRawUnsafe<DepartmentRow[]>(
+    `
+      SELECT
+        number,
+        "desc" AS description,
+        beg_categ AS "begCateg",
+        end_categ AS "endCateg"
+      FROM app.taxonomy_department
+      WHERE number = $1
+      LIMIT 1
+    `,
+    departmentNumber,
+  );
+  const row = rows[0];
+  if (!row) {
+    throw new AssortmentPlanningServiceError(404, 'DEPARTMENT_NOT_FOUND', `Department not found: ${departmentNumber}`);
+  }
+  return row;
+}
+
+async function loadCategoriesForDepartment(department: DepartmentRow): Promise<CategoryRow[]> {
+  const rows = await prisma.$queryRawUnsafe<CategoryRow[]>(
+    `
+      SELECT number, "desc" AS description
+      FROM app.taxonomy_category
+      WHERE number >= $1
+        AND number <= $2
+      ORDER BY number
+    `,
+    Number(department.begCateg),
+    Number(department.endCateg),
+  );
+  if (rows.length === 0) {
+    throw new AssortmentPlanningServiceError(
+      422,
+      'DEPARTMENT_HAS_NO_CATEGORIES',
+      `Department ${department.number} has no categories in its category range.`,
+    );
+  }
+  return rows;
+}
+
+interface ResolvedPlanningScope {
+  planningScope: AssortmentPlanningScope;
+  scopeLabel: string;
+  categoryNumber: number;
+  categoryLabel: string;
+  categoryNumbers: number[];
+}
+
+async function resolvePlanningScope(input: AssortmentPlanRequest): Promise<ResolvedPlanningScope> {
+  const rawScope = input.planningScope;
+  const scopeType: AssortmentPlanningScopeType = rawScope?.type === 'DEPARTMENT' ? 'DEPARTMENT' : 'CATEGORY';
+  const scopeNumber = Math.trunc(Number(rawScope?.number ?? input.categoryNumber ?? DEFAULT_CATEGORY_NUMBER));
+  if (!Number.isInteger(scopeNumber) || scopeNumber <= 0) {
+    throw new AssortmentPlanningServiceError(400, 'INVALID_PLANNING_SCOPE', 'Planning scope number must be positive.');
+  }
+
+  if (scopeType === 'DEPARTMENT') {
+    const department = await loadDepartment(scopeNumber);
+    const categories = await loadCategoriesForDepartment(department);
+    const scopeLabel = `${department.number} - ${department.description}`;
+    return {
+      planningScope: { type: 'DEPARTMENT', number: Number(department.number) },
+      scopeLabel,
+      categoryNumber: Number(department.number),
+      categoryLabel: scopeLabel,
+      categoryNumbers: categories.map((category) => Number(category.number)),
+    };
+  }
+
+  const category = await loadCategory(scopeNumber);
+  const categoryLabel = `${category.number} - ${category.description}`;
+  return {
+    planningScope: { type: 'CATEGORY', number: Number(category.number) },
+    scopeLabel: categoryLabel,
+    categoryNumber: Number(category.number),
+    categoryLabel,
+    categoryNumbers: [Number(category.number)],
+  };
 }
 
 async function loadStore(storeId: number): Promise<StoreRow> {
@@ -534,7 +815,7 @@ function applyAlias(rawKey: string, aliases: Map<string, ColorAlias>): ColorAlia
   return { rawKey: normalized, canonicalColor: normalized, colorFamily: 'unknown' };
 }
 
-async function resolveHistoryWindow(categoryNumber: number, warehouseStoreId: number): Promise<{
+async function resolveHistoryWindow(categoryNumbers: number[], warehouseStoreId: number, historyMonths: number): Promise<{
   fromYearMonth: string;
   toYearMonth: string;
 }> {
@@ -544,10 +825,10 @@ async function resolveHistoryWindow(categoryNumber: number, warehouseStoreId: nu
       FROM app.inventory_history_snapshot h
       JOIN app.inventory_history_month m ON m.snapshot_id = h.id
       JOIN app.sku s ON s.id = h.sku_id
-      WHERE s.category_number = $1
+      WHERE s.category_number = ANY($1::int[])
         AND h.store_id <> $2
     `,
-    categoryNumber,
+    categoryNumbers,
     warehouseStoreId,
   );
   const toYearMonth = rows[0]?.yearMonth && /^\d{4}-(0[1-9]|1[0-2])$/.test(rows[0].yearMonth)
@@ -555,14 +836,51 @@ async function resolveHistoryWindow(categoryNumber: number, warehouseStoreId: nu
     : new Date().toISOString().slice(0, 7);
   return {
     toYearMonth,
-    fromYearMonth: shiftYearMonth(toYearMonth, -HISTORY_MONTHS + 1),
+    fromYearMonth: shiftYearMonth(toYearMonth, -Math.max(1, historyMonths) + 1),
   };
 }
 
+async function loadScheduledSkuIds(categoryNumbers: number[], excludePlanId?: string | null): Promise<Set<string>> {
+  if (categoryNumbers.length === 0) return new Set();
+  const rows = await prisma.$queryRawUnsafe<Array<{ skuId: string }>>(
+    `
+      SELECT DISTINCT pool.sku_id::text AS "skuId"
+      FROM app.assortment_plan_pool_item pool
+      JOIN app.assortment_plan plan ON plan.id = pool.plan_id
+      JOIN app.sku s ON s.id = pool.sku_id
+      JOIN app.assortment_plan_wave wave ON wave.id = pool.assigned_wave_id
+      WHERE s.category_number = ANY($1::int[])
+        AND ($2::uuid IS NULL OR plan.id <> $2::uuid)
+        AND plan.archived_at IS NULL
+        AND plan.status IN ('DRAFT', 'ACTIVE')
+        AND wave.status <> 'COMMITTED'
+    `,
+    categoryNumbers,
+    excludePlanId ?? null,
+  );
+  return new Set(rows.map((row) => row.skuId));
+}
+
+async function assertNoScheduledSkuConflict(input: {
+  categoryNumbers: number[];
+  skuIds: string[];
+  excludePlanId?: string | null;
+}): Promise<void> {
+  const scheduled = await loadScheduledSkuIds(input.categoryNumbers, input.excludePlanId ?? null);
+  const conflicts = input.skuIds.filter((skuId) => scheduled.has(skuId));
+  if (conflicts.length === 0) return;
+  throw new AssortmentPlanningServiceError(
+    409,
+    'SKU_ALREADY_SCHEDULED',
+    `${conflicts.length} SKU(s) are already scheduled in another active assortment plan. Recompute the plan.`,
+  );
+}
+
 async function loadPool(input: {
-  categoryNumber: number;
+  categoryNumbers: number[];
   warehouseStoreId: number;
   aliases: Map<string, ColorAlias>;
+  excludeScheduledSkuIds: Set<string>;
 }): Promise<AssortmentPoolItem[]> {
   const rows = await prisma.$queryRawUnsafe<PoolSqlRow[]>(
     `
@@ -584,6 +902,8 @@ async function loadPool(input: {
         s.id::text AS "skuId",
         COALESCE(s.code, s.provisional_code) AS "skuCode",
         COALESCE(s.description_web, s.description_rics, s.style_color) AS "skuDescription",
+        s.category_number AS "categoryNumber",
+        c."desc" AS "categoryDescription",
         s.style_color AS "styleColor",
         s.color_code AS "colorCode",
         s.keywords,
@@ -592,16 +912,18 @@ async function loadPool(input: {
       FROM app.sku s
       JOIN wh ON wh.sku_id = s.id
       LEFT JOIN store_stock ON store_stock.sku_id = s.id
-      WHERE s.category_number = $1
+      LEFT JOIN app.taxonomy_category c ON c.number = s.category_number
+      WHERE s.category_number = ANY($1::int[])
         AND s.sku_state = 'ACTIVE'
         AND s.code IS NOT NULL
       ORDER BY COALESCE(s.code, s.provisional_code)
     `,
-    input.categoryNumber,
+    input.categoryNumbers,
     input.warehouseStoreId,
   );
 
   return rows.flatMap((row) => {
+    if (input.excludeScheduledSkuIds.has(row.skuId)) return [];
     const neverDistributed = toInt(row.storeUnits) === 0;
     const pending = hasPrKeyword(row.keywords);
     if (!neverDistributed && !pending) return [];
@@ -615,6 +937,8 @@ async function loadPool(input: {
       skuId: row.skuId,
       skuCode: row.skuCode,
       skuDescription: row.skuDescription,
+      categoryNumber: toInt(row.categoryNumber),
+      categoryLabel: `${toInt(row.categoryNumber)} - ${row.categoryDescription ?? ''}`.trim(),
       styleColor: row.styleColor,
       colorCode: row.colorCode,
       rawColorKey: alias.rawKey,
@@ -629,11 +953,12 @@ async function loadPool(input: {
 }
 
 async function loadTargetStores(input: {
-  categoryNumber: number;
+  categoryNumbers: number[];
   warehouseStoreId: number;
   targetStoreIds: number[];
   historyFromYearMonth: string;
   historyToYearMonth: string;
+  planningFactors: AssortmentPlanningFactors;
 }): Promise<AssortmentTargetStore[]> {
   const hasExplicitTargets = input.targetStoreIds.length > 0;
   const rows = hasExplicitTargets
@@ -650,7 +975,7 @@ async function loadTargetStores(input: {
           FROM app.inventory_history_snapshot h
           JOIN app.inventory_history_month m ON m.snapshot_id = h.id
           JOIN app.sku s ON s.id = h.sku_id
-          WHERE s.category_number = $1
+          WHERE s.category_number = ANY($1::int[])
             AND m.year_month >= $2
             AND m.year_month <= $3
             AND h.store_id = ANY($5::int[])
@@ -660,7 +985,7 @@ async function loadTargetStores(input: {
           SELECT sl.store_id, COUNT(DISTINCT sl.sku_id)::int AS sku_count, SUM(sl.on_hand)::int AS units
           FROM app.stock_level sl
           JOIN app.sku s ON s.id = sl.sku_id
-          WHERE s.category_number = $1
+          WHERE s.category_number = ANY($1::int[])
             AND sl.on_hand > 0
             AND sl.store_id = ANY($5::int[])
           GROUP BY sl.store_id
@@ -676,7 +1001,7 @@ async function loadTargetStores(input: {
         LEFT JOIN current_stock ON current_stock.store_id = selected.store_id
         ORDER BY selected.store_id
       `,
-      input.categoryNumber,
+      input.categoryNumbers,
       input.historyFromYearMonth,
       input.historyToYearMonth,
       input.warehouseStoreId,
@@ -689,7 +1014,7 @@ async function loadTargetStores(input: {
           FROM app.inventory_history_snapshot h
           JOIN app.inventory_history_month m ON m.snapshot_id = h.id
           JOIN app.sku s ON s.id = h.sku_id
-          WHERE s.category_number = $1
+          WHERE s.category_number = ANY($1::int[])
             AND m.year_month >= $2
             AND m.year_month <= $3
             AND h.store_id <> $4
@@ -699,7 +1024,7 @@ async function loadTargetStores(input: {
           SELECT sl.store_id, COUNT(DISTINCT sl.sku_id)::int AS sku_count, SUM(sl.on_hand)::int AS units
           FROM app.stock_level sl
           JOIN app.sku s ON s.id = sl.sku_id
-          WHERE s.category_number = $1
+          WHERE s.category_number = ANY($1::int[])
             AND sl.on_hand > 0
             AND sl.store_id <> $4
           GROUP BY sl.store_id
@@ -717,7 +1042,7 @@ async function loadTargetStores(input: {
            OR COALESCE(current_stock.units, 0) > 0
         ORDER BY COALESCE(sales.units, 0) DESC, COALESCE(current_stock.units, 0) DESC
       `,
-      input.categoryNumber,
+      input.categoryNumbers,
       input.historyFromYearMonth,
       input.historyToYearMonth,
       input.warehouseStoreId,
@@ -727,7 +1052,8 @@ async function loadTargetStores(input: {
   const avgPositiveSales = positiveSales.length
     ? positiveSales.reduce((sum, value) => sum + value, 0) / positiveSales.length
     : 1;
-  const stockOnlyFloor = Math.max(1, Math.round(avgPositiveSales * 0.05));
+  const stockOnlyFloor = Math.max(1, Math.round(avgPositiveSales * (input.planningFactors.stockOnlyStoreWeightPct / 100)));
+  const modelOverrides = new Map(input.planningFactors.storeModelOverrides.map((row) => [row.storeId, row.modelQuantity]));
   const baseStores = rows.map((row) => {
     const salesUnits = toInt(row.salesUnits);
     const currentUnits = toInt(row.currentUnits);
@@ -753,21 +1079,24 @@ async function loadTargetStores(input: {
       ? Math.round((store.weight / totalWeight) * totalCurrentSkuCount)
       : 1;
     const suggestedSkuBudget = Math.max(1, store.currentSkuCount || proportionalSkuBudget || 1);
-    const averageMonthlySales = Number((store.salesUnits / HISTORY_MONTHS).toFixed(2));
+    const averageMonthlySales = Number((store.salesUnits / input.planningFactors.historyMonths).toFixed(2));
     const salesPerSkuMonth = Number((averageMonthlySales / suggestedSkuBudget).toFixed(2));
-    const modelFromSales = Math.ceil(MODEL_DISPLAY_FLOOR + salesPerSkuMonth * (MODEL_COVER_WEEKS / 4));
+    const modelFromSales = Math.ceil(input.planningFactors.modelDisplayFloor + salesPerSkuMonth * (input.planningFactors.modelCoverWeeks / 4));
+    const overriddenModelQuantity = modelOverrides.get(store.storeId);
     return {
       ...store,
       suggestedSkuBudget,
       averageMonthlySales,
       salesPerSkuMonth,
-      suggestedModelQuantity: clampInt(modelFromSales, 1, MAX_MODEL_QUANTITY),
+      suggestedModelQuantity: overriddenModelQuantity == null
+        ? clampInt(modelFromSales, 1, input.planningFactors.maxModelQuantity)
+        : clampInt(overriddenModelQuantity, 0, input.planningFactors.maxModelQuantity),
     };
   });
 }
 
 async function loadColorSales(input: {
-  categoryNumber: number;
+  categoryNumbers: number[];
   targetStoreIds: number[];
   historyFromYearMonth: string;
   historyToYearMonth: string;
@@ -789,13 +1118,13 @@ async function loadColorSales(input: {
       FROM app.inventory_history_snapshot h
       JOIN app.inventory_history_month m ON m.snapshot_id = h.id
       JOIN app.sku s ON s.id = h.sku_id
-      WHERE s.category_number = $1
+      WHERE s.category_number = ANY($1::int[])
         AND h.store_id = ANY($2::int[])
         AND m.year_month >= $3
         AND m.year_month <= $4
       GROUP BY COALESCE(s.code, s.provisional_code), s.style_color, s.color_code
     `,
-    input.categoryNumber,
+    input.categoryNumbers,
     input.targetStoreIds,
     input.historyFromYearMonth,
     input.historyToYearMonth,
@@ -967,12 +1296,36 @@ function buildColorMix(input: {
   }).sort((left, right) => right.salesUnits - left.salesUnits || right.plannedStyleCount - left.plannedStyleCount);
 }
 
+function buildWaveLine(item: AssortmentPoolItem, targetStores: AssortmentTargetStore[]): AssortmentWaveLine {
+  const allocations = allocateOpeningModel(item.warehouseUnits, targetStores);
+  const releaseUnits = allocations.reduce((sum, allocation) => sum + allocation.quantity, 0);
+  return {
+    skuId: item.skuId,
+    skuCode: item.skuCode,
+    skuDescription: item.skuDescription,
+    rawColorKey: item.rawColorKey,
+    canonicalColor: item.canonicalColor,
+    colorFamily: item.colorFamily,
+    warehouseUnits: item.warehouseUnits,
+    releaseUnits,
+    reserveUnits: Math.max(0, item.warehouseUnits - releaseUnits),
+    allocations,
+  };
+}
+
+function recomputeWaveTotals(wave: AssortmentWave): void {
+  wave.styleCount = wave.lines.length;
+  wave.totalUnits = wave.lines.reduce((sum, line) => sum + line.releaseUnits, 0);
+}
+
 export function buildWavePlan(input: {
   pool: AssortmentPoolItem[];
-  releaseDates: string[];
+  releaseSchedule: AssortmentWaveWeight[];
   colorSales: Map<string, { units: number; family: string }>;
   targetStores: AssortmentTargetStore[];
+  planningFactors?: AssortmentPlanningFactors;
 }): { waves: AssortmentWave[]; colorMix: AssortmentColorMix[] } {
+  const planningFactors = normalizePlanningFactors(input.planningFactors);
   const poolByColor = new Map<string, AssortmentPoolItem[]>();
   for (const item of input.pool) {
     const bucket = poolByColor.get(item.canonicalColor) ?? [];
@@ -984,49 +1337,56 @@ export function buildWavePlan(input: {
   }
 
   const totalSales = [...input.colorSales.values()].reduce((sum, row) => sum + row.units, 0);
+  const colorOverrides = new Map(planningFactors.colorOverrides.map((row) => [row.canonicalColor, row]));
   const colorWeights = new Map<string, number>();
+  const fixedColorTargets = new Map<string, number>();
   for (const [color, bucket] of poolByColor) {
+    const override = colorOverrides.get(color);
+    if (override?.targetStyleCount != null) {
+      fixedColorTargets.set(color, Math.min(bucket.length, Math.max(0, Math.round(override.targetStyleCount))));
+      continue;
+    }
     const salesUnits = input.colorSales.get(color)?.units ?? 0;
-    colorWeights.set(color, salesUnits > 0 ? salesUnits : totalSales > 0 ? totalSales * 0.02 : bucket.length);
+    colorWeights.set(
+      color,
+      override?.weight != null
+        ? override.weight
+        : salesUnits > 0
+          ? salesUnits
+          : totalSales > 0
+            ? totalSales * (planningFactors.unseenColorFallbackPct / 100)
+            : bucket.length,
+    );
   }
-  const colorTargets = distributeCounts(input.pool.length, colorWeights);
+  const fixedTotal = [...fixedColorTargets.values()].reduce((sum, value) => sum + value, 0);
+  const colorTargets = distributeCounts(Math.max(0, input.pool.length - fixedTotal), colorWeights);
+  for (const [color, count] of fixedColorTargets) colorTargets.set(color, count);
   const colorRemaining = new Map(colorTargets);
   const waveTargets = allocateByWeights(
     input.pool.length,
-    input.releaseDates.map((date) => ({ item: date, weight: 1 })),
+    input.releaseSchedule.map((wave) => ({ item: wave.releaseDate, weight: wave.weight })),
   );
 
   const waves: AssortmentWave[] = [];
-  for (let index = 0; index < input.releaseDates.length; index += 1) {
-    const releaseDate = input.releaseDates[index]!;
+  for (let index = 0; index < input.releaseSchedule.length; index += 1) {
+    const releaseDate = input.releaseSchedule[index]!.releaseDate;
     const targetStyleCount = waveTargets.get(releaseDate) ?? 0;
     const lines: AssortmentWaveLine[] = [];
     for (let slot = 0; slot < targetStyleCount; slot += 1) {
       const color = [...poolByColor.entries()]
-        .filter(([, bucket]) => bucket.length > 0)
+        .filter(([nextColor, bucket]) => bucket.length > 0 && (colorRemaining.get(nextColor) ?? 0) > 0)
         .sort((left, right) =>
           (colorRemaining.get(right[0]) ?? 0) - (colorRemaining.get(left[0]) ?? 0)
           || right[1].length - left[1].length
           || left[0].localeCompare(right[0]),
-        )[0]?.[0];
+        )[0]?.[0] ?? [...poolByColor.entries()]
+        .filter(([, bucket]) => bucket.length > 0)
+        .sort((left, right) => right[1].length - left[1].length || left[0].localeCompare(right[0]))[0]?.[0];
       if (!color) break;
       const item = poolByColor.get(color)!.shift()!;
       colorRemaining.set(color, (colorRemaining.get(color) ?? 0) - 1);
       item.assignedWaveSequence = index + 1;
-      const allocations = allocateOpeningModel(item.warehouseUnits, input.targetStores);
-      const releaseUnits = allocations.reduce((sum, allocation) => sum + allocation.quantity, 0);
-      lines.push({
-        skuId: item.skuId,
-        skuCode: item.skuCode,
-        skuDescription: item.skuDescription,
-        rawColorKey: item.rawColorKey,
-        canonicalColor: item.canonicalColor,
-        colorFamily: item.colorFamily,
-        warehouseUnits: item.warehouseUnits,
-        releaseUnits,
-        reserveUnits: Math.max(0, item.warehouseUnits - releaseUnits),
-        allocations,
-      });
+      lines.push(buildWaveLine(item, input.targetStores));
     }
     waves.push({
       sequence: index + 1,
@@ -1038,6 +1398,40 @@ export function buildWavePlan(input: {
       totalUnits: lines.reduce((sum, line) => sum + line.releaseUnits, 0),
       lines,
     });
+  }
+
+  const poolBySkuId = new Map(input.pool.map((item) => [item.skuId, item]));
+  const waveByReleaseDate = new Map(waves.map((wave) => [wave.releaseDate, wave]));
+  const lineLocationBySkuId = new Map<string, { wave: AssortmentWave; line: AssortmentWaveLine }>();
+  for (const wave of waves) {
+    for (const line of wave.lines) {
+      lineLocationBySkuId.set(line.skuId, { wave, line });
+    }
+  }
+  for (const override of planningFactors.skuWaveOverrides) {
+    const item = poolBySkuId.get(override.skuId);
+    if (!item) continue;
+    const current = lineLocationBySkuId.get(override.skuId);
+    if (override.releaseDate !== null && !waveByReleaseDate.has(override.releaseDate)) continue;
+
+    if (current) {
+      current.wave.lines = current.wave.lines.filter((line) => line.skuId !== override.skuId);
+      lineLocationBySkuId.delete(override.skuId);
+    }
+    if (override.releaseDate === null) {
+      item.assignedWaveSequence = undefined;
+      continue;
+    }
+
+    const targetWave = waveByReleaseDate.get(override.releaseDate)!;
+    const line = current?.line ?? buildWaveLine(item, input.targetStores);
+    targetWave.lines.push(line);
+    item.assignedWaveSequence = targetWave.sequence;
+    lineLocationBySkuId.set(override.skuId, { wave: targetWave, line });
+  }
+  for (const wave of waves) {
+    wave.lines.sort((left, right) => left.skuCode.localeCompare(right.skuCode));
+    recomputeWaveTotals(wave);
   }
 
   const plannedCounts = new Map<string, number>();
@@ -1062,12 +1456,14 @@ function normalizeRequest(input: AssortmentPlanRequest): Required<Omit<Assortmen
   const highSeasonMonths = uniqueSortedNumbers(input.highSeasonMonths?.length ? input.highSeasonMonths : DEFAULT_HIGH_SEASON_MONTHS)
     .filter((month) => month >= 1 && month <= 12);
   return {
+    planningScope: input.planningScope ?? { type: 'CATEGORY', number: categoryNumber },
     categoryNumber,
     warehouseStoreId,
     targetStoreIds: uniqueSortedNumbers(input.targetStoreIds ?? []),
     startDate: input.startDate ?? currentDateOnly(),
     horizonMonths,
     highSeasonMonths: highSeasonMonths.length ? highSeasonMonths : DEFAULT_HIGH_SEASON_MONTHS,
+    planningFactors: normalizePlanningFactors(input.planningFactors),
     label: input.label,
     createdBy: input.createdBy,
   };
@@ -1091,52 +1487,74 @@ function reportTotals(report: Pick<AssortmentPlanReport, 'pool' | 'waves' | 'tar
 }
 
 function defaultLabel(report: AssortmentPlanReport): string {
-  return `Assortment ${report.categoryLabel} ${report.startDate}`;
+  return `Assortment ${report.scopeLabel} ${report.startDate}`;
 }
 
 export async function previewAssortmentPlan(input: AssortmentPlanRequest): Promise<AssortmentPlanReport> {
   const normalized = normalizeRequest(input);
   const aliases = await loadColorAliasMap();
-  const [category, warehouse, historyWindow] = await Promise.all([
-    loadCategory(normalized.categoryNumber),
+  const [scope, warehouse] = await Promise.all([
+    resolvePlanningScope(normalized),
     loadStore(normalized.warehouseStoreId),
-    resolveHistoryWindow(normalized.categoryNumber, normalized.warehouseStoreId),
   ]);
+  const planningFactors = normalizePlanningFactors(normalized.planningFactors);
+  const historyWindow = await resolveHistoryWindow(
+    scope.categoryNumbers,
+    normalized.warehouseStoreId,
+    planningFactors.historyMonths,
+  );
   const targetStores = await loadTargetStores({
-    categoryNumber: normalized.categoryNumber,
+    categoryNumbers: scope.categoryNumbers,
     warehouseStoreId: normalized.warehouseStoreId,
     targetStoreIds: normalized.targetStoreIds,
     historyFromYearMonth: historyWindow.fromYearMonth,
     historyToYearMonth: historyWindow.toYearMonth,
+    planningFactors,
   });
+  const scheduledSkuIds = await loadScheduledSkuIds(scope.categoryNumbers);
   const pool = await loadPool({
-    categoryNumber: normalized.categoryNumber,
+    categoryNumbers: scope.categoryNumbers,
     warehouseStoreId: normalized.warehouseStoreId,
     aliases,
+    excludeScheduledSkuIds: scheduledSkuIds,
   });
   const colorSales = await loadColorSales({
-    categoryNumber: normalized.categoryNumber,
+    categoryNumbers: scope.categoryNumbers,
     targetStoreIds: targetStores.map((store) => store.storeId),
     historyFromYearMonth: historyWindow.fromYearMonth,
     historyToYearMonth: historyWindow.toYearMonth,
     aliases,
   });
   const releaseDates = buildReleaseDates(normalized.startDate, normalized.horizonMonths, normalized.highSeasonMonths);
-  const { waves, colorMix } = buildWavePlan({ pool, releaseDates, colorSales, targetStores });
+  const scheduledFactors = withReleaseSchedule(planningFactors, releaseDates);
+  const { waves, colorMix } = buildWavePlan({
+    pool,
+    releaseSchedule: scheduledFactors.waveWeights,
+    colorSales,
+    targetStores,
+    planningFactors: scheduledFactors,
+  });
   const warnings: string[] = [];
   if (pool.length === 0) warnings.push('No positive warehouse-stock SKUs matched never-distributed or PR keyword rules.');
-  if (pool.length !== 27 && normalized.categoryNumber === DEFAULT_CATEGORY_NUMBER && normalized.warehouseStoreId === DEFAULT_WAREHOUSE_STORE_ID) {
+  if (pool.length !== 27 && scope.planningScope.type === 'CATEGORY' && scope.categoryNumber === DEFAULT_CATEGORY_NUMBER && normalized.warehouseStoreId === DEFAULT_WAREHOUSE_STORE_ID) {
     warnings.push(`Detected ${pool.length} category-71 SKUs for the current warehouse pool. Expected operational check is 27 with current data.`);
   }
+  if (scheduledSkuIds.size > 0) {
+    warnings.push(`${scheduledSkuIds.size} SKU(s) are already scheduled in active assortment plans and were excluded from this pending pool.`);
+  }
   const report: AssortmentPlanReport = {
-    categoryNumber: normalized.categoryNumber,
-    categoryLabel: `${category.number} - ${category.description}`,
+    planningScope: scope.planningScope,
+    scopeLabel: scope.scopeLabel,
+    categoryNumber: scope.categoryNumber,
+    categoryLabel: scope.categoryLabel,
+    categoryNumbers: scope.categoryNumbers,
     warehouseStoreId: normalized.warehouseStoreId,
     warehouseStoreLabel: storeLabel(warehouse.number, warehouse.description),
     targetStores,
     startDate: normalized.startDate,
     horizonMonths: normalized.horizonMonths,
     highSeasonMonths: normalized.highSeasonMonths,
+    planningFactors: scheduledFactors,
     historyFromYearMonth: historyWindow.fromYearMonth,
     historyToYearMonth: historyWindow.toYearMonth,
     pool,
@@ -1167,14 +1585,42 @@ export async function createAssortmentPlan(
   const actor = actorOverride?.trim() || input.createdBy?.trim() || 'system';
   const label = input.label?.trim() || defaultLabel(draft);
   const planId = await prisma.$transaction(async (tx) => {
+    const scheduled = await tx.$queryRawUnsafe<Array<{ skuId: string }>>(
+      `
+        SELECT DISTINCT pool.sku_id::text AS "skuId"
+        FROM app.assortment_plan_pool_item pool
+        JOIN app.assortment_plan plan ON plan.id = pool.plan_id
+        JOIN app.sku s ON s.id = pool.sku_id
+        JOIN app.assortment_plan_wave wave ON wave.id = pool.assigned_wave_id
+        WHERE s.category_number = ANY($1::int[])
+          AND plan.archived_at IS NULL
+          AND plan.status IN ('DRAFT', 'ACTIVE')
+          AND wave.status <> 'COMMITTED'
+      `,
+      draft.categoryNumbers,
+    );
+    const scheduledSkuIds = new Set(scheduled.map((row) => row.skuId));
+    const conflicts = draft.pool.filter((item) => scheduledSkuIds.has(item.skuId));
+    if (conflicts.length > 0) {
+      throw new AssortmentPlanningServiceError(
+        409,
+        'SKU_ALREADY_SCHEDULED',
+        `${conflicts.length} SKU(s) are already scheduled in another active assortment plan. Recompute the plan.`,
+      );
+    }
+
     const inserted = await tx.$queryRawUnsafe<Array<{ id: string }>>(
       `
         INSERT INTO app.assortment_plan (
           label, category_number, category_label, warehouse_store_id, warehouse_store_label,
           target_store_ids, start_date, horizon_months, high_season_months,
-          history_from_year_month, history_to_year_month, metadata, created_by
+          history_from_year_month, history_to_year_month, metadata, created_by,
+          planning_scope_type, planning_scope_number, scope_label, category_numbers, planning_factors
         )
-        VALUES ($1, $2, $3, $4, $5, $6::int[], $7::date, $8, $9::smallint[], $10, $11, $12::jsonb, $13)
+        VALUES (
+          $1, $2, $3, $4, $5, $6::int[], $7::date, $8, $9::smallint[], $10, $11, $12::jsonb, $13,
+          $14, $15, $16, $17::int[], $18::jsonb
+        )
         RETURNING id::text
       `,
       label,
@@ -1191,9 +1637,18 @@ export async function createAssortmentPlan(
       JSON.stringify({
         targetStores: draft.targetStores,
         colorMix: draft.colorMix,
+        planningScope: draft.planningScope,
+        scopeLabel: draft.scopeLabel,
+        categoryNumbers: draft.categoryNumbers,
+        planningFactors: draft.planningFactors,
         warnings: draft.warnings,
       }),
       actor,
+      draft.planningScope.type,
+      draft.planningScope.number,
+      draft.scopeLabel,
+      draft.categoryNumbers,
+      JSON.stringify(draft.planningFactors),
     );
     const id = inserted[0]?.id;
     if (!id) throw new Error('Assortment plan insert did not return id.');
@@ -1236,6 +1691,8 @@ export async function createAssortmentPlan(
         item.keywords,
         item.assignedWaveSequence ? waveIds.get(item.assignedWaveSequence) ?? null : null,
         JSON.stringify({
+          categoryNumber: item.categoryNumber,
+          categoryLabel: item.categoryLabel,
           styleColor: item.styleColor,
           colorCode: item.colorCode,
           storeUnits: item.storeUnits,
@@ -1292,14 +1749,19 @@ async function loadPlanRow(planId: string): Promise<StoredPlanRow> {
         id::text,
         label,
         status,
+        planning_scope_type AS "planningScopeType",
+        planning_scope_number AS "planningScopeNumber",
+        scope_label AS "scopeLabel",
         category_number AS "categoryNumber",
         category_label AS "categoryLabel",
+        category_numbers AS "categoryNumbers",
         warehouse_store_id AS "warehouseStoreId",
         warehouse_store_label AS "warehouseStoreLabel",
         target_store_ids AS "targetStoreIds",
         start_date AS "startDate",
         horizon_months AS "horizonMonths",
         high_season_months AS "highSeasonMonths",
+        planning_factors AS "planningFactors",
         history_from_year_month AS "historyFromYearMonth",
         history_to_year_month AS "historyToYearMonth",
         metadata,
@@ -1440,6 +1902,8 @@ async function buildReportFromStored(planRow: StoredPlanRow): Promise<Assortment
       skuId: row.skuId,
       skuCode: row.skuCode,
       skuDescription: row.skuDescription,
+      categoryNumber: typeof metadata.categoryNumber === 'number' ? metadata.categoryNumber : Number(row.categoryNumber ?? planRow.categoryNumber),
+      categoryLabel: typeof metadata.categoryLabel === 'string' ? metadata.categoryLabel : row.categoryLabel ?? planRow.categoryLabel,
       styleColor: typeof metadata.styleColor === 'string' ? metadata.styleColor : null,
       colorCode: typeof metadata.colorCode === 'string' ? metadata.colorCode : null,
       rawColorKey: row.rawColorKey,
@@ -1466,16 +1930,21 @@ async function buildReportFromStored(planRow: StoredPlanRow): Promise<Assortment
       lines,
     };
   });
+  const header = normalizeHeader(planRow);
   const report: AssortmentPlanReport = {
-    plan: normalizeHeader(planRow),
+    plan: header,
+    planningScope: header.planningScope,
+    scopeLabel: header.scopeLabel,
     categoryNumber: Number(planRow.categoryNumber),
     categoryLabel: planRow.categoryLabel,
+    categoryNumbers: header.categoryNumbers,
     warehouseStoreId: Number(planRow.warehouseStoreId),
     warehouseStoreLabel: planRow.warehouseStoreLabel,
     targetStores: metadataArray<AssortmentTargetStore>(planRow.metadata, 'targetStores'),
     startDate: dateOnly(planRow.startDate),
     horizonMonths: Number(planRow.horizonMonths),
     highSeasonMonths: (planRow.highSeasonMonths ?? []).map(Number),
+    planningFactors: header.planningFactors,
     historyFromYearMonth: planRow.historyFromYearMonth,
     historyToYearMonth: planRow.historyToYearMonth,
     pool,
@@ -1540,14 +2009,19 @@ export async function listAssortmentPlans(params: {
         p.id::text,
         p.label,
         p.status,
+        p.planning_scope_type AS "planningScopeType",
+        p.planning_scope_number AS "planningScopeNumber",
+        p.scope_label AS "scopeLabel",
         p.category_number AS "categoryNumber",
         p.category_label AS "categoryLabel",
+        p.category_numbers AS "categoryNumbers",
         p.warehouse_store_id AS "warehouseStoreId",
         p.warehouse_store_label AS "warehouseStoreLabel",
         p.target_store_ids AS "targetStoreIds",
         p.start_date AS "startDate",
         p.horizon_months AS "horizonMonths",
         p.high_season_months AS "highSeasonMonths",
+        p.planning_factors AS "planningFactors",
         p.history_from_year_month AS "historyFromYearMonth",
         p.history_to_year_month AS "historyToYearMonth",
         p.metadata,
@@ -1726,6 +2200,19 @@ export async function createAssortmentTransferDrafts(
   if (wave.status === 'COMMITTED') {
     throw new AssortmentPlanningServiceError(409, 'WAVE_ALREADY_COMMITTED', 'Committed waves cannot create new transfer drafts.');
   }
+  const waveSkuRows = await prisma.$queryRawUnsafe<Array<{ skuId: string }>>(
+    `
+      SELECT sku_id::text AS "skuId"
+      FROM app.assortment_plan_wave_line
+      WHERE wave_id = $1::uuid
+    `,
+    waveId,
+  );
+  await assertNoScheduledSkuConflict({
+    categoryNumbers: normalizeHeader(plan).categoryNumbers,
+    skuIds: waveSkuRows.map((row) => row.skuId),
+    excludePlanId: planId,
+  });
 
   await prisma.$transaction(async (tx) => {
     const existing = await existingWaveTransferIds(tx, waveId);

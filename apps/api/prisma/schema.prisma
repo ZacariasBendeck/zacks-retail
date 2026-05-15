@@ -1002,14 +1002,19 @@ model AssortmentPlan {
   id                   String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   label                String
   status               String    @default("DRAFT")
+  planningScopeType    String    @default("CATEGORY") @map("planning_scope_type")
+  planningScopeNumber  Int       @map("planning_scope_number") @db.SmallInt
+  scopeLabel           String    @map("scope_label")
   categoryNumber       Int       @map("category_number") @db.SmallInt
   categoryLabel        String    @map("category_label")
+  categoryNumbers      Int[]     @default([]) @map("category_numbers")
   warehouseStoreId     Int       @map("warehouse_store_id")
   warehouseStoreLabel  String    @map("warehouse_store_label")
   targetStoreIds       Int[]     @map("target_store_ids")
   startDate            DateTime  @map("start_date") @db.Date
   horizonMonths        Int       @default(12) @map("horizon_months") @db.SmallInt
   highSeasonMonths     Int[]     @map("high_season_months") @db.SmallInt
+  planningFactors      Json      @default("{}") @map("planning_factors")
   historyFromYearMonth String    @map("history_from_year_month") @db.VarChar(7)
   historyToYearMonth   String    @map("history_to_year_month") @db.VarChar(7)
   metadata             Json?
@@ -1020,6 +1025,7 @@ model AssortmentPlan {
 
   @@index([status, updatedAt(sort: Desc)], map: "assortment_plan_status_updated_idx")
   @@index([categoryNumber, createdAt(sort: Desc)], map: "assortment_plan_category_idx")
+  @@index([planningScopeType, planningScopeNumber, updatedAt(sort: Desc)], map: "assortment_plan_scope_updated_idx")
   @@map("assortment_plan")
   @@schema("app")
 }

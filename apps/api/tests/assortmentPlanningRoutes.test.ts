@@ -41,12 +41,27 @@ function report() {
   return {
     categoryNumber: 71,
     categoryLabel: '71 - Corbatas de hombre',
+    planningScope: { type: 'CATEGORY', number: 71 },
+    scopeLabel: '71 - Corbatas de hombre',
+    categoryNumbers: [71],
     warehouseStoreId: 99,
     warehouseStoreLabel: '99 - BODEGA GENERAL',
     targetStores: [],
     startDate: '2026-05-06',
     horizonMonths: 12,
     highSeasonMonths: [6, 11, 12],
+    planningFactors: {
+      historyMonths: 12,
+      modelCoverWeeks: 4,
+      modelDisplayFloor: 1,
+      maxModelQuantity: 6,
+      stockOnlyStoreWeightPct: 5,
+      unseenColorFallbackPct: 2,
+      waveWeights: [],
+      storeModelOverrides: [],
+      colorOverrides: [],
+      skuWaveOverrides: [],
+    },
     historyFromYearMonth: '2025-01',
     historyToYearMonth: '2025-12',
     pool: [],
@@ -92,6 +107,34 @@ describe('assortment planning routes', () => {
     expect(res.status).toBe(201);
     expect(res.body.plan.id).toBe('plan-1');
     expect(service.createAssortmentPlan).toHaveBeenCalledWith({ categoryNumber: 71, label: 'Category 71 May' }, null);
+  });
+
+  it('accepts department scope and planning factors', async () => {
+    service.previewAssortmentPlan.mockResolvedValue({
+      ...report(),
+      planningScope: { type: 'DEPARTMENT', number: 10 },
+      scopeLabel: '10 - Footwear',
+      categoryNumbers: [71, 72],
+    });
+    const payload = {
+      planningScope: { type: 'DEPARTMENT', number: 10 },
+      warehouseStoreId: 99,
+      planningFactors: {
+        historyMonths: 18,
+        modelCoverWeeks: 6,
+        waveWeights: [{ releaseDate: '2026-05-15', weight: 3 }],
+        storeModelOverrides: [{ storeId: 1, modelQuantity: 4 }],
+        colorOverrides: [{ canonicalColor: 'Negro', targetStyleCount: 8, weight: 10 }],
+        skuWaveOverrides: [{ skuId: 'sku-1', releaseDate: '2026-05-15' }],
+      },
+    };
+
+    const res = await request(app())
+      .post('/api/v1/assortment-planning/preview')
+      .send(payload);
+
+    expect(res.status).toBe(200);
+    expect(service.previewAssortmentPlan).toHaveBeenCalledWith(payload);
   });
 
   it('lists and loads saved plans', async () => {

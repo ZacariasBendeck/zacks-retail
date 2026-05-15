@@ -29,10 +29,6 @@ type MockChecklistQueryInput = {
     currentInventoryUnits: number;
     currentInventoryValue: number;
   }>;
-  otb?: Array<{
-    departmentNumber: number;
-    openToBuyUnits: number;
-  }>;
   planRows?: Array<Record<string, unknown>>;
   attributePlans?: Array<Record<string, unknown>>;
   attributeActualRows?: Array<Record<string, unknown>>;
@@ -79,8 +75,7 @@ function mockChecklistQueries(input: MockChecklistQueryInput = {}) {
     ])
     .mockResolvedValueOnce(input.inventory ?? [
       { categoryNumber: 262, currentInventoryUnits: 20, currentInventoryValue: 500.25 },
-    ])
-    .mockResolvedValueOnce(input.otb ?? []);
+    ]);
 
   if ((input.planRows?.length ?? 0) > 0 || input.attributePlans || input.attributeActualRows) {
     (prisma.$queryRawUnsafe as jest.Mock)
@@ -136,6 +131,7 @@ describe('listBuyerChecklistCategories aggregation', () => {
     expect(inventorySql).not.toMatch(/s\.sku_id\s*=\s*k\.id/i);
     expect(inventorySql).not.toContain('inventory_history_month');
     expect(inventoryParams).toEqual([[262, 560]]);
+    expect((prisma.$queryRawUnsafe as jest.Mock).mock.calls.some(([sql]) => String(sql).includes('purchase_plan_row'))).toBe(false);
 
     expect(rows).toEqual(expect.arrayContaining([
       expect.objectContaining({
@@ -144,10 +140,11 @@ describe('listBuyerChecklistCategories aggregation', () => {
         last12MonthsUnits: 12,
         currentInventoryUnits: 20,
         currentInventoryValue: 500.25,
+        departmentOtbUnits: null,
         currentSeason: expect.objectContaining({
           steps: expect.objectContaining({
             salesProjection: expect.objectContaining({ status: 'missing' }),
-            inventoryPlan: expect.objectContaining({ status: 'missing', currentInventoryUnits: 20 }),
+            inventoryPlan: expect.objectContaining({ status: 'missing', currentInventoryUnits: 20, departmentOtbUnits: null }),
             carryovers: expect.objectContaining({ status: 'missing' }),
             attributePlan: expect.objectContaining({ status: 'missing' }),
           }),
@@ -159,6 +156,7 @@ describe('listBuyerChecklistCategories aggregation', () => {
         last12MonthsUnits: 0,
         currentInventoryUnits: 0,
         currentInventoryValue: 0,
+        departmentOtbUnits: null,
       }),
     ]));
   });
@@ -168,10 +166,6 @@ describe('listBuyerChecklistCategories aggregation', () => {
       inventory: [
         { categoryNumber: 262, currentInventoryUnits: 20, currentInventoryValue: 500.25 },
         { categoryNumber: 560, currentInventoryUnits: 8, currentInventoryValue: 250 },
-      ],
-      otb: [
-        { departmentNumber: 56, openToBuyUnits: 40 },
-        { departmentNumber: 59, openToBuyUnits: 12 },
       ],
       planRows: [
         {
@@ -260,7 +254,7 @@ describe('listBuyerChecklistCategories aggregation', () => {
         status: 'draft',
         hasProjectionPlan: true,
         currentInventoryUnits: 20,
-        departmentOtbUnits: 40,
+        departmentOtbUnits: null,
       },
       carryovers: {
         status: 'draft',
@@ -288,10 +282,10 @@ describe('listBuyerChecklistCategories aggregation', () => {
         updatedAt: '2026-05-02T01:00:00.000Z',
       },
       inventoryPlan: {
-        status: 'confirmed',
+        status: 'draft',
         hasProjectionPlan: true,
         currentInventoryUnits: 8,
-        departmentOtbUnits: 12,
+        departmentOtbUnits: null,
       },
       carryovers: {
         status: 'complete',
@@ -301,6 +295,50 @@ describe('listBuyerChecklistCategories aggregation', () => {
       },
       attributePlan: {
         status: 'missing',
+      },
+    });
+  });
+
+  it('does not auto-complete carryovers when the category has a zero carryover target', async () => {
+    mockChecklistQueries({
+      categories: [{
+        buyerCode: 'ZB',
+        buyerLabel: 'Zacarias',
+        categoryNumber: 262,
+        categoryLabel: '262 - Ladies Casual',
+        departmentNumber: 56,
+        departmentLabel: '56 - Ladies',
+      }],
+      planRows: [{
+        categoryNumber: 262,
+        buyingSeason: 'FALL_WINTER',
+        seasonYear: 2026,
+        workbookId: 'workbook-1',
+        cardId: 'card-1',
+        status: 'HISTORY_REVIEWED',
+        updatedAt: '2026-05-02T00:00:00.000Z',
+        salesProjectionPlanId: 'plan-1',
+        salesProjectionUnits: 48,
+        salesProjectionUpdatedAt: '2026-05-02T01:00:00.000Z',
+        targetCarryoverSkuCount: 0,
+        plannedCarryoverCount: 0,
+        boughtCarryoverCount: 0,
+      }],
+    });
+
+    const rows = await service.listBuyerChecklistCategories({
+      buyingSeason: 'FALL_WINTER',
+      seasonYear: 2026,
+    });
+
+    expect(rows[0].currentSeason.steps).toMatchObject({
+      salesProjection: { status: 'confirmed' },
+      inventoryPlan: { status: 'draft' },
+      carryovers: {
+        status: 'not_applicable',
+        targetCount: 0,
+        plannedCount: 0,
+        boughtCount: 0,
       },
     });
   });

@@ -14,6 +14,7 @@ import {
   resolveYearMonth,
   type PurchasePlanSeasonWindowItem,
 } from './season';
+import { syncBuyerSalesProjectionDraftForPlanRows } from './buyerSalesProjectionSync';
 import { traceStep } from '../../observability/requestContext';
 import type {
   EohMethod,
@@ -2242,6 +2243,7 @@ export async function updatePurchasePlanRows(
 ): Promise<PurchasePlanDetailResponse> {
   const actor = input.appliedBy?.trim() || 'system';
   const reason = input.reason.trim();
+  const updatesProjectedSales = input.rows.some((row) => hasUnitOverride(row, 'currentProjSales'));
   if (!reason) throw new PurchasePlanningServiceError(400, 'REASON_REQUIRED', 'Adjustment reason is required.');
   if (input.rows.length === 0) {
     throw new PurchasePlanningServiceError(400, 'NO_ROW_UPDATES', 'At least one monthly plan row is required.');
@@ -2299,6 +2301,13 @@ export async function updatePurchasePlanRows(
       `UPDATE app.purchase_plan SET updated_at = CURRENT_TIMESTAMP WHERE id = $1::uuid`,
       planId,
     );
+    if (updatesProjectedSales) {
+      const syncedRows = planRows.map((row) => {
+        const updated = afterRows.find((candidate) => candidate.id === row.id);
+        return updated ?? row;
+      });
+      await syncBuyerSalesProjectionDraftForPlanRows(planId, syncedRows, tx);
+    }
     await recordAudit(
       planId,
       'worksheet_update',
@@ -2350,6 +2359,10 @@ export async function recalculatePurchasePlan(
         await applyExistingAdjustmentRows(planId, adjustment, tx);
       }
     }
+    const syncedRows = recalculateInput.mode !== 'preserve_user'
+      ? await loadRows(planId, tx)
+      : rowsToInsert.map((row) => ({ ...row, id: '', planId }));
+    await syncBuyerSalesProjectionDraftForPlanRows(planId, syncedRows, tx);
     await tx.$executeRawUnsafe(
       `
         UPDATE app.purchase_plan

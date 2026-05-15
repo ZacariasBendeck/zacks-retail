@@ -639,6 +639,11 @@ describe('purchase planning saved service department scoping', () => {
     const planUpdate = mockTx.$executeRawUnsafe.mock.calls
       .find(([sql]) => String(sql).includes('UPDATE app.purchase_plan') && String(sql).includes('forecast_method'));
     expect(planUpdate?.slice(1)).toEqual([planId, '2023-03', '2026-02', 'sameMonthLastYear']);
+
+    const buyerDraftSync = mockTx.$executeRawUnsafe.mock.calls
+      .find(([sql]) => String(sql).includes('UPDATE app.buyer_purchase_category_card'));
+    expect(buyerDraftSync?.[1]).toBe(planId);
+    expect(String(buyerDraftSync?.[0])).toContain('sales_projection_updated_at = NULL');
   });
 
   it('recalculates buy during EOH-target-only updates', async () => {
@@ -697,6 +702,8 @@ describe('purchase planning saved service department scoping', () => {
     expect(updateCalls).toHaveLength(2);
     expect(updateCalls[0]?.slice(1)).toEqual(['row-1', 70, 60, 60, 50, 60]);
     expect(updateCalls[1]?.slice(1)).toEqual(['row-2', 60, 70, 65, 80, 70]);
+    expect(mockTx.$executeRawUnsafe.mock.calls.some(([sql]) =>
+      String(sql).includes('UPDATE app.buyer_purchase_category_card'))).toBe(false);
   });
 
   it('updates monthly projection and target values and rolls EOH forward', async () => {
@@ -756,5 +763,18 @@ describe('purchase planning saved service department scoping', () => {
     expect(updateCalls).toHaveLength(2);
     expect(updateCalls[0]?.slice(1)).toEqual(['row-1', 70, 80, 60, 70, 60]);
     expect(updateCalls[1]?.slice(1)).toEqual(['row-2', 60, 70, 65, 80, 70]);
+
+    const buyerDraftSync = mockTx.$executeRawUnsafe.mock.calls
+      .find(([sql]) => String(sql).includes('UPDATE app.buyer_purchase_category_card'));
+    expect(buyerDraftSync?.slice(1)).toEqual([
+      planId,
+      JSON.stringify([
+        { yearMonth: '2026-03', projectedUnits: 80, projectedSales: 0 },
+        { yearMonth: '2026-04', projectedUnits: 70, projectedSales: 0 },
+      ]),
+      150,
+      0,
+    ]);
+    expect(String(buyerDraftSync?.[0])).toContain('sales_projection_updated_at = NULL');
   });
 });

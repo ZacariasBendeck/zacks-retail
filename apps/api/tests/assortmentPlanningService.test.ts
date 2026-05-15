@@ -79,7 +79,10 @@ describe('assortment planning helpers', () => {
     ];
     const { waves, colorMix } = buildWavePlan({
       pool,
-      releaseDates: ['2026-05-06', '2026-06-01'],
+      releaseSchedule: [
+        { releaseDate: '2026-05-06', weight: 1 },
+        { releaseDate: '2026-06-01', weight: 1 },
+      ],
       colorSales: new Map([
         ['Negro', { units: 90, family: 'black' }],
         ['Azul', { units: 30, family: 'blue' }],
@@ -100,6 +103,52 @@ describe('assortment planning helpers', () => {
     }
     expect(colorMix.find((row) => row.canonicalColor === 'Negro')?.plannedStyleCount).toBe(2);
   });
+
+  it('uses wave weights, color targets, and store model overrides', () => {
+    const pool: AssortmentPoolItem[] = [
+      poolItem('sku-1', 'TIE1BK', 'Negro', 12),
+      poolItem('sku-2', 'TIE2BL', 'Azul', 12),
+      poolItem('sku-3', 'TIE3RD', 'Rojo', 12),
+      poolItem('sku-4', 'TIE4GY', 'Gris', 12),
+    ];
+    const stores: AssortmentTargetStore[] = [
+      targetStore(1, '1 - A', 90, 90, 4),
+      targetStore(2, '2 - B', 10, 10, 2),
+    ];
+    const { waves, colorMix } = buildWavePlan({
+      pool,
+      releaseSchedule: [
+        { releaseDate: '2026-05-06', weight: 3 },
+        { releaseDate: '2026-06-01', weight: 1 },
+      ],
+      colorSales: new Map([
+        ['Negro', { units: 90, family: 'black' }],
+        ['Azul', { units: 10, family: 'blue' }],
+      ]),
+      targetStores: stores,
+      planningFactors: {
+        historyMonths: 12,
+        modelCoverWeeks: 4,
+        modelDisplayFloor: 1,
+        maxModelQuantity: 6,
+        stockOnlyStoreWeightPct: 5,
+        unseenColorFallbackPct: 2,
+        waveWeights: [],
+        storeModelOverrides: [{ storeId: 2, modelQuantity: 1 }],
+        colorOverrides: [{ canonicalColor: 'Azul', targetStyleCount: 2 }],
+        skuWaveOverrides: [{ skuId: 'sku-1', releaseDate: '2026-06-01' }],
+      },
+    });
+
+    expect(waves.find((wave) => wave.sequence === 1)?.styleCount).toBe(2);
+    expect(waves.find((wave) => wave.sequence === 2)?.styleCount).toBe(2);
+    expect(waves.find((wave) => wave.sequence === 2)?.lines.some((line) => line.skuId === 'sku-1')).toBe(true);
+    expect(pool.find((item) => item.skuId === 'sku-1')?.assignedWaveSequence).toBe(2);
+    expect(colorMix.find((row) => row.canonicalColor === 'Azul')?.plannedStyleCount).toBe(1);
+    expect(waves.flatMap((wave) => wave.lines).flatMap((line) => line.allocations).some((allocation) => (
+      allocation.storeId === 2 && allocation.modelQuantity === 2
+    ))).toBe(true);
+  });
 });
 
 function poolItem(skuId: string, skuCode: string, canonicalColor: string, warehouseUnits: number): AssortmentPoolItem {
@@ -107,6 +156,8 @@ function poolItem(skuId: string, skuCode: string, canonicalColor: string, wareho
     skuId,
     skuCode,
     skuDescription: skuCode,
+    categoryNumber: 71,
+    categoryLabel: '71 - Test',
     styleColor: null,
     colorCode: null,
     rawColorKey: skuCode.slice(-2),

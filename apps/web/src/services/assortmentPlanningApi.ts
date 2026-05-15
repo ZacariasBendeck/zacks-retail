@@ -1,13 +1,55 @@
 export type AssortmentPlanStatus = 'DRAFT' | 'ACTIVE' | 'COMMITTED' | 'ARCHIVED';
 export type AssortmentInclusionReason = 'Never distributed' | 'PR' | 'Both';
+export type AssortmentPlanningScopeType = 'CATEGORY' | 'DEPARTMENT';
+
+export interface AssortmentPlanningScope {
+  type: AssortmentPlanningScopeType;
+  number: number;
+}
+
+export interface AssortmentWaveWeight {
+  releaseDate: string;
+  weight: number;
+}
+
+export interface AssortmentStoreModelOverride {
+  storeId: number;
+  modelQuantity: number;
+}
+
+export interface AssortmentColorOverride {
+  canonicalColor: string;
+  targetStyleCount?: number;
+  weight?: number;
+}
+
+export interface AssortmentSkuWaveOverride {
+  skuId: string;
+  releaseDate: string | null;
+}
+
+export interface AssortmentPlanningFactors {
+  historyMonths: number;
+  modelCoverWeeks: number;
+  modelDisplayFloor: number;
+  maxModelQuantity: number;
+  stockOnlyStoreWeightPct: number;
+  unseenColorFallbackPct: number;
+  waveWeights: AssortmentWaveWeight[];
+  storeModelOverrides: AssortmentStoreModelOverride[];
+  colorOverrides: AssortmentColorOverride[];
+  skuWaveOverrides: AssortmentSkuWaveOverride[];
+}
 
 export interface AssortmentPlanRequest {
+  planningScope?: AssortmentPlanningScope;
   categoryNumber?: number;
   warehouseStoreId?: number;
   targetStoreIds?: number[];
   startDate?: string;
   horizonMonths?: number;
   highSeasonMonths?: number[];
+  planningFactors?: Partial<AssortmentPlanningFactors>;
   label?: string;
   createdBy?: string;
 }
@@ -16,14 +58,18 @@ export interface AssortmentPlanHeader {
   id: string;
   label: string;
   status: AssortmentPlanStatus;
+  planningScope: AssortmentPlanningScope;
+  scopeLabel: string;
   categoryNumber: number;
   categoryLabel: string;
+  categoryNumbers: number[];
   warehouseStoreId: number;
   warehouseStoreLabel: string;
   targetStoreIds: number[];
   startDate: string;
   horizonMonths: number;
   highSeasonMonths: number[];
+  planningFactors: AssortmentPlanningFactors;
   historyFromYearMonth: string;
   historyToYearMonth: string;
   createdBy: string;
@@ -50,6 +96,8 @@ export interface AssortmentPoolItem {
   skuId: string;
   skuCode: string;
   skuDescription: string | null;
+  categoryNumber: number;
+  categoryLabel: string;
   styleColor: string | null;
   colorCode: string | null;
   rawColorKey: string;
@@ -106,14 +154,18 @@ export interface AssortmentWave {
 
 export interface AssortmentPlanReport {
   plan?: AssortmentPlanHeader;
+  planningScope: AssortmentPlanningScope;
+  scopeLabel: string;
   categoryNumber: number;
   categoryLabel: string;
+  categoryNumbers: number[];
   warehouseStoreId: number;
   warehouseStoreLabel: string;
   targetStores: AssortmentTargetStore[];
   startDate: string;
   horizonMonths: number;
   highSeasonMonths: number[];
+  planningFactors: AssortmentPlanningFactors;
   historyFromYearMonth: string;
   historyToYearMonth: string;
   pool: AssortmentPoolItem[];

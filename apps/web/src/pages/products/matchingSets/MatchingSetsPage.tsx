@@ -194,6 +194,14 @@ function suggestedDisplayName(input: {
   ].filter(Boolean).join(' - ')
 }
 
+function suggestedQuantityRatio(setTypeCode: string | null | undefined, roleCode: string | null | undefined): number {
+  if (setTypeCode === 'suit') {
+    if (roleCode === 'pant') return 1.2
+    if (roleCode === 'vest') return 0.5
+  }
+  return 1
+}
+
 export default function MatchingSetsPage() {
   const { message } = App.useApp()
   const [searchParams] = useSearchParams()
@@ -258,6 +266,7 @@ export default function MatchingSetsPage() {
     () => types?.find((type) => type.code === (watchedType ?? detail?.setTypeCode)),
     [detail?.setTypeCode, types, watchedType],
   )
+  const currentSetTypeCode = clean(watchedType) ?? clean(detail?.setTypeCode) ?? selectedType?.code ?? 'suit'
   const skuLookupInitialFilters = useMemo(() => {
     const vendor = clean(watchedVendorId) ?? clean(detail?.vendorId)
     return vendor ? { vendor } : undefined
@@ -394,7 +403,7 @@ export default function MatchingSetsPage() {
         skuCode: picked.skuCode,
         roleCode,
         isPrimary: current.length === 0,
-        quantityRatio: 1,
+        quantityRatio: suggestedQuantityRatio(currentSetTypeCode, roleCode),
         displayCode: picked.skuCode,
       },
     ])
@@ -534,7 +543,9 @@ export default function MatchingSetsPage() {
           style={{ width: 180 }}
           onChange={(roleCode) =>
             setDraftMembers((current) =>
-              current.map((member) => member.key === record.key ? { ...member, roleCode } : member),
+              current.map((member) => member.key === record.key
+                ? { ...member, roleCode, quantityRatio: suggestedQuantityRatio(currentSetTypeCode, roleCode) }
+                : member),
             )
           }
         />
@@ -564,7 +575,7 @@ export default function MatchingSetsPage() {
         <InputNumber
           min={0.001}
           step={0.1}
-          value={record.quantityRatio ?? 1}
+          value={record.quantityRatio ?? suggestedQuantityRatio(currentSetTypeCode, record.roleCode)}
           style={{ width: 86 }}
           onChange={(quantityRatio) =>
             setDraftMembers((current) =>

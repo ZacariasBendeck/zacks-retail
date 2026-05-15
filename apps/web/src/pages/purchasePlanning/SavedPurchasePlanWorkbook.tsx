@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react'
 import { QuestionCircleOutlined } from '@ant-design/icons'
 import { Alert, Button, Card, Col, Empty, Input, InputNumber, Row, Segmented, Select, Space, Table, Tabs, Tag, Tooltip, Typography } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
@@ -124,6 +124,10 @@ export interface SavedPurchasePlanWorkbookProps {
   showWorksheetTabs?: boolean
   activeWorksheetTab?: SavedPurchasePlanWorksheetTabKey
   confirmLabel?: string
+  confirmTooltip?: ReactNode
+  confirmDisabledTooltip?: ReactNode
+  confirmButtonStyle?: CSSProperties
+  disableConfirmWhenDirty?: boolean
   extraControls?: ReactNode
   salesTrendSummary?: SavedPurchasePlanSalesTrendSummary | null
   onSaveRows: (planId: string, payload: SavedPurchasePlanRowsUpdateRequest) => void
@@ -381,6 +385,10 @@ export function SavedPurchasePlanWorkbook({
   showWorksheetTabs = true,
   activeWorksheetTab,
   confirmLabel = 'Confirm sales projection',
+  confirmTooltip,
+  confirmDisabledTooltip,
+  confirmButtonStyle,
+  disableConfirmWhenDirty = false,
   extraControls,
   salesTrendSummary,
   onSaveRows,
@@ -463,6 +471,10 @@ export function SavedPurchasePlanWorkbook({
 
   const salesWorksheetChanges = useMemo(() => buildSalesWorksheetChanges(worksheetRows, originalRowsById), [originalRowsById, worksheetRows])
   const onHandWorksheetChanges = useMemo(() => buildOnHandWorksheetChanges(worksheetRows, originalRowsById), [originalRowsById, worksheetRows])
+  const confirmDisabled = disableConfirmWhenDirty && salesWorksheetChanges.length > 0
+  const confirmTitle = confirmDisabled
+    ? confirmDisabledTooltip ?? 'Save worksheet changes before marking this sales projection complete.'
+    : confirmTooltip
   const salesProjectionSummary = useMemo<SalesProjectionSummary>(() => {
     const projectionMonths = (detail?.plan.seasonMonths.length
       ? [...detail.plan.seasonMonths]
@@ -701,7 +713,7 @@ export function SavedPurchasePlanWorkbook({
       title={workbookTitle}
       extra={(
         <Space>
-          {onRecalculate ? (
+          {onRecalculate && selectedWorksheetTab === 'sales-projection' ? (
             <>
               <Select<SavedForecastMethod>
                 aria-label="Forecast method"
@@ -722,11 +734,6 @@ export function SavedPurchasePlanWorkbook({
                 Regenerate
               </Button>
             </>
-          ) : null}
-          {onConfirm && selectedWorksheetTab === 'sales-projection' ? (
-            <Button type="primary" htmlType="button" onClick={() => onConfirm(detail.plan.id)} loading={confirmLoading}>
-              {confirmLabel}
-            </Button>
           ) : null}
           {showArchive && onArchive ? (
             <Button danger htmlType="button" onClick={() => onArchive(detail.plan.id)} loading={archiveLoading}>
@@ -867,6 +874,22 @@ export function SavedPurchasePlanWorkbook({
                   <Button htmlType="button" onClick={resetSalesWorksheet} disabled={salesWorksheetChanges.length === 0}>
                     Reset worksheet
                   </Button>
+                  {onConfirm && selectedWorksheetTab === 'sales-projection' ? (
+                    <Tooltip title={confirmTitle}>
+                      <span style={{ display: 'inline-block' }}>
+                        <Button
+                          type="primary"
+                          htmlType="button"
+                          onClick={() => onConfirm(detail.plan.id)}
+                          loading={confirmLoading}
+                          disabled={confirmDisabled}
+                          style={confirmButtonStyle}
+                        >
+                          {confirmLabel}
+                        </Button>
+                      </span>
+                    </Tooltip>
+                  ) : null}
                   {salesWorksheetChanges.length > 0 ? <Tag color="gold">{salesWorksheetChanges.length} changed</Tag> : null}
                 </Space>
                 <div>

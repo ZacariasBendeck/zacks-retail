@@ -196,6 +196,39 @@ describe('matchingSetService SKU-derived header fields', () => {
     expect(tx.$executeRawUnsafe.mock.calls[0]).toEqual(expect.arrayContaining(['lt', 'Leather']));
   });
 
+  it('uses default suit ratios when member ratios are omitted on create', async () => {
+    const tx = makeTx({
+      skus: [
+        { id: SKU_1_ID, code: 'ST100-JKT', provisionalCode: 'ST100-JKT' },
+        { id: SKU_2_ID, code: 'ST100-PNT', provisionalCode: 'ST100-PNT' },
+        { id: '10000000-0000-4000-8000-000000000003', code: 'ST100-VST', provisionalCode: 'ST100-VST' },
+      ],
+      sourceRows: [],
+    });
+    installTransaction(tx);
+
+    const result = await matchingSetService.create({
+      code: 'MS-RATIO',
+      setTypeCode: 'suit',
+      members: [
+        { skuCode: 'ST100-JKT', roleCode: 'jacket' },
+        { skuCode: 'ST100-PNT', roleCode: 'pant' },
+        { skuCode: 'ST100-VST', roleCode: 'vest' },
+      ],
+    }, 'buyer@example.com');
+
+    expect(result.ok).toBe(true);
+    const ratios = new Map(
+      tx.matchingSetMember.create.mock.calls.map(([call]) => [
+        call.data.roleCode,
+        Number(call.data.quantityRatio.toString()),
+      ]),
+    );
+    expect(ratios.get('jacket')).toBeCloseTo(1);
+    expect(ratios.get('pant')).toBeCloseTo(1.2);
+    expect(ratios.get('vest')).toBeCloseTo(0.5);
+  });
+
   it('leaves conflicting SKU-derived fields blank when no primary SKU is set', async () => {
     const tx = makeTx({
       skus: [

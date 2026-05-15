@@ -450,7 +450,7 @@ const checklistSteps = {
     planId: 'plan-1',
   },
   inventoryPlan: {
-    status: 'confirmed' as const,
+    status: 'draft' as const,
     hasProjectionPlan: true,
     currentInventoryUnits: 123,
     departmentOtbUnits: 250,
@@ -847,7 +847,11 @@ describe('BuyerPurchasePlanningPage', () => {
 
     const categoryRow = screen.getByText('11 - Traje Smoking Hombre').closest('tr')
     expect(categoryRow).toBeTruthy()
-    await userEvent.click(within(categoryRow as HTMLElement).getByRole('button', { name: 'Alert' }))
+    const categoryRowScope = within(categoryRow as HTMLElement)
+    expect(categoryRowScope.getByText('440 units')).toBeInTheDocument()
+    expect(categoryRowScope.getByText('948,496')).toBeInTheDocument()
+    expect(categoryRowScope.queryByText(/OTB/)).not.toBeInTheDocument()
+    await userEvent.click(categoryRowScope.getByRole('button', { name: 'Alert' }))
 
     await screen.findByRole('tab', { name: 'Attribute Plan' })
     expect(screen.getByTestId('current-location')).toHaveTextContent('/purchase-planning/buyer-checklist/workbooks/workbook-1/cards/card-1?tab=attribute-plan')
@@ -1010,7 +1014,7 @@ describe('BuyerPurchasePlanningPage', () => {
     expect(salesProjectionTabs).toHaveLength(1)
     expect(salesProjectionTabs[0]).toHaveAttribute('aria-selected', 'true')
     expect(screen.getByRole('tab', { name: 'On Hand Projection' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Confirm sales projection' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Mark Complete' })).toBeInTheDocument()
     expect(screen.getByText('Category trend')).toBeInTheDocument()
     await userEvent.hover(screen.getByRole('button', { name: 'How category trend is calculated' }))
     const trendTooltip = await screen.findByRole('tooltip')
@@ -1047,21 +1051,79 @@ describe('BuyerPurchasePlanningPage', () => {
     expect(screen.queryByLabelText('On hand projection worksheet')).not.toBeInTheDocument()
     await userEvent.click(screen.getByRole('tab', { name: 'On Hand Projection' }))
     expect(screen.getByText('On Hand Projection worksheet')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Confirm sales projection' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Mark Complete' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('combobox', { name: 'Forecast method' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Regenerate' })).not.toBeInTheDocument()
     await userEvent.click(screen.getByRole('tab', { name: 'Sales Projection' }))
-    expect(screen.getByRole('button', { name: 'Confirm sales projection' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Mark Complete' })).toBeInTheDocument()
     await userEvent.clear(screen.getByLabelText('May 2026 user projected sales'))
     await userEvent.type(screen.getByLabelText('May 2026 user projected sales'), '8')
     expect(await screen.findByText('+3')).toBeInTheDocument()
     expect(screen.getAllByText('100%')[0]).toBeInTheDocument()
     expect(screen.getByText('constrained')).toBeInTheDocument()
+    const dirtyMarkComplete = screen.getByRole('button', { name: 'Mark Complete' })
+    expect(dirtyMarkComplete).toBeDisabled()
+    await userEvent.hover(dirtyMarkComplete.parentElement as HTMLElement)
+    expect(await screen.findByText('Save worksheet changes before marking this sales projection complete.')).toBeInTheDocument()
+
+    const savedProjectionPlan: SavedPurchasePlanDetail = {
+      ...salesProjectionPlan,
+      departments: [{
+        ...salesProjectionPlan.departments[0]!,
+        months: salesProjectionPlan.departments[0]!.months.map((row) =>
+          row.id === 'projection-row-1' ? { ...row, currentProjSales: 8 } : row),
+      }],
+      totals: { ...salesProjectionPlan.totals, totalProjSales: 92 },
+    }
+    const draftDetail: BuyerWorkbookDetail = {
+      ...detail,
+      cards: [{
+        ...detail.cards[0]!,
+        salesProjectionPlanId: 'plan-1',
+        salesProjection: {
+          ...detail.cards[0]!.salesProjection,
+          months: savedProjectionPlan.departments[0]!.months.map((row) => ({
+            yearMonth: row.yearMonth,
+            projectedUnits: row.currentProjSales,
+            projectedSales: 0,
+          })),
+          totalProjectedUnits: 92,
+          totalProjectedSales: 0,
+          updatedBy: null,
+          updatedAt: null,
+        },
+      }],
+    }
+    vi.mocked(updateSavedPurchasePlanRows).mockResolvedValueOnce(savedProjectionPlan)
+    vi.mocked(fetchBuyerWorkbook).mockResolvedValue(draftDetail)
     await userEvent.click(screen.getByRole('button', { name: 'Save worksheet' }))
 
     await waitFor(() => expect(updateSavedPurchasePlanRows).toHaveBeenCalledWith('plan-1', expect.objectContaining({
       rows: [expect.objectContaining({ rowId: 'projection-row-1', currentProjSales: 8 })],
       appliedBy: 'buyer',
     })))
+    expect(confirmBuyerSalesProjectionWorkbook).not.toHaveBeenCalled()
+    await waitFor(() => expect(screen.getByText('92 units')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Mark Complete' })).toBeEnabled())
+    await userEvent.hover(screen.getByRole('button', { name: 'Mark Complete' }))
+    expect(await screen.findByText('Marks only this sales projection worksheet complete and updates the Buyer Checklist projected units.')).toBeInTheDocument()
+    vi.mocked(confirmBuyerSalesProjectionWorkbook).mockResolvedValueOnce({
+      ...draftDetail,
+      cards: [{
+        ...draftDetail.cards[0]!,
+        status: 'HISTORY_REVIEWED',
+        salesProjection: {
+          ...draftDetail.cards[0]!.salesProjection,
+          updatedBy: 'buyer',
+          updatedAt: '2026-05-07T01:00:00.000Z',
+        },
+      }],
+    })
+    await userEvent.click(screen.getByRole('button', { name: 'Mark Complete' }))
     await waitFor(() => expect(confirmBuyerSalesProjectionWorkbook).toHaveBeenCalledWith('workbook-1', 'card-1', 'buyer'))
+    await waitFor(() => expect(screen.getByRole('button', { name: /Sales Projection\s+Complete/i })).toBeInTheDocument())
+    expect(screen.getByRole('button', { name: /Inventory Plan\s+Draft/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Carryovers\s+Draft/i })).toBeInTheDocument()
 
     await userEvent.click(screen.getByRole('tab', { name: 'Attribute Plan' }))
     expect(screen.getByRole('button', { name: /Save Attribute Plan/i })).toBeInTheDocument()
@@ -1181,6 +1243,8 @@ describe('BuyerPurchasePlanningPage', () => {
     await openCategory()
     expect(screen.queryByRole('heading', { name: 'Carrying Setup' })).not.toBeInTheDocument()
     await userEvent.click(screen.getByRole('tab', { name: 'On Hand Projection' }))
+    expect(screen.queryByRole('combobox', { name: 'Forecast method' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Regenerate' })).not.toBeInTheDocument()
     await screen.findByText('12 stock')
     await userEvent.click(screen.getByRole('button', { name: /Apply Suggested Stores/i }))
 
